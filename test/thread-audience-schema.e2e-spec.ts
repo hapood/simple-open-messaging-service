@@ -37,9 +37,9 @@ describe('ThreadAudience schema', () => {
     expect(constraints.has('ThreadAudience_accessEpoch_check')).toBe(false);
     expect(constraints.has('ThreadAudience_visibleRange_check')).toBe(false);
     expect(constraints.has('ThreadAudience_scope_check')).toBe(false);
-    expect(
-      constraints.get('ThreadAudience_deliverThroughChangeId_check'),
-    ).toContain('>= 0');
+    expect(constraints.has('ThreadAudience_deliverThroughChangeId_check')).toBe(
+      false,
+    );
 
     const columns = await database.pool.query<{ column_name: string }>(
       `SELECT column_name
@@ -55,6 +55,7 @@ describe('ThreadAudience schema', () => {
         'endedAt',
         'scope',
         'creatorUserId',
+        'deliverThroughChangeId',
       ]),
     );
   });
@@ -86,7 +87,7 @@ describe('ThreadAudience schema', () => {
     );
   });
 
-  it('installs cursor-only federation allocation and removes database change queues', async () => {
+  it('installs compacted feed indexes and removes database change queues and allocations', async () => {
     const tables = await database.pool.query<{ table_name: string }>(
       `SELECT table_name
        FROM information_schema.tables
@@ -98,11 +99,20 @@ describe('ThreadAudience schema', () => {
           'DiscoveryChange',
           'FederationPullCursor',
           'FederationServeCursor',
+          'FederationMessageFeedIndex',
+          'FederationTombstoneFeedIndex',
+          'FederationMessageFeedAllocation',
+          'FederationTombstoneFeedAllocation',
         ],
       ],
     );
     expect(tables.rows.map((row) => row.table_name).sort()).toEqual(
-      ['FederationPullCursor', 'FederationServeCursor'].sort(),
+      [
+        'FederationMessageFeedIndex',
+        'FederationPullCursor',
+        'FederationServeCursor',
+        'FederationTombstoneFeedIndex',
+      ].sort(),
     );
 
     const indexes = await database.pool.query<{ indexname: string }>(
@@ -149,10 +159,10 @@ describe('ThreadAudience schema', () => {
       cursorChecks.get('FederationPullCursor_committedThrough_check'),
     ).toContain('retainedAfter');
     expect(
-      cursorChecks.get('FederationServeCursor_acknowledgedThrough_check'),
-    ).toContain('retainedAfter');
+      cursorChecks.has('FederationServeCursor_acknowledgedThrough_check'),
+    ).toBe(false);
     expect(
-      cursorChecks.get('FederationServeCursor_lastServedThrough_check'),
-    ).toContain('acknowledgedThrough');
+      cursorChecks.has('FederationServeCursor_lastServedThrough_check'),
+    ).toBe(false);
   });
 });

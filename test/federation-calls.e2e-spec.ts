@@ -76,7 +76,7 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
         expect(stub).toBeDefined();
         return stub!;
       },
-      { timeout: 10_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
     erinStubIdOnB = erinStubB.id;
 
@@ -92,7 +92,7 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
         expect(request).toBeDefined();
         return request!;
       },
-      { timeout: 10_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
     const acc = await request(appB.baseUrl)
       .post('/api/v1/invite/accept')
@@ -118,7 +118,7 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
         expect(activeOnA).toBeDefined();
         expect(activeOnB).toBeDefined();
       },
-      { timeout: 10_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
   }, 120_000);
 

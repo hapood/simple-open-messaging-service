@@ -312,7 +312,9 @@ export class NotificationQueryService {
 
   /** Resolve a `(threadId, seq)` cursor to its internal BigInt id (one lookup); null when unresolved. */
   private async resolveId(cursor: MissedCursor): Promise<bigint | null> {
-    const [m] = await this.messageService.findMessagesBySeqPairs([cursor]);
+    const [m] = await this.messageService.findMessageIdentitiesBySeqPairs([
+      cursor,
+    ]);
     return m?.id ?? null;
   }
 
@@ -374,14 +376,19 @@ export class NotificationQueryService {
         (p): p is { threadId: number; seq: number } =>
           p.seq != null && p.seq >= 0,
       );
-    const latestMsgs =
+    const identityMsgs =
+      pairs.length > 0
+        ? await this.messageService.findMessageIdentitiesBySeqPairs(pairs)
+        : [];
+    const latestVisibleMsgs =
       pairs.length > 0
         ? await this.messageService.findMessagesBySeqPairs(pairs)
         : [];
-    const attached = await this.messageService.attachMediaStatus(latestMsgs);
+    const attached =
+      await this.messageService.attachMediaStatus(latestVisibleMsgs);
     const latestIdByThread = new Map<number, bigint>();
     const creatorByThread = new Map<number, number>();
-    for (const m of latestMsgs) {
+    for (const m of identityMsgs) {
       latestIdByThread.set(m.threadId, m.id);
       creatorByThread.set(m.threadId, m.creator);
     }

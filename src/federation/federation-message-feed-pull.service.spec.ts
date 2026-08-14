@@ -8,8 +8,9 @@ function page(
   hasMore = false,
 ): FederationMessageFeedPage {
   return {
-    messages: [],
+    items: [],
     scannedThrough,
+    messageFeedEndId: scannedThrough,
     hasMore,
   };
 }
@@ -87,11 +88,7 @@ describe('FederationMessageFeedPullService commit boundary', () => {
       apply: async () => undefined,
     });
 
-    expect(fetch.mock.calls.map(([after]) => after)).toEqual([
-      undefined,
-      4n,
-      6n,
-    ]);
+    expect(fetch.mock.calls.map(([after]) => after)).toEqual([undefined, 4n]);
     expect(state).toEqual({
       initialized: true,
       retainedAfter: 4n,
@@ -149,7 +146,7 @@ describe('FederationMessageFeedPullService commit boundary', () => {
       apply: async () => undefined,
     });
 
-    expect(fetch.mock.calls.map(([after]) => after)).toEqual([0n, 8n]);
+    expect(fetch.mock.calls.map(([after]) => after)).toEqual([0n]);
     expect(state.committedThrough).toBe(8n);
   });
 
@@ -165,29 +162,30 @@ describe('FederationMessageFeedPullService commit boundary', () => {
 
     await service.run('peer.test', { fetch, apply, afterCommit });
 
-    expect(fetch.mock.calls.map(([after]) => after)).toEqual([0n, 5n, 8n]);
+    expect(fetch.mock.calls.map(([after]) => after)).toEqual([0n, 5n]);
     expect(state).toEqual({
       initialized: true,
       retainedAfter: 5n,
       committedThrough: 8n,
     });
-    expect(apply).toHaveBeenCalledTimes(2);
-    expect(afterCommit).toHaveBeenCalledTimes(2);
+    expect(apply).toHaveBeenCalledOnce();
+    expect(afterCommit).toHaveBeenCalledOnce();
   });
 
-  it('rejects a non-monotonic remote cursor reset', async () => {
+  it('accepts a correcting cursor when the local after is beyond the source end', async () => {
     const { service, state, whereUpdate } = harness(5n);
+    const fetch = vi
+      .fn()
+      .mockRejectedValueOnce(new RemoteFeedCursorUnavailableError(4n))
+      .mockResolvedValueOnce(page('4'));
 
-    await expect(
-      service.run('peer.test', {
-        fetch: async () =>
-          Promise.reject(new RemoteFeedCursorUnavailableError(4n)),
-        apply: async () => undefined,
-      }),
-    ).rejects.toThrow('invalid message-feed cursor reset');
+    await service.run('peer.test', {
+      fetch,
+      apply: async () => undefined,
+    });
 
-    expect(state.committedThrough).toBe(5n);
-    expect(whereUpdate).not.toHaveBeenCalled();
+    expect(state.committedThrough).toBe(4n);
+    expect(whereUpdate).toHaveBeenCalled();
   });
 
   it('freezes an advertised HWM as the page truncation boundary', async () => {
@@ -203,10 +201,7 @@ describe('FederationMessageFeedPullService commit boundary', () => {
       apply: async () => undefined,
     });
 
-    expect(fetch.mock.calls).toEqual([
-      [0n, 8n],
-      [8n, 8n],
-    ]);
+    expect(fetch.mock.calls).toEqual([[0n, 8n]]);
   });
 
   it('does not fetch an advertised message window before its state dependency', async () => {

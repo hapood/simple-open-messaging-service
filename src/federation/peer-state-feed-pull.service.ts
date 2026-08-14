@@ -63,8 +63,7 @@ export class PeerStateFeedPullService {
       if (!applied) return;
       if (!applied.page) continue;
       await callbacks.afterCommit?.(applied.page);
-      if (applied.hasMore || applied.scannedThrough > applied.requestedAfter)
-        continue;
+      if (applied.hasMore) continue;
       const cursor =
         await this.database.db.query.peerStateFeedPullCursor.findFirst({
           where: eq(peerStateFeedPullCursor.peerDomain, peerDomain),
@@ -104,7 +103,7 @@ export class PeerStateFeedPullService {
         if (!(error instanceof RemoteFeedCursorUnavailableError)) throw error;
         if (
           error.resumeAfter < 0n ||
-          (cursor.initialized && error.resumeAfter <= cursor.committedThrough)
+          (cursor.initialized && error.resumeAfter === cursor.committedThrough)
         ) {
           throw new Error('peer returned an invalid state-feed resume cursor');
         }

@@ -6,6 +6,7 @@ import {
   Post,
   HttpCode,
   HttpStatus,
+  Logger,
   Query,
   Req,
   Res,
@@ -62,6 +63,16 @@ import {
 @Controller(FEDERATION_API_PREFIX)
 @UseGuards(S2sSignatureGuard)
 export class S2sController {
+  private readonly logger = new Logger(S2sController.name);
+  private readonly feedDrainRunning = new Set<string>();
+  private readonly feedDrainPending = new Set<string>();
+  private readonly feedDrainRetryAttempts = new Map<string, number>();
+  private readonly feedDrainRetryTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
+  private readonly feedDrainRequiredState = new Map<string, bigint>();
+
   constructor(
     private readonly federation: FederationService,
     private readonly messageFeed: FederationMessageFeedService,
@@ -112,20 +123,68 @@ export class S2sController {
     this.messageFeedPull.advertise(signer, messageFeedEndId, stateFeedEndId);
     this.tombstonePull.advertise(signer, tombstoneFeedEndId, stateFeedEndId);
     // Wake-up is intentionally fire-and-forget: the durable cursor/page transaction owns recovery,
-    // while this lightweight push returns promptly even when the peer has a large backlog.
-    void this.federation
-      .pullStateFromPeer(signer, stateFeedEndId)
-      .then(() =>
-        this.federation.pullTombstonesFromPeer(signer, stateFeedEndId),
-      )
-      .then(() =>
-        this.federation.pullMissedFromPeer(
+    // while this lightweight push returns promptly even when the peer has a large backlog. A transient
+    // pull failure is retried locally: the HWM notification is only a hint and the sender is not required
+    // to emit another one merely because transport became available again.
+    const required = this.feedDrainRequiredState.get(signer);
+    if (required === undefined || stateFeedEndId > required)
+      this.feedDrainRequiredState.set(signer, stateFeedEndId);
+    this.startFeedDrain(signer);
+  }
+
+  private startFeedDrain(domain: string): void {
+    this.feedDrainPending.add(domain);
+    const timer = this.feedDrainRetryTimers.get(domain);
+    if (timer) {
+      clearTimeout(timer);
+      this.feedDrainRetryTimers.delete(domain);
+    }
+    if (this.feedDrainRunning.has(domain)) return;
+    void this.drainFeedHeads(domain);
+  }
+
+  private async drainFeedHeads(domain: string): Promise<void> {
+    if (this.feedDrainRunning.has(domain)) return;
+    this.feedDrainRunning.add(domain);
+    try {
+      do {
+        this.feedDrainPending.delete(domain);
+        const requiredState = this.feedDrainRequiredState.get(domain) ?? 0n;
+        await this.federation.pullStateFromPeer(domain, requiredState);
+        await this.federation.pullTombstonesFromPeer(domain, requiredState);
+        await this.federation.pullMissedFromPeer(
           this.messageFeedPull,
-          signer,
-          stateFeedEndId,
-        ),
+          domain,
+          requiredState,
+        );
+      } while (this.feedDrainPending.has(domain));
+      this.feedDrainRetryAttempts.delete(domain);
+    } catch (error) {
+      this.logger.warn(
+        `feed-head drain failed for ${domain}: ${(error as Error).message}`,
+      );
+      this.scheduleFeedDrainRetry(domain);
+    } finally {
+      this.feedDrainRunning.delete(domain);
+      if (
+        this.feedDrainPending.has(domain) &&
+        !this.feedDrainRetryTimers.has(domain)
       )
-      .catch(() => undefined);
+        queueMicrotask(() => this.startFeedDrain(domain));
+    }
+  }
+
+  private scheduleFeedDrainRetry(domain: string): void {
+    if (this.feedDrainRetryTimers.has(domain)) return;
+    const attempt = (this.feedDrainRetryAttempts.get(domain) ?? 0) + 1;
+    this.feedDrainRetryAttempts.set(domain, attempt);
+    const delayMs = Math.min(250 * 2 ** Math.min(attempt - 1, 5), 5000);
+    const timer = setTimeout(() => {
+      this.feedDrainRetryTimers.delete(domain);
+      this.startFeedDrain(domain);
+    }, delayMs);
+    timer.unref();
+    this.feedDrainRetryTimers.set(domain, timer);
   }
 
   @Get('message-tombstone-feed')
@@ -159,6 +218,58 @@ export class S2sController {
     return this.tombstoneFeed.serve(peerDomain, after, take, through);
   }
 
+  @Get('message-tombstones')
+  async queryMessageTombstones(
+    @Req() req: FastifyRequest,
+    @Query('type') type?: string,
+    @Query('account') account?: string,
+    @Query('peerAccount') peerAccount?: string,
+    @Query('groupAccount') groupAccount?: string,
+    @Query('groupDomain') groupDomain?: string,
+    @Query('after') afterParam?: string,
+    @Query('take') takeParam?: string,
+    @Query('through') throughParam?: string,
+  ) {
+    this.assertQueryShape(req, [
+      'type',
+      'account',
+      'peerAccount',
+      'groupAccount',
+      'groupDomain',
+      'after',
+      'take',
+      'through',
+    ]);
+    const selector = this.parseThreadQuery(
+      type,
+      account,
+      peerAccount,
+      groupAccount,
+      groupDomain,
+    );
+    const peerDomain = this.signerDomain(req);
+    if (afterParam === undefined) {
+      if (takeParam !== undefined || throughParam !== undefined) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'take and through require after',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      return this.tombstoneFeed.rejectMissingQueryAfter(peerDomain, selector);
+    }
+    const after = this.parseCursorBigInt(afterParam, 'after');
+    const take =
+      takeParam === undefined
+        ? undefined
+        : this.parsePositiveSafeIntegerQuery(takeParam, 'take');
+    const through =
+      throughParam === undefined
+        ? undefined
+        : this.parseCursorBigInt(throughParam, 'through');
+    return this.tombstoneFeed.query(peerDomain, selector, after, take, through);
+  }
+
   /** Durable cross-thread feed. feedId values stay decimal strings on the JSON wire. */
   @Get('message-feed')
   async getMissed(
@@ -166,19 +277,14 @@ export class S2sController {
     @Query('after') afterParam?: string,
     @Query('take') takeParam?: string,
     @Query('through') throughParam?: string,
-    @Query('excludeSelf') excludeSelfParam?: string,
   ) {
-    this.assertQueryShape(req, ['after', 'take', 'through', 'excludeSelf']);
+    this.assertQueryShape(req, ['after', 'take', 'through']);
     const peerDomain = this.signerDomain(req);
     if (afterParam === undefined) {
-      if (
-        takeParam !== undefined ||
-        throughParam !== undefined ||
-        excludeSelfParam !== undefined
-      ) {
+      if (takeParam !== undefined || throughParam !== undefined) {
         throw new BusinessException(
           BusinessCode.FEDERATION_MALFORMED,
-          'take, through and excludeSelf require after',
+          'take and through require after',
           HttpStatus.BAD_REQUEST,
         );
       }
@@ -193,17 +299,59 @@ export class S2sController {
       throughParam === undefined
         ? undefined
         : this.parseCursorBigInt(throughParam, 'through');
-    const excludeSelf = this.parseOptionalBoolean(
-      excludeSelfParam,
-      'excludeSelf',
+    return this.messageFeed.serve(peerDomain, after, take, through);
+  }
+
+  @Get('messages')
+  async queryMessages(
+    @Req() req: FastifyRequest,
+    @Query('type') type?: string,
+    @Query('account') account?: string,
+    @Query('peerAccount') peerAccount?: string,
+    @Query('groupAccount') groupAccount?: string,
+    @Query('groupDomain') groupDomain?: string,
+    @Query('after') afterParam?: string,
+    @Query('take') takeParam?: string,
+    @Query('through') throughParam?: string,
+  ) {
+    this.assertQueryShape(req, [
+      'type',
+      'account',
+      'peerAccount',
+      'groupAccount',
+      'groupDomain',
+      'after',
+      'take',
+      'through',
+    ]);
+    const selector = this.parseThreadQuery(
+      type,
+      account,
+      peerAccount,
+      groupAccount,
+      groupDomain,
     );
-    return this.messageFeed.serve(
-      peerDomain,
-      after,
-      take,
-      through,
-      excludeSelf,
-    );
+    const peerDomain = this.signerDomain(req);
+    if (afterParam === undefined) {
+      if (takeParam !== undefined || throughParam !== undefined) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'take and through require after',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      return this.messageFeed.rejectMissingQueryAfter(peerDomain, selector);
+    }
+    const after = this.parseThreadSequence(afterParam, 'after');
+    const take =
+      takeParam === undefined
+        ? undefined
+        : this.parsePositiveSafeIntegerQuery(takeParam, 'take');
+    const through =
+      throughParam === undefined
+        ? undefined
+        : this.parseThreadSequence(throughParam, 'through');
+    return this.messageFeed.query(peerDomain, selector, after, take, through);
   }
 
   @Get('state-feed')
@@ -296,10 +444,10 @@ export class S2sController {
   }
 
   private parseCursorBigInt(value: string | undefined, name: string): bigint {
-    if (value === undefined || !/^(0|-?[1-9]\d*)$/.test(value)) {
+    if (value === undefined || !/^(0|[1-9]\d*)$/.test(value)) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        `${name} must be a canonical decimal integer`,
+        `${name} must be a canonical non-negative decimal integer`,
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -323,6 +471,72 @@ export class S2sController {
       );
     }
     return parsed;
+  }
+
+  private parseThreadSequence(value: string, name: string): number {
+    if (!/^(?:0|-?[1-9]\d*)$/.test(value)) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        `${name} must be a canonical integer`,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const parsed = Number(value);
+    if (!Number.isSafeInteger(parsed)) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        `${name} must be a safe integer`,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    if (parsed < -1) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        `${name} must be at least -1`,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    return parsed;
+  }
+
+  private parseThreadQuery(
+    type?: string,
+    account?: string,
+    peerAccount?: string,
+    groupAccount?: string,
+    groupDomain?: string,
+  ) {
+    if (
+      type === 'P2P' &&
+      account !== undefined &&
+      peerAccount !== undefined &&
+      groupAccount === undefined &&
+      groupDomain === undefined
+    ) {
+      return {
+        type: 'P2P' as const,
+        account: requireUserAccount(account, 'account'),
+        peerAccount: requireUserAccount(peerAccount, 'peerAccount'),
+      };
+    }
+    if (
+      type === 'GROUP' &&
+      account === undefined &&
+      peerAccount === undefined &&
+      groupAccount !== undefined &&
+      groupDomain !== undefined
+    ) {
+      return {
+        type: 'GROUP' as const,
+        groupAccount: requireAccount(groupAccount, 'groupAccount'),
+        groupDomain: requireDomain(groupDomain, 'groupDomain'),
+      };
+    }
+    throw new BusinessException(
+      BusinessCode.FEDERATION_MALFORMED,
+      'thread query must be exactly one P2P or GROUP shape',
+      HttpStatus.BAD_REQUEST,
+    );
   }
 
   private parseOptionalBoolean(

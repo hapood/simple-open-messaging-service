@@ -60,8 +60,7 @@
       "successStatus": [200],
       "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/messageFeedQuery",
       "responseSchema": "urn:soms:federation:v1:message-feed",
-      "responseEnvelope": true,
-      "secondaryContentSchema": "urn:soms:federation:v1:message-content"
+      "responseEnvelope": true
     },
     {
       "id": "messageTombstoneFeed",
@@ -71,6 +70,27 @@
       "successStatus": [200],
       "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/tombstoneFeedQuery",
       "responseSchema": "urn:soms:federation:v1:message-tombstone-feed",
+      "responseEnvelope": true
+    },
+    {
+      "id": "messageQuery",
+      "method": "GET",
+      "path": "/s2s/v1/messages",
+      "authentication": "recognized-http-message-signature",
+      "successStatus": [200],
+      "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/threadDataQuery",
+      "responseSchema": "urn:soms:federation:v1:message-query",
+      "responseEnvelope": true,
+      "secondaryContentSchema": "urn:soms:federation:v1:message-content"
+    },
+    {
+      "id": "messageTombstoneQuery",
+      "method": "GET",
+      "path": "/s2s/v1/message-tombstones",
+      "authentication": "recognized-http-message-signature",
+      "successStatus": [200],
+      "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/threadDataQuery",
+      "responseSchema": "urn:soms:federation:v1:message-tombstone-query",
       "responseEnvelope": true
     },
     {

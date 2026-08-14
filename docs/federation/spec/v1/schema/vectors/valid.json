@@ -67,16 +67,15 @@
             }
           },
           {
-            "account": "carol",
-            "domain": "c.example",
+            "account": "bob",
+            "domain": "b.example",
             "eventType": "MEMBER_PROFILE",
             "subjectAccount": "",
             "subjectDomain": "",
             "revision": "4",
             "feedId": "2",
             "body": {
-              "availability": "AVAILABLE",
-              "displayName": "Carol",
+              "displayName": "Bob",
               "avatar": null
             }
           },
@@ -152,12 +151,33 @@
       }
     },
     {
-      "name": "message page with parsed text content",
+      "name": "message compacted feed page",
       "schema": "urn:soms:federation:v1:message-feed",
+      "value": {
+        "items": [
+          {
+            "feedId": "1",
+            "thread": {
+              "type": "P2P",
+              "participants": [
+                { "account": "alice", "domain": "a.example" },
+                { "account": "bob", "domain": "b.example" }
+              ]
+            },
+            "messageEndSeq": "8"
+          }
+        ],
+        "scannedThrough": "1",
+        "messageFeedEndId": "1",
+        "hasMore": false
+      }
+    },
+    {
+      "name": "message query page with parsed text content",
+      "schema": "urn:soms:federation:v1:message-query",
       "value": {
         "messages": [
           {
-            "feedId": "1",
             "thread": {
               "type": "P2P",
               "participants": [
@@ -440,6 +460,50 @@
       }
     },
     {
+      "name": "tombstone compacted feed page",
+      "schema": "urn:soms:federation:v1:message-tombstone-feed",
+      "value": {
+        "items": [
+          {
+            "feedId": "2",
+            "thread": {
+              "type": "GROUP",
+              "account": "!group",
+              "domain": "a.example"
+            },
+            "tombstoneEndSeq": "4"
+          }
+        ],
+        "scannedThrough": "2",
+        "tombstoneFeedEndId": "2",
+        "hasMore": false
+      }
+    },
+    {
+      "name": "tombstone query page",
+      "schema": "urn:soms:federation:v1:message-tombstone-query",
+      "value": {
+        "tombstones": [
+          {
+            "deletionSeq": "4",
+            "thread": {
+              "type": "GROUP",
+              "account": "!group",
+              "domain": "a.example"
+            },
+            "target": {
+              "creator": { "account": "alice", "domain": "a.example" },
+              "originSeq": 7
+            },
+            "type": "WITHDRAW",
+            "deletedAt": 1700000000000
+          }
+        ],
+        "scannedThrough": "4",
+        "hasMore": false
+      }
+    },
+    {
       "name": "error envelope",
       "schema": "urn:soms:federation:v1:error",
       "value": { "code": 50007, "message": "malformed" }
@@ -450,7 +514,7 @@
       "value": {
         "code": 50011,
         "message": "peer quota exceeded",
-        "data": { "category": "messages", "limit": 1000, "retryAfter": 60 }
+        "data": { "retryAfter": 60 }
       }
     },
     {
@@ -463,12 +527,30 @@
       }
     },
     {
-      "name": "cursor-floor error envelope",
+      "name": "message-query cursor correction envelope",
       "schema": "urn:soms:federation:v1:error",
       "value": {
         "code": 50019,
-        "message": "requested cursor is below retained floor",
+        "message": "requested message history is no longer retained",
         "data": { "resumeAfter": "120" }
+      }
+    },
+    {
+      "name": "message-query rate-limited envelope",
+      "schema": "urn:soms:federation:v1:error",
+      "value": {
+        "code": 50024,
+        "message": "message query rate limited",
+        "data": { "retryAfter": 3 }
+      }
+    },
+    {
+      "name": "message-query temporarily-unavailable envelope",
+      "schema": "urn:soms:federation:v1:error",
+      "value": {
+        "code": 50025,
+        "message": "message query temporarily unavailable",
+        "data": { "retryAfter": 10 }
       }
     }
   ]

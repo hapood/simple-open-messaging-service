@@ -18,20 +18,16 @@ DNS is repaired, a SUPER_ADMIN may recover only the exact original pinned root. 
 requires destructive reset and fresh bilateral recognition. `blocked` and `reset_in_progress` are durable
 policy states that an in-flight recognition request cannot overwrite.
 
-## State before messages
+## Compacted synchronization feeds
 
-Every lightweight `POST /s2s/v1/feed-revisions` carries two decimal-string high-water marks:
+Every lightweight `POST /s2s/v1/feed-heads` carries three independent feed end IDs for state, message
+discovery, and tombstone discovery. Wake-ups may be lost, duplicated, delayed, or reordered; startup and
+periodic reconciliation read all three feeds directly.
 
-- `stateFeedRev` for compacted relationship, profile, and group state;
-- `messageFeedRev` for durable message discovery.
-
-The receiver always commits `/s2s/v1/state-feed` before requesting
-`/s2s/v1/message-feed`. Wake-ups are
-ephemeral and may be lost, duplicated, delayed, or reordered; startup and periodic reconciliation read
-both feeds directly. Both receivers reject cursor rollback.
-
-State pages and their cursor advance commit in one transaction. A malformed item rolls back the whole
-page. The source compacts by event key and overwrites only with a strictly newer business revision.
+All three feeds are durable compacted projections. The source does not maintain consumer ACK cursors or
+require monotonic `after`; the consumer commits each page with its own cursor atomically. State feed items
+carry mergeable snapshots. Message and tombstone feed items carry only a thread address and the latest
+query end sequence; concrete messages and deletion facts are fetched through per-thread GET queries.
 
 ## Relationship model
 
@@ -50,8 +46,10 @@ participant and audience only after a newer origin snapshot confirms membership.
 ## Profiles and client state
 
 `PROFILE` is an independently revisioned snapshot and may carry localized avatar bytes. `GROUP_META`
-does not embed member avatars. When a group origin learns a member profile update, it relays that profile
-to the other member servers; leaving a group does not produce a profile-deletion event.
+does not embed member avatars. A required `MEMBER_PROFILE` is indexed before the group revision that first
+references it. Once a person is neither a local member's friend nor a shared-group member, the publisher
+omits that profile from its current projection without a deletion item; the consumer garbage-collects
+unreferenced source-scoped profiles only after a complete state drain.
 
 The user client exposes one `stateRevision` cursor for thread membership and cached profile changes.
 `HELLO` and `STATE_REV_UPDATED` carry that name. The client applies profile state before membership state,
@@ -59,9 +57,11 @@ then processes the missed-message summary. There are no chat-open profile/meta r
 
 ## Message and media delivery
 
-Messages allocate a durable per-peer discovery change in the same transaction as the message and its
-audience. `/s2s/v1/message-feed` carries ordered changes and advances with `scannedThrough`, including across
-compaction or deletion gaps. Pulled messages are idempotent by stable author identity and `originSeq`.
+`/s2s/v1/message-feed` and `/s2s/v1/message-tombstone-feed` are index-only compacted feeds. Their items
+advance per-thread `messageEndSeq` and `tombstoneEndSeq`; `/s2s/v1/messages` and
+`/s2s/v1/message-tombstones` return the concrete arrays after checking current durable authorization.
+Pulled messages are idempotent by stable author identity and `originSeq`. Tombstone facts are permanent;
+message bodies may be retained according to source policy and can return a corrected query `resumeAfter`.
 
 For group leave, membership converges only through the state feed. The origin keeps a member-server's
 thread audience open while that server has any active member, so a
@@ -69,8 +69,8 @@ rejoining local user sees history retained by the shared mirror. When its last m
 freezes that peer audience at the inclusive current change id. Rejoining reuses the mirror and resumes
 future delivery, but deliberately does not backfill messages from the no-member interval.
 
-The federation message feed accepts only its documented content-type whitelist. Unknown values are
-rejected uniformly.
+The federation message query accepts only its documented content-type whitelist. Unknown values are
+rejected uniformly; the index-only message feed never carries message content.
 
 Media message persistence is independent from byte localization. Authorized CAS range downloads and
 forward-bundle closure downloads validate the message/bundle binding. Durable pending-media rows survive
@@ -90,9 +90,12 @@ capability negotiation. See the normative [call specification](../federation/spe
 - `GET /.well-known/soms`
 - `POST /s2s/v1/recognize`
 - `POST /s2s/v1/healthy`
-- `POST /s2s/v1/feed-revisions`
+- `POST /s2s/v1/feed-heads`
 - `GET /s2s/v1/state-feed`
 - `GET /s2s/v1/message-feed`
+- `GET /s2s/v1/message-tombstone-feed`
+- `GET /s2s/v1/messages`
+- `GET /s2s/v1/message-tombstones`
 - `POST /s2s/v1/call`
 - `GET /s2s/v1/users/:account`
 - `GET /s2s/v1/media/:digest`

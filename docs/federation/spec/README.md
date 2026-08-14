@@ -12,7 +12,8 @@ spec/
     README.md               v1 状态和阅读顺序
     protocol.md             主协议正文
     state-feed.md           state-feed 完整 wire schema
-    message-feed.md         message-feed 与所有消息类型
+    message-feed.md         message 压缩索引 feed 与 thread query
+    message-tombstone-feed.md tombstone 压缩索引 feed 与 thread query
     calls.md                WebRTC、通话状态机与 TURN 边界
     errors.md               稳定错误码与 caller action
     schema/                 JSON Schema、HTTP manifest 与 conformance 向量

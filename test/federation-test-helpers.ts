@@ -189,7 +189,7 @@ export async function openSse(
 export async function waitForSseEvent(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   predicate: (event: string, data: unknown) => boolean,
-  timeoutMs = 6000,
+  timeoutMs = 5000,
 ): Promise<unknown> {
   const decoder = new TextDecoder();
   let buf = '';

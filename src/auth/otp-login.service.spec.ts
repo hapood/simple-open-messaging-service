@@ -6,13 +6,27 @@ import { BusinessCode } from '../common/business-code.js';
 import type { SessionTokenService } from './session-token.service.js';
 import type { SettingsService } from '../settings/settings.service.js';
 
+// Service-unit tests exercise OTP selection, expiry, single-use and throttling semantics. Real Argon2
+// interoperability is covered by the password hasher and PostgreSQL-backed OTP E2E suites; running many
+// native Argon2 jobs inside Vitest's already-parallel unit pool multiplies worker/thread concurrency and
+// makes unrelated assertions depend on host CPU availability.
+vi.mock('argon2', () => ({
+  default: {
+    hash: vi.fn(async (plain: string) => `$otp-test$${plain}`),
+    verify: vi.fn(
+      async (encoded: string, plain: string) =>
+        encoded === `$otp-test$${plain}`,
+    ),
+  },
+}));
+
 /**
  * OtpLoginService: admin-issued one-time login codes (available on every platform). Covers issue (plaintext
  * reveal-once; multi-issue — issuing does NOT revoke prior codes; configurable TTL), verifyAndLogin (accepts
  * ANY active code by argon2 hash-match, single-use guard, client-driven trust, producedSessionId audit link,
  * precise expired/invalid codes), the account-dimension brute-force lock, revoke, and the audit list.
- * argon2 runs real (one hash/verify per round-trip) — the failure paths that don't need it (no-code) throw
- * before verify.
+ * Argon2 is represented by a deterministic async test double here so the full unit pool does not contend
+ * for native hashing workers; cryptographic round-trips remain covered by dedicated integration tests.
  */
 describe('OtpLoginService', () => {
   const store = {
@@ -39,8 +53,7 @@ describe('OtpLoginService', () => {
             findFirst: (...args: unknown[]) => store.user.findUnique(...args),
           },
           loginCode: {
-            findMany: (...args: unknown[]) =>
-              store.loginCode.findMany(...args),
+            findMany: (...args: unknown[]) => store.loginCode.findMany(...args),
           },
         },
         insert: vi.fn(() => ({

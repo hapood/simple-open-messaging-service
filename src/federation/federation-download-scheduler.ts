@@ -46,7 +46,7 @@ export class FederationDownloadScheduler {
     digest: string,
     task: () => Promise<T>,
   ): Promise<T> {
-    const key = `${peerDomain}\0${digest}`;
+    const key = JSON.stringify([peerDomain, digest]);
     const current = this.inflight.get(key);
     if (current) return current as Promise<T>;
 

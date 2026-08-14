@@ -63,7 +63,7 @@ class TestS2sHookController {
     const upstream = await fetch(url, {
       method: 'GET',
       headers,
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(5000),
     });
     const text = await upstream.text();
     let body: unknown = text;

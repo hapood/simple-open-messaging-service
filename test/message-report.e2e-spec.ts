@@ -83,7 +83,14 @@ describe('message report workflow', () => {
     adminId = adminRow.id;
     const [threadRow] = await database.db
       .insert(messageThread)
-      .values({ type: 'P2P', updatedAt: now, curSeq: 1 })
+      .values({
+        type: 'P2P',
+        updatedAt: now,
+        curSeq: 1,
+        lastMessageSeq: 1,
+        lastMessagePreview: 'second',
+        lastMessageAt: now,
+      })
       .returning({ id: messageThread.id });
     threadId = threadRow.id;
     await database.db.insert(threadParticipant).values([
@@ -158,12 +165,19 @@ describe('message report workflow', () => {
         eq(deletedMessage.seq, 1),
       ),
     });
+    const storedThread = await database.db.query.messageThread.findFirst({
+      where: eq(messageThread.id, threadId),
+    });
     expect(storedReport).toMatchObject({
       status: MessageReportStatus.UPHELD,
       reviewedByAdminId: adminId,
     });
     expect(storedMessage?.isDeleted).toBe(true);
     expect(deletion?.type).toBe(MessageDeleteType.REPORT);
+    expect(storedThread).toMatchObject({
+      lastMessageSeq: 1,
+      lastMessagePreview: 'second',
+    });
   });
 
   it('allows REJECTED to be reconsidered but keeps UPHELD terminal', async () => {

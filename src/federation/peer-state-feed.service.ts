@@ -1,4 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
+import { isDeepStrictEqual } from 'node:util';
 import { and, asc, eq, gt, lte, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -12,10 +13,6 @@ import {
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
-import {
-  hasPostgresErrorCode,
-  PG_LOCK_NOT_AVAILABLE,
-} from '../database/database-error.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
 
 export type PeerStateEventType = (typeof peerStateEventType.enumValues)[number];
@@ -31,6 +28,8 @@ export interface PeerStateFeedWrite {
   subjectDomain?: string;
   revision: number;
   body: PeerStateBody;
+  /** Reallocate the same revision/body after one of its referenced compacted keys moved later. */
+  forceReindex?: boolean;
 }
 
 export interface PeerStateFeedPage {
@@ -66,6 +65,24 @@ export class PeerStateFeedService {
       .insert(peerStateFeedTarget)
       .values({ peerDomain })
       .onConflictDoNothing();
+  }
+
+  async deleteProjectionInTx(
+    tx: DatabaseTransaction,
+    key: Omit<PeerStateFeedWrite, 'revision' | 'body'>,
+  ): Promise<void> {
+    await tx
+      .delete(peerStateFeed)
+      .where(
+        and(
+          eq(peerStateFeed.peerDomain, key.peerDomain),
+          eq(peerStateFeed.account, key.account),
+          eq(peerStateFeed.domain, key.domain),
+          eq(peerStateFeed.eventType, key.eventType),
+          eq(peerStateFeed.subjectAccount, key.subjectAccount ?? ''),
+          eq(peerStateFeed.subjectDomain, key.subjectDomain ?? ''),
+        ),
+      );
   }
 
   /** Writes are ordered by peer and allocate a rev only when the compacted key advances. */
@@ -119,7 +136,10 @@ export class PeerStateFeedService {
         .for('update')
         .limit(1);
       const [current] = await tx
-        .select({ revision: peerStateFeed.revision })
+        .select({
+          revision: peerStateFeed.revision,
+          body: peerStateFeed.body,
+        })
         .from(peerStateFeed)
         .where(
           and(
@@ -132,7 +152,14 @@ export class PeerStateFeedService {
           ),
         )
         .limit(1);
-      if (current && current.revision >= write.revision) continue;
+      if (current && current.revision > write.revision) continue;
+      if (current?.revision === write.revision) {
+        if (!write.forceReindex) continue;
+        if (!isDeepStrictEqual(current.body, body))
+          throw new Error(
+            'state dependency repair cannot change a body at the same revision',
+          );
+      }
       const [allocated] = await tx
         .update(peerStateFeedTarget)
         .set({
@@ -199,23 +226,16 @@ export class PeerStateFeedService {
 
   async rejectMissingAfter(peerDomain: string): Promise<never> {
     const [target] = await this.database.db
-      .select({
-        retainedAfter: peerStateFeedTarget.retainedAfter,
-        acknowledgedThrough: peerStateFeedTarget.acknowledgedThrough,
-      })
+      .select({ peerDomain: peerStateFeedTarget.peerDomain })
       .from(peerStateFeedTarget)
       .where(eq(peerStateFeedTarget.peerDomain, peerDomain))
       .limit(1);
     if (!target) throw new Error(`peer ${peerDomain} has no state feed`);
-    const resumeAfter =
-      target.retainedAfter > target.acknowledgedThrough
-        ? target.retainedAfter
-        : target.acknowledgedThrough;
     throw new BusinessException(
       BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
-      'after is required; resume from the available state cursor',
+      'after is required; initialize the state feed cursor',
       HttpStatus.OK,
-      { resumeAfter: resumeAfter.toString() },
+      { resumeAfter: '0' },
     );
   }
 
@@ -233,147 +253,91 @@ export class PeerStateFeedService {
         HttpStatus.BAD_REQUEST,
       );
     }
-    try {
-      return await this.database.db.transaction(async (tx) => {
-        const [target] = await tx
-          .select()
-          .from(peerStateFeedTarget)
-          .where(eq(peerStateFeedTarget.peerDomain, peerDomain))
-          .for('update', { noWait: true })
-          .limit(1);
-        if (!target) {
-          throw new Error(
-            `peer ${peerDomain} has no initialized state-feed target`,
-          );
-        }
-        const stateFeedEndId = target.allocatedThrough;
-        if (through !== undefined && through < after) {
-          throw new BusinessException(
-            BusinessCode.FEDERATION_MALFORMED,
-            'through must be greater than or equal to after',
-            HttpStatus.BAD_REQUEST,
-          );
-        }
-        const availableCursor =
-          target.retainedAfter > target.acknowledgedThrough
-            ? target.retainedAfter
-            : target.acknowledgedThrough;
-        if (after < availableCursor) {
-          throw new BusinessException(
-            BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
-            'requested state cursor is below the retained floor',
-            HttpStatus.OK,
-            { resumeAfter: availableCursor.toString() },
-          );
-        }
-        const requestedScanEnd =
-          through === undefined || through > stateFeedEndId
-            ? stateFeedEndId
-            : through;
-        const validCursor =
-          after === availableCursor ||
-          after === target.acknowledgedThrough ||
-          after === target.lastServedThrough;
-        if (!validCursor || after > stateFeedEndId) {
-          throw new BusinessException(
-            BusinessCode.FEDERATION_FEED_CURSOR_MISMATCH,
-            'after is neither the confirmed nor last served state cursor',
-            HttpStatus.OK,
-            {
-              acknowledgedThrough: target.acknowledgedThrough.toString(),
-              lastServedThrough: target.lastServedThrough.toString(),
-            },
-          );
-        }
-        const retry =
-          after === target.acknowledgedThrough &&
-          target.lastServedThrough > target.acknowledgedThrough;
-        const scanEnd = retry ? target.lastServedScanEnd : requestedScanEnd;
-        const replayEnd = retry ? target.lastServedThrough : scanEnd;
-        const rawRows = await tx
-          .select()
-          .from(peerStateFeedVersion)
-          .where(
-            and(
-              eq(peerStateFeedVersion.peerDomain, peerDomain),
-              gt(peerStateFeedVersion.feedId, after),
-              lte(peerStateFeedVersion.feedId, replayEnd),
-            ),
-          )
-          .orderBy(asc(peerStateFeedVersion.feedId))
-          .limit(retry ? MAX_TAKE + 1 : take + 1);
-        const scanRows = retry ? rawRows : rawRows.slice(0, take);
-        const latestByKey = new Map<string, (typeof scanRows)[number]>();
-        for (const row of scanRows) {
-          latestByKey.set(
-            `${row.domain}\u0000${row.account}\u0000${row.eventType}\u0000${row.subjectDomain}\u0000${row.subjectAccount}`,
-            row,
-          );
-        }
-        const rows = [...latestByKey.values()].sort((a, b) =>
-          a.feedId < b.feedId ? -1 : a.feedId > b.feedId ? 1 : 0,
-        );
-        const items: PeerStateFeedPage['items'] = [];
-        let bytes = 0;
-        for (const row of rows.slice(0, take)) {
-          const item = {
-            account: row.account,
-            domain: row.domain,
-            eventType: row.eventType,
-            subjectAccount: row.subjectAccount,
-            subjectDomain: row.subjectDomain,
-            revision: row.revision.toString(),
-            feedId: row.feedId.toString(),
-            body: row.body,
-          };
-          const itemBytes = Buffer.byteLength(JSON.stringify(item));
-          if (itemBytes > ITEM_BYTES)
-            throw new BusinessException(
-              BusinessCode.FEDERATION_PAYLOAD_TOO_LARGE,
-              'state feed item exceeds byte limit',
-              HttpStatus.OK,
-            );
-          if (items.length > 0 && bytes + itemBytes > PAGE_BYTES) break;
-          items.push(item);
-          bytes += itemBytes;
-        }
-        const last = items.at(-1);
-        let scannedThrough: bigint;
-        if (retry) {
-          scannedThrough = target.lastServedThrough;
-        } else if (items.length < rows.length && last) {
-          scannedThrough = BigInt(last.feedId);
-        } else if (rawRows.length > take) {
-          scannedThrough = scanRows.at(-1)?.feedId ?? after;
-        } else {
-          scannedThrough = scanEnd;
-        }
-        const hasMore = scannedThrough < scanEnd;
-        await tx
-          .update(peerStateFeedTarget)
-          .set({
-            acknowledgedThrough: retry ? target.acknowledgedThrough : after,
-            lastServedThrough: scannedThrough,
-            lastServedScanEnd: scanEnd,
-            updatedAt: new Date(),
-          })
-          .where(eq(peerStateFeedTarget.peerDomain, peerDomain));
-        return {
-          items,
-          scannedThrough: scannedThrough.toString(),
-          stateFeedEndId: stateFeedEndId.toString(),
-          hasMore,
-        };
-      });
-    } catch (error) {
-      if (hasPostgresErrorCode(error, PG_LOCK_NOT_AVAILABLE)) {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_FEED_REQUEST_IN_PROGRESS,
-          `another state feed request for ${peerDomain} is running`,
-          HttpStatus.OK,
+    return this.database.db.transaction(async (tx) => {
+      const [target] = await tx
+        .select()
+        .from(peerStateFeedTarget)
+        .where(eq(peerStateFeedTarget.peerDomain, peerDomain))
+        .limit(1);
+      if (!target) {
+        throw new Error(
+          `peer ${peerDomain} has no initialized state-feed target`,
         );
       }
-      throw error;
-    }
+      const stateFeedEndId = target.allocatedThrough;
+      if (through !== undefined && through < after) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'through must be greater than or equal to after',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      if (after < 0n || after > stateFeedEndId) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
+          'state feed cursor is outside the available coordinate space',
+          HttpStatus.OK,
+          { resumeAfter: '0' },
+        );
+      }
+      const requestedScanEnd =
+        through === undefined || through > stateFeedEndId
+          ? stateFeedEndId
+          : through;
+      const scanEnd = requestedScanEnd;
+      const rawRows = await tx
+        .select()
+        .from(peerStateFeed)
+        .where(
+          and(
+            eq(peerStateFeed.peerDomain, peerDomain),
+            gt(peerStateFeed.rev, after),
+            lte(peerStateFeed.rev, scanEnd),
+          ),
+        )
+        .orderBy(asc(peerStateFeed.rev))
+        .limit(take + 1);
+      const rows = rawRows.slice(0, take);
+      const items: PeerStateFeedPage['items'] = [];
+      let bytes = 0;
+      for (const row of rows) {
+        const item = {
+          account: row.account,
+          domain: row.domain,
+          eventType: row.eventType,
+          subjectAccount: row.subjectAccount,
+          subjectDomain: row.subjectDomain,
+          revision: row.revision.toString(),
+          feedId: row.rev.toString(),
+          body: row.body,
+        };
+        const itemBytes = Buffer.byteLength(JSON.stringify(item));
+        if (itemBytes > ITEM_BYTES)
+          throw new BusinessException(
+            BusinessCode.FEDERATION_PAYLOAD_TOO_LARGE,
+            'state feed item exceeds byte limit',
+            HttpStatus.OK,
+          );
+        if (items.length > 0 && bytes + itemBytes > PAGE_BYTES) break;
+        items.push(item);
+        bytes += itemBytes;
+      }
+      const last = items.at(-1);
+      let scannedThrough: bigint;
+      if (items.length < rows.length && last) {
+        scannedThrough = BigInt(last.feedId);
+      } else if (rawRows.length > take) {
+        scannedThrough = rows.at(-1)?.rev ?? after;
+      } else {
+        scannedThrough = scanEnd;
+      }
+      const hasMore = scannedThrough < scanEnd;
+      return {
+        items,
+        scannedThrough: scannedThrough.toString(),
+        stateFeedEndId: stateFeedEndId.toString(),
+        hasMore,
+      };
+    });
   }
 }

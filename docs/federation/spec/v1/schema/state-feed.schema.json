@@ -48,23 +48,14 @@
       },
       "additionalProperties": false
     },
-    "memberProfileAvailableBody": {
+    "memberProfileBody": {
       "type": "object",
-      "required": ["availability", "displayName", "avatar"],
+      "required": ["displayName", "avatar"],
       "properties": {
-        "availability": { "const": "AVAILABLE" },
         "displayName": { "type": "string", "minLength": 1 },
         "avatar": {
           "oneOf": [{ "$ref": "#/$defs/profileAvatar" }, { "type": "null" }]
         }
-      },
-      "additionalProperties": false
-    },
-    "memberProfileRemovedBody": {
-      "type": "object",
-      "required": ["availability"],
-      "properties": {
-        "availability": { "const": "REMOVED" }
       },
       "additionalProperties": false
     },
@@ -89,9 +80,6 @@
             },
             { "type": "null" }
           ]
-        },
-        "messageFeedEndId": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/signedDecimalString"
         }
       },
       "allOf": [
@@ -107,14 +95,6 @@
             }
           },
           "else": { "properties": { "expiresAt": { "type": "null" } } }
-        },
-        {
-          "if": {
-            "properties": { "status": { "const": "REVOKED" } },
-            "required": ["status"]
-          },
-          "then": { "required": ["messageFeedEndId"] },
-          "else": { "not": { "required": ["messageFeedEndId"] } }
         }
       ],
       "additionalProperties": false
@@ -297,12 +277,7 @@
             "eventType": { "const": "MEMBER_PROFILE" },
             "subjectAccount": { "const": "" },
             "subjectDomain": { "const": "" },
-            "body": {
-              "oneOf": [
-                { "$ref": "#/$defs/memberProfileAvailableBody" },
-                { "$ref": "#/$defs/memberProfileRemovedBody" }
-              ]
-            }
+            "body": { "$ref": "#/$defs/memberProfileBody" }
           },
           "unevaluatedProperties": false
         },

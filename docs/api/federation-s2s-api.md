@@ -1,183 +1,94 @@
 # SOMS Federation S2S API
 
-> Non-normative SOMS implementation reference for the current `/s2s/v1` surface. The normative
-> wire contract is [Federation Protocol v1](../federation/spec/v1/protocol.md). Database fields, local
-> limits and worker behavior described here are examples, not requirements on another implementation.
+> 当前 `/s2s/v1` 的非规范性 SOMS 实现参考。规范性 wire contract 以
+> [Federation Protocol v1](../federation/spec/v1/protocol.md) 为准。
 
-All S2S endpoints are RFC 9421 signed. `recognize` is the bootstrap operation, `healthy` is the
-privacy-preserving availability operation, and ordinary data operations require converged bilateral
-recognition facts. Wire identities are `{ account, domain }`; database ids never cross S2S.
+所有 S2S operation 使用 RFC 9421 HTTP Message Signature。`recognize` 建立双向认可，`healthy` 查询已固定
+identity 的可用性，普通数据 operation 需要已收敛的双向认可。
 
 ## Endpoints
 
-| Method | Path                         | Purpose                                                                        |
-| ------ | ---------------------------- | ------------------------------------------------------------------------------ |
-| `POST` | `/recognize`                 | Confirm one recognition direction and schedule the reverse direction.          |
-| `POST` | `/healthy`                   | Return `healthy`, `degraded`, or privacy-preserving `unavailable`.             |
-| `POST` | `/feed-heads`                | Ephemeral wake-up carrying the three independent feed end IDs.                 |
-| `GET`  | `/state-feed`                | Pull compacted relationship/profile/group state after a feed ID.               |
-| `GET`  | `/message-feed`              | Pull durable message discovery after a feed ID.                                |
-| `GET`  | `/message-tombstone-feed`    | Pull durable withdrawals and effective moderation deletions.                   |
-| `POST` | `/call`                      | Ephemeral WebRTC lifecycle, SDP/ICE and video-upgrade signalling.              |
-| `GET`  | `/users/:account`            | Resolve a local user's public profile for first-contact lookup.                |
-| `GET`  | `/media/:digest`             | Exact-message-authorized range download of a content-addressed asset.          |
-| `GET`  | `/forward-bundles/:bundleId` | Authorized immutable forward-bundle closure.                                   |
+| Method | Path                         | Purpose                                          |
+| ------ | ---------------------------- | ------------------------------------------------ |
+| `POST` | `/recognize`                 | 认可一个方向并调度反向认可。                     |
+| `POST` | `/healthy`                   | 隐私保护的已认可 peer 可用性查询。               |
+| `POST` | `/feed-heads`                | 携带三个独立 feed end ID 的可丢失唤醒。          |
+| `GET`  | `/state-feed`                | 读取状态快照型压缩 feed。                        |
+| `GET`  | `/message-feed`              | 读取 `thread + messageEndSeq` 压缩索引。         |
+| `GET`  | `/message-tombstone-feed`    | 读取 `thread + tombstoneEndSeq` 压缩索引。       |
+| `GET`  | `/messages`                  | 按 thread 与 seq 窗口查询消息正文。              |
+| `GET`  | `/message-tombstones`        | 按 thread 与 deletion seq 窗口查询权威删除事实。 |
+| `POST` | `/call`                      | 瞬时 WebRTC lifecycle/SDP/ICE signalling。       |
+| `GET`  | `/users/:account`            | 首次联系的最小公开 identity card。               |
+| `GET`  | `/media/:digest`             | 精确消息授权的 CAS Range 下载。                  |
+| `GET`  | `/forward-bundles/:bundleId` | 授权的不可变 forward-bundle closure。            |
 
-## Wake-up and drain order
+## 压缩 Feed 共享模型
 
-```text
-POST /feed-heads
-  → drain /state-feed completely
-  → commit state page and state cursor atomically
-  → drain /message-tombstone-feed
-  → commit tombstone page and tombstone cursor atomically
-  → drain /message-feed
-  → commit message page and message cursor atomically
-```
+三个 feed 的 wire 参数均为可选 `after`、`take`、`through`。`after` 是 exclusive，`through` 是
+inclusive，窗口是 `(after, through]`。首次 bootstrap 请求不得携带任何 query 参数；也就是说，省略
+`after` 时不得单独携带 `take` 或 `through`，source 只返回 `resumeAfter`，不返回 page。SOMS 新建 feed
+的起点为 `0`，第一个 item ID 为 `1`。feed ID 为正整数，cursor/end 为非负整数。
 
-The POST is only a hint. Lost, duplicated and out-of-order hints are safe because startup and periodic
-reconciliation directly request all three feeds. Advertised end IDs are max-coalesced and no pull cursor
-may move backwards.
-
-State, message, and tombstone feeds each have an independent per-peer feed-ID allocator and independent
-ACK/pull cursors. A drain freezes `stateFeedEndId`, `tombstoneFeedEndId`, and `messageFeedEndId` as the
-respective `through` bounds; an ID from one feed has no ordering meaning in another feed.
-
-After a process restart the recovery sequence is:
-
-```text
-POST /healthy → state feed → message tombstone feed → message feed
-```
-
-`healthy` never establishes identity and never fetches an unknown signer's keys. Missing recognition
-facts are repaired through idempotent bilateral `recognize`; a pure transport failure moves the peer to
-`degraded` without erasing authorization. A root contradiction enters `halted` with an identity-mismatch reason. After DNS is
-repaired, a SUPER_ADMIN may restore only the exact pinned root with a currently valid root-authorized
-signing certificate. A genuinely new root still requires destructive reset and fresh recognition.
+source 不为 peer 保存 ACK、最后服务位置或单调验证游标。较旧或重复 `after` 可重读；consumer 自行
+原子提交 page 和本地 cursor。三个 feed 都是持久压缩投影，不因历史清理提高最小 `after`。
+当 stable key 的当前值推进时，必须分配全 feed 更大的新 `feedId`，不能只在旧 ID 上原地改写。
 
 ## State feed
 
-Query parameters:
+State feed 是 snapshot-bearing compacted feed。它直接携带 `PROFILE`、`MEMBER_PROFILE`、三种方向
+intent 和 origin-authoritative `GROUP_META`。consumer 按 stable key 和业务 `revision` 幂等合并；
+`feedId` 只用于扫描。
 
-- `after`: exclusive feed cursor already committed by the receiver; omit it only for initial positioning.
-- `take`: preferred scan size, capped or adjusted by the server; requires `after`.
-- `through`: optional inclusive feed-ID upper bound; requires `after`.
+一个群 revision 引用新 member 前，publisher 必须先把对应 `MEMBER_PROFILE` 放入目标 peer 的当前
+feed projection，且 member item 的 feed ID 更小。profile 后续更新打破该顺序时，source 重新索引
+仍引用它的 group snapshot；相同业务 revision/body 在 consumer 端是 no-op。
 
-A bootstrap request without `after` returns `FEDERATION_FEED_CURSOR_UNAVAILABLE` with an exclusive
-`resumeAfter`; it returns no page. A successful response contains decimal strings `stateFeedEndId`,
-`scannedThrough`, each item's `feedId`, and its independent business `revision`. Feed IDs and cursors are
-BigInt decimal strings. Business revisions belong to stable keys and are not feed cursors.
+当一个 member 对目标 peer 既不再是好友、也不再是任一共同群的成员时，publisher 直接从投影
+移除 `MEMBER_PROFILE`，不发布删除 item。consumer 只能在完整排空 state feed 后按最新好友和 roster
+做 mark-and-sweep，不得在单页之间清理，也不得删除历史消息的稳定 author Address。
 
-Event keys and bodies:
+## Message and tombstone discovery
 
-- `PROFILE(account)`: public profile snapshot, including avatar bytes; applies only when its business
-  revision is strictly newer than `remoteProfileRev`.
-- `MEMBER_PROFILE(account)`: source-scoped display snapshot for a person visible through an explicit source.
-- `P2P_INTENT(requester, target)`: one directed friend intent with `REQUESTED`, `ACCEPTED`, or `REVOKED`.
-- `GROUP_INVITE_INTENT(group, member)`: origin's directed invitation fact.
-- `GROUP_JOIN_INTENT(group, member)`: member's directed join/leave fact.
-- `GROUP_META(group)`: origin-authoritative roster and group snapshot. Meta JSON does not contain member
-  avatars; member profiles arrive as independently revisioned `MEMBER_PROFILE` items.
+Message feed 的 stable key 是 `(peer, thread)`，item 只含 `feedId`、`thread`、`messageEndSeq`。
+Tombstone feed 对称地只含 `tombstoneEndSeq`。两个 end seq 是独立的 thread-local query 坐标，
+不是 feed ID。具体 message/tombstone array 只从两个 query operation 返回。
 
-The feed is compacted by `(peer, eventType, account, subjectAccount)`. A same or older business revision
-is a complete no-op: it does not rewrite the fact, refresh `updatedAt`, mutate a projection, allocate a
-new feed revision, or trigger downstream state. A page is applied in one transaction; any invalid item
-rolls back the entire page and cursor.
+Message query 允许 source 清理旧正文；若请求位置早于可服务 floor，source 可返回更高
+`resumeAfter`。Tombstone 事实和 deletion sequence 永久保留，tombstone query 不得以清理为由跳过删除事实。
 
-The state feed is likewise target-allocated, not filtered by who first proposed a fact. A peer may
-receive a fact it originally published after the other side has persisted and confirmed, rejected, or
-revision-bumped that direction. The receiver always merges by compacted key and business revision; it
-must not discard an item merely because the underlying identity or proposal originated locally.
+Query 的 `through` 是一次有界排空固定使用的 inclusive thread-seq 终点，不是 feed ID；连续分页保持同一
+值，以免持续写入使单次任务没有终点。Message query 请求过频或暂时无法产生一致 page 时，可分别返回
+HTTP `200 FEDERATION_MESSAGE_QUERY_RATE_LIMITED` 或
+`FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE`，两者都携带秒级 `retryAfter`，且都不推进 query
+cursor、不改变 peer lifecycle。
 
-Friendship becomes active only when both directed facts are `FRIEND`. `REQUESTED` carries an absolute
-expiry (default seven days), may be accepted only before that instant, and is treated as absent after
-expiry so the same directional row can be recreated at a higher business revision. `FRIEND` and
-`NOT_FRIEND` have no expiry. If a peer's established `FRIEND` arrives while the local direction is a
-newer `NOT_FRIEND`, the receiver preserves the peer's standing consent but bumps and returns its local
-`NOT_FRIEND`; it never silently reactivates the thread. A still-valid local `REQUESTED`, by contrast,
-is promoted to `FRIEND` and returned as the confirmation.
-The directional `note` is reused as request text for `REQUESTED` and as an optional removal/rejection
-reason for `NOT_FRIEND` or `NOT_MEMBER`; send the empty string when there is no reason and never leak the
-old request note into a terminal state.
+`/messages`、`/message-tombstones`、`/media/:digest` 和 `/forward-bundles/:bundleId` 均可返回 HTTP `200`
+`FEDERATION_QUOTA_EXCEEDED`。其 closed data 只有 `{ retryAfter }`；operation 已提供业务类型上下文，协议不
+公开 category、limit、计量单位、窗口或算法。
 
-Group membership uses two directions but the origin remains the roster authority. A mirror created by an
-invitation is initially inactive; only a newer origin `GROUP_META` activates its participant and audience.
-Invitation `REQUESTED` state expires; confirmed `MEMBER` state clears that TTL. Immediate leave→join is
-legal before the origin observes the leave: compaction may expose only the newest JOIN, and the origin
-must still resend authoritative `GROUP_META` even if its pair was already active. Conversely, a local
-`NOT_MEMBER` wins over a stale roster entry and is revision-bumped back to the origin. There is no
-member-profile delete event merely because a member leaves a group. The server-local 999-member policy is
-not a wire-protocol constant; a full origin rejects by returning ordinary authoritative roster state.
+两个 query 在每次请求时重新计算权限，feed item 不是授权 proof。权限计算可幂等物化已有 durable
+facts 推导的即时好友/群有效状态，但不得因 GET 自身创建邀请、接受好友、入群或扩大当前权限。
 
-## Message feed
+## Wake-up and drain
 
-Query parameters are optional `after`, `take`, `through`, and `excludeSelf`; the latter three require
-`after`. A bootstrap request without `after` returns `FEDERATION_FEED_CURSOR_UNAVAILABLE` with the exact
-exclusive `resumeAfter` to persist and use next. `take` is the
-consumer's preferred scan size rather than a hard response limit; the source chooses the actual scan
-size according to its capacity. The response contains ordered `messages`, `scannedThrough`, `hasMore`,
-and optional `retryAfterMs`. If retained history moves beyond an old cursor, the source returns the same
-`resumeAfter` result; successful pages do not expose allocation upper bounds or degradation metadata.
-
-The feed is target-allocated, not filtered as “messages authored by someone else”. After SOMS commits a
-message fetched from its author server, it allocates that self-authored item back to the author as a
-delivery acknowledgement. `originSeq` identifies the author's published sequence and `createdAt` is the
-receiving publisher's persistence time. The author matches it to its original message and does not insert
-a duplicate. For a relayed message whose author differs from the immediate source peer, SOMS excludes
-that source peer from the new allocation to prevent a direct reflection loop.
-
-Messages carry stable author identity and source `originSeq`; receiver-local `seq` remains local. The feed
-accepts only the content types defined by the federation schema and uniformly rejects unknown values.
-Group membership changes converge through `GROUP_META` and membership state.
-
-`after` may equal the current acknowledged cursor for retry or the last served cursor to confirm it.
-Other values are rejected; callers cannot fast-forward. Feed IDs are strictly increasing but not contiguous,
-and unacknowledged per-peer allocations are durable so process restart replays the same ID.
-
-Media and forward-bundle authorization joins the signed peer's thread audience and then verifies the exact
-message-to-digest/bundle binding. It does not depend on a message-feed change remaining after acknowledgement.
-
-### SOMS receipt storage example
-
-This subsection is implementation-specific. A newly authored SOMS `Message` keeps nullable
-`originSeq` and `originServerTime` unset. While no receipt exists, the feed publisher serializes its
-local `seq` as wire `originSeq`. When the self-authored item returns, SOMS stores its `originSeq` and the
-item publisher's `createdAt` in those two columns. Other implementations may use a receipt table, an
-event log, or no durable UI-facing receipt storage, provided their wire behavior and deduplication match
-the protocol.
-
-## Lightweight feed head body
-
-```ts
-type FeedHeadHint = {
-  origin: string;
-  stateFeedEndId: string;
-  messageFeedEndId: string;
-  tombstoneFeedEndId: string;
-};
+```text
+POST /feed-heads (S, M, D)
+  -> GET /state-feed?after=<stateCursor>&through=S
+  -> after state reaches S: GET /message-tombstone-feed?after=<tombstoneFeedCursor>&through=D
+  -> GET /message-feed?after=<messageFeedCursor>&through=M
+  -> merge per-thread tombstoneEndSeq/messageEndSeq
+  -> GET /message-tombstones per changed thread
+  -> GET /messages per changed thread
 ```
 
-All three end IDs are BigInt decimal strings in independent feed spaces. `origin` must equal the verified
-signer domain. The hint is not an acknowledgement and does not authorize cursor movement.
+hint 可丢失、重复和乱序；三个坐标可分别 max-coalesce。启动与周期 reconciliation 即使没有 hint
+也必须按 state、tombstone、message 顺序直接读取三个 feed。索引引用未知 thread 时回滚该索引 page，
+重新排空 state feed 后重试。对同一 thread，先应用 tombstone query，再应用 message query；反向到达时
+pending tombstone 机制仍必须防止消息复活。
 
-## Calls
+## Calls and resources
 
-Media uses WebRTC/JSEP; `/call` is the SOMS federation signaling plane, not SIP and not a media relay.
-Its closed frame schema, lifecycle operations, four signal kinds and in-place AUDIO-to-VIDEO upgrade are
-defined normatively by [Federation v1 Calls](../federation/spec/v1/calls.md). Real-time frames are
-transient. Only the origin-authored terminal `CALL` message is durable and reaches the mirror through
-the message feed. TURN URI and credentials stay between each endpoint and its own home server; federation
-relays only the resulting `ice` frame, including `typ relay` candidates, and has no guest-credential
-exchange or TURN capability negotiation.
-
-## Media and forward assets
-
-`media/:digest` supports HTTP Range. The signer domain comes only from the verified signature; query
-parameters bind the stable author, source seq, thread recipient/group and optional forward bundle. The
-server verifies the exact durable discovery allocation and digest membership before serving bytes.
-Incoming media messages may commit as durable pending work while their files download;
-download failure never rolls back an already admitted text/message-feed page. Quota-paused tasks stay
-pending and are automatically re-driven after an administrator adds allowance.
-
-Forward bundles are immutable manifest closures with bounded depth. The receiver verifies manifest
-digests and separately downloads authorized binary assets through `media/:digest`.
+`/call` 承载瞬时 WebRTC/JSEP frame；终态通话历史仍是普通 `CALL` message。媒体与 forward bundle
+使用精确 message identity 作授权坐标。查询到消息后可先持久 pending media work，再进行可恢复 Range
+下载；资源失败不回滚已提交的 message query cursor。

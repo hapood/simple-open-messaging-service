@@ -57,12 +57,12 @@ envelope；consumer 必须（MUST）先按 `Content-Type` 和 envelope 判定错
 GET /s2s/v1/users/:account
 ```
 
-| 项目           | 要求                                               |
-| -------------- | -------------------------------------------------- |
-| Path variable  | `account: UserAccount`                             |
-| Query          | 不允许                                             |
-| Request body   | 第 1 节定义的零长度 body                           |
-| Success        | HTTP `200` success data envelope；data 见第 2.2 节 |
+| 项目           | 要求                                                                                    |
+| -------------- | --------------------------------------------------------------------------------------- |
+| Path variable  | `account: UserAccount`                                                                  |
+| Query          | 不允许                                                                                  |
+| Request body   | 第 1 节定义的零长度 body                                                                |
+| Success        | HTTP `200` success data envelope；data 见第 2.2 节                                      |
 | Business error | HTTP `200 NOT_FOUND` 或 `200 FEDERATION_PROFILE_NOT_DISCLOSED`；其他公共错误见第 2.3 节 |
 
 `account` 必须（MUST）是 `UserAccount`，不得（MUST NOT）是 `GroupAccount`。请求不得携带 query 或 body。
@@ -262,6 +262,7 @@ v1 支持一个 RFC 9110 byte range，包括 `bytes=start-end`、`bytes=start-` 
 | 授权消息存在，但 digest 未绑定该消息                                                                                   | `200 NOT_FOUND`                        | 当前资源不存在；仅在消息/资源状态改变或人工重试后再请求                                            |
 | `bundleId` 未绑定该 outer FORWARD message，或 digest 不在该 root closure                                               | `200 NOT_FOUND`                        | 拒绝该 asset；不得改用 child ID、inner sender 或其他 publisher 猜测下载                            |
 | digest binding 存在，但 CAS 记录已删除、标记 deleted、blob 文件缺失或无法作为完整资源读取                              | `200 NOT_FOUND`                        | 保留消息/closure；把 asset 标为 unavailable/retryable-by-state-change，不得将 peer 置为 `degraded` |
+| 实现方为本 media operation 定义的配额已经耗尽                                                                          | `200 FEDERATION_QUOTA_EXCEEDED`        | 不接受任何资源 byte；只按 `data.retryAfter` 退避，不改变 peer lifecycle                            |
 | 单 Range grammar 合法，但起点超出当前长度或 `start > end`                                                              | `416 FEDERATION_RANGE_NOT_SATISFIABLE` | 验证 `Content-Range` 后停止当前 offset；不得解释为文件不存在                                       |
 | publisher 暂时无法读取存储或提供服务，且不能确定资源已不存在                                                           | `503 INTERNAL`                         | 保留授权坐标和 cursor，按 errors.md 有上限退避重试并将已建立 peer 置为 degraded                    |
 
@@ -278,6 +279,7 @@ server 上不存在。publisher 不得（MUST NOT）把“请求者没有 messag
 `NOT_FOUND` 与 `FORBIDDEN` 的 message 文本推断资源是否存在。publisher 已发送 `200/206` header 和部分
 bytes 后发生磁盘读取或连接错误时，已经不能改发 JSON envelope；必须（MUST）终止 stream。consumer
 必须丢弃未达到声明 `Content-Length` 或 digest 校验失败的当前 range，并从同一 offset 按本地有上限策略重试。
+quota 必须在发送任何 raw byte 前判定；其 data 是 closed `{ retryAfter }`，不公开阈值、单位、窗口或算法。
 
 ### 3.4 完整 Range HTTP 示例
 
@@ -440,6 +442,8 @@ Signature: sig1=:j+HRgnN5UrLHamIKxt7FBEha9Q0Cw0RAfhTGBZXuJn5dxQPkwHOfJzdR/u9Y5qs
 - path parameter malformed：HTTP `400 FEDERATION_MALFORMED`。
 - bundle 不存在、已不可见或没有对签名 peer 的 message/audience binding：HTTP `200 NOT_FOUND`。
 - closure 超出公开上限：HTTP `200 FEDERATION_PAYLOAD_TOO_LARGE`，不得返回部分 closure。
+- 实现方为本 bundle operation 定义的配额耗尽：HTTP `200 FEDERATION_QUOTA_EXCEEDED`，只携带
+  `{ retryAfter }`；consumer 不提交部分 closure、不改变 peer lifecycle，并至少等待该秒数后重试。
 - 公共签名、认可、identity、策略及服务故障：按 errors.md。
 
 bundle 的有效 `NOT_FOUND` 同样允许（MAY）consumer 按本地策略处理对应的 mirror message，例如保留不可展开

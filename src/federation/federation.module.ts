@@ -25,7 +25,7 @@ import { FederationDownloadRecoveryService } from './federation-download-recover
 import { PeerStateFeedService } from './peer-state-feed.service.js';
 import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
 import { GroupMembershipStateService } from '../group/group-membership-state.service.js';
-import { FederationMemoryFeedService } from './federation-memory-feed.service.js';
+import { FederationMessageFeedIndexerService } from './federation-message-feed-indexer.service.js';
 import { FederationFeedFulfiller } from './federation-feed-fulfiller.service.js';
 import { S2sSignatureGuard } from './s2s-signature.guard.js';
 import { FederationMessageTombstoneFeedService } from './federation-message-tombstone-feed.service.js';
@@ -70,7 +70,7 @@ import { FederationMessageTombstonePullService } from './federation-message-tomb
     FederationMessageFeedPullService,
     FederationMessageTombstoneFeedService,
     FederationMessageTombstonePullService,
-    FederationMemoryFeedService,
+    FederationMessageFeedIndexerService,
     FederationFeedFulfiller,
     FederationDownloadScheduler,
     FederationDownloadRecoveryService,
@@ -89,7 +89,7 @@ import { FederationMessageTombstonePullService } from './federation-message-tomb
     FederationMessageFeedPullService,
     FederationMessageTombstoneFeedService,
     FederationMessageTombstonePullService,
-    FederationMemoryFeedService,
+    FederationMessageFeedIndexerService,
     FederationFeedFulfiller,
     FederationDownloadScheduler,
     FederationDownloadRecoveryService,

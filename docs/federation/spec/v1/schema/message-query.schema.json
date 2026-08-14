@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:soms:federation:v1:message-query",
+  "title": "GET /s2s/v1/messages response data",
+  "$defs": {
+    "asset": {
+      "type": "object",
+      "required": ["digest", "bytes", "status"],
+      "properties": {
+        "digest": { "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex" },
+        "bytes": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+        },
+        "status": { "enum": ["READY", "DELETED"] }
+      },
+      "additionalProperties": false
+    },
+    "message": {
+      "type": "object",
+      "required": [
+        "thread",
+        "author",
+        "seq",
+        "originSeq",
+        "contentType",
+        "content",
+        "createdAt",
+        "updatedAt",
+        "clientMessageId",
+        "assets"
+      ],
+      "properties": {
+        "thread": {
+          "$ref": "urn:soms:federation:v1:message-feed#/$defs/thread"
+        },
+        "author": { "$ref": "urn:soms:federation:v1:common#/$defs/address" },
+        "seq": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+        },
+        "originSeq": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+        },
+        "contentType": {
+          "enum": [
+            "PURE_TEXT",
+            "INVITE",
+            "IMAGE",
+            "VIDEO",
+            "FILE",
+            "AUDIO",
+            "LINK",
+            "CALL",
+            "FORWARD",
+            "GALLERY"
+          ]
+        },
+        "content": { "type": "string", "minLength": 2 },
+        "createdAt": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+        },
+        "updatedAt": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+        },
+        "clientMessageId": {
+          "oneOf": [
+            { "$ref": "urn:soms:federation:v1:common#/$defs/canonicalUuid" },
+            { "type": "null" }
+          ]
+        },
+        "quoteTarget": {
+          "type": "object",
+          "required": ["creator", "originSeq"],
+          "properties": {
+            "creator": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/address"
+            },
+            "originSeq": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+            }
+          },
+          "additionalProperties": false
+        },
+        "assets": { "type": "array", "items": { "$ref": "#/$defs/asset" } }
+      },
+      "additionalProperties": false
+    }
+  },
+  "type": "object",
+  "required": ["messages", "scannedThrough", "hasMore"],
+  "properties": {
+    "messages": { "type": "array", "items": { "$ref": "#/$defs/message" } },
+    "scannedThrough": {
+      "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+    },
+    "hasMore": { "type": "boolean" }
+  },
+  "additionalProperties": false
+}

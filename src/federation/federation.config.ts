@@ -37,8 +37,8 @@ export function loadFederationConfig(): FederationConfig {
     domain: requireEnv('SOMS_DOMAIN'),
     keyPath: process.env.SOMS_S2S_KEY_PATH ?? './data/soms-s2s-key.json',
     keyCacheTtlSec: Number(process.env.SOMS_KEY_CACHE_TTL_SEC ?? 6 * 60 * 60), // 6h
-    connectTimeoutSec: Number(process.env.SOMS_CONNECT_TIMEOUT_SEC ?? 5),
-    callTimeoutSec: Number(process.env.SOMS_CALL_TIMEOUT_SEC ?? 10),
+    connectTimeoutSec: Number(process.env.SOMS_CONNECT_TIMEOUT_SEC ?? 12),
+    callTimeoutSec: Number(process.env.SOMS_CALL_TIMEOUT_SEC ?? 12),
     mediaChunkBytes: Number(
       process.env.SOMS_MEDIA_CHUNK_BYTES ?? 8 * 1024 * 1024,
     ),

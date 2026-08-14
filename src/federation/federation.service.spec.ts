@@ -116,6 +116,47 @@ describe('FederationService inbound call preflight', () => {
   });
 });
 
+describe('FederationService state-feed drain window', () => {
+  it('does not retain a stale through bound in the coalesced pull worker', async () => {
+    const { svc } = makeStubs();
+    const pullStateFeedPage = vi.fn().mockResolvedValue({
+      items: [],
+      scannedThrough: '5',
+      stateFeedEndId: '5',
+      hasMore: false,
+    });
+    const target = svc as unknown as {
+      stateFeedPull: {
+        advertise: (domain: string, revision: bigint) => void;
+        run: (
+          domain: string,
+          callbacks: { fetch: (after?: bigint) => Promise<unknown> },
+        ) => Promise<void>;
+      };
+      pullStateFeedPage: typeof pullStateFeedPage;
+      sweepFederatedMemberProfiles: (domain: string) => Promise<void>;
+      readStatePullCursor: (domain: string) => Promise<bigint>;
+    };
+    target.stateFeedPull = {
+      advertise: vi.fn(),
+      run: vi.fn(async (_domain, callbacks) => {
+        await callbacks.fetch(2n);
+      }),
+    };
+    target.pullStateFeedPage = pullStateFeedPage;
+    target.sweepFederatedMemberProfiles = vi.fn().mockResolvedValue(undefined);
+    target.readStatePullCursor = vi.fn().mockResolvedValue(5n);
+
+    await svc.pullStateFromPeer('peer.test', 5n);
+
+    expect(pullStateFeedPage).toHaveBeenCalledWith(
+      'peer.test',
+      2n,
+      100,
+    );
+  });
+});
+
 describe('FederationService optional range digest', () => {
   function target() {
     const { svc, recognition } = makeStubs();
@@ -235,7 +276,7 @@ describe('FederationService JSON error data', () => {
         JSON.stringify({
           code: BusinessCode.FEDERATION_QUOTA_EXCEEDED,
           message: 'peer quota exceeded',
-          data: { category: 'messages', limit: 1000, retryAfter: 60 },
+          data: { retryAfter: 60 },
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
       ),
@@ -260,7 +301,7 @@ describe('FederationService JSON error data', () => {
     ).rejects.toMatchObject({
       status: 200,
       code: BusinessCode.FEDERATION_QUOTA_EXCEEDED,
-      data: { category: 'messages', limit: 1000, retryAfter: 60 },
+      data: { retryAfter: 60 },
     });
     fetchMock.mockRestore();
   });
@@ -421,8 +462,9 @@ describe('FederationService global missed transport', () => {
       rootKeyFingerprint: 'sha256:test',
     };
     const page = {
-      messages: [],
+      items: [],
       scannedThrough: '9',
+      messageFeedEndId: '9',
       hasMore: false,
     };
     const order: string[] = [];

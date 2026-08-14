@@ -61,7 +61,7 @@ describe('Federation v1 protocol documentation', () => {
     }>('state-feed.schema.json');
     const message = readSchema<{
       $defs: { message: { properties: { contentType: { enum: string[] } } } };
-    }>('message-feed.schema.json');
+    }>('message-query.schema.json');
     const content = readSchema<{
       properties: { contentType: { enum: string[] } };
     }>('message-content.schema.json');
@@ -118,6 +118,8 @@ describe('Federation v1 protocol documentation', () => {
       'GET /s2s/v1/state-feed',
       'GET /s2s/v1/message-feed',
       'GET /s2s/v1/message-tombstone-feed',
+      'GET /s2s/v1/messages',
+      'GET /s2s/v1/message-tombstones',
       'POST /s2s/v1/call',
       'GET /s2s/v1/users/:account',
       'GET /s2s/v1/media/:digest',

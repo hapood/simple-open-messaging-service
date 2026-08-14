@@ -80,12 +80,21 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
       const shouldTruncate = isGetFileFirstRange && truncateNextGetFile;
       const isMessageFeed =
         typeof req.url === 'string' && req.url.includes('/s2s/v1/message-feed');
-      const isStateFeed =
-        typeof req.url === 'string' && req.url.includes('/s2s/v1/state-feed?');
+      // The first compact-feed request intentionally has no `after` query
+      // parameter. Match the route by pathname so bootstrap and resumed pulls
+      // are both eligible for state-feed fault injection.
+      const requestPathname = new URL(
+        req.url ?? '/',
+        'http://federation-proxy.invalid',
+      ).pathname;
+      const isStateFeed = requestPathname === '/s2s/v1/state-feed';
       if (shouldTruncate) truncateNextGetFile = false; // consume the one-shot
 
       const relay = (): void => {
-        if (res.destroyed || req.destroyed) return;
+        // A bodyless GET can have a normally completed/destroyed IncomingMessage while its response is
+        // intentionally held by this proxy. `destroyed` therefore does not mean that the client cancelled
+        // the exchange; `aborted` is the signal that makes a queued relay unsafe to resume.
+        if (req.aborted) return;
         const fixtureDigest = /^\/s2s\/v1\/media\/([a-f0-9]{64})(?:\?|$)/.exec(
           req.url ?? '/',
         )?.[1];
@@ -127,6 +136,7 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
               'sha-256=:' +
               createHash('sha256').update(body).digest('base64') +
               ':',
+            ...(shouldTruncate ? { connection: 'close' } : {}),
           });
           if (shouldTruncate) {
             res.write(body.subarray(0, Math.min(body.length, 8)));
@@ -167,7 +177,10 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
               // (buf.length < unitLen) → fetchMediaChunks discards the partial unit + re-requests the SAME
               // range (resume). A destroy/RST would reject the fetch → markTransportDegraded (wrong). Capped at 8 bytes
               // so the unit (chunkBytes=64) is guaranteed incomplete even if the first chunk is a full unit.
-              res.writeHead(upRes.statusCode ?? 206, upRes.headers);
+              res.writeHead(upRes.statusCode ?? 206, {
+                ...upRes.headers,
+                connection: 'close',
+              });
               let relayedFirst = false;
               upRes.on('data', (chunk: Buffer) => {
                 if (!relayedFirst) {

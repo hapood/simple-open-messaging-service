@@ -137,11 +137,11 @@ Unique: `@@unique([userId, threadId])`. Indexes: `[threadId]` (roster), `[userId
 - **GroupMembershipRequest** — one row per `(groupUserId, memberUserId, direction)`, where direction is
   `INVITE` (GROUP→USER) or `JOIN` (USER→GROUP). `GroupMembershipPair` is the local active projection;
   for federation, only the origin's newer `GROUP_META` snapshot may activate a mirror.
-- **ThreadAudience leave boundary** — relationship removal retains the audience row and freezes
-  `deliverThroughChangeId` at an inclusive discovery boundary. Reactivation clears the boundary and
-  reuses the same thread/mirror. A group peer audience stays open while that peer has any active member;
-  after its last member leaves, messages from the no-member interval are intentionally not discovered or
-  backfilled.
+- **ThreadAudience current projection** — relationship removal deletes the current audience row.
+  Permanent `FederationMessageDelivery` facts preserve exactly the messages previously allocated to the
+  peer; reactivation recreates the audience at the current thread tail and reuses the same thread/mirror.
+  A group peer audience remains present while that peer has any active member. Messages from an interval
+  with no active audience are neither discovered nor backfilled.
 
 Crossed writes lock the canonical pair row before inspecting either direction. Notes remain separate;
 there is no JSON merge and no polymorphic `Invite` table.

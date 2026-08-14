@@ -1,8 +1,8 @@
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import {
-  federationMessageFeedAllocation,
   federationMessageDelivery,
+  federationMessageFeedIndex,
   federationServeCursor,
   messageThread,
   threadAudience,
@@ -10,62 +10,19 @@ import {
 
 const DRAIN_BATCH = 500;
 
-/** Start a new current authorization at the thread's committed end. The audience row is the
- * serialization point; message writers do not take or wait for this lock. */
-export async function openFederatedAudienceInTx(
+/**
+ * Materialize all currently committed, eligible messages after an audience's durable thread scan
+ * position. One scan advancement allocates at most one new compacted feed ID for the thread.
+ */
+export async function advanceFederatedAudienceInTx(
   tx: DatabaseTransaction,
   peerDomain: string,
   threadId: number,
-): Promise<void> {
-  await tx
-    .select({ id: threadAudience.id })
-    .from(threadAudience)
-    .where(
-      and(
-        eq(threadAudience.targetDomain, peerDomain),
-        eq(threadAudience.threadId, threadId),
-        isNull(threadAudience.localUserId),
-      ),
-    )
-    .for('update')
-    .limit(1);
-  const [thread] = await tx
-    .select({ curSeq: messageThread.curSeq })
-    .from(messageThread)
-    .where(eq(messageThread.id, threadId))
-    .limit(1);
-  if (!thread) throw new Error(`thread ${threadId} does not exist`);
-  await tx
-    .insert(threadAudience)
-    .values({
-      targetDomain: peerDomain,
-      localUserId: null,
-      threadId,
-      deliverThroughChangeId: null,
-      messageScannedThroughSeq: thread.curSeq,
-    })
-    .onConflictDoUpdate({
-      target: [threadAudience.targetDomain, threadAudience.threadId],
-      targetWhere: sql`${threadAudience.targetDomain} <> 'local'`,
-      set: {
-        deliverThroughChangeId: null,
-        messageScannedThroughSeq: thread.curSeq,
-      },
-    });
-}
-
-/** Freeze the audience first, then drain through the thread seq visible at that point. An uncommitted
- * message is linearized after close and message writers never wait for this operation. */
-export async function closeFederatedAudienceInTx(
-  tx: DatabaseTransaction,
-  peerDomain: string,
-  threadId: number,
-): Promise<bigint> {
+): Promise<boolean> {
   const [audience] = await tx
     .select({
       id: threadAudience.id,
       scannedThrough: threadAudience.messageScannedThroughSeq,
-      closedAt: threadAudience.deliverThroughChangeId,
     })
     .from(threadAudience)
     .where(
@@ -77,25 +34,17 @@ export async function closeFederatedAudienceInTx(
     )
     .for('update')
     .limit(1);
-  if (!audience) {
-    const [cursor] = await tx
-      .select({ endId: federationServeCursor.allocatedThrough })
-      .from(federationServeCursor)
-      .where(eq(federationServeCursor.peerDomain, peerDomain))
-      .limit(1);
-    if (!cursor) throw new Error(`peer ${peerDomain} has no message feed cursor`);
-    return cursor.endId;
-  }
-  if (audience.closedAt !== null) return audience.closedAt;
+  if (!audience) return false;
+
   const [thread] = await tx
     .select({ curSeq: messageThread.curSeq })
     .from(messageThread)
     .where(eq(messageThread.id, threadId))
     .limit(1);
   if (!thread) throw new Error(`thread ${threadId} does not exist`);
-  if (audience.scannedThrough === null)
-    throw new Error(`peer audience ${audience.id.toString()} has no scan position`);
-  let scanned = audience.scannedThrough;
+  let scanned = audience.scannedThrough ?? thread.curSeq;
+  let messageEndSeq: number | null = null;
+
   while (scanned < thread.curSeq) {
     const rows = await tx.execute<{
       messageId: string;
@@ -125,56 +74,114 @@ export async function closeFederatedAudienceInTx(
       scanned = thread.curSeq;
       break;
     }
-    const candidates = rows.rows.filter((row) => row.eligible);
-    if (candidates.length > 0) {
-      const [allocated] = await tx
-        .update(federationServeCursor)
-        .set({
-          allocatedThrough: sql`${federationServeCursor.allocatedThrough} + ${candidates.length}`,
-          updatedAt: new Date(),
-        })
-        .where(eq(federationServeCursor.peerDomain, peerDomain))
-        .returning({ last: federationServeCursor.allocatedThrough });
-      if (!allocated)
-        throw new Error(`peer ${peerDomain} has no message feed cursor`);
-      const first = allocated.last - BigInt(candidates.length) + 1n;
-      await tx.insert(federationMessageFeedAllocation).values(
-        candidates.map((row, index) => ({
-          peerDomain,
-          feedId: first + BigInt(index),
-          messageId: BigInt(row.messageId),
-          threadId,
-          messageSeq: row.messageSeq,
-        })),
-      );
+    const eligible = rows.rows.filter((row) => row.eligible);
+    if (eligible.length > 0) {
       await tx
         .insert(federationMessageDelivery)
         .values(
-          candidates.map((row) => ({
+          eligible.map((row) => ({
             peerDomain,
             messageId: BigInt(row.messageId),
           })),
         )
         .onConflictDoNothing();
+      messageEndSeq = eligible.at(-1)!.messageSeq;
     }
     scanned = rows.rows.at(-1)!.messageSeq;
-    await tx
-      .update(threadAudience)
-      .set({ messageScannedThroughSeq: scanned })
-      .where(eq(threadAudience.id, audience.id));
   }
+
+  await tx
+    .update(threadAudience)
+    .set({ messageScannedThroughSeq: scanned })
+    .where(eq(threadAudience.id, audience.id));
+
+  if (messageEndSeq === null) return false;
+  const [current] = await tx
+    .select({ messageEndSeq: federationMessageFeedIndex.messageEndSeq })
+    .from(federationMessageFeedIndex)
+    .where(
+      and(
+        eq(federationMessageFeedIndex.peerDomain, peerDomain),
+        eq(federationMessageFeedIndex.threadId, threadId),
+      ),
+    )
+    .limit(1);
+  if (current && current.messageEndSeq >= messageEndSeq) return false;
+
+  const [head] = await tx
+    .update(federationServeCursor)
+    .set({
+      allocatedThrough: sql`${federationServeCursor.allocatedThrough} + 1`,
+      updatedAt: new Date(),
+    })
+    .where(eq(federationServeCursor.peerDomain, peerDomain))
+    .returning({ feedId: federationServeCursor.allocatedThrough });
+  if (!head) throw new Error(`peer ${peerDomain} has no message feed target`);
+  await tx
+    .insert(federationMessageFeedIndex)
+    .values({ peerDomain, threadId, feedId: head.feedId, messageEndSeq })
+    .onConflictDoUpdate({
+      target: [
+        federationMessageFeedIndex.peerDomain,
+        federationMessageFeedIndex.threadId,
+      ],
+      set: {
+        feedId: head.feedId,
+        messageEndSeq,
+        updatedAt: new Date(),
+      },
+    });
+  return true;
+}
+
+/** Reauthorization starts after the current thread tail, so an inactive interval is never backfilled. */
+export async function openFederatedAudienceInTx(
+  tx: DatabaseTransaction,
+  peerDomain: string,
+  threadId: number,
+): Promise<void> {
+  const [thread] = await tx
+    .select({ curSeq: messageThread.curSeq })
+    .from(messageThread)
+    .where(eq(messageThread.id, threadId))
+    .limit(1);
+  if (!thread) throw new Error(`thread ${threadId} does not exist`);
+  await tx
+    .insert(threadAudience)
+    .values({
+      targetDomain: peerDomain,
+      localUserId: null,
+      threadId,
+      messageScannedThroughSeq: thread.curSeq,
+    })
+    .onConflictDoUpdate({
+      target: [threadAudience.targetDomain, threadAudience.threadId],
+      targetWhere: sql`${threadAudience.targetDomain} <> 'local'`,
+      set: { messageScannedThroughSeq: thread.curSeq },
+    });
+}
+
+/** Close the current audience after materializing its committed tail, then remove the active row. */
+export async function closeFederatedAudienceInTx(
+  tx: DatabaseTransaction,
+  peerDomain: string,
+  threadId: number,
+): Promise<bigint> {
+  await advanceFederatedAudienceInTx(tx, peerDomain, threadId);
+  await tx
+    .delete(threadAudience)
+    .where(
+      and(
+        eq(threadAudience.targetDomain, peerDomain),
+        eq(threadAudience.threadId, threadId),
+        isNull(threadAudience.localUserId),
+      ),
+    );
   const [cursor] = await tx
     .select({ endId: federationServeCursor.allocatedThrough })
     .from(federationServeCursor)
     .where(eq(federationServeCursor.peerDomain, peerDomain))
     .limit(1);
-  if (!cursor) throw new Error(`peer ${peerDomain} has no message feed cursor`);
-  await tx
-    .update(threadAudience)
-    .set({
-      messageScannedThroughSeq: scanned,
-      deliverThroughChangeId: cursor.endId,
-    })
-    .where(eq(threadAudience.id, audience.id));
+  if (!cursor) throw new Error(`peer ${peerDomain} has no message feed target`);
   return cursor.endId;
 }

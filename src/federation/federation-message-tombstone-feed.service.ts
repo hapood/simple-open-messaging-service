@@ -1,50 +1,36 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, isNull, lte, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import {
-  DatabaseService,
-  type DatabaseTransaction,
-} from '../database/database.service.js';
+import type { MessageDeleteType } from '../database/enums.js';
+import type { DatabaseTransaction } from '../database/database.service.js';
+import { DatabaseService } from '../database/database.service.js';
 import {
   deletedMessage,
-  federatedPeer,
-  federationTombstoneFeedAllocation,
+  federationMessageDelivery,
+  federationTombstoneFeedIndex,
   federationTombstoneServeCursor,
   message,
   messageThread,
+  threadParticipant,
   user,
 } from '../database/schema.js';
-import type { MessageDeleteType } from '../database/enums.js';
-import { FederationChangeBuffer } from './federation-change-buffer.js';
 import {
-  FEDERATION_MEMORY_FEED_CAPACITY,
+  type FederationThreadAddress,
+  type FederationThreadQuery,
+} from './federation-message-feed.service.js';
+import { loadFederationConfig } from './federation.config.js';
+import {
   FederationFeedFillState,
   type FederationFeedFillQuantumResult,
-  FederationMemoryFeedService,
-} from './federation-memory-feed.service.js';
-import { loadFederationConfig } from './federation.config.js';
+} from './federation-message-feed-indexer.service.js';
 
 const DEFAULT_PAGE_SIZE = 100;
 const MAX_PAGE_SIZE = 200;
-const FILL_QUERY_SIZE = 500;
-const RETRY_AFTER_MS = 100;
-
-export interface FederationBufferedTombstone {
-  feedId: bigint;
-  deletionId: bigint;
-  threadId: number;
-  messageSeq: number;
-}
 
 export interface FederationMessageTombstoneItem {
-  feedId: string;
-  thread:
-    | { type: 'GROUP'; account: string; domain: string }
-    | {
-        type: 'P2P';
-        participants: Array<{ account: string; domain: string }>;
-      };
+  deletionSeq: string;
+  thread: FederationThreadAddress;
   target: {
     creator: { account: string; domain: string };
     originSeq: number;
@@ -54,386 +40,251 @@ export interface FederationMessageTombstoneItem {
 }
 
 export interface FederationMessageTombstonePage {
+  items: Array<{
+    feedId: string;
+    thread: FederationThreadAddress;
+    tombstoneEndSeq: string;
+  }>;
+  scannedThrough: string;
+  tombstoneFeedEndId: string;
+  hasMore: boolean;
+  /** Consumer-only materialization; never serialized by the source endpoint. */
+  tombstones?: FederationMessageTombstoneItem[];
+  queryCursors?: Array<{ threadKey: string; committedThrough: string }>;
+}
+
+export interface FederationMessageTombstoneQueryPage {
   tombstones: FederationMessageTombstoneItem[];
   scannedThrough: string;
   hasMore: boolean;
-  retryAfterMs?: number;
-}
-
-interface PeerTombstoneFeed {
-  buffer: FederationChangeBuffer<FederationBufferedTombstone>;
-  keys: Set<string>;
-  state: FederationFeedFillState;
-  initialized: boolean;
-  resetGeneration: number | null;
 }
 
 @Injectable()
 export class FederationMessageTombstoneFeedService {
   private readonly localDomain = loadFederationConfig().domain;
-  private readonly peers = new Map<string, PeerTombstoneFeed>();
 
-  constructor(
-    private readonly database: DatabaseService,
-    private readonly memoryFeed: FederationMemoryFeedService,
-  ) {}
+  constructor(private readonly database: DatabaseService) {}
 
   async rejectMissingAfter(peerDomain: string): Promise<never> {
-    const [cursor] = await this.database.db
-      .select({
-        retainedAfter: federationTombstoneServeCursor.retainedAfter,
-        acknowledgedThrough: federationTombstoneServeCursor.acknowledgedThrough,
-      })
-      .from(federationTombstoneServeCursor)
-      .where(eq(federationTombstoneServeCursor.peerDomain, peerDomain))
-      .limit(1);
-    if (!cursor) throw new Error(`peer ${peerDomain} has no tombstone feed`);
-    const resumeAfter =
-      cursor.retainedAfter > cursor.acknowledgedThrough
-        ? cursor.retainedAfter
-        : cursor.acknowledgedThrough;
+    await this.requireTarget(peerDomain);
     throw new BusinessException(
       BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
-      'after is required; resume from the available tombstone cursor',
+      'after is required; initialize the tombstone feed cursor',
       HttpStatus.OK,
-      { resumeAfter: resumeAfter.toString() },
+      { resumeAfter: '0' },
     );
   }
 
-  state(peerDomain: string): FederationFeedFillState {
-    return this.peer(peerDomain).state;
+  state(_peerDomain: string): FederationFeedFillState {
+    return FederationFeedFillState.CAUGHT_UP;
   }
 
-  fill(peerDomain: string): Promise<FederationFeedFillState> {
-    return this.memoryFeed
-      .runExclusive(
-        peerDomain,
-        async () => (await this.fillWhileLocked(peerDomain)).state,
-      )
-      .catch((error: unknown) => {
-        this.peer(peerDomain).state = FederationFeedFillState.NEEDS_FILL;
-        throw error;
-      });
+  async fill(peerDomain: string): Promise<FederationFeedFillState> {
+    await this.database.db.transaction(async (tx) => {
+      const [cursor] = await tx
+        .select()
+        .from(federationTombstoneServeCursor)
+        .where(eq(federationTombstoneServeCursor.peerDomain, peerDomain))
+        .for('update')
+        .limit(1);
+      if (!cursor)
+        throw new Error(`peer ${peerDomain} has no tombstone feed target`);
+      const rows = await tx
+        .select({
+          deletionId: deletedMessage.id,
+          threadId: deletedMessage.threadId,
+          messageId: message.id,
+        })
+        .from(deletedMessage)
+        .innerJoin(
+          message,
+          and(
+            eq(message.threadId, deletedMessage.threadId),
+            eq(message.seq, deletedMessage.seq),
+          ),
+        )
+        .innerJoin(
+          federationMessageDelivery,
+          and(
+            eq(federationMessageDelivery.peerDomain, peerDomain),
+            eq(federationMessageDelivery.messageId, message.id),
+          ),
+        )
+        // Delivery proof can be materialized after the deletion transaction (for example while
+        // draining an audience during relationship closure). Reconsider permanent local facts on
+        // every fill so advancing the global scan watermark can never hide a newly eligible proof.
+        .where(isNull(deletedMessage.federationSourceDomain))
+        .orderBy(asc(deletedMessage.id));
+      const latest = new Map<number, bigint>();
+      for (const row of rows) latest.set(row.threadId, row.deletionId);
+      let feedId = cursor.allocatedThrough;
+      for (const [threadId, tombstoneEndSeq] of latest) {
+        const [current] = await tx
+          .select({ end: federationTombstoneFeedIndex.tombstoneEndSeq })
+          .from(federationTombstoneFeedIndex)
+          .where(
+            and(
+              eq(federationTombstoneFeedIndex.peerDomain, peerDomain),
+              eq(federationTombstoneFeedIndex.threadId, threadId),
+            ),
+          )
+          .limit(1);
+        if (current && current.end >= tombstoneEndSeq) continue;
+        feedId += 1n;
+        await tx
+          .insert(federationTombstoneFeedIndex)
+          .values({ peerDomain, threadId, feedId, tombstoneEndSeq })
+          .onConflictDoUpdate({
+            target: [
+              federationTombstoneFeedIndex.peerDomain,
+              federationTombstoneFeedIndex.threadId,
+            ],
+            set: { feedId, tombstoneEndSeq, updatedAt: new Date() },
+          });
+      }
+      const [globalEnd] = await tx
+        .select({ end: sql<bigint>`COALESCE(MAX(${deletedMessage.id}), 0)` })
+        .from(deletedMessage);
+      await tx
+        .update(federationTombstoneServeCursor)
+        .set({
+          allocatedThrough: feedId,
+          sourceScannedThrough: globalEnd?.end ?? cursor.sourceScannedThrough,
+          updatedAt: new Date(),
+        })
+        .where(eq(federationTombstoneServeCursor.peerDomain, peerDomain));
+    });
+    return FederationFeedFillState.CAUGHT_UP;
   }
 
-  fillQuantum(
+  async fillQuantum(
     peerDomain: string,
-    maxWork: number,
+    _maxWork: number,
   ): Promise<FederationFeedFillQuantumResult> {
-    if (!Number.isInteger(maxWork) || maxWork < 0) {
-      throw new Error('fill quantum must be a non-negative integer');
-    }
-    return this.memoryFeed
-      .runExclusive(peerDomain, () => this.fillWhileLocked(peerDomain, maxWork))
-      .catch((error: unknown) => {
-        this.peer(peerDomain).state = FederationFeedFillState.NEEDS_FILL;
-        throw error;
-      });
+    await this.fill(peerDomain);
+    return { state: FederationFeedFillState.CAUGHT_UP, work: 1 };
   }
 
   async serve(
     peerDomain: string,
     after: bigint,
     requestedTake?: number,
-    trunc?: bigint,
+    through?: bigint,
   ): Promise<FederationMessageTombstonePage> {
     const take = this.pageSize(requestedTake);
-    if (trunc !== undefined && trunc < after) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'trunc must be greater than or equal to after',
-        HttpStatus.BAD_REQUEST,
+    if (through !== undefined && through < after) this.invalidThrough();
+    await this.fill(peerDomain);
+    return this.database.db.transaction(async (tx) => {
+      const end = await this.readEndInTx(tx, peerDomain);
+      if (after < 0n || after > end) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
+          'tombstone feed cursor is outside the available coordinate space',
+          HttpStatus.OK,
+          { resumeAfter: '0' },
+        );
+      }
+      const requestEnd = through === undefined || through > end ? end : through;
+      const rows = await tx
+        .select({
+          threadId: federationTombstoneFeedIndex.threadId,
+          feedId: federationTombstoneFeedIndex.feedId,
+          tombstoneEndSeq: federationTombstoneFeedIndex.tombstoneEndSeq,
+        })
+        .from(federationTombstoneFeedIndex)
+        .where(
+          and(
+            eq(federationTombstoneFeedIndex.peerDomain, peerDomain),
+            gt(federationTombstoneFeedIndex.feedId, after),
+            lte(federationTombstoneFeedIndex.feedId, requestEnd),
+          ),
+        )
+        .orderBy(asc(federationTombstoneFeedIndex.feedId))
+        .limit(take + 1);
+      const selected = rows.slice(0, take);
+      const addresses = await this.threadAddressesInTx(
+        tx,
+        selected.map((row) => row.threadId),
       );
-    }
-    return this.memoryFeed.runExclusive(peerDomain, async () => {
-      await this.fillWhileLocked(peerDomain);
-      const peer = this.peer(peerDomain);
-      const result = await this.database.db.transaction(async (tx) => {
-        const [cursor] = await tx
-          .select()
-          .from(federationTombstoneServeCursor)
-          .where(eq(federationTombstoneServeCursor.peerDomain, peerDomain))
-          .for('update', { noWait: true })
-          .limit(1);
-        if (!cursor) {
-          throw new BusinessException(
-            BusinessCode.FEDERATION_RECOGNITION_REQUIRED,
-            'peer has no tombstone feed cursor',
-            HttpStatus.UNAUTHORIZED,
-          );
-        }
-        const availableCursor =
-          cursor.retainedAfter > cursor.acknowledgedThrough
-            ? cursor.retainedAfter
-            : cursor.acknowledgedThrough;
-        if (after < availableCursor) {
-          throw new BusinessException(
-            BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
-            'requested tombstone cursor is below the retained floor',
-            HttpStatus.OK,
-            { resumeAfter: availableCursor.toString() },
-          );
-        }
-        const validCursor =
-          after === availableCursor ||
-          after === cursor.acknowledgedThrough ||
-          after === cursor.lastServedThrough;
-        if (!validCursor || after > cursor.allocatedThrough) {
-          throw new BusinessException(
-            BusinessCode.FEDERATION_FEED_CURSOR_MISMATCH,
-            'after is neither the confirmed nor last served tombstone cursor',
-            HttpStatus.OK,
-            {
-              acknowledgedThrough: cursor.acknowledgedThrough.toString(),
-              lastServedThrough: cursor.lastServedThrough.toString(),
-            },
-          );
-        }
-        const effectiveAfter = after;
-        const retry =
-          after === cursor.acknowledgedThrough &&
-          cursor.lastServedThrough > cursor.acknowledgedThrough;
-        const requestEnd = retry
-          ? cursor.lastServedThrough
-          : trunc === undefined || trunc > cursor.allocatedThrough
-            ? cursor.allocatedThrough
-            : trunc;
-        const boundedEnd =
-          requestEnd < effectiveAfter ? effectiveAfter : requestEnd;
-        await this.acknowledgeInTx(tx, peerDomain, peer, effectiveAfter);
-        const refs = peer.buffer
-          .snapshot()
-          .filter(
-            (entry) =>
-              entry.feedId > effectiveAfter && entry.feedId <= boundedEnd,
-          )
-          .slice(0, take);
-        const scannedThrough =
-          refs.length === take ? refs.at(-1)!.feedId : boundedEnd;
-        const tombstones = await this.serializeInTx(tx, refs);
-        await tx
-          .update(federationTombstoneServeCursor)
-          .set({
-            acknowledgedThrough: retry
-              ? cursor.acknowledgedThrough
-              : effectiveAfter,
-            lastServedThrough: scannedThrough,
-            updatedAt: new Date(),
-          })
-          .where(eq(federationTombstoneServeCursor.peerDomain, peerDomain));
-        const page: FederationMessageTombstonePage = {
-          tombstones,
-          scannedThrough: scannedThrough.toString(),
-          hasMore: scannedThrough < boundedEnd,
-        };
-        return {
-          page,
-          acknowledgedThrough: effectiveAfter,
-        };
-      });
-      this.retireWhileLocked(peer, result.acknowledgedThrough);
-      if (!peer.buffer.full) await this.fillWhileLocked(peerDomain);
-      const allocatedThrough = await this.readAllocatedThrough(peerDomain);
-      if (
-        BigInt(result.page.scannedThrough) <
-          (trunc === undefined || trunc > allocatedThrough
-            ? allocatedThrough
-            : trunc) ||
-        peer.state === FederationFeedFillState.NEEDS_FILL ||
-        peer.state === FederationFeedFillState.FILLING
-      ) {
-        result.page.hasMore = true;
-      }
-      if (
-        result.page.hasMore &&
-        result.page.tombstones.length === 0 &&
-        BigInt(result.page.scannedThrough) === after
-      ) {
-        result.page.retryAfterMs = RETRY_AFTER_MS;
-      }
-      return result.page;
+      const items = selected.map((row) => ({
+        feedId: row.feedId.toString(),
+        thread: this.requiredAddress(addresses, row.threadId),
+        tombstoneEndSeq: row.tombstoneEndSeq.toString(),
+      }));
+      const scannedThrough =
+        rows.length > take ? selected.at(-1)!.feedId : requestEnd;
+      return {
+        items,
+        scannedThrough: scannedThrough.toString(),
+        tombstoneFeedEndId: end.toString(),
+        hasMore: scannedThrough < requestEnd,
+      };
     });
   }
 
-  private async fillWhileLocked(
+  async rejectMissingQueryAfter(
     peerDomain: string,
-    maxWork = Number.MAX_SAFE_INTEGER,
-  ): Promise<FederationFeedFillQuantumResult> {
-    const peer = this.peer(peerDomain);
-    try {
-      await this.refreshGeneration(peerDomain, peer);
-      if (peer.buffer.full) {
-        peer.state = FederationFeedFillState.FULL;
-        return { state: peer.state, work: 0 };
-      }
-      if (maxWork === 0) return { state: peer.state, work: 0 };
-      peer.state = FederationFeedFillState.FILLING;
-      let work = 0;
-      let hasMore = false;
-      for (;;) {
-        if (peer.buffer.full || work >= maxWork) {
-          hasMore = true;
-          break;
-        }
-        const [cursor] = await this.database.db
-          .select({
-            sourceScannedThrough:
-              federationTombstoneServeCursor.sourceScannedThrough,
-          })
-          .from(federationTombstoneServeCursor)
-          .where(eq(federationTombstoneServeCursor.peerDomain, peerDomain))
-          .limit(1);
-        if (!cursor) throw new Error(`peer ${peerDomain} has no allocator`);
-        const take = Math.min(
-          FILL_QUERY_SIZE,
-          peer.buffer.capacity - peer.buffer.size,
-          maxWork - work,
-        );
-        const rows = await this.database.db.execute<{
-          deletionId: string;
-          threadId: number;
-          messageSeq: number;
-          eligible: boolean;
-          waitingForMessageScan: boolean;
-        }>(sql`
-          SELECT deleted.id::text AS "deletionId",
-                 deleted."threadId" AS "threadId",
-                 deleted.seq AS "messageSeq",
-                 (
-                   deleted."federationSourceDomain" IS NULL
-                   AND (
-                     (thread.type = 'P2P' AND creator."isForeigner" = false)
-                     OR (
-                       thread.type = 'GROUP'
-                       AND (
-                         group_user.domain = 'local'
-                         OR (creator."isForeigner" = false AND target."originSeq" IS NULL)
-                       )
-                     )
-                   )
-                   AND EXISTS (
-                     SELECT 1 FROM "FederationMessageDelivery" delivery
-                     WHERE delivery."peerDomain" = ${peerDomain}
-                       AND delivery."messageId" = target.id
-                   )
-                 ) AS eligible,
-                 (
-                   deleted."federationSourceDomain" IS NULL
-                   AND (
-                     (thread.type = 'P2P' AND creator."isForeigner" = false)
-                     OR (
-                       thread.type = 'GROUP'
-                       AND (
-                         group_user.domain = 'local'
-                         OR (creator."isForeigner" = false AND target."originSeq" IS NULL)
-                       )
-                     )
-                   )
-                   AND NOT EXISTS (
-                     SELECT 1 FROM "FederationMessageDelivery" delivery
-                     WHERE delivery."peerDomain" = ${peerDomain}
-                       AND delivery."messageId" = target.id
-                   )
-                   AND EXISTS (
-                     SELECT 1 FROM "ThreadAudience" audience
-                     WHERE audience."targetDomain" = ${peerDomain}
-                       AND audience."localUserId" IS NULL
-                       AND audience."threadId" = deleted."threadId"
-                       AND audience."deliverThroughChangeId" IS NULL
-                       AND audience."messageScannedThroughSeq" < deleted.seq
-                   )
-                 ) AS "waitingForMessageScan"
-          FROM "DeletedMessage" deleted
-          JOIN "Message" target
-            ON target."threadId" = deleted."threadId" AND target.seq = deleted.seq
-          JOIN "MessageThread" thread ON thread.id = deleted."threadId"
-          JOIN "User" creator ON creator.id = target.creator
-          LEFT JOIN "User" group_user ON group_user.id = thread."groupUserId"
-          WHERE deleted.id > ${cursor.sourceScannedThrough}
-          ORDER BY deleted.id
-          LIMIT ${take}
-        `);
-        work += Math.max(rows.rows.length, 1);
-        if (rows.rows.length === 0) break;
-        const waitingIndex = rows.rows.findIndex(
-          (row) => row.waitingForMessageScan,
-        );
-        const settledRows =
-          waitingIndex < 0 ? rows.rows : rows.rows.slice(0, waitingIndex);
-        if (settledRows.length === 0) {
-          hasMore = true;
-          break;
-        }
-        const candidates = settledRows
-          .filter(
-            (row) => row.eligible && !peer.keys.has(row.deletionId),
-          )
-          .map((row) => ({
-            deletionId: BigInt(row.deletionId),
-            threadId: row.threadId,
-            messageSeq: row.messageSeq,
-          }));
-        const allocated = await this.allocateWhileLocked(
-          peerDomain,
-          BigInt(settledRows.at(-1)!.deletionId),
-          candidates,
-        );
-        allocated.forEach((entry) => {
-          if (peer.buffer.append(entry))
-            peer.keys.add(entry.deletionId.toString());
-        });
-        if (waitingIndex >= 0) {
-          hasMore = true;
-          break;
-        }
-        if (rows.rows.length < take) break;
-      }
-      peer.state = peer.buffer.full
-        ? FederationFeedFillState.FULL
-        : hasMore
-          ? FederationFeedFillState.NEEDS_FILL
-          : FederationFeedFillState.CAUGHT_UP;
-      return { state: peer.state, work };
-    } catch (error) {
-      peer.state = FederationFeedFillState.NEEDS_FILL;
-      throw error;
-    }
+    selector: FederationThreadQuery,
+  ): Promise<never> {
+    await this.resolveAuthorizedThread(peerDomain, selector);
+    throw new BusinessException(
+      BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
+      'after is required; initialize the tombstone query cursor',
+      HttpStatus.OK,
+      { resumeAfter: '0' },
+    );
   }
 
-  private async acknowledgeInTx(
-    tx: DatabaseTransaction,
+  async query(
     peerDomain: string,
-    _peer: PeerTombstoneFeed,
-    through: bigint,
-  ): Promise<void> {
-    await tx
-      .delete(federationTombstoneFeedAllocation)
-      .where(
-        and(
-          eq(federationTombstoneFeedAllocation.peerDomain, peerDomain),
-          sql`${federationTombstoneFeedAllocation.feedId} <= ${through}`,
-        ),
-      );
-  }
-
-  private async serializeInTx(
-    tx: DatabaseTransaction,
-    refs: FederationBufferedTombstone[],
-  ): Promise<FederationMessageTombstoneItem[]> {
-    const result: FederationMessageTombstoneItem[] = [];
-    for (const ref of refs) {
-      const [row] = await tx
+    selector: FederationThreadQuery,
+    after: bigint,
+    requestedTake?: number,
+    through?: bigint,
+  ): Promise<FederationMessageTombstoneQueryPage> {
+    const take = this.pageSize(requestedTake);
+    if (through !== undefined && through < after) this.invalidThrough();
+    const threadId = await this.resolveAuthorizedThread(peerDomain, selector);
+    return this.database.db.transaction(async (tx) => {
+      const [tail] = await tx
+        .select({ end: sql<bigint>`COALESCE(MAX(${deletedMessage.id}), 0)` })
+        .from(deletedMessage)
+        .innerJoin(
+          message,
+          and(
+            eq(message.threadId, deletedMessage.threadId),
+            eq(message.seq, deletedMessage.seq),
+          ),
+        )
+        .innerJoin(
+          federationMessageDelivery,
+          and(
+            eq(federationMessageDelivery.peerDomain, peerDomain),
+            eq(federationMessageDelivery.messageId, message.id),
+          ),
+        )
+        .where(eq(deletedMessage.threadId, threadId));
+      const currentEnd = tail?.end ?? 0n;
+      if (after > currentEnd) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
+          'tombstone query cursor is beyond the current thread end',
+          HttpStatus.OK,
+          { resumeAfter: currentEnd.toString() },
+        );
+      }
+      const queryEnd =
+        through === undefined || through > currentEnd ? currentEnd : through;
+      const rows = await tx
         .select({
+          deletionId: deletedMessage.id,
+          threadId: deletedMessage.threadId,
           type: deletedMessage.type,
-          localDeletedAt: deletedMessage.createdAt,
+          deletedAt: deletedMessage.createdAt,
+          messageSeq: message.seq,
           originSeq: message.originSeq,
-          seq: message.seq,
-          creatorId: message.creator,
           creatorAccount: user.account,
           creatorDomain: user.domain,
-          creatorForeigner: user.isForeigner,
-          threadType: messageThread.type,
-          groupUserId: messageThread.groupUserId,
         })
         .from(deletedMessage)
         .innerJoin(
@@ -444,193 +295,225 @@ export class FederationMessageTombstoneFeedService {
           ),
         )
         .innerJoin(user, eq(user.id, message.creator))
-        .innerJoin(messageThread, eq(messageThread.id, message.threadId))
-        .where(eq(deletedMessage.id, ref.deletionId))
-        .limit(1);
-      if (!row) {
-        throw new Error(
-          `buffered tombstone ${ref.deletionId.toString()} is missing`,
-        );
-      }
-      const creator = {
-        account: row.creatorAccount,
-        domain: row.creatorForeigner ? row.creatorDomain : this.localDomain,
-      };
-      let thread: FederationMessageTombstoneItem['thread'];
-      if (row.threadType === 'GROUP') {
-        const group = await tx.query.user.findFirst({
-          where: eq(user.id, row.groupUserId!),
-          columns: { account: true, domain: true },
-        });
-        if (!group) {
-          throw new Error(`group identity missing for thread ${ref.threadId}`);
-        }
-        thread = {
-          type: 'GROUP',
-          account: group.account,
-          domain: group.domain === 'local' ? this.localDomain : group.domain,
-        };
-      } else {
-        const participants = await tx.execute<{
-          account: string;
-          domain: string;
-          isForeigner: boolean;
-        }>(sql`
-          SELECT member.account, member.domain, member."isForeigner"
-          FROM "ThreadParticipant" participant
-          JOIN "User" member ON member.id = participant."userId"
-          WHERE participant."threadId" = ${ref.threadId}
-          ORDER BY member.id
-        `);
-        thread = {
-          type: 'P2P',
-          participants: participants.rows.map((participant) => ({
-            account: participant.account,
-            domain: participant.isForeigner
-              ? participant.domain
-              : this.localDomain,
-          })),
-        };
-      }
-      result.push({
-        feedId: ref.feedId.toString(),
+        .innerJoin(
+          federationMessageDelivery,
+          and(
+            eq(federationMessageDelivery.peerDomain, peerDomain),
+            eq(federationMessageDelivery.messageId, message.id),
+          ),
+        )
+        .where(
+          and(
+            eq(deletedMessage.threadId, threadId),
+            isNull(deletedMessage.federationSourceDomain),
+            gt(deletedMessage.id, after),
+            lte(deletedMessage.id, queryEnd),
+          ),
+        )
+        .orderBy(asc(deletedMessage.id))
+        .limit(take + 1);
+      const selected = rows.slice(0, take);
+      const addresses = await this.threadAddressesInTx(tx, [threadId]);
+      const thread = this.requiredAddress(addresses, threadId);
+      const tombstones = selected.map((row) => ({
+        deletionSeq: row.deletionId.toString(),
         thread,
-        target: { creator, originSeq: row.originSeq ?? row.seq },
+        target: {
+          creator: {
+            account: row.creatorAccount,
+            domain: this.wireDomain(row.creatorDomain),
+          },
+          originSeq: row.originSeq ?? row.messageSeq,
+        },
         type: row.type,
-        deletedAt: row.localDeletedAt.getTime(),
-      });
-    }
-    return result;
-  }
-
-  private retireWhileLocked(peer: PeerTombstoneFeed, through: bigint): void {
-    for (const entry of peer.buffer.retireThrough(through)) {
-      peer.keys.delete(entry.deletionId.toString());
-    }
-    if (peer.state === FederationFeedFillState.FULL) {
-      peer.state = FederationFeedFillState.NEEDS_FILL;
-    }
-  }
-
-  private peer(peerDomain: string): PeerTombstoneFeed {
-    let peer = this.peers.get(peerDomain);
-    if (!peer) {
-      peer = {
-        buffer: new FederationChangeBuffer(FEDERATION_MEMORY_FEED_CAPACITY),
-        keys: new Set(),
-        state: FederationFeedFillState.NEEDS_FILL,
-        initialized: false,
-        resetGeneration: null,
-      };
-      this.peers.set(peerDomain, peer);
-    }
-    return peer;
-  }
-
-  private async refreshGeneration(
-    peerDomain: string,
-    peer: PeerTombstoneFeed,
-  ): Promise<void> {
-    const [current] = await this.database.db
-      .select({ resetGeneration: federatedPeer.resetGeneration })
-      .from(federatedPeer)
-      .where(eq(federatedPeer.domain, peerDomain))
-      .limit(1);
-    if (!current) throw new Error(`peer ${peerDomain} is not recognized`);
-    if (peer.initialized && peer.resetGeneration === current.resetGeneration) {
-      return;
-    }
-    peer.buffer.clear();
-    peer.keys.clear();
-    peer.resetGeneration = current.resetGeneration;
-    const allocations = await this.database.db
-      .select()
-      .from(federationTombstoneFeedAllocation)
-      .where(eq(federationTombstoneFeedAllocation.peerDomain, peerDomain))
-      .orderBy(asc(federationTombstoneFeedAllocation.feedId))
-      .limit(peer.buffer.capacity);
-    for (const allocation of allocations) {
-      const entry: FederationBufferedTombstone = {
-        feedId: allocation.feedId,
-        deletionId: allocation.deletionId,
-        threadId: allocation.threadId,
-        messageSeq: allocation.messageSeq,
-      };
-      if (!peer.buffer.append(entry)) break;
-      peer.keys.add(entry.deletionId.toString());
-    }
-    peer.initialized = true;
-  }
-
-  async readAllocatedThrough(peerDomain: string): Promise<bigint> {
-    const [row] = await this.database.db
-      .select({
-        allocatedThrough: federationTombstoneServeCursor.allocatedThrough,
-      })
-      .from(federationTombstoneServeCursor)
-      .where(eq(federationTombstoneServeCursor.peerDomain, peerDomain))
-      .limit(1);
-    if (!row) throw new Error(`peer ${peerDomain} has no allocator`);
-    return row.allocatedThrough;
-  }
-
-  private async allocateWhileLocked(
-    peerDomain: string,
-    sourceScannedThrough: bigint,
-    candidates: ReadonlyArray<{
-      deletionId: bigint;
-      threadId: number;
-      messageSeq: number;
-    }>,
-  ): Promise<
-    Array<{
-      feedId: bigint;
-      deletionId: bigint;
-      threadId: number;
-      messageSeq: number;
-    }>
-  > {
-    return this.database.db.transaction(async (tx) => {
-      const [allocated] = await tx
-        .update(federationTombstoneServeCursor)
-        .set({
-          allocatedThrough: sql`${federationTombstoneServeCursor.allocatedThrough} + ${candidates.length}`,
-          sourceScannedThrough,
-          updatedAt: new Date(),
-        })
-        .where(eq(federationTombstoneServeCursor.peerDomain, peerDomain))
-        .returning({
-          allocatedThrough: federationTombstoneServeCursor.allocatedThrough,
-        });
-      if (!allocated) throw new Error(`peer ${peerDomain} has no allocator`);
-      const first = allocated.allocatedThrough - BigInt(candidates.length) + 1n;
-      const rows = candidates.map((candidate, index) => ({
-        ...candidate,
-        feedId: first + BigInt(index),
+        deletedAt: row.deletedAt.getTime(),
       }));
-      if (rows.length > 0)
-        await tx.insert(federationTombstoneFeedAllocation).values(
-          rows.map((row) => ({
-            peerDomain,
-            feedId: row.feedId,
-            deletionId: row.deletionId,
-            threadId: row.threadId,
-            messageSeq: row.messageSeq,
-          })),
-        );
-      return rows;
+      const scannedThrough =
+        rows.length > take ? selected.at(-1)!.deletionId : queryEnd;
+      return {
+        tombstones,
+        scannedThrough: scannedThrough.toString(),
+        hasMore: scannedThrough < queryEnd,
+      };
     });
   }
 
-  private pageSize(requested?: number): number {
-    if (requested === undefined) return DEFAULT_PAGE_SIZE;
-    if (!Number.isSafeInteger(requested) || requested < 1) {
+  async readAllocatedThrough(peerDomain: string): Promise<bigint> {
+    return this.database.db.transaction((tx) =>
+      this.readEndInTx(tx, peerDomain),
+    );
+  }
+
+  private async resolveAuthorizedThread(
+    peerDomain: string,
+    selector: FederationThreadQuery,
+  ): Promise<number> {
+    const rows =
+      selector.type === 'GROUP'
+        ? await this.database.db.execute<{ threadId: number }>(sql`
+            SELECT thread.id AS "threadId"
+            FROM "MessageThread" thread
+            JOIN "User" group_user ON group_user.id = thread."groupUserId"
+            WHERE thread.type = 'GROUP' AND group_user.account = ${selector.groupAccount}
+              AND (CASE WHEN group_user.domain = 'local' THEN ${this.localDomain} ELSE group_user.domain END) = ${selector.groupDomain}
+              AND (
+                EXISTS (SELECT 1 FROM "ThreadAudience" audience
+                  WHERE audience."threadId" = thread.id
+                    AND audience."targetDomain" = ${peerDomain}
+                    AND audience."localUserId" IS NULL)
+                OR EXISTS (
+                  SELECT 1 FROM "FederationMessageDelivery" delivery
+                  JOIN "Message" delivered_message ON delivered_message.id = delivery."messageId"
+                  WHERE delivery."peerDomain" = ${peerDomain}
+                    AND delivered_message."threadId" = thread.id
+                )
+              )
+            LIMIT 1
+          `)
+        : await this.database.db.execute<{ threadId: number }>(sql`
+            SELECT thread.id AS "threadId"
+            FROM "MessageThread" thread
+            WHERE thread.type = 'P2P'
+              AND (
+                EXISTS (SELECT 1 FROM "ThreadAudience" audience
+                  WHERE audience."threadId" = thread.id
+                    AND audience."targetDomain" = ${peerDomain}
+                    AND audience."localUserId" IS NULL)
+                OR EXISTS (
+                  SELECT 1 FROM "FederationMessageDelivery" delivery
+                  JOIN "Message" delivered_message ON delivered_message.id = delivery."messageId"
+                  WHERE delivery."peerDomain" = ${peerDomain}
+                    AND delivered_message."threadId" = thread.id
+                )
+              )
+              AND EXISTS (SELECT 1 FROM "ThreadParticipant" p JOIN "User" u ON u.id = p."userId"
+                WHERE p."threadId" = thread.id AND u.account = ${selector.account} AND u."isForeigner" = false)
+              AND EXISTS (SELECT 1 FROM "ThreadParticipant" p JOIN "User" u ON u.id = p."userId"
+                WHERE p."threadId" = thread.id AND u.account = ${selector.peerAccount}
+                  AND u."isForeigner" = true AND u.domain = ${peerDomain})
+            LIMIT 1
+          `);
+    const threadId = rows.rows[0]?.threadId;
+    if (threadId === undefined) {
+      throw new BusinessException(
+        BusinessCode.FORBIDDEN,
+        'the signed peer has neither current access nor a durable message delivery proof for this thread',
+        HttpStatus.OK,
+      );
+    }
+    return threadId;
+  }
+
+  private async threadAddressesInTx(
+    tx: DatabaseTransaction,
+    threadIds: number[],
+  ): Promise<Map<number, FederationThreadAddress>> {
+    if (threadIds.length === 0) return new Map();
+    const rows = await tx.execute<{
+      threadId: number;
+      type: 'P2P' | 'GROUP';
+      groupAccount: string | null;
+      groupDomain: string | null;
+    }>(sql`
+      SELECT thread.id AS "threadId", thread.type,
+             group_user.account AS "groupAccount", group_user.domain AS "groupDomain"
+      FROM "MessageThread" thread
+      LEFT JOIN "User" group_user ON group_user.id = thread."groupUserId"
+      WHERE thread.id IN (${sql.join(
+        threadIds.map((id) => sql`${id}`),
+        sql`, `,
+      )})
+    `);
+    const participants = await tx
+      .select({
+        threadId: threadParticipant.threadId,
+        account: user.account,
+        domain: user.domain,
+      })
+      .from(threadParticipant)
+      .innerJoin(user, eq(user.id, threadParticipant.userId))
+      .where(inArray(threadParticipant.threadId, threadIds));
+    return new Map(
+      rows.rows.map((row) => [
+        row.threadId,
+        row.type === 'GROUP'
+          ? {
+              type: 'GROUP' as const,
+              account: row.groupAccount!,
+              domain: this.wireDomain(row.groupDomain!),
+            }
+          : {
+              type: 'P2P' as const,
+              participants: participants
+                .filter((member) => member.threadId === row.threadId)
+                .map((member) => ({
+                  account: member.account,
+                  domain: this.wireDomain(member.domain),
+                }))
+                .sort(
+                  (a, b) =>
+                    a.domain.localeCompare(b.domain) ||
+                    a.account.localeCompare(b.account),
+                ),
+            },
+      ]),
+    );
+  }
+
+  private requiredAddress(
+    addresses: Map<number, FederationThreadAddress>,
+    threadId: number,
+  ): FederationThreadAddress {
+    const address = addresses.get(threadId);
+    if (!address) throw new Error(`thread ${threadId} has no wire address`);
+    return address;
+  }
+
+  private async requireTarget(peerDomain: string): Promise<void> {
+    const [row] = await this.database.db
+      .select({ peerDomain: federationTombstoneServeCursor.peerDomain })
+      .from(federationTombstoneServeCursor)
+      .where(eq(federationTombstoneServeCursor.peerDomain, peerDomain))
+      .limit(1);
+    if (!row)
+      throw new Error(`peer ${peerDomain} has no tombstone feed target`);
+  }
+
+  private async readEndInTx(
+    tx: DatabaseTransaction,
+    peerDomain: string,
+  ): Promise<bigint> {
+    const [row] = await tx
+      .select({ end: federationTombstoneServeCursor.allocatedThrough })
+      .from(federationTombstoneServeCursor)
+      .where(eq(federationTombstoneServeCursor.peerDomain, peerDomain))
+      .limit(1);
+    if (!row)
+      throw new Error(`peer ${peerDomain} has no tombstone feed target`);
+    return row.end;
+  }
+
+  private pageSize(value?: number): number {
+    if (value === undefined) return DEFAULT_PAGE_SIZE;
+    if (!Number.isSafeInteger(value) || value < 1 || value > MAX_PAGE_SIZE) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'take must be a positive safe integer',
+        'take must be a positive safe integer no greater than 200',
         HttpStatus.BAD_REQUEST,
       );
     }
-    return Math.min(requested, MAX_PAGE_SIZE);
+    return value;
+  }
+
+  private invalidThrough(): never {
+    throw new BusinessException(
+      BusinessCode.FEDERATION_MALFORMED,
+      'through must be greater than or equal to after',
+      HttpStatus.BAD_REQUEST,
+    );
+  }
+
+  private wireDomain(domain: string): string {
+    return domain === 'local' ? this.localDomain : domain;
   }
 }

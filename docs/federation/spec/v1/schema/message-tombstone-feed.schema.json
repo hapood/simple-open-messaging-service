@@ -3,79 +3,33 @@
   "$id": "urn:soms:federation:v1:message-tombstone-feed",
   "title": "GET /s2s/v1/message-tombstone-feed response data",
   "$defs": {
-    "thread": {
-      "oneOf": [
-        {
-          "type": "object",
-          "required": ["type", "account", "domain"],
-          "properties": {
-            "type": { "const": "GROUP" },
-            "account": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/groupAccount"
-            },
-            "domain": { "$ref": "urn:soms:federation:v1:common#/$defs/domain" }
-          },
-          "additionalProperties": false
-        },
-        {
-          "type": "object",
-          "required": ["type", "participants"],
-          "properties": {
-            "type": { "const": "P2P" },
-            "participants": {
-              "type": "array",
-              "minItems": 2,
-              "maxItems": 2,
-              "uniqueItems": true,
-              "items": {
-                "$ref": "urn:soms:federation:v1:common#/$defs/address"
-              }
-            }
-          },
-          "additionalProperties": false
-        }
-      ]
-    },
+    "thread": { "$ref": "urn:soms:federation:v1:message-feed#/$defs/thread" },
     "item": {
       "type": "object",
-      "required": ["feedId", "thread", "target", "type", "deletedAt"],
+      "required": ["feedId", "thread", "tombstoneEndSeq"],
       "properties": {
         "feedId": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/signedDecimalString"
+          "$ref": "urn:soms:federation:v1:common#/$defs/positiveDecimalString"
         },
         "thread": { "$ref": "#/$defs/thread" },
-        "target": {
-          "type": "object",
-          "required": ["creator", "originSeq"],
-          "properties": {
-            "creator": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/address"
-            },
-            "originSeq": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
-            }
-          },
-          "additionalProperties": false
-        },
-        "type": { "enum": ["WITHDRAW", "REPORT"] },
-        "deletedAt": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+        "tombstoneEndSeq": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
         }
       },
       "additionalProperties": false
     }
   },
   "type": "object",
-  "required": ["tombstones", "scannedThrough", "hasMore"],
+  "required": ["items", "scannedThrough", "tombstoneFeedEndId", "hasMore"],
   "properties": {
-    "tombstones": { "type": "array", "items": { "$ref": "#/$defs/item" } },
+    "items": { "type": "array", "items": { "$ref": "#/$defs/item" } },
     "scannedThrough": {
-      "$ref": "urn:soms:federation:v1:common#/$defs/signedDecimalString"
+      "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
     },
-    "hasMore": { "type": "boolean" },
-    "retryAfterMs": {
-      "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
-    }
+    "tombstoneFeedEndId": {
+      "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+    },
+    "hasMore": { "type": "boolean" }
   },
   "additionalProperties": false
 }

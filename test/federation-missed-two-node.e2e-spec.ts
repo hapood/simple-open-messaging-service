@@ -85,7 +85,7 @@ describe('federation durable missed transport (two nodes)', () => {
         expect(stub).toBeDefined();
         return stub;
       },
-      { timeout: 10_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
     aliceStubIdB = aliceStub!.id;
     const replied = await request(appB.baseUrl)
@@ -112,7 +112,7 @@ describe('federation durable missed transport (two nodes)', () => {
         );
         expect(activeOnA).toBeDefined();
       },
-      { timeout: 10_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
   }, 120_000);
 
@@ -169,7 +169,7 @@ describe('federation durable missed transport (two nodes)', () => {
           expect(source?.allocatedThrough).toBeGreaterThan(0n);
           expect(pulled?.committedThrough).toBe(source?.allocatedThrough);
         },
-        { timeout: 10_000 },
+        { timeout: 5000 },
       );
 
       await waitForSseEvent(
@@ -279,7 +279,7 @@ describe('federation durable missed transport (two nodes)', () => {
         ).toBe(true);
         expect(signedGets.some((entry) => entry.status === 401)).toBe(false);
       },
-      { timeout: 10_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
 
     let batchId = '';
@@ -300,7 +300,7 @@ describe('federation durable missed transport (two nodes)', () => {
         expect(progress?.status).toBe('DOWNLOADING');
         expect(proxy.blockedGetFileCount()).toBeGreaterThan(0);
       },
-      { timeout: 20_000 },
+      { timeout: 5000 },
     );
 
     await appB.stop();
@@ -314,7 +314,7 @@ describe('federation durable missed transport (two nodes)', () => {
     await appB.start();
     await vi.waitFor(
       () => expect(proxy.blockedGetFileCount()).toBeGreaterThan(0),
-      { timeout: 10_000 },
+      { timeout: 5000 },
     );
 
     const reader = await openSse(appB.baseUrl, tokenB);
@@ -352,7 +352,7 @@ describe('federation durable missed transport (two nodes)', () => {
             }),
           ).toBeUndefined();
         },
-        { timeout: 10_000 },
+        { timeout: 5000 },
       );
       await waitForSseEvent(
         reader,
@@ -462,7 +462,7 @@ describe('federation durable missed transport (two nodes)', () => {
           }),
         ).toBeUndefined();
       },
-      { timeout: 15_000 },
+      { timeout: 5000 },
     );
 
     const reader = await openSse(appB.baseUrl, tokenB);
@@ -507,7 +507,7 @@ describe('federation durable missed transport (two nodes)', () => {
             }),
           ).toBeUndefined();
         },
-        { timeout: 15_000 },
+        { timeout: 5000 },
       );
       await waitForSseEvent(
         reader,

@@ -296,12 +296,10 @@ export class GroupService {
         .returning({ id: threadParticipant.id });
       if (ended.length > 0) {
         await tx.execute(sql`
-          UPDATE "ThreadAudience" audience
-          SET "deliverThroughChangeId" = 0
+          DELETE FROM "ThreadAudience" audience
           WHERE audience."targetDomain" = 'local'
             AND audience."localUserId" = ${params.userId}
             AND audience."threadId" = ${params.threadId}
-            AND audience."deliverThroughChangeId" IS NULL
         `);
       }
       if (shouldDelete) {

@@ -343,6 +343,7 @@ export class DiscoveryService {
 
   private createDispatcher(domain: string, connectHost: string): Agent {
     return new Agent({
+      connectTimeout: this.config.connectTimeoutSec * 1000,
       connect: {
         servername: domain,
         lookup: (_hostname, options, callback) => {

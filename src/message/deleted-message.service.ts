@@ -1,5 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { and, asc, desc, eq, gt, max, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, max, sql } from 'drizzle-orm';
 import {
   DatabaseService,
   type DatabaseTransaction,
@@ -17,7 +17,6 @@ import {
 } from '../database/schema.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import { derivePreview } from './message.service.js';
 
 @Injectable()
 export class DeletedMessageService {
@@ -136,24 +135,6 @@ export class DeletedMessageService {
       if (deletionId === undefined)
         throw new Error('deleted message log was not persisted');
 
-      const replacement = await tx.query.message.findFirst({
-        where: and(
-          eq(message.threadId, threadId),
-          eq(message.isDeleted, false),
-        ),
-        orderBy: [desc(message.createdAt), desc(message.id)],
-      });
-      await tx
-        .update(messageThread)
-        .set({
-          lastMessageSeq: replacement?.seq ?? null,
-          lastMessagePreview: replacement
-            ? derivePreview(replacement.contentType, replacement.content)
-            : null,
-          lastMessageAt: replacement?.createdAt ?? null,
-          updatedAt: now,
-        })
-        .where(eq(messageThread.id, threadId));
       return { id: deletionId.toString(), threadId, seq };
     });
   }
@@ -209,26 +190,6 @@ export class DeletedMessageService {
     if (deletionId === undefined)
       throw new Error('deleted message log was not persisted');
 
-    if (!target.isDeleted) {
-      const replacement = await tx.query.message.findFirst({
-        where: and(
-          eq(message.threadId, threadId),
-          eq(message.isDeleted, false),
-        ),
-        orderBy: [desc(message.createdAt), desc(message.id)],
-      });
-      await tx
-        .update(messageThread)
-        .set({
-          lastMessageSeq: replacement?.seq ?? null,
-          lastMessagePreview: replacement
-            ? derivePreview(replacement.contentType, replacement.content)
-            : null,
-          lastMessageAt: replacement?.createdAt ?? null,
-          updatedAt: now,
-        })
-        .where(eq(messageThread.id, threadId));
-    }
     return deletionId.toString();
   }
 
@@ -438,26 +399,6 @@ export class DeletedMessageService {
             eq(federatedMessageTombstone.originSeq, params.originSeq),
           ),
         );
-      if (!target.isDeleted) {
-        const replacement = await tx.query.message.findFirst({
-          where: and(
-            eq(message.threadId, params.threadId),
-            eq(message.isDeleted, false),
-          ),
-          orderBy: [desc(message.createdAt), desc(message.id)],
-        });
-        await tx
-          .update(messageThread)
-          .set({
-            lastMessageSeq: replacement?.seq ?? null,
-            lastMessagePreview: replacement
-              ? derivePreview(replacement.contentType, replacement.content)
-              : null,
-            lastMessageAt: replacement?.createdAt ?? null,
-            updatedAt: now,
-          })
-          .where(eq(messageThread.id, params.threadId));
-      }
     }
 
     // Download-inbox (§12.8): if the deleted message is still staged, terminate its logical download

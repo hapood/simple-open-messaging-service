@@ -145,14 +145,14 @@ describe('First message after friend-add is delivered (single instance)', () => 
       // 4. The fan-out wrote a NEW_MESSAGE signal to Bob's stream. The frame is identity-only
       //    { threadId, seq, ts } — the rendered body is never carried on the wire (single data source:
       //    the client pulls it). Assert the signal targets this thread.
-      const delivered = await waitForSseEvent(
+      const delivered = (await waitForSseEvent(
         reader,
         (event, data) =>
           event === 'NEW_MESSAGE' &&
           typeof data === 'object' &&
           data !== null &&
           (data as { threadId?: number }).threadId === threadId,
-      ) as { seq: number };
+      )) as { seq: number };
       expect(delivered).toBeDefined();
 
       // 5. The row is committed and the SSE cursor identifies that exact row. The number of preceding
@@ -185,13 +185,10 @@ describe('First message after friend-add is delivered (single instance)', () => 
         expect(res.body.code).toBe(0);
       });
     const revokedAudiences = await database.db
-      .select({ deliverThrough: threadAudience.deliverThroughChangeId })
+      .select({ id: threadAudience.id })
       .from(threadAudience)
       .where(eq(threadAudience.threadId, threadId));
-    expect(revokedAudiences).toHaveLength(2);
-    expect(revokedAudiences.every((row) => row.deliverThrough === 0n)).toBe(
-      true,
-    );
+    expect(revokedAudiences).toHaveLength(0);
   });
 
   it('creates one local-user audience and one peer-domain audience for a federated friendship', async () => {
@@ -293,8 +290,9 @@ describe('First message after friend-add is delivered (single instance)', () => 
       }),
     );
 
-    const beforeConfirmation =
-      await database.db.query.friendPair.findFirst({ where: pairWhere });
+    const beforeConfirmation = await database.db.query.friendPair.findFirst({
+      where: pairWhere,
+    });
     expect(beforeConfirmation?.active).toBe(false);
     expect(beforeConfirmation?.threadId).toBeNull();
 
@@ -311,8 +309,9 @@ describe('First message after friend-add is delivered (single instance)', () => 
       }),
     );
 
-    const afterConfirmation =
-      await database.db.query.friendPair.findFirst({ where: pairWhere });
+    const afterConfirmation = await database.db.query.friendPair.findFirst({
+      where: pairWhere,
+    });
     expect(afterConfirmation?.active).toBe(true);
     expect(afterConfirmation?.threadId).not.toBeNull();
   });

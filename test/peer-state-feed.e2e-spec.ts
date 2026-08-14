@@ -135,12 +135,13 @@ describe('per-peer state feed', () => {
     expect(b.items[0].body).toMatchObject({ name: 'private-to-b' });
   });
 
-  it('rejects a cursor rollback after the peer acknowledges a later page', async () => {
-    await feed.serve(DOMAINS[0], 4n);
-    await expect(feed.serve(DOMAINS[0], 0n)).rejects.toMatchObject({
-      bizCode: expect.anything(),
-      status: 200,
-    });
+  it('serves an older after without maintaining a source-side peer cursor', async () => {
+    const later = await feed.serve(DOMAINS[0], 4n);
+    const replay = await feed.serve(DOMAINS[0], 0n);
+    expect(BigInt(replay.scannedThrough)).toBeGreaterThanOrEqual(
+      BigInt(later.scannedThrough),
+    );
+    expect(replay.items.length).toBeGreaterThan(0);
   });
 
   it('rolls allocation and item back atomically', async () => {

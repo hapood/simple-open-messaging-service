@@ -15,9 +15,9 @@ wire 字段、枚举、HTTP header、标准名和稳定错误码（stable code�
 1. [主协议](./protocol.md)：角色、版本、HTTP 接口面（HTTP surface）、共享类型、响应、持久状态和演进规则。
 2. [传输与安全](./transport-security.md)：well-known、根密钥/签名密钥（root/signing key）、SRV、TLS、逻辑权威（authority）、摘要（digest）和 HTTP Message Signature。
 3. [服务器认可](./recognition.md)：双向 Recognize、根公钥固定（root public key pinning）、Healthy 可用性查询、降级状态、时序和失败处理。
-4. [状态源（State Feed）](./state-feed.md)：可靠有界分页、六种状态事件、资料最小披露与字段级合并语义。
-5. [消息源（Message Feed）](./message-feed.md)：完整分页与 10 种联邦消息类型。
-6. [消息墓碑源（Message Tombstone Feed）](./message-tombstone-feed.md)：撤回、治理删除、权威、持久游标与竞态收敛。
+4. [状态源（State Feed）](./state-feed.md)：快照型压缩 feed、六种状态、member 引用顺序和 projection omission。
+5. [消息源与查询（Message Feed and Query）](./message-feed.md)：索引型压缩 feed 与 thread 正文查询。
+6. [消息墓碑源与查询（Message Tombstone Feed and Query）](./message-tombstone-feed.md)：墓碑索引、永久删除事实和竞态收敛。
 7. [资源接口](./resources.md)：用户资料、媒体 bytes 与转发 closure 的参数、响应、授权和错误契约。
 8. [语音与视频通话](./calls.md)：WebRTC 标准栈、S2S 帧（frame）、状态机与 AUDIO→VIDEO 升级。
 9. [错误码注册表](./errors.md)：稳定错误码、HTTP 状态（status）、重试与身份动作（identity action）。

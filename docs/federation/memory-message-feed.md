@@ -1,5 +1,9 @@
 # Bounded in-memory message feed
 
+> Superseded design note. Federation v1 now specifies a durable compacted `(peer, thread)` index without
+> source-side ACK/cursor validation. This document describes the pre-query implementation and must not be
+> used as the target contract; see [Message Feed and Query](./spec/v1/message-feed.md).
+
 The S2S message feed uses a bounded process-local delivery index. The old `DiscoveryChange` and
 `DiscoveryTarget` tables are removed completely. Local clients already recover from thread revisions and
 per-thread message seq, while federation keeps its allocation upper bound directly on `FederationServeCursor.allocatedThrough`.

@@ -3,27 +3,31 @@
 状态：`REVIEW`
 规范性：本文全部为规范性要求，除非段落明确标记为“非规范性实现说明”。
 
-本文定义 `GET /s2s/v1/state-feed` 的请求、可靠分页、状态事件、合并与授权语义。通用身份、
-签名、响应和错误规则见 [主协议](./protocol.md)。State feed 承载必须最终收敛的元数据；它不得
-采用 message feed 的过期或截断规则，三个 feed 都禁止 consumer fast-forward。
+本文定义状态快照型压缩 feed `GET /s2s/v1/state-feed`。它与两个索引型 feed 共享
+`feedId/after/through/take` 扫描模型，但 item 直接携带可幂等合并的当前业务快照，不需要再调用
+query 获取内容。通用身份、签名、响应和错误规则见 [主协议](./protocol.md)。
 
 ## 1. 请求
 
 请求 query 是 closed 参数集合：
 
-| 字段      | 类型                               | 要求                                                                                           |
-| --------- | ---------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `after`   | `SignedDecimalString` query string | 可选；consumer 已原子提交的 exclusive cursor；省略时只返回 `resumeAfter`，不返回 page。        |
-| `take`    | `PositiveSafeInteger` query string | 可选；consumer 建议的本页扫描数。publisher SHOULD 参考，但 MAY 按负载、item 大小和公平性调整。 |
-| `through` | `SignedDecimalString` query string | 可选；本轮扫描的 inclusive 上界，MUST 大于或等于 `after`。连续有界分页 MUST 保持同一个值。     |
+| 字段      | 类型                               | 要求                                                                                       |
+| --------- | ---------------------------------- | ------------------------------------------------------------------------------------------ |
+| `after`   | `DecimalString` query string       | 可选；consumer 的 exclusive 扫描位置；省略时只返回 `resumeAfter`，不返回 page。            |
+| `take`    | `PositiveSafeInteger` query string | 可选；consumer 建议的本页最大 item 数。publisher MAY 返回更少，但不得返回更多。            |
+| `through` | `DecimalString` query string       | 可选；本轮扫描的 inclusive 上界，MUST 大于或等于 `after`。连续有界分页 MUST 保持同一个值。 |
 
-`take` 不是返回 item 数或响应 bytes 的安全承诺。publisher MUST 设置公开、确定的 item 和 page
-上限；请求值不受支持时返回 `FEDERATION_MALFORMED`，单个合法状态快照超过 operation 上限时返回
+`take` 不保证 page 一定包含该数量，也不是响应 bytes 的安全承诺。publisher MUST 同时执行公开、确定的
+item 和 page-byte 上限，并取其中更严格者；请求值不受支持时返回 `FEDERATION_MALFORMED`，单个合法状态快照超过 operation 上限时返回
 `FEDERATION_PAYLOAD_TOO_LARGE`。`through` 只冻结读取窗口，不确认、删除或降级任何状态。
 
 省略 `after` 时不得携带 `take` 或 `through`。source MUST 返回 HTTP `200`
 `FEDERATION_FEED_CURSOR_UNAVAILABLE`，data 只含当前可用 exclusive cursor `resumeAfter`。consumer 原子
-保存后以 `after=resumeAfter` 开始正常读取；不得猜测初始 ID。协议不规定 state feed 的初始 ID 或连续性。
+保存后以 `after=resumeAfter` 开始正常读取；不得猜测初始 ID。该起点由 publisher 定义；
+SOMS 新建的 per-peer state feed 使用 `"0"`。feed item ID MUST 为正整数，cursor/end MUST 为非负整数；
+`0` 是第一个 item 之前的 exclusive cursor，不是 item ID。
+从 `resumeAfter` 开始排空 MUST 能重建当前完整 state projection；若当前存在 item，publisher 不得把
+`stateFeedEndId` 直接当作 bootstrap 起点而跳过它们。
 
 ## 2. Page 与可靠 cursor
 
@@ -38,7 +42,7 @@ interface StateFeedPage {
 }
 ```
 
-publisher 在请求事务开始时冻结 source allocation upper bound `stateFeedEndId`，并计算：
+publisher 在一个一致 source snapshot 上读取 `stateFeedEndId`，并计算：
 
 ```text
 scanEnd = through is present ? min(stateFeedEndId, through) : stateFeedEndId
@@ -58,32 +62,16 @@ consumer MUST 完整验证 page，并在同一事务中提交全部副作用与 
 identity/binding 不一致或授权失败时，整个 page 与 cursor MUST 回滚。`hasMore: true` 时下一页 MUST
 使用本页 `scannedThrough`；有界排空还 MUST 复用原 `through`。
 
-### 2.1 Source 确认与防 fast-forward
+### 2.1 无 Source ACK 的压缩投影
 
-publisher MUST 为每个 peer 持久保存 state feed 已确认位置和最后一次已服务位置。设二者分别为
-`acknowledgedThrough` 和 `lastServedThrough`，则只接受：
+publisher 不为 consumer 维护 `acknowledgedThrough`、`lastServedThrough` 或其他验证游标。任意位于
+`[0, stateFeedEndId]` 的 `after` 都可读，包括重复和较旧位置。publisher 不得把 `after` 当作 ACK，也不得
+因 consumer 读取而删除当前投影。
 
-- `after === acknowledgedThrough`：首次读取，或重放尚未确认的 page；
-- `after === lastServedThrough`：确认上一 page 并继续读取。
-
-采用 bootstrap `resumeAfter` 后的首次请求也合法；当两个确认值相等时两种情况等价。其他 `after` MUST
-返回 `FEDERATION_FEED_CURSOR_MISMATCH`，不得把请求值当成确认，不得推进、删除或跳过任何状态。重放尚未
-确认 page 时，publisher MUST 再次返回相同的 `scannedThrough` 以及语义相同的截至该边界的 stable-key
-投影；后续 revision 不得越过冻结边界替代重放内容。
-
-publisher MUST 可靠保存每个 stable key 的最新快照以及尚未确认的删除/撤销终态。state feed 不存在
-retained floor 自动前跳；不得因容量、时间、重启或本地修复静默丢弃 peer 尚未确认且仍为最新的状态。
-publisher 分配的新 `feedId` MUST 大于该 peer 历史上分配的所有 `feedId`，且不得复用。
-
-当 publisher 已经对外形成包含 state 上界 `S` 的 drain barrier 时，在该 barrier 被确认前，任一
-`state-feed?through=S` 排空都 MUST 能重建截至 `S` 的有效 stable-key 投影。某 key 后来被 `feedId>S` 的版本
-覆盖，不得导致它在 `S` 所需的最后版本消失。publisher 可以保留版本行、冻结 page 或使用其他等价机制；
-只原地覆盖唯一快照而不保留 barrier-visible 版本不满足本要求。已经被更高且仍不超过 `S` 的 revision
-覆盖的中间版本可以 compact。
-
-consumer 收到 cursor mismatch 时 MUST 保留本地 cursor：若它等于响应中的已确认位置或最后服务位置，
-可以用该值恢复；否则 MUST 停止自动同步并进入管理员恢复流程，不得自行采用 source allocation upper bound。普通 peer
-identity reset、重新建联和 cursor 丢失的恢复不属于本 operation。
+publisher MUST 持久保存每个当前 stable key 的最新快照。更高业务 revision 覆盖旧版本时，必须分配
+比该 feed 历史所有 ID 都大的新 `feedId`；不得复用旧 ID 或在 consumer 已可能越过的 ID 上原地
+改写。旧版本可以立即 compact。省略 `after` 或者 `after > stateFeedEndId` 时可返回有效
+`resumeAfter`；压缩本身不得导致 cursor unavailable。
 
 ## 3. 通用 Item 与身份
 
@@ -114,9 +102,10 @@ interface StateFeedItem {
 (domain, account, eventType, subjectDomain, subjectAccount)
 ```
 
-`revision` 是该 stable key 的业务版本。publisher 只在 `revision` 严格增加时分配新 `feedId`；相同或更旧
-revision 是完整 no-op。consumer 按 stable key 与 `revision` 幂等合并，不得用 `feedId` 代替业务
+`revision` 是该 stable key 的业务版本。业务内容只能在 `revision` 严格增加时变化；相同或更旧
+revision 不得改写 body。consumer 按 stable key 与 `revision` 幂等合并，不得用 `feedId` 代替业务
 revision。consumer 已保存相同 revision 但收到语义不同 body 时 MUST 拒绝 page，并记录协议冲突。
+除第 6 节的 member-before-group dependency repair 外，相同 revision/body 不分配新 `feedId`。
 
 `PROFILE`、`MEMBER_PROFILE`、`GROUP_META` 的 subject 两字段 MUST 都是 `""`。三个 intent 的 subject
 两字段 MUST 构成完整非空 `Address`。事件绑定如下：
@@ -176,32 +165,33 @@ interface ProfileBody {
 特定群。实际 roster 只能由 `GROUP_META.members` 表达。
 
 ```ts
-type MemberProfileBody =
-  | {
-      availability: 'AVAILABLE';
-      displayName: string;
-      avatar: ProfileAvatar | null;
-    }
-  | {
-      availability: 'REMOVED';
-    };
+interface MemberProfileBody {
+  displayName: string;
+  avatar: ProfileAvatar | null;
+}
 ```
 
 publisher MUST 为每个 `(target peer, member Address)` 维护完整的当前可见性来源集合：
 
-- 第一个来源出现时发布 `AVAILABLE`；
-- 仍有至少一个来源时，新增或删除其他来源不得发布 `REMOVED`；
-- 最后一个来源消失时发布 `REMOVED`；
-- 人员资料 revision 增加时，只向仍有来源的 peer 发布新的 `AVAILABLE`；
-- `REMOVED` 必须作为可靠 tombstone 保留到目标 peer 确认，不能依赖 GC 表达撤销。
+- 第一个来源出现时发布完整 `MEMBER_PROFILE`；
+- 仍有至少一个来源时，新增或删其他来源不得移除快照；
+- 人员资料 revision 增加时，只向仍有来源的 peer 发布新快照；
+- 最后一个来源消失时，publisher 直接从当前 state-feed projection 删除该 stable key，
+  不分配 `REMOVED` item，也不保留可见 tombstone。
 
 来源集合是权威事实；来源数量只能从集合衍生，不得作为另一份独立权威。具体表、引用计数缓存或 GC
 实现不属于协议要求。
 
 consumer MUST 按 `(signer domain, member Address)` 隔离保存快照。由不同 signer 发布的同一人员可以分叉，
-不得按人员 Address 或 profile revision 跨 signer 合并。展示某个 origin-owned 群时，consumer MUST 使用该
-origin 发布的 source-scoped `MEMBER_PROFILE`；快照不存在或已 `REMOVED` 时可以回退显示规范化 Address，
-但不得向其他 publisher 的快照取值。历史消息的 author Address 必须保留；删除展示快照不得删除消息。
+不得按人员 Address 或 profile revision 跨 signer 合并。一次可清理的完整排空必须固定 state drain target：
+target 可以来自 feed-head hint，或本轮第一个未携带 `through` 的成功 page 所返回的 `stateFeedEndId`；后一种
+情况下该首 page 计入本轮，后续 page 必须固定使用 `through=target`。只有达到
+`hasMore: false && scannedThrough === target`，且所有 page 的状态副作用和最终 cursor 都已提交，才可针对
+该 signer 做一次 source-scoped mark-and-sweep。sweep 必须使用此时本地最新
+已提交的 P2P 关系和 `GROUP_META` replacement roster：同时不再是本域成员好友、也不再与本域成员共享任一群
+的 member 快照应被删除。不得在单个 page 之间、失败 page 后或尚未达到固定 target 时清理。历史消息的
+author Address 必须保留；删除展示快照不得删除消息。排空期间被重新索引到更大 feed ID 的状态由后续 hint
+或周期 reconciliation 处理；仍被本地已提交关系或 roster 引用的 member 不会在本轮被 sweep。
 
 ## 5. 统一方向意图
 
@@ -217,9 +207,7 @@ interface IntentBody {
   expiresAt: EpochMilliseconds | null;
 }
 
-interface P2PIntentBody extends IntentBody {
-  messageFeedEndId?: SignedDecimalString;
-}
+type P2PIntentBody = IntentBody;
 ```
 
 - `REQUESTED` 表示本方向当前有效地请求或同意建立关系；`requestedAt` MUST 非空。
@@ -240,23 +228,8 @@ P2P 关系只有双方最新方向都为 `ACCEPTED` 时成立。收到对方有�
 发布 `REVOKED` 后关系立即失效，并停止该已关闭 audience 的未来 P2P message allocation；另一方向不会
 因此被伪造成该方 author 的状态。
 
-`P2P_INTENT(REVOKED)` MUST 携带 `messageFeedEndId`，其他状态 MUST 省略。该字段与
-`feed-heads.messageFeedEndId` 使用完全相同的 per-peer message-feed ID 空间：它是在关闭
-该方向 audience 的原子提交中，已经向目标 peer 分配并可见的整个 message feed 上界，使用
-`SignedDecimalString` 编码且为 inclusive。它不是 thread `seq`、该 P2P thread 最后一条消息的 ID 或整个
-feed 的永久终点；该位置可以属于其他 thread 或空洞，但不属于独立的 tombstone feed。
-
-包含关系必须按数值判断：属于该次已关闭关系且 `feedId <= messageFeedEndId` 的既有 allocation 位于历史
-边界内；`feedId > messageFeedEndId` 的 allocation 不能由该次已关闭关系授权。等于上界的 ID 被包含，但
-不表示该 ID 一定存在或一定属于这个 P2P thread。
-
-关闭 audience 与取得 `messageFeedEndId` 必须处于同一串行化边界。提交后，publisher 不得再以该次已关闭
-关系为依据分配更大 feed ID 的 message。解除前尚未进入目标 peer 可见 feed 的积压消息不要求为了扩大
-该边界而强制分配。以后更高 revision 的 `ACCEPTED` 可以重新开放 audience，并授权新的、更大 feed ID。
-
-consumer 即使未观察到已被压缩的中间 `ACCEPTED`，也可以用该边界为 publisher 方向建立只读历史上下文，
-但不得恢复当前好友关系或发送权限。consumer 仍可依据自己的方向状态和本地安全策略拒绝、隔离或丢弃
-单条消息；该决定不得阻塞同页其他消息或 durable feed cursor。
+`P2P_INTENT` 不携带 message-feed cursor 或历史授权边界。好友关系关闭或重新建立后，message query
+由 source 根据 durable 状态和本地策略即时判断可读范围；不得把 per-peer feed ID 解释为 thread 消息权限。
 
 ### 5.2 群邀请与申请
 
@@ -306,20 +279,27 @@ publisher MUST 在同一原子提交中形成目标 peer 的权威 `GROUP_META` 
 关闭事实。依赖新 audience 的 message-feed allocation 只能在该提交成功后发生。consumer MUST 先提交
 state-feed，再处理随后拉取的数据 feed。
 
-`active: false` 撤销未来 allocation，但不得使已经在有效 audience 期间合法分配给该 peer 的消息失效。
-publisher 必须持久保存足以在重启、重复拉取及 audience 关闭后重建这些合法 allocation 的授权事实，
-不得只根据当前 roster 判断已经分配的消息是否仍可交付。具体锁、内部 thread seq 和存储结构
-不属于协议要求。
+对 `GROUP_META.members` 中每个新增 member，publisher MUST 在分配该 `GROUP_META` feed ID 前，保证
+目标 peer 的当前 state-feed projection 已存在对应 `MEMBER_PROFILE`，且其 `feedId` 更小。若后续
+member profile 更新使它的新 `feedId` 超过仍引用该 member 的 `GROUP_META`，publisher MUST 重新索引
+相关 `GROUP_META`，使当前压缩投影仍保持 member-before-group 顺序。这种 dependency-repair allocation
+MAY 在 body 和业务 revision 不变时只分配新 `feedId`；consumer 对相同 revision/body 幂等 no-op。
+一个一致 page snapshot 不得同时返回仍引用 member 的 group 快照和不可解析的 member 投影。
+
+`active: false` 撤销未来 allocation，并使 message query 的当前访问结果为 `FORBIDDEN`，但不删除此前在
+有效 audience 期间形成的历史 allocation proof，也不重置 query 坐标。同一 account 的 audience 重新有效
+后，只恢复读取这些历史 proof 与重新有效后的新 allocation；无有效 audience 期间的消息不回填。
+publisher 必须持久保存足以在重启、重复拉取、audience 关闭和重新打开后重建该结果的事实，不得只根据
+当前 roster 推断历史可见范围。具体锁、内部 thread seq 和存储结构不属于协议要求。
 
 ## 7. 应用、恢复与安全
 
 consumer MUST 先按 wire `feedId` 验证 page、身份、binding 和每个 stable key revision。全页验证成功后，
-可以为满足外键依赖按 `GROUP_META → PROFILE/MEMBER_PROFILE → intent` 的顺序物化本地投影；重排不得改变
-授权结果或把较旧 revision 覆盖到较新 revision。
+按 feed 顺序先物化 `PROFILE/MEMBER_PROFILE`，再物化引用它们的 `GROUP_META` 和 intent。相同或较旧业务
+revision 不得覆盖新快照；dependency-repair 产生的相同 revision/body 是 no-op，但其 feed cursor 仍正常推进。
 
-`MEMBER_PROFILE` 的授权在 publisher 分配时由其当前可见性来源决定。consumer 不得因同页或更高 revision
-的 `GROUP_META` 已移除该 member 而拒绝先前合法分配的 `AVAILABLE`；最终 `REMOVED` 通过自身 stable key
-收敛。malformed、signer binding 错误或跨 signer 合并仍必须使整页失败。
+`MEMBER_PROFILE` 的可见性在 publisher 生成投影时由当前来源集决定。consumer 只在完整排空后做引用闭包
+清理，不把 feed 投影 omission 解释为删除事件。malformed、signer binding 错误或跨 signer 合并必须使整页失败。
 
 feed-head hint 不携带任何业务 body，也不能代替 state-feed。重启、提示丢失、重复 page、乱序 hint、
 compacted 中间 revision 缺失和 page 重排，都必须通过 stable key 最新快照得到同一最终投影。

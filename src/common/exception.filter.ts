@@ -58,7 +58,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const { httpStatus, code, message } = this.map(exception);
 
     // A BusinessException may carry a structured `data` payload (e.g. a quota hit's
-    // {category, limit, retryAfter}); surface it on the envelope. All other exceptions → data:null.
+    // {retryAfter}); surface it on the envelope. All other exceptions → data:null.
     const data =
       exception instanceof BusinessException
         ? ((exception.getResponse() as { data?: unknown }).data ?? null)

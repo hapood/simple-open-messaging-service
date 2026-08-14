@@ -130,8 +130,30 @@ function semanticValid(schema: string, value: unknown): boolean {
   if (schema === 'urn:soms:federation:v1:message-feed') {
     const page = value as {
       scannedThrough?: string;
-      messages?: Array<{
+      messageFeedEndId?: string;
+      items?: Array<{
         feedId: string;
+        messageEndSeq: string;
+      }>;
+    };
+    if (
+      page.scannedThrough === undefined ||
+      page.messageFeedEndId === undefined
+    )
+      return false;
+    let previous: bigint | undefined;
+    return (page.items ?? []).every((item) => {
+      const feedId = BigInt(item.feedId);
+      const ordered = previous === undefined || feedId > previous;
+      previous = feedId;
+      return ordered && feedId <= BigInt(page.scannedThrough!);
+    });
+  }
+  if (schema === 'urn:soms:federation:v1:message-query') {
+    const page = value as {
+      scannedThrough?: string;
+      messages?: Array<{
+        seq: number;
         createdAt: number;
         updatedAt: number;
         contentType: string;
@@ -139,14 +161,13 @@ function semanticValid(schema: string, value: unknown): boolean {
       }>;
     };
     if (page.scannedThrough === undefined) return false;
-    let previous: bigint | undefined;
+    let previous: number | undefined;
     return (page.messages ?? []).every((message) => {
-      const feedId = BigInt(message.feedId);
-      const ordered = previous === undefined || feedId > previous;
-      previous = feedId;
+      const ordered = previous === undefined || message.seq > previous;
+      previous = message.seq;
       return (
         ordered &&
-        feedId <= BigInt(page.scannedThrough!) &&
+        BigInt(message.seq) <= BigInt(page.scannedThrough!) &&
         message.updatedAt >= message.createdAt &&
         parsedContent(message.contentType, message.content) !== null
       );
@@ -229,7 +250,9 @@ async function validateManifest(ajv: Ajv2020Instance): Promise<void> {
     'POST /s2s/v1/feed-heads',
     'GET /s2s/v1/state-feed',
     'GET /s2s/v1/message-feed',
+    'GET /s2s/v1/messages',
     'GET /s2s/v1/message-tombstone-feed',
+    'GET /s2s/v1/message-tombstones',
     'POST /s2s/v1/call',
     'GET /s2s/v1/users/:account',
     'GET /s2s/v1/media/:digest',

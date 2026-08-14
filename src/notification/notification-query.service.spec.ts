@@ -20,6 +20,7 @@ describe('NotificationQueryService', () => {
   let unreadAttentionByThread: ReturnType<typeof vi.fn>;
   let mentionStatesSinceId: ReturnType<typeof vi.fn>;
   let findMsgs: ReturnType<typeof vi.fn>;
+  let findIdentities: ReturnType<typeof vi.fn>;
   let attachMedia: ReturnType<typeof vi.fn>;
   let senderCountsSince: ReturnType<typeof vi.fn>;
   let senderAttentionSince: ReturnType<typeof vi.fn>;
@@ -57,6 +58,7 @@ describe('NotificationQueryService', () => {
     unreadAttentionByThread = vi.fn().mockResolvedValue(new Map());
     mentionStatesSinceId = vi.fn().mockResolvedValue(new Map());
     findMsgs = vi.fn();
+    findIdentities = vi.fn();
     attachMedia = vi.fn();
     senderCountsSince = vi.fn();
     senderAttentionSince = vi.fn();
@@ -77,6 +79,7 @@ describe('NotificationQueryService', () => {
         unreadMentionStates,
         mentionStatesSinceId,
         findMessagesBySeqPairs: findMsgs,
+        findMessageIdentitiesBySeqPairs: findIdentities,
         attachMediaStatus: attachMedia,
         senderCountsSince,
         senderAttentionSince,
@@ -150,10 +153,11 @@ describe('NotificationQueryService', () => {
         },
       ]),
     );
-    // findMessagesBySeqPairs serves BOTH the cursor (from/to) resolution AND the per-thread latest fetch.
+    const resolvePairs = (pairs: Array<{ threadId: number; seq: number }>) =>
+      pairs.map((p) => byPair.get(`${p.threadId}:${p.seq}`)).filter(Boolean);
+    findIdentities.mockImplementation(resolvePairs);
     findMsgs.mockImplementation(
-      (pairs: Array<{ threadId: number; seq: number }>) =>
-        pairs.map((p) => byPair.get(`${p.threadId}:${p.seq}`)).filter(Boolean),
+      (pairs: Array<{ threadId: number; seq: number }>) => resolvePairs(pairs),
     );
     attachMedia.mockImplementation((ms: Array<{ id: bigint; seq: number }>) =>
       ms.map(({ id: _drop, ...rest }) => ({
@@ -270,6 +274,24 @@ describe('NotificationQueryService', () => {
     expect(res.items[0].latestMessage).not.toHaveProperty('id');
   });
 
+  it('buildSummary keeps a tombstoned latest seq as its cursor but omits its body', async () => {
+    wire(
+      [row(1, 'P2P', { lastMessageSeq: 2 })],
+      { 1: 0 },
+      { 1: { seq: 2, content: 'deleted', contentType: 'PURE_TEXT', id: 20 } },
+    );
+    // Identity lookup sees the durable row; the visible-body lookup excludes its tombstone.
+    findMsgs.mockResolvedValue([]);
+
+    const res = await svc.buildSummary(1, {
+      to: { threadId: 1, seq: 2 },
+      take: 50,
+    });
+
+    expect(res.items).toHaveLength(1);
+    expect(res.items[0]).toMatchObject({ threadId: 1, latestMessage: null });
+  });
+
   // ── buildNotifyResponse: per-sender aggregation since the HWM ────────────────────────────────
 
   function wireAway(opts: {
@@ -281,8 +303,8 @@ describe('NotificationQueryService', () => {
     newest?: { threadId: number; seq: number; ts: number } | null;
   }) {
     participants.mockResolvedValue([]);
-    // resolveId(since) → findMessagesBySeqPairs([since]) resolves the cursor to a valid id (100).
-    findMsgs.mockResolvedValue([{ threadId: 1, seq: 5, id: 100n }]);
+    // resolveId(since) accepts a live row or tombstone as the durable cursor identity.
+    findIdentities.mockResolvedValue([{ threadId: 1, seq: 5, id: 100n }]);
     blockedByMe.mockResolvedValue(new Set(opts.blocked ?? []));
     senderCountsSince.mockResolvedValue({
       counts: opts.counts ?? new Map<number, number>(),

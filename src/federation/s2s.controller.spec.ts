@@ -9,7 +9,13 @@ function target() {
       absPath: '/unused',
       bytes: 16,
     }),
+    pullStateFromPeer: vi.fn().mockResolvedValue(0n),
+    pullTombstonesFromPeer: vi.fn().mockResolvedValue(undefined),
+    pullMissedFromPeer: vi.fn().mockResolvedValue(undefined),
   };
+  const messageFeedPull = { advertise: vi.fn() };
+  const tombstonePull = { advertise: vi.fn() };
+  const peerStateFeedPull = { advertise: vi.fn() };
   const messageFeed = {
     rejectMissingAfter: vi.fn().mockRejectedValue(
       Object.assign(new Error('after is required'), {
@@ -37,12 +43,12 @@ function target() {
   const controller = new S2sController(
     federation as never,
     messageFeed as never,
-    {} as never,
+    messageFeedPull as never,
     tombstoneFeed as never,
-    {} as never,
+    tombstonePull as never,
     {} as never,
     peerStateFeed as never,
-    {} as never,
+    peerStateFeedPull as never,
   );
   return {
     controller,
@@ -50,6 +56,9 @@ function target() {
     messageFeed,
     tombstoneFeed,
     peerStateFeed,
+    messageFeedPull,
+    tombstonePull,
+    peerStateFeedPull,
   };
 }
 
@@ -179,5 +188,41 @@ describe('S2sController state and tombstone feed bootstrap', () => {
     });
     expect(tombstoneFeed.rejectMissingAfter).toHaveBeenCalledWith('a.example');
     expect(peerStateFeed.rejectMissingAfter).toHaveBeenCalledWith('a.example');
+  });
+});
+
+describe('S2sController feed-head recovery', () => {
+  it('retries a transient drain failure without requiring another feed-head', async () => {
+    vi.useFakeTimers();
+    try {
+      const { controller, federation } = target();
+      federation.pullStateFromPeer
+        .mockRejectedValueOnce(new Error('temporarily offline'))
+        .mockResolvedValueOnce(7n);
+      const req = {
+        body: {
+          origin: 'a.example',
+          stateFeedEndId: '7',
+          messageFeedEndId: '8',
+          tombstoneFeedEndId: '9',
+        },
+        peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+      } as unknown as FastifyRequest;
+
+      await controller.postDiscoveryHwm(req);
+      await vi.waitFor(() =>
+        expect(federation.pullStateFromPeer).toHaveBeenCalledTimes(1),
+      );
+      await vi.advanceTimersByTimeAsync(250);
+      await vi.waitFor(() =>
+        expect(federation.pullMissedFromPeer).toHaveBeenCalledOnce(),
+      );
+      expect(federation.pullTombstonesFromPeer).toHaveBeenCalledWith(
+        'a.example',
+        7n,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

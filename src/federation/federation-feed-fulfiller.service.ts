@@ -5,10 +5,10 @@ import { federatedPeer } from '../database/schema.js';
 import { DatabaseService } from '../database/database.service.js';
 import {
   FederationFeedFillState,
-  FederationMemoryFeedService,
-} from './federation-memory-feed.service.js';
+  FederationMessageFeedIndexerService,
+} from './federation-message-feed-indexer.service.js';
 import { FederationCursorService } from './federation-cursor.service.js';
-import { FEDERATION_MEMORY_FEED_ADVANCED } from './federation-memory-feed.events.js';
+import { FEDERATION_MESSAGE_FEED_ADVANCED } from './federation-message-feed.events.js';
 import { FederationMessageTombstoneFeedService } from './federation-message-tombstone-feed.service.js';
 
 const MAX_CONCURRENT_PEERS = 4;
@@ -27,7 +27,7 @@ export class FederationFeedFulfiller implements OnModuleInit {
 
   constructor(
     private readonly database: DatabaseService,
-    private readonly memoryFeed: FederationMemoryFeedService,
+    private readonly messageIndexer: FederationMessageFeedIndexerService,
     private readonly tombstoneFeed: FederationMessageTombstoneFeedService,
     private readonly cursor: FederationCursorService,
     private readonly events: EventEmitter2,
@@ -39,7 +39,7 @@ export class FederationFeedFulfiller implements OnModuleInit {
 
   schedule(peerDomain: string): void {
     if (
-      this.memoryFeed.state(peerDomain) !==
+      this.messageIndexer.state(peerDomain) !==
         FederationFeedFillState.NEEDS_FILL &&
       this.tombstoneFeed.state(peerDomain) !==
         FederationFeedFillState.NEEDS_FILL
@@ -54,7 +54,7 @@ export class FederationFeedFulfiller implements OnModuleInit {
 
   async fillNow(peerDomain: string): Promise<FederationFeedFillState> {
     this.queued.delete(peerDomain);
-    const messageState = await this.memoryFeed.fill(peerDomain);
+    const messageState = await this.messageIndexer.fill(peerDomain);
     const tombstoneState = await this.tombstoneFeed.fill(peerDomain);
     return messageState === FederationFeedFillState.FULL ||
       tombstoneState === FederationFeedFillState.FULL
@@ -89,7 +89,7 @@ export class FederationFeedFulfiller implements OnModuleInit {
       void this.fillAndNotify(peerDomain)
         .catch((error: unknown) => {
           this.logger.warn(
-            `could not fill memory feed for ${peerDomain}: ${(error as Error).message}`,
+            `could not advance compacted feeds for ${peerDomain}: ${(error as Error).message}`,
           );
         })
         .finally(() => {
@@ -103,7 +103,7 @@ export class FederationFeedFulfiller implements OnModuleInit {
     const before = await this.cursor.readAllocatedThrough(peerDomain);
     let remaining = FEDERATION_PEER_FILL_QUANTUM;
     const tombstoneFirst = this.tombstoneFirst.delete(peerDomain);
-    let messageState = this.memoryFeed.state(peerDomain);
+    let messageState = this.messageIndexer.state(peerDomain);
     let tombstoneState = this.tombstoneFeed.state(peerDomain);
     if (tombstoneFirst) {
       if (tombstoneState === FederationFeedFillState.NEEDS_FILL) {
@@ -115,7 +115,7 @@ export class FederationFeedFulfiller implements OnModuleInit {
         remaining -= tombstones.work;
       }
       if (messageState === FederationFeedFillState.NEEDS_FILL) {
-        const messages = await this.memoryFeed.fillQuantum(
+        const messages = await this.messageIndexer.fillQuantum(
           peerDomain,
           remaining,
         );
@@ -123,7 +123,7 @@ export class FederationFeedFulfiller implements OnModuleInit {
       }
     } else {
       if (messageState === FederationFeedFillState.NEEDS_FILL) {
-        const messages = await this.memoryFeed.fillQuantum(
+        const messages = await this.messageIndexer.fillQuantum(
           peerDomain,
           remaining,
         );
@@ -141,7 +141,7 @@ export class FederationFeedFulfiller implements OnModuleInit {
     }
     const after = await this.cursor.readAllocatedThrough(peerDomain);
     if (after > before) {
-      this.events.emit(FEDERATION_MEMORY_FEED_ADVANCED, { peerDomain });
+      this.events.emit(FEDERATION_MESSAGE_FEED_ADVANCED, { peerDomain });
     }
     if (
       messageState === FederationFeedFillState.NEEDS_FILL ||

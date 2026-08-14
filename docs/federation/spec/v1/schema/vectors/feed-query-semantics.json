@@ -1,0 +1,165 @@
+{
+  "formatVersion": 1,
+  "description": "Non-wire state-machine vectors. Cursor values are exclusive committed positions.",
+  "cases": [
+    {
+      "name": "state is committed before data feeds",
+      "initialCursors": {
+        "state": "4",
+        "tombstoneFeed": "7",
+        "messageFeed": "9"
+      },
+      "hint": { "state": "6", "tombstoneFeed": "8", "messageFeed": "10" },
+      "steps": [
+        {
+          "request": "state-feed",
+          "after": "4",
+          "through": "6",
+          "responseScannedThrough": "6",
+          "commit": true
+        },
+        {
+          "request": "message-tombstone-feed",
+          "after": "7",
+          "through": "8",
+          "responseScannedThrough": "8",
+          "commit": true
+        },
+        {
+          "request": "message-feed",
+          "after": "9",
+          "through": "10",
+          "responseScannedThrough": "10",
+          "commit": true
+        }
+      ],
+      "assertions": ["no data-feed request occurs before state cursor equals 6"]
+    },
+    {
+      "name": "first page fixes drain target and later pages preserve through",
+      "initialCursors": { "state": "4" },
+      "steps": [
+        {
+          "request": "state-feed",
+          "after": "4",
+          "responseEnd": "9",
+          "responseScannedThrough": "6",
+          "hasMore": true,
+          "commit": true
+        },
+        {
+          "request": "state-feed",
+          "after": "6",
+          "through": "9",
+          "responseEnd": "11",
+          "responseScannedThrough": "9",
+          "hasMore": false,
+          "commit": true
+        }
+      ],
+      "assertions": [
+        "drain target is 9",
+        "the first page belongs to the drain",
+        "state sweep is allowed only after cursor equals 9"
+      ]
+    },
+    {
+      "name": "inactive audience forbids query without moving cursor",
+      "initialCursors": { "messageQuery": "20" },
+      "steps": [
+        {
+          "request": "messages",
+          "after": "20",
+          "through": "30",
+          "audienceActive": false,
+          "responseCode": 10004,
+          "commit": false
+        }
+      ],
+      "assertions": ["message query cursor remains 20"]
+    },
+    {
+      "name": "same account reactivation preserves cursor and leaves allocation holes",
+      "initialCursors": { "messageQuery": "20" },
+      "source": {
+        "allocatedSeqs": [21, 22, 28, 29],
+        "inactiveInterval": [23, 27]
+      },
+      "steps": [
+        {
+          "request": "messages",
+          "after": "20",
+          "through": "29",
+          "audienceActive": true,
+          "returnedSeqs": [21, 22, 28, 29],
+          "responseScannedThrough": "29",
+          "hasMore": false,
+          "commit": true
+        }
+      ],
+      "assertions": [
+        "query coordinate identity is unchanged",
+        "seq 23 through 27 are not backfilled"
+      ]
+    },
+    {
+      "name": "message query retry results never move cursor or peer lifecycle",
+      "initialCursors": { "messageQuery": "40" },
+      "initialPeerLifecycle": "healthy",
+      "steps": [
+        {
+          "request": "messages",
+          "after": "40",
+          "responseCode": 50024,
+          "retryAfter": 3,
+          "commit": false
+        },
+        {
+          "request": "messages",
+          "after": "40",
+          "responseCode": 50025,
+          "retryAfter": 10,
+          "commit": false
+        }
+      ],
+      "assertions": [
+        "message query cursor remains 40",
+        "peer lifecycle remains healthy"
+      ]
+    },
+    {
+      "name": "unknown thread gets one state recovery then stops",
+      "initialCursors": { "state": "6", "messageFeed": "9" },
+      "steps": [
+        {
+          "request": "message-feed",
+          "after": "9",
+          "responseScannedThrough": "10",
+          "threadKnown": false,
+          "commit": false
+        },
+        {
+          "request": "state-feed",
+          "after": "6",
+          "responseScannedThrough": "8",
+          "hasMore": false,
+          "commit": true
+        },
+        {
+          "request": "message-feed",
+          "after": "9",
+          "responseScannedThrough": "10",
+          "samePage": true,
+          "threadKnown": false,
+          "commit": false
+        }
+      ],
+      "assertions": [
+        "message feed cursor remains 9",
+        "automatic data-feed drain stops",
+        "protocol conflict is audited",
+        "the item is not skipped"
+      ]
+    }
+  ]
+}

@@ -78,34 +78,34 @@ HTTP `409` 本身不足以触发 `halted`。只有 `FEDERATION_PEER_BLOCKED`、
 
 ## 稳定错误码注册表（Stable Code Registry）
 
-|  code | 名称                                      | HTTP | 调用方动作                                                                                                                         |
-| ----: | ----------------------------------------- | ---: | ---------------------------------------------------------------------------------------------------------------------------------- |
-| 10000 | `VALIDATION_FAILED`                       |  200 | 修正业务请求；不得（MUST NOT）原样重试。                                                                                           |
-| 10001 | `NOT_FOUND`                               |  200 | 当前资源不存在；仅在业务状态改变后重试。                                                                                           |
-| 10004 | `FORBIDDEN`                               |  200 | 当前业务身份无权访问资源；不得（MUST NOT）原样重试。                                                                               |
-| 10005 | `RATE_LIMITED`                            |  503 | 对端临时限流；按本地有上限、带 jitter 的退避策略重试。                                                                             |
-| 10999 | `INTERNAL`                                |  503 | 保留 pin 和 cursor，退避重试。                                                                                                     |
-| 50001 | `FEDERATION_RECOGNITION_REQUIRED`         |  401 | 缺少 operation 所需的 pinned identity 或双向认可事实；停止数据面请求并补齐缺失认可。纯传输 `degraded` 不得（MUST NOT）产生此错误。 |
-| 50002 | `FEDERATION_BAD_SIGNATURE`                |  401 | 停止原样重试并审计 signature、digest、keyId 或 certificate；不得（MUST NOT）接受响应数据。                                         |
-| 50003 | `FEDERATION_BINDING_VIOLATION`            |  401 | 修正 signer/body/address binding；不得（MUST NOT）原样重试。                                                                       |
-| 50007 | `FEDERATION_MALFORMED`                    |  400 | 修正 JSON/header profile、基础类型、时间参数、query、media type 或 content coding；不得（MUST NOT）原样重试。                      |
-| 50009 | `FEDERATION_PEER_BLOCKED`                 |  409 | Fatal：记录 remote-blocked 原因并进入 `halted`，停止自动通信。                                                                     |
-| 50010 | `FEDERATION_GROUP_AUTHOR_LEFT`            |  200 | 该 author 路径已终止；停止此 stream，不影响其他 stream。                                                                           |
-| 50011 | `FEDERATION_QUOTA_EXCEEDED`               |  200 | 按 `data.retryAfter` 秒数退避；不得（MUST NOT）把 peer 置为 degraded 或推进失败 page cursor。                                      |
-| 50012 | `FEDERATION_PAYLOAD_TOO_LARGE`            |  200 | 已解析 item 超出 operation limit；仅在 operation 允许拆分或缩小请求时重构后重试。                                                  |
-| 50013 | `FEDERATION_CAPABILITY_DISABLED`          |  200 | 对端策略禁用该业务类别；停止自动重试，等待配置变化。                                                                               |
-| 50014 | `FEDERATION_LOCAL_IDENTITY_LOST`          |  503 | 对端暂时无法安全提供 federation 服务；保留原 pin 并退避重试。                                                                      |
-| 50015 | `FEDERATION_IDENTITY_MISMATCH`            |  409 | Fatal：保留原 pin，记录 identity contradiction 并进入 `halted`；不得（MUST NOT）自动采用新身份。                                   |
-| 50018 | `FEDERATION_FEED_REQUEST_IN_PROGRESS`     |  200 | 同一 peer/feed 的另一请求尚未完成；保持 cursor，短暂退避后从同一 `after` 重试。                                                    |
-| 50019 | `FEDERATION_FEED_CURSOR_UNAVAILABLE`      |  200 | 不应用 page；验证并原子保存 `data.resumeAfter`，再将它作为下一次请求的 `after`。                                                   |
-| 50020 | `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED` |  409 | Fatal：记录版本原因并进入 `halted`；不得（MUST NOT）透明降级。                                                                     |
-| 50021 | `FEDERATION_RANGE_NOT_SATISFIABLE`        |  416 | 当前单 Range 不可满足；按 media 规则读取 `Content-Range`，不得（MUST NOT）把资源解释为不存在。                                     |
-| 50022 | `FEDERATION_FEED_CURSOR_MISMATCH`         |  200 | 保留本地 cursor；请求值不是 source 已确认或最近服务的位置，停止自动同步并审计调用方 cursor。                                       |
-| 50023 | `FEDERATION_PROFILE_NOT_DISCLOSED`        |  200 | 用户选择不向当前 peer 展示公开资料；停止原样重试。publisher 可改用 `NOT_FOUND` 隐藏账号是否存在。                                 |
-| 70001 | `CALL_NOT_ALLOWED`                        |  200 | 未知 callSid，或隐私合并后的账号、关系、block、租户及呼叫准入失败；终止本次呼叫，不得（MUST NOT）把 peer 置为 degraded。           |
-| 70004 | `CALL_BUSY`                               |  200 | 对端参与者正忙；终止或稍后使用新 `callSid` 发起，不得（MUST NOT）重放同一 incoming frame。                                         |
-| 70007 | `CALL_CANCELLED`                          |  200 | 通话已由 caller 取消；本地收敛为 cancelled，停止媒体、计时器和依赖 frame，不得（MUST NOT）把 peer 置为 degraded。                  |
-| 70008 | `CALL_TERMINATED`                         |  200 | 通话已由其他终态结束；本地收敛为 terminal，停止媒体、计时器和依赖 frame，不得（MUST NOT）把 peer 置为 degraded。                   |
+|  code | 名称                                               | HTTP | 调用方动作                                                                                                                         |
+| ----: | -------------------------------------------------- | ---: | ---------------------------------------------------------------------------------------------------------------------------------- |
+| 10000 | `VALIDATION_FAILED`                                |  200 | 修正业务请求；不得（MUST NOT）原样重试。                                                                                           |
+| 10001 | `NOT_FOUND`                                        |  200 | 当前资源不存在；仅在业务状态改变后重试。                                                                                           |
+| 10004 | `FORBIDDEN`                                        |  200 | 当前业务身份无权访问资源；不得（MUST NOT）原样重试。                                                                               |
+| 10005 | `RATE_LIMITED`                                     |  503 | 对端临时限流；按本地有上限、带 jitter 的退避策略重试。                                                                             |
+| 10999 | `INTERNAL`                                         |  503 | 保留 pin 和 cursor，退避重试。                                                                                                     |
+| 50001 | `FEDERATION_RECOGNITION_REQUIRED`                  |  401 | 缺少 operation 所需的 pinned identity 或双向认可事实；停止数据面请求并补齐缺失认可。纯传输 `degraded` 不得（MUST NOT）产生此错误。 |
+| 50002 | `FEDERATION_BAD_SIGNATURE`                         |  401 | 停止原样重试并审计 signature、digest、keyId 或 certificate；不得（MUST NOT）接受响应数据。                                         |
+| 50003 | `FEDERATION_BINDING_VIOLATION`                     |  401 | 修正 signer/body/address binding；不得（MUST NOT）原样重试。                                                                       |
+| 50007 | `FEDERATION_MALFORMED`                             |  400 | 修正 JSON/header profile、基础类型、时间参数、query、media type 或 content coding；不得（MUST NOT）原样重试。                      |
+| 50009 | `FEDERATION_PEER_BLOCKED`                          |  409 | Fatal：记录 remote-blocked 原因并进入 `halted`，停止自动通信。                                                                     |
+| 50010 | `FEDERATION_GROUP_AUTHOR_LEFT`                     |  200 | 该 author 路径已终止；停止此 stream，不影响其他 stream。                                                                           |
+| 50011 | `FEDERATION_QUOTA_EXCEEDED`                        |  200 | 按 `data.retryAfter` 秒数退避；不得（MUST NOT）把 peer 置为 degraded 或推进失败 page cursor。                                      |
+| 50012 | `FEDERATION_PAYLOAD_TOO_LARGE`                     |  200 | 已解析 item 超出 operation limit；仅在 operation 允许拆分或缩小请求时重构后重试。                                                  |
+| 50013 | `FEDERATION_CAPABILITY_DISABLED`                   |  200 | 对端策略禁用该业务类别；停止自动重试，等待配置变化。                                                                               |
+| 50014 | `FEDERATION_LOCAL_IDENTITY_LOST`                   |  503 | 对端暂时无法安全提供 federation 服务；保留原 pin 并退避重试。                                                                      |
+| 50015 | `FEDERATION_IDENTITY_MISMATCH`                     |  409 | Fatal：保留原 pin，记录 identity contradiction 并进入 `halted`；不得（MUST NOT）自动采用新身份。                                   |
+| 50019 | `FEDERATION_FEED_CURSOR_UNAVAILABLE`               |  200 | 不应用 page；验证并原子保存 `data.resumeAfter`。用于 bootstrap、明显越界 cursor，以及 message query 已清理正文。                   |
+| 50020 | `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED`          |  409 | Fatal：记录版本原因并进入 `halted`；不得（MUST NOT）透明降级。                                                                     |
+| 50021 | `FEDERATION_RANGE_NOT_SATISFIABLE`                 |  416 | 当前单 Range 不可满足；按 media 规则读取 `Content-Range`，不得（MUST NOT）把资源解释为不存在。                                     |
+| 50023 | `FEDERATION_PROFILE_NOT_DISCLOSED`                 |  200 | 用户选择不向当前 peer 展示公开资料；停止原样重试。publisher 可改用 `NOT_FOUND` 隐藏账号是否存在。                                  |
+| 50024 | `FEDERATION_MESSAGE_QUERY_RATE_LIMITED`            |  200 | Message query 请求过频；不推进 query cursor，至少等待 `data.retryAfter` 秒后带 jitter 重试，不改变 peer lifecycle。                |
+| 50025 | `FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE` |  200 | Message query 暂时不能产生一致 page；不推进 query cursor，至少等待 `data.retryAfter` 秒后带 jitter 重试，不改变 peer lifecycle。   |
+| 70001 | `CALL_NOT_ALLOWED`                                 |  200 | 未知 callSid，或隐私合并后的账号、关系、block、租户及呼叫准入失败；终止本次呼叫，不得（MUST NOT）把 peer 置为 degraded。           |
+| 70004 | `CALL_BUSY`                                        |  200 | 对端参与者正忙；终止或稍后使用新 `callSid` 发起，不得（MUST NOT）重放同一 incoming frame。                                         |
+| 70007 | `CALL_CANCELLED`                                   |  200 | 通话已由 caller 取消；本地收敛为 cancelled，停止媒体、计时器和依赖 frame，不得（MUST NOT）把 peer 置为 degraded。                  |
+| 70008 | `CALL_TERMINATED`                                  |  200 | 通话已由其他终态结束；本地收敛为 terminal，停止媒体、计时器和依赖 frame，不得（MUST NOT）把 peer 置为 degraded。                   |
 
 `FEDERATION_CAPABILITY_DISABLED` 是为兼容已发布 wire code 保留的稳定标识符；这里的 `capability` 只表示某类业务
 操作被对端策略关闭，不表示 v1 存在能力协商（capability negotiation），也不能据此推导可选接口。
@@ -118,9 +118,6 @@ HTTP `409` 本身不足以触发 `halted`。只有 `FEDERATION_PEER_BLOCKED`、
 
 ```ts
 interface FederationQuotaExceededData {
-  category: 'messages' | 'files' | 'requests' | 'signals';
-  // 该 category 当前生效的非负、安全整数上限。
-  limit: SafeInteger;
   // 非负整数 delta-seconds；从完整接收响应时开始计算。
   retryAfter: SafeInteger;
 }
@@ -134,23 +131,29 @@ interface FederationFeedCursorUnavailableData {
   resumeAfter: DecimalString;
 }
 
-interface FederationFeedCursorMismatchData {
-  acknowledgedThrough: DecimalString;
-  lastServedThrough: DecimalString;
+interface FederationQueryRetryData {
+  // 从完整收到响应时开始计算的非负整数秒。
+  retryAfter: SafeInteger;
 }
 ```
 
-`FEDERATION_QUOTA_EXCEEDED` 必须（MUST）携带 `FederationQuotaExceededData`，其中 `limit >= 0`、
-`retryAfter >= 0`。`FEDERATION_CAPABILITY_DISABLED` 必须（MUST）携带
+`FEDERATION_QUOTA_EXCEEDED` 必须（MUST）携带 `FederationQuotaExceededData`，其中
+`retryAfter >= 0`。operation 本身定义受限的业务类型；响应不得携带 category、limit、计量单位、窗口或
+服务端策略参数。实现可以把具体配额原因写入仅供诊断的 `message`，consumer 不得解析该文本决定行为。
+`FEDERATION_CAPABILITY_DISABLED` 必须（MUST）携带
 `FederationCapabilityDisabledData`。
 `FEDERATION_FEED_CURSOR_UNAVAILABLE` 必须（MUST）携带
-`FederationFeedCursorUnavailableData`。省略 `after` 的 bootstrap 可以返回任意当前有效的非负
-`resumeAfter`；携带旧 `after` 时，consumer 还必须验证 `resumeAfter` 严格大于本地已提交 cursor。任一检查失败
-都不得（MUST NOT）推进 cursor。响应不暴露 feed end；排空上界只由 `feed-heads` 提供。
+`FederationFeedCursorUnavailableData`。省略 `after` 时，`resumeAfter` 必须是该 operation 当前有效的
+exclusive 起点；三个 feed 和 tombstone query 的起点非负，message query 可以使用 `-1` 表示 seq `0`
+之前。携带 `after` 时有且只有两种可采用的修正：旧 message 正文已清理时 `resumeAfter > after`；请求位置
+明显大于当前 operation end 时 `resumeAfter < after`。相等值无进展，必须拒绝。三个压缩 feed 不得因历史
+删除或压缩使用该结果；tombstone query 不得以清理为由跳过永久删除事实。
 
-`FEDERATION_FEED_CURSOR_MISMATCH` 适用于三个可靠 feed，必须（MUST）携带
-`FederationFeedCursorMismatchData`，并满足 `acknowledgedThrough <= lastServedThrough`。它不是可采用的新
-floor；consumer 不得将任一响应值写入本地 cursor，除非该值已经等于 consumer 自己持久保存的 cursor。
+`FEDERATION_MESSAGE_QUERY_RATE_LIMITED` 和
+`FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE` 必须（MUST）携带
+`FederationQueryRetryData`，且只能由 `GET /s2s/v1/messages` 使用。两者都是已经通过 HTTP 与身份认证后的
+业务暂缓，不得用于掩盖 signature、binding、授权或 malformed 错误，也不得用于 tombstone query、三个 feed
+或整个 federation 服务不可用。它们不使用 HTTP `Retry-After` header。
 
 完整 wire 示例：
 
@@ -158,30 +161,34 @@ floor；consumer 不得将任一响应值写入本地 cursor，除非该值已�
 HTTP/1.1 200 OK
 Content-Type: application/json
 
-{"code":50011,"message":"peer quota exceeded","data":{"category":"messages","limit":1000,"retryAfter":60}}
+{"code":50011,"message":"message query quota exceeded","data":{"retryAfter":60}}
 ```
 
-该业务结果表示 `messages` 的当前上限为 `1000`，有效退避是 `60` 秒。Cursor 截断示例是：
+该业务结果只承诺当前 operation 至少等待 `60` 秒后可以重试；它不公开配额阈值、单位、窗口或算法。
+下例是 message query
+中请求正文已清理区间的有效修正：
 
 ```json
 {
   "code": 50019,
-  "message": "requested cursor is below retained floor",
+  "message": "requested message history is no longer retained",
   "data": { "resumeAfter": "120" }
 }
 ```
 
-上例是有效响应。下面是对应的无效反例：
+上例是有效的正文保留 floor 响应。下面是对应的无效反例：
 
 ```json
 {
   "code": 50019,
-  "message": "requested cursor is below retained floor",
+  "message": "requested message history is no longer retained",
   "data": { "resumeAfter": "100" }
 }
 ```
 
-假设 consumer 已提交到 `100`，反例的 `resumeAfter` 没有严格前进；consumer 必须（MUST）拒绝采用它。
+假设 query `after=100` 且该位置并未超过 source 当前 end，反例的 `resumeAfter` 没有严格前进；consumer
+必须（MUST）拒绝采用它。若请求本身明显超过当前 end，则 source 返回严格更小的有效位置属于另一种
+越界修正，不适用本例。
 
 Federation v1 的业务配额只使用 `data.retryAfter`，不得（MUST NOT）为它发送 HTTP `Retry-After`，以免把业务
 结果误解成 HTTP 可用性失败。该值 malformed 时 consumer 必须（MUST）忽略它并使用本地有上限、带 jitter 的退避。

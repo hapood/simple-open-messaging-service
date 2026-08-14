@@ -110,11 +110,7 @@ export class FederationMessageFeedPullService {
       // supplied floor without applying or publishing a synthetic page.
       if (!applied.page) continue;
 
-      // A data-bearing final page is not acknowledged at the source until we request once more with
-      // its scannedThrough. Continue until the source returns a stable empty/no-advance final page.
-      if (applied.hasMore || applied.scannedThrough > applied.requestedAfter) {
-        continue;
-      }
+      if (applied.hasMore) continue;
 
       const cursor = await this.readCursor(peerDomain);
       if (!cursor) return; // reset removed the peer while the request was in flight
@@ -181,8 +177,7 @@ export class FederationMessageFeedPullService {
         }
         if (
           cursor.initialized &&
-          (error.resumeAfter < cursor.retainedAfter ||
-            error.resumeAfter <= cursor.committedThrough)
+          error.resumeAfter === cursor.committedThrough
         ) {
           throw new Error('peer returned an invalid message-feed cursor reset');
         }
@@ -216,13 +211,24 @@ export class FederationMessageFeedPullService {
         page.scannedThrough,
         'scannedThrough',
       );
+      const sourceEnd = this.parseCursor(
+        page.messageFeedEndId,
+        'messageFeedEndId',
+      );
       if (scannedThrough < cursor.committedThrough) {
         throw new Error('peer returned an invalid message-feed page boundary');
       }
+      if (
+        scannedThrough > sourceEnd ||
+        (!page.hasMore &&
+          scannedThrough !==
+            (trunc === undefined || trunc > sourceEnd ? sourceEnd : trunc))
+      )
+        throw new Error('peer returned an inconsistent message-feed end');
 
       let previousFeedId = cursor.committedThrough;
-      for (const item of page.messages) {
-        const feedId = this.parseCursor(item.feedId, 'message.feedId');
+      for (const item of page.items) {
+        const feedId = this.parseCursor(item.feedId, 'item.feedId');
         if (feedId <= previousFeedId || feedId > scannedThrough) {
           throw new Error('peer returned unordered message-feed items');
         }
@@ -255,7 +261,7 @@ export class FederationMessageFeedPullService {
   }
 
   private parseCursor(value: string, name: string): bigint {
-    if (!/^(0|-?[1-9]\d*)$/.test(value)) {
+    if (!/^(0|[1-9]\d*)$/.test(value)) {
       throw new Error(`invalid ${name}`);
     }
     return BigInt(value);

@@ -80,9 +80,7 @@ export class FederationMessageTombstonePullService {
       if (!applied) return;
       if (!applied.page) continue;
       await callbacks.afterCommit?.(applied.page);
-      if (applied.hasMore || applied.scannedThrough > applied.requestedAfter) {
-        continue;
-      }
+      if (applied.hasMore) continue;
       const cursor =
         await this.database.db.query.federationTombstonePullCursor.findFirst({
           where: eq(federationTombstonePullCursor.peerDomain, peerDomain),
@@ -143,7 +141,7 @@ export class FederationMessageTombstonePullService {
         if (!(error instanceof RemoteFeedCursorUnavailableError)) throw error;
         if (
           error.resumeAfter < 0n ||
-          (cursor.initialized && error.resumeAfter <= cursor.committedThrough)
+          (cursor.initialized && error.resumeAfter === cursor.committedThrough)
         ) {
           throw new Error(
             'peer returned an invalid tombstone-feed resume cursor',
@@ -170,11 +168,19 @@ export class FederationMessageTombstonePullService {
         );
       }
       const scannedThrough = this.parse(page.scannedThrough);
+      const sourceEnd = this.parse(page.tombstoneFeedEndId);
       if (scannedThrough < cursor.committedThrough) {
         throw new Error('peer returned a regressing tombstone cursor');
       }
+      if (
+        scannedThrough > sourceEnd ||
+        (!page.hasMore &&
+          scannedThrough !==
+            (trunc === undefined || trunc > sourceEnd ? sourceEnd : trunc))
+      )
+        throw new Error('peer returned an inconsistent tombstone-feed end');
       let previous = cursor.committedThrough;
-      for (const tombstone of page.tombstones) {
+      for (const tombstone of page.items) {
         const feedId = this.parse(tombstone.feedId);
         if (feedId <= previous || feedId > scannedThrough) {
           throw new Error('peer returned unordered tombstones');
@@ -200,7 +206,7 @@ export class FederationMessageTombstonePullService {
   }
 
   private parse(value: string): bigint {
-    if (!/^(0|-?[1-9]\d*)$/.test(value)) throw new Error('invalid cursor');
+    if (!/^(0|[1-9]\d*)$/.test(value)) throw new Error('invalid cursor');
     return BigInt(value);
   }
 }

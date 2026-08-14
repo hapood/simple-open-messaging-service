@@ -18,11 +18,11 @@
       "dependentRequired": { "take": ["after"], "through": ["after"] },
       "properties": {
         "after": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/signedDecimalString"
+          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
         },
-        "take": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" },
         "through": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/signedDecimalString"
+          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
         }
       },
       "additionalProperties": false
@@ -32,33 +32,76 @@
       "dependentRequired": { "take": ["after"], "through": ["after"] },
       "properties": {
         "after": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/signedDecimalString"
+          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
         },
-        "take": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" },
         "through": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/signedDecimalString"
+          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
         }
       },
       "additionalProperties": false
     },
     "messageFeedQuery": {
       "type": "object",
-      "dependentRequired": {
-        "take": ["after"],
-        "through": ["after"],
-        "excludeSelf": ["after"]
-      },
+      "dependentRequired": { "take": ["after"], "through": ["after"] },
       "properties": {
         "after": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/signedDecimalString"
+          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
         },
         "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" },
         "through": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/signedDecimalString"
-        },
-        "excludeSelf": { "enum": ["true", "false"] }
+          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+        }
       },
       "additionalProperties": false
+    },
+    "threadDataQuery": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type", "account", "peerAccount"],
+          "dependentRequired": { "take": ["after"], "through": ["after"] },
+          "properties": {
+            "type": { "const": "P2P" },
+            "account": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/userAccount"
+            },
+            "peerAccount": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/userAccount"
+            },
+            "after": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+            },
+            "through": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+            },
+            "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "groupAccount", "groupDomain"],
+          "dependentRequired": { "take": ["after"], "through": ["after"] },
+          "properties": {
+            "type": { "const": "GROUP" },
+            "groupAccount": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/groupAccount"
+            },
+            "groupDomain": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/domain"
+            },
+            "after": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+            },
+            "through": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+            },
+            "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" }
+          },
+          "additionalProperties": false
+        }
+      ]
     },
     "mediaParameters": {
       "type": "object",

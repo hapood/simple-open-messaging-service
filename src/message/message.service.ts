@@ -1354,17 +1354,29 @@ export class MessageService {
   }
 
   /** Single message lookup by per-thread (threadId, seq) identity — seq is unique only within a thread,
-   *  so both parts of the compound unique are required. Used by mark-read to validate the cursor. */
+   *  so both parts of the compound unique are required. Tombstones remain valid read cursors: deletion
+   *  removes a body from the visible log, not its position in the thread's monotonic seq space. */
   findMessageBySeq(threadId: number, seq: number) {
     return this.database.db.query.message
       .findFirst({
-        where: and(
-          eq(message.threadId, threadId),
-          eq(message.seq, seq),
-          eq(message.isDeleted, false),
-        ),
+        where: and(eq(message.threadId, threadId), eq(message.seq, seq)),
       })
       .then((row) => (row ? stripMessageId(row) : null));
+  }
+
+  /** Resolve public per-thread identities to their durable Message rows, including tombstones. Used only
+   *  for cursor ordering; callers that render message bodies must use findMessagesBySeqPairs instead. */
+  async findMessageIdentitiesBySeqPairs(
+    pairs: Array<{ threadId: number; seq: number }>,
+  ): Promise<Message[]> {
+    if (pairs.length === 0) return [];
+    return this.database.db.query.message.findMany({
+      where: or(
+        ...pairs.map((pair) =>
+          and(eq(message.threadId, pair.threadId), eq(message.seq, pair.seq)),
+        ),
+      ),
+    });
   }
 
   /** Batched lookup of messages by their per-thread (threadId, seq) identity — the missed summary fetches
@@ -1686,6 +1698,7 @@ export class MessageService {
         WHERE msg."threadId" = tp."threadId"
           AND msg.seq > COALESCE(tp."lastReadSeq", -1)
           AND msg.creator <> ${userId}
+          AND msg."isDeleted" = false
         ORDER BY msg.seq ASC
         LIMIT 1000
       ) m ON TRUE
@@ -1731,6 +1744,7 @@ export class MessageService {
         WHERE msg."threadId" = tp."threadId"
           AND msg.seq > COALESCE(tp."lastReadSeq", -1)
           AND msg.creator <> ${userId}
+          AND msg."isDeleted" = false
         ORDER BY msg.seq ASC
         LIMIT 1000
       ) m ON TRUE
@@ -1786,6 +1800,7 @@ export class MessageService {
         WHERE m."threadId" = ${threadId}
           AND m.seq > a."lastReadSeq"
           AND m.creator <> ${userId}
+          AND m."isDeleted" = false
         ORDER BY m.seq ASC
         LIMIT 1000
       )

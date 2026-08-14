@@ -49,6 +49,7 @@ Federation v1 的规范性要求由本文及其明确引用的 [传输与安全]
 Federation v1 的数据平面采用固定权威拓扑：P2P authored message/withdraw 由作者 home server 直接发布给
 对端；群数据只有“成员 home → origin”的提交腿和“origin → mirrors”的权威分发腿。识别关系形成 mesh
 连接能力，不表示任意已识别 peer 可以转发另一个 authority 的事实。
+
 - **持久事实（durable fact）**：由服务器持久保存的业务事实，例如关系方向、群成员名册快照或消息副本。
   它的正确性和生命周期由业务状态决定，不依赖修订提示是否送达。
 - **持久变更（durable change）**：发布方为特定对等节点持久分配、用于发现或同步持久事实的有序源记录。
@@ -102,7 +103,7 @@ object 的兼容规则；删除或重命名字段、改变字段含义、改变�
 
 ## 3. Federation v1 HTTP 接口面（HTTP Surface）
 
-下表是完整 v1 surface；同步面包含三个 GET feed 和一个 POST feed-head hint。
+下表是完整 v1 surface；同步面包含三个 GET feed、两个 GET thread query 和一个 POST feed-head hint。
 `鉴权上下文` 决定签名验证时如何获取 key 以及哪些 peer 状态可以（MAY）调用 operation；它不改变
 第 6 节的签名 wire format。
 
@@ -115,6 +116,8 @@ object 的兼容规则；删除或重命名字段、改变字段含义、改变�
 | `GET`  | `/s2s/v1/state-feed`                | recognized signed  | feed query                | `200`       | success data envelope  |
 | `GET`  | `/s2s/v1/message-feed`              | recognized signed  | feed query                | `200`       | success data envelope  |
 | `GET`  | `/s2s/v1/message-tombstone-feed`    | recognized signed  | feed query                | `200`       | success data envelope  |
+| `GET`  | `/s2s/v1/messages`                  | recognized signed  | thread data query         | `200`       | success data envelope  |
+| `GET`  | `/s2s/v1/message-tombstones`        | recognized signed  | thread data query         | `200`       | success data envelope  |
 | `POST` | `/s2s/v1/call`                      | recognized signed  | JSON call frame           | `200`       | success data envelope  |
 | `GET`  | `/s2s/v1/users/:account`            | recognized signed  | path account              | `200`       | success data envelope  |
 | `GET`  | `/s2s/v1/media/:digest`             | recognized signed  | path/query/optional Range | `200`/`206` | raw bytes              |
@@ -317,8 +320,9 @@ revision 是完整 no-op。P2P 只有双方方向均为 `ACCEPTED` 才成立；�
 `GROUP_META` 为准。
 
 `state-feed` 的完整 page、六种 event body、字段约束与合并语义由
-[Federation v1 State Feed](./state-feed.md) 定义；`message-feed` 的完整 page、10 种 content type、
-媒体与转发由 [Federation v1 Message Feed](./message-feed.md) 定义；撤回与生效治理删除由
+[Federation v1 State Feed](./state-feed.md) 定义；`message-feed` 的 `thread + messageEndSeq` 压缩索引和
+`/messages` query 由 [Federation v1 Message Feed](./message-feed.md) 定义，十种 message content、媒体与
+转发 body 由 [Message](./message.md) 定义；墓碑压缩索引与权威删除 query 由
 [Federation v1 Message Tombstone Feed](./message-tombstone-feed.md) 定义。三者与本文
 共同构成 v1 规范性正文，概要不能覆盖其字段级要求。
 
@@ -344,11 +348,12 @@ hint 或普通消息 payload。
   consumer 必须（MUST）按 compacted key 和 business revision 幂等合并，不得（MUST NOT）把“作者是自己”当作丢弃条件。
 - message item 的 `originSeq` 必须（MUST）是作者服务器分配的稳定源序列；publisher 的本地排序序列不得（MUST NOT）
   改写它。item 的 `createdAt` 必须（MUST）表示 publisher 将该副本持久化的时间。
-- publisher 从 peer X 拉取并提交一条由 X authored 的消息后，必须（MUST）把该消息分配回 X 的
-  `message-feed`。该 self-authored item 是 durable delivery acknowledgement：`originSeq` 指明
-  X 的哪条发布已被接收，`createdAt` 给出 publisher 的持久化时间。
-- consumer 收到 self-authored item 时 必须（MUST）用稳定 `(thread, author, originSeq)` 坐标关联原发布，
-  不得（MUST NOT）创建重复消息。consumer 如何保存或展示回执属于本地实现，不属于 protocol contract。
+- publisher 从 peer X 拉取并提交一条由 X authored 的消息后，必须（MUST）推进回 X 的该 thread
+  `messageEndSeq`，并以新的 message-feed 索引 item 通知 X。X 随后通过 `/messages` query 读回该
+  self-authored message；query 中的 `originSeq` 指明 X 的哪条发布已被接收，`createdAt` 给出 publisher
+  的持久化时间。因此 delivery acknowledgement 来自 query message，不是 message-feed item 本身。
+- consumer query 到 self-authored message 时必须（MUST）用稳定 `(thread, author, originSeq)` 坐标关联原
+  发布，不得（MUST NOT）创建重复消息。consumer 如何保存或展示回执属于本地实现，不属于 protocol contract。
 - 群 origin 从成员 home server 接收第三方 authored submission 后，必须先验证作者、群成员资格和内容并
   持久接受；随后只能由 origin 向各 mirror 权威分发。mirror 只接受已知 group origin 作为该群分发 source，
   不得继续发布给其他 peer。v1 不携带 author server 的端到端 message signature；mirror 信任的是已认证
@@ -361,34 +366,33 @@ hint 或普通消息 payload。
 
 本规范中的 feed 坐标统一采用以下术语；不得用未限定含义的 `HWM` 同时指代其中多个值：
 
-- `feedId`：source 在一个 feed 坐标空间中分配的单调 item ID。state、message 与 tombstone 使用三个
-  彼此独立的 per-peer 空间；协议不规定初始值，也不要求连续。
-- `after`：consumer 已原子提交的 exclusive cursor。consumer 侧持久字段名为 `committedThrough`。
+- `feedId`：source 在一个 feed 坐标空间中分配的正整数 item ID。state、message 与 tombstone 使用三个
+  彼此独立的 per-peer 空间；ID 严格增加、不复用，但可以不连续。
+- `after`：consumer 提供的 exclusive 扫描位置。source 不把它当作 ACK，也不验证其单调性。
 - `through`：一次有界排空的 inclusive 上界；它不表示确认。
 - `scannedThrough`：page 已连续扫描完成的 inclusive 边界，也是成功提交后下一次请求的 `after`。
-- `retainedAfter`：source 内部仍可服务的 retained-history exclusive floor；不是 wire 字段。
-- `acknowledgedThrough`：source 已从请求 `after` 观察到的 consumer 确认位置。
-- `resumeAfter = max(retainedAfter, acknowledgedThrough)`：50019 返回的下一次可用 exclusive cursor。
-- `allocatedThrough`：source 曾分配的最大 feed 坐标，即 allocation upper bound；
-  它单调且可以落在空洞上。
+- `resumeAfter`：省略 `after`、message query 旧正文已清理，或请求位置明显超出当前 end 时，
+  source 返回的下一个有效 exclusive 请求位置。
 - `stateFeedEndId` / `messageFeedEndId` / `tombstoneFeedEndId`：feed-heads 发布的三个独立 inclusive drain
-  barrier 坐标。它们是排空目标，不是 consumer cursor。
-- `lastServedThrough`：source 最近成功服务的 `scannedThrough`，用于重放和确认校验。
+  上界。它们是排空目标，不是 consumer cursor 或业务 revision。
+- `messageEndSeq` / `tombstoneEndSeq`：某个 thread 可查询内容的 inclusive 上界；它们分属两个
+  thread-local 坐标空间，不是 feed ID。
 
-数据库或实现注释需要使用 “allocation upper bound”“drain barrier” 或 “committed cursor”等限定词；
-`HWM` 仅可作为带限定语的解释性简称，不是协议字段名。thread 内的 message `seq` 上界属于另一个坐标
-空间，必须称为 thread sequence upper bound，不得与 federation feed 坐标混用。
+feed cursor/end 使用非负十进制字符串，item ID 使用正整数字符串。`0` 可作为第一个 item 之前的
+exclusive cursor，但不是 item ID。SOMS 新 feed 从 `after=0` 开始；其他实现可在 bootstrap 时返回自己的
+非负 `resumeAfter`。
 
 ### 9.2 通用 Feed 规则
 
 三个 feed 的 `after` 都可省略以查询当前可用起点，此时 source 返回
 `FEDERATION_FEED_CURSOR_UNAVAILABLE` 和 `resumeAfter`，不返回 page。省略 `after` 时不得携带其他 page
-参数。三个 feed 都可包含
+参数。该 `resumeAfter` 是 feed 的 bootstrap base：从它开始排空必须能观察到当前对该 peer 可见的完整
+压缩投影。source 不得简单返回当前 feed end 而跳过已存在的当前 item。三个 feed 都可包含
 可选 `take` 和 inclusive feed-ID 上界 `through`。`take` 只是 consumer 建议扫描数，source 应参考但
 可根据服务能力采用不同页大小；各 feed 的精确规则由其 operation 定义。带 `through` 的连续分页必须
 保持该值不变；它只限制读取窗口，不是
-确认、删除或历史降级操作。三个 feed 各有独立 per-peer allocator、retention、ACK 和 pull cursor。page 返回 `scannedThrough` 和 `hasMore`；
-consumer 从已提交 cursor 开始，先完整排空 state，再拉 tombstone 和 message。
+确认、删除或历史降级操作。三个 feed 各有独立 per-peer allocator 和 consumer 本地 cursor，但 source 不维护
+consumer ACK/cursor。page 返回 `scannedThrough`、feed end 和 `hasMore`。
 
 所有 feed-ID 窗口统一使用左开右闭区间。请求 `after=A&through=T` 表示 `(A, T]`：`A` 已由 consumer
 提交，必须排除；`T` 是本轮包含的上界。page 的实际完成窗口是 `(after, scannedThrough]`，因此
@@ -396,53 +400,40 @@ consumer 从已提交 cursor 开始，先完整排空 state，再拉 tombstone �
 source 冻结的当前 `*FeedEndId`，不改变左开右闭规则。本文中 HTTP byte range、时间区间及其他非 feed
 坐标不受本约定约束。
 
-page 与 cursor 必须（MUST）在一个事务中提交。重复 page 必须（MUST）幂等；空 page 也可通过 `scannedThrough` 确认并推进。
-同一 `after` 可以（MAY）用于重试。三个 feed 都禁止 consumer fast-forward；各 feed 的 retention/ACK 规则以对应 operation
-文档为准。feed ID 只要求
+page 与 consumer 本地 cursor 必须（MUST）在一个事务中提交。重复 page 必须（MUST）幂等；空 page 也可通过
+`scannedThrough` 推进。source 不验证 `after` 是否等于上一个 page；consumer 自行保证本地 cursor 不后退。feed ID 只要求
 严格递增，不要求连续；`scannedThrough` 和下一条 item ID 都可以（MAY）跨越任意大的已删除或未分配空洞。
 
-publisher 可以（MAY）物理删除已确认 cursor 之前的 message-feed allocation。若 peer 长期不消费，publisher
-也可以（MAY）按本地保留策略丢弃仍未确认的旧 message allocation，并抬高内部 `retainedAfter`。当请求的
-`after` 低于 `resumeAfter` 时，publisher 返回 `FEDERATION_FEED_CURSOR_UNAVAILABLE`；consumer 验证后原子
-采用响应中的 `resumeAfter` 并继续，不执行全量同步。state 与 tombstone 的保留规则由各自 operation 定义。
+三个 feed 都是持久压缩投影，不得因时间、容量或历史清理建立 retained floor。旧 stable-key item 可被
+新 item 替换，但新 item 必须分配更大 feed ID。state feed 可按其 operation 规则省略已无可见性来源的
+member 投影。正文清理只影响 message query，不影响 feed；tombstone 事实永久保留。
 
-`feed-heads` 只携带 `origin`、`stateFeedEndId`、`messageFeedEndId` 和 `tombstoneFeedEndId`。publisher MUST
-从同一个已提交的 per-peer 同步视图读取三者，并把 `(S, M, D)` 作为不可拆分的 drain barrier 发布。每个
-barrier MUST 满足：所有 message `feedId <= M` 与 tombstone `feedId <= D` 都能够仅依赖 state
-`feedId <= S` 的投影完成身份解析、关系判断和历史 audience 验证。
+`feed-heads` 只携带 `origin`、`stateFeedEndId`、`messageFeedEndId` 和 `tombstoneFeedEndId`。三者是
+三个独立压缩 feed 的 inclusive 扫描上界，只用于唤醒和有界排空，不是 ACK、业务 revision 或 query seq。
+publisher 必须先提交 state 及其 feed 索引，再使依赖它的 data-feed item 可见。hint 可丢失、重复或乱序，
+不得成为唯一恢复载体。
 
-publisher MUST 先持久提交业务状态及其 state-feed allocation，再允许依赖该状态的数据 change 推进到
-可被 barrier 捕获的 data feed end。并发业务提交、buffer fill、重启恢复和 hint 发送都不得使
-`messageFeedEndId` 或 `tombstoneFeedEndId` 越过尚未进入对应 `stateFeedEndId` 的依赖。hint 只负责唤醒，可以丢失、重复或乱序；它不能成为上述一致性的
-唯一载体。
-
-consumer 收到 barrier `(S, M, D)` 后 MUST 按以下有界顺序排空：
+consumer 收到 hint `(S, M, D)` 后 MUST 使用各 feed 已提交的本地 cursor，按以下有界顺序排空：
 
 ```text
-state-feed?through=S
-message-tombstone-feed?through=D
-message-feed?through=M
+state-feed?after=<localStateCursor>&through=S
+message-tombstone-feed?after=<localTombstoneFeedCursor>&through=D
+message-feed?after=<localMessageFeedCursor>&through=M
 ```
 
-只有 durable state cursor 已提交到 `S`，才可以请求或应用该轮 `M`、`D` 窗口；message cursor 到达 `M`
-且 tombstone cursor 到达 `D` 后，该 barrier 才算排空。consumer 不得用当前无界 source end coordinate
-或 hint 到达顺序代替 `through`。并发到达的新 barrier 进入后续排空轮次，不得改变正在进行的 `(S, M, D)` 窗口。
-
-P2P audience 关闭时，`P2P_INTENT(REVOKED).messageFeedEndId` 记录该原子关闭点已经向目标 peer 可见的
-message-feed feed-ID inclusive 上界。属于该次已关闭关系的既有 allocation 只有在
-`feedId <= messageFeedEndId` 时才位于该历史边界内；该值是整个 per-peer feed 的坐标，边界位置可以属于
-其他 thread 或空洞，但不能属于独立的 tombstone feed。详细字段约束见 [State Feed](./state-feed.md#51-p2p)。consumer 因自身
-方向状态或本地策略丢弃单条消息时，仍 MUST 继续处理同页其他消息并提交 feed cursor。
-
-publisher 形成 barrier 后，必须保留足以完成这些有界读取的 state 版本与未确认 data allocation。
-state stable key 在 `S` 之后被覆盖时，`through=S` 仍必须得到截至 `S` 的最后有效版本；否则 publisher
-必须返回可重试的 `INTERNAL` 并停止该 barrier 的数据 feed，不能返回看似完整的空洞或要求 consumer
-cursor 前跳。具体版本表、snapshot、锁和队列实现不属于协议要求。
-
-consumer 可以对重复或乱序 barrier 的两个坐标分别取数值最大值，因为 publisher 的 feed-end barrier 单调且更大的
-state 上界只能提供更多依赖状态；合并结果仍必须作为一个新 `(maxS, maxM)` barrier 按上述顺序排空。
-启动和周期 reconciliation 即使没有收到 hint，也 MUST 读取当前一致 barrier 并执行相同流程。进程恢复
-时先确认已缓存 peer 的 root identity 和可用 signing certificate，再开始排空。
+必须先完整提交 state cursor 到 `S`，才能请求本轮两个索引 feed；不得并行拉取三个 feed。索引 item 只合并 thread end seq，实际内容通过
+`/messages` 和 `/message-tombstones` 查询。对同一 thread，先排空 tombstone query，再排空 message query。
+压缩可使某 item 在排空期间移到更大 feed ID；它必须通过后续 hint 或周期 reconciliation 被再次发现。
+consumer 可对重复或乱序 hint 的三个坐标分别取数值最大值。
+启动和周期 reconciliation 即使没有收到 hint，也 MUST 先使用本地 state cursor 读取并排空 state feed，
+再依次读取 tombstone 和 message feed；每个 feed 首个未携带 `through` 的成功 page 返回的 end 可固定为该次
+drain target，该首 page 计入本轮，后续 page 使用该 target 作为 `through`。三个 end 不要求来自跨 feed 原子
+snapshot。若索引 page 引用本地未知 thread，consumer MUST 回滚该索引 page、重新排空 state feed 后原样
+重试，而不是丢弃 item 或推进索引 cursor。对同一个未改变的索引 page 只执行一次这种恢复；完整 state
+排空后重试仍未知，必须把响应判为 protocol/binding conflict，保持索引 cursor、停止该 peer 的自动 data-feed
+排空并审计，不得无限重试或跳过 item。publisher 的 state-before-data allocation 顺序与该恢复规则共同
+避免“尚无 thread 却提交消息索引”。进程恢复时先确认已缓存 peer 的 root identity 和可用 signing
+certificate，再开始排空。
 
 媒体 content 只携带显式 digest，不携带 publisher 展示或下载 URL。媒体消息可先作为 durable pending
 work 提交，再由 consumer 按 outer message 授权坐标构造 `media/:digest` Range 请求。下载授权 必须（MUST）

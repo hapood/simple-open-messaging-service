@@ -3,17 +3,6 @@
   "$id": "urn:soms:federation:v1:message-feed",
   "title": "GET /s2s/v1/message-feed response data",
   "$defs": {
-    "userAddress": {
-      "type": "object",
-      "required": ["account", "domain"],
-      "properties": {
-        "account": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/userAccount"
-        },
-        "domain": { "$ref": "urn:soms:federation:v1:common#/$defs/domain" }
-      },
-      "additionalProperties": false
-    },
     "thread": {
       "oneOf": [
         {
@@ -39,7 +28,7 @@
               "maxItems": 2,
               "uniqueItems": true,
               "items": {
-                "$ref": "#/$defs/userAddress"
+                "$ref": "urn:soms:federation:v1:common#/$defs/address"
               }
             }
           },
@@ -47,100 +36,32 @@
         }
       ]
     },
-    "asset": {
+    "item": {
       "type": "object",
-      "required": ["digest", "bytes", "status"],
-      "properties": {
-        "digest": { "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex" },
-        "bytes": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
-        },
-        "status": { "enum": ["READY", "DELETED"] }
-      },
-      "additionalProperties": false
-    },
-    "quoteTarget": {
-      "type": "object",
-      "required": ["creator", "originSeq"],
-      "properties": {
-        "creator": { "$ref": "#/$defs/userAddress" },
-        "originSeq": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
-        }
-      },
-      "additionalProperties": false
-    },
-    "message": {
-      "type": "object",
-      "required": [
-        "feedId",
-        "thread",
-        "author",
-        "seq",
-        "originSeq",
-        "contentType",
-        "content",
-        "createdAt",
-        "updatedAt",
-        "clientMessageId",
-        "assets"
-      ],
+      "required": ["feedId", "thread", "messageEndSeq"],
       "properties": {
         "feedId": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/signedDecimalString"
+          "$ref": "urn:soms:federation:v1:common#/$defs/positiveDecimalString"
         },
         "thread": { "$ref": "#/$defs/thread" },
-        "author": { "$ref": "#/$defs/userAddress" },
-        "seq": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
-        },
-        "originSeq": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
-        },
-        "contentType": {
-          "enum": [
-            "PURE_TEXT",
-            "INVITE",
-            "IMAGE",
-            "VIDEO",
-            "FILE",
-            "AUDIO",
-            "LINK",
-            "CALL",
-            "FORWARD",
-            "GALLERY"
-          ]
-        },
-        "content": { "type": "string", "minLength": 2 },
-        "createdAt": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
-        },
-        "updatedAt": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
-        },
-        "clientMessageId": {
-          "oneOf": [
-            { "$ref": "urn:soms:federation:v1:common#/$defs/canonicalUuid" },
-            { "type": "null" }
-          ]
-        },
-        "quoteTarget": { "$ref": "#/$defs/quoteTarget" },
-        "assets": { "type": "array", "items": { "$ref": "#/$defs/asset" } }
+        "messageEndSeq": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+        }
       },
       "additionalProperties": false
     }
   },
   "type": "object",
-  "required": ["messages", "scannedThrough", "hasMore"],
+  "required": ["items", "scannedThrough", "messageFeedEndId", "hasMore"],
   "properties": {
-    "messages": { "type": "array", "items": { "$ref": "#/$defs/message" } },
+    "items": { "type": "array", "items": { "$ref": "#/$defs/item" } },
     "scannedThrough": {
-      "$ref": "urn:soms:federation:v1:common#/$defs/signedDecimalString"
+      "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
     },
-    "hasMore": { "type": "boolean" },
-    "retryAfterMs": {
-      "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
-    }
+    "messageFeedEndId": {
+      "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+    },
+    "hasMore": { "type": "boolean" }
   },
   "additionalProperties": false
 }

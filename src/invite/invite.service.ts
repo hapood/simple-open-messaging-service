@@ -1165,11 +1165,9 @@ export class InviteService {
     for (const peer of peers)
       await closeFederatedAudienceInTx(tx, peer.domain, threadId);
     await tx.execute(sql`
-      UPDATE "ThreadAudience" audience
-      SET "deliverThroughChangeId" = 0
+      DELETE FROM "ThreadAudience" audience
       WHERE audience."threadId" = ${threadId}
         AND audience."targetDomain" = 'local'
-        AND audience."deliverThroughChangeId" IS NULL
     `);
   }
 
@@ -1204,26 +1202,34 @@ export class InviteService {
       .returning({ id: threadParticipant.id });
     if (restored.length !== 2)
       throw new Error('retained P2P participants disappeared');
-    await tx
-      .update(threadAudience)
-      .set({ deliverThroughChangeId: null })
-      .where(
-        and(
-          eq(threadAudience.threadId, threadId),
-          eq(threadAudience.targetDomain, 'local'),
-        ),
-      );
-    const peers = await tx
-      .select({ domain: threadAudience.targetDomain })
-      .from(threadAudience)
-      .where(
-        and(
-          eq(threadAudience.threadId, threadId),
-          sql`${threadAudience.targetDomain} <> 'local'`,
-        ),
-      );
-    for (const peer of peers)
-      await openFederatedAudienceInTx(tx, peer.domain, threadId);
+    const participants = await tx
+      .select({
+        id: user.id,
+        domain: user.domain,
+      })
+      .from(user)
+      .where(inArray(user.id, [userAId, userBId]));
+    if (participants.length !== 2)
+      throw new Error('retained P2P audience participants disappeared');
+    const localAudiences = participants
+      .filter((participant) => participant.domain === 'local')
+      .map((participant) => ({
+        targetDomain: 'local',
+        localUserId: participant.id,
+        threadId,
+      }));
+    if (localAudiences.length > 0)
+      await tx
+        .insert(threadAudience)
+        .values(localAudiences)
+        .onConflictDoNothing();
+    const peerDomains = new Set(
+      participants
+        .map((participant) => participant.domain)
+        .filter((domain) => domain !== 'local'),
+    );
+    for (const peerDomain of peerDomains)
+      await openFederatedAudienceInTx(tx, peerDomain, threadId);
     return threadId;
   }
 
@@ -1335,8 +1341,7 @@ export class InviteService {
       })
       .where(eq(threadParticipant.threadId, threadId));
     await tx
-      .update(threadAudience)
-      .set({ deliverThroughChangeId: 0n })
+      .delete(threadAudience)
       .where(
         and(
           eq(threadAudience.threadId, threadId),

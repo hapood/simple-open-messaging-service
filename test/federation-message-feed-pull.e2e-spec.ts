@@ -53,44 +53,37 @@ describe('FederationMessageFeedPullService', () => {
     scannedThrough: bigint,
     feedIds: bigint[] = [],
     hasMore = false,
+    messageFeedEndId = scannedThrough,
   ): FederationMessageFeedPage => ({
-    scannedThrough: scannedThrough.toString(),
-    hasMore,
-    messages: feedIds.map((feedId) => ({
+    items: feedIds.map((feedId) => ({
       feedId: feedId.toString(),
       thread: { type: 'P2P', participants: [] },
-      author: { account: 'alice', domain: peerDomain },
-      seq: Number(feedId),
-      originSeq: Number(feedId),
-      contentType: 'PURE_TEXT',
-      content: '{}',
-      createdAt: 0,
-      updatedAt: 0,
-      isDeleted: false,
-      clientMessageId: null,
-      assets: [],
+      messageEndSeq: feedId.toString(),
     })),
+    scannedThrough: scannedThrough.toString(),
+    messageFeedEndId: messageFeedEndId.toString(),
+    hasMore,
   });
 
-  it('keeps pulling through a final empty acknowledgement page', async () => {
+  it('stops at the final non-empty page without an acknowledgement request', async () => {
     const requested: Array<bigint | undefined> = [];
     const applied: string[][] = [];
     const callbacks: FederationMessageFeedPullCallbacks = {
       fetch: async (after) => {
         requested.push(after);
-        if (after === 0n) return page(2n, [1n, 2n], true);
+        if (after === 0n) return page(2n, [1n, 2n], true, 5n);
         if (after === 2n) return page(5n, [3n, 5n]);
         return page(5n);
       },
       apply: async (_tx, value) => {
-        applied.push(value.messages.map((item) => item.feedId));
+        applied.push(value.items.map((item) => item.feedId));
       },
     };
 
     await service.run(peerDomain, callbacks);
 
-    expect(requested).toEqual([0n, 2n, 5n]);
-    expect(applied).toEqual([['1', '2'], ['3', '5'], []]);
+    expect(requested).toEqual([0n, 2n]);
+    expect(applied).toEqual([['1', '2'], ['3', '5']]);
     const cursor = await database.db.query.federationPullCursor.findFirst({
       where: eq(federationPullCursor.peerDomain, peerDomain),
     });
@@ -117,7 +110,7 @@ describe('FederationMessageFeedPullService', () => {
 
     await service.run(peerDomain, callbacks);
 
-    expect(requested).toEqual([0n, 0n, 1n]);
+    expect(requested).toEqual([0n, 0n]);
     const cursor = await database.db.query.federationPullCursor.findFirst({
       where: eq(federationPullCursor.peerDomain, peerDomain),
     });
@@ -162,7 +155,7 @@ describe('FederationMessageFeedPullService', () => {
     await Promise.all([initial, ...burst]);
 
     expect(maxActiveFetches).toBe(1);
-    expect(requested).toEqual([0n, 0n, 100n]);
+    expect(requested).toEqual([0n, 0n]);
     const cursor = await database.db.query.federationPullCursor.findFirst({
       where: eq(federationPullCursor.peerDomain, peerDomain),
     });

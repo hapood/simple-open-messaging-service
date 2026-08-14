@@ -12,16 +12,24 @@
 - `discovery.schema.json`：`/.well-known/soms`，包括多版本 `protocolVersions`。
 - `identity.schema.json`：Recognize、Healthy 与 feed-head hint 的 closed JSON shape。
 - `state-feed.schema.json`：完整 page 与六种 event body。
-- `message-feed.schema.json`：完整 page、outer message、thread 和 asset descriptor。
-- `message-tombstone-feed.schema.json`：撤回/治理删除 page、稳定 target 和 thread identity。
+- `message-feed.schema.json`：消息索引型压缩 feed page 与 `thread + messageEndSeq` item。
+- `message-tombstone-feed.schema.json`：墓碑索引型压缩 feed page 与 `thread + tombstoneEndSeq` item。
+- `message-query.schema.json`、`message-tombstone-query.schema.json`：thread query 返回的消息和权威删除事实。
 - `message-content.schema.json`：二次解析后的 11 种 message content。
 - `call.schema.json`：全部 call lifecycle、signal，以及每个 op 的 closed 条件字段集合。
 - `profile.schema.json`、`forward-bundle.schema.json`、`error.schema.json`：其他 JSON operation。
 - `http-parameters.schema.json`：规范化后的 query/path 参数对象。
-- `http-manifest.json`：完整 11-operation surface、鉴权、status、media type 和 Schema 映射。
+
+JSON Schema 检查参数的 closed shape、依赖关系和十进制规范形式。`PositiveSafeInteger` query string 的
+数值上限以及 `through >= after` 这类跨字段数值关系必须在解析为精确整数后执行语义校验；不得先转换为
+可能丢失精度的浮点数。语义失败按对应 operation 返回 `400 FEDERATION_MALFORMED`。
+
+- `http-manifest.json`：完整 operation surface、鉴权、status、media type 和 Schema 映射。
 - `vectors/valid.json`、`vectors/invalid.json`：正反 JSON 向量。
 - `vectors/http-message-signature.json`：通用固定 Ed25519 HTTP Message Signature 向量。
 - `vectors/call-http-message-signature.json`：完整签名 `/s2s/v1/call` 向量。
+- `vectors/feed-query-semantics.json`：state-first、固定 `through`、关系恢复、query 暂缓和未知 thread
+  恢复的结构化时序断言，供实现级状态机测试使用。
 
 ## 校验
 

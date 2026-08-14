@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:soms:federation:v1:message-tombstone-query",
+  "title": "GET /s2s/v1/message-tombstones response data",
+  "$defs": {
+    "tombstone": {
+      "type": "object",
+      "required": ["deletionSeq", "thread", "target", "type", "deletedAt"],
+      "properties": {
+        "deletionSeq": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/positiveDecimalString"
+        },
+        "thread": {
+          "$ref": "urn:soms:federation:v1:message-feed#/$defs/thread"
+        },
+        "target": {
+          "type": "object",
+          "required": ["creator", "originSeq"],
+          "properties": {
+            "creator": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/address"
+            },
+            "originSeq": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+            }
+          },
+          "additionalProperties": false
+        },
+        "type": { "enum": ["WITHDRAW", "REPORT"] },
+        "deletedAt": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "type": "object",
+  "required": ["tombstones", "scannedThrough", "hasMore"],
+  "properties": {
+    "tombstones": { "type": "array", "items": { "$ref": "#/$defs/tombstone" } },
+    "scannedThrough": {
+      "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+    },
+    "hasMore": { "type": "boolean" }
+  },
+  "additionalProperties": false
+}

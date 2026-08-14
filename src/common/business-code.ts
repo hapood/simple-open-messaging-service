@@ -97,8 +97,8 @@ export enum BusinessCode {
   FEDERATION_DELIVERY_FAILED = 50008, // sync S2S send failed (peer unreachable/rejected) — user retries
   FEDERATION_PEER_BLOCKED = 50009, // registered fatal federation relationship conflict (HTTP 409)
   FEDERATION_GROUP_AUTHOR_LEFT = 50010, // retained business code for a remote group author that has left
-  FEDERATION_QUOTA_EXCEEDED = 50011, // a federated peer exceeded its daily-quota budget → HTTP 200; the
-  // body carries {category, limit, retryAfter = seconds to 00:00 UTC}). Returned on
+  FEDERATION_QUOTA_EXCEEDED = 50011, // a federated peer exceeded an implementation-defined quota → HTTP 200;
+  // the body carries only {retryAfter}. Returned on
   // state/message/media ingestion refuses internally (no peer-visible status). NEVER degrades the peer —
   // 429 is outside the degradation set in getSigned/sendSignedPost. See src/quota/.
   FEDERATION_PAYLOAD_TOO_LARGE = 50012, // a parsed federation item exceeds its operation limit → HTTP 200
@@ -110,13 +110,13 @@ export enum BusinessCode {
   FEDERATION_LOCAL_IDENTITY_LOST = 50014, // local federation service cannot sign safely (HTTP 503)
   FEDERATION_IDENTITY_MISMATCH = 50015, // registered fatal root identity conflict (HTTP 409)
   FEDERATION_PEER_IDENTITY_LOST = 50016, // internal/local diagnostic; not a Federation v1 wire code
-  FEDERATION_FEED_REQUEST_IN_PROGRESS = 50018, // another request for this peer/feed is running (HTTP 200)
   FEDERATION_FEED_CURSOR_UNAVAILABLE = 50019, // missing/expired feed cursor; data returns { resumeAfter }
   FEDERATION_PROTOCOL_VERSION_UNSUPPORTED = 50020, // registered fatal version conflict (HTTP 409)
   FEDERATION_RANGE_NOT_SATISFIABLE = 50021,
-  FEDERATION_FEED_CURSOR_MISMATCH = 50022, // after is neither the confirmed nor last served cursor
   FEDERATION_PROFILE_NOT_DISCLOSED = 50023, // the user has chosen not to disclose the public profile
   // to this peer. A publisher MAY return NOT_FOUND instead to avoid revealing whether the account exists.
+  FEDERATION_MESSAGE_QUERY_RATE_LIMITED = 50024, // HTTP 200 + { retryAfter }; query cursor is unchanged
+  FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE = 50025, // HTTP 200 + { retryAfter }; peer is not degraded
 
   // 60xxx settings (admin-managed runtime config)
   VAPID_INVALID = 60001, // VAPID keypair failed validation (malformed / mismatched pair / bad subject)
@@ -156,12 +156,12 @@ export enum FederationV1WireErrorCode {
   FEDERATION_CAPABILITY_DISABLED = BusinessCode.FEDERATION_CAPABILITY_DISABLED,
   FEDERATION_LOCAL_IDENTITY_LOST = BusinessCode.FEDERATION_LOCAL_IDENTITY_LOST,
   FEDERATION_IDENTITY_MISMATCH = BusinessCode.FEDERATION_IDENTITY_MISMATCH,
-  FEDERATION_FEED_REQUEST_IN_PROGRESS = BusinessCode.FEDERATION_FEED_REQUEST_IN_PROGRESS,
   FEDERATION_FEED_CURSOR_UNAVAILABLE = BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
   FEDERATION_PROTOCOL_VERSION_UNSUPPORTED = BusinessCode.FEDERATION_PROTOCOL_VERSION_UNSUPPORTED,
   FEDERATION_RANGE_NOT_SATISFIABLE = BusinessCode.FEDERATION_RANGE_NOT_SATISFIABLE,
-  FEDERATION_FEED_CURSOR_MISMATCH = BusinessCode.FEDERATION_FEED_CURSOR_MISMATCH,
   FEDERATION_PROFILE_NOT_DISCLOSED = BusinessCode.FEDERATION_PROFILE_NOT_DISCLOSED,
+  FEDERATION_MESSAGE_QUERY_RATE_LIMITED = BusinessCode.FEDERATION_MESSAGE_QUERY_RATE_LIMITED,
+  FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE = BusinessCode.FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE,
   CALL_NOT_ALLOWED = BusinessCode.CALL_NOT_ALLOWED,
   CALL_BUSY = BusinessCode.CALL_BUSY,
   CALL_CANCELLED = BusinessCode.CALL_CANCELLED,

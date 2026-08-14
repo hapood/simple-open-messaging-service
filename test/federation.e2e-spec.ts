@@ -349,7 +349,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         expect(stub).toBeDefined();
         return stub;
       },
-      { timeout: 10_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
     expect(aliceStubB).toBeDefined();
     expect(aliceStubB!.isForeigner).toBe(true);
@@ -425,7 +425,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           expect(await findActiveP2pParticipant(app, peerId)).toBeDefined();
         }
       },
-      { timeout: 10_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
   });
 
@@ -490,7 +490,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         expect(stub).toBeDefined();
         return stub;
       },
-      { timeout: 10_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
     aliceStubIdOnB = aliceStub!.id;
     const reverse = await request(appB.baseUrl)
@@ -507,7 +507,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           await findActiveP2pParticipant(appB, aliceStubIdOnB),
         ).toBeDefined();
       },
-      { timeout: 10_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
   }
 
@@ -670,7 +670,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         importedOnB = await findLatestForwardMessage(appB, aliceStubIdOnB);
         expect(importedOnB?.forwardMessage?.bundle.depth).toBe(1);
       },
-      { timeout: 8000 },
+      { timeout: 5000 },
     );
 
     const clientMessageIdB = randomUUID();
@@ -701,7 +701,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           });
         expect(closure).toHaveLength(1);
       },
-      { timeout: 8000 },
+      { timeout: 5000 },
     );
   }, 30_000);
 
@@ -848,7 +848,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         expect(asset).toBeDefined();
         expect(asset!.isDeleted).toBe(false);
       },
-      { timeout: 8000 },
+      { timeout: 5000 },
     );
 
     // Resume proven: the first media range was issued ≥2 times through the proxy (the initial call
@@ -896,7 +896,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         expect(a?.avatar).not.toBe(avatarBefore); // re-pulled to the new avatar
         return a!;
       },
-      { timeout: 8000 },
+      { timeout: 5000 },
     );
     expect(after.avatar).toMatch(/^\/uploads\/.+-512\.webp$/);
     expect(after.remoteProfileRev!).toBeGreaterThanOrEqual(
@@ -1004,7 +1004,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         });
         expect(card).toBeDefined();
       },
-      { timeout: 8000 },
+      { timeout: 5000 },
     );
 
     // Bob authors only the local USER→GROUP direction. Hold the origin's
@@ -1020,7 +1020,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       expect(accept.body.code).toBe(BusinessCode.OK);
       await vi.waitFor(
         () => expect(proxy.blockedStateFeedCount()).toBeGreaterThan(0),
-        { timeout: 10_000, interval: 100 },
+        { timeout: 5000, interval: 100 },
       );
       const pendingDetail = await request(appB.baseUrl)
         .post('/api/v1/invite/detail')
@@ -1064,7 +1064,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           });
         expect(bobOnMirror).toBeDefined();
       },
-      { timeout: 10_000 },
+      { timeout: 5000 },
     );
 
     const confirmedMemberships = await appB.database
@@ -1117,7 +1117,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           expect(joined).toHaveLength(1);
         }
       },
-      { timeout: 10_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
 
     // alice (origin local member) sends a group message → appB mirror pulls it from the origin hub.
@@ -1148,7 +1148,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           expect(msg).toBeDefined();
           helloGroupSeq = msg!.seq;
         },
-        { timeout: 8000 },
+        { timeout: 5000 },
       );
       // ...AND arrives on bob's real SSE stream (identity-only NEW_MESSAGE signal, end-to-end cross-server).
       await waitForSseEvent(
@@ -1208,7 +1208,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           }),
         ).not.toBeNull();
       },
-      { timeout: 8000 },
+      { timeout: 5000 },
     );
 
     // No chat-open request is made. The durable global feed is the recovery mechanism; old
@@ -1241,7 +1241,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         });
         expect(inv).toBeDefined();
       },
-      { timeout: 5000 },
+      { timeout: 5000, interval: 100 },
     );
     const aliceStubForDave = await appB.database.query.user.findFirst({
       where: and(eq(user.account, 'alice'), eq(user.domain, DOM_A)),
@@ -1276,7 +1276,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         `);
         expect(pairThread.rows[0]).toBeDefined();
       },
-      { timeout: 5000 },
+      { timeout: 5000, interval: 100 },
     );
 
     // Invite dave to the SAME group bob is in; appB adds dave to the EXISTING mirror thread.
@@ -1344,7 +1344,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           .limit(1);
         expect(daveOnOrigin?.leftAt).toBeNull();
       },
-      { timeout: 8000 },
+      { timeout: 5000 },
     );
     await vi.waitFor(
       async () => {
@@ -1368,7 +1368,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           }),
         ).toBeDefined();
       },
-      { timeout: 8000 },
+      { timeout: 5000 },
     );
 
     // Open BOTH SSE streams; alice sends; assert BOTH bob AND dave receive it (the multi-local-member fan).
@@ -1433,7 +1433,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           expect(msg).toBeDefined();
           return msg!;
         },
-        { timeout: 8000 },
+        { timeout: 5000 },
       );
       const activeLocalRecipients = await appB.database
         .select({ userId: threadParticipant.userId })
@@ -1504,7 +1504,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         });
         expect(boundaryMessage).toBeDefined();
       },
-      { timeout: 10_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
   });
 
@@ -1533,7 +1533,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           }),
         ).toBeDefined();
       },
-      { timeout: 10_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
 
     const reinvite = await request(appA.baseUrl)
@@ -1552,7 +1552,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           });
         expect(requestRow?.status).toBe('REQUESTED');
       },
-      { timeout: 10_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
     const rejoin = await request(appB.baseUrl)
       .post('/api/v1/group/join-request')
@@ -1580,7 +1580,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           }),
         ).toBeDefined();
       },
-      { timeout: 10_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
   });
 
@@ -1602,7 +1602,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           });
         expect(daveOnOrigin?.leftAt).not.toBeNull();
       },
-      { timeout: 10_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
 
     proxy.blockMessageFeed(true);
@@ -1619,7 +1619,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       expect(finalBeforeLeave.body.code).toBe(BusinessCode.OK);
       await vi.waitFor(
         () => expect(proxy.blockedMessageFeedCount()).toBeGreaterThan(0),
-        { timeout: 10_000, interval: 100 },
+        { timeout: 5000, interval: 100 },
       );
 
       const bobLeave = await request(appB.baseUrl)
@@ -1650,17 +1650,17 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             }),
           ]);
           expect(bobOnOrigin?.leftAt).not.toBeNull();
-          expect(originAudience?.deliverThroughChangeId).not.toBeNull();
+          expect(originAudience).toBeUndefined();
           expect(bobOnMirror?.leftAt).not.toBeNull();
         },
-        { timeout: 15_000, interval: 100 },
+        { timeout: 5000, interval: 100 },
       );
     } finally {
       proxy.blockMessageFeed(false);
     }
 
-    // Although GROUP_META closed the mirror first, the already allocated final
-    // item remains authorized by the inclusive peer boundary and is persisted.
+    // Although GROUP_META closed the mirror first, the permanent delivery proof
+    // keeps the already indexed final item queryable as a historical fact.
     await vi.waitFor(
       async () => {
         expect(
@@ -1675,7 +1675,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           }),
         ).toBeDefined();
       },
-      { timeout: 15_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
 
     const targetBeforeGap =
@@ -1725,7 +1725,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           });
         expect(invite?.status).toBe('REQUESTED');
       },
-      { timeout: 10_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
     const bobRejoin = await request(appB.baseUrl)
       .post('/api/v1/group/join-request')
@@ -1755,11 +1755,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             ),
           }),
         ]);
-        expect(originAudience?.deliverThroughChangeId).toBeNull();
-        expect(localAudience?.deliverThroughChangeId).toBeNull();
+        expect(originAudience).toBeDefined();
+        expect(localAudience).toBeDefined();
         expect(bobOnMirror?.leftAt).toBeNull();
       },
-      { timeout: 15_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
 
     // Rejoin reuses the same mirror id, does not backfill the no-member gap,
@@ -1793,7 +1793,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           }),
         ).toBeDefined();
       },
-      { timeout: 15_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
   }, 90_000);
 
@@ -1864,7 +1864,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           alreadyJoined: true,
         });
       },
-      { timeout: 30_000, interval: 150 },
+      { timeout: 5000, interval: 150 },
     );
   }, 60_000);
 
@@ -1883,7 +1883,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         expect(row).toBeDefined();
         return row!;
       },
-      { timeout: 10_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
 
     // The owner is already member #1. Fill the origin roster to its local
@@ -1919,7 +1919,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       expect(accepted.body.code).toBe(BusinessCode.OK);
       await vi.waitFor(
         () => expect(proxy.blockedStateFeedCount()).toBeGreaterThan(0),
-        { timeout: 15_000, interval: 100 },
+        { timeout: 5000, interval: 100 },
       );
       const pending = await request(appB.baseUrl)
         .post('/api/v1/invite/detail')
@@ -1955,7 +1955,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           });
         expect(mirrorParticipant).toBeUndefined();
       },
-      { timeout: 15_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
     const [originCount] = await appA.database
       .select({ value: count() })
@@ -2069,7 +2069,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           }),
         ).toBeDefined();
       },
-      { timeout: 20_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
     await vi.waitFor(
       async () => {
@@ -2080,7 +2080,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           await findActiveP2pBetween(appB, bobLocalIdB, aliceStubIdOnB),
         ).toEqual(oldThreadB);
       },
-      { timeout: 20_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
 
     const [resumedAudience, targetBeforeContinue, peerBeforeContinue] =
@@ -2098,7 +2098,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           where: eq(federatedPeer.domain, DOM_B),
         }),
       ]);
-    expect(resumedAudience?.deliverThroughChangeId).toBeNull();
+    expect(resumedAudience).toBeDefined();
     expect(peerBeforeContinue?.trustLevel).toBe('available');
 
     const continued = await request(appA.baseUrl)
@@ -2131,7 +2131,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           }),
         ).toBeDefined();
       },
-      { timeout: 10_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
   });
 
@@ -2490,7 +2490,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         expect(peer).toBeUndefined();
         expect(tombstone?.reinitPending).toBe(true);
       },
-      { timeout: 20_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
 
     const affectedIds = affectedBefore.rows.map((row) => row.id);

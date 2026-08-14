@@ -140,7 +140,7 @@ describe('Federation destructive reset', () => {
         expect(peer).toBeUndefined();
         expect(tombstone?.reinitPending).toBe(true);
       },
-      { timeout: 20_000, interval: 100 },
+      { timeout: 5000, interval: 100 },
     );
 
     const shell = await appA.database.query.messageThread.findFirst({

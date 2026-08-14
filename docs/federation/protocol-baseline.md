@@ -1,6 +1,6 @@
 # SOMS 联邦协议实现基线
 
-> 本文是 SOMS 当前实现基线，不是第三方实现必须复制的数据模型。规范性 wire contract 以
+> 本文是 SOMS 的目标实现基线，当前代码尚待按此迁移；它不是第三方实现必须复制的数据模型。规范性 wire contract 以
 > [Federation Protocol v1](./spec/v1/protocol.md)为准；本文中的数据库字段、本地限制和后台任务
 > 仅用于解释本项目如何满足协议。详细实现字段见 [S2S API](../api/federation-s2s-api.md)。
 
@@ -15,6 +15,8 @@
 | `GET`  | `/s2s/v1/state-feed`                | PROFILE、好友方向事实、群方向事实和 origin 群快照。 |
 | `GET`  | `/s2s/v1/message-feed`              | durable message discovery feed。                    |
 | `GET`  | `/s2s/v1/message-tombstone-feed`    | durable message deletion tombstone feed。           |
+| `GET`  | `/s2s/v1/messages`                  | 按 thread 查询具体消息。                            |
+| `GET`  | `/s2s/v1/message-tombstones`        | 按 thread 查询永久权威删除事实。                    |
 | `POST` | `/s2s/v1/call`                      | 临时 WebRTC 生命周期和 SDP/ICE relay。              |
 | `GET`  | `/s2s/v1/users/:account`            | 首次用户查询所需的完整公开 profile。                |
 | `GET`  | `/s2s/v1/media/:digest`             | 绑定精确消息/thread 所有权的 CAS Range 下载。       |
@@ -49,27 +51,24 @@ pinning 和出站防火墙属于节点部署选择，不是 Federation v1 wire c
   的最终权威。
 - `PROFILE` 独立带 revision；群 meta JSON 不嵌头像。群成员服务器可直接应用 origin relay 的
   成员 PROFILE。
-- 相同或更旧业务 revision 是完整 no-op：不写业务行、不刷新 `updatedAt`、不写投影、不生成
-  feed、不触发下游。
+- 相同或更旧业务 revision 不改写 body；为维持 member-before-group 当前投影顺序，可以对语义相同的
+  `GROUP_META` 做 dependency-repair feed reindex。
 - per-peer state feed 按 key 压缩。transport `feedId`/cursor 使用 bigint，stable-key 业务
   `revision` 使用 int；两者不可混用。
 - state feed page 与 receiver cursor 同事务提交；任一非法 state item 回滚整页。
-- message feed 逐条使用 savepoint 隔离；非法 message item 记 error 并跳过，页面内其余消息继续提交，
-  cursor 仍推进到 `scannedThrough`。
+- state feed 中 member 快照先于引用它的群 revision；最后可见性来源消失时直接从投影删除，
+  consumer 在完整 state drain 后做引用闭包清理。
 
 ## 消息与媒体
 
 - wake-up 不携正文；receiver 冻结三个独立上界，并按 state、tombstone、message 顺序排空。
-- 三个 feed 的 `feedId` 空间、ACK 与 pull cursor 彼此独立；跨 feed 比较 ID 没有意义。
-- message discovery change 与 message/audience 原子提交。
-- feed 按目标 peer 分配。节点从作者服务器 X 拉取并提交消息后，将 self-authored item 分配回 X
-  作为持久投递回执：`originSeq` 标识 X 发布的源序列，item `createdAt` 是接收节点的持久化时间；
-  X 关联原消息但不得重复插入。
+- 三个 feed 的 `feedId` 空间和 consumer 本地 cursor 彼此独立；source 不维护 ACK 或单调验证 cursor。
+- message/tombstone feed 只是按 `(peer, thread)` 压缩的 end-seq 索引，具体 array 由 thread query 返回。
 - 从 peer X 拉取的第三方 authored relay 消息不得直接反射回 X，但仍可分配给作者服务器或其他
   已授权 audience。
 - SOMS 当前用 nullable `Message.originSeq/originServerTime` 记录上述回执只是本地实现，不是联邦
   协议要求的数据库模型。
-- message-feed 未知 content type 统一按非法 item 处理。
+- message query 未知 content type 统一按非法 message 处理；索引型 message-feed 不携带 content。
 - 退群成员关系通过 state feed 收敛；最后一个本地成员离开时固定 peer audience 交付边界。
 - 同服务器仍有其他群成员时，共享镜像继续保存消息，退群者重新加入后可查看期间历史；最后一个
   成员离开时冻结 peer audience，重新加入复用镜像并恢复后续消息，但不补无人订阅期间的历史。
@@ -77,8 +76,8 @@ pinning 和出站防火墙属于节点部署选择，不是 Federation v1 wire c
   加配额后自动唤醒。
 - CAS 和 forward bundle 下载均验证精确消息/thread 所有权和 digest/bundle 绑定。
 - 资源授权实时 join signer 的 thread audience，不依赖可被 GC 的 message change。
-- 已确认 feed allocation 可物理清理；长期不消费的 peer 可按本地策略推进 message retained floor，旧
-  cursor 通过 `FEDERATION_FEED_CURSOR_UNAVAILABLE` 携带的 `resumeAfter` 恢复。
+- 三个 feed 当前压缩投影不清理；message query 正文可按保留策略清理并返回更高 `resumeAfter`，
+  tombstone 事实永久保留。
 
 ## 当前限制
 

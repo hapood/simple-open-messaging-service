@@ -3,8 +3,8 @@
 状态：`REVIEW`
 规范性：本文全部为规范性要求，除非段落明确标记为“非规范性实现说明”。
 
-本文定义 message-feed 中每个 message 的 wire 结构、全部 `contentType`、接收处理方式和附件拉取。
-Feed cursor、分页和确认语义见 [Message Feed](./message-feed.md)，资源 HTTP operation 见
+本文定义 message query 中每个 message 的 wire 结构、全部 `contentType`、接收处理方式和附件拉取。
+Feed 与 query 分页语义见 [Message Feed and Query](./message-feed.md)，资源 HTTP operation 见
 [Resources](./resources.md)。
 
 ## 1. 类型与处理总览
@@ -24,16 +24,16 @@ Feed cursor、分页和确认语义见 [Message Feed](./message-feed.md)，资�
 | `INVITE`      | 保存群邀请消息快照；群成员权威状态仍由 state-feed 决定                                     | `assets` 必须为空                           |
 | `CALL`        | 保存通话结束后的 durable terminal message；不得当作实时 signaling frame                    | `assets` 必须为空                           |
 | `FORWARD`     | 校验并保存 forward manifest/closure；closure 内消息保持作者坐标                            | 按 forward bundle 和 closure asset 规则拉取 |
-| `SYSTEM`      | 不属于 federation message-feed；收到时必须拒绝该 item                                      | 不适用                                      |
+| `SYSTEM`      | 不属于 federation message query；收到时必须拒绝该 item                                     | 不适用                                      |
 
 consumer 对每个 item 的通用处理顺序：
 
-1. 校验 thread、author、feed ID 和所有外层字段。
+1. 校验 thread、author、query seq 和所有外层字段。
 2. 根据 `contentType` 解析并校验 `content`。
 3. 校验 `assets` 与 content 中显式引用的 digest 集合完全一致。
 4. 使用 `(thread, author, originSeq)` 幂等落库；不得按 `seq` 或时间去重。
 5. 将尚未下载的资源保存为 durable pending work，再按资源接口拉取。
-6. 按本地策略确定该 item 的处理结果；单条坏消息和后续资源失败不得永久阻塞同页其他消息或 feed
+6. 按本地策略确定该 item 的处理结果；单条坏消息和后续资源失败不得永久阻塞同页其他消息或 query
    cursor。资源可作为 durable pending work 在 cursor 提交后继续处理。
 
 ## 2. 顺序与时间语义
@@ -49,18 +49,13 @@ message wire 中没有客户端权威的 `date` 字段。顺序和时间只使�
   它是服务器落库时间，不是客户端发送时间、设备时间或跨 server 全局排序时间。
 - `updatedAt`：当前 publisher 最后一次持久更新该 Message 副本的 epoch milliseconds，MUST
   大于或等于 `createdAt`。它同样是服务器数据库时间。
-- `feedId`：message-feed 的投递/扫描坐标，只在该 source peer 的 feed 内有意义，不等于
-  thread `seq`。
 
 group origin 接受 submission 时会产生自己的 `seq`、`createdAt` 和 `updatedAt`，因此这些字段在不同 publisher 返回的
 同一 authored message 上可以不同。consumer MUST 使用 `(thread, author, originSeq)` 关联重复消息
 和 self-authored receipt。跨 thread 或跨 server 展示排序不得假设不同服务器时钟严格同步。
 
-message-feed 默认会把 pull peer 自己 authored 的消息返回给它。这条 self-authored item 表示该
-source 已经持久化该消息，并携带 source 本地生成的 `seq/createdAt/updatedAt`。请求使用
-`excludeSelf=true` 时，source 仍扫描这些 change，但不返回 item；pull peer 因此明确放弃这类落库
-回执和 source 本地坐标。若一页全部被过滤，pull peer 仍须提交 `scannedThrough`，并在
-`hasMore=true` 时继续拉取。
+message query MAY 返回 pull peer 自己 authored 且已由 source 持久化的消息。consumer 使用稳定 authored
+identity 将它作为幂等回执合并，不得创建重复消息。
 
 content 内部若另有业务时间，例如 CALL 的 `startedAt`、`endedAt`，其语义由对应 content schema
 单独定义，不能替代外层数据库时间。
@@ -89,7 +84,6 @@ interface QuoteTarget {
 }
 
 interface FederatedMessage {
-  feedId: SignedDecimalString;
   thread: ThreadAddress;
   author: Address;
   seq: number;
@@ -104,7 +98,6 @@ interface FederatedMessage {
 }
 ```
 
-- `feedId` 是对目标 peer 的 feed allocation 坐标。
 - GROUP identity 由 `thread.account/domain` 标识。P2P `participants` MUST 恰好包含两个不同 address，
   且包含 author；顺序无语义。GROUP 的 `account` 必须是 `GroupAccount`；message author 和 P2P participant
   的 `account` 必须是 `UserAccount`。consumer 以规范化 Address 的 `(domain, account)` ASCII
@@ -254,8 +247,7 @@ media content 不携带 publisher 展示 URL。每个资源使用显式 `digest`
 [媒体资源 operation](./resources.md#31-operation-与精确授权坐标)。
 
 publisher 必须通过 signer 的 thread audience 授权资源访问，并验证 digest 与精确消息的绑定；
-不得使用内存 message-feed allocation 作为下载授权，因为 feed 引用可以在消息
-确认后被物理清理。
+不得使用 message-feed 索引 item 作为下载授权。feed 只负责发现 thread query 上界，不是资源权限 proof。
 
 ```ts
 interface ImageContent {

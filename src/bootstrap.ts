@@ -228,6 +228,18 @@ export async function configureApp(
         path: `${FEDERATION_API_PREFIX}/message-feed`,
         method: RequestMethod.GET,
       },
+      {
+        path: `${FEDERATION_API_PREFIX}/message-tombstone-feed`,
+        method: RequestMethod.GET,
+      },
+      {
+        path: `${FEDERATION_API_PREFIX}/messages`,
+        method: RequestMethod.GET,
+      },
+      {
+        path: `${FEDERATION_API_PREFIX}/message-tombstones`,
+        method: RequestMethod.GET,
+      },
       { path: `${FEDERATION_API_PREFIX}/call`, method: RequestMethod.POST },
       {
         path: `${FEDERATION_API_PREFIX}/users/:account`,

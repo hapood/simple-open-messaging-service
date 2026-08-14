@@ -6,9 +6,8 @@ import {
 import type { FederationMessageFeedPage } from './federation-message-feed.service.js';
 
 const item = (
-  feedId: string,
+  sequence: string,
 ): FederationMessageFeedPage['messages'][number] => ({
-  feedId,
   thread: {
     type: 'P2P',
     participants: [
@@ -17,10 +16,10 @@ const item = (
     ],
   },
   author: { account: 'alice', domain: 'local.test' },
-  seq: Number(feedId),
-  originSeq: Number(feedId),
+  seq: Number(sequence),
+  originSeq: Number(sequence),
   contentType: 'PURE_TEXT',
-  content: JSON.stringify({ text: `message ${feedId}` }),
+  content: JSON.stringify({ text: `message ${sequence}` }),
   createdAt: Date.now(),
   updatedAt: Date.now(),
   clientMessageId: null,
@@ -66,7 +65,9 @@ describe('federation message context isolation', () => {
         tx as never,
         'group-origin.test',
         {
+          items: [],
           scannedThrough: '1',
+          messageFeedEndId: '1',
           hasMore: false,
           messages: [item('1')],
         },
@@ -81,7 +82,7 @@ describe('federation message context isolation', () => {
     });
   });
 
-  it('logs and skips a missing relationship while continuing the same page', async () => {
+  it('rolls back a page that references an unknown thread', async () => {
     const service = Object.create(
       FederationService.prototype,
     ) as FederationService & Record<string, unknown>;
@@ -120,7 +121,9 @@ describe('federation message context isolation', () => {
       })),
     };
     const page: FederationMessageFeedPage = {
+      items: [],
       scannedThrough: '2',
+      messageFeedEndId: '2',
       hasMore: false,
       messages: [item('1'), item('2')],
     };
@@ -132,11 +135,9 @@ describe('federation message context isolation', () => {
         page,
         {} as never,
       ),
-    ).resolves.toEqual([]);
-    expect(resolve).toHaveBeenCalledTimes(2);
-    expect(logger.error).toHaveBeenCalledWith(
-      expect.stringContaining('friend/thread is absent'),
-    );
+    ).rejects.toThrow('friend/thread is absent');
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(logger.error).not.toHaveBeenCalled();
   });
 
   it('logs and skips malformed wire data instead of aborting the page', async () => {
@@ -162,7 +163,9 @@ describe('federation message context isolation', () => {
         tx as never,
         'peer.test',
         {
+          items: [],
           scannedThrough: '1',
+          messageFeedEndId: '1',
           hasMore: false,
           messages: [malformed],
         },
@@ -200,7 +203,9 @@ describe('federation message context isolation', () => {
           tx as never,
           'peer.test',
           {
+            items: [],
             scannedThrough: '1',
+            messageFeedEndId: '1',
             hasMore: false,
             messages: [unknown],
           },

@@ -252,6 +252,15 @@
       "value": { "code": 50011, "message": "peer quota exceeded" }
     },
     {
+      "name": "quota error exposes implementation policy",
+      "schema": "urn:soms:federation:v1:error",
+      "value": {
+        "code": 50011,
+        "message": "peer quota exceeded",
+        "data": { "category": "files", "limit": 1000, "retryAfter": 60 }
+      }
+    },
+    {
       "name": "ordinary error carries unregistered structured data",
       "schema": "urn:soms:federation:v1:error",
       "value": {
@@ -267,6 +276,15 @@
         "code": 50019,
         "message": "requested cursor is below retained floor",
         "data": { "availableCursor": "100" }
+      }
+    },
+    {
+      "name": "message-query retry error omits retryAfter",
+      "schema": "urn:soms:federation:v1:error",
+      "value": {
+        "code": 50024,
+        "message": "message query rate limited",
+        "data": {}
       }
     }
   ]

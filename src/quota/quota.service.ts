@@ -121,7 +121,7 @@ export class QuotaService implements OnModuleInit {
         BusinessCode.FEDERATION_QUOTA_EXCEEDED,
         `daily quota exceeded: ${category} ${count}/${limit} (resets in ${retryAfter}s)`,
         HttpStatus.OK,
-        { category, limit, retryAfter },
+        { retryAfter },
       );
     }
   }
@@ -172,7 +172,7 @@ export class QuotaService implements OnModuleInit {
           BusinessCode.FEDERATION_QUOTA_EXCEEDED,
           `daily quota exceeded: ${category} ${count}/${limit} (resets in ${retryAfter}s)`,
           HttpStatus.OK,
-          { category, limit, retryAfter },
+          { retryAfter },
         );
       }
     };
@@ -383,7 +383,7 @@ export class QuotaService implements OnModuleInit {
           curBytes + addBytes
         ).toString()}/${limits.fileBytes}`,
         HttpStatus.OK,
-        { category: 'files', limit: limits.file, retryAfter },
+        { retryAfter },
       );
     }
   }

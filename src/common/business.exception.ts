@@ -25,7 +25,7 @@ export class BusinessException extends HttpException {
     httpStatus: HttpStatus = HttpStatus.OK,
     /** Optional structured payload surfaced on the response envelope's `data` field (the filter
      *  passes it through verbatim; absent → `data: null` as usual). Use for error context the client
-     *  can act on — e.g. a quota hit's `{category, limit, retryAfter}` or a rate-limit's `retryAfter`. */
+     *  can act on — e.g. a quota or rate-limit result's `{retryAfter}`. */
     public readonly data?: unknown,
   ) {
     // Stash the domain code + data inside the response object so the filter can read them without a

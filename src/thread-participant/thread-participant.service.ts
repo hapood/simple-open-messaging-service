@@ -394,11 +394,9 @@ export class ThreadParticipantService {
         // Local visibility ends immediately. A remote audience is drained and closed by the helper;
         // its returned feed ID is the exact inclusive delivery boundary carried by REVOKE.
         await tx.execute(sql`
-          UPDATE "ThreadAudience" audience
-          SET "deliverThroughChangeId" = 0
+          DELETE FROM "ThreadAudience" audience
           WHERE audience."threadId" = ${threadId}
             AND audience."targetDomain" = 'local'
-            AND audience."deliverThroughChangeId" IS NULL
         `);
         if (peer?.domain && peer.domain !== 'local') {
           revokedMessageFeedEndId = await closeFederatedAudienceInTx(

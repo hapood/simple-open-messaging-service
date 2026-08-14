@@ -4,8 +4,8 @@ import { FederationCursorService } from './federation-cursor.service.js';
 import { FederationFeedFulfiller } from './federation-feed-fulfiller.service.js';
 import {
   FederationFeedFillState,
-  FederationMemoryFeedService,
-} from './federation-memory-feed.service.js';
+  FederationMessageFeedIndexerService,
+} from './federation-message-feed-indexer.service.js';
 
 function setup(
   initial: Record<string, FederationFeedFillState>,
@@ -25,14 +25,14 @@ function setup(
       work: maxWork > 0 ? 1 : 0,
     };
   });
-  const memoryFeed = {
+  const messageIndexer = {
     state: vi.fn(
       (peerDomain: string) =>
         states.get(peerDomain) ?? FederationFeedFillState.NEEDS_FILL,
     ),
     fill,
     fillQuantum,
-  } as unknown as FederationMemoryFeedService;
+  } as unknown as FederationMessageFeedIndexerService;
   const tombstoneFeed = {
     state: vi.fn(
       (peerDomain: string) =>
@@ -63,7 +63,7 @@ function setup(
   const events = new EventEmitter2();
   const service = new FederationFeedFulfiller(
     database as never,
-    memoryFeed,
+    messageIndexer,
     tombstoneFeed as never,
     cursor,
     events,
