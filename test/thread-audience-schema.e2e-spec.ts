@@ -56,7 +56,17 @@ describe('ThreadAudience schema', () => {
         'scope',
         'creatorUserId',
         'deliverThroughChangeId',
+        'remoteRelationshipRev',
       ]),
+    );
+
+    const peerColumns = await database.pool.query<{ column_name: string }>(
+      `SELECT column_name
+       FROM information_schema.columns
+       WHERE table_name = 'FederatedPeer'`,
+    );
+    expect(peerColumns.rows.map((row) => row.column_name)).not.toContain(
+      'addedBy',
     );
   });
 
@@ -87,7 +97,7 @@ describe('ThreadAudience schema', () => {
     );
   });
 
-  it('installs compacted feed indexes and removes database change queues and allocations', async () => {
+  it('installs compacted feeds and removes superseded federation storage', async () => {
     const tables = await database.pool.query<{ table_name: string }>(
       `SELECT table_name
        FROM information_schema.tables
@@ -103,6 +113,10 @@ describe('ThreadAudience schema', () => {
           'FederationTombstoneFeedIndex',
           'FederationMessageFeedAllocation',
           'FederationTombstoneFeedAllocation',
+          'FederationAudienceEpoch',
+          'FederationThreadCheckpoint',
+          'FederationTombstoneCheckpoint',
+          'FederationP2PHistoryGrant',
         ],
       ],
     );
@@ -164,5 +178,14 @@ describe('ThreadAudience schema', () => {
     expect(
       cursorChecks.has('FederationServeCursor_lastServedThrough_check'),
     ).toBe(false);
+
+    const obsoleteFunctions = await database.pool.query<{ proname: string }>(
+      `SELECT proname
+       FROM pg_proc
+       JOIN pg_namespace ON pg_namespace.oid = pg_proc.pronamespace
+       WHERE pg_namespace.nspname = 'public'
+         AND proname = 'soms_sync_federation_tombstone_checkpoint'`,
+    );
+    expect(obsoleteFunctions.rows).toEqual([]);
   });
 });

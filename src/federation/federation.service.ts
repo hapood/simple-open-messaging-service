@@ -7159,8 +7159,7 @@ export class FederationService {
   /**
    * Admin-driven retry of a stalled inbound media batch (design doc §12.7). Resets files frozen in
    * DOWNLOADING (a crashed driver) or FAILED back to PENDING, restores the admitted download route
-   * persisted by global /missed (with a derivation fallback for legacy thread-pull batches), then
-   * fire-and-forgets runFileSyncBatch. Returns the
+   * persisted by global /missed, then fire-and-forgets runFileSyncBatch. Returns the
    * number of stuck files reset (FAILED/DOWNLOADING → PENDING); the admin observes progress via the
    * inbox list endpoint.
    */
@@ -7217,44 +7216,9 @@ export class FederationService {
     });
     const persistedAuth = parseInboundDownloadAuth(progress?.payload);
 
-    // Legacy thread-pull batches predate persisted route context. Keep the derivation fallback until
-    // that transport is removed; new global /missed batches never depend on it.
-    const creator = await this.database.db.query.user.findFirst({
-      where: eq(tables.user.id, batch.creatorId),
-      columns: { account: true, domain: true },
-    });
-    const thread = await this.database.db.query.messageThread.findFirst({
-      where: eq(tables.messageThread.id, batch.threadId),
-      columns: { groupUserId: true },
-    });
-    let toAccount: string | null = null;
-    if (thread?.groupUserId != null) {
-      const groupUser = await this.database.db.query.user.findFirst({
-        where: eq(tables.user.id, thread.groupUserId),
-        columns: { account: true },
-      });
-      toAccount = groupUser?.account ?? null;
-    } else {
-      const [localMember] = await this.database.db
-        .select({ account: tables.user.account })
-        .from(tables.threadParticipant)
-        .innerJoin(
-          tables.user,
-          eq(tables.threadParticipant.userId, tables.user.id),
-        )
-        .where(
-          and(
-            eq(tables.threadParticipant.threadId, batch.threadId),
-            isNull(tables.threadParticipant.leftAt),
-            eq(tables.user.domain, 'local'),
-          ),
-        )
-        .limit(1);
-      toAccount = localMember?.account ?? null;
-    }
-    const fromAccount = persistedAuth?.fromAccount ?? creator?.account;
-    const fromDomain = persistedAuth?.fromDomain ?? creator?.domain;
-    toAccount = persistedAuth?.toAccount ?? toAccount;
+    const fromAccount = persistedAuth?.fromAccount;
+    const fromDomain = persistedAuth?.fromDomain;
+    const toAccount = persistedAuth?.toAccount;
     if (
       !fromAccount ||
       !fromDomain ||
@@ -7264,7 +7228,7 @@ export class FederationService {
     ) {
       throw new BusinessException(
         BusinessCode.INTERNAL,
-        `cannot re-derive routing for batch ${batchId}`,
+        `inbound media batch ${batchId} has no persisted download route`,
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }

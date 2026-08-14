@@ -316,7 +316,6 @@ export const threadParticipant = pgTable(
     alias: varchar({ length: 64 }),
     recognizesFriend: boolean().default(true).notNull(),
     relationshipRev: integer().default(0).notNull(),
-    remoteRelationshipRev: integer(),
     leftAt: timestamp({ precision: 3, mode: 'date' }),
     createdAt: timestamp({ precision: 3, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
@@ -373,7 +372,7 @@ export const threadParticipant = pgTable(
     ),
     check(
       'ThreadParticipant_relationship_rev_check',
-      sql`${table.relationshipRev} >= 0 AND (${table.remoteRelationshipRev} IS NULL OR ${table.remoteRelationshipRev} >= 0)`,
+      sql`${table.relationshipRev} >= 0`,
     ),
   ],
 );
@@ -1445,7 +1444,6 @@ export const federatedPeer = pgTable(
   {
     domain: varchar({ length: 63 }).primaryKey().notNull(),
     trustLevel: varchar({ length: 31 }).default('unrecognized').notNull(),
-    addedBy: varchar({ length: 31 }),
     createdAt: timestamp({ precision: 3, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),

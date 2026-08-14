@@ -134,6 +134,12 @@ npm run db:status
 npm run db:baseline
 ```
 
+`database/migrations/0000_base.sql` is the current greenfield baseline. Because
+the migration history was intentionally compacted, databases carrying an older
+`schema_migrations` ledger must be recreated from this baseline; the runner will
+reject a mixed old/new ledger instead of silently accepting an unverifiable
+schema.
+
 ### 4. Start the Services
 
 ```bash
