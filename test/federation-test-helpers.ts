@@ -5,9 +5,11 @@ import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import request from 'supertest';
+import { and, eq } from 'drizzle-orm';
 import type { Database } from '../src/database/database.service.js';
 import {
   admin,
+  friendPair,
   mediaAsset,
   sessionToken,
   user,
@@ -120,6 +122,140 @@ export async function registerAndLogin(
     .returning({ id: user.id });
   const token = await seedSessionToken(app.database, u.id, 'app');
   return { id: u.id, token };
+}
+
+export async function resolveFederatedCard(
+  app: AppLike,
+  token: string,
+  account: string,
+  domain: string,
+): Promise<{ event: 'resolved' | 'failed'; data: Record<string, unknown> }> {
+  const response = await request(app.baseUrl)
+    .get('/api/v1/user/resolve-federated-stream')
+    .query({ account, domain })
+    .set('Authorization', `Bearer ${token}`)
+    .set('Accept', 'text/event-stream');
+  const event = /^event:\s*(resolved|failed)$/m.exec(response.text)?.[1] as
+    | 'resolved'
+    | 'failed'
+    | undefined;
+  const raw = /^data:\s*(.+)$/m.exec(response.text)?.[1];
+  if (response.status !== 200 || !event || !raw)
+    throw new Error(`invalid federated resolve stream: ${response.text}`);
+  return { event, data: JSON.parse(raw) as Record<string, unknown> };
+}
+
+/** Establish a new cross-server friendship through the no-stub Address flow. */
+export async function establishFederatedFriendship(params: {
+  local: AppLike;
+  remote: AppLike;
+  localUserId: number;
+  remoteUserId: number;
+  localToken: string;
+  remoteToken: string;
+  localAccount: string;
+  remoteAccount: string;
+  localDomain: string;
+  remoteDomain: string;
+  note?: string;
+}): Promise<{ remoteStubIdOnLocal: number; localStubIdOnRemote: number }> {
+  const card = await resolveFederatedCard(
+    params.local,
+    params.localToken,
+    params.remoteAccount,
+    params.remoteDomain,
+  );
+  if (card.event !== 'resolved')
+    throw new Error(
+      `federated card lookup failed: ${JSON.stringify(card.data)}`,
+    );
+  const sent = await request(params.local.baseUrl)
+    .post('/api/v1/invite/federated-friend')
+    .set('Authorization', `Bearer ${params.localToken}`)
+    .send({
+      account: params.remoteAccount,
+      domain: params.remoteDomain,
+      note: params.note ?? '',
+    });
+  if (sent.body.code !== 0)
+    throw new Error(`federated request failed: ${JSON.stringify(sent.body)}`);
+
+  let incomingId: string | undefined;
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const incoming = await request(params.remote.baseUrl)
+      .post('/api/v1/invite/incoming')
+      .set('Authorization', `Bearer ${params.remoteToken}`)
+      .send({});
+    incomingId = (
+      incoming.body.data as Array<{ id: string }> | undefined
+    )?.find((row) => row.id.startsWith('f:'))?.id;
+    if (incomingId) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  if (!incomingId) throw new Error('federated request did not reach remote');
+  const accepted = await request(params.remote.baseUrl)
+    .post('/api/v1/invite/accept')
+    .set('Authorization', `Bearer ${params.remoteToken}`)
+    .send({ inviteId: incomingId });
+  if (accepted.body.code !== 0)
+    throw new Error(
+      `federated accept failed: ${JSON.stringify(accepted.body)}`,
+    );
+
+  while (Date.now() < deadline + 10_000) {
+    const [remoteStub, localStub] = await Promise.all([
+      params.local.database.query.user.findFirst({
+        where: and(
+          eq(user.account, params.remoteAccount),
+          eq(user.domain, params.remoteDomain),
+        ),
+      }),
+      params.remote.database.query.user.findFirst({
+        where: and(
+          eq(user.account, params.localAccount),
+          eq(user.domain, params.localDomain),
+        ),
+      }),
+    ]);
+    if (remoteStub && localStub) {
+      const [localPair, remotePair] = await Promise.all([
+        params.local.database.query.friendPair.findFirst({
+          where: and(
+            eq(
+              friendPair.userLowId,
+              Math.min(params.localUserId, remoteStub.id),
+            ),
+            eq(
+              friendPair.userHighId,
+              Math.max(params.localUserId, remoteStub.id),
+            ),
+            eq(friendPair.active, true),
+          ),
+        }),
+        params.remote.database.query.friendPair.findFirst({
+          where: and(
+            eq(
+              friendPair.userLowId,
+              Math.min(params.remoteUserId, localStub.id),
+            ),
+            eq(
+              friendPair.userHighId,
+              Math.max(params.remoteUserId, localStub.id),
+            ),
+            eq(friendPair.active, true),
+          ),
+        }),
+      ]);
+      if (localPair && remotePair)
+        return {
+          remoteStubIdOnLocal: remoteStub.id,
+          localStubIdOnRemote: localStub.id,
+        };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error('federated friendship did not converge');
 }
 
 /** Create a SUPER_ADMIN identity + log in via the admin route, returning the admin_session cookie pair.

@@ -8,7 +8,7 @@ import {
   group,
   friendPair,
   friendRequest,
-  federationP2PHistoryGrant,
+  federatedFriendRequest,
   groupMembershipRequest,
   messageThread,
   threadAudience,
@@ -58,6 +58,11 @@ export type FriendRelationshipState =
   | 'INCOMING_PENDING'
   | 'FRIEND';
 
+export interface FederatedPendingProfileSnapshot {
+  displayName?: string;
+  avatar?: string;
+}
+
 /** Fields selected for the embedded inviter/recipient profile on list queries (never hashPwd — it is
  *  sensitive). */
 const USER_SELECT = {
@@ -95,6 +100,142 @@ export class InviteService {
     private readonly messageFanout?: Pick<MessageFanoutService, 'dispatch'>,
   ) {}
 
+  /** Create an outbound federated request by immutable Address without materializing a User stub.
+   * The optional display snapshot came from the caller's temporary resolve stream and is deliberately
+   * presentation-only. FederationService owns the authoritative state-feed write in the callback. */
+  async createFederatedFriendInvite(
+    localUserId: number,
+    remoteAccount: string,
+    remoteDomain: string,
+    note: string,
+    snapshot: FederatedPendingProfileSnapshot,
+    afterWrite: (
+      tx: DatabaseTransaction,
+      state: {
+        revision: number;
+        requestedAt: Date;
+        expiresAt: Date;
+        note: string;
+      },
+    ) => Promise<void>,
+  ): Promise<{ inviteId: string; created: boolean }> {
+    const account = normalizeAccount(remoteAccount);
+    const trimmed = note.slice(0, 255);
+    const now = new Date();
+    return this.database.db.transaction(async (tx) => {
+      const [current] = await tx
+        .select({
+          id: federatedFriendRequest.id,
+          status: federatedFriendRequest.status,
+          revision: federatedFriendRequest.revision,
+          expiresAt: federatedFriendRequest.expiresAt,
+        })
+        .from(federatedFriendRequest)
+        .where(
+          and(
+            eq(federatedFriendRequest.localUserId, localUserId),
+            eq(federatedFriendRequest.remoteAccount, account),
+            eq(federatedFriendRequest.remoteDomain, remoteDomain),
+            eq(federatedFriendRequest.direction, 'OUTGOING'),
+          ),
+        )
+        .for('update')
+        .limit(1);
+      if (
+        current?.status === 'REQUESTED' &&
+        current.expiresAt !== null &&
+        current.expiresAt > now
+      ) {
+        return { inviteId: `f:${current.id.toString()}`, created: false };
+      }
+      const requestedAt = now;
+      const expiresAt = new Date(now.getTime() + INVITE_TTL_MS);
+      const revision = (current?.revision ?? -1) + 1;
+      const [row] = await tx
+        .insert(federatedFriendRequest)
+        .values({
+          localUserId,
+          remoteAccount: account,
+          remoteDomain,
+          direction: 'OUTGOING',
+          status: 'REQUESTED',
+          note: trimmed,
+          revision,
+          requestedAt,
+          expiresAt,
+          displayName: snapshot.displayName?.slice(0, 30) || null,
+          avatar: snapshot.avatar || null,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [
+            federatedFriendRequest.localUserId,
+            federatedFriendRequest.remoteDomain,
+            federatedFriendRequest.remoteAccount,
+            federatedFriendRequest.direction,
+          ],
+          set: {
+            status: 'REQUESTED',
+            note: trimmed,
+            revision,
+            requestedAt,
+            expiresAt,
+            displayName: snapshot.displayName?.slice(0, 30) || null,
+            avatar: snapshot.avatar || null,
+            updatedAt: now,
+          },
+        })
+        .returning({ id: federatedFriendRequest.id });
+      if (!row) throw new Error('federated friend request write disappeared');
+      await afterWrite(tx, { revision, requestedAt, expiresAt, note: trimmed });
+      return { inviteId: `f:${row.id.toString()}`, created: true };
+    });
+  }
+
+  /** Relationship state for an exact federated Address, including requests that intentionally have
+   * no User stub yet. */
+  async federatedRelationshipStatus(
+    localUserId: number,
+    remoteAccount: string,
+    remoteDomain: string,
+  ): Promise<FriendRelationshipState> {
+    const account = normalizeAccount(remoteAccount);
+    const stub = await this.database.db.query.user.findFirst({
+      where: and(eq(user.account, account), eq(user.domain, remoteDomain)),
+      columns: { id: true },
+    });
+    if (
+      stub &&
+      (await this.participantService.areFriends(localUserId, stub.id))
+    )
+      return 'FRIEND';
+    const rows = await this.database.db
+      .select({
+        direction: federatedFriendRequest.direction,
+        status: federatedFriendRequest.status,
+        expiresAt: federatedFriendRequest.expiresAt,
+      })
+      .from(federatedFriendRequest)
+      .where(
+        and(
+          eq(federatedFriendRequest.localUserId, localUserId),
+          eq(federatedFriendRequest.remoteAccount, account),
+          eq(federatedFriendRequest.remoteDomain, remoteDomain),
+        ),
+      );
+    const active = rows.filter(
+      (row) =>
+        row.status === 'REQUESTED' &&
+        row.expiresAt !== null &&
+        row.expiresAt > new Date(),
+    );
+    if (active.some((row) => row.direction === 'INCOMING'))
+      return 'INCOMING_PENDING';
+    if (active.some((row) => row.direction === 'OUTGOING'))
+      return 'OUTGOING_PENDING';
+    return 'NONE';
+  }
+
   /** Apply one locally-authored direction. Purely local pairs use this same state machine but emit no
    * peer feed. The canonical pair row is locked before either directed request is inspected. */
   async writeLocalFriendIntentInTx(
@@ -128,14 +269,18 @@ export class InviteService {
         ? 'FRIEND'
         : 'REQUESTED'
       : 'NOT_FRIEND';
+    const requestedAt = wantsFriend ? new Date() : null;
+    const expiresAt =
+      desired === 'REQUESTED' && requestedAt
+        ? new Date(requestedAt.getTime() + INVITE_TTL_MS)
+        : null;
     await tx.execute(sql`
       INSERT INTO "FriendRequest" (
         "requesterUserId", "targetUserId", status, note, revision,
         "requestedAt", "expiresAt", "updatedAt"
       ) VALUES (${actorUserId}, ${peerUserId}, ${desired}::"FriendRequestStatus",
         ${note.slice(0, 255)}, 1,
-        ${wantsFriend ? new Date() : null},
-        ${desired === 'REQUESTED' ? new Date(Date.now() + INVITE_TTL_MS) : null}, CURRENT_TIMESTAMP)
+        ${requestedAt}, ${expiresAt}, CURRENT_TIMESTAMP)
       ON CONFLICT ("requesterUserId", "targetUserId") DO UPDATE SET
         status = EXCLUDED.status, note = EXCLUDED.note,
         revision = "FriendRequest".revision + 1,
@@ -165,11 +310,6 @@ export class InviteService {
       actorUserId,
       peerUserId,
     );
-    if (!wantsFriend && pairEffect.threadId !== undefined) {
-      await tx
-        .delete(federationP2PHistoryGrant)
-        .where(eq(federationP2PHistoryGrant.threadId, pairEffect.threadId));
-    }
   }
 
   /** Rejection/deletion closes only the actor's direction. The opposite request remains valid and may
@@ -730,7 +870,14 @@ export class InviteService {
             .onConflictDoNothing();
         }
         if (afterGroupJoin) await afterGroupJoin(tx, threadRow.id);
-        if (!isMirror)
+        if (!isMirror) {
+          pendingRevisions.push(
+            ...(await this.threadRevisionService.recordActiveLocalThreadRefreshInTx(
+              tx,
+              threadRow.id,
+              [byUserId],
+            )),
+          );
           pendingRevisions.push({
             userId: byUserId,
             revision: await this.threadRevisionService.recordThreadAddInTx(
@@ -739,6 +886,7 @@ export class InviteService {
               threadRow.id,
             ),
           });
+        }
         const groupAccount = groupState?.account ?? null;
         const groupDomain = groupState?.domain ?? null;
         if (groupDomain && groupDomain !== 'local') {
@@ -865,25 +1013,85 @@ export class InviteService {
    * Incoming PENDING friend invites for `userId`, newest first, last-7-days, ≤200. No client params.
    * The caller (controller) filters out any whose inviter is already a friend.
    */
-  listIncoming(userId: number) {
+  async listIncoming(userId: number) {
     const since = new Date(Date.now() - INVITE_TTL_MS);
-    return this.listFriendInvites(
-      and(
-        eq(friendRequest.targetUserId, userId),
-        gt(friendRequest.requestedAt, since),
+    const [local, federated] = await Promise.all([
+      this.listFriendInvites(
+        and(
+          eq(friendRequest.targetUserId, userId),
+          gt(friendRequest.requestedAt, since),
+        ),
       ),
-    );
+      this.listFederatedFriendInvites(userId, 'INCOMING'),
+    ]);
+    return [...local, ...federated]
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, LIST_LIMIT);
   }
 
   /** Outgoing PENDING friend invites from `userId`, newest first, last-7-days, ≤200. */
-  listOutgoing(userId: number) {
+  async listOutgoing(userId: number) {
     const since = new Date(Date.now() - INVITE_TTL_MS);
-    return this.listFriendInvites(
-      and(
-        eq(friendRequest.requesterUserId, userId),
-        gt(friendRequest.requestedAt, since),
+    const [local, federated] = await Promise.all([
+      this.listFriendInvites(
+        and(
+          eq(friendRequest.requesterUserId, userId),
+          gt(friendRequest.requestedAt, since),
+        ),
       ),
-    );
+      this.listFederatedFriendInvites(userId, 'OUTGOING'),
+    ]);
+    return [...local, ...federated]
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, LIST_LIMIT);
+  }
+
+  private async listFederatedFriendInvites(
+    localUserId: number,
+    direction: 'INCOMING' | 'OUTGOING',
+  ) {
+    const local = await this.database.db.query.user.findFirst({
+      where: eq(user.id, localUserId),
+      columns: USER_SELECT,
+    });
+    if (!local) return [];
+    const rows = await this.database.db
+      .select()
+      .from(federatedFriendRequest)
+      .where(
+        and(
+          eq(federatedFriendRequest.localUserId, localUserId),
+          eq(federatedFriendRequest.direction, direction),
+          eq(federatedFriendRequest.status, 'REQUESTED'),
+          gt(federatedFriendRequest.expiresAt, new Date()),
+        ),
+      )
+      .orderBy(desc(federatedFriendRequest.requestedAt))
+      .limit(LIST_LIMIT);
+    return rows.map((row) => {
+      const remote = {
+        id: 0,
+        account: row.remoteAccount,
+        name: row.displayName ?? row.remoteAccount,
+        avatar: row.avatar ?? '',
+        domain: row.remoteDomain,
+        isForeigner: true,
+      };
+      return {
+        id: `f:${row.id.toString()}`,
+        kind: 'FRIEND' as const,
+        fromUserId: direction === 'INCOMING' ? 0 : localUserId,
+        toUserId: direction === 'INCOMING' ? localUserId : 0,
+        threadId: null,
+        note: row.note,
+        status: 'PENDING' as const,
+        expiresAt: row.expiresAt ?? new Date(0),
+        createdAt: row.requestedAt ?? row.createdAt,
+        updatedAt: row.updatedAt,
+        fromUser: direction === 'INCOMING' ? remote : local,
+        toUser: direction === 'INCOMING' ? local : remote,
+      };
+    });
   }
 
   private async listFriendInvites(extra: SQL | undefined) {
@@ -1148,7 +1356,7 @@ export class InviteService {
     };
   }
 
-  /** Close every P2P subscription at an exact message-feed boundary. */
+  /** Close every P2P subscription and remove its current discovery projections. */
   private async closeP2PAudiencesInTx(
     tx: DatabaseTransaction,
     threadId: number,
@@ -1304,57 +1512,6 @@ export class InviteService {
     for (const peerDomain of peerDomains)
       await openFederatedAudienceInTx(tx, peerDomain, thread.id);
     return thread.id;
-  }
-
-  /** Materialize a retained read-only P2P shell for history authorized by a compacted remote
-   * REVOKED snapshot. This never activates FriendPair or grants write access. */
-  async ensureP2PHistoryThreadInTx(
-    tx: DatabaseTransaction,
-    localUserId: number,
-    peerUserId: number,
-  ): Promise<number> {
-    await this.lockFriendPairInTx(tx, localUserId, peerUserId);
-    const low = Math.min(localUserId, peerUserId);
-    const high = Math.max(localUserId, peerUserId);
-    const [pair] = await tx
-      .select({ threadId: friendPair.threadId })
-      .from(friendPair)
-      .where(
-        and(eq(friendPair.userLowId, low), eq(friendPair.userHighId, high)),
-      )
-      .limit(1);
-    if (pair?.threadId !== null && pair?.threadId !== undefined)
-      return pair.threadId;
-
-    const threadId = await this.createP2PFriendshipInTx(
-      tx,
-      localUserId,
-      peerUserId,
-    );
-    const now = new Date();
-    await tx
-      .update(threadParticipant)
-      .set({
-        leftAt: now,
-        recognizesFriend: false,
-        updatedAt: now,
-      })
-      .where(eq(threadParticipant.threadId, threadId));
-    await tx
-      .delete(threadAudience)
-      .where(
-        and(
-          eq(threadAudience.threadId, threadId),
-          sql`${threadAudience.targetDomain} <> 'local'`,
-        ),
-      );
-    await tx
-      .update(friendPair)
-      .set({ active: false, threadId, updatedAt: now })
-      .where(
-        and(eq(friendPair.userLowId, low), eq(friendPair.userHighId, high)),
-      );
-    return threadId;
   }
 
   private parseInviteId(s: string): bigint {

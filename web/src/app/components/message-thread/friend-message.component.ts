@@ -126,8 +126,8 @@ import {
 import { PopupType, RouteService } from '../../services/route.service';
 import { ChatboxPopupComponent } from '../chatbox-popup/chatbox-popup.component';
 import { GroupService } from '../../services/group.service';
+import { GroupStateStore } from '../../services/group-state-store.service';
 import { ChatAppearanceService } from '../../services/chat-appearance.service';
-import { GroupEventService } from '../../services/group-event.service';
 import {
   ALL_MENTION_ID,
   escapePlainText,
@@ -291,8 +291,8 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly theme = inject(ThemeService);
   private readonly toast = inject(ToastService);
   private readonly groupService = inject(GroupService);
+  private readonly groupState = inject(GroupStateStore);
   private readonly chatAppearance = inject(ChatAppearanceService);
-  private readonly groupEvents = inject(GroupEventService);
   private readonly http = inject(HttpClient);
   readonly nativeComposer = inject(NativeComposerService);
   private readonly composerDrafts = inject(ComposerDraftService);
@@ -568,7 +568,7 @@ export class MessageThreadComponent implements OnDestroy {
         });
       };
       load();
-      const sub = this.groupEvents.rosterChanged$.subscribe((groupId) => {
+      const sub = this.groupState.rosterChanged$.subscribe((groupId) => {
         if (groupId === trd.group.id) load();
       });
       onCleanup(() => {

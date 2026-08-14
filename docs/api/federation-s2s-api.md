@@ -48,6 +48,16 @@ feed projection，且 member item 的 feed ID 更小。profile 后续更新打�
 移除 `MEMBER_PROFILE`，不发布删除 item。consumer 只能在完整排空 state feed 后按最新好友和 roster
 做 mark-and-sweep，不得在单页之间清理，也不得删除历史消息的稳定 author Address。
 
+精确 `/users/:account` 查询只是有界代理查询，不创建 human `User` stub。收到 home-authored `PROFILE`
+可以先按 Address 保存验证后的资料，但 `REQUESTED`/`REVOKED` 仍不物化 stub；只有有效 `ACCEPTED` 与该
+PROFILE 同时具备时才创建。所有好友申请、群邀请与群申请的 `REQUESTED` 都必须使用绝对过期时间，且
+最长七天；过期项可以从 projection 静默省略。`REVOKED` 不设过期时间，publisher 应按容量尽量保留，
+但也可在之后静默省略；message/current-authority query 负责兜底拒绝失效权限。
+
+SOMS 给本地客户端的统一 state delta 另外携带 `MEMBER_PROFILE` invalidation。客户端按
+`(sourcePeerDomain, member Address)` 区分资料，并对群展示使用 `(threadId, userId)` 上下文；服务端在一次
+固定 `through` 排空完成后才执行 source-scoped sweep，再推动受影响 roster 刷新。
+
 ## Message and tombstone discovery
 
 Message feed 的 stable key 是 `(peer, thread)`，item 只含 `feedId`、`thread`、`messageEndSeq`。
@@ -81,6 +91,14 @@ POST /feed-heads (S, M, D)
   -> GET /message-tombstones per changed thread
   -> GET /messages per changed thread
 ```
+
+message 和 tombstone 索引中的 thread 集合彼此独立，不得按位置或集合做对齐假设；
+仅发送过消息而从未产生墓碑的 thread 只出现在 message feed 中是正常的。P2P 关系终止后，
+source 可从两个 feed 中分别移除该 thread 的当前投影。consumer 以 state feed 的 `REVOKED`
+作为主要清理信号；若旧 query 先返回 `FORBIDDEN`，则停止该 thread 的当前查询并优先
+重新排空 state feed，不回退全局 feed cursor。
+`P2P_INTENT/REVOKED` 不携带 message/tombstone feed end ID；这些 end ID 只出现在各自 feed page
+和 `feed-heads` 中。索引 feed 不携带消息正文，关系关闭也不再使用 feed end 作为正文交付边界。
 
 hint 可丢失、重复和乱序；三个坐标可分别 max-coalesce。启动与周期 reconciliation 即使没有 hint
 也必须按 state、tombstone、message 顺序直接读取三个 feed。索引引用未知 thread 时回滚该索引 page，

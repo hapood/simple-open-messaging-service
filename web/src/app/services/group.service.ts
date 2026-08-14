@@ -23,6 +23,8 @@ export interface GroupMember {
   isForeigner: boolean;
   /** Home domain; empty for a local member (the badge self-hides). */
   domain: string;
+  /** Publisher of this group-scoped display snapshot; empty means home-owned User profile. */
+  profileSourceDomain: string;
   /** OWNER | ADMIN | MEMBER */
   role: 'OWNER' | 'ADMIN' | 'MEMBER';
   /** joined at, ms timestamp */

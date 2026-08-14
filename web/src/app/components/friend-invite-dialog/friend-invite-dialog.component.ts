@@ -1,4 +1,11 @@
-import { Component, inject, input, output, signal } from '@angular/core';
+import {
+  Component,
+  computed,
+  inject,
+  input,
+  output,
+  signal,
+} from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
@@ -38,38 +45,53 @@ export class FriendInviteDialogComponent {
   readonly UserAvatarType = UserAvatarType;
   readonly displayUserName = displayUserName;
   readonly displayUserAccount = displayUserAccount;
+  readonly avatarIdentity = computed(() => {
+    const user = this.user();
+    return user.id > 0
+      ? user.id
+      : `${user.domain ?? 'local'}\u0000${user.account}`;
+  });
 
   send() {
     if (this.sending()) return;
     this.sending.set(true);
     this.errorText.set('');
-    this.userService
-      .sendFriendInvite({
-        toUserId: this.user().id,
-        note: this.note().trim().slice(0, 255),
-      })
-      .subscribe({
-        next: (res) => {
-          if (res.code === 0) {
-            this.completed.emit({
-              userId: this.user().id,
-              status:
-                res.data?.threadId ||
-                res.messageKey === 'friend.msg.alreadyFriends'
-                  ? 'FRIEND'
-                  : 'OUTGOING_PENDING',
-            });
-            return;
-          }
-          this.errorText.set(translateBizResult(res, this.transloco));
-          this.sending.set(false);
-        },
-        error: () => {
-          this.errorText.set(
-            this.transloco.translate('friend.error.unknownError'),
-          );
-          this.sending.set(false);
-        },
-      });
+    const user = this.user();
+    const request =
+      user.id === 0 && user.isForeigner && user.domain
+        ? this.userService.sendFederatedFriendInvite({
+            account: user.account,
+            domain: user.domain,
+            displayName: user.name,
+            avatar: user.avatar,
+            note: this.note().trim().slice(0, 255),
+          })
+        : this.userService.sendFriendInvite({
+            toUserId: user.id,
+            note: this.note().trim().slice(0, 255),
+          });
+    request.subscribe({
+      next: (res) => {
+        if (res.code === 0) {
+          this.completed.emit({
+            userId: this.user().id,
+            status:
+              res.data?.threadId ||
+              res.messageKey === 'friend.msg.alreadyFriends'
+                ? 'FRIEND'
+                : 'OUTGOING_PENDING',
+          });
+          return;
+        }
+        this.errorText.set(translateBizResult(res, this.transloco));
+        this.sending.set(false);
+      },
+      error: () => {
+        this.errorText.set(
+          this.transloco.translate('friend.error.unknownError'),
+        );
+        this.sending.set(false);
+      },
+    });
   }
 }

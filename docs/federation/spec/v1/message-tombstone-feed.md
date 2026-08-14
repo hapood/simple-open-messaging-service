@@ -60,9 +60,16 @@ interface MessageTombstoneFeedItem {
 stable key 是 `(target peer, thread)`。当该 peer 有权得知的 `tombstoneEndSeq` 严格增加时，source MUST
 为它分配新的、全 feed 历史更大的 `feedId`，并用新 item 取代旧 item。相同或更小上界是 no-op。
 
-tombstone feed 是持久压缩索引。source 可删除被新 item 覆盖的旧索引 item，但不得删除任一
-当前 thread stable-key 投影，也不得因压缩、历史清理或重启要求 consumer 提高 feed `after`。
-更新 item 必须使用更大 `feedId`，不得在 consumer 已可能越过的 ID 上原地改写。
+tombstone feed 是持久压缩索引。source 可删除被新 item 覆盖的旧索引 item。对仍有当前
+audience 或仍允许查询的 thread，source 不得因压缩、历史清理或重启删除当前投影，
+也不得要求 consumer 提高 feed `after`。更新 item 必须使用更大 `feedId`，不得在
+consumer 已可能越过的 ID 上原地改写。
+
+P2P 好友关系解除后，source MAY 独立删除该 peer/thread 的当前 tombstone-feed 投影；
+删除不分配新 `feedId`，也不回退 `tombstoneFeedEndId`。message feed 和 tombstone feed
+的 thread 集合不要求相同：从未发生撤回的 thread 没有 tombstone stable key 是正常状态。
+关系重新建立后，若需重建该投影，即使 `tombstoneEndSeq` 未变，也 MUST 分配新的、
+更大的 `feedId`。
 
 feed item 只是查询发现索引，不是删除事实，不能单独导致本地 message 删除。consumer 原子合并
 每个 thread 的最大 `tombstoneEndSeq` 和 feed `scannedThrough`，然后通过 query 取得具体事实。
@@ -95,6 +102,11 @@ interface MessageTombstoneQueryPage {
 source MUST 在 query 时重新校验 thread authority、目标 peer 是否曾被授予目标消息的可见性，以及
 当前 block 和本地策略。feed item 不是授权 proof。权限计算 MAY 幂等物化已有 durable facts 推导的
 即时好友/群有效状态，但不得因 GET 本身创建或扩大授权。
+
+consumer 收到关系终止的 state-feed 状态后 MUST 使该 peer/thread 的当前 tombstone-feed
+目标失效。若 tombstone query 先因当前关系失效返回 `FORBIDDEN`，consumer MUST 停止该
+thread 的 query、使当前待处理 end 失效并优先重新排空 state feed。不得因此回退全局
+tombstone-feed cursor，也不得撤销已提交的权威 tombstone 事实。
 
 实现方配额耗尽时，query MAY 返回 HTTP `200 FEDERATION_QUOTA_EXCEEDED` 和唯一结构化数据
 `{ retryAfter }`。consumer 不推进 thread deletion cursor、不改变 peer lifecycle，并至少等待该秒数后重试。

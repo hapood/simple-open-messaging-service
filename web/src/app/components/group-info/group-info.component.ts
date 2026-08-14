@@ -19,7 +19,6 @@ import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { GroupService, GroupMember } from '../../services/group.service';
 import { UserService } from '../../services/user.service';
 import { ConversationListService } from '../../services/conversation-list.service';
-import { GroupEventService } from '../../services/group-event.service';
 import { ConversationItem } from '../../services/model';
 import {
   UserAvatarComponent,
@@ -33,6 +32,7 @@ import { translateBizResult } from '../../services/biz-code';
 import { ToastService } from '../../services/toast.service';
 import { ThreadDeletionLockService } from '../../services/thread-deletion-lock.service';
 import { MsgService } from '../../services/message.service';
+import { GroupStateStore } from '../../services/group-state-store.service';
 
 type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
 
@@ -67,9 +67,9 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
 
   private readonly nav = inject(NavStateMachineService);
   private readonly groupService = inject(GroupService);
+  private readonly groupState = inject(GroupStateStore);
   private readonly userService = inject(UserService);
   private readonly convList = inject(ConversationListService);
-  private readonly groupEvents = inject(GroupEventService);
   private readonly routeService = inject(RouteService);
   private readonly deletionLock = inject(ThreadDeletionLockService);
   private readonly snackBar = inject(MatSnackBar);
@@ -164,9 +164,9 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
 
   ngOnInit() {
     this.loadMembers();
-    // Live roster refresh: a GROUP_* membership/role event for this group reloads the roster. The
-    // component is ephemeral (a popup/panel), so the subscription is released on close (ngOnDestroy).
-    this.rosterSub = this.groupEvents.rosterChanged$
+    // The applied durable state delta invalidates this roster. The component is ephemeral, so the
+    // subscription is released on close (ngOnDestroy).
+    this.rosterSub = this.groupState.rosterChanged$
       .pipe(filter((gid) => gid === this.groupId()))
       .subscribe(() => this.loadMembers());
   }
@@ -519,7 +519,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     // One batched request (the server writes one INVITE per friend in their P2P thread). Busy gates
     // the button; the response carries invited/skipped counts surfaced via a snackbar. The roster is
     // NOT reloaded here — invitees are not members until they accept; they appear live via
-    // GROUP_MEMBER_JOINED once they join (GroupEventService → rosterChanged$).
+    // The durable group-state delta refreshes this roster once they join.
     const existing = this.existingMemberIds();
     const userIds = list
       .map((item) => item.peerUser.id)

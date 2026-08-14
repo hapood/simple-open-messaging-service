@@ -59,9 +59,13 @@ function createService(
     writeGroupInviteIntentInTx: vi.fn().mockResolvedValue(new Map()),
     pushStateFeedDomains: vi.fn().mockResolvedValue(undefined),
   };
+  const revisionService = {
+    recordActiveLocalThreadRefreshInTx: vi.fn().mockResolvedValue([]),
+    ...revisions,
+  };
   return new GroupService(
     database as never,
-    revisions as never,
+    revisionService as never,
     federation as never,
     messages as never,
     messageFanout as never,

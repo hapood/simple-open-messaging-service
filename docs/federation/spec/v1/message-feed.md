@@ -60,9 +60,17 @@ source MUST 为该 stable key 分配一个比该 feed 历史所有 ID 都大的�
 `messageEndSeq`、message query 的 `after/through/scannedThrough` 与外层 message `seq` 必须都在
 `SafeInteger` 数值范围内；前四者在 wire 上使用十进制字符串，message `seq` 使用 JSON integer。
 
-message feed 是持久压缩索引：source 可以删除被更新 item 覆盖的旧 item，但不得因容量、时间、
-重启或 consumer 读取位置删除当前 stable-key 投影。对一个仍可能产生或查询消息的 thread，
-当前 item MUST 可从任何合法较旧 `after` 发现。
+message feed 是持久压缩索引：source 可以删除被更新 item 覆盖的旧 item。对一个仍有
+当前 audience 、仍可能产生消息或仍允许查询的 thread，不得因容量、时间、重启或
+consumer 读取位置删除当前 stable-key 投影，当前 item MUST 可从任何合法较旧 `after`
+发现。
+
+P2P 好友关系解除后，source MAY 删除该 peer/thread 的当前 message-feed 投影；删除不分配
+新 `feedId`，也不回退 `messageFeedEndId`。message feed 和 tombstone feed 的 stable key 集合彼此
+独立：从未产生墓碑的 thread 可以只存在于 message feed，consumer 不得要求两个 feed
+包含相同的 thread 集合或对齐的 end seq。同一关系重新建立后，即使当前
+`messageEndSeq` 与删除前相同，source 也 MUST 以新的、更大的 `feedId` 重建投影，
+使已越过旧 item 的 consumer 能再次发现它。
 
 每一 page 在一个一致 source snapshot 上计算：
 
@@ -80,6 +88,8 @@ source 返回不超过自身 page 上限的前缀。若还有 candidate，`scann
 
 consumer MUST 验证 page，原子合并每个 thread 的最大 `messageEndSeq` 并把本地 feed cursor 更新为
 `scannedThrough`。feed page 本身不携带消息正文，也不授予读取权限。
+因此好友关系终止时不需要在 `P2P_INTENT/REVOKED` 中携带 message-feed end ID 来截断
+正文交付；这是将消息正文从 feed 拆到 thread query 后已删除的旧设计。
 
 ## 2. Message query
 
@@ -145,6 +155,12 @@ audience 无效时，source MUST 返回 `FORBIDDEN`；重新建立同一 account
 不得重置或缩小坐标空间。关系有效时，只能返回该 peer 在历史有效 audience 期间获得 durable allocation
 proof 的消息；离开期间未 allocation 的 sequence 是空洞，重新加入不得回填。正文保留策略仍可通过
 第 2.2 节的 `resumeAfter` 跳过已清理前缀。
+
+consumer 收到关系终止的 state-feed 状态后 MUST 将该 peer/thread 的当前 message-feed
+目标标记为失效，不得继续为之重试 query。如果 state 通知延迟、丢失或本地状态尚未
+收敛，message query 的 `FORBIDDEN` 是兜底信号：consumer MUST 停止该 thread 的 query、
+使当前待处理 end 失效并优先重新排空 state feed。这一处理不回退全局 message-feed cursor，
+也不删除已幂等提交的消息或历史 query cursor。
 
 权限计算 MAY 在同一本地事务中物化由已有 durable facts 可确定推导的即时状态，例如过期请求失效、
 好友有效性或群 audience 有效性。这种 reconciliation 必须幂等，不得仅因为 peer 发起了 GET 就创建

@@ -17,7 +17,12 @@ import { PreferenceStore } from './preference-store.service';
 
 export type { User } from './model';
 
-/** One entry of the hydrated thread-list delta (POST /user/query-thread/delta). The server plans
+export type FederatedResolveResult = {
+  user: User;
+  relationship: 'NONE' | 'OUTGOING_PENDING' | 'INCOMING_PENDING' | 'FRIEND';
+};
+
+/** One entry of the hydrated client-state delta (POST /user/query-state/delta). The server plans
  *  (last-op-wins) + hydrates the ADDs inline (peer/group/unread); DELETE entries carry the threadId only
  *  (the thread is leaving the roster — nothing to render). The client applies a single response — no
  *  client-side planning, no second batch-hydrate round-trip. */
@@ -25,6 +30,21 @@ export type HydratedThreadDeltaOp =
   | { threadId: number; direction: 'ADD'; item: ConversationItem }
   | { threadId: number; direction: 'DELETE' }
   | { direction: 'PROFILE'; user: User }
+  | {
+      direction: 'PROFILE_DELETE';
+      userId: number;
+      account: string;
+      domain: string;
+      revision: number;
+    }
+  | {
+      direction: 'MEMBER_PROFILE';
+      sourcePeerDomain: string;
+      memberAccount: string;
+      memberDomain: string;
+      threadIds: number[];
+      revision: number;
+    }
   | { direction: 'FRIEND_REQUEST'; revision: number };
 
 /** The persisted last-logged-in userId (localStorage) — the client's sole pre-HELLO source of its own
@@ -368,7 +388,7 @@ export class UserService {
     );
   }
 
-  /** One entry of the hydrated thread-list delta from POST /user/query-thread/delta. The server plans
+  /** One entry of the hydrated client-state delta from POST /user/query-state/delta. The server plans
    *  (last-op-wins) + hydrates the ADDs inline (peer/group/unread); DELETE entries carry the threadId
    *  only (the thread is leaving the roster — nothing to render). The client applies a single response —
    *  no client-side planning, no second batch-hydrate round-trip. */
@@ -386,14 +406,45 @@ export class UserService {
     );
   }
 
-  /** Resolve a user to address in friend ops. `account` alone = local lookup; `account` + `domain` =
-   *  federated. The `@` separator is a UI input aid only — the caller (friend-requests search) splits a
-   *  typed `alice@bbb.com` into these two fields; the API never carries an @-joined string. */
+  /** Resolve a local account (an explicitly supplied own-domain value is also local). Federated exact
+   * lookup must use resolveFederatedUser so it remains a temporary SSE and cannot create a stub. */
   resolveUser(params: { account: string; domain?: string }) {
     return this.http.post<StandardResponse<User>>(
       `${apiPrefix()}/user/resolve`,
       params,
     );
+  }
+
+  /** One-shot temporary SSE used only for federated exact resolve. Unsubscribing closes the stream;
+   * the server emits exactly one resolved/failed terminal and never creates a User stub. */
+  resolveFederatedUser(params: { account: string; domain: string }) {
+    const query = new URLSearchParams(params);
+    // HttpClient is intentional: browser requests use the httpOnly cookie and
+    // TauriHttpBackend routes native requests through Rust, which injects its
+    // in-memory Bearer. The response is terminal and server-closed, so native
+    // may safely deliver the complete SSE body as one IPC response.
+    return this.http
+      .get(`${apiPrefix()}/user/resolve-federated-stream?${query.toString()}`, {
+        responseType: 'text',
+        headers: { Accept: 'text/event-stream' },
+      })
+      .pipe(
+        map((text) => {
+          for (const frame of text.split(/\r?\n\r?\n/)) {
+            const event = /^event:\s*(.+)$/m.exec(frame)?.[1]?.trim();
+            const data = /^data:\s*(.+)$/m.exec(frame)?.[1];
+            if (!event || !data) continue;
+            if (event === 'resolved')
+              return JSON.parse(data) as FederatedResolveResult;
+            if (event === 'failed')
+              throw new Error(
+                (JSON.parse(data) as { reason?: string }).reason ??
+                  'federated resolve failed',
+              );
+          }
+          throw new Error('resolve stream ended without a terminal event');
+        }),
+      );
   }
 
   /** Local user discovery (fuzzy over account OR display name, case-insensitive). Returns up to 20
@@ -423,6 +474,18 @@ export class UserService {
     return this.http.post<
       StandardResponse<{ inviteId?: string; threadId?: number }>
     >(`${apiPrefix()}/invite/friend`, params);
+  }
+
+  sendFederatedFriendInvite(params: {
+    account: string;
+    domain: string;
+    displayName?: string;
+    avatar?: string;
+    note?: string;
+  }) {
+    return this.http.post<
+      StandardResponse<{ inviteId?: string; threadId?: number }>
+    >(`${apiPrefix()}/invite/federated-friend`, params);
   }
 
   /** Authoritative relationship/invite state for discovery rows. Server-backed so refreshes and other
@@ -514,7 +577,7 @@ export class UserService {
     );
   }
 
-  /** Commit the viewport's local read HWM. Authoritative state arrives on THREAD_READ_UPDATED. */
+  /** Commit the viewport's local read HWM. Authoritative state arrives in the unified state delta. */
   markRead(params: { threadId: number; localReadHwm: number }) {
     return this.http.post<StandardResponse>(
       `${apiPrefix()}/thread/mark-read`,

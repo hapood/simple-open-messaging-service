@@ -217,7 +217,7 @@ export class ConversationListService {
     this.repo.updatePeerUser(threadId, user);
   }
 
-  /** Apply a rename / avatar / description change from a GROUP_UPDATED event. */
+  /** Apply an optimistic local group metadata patch. Durable replacement arrives via state delta. */
   applyGroupUpdate(
     threadId: number,
     patch: {
@@ -231,7 +231,7 @@ export class ConversationListService {
     this.repo.applyGroupUpdate(threadId, patch);
   }
 
-  /** Apply my own role change from a GROUP_ROLE_CHANGED event targeting me. */
+  /** Apply an optimistic local role change; the durable group snapshot remains authoritative. */
   applyRole(threadId: number, role: 'OWNER' | 'ADMIN' | 'MEMBER'): void {
     this.repo.applyRole(threadId, role);
   }

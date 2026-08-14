@@ -12,7 +12,6 @@ import type { FastifyRequest } from 'fastify';
 import { UserService } from '../user/user.service.js';
 import { InviteService } from '../invite/invite.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
-import { SseService } from '../gateway/sse.service.js';
 import {
   FederationService,
   S2sResponseError,
@@ -22,6 +21,7 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import {
   SendFriendInviteDto,
+  SendFederatedFriendInviteDto,
   InviteIdDto,
   InviteDto,
   InviteDetailDto,
@@ -65,7 +65,6 @@ export class InviteController {
     private readonly userService: UserService,
     private readonly inviteService: InviteService,
     private readonly participantService: ThreadParticipantService,
-    private readonly sseService: SseService,
     private readonly federationService: FederationService,
     private readonly userQuota: UserQuotaService,
   ) {}
@@ -167,12 +166,69 @@ export class InviteController {
 
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
+  @Post('invite/federated-friend')
+  @ApiOperation({
+    summary:
+      'Send a federated friend request by Address without creating a foreign User stub',
+  })
+  async sendFederatedFriendInvite(
+    @Request() req: FastifyRequest,
+    @Body() dto: SendFederatedFriendInviteDto,
+  ) {
+    const account = dto.account.trim().toLowerCase();
+    const domain = dto.domain.trim().toLowerCase();
+    if (domain === this.federationService.ourDomain)
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'local friend requests require toUserId',
+      );
+    await this.federationService.ensurePeerTrusted(domain);
+    let statePeers = new Map<string, bigint>();
+    const result = await this.inviteService.createFederatedFriendInvite(
+      req.user.userId,
+      account,
+      domain,
+      dto.note ?? '',
+      { displayName: dto.displayName, avatar: dto.avatar },
+      async (tx, state) => {
+        await this.userQuota.tick(req.user.userId, 'requests', tx);
+        statePeers =
+          await this.federationService.writeAddressedFriendRequestInTx(
+            tx,
+            req.user.userId,
+            { account, domain },
+            state,
+          );
+      },
+    );
+    await this.federationService.pushStateFeedDomains(statePeers.keys());
+    return envelope(
+      { inviteId: result.inviteId },
+      {
+        message: 'friend request sent',
+        messageKey: result.created
+          ? 'friend.msg.sent'
+          : 'friend.msg.requestAlreadySent',
+      },
+    );
+  }
+
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
   @Post('invite/accept')
   @ApiOperation({
     summary:
       'Accept an invite by id (friend → P2P thread; group → join as MEMBER)',
   })
   async acceptInvite(@Request() req: FastifyRequest, @Body() dto: InviteIdDto) {
+    if (dto.inviteId.startsWith('f:')) {
+      const peers = await this.federationService.acceptAddressedFriendRequest(
+        req.user.userId,
+        dto.inviteId,
+      );
+      await this.federationService.pushStateFeedDomains(peers.keys());
+      return {};
+    }
     // acceptInvite throws BusinessException (INVITE_EXPIRED / NOT_FOUND / …) → the global filter renders it.
     let friendStatePeers = new Map<string, bigint>();
     let groupStatePeers = new Map<string, bigint>();
@@ -222,22 +278,6 @@ export class InviteController {
       return { threadId: res.threadId };
     }
 
-    // GROUP → fan out GROUP_ROSTER_UPDATED (signal-only) to the active local roster (incl. the new
-    // member). The client pulls the fresh roster. The former GROUP_MEMBER_JOINED payload (userId/role)
-    // is dropped — toast/UX detail is handled client-side from the pulled roster.
-    const members = await this.participantService.getActiveParticipantUserIds(
-      res.threadId,
-    );
-    const audience = new Set([
-      ...members.map((m) => m.userId),
-      req.user.userId,
-    ]);
-    audience.forEach((uid) =>
-      this.sseService.onGroupEvent(uid, 'GROUP_ROSTER_UPDATED', {
-        threadId: res.threadId,
-      }),
-    );
-
     // Federated join delivery is the GROUP_JOIN_INTENT written in the accept transaction above.
     return { threadId: res.threadId };
   }
@@ -250,6 +290,15 @@ export class InviteController {
     @Request() req: FastifyRequest,
     @Body() dto: InviteIdDto,
   ): Promise<void> {
+    if (dto.inviteId.startsWith('f:')) {
+      const peers = await this.federationService.revokeAddressedFriendRequest(
+        req.user.userId,
+        dto.inviteId,
+        'INCOMING',
+      );
+      await this.federationService.pushStateFeedDomains(peers.keys());
+      return;
+    }
     let statePeers = new Map<string, bigint>();
     await this.inviteService.rejectInvite(
       dto.inviteId,
@@ -287,6 +336,15 @@ export class InviteController {
     @Body() dto: InviteIdDto,
   ): Promise<void> {
     const me = req.user.userId;
+    if (dto.inviteId.startsWith('f:')) {
+      const peers = await this.federationService.revokeAddressedFriendRequest(
+        me,
+        dto.inviteId,
+        'OUTGOING',
+      );
+      await this.federationService.pushStateFeedDomains(peers.keys());
+      return;
+    }
     let statePeers = new Map<string, bigint>();
     await this.inviteService.revokeInvite(
       dto.inviteId,

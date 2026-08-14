@@ -41,7 +41,7 @@ const PHASE_BY_EVENT: Record<string, CallPhase> = {
 
 /**
  * Routes the call's realtime events into ONE {@link callState} signal the call UI reads — the Angular half
- * of "native owns the call, the WebView is disposable chrome" (mirrors how {@link GroupEventService} routes
+ * of "native owns the call, the WebView is disposable chrome" (mirrors how the thread repository routes
  * GROUP_* and how {@link WebsocketService} self-starts).
  *
  * Two feeds merge into `callState`:

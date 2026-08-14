@@ -158,7 +158,7 @@ Identity (name/avatar/bio) lives on the group's `!`-User row; this table holds o
 
 ### ThreadRevision / ProfileStateRevision — Client state log
 
-Thread ADD/DELETE and PROFILE entries share `User.threadRevision`, exposed on the wire as `stateRevision`. The client pulls `query-thread(from,to]` and applies PROFILE before membership changes.
+Thread ADD/DELETE, PROFILE and other client-state entries share `User.threadRevision`, exposed on the wire as `stateRevision`. The client pulls `query-state(from,to]` and applies the fixed range atomically.
 
 ### UserBlock — One-way block
 

@@ -67,38 +67,6 @@ describe('SseService', () => {
     svc.onModuleDestroy();
   });
 
-  it('broadcasts THREAD_READ_UPDATED to every connection of the same user', () => {
-    const svc = makeService();
-    const a = mockRes();
-    const b = mockRes();
-    (svc as unknown as { clients: Record<number, unknown[]> }).clients[7] = [
-      {
-        res: a.res,
-        ping: setInterval(() => undefined, 60_000),
-        since: 0,
-        sessionId: 1,
-      },
-      {
-        res: b.res,
-        ping: setInterval(() => undefined, 60_000),
-        since: 0,
-        sessionId: 2,
-      },
-    ];
-
-    svc.onThreadReadUpdated(7, {
-      threadId: 9,
-      lastReadSeq: 12,
-      readRevision: 4,
-      unreadCount: 0,
-      mentionUnread: [],
-    });
-
-    expect(a.writes.join('')).toContain('event: THREAD_READ_UPDATED');
-    expect(b.writes.join('')).toContain('"readRevision":4');
-    svc.onModuleDestroy();
-  });
-
   it('onSessionRevoked disconnects ONLY the matching session (other devices survive)', () => {
     const svc = makeService();
     const a = mockRes(); // session 11

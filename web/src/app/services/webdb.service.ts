@@ -974,7 +974,10 @@ export class WebdbService implements OnDestroy {
       return;
     }
     const db = await this.db();
-    const tx = db.transaction(['threads', 'profiles', 'settings'], 'readwrite');
+    const tx = db.transaction(
+      ['threads', 'profiles', 'avatars', 'settings'],
+      'readwrite',
+    );
     for (const op of delta) {
       if (op.direction === 'FRIEND_REQUEST') {
         await tx.objectStore('settings').put({
@@ -1001,6 +1004,16 @@ export class WebdbService implements OnDestroy {
         }
         continue;
       }
+      if (op.direction === 'PROFILE_DELETE') {
+        const identity = `u${op.userId}`;
+        await tx.objectStore('profiles').delete(identity);
+        await tx.objectStore('avatars').delete(identity);
+        continue;
+      }
+      // MEMBER_PROFILE is a durable invalidation marker. ThreadRepository emits the
+      // affected group ids to the live roster layer; there is no global member-profile
+      // record to persist because its identity is source-scoped, not userId-scoped.
+      if (op.direction === 'MEMBER_PROFILE') continue;
       if (op.direction === 'DELETE')
         await tx.objectStore('threads').delete(op.threadId);
       else await tx.objectStore('threads').put(op.item);

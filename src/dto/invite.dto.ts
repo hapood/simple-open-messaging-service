@@ -37,18 +37,68 @@ export class FriendRelationshipStateDto {
   inviteId?: string;
 }
 
-/** Send a friend invite (optionally with a ≤255-char note). The target is addressed by userId — a
- *  local user OR a federated stub id (minted by /user/resolve). Federated delivery is automatic.
- *  Group invites are NOT sent here — they are minted by group/create + group/invite. */
+/** Send a friend invite (optionally with a ≤255-char note) to a local user or an existing
+ * federated stub. A foreign Address without a stub uses SendFederatedFriendInviteDto instead. */
 export class SendFriendInviteDto {
   @ApiProperty({
     example: 1,
-    description: 'Target user id (local user OR federated stub id)',
+    description: 'Target local user id or existing federated stub id',
   })
   @Type(() => Number)
   @IsInt()
   @Min(1)
   toUserId!: number;
+
+  @ApiProperty({
+    required: false,
+    example: 'Hi from the conference',
+    description: 'Invite note (≤255 chars)',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  note?: string;
+}
+
+/** Send a federated friend request before a foreign User stub exists. Address is the routing identity;
+ * displayName/avatar are an untrusted card snapshot and never establish identity or relationship. */
+export class SendFederatedFriendInviteDto {
+  @ApiProperty({
+    example: 'alice',
+    description:
+      'Federated target account. Used with domain instead of toUserId.',
+  })
+  @IsString()
+  @IsNotEmpty()
+  account!: string;
+
+  @ApiProperty({
+    example: 'peer.example',
+    description:
+      'Federated target home domain. Used with account instead of toUserId.',
+  })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(63)
+  domain!: string;
+
+  @ApiProperty({
+    required: false,
+    description: 'Untrusted pending-card display snapshot.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(30)
+  displayName?: string;
+
+  @ApiProperty({
+    required: false,
+    description: 'Untrusted pending-card avatar URL/data URL.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1_500_000)
+  avatar?: string;
 
   @ApiProperty({
     required: false,

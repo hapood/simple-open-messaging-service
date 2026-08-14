@@ -374,7 +374,8 @@ hint 或普通消息 payload。
 - `resumeAfter`：省略 `after`、message query 旧正文已清理，或请求位置明显超出当前 end 时，
   source 返回的下一个有效 exclusive 请求位置。
 - `stateFeedEndId` / `messageFeedEndId` / `tombstoneFeedEndId`：feed-heads 发布的三个独立 inclusive drain
-  上界。它们是排空目标，不是 consumer cursor 或业务 revision。
+  上界。它们是排空目标，不是 consumer cursor、业务 revision、thread 授权边界或
+  关系终止位置，不得出现在 `P2P_INTENT` body 中。
 - `messageEndSeq` / `tombstoneEndSeq`：某个 thread 可查询内容的 inclusive 上界；它们分属两个
   thread-local 坐标空间，不是 feed ID。
 
@@ -406,7 +407,10 @@ page 与 consumer 本地 cursor 必须（MUST）在一个事务中提交。重�
 
 三个 feed 都是持久压缩投影，不得因时间、容量或历史清理建立 retained floor。旧 stable-key item 可被
 新 item 替换，但新 item 必须分配更大 feed ID。state feed 可按其 operation 规则省略已无可见性来源的
-member 投影。正文清理只影响 message query，不影响 feed；tombstone 事实永久保留。
+member 投影；P2P 关系终止后，message 和 tombstone feed 也可分别删除该 peer/thread 的当前
+投影，而不回退各自的 feed end。两个 data feed 的 thread 集合独立，不要求对齐；从未撤回过的
+thread 可以只有 message 投影。重建已删除的投影时必须分配新的、更大 feed ID。正文清理只
+影响 message query；tombstone 事实永久保留，即使其当前发现索引投影已因失权被移除。
 
 `feed-heads` 只携带 `origin`、`stateFeedEndId`、`messageFeedEndId` 和 `tombstoneFeedEndId`。三者是
 三个独立压缩 feed 的 inclusive 扫描上界，只用于唤醒和有界排空，不是 ACK、业务 revision 或 query seq。
@@ -425,6 +429,10 @@ message-feed?after=<localMessageFeedCursor>&through=M
 `/messages` 和 `/message-tombstones` 查询。对同一 thread，先排空 tombstone query，再排空 message query。
 压缩可使某 item 在排空期间移到更大 feed ID；它必须通过后续 hint 或周期 reconciliation 被再次发现。
 consumer 可对重复或乱序 hint 的三个坐标分别取数值最大值。
+索引 feed 中某个 thread 投影的缺失不是删除通知，consumer 不得通过对比 message 与
+tombstone 的 thread 集合推导状态。关系终止以 state feed 为主路径；若本地仍持有旧 end 并发起
+query，当前授权失效所得的 `FORBIDDEN` 是兜底信号。consumer 应使该 thread 的当前待查询
+目标失效、优先重新排空 state feed，但不回退全局 feed cursor 或已提交的 thread-local cursor。
 启动和周期 reconciliation 即使没有收到 hint，也 MUST 先使用本地 state cursor 读取并排空 state feed，
 再依次读取 tombstone 和 message feed；每个 feed 首个未携带 `through` 的成功 page 返回的 end 可固定为该次
 drain target，该首 page 计入本轮，后续 page 使用该 target 作为 `through`。三个 end 不要求来自跨 feed 原子

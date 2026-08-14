@@ -76,8 +76,9 @@ pinning 和出站防火墙属于节点部署选择，不是 Federation v1 wire c
   加配额后自动唤醒。
 - CAS 和 forward bundle 下载均验证精确消息/thread 所有权和 digest/bundle 绑定。
 - 资源授权实时 join signer 的 thread audience，不依赖可被 GC 的 message change。
-- 三个 feed 当前压缩投影不清理；message query 正文可按保留策略清理并返回更高 `resumeAfter`，
-  tombstone 事实永久保留。
+- 三个 feed 不因容量、时间或重启清理有效的当前压缩投影；P2P 关系终止后，source
+  可分别移除该 thread 的 message/tombstone 投影。两个 data feed 的 thread 集合独立。message query
+  正文可按保留策略清理并返回更高 `resumeAfter`，tombstone 事实永久保留。
 
 ## 当前限制
 

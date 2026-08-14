@@ -34,8 +34,8 @@ export enum AddTabStatus {
 // (fromUser for incoming, toUser for outgoing), so no separate profile lookup is needed.
 type PendingReq = {
   id: string;
-  /** The peer user's numeric id — the avatar cache identity (the invite `id` is NOT a user id). */
-  peerId?: number;
+  /** Existing stub id, or an Address key while no stub exists. */
+  peerId?: number | string;
   name?: string;
   avatar?: string;
   account?: string;
@@ -157,28 +157,43 @@ export class FriendRequestsComponent implements OnDestroy {
         : null;
     const account = at > 0 ? curSearchText.slice(0, at) : curSearchText;
 
-    // Exact resolve → establish trust when federated (if needed) → fetch profile → one card.
+    // Local exact resolve remains a normal request. Federated resolve is a temporary SSE proxy and
+    // returns a transient id=0 card plus its Address-based relationship state.
     const runResolve = () => {
-      this.searchSub = this.userService
-        .resolveUser({ account, ...(domain ? { domain } : {}) })
-        .subscribe({
-          next: (res) => {
-            this.connectingDomain.set(null);
-            if (res.code === 0) {
-              this.applySelectedUser(res.data!);
-            } else {
-              this.curSearchText.set(curSearchText);
-              this.addTabStatus.set(AddTabStatus.EMPTY);
-            }
-          },
-          error: () => {
-            this.connectingDomain.set(null);
-            this.errMsg.set(
-              this.transloco.translate('friend.error.unknownError'),
-            );
-            this.addTabStatus.set(AddTabStatus.ERROR);
-          },
-        });
+      this.searchSub = domain
+        ? this.userService.resolveFederatedUser({ account, domain }).subscribe({
+            next: ({ user, relationship }) => {
+              this.connectingDomain.set(null);
+              this.relationshipStates.set(new Map([[0, relationship]]));
+              this.localResults.set([user]);
+              this.addTabStatus.set(AddTabStatus.SUCCESS);
+            },
+            error: () => {
+              this.connectingDomain.set(null);
+              this.errMsg.set(
+                this.transloco.translate('friend.error.unknownError'),
+              );
+              this.addTabStatus.set(AddTabStatus.ERROR);
+            },
+          })
+        : this.userService.resolveUser({ account }).subscribe({
+            next: (res) => {
+              this.connectingDomain.set(null);
+              if (res.code === 0) {
+                this.applySelectedUser(res.data!);
+              } else {
+                this.curSearchText.set(curSearchText);
+                this.addTabStatus.set(AddTabStatus.EMPTY);
+              }
+            },
+            error: () => {
+              this.connectingDomain.set(null);
+              this.errMsg.set(
+                this.transloco.translate('friend.error.unknownError'),
+              );
+              this.addTabStatus.set(AddTabStatus.ERROR);
+            },
+          });
     };
 
     if (domain) {
@@ -392,7 +407,7 @@ export class FriendRequestsComponent implements OnDestroy {
   private toPendingReq(inv: Invite, peer: Invite['fromUser']): PendingReq {
     return {
       id: inv.id,
-      peerId: peer.id,
+      peerId: this.userIdentity(peer),
       name: peer.name,
       avatar: peer.avatar,
       account: peer.account,
@@ -403,6 +418,12 @@ export class FriendRequestsComponent implements OnDestroy {
       date: inv.createdAt,
       errText: '',
     };
+  }
+
+  userIdentity(peer: Pick<User, 'id' | 'account' | 'domain'>): number | string {
+    return peer.id > 0
+      ? peer.id
+      : `${peer.domain ?? 'local'}\u0000${peer.account}`;
   }
 
   relativeDate(timestamp: number): string {

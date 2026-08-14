@@ -12,7 +12,9 @@ import {
 } from './federation-harness.js';
 import {
   uploadAvatar,
+  establishFederatedFriendship,
   registerAndLogin,
+  resolveFederatedCard,
   getAdminCookie,
   openSse,
   waitForSseEvent,
@@ -28,10 +30,14 @@ import { and, count, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
   deletedMessage,
   federatedPeer,
+  federatedFriendRequest,
   federatedPeerEvent,
   federatedPeerReset,
   federatedMessageTombstone,
   federationDeletedCursor,
+  federationMessageFeedIndex,
+  federationTombstoneFeedIndex,
+  federationTombstoneServeCursor,
   federationServeCursor,
   forwardBundle,
   forwardBundleDependency,
@@ -282,37 +288,26 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await proxy?.close();
   });
 
-  it('bidirectional Recognize establishes a healthy peer on resolve', async () => {
-    const res = await request(appA.baseUrl)
-      .post('/api/v1/user/resolve')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({ account: 'bob', domain: DOM_B });
-    expect(res.status).toBe(200);
-    expect(res.body.code, JSON.stringify(res.body)).toBe(BusinessCode.OK);
-    expect(res.body.data.isForeigner).toBe(true);
-    expect(res.body.data.domain).toBe(DOM_B);
-    bobStubIdOnA = res.body.data.id;
+  it('temporary resolve establishes trust without creating a stub', async () => {
+    const resolved = await resolveFederatedCard(appA, tokenA, 'bob', DOM_B);
+    expect(resolved.event).toBe('resolved');
+    expect(resolved.data).toMatchObject({
+      relationship: 'NONE',
+      user: { id: 0, isForeigner: true, domain: DOM_B },
+    });
+    expect(
+      await appA.database.query.user.findFirst({
+        where: and(eq(user.account, 'bob'), eq(user.domain, DOM_B)),
+      }),
+    ).toBeUndefined();
 
-    // Resolving the same profile reuses the local mirror and profileRev gates
-    // all disk/DB writes. In particular, updatedAt and the localized avatar URL
-    // must remain stable when the peer reports the same version.
-    const beforeRepeat = await appA.database.query.user.findFirst({
-      where: eq(user.id, bobStubIdOnA),
-    });
-    const repeated = await request(appA.baseUrl)
-      .post('/api/v1/user/resolve')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({ account: 'bob', domain: DOM_B });
-    expect(repeated.body.code).toBe(BusinessCode.OK);
-    expect(repeated.body.data.id).toBe(bobStubIdOnA);
-    const afterRepeat = await appA.database.query.user.findFirst({
-      where: eq(user.id, bobStubIdOnA),
-    });
-    expect(afterRepeat?.remoteProfileRev).toBe(beforeRepeat?.remoteProfileRev);
-    expect(afterRepeat?.avatar).toBe(beforeRepeat?.avatar);
-    expect(afterRepeat?.updatedAt.getTime()).toBe(
-      beforeRepeat?.updatedAt.getTime(),
-    );
+    const repeated = await resolveFederatedCard(appA, tokenA, 'bob', DOM_B);
+    expect(repeated.event).toBe('resolved');
+    expect(
+      await appA.database.query.user.findFirst({
+        where: and(eq(user.account, 'bob'), eq(user.domain, DOM_B)),
+      }),
+    ).toBeUndefined();
 
     // appA now trusts bbb.local.
     const peerA = await appA.database.query.federatedPeer.findFirst({
@@ -332,62 +327,67 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(peerB?.trustLevel).toBe('available');
   });
 
-  it('friend.request carries the profile and localizes the avatar on the receiver', async () => {
+  it('Address request carries PROFILE but creates stubs only after accept', async () => {
     const res = await request(appA.baseUrl)
-      .post('/api/v1/invite/friend')
+      .post('/api/v1/invite/federated-friend')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ toUserId: bobStubIdOnA, note: 'hi from aaa' });
+      .send({ account: 'bob', domain: DOM_B, note: 'hi from aaa' });
     expect(res.status).toBe(200);
     expect(res.body.code, JSON.stringify(res.body)).toBe(BusinessCode.OK);
 
-    // appB created a stub of alice with a localized avatar (saved through saveAvatars → /uploads/).
-    const aliceStubB = await vi.waitFor(
+    const incoming = await vi.waitFor(
       async () => {
-        const stub = await appB.database.query.user.findFirst({
-          where: and(eq(user.account, 'alice'), eq(user.domain, DOM_A)),
+        const row = await appB.database.query.federatedFriendRequest.findFirst({
+          where: and(
+            eq(federatedFriendRequest.localUserId, bobLocalIdB),
+            eq(federatedFriendRequest.remoteAccount, 'alice'),
+            eq(federatedFriendRequest.remoteDomain, DOM_A),
+            eq(federatedFriendRequest.direction, 'INCOMING'),
+          ),
         });
-        expect(stub).toBeDefined();
-        return stub;
+        expect(row).toBeDefined();
+        return row!;
       },
       { timeout: 5000, interval: 100 },
     );
-    expect(aliceStubB).toBeDefined();
-    expect(aliceStubB!.isForeigner).toBe(true);
-    expect(aliceStubB!.avatar).toMatch(/^\/uploads\/.+-(512)\.webp$/);
-    aliceStubIdOnB = aliceStubB!.id;
-
-    // appB has a PENDING FRIEND Invite from alice's stub (the S2S delivery created it + armed the badge).
-    const inviteB = await appB.database.query.friendRequest.findFirst({
-      where: and(
-        eq(friendRequest.status, 'REQUESTED'),
-        eq(friendRequest.requesterUserId, aliceStubIdOnB),
-      ),
-    });
-    expect(inviteB).toBeDefined();
-    expect(inviteB!.targetUserId).not.toBe(aliceStubIdOnB); // addressed to bob (local), not the stub
-    const sourceRequest = await appA.database.query.friendRequest.findFirst({
-      where: and(
-        eq(friendRequest.requesterUserId, aliceLocalIdA),
-        eq(friendRequest.targetUserId, bobStubIdOnA),
-      ),
-    });
-    expect(sourceRequest?.expiresAt).not.toBeNull();
-    expect(inviteB!.expiresAt?.getTime()).toBe(
-      sourceRequest!.expiresAt!.getTime(),
-    );
     expect(
-      sourceRequest!.expiresAt!.getTime() -
-        sourceRequest!.requestedAt!.getTime(),
+      await appB.database.query.user.findFirst({
+        where: and(eq(user.account, 'alice'), eq(user.domain, DOM_A)),
+      }),
+    ).toBeUndefined();
+    expect(incoming.expiresAt).not.toBeNull();
+    expect(
+      incoming.expiresAt!.getTime() - incoming.requestedAt!.getTime(),
     ).toBe(7 * 24 * 60 * 60 * 1000);
 
-    // Crossed requests are the approval handshake: each direction retains its own note, while the
-    // canonical pair becomes active as soon as both facts have converged.
-    const reverse = await request(appB.baseUrl)
-      .post('/api/v1/invite/friend')
+    const accepted = await request(appB.baseUrl)
+      .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${tokenB}`)
-      .send({ toUserId: aliceStubIdOnB, note: 'hi back from bbb' });
-    expect(reverse.status).toBe(200);
-    expect(reverse.body.code).toBe(BusinessCode.OK);
+      .send({ inviteId: `f:${incoming.id.toString()}` });
+    expect(accepted.body.code).toBe(BusinessCode.OK);
+
+    const [aliceStubB, bobStubA] = await vi.waitFor(
+      async () => {
+        const stubs = await Promise.all([
+          appB.database.query.user.findFirst({
+            where: and(eq(user.account, 'alice'), eq(user.domain, DOM_A)),
+          }),
+          appA.database.query.user.findFirst({
+            where: and(eq(user.account, 'bob'), eq(user.domain, DOM_B)),
+          }),
+        ]);
+        expect(stubs[0]).toBeDefined();
+        expect(stubs[1]).toBeDefined();
+        return stubs as [
+          NonNullable<(typeof stubs)[0]>,
+          NonNullable<(typeof stubs)[1]>,
+        ];
+      },
+      { timeout: 5000, interval: 100 },
+    );
+    aliceStubIdOnB = aliceStubB.id;
+    bobStubIdOnA = bobStubA.id;
+    expect(aliceStubB.avatar).toMatch(/^\/uploads\/.+-(512)\.webp$/);
 
     await vi.waitFor(
       async () => {
@@ -412,7 +412,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             );
           expect(rows).toHaveLength(2);
           expect(rows.map((row) => row.note).sort()).toEqual([
-            'hi back from bbb',
+            '',
             'hi from aaa',
           ]);
           const pair = await app.database.query.friendPair.findFirst({
@@ -435,7 +435,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const threadA = await findActiveP2pParticipant(appA, bobStubIdOnA);
     expect(threadA).toBeDefined();
 
-    // appA's stub of bob also has a localized avatar (pulled at resolve time, pre-request).
+    // ACCEPTED + verified home PROFILE materialized bob's localized avatar.
     const bobStubA = await appA.database.query.user.findFirst({
       where: eq(user.id, bobStubIdOnA),
     });
@@ -469,46 +469,21 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       return;
     }
 
-    const resolved = await request(appA.baseUrl)
-      .post('/api/v1/user/resolve')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({ account: 'bob', domain: DOM_B });
-    expect(resolved.body.code).toBe(BusinessCode.OK);
-    bobStubIdOnA = resolved.body.data.id;
-
-    const sent = await request(appA.baseUrl)
-      .post('/api/v1/invite/friend')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({ toUserId: bobStubIdOnA, note: 'media test setup' });
-    expect(sent.body.code).toBe(BusinessCode.OK);
-
-    const aliceStub = await vi.waitFor(
-      async () => {
-        const stub = await appB.database.query.user.findFirst({
-          where: and(eq(user.account, 'alice'), eq(user.domain, DOM_A)),
-        });
-        expect(stub).toBeDefined();
-        return stub;
-      },
-      { timeout: 5000, interval: 100 },
-    );
-    aliceStubIdOnB = aliceStub!.id;
-    const reverse = await request(appB.baseUrl)
-      .post('/api/v1/invite/friend')
-      .set('Authorization', `Bearer ${tokenB}`)
-      .send({ toUserId: aliceStubIdOnB, note: 'media test setup reply' });
-    expect(reverse.body.code).toBe(BusinessCode.OK);
-    await vi.waitFor(
-      async () => {
-        expect(
-          await findActiveP2pParticipant(appA, bobStubIdOnA),
-        ).toBeDefined();
-        expect(
-          await findActiveP2pParticipant(appB, aliceStubIdOnB),
-        ).toBeDefined();
-      },
-      { timeout: 5000, interval: 100 },
-    );
+    const friendship = await establishFederatedFriendship({
+      local: appA,
+      remote: appB,
+      localUserId: aliceLocalIdA,
+      remoteUserId: bobLocalIdB,
+      localToken: tokenA,
+      remoteToken: tokenB,
+      localAccount: 'alice',
+      remoteAccount: 'bob',
+      localDomain: DOM_A,
+      remoteDomain: DOM_B,
+      note: 'media test setup',
+    });
+    bobStubIdOnA = friendship.remoteStubIdOnLocal;
+    aliceStubIdOnB = friendship.localStubIdOnRemote;
   }
 
   async function sendFederatedImage(bytes: Buffer, dimension: number) {
@@ -930,6 +905,22 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             'number',
       )) as { stateRevision?: number };
       expect(payload.stateRevision).toBeGreaterThan(0);
+      const delta = await request(appA.baseUrl)
+        .post('/api/v1/user/query-state/delta')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({ fromRevision: 0, toRevision: payload.stateRevision });
+      expect(delta.status).toBe(200);
+      expect(delta.body.data).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            direction: 'PROFILE',
+            user: expect.objectContaining({
+              id: aliceLocalIdA,
+              name: 'Alice Renamed',
+            }),
+          }),
+        ]),
+      );
     } finally {
       await reader.cancel();
     }
@@ -1219,42 +1210,21 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // The untested topology path: TWO local members (bob + dave) on appB's SAME mirror thread. A pulled
     // message must SSE-fan to EVERY local active member (storePulledMessage's recipient loop), and the
     // mirror is SHARED (MessageThread.groupUserId @unique → one mirror per group, not one per local user).
-    // Friend gate for the group invite: befriend alice↔dave (resolve → request → dave accepts).
-    const resolveDave = await request(appA.baseUrl)
-      .post('/api/v1/user/resolve')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({ account: 'dave', domain: DOM_B });
-    expect(resolveDave.body.code).toBe(BusinessCode.OK);
-    daveStubIdOnA = resolveDave.body.data.id as number;
-
-    await request(appA.baseUrl)
-      .post('/api/v1/invite/friend')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({ toUserId: daveStubIdOnA, note: 'hi dave' });
-    await vi.waitFor(
-      async () => {
-        const inv = await appB.database.query.friendRequest.findFirst({
-          where: and(
-            eq(friendRequest.status, 'REQUESTED'),
-            eq(friendRequest.targetUserId, daveLocalIdB),
-          ),
-        });
-        expect(inv).toBeDefined();
-      },
-      { timeout: 5000, interval: 100 },
-    );
-    const aliceStubForDave = await appB.database.query.user.findFirst({
-      where: and(eq(user.account, 'alice'), eq(user.domain, DOM_A)),
+    // Friend gate for the group invite: ACCEPTED state creates dave's stub.
+    const daveFriendship = await establishFederatedFriendship({
+      local: appA,
+      remote: appB,
+      localUserId: aliceLocalIdA,
+      remoteUserId: daveLocalIdB,
+      localToken: tokenA,
+      remoteToken: tokenDave,
+      localAccount: 'alice',
+      remoteAccount: 'dave',
+      localDomain: DOM_A,
+      remoteDomain: DOM_B,
+      note: 'hi dave',
     });
-    expect(aliceStubForDave).toBeDefined();
-    const daveReply = await request(appB.baseUrl)
-      .post('/api/v1/invite/friend')
-      .set('Authorization', `Bearer ${tokenDave}`)
-      .send({
-        toUserId: aliceStubForDave!.id,
-        note: 'hi alice from dave',
-      });
-    expect(daveReply.body.code).toBe(BusinessCode.OK);
+    daveStubIdOnA = daveFriendship.remoteStubIdOnLocal;
     // The group-invite friend gate keys on an active P2P thread alice↔dave on appB — wait for it.
     await vi.waitFor(
       async () => {
@@ -1988,7 +1958,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     ).toBeUndefined();
   }, 60_000);
 
-  it('unfriend drains the inclusive message boundary, closes both directions, and re-add resumes the retained thread', async () => {
+  it('unfriend removes the current feed projection and re-add resumes only with later messages', async () => {
     const oldThreadA = await findActiveP2pBetween(
       appA,
       aliceLocalIdA,
@@ -2002,9 +1972,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(oldThreadA).toBeDefined();
     expect(oldThreadB).toBeDefined();
 
-    // Keep B offline so A's final pre-delete message and NOT_FRIEND state are
-    // both durable but unconsumed. On restart B must apply state first and
-    // still accept that already-authorized message-feed item afterwards.
+    // Keep B offline so A has an unconsumed message projection. Unfriend removes
+    // that projection; REVOKED carries no feed boundary or message content.
     await appB.stop();
     const lastBeforeDelete = await request(appA.baseUrl)
       .post('/api/v1/send-message')
@@ -2017,12 +1986,57 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       });
     expect(lastBeforeDelete.body.code).toBe(BusinessCode.OK);
 
+    // The two discovery indexes are independent. Seed a tombstone projection so
+    // this transition proves that close removes both current stable keys.
+    await appA.database.transaction(async (tx) => {
+      const [head] = await tx
+        .update(federationTombstoneServeCursor)
+        .set({
+          allocatedThrough: sql`${federationTombstoneServeCursor.allocatedThrough} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(eq(federationTombstoneServeCursor.peerDomain, DOM_B))
+        .returning({ feedId: federationTombstoneServeCursor.allocatedThrough });
+      expect(head).toBeDefined();
+      await tx
+        .insert(federationTombstoneFeedIndex)
+        .values({
+          peerDomain: DOM_B,
+          threadId: oldThreadA!.threadId,
+          feedId: head!.feedId,
+          tombstoneEndSeq: 1n,
+        })
+        .onConflictDoUpdate({
+          target: [
+            federationTombstoneFeedIndex.peerDomain,
+            federationTombstoneFeedIndex.threadId,
+          ],
+          set: { feedId: head!.feedId, tombstoneEndSeq: 1n },
+        });
+    });
+
     const res = await request(appA.baseUrl)
       .post('/api/v1/user/delete-friend')
       .set('Authorization', `Bearer ${tokenA}`)
       .send({ userId: bobStubIdOnA });
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(BusinessCode.OK);
+    expect(
+      await appA.database.query.federationMessageFeedIndex.findFirst({
+        where: and(
+          eq(federationMessageFeedIndex.peerDomain, DOM_B),
+          eq(federationMessageFeedIndex.threadId, oldThreadA!.threadId),
+        ),
+      }),
+    ).toBeUndefined();
+    expect(
+      await appA.database.query.federationTombstoneFeedIndex.findFirst({
+        where: and(
+          eq(federationTombstoneFeedIndex.peerDomain, DOM_B),
+          eq(federationTombstoneFeedIndex.threadId, oldThreadA!.threadId),
+        ),
+      }),
+    ).toBeUndefined();
 
     // appA tore it down — the P2P thread is soft-left (no active thread between alice and bob's stub).
     const threadA = await findActiveP2pParticipant(appA, bobStubIdOnA);
@@ -2067,7 +2081,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
               eq(message.content, textContent('last-before-unfriend')),
             ),
           }),
-        ).toBeDefined();
+        ).toBeUndefined();
       },
       { timeout: 5000, interval: 100 },
     );
@@ -2190,21 +2204,19 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // The uncached lookup reaches fetchRemoteUser and gets a real ECONNREFUSED → markTransportDegraded(DOM_B).
     await appB.stop();
     try {
-      const res = await request(appA.baseUrl)
-        .post('/api/v1/user/resolve')
-        .set('Authorization', `Bearer ${tokenA}`)
-        .send({ account: 'unreachable', domain: DOM_B });
-      expect(res.status).toBe(200);
-      expect(res.body.code).toBe(BusinessCode.FEDERATION_DELIVERY_FAILED);
+      const res = await resolveFederatedCard(
+        appA,
+        tokenA,
+        'unreachable',
+        DOM_B,
+      );
+      expect(res).toEqual({ event: 'failed', data: { reason: 'UNREACHABLE' } });
 
       // A reconnect ping already in flight when stop() began may finish just after the failed GET and
       // temporarily recover the peer. Once that bounded race has drained, a second operation leaves the
       // peer stably degraded (or fails fast because it already is degraded).
       await new Promise((resolve) => setTimeout(resolve, 250));
-      await request(appA.baseUrl)
-        .post('/api/v1/user/resolve')
-        .set('Authorization', `Bearer ${tokenA}`)
-        .send({ account: 'still-unreachable', domain: DOM_B });
+      await resolveFederatedCard(appA, tokenA, 'still-unreachable', DOM_B);
 
       // aaa marked bbb degraded: state flipped, count bumped and the event is logged. Pinned keys are continuity
       // evidence, so a transient outage must retain them for the signed-heartbeat recovery below.
@@ -2256,12 +2268,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         degradationReason: 'deterministic identity recovery fixture',
       })
       .where(eq(federatedPeer.domain, DOM_B));
-    const res = await request(appA.baseUrl)
-      .post('/api/v1/user/resolve')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({ account: 'bob', domain: DOM_B });
-    expect(res.status).toBe(200);
-    expect(res.body.code).toBe(BusinessCode.OK);
+    const res = await resolveFederatedCard(appA, tokenA, 'bob', DOM_B);
+    expect(res.event).toBe('resolved');
 
     const peer = await appA.database.query.federatedPeer.findFirst({
       where: eq(federatedPeer.domain, DOM_B),
@@ -2392,12 +2400,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       haltCode: BusinessCode.FEDERATION_PEER_BLOCKED,
     });
 
-    const res = await request(appA.baseUrl)
-      .post('/api/v1/user/resolve')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({ account: 'bob', domain: DOM_B });
-    expect(res.status).toBe(200);
-    expect(res.body.code).toBe(BusinessCode.FEDERATION_PEER_BLOCKED);
+    const res = await resolveFederatedCard(appA, tokenA, 'bob', DOM_B);
+    expect(res).toEqual({ event: 'failed', data: { reason: 'BLOCKED' } });
 
     // Admin reads (the admin page's data sources, via their real routes): the list filters by state; the
     // timeline (newest-first) carries the full discovered → trusted → degraded → trusted → blocked process.
@@ -2545,13 +2549,20 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     });
     expect(remaining.deleteRevisions).toBeGreaterThan(0);
 
-    const rejoin = await request(appA.baseUrl)
-      .post('/api/v1/user/resolve')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({ account: 'bob', domain: DOM_B });
-    expect(rejoin.status).toBe(200);
-    expect(rejoin.body.code).toBe(BusinessCode.OK);
-    expect(rejoin.body.data.id).not.toBe(bobStubIdOnA);
+    const rejoined = await establishFederatedFriendship({
+      local: appA,
+      remote: appB,
+      localUserId: aliceLocalIdA,
+      remoteUserId: bobLocalIdB,
+      localToken: tokenA,
+      remoteToken: tokenB,
+      localAccount: 'alice',
+      remoteAccount: 'bob',
+      localDomain: DOM_A,
+      remoteDomain: DOM_B,
+      note: 'post-reset request',
+    });
+    expect(rejoined.remoteStubIdOnLocal).not.toBe(bobStubIdOnA);
 
     const [rejoinedPeer, consumedReset] = await Promise.all([
       appA.database.query.federatedPeer.findFirst({
@@ -2569,7 +2580,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .from(threadParticipant)
       .where(
         and(
-          eq(threadParticipant.userId, rejoin.body.data.id),
+          eq(threadParticipant.userId, rejoined.remoteStubIdOnLocal),
           inArray(threadParticipant.threadId, affectedIds),
         ),
       );

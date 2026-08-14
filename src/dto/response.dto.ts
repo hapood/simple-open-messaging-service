@@ -431,6 +431,13 @@ export class GroupMemberDto {
   })
   domain!: string;
 
+  @ApiProperty({
+    example: 'group-origin.example',
+    description:
+      'Publisher of the source-scoped display snapshot. Empty means the home-owned User profile.',
+  })
+  profileSourceDomain!: string;
+
   @ApiProperty({ enum: GroupRole, description: 'Member role in this group' })
   role!: GroupRole;
 

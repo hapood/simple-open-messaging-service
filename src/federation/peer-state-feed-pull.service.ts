@@ -9,9 +9,10 @@ import type { PeerStateFeedPage } from './peer-state-feed.service.js';
 import { RemoteFeedCursorUnavailableError } from './federation-feed-cursor-error.js';
 
 export interface PeerStateFeedPullCallbacks {
-  fetch(after?: bigint): Promise<PeerStateFeedPage>;
+  fetch(after?: bigint, through?: bigint): Promise<PeerStateFeedPage>;
   apply(tx: DatabaseTransaction, page: PeerStateFeedPage): Promise<void>;
   afterCommit?(page: PeerStateFeedPage): Promise<void> | void;
+  afterDrain?(through: bigint): Promise<void> | void;
 }
 
 @Injectable()
@@ -58,12 +59,21 @@ export class PeerStateFeedPullService {
     callbacks: PeerStateFeedPullCallbacks,
   ): Promise<void> {
     this.pending.delete(peerDomain);
+    let drainTarget: bigint | undefined;
     for (;;) {
-      const applied = await this.applyOnePage(peerDomain, callbacks);
+      const applied = await this.applyOnePage(
+        peerDomain,
+        callbacks,
+        drainTarget,
+      );
       if (!applied) return;
       if (!applied.page) continue;
+      drainTarget ??= applied.sourceEndId;
       await callbacks.afterCommit?.(applied.page);
       if (applied.hasMore) continue;
+      if (applied.scannedThrough !== drainTarget)
+        throw new Error('peer ended state drain before its fixed target');
+      await callbacks.afterDrain?.(drainTarget);
       const cursor =
         await this.database.db.query.peerStateFeedPullCursor.findFirst({
           where: eq(peerStateFeedPullCursor.peerDomain, peerDomain),
@@ -71,10 +81,15 @@ export class PeerStateFeedPullService {
         });
       if (!cursor) return;
       const advertised = this.advertised.get(peerDomain);
-      if (advertised !== undefined && advertised > cursor.committedThrough)
+      if (advertised !== undefined && advertised > cursor.committedThrough) {
+        drainTarget = undefined;
         continue;
+      }
       if (advertised !== undefined) this.advertised.delete(peerDomain);
-      if (this.pending.delete(peerDomain)) continue;
+      if (this.pending.delete(peerDomain)) {
+        drainTarget = undefined;
+        continue;
+      }
       return;
     }
   }
@@ -82,6 +97,7 @@ export class PeerStateFeedPullService {
   private async applyOnePage(
     peerDomain: string,
     callbacks: PeerStateFeedPullCallbacks,
+    through?: bigint,
   ) {
     return this.database.db.transaction(async (tx) => {
       const lock = await tx.execute<{ locked: boolean }>(
@@ -98,6 +114,7 @@ export class PeerStateFeedPullService {
       try {
         page = await callbacks.fetch(
           cursor.initialized ? cursor.committedThrough : undefined,
+          cursor.initialized ? through : undefined,
         );
       } catch (error) {
         if (!(error instanceof RemoteFeedCursorUnavailableError)) throw error;
@@ -130,10 +147,13 @@ export class PeerStateFeedPullService {
         'scannedThrough',
       );
       const sourceEndId = this.parseRev(page.stateFeedEndId, 'stateFeedEndId');
+      const scanEnd =
+        through === undefined || sourceEndId < through ? sourceEndId : through;
       if (
         scannedThrough < cursor.committedThrough ||
-        scannedThrough > sourceEndId ||
-        (page.hasMore && scannedThrough === cursor.committedThrough)
+        scannedThrough > scanEnd ||
+        (page.hasMore && scannedThrough === cursor.committedThrough) ||
+        page.hasMore !== scannedThrough < scanEnd
       )
         throw new Error('peer returned an invalid state feed boundary');
       let previous = cursor.committedThrough;
@@ -156,6 +176,7 @@ export class PeerStateFeedPullService {
       return {
         requestedAfter: cursor.committedThrough,
         scannedThrough,
+        sourceEndId,
         hasMore: page.hasMore,
         page,
       };

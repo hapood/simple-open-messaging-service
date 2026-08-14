@@ -120,14 +120,29 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 - `update-profile`: `{ name?, bio? }` (handle cannot change; bumps `profileRev`).
 - `update-avatar`: `multipart/form-data` `file` → `sharp` multi-size webp (32/64/128/256/512, EXIF-oriented, cover-cropped, bomb-guarded); returns `{ avatar }` (the 512px URL).
 
-### POST `/user/query-thread/delta` — Client state delta
+### POST `/user/query-state/delta` — Client state delta
 
-- **Body**: `{ from: number, to: number }` (revision range). Returns thread ADD/DELETE and PROFILE entries since the client's `stateRevision` cursor. The client applies PROFILE entries first and then thread membership changes.
+- **Body**: `{ fromRevision: number, toRevision: number }` (revision range). Returns hydrated thread
+  ADD/DELETE, PROFILE/PROFILE_DELETE, MEMBER_PROFILE invalidation and FRIEND_REQUEST entries since the
+  client's `stateRevision` cursor. An ADD is an authoritative replacement snapshot and may represent a
+  group/roster/role change or a per-user thread-setting/read-state change, not only a new conversation.
+  The current user's own avatar/name/bio update is included as PROFILE in this same log.
+  MEMBER_PROFILE carries `sourcePeerDomain + member Address + affected threadIds`; clients refetch those
+  rosters and never merge source-scoped displays by userId alone.
 
 ### POST `/user/query` · `/user/resolve` · `/user/search`
 
 - `query`: `{ userIds: number[] }` (`@ArrayMaxSize(100)`) batch user lookup.
-- `resolve` / `search`: account-based / fuzzy lookup. (`10001` not found.)
+- `resolve` / `search`: local exact/fuzzy lookup. A foreign domain is rejected by `resolve`; federated
+  exact lookup must use the temporary stream below. (`10001` not found.)
+
+### GET `/user/resolve-federated-stream` — Temporary federated exact lookup
+
+- **Query**: `{ account, domain }`; authenticated temporary SSE, with a 30-second server-side bound.
+- Emits one terminal `resolved` or `failed` event and closes. Closing the client connection cancels client
+  interest; the server-to-peer request keeps its normal bounded timeout.
+- The result is an untrusted display card plus relationship status. It is never persisted and never creates
+  a stub; clients may close it and start another lookup at any time.
 
 ### POST `/user/delete-friend` · `/user/block`
 
@@ -155,6 +170,15 @@ rows with independent notes and revisions; group invitation and join intent are 
   request expires after seven days; an explicit resend after expiry grows its revision and renews the
   absolute expiry. `20001` friending self · `20004` invalid target.
 
+### POST `/invite/federated-friend` — Send a pre-stub federated request
+
+- **Body**: `{ account, domain, note?, displayName?, avatar? }`. `account + domain` are the immutable target
+  Address; `displayName/avatar` are only the untrusted request-card snapshot returned by the temporary
+  lookup. The client is session-authenticated but does not sign this application or its snapshot.
+- The server does not create a target stub. A human foreign stub is created only after the peer publishes
+  valid `ACCEPTED` state and a verified home-owned PROFILE is available.
+- Its returned `inviteId` is prefixed with `f:`; the existing accept/reject/revoke endpoints accept that id.
+
 ### POST `/invite/accept` · `/invite/reject` · `/invite/revoke`
 
 - **Body**: `{ inviteId }`.
@@ -163,6 +187,8 @@ rows with independent notes and revisions; group invitation and join intent are 
   the origin's state snapshot confirms membership.
 - `reject` / `revoke`: close only the caller-owned direction. Federation convergence is asynchronous
   through the state feed; there are no S2S invite command endpoints.
+- Every pending friend/group request has an absolute expiry of at most seven days. Expired requests are
+  ineffective even if an old feed projection remains. REVOKED has no expiry and is retained best-effort.
 
 ### POST `/invite/incoming` · `/invite/outgoing`
 
@@ -315,25 +341,32 @@ Admin auth is a **separate opaque session** (`AdminSession`, own `adminSecret`, 
 
 The browser opens the stream via a fetch-backed SSE client inside a Web Worker (the native EventSource API cannot set headers). The credential travels as the **httpOnly cookie** (browser) or `Authorization: Bearer` (native) — never in the URL. Authentication failure → HTTP 401 (no frame); the client reconnects.
 
-On connect the server pushes a **`HELLO`** frame with catch-up cursors: newest-message cursor, `stateRevision`, and `activeCall`. `stateRevision` covers the thread list, cached profile changes, and incoming friend requests. Heartbeat: a `: ping` comment frame every 25s.
+On connect the server pushes a **`HELLO`** frame with catch-up cursors: newest-message cursor,
+`stateRevision`, and `activeCall`. `stateRevision` covers hydrated thread state (including group/roster
+invalidation and per-user settings/read state), cached profile changes, source-scoped member profiles, and
+incoming friend requests. Heartbeat: a `: ping` comment frame every 25s.
 
 ### Frame format
 
 ```
 event: <EVENT_NAME>
-id: <seq>            # NEW_MESSAGE only
 data: <json>
 ```
 
 ### Event list (backend → frontend)
 
-| Event               | Trigger                                   | `data`                                                                      | Client handling                         |
-| ------------------- | ----------------------------------------- | --------------------------------------------------------------------------- | --------------------------------------- |
-| `HELLO`             | connect                                   | cursors (message / stateRevision / activeCall)                              | pull state delta and missed summary     |
-| `STATE_REV_UPDATED` | local state cursor advances               | `{ stateRevision }`                                                         | pull and apply the next state range     |
-| `NEW_MESSAGE`       | a message is sent to the user             | full message body `{ threadId, seq, content, contentType, createdAt, ... }` | cache in the message repository; render |
-| `THREAD_META`       | thread mute/pin/clear/revision change     | `{ threadId, ... }`                                                         | update conversation list                |
-| `FORCE_LOGOUT`      | logout-all / password change / admin kick | reason                                                                      | disconnect + force re-login             |
+| Event                        | Purpose                                            | Recovery source                           |
+| ---------------------------- | -------------------------------------------------- | ----------------------------------------- |
+| `HELLO`                      | connection handshake and current high-water marks  | sent on every connection                  |
+| `STATE_REV_UPDATED`          | identity-only unified client-state wake            | `HELLO.stateRevision` + ranged state pull |
+| `NEW_MESSAGE`                | identity-only message wake `{ threadId, seq, ts }` | missed-message/message query              |
+| `DELETED_MESSAGE_UPDATED`    | identity-only deletion-log wake                    | deletion HWM/log                          |
+| `MEDIA_STATUS`               | media-localization completion wake                 | message/media query                       |
+| `CALL_EVENT` / `CALL_SIGNAL` | ephemeral call lifecycle and WebRTC signaling      | active-call snapshot/new negotiation      |
+| `FORCE_LOGOUT`               | terminate a revoked session                        | authentication state                      |
+
+There are no dedicated group, profile, friend/request, thread-metadata, or read-state SSE events. Those
+changes are committed to the unified state log first and SSE carries only `STATE_REV_UPDATED`.
 
 > Ordering & completeness: on a live connection, strict ordering is guaranteed by TCP; state missed during a disconnect is caught up from `stateRevision`, and messages are caught up from the per-thread message cursors (the stream does not replay history — no `Last-Event-ID`).
 

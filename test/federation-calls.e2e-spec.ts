@@ -12,6 +12,7 @@ import {
   type S2sProxy,
 } from './federation-harness.js';
 import {
+  establishFederatedFriendship,
   registerAndLogin,
   openSse,
   waitForSseEvent,
@@ -54,51 +55,25 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
     ({ token: tokenErin } = await registerAndLogin(appA, 'erin', 'Erin'));
     ({ token: tokenFrank } = await registerAndLogin(appB, 'frank', 'Frank'));
 
-    // Mutual trust: erin resolves frank → triggers the init handshake (auto-accept both ways).
-    const res = await request(appA.baseUrl)
-      .post('/api/v1/user/resolve')
-      .set('Authorization', `Bearer ${tokenErin}`)
-      .send({ account: 'frank', domain: DOM_B });
-    expect(res.body.code).toBe(BusinessCode.OK);
-    frankStubIdOnA = res.body.data.id;
-
-    // erin invites frank → appB creates erin's stub + a PENDING FRIEND invite for frank.
-    const inv = await request(appA.baseUrl)
-      .post('/api/v1/invite/friend')
-      .set('Authorization', `Bearer ${tokenErin}`)
-      .send({ toUserId: frankStubIdOnA, note: 'hi' });
-    expect(inv.body.code).toBe(BusinessCode.OK);
-    const erinStubB = await vi.waitFor(
-      async () => {
-        const stub = await appB.database.query.user.findFirst({
-          where: and(eq(user.account, 'erin'), eq(user.domain, DOM_A)),
-        });
-        expect(stub).toBeDefined();
-        return stub!;
-      },
-      { timeout: 5000, interval: 100 },
-    );
-    erinStubIdOnB = erinStubB.id;
-
-    // frank accepts → a live P2P thread exists on BOTH servers.
-    const pending = await vi.waitFor(
-      async () => {
-        const request = await appB.database.query.friendRequest.findFirst({
-          where: and(
-            eq(friendRequest.status, 'REQUESTED'),
-            eq(friendRequest.requesterUserId, erinStubIdOnB),
-          ),
-        });
-        expect(request).toBeDefined();
-        return request!;
-      },
-      { timeout: 5000, interval: 100 },
-    );
-    const acc = await request(appB.baseUrl)
-      .post('/api/v1/invite/accept')
-      .set('Authorization', `Bearer ${tokenFrank}`)
-      .send({ inviteId: pending.id.toString() });
-    expect(acc.body.code).toBe(BusinessCode.OK);
+    const friendship = await establishFederatedFriendship({
+      local: appA,
+      remote: appB,
+      localUserId: (await appA.database.query.user.findFirst({
+        where: and(eq(user.account, 'erin'), eq(user.domain, 'local')),
+      }))!.id,
+      remoteUserId: (await appB.database.query.user.findFirst({
+        where: and(eq(user.account, 'frank'), eq(user.domain, 'local')),
+      }))!.id,
+      localToken: tokenErin,
+      remoteToken: tokenFrank,
+      localAccount: 'erin',
+      remoteAccount: 'frank',
+      localDomain: DOM_A,
+      remoteDomain: DOM_B,
+      note: 'hi',
+    });
+    frankStubIdOnA = friendship.remoteStubIdOnLocal;
+    erinStubIdOnB = friendship.localStubIdOnRemote;
     await vi.waitFor(
       async () => {
         const [activeOnA, activeOnB] = await Promise.all([

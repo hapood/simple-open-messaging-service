@@ -15,8 +15,16 @@
 
 本文替换早期实现中由聊天消息承担关系动作、删除关系后再懒查询权威状态，以及 profile/group meta
 revision 二次查询的部分。
-现有消息 `/message-feed`、`ThreadAudience`、消息删除、`leaveId`/消息交付边界继续服务于聊天消息，
-不因本设计删除或复用。状态 feed 有独立的表、rev allocation upper bound 和 pull cursor。
+当前 v1 的 message/tombstone feed 只是 thread end-seq 索引，正文由 thread query 返回；
+`P2P_INTENT/REVOKED` 不携带任何 feed end ID。状态 feed 仍有独立的表、rev allocation upper bound
+和 pull cursor，规范性行为以 v1 文档为准。
+
+> **2026-08-14 收敛说明：** 后续规范已把 `P2P_META`/`FRIEND`/`NOT_FRIEND` wire 名称收敛为
+> `P2P_INTENT`/`ACCEPTED`/`REVOKED`。所有好友、群邀请和群申请 `REQUESTED` 都必须在七天内绝对过期；
+> 过期项允许无通知省略。`REVOKED` 本身无过期时间，尽量长期保留但允许按容量清理。精确用户查询不
+> 创建 human stub；只有 home PROFILE 已验证且 ACCEPTED 到达才物化。`MEMBER_PROFILE` 在服务端和
+> 客户端均按 source peer + Address 隔离，并只在固定 drain target 完整提交后清理。下文旧名称仅保留
+> 作为历史设计映射，规范性行为以 v1 state-feed 文档为准。
 
 ## 1. 最终原则
 
@@ -341,8 +349,8 @@ avatar、关系或群 meta 的二次远程请求。
 继续保留：
 
 - 申请、接受、拒绝、删除好友等业务 command；
-- 消息 `/message-feed`、bounded memory buffer、`ThreadAudience`、message allocation upper bound/cursor；
-- 消息删除、`leaveId` 及现有消息交付机制；
+- 消息/thread audience 的业务分配与授权；
+- 只携带 thread end-seq 的 message/tombstone 索引 feed，以及对应 thread query；
 - federation identity、签名、trust、reset 和 quota 约束。
 
 ## 11. 实施顺序

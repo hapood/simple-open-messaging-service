@@ -22,7 +22,7 @@ import { RustChannelSseTransport } from './rust-channel-sse.transport';
 import { isFullConsoleLoggingEnabled } from './log-buffer';
 import { ThreadDeletionLockService } from './thread-deletion-lock.service';
 
-// Re-exported for downstream consumers (HttpItemSource, GroupEventService, ConnectionBanner, …) that
+// Re-exported for downstream consumers (HttpItemSource, ConnectionBanner, …) that
 // already import these from here — the canonical home is now realtime-transport.ts.
 export type { StandardMessage, ConnectionState } from './realtime-transport';
 
@@ -112,9 +112,8 @@ export class WebsocketService implements OnDestroy {
           }
         }
         if (m.event === 'STATE_REV_UPDATED') {
-          const revision = (
-            m.data as { stateRevision?: unknown } | undefined
-          )?.stateRevision;
+          const revision = (m.data as { stateRevision?: unknown } | undefined)
+            ?.stateRevision;
           if (!Number.isSafeInteger(revision) || Number(revision) < 0) {
             console.error(
               '[sse] invalid STATE_REV_UPDATED stateRevision — reconnecting',

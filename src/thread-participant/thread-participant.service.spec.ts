@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ThreadParticipantService } from './thread-participant.service.js';
 
 describe('ThreadParticipantService.endP2P transaction boundary', () => {
-  it('writes relationship, clear boundary and both revisions before publishing SSE', async () => {
+  it('writes relationship, clear boundary and both revisions before publishing the state wake', async () => {
     const returning = vi.fn().mockResolvedValue([{ id: 1 }, { id: 2 }]);
     const where = vi.fn(() => ({ returning }));
     const set = vi.fn(() => ({ where }));
@@ -60,7 +60,7 @@ describe('ThreadParticipantService.endP2P transaction boundary', () => {
       tx.update.mock.invocationCallOrder[0],
     );
     expect(tx.update).toHaveBeenCalledTimes(3);
-    expect(tx.delete).toHaveBeenCalledTimes(1); // revoke any remote history-only grant
+    expect(tx.delete).not.toHaveBeenCalled(); // history-only compatibility grants no longer exist
     expect(revisions.recordThreadDeleteInTx).toHaveBeenCalledWith(tx, 1, 10);
     expect(revisions.recordThreadAddInTx).toHaveBeenCalledWith(tx, 2, 10);
     expect(revisions.notifyThreadRevision).toHaveBeenCalledTimes(2);

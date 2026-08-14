@@ -90,6 +90,7 @@ export interface ThreadAttentionState {
 export interface CommittedThreadReadState extends ThreadAttentionState {
   lastReadSeq: number;
   readRevision: number;
+  stateRevision: number;
 }
 
 export interface AwayThreadAttentionState extends ThreadAttentionState {
@@ -1774,6 +1775,7 @@ export class MessageService {
       Array<{
         lastReadSeq: number;
         readRevision: number;
+        stateRevision: number;
         unread: number;
         mentionContents: string[];
         account: string;
@@ -1781,9 +1783,11 @@ export class MessageService {
     >`
       WITH bumped AS (
         UPDATE "User"
-        SET "readRevision" = "readRevision" + 1
+        SET "readRevision" = "readRevision" + 1,
+            "threadRevision" = "threadRevision" + 1,
+            "updatedAt" = CURRENT_TIMESTAMP
         WHERE id = ${userId}
-        RETURNING "readRevision"
+        RETURNING "readRevision", "threadRevision"
       ), advanced AS (
         UPDATE "ThreadParticipant" AS participant
         SET "lastReadSeq" = GREATEST(COALESCE("lastReadSeq", -1), ${localReadHwm}),
@@ -1794,6 +1798,15 @@ export class MessageService {
           AND participant."threadId" = ${threadId}
           AND participant."leftAt" IS NULL
         RETURNING participant."lastReadSeq", participant."readRevision"
+      ), state_logged AS (
+        INSERT INTO "ThreadRevision"
+          ("userId", "threadId", direction, revision, "isDelete")
+        SELECT ${userId}, ${threadId}, 'ADD'::"ThreadRevisionDirection",
+               bumped."threadRevision", false
+        FROM bumped, advanced
+        ON CONFLICT ("userId", "threadId", direction)
+        DO UPDATE SET revision = EXCLUDED.revision, "isDelete" = false
+        RETURNING revision
       ), sample AS (
         SELECT m.seq, m.content, m."contentType"
         FROM "Message" m, advanced a
@@ -1807,6 +1820,7 @@ export class MessageService {
       SELECT
         a."lastReadSeq" AS "lastReadSeq",
         a."readRevision" AS "readRevision",
+        state_logged.revision AS "stateRevision",
         COUNT(s.seq)::int AS unread,
         COALESCE(
           ARRAY_AGG(s.content::text) FILTER (
@@ -1820,15 +1834,17 @@ export class MessageService {
         ) AS "mentionContents",
         u.account
       FROM advanced a
+      JOIN state_logged ON TRUE
       JOIN "User" u ON u.id = ${userId}
       LEFT JOIN sample s ON TRUE
-      GROUP BY a."lastReadSeq", a."readRevision", u.account
+      GROUP BY a."lastReadSeq", a."readRevision", state_logged.revision, u.account
     `;
     const row = rows[0];
     if (!row) return null;
     return {
       lastReadSeq: row.lastReadSeq,
       readRevision: row.readRevision,
+      stateRevision: row.stateRevision,
       count: row.unread,
       mention: this.mentionState(row.mentionContents ?? [], row.account),
     };

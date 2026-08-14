@@ -29,7 +29,6 @@ import { ResourceId } from '../common/resource-id.decorator.js';
 import { RolesGuard } from '../group/roles.guard.js';
 import { Roles } from '../group/roles.decorator.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
-import { SseService, GROUP_SSE } from '../gateway/sse.service.js';
 import {
   CreateGroupDto,
   InviteGroupDto,
@@ -62,33 +61,10 @@ export class GroupController {
     private readonly groupService: GroupService,
     private readonly participantService: ThreadParticipantService,
     private readonly inviteService: InviteService,
-    private readonly sseService: SseService,
     private readonly federationService: FederationService,
     private readonly userService: UserService,
     private readonly database: DatabaseService,
   ) {}
-
-  /**
-   * Fan a group-lifecycle event to every active member of the thread, plus any extra users (e.g.
-   * a kicked member who just ceased to be active). The payload carries groupId+threadId (BOTH equal
-   * the threadId now that groups are `!`-User threads and Group.id is gone) so the client can route
-   * it without a follow-up lookup.
-   */
-  private async fanoutGroup(
-    threadId: number,
-    eventName: (typeof GROUP_SSE)[keyof typeof GROUP_SSE],
-    payload: Record<string, unknown>,
-    extraUserIds: number[] = [],
-  ) {
-    const members =
-      await this.participantService.getActiveParticipantUserIds(threadId);
-    const ids = new Set<number>([
-      ...members.map((m) => m.userId),
-      ...extraUserIds,
-    ]);
-    const data = { groupId: threadId, threadId, ...payload };
-    ids.forEach((uid) => this.sseService.onGroupEvent(uid, eventName, data));
-  }
 
   @UseGuards(ThrottleGuard)
   @Throttle(10, 60)
@@ -362,9 +338,11 @@ export class GroupController {
           userId: number;
           displayName: string;
           avatar: string | null;
+          profileSourceDomain: string;
         }>(sql`
           SELECT thread.id AS "threadId", member_u.id AS "userId",
-            profile."displayName", profile.avatar
+            profile."displayName", profile.avatar,
+            profile."sourcePeerDomain" AS "profileSourceDomain"
           FROM "MessageThread" thread
           JOIN "User" group_u ON group_u.id = thread."groupUserId"
           JOIN "ThreadParticipant" participant ON participant."threadId" = thread.id
@@ -412,6 +390,7 @@ export class GroupController {
             // so the badge self-hides for locals and shows the peer domain for federated stubs.
             isForeigner: r.user.isForeigner,
             domain: r.user.domain,
+            profileSourceDomain: scoped ? scoped.profileSourceDomain : '',
             role: r.role,
             joinedAt: r.joinedAt,
             isOwner: r.role === GroupRole.OWNER,
@@ -465,16 +444,12 @@ export class GroupController {
     }
     const threadId = req.threadAccess!.threadId;
     const { participant } = req.threadAccess!;
-    const result = await this.groupService.leaveGroup({
+    await this.groupService.leaveGroup({
       userId: req.user.userId,
       threadId,
       role: participant.role,
       deleteData: dto.deleteData ?? false,
     });
-    // Fans to all still-active members (= remaining after the soft-leave); the leaver is excluded.
-    if (result.transitioned) {
-      await this.fanoutGroup(threadId, GROUP_SSE.GROUP_ROSTER_UPDATED, {});
-    }
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -494,15 +469,10 @@ export class GroupController {
       throw new BusinessException(BusinessCode.GROUP_FORBIDDEN, 'owner only');
     }
     const threadId = req.threadAccess!.threadId;
-    const result = await this.groupService.dissolveGroup({
+    await this.groupService.dissolveGroup({
       threadId,
       deleteForUserId: dto.deleteData ? req.user.userId : undefined,
     });
-    if (result.transitioned) {
-      await this.fanoutGroup(threadId, GROUP_SSE.GROUP_UPDATED, {
-        dissolved: true,
-      });
-    }
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
@@ -518,19 +488,11 @@ export class GroupController {
     @Body() dto: KickGroupDto,
   ): Promise<void> {
     const threadId = req.threadAccess!.threadId;
-    const result = await this.groupService.kickMember({
+    await this.groupService.kickMember({
       threadId,
       operatorUserId: req.user.userId,
       targetUserId: dto.userId,
     });
-    if (result.transitioned) {
-      await this.fanoutGroup(
-        threadId,
-        GROUP_SSE.GROUP_ROSTER_UPDATED,
-        {},
-        [dto.userId], // the kicked user may no longer be "active" after the soft-leave
-      );
-    }
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
@@ -551,9 +513,6 @@ export class GroupController {
       fromUserId: req.user.userId,
       toUserId: dto.toUserId,
     });
-    // Signal-only: members pull the fresh roster (GroupService.transferOwnership bumped rosterRev +
-    // flipped ownerId). The former two GROUP_ROLE_CHANGED events collapse into one roster-refresh signal.
-    await this.fanoutGroup(threadId, GROUP_SSE.GROUP_ROSTER_UPDATED, {});
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
@@ -575,7 +534,6 @@ export class GroupController {
       role: dto.role,
       operatorUserId: req.user.userId,
     });
-    await this.fanoutGroup(threadId, GROUP_SSE.GROUP_ROSTER_UPDATED, {});
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
@@ -596,11 +554,6 @@ export class GroupController {
       name: dto.name,
       description: dto.description,
       avatar: dto.avatar,
-      membersCanInvite: dto.membersCanInvite,
-    });
-    // updated is the `!`-User row; description lives in User.bio. Signal-only: the client receives
-    // { threadId } and HTTP-pulls /group/info to refresh (GroupService.updateGroup bumped profileRev).
-    await this.fanoutGroup(threadId, GROUP_SSE.GROUP_UPDATED, {
       membersCanInvite: dto.membersCanInvite,
     });
   }

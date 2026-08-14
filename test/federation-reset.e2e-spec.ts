@@ -3,12 +3,17 @@ import request from 'supertest';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import {
   bootFederationPair,
+  FED_DOMAIN_A,
   FED_DOMAIN_B,
   truncateFederationDbs,
   type FedApp,
   type S2sProxy,
 } from './federation-harness.js';
-import { getAdminCookie, registerAndLogin } from './federation-test-helpers.js';
+import {
+  establishFederatedFriendship,
+  getAdminCookie,
+  registerAndLogin,
+} from './federation-test-helpers.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { MessageThreadType } from '../src/database/enums.js';
 import {
@@ -25,7 +30,9 @@ describe('Federation destructive reset', () => {
   let appB: FedApp;
   let proxy: S2sProxy;
   let tokenA: string;
+  let tokenB: string;
   let aliceId: number;
+  let bobId: number;
   let oldBobStubId: number;
   let adminCookieA: string;
   let affectedThreadId: number;
@@ -40,16 +47,23 @@ describe('Federation destructive reset', () => {
       'reset-alice',
       'Reset Alice',
     ));
-    await registerAndLogin(appB, 'reset-bob', 'Reset Bob');
+    const bob = await registerAndLogin(appB, 'reset-bob', 'Reset Bob');
+    bobId = bob.id;
+    tokenB = bob.token;
     adminCookieA = await getAdminCookie(appA, 'reset-admin');
-
-    const resolved = await request(appA.baseUrl)
-      .post('/api/v1/user/resolve')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({ account: 'reset-bob', domain: FED_DOMAIN_B });
-    expect(resolved.status).toBe(200);
-    expect(resolved.body.code).toBe(BusinessCode.OK);
-    oldBobStubId = resolved.body.data.id;
+    const friendship = await establishFederatedFriendship({
+      local: appA,
+      remote: appB,
+      localUserId: aliceId,
+      remoteUserId: bob.id,
+      localToken: tokenA,
+      remoteToken: bob.token,
+      localAccount: 'reset-alice',
+      remoteAccount: 'reset-bob',
+      localDomain: FED_DOMAIN_A,
+      remoteDomain: FED_DOMAIN_B,
+    });
+    oldBobStubId = friendship.remoteStubIdOnLocal;
 
     await appA.database.transaction(async (tx) => {
       const [thread] = await tx
@@ -193,13 +207,20 @@ describe('Federation destructive reset', () => {
       serveCursors: 0,
     });
 
-    const rejoin = await request(appA.baseUrl)
-      .post('/api/v1/user/resolve')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({ account: 'reset-bob', domain: FED_DOMAIN_B });
-    expect(rejoin.status, JSON.stringify(rejoin.body)).toBe(200);
-    expect(rejoin.body.code).toBe(BusinessCode.OK);
-    expect(rejoin.body.data.id).not.toBe(oldBobStubId);
+    const rejoin = await establishFederatedFriendship({
+      local: appA,
+      remote: appB,
+      localUserId: aliceId,
+      remoteUserId: bobId,
+      localToken: tokenA,
+      remoteToken: tokenB,
+      localAccount: 'reset-alice',
+      remoteAccount: 'reset-bob',
+      localDomain: FED_DOMAIN_A,
+      remoteDomain: FED_DOMAIN_B,
+      note: 'post-reset request',
+    });
+    expect(rejoin.remoteStubIdOnLocal).not.toBe(oldBobStubId);
 
     const [rejoinedPeer, consumedReset] = await Promise.all([
       appA.database.query.federatedPeer.findFirst({
@@ -217,7 +238,7 @@ describe('Federation destructive reset', () => {
       .from(threadParticipant)
       .where(
         and(
-          eq(threadParticipant.userId, rejoin.body.data.id),
+          eq(threadParticipant.userId, rejoin.remoteStubIdOnLocal),
           inArray(threadParticipant.threadId, [affectedThreadId]),
         ),
       );

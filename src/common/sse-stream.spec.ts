@@ -26,7 +26,11 @@ function payloadOf(frame: string): unknown {
  */
 describe('initSseResponse — CORS on the hijacked raw stream', () => {
   /** Minimal ServerResponse double: capture writeHead's headers + every write. */
-  function mockRes(): { res: ServerResponse; writeHead: ReturnType<typeof vi.fn>; writes: string[] } {
+  function mockRes(): {
+    res: ServerResponse;
+    writeHead: ReturnType<typeof vi.fn>;
+    writes: string[];
+  } {
     const writes: string[] = [];
     const writeHead = vi.fn();
     const res = {
@@ -46,8 +50,13 @@ describe('initSseResponse — CORS on the hijacked raw stream', () => {
     const handle = initSseResponse(res, 'https://tauri.localhost');
     try {
       expect(writeHead).toHaveBeenCalledTimes(1);
-      const [, headers] = writeHead.mock.calls[0] as [number, Record<string, string>];
-      expect(headers['Access-Control-Allow-Origin']).toBe('https://tauri.localhost');
+      const [, headers] = writeHead.mock.calls[0] as [
+        number,
+        Record<string, string>,
+      ];
+      expect(headers['Access-Control-Allow-Origin']).toBe(
+        'https://tauri.localhost',
+      );
       expect(headers['Vary']).toBe('Origin');
       // The streaming essentials are still emitted alongside the CORS header.
       expect(headers['Content-Type']).toBe('text/event-stream');
@@ -62,7 +71,10 @@ describe('initSseResponse — CORS on the hijacked raw stream', () => {
     const { res, writeHead } = mockRes();
     const handle = initSseResponse(res);
     try {
-      const [, headers] = writeHead.mock.calls[0] as [number, Record<string, string>];
+      const [, headers] = writeHead.mock.calls[0] as [
+        number,
+        Record<string, string>,
+      ];
       expect(headers['Access-Control-Allow-Origin']).toBeUndefined();
       expect(headers['Vary']).toBeUndefined();
     } finally {
@@ -112,7 +124,9 @@ describe('formatSseFrame', () => {
     // The whole point of routing frames through serializeBody: a Date must leave as a number so the SSE
     // bus matches the HTTP SerializeInterceptor's contract. Without it, Date.prototype.toJSON would emit
     // an ISO string and the client's `ts: number` cast would silently lie.
-    const parsed = payloadOf(formatSseFrame('HELLO', { ts: new Date(1_700_000_000_000) })) as {
+    const parsed = payloadOf(
+      formatSseFrame('HELLO', { ts: new Date(1_700_000_000_000) }),
+    ) as {
       ts: unknown;
     };
     expect(parsed.ts).toBe(1_700_000_000_000);
@@ -123,7 +137,9 @@ describe('formatSseFrame', () => {
     // A stray BigInt reaching a raw JSON.stringify throws and kills the SSE writer; the chokepoint exists
     // so a caller forgetting to pre-convert can never cause that.
     expect(() => JSON.stringify({ id: 9_007_199_254_740_993n })).toThrow();
-    const parsed = payloadOf(formatSseFrame('NOTIFY', { id: 9_007_199_254_740_993n })) as {
+    const parsed = payloadOf(
+      formatSseFrame('NOTIFY', { id: 9_007_199_254_740_993n }),
+    ) as {
       id: string;
     };
     expect(parsed.id).toBe('9007199254740993');
@@ -132,7 +148,7 @@ describe('formatSseFrame', () => {
   it('nested Date / BigInt inside objects and arrays are recursively converted; null is preserved', () => {
     expect(
       payloadOf(
-        formatSseFrame('THREAD_META', {
+        formatSseFrame('STATE_REV_UPDATED', {
           pinnedAt: new Date(0),
           clearedSeq: null,
           rows: [{ id: 1n, at: new Date(1_700_000_000_000) }],
@@ -147,7 +163,9 @@ describe('formatSseFrame', () => {
 
   it('primitive payloads pass through unchanged (no spurious conversion)', () => {
     expect(payloadOf(formatSseFrame('ping', {}))).toEqual({});
-    expect(payloadOf(formatSseFrame('x', { n: 1, s: 'a', b: true, nil: null }))).toEqual({
+    expect(
+      payloadOf(formatSseFrame('x', { n: 1, s: 'a', b: true, nil: null })),
+    ).toEqual({
       n: 1,
       s: 'a',
       b: true,

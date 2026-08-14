@@ -8,19 +8,6 @@ import { user as userTable } from '../database/schema.js';
 import { MessageService } from '../message/message.service.js';
 import { CallStateRegistry } from './call-state.registry.js';
 
-/**
- * Group-lifecycle SSE event names. Carried on every group frame so the frontend dispatches by
- * event name (matching NEW_MESSAGE / FORCE_LOGOUT). Payload shape (the `data` field) is common:
- *   { groupId, threadId, ...event-specific fields, byUserId? }
- * The frontend refreshes the roster / conversation list on receipt (Phase 4).
- */
-export type GroupSseEvent = 'GROUP_UPDATED' | 'GROUP_ROSTER_UPDATED';
-
-export const GROUP_SSE: Record<GroupSseEvent, GroupSseEvent> = {
-  GROUP_UPDATED: 'GROUP_UPDATED',
-  GROUP_ROSTER_UPDATED: 'GROUP_ROSTER_UPDATED',
-};
-
 /** One held SSE connection: the raw response, its heartbeat timer, the establishment time, and the
  *  session-token row id — so a single revoked session can be targeted for FORCE_LOGOUT without kicking the
  *  user's other devices (see onSessionRevoked). */
@@ -39,8 +26,8 @@ interface SseClient {
  * of connection/reconnect/auth complexity at the root.
  *
  * One registry, `clients`, keyed by userId (a user may have multiple live connections — multiple
- * tabs/devices — in an array): the primary session stream (GET /events) carrying full NEW_MESSAGE
- * payloads + group/read-cursor events for the in-app UI, with `res.on('close')` cleanup. (The former
+ * tabs/devices — in an array): the primary session stream (GET /events) carrying wake-ups and
+ * ephemeral call coordination, with `res.on('close')` cleanup. (The former
  * separate notification-stream registry + its scoped notification token were removed — the Android
  * foreground service now consumes `/events` directly via the Kotlin-owned connection.)
  */
@@ -233,31 +220,6 @@ export class SseService implements OnModuleDestroy {
   }
 
   /**
-   * Group-lifecycle event (joined/left/kicked/role-changed/updated). No message-cursor id (these
-   * are not message-history events). Fan-out to each affected member is the caller's job — this
-   * pushes one frame to one user's online connections only.
-   */
-  onGroupEvent(userId: number, eventName: GroupSseEvent, data: unknown) {
-    this.pushToUser(userId, eventName, data);
-  }
-
-  /**
-   * Per-user thread metadata change (mute / pin / clear-history). Fanned to the caller's OWN connections
-   * only — these are per-user display settings, not shared state, so this is NOT a
-   * peer broadcast. It carries whichever fields just changed so each of the user's other online
-   * tabs/devices patches its conversation-list row + re-sorts without a full reload.
-   */
-  onThreadMeta(userId: number, data: unknown) {
-    this.pushToUser(userId, 'THREAD_META', data);
-  }
-
-  /** A per-user read cursor changed. Broadcast the authoritative derived state to every connection owned
-   *  by the account, including the connection that issued mark-read, so all clients use one update path. */
-  onThreadReadUpdated(userId: number, data: unknown) {
-    this.pushToUser(userId, 'THREAD_READ_UPDATED', data);
-  }
-
-  /**
    * A federated media message finished localizing. Signal-only state flip: the recipient sets that
    * message's mediaStatus to 'ready' (every digest has bytes on disk + an authz row → the URL serves
    * 200) or 'failed' (at least one digest stayed inert → shown as a retryable failure), then re-renders
@@ -277,26 +239,14 @@ export class SseService implements OnModuleDestroy {
     this.pushToUser(userId, 'MEDIA_STATUS', data);
   }
 
-  /**
-   * A peer's profile (avatar/name/bio) changed — push a signal to each approved P2P peer so the
-   * recipient HTTP-pulls the fresh profile itself (SSE-signal-only convention). Emitted on local
-   * self-edits (update-profile / update-avatar) and on federated stub re-localization (the catch-up
-   * path: once any local user's probe refreshes a foreign stub, all that stub's local friends get it
-   * too — the only way federated peers benefit from the push, since there is no S2S profile-push and
-   * federation is pull-based by design).
-   */
   /** Thread-list revision bumped (thread added or deleted). Signal-only: the client receives the new
-   *  revision and pulls ADD/DELETE deltas via query-thread(from, to]. */
+   *  revision and pulls unified deltas via query-state(from, to]. */
   onThreadRevisionUpdated(userId: number, data: { threadRevision: number }) {
     this.pushToUser(userId, 'STATE_REV_UPDATED', {
       stateRevision: data.threadRevision,
     });
   }
 
-  /** Self-profile revision bumped (avatar / name / bio edit on this account). The client invalidates its
-   *  IDB-cached selfProfile (whose profileRev it compared at HELLO) and re-fetches /user/my-profile — this
-   *  is the multi-device self-profile refresh (the editor's OTHER tabs/devices learn of their own edit's
-   *  effect). Carried on the wire as `{ profileRev }`, advanced in HELLO too. */
   /** Send a FORCE_LOGOUT frame and end each connection, clearing its heartbeat. The caller removes the
    *  entries from the registry (the broadcast deletes the whole user slot; the per-session path splices
    *  just the matching entries). Idempotent per-connection — a half-closed socket is already gone.

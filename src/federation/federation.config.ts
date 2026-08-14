@@ -30,9 +30,79 @@ export interface FederationConfig {
   mediaMaxChunkRetries: number;
   /** dev-only: allow plain http:// for localhost federation testing (never in production). */
   allowInsecureHttp: boolean;
+  /** Dev-only static peer routes. This deliberately bypasses DNS/SRV so two local nodes can federate
+   *  over a Docker network while keeping their logical SOMS domains. Forbidden in production. */
+  devRoutes: Readonly<Record<string, string>>;
+}
+
+const DOMAIN_RE =
+  /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/;
+
+function loadDevRoutes(allowInsecureHttp: boolean): Record<string, string> {
+  const raw = process.env.SOMS_DEV_FEDERATION_ROUTES;
+  const production = process.env.NODE_ENV === 'production';
+  if (production && (raw !== undefined || allowInsecureHttp)) {
+    throw new Error(
+      'SOMS_ALLOW_INSECURE_HTTP and SOMS_DEV_FEDERATION_ROUTES are forbidden when NODE_ENV=production',
+    );
+  }
+  if (raw === undefined) return {};
+  if (!allowInsecureHttp) {
+    throw new Error(
+      'SOMS_DEV_FEDERATION_ROUTES requires SOMS_ALLOW_INSECURE_HTTP=1',
+    );
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    throw new Error('SOMS_DEV_FEDERATION_ROUTES must be a JSON object');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('SOMS_DEV_FEDERATION_ROUTES must be a JSON object');
+  }
+
+  const routes: Record<string, string> = {};
+  for (const [domain, value] of Object.entries(parsed)) {
+    const normalized = domain.toLowerCase();
+    if (domain !== normalized || !DOMAIN_RE.test(normalized)) {
+      throw new Error(
+        `SOMS_DEV_FEDERATION_ROUTES contains invalid canonical domain: ${domain}`,
+      );
+    }
+    if (typeof value !== 'string') {
+      throw new Error(
+        `development federation route for ${domain} must be a URL`,
+      );
+    }
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      throw new Error(
+        `development federation route for ${domain} must be a URL`,
+      );
+    }
+    if (
+      url.protocol !== 'http:' ||
+      url.username ||
+      url.password ||
+      url.pathname !== '/' ||
+      url.search ||
+      url.hash
+    ) {
+      throw new Error(
+        `development federation route for ${domain} must be an http:// origin without credentials, path, query, or fragment`,
+      );
+    }
+    routes[normalized] = url.origin;
+  }
+  return routes;
 }
 
 export function loadFederationConfig(): FederationConfig {
+  const allowInsecureHttp = process.env.SOMS_ALLOW_INSECURE_HTTP === '1';
   return {
     domain: requireEnv('SOMS_DOMAIN'),
     keyPath: process.env.SOMS_S2S_KEY_PATH ?? './data/soms-s2s-key.json',
@@ -46,7 +116,8 @@ export function loadFederationConfig(): FederationConfig {
       process.env.SOMS_MEDIA_CHUNK_TIMEOUT_SEC ?? 120,
     ),
     mediaMaxChunkRetries: Number(process.env.SOMS_MEDIA_MAX_CHUNK_RETRIES ?? 5),
-    allowInsecureHttp: process.env.SOMS_ALLOW_INSECURE_HTTP === '1',
+    allowInsecureHttp,
+    devRoutes: loadDevRoutes(allowInsecureHttp),
   };
 }
 
@@ -81,9 +152,7 @@ export function loadQuotaConfig(): QuotaConfig {
     dailySignalLimit: Number(
       process.env.SOMS_QUOTA_DAILY_SIGNAL_LIMIT ?? 50_000,
     ),
-    dailyFileLimit: Number(
-      process.env.SOMS_QUOTA_DAILY_FILE_LIMIT ?? 500,
-    ),
+    dailyFileLimit: Number(process.env.SOMS_QUOTA_DAILY_FILE_LIMIT ?? 500),
     dailyFileBytesLimit: Number(
       process.env.SOMS_QUOTA_DAILY_FILE_BYTES_LIMIT ?? 5 * 1024 * 1024 * 1024,
     ),

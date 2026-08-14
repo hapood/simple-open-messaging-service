@@ -61,6 +61,7 @@ import { UserQuotaService } from '../quota/user-quota.service.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
 import { MessageReportService } from '../message/message-report.service.js';
 import { CreateMessageReportsDto } from '../message/message-report.dto.js';
+import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
 import {
   parseTextMessageContent,
   stringifyTextMessageContent,
@@ -81,6 +82,7 @@ export class MessageController {
     private readonly userQuota: UserQuotaService,
     private readonly deletedMessages: DeletedMessageService,
     private readonly messageReports: MessageReportService,
+    private readonly threadRevision: ThreadRevisionService,
   ) {}
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -674,13 +676,11 @@ export class MessageController {
       dto.threadId,
       msg.seq,
     );
-    this.sseService.onThreadReadUpdated(req.user.userId, {
-      threadId: dto.threadId,
-      lastReadSeq: state?.lastReadSeq ?? msg.seq,
-      unreadCount: state?.count ?? 0,
-      mentionUnread: state?.mention ?? [],
-      readRevision: state?.readRevision ?? 0,
-    });
+    if (state)
+      this.threadRevision.notifyThreadRevision({
+        userId: req.user.userId,
+        revision: state.stateRevision,
+      });
   }
 
   @UseGuards(ThrottleGuard)
@@ -727,12 +727,6 @@ export class MessageController {
       dto.threadId,
       dto.muted,
     );
-    // Sync the caller's other online devices so their list row swaps the mute icon live (no reload).
-    this.sseService.onThreadMeta(req.user.userId, {
-      event: 'THREAD_META',
-      threadId: dto.threadId,
-      muted: dto.muted,
-    });
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -765,11 +759,6 @@ export class MessageController {
         else await this.userBlockService.unblock(req.user.userId, peer.userId);
       }
     }
-    this.sseService.onThreadMeta(req.user.userId, {
-      event: 'THREAD_META',
-      threadId: dto.threadId,
-      blocked: dto.blocked,
-    });
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -785,19 +774,11 @@ export class MessageController {
     @Request() req: FastifyRequest,
     @Body() dto: SetPinnedDto,
   ): Promise<void> {
-    const updated = await this.participantService.setPinned(
+    await this.participantService.setPinned(
       req.user.userId,
       dto.threadId,
       dto.pinned,
     );
-    // Carry the resulting pinnedAt so other devices sort the row into the pinned tier correctly
-    // (pinning stamps now(); unpinning clears it).
-    this.sseService.onThreadMeta(req.user.userId, {
-      event: 'THREAD_META',
-      threadId: dto.threadId,
-      pinned: dto.pinned,
-      pinnedAt: updated.pinnedAt,
-    });
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -814,15 +795,7 @@ export class MessageController {
     @Request() req: FastifyRequest,
     @Body() dto: ClearHistoryDto,
   ): Promise<void> {
-    const updated = await this.participantService.clearHistory(
-      req.user.userId,
-      dto.threadId,
-    );
-    this.sseService.onThreadMeta(req.user.userId, {
-      event: 'THREAD_META',
-      threadId: dto.threadId,
-      clearedSeq: updated.clearedSeq,
-    });
+    await this.participantService.clearHistory(req.user.userId, dto.threadId);
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -839,17 +812,11 @@ export class MessageController {
     @Request() req: FastifyRequest,
     @Body() dto: SetAliasDto,
   ): Promise<void> {
-    const updated = await this.participantService.setAlias(
+    await this.participantService.setAlias(
       req.user.userId,
       dto.threadId,
       dto.alias,
     );
-    // Carry the resolved alias (null when cleared) so other devices flip their header/list title live.
-    this.sseService.onThreadMeta(req.user.userId, {
-      event: 'THREAD_META',
-      threadId: dto.threadId,
-      alias: updated.alias,
-    });
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)

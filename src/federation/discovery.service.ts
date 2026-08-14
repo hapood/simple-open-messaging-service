@@ -3,6 +3,7 @@ import { Interval } from '@nestjs/schedule';
 import { lookup, type LookupAddress } from 'node:dns';
 import { resolveSrv } from 'node:dns/promises';
 import { createHash } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { and, eq } from 'drizzle-orm';
 import { Agent, fetch as undiciFetch } from 'undici';
 import { BusinessCode } from '../common/business-code.js';
@@ -22,6 +23,7 @@ const KEY_REFRESH_MS =
   Number(process.env.SOMS_KEY_CACHE_TTL_SEC ?? 6 * 60 * 60) * 1000;
 const DOMAIN_RE =
   /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/;
+const PEER_REQUEST_INTERVAL_MS = 1_000;
 
 export interface WellKnownDoc {
   software?: string;
@@ -43,6 +45,7 @@ export class DiscoveryService {
   private readonly logger = new Logger(DiscoveryService.name);
   private readonly config = loadFederationConfig();
   private readonly routes = new Map<string, CachedRoute>();
+  private readonly nextRequestAt = new Map<string, number>();
 
   constructor(
     private readonly database: DatabaseService,
@@ -64,6 +67,16 @@ export class DiscoveryService {
     const ttlMs = this.config.keyCacheTtlSec * 1000;
     const cached = this.routes.get(normalized);
     if (cached && Date.now() - cached.fetchedAt < ttlMs) return cached.baseUrl;
+
+    const devRoute = this.config.devRoutes[normalized];
+    if (devRoute) {
+      this.routes.set(normalized, {
+        baseUrl: devRoute,
+        connectHost: new URL(devRoute).hostname,
+        fetchedAt: Date.now(),
+      });
+      return devRoute;
+    }
 
     if (this.config.allowInsecureHttp) {
       const baseUrl = `http://${normalized}`;
@@ -140,9 +153,20 @@ export class DiscoveryService {
     return response as unknown as Response;
   }
 
+  /** Reserve one outbound HTTP start slot for a logical peer. Reserve before signing and creating
+   * the request timeout so queued requests cannot leave with stale signatures or expired signals. */
+  async waitForRequestSlot(peerDomain: string): Promise<void> {
+    const domain = this.normalizeDomain(peerDomain);
+    const now = Date.now();
+    const startAt = Math.max(now, this.nextRequestAt.get(domain) ?? now);
+    this.nextRequestAt.set(domain, startAt + PEER_REQUEST_INTERVAL_MS);
+    if (startAt > now) await delay(startAt - now);
+  }
+
   async fetchWellKnown(domain: string): Promise<WellKnownDoc> {
     this.keypair.assertAvailable();
     const base = await this.resolveBase(domain);
+    await this.waitForRequestSlot(domain);
     const response = await this.request(`${base}/.well-known/soms`, {
       signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
       headers: { accept: 'application/json' },

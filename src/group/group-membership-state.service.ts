@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../database/database.service.js';
 
+const GROUP_REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
 export type GroupMembershipDirection = 'INVITE' | 'JOIN';
 export type GroupMembershipStatus = 'REQUESTED' | 'MEMBER' | 'NOT_MEMBER';
 
@@ -70,6 +72,9 @@ export class GroupMembershipStateService {
   }> {
     await this.lockPairInTx(tx, params.groupUserId, params.memberUserId);
     const desired = params.requested ? 'REQUESTED' : 'NOT_MEMBER';
+    const expiresAt = params.requested
+      ? (params.expiresAt ?? new Date(Date.now() + GROUP_REQUEST_TTL_MS))
+      : null;
     const written = await tx.execute<RawGroupMembershipRequestState>(sql`
       INSERT INTO "GroupMembershipRequest" (
         "groupUserId", "memberUserId", direction, status, note, revision,
@@ -78,7 +83,7 @@ export class GroupMembershipStateService {
         ${params.direction}::"GroupMembershipDirection",
         ${desired}::"GroupMembershipRequestStatus",
         ${(params.note ?? '').slice(0, 255)}, 1,
-        ${params.requested ? new Date() : null}, ${params.expiresAt ?? null}, CURRENT_TIMESTAMP)
+        ${params.requested ? new Date() : null}, ${expiresAt}, CURRENT_TIMESTAMP)
       ON CONFLICT ("groupUserId", "memberUserId", direction) DO UPDATE SET
         status = EXCLUDED.status, note = EXCLUDED.note,
         revision = "GroupMembershipRequest".revision + 1,

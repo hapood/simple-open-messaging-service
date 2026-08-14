@@ -3,7 +3,7 @@
  * polymorphic surface. The facade ({@link WebsocketService}) selects ONE implementation at construction
  * by platform and delegates `start`/`stop`/`retryNow` to it; both implementations push into the same
  * {@link RealtimeSink}, so the public `eventSubject`/`state`/`reconnect$` are platform-agnostic and every
- * downstream consumer (HttpItemSource, GroupEventService, HomeComponent, ConnectionBanner, HomeShell) is
+ * downstream consumer (HttpItemSource, HomeComponent, ConnectionBanner, HomeShell) is
  * unchanged regardless of whether events arrive from:
  *  - a Web Worker SSE loop (browser + all Tauri desktop: pc/mac/linux) — {@link WorkerSseTransport}; or
  *  - the Android native /events bridge (Kotlin's RealtimeService → `window.__SOMS_EVENT__`) —
@@ -33,7 +33,12 @@ export interface StandardMessage<T = any> {
  *  distinct from `reconnecting` (the server is unreachable but the network is up): there is no point retrying
  *  until the OS network returns, so it shows a static "no network" label with no countdown. The worker/desktop
  *  transports never emit it (they go straight to `reconnecting` on a drop). */
-export type ConnectionState = 'connecting' | 'open' | 'reconnecting' | 'disconnected' | 'closed';
+export type ConnectionState =
+  | 'connecting'
+  | 'open'
+  | 'reconnecting'
+  | 'disconnected'
+  | 'closed';
 
 /** The outputs every transport produces, funneled into the facade's single set of subjects/signal. The
  *  transport is a pure producer; the facade owns the public `eventSubject`/`state`/`reconnect$` and the

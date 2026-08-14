@@ -1386,6 +1386,44 @@ export const friendRequestStateRevision = pgTable(
   ],
 );
 
+/** Latest source-scoped member-profile change visible to one local user. This shares User.threadRevision
+ * with thread/profile/friend-request state so reconnecting clients durably re-trigger affected roster
+ * reads after applying the fixed state target. */
+export const memberProfileStateRevision = pgTable(
+  'MemberProfileStateRevision',
+  {
+    userId: integer().notNull(),
+    sourcePeerDomain: varchar({ length: 63 }).notNull(),
+    memberAccount: varchar({ length: 31 }).notNull(),
+    memberDomain: varchar({ length: 63 }).notNull(),
+    revision: integer().notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.userId,
+        table.sourcePeerDomain,
+        table.memberAccount,
+        table.memberDomain,
+      ],
+      name: 'MemberProfileStateRevision_pkey',
+    }),
+    index('MemberProfileStateRevision_user_revision_idx').on(
+      table.userId,
+      table.revision,
+    ),
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [user.id],
+      name: 'MemberProfileStateRevision_userId_fkey',
+    }).onDelete('cascade'),
+    check(
+      'MemberProfileStateRevision_revision_check',
+      sql`${table.revision} > 0`,
+    ),
+  ],
+);
+
 export const systemSetting = pgTable('SystemSetting', {
   key: varchar({ length: 63 }).primaryKey().notNull(),
   value: text().notNull(),
@@ -1698,6 +1736,107 @@ export const federatedMemberProfile = pgTable(
   ],
 );
 
+/** Home-authored federated profile projection keyed by immutable Address. Human profiles may exist
+ * here before a durable User stub is justified (for example while a friend request is pending).
+ * Accepting the relationship promotes this verified projection into User; resolve-only results never
+ * enter this table. */
+export const federatedProfile = pgTable(
+  'FederatedProfile',
+  {
+    domain: varchar({ length: 63 }).notNull(),
+    account: varchar({ length: 31 }).notNull(),
+    revision: integer().notNull(),
+    displayName: varchar({ length: 30 }).notNull(),
+    bio: varchar({ length: 255 }).default('').notNull(),
+    avatar: varchar({ length: 255 }),
+    deleted: boolean().default(false).notNull(),
+    updatedAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.domain, table.account],
+      name: 'FederatedProfile_pkey',
+    }),
+    foreignKey({
+      columns: [table.domain],
+      foreignColumns: [federatedPeer.domain],
+      name: 'FederatedProfile_domain_fkey',
+    }).onDelete('cascade'),
+    check('FederatedProfile_revision_check', sql`${table.revision} >= 0`),
+  ],
+);
+
+/** Address-based federated friend intent. Pending/revoked intents deliberately do not require a
+ * foreign User stub; the stub is materialized only after an ACCEPTED state proves the remote account
+ * and the local user have converged. displayName/avatar are request-card snapshots, never identity
+ * authority. */
+export const federatedFriendRequest = pgTable(
+  'FederatedFriendRequest',
+  {
+    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
+    localUserId: integer().notNull(),
+    remoteAccount: varchar({ length: 31 }).notNull(),
+    remoteDomain: varchar({ length: 63 }).notNull(),
+    direction: varchar({ length: 16 }).notNull(),
+    status: varchar({ length: 16 }).notNull(),
+    note: varchar({ length: 255 }).default('').notNull(),
+    revision: integer().default(0).notNull(),
+    requestedAt: timestamp({ precision: 3, mode: 'date' }),
+    expiresAt: timestamp({ precision: 3, mode: 'date' }),
+    displayName: varchar({ length: 30 }),
+    avatar: text(),
+    profileRevision: integer(),
+    createdAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('FederatedFriendRequest_direction_key').on(
+      table.localUserId,
+      table.remoteDomain,
+      table.remoteAccount,
+      table.direction,
+    ),
+    index('FederatedFriendRequest_pending_idx').on(
+      table.localUserId,
+      table.direction,
+      table.status,
+      table.expiresAt,
+    ),
+    foreignKey({
+      columns: [table.localUserId],
+      foreignColumns: [user.id],
+      name: 'FederatedFriendRequest_localUserId_fkey',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.remoteDomain],
+      foreignColumns: [federatedPeer.domain],
+      name: 'FederatedFriendRequest_remoteDomain_fkey',
+    }).onDelete('cascade'),
+    check(
+      'FederatedFriendRequest_direction_check',
+      sql`${table.direction} IN ('INCOMING', 'OUTGOING')`,
+    ),
+    check(
+      'FederatedFriendRequest_status_check',
+      sql`${table.status} IN ('REQUESTED', 'REVOKED')`,
+    ),
+    check(
+      'FederatedFriendRequest_revision_check',
+      sql`${table.revision} >= 0 AND (${table.profileRevision} IS NULL OR ${table.profileRevision} >= 0)`,
+    ),
+    check(
+      'FederatedFriendRequest_expiry_check',
+      sql`(${table.status} = 'REQUESTED' AND ${table.requestedAt} IS NOT NULL AND ${table.expiresAt} IS NOT NULL AND ${table.expiresAt} > ${table.requestedAt} AND ${table.expiresAt} <= ${table.requestedAt} + INTERVAL '7 days') OR (${table.status} = 'REVOKED' AND ${table.expiresAt} IS NULL)`,
+    ),
+  ],
+);
+
 export const peerStateFeedPullCursor = pgTable(
   'PeerStateFeedPullCursor',
   {
@@ -1721,8 +1860,7 @@ export const peerStateFeedPullCursor = pgTable(
   ],
 );
 
-/** Current compacted message-feed projection. Allocation history may be retired internally, but
- * this stable-key row is retained for the lifetime of the peer/thread coordinate space. */
+/** Current compacted message-feed projection. Relationship closure may remove the stable key. */
 export const federationMessageFeedIndex = pgTable(
   'FederationMessageFeedIndex',
   {
@@ -1790,45 +1928,6 @@ export const federationMessageDelivery = pgTable(
   ],
 );
 
-/** Consumer-side authorization for history exposed by a compacted remote P2P REVOKED snapshot.
- * It is scoped to the source peer and never grants current friendship or write access. */
-export const federationP2PHistoryGrant = pgTable(
-  'FederationP2PHistoryGrant',
-  {
-    sourcePeerDomain: varchar({ length: 63 }).notNull(),
-    threadId: integer().notNull(),
-    throughFeedId: bigint({ mode: 'bigint' }).notNull(),
-    stateRevision: integer().notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.sourcePeerDomain, table.threadId],
-      name: 'FederationP2PHistoryGrant_pkey',
-    }),
-    foreignKey({
-      columns: [table.sourcePeerDomain],
-      foreignColumns: [federatedPeer.domain],
-      name: 'FederationP2PHistoryGrant_sourcePeerDomain_fkey',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.threadId],
-      foreignColumns: [messageThread.id],
-      name: 'FederationP2PHistoryGrant_threadId_fkey',
-    }).onDelete('cascade'),
-    check(
-      'FederationP2PHistoryGrant_throughFeedId_check',
-      sql`${table.throughFeedId} >= 0`,
-    ),
-    check(
-      'FederationP2PHistoryGrant_stateRevision_check',
-      sql`${table.stateRevision} >= 0`,
-    ),
-  ],
-);
-
 /** One authoritative directed request. A and B may each retain an independent row and note. */
 export const friendRequest = pgTable(
   'FriendRequest',
@@ -1864,6 +1963,10 @@ export const friendRequest = pgTable(
     check(
       'FriendRequest_revision_check',
       sql`${table.revision} >= 0 AND ${table.requesterUserId} <> ${table.targetUserId}`,
+    ),
+    check(
+      'FriendRequest_expiry_check',
+      sql`(${table.status} = 'REQUESTED' AND ${table.requestedAt} IS NOT NULL AND ${table.expiresAt} IS NOT NULL AND ${table.expiresAt} > ${table.requestedAt} AND ${table.expiresAt} <= ${table.requestedAt} + INTERVAL '7 days') OR (${table.status} <> 'REQUESTED' AND ${table.expiresAt} IS NULL)`,
     ),
   ],
 );
@@ -1945,6 +2048,10 @@ export const groupMembershipRequest = pgTable(
     check(
       'GroupMembershipRequest_revision_check',
       sql`${table.revision} >= 0 AND ${table.groupUserId} <> ${table.memberUserId}`,
+    ),
+    check(
+      'GroupMembershipRequest_expiry_check',
+      sql`(${table.status} = 'REQUESTED' AND ${table.requestedAt} IS NOT NULL AND ${table.expiresAt} IS NOT NULL AND ${table.expiresAt} > ${table.requestedAt} AND ${table.expiresAt} <= ${table.requestedAt} + INTERVAL '7 days') OR (${table.status} <> 'REQUESTED' AND ${table.expiresAt} IS NULL)`,
     ),
   ],
 );

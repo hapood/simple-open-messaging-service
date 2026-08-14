@@ -157,7 +157,11 @@ interface ProfileBody {
 精确 P2P 请求、群邀请 mirror 所必需的目标 peer 分配该资料。
 
 精确用户查询与本事件是不同的披露场景。`GET /users/:account` 只返回资源规范定义的最小公共身份卡，
-不得因为 `PROFILE` 包含 `bio` 或 tombstone 状态而扩大查询响应。
+不得因为 `PROFILE` 包含 `bio` 或 tombstone 状态而扩大查询响应。consumer 代理该查询时 MUST NOT 因查询
+结果创建持久 `User` stub、关系或 state projection。人类用户的 home-authored `PROFILE` 可以先按 Address
+保存为已验证资料投影，但收到 `REQUESTED` 或 `REVOKED` 仍不得创建 stub；只有收到有效 `ACCEPTED`，且
+已保存该 identity home 发布的非删除 `PROFILE` 时，才可把投影物化成持久 stub。群 mirror 的惰性物化不受
+这条人类用户规则影响。
 
 ### 4.2 `MEMBER_PROFILE`
 
@@ -207,6 +211,7 @@ interface IntentBody {
   expiresAt: EpochMilliseconds | null;
 }
 
+// Closed shape: P2P_INTENT has no additional fields.
 type P2PIntentBody = IntentBody;
 ```
 
@@ -214,12 +219,17 @@ type P2PIntentBody = IntentBody;
 - `ACCEPTED` 表示本方向已经观察并确认双方流程的成功结果；`expiresAt` MUST 是 `null`。
 - `REVOKED` 表示本方向拒绝、撤回或终止；`expiresAt` MUST 是 `null`。
 - `note` 只描述本方向，不授予权限，最多 255 个 Unicode code point。
-- expiry 只使 `REQUESTED` 失去效力，不隐式增加 revision；publisher SHOULD 产生更高 revision 的
-  `REVOKED` 使持久状态最终收敛。
+- expiry 只使 `REQUESTED` 失去效力，不隐式增加 revision。过期 `REQUESTED` 可以从当前 feed projection
+  直接省略，不要求发布 `REVOKED` 或其他删除通知；consumer 无论是否再次看到该 key，都必须按绝对时间
+  停止把它当作有效申请。
 
-`P2P_INTENT` 与 `GROUP_INVITE_INTENT` 的 `REQUESTED` 必须有非空 `expiresAt`，并满足
-`expiresAt > requestedAt`。`GROUP_JOIN_INTENT` 的 `expiresAt` MAY 是 `null`，表示由 origin 的本地准入
-策略决定等待期限。
+三种 intent 的 `REQUESTED` 都必须有非空 `expiresAt`，并满足
+`requestedAt < expiresAt <= requestedAt + 7 days`。协议不允许永久 pending 的好友申请、群邀请或群申请。
+
+`REVOKED` 没有语义有效期，`expiresAt` 必须为 `null`。它是拒绝、撤回或终止的 best-effort 状态通知：
+publisher SHOULD 按服务能力尽量长期保留其当前 projection，但 MAY 在之后直接省略该 key，不需要删除
+通知。consumer 不得把 projection 缺失解释为关系重新有效；当前关系/授权查询和 message query 的即时
+拒绝是清理后的兜底收敛机制。
 
 ### 5.1 P2P
 
@@ -228,8 +238,17 @@ P2P 关系只有双方最新方向都为 `ACCEPTED` 时成立。收到对方有�
 发布 `REVOKED` 后关系立即失效，并停止该已关闭 audience 的未来 P2P message allocation；另一方向不会
 因此被伪造成该方 author 的状态。
 
-`P2P_INTENT` 不携带 message-feed cursor 或历史授权边界。好友关系关闭或重新建立后，message query
-由 source 根据 durable 状态和本地策略即时判断可读范围；不得把 per-peer feed ID 解释为 thread 消息权限。
+`P2P_INTENT` 是 closed body，不得携带 `messageFeedEndId`、`tombstoneFeedEndId`、任何
+data-feed cursor 或历史授权边界。feed end 只是对应全局索引 feed 的扫描上界，不是
+thread 关系关闭边界。收到 `REVOKED` 后，consumer MUST
+使对应 peer/thread 的当前 message/tombstone query 目标失效并停止重试；source MAY 从
+两个索引 feed 中分别删除该 thread 的当前投影。这两个投影彼此独立，无需同时存在或
+同时删除。若 query 在 state 收敛前返回 `FORBIDDEN`，consumer 以相同方式使当前目标失效，
+并优先重新排空 state feed 作为兜底对账。
+
+好友关系关闭或重新建立后，message/tombstone query 由 source 根据 durable 状态和本地策略
+即时判断可读范围；不得把 per-peer feed ID 解释为 thread 消息权限，也不得因关系重建而
+回退已提交的 thread-local query cursor。
 
 ### 5.2 群邀请与申请
 
@@ -300,6 +319,10 @@ revision 不得覆盖新快照；dependency-repair 产生的相同 revision/body
 
 `MEMBER_PROFILE` 的可见性在 publisher 生成投影时由当前来源集决定。consumer 只在完整排空后做引用闭包
 清理，不把 feed 投影 omission 解释为删除事件。malformed、signer binding 错误或跨 signer 合并必须使整页失败。
+consumer 向自己的客户端同步时 MUST 保留 `(source signer domain, member Address)` 作用域；群成员列表中的
+展示资料还必须关联其 `source signer domain`，不得只按本地 `userId` 或 member Address 合并不同 peer
+中继的快照。客户端只有在固定 `stateRevision` 目标完整提交后才能清理已无引用的 source-scoped 展示
+缓存，并必须保留历史消息中的稳定 author Address。
 
 feed-head hint 不携带任何业务 body，也不能代替 state-feed。重启、提示丢失、重复 page、乱序 hint、
 compacted 中间 revision 缺失和 page 重排，都必须通过 stable key 最新快照得到同一最终投影。

@@ -62,10 +62,9 @@ export class ThreadIdDto {
   threadId!: number;
 }
 
-/** Resolve a user to address in friend ops. `account` alone = local lookup; `account` + `domain` =
- *  federated (runs bidirectional server recognition + signed profile GET + stub localization). The `@` separator is a
- *  UI input aid ONLY — the client splits a typed `alice@bbb.com` into these two fields; the API never
- *  carries an @-joined string. */
+/** Exact account lookup input. POST /user/resolve accepts local/our-domain lookup; the temporary
+ * federated SSE endpoint requires both account and a foreign domain. The client splits a typed
+ * `alice@bbb.com`; the API never carries an @-joined string. */
 export class UserResolveDto {
   @ApiProperty({
     example: 'alice',
@@ -175,7 +174,7 @@ export class QueryUsersDto {
   userIds!: number[];
 }
 
-/** Body for /user/query-thread/delta — pull ADD/DELETE deltas in (fromRevision, toRevision]
+/** Body for /user/query-state/delta — pull unified client-state deltas in (fromRevision, toRevision]
  *  (from exclusive, to inclusive). The client applies them in revision order. */
 export class ThreadDeltaDto {
   @ApiProperty({ example: 0, description: 'From revision (exclusive)' })

@@ -243,7 +243,7 @@ export class GroupService {
   /**
    * Leave a group (soft: sets leftAt). The owner may not leave: they must transfer ownership or dissolve
    * the group, preserving the invariant that every active group has exactly one owner. Returns the
-   * remaining active member ids so the controller can fan out GROUP_MEMBER_LEFT.
+   * remaining active member ids for the caller response and follow-up effects.
    */
   async leaveGroup(params: {
     userId: number;
@@ -369,19 +369,26 @@ export class GroupService {
         ended.length > 0
           ? await this.federation.writeGroupStateInTx(tx, params.threadId)
           : new Map<string, bigint>();
+      const refreshes =
+        ended.length > 0
+          ? await this.threadRevisionService.recordActiveLocalThreadRefreshInTx(
+              tx,
+              params.threadId,
+            )
+          : [];
       return {
         transitioned: ended.length > 0,
         remainingMemberIds: remaining.map((row) => row.userId),
-        revision,
+        revisions: [
+          ...refreshes,
+          ...(revision === null ? [] : [{ userId: params.userId, revision }]),
+        ],
         statePeers: [...requestState.keys(), ...groupState.keys()],
       };
     });
-    if (result.revision !== null) {
-      this.threadRevisionService.notifyThreadRevision({
-        userId: params.userId,
-        revision: result.revision,
-      });
-    }
+    result.revisions.forEach((pending) =>
+      this.threadRevisionService.notifyThreadRevision(pending),
+    );
     await this.federation.pushStateFeedDomains(result.statePeers);
     if (result.transitioned) {
       await this.federation.notifyGroupLeave(params.threadId, params.userId);
@@ -482,18 +489,30 @@ export class GroupService {
         dissolved.length > 0
           ? await this.federation.writeGroupStateInTx(tx, params.threadId)
           : new Map<string, bigint>();
+      const refreshes =
+        dissolved.length > 0
+          ? await this.threadRevisionService.recordActiveLocalThreadRefreshInTx(
+              tx,
+              params.threadId,
+              params.deleteForUserId === undefined
+                ? []
+                : [params.deleteForUserId],
+            )
+          : [];
       return {
         transitioned: dissolved.length > 0,
-        revision,
+        revisions: [
+          ...refreshes,
+          ...(revision === null || params.deleteForUserId === undefined
+            ? []
+            : [{ userId: params.deleteForUserId, revision }]),
+        ],
         statePeers: [...stateItems.keys()],
       };
     });
-    if (result.revision !== null && params.deleteForUserId !== undefined) {
-      this.threadRevisionService.notifyThreadRevision({
-        userId: params.deleteForUserId,
-        revision: result.revision,
-      });
-    }
+    result.revisions.forEach((pending) =>
+      this.threadRevisionService.notifyThreadRevision(pending),
+    );
     await this.federation.pushStateFeedDomains(result.statePeers);
     return { transitioned: result.transitioned };
   }
@@ -542,7 +561,7 @@ export class GroupService {
       if (target.leftAt !== null)
         return {
           transitioned: false,
-          revision: null,
+          revisions: [],
           statePeers: [],
         };
       if (
@@ -577,7 +596,7 @@ export class GroupService {
       if (ended.length === 0)
         return {
           transitioned: false,
-          revision: null,
+          revisions: [],
           statePeers: [],
         };
       const [thread] = await tx
@@ -618,18 +637,25 @@ export class GroupService {
         params.threadId,
         targetIdentity?.isForeigner ? [targetIdentity.domain] : [],
       );
+      const refreshes =
+        await this.threadRevisionService.recordActiveLocalThreadRefreshInTx(
+          tx,
+          params.threadId,
+        );
       return {
         transitioned: true,
-        revision,
+        revisions: [
+          ...refreshes,
+          ...(revision === null
+            ? []
+            : [{ userId: params.targetUserId, revision }]),
+        ],
         statePeers: [...requestState.keys(), ...groupState.keys()],
       };
     });
-    if (result.revision !== null) {
-      this.threadRevisionService.notifyThreadRevision({
-        userId: params.targetUserId,
-        revision: result.revision,
-      });
-    }
+    result.revisions.forEach((pending) =>
+      this.threadRevisionService.notifyThreadRevision(pending),
+    );
     await this.federation.pushStateFeedDomains(result.statePeers);
     if (result.transitioned)
       await this.emitSystemMessage(
@@ -644,7 +670,7 @@ export class GroupService {
   /**
    * Transfer ownership to an active member: demote the caller to MEMBER, promote the target to
    * OWNER — all in one transaction so no ownerless state is visible. Group.ownerId is updated in
-   * the same transaction, and the controller emits GROUP_ROLE_CHANGED for both users.
+   * the same transaction, then records a durable hydrated-thread refresh for every local member.
    */
   async transferOwnership(params: {
     threadId: number;
@@ -657,7 +683,7 @@ export class GroupService {
         'cannot transfer ownership to yourself',
       );
     }
-    const statePeers = await this.database.db.transaction(async (tx) => {
+    const result = await this.database.db.transaction(async (tx) => {
       // Serialize every transfer through the current OWNER row. The partial unique index prevents
       // multiple active owners; the service invariants prevent the sole owner from leaving/demotion.
       const [currentOwner] = await tx
@@ -741,13 +767,21 @@ export class GroupService {
           })
           .where(eq(group.groupUserId, trd.groupUserId));
       }
-      return [
-        ...(
-          await this.federation.writeGroupStateInTx(tx, params.threadId)
-        ).keys(),
-      ];
+      const state = await this.federation.writeGroupStateInTx(
+        tx,
+        params.threadId,
+      );
+      const revisions =
+        await this.threadRevisionService.recordActiveLocalThreadRefreshInTx(
+          tx,
+          params.threadId,
+        );
+      return { statePeers: [...state.keys()], revisions };
     });
-    await this.federation.pushStateFeedDomains(statePeers);
+    result.revisions.forEach((pending) =>
+      this.threadRevisionService.notifyThreadRevision(pending),
+    );
+    await this.federation.pushStateFeedDomains(result.statePeers);
     await this.emitSystemMessage(
       params.fromUserId,
       params.threadId,
@@ -797,7 +831,7 @@ export class GroupService {
       );
     }
     if (target.role === params.role) return;
-    const statePeers = await this.database.db.transaction(async (tx) => {
+    const result = await this.database.db.transaction(async (tx) => {
       await tx
         .update(threadParticipant)
         .set({ role: params.role, updatedAt: new Date() })
@@ -815,13 +849,21 @@ export class GroupService {
             updatedAt: new Date(),
           })
           .where(eq(group.groupUserId, trd.groupUserId));
-      return [
-        ...(
-          await this.federation.writeGroupStateInTx(tx, params.threadId)
-        ).keys(),
-      ];
+      const state = await this.federation.writeGroupStateInTx(
+        tx,
+        params.threadId,
+      );
+      const revisions =
+        await this.threadRevisionService.recordActiveLocalThreadRefreshInTx(
+          tx,
+          params.threadId,
+        );
+      return { statePeers: [...state.keys()], revisions };
     });
-    await this.federation.pushStateFeedDomains(statePeers);
+    result.revisions.forEach((pending) =>
+      this.threadRevisionService.notifyThreadRevision(pending),
+    );
+    await this.federation.pushStateFeedDomains(result.statePeers);
     await this.emitSystemMessage(
       params.operatorUserId,
       params.threadId,
@@ -897,8 +939,16 @@ export class GroupService {
         tx,
         params.threadId,
       );
-      return { row, statePeers: [...stateItems.keys()] };
+      const revisions =
+        await this.threadRevisionService.recordActiveLocalThreadRefreshInTx(
+          tx,
+          params.threadId,
+        );
+      return { row, statePeers: [...stateItems.keys()], revisions };
     });
+    result.revisions.forEach((pending) =>
+      this.threadRevisionService.notifyThreadRevision(pending),
+    );
     await this.federation.pushStateFeedDomains(result.statePeers);
     return result.row;
   }

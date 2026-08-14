@@ -9,7 +9,18 @@ import type { ServerResponse } from 'http';
 import { join } from 'path';
 import { mkdir, readFile, readdir, rename, stat, unlink } from 'fs';
 import { promisify } from 'util';
-import { and, asc, count, desc, eq, inArray, lt, ne, or, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  inArray,
+  lt,
+  ne,
+  or,
+  sql,
+} from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import {
   DatabaseService,
@@ -21,6 +32,8 @@ import {
   forwardBundleAsset,
   forwardBundleDependency,
   fileSyncProgress,
+  federatedProfile,
+  federatedMemberProfile,
   federatedMessageTombstone,
   mediaAsset,
   message,
@@ -435,15 +448,15 @@ export class MediaAssetGcService {
           matchedDeleted: message.isDeleted,
         })
         .from(federatedMessageTombstone)
-        .innerJoin(
-          creator,
-          eq(creator.id, federatedMessageTombstone.creatorId),
-        )
+        .innerJoin(creator, eq(creator.id, federatedMessageTombstone.creatorId))
         .innerJoin(
           messageThread,
           eq(messageThread.id, federatedMessageTombstone.threadId),
         )
-        .leftJoin(groupIdentity, eq(groupIdentity.id, messageThread.groupUserId))
+        .leftJoin(
+          groupIdentity,
+          eq(groupIdentity.id, messageThread.groupUserId),
+        )
         .leftJoin(message, predicate)
         .orderBy(
           desc(federatedMessageTombstone.createdAt),
@@ -1107,8 +1120,17 @@ export class MediaAssetGcService {
       .select({ avatar: user.avatar })
       .from(user)
       .where(ne(user.avatar, ''));
+    const memberProfiles = await this.database.db
+      .select({ avatar: federatedMemberProfile.avatar })
+      .from(federatedMemberProfile)
+      .where(ne(federatedMemberProfile.avatar, ''));
+    const homeProfiles = await this.database.db
+      .select({ avatar: federatedProfile.avatar })
+      .from(federatedProfile)
+      .where(ne(federatedProfile.avatar, ''));
     const live = new Set<string>();
-    for (const r of users) {
+    for (const r of [...users, ...memberProfiles, ...homeProfiles]) {
+      if (!r.avatar) continue;
       const base = parseAvatarBase(r.avatar);
       if (base) live.add(base);
     }

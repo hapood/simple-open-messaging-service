@@ -7,7 +7,6 @@ import {
 } from '../database/database.service.js';
 import {
   group,
-  federationP2PHistoryGrant,
   messageThread,
   threadAudience,
   threadParticipant,
@@ -389,25 +388,17 @@ export class ThreadParticipantService {
       }
       const transitioned = ended.length > 0;
       const statePeers: string[] = [];
-      let revokedMessageFeedEndId: bigint | undefined;
       if (transitioned) {
-        // Local visibility ends immediately. A remote audience is drained and closed by the helper;
-        // its returned feed ID is the exact inclusive delivery boundary carried by REVOKE.
+        // Local visibility ends immediately. Remote discovery projections are removed with the
+        // audience; REVOKED carries relationship state only.
         await tx.execute(sql`
           DELETE FROM "ThreadAudience" audience
           WHERE audience."threadId" = ${threadId}
             AND audience."targetDomain" = 'local'
         `);
         if (peer?.domain && peer.domain !== 'local') {
-          revokedMessageFeedEndId = await closeFederatedAudienceInTx(
-            tx,
-            peer.domain,
-            threadId,
-          );
+          await closeFederatedAudienceInTx(tx, peer.domain, threadId);
         }
-        await tx
-          .delete(federationP2PHistoryGrant)
-          .where(eq(federationP2PHistoryGrant.threadId, threadId));
       }
       if (transitioned) {
         if (mine && peer) {
@@ -455,7 +446,6 @@ export class ThreadParticipantService {
                   note: '',
                   requestedAt: null,
                   expiresAt: null,
-                  messageFeedEndId: (revokedMessageFeedEndId ?? 0n).toString(),
                 },
               },
             ]);
@@ -609,22 +599,38 @@ export class ThreadParticipantService {
     return result.rows.map((row) => row.userId);
   }
 
-  private updateParticipant(
+  private async updateParticipant(
     userId: number,
     threadId: number,
     data: Partial<typeof threadParticipant.$inferInsert>,
   ) {
-    return this.database.db
-      .update(threadParticipant)
-      .set({ ...data, updatedAt: new Date() })
-      .where(
-        and(
-          eq(threadParticipant.userId, userId),
-          eq(threadParticipant.threadId, threadId),
+    const result = await this.database.db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(threadParticipant)
+        .set({ ...data, updatedAt: new Date() })
+        .where(
+          and(
+            eq(threadParticipant.userId, userId),
+            eq(threadParticipant.threadId, threadId),
+          ),
+        )
+        .returning();
+      if (!row) return { row, revision: null };
+      return {
+        row,
+        revision: await this.threadRevisionService.recordThreadAddInTx(
+          tx,
+          userId,
+          threadId,
         ),
-      )
-      .returning()
-      .then(([row]) => row);
+      };
+    });
+    if (result.revision !== null)
+      this.threadRevisionService.notifyThreadRevision({
+        userId,
+        revision: result.revision,
+      });
+    return result.row;
   }
 
   /**

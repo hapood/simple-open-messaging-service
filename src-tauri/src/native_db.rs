@@ -362,6 +362,7 @@ pub(crate) struct ThreadDelta {
     direction: String,
     item: Option<Value>,
     user: Option<Value>,
+    user_id: Option<i64>,
     revision: Option<i64>,
 }
 
@@ -586,6 +587,18 @@ pub(crate) async fn native_db_apply_thread_delta(
                         params![user_id, identity, json_text(&profile)?, profile_rev],
                     ).map_err(|e| format!("apply profile state: {e}"))?;
                 }
+                "PROFILE_DELETE" => {
+                    let subject_user_id = op.user_id.ok_or_else(|| "PROFILE_DELETE delta has no userId".to_string())?;
+                    let identity = format!("u{subject_user_id}");
+                    tx.execute(
+                        "DELETE FROM profiles WHERE user_id = ?1 AND identity = ?2",
+                        params![user_id, identity],
+                    ).map_err(|e| format!("delete profile state: {e}"))?;
+                    tx.execute(
+                        "DELETE FROM avatars WHERE user_id = ?1 AND identity = ?2",
+                        params![user_id, identity],
+                    ).map_err(|e| format!("delete profile avatar state: {e}"))?;
+                }
                 "FRIEND_REQUEST" => {
                     let friend_revision = op.revision.ok_or_else(|| "FRIEND_REQUEST delta has no revision".to_string())?;
                     tx.execute(
@@ -595,6 +608,10 @@ pub(crate) async fn native_db_apply_thread_delta(
                     )
                     .map_err(|e| format!("save friend-request state revision: {e}"))?;
                 }
+                // Control/invalidation op only. The Angular roster layer refetches the
+                // source-scoped group members; native storage must still advance the
+                // enclosing state revision atomically.
+                "MEMBER_PROFILE" => {}
                 other => return Err(format!("unknown thread delta direction: {other}")),
             }
         }

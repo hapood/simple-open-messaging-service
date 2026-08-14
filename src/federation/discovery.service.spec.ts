@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { signingCertificateStatement } from './federation-certificate.js';
 
@@ -35,6 +35,30 @@ function certificate(rootPrivateKey: Uint8Array, keyId: string, seed: number) {
 function service() {
   return new DiscoveryService({} as never, {} as never);
 }
+
+afterEach(() => vi.useRealTimers());
+
+describe('DiscoveryService outbound peer pacing', () => {
+  it('spaces starts for one peer while allowing another peer immediately', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_700_000_000_000);
+    const discovery = service();
+
+    await discovery.waitForRequestSlot('peer.example');
+    let secondStarted = false;
+    const second = discovery.waitForRequestSlot('peer.example').then(() => {
+      secondStarted = true;
+    });
+
+    await discovery.waitForRequestSlot('other.example');
+    expect(secondStarted).toBe(false);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(secondStarted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await second;
+    expect(secondStarted).toBe(true);
+  });
+});
 
 describe('DiscoveryService root-authorized signing certificates', () => {
   const rootPrivateKey = Uint8Array.from({ length: 32 }, (_, index) => index);

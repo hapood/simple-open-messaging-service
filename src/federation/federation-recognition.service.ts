@@ -74,6 +74,7 @@ export class FederationRecognitionService {
     const base = await this.discovery.resolveBase(domain);
     const url = new URL(`${base}/s2s/v1/healthy`);
     const body = JSON.stringify({ domain: this.config.domain });
+    await this.discovery.waitForRequestSlot(domain);
     const headers = await this.signature.signOutbound({
       method: 'POST',
       url,
@@ -345,6 +346,7 @@ export class FederationRecognitionService {
     const base = await this.discovery.resolveBase(domain);
     const url = new URL(`${base}/s2s/v1/recognize`);
     const body = JSON.stringify({ domain: this.config.domain });
+    await this.discovery.waitForRequestSlot(domain);
     const headers = await this.signature.signOutbound({
       method: 'POST',
       url,

@@ -6,7 +6,7 @@
  *
  * The backend pushes `STATE_REV_UPDATED { stateRevision }` for thread and profile state changes (friend approve,
  * group create/join, leave, kick, unfriend). The client pulls the ranged delta `(cursor, toRevision]` via
- * `POST /user/query-thread/delta`; this module plans that flat op list into the threads to hydrate+insert
+ * `POST /user/query-state/delta`; this module plans that flat op list into the threads to hydrate+insert
  * (ADD) vs. drop locally (DELETE).
  */
 

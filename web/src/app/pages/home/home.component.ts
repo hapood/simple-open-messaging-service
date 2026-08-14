@@ -3,7 +3,6 @@ import { UserService } from '../../services/user.service';
 import { AuthService } from '../../services/auth.service';
 import { WebsocketService } from '../../services/websocket.service';
 import { ThreadRepository } from '../../services/thread-store.service';
-import { GroupEventService } from '../../services/group-event.service';
 import { HomeShellComponent } from '../../components/home-shell/home-shell.component';
 import { IndicatorSlotComponent } from '../../components/indicator-slot/indicator-slot.component';
 import { ConnectionBannerComponent } from '../../components/connection-banner/connection-banner.component';
@@ -38,13 +37,12 @@ export class HomeComponent implements OnInit {
   private readonly authService = inject(AuthService);
   private readonly wsService = inject(WebsocketService);
   // Injected to instantiate the DB-layer root singletons that self-subscribe to the SSE stream in their
-  // constructors: ThreadRepository routes the thread-list data events (NEW_MESSAGE / THREAD_META /
-  // STATE_REV_UPDATED +
-  // reconnect refresh); GroupEventService routes the GROUP_* control events (toasts / roster reload).
+  // constructors: ThreadRepository routes NEW_MESSAGE / STATE_REV_UPDATED and reconnect refresh.
+  // Group roster invalidation is emitted locally only after
+  // the corresponding durable state delta has been applied.
   // Injecting them here guarantees their subscriptions are alive for the whole home-route session
   // regardless of which child panes are mounted.
   private readonly threadRepo = inject(ThreadRepository);
-  private readonly groupEvents = inject(GroupEventService);
 
   ngOnInit() {
     // The self profile is loaded by the HELLO connect handshake now (UserService.establishSession gates

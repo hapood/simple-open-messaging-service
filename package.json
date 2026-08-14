@@ -27,6 +27,8 @@
     "test:cov": "vitest run --coverage",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "federation:conformance": "tsx scripts/federation-conformance.ts",
+    "federation:lab": "./dev/federation-lab/up.sh",
+    "federation:lab:reset": "./dev/federation-lab/reset.sh",
     "db:migrate": "tsx scripts/migrate-db.ts migrate",
     "db:baseline": "tsx scripts/migrate-db.ts baseline",
     "db:status": "tsx scripts/migrate-db.ts status",

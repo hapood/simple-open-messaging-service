@@ -4,6 +4,7 @@ import {
   federationMessageDelivery,
   federationMessageFeedIndex,
   federationServeCursor,
+  federationTombstoneFeedIndex,
   messageThread,
   threadAudience,
 } from '../database/schema.js';
@@ -161,13 +162,12 @@ export async function openFederatedAudienceInTx(
     });
 }
 
-/** Close the current audience after materializing its committed tail, then remove the active row. */
+/** Close the current audience and remove both independently compacted discovery projections. */
 export async function closeFederatedAudienceInTx(
   tx: DatabaseTransaction,
   peerDomain: string,
   threadId: number,
-): Promise<bigint> {
-  await advanceFederatedAudienceInTx(tx, peerDomain, threadId);
+): Promise<void> {
   await tx
     .delete(threadAudience)
     .where(
@@ -177,11 +177,20 @@ export async function closeFederatedAudienceInTx(
         isNull(threadAudience.localUserId),
       ),
     );
-  const [cursor] = await tx
-    .select({ endId: federationServeCursor.allocatedThrough })
-    .from(federationServeCursor)
-    .where(eq(federationServeCursor.peerDomain, peerDomain))
-    .limit(1);
-  if (!cursor) throw new Error(`peer ${peerDomain} has no message feed target`);
-  return cursor.endId;
+  await tx
+    .delete(federationMessageFeedIndex)
+    .where(
+      and(
+        eq(federationMessageFeedIndex.peerDomain, peerDomain),
+        eq(federationMessageFeedIndex.threadId, threadId),
+      ),
+    );
+  await tx
+    .delete(federationTombstoneFeedIndex)
+    .where(
+      and(
+        eq(federationTombstoneFeedIndex.peerDomain, peerDomain),
+        eq(federationTombstoneFeedIndex.threadId, threadId),
+      ),
+    );
 }

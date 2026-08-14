@@ -65,7 +65,10 @@ function makeStubs() {
   const svc = new FederationService(
     database as never,
     {} as never, // signature
-    { request: (...args: Parameters<typeof fetch>) => fetch(...args) } as never, // discovery
+    {
+      waitForRequestSlot: async () => undefined,
+      request: (...args: Parameters<typeof fetch>) => fetch(...args),
+    } as never, // discovery
     {} as never, // upload
     {} as never, // participantService
     {} as never, // message
@@ -117,7 +120,7 @@ describe('FederationService inbound call preflight', () => {
 });
 
 describe('FederationService state-feed drain window', () => {
-  it('does not retain a stale through bound in the coalesced pull worker', async () => {
+  it('passes the pull worker fixed drain bound to state-feed pages', async () => {
     const { svc } = makeStubs();
     const pullStateFeedPage = vi.fn().mockResolvedValue({
       items: [],
@@ -130,7 +133,9 @@ describe('FederationService state-feed drain window', () => {
         advertise: (domain: string, revision: bigint) => void;
         run: (
           domain: string,
-          callbacks: { fetch: (after?: bigint) => Promise<unknown> },
+          callbacks: {
+            fetch: (after?: bigint, through?: bigint) => Promise<unknown>;
+          },
         ) => Promise<void>;
       };
       pullStateFeedPage: typeof pullStateFeedPage;
@@ -140,7 +145,7 @@ describe('FederationService state-feed drain window', () => {
     target.stateFeedPull = {
       advertise: vi.fn(),
       run: vi.fn(async (_domain, callbacks) => {
-        await callbacks.fetch(2n);
+        await callbacks.fetch(2n, 5n);
       }),
     };
     target.pullStateFeedPage = pullStateFeedPage;
@@ -149,11 +154,7 @@ describe('FederationService state-feed drain window', () => {
 
     await svc.pullStateFromPeer('peer.test', 5n);
 
-    expect(pullStateFeedPage).toHaveBeenCalledWith(
-      'peer.test',
-      2n,
-      100,
-    );
+    expect(pullStateFeedPage).toHaveBeenCalledWith('peer.test', 2n, 100, 5n);
   });
 });
 
@@ -286,6 +287,7 @@ describe('FederationService JSON error data', () => {
       signature: { signOutbound: () => Record<string, string> };
       discovery: {
         resolveBase: (domain: string) => Promise<string>;
+        waitForRequestSlot: (domain: string) => Promise<void>;
         request: typeof fetch;
       };
       getSigned(path: string, domain: string): Promise<unknown>;
@@ -293,6 +295,7 @@ describe('FederationService JSON error data', () => {
     target.signature = { signOutbound: () => ({}) };
     target.discovery = {
       resolveBase: async () => 'https://peer.test',
+      waitForRequestSlot: async () => undefined,
       request: (...args) => fetch(...args),
     };
 
@@ -530,6 +533,22 @@ describe('FederationService global missed transport', () => {
       expect(target.capturePeerResponseToken).not.toHaveBeenCalled();
     },
   );
+});
+
+describe('FederationService thread-query revocation fallback', () => {
+  it('maps a current authorization denial to state-recoverable context loss', () => {
+    const { svc } = makeStubs();
+    const target = svc as unknown as {
+      throwIfThreadQueryForbidden: (error: Error, threadKey: string) => void;
+    };
+
+    expect(() =>
+      target.throwIfThreadQueryForbidden(
+        new S2sResponseError('revoked', 200, BusinessCode.FORBIDDEN),
+        'v1:thread',
+      ),
+    ).toThrow(/thread query access was revoked/);
+  });
 });
 
 describe('FederationService thread-bound response write gate', () => {

@@ -28,6 +28,7 @@ import {
   type S2sProxy,
 } from './federation-harness.js';
 import {
+  establishFederatedFriendship,
   getAdminCookie,
   openSse,
   registerAndLogin,
@@ -61,38 +62,21 @@ describe('federation durable missed transport (two nodes)', () => {
     await uploadAvatar(appA, tokenA, await makePng(31));
     await uploadAvatar(appB, tokenB, await makePng(63));
 
-    const resolved = await request(appA.baseUrl)
-      .post('/api/v1/user/resolve')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({ account: 'missedbob', domain: FED_DOMAIN_B });
-    expect(resolved.body.code).toBe(BusinessCode.OK);
-    const bobStubIdA = resolved.body.data.id as number;
-
-    const requested = await request(appA.baseUrl)
-      .post('/api/v1/invite/friend')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({ toUserId: resolved.body.data.id, note: 'durable missed e2e' });
-    expect(requested.body.code).toBe(BusinessCode.OK);
-
-    const aliceStub = await vi.waitFor(
-      async () => {
-        const stub = await appB.database.query.user.findFirst({
-          where: and(
-            eq(user.account, 'missedalice'),
-            eq(user.domain, FED_DOMAIN_A),
-          ),
-        });
-        expect(stub).toBeDefined();
-        return stub;
-      },
-      { timeout: 5000, interval: 100 },
-    );
-    aliceStubIdB = aliceStub!.id;
-    const replied = await request(appB.baseUrl)
-      .post('/api/v1/invite/friend')
-      .set('Authorization', `Bearer ${tokenB}`)
-      .send({ toUserId: aliceStubIdB, note: 'durable missed reply' });
-    expect(replied.body.code).toBe(BusinessCode.OK);
+    const friendship = await establishFederatedFriendship({
+      local: appA,
+      remote: appB,
+      localUserId: aliceIdA,
+      remoteUserId: bobIdB,
+      localToken: tokenA,
+      remoteToken: tokenB,
+      localAccount: 'missedalice',
+      remoteAccount: 'missedbob',
+      localDomain: FED_DOMAIN_A,
+      remoteDomain: FED_DOMAIN_B,
+      note: 'durable missed e2e',
+    });
+    const bobStubIdA = friendship.remoteStubIdOnLocal;
+    aliceStubIdB = friendship.localStubIdOnRemote;
     await vi.waitFor(
       async () => {
         const active = await appB.database.query.threadParticipant.findFirst({

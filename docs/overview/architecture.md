@@ -48,7 +48,7 @@ The application root module [src/app.module.ts](../../src/app.module.ts) imports
 | ------------------------------------ | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **AuthModule**                       | [src/auth/](../../src/auth/)                                               | Opaque **SessionToken** issue/validate (`SessionTokenService` + `BearerAuthService`), login by password / OTP / QR, argon2 hashing, shared `BruteForceService` ban engine, the global `SessionAuthGuard` (`APP_GUARD`) and `SessionCookieInterceptor` (`APP_INTERCEPTOR`) |
 | **UserModule**                       | [src/user/](../../src/user/)                                               | `UserService` — profile, register, friend/block helpers, and peer-trust status                                                                                                                                                                                            |
-| **GatewayModule**                    | [src/gateway/](../../src/gateway/)                                         | SSE downlink (`EventsController` + `SseService`): connection registry, `: ping` heartbeat, `HELLO` handshake, `STATE_REV_UPDATED`/`NEW_MESSAGE`/`THREAD_META` push, `FORCE_LOGOUT`; `CallStateRegistry` mirrors active-call state for the HELLO                           |
+| **GatewayModule**                    | [src/gateway/](../../src/gateway/)                                         | SSE downlink (`EventsController` + `SseService`): connection registry, heartbeat, `HELLO`, durable-feed and message/media wake-ups, ephemeral call coordination, and `FORCE_LOGOUT`; `CallStateRegistry` mirrors active-call state for `HELLO`                            |
 | **MessageModule**                    | [src/message/](../../src/message/)                                         | `MessageService` — message write (per-thread atomic `seq`) + paginated query primitives; `MessageFanoutService` (global) does unified `NEW_MESSAGE` fan-out                                                                                                               |
 | **GroupModule**                      | [src/group/](../../src/group/)                                             | `GroupService` + `RolesGuard` — group create/invite/members/leave/kick/transfer/role/update                                                                                                                                                                               |
 | **ThreadParticipantModule**          | [src/thread-participant/](../../src/thread-participant/)                   | `ThreadParticipantService` (raw thread-roster mutator) + `ThreadAccessGuard` (membership guard reused by message/group routes)                                                                                                                                            |
@@ -87,7 +87,7 @@ All sit under `/api/v1` (set in `bootstrap.ts`). Most use `@Controller()` with t
 | AuthController                      | [src/controller/auth.controller.ts](../../src/controller/auth.controller.ts)                                                                                        | `auth/login` (password), `auth/logout`, `auth/logout-all`, `auth/change-password`, `auth/set-password`, `auth/sessions`, `auth/revoke-session`                  |
 | AuthOtpController                   | [src/controller/auth-otp.controller.ts](../../src/controller/auth-otp.controller.ts)                                                                                | `auth/otp/login`                                                                                                                                                |
 | AuthQrController                    | [src/controller/auth-qr.controller.ts](../../src/controller/auth-qr.controller.ts)                                                                                  | `auth/qr/{create,poll,scan,confirm}`                                                                                                                            |
-| UserController                      | [src/controller/user.controller.ts](../../src/controller/user.controller.ts)                                                                                        | `user/{register,my-profile,update-avatar,update-profile,query-thread/delta,delete-friend,block,query,peer-trust-status,resolve,search,thread-info}`             |
+| UserController                      | [src/controller/user.controller.ts](../../src/controller/user.controller.ts)                                                                                        | `user/{register,my-profile,update-avatar,update-profile,query-state/delta,delete-friend,block,query,peer-trust-status,resolve,search,thread-info}`              |
 | MessageController                   | [src/controller/message.controller.ts](../../src/controller/message.controller.ts)                                                                                  | `send-message`, `send-media`, `query-messages`, `thread/{by-user-id,mark-read,set-muted,set-pinned,clear-history,set-alias}`, `search-messages`, `media-status` |
 | GroupController                     | [src/controller/group.controller.ts](../../src/controller/group.controller.ts)                                                                                      | `group/{create,invite,info,members,leave,kick,transfer,set-role,update}`                                                                                        |
 | InviteController                    | [src/controller/invite.controller.ts](../../src/controller/invite.controller.ts)                                                                                    | `invite/{friend,accept,reject,revoke,incoming,outgoing,detail,mark-read}`                                                                                       |
@@ -194,17 +194,21 @@ The server writes a `: ping` comment frame every 25s. SSE is one-way (no pong); 
 
 ```
 event: <EVENT_NAME>
-id: <msgId>          # NEW_MESSAGE only
 data: <json>
 ```
 
-| Event               | Trigger                                   | `data`                                                                      | Client handling                          |
-| ------------------- | ----------------------------------------- | --------------------------------------------------------------------------- | ---------------------------------------- |
-| `HELLO`             | connect                                   | cursors (message/stateRevision/activeCall)                                  | pull state delta and missed summary      |
-| `STATE_REV_UPDATED` | state cursor advances                     | `{ stateRevision }`                                                         | pull the next client-state range         |
-| `NEW_MESSAGE`       | a message is sent to the user             | full message body `{ threadId, seq, content, contentType, createdAt, ... }` | cache in the message repository; render  |
-| `THREAD_META`       | thread mute/pin/clear/revision change     | `{ threadId, ... }`                                                         | update conversation list                 |
-| `FORCE_LOGOUT`      | logout-all / password change / admin kick | reason                                                                      | disconnect + force re-login              |
+| Event                      | Purpose                                            | Recovery source                           |
+| -------------------------- | -------------------------------------------------- | ----------------------------------------- |
+| `HELLO`                    | connection handshake and current high-water marks  | sent on every connection                  |
+| `STATE_REV_UPDATED`        | identity-only unified client-state wake            | `HELLO.stateRevision` + ranged state pull |
+| `NEW_MESSAGE`              | identity-only message wake `{ threadId, seq, ts }` | missed-message/message query              |
+| `DELETED_MESSAGE_UPDATED`  | identity-only deletion-log wake                    | deletion HWM/log                          |
+| `MEDIA_STATUS`             | media-localization completion wake                 | message/media query                       |
+| `CALL_EVENT`/`CALL_SIGNAL` | ephemeral call lifecycle and WebRTC signaling      | active-call snapshot/new negotiation      |
+| `FORCE_LOGOUT`             | terminate a revoked session                        | authentication state                      |
+
+Group/profile/friend/request/thread-setting/read state has no dedicated SSE event. The mutation and its
+client-state revision commit atomically; SSE then carries only `STATE_REV_UPDATED`.
 
 ### Reconnection Recovery
 

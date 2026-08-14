@@ -42,7 +42,7 @@ import { firstValueFrom } from 'rxjs';
  * Destructive actions use a two-tap inline confirm driven by swapping the menu's entry list (no separate
  * confirm dialog) — EXCEPT clear history, whose irreversibility warrants an unmissable app-level modal
  * ({@link PopupType.CONFIRM}) with a danger-styled warning. Mute / pin apply optimistically to the
- * conversation list (via applyThreadMeta) and the server's THREAD_META frame re-confirms idempotently.
+ * conversation list (via applyThreadMeta) and the durable state delta re-confirms idempotently.
  * Actions that affect the shell (clear history / delete / leave → navigate away) or conversation state
  * (block → banner) are applied through their owning services.
  */
@@ -318,7 +318,7 @@ export class MessageHeaderComponent {
     }
   }
 
-  /** Mute toggle: optimistic patch (icon flips now), server confirms via THREAD_META idempotently. */
+  /** Mute toggle: optimistic patch; the server confirms through the durable state delta. */
   private toggleMute(threadId: number, muted: boolean): void {
     const next = !muted;
     this.convList.applyThreadMeta(threadId, { muted: next });
@@ -330,7 +330,7 @@ export class MessageHeaderComponent {
   private togglePin(threadId: number, pinned: boolean): void {
     const next = !pinned;
     // pinnedAt is resolved server-side; optimistically set a provisional now so the row re-sorts into
-    // the pinned tier immediately. The THREAD_META frame overwrites it with the authoritative value.
+    // the pinned tier immediately. The state delta overwrites it with the authoritative value.
     this.convList.applyThreadMeta(threadId, {
       pinned: next,
       pinnedAt: next ? Date.now() : null,

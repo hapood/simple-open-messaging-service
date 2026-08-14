@@ -4,7 +4,7 @@ import { MatSnackBar } from '@angular/material/snack-bar';
 import { TranslocoService } from '@jsverse/transloco';
 import { of, Subject } from 'rxjs';
 import { RouteService } from '../../services/route.service';
-import type { StandardResponse, User } from '../../services/model';
+import type { User } from '../../services/model';
 import { UserService } from '../../services/user.service';
 import {
   AddTabStatus,
@@ -59,9 +59,12 @@ describe('FriendRequestsComponent federated search progress', () => {
   });
 
   it('shows first-contact handshake progress until resolve and localization finish', () => {
-    const resolve = new Subject<StandardResponse<User>>();
+    const resolve = new Subject<{
+      user: User;
+      relationship: 'NONE';
+    }>();
     const remote = {
-      id: 9,
+      id: 0,
       account: 'bob',
       name: 'Bob',
       domain: 'peer.test',
@@ -72,12 +75,7 @@ describe('FriendRequestsComponent federated search progress', () => {
       peerTrustStatus: jasmine
         .createSpy()
         .and.returnValue(of({ code: 0, data: { trusted: false } })),
-      resolveUser: jasmine.createSpy().and.returnValue(resolve),
-      friendRelationshipStatuses: jasmine
-        .createSpy()
-        .and.returnValue(
-          of({ code: 0, data: [{ userId: remote.id, status: 'NONE' }] }),
-        ),
+      resolveFederatedUser: jasmine.createSpy().and.returnValue(resolve),
     };
     TestBed.configureTestingModule({
       imports: [FriendRequestsComponent],
@@ -101,7 +99,7 @@ describe('FriendRequestsComponent federated search progress', () => {
 
     expect(component.connectingDomain()).toBe('peer.test');
     expect(component.addTabStatus()).toBe(AddTabStatus.SEARCHING);
-    resolve.next({ code: 0, message: '', data: remote });
+    resolve.next({ user: remote, relationship: 'NONE' });
     resolve.complete();
     expect(component.connectingDomain()).toBeNull();
     expect(component.addTabStatus()).toBe(AddTabStatus.SUCCESS);
@@ -109,11 +107,14 @@ describe('FriendRequestsComponent federated search progress', () => {
   });
 
   it('cancels an in-flight resolve and clears the handshake affordance', () => {
-    const resolve = new Subject<StandardResponse<User>>();
+    const resolve = new Subject<{
+      user: User;
+      relationship: 'NONE';
+    }>();
     const userService = {
       sessionProfile: () => ({ id: 1 }),
       peerTrustStatus: () => of({ code: 0, data: { trusted: false } }),
-      resolveUser: () => resolve,
+      resolveFederatedUser: () => resolve,
     };
     TestBed.resetTestingModule();
     TestBed.configureTestingModule({

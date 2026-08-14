@@ -9,7 +9,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
  * Inline alias/remark editor for a conversation, embedded in the peer-profile + group-info panels.
  * Shows the caller's current alias for the thread (or an "add remark" affordance); tapping toggles an
  * input + Save/Cancel. Save hits `thread/set-alias` and patches the conv list optimistically so the chat
- * header + conversation list update the displayed name immediately; the THREAD_META frame re-confirms it
+ * header + conversation list update the displayed name immediately; the state delta re-confirms it
  * on the caller's other devices. An empty submit clears the alias (real name shows again).
  *
  * Rendered as a Material-style info card (WhatsApp/Telegram contact-detail rows): a leading tag icon +
@@ -148,7 +148,7 @@ export class ThreadAliasEditorComponent {
   private readonly msgService = inject(MsgService)
   private readonly convList = inject(ConversationListService)
 
-  /** The live alias from the conv list (so a THREAD_META from another device updates it in place). */
+  /** The live alias from the conversation list, including changes synced from another device. */
   readonly currentAlias = computed(() => {
     const t = this.convList.items().find((it) => it.threadId === this.threadId())
     return t?.alias ?? ''
@@ -168,7 +168,7 @@ export class ThreadAliasEditorComponent {
   save(): void {
     const next = this.draft().trim()
     const tid = this.threadId()
-    // Optimistic patch so the header/list title flips instantly; the THREAD_META echo re-confirms it.
+    // Optimistic patch so the header/list title flips instantly; the state delta re-confirms it.
     this.convList.applyThreadMeta(tid, { alias: next.length > 0 ? next : null })
     this.msgService.setAlias({ threadId: tid, alias: next }).subscribe({
       error: () => this.convList.applyThreadMeta(tid, { alias: this.currentAlias() }), // revert on failure

@@ -1025,34 +1025,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     );
   });
 
-  it('applies an adjacent THREAD_READ_UPDATED revision and ignores its replay', async () => {
-    await populate([p2p(1, 11, { lastReadSeq: 5, unreadCount: 3 })]);
-    await webdb.putMeta('readRevision', 4);
-    emitHello({ userId: 1, stateRevision: 0, readRevision: 4 });
-    await flush(20);
-
-    const state = {
-      threadId: 1,
-      lastReadSeq: 7,
-      readRevision: 5,
-      unreadCount: 1,
-      mentionUnread: ['me'] as Array<'all' | 'me'>,
-    };
-    eventSubject.next({ event: 'THREAD_READ_UPDATED', data: state });
-    eventSubject.next({ event: 'THREAD_READ_UPDATED', data: state });
-    await flush();
-
-    expect(repo.items()[0]).toEqual(
-      jasmine.objectContaining({
-        lastReadSeq: 7,
-        unreadCount: 1,
-        mentionUnread: ['me'],
-      }),
-    );
-    expect(await webdb.getMeta('readRevision')).toBe(5);
-    expect(queryReadDeltaSpy).not.toHaveBeenCalled();
-  });
-
   it('pulls read delta when HELLO exposes a revision gap', async () => {
     await populate([p2p(1, 11, { lastReadSeq: 2, unreadCount: 4 })]);
     await webdb.putMeta('readRevision', 2);

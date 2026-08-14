@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, asc, eq, gt, inArray, lte, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, isNull, lte, sql } from 'drizzle-orm';
 import {
   DatabaseService,
   type Database,
@@ -7,7 +7,9 @@ import {
 } from '../database/database.service.js';
 import {
   friendRequestStateRevision,
+  memberProfileStateRevision,
   profileStateRevision,
+  threadParticipant,
   threadRevision,
   user,
 } from '../database/schema.js';
@@ -21,7 +23,7 @@ export interface PendingThreadRevision {
 /**
  * Per-user thread-list versioning. Every thread add/delete (friend approve, group join, unfriend,
  * leave, kick) bumps User.threadRevision and writes a ThreadRevision log row (ADD or DELETE); the
- * client holds threadRevision as its cursor and pulls ADD/DELETE deltas via query-thread(from, to].
+ * client holds stateRevision as its cursor and pulls unified deltas via query-state(from, to].
  *
  * The ADD row carries an `isDelete` flag (redundant with the DELETE row's existence) for fast "active
  * threads" queries (WHERE direction=ADD AND isDelete=false) — snapshot(revision=R) still uses the
@@ -73,6 +75,53 @@ export class ThreadRevisionService {
         set: { revision: u.threadRevision, isDelete: false },
       });
     return u.threadRevision;
+  }
+
+  /**
+   * Record a durable hydrated-thread refresh for every active local participant
+   * whose conversation is currently visible. A hidden thread stays hidden; a
+   * genuine join/message path must explicitly record ADD to restore it.
+   * Reusing ADD is intentional: an ADD delta is a replacement snapshot, not merely
+   * a first-time insertion. This keeps group metadata/roster/role changes in the
+   * same replayable client-state log without a parallel GROUP_* SSE channel.
+   */
+  async recordActiveLocalThreadRefreshInTx(
+    tx: DatabaseTransaction,
+    threadId: number,
+    excludeUserIds: readonly number[] = [],
+  ): Promise<PendingThreadRevision[]> {
+    const rows = await tx
+      .select({ userId: user.id })
+      .from(threadParticipant)
+      .innerJoin(user, eq(user.id, threadParticipant.userId))
+      .innerJoin(
+        threadRevision,
+        and(
+          eq(threadRevision.userId, threadParticipant.userId),
+          eq(threadRevision.threadId, threadParticipant.threadId),
+          eq(threadRevision.direction, 'ADD'),
+          eq(threadRevision.isDelete, false),
+        ),
+      )
+      .where(
+        and(
+          eq(threadParticipant.threadId, threadId),
+          isNull(threadParticipant.leftAt),
+          eq(user.isForeigner, false),
+          eq(user.isDeleted, false),
+        ),
+      );
+    const excluded = new Set(excludeUserIds);
+    const pending: PendingThreadRevision[] = [];
+    for (const userId of [...new Set(rows.map((row) => row.userId))]
+      .filter((id) => !excluded.has(id))
+      .sort((a, b) => a - b)) {
+      pending.push({
+        userId,
+        revision: await this.recordThreadAddInTx(tx, userId, threadId),
+      });
+    }
+    return pending;
   }
 
   notifyThreadRevision(pending: PendingThreadRevision): void {
@@ -169,6 +218,91 @@ export class ThreadRevisionService {
         ),
       )
       .orderBy(asc(profileStateRevision.revision));
+  }
+
+  async recordMemberProfileStateInTx(
+    tx: DatabaseTransaction,
+    key: {
+      sourcePeerDomain: string;
+      memberAccount: string;
+      memberDomain: string;
+    },
+    consumerUserIds: readonly number[],
+  ): Promise<PendingThreadRevision[]> {
+    const pending: PendingThreadRevision[] = [];
+    for (const userId of [...new Set(consumerUserIds)].sort((a, b) => a - b)) {
+      const [owner] = await tx
+        .update(user)
+        .set({
+          threadRevision: sql`${user.threadRevision} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(eq(user.id, userId))
+        .returning({ revision: user.threadRevision });
+      if (!owner) continue;
+      await tx
+        .insert(memberProfileStateRevision)
+        .values({ userId, ...key, revision: owner.revision })
+        .onConflictDoUpdate({
+          target: [
+            memberProfileStateRevision.userId,
+            memberProfileStateRevision.sourcePeerDomain,
+            memberProfileStateRevision.memberAccount,
+            memberProfileStateRevision.memberDomain,
+          ],
+          set: { revision: owner.revision },
+        });
+      pending.push({ userId, revision: owner.revision });
+    }
+    return pending;
+  }
+
+  async queryMemberProfileDelta(
+    userId: number,
+    fromRevision: number,
+    toRevision: number,
+  ) {
+    const rows = await this.database.db
+      .select({
+        sourcePeerDomain: memberProfileStateRevision.sourcePeerDomain,
+        memberAccount: memberProfileStateRevision.memberAccount,
+        memberDomain: memberProfileStateRevision.memberDomain,
+        revision: memberProfileStateRevision.revision,
+      })
+      .from(memberProfileStateRevision)
+      .where(
+        and(
+          eq(memberProfileStateRevision.userId, userId),
+          gt(memberProfileStateRevision.revision, fromRevision),
+          lte(memberProfileStateRevision.revision, toRevision),
+        ),
+      )
+      .orderBy(asc(memberProfileStateRevision.revision));
+    return Promise.all(
+      rows.map(async (row) => {
+        const threads = await this.database.db.execute<{
+          threadId: number;
+        }>(sql`
+          SELECT DISTINCT thread.id AS "threadId"
+          FROM "MessageThread" thread
+          JOIN "User" group_u ON group_u.id = thread."groupUserId"
+            AND group_u.domain = ${row.sourcePeerDomain}
+          JOIN "ThreadParticipant" mine ON mine."threadId" = thread.id
+            AND mine."userId" = ${userId} AND mine."leftAt" IS NULL
+          JOIN "ThreadParticipant" member_p ON member_p."threadId" = thread.id
+            AND member_p."leftAt" IS NULL
+          JOIN "User" member_u ON member_u.id = member_p."userId"
+          WHERE member_u.account = ${row.memberAccount}
+            AND (CASE WHEN member_u.domain = 'local'
+                      THEN COALESCE((SELECT domain FROM "LocalFederationIdentity" LIMIT 1), 'local')
+                      ELSE member_u.domain END) = ${row.memberDomain}
+        `);
+        return {
+          ...row,
+          threadIds: threads.rows.map((thread) => thread.threadId),
+        };
+      }),
+    );
   }
 
   /** Record a thread DELETE: bump threadRevision, upsert the DELETE row, mark the ADD row soft-deleted,

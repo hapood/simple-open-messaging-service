@@ -15,6 +15,7 @@ import type { MissedCursor } from './notification-descriptor.model';
 import { ConversationItem, ThreadReadState, User } from './model';
 import { ThreadDeletionLockService } from './thread-deletion-lock.service';
 import { MsgService } from './message.service';
+import { GroupStateStore } from './group-state-store.service';
 
 /** Load status as a const object so it can be used as a VALUE in templates and as a TYPE. */
 export const ConversationLoadStatus = {
@@ -28,8 +29,8 @@ export type ConversationLoadStatus =
 /**
  * The DB-layer repository for the conversation list — the read + SSE half of the strict 3-tier
  * (UI ↔ repositories ↔ backend) for the thread-list domain. It is the ONLY service that issues the
- * list READ (`/user/query-thread/delta`) and the ONLY consumer of the thread-list DATA SSE events
- * (`NEW_MESSAGE`, `THREAD_META`, `STATE_REV_UPDATED`). UI-facing services
+ * list READ (`/user/query-state/delta`) and the ONLY consumer of the client-state wake
+ * (`NEW_MESSAGE`, `STATE_REV_UPDATED`). UI-facing services
  * read its signals; they never fetch or mutate from SSE.
  *
  * NO write operations live here — `markRead` (a write) stays in the UI layer ({@link ConversationListService}
@@ -59,6 +60,7 @@ export class ThreadRepository {
   private readonly messageRepo = inject(MessageRepository);
   private readonly missedSync = inject(MissedSyncService);
   private readonly messages = inject(MsgService);
+  private readonly groupState = inject(GroupStateStore);
 
   private readonly _items = signal<ConversationItem[]>([]);
   readonly items = this._items.asReadonly();
@@ -211,12 +213,6 @@ export class ThreadRepository {
               m.data as { threadId: number; seq: number; ts: number },
             );
           break;
-        case 'THREAD_META':
-          this.onThreadMeta(m.data as ThreadMetaPayload | undefined);
-          break;
-        case 'THREAD_READ_UPDATED':
-          this.onThreadReadUpdated(m.data as ThreadReadState);
-          break;
         case 'STATE_REV_UPDATED':
           if (m.data !== undefined)
             this.onStateRevisionUpdated(
@@ -365,7 +361,7 @@ export class ThreadRepository {
   // ── list mutations (each writes through to IDB + emits a fine-grained signal update) ───────
 
   /** Patch per-user thread metadata (mute/pin/clear/block/alias) on a row, then re-sort so pin/unpin
-   *  reorders it live. Only defined fields are applied. Called from the THREAD_META SSE handler
+   *  reorders it live. Only defined fields are applied. Used for optimistic UI patches
    *  (multi-device) and (via the facade) from local optimistic actions (mute/pin toggle, block/unblock). */
   applyThreadMeta(
     threadId: number,
@@ -413,7 +409,7 @@ export class ThreadRepository {
     }
   }
 
-  /** Apply a rename / avatar / description change from a GROUP_UPDATED event (live list refresh). */
+  /** Apply an optimistic local group metadata patch. Durable replacement arrives via state delta. */
   applyGroupUpdate(
     threadId: number,
     patch: {
@@ -447,7 +443,7 @@ export class ThreadRepository {
     }
   }
 
-  /** Apply my own role change from a GROUP_ROLE_CHANGED event targeting me. */
+  /** Apply an optimistic local role change; the durable group snapshot remains authoritative. */
   applyRole(threadId: number, role: 'OWNER' | 'ADMIN' | 'MEMBER'): void {
     let changed: ConversationItem | undefined;
     this._items.update((list) => {
@@ -647,21 +643,6 @@ export class ThreadRepository {
     return topId;
   }
 
-  // ── SSE handlers ───────────────────────────────────────────────────────────────────────────
-
-  /** THREAD_META (multi-device sync for mute/pin/clear/alias). */
-  private onThreadMeta(d: ThreadMetaPayload | undefined): void {
-    if (!d || d.threadId === undefined) return;
-    this.applyThreadMeta(d.threadId, {
-      muted: d.muted,
-      pinned: d.pinned,
-      pinnedAt: d.pinnedAt,
-      clearedSeq: d.clearedSeq,
-      blocked: d.blocked,
-      alias: d.alias,
-    });
-  }
-
   private applyPeerProfile(u: User): void {
     let changed: ConversationItem | undefined;
     this._items.update((list) => {
@@ -680,6 +661,33 @@ export class ThreadRepository {
       void this.persistThread(changed);
       this.writePeerProfile(u);
     }
+  }
+
+  private applyPeerProfileRemoval(
+    userId: number,
+    account: string,
+    domain: string,
+  ): void {
+    let changed: ConversationItem | undefined;
+    this._items.update((list) =>
+      list.map((item) => {
+        if (item.type !== 'P2P' || item.peerUser?.id !== userId) return item;
+        changed = {
+          ...item,
+          peerUser: {
+            ...item.peerUser,
+            account,
+            domain,
+            name: account,
+            avatar: '',
+            bio: '',
+            isDeleted: true,
+          },
+        };
+        return changed;
+      }),
+    );
+    if (changed) void this.persistThread(changed);
   }
 
   /**
@@ -936,22 +944,6 @@ export class ThreadRepository {
     void this.hydratePreviews();
   }
 
-  private onThreadReadUpdated(state: ThreadReadState): void {
-    if (!state || typeof state.readRevision !== 'number') return;
-    const current = this.readRevision;
-    if (current === undefined) {
-      this.readSyncTarget = Math.max(this.readSyncTarget, state.readRevision);
-      return;
-    }
-    if (state.readRevision <= current) return;
-    if (state.readRevision === current + 1) {
-      this.applyReadState(state);
-      this.advanceReadRevision(state.readRevision);
-      return;
-    }
-    void this.syncReadDelta(state.readRevision);
-  }
-
   private async syncReadDelta(target: number): Promise<void> {
     this.readSyncTarget = Math.max(this.readSyncTarget, target);
     if (this.readSyncInFlight || this.readRevision === undefined) return;
@@ -1142,10 +1134,17 @@ export class ThreadRepository {
           } else if (op.direction === 'PROFILE') {
             this.userService.applyStateProfile(op.user);
             this.applyPeerProfile(op.user);
+          } else if (op.direction === 'PROFILE_DELETE') {
+            this.applyPeerProfileRemoval(op.userId, op.account, op.domain);
+          } else if (op.direction === 'MEMBER_PROFILE') {
+            for (const threadId of op.threadIds)
+              this.groupState.notifyRosterChanged(threadId);
           } else if (op.direction === 'DELETE') this.removeThread(op.threadId);
           else {
             if (!bulkHydrate) this.markTopOnNextUpdate(op.threadId); // FLIP only on an incremental ADD
             this.upsertThread(op.item);
+            if (op.item.type === 'GROUP')
+              this.groupState.notifyRosterChanged(op.threadId);
           }
         }
         this.userService.advanceStateRevCursor(toRev);

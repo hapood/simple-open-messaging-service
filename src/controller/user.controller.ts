@@ -1,7 +1,10 @@
 import {
   Controller,
+  Get,
   Post,
   Body,
+  Query,
+  Res,
   Request,
   UseGuards,
   HttpStatus,
@@ -17,6 +20,7 @@ import {
   ApiConsumes,
 } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
+import type { FastifyReply } from 'fastify';
 import { UserService } from '../user/user.service.js';
 import { UploadService } from '../upload/upload.service.js';
 import { MessageService } from '../message/message.service.js';
@@ -56,6 +60,9 @@ import {
   type S2SProfile,
 } from '../federation/federation.service.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
+import { InviteService } from '../invite/invite.service.js';
+import { Raw } from '../common/raw.decorator.js';
+import { formatSseFrame, initSseResponse } from '../common/sse-stream.js';
 
 /**
  * One entry of the unified client-state delta (`POST /user/query-state/delta`). ADD entries carry the fully
@@ -67,6 +74,21 @@ type HydratedThreadDeltaOp =
   | { threadId: number; direction: 'ADD'; item: ConversationItemDto }
   | { threadId: number; direction: 'DELETE' }
   | { direction: 'PROFILE'; user: UserResponseDto }
+  | {
+      direction: 'PROFILE_DELETE';
+      userId: number;
+      account: string;
+      domain: string;
+      revision: number;
+    }
+  | {
+      direction: 'MEMBER_PROFILE';
+      sourcePeerDomain: string;
+      memberAccount: string;
+      memberDomain: string;
+      threadIds: number[];
+      revision: number;
+    }
   | { direction: 'FRIEND_REQUEST'; revision: number };
 
 type ParticipantWithThread = typeof threadParticipant.$inferSelect & {
@@ -95,6 +117,7 @@ export class UserController {
     private readonly federationService: FederationService,
     private readonly threadRevisionService: ThreadRevisionService,
     private readonly userQuotaService: UserQuotaService,
+    private readonly inviteService: InviteService,
     @Optional()
     @Inject(forwardRef(() => MessageFanoutService))
     private readonly messageFanout?: Pick<MessageFanoutService, 'dispatch'>,
@@ -193,7 +216,7 @@ export class UserController {
   /**
    * The single conversation-row hydration pipeline — turns ThreadParticipant rows (with `thread`
    * included) into rendered ConversationItemDtos: batched unread counts, P2P peer users + blocked flags,
-   * GROUP info, and the pinned/recent sort. Shared by /user/query-thread/delta (hydrates the net-ADD ops)
+   * GROUP info, and the pinned/recent sort. Shared by /user/query-state/delta (hydrates the net-ADD ops)
    * and /user/thread-info (single) so the two can never drift on what a list row looks like. Carries NO
    * preview body — the client derives previews local-first from its message store.
    */
@@ -349,23 +372,29 @@ export class UserController {
     const me = req.user.userId;
     // Read the raw ADD/DELETE op log in (from, to], then plan it (last-op-wins per thread). The client
     // applies a single response: it never re-plans or batch-hydrates — the server is authoritative on both.
-    const [ops, profileOps, friendRequestRevision] = await Promise.all([
-      this.threadRevisionService.queryDelta(
-        me,
-        dto.fromRevision,
-        dto.toRevision,
-      ),
-      this.threadRevisionService.queryProfileDelta(
-        me,
-        dto.fromRevision,
-        dto.toRevision,
-      ),
-      this.threadRevisionService.queryFriendRequestStateDelta(
-        me,
-        dto.fromRevision,
-        dto.toRevision,
-      ),
-    ]);
+    const [ops, profileOps, memberProfileOps, friendRequestRevision] =
+      await Promise.all([
+        this.threadRevisionService.queryDelta(
+          me,
+          dto.fromRevision,
+          dto.toRevision,
+        ),
+        this.threadRevisionService.queryProfileDelta(
+          me,
+          dto.fromRevision,
+          dto.toRevision,
+        ),
+        this.threadRevisionService.queryMemberProfileDelta(
+          me,
+          dto.fromRevision,
+          dto.toRevision,
+        ),
+        this.threadRevisionService.queryFriendRequestStateDelta(
+          me,
+          dto.fromRevision,
+          dto.toRevision,
+        ),
+      ]);
     const { addIds, removeIds } = planThreadDelta(ops);
     // Hydrate ONLY the net-ADD threads in one batched pass. leftAt:null is the strict "currently a member"
     // guard; a net-ADD whose participant row is gone (a reaped edge) simply drops — the client won't insert
@@ -389,9 +418,34 @@ export class UserController {
     const profiles = await this.userService.queryUsers({
       where: {
         id: { in: profileOps.map((op) => op.subjectUserId) },
-        isDeleted: false,
       },
     });
+    const profileById = new Map(
+      profiles.map((profile) => [profile.id, profile]),
+    );
+    const hydratedProfiles: HydratedThreadDeltaOp[] = [];
+    for (const op of profileOps) {
+      const profile = profileById.get(op.subjectUserId);
+      if (!profile) continue;
+      if (profile.isDeleted) {
+        hydratedProfiles.push({
+          direction: 'PROFILE_DELETE',
+          userId: profile.id,
+          account: profile.account,
+          domain: profile.domain,
+          revision: op.revision,
+        });
+      } else {
+        hydratedProfiles.push({
+          direction: 'PROFILE',
+          user: {
+            ...profile,
+            createdAt: profile.createdAt.getTime(),
+            updatedAt: profile.updatedAt.getTime(),
+          },
+        });
+      }
+    }
     return [
       ...(friendRequestRevision === null
         ? []
@@ -401,13 +455,10 @@ export class UserController {
               revision: friendRequestRevision,
             },
           ]),
-      ...profiles.map((user) => ({
-        direction: 'PROFILE' as const,
-        user: {
-          ...user,
-          createdAt: user.createdAt.getTime(),
-          updatedAt: user.updatedAt.getTime(),
-        },
+      ...hydratedProfiles,
+      ...memberProfileOps.map((op) => ({
+        direction: 'MEMBER_PROFILE' as const,
+        ...op,
       })),
       ...adds.map((item) => ({
         threadId: item.threadId,
@@ -540,64 +591,19 @@ export class UserController {
   @HttpCode(HttpStatus.OK)
   @Post('user/resolve')
   @ApiOperation({
-    summary:
-      'Resolve a user by {account, domain} (local lookup, or federated via S2S)',
+    summary: 'Resolve a local user by account',
   })
   @ApiResultResponse(UserResponseDto)
   async resolveUser(@Body() dto: UserResolveDto) {
     const account = normalizeAccount(dto.account);
     const { domain } = dto;
-    // Federated (account + a peer domain != ours) → establish mutual server recognition, if not
-    // already trusted), fetch the peer's profile (avatar inline as base64), find-or-create a stub, and
-    // localize it (persist the avatar via saveAvatars + write name/bio), so the caller can address the
-    // user by id in subsequent friend ops (same as a local lookup).
     if (domain && domain !== this.federationService.ourDomain) {
-      try {
-        // Trust prerequisite: the signed profile GET below is allow-list-gated on the peer, and our
-        // guard gates their reply traffic — so mutual trust must exist first. Idempotent (no-op if
-        // already recognized). The reverse Recognize is scheduled durably by the peer.
-        await this.federationService.ensurePeerTrusted(domain);
-      } catch (e) {
-        if (
-          e instanceof BusinessException &&
-          e.bizCode === BusinessCode.FEDERATION_PEER_BLOCKED
-        ) {
-          // Admin intent — distinct from an unreachable peer so the client can show "blocked by admin".
-          throw new BusinessException(
-            BusinessCode.FEDERATION_PEER_BLOCKED,
-            `${domain} is blocked by an admin`,
-          );
-        }
-        throw new BusinessException(
-          BusinessCode.FEDERATION_DELIVERY_FAILED,
-          `could not establish trust with ${domain}: ${(e as Error).message}`,
-        );
-      }
-      let profile: S2SProfile;
-      const peerToken =
-        await this.federationService.capturePeerResponseToken(domain);
-      try {
-        profile = await this.federationService.fetchRemoteUser({
-          account,
-          domain,
-        });
-      } catch (e) {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_DELIVERY_FAILED,
-          `could not reach ${domain}: ${(e as Error).message}`,
-        );
-      }
-      const foreignId =
-        await this.federationService.upsertForeignUserFromPeerResponse(
-          account,
-          domain,
-          profile,
-          peerToken,
-        );
-      // Return the localized stub (avatar is now a /uploads/* URL, not the wire base64).
-      return this.userService.findUniqueUser({ id: foreignId });
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'federated lookup requires resolve-federated-stream',
+      );
     }
-    // Local: no domain, or a domain equal to ours → look up by account.
+    // No domain, or our own domain, is a local account lookup.
     const user = await this.userService.findUniqueUser({
       account_domain: { account: account, domain: 'local' },
       isDeleted: false,
@@ -615,6 +621,95 @@ export class UserController {
       BusinessCode.NOT_FOUND,
       `can not find user [${account}]`,
     );
+  }
+
+  /** Temporary resolve stream. It has one terminal result and never materializes a User stub. The
+   * browser may close it at any time; the peer request retains its normal bounded S2S timeout. */
+  @Raw()
+  @ApiBearerAuth()
+  @Get('user/resolve-federated-stream')
+  async resolveFederatedUserStream(
+    @Request() req: FastifyRequest,
+    @Query() dto: UserResolveDto,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    reply.hijack();
+    const heartbeat = initSseResponse(reply.raw, req.headers.origin);
+    let closed = false;
+    const finish = (event: string, data: unknown) => {
+      if (closed) return;
+      closed = true;
+      clearInterval(heartbeat);
+      reply.raw.write(formatSseFrame(event, data));
+      reply.raw.end();
+    };
+    reply.raw.on('close', () => {
+      closed = true;
+      clearInterval(heartbeat);
+    });
+    const account = normalizeAccount(dto.account);
+    const domain = dto.domain?.trim().toLowerCase() ?? '';
+    if (!domain || domain === this.federationService.ourDomain) {
+      finish('failed', { reason: 'INVALID_ADDRESS' });
+      return;
+    }
+    const deadline = new Promise<never>((_, reject) => {
+      const handle = setTimeout(
+        () => reject(new Error('resolve deadline exceeded')),
+        30_000,
+      );
+      reply.raw.once('close', () => clearTimeout(handle));
+    });
+    try {
+      const profile = await Promise.race([
+        (async () => {
+          await this.federationService.ensurePeerTrusted(domain);
+          return this.federationService.fetchRemoteUser({ account, domain });
+        })(),
+        deadline,
+      ]);
+      const relationship = await this.inviteService.federatedRelationshipStatus(
+        req.user.userId,
+        account,
+        domain,
+      );
+      finish('resolved', {
+        user: this.transientFederatedUser(profile),
+        relationship,
+      });
+    } catch (error) {
+      finish('failed', {
+        reason:
+          (error as Error).message === 'resolve deadline exceeded'
+            ? 'TIMEOUT'
+            : error instanceof BusinessException &&
+                error.bizCode === BusinessCode.FEDERATION_PEER_BLOCKED
+              ? 'BLOCKED'
+              : 'UNREACHABLE',
+      });
+    }
+  }
+
+  private transientFederatedUser(profile: S2SProfile) {
+    const now = Date.now();
+    return {
+      id: 0,
+      account: profile.account,
+      name: profile.displayName,
+      avatar: profile.avatar
+        ? `data:image/webp;base64,${profile.avatar.b64}`
+        : '',
+      bio: profile.bio,
+      isForeigner: true,
+      isGroup: false,
+      domain: profile.domain,
+      createdAt: now,
+      updatedAt: now,
+      isDeleted: false,
+      profileRev: 0,
+      remoteProfileRev: profile.profileRev,
+      mustChangePassword: false,
+    };
   }
 
   @ApiBearerAuth()
