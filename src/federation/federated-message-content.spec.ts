@@ -211,6 +211,22 @@ describe('federated message content projection', () => {
     ).toEqual(JSON.parse(stored));
   });
 
+  it.each([
+    'alice',
+    'Alice@example.test',
+    'alice@@example.test',
+    'alice@bad_domain',
+    'alice@local',
+    'alice@printer.local',
+  ])('rejects invalid wire mention address %s', (address) => {
+    const wire = JSON.stringify({
+      text: `hello [@Alice](socfp://user/${encodeURIComponent(address)})`,
+    });
+    expect(() =>
+      fromFederatedMessageContent(ContentType.PURE_TEXT, wire, 'local.test'),
+    ).toThrow('valid full address');
+  });
+
   it('compares immutable authored snapshots semantically', () => {
     const first = authoredMessageSnapshot({
       contentType: ContentType.PURE_TEXT,

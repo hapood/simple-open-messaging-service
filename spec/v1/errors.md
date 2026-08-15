@@ -1,6 +1,6 @@
 # Simple Open Chat Federation Protocol v1 错误码注册表
 
-状态：`RELEASE CANDIDATE`（`v1.0-rc.2`）
+状态：`RELEASE CANDIDATE`（`v1.0.0-rc.0`）
 规范性：本文分别定义 S2S HTTP 失败分类、HTTP `200` 业务结果、稳定 `code`、结构化 `data` 和调用方动作。
 
 ## 错误封装（Error Envelope）
@@ -107,8 +107,8 @@ HTTP `409` 本身不足以触发 `halted`。只有 `FEDERATION_PEER_BLOCKED`、
 | 70007 | `CALL_CANCELLED`                                   |  200 | 通话已由 caller 取消；本地收敛为 cancelled，停止媒体、计时器和依赖 frame，不得（MUST NOT）把 peer 置为 degraded。                  |
 | 70008 | `CALL_TERMINATED`                                  |  200 | 通话已由其他终态结束；本地收敛为 terminal，停止媒体、计时器和依赖 frame，不得（MUST NOT）把 peer 置为 degraded。                   |
 
-`FEDERATION_CAPABILITY_DISABLED` 是为兼容已发布 wire code 保留的稳定标识符；这里的 `capability` 只表示某类业务
-操作被对端策略关闭，不表示 v1 存在能力协商（capability negotiation），也不能据此推导可选接口。
+`FEDERATION_CAPABILITY_DISABLED` 是为兼容既有 wire code 保留的稳定标识符；这里的 `capability` 只表示某类
+核心业务操作被对端策略关闭，不是主协议第 2.1 节的 extension capability，也不能据此推导可选接口。
 `FEDERATION_PAYLOAD_TOO_LARGE` 同样只为兼容已发布 wire code 保留；它不是 JSON/JSONB、page、bundle 或媒体的上限协商机制。
 
 ## 结构化错误数据（Structured Error Data）

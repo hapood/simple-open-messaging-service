@@ -61,7 +61,6 @@ async function validateReleaseMetadata(): Promise<void> {
   const expected = {
     protocol: 'Simple Open Chat Federation Protocol',
     abbreviation: 'SOCFP',
-    version: '1.0.0-rc.2',
     major: protocolVersion,
     status: 'release-candidate',
   };
@@ -69,6 +68,16 @@ async function validateReleaseMetadata(): Promise<void> {
     if (release[key as keyof typeof release] !== value) {
       throw new Error(`RELEASE.json has unexpected ${key}`);
     }
+  }
+  if (
+    typeof release.version !== 'string' ||
+    !new RegExp(`^${protocolVersion}\\.\\d+\\.\\d+-rc\\.(0|[1-9]\\d*)$`).test(
+      release.version,
+    )
+  ) {
+    throw new Error(
+      'RELEASE.json version must be a release-candidate SemVer for the wire major',
+    );
   }
   for (const path of [
     release.normativeEntryPoint,
@@ -126,6 +135,26 @@ function semanticValid(schema: string, value: unknown): boolean {
         root,
       );
     });
+  }
+  if (
+    schema === 'urn:socfp:v1:identity#/$defs/v1DiscoveryResult' ||
+    schema === 'urn:socfp:v1:identity#/$defs/healthResult'
+  ) {
+    const extensions = (
+      value as {
+        extensions?: string[];
+        acceptedExtensions?: string[] | null;
+      }
+    ).extensions ??
+      (value as { acceptedExtensions?: string[] | null }).acceptedExtensions;
+    return (
+      extensions === null ||
+      extensions === undefined ||
+      extensions.every(
+        (extension, index) =>
+          index === 0 || extension > extensions[index - 1],
+      )
+    );
   }
   if (schema === 'urn:socfp:v1:state-feed') {
     const page = value as {
@@ -271,6 +300,7 @@ async function validateManifest(ajv: Ajv2020Instance): Promise<void> {
     'GET /.well-known/socfp',
     'POST /s2s/v1/recognize',
     'POST /s2s/v1/healthy',
+    'POST /s2s/v1/discover',
     'POST /s2s/v1/feed-heads',
     'GET /s2s/v1/state-feed',
     'GET /s2s/v1/message-feed',

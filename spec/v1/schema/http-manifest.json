@@ -34,6 +34,16 @@
       "responseSchema": "urn:socfp:v1:identity#/$defs/healthResult"
     },
     {
+      "id": "discover",
+      "method": "POST",
+      "path": "/s2s/v1/discover",
+      "authentication": "lightweight-http-message-signature",
+      "successStatus": [200],
+      "requestMediaType": "application/json",
+      "requestSchema": "urn:socfp:v1:identity#/$defs/v1DiscoveryRequest",
+      "responseSchema": "urn:socfp:v1:identity#/$defs/v1DiscoveryResult"
+    },
+    {
       "id": "feedHeads",
       "method": "POST",
       "path": "/s2s/v1/feed-heads",

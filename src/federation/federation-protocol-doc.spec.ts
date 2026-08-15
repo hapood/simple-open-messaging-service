@@ -37,7 +37,7 @@ describe('Federation v1 protocol documentation', () => {
   });
 
   it('lists every message content type exactly once', () => {
-    expect(documentedUnion(readSpec('message.md'), 'ContentType')).toEqual(
+    expect(documentedUnion(readSpec('message.md'), 'CoreContentType')).toEqual(
       FEDERATED_MESSAGE_CONTENT_TYPES,
     );
   });
@@ -57,7 +57,11 @@ describe('Federation v1 protocol documentation', () => {
       };
     }>('state-feed.schema.json');
     const common = readSchema<{
-      $defs: { contentType: { enum: string[] } };
+      $defs: {
+        contentType: {
+          oneOf: Array<{ enum?: string[]; $ref?: string }>;
+        };
+      };
     }>('common.schema.json');
     const call = readSchema<{
       $defs: { signalKind: { enum: string[] } };
@@ -73,8 +77,11 @@ describe('Federation v1 protocol documentation', () => {
         .map((item) => item.properties.eventType.const)
         .sort(),
     ).toEqual([...peerStateEventType.enumValues].sort());
-    expect(common.$defs.contentType.enum).toEqual(
+    expect(common.$defs.contentType.oneOf[0].enum).toEqual(
       FEDERATED_MESSAGE_CONTENT_TYPES,
+    );
+    expect(common.$defs.contentType.oneOf[1].$ref).toBe(
+      '#/$defs/extensionId',
     );
     expect(call.$defs.signalKind.enum).toEqual(CALL_SIGNAL_KINDS);
     expect(
@@ -105,6 +112,7 @@ describe('Federation v1 protocol documentation', () => {
       'GET /.well-known/socfp',
       'POST /s2s/v1/recognize',
       'POST /s2s/v1/healthy',
+      'POST /s2s/v1/discover',
       'POST /s2s/v1/feed-heads',
       'GET /s2s/v1/state-feed',
       'GET /s2s/v1/message-feed',

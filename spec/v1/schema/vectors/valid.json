@@ -31,10 +31,38 @@
       "name": "healthy result",
       "schema": "urn:socfp:v1:identity#/$defs/healthResult",
       "values": [
-        { "status": "available" },
-        { "status": "degraded" },
-        { "status": "unavailable" }
+        {
+          "status": "available",
+          "selectedProtocolVersion": 1,
+          "acceptedExtensions": ["socfp.message.sticker.v1"]
+        },
+        {
+          "status": "degraded",
+          "selectedProtocolVersion": 1,
+          "acceptedExtensions": []
+        },
+        {
+          "status": "unavailable",
+          "selectedProtocolVersion": null,
+          "acceptedExtensions": null
+        }
       ]
+    },
+    {
+      "name": "v1 extension discovery result",
+      "schema": "urn:socfp:v1:identity#/$defs/v1DiscoveryResult",
+      "value": {
+        "extensions": [
+          "com.example.custom-emoji.v1",
+          "socfp.message.sticker.v1"
+        ],
+        "software": "example/1.0"
+      }
+    },
+    {
+      "name": "v1 extension discovery request",
+      "schema": "urn:socfp:v1:identity#/$defs/v1DiscoveryRequest",
+      "value": { "origin": "a.example" }
     },
     {
       "name": "feed head wake-up",
@@ -43,7 +71,10 @@
         "origin": "a.example",
         "stateFeedEndId": "12",
         "messageFeedEndId": "34",
-        "tombstoneFeedEndId": "9"
+        "tombstoneFeedEndId": "9",
+        "extensions": {
+          "socfp.push.priority.v1": { "priority": "high" }
+        }
       }
     },
     {
@@ -63,7 +94,10 @@
               "displayName": "Alice",
               "bio": "",
               "avatar": null,
-              "deleted": false
+              "deleted": false,
+              "extensions": {
+                "socfp.profile.pronouns.v1": { "value": "she/her" }
+              }
             }
           },
           {
@@ -192,11 +226,27 @@
             "content": "{\"text\":\"hello\"}",
             "createdAt": 1700000000000,
             "originCreatedAt": null,
-            "clientMessageId": "550e8400-e29b-41d4-a716-446655440000",
+            "assets": []
+          },
+          {
+            "thread": {
+              "type": "P2P",
+              "participants": [
+                { "account": "alice", "domain": "a.example" },
+                { "account": "bob", "domain": "b.example" }
+              ]
+            },
+            "author": { "account": "alice", "domain": "a.example" },
+            "seq": 2,
+            "originSeq": null,
+            "contentType": "socfp.message.sticker.v1",
+            "content": "{\"stickerId\":\"wave\"}",
+            "createdAt": 1700000000001,
+            "originCreatedAt": null,
             "assets": []
           }
         ],
-        "scannedThrough": "1",
+        "scannedThrough": "2",
         "hasMore": false
       }
     },
@@ -223,8 +273,7 @@
           "content": {
             "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
             "w": 1,
-            "h": 1,
-            "size": 1
+            "h": 1
           }
         },
         {
@@ -232,7 +281,6 @@
           "content": {
             "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
             "name": "v",
-            "size": 1,
             "mimeType": "video/webm",
             "w": 1,
             "h": 1,
@@ -244,7 +292,6 @@
           "content": {
             "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
             "name": "f",
-            "size": 1,
             "mimeType": "application/octet-stream"
           }
         },
@@ -253,7 +300,6 @@
           "content": {
             "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
             "name": "a",
-            "size": 1,
             "mimeType": "audio/opus",
             "duration": 1
           }
@@ -263,12 +309,14 @@
           "content": {
             "url": "https://example.com",
             "title": "",
-            "description": ""
+            "description": "",
+            "siteName": ""
           }
         },
         {
           "contentType": "CALL",
           "content": {
+            "callSid": "550e8400-e29b-41d4-a716-446655440000",
             "callType": "AUDIO",
             "status": "completed",
             "startedAt": 1700000000000,
@@ -288,11 +336,16 @@
               {
                 "kind": "IMAGE",
                 "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
-                "size": 1,
                 "w": 1,
                 "h": 1
               }
             ]
+          }
+        },
+        {
+          "contentType": "socfp.message.sticker.v1",
+          "content": {
+            "stickerId": "wave"
           }
         }
       ]

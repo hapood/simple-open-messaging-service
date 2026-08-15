@@ -1,6 +1,11 @@
 import { ContentType } from '../database/enums.js';
 import { extractDigests } from '../upload/file-content.js';
-import { isValidGroupAccount, isValidUserAccount } from '../common/account.js';
+import {
+  isValidGroupAccount,
+  isValidUserAccount,
+  isValidSocfpUserAccount,
+  parseSocfpUserAddress,
+} from '../common/account.js';
 import { parseFederatedCallContent } from '../calls/call-content.js';
 import {
   parseMessageEntities,
@@ -152,13 +157,15 @@ function projectTextContent(
   assertKeys(value, ['text'], strictQuote ? [] : ['quote']);
   if (typeof value['text'] !== 'string' || value['text'].length === 0)
     throw new Error('invalid text');
+  const publishingLocalContent = domainMapping?.from === 'local';
   for (const segment of parseMessageEntities(value['text'])) {
-    if (
-      segment.kind === 'entity' &&
-      segment.entityType === 'user' &&
-      !segment.entityId.includes('@')
-    ) {
-      throw new Error('federated user mention must use a full address');
+    if (segment.kind !== 'entity' || segment.entityType !== 'user') continue;
+    if (publishingLocalContent && segment.entityId.endsWith('@local')) {
+      const account = segment.entityId.slice(0, -'@local'.length);
+      if (isValidSocfpUserAccount(account)) continue;
+    }
+    if (!parseSocfpUserAddress(segment.entityId)) {
+      throw new Error('federated user mention must use a valid full address');
     }
   }
   const text = domainMapping

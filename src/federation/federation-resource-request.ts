@@ -2,11 +2,12 @@ import { HttpStatus } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
+import {
+  isValidSocfpDomain,
+  isValidSocfpUserAccount,
+} from '../common/account.js';
 
-const USER_ACCOUNT_RE = /^[a-z0-9][a-z0-9._-]{1,29}$/;
 const GROUP_ACCOUNT_RE = /^![a-z0-9]{2,30}$/;
-const DOMAIN_RE =
-  /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/;
 const SHA256_HEX_RE = /^[a-f0-9]{64}$/;
 const DECIMAL_RE = /^(?:0|[1-9][0-9]*)$/;
 
@@ -127,19 +128,19 @@ export function parseFederationResourceRequest(
 }
 
 export function requireUserAccount(value: string, name: string): string {
-  if (!USER_ACCOUNT_RE.test(value)) malformed(`${name} is not a UserAccount`);
+  if (!isValidSocfpUserAccount(value))
+    malformed(`${name} is not a UserAccount`);
   return value;
 }
 
 export function requireAccount(value: string, name: string): string {
-  if (!USER_ACCOUNT_RE.test(value) && !GROUP_ACCOUNT_RE.test(value))
+  if (!isValidSocfpUserAccount(value) && !GROUP_ACCOUNT_RE.test(value))
     malformed(`${name} is not an Account`);
   return value;
 }
 
 export function requireDomain(value: string, name: string): string {
-  if (value.length > 253 || !DOMAIN_RE.test(value))
-    malformed(`${name} is not a Domain`);
+  if (!isValidSocfpDomain(value)) malformed(`${name} is not a Domain`);
   return value;
 }
 

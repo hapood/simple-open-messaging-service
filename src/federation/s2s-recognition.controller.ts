@@ -71,9 +71,9 @@ export class S2sRecognitionController {
       throw error;
     }
     if (!this.isDomainBody(body, signer.domain))
-      return { status: 'unavailable' };
+      return this.unavailableHealth();
     if (!(await this.recognition.hasPinnedIdentity(signer.domain))) {
-      return { status: 'unavailable' } as const;
+      return this.unavailableHealth();
     }
     let publicKey: Uint8Array | null;
     try {
@@ -84,9 +84,9 @@ export class S2sRecognitionController {
         signer.keyId,
       );
     } catch {
-      return { status: 'unavailable' } as const;
+      return this.unavailableHealth();
     }
-    if (!publicKey) return { status: 'unavailable' } as const;
+    if (!publicKey) return this.unavailableHealth();
     try {
       await this.verify.verifyWithPublicKey(
         this.verify.signedRequest(req),
@@ -94,9 +94,23 @@ export class S2sRecognitionController {
         Buffer.from(publicKey).toString('base64'),
       );
     } catch {
-      return { status: 'unavailable' } as const;
+      return this.unavailableHealth();
     }
-    return { status: await this.recognition.queryHealth(signer.domain) };
+    const status = await this.recognition.queryHealth(signer.domain);
+    if (status === 'unavailable') return this.unavailableHealth();
+    return {
+      status,
+      selectedProtocolVersion: 1,
+      acceptedExtensions: [],
+    } as const;
+  }
+
+  private unavailableHealth() {
+    return {
+      status: 'unavailable',
+      selectedProtocolVersion: null,
+      acceptedExtensions: null,
+    } as const;
   }
 
   private assertDomainBody(value: unknown, signerDomain: string): void {

@@ -1,6 +1,6 @@
 # Simple Open Chat Federation Protocol v1 Message Feed and Query
 
-状态：`RELEASE CANDIDATE`（`v1.0-rc.2`）
+状态：`RELEASE CANDIDATE`（`v1.0.0-rc.0`）
 规范性：本文全部为规范性要求。
 
 本文定义消息索引型压缩 feed `GET /s2s/v1/message-feed` 和按 thread 读取消息正文的

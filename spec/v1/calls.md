@@ -1,6 +1,6 @@
 # Simple Open Chat Federation Protocol v1 通话信令（Call Signaling）
 
-状态：`RELEASE CANDIDATE`（`v1.0-rc.2`）
+状态：`RELEASE CANDIDATE`（`v1.0.0-rc.0`）
 
 本文定义协议服务器之间一对一通话的完整协议契约（protocol contract）。Federation v1 只定义签名的
 `POST /s2s/v1/call` 和其中的协议生命周期事件；媒体、SDP、ICE、STUN 和 TURN 遵循第 13 节列出的

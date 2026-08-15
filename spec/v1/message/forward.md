@@ -1,6 +1,6 @@
 # `FORWARD` Message and Bundle
 
-状态：`RELEASE CANDIDATE`（`v1.0-rc.2`）
+状态：`RELEASE CANDIDATE`（`v1.0.0-rc.0`）
 
 本文定义 timeline 中的 `FORWARD` 卡片和它引用的不可变 forward bundle。消息卡片只保存摘要和 bundle
 root ID；完整 bundle 通过资源 operation 获取。共用消息外层结构见 [Message Envelope](./envelope.md)，
@@ -39,7 +39,6 @@ interface ForwardCardContent {
   "originSeq": null,
   "originCreatedAt": null,
   "createdAt": 1770000200000,
-  "clientMessageId": null,
   "contentType": "FORWARD",
   "content": "{\"bundleId\":\"bundle-demo-01\"}",
   "assets": []
@@ -49,11 +48,6 @@ interface ForwardCardContent {
 ## 3. Bundle schema
 
 ```ts
-interface BlobDescriptor {
-  digest: Sha256Hex;
-  bytes: SafeInteger;
-}
-
 interface ForwardWireBundle {
   id: string;
   messages: ForwardBundleMessage[];
@@ -92,8 +86,11 @@ type ForwardBundleMessage = ForwardBundleMessageBase &
   );
 ```
 
+`ForwardWireBundle.assets` 使用 [Message Envelope](./envelope.md#1-wire-类型) 定义的共享
+`BlobDescriptor { digest, bytes }`。
+
 所有 object 都是 closed schema。inner `content` 使用对应 message content schema，但依赖消息外层结构
-thread、`clientMessageId` 或 `quoteTarget` 的约束在 bundle 中不适用。
+thread 或 `quoteTarget` 的约束在 bundle 中不适用。
 
 ## 4. Bundle 图与局部 ID
 
@@ -121,6 +118,10 @@ thread、`clientMessageId` 或 `quoteTarget` 的约束在 bundle 中不适用。
 
 inner INVITE 和 CALL 只是不可变历史展示，不授予当前 membership、群权限或实时 call 状态。inner
 inviter/caller 由 enclosing `ForwardBundleMessage.author` 表示；bundle 不表达 CALL callee。
+
+inner extension message 只能在目标 peer 的有效 v1 discover response 与 Health 都允许对应 capability 时发送。consumer 若仍遇到
+自己不支持的合法 extension type，必须放弃整个 bundle，不持久化部分 closure、不下载其 assets；承载该
+bundle 的外层 FORWARD card 可以保留为不可展开状态。未知 inner content 不得阻塞 message query cursor。
 
 ## 6. 最小完整 bundle 示例
 

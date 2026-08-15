@@ -1,7 +1,7 @@
 {
   "protocol": "Simple Open Chat Federation Protocol",
   "abbreviation": "SOCFP",
-  "version": "1.0.0-rc.2",
+  "version": "1.0.0-rc.0",
   "major": 1,
   "status": "release-candidate",
   "language": "zh-CN",

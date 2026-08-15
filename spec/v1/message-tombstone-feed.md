@@ -1,6 +1,6 @@
 # Simple Open Chat Federation Protocol v1 Message Tombstone Feed and Query
 
-状态：`RELEASE CANDIDATE`（`v1.0-rc.2`）
+状态：`RELEASE CANDIDATE`（`v1.0.0-rc.0`）
 规范性：本文全部为规范性要求。
 
 本文定义墓碑索引型压缩 feed `GET /s2s/v1/message-tombstone-feed` 和按 thread 读取权威
@@ -147,7 +147,8 @@ query cursor。
 
 ## 5. 与轻量推送的关系
 
-`feed-heads` 仍只携带 `stateFeedEndId`、`messageFeedEndId`、`tombstoneFeedEndId`。consumer 先排空
+`feed-heads` 的三个核心 drain target 仍是 `stateFeedEndId`、`messageFeedEndId`、
+`tombstoneFeedEndId`；可选 extension 不改变其含义。consumer 先排空
 state feed，再排空 tombstone 和 message 索引 feed，合并其 thread end seq，最后按 thread 调用两个 query。
 提示可丢失、重复或乱序；启动和周期 reconciliation 必须直接读取三个 feed。
 

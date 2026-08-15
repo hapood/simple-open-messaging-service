@@ -23,13 +23,12 @@ afterEach(() => {
 describe('development federation routes', () => {
   it('loads canonical HTTP origins in a non-production insecure environment', () => {
     process.env.NODE_ENV = 'development';
-    process.env.SOMS_DOMAIN = 'aaa.local';
+    process.env.SOMS_DOMAIN = 'aaa.test';
     process.env.SOMS_ALLOW_INSECURE_HTTP = '1';
-    process.env.SOMS_DEV_FEDERATION_ROUTES =
-      '{"bbb.local":"http://app-b:3000"}';
+    process.env.SOMS_DEV_FEDERATION_ROUTES = '{"bbb.test":"http://app-b:3000"}';
 
     expect(loadFederationConfig().devRoutes).toEqual({
-      'bbb.local': 'http://app-b:3000',
+      'bbb.test': 'http://app-b:3000',
     });
   });
 
@@ -53,10 +52,9 @@ describe('development federation routes', () => {
 
   it('requires the explicit insecure transport switch', () => {
     process.env.NODE_ENV = 'development';
-    process.env.SOMS_DOMAIN = 'aaa.local';
+    process.env.SOMS_DOMAIN = 'aaa.test';
     delete process.env.SOMS_ALLOW_INSECURE_HTTP;
-    process.env.SOMS_DEV_FEDERATION_ROUTES =
-      '{"bbb.local":"http://app-b:3000"}';
+    process.env.SOMS_DEV_FEDERATION_ROUTES = '{"bbb.test":"http://app-b:3000"}';
 
     expect(() => loadFederationConfig()).toThrow(
       'requires SOMS_ALLOW_INSECURE_HTTP=1',
@@ -65,16 +63,25 @@ describe('development federation routes', () => {
 
   it.each([
     '["http://app-b:3000"]',
-    '{"BBB.local":"http://app-b:3000"}',
-    '{"bbb.local":"https://app-b:3000"}',
-    '{"bbb.local":"http://user:pass@app-b:3000"}',
-    '{"bbb.local":"http://app-b:3000/path"}',
+    '{"BBB.test":"http://app-b:3000"}',
+    '{"bbb.test":"https://app-b:3000"}',
+    '{"bbb.test":"http://user:pass@app-b:3000"}',
+    '{"bbb.test":"http://app-b:3000/path"}',
   ])('rejects unsafe or malformed routes: %s', (routes) => {
     process.env.NODE_ENV = 'test';
-    process.env.SOMS_DOMAIN = 'aaa.local';
+    process.env.SOMS_DOMAIN = 'aaa.test';
     process.env.SOMS_ALLOW_INSECURE_HTTP = '1';
     process.env.SOMS_DEV_FEDERATION_ROUTES = routes;
 
     expect(() => loadFederationConfig()).toThrow();
+  });
+
+  it.each(['local', 'node.local'])('rejects RFC 6762 domain %s', (domain) => {
+    process.env.NODE_ENV = 'test';
+    process.env.SOMS_DOMAIN = domain;
+    delete process.env.SOMS_ALLOW_INSECURE_HTTP;
+    delete process.env.SOMS_DEV_FEDERATION_ROUTES;
+
+    expect(() => loadFederationConfig()).toThrow('RFC 6762 .local');
   });
 });

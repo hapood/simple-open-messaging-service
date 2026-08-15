@@ -1,6 +1,6 @@
 # `INVITE` Message
 
-状态：`RELEASE CANDIDATE`（`v1.0-rc.2`）
+状态：`RELEASE CANDIDATE`（`v1.0.0-rc.0`）
 
 本文定义 P2P timeline 中的群邀请展示卡片。它是发送时的 snapshot，不是 membership authority；群成员
 权威状态由 state-feed 收敛。共用消息外层结构见 [Message Envelope](./envelope.md)。
@@ -44,7 +44,6 @@ interface GroupInviteContent {
   "originSeq": null,
   "originCreatedAt": null,
   "createdAt": 1770000020000,
-  "clientMessageId": null,
   "contentType": "INVITE",
   "content": "{\"group\":\"!engineering\",\"groupName\":\"Engineering\",\"groupDomain\":\"groups.example\"}",
   "assets": []

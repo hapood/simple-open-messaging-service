@@ -49,6 +49,10 @@ import {
   toDisplayText,
 } from '../common/message-entity.js';
 import {
+  isValidSocfpUserAccount,
+  parseSocfpUserAddress,
+} from '../common/account.js';
+import {
   parseTextMessageContent,
   stringifyTextMessageContent,
 } from '../../shared/text-message-content.js';
@@ -323,6 +327,25 @@ export class MessageService {
             BusinessCode.VALIDATION_FAILED,
             'invalid text message content',
           );
+        }
+        if (textContent) {
+          for (const segment of parseMessageEntities(textContent.text)) {
+            if (segment.kind !== 'entity' || segment.entityType !== 'user')
+              continue;
+            const localAccount = segment.entityId.endsWith('@local')
+              ? segment.entityId.slice(0, -'@local'.length)
+              : null;
+            if (
+              (localAccount === null ||
+                !isValidSocfpUserAccount(localAccount)) &&
+              !parseSocfpUserAddress(segment.entityId)
+            ) {
+              throw new BusinessException(
+                BusinessCode.VALIDATION_FAILED,
+                'user mention must use a valid full address',
+              );
+            }
+          }
         }
         if (
           type === ContentType.SYSTEM &&

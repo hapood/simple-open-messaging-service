@@ -1,6 +1,6 @@
 # `PURE_TEXT` Message
 
-状态：`RELEASE CANDIDATE`（`v1.0-rc.2`）
+状态：`RELEASE CANDIDATE`（`v1.0.0-rc.0`）
 
 本文定义 `PURE_TEXT` 的解析后 content、引用回复和 inline entity。共用外层字段与接收规则见
 [Message Envelope](./envelope.md)。
@@ -91,7 +91,6 @@ author server 在首次持久化前验证 mention 是否适用于 thread；group
   "originSeq": null,
   "originCreatedAt": null,
   "createdAt": 1770000000000,
-  "clientMessageId": "018f0f4e-7b2a-7c3d-8e9f-0123456789ab",
   "contentType": "PURE_TEXT",
   "content": "{\"text\":\"你好 [@张三](socfp://user/zhangsan%40example.com)\"}",
   "assets": []
@@ -114,9 +113,7 @@ author server 在首次持久化前验证 mention 是否适用于 thread；group
   "originSeq": null,
   "originCreatedAt": null,
   "createdAt": 1770000005000,
-  "clientMessageId": null,
   "quoteTarget": {
-    "creator": { "account": "alice", "domain": "a.example" },
     "targetSeq": 42
   },
   "contentType": "PURE_TEXT",

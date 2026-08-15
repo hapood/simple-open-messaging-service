@@ -46,13 +46,13 @@ spec/
 - `FINAL`：当前 major 的 wire contract 已冻结；不兼容变化只能进入新的 URL major version。
 - `SUPERSEDED`：已被后续 major 取代，保留用于兼容实现和历史查阅。
 
-当前发布是 [Simple Open Chat Federation Protocol v1.0-rc.2](./v1/README.md)。任何声称兼容本协议的
+当前发布候选是 [Simple Open Chat Federation Protocol v1.0.0-rc.0](./v1/README.md)。任何声称兼容本协议的
 实现（包括 SOMS）都必须通过测试证明与它一致；实现代码、实现审计、Schema 和示例都不能单独改变
 协议正文的含义。
 
 本协议当前没有升级为 `FINAL` 的发布计划。维护者仍按可冻结协议的完整性、安全性、注册和互操作要求
 维护每个 release candidate；满足这些要求只表示 RC 达到相应质量基线，不自动改变其发布状态。
 
-`v1.0-rc.2` 使用协议自有的 discovery 标识 `/.well-known/socfp` 与 `_socfp._tcp`。早期 SOMS 实现使用的
+`v1.0.0-rc.0` 使用协议自有的 discovery 标识 `/.well-known/socfp` 与 `_socfp._tcp`。早期 SOMS 实现使用的
 `/.well-known/soms` 与 `_soms._tcp` 不属于本发布，兼容迁移必须由实现另行明确提供，不能改变本规范的
 合规接口面。

@@ -46,6 +46,31 @@
       }
     },
     {
+      "name": "available health requires one selected protocol version",
+      "schema": "urn:socfp:v1:identity#/$defs/healthResult",
+      "value": {
+        "status": "available",
+        "selectedProtocolVersion": null,
+        "acceptedExtensions": []
+      }
+    },
+    {
+      "name": "unavailable health does not disclose a selected protocol version",
+      "schema": "urn:socfp:v1:identity#/$defs/healthResult",
+      "value": {
+        "status": "unavailable",
+        "selectedProtocolVersion": 1,
+        "acceptedExtensions": null
+      }
+    },
+    {
+      "name": "recognize rejects RFC 6762 local domain",
+      "schema": "urn:socfp:v1:identity#/$defs/recognizeRequest",
+      "value": {
+        "domain": "node.local"
+      }
+    },
+    {
       "name": "profile snapshot cannot have a directional subject",
       "schema": "urn:socfp:v1:state-feed",
       "value": {
@@ -77,11 +102,23 @@
       "value": { "contentType": "STICKER", "content": {} }
     },
     {
+      "name": "extension identifier requires a namespace and version",
+      "schema": "urn:socfp:v1:common#/$defs/extensionId",
+      "value": "sticker"
+    },
+    {
+      "name": "extension payload value must be an object",
+      "schema": "urn:socfp:v1:common#/$defs/extensions",
+      "value": {
+        "socfp.profile.pronouns.v1": "she/her"
+      }
+    },
+    {
       "name": "media content rejects publisher display URL",
       "schema": "urn:socfp:v1:message-content",
       "value": {
         "contentType": "IMAGE",
-        "content": { "url": "/asset/0", "w": 1, "h": 1, "size": 1 }
+        "content": { "url": "/asset/0", "w": 1, "h": 1 }
       }
     },
     {
@@ -106,6 +143,7 @@
         "contentType": "CALL",
         "content": {
           "type": "CALL",
+          "callSid": "550e8400-e29b-41d4-a716-446655440000",
           "callType": "AUDIO",
           "status": "completed",
           "caller": { "account": "alice", "domain": "a.example" },
@@ -120,6 +158,7 @@
         "contentType": "CALL",
         "content": {
           "type": "CALL",
+          "callSid": "550e8400-e29b-41d4-a716-446655440000",
           "callType": "AUDIO",
           "status": "cancelled",
           "caller": { "account": "alice", "domain": "a.example" },

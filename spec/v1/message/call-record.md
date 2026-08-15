@@ -1,6 +1,6 @@
 # `CALL` Message Record
 
-状态：`RELEASE CANDIDATE`（`v1.0-rc.2`）
+状态：`RELEASE CANDIDATE`（`v1.0.0-rc.0`）
 
 本文定义 P2P timeline 中持久化的通话终态记录。它不是实时 signaling payload：ringing、SDP、ICE 和
 transient lifecycle 只通过 `/s2s/v1/call` 传输。共用消息外层结构见
@@ -20,12 +20,14 @@ type CallOutcome =
   | 'unreachable';
 
 interface UnconnectedCallRecordContent {
+  callSid: CanonicalUuid;
   callType: CallMediaType;
   status: CallOutcome;
   endedAt: EpochMilliseconds;
 }
 
 interface ConnectedCallRecordContent {
+  callSid: CanonicalUuid;
   callType: CallMediaType;
   status: 'completed' | 'failed';
   startedAt: EpochMilliseconds;
@@ -66,8 +68,8 @@ durationMs = endedAt - startedAt
 
 - thread 必须是 P2P，且恰好包含 caller 和 callee 两个不同 Address。
 - 消息外层结构的 `author` 是 caller；callee 是另一个 participant。
-- content 不得重复传输 caller、callee 或数据库 user ID。
-- `clientMessageId` 必须是非 null `CanonicalUuid` call SID。
+- content 不得重复传输 caller、callee 或任何本地 user ID。
+- content `callSid` 必须是与实时 call operation 相同的 `CanonicalUuid`。
 - `assets` 必须为空。
 
 实时 call operation 到终态记录的映射如下：
@@ -93,9 +95,8 @@ durationMs = endedAt - startedAt
   "originSeq": null,
   "originCreatedAt": null,
   "createdAt": 1770000061000,
-  "clientMessageId": "018f0f4e-7b2a-7c3d-8e9f-0123456789ab",
   "contentType": "CALL",
-  "content": "{\"callType\":\"VIDEO\",\"status\":\"completed\",\"startedAt\":1770000000000,\"endedAt\":1770000060000}",
+  "content": "{\"callSid\":\"018f0f4e-7b2a-7c3d-8e9f-0123456789ab\",\"callType\":\"VIDEO\",\"status\":\"completed\",\"startedAt\":1770000000000,\"endedAt\":1770000060000}",
   "assets": []
 }
 ```
@@ -116,9 +117,8 @@ durationMs = endedAt - startedAt
   "originSeq": null,
   "originCreatedAt": null,
   "createdAt": 1770000100000,
-  "clientMessageId": "018f0f4e-7b2a-7c3d-8e9f-1123456789ab",
   "contentType": "CALL",
-  "content": "{\"callType\":\"AUDIO\",\"status\":\"declined\",\"endedAt\":1770000099000}",
+  "content": "{\"callSid\":\"018f0f4e-7b2a-7c3d-8e9f-1123456789ab\",\"callType\":\"AUDIO\",\"status\":\"declined\",\"endedAt\":1770000099000}",
   "assets": []
 }
 ```
@@ -128,15 +128,9 @@ durationMs = endedAt - startedAt
 consumer MUST 拒绝至少以下情况：
 
 - CALL 位于 GROUP thread；
-- `clientMessageId` 为 null 或不是 `CanonicalUuid`；
-- `callType/status/endedAt` 缺失或不合法；
+- `callSid/callType/status/endedAt` 缺失或不合法；
 - `endedAt < startedAt`；
 - content 携带派生字段 `durationMs`；
 - `cancelled/declined/missed/unreachable` 携带 connected 字段；
-- content 携带 caller、callee、数据库 ID 或未知字段；
+- content 携带 caller、callee、本地 ID 或未知字段；
 - 消息外层结构的 `assets` 非空。
-
-## 7. 非规范性实现说明
-
-实现可以在 S2S 边界把 caller/callee Address 投影为接收节点自己的内部 user ID 后再保存本地 CALL
-气泡，以兼容现有客户端。这些本地字段不属于 federation wire。

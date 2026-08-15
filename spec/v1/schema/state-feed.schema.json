@@ -44,7 +44,8 @@
         "avatar": {
           "oneOf": [{ "$ref": "#/$defs/profileAvatar" }, { "type": "null" }]
         },
-        "deleted": { "type": "boolean" }
+        "deleted": { "type": "boolean" },
+        "extensions": { "$ref": "urn:socfp:v1:common#/$defs/extensions" }
       },
       "additionalProperties": false
     },
@@ -55,7 +56,8 @@
         "displayName": { "type": "string", "minLength": 1 },
         "avatar": {
           "oneOf": [{ "$ref": "#/$defs/profileAvatar" }, { "type": "null" }]
-        }
+        },
+        "extensions": { "$ref": "urn:socfp:v1:common#/$defs/extensions" }
       },
       "additionalProperties": false
     },

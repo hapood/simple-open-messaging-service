@@ -4,22 +4,38 @@
   "title": "Simple Open Chat Federation Protocol v1 common wire scalars",
   "$defs": {
     "contentType": {
-      "enum": [
-        "PURE_TEXT",
-        "INVITE",
-        "IMAGE",
-        "VIDEO",
-        "FILE",
-        "AUDIO",
-        "LINK",
-        "CALL",
-        "FORWARD",
-        "GALLERY"
+      "oneOf": [
+        {
+          "enum": [
+            "PURE_TEXT",
+            "INVITE",
+            "IMAGE",
+            "VIDEO",
+            "FILE",
+            "AUDIO",
+            "LINK",
+            "CALL",
+            "FORWARD",
+            "GALLERY"
+          ]
+        },
+        { "$ref": "#/$defs/extensionId" }
       ]
+    },
+    "extensionId": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^(?:socfp|[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+)\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*\\.v[1-9][0-9]*$"
+    },
+    "extensions": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": { "$ref": "#/$defs/extensionId" },
+      "additionalProperties": { "type": "object" }
     },
     "userAccount": {
       "type": "string",
-      "pattern": "^[a-z0-9][a-z0-9._-]{1,29}$"
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,29}$"
     },
     "groupAccount": {
       "type": "string",
@@ -27,13 +43,13 @@
     },
     "account": {
       "type": "string",
-      "pattern": "^(?:[a-z0-9][a-z0-9._-]{1,29}|![a-z0-9]{2,30})$"
+      "pattern": "^(?:[a-z0-9][a-z0-9._-]{0,29}|![a-z0-9]{2,30})$"
     },
     "domain": {
       "type": "string",
       "minLength": 1,
       "maxLength": 253,
-      "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$"
+      "pattern": "^(?!local$)(?!.*\\.local$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$"
     },
     "decimalString": {
       "type": "string",

@@ -1,6 +1,6 @@
 # Simple Open Chat Federation Protocol v1
 
-- 状态：`RELEASE CANDIDATE`（`v1.0-rc.2`）
+- 状态：`RELEASE CANDIDATE`（`v1.0.0-rc.0`）
 - 协议标识：`1`
 - S2S API 前缀：`/s2s/v1`
 - 跨版本发现路径：`/.well-known/socfp`
@@ -67,6 +67,12 @@ Federation v1 的数据平面采用固定权威拓扑：P2P authored message/wit
 
 ## 2. 版本与兼容性（Versioning and Compatibility）
 
+SOCFP 区分 wire protocol major 与规范发布包版本。wire 只协商正整数 major，例如 `1`；URL 使用
+`/s2s/v1`，发现文档使用 `protocolVersions: [1]`。规范文本、Schema、向量和 conformance 工具组成的
+发布包使用 Semantic Versioning，例如 `1.0.0-rc.0` 或 `1.0.0`；该版本不得出现在 S2S body、URL 或
+版本选择算法中，也不得作为 capability negotiation。v1 的 patch release 只能包含不改变对端可观察
+wire 行为的勘误和制品修正；任何 wire 行为变化都必须进入新的整数 major。
+
 Federation v1 的所有 S2S 数据面端点都位于 `/s2s/v1/*`。公开发现端点固定为
 `/.well-known/socfp`，因为调用方在读取发现文档前不能依赖 API 前缀。
 
@@ -101,14 +107,47 @@ well-known；刷新频率和连接生命周期由实现决定，但请求行为�
 请求到达语法可识别但本节点未启用的 `/s2s/v<major>` 时，节点必须（MUST）拒绝，并应该（SHOULD）返回
 HTTP `409` 和 `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED`；不得（MUST NOT）把它路由到其他主版本的 handler。
 
-v1 不使用 capability negotiation，也没有可选接口（endpoint）分支。增加可选响应字段必须（MUST）先满足对应
-object 的兼容规则；删除或重命名字段、改变字段含义、改变接口、鉴权、状态码、幂等或 cursor
+v1 核心接口没有可选 endpoint 分支；第 2.1 节的 extension capability 只协商非核心扩展。增加核心响应
+字段必须（MUST）先满足对应 object 的兼容规则；删除或重命名字段、改变字段含义、改变接口、鉴权、状态码、幂等或 cursor
 语义均属于不兼容变化，必须（MUST）使用新的 `/s2s/v2` 主版本。错误修订、非规范性说明和不改变
 外部可观察协议行为的实现优化可以（MAY）在 v1 内发布。
 
+### 2.1 Extension capability
+
+`POST /s2s/v1/discover` 返回本服务器当前能够接收的 v1 `extensions` 数组和可选诊断 `software`。该接口
+由路径绑定 v1，不重复返回 `protocolVersions`、root identity 或 signing keys；这些跨版本 bootstrap 信息
+仍只属于 `/.well-known/socfp`。每个 extension 值是一个完整、不可变的 capability ID；
+`socfp.*` 保留给本协议维护者，第三方 ID 使用其控制域名的反向域名前缀。ID 必须是小写 ASCII、最长
+128 bytes，并以正整数 `.vN` 结尾；数组最多 64 项、不得重复，并按 ASCII lexicographic 顺序发送。
+不兼容的 extension 变更必须使用新的 ID，不得改变已发布 ID 的含义。
+
+capability 是单向接收声明。节点 B 在有效 v1 discover response 中声明 extension `E`，只表示 B 能接收并处理
+发给 B 的 `E`；不表示 B 已经为 A 启用该能力，也不表示 B 会发送 `E`。A 只有在最近一次成功验证的 B v1
+discover response 与最近有效 Health 的 `acceptedExtensions` 中都存在 `E` 时，才可以（MAY）在发给 B 的
+message、state/profile 或 feed-head hint 中发送 `E` 定义的数据。B 是否可以向 A 反向发送 `E`，只由 A
+对 B 返回的 discover response 与 Health 决定。发送方不得（MUST NOT）根据自身 capability、对端软件名、
+旧缓存以外的猜测或另一方向的流量推断接收支持。
+
+payload extension 使用可选 closed `extensions` 容器；容器的 key 是 capability ID，value 是 JSON object。
+每个容器最多 64 项。发送方不得（MUST NOT）放入接收方未声明的 ID。已知 extension value 必须按该
+extension 自己的 closed schema 校验。接收方必须（MUST）有界忽略未知 entry，不得因它改变 v1 identity、
+authorization、membership、cursor、核心状态机或已知字段含义。实现必须在 JSON 解析前执行本地 body
+byte 上限，并对解析深度、对象成员数和数组长度执行有限上限；这些本地上限不得成为远端可协商参数。
+
+extension 不得新增 v1 合规所必需的行为，也不得放宽 v1 的签名、认可、授权或验证要求。某能力成为所有
+节点正确互操作所必需时，必须进入新的整数 wire major。
+
+`POST /s2s/v1/discover` 同时是能力查询和可丢失、可重复的轻量失效提示。request body 只携带 signer
+`origin`；response 立即返回接收方自己的当前 capability view。发送方必须先更新自己的 discover response
+再调用对端。成功响应只表示对端接受了刷新提示并返回自身能力，不表示已经反向获取发送方的新能力、启用
+扩展或完成重新协商。接收方自主决定异步刷新时间；在刷新成功前继续使用上次已验证结果。新增 extension
+只有刷新且后续 Health 接受后才能发送；删除 extension 被刷新观察到后必须立即停止新的发送。节点还应该
+使用有上限、带抖动的周期 discover 保证提示丢失后最终收敛。
+
 ## 3. Federation v1 HTTP 接口面（HTTP Surface）
 
-下表是完整 v1 surface；同步面包含三个 GET feed、两个 GET thread query 和一个 POST feed-head hint。
+下表是完整 v1 surface；同步面包含三个 GET feed、两个 GET thread query、一个 POST feed-head hint 和一个
+POST capability discover/exchange。
 `鉴权上下文` 决定签名验证时如何获取 key 以及哪些 peer 状态可以（MAY）调用 operation；它不改变
 第 6 节的签名 wire format。
 
@@ -117,6 +156,7 @@ object 的兼容规则；删除或重命名字段、改变字段含义、改变�
 | `GET`  | `/.well-known/socfp`                | 公开 TLS           | 无 query、无 body         | `200`       | 裸 discovery object    |
 | `POST` | `/s2s/v1/recognize`                 | bootstrap signed   | JSON signer domain        | `200`       | 裸 recognize OK        |
 | `POST` | `/s2s/v1/healthy`                   | status signed      | JSON signer domain        | `200`       | 裸 privacy-safe status |
+| `POST` | `/s2s/v1/discover`                  | lightweight signed | JSON signer origin        | `200`       | 裸 v1 capability view  |
 | `POST` | `/s2s/v1/feed-heads`                | lightweight signed | JSON feed-head hint       | `200`       | success ack envelope   |
 | `GET`  | `/s2s/v1/state-feed`                | recognized signed  | feed query                | `200`       | success data envelope  |
 | `GET`  | `/s2s/v1/message-feed`              | recognized signed  | feed query                | `200`       | success data envelope  |
@@ -136,7 +176,7 @@ object 的兼容规则；删除或重命名字段、改变字段含义、改变�
 - **status signed**：只用于 `healthy`。接收方只使用已有的 pinned/recognition identity 尝试验签；已认可但
   尚未收敛的 peer 可以（MAY）得到 `degraded`，未知、未被本方认可或无权请求者统一得到 privacy-safe
   `unavailable`，不得（MUST NOT）借查询触发首次认可。
-- **lightweight signed**：只用于 `feed-heads`。接收方在返回该 signer 的 Recognize `OK` 前必须（MUST）
+- **lightweight signed**：用于 `feed-heads` 和 `discover`。接收方在返回该 signer 的 Recognize `OK` 前必须（MUST）
   原子开放该方向门禁；signer 只有收到 `OK` 后才可以（MAY）发送。它不要求完整 `available`，但不能授权其他数据面。
 - **recognized signed**：signer 必须（MUST）已有 pinned root、完整双向认可事实和当前有效的 signing key
   certificate，并通过 operation 自身的业务授权。接收方不得（MUST NOT）仅因本地缓存的可用性视图为
@@ -152,7 +192,7 @@ object 的兼容规则；删除或重命名字段、改变字段含义、改变�
 [资源接口](./resources.md)完整定义；HTTP surface 表及本节概要不得覆盖其字段级要求。
 
 未列入本节完整 surface 的路径不属于 Federation v1。
-`recognize`、`healthy` 的字段、双向状态、pin、重试、隐私与完整 HTTP 示例由
+`recognize`、`healthy` 和 `discover` 的字段、双向状态、pin、重试与隐私由
 [Federation v1 服务器认可](./recognition.md) 定义。
 
 本地 peer lifecycle 是 `unrecognized`、`establishing`、`available`、`degraded` 或 `halted`。它与 Healthy 返回的
@@ -169,7 +209,8 @@ object 的兼容规则；删除或重命名字段、改变字段含义、改变�
 （MUST）由 pinned identity、方向确认事实、版本、策略和业务授权共同计算；完整状态和转换以
 recognition.md 为准。
 
-Recognize 接收方必须（MUST）在返回 `OK` 前原子开放该方向的 `feed-heads` 接收门禁。发送反向
+Recognize 接收方必须（MUST）在返回 `OK` 前原子开放该方向的 `feed-heads` 和 `discover`
+接收门禁。发送反向
 Recognize 的 server 必须（MUST）在发出 HTTP request 前完成本地服务准备，使对方随后发起的 Healthy
 查询至少返回 `degraded`，而不是 `unavailable`。具体提交边界和竞态时序以 recognition.md 为准。
 
@@ -205,7 +246,7 @@ operation 引用下表类型时，必须（MUST）遵守其格式、范围和规
 | 名称                     | v1 传输 grammar 与语义                                                                                                               |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
 | `Domain`                 | ASCII 小写 DNS name，总长 1–253，label 长 1–63，只允许 `a-z`、`0-9`、`-`，label 首尾不得（MUST NOT）为 `-`，on the wire 不带末尾根点 |
-| `UserAccount`            | 规范化的小写 ASCII 用户账号；匹配 `^[a-z0-9][a-z0-9._-]{1,29}$`，总长 2–30 characters                                                |
+| `UserAccount`            | 规范化的小写 ASCII 用户账号；匹配 `^[a-z0-9][a-z0-9._-]{0,29}$`，总长 1–30 characters                                                |
 | `GroupAccount`           | `!` 加规范化的小写 ASCII 群组账号；匹配 `^![a-z0-9]{2,30}$`，总长 3–31 characters                                                    |
 | `Account`                | `UserAccount` 或 `GroupAccount`；大小写敏感且只接受上述小写形式；operation 必须（MUST）拒绝不符合其资源类型的 account                |
 | `Address`                | closed JSON object `{ "account": Account, "domain": Domain }`                                                                        |
@@ -222,6 +263,9 @@ operation 引用下表类型时，必须（MUST）遵守其格式、范围和规
 | `CanonicalUuid`          | 小写 RFC 4122 文本形式，版本 nibble 为 `1..8`，variant nibble 为 `8`、`9`、`a` 或 `b`                                                |
 
 v1 on the wire 只接受上表的规范化 `Domain` 和 `Account`。发送方必须（MUST）以小写 ASCII 发送两者；
+RFC 6762 special-use `.local` namespace 不是全球稳定的服务器身份，因此 `local` 以及任何以 `.local` 结尾的
+`Domain` 不得（MUST NOT）出现在 SOCFP wire 上。实现可以在本地存储中使用 `local` 作为内部标记，但必须在
+联邦边界将其转换为该服务器真实的 `Domain`，且不得向 peer 暴露该标记。
 `Account` 必须（MUST）来自已经规范化的 Federation account ID，不得（MUST NOT）把 display name 或未经
 身份映射的原始用户输入直接写入 S2S 请求。用户输入中的大小写、空白、Unicode domain 或末尾根点必须（MUST）
 在进入 S2S 边界前由发送方完成确定性规范化或拒绝。接收方必须（MUST）拒绝含大写字母、空白、Unicode
@@ -424,8 +468,9 @@ member 投影；P2P 关系终止后，message 和 tombstone feed 也可分别删
 thread 可以只有 message 投影。重建已删除的投影时必须分配新的、更大 feed ID。正文清理只
 影响 message query；tombstone 事实永久保留，即使其当前发现索引投影已因失权被移除。
 
-`feed-heads` 只携带 `origin`、`stateFeedEndId`、`messageFeedEndId` 和 `tombstoneFeedEndId`。三者是
-三个独立压缩 feed 的 inclusive 扫描上界，只用于唤醒和有界排空，不是 ACK、业务 revision 或 query seq。
+`feed-heads` 的核心字段是 `origin`、`stateFeedEndId`、`messageFeedEndId` 和 `tombstoneFeedEndId`，并可
+携带第 2.1 节定义的可选 `extensions` 容器。三个 end 是独立压缩 feed 的 inclusive 扫描上界，只用于
+唤醒和有界排空，不是 ACK、业务 revision 或 query seq；extension 不得改变这些核心字段的处理。
 publisher 必须先提交 state 及其 feed 索引，再使依赖它的 data-feed item 可见。hint 可丢失、重复或乱序，
 不得成为唯一恢复载体。
 

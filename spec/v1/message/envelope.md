@@ -1,6 +1,6 @@
 # Message Envelope
 
-状态：`RELEASE CANDIDATE`（`v1.0-rc.2`）
+状态：`RELEASE CANDIDATE`（`v1.0.0-rc.0`）
 
 本文定义 federation message query 中每个 message 共用的外层 wire 结构、来源坐标、幂等规则和
 processing receipt。具体 `contentType` 的解析后结构见 [Message 总览](../message.md#4-contenttype)
@@ -41,15 +41,15 @@ interface FederatedMessage extends EncodedMessageContent {
   originSeq: PositiveSafeInteger | null;
   originCreatedAt: EpochMilliseconds | null;
   createdAt: EpochMilliseconds;
-  clientMessageId: CanonicalUuid | null;
   quoteTarget?: QuoteTarget;
   assets: BlobDescriptor[];
 }
 ```
 
 `JsonObjectString` 表示 UTF-8 JSON object 的字符串编码，不是任意文本。consumer MUST 先校验外层
-`FederatedMessage`，再根据 `contentType` 对 `content` 执行一次 JSON 解析，并严格校验对应 closed
-schema。解析结果不是 object、包含未知字段或不符合对应类型时，consumer MUST 拒绝该 item。
+`FederatedMessage`，再根据 `contentType` 处理 `content`。已知类型必须执行一次 JSON 解析并严格校验对应
+closed schema；解析结果不是 object、包含该类型未知字段或不符合对应类型时必须拒绝。合法但未知的
+extension type 使用 [Message 第 4 节](../message.md#4-contenttype)的有界跳过规则。
 
 ## 2. Thread 与 author
 
@@ -72,7 +72,7 @@ message wire 没有客户端权威的 `date` 字段：
 - `originSeq/originCreatedAt` 必须同时为 null 或同时非 null。它们是单跳来源坐标，不得跨 publisher
   原样复制。
 
-content 内的业务时间，例如 CALL 的 `startedAt/endedAt`，不能替代外层数据库时间。
+content 内的业务时间，例如 CALL 的 `startedAt/endedAt`，不能替代外层 `createdAt`。
 
 ## 4. Identity 与不可变性
 
@@ -83,7 +83,7 @@ incoming message 的直接来源 identity 是：
 ```
 
 consumer 必须持久保存该坐标与本地副本的映射。同一来源坐标的普通消息重放必须幂等合并；不得按时间、
-preview、`clientMessageId` 或本地数据库 ID 去重。
+preview 或本地记录 ID 去重。
 
 同一来源坐标下，以下字段全部不可变：
 
@@ -92,7 +92,6 @@ preview、`clientMessageId` 或本地数据库 ID 去重。
 - `seq`
 - `originSeq/originCreatedAt`
 - `createdAt`
-- `clientMessageId`
 - `contentType`
 - 解析后的 `content`
 - `quoteTarget`
@@ -108,10 +107,7 @@ preview、`clientMessageId` 或本地数据库 ID 去重。
 | 字段 | 必须出现 | 必须省略 |
 | ---- | -------- | -------- |
 | `quoteTarget` | `PURE_TEXT` message 是引用回复 | message 不是引用回复，或类型不是 `PURE_TEXT` |
-| CALL `clientMessageId` | 始终；值必须是非 null `CanonicalUuid` call SID | 不适用 |
-
-其他类型专属条件字段由对应 content 文档定义。`clientMessageId` 对一般消息是作者提供的幂等 key 或
-`null`，不得作为跨作者全局 identity。
+其他类型专属条件字段由对应 content 文档定义。
 
 ## 6. Asset 清单
 
@@ -126,7 +122,8 @@ preview、`clientMessageId` 或本地数据库 ID 去重。
 
 - 每个 digest 最多出现一次。
 - content 引用 digest 的去重集合必须与 `assets` 完全相等。
-- content 中的 `size` 必须与对应 descriptor 的 `bytes` 相同。
+- `BlobDescriptor.bytes` 是资源的唯一声明长度。consumer 可以在下载前用它执行本地大小和 quota
+  检查；完整下载后仍必须同时验证实际字节数和 digest。
 - 资源当前是否存在只由资源 operation 的响应表达；消息 descriptor 不携带可用状态。
 
 ## 7. 引用坐标

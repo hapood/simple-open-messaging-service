@@ -14,7 +14,7 @@
     },
     "image": {
       "type": "object",
-      "required": ["digest", "w", "h", "size"],
+      "required": ["digest", "w", "h"],
       "properties": {
         "digest": { "$ref": "urn:socfp:v1:common#/$defs/sha256Hex" },
         "w": {
@@ -22,35 +22,26 @@
         },
         "h": {
           "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
-        },
-        "size": {
-          "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
         }
       },
       "additionalProperties": false
     },
     "file": {
       "type": "object",
-      "required": ["digest", "name", "size", "mimeType"],
+      "required": ["digest", "name", "mimeType"],
       "properties": {
         "digest": { "$ref": "urn:socfp:v1:common#/$defs/sha256Hex" },
         "name": { "type": "string", "minLength": 1 },
-        "size": {
-          "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
-        },
         "mimeType": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": false
     },
     "video": {
       "type": "object",
-      "required": ["digest", "name", "size", "mimeType", "w", "h", "duration"],
+      "required": ["digest", "name", "mimeType", "w", "h", "duration"],
       "properties": {
         "digest": { "$ref": "urn:socfp:v1:common#/$defs/sha256Hex" },
         "name": { "type": "string", "minLength": 1 },
-        "size": {
-          "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
-        },
         "mimeType": { "type": "string", "minLength": 1 },
         "w": {
           "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
@@ -64,13 +55,10 @@
     },
     "audio": {
       "type": "object",
-      "required": ["digest", "name", "size", "mimeType", "duration"],
+      "required": ["digest", "name", "mimeType", "duration"],
       "properties": {
         "digest": { "$ref": "urn:socfp:v1:common#/$defs/sha256Hex" },
         "name": { "type": "string", "minLength": 1 },
-        "size": {
-          "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
-        },
         "mimeType": { "type": "string", "minLength": 1 },
         "duration": { "$ref": "#/$defs/positiveNumber" }
       },
@@ -80,14 +68,11 @@
       "oneOf": [
         {
           "type": "object",
-          "required": ["kind", "digest", "size", "w", "h"],
+          "required": ["kind", "digest", "w", "h"],
           "properties": {
             "kind": { "const": "IMAGE" },
             "digest": {
               "$ref": "urn:socfp:v1:common#/$defs/sha256Hex"
-            },
-            "size": {
-              "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
             },
             "w": {
               "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
@@ -103,7 +88,6 @@
           "required": [
             "kind",
             "digest",
-            "size",
             "name",
             "mimeType",
             "w",
@@ -115,11 +99,8 @@
             "digest": {
               "$ref": "urn:socfp:v1:common#/$defs/sha256Hex"
             },
-            "size": {
-              "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
-            },
-            "name": { "type": "string" },
-            "mimeType": { "type": "string" },
+            "name": { "type": "string", "minLength": 1 },
+            "mimeType": { "type": "string", "minLength": 1 },
             "w": {
               "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
             },
@@ -135,7 +116,6 @@
           "required": [
             "kind",
             "digest",
-            "size",
             "name",
             "mimeType",
             "duration"
@@ -145,28 +125,22 @@
             "digest": {
               "$ref": "urn:socfp:v1:common#/$defs/sha256Hex"
             },
-            "size": {
-              "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
-            },
-            "name": { "type": "string" },
-            "mimeType": { "type": "string" },
+            "name": { "type": "string", "minLength": 1 },
+            "mimeType": { "type": "string", "minLength": 1 },
             "duration": { "$ref": "#/$defs/positiveNumber" }
           },
           "additionalProperties": false
         },
         {
           "type": "object",
-          "required": ["kind", "digest", "size", "name", "mimeType"],
+          "required": ["kind", "digest", "name", "mimeType"],
           "properties": {
             "kind": { "const": "FILE" },
             "digest": {
               "$ref": "urn:socfp:v1:common#/$defs/sha256Hex"
             },
-            "size": {
-              "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
-            },
-            "name": { "type": "string" },
-            "mimeType": { "type": "string" }
+            "name": { "type": "string", "minLength": 1 },
+            "mimeType": { "type": "string", "minLength": 1 }
           },
           "additionalProperties": false
         }
@@ -186,7 +160,7 @@
     },
     "link": {
       "type": "object",
-      "required": ["url", "title", "description"],
+      "required": ["url", "title", "description", "siteName"],
       "properties": {
         "url": { "type": "string", "pattern": "^https?://" },
         "title": { "type": "string" },
@@ -217,8 +191,11 @@
     },
     "call": {
       "type": "object",
-      "required": ["callType", "status", "endedAt"],
+      "required": ["callSid", "callType", "status", "endedAt"],
       "properties": {
+        "callSid": {
+          "$ref": "urn:socfp:v1:common#/$defs/canonicalUuid"
+        },
         "callType": { "enum": ["AUDIO", "VIDEO"] },
         "status": {
           "enum": [

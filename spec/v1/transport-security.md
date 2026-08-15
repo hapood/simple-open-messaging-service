@@ -1,6 +1,6 @@
 # Simple Open Chat Federation Protocol v1 传输与安全（Transport and Security）
 
-状态：`RELEASE CANDIDATE`（`v1.0-rc.2`）
+状态：`RELEASE CANDIDATE`（`v1.0.0-rc.0`）
 
 本文定义 Federation v1 的发现文档、root identity、签名密钥证书、网络发现、TLS、HTTP request target、
 Content-Digest 和 HTTP Message Signature profile。它是 [Simple Open Chat Federation Protocol v1](./protocol.md)

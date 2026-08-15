@@ -1,6 +1,6 @@
 # Simple Open Chat Federation Protocol v1 服务器认可（Peer Recognition）
 
-状态：`RELEASE CANDIDATE`（`v1.0-rc.2`）
+状态：`RELEASE CANDIDATE`（`v1.0.0-rc.0`）
 
 Operations：
 
@@ -55,6 +55,16 @@ Recognize 不交换 feed cursor，不初始化业务 mirror，也不证明用户
 | 幂等坐标     | `(signerDomain, recipientDomain)` | 无副作用查询                                   |
 | 状态作用     | 提交一个方向的认可                | handler 无副作用；响应可供调用方更新远端可用性 |
 
+v1 capability 查询和刷新提示合并为一个附加控制面 operation：
+
+| 项目 | Discover |
+| --- | --- |
+| Method / path | `POST /s2s/v1/discover` |
+| Request | 裸 `{ origin: Domain }` |
+| Request auth | lightweight signed |
+| Success | HTTP `200`，裸 `V1DiscoveryResult` |
+| 状态作用 | 返回本方能力，并合并一个异步反向 capability refresh hint |
+
 ```ts
 interface DomainRequest {
   domain: Domain;
@@ -66,10 +76,14 @@ interface RecognizeOk {
 
 interface HealthResult {
   status: 'available' | 'degraded' | 'unavailable';
+  selectedProtocolVersion: PositiveSafeInteger | null;
+  acceptedExtensions: ExtensionId[] | null;
 }
 ```
 
-三个 object 都是 closed object：列出的字段全部必选，`null`、重复字段和未知字段均不允许。
+本节列出的 core object 以及 Discover request/result 都是 closed object：除明确标为可选的
+`V1DiscoveryResult.software` 外，列出的字段全部必选，重复字段和未知字段均不允许。Health 只有
+`unavailable` 分支使用 `null`，规则见第 9 节。
 
 ## 3. 双向状态模型（Bidirectional State Model）
 
@@ -106,7 +120,7 @@ Healthy 的 `available | degraded | unavailable` 是上述本地状态和查询�
 （MUST NOT）仅按 `available`/`degraded` 标签授权：完整双向认可事实、pinned
 identity、共同版本、policy 和 operation 业务授权均有效时，纯传输 `degraded` peer 仍可以（MAY）发送和接收
 普通数据面。`establishing` peer 只能使用 `recognize`、`healthy` 和按方向开放的
-`feed-heads`。
+`feed-heads`、`discover`。
 
 本地 `available` 按下式计算：
 
@@ -168,7 +182,7 @@ operation gate 与 lifecycle 分开计算：
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------- |
 | `recognize`              | bootstrap signed 和对应 admission；不要求已有 lifecycle                                                             |
 | `healthy`                | status signed；失败统一投影为 `unavailable`                                                                         |
-| `feed-heads`             | 该 signer 方向的 `lightweightInboundReady`                                                                          |
+| `feed-heads` / `discover` | 该 signer 方向的 `lightweightInboundReady`                                                                          |
 | 普通 recognized data     | pinned identity、双方 direction confirmation、共同版本、policy 和 operation 业务授权；纯传输 `degraded` 不关闭 gate |
 | 已有活动 call 的终止收敛 | calls.md 定义的现有 binding/tombstone 规则；不得仅因 health cache 降级而阻止                                        |
 
@@ -181,9 +195,9 @@ Recognize 发出后发生 timeout、DNS/TLS/connect failure、响应中断或可
 `degraded` 仅用于已完成双向认可、但当前可达性受损的 peer；握手未收敛使用 `establishing`。
 
 普通 feed、call、user、media 和 forward-bundle operation 使用 protocol.md 的 `recognized signed`
-鉴权上下文，不以本地缓存的 `available` 标签作为协议门禁。本文所说的轻量请求严格指 `feed-heads`
-feed-head hint：接收方在发送 Recognize `OK` 前必须（MUST）准备好接收该 signer 的 `feed-heads`；发送方
-只有收到 `OK` 后才可以（MAY）向该方向发送 hint。hint 可丢失且不携带 durable payload，因此这个方向性
+鉴权上下文，不以本地缓存的 `available` 标签作为协议门禁。本文所说的轻量请求只包括 `feed-heads` 与
+`discover`：接收方在发送 Recognize `OK` 前必须（MUST）准备好接收该 signer 的两种请求；发送方
+只有收到 `OK` 后才可以（MAY）向该方向发送。hint 可丢失且不携带 durable payload，因此这个方向性
 门禁不等于在握手未收敛时开放其他数据面。
 
 `localServiceAvailable` 与本地 peer lifecycle 的 `available` 不是同一个量：前者表示“本服务器已经准备好”，
@@ -257,7 +271,7 @@ serialization，但 digest 和签名必须（MUST）覆盖实际发送的精确 
 
 1. 固定或核对 A 的 root identity。
 2. 提交 `inboundRecognitionConfirmed`，且保留首次确认时间。
-3. 提交 `lightweightInboundReady`，使 A 在收到 `OK` 后立即发送的 `feed-heads` 不会被尚未就绪的
+3. 提交 `lightweightInboundReady`，使 A 在收到 `OK` 后立即发送的 `feed-heads` 或 `discover` 不会被尚未就绪的
    admission gate 拒绝。
 4. 确保反向 `B → A Recognize` 会被执行；崩溃恢复后也必须（MUST）能够继续该工作。
 5. 如果 B 在处理请求前已经存在 `recognizesPeer(A)`，B 必须（MUST）在返回 `OK` 前设置
@@ -295,7 +309,7 @@ B 成功提交 `A → B` 并返回第一次 `OK` 后，开始 `B → A` 前必�
 之前，B 必须（MUST）在一个事务中：
 
 1. 作出并持久化 `recognizesPeer(A)`；验证时使用的 A root 成为固定身份锚。
-2. 准备处理 A 随后可能到达的已授权请求，包括 `feed-heads` 接收路径所需的状态。
+2. 准备处理 A 随后可能到达的已授权请求，包括两种 lightweight hint 接收路径所需的状态。
 3. 设置 `localServiceAvailable`，使 A 随后的有效 Healthy 查询至少能够返回 `degraded`，而不是
    `unavailable`。
 4. 持久记录反向 Recognize 待发送工作，使崩溃不会留下“服务已经准备、但永远不发送反向认可”的状态。
@@ -493,19 +507,24 @@ B 只可以（MAY）使用已有的 pinned/recognition identity 尝试验证 Hea
 （SHOULD NOT）仅为回答查询而主动获取其 well-known，避免把接口变成任意 DNS/HTTP fetch oracle。对已有 pinned
 identity 的 A，B 可以（MAY）按 signing key 轮换规则刷新 well-known，但不得（MUST NOT）因查询而替换 root pin。
 
-B 只能返回以下三个 closed object 之一：
+B 只能返回以下三个 closed object 之一；`acceptedExtensions` 是 B 当前已对 A 实际启用的单向接收能力：
 
 ```json
-{ "status": "available" }
+{ "status": "available", "selectedProtocolVersion": 1, "acceptedExtensions": ["socfp.message.sticker.v1"] }
 ```
 
 ```json
-{ "status": "degraded" }
+{ "status": "degraded", "selectedProtocolVersion": 1, "acceptedExtensions": [] }
 ```
 
 ```json
-{ "status": "unavailable" }
+{ "status": "unavailable", "selectedProtocolVersion": null, "acceptedExtensions": null }
 ```
+
+`available` 和 `degraded` 的 `selectedProtocolVersion` 必须是 B 当前为 A 选择的唯一共同 wire major。
+`acceptedExtensions` 必须按 ASCII lexicographic 顺序、无重复，且必须是 B 当前
+`POST /s2s/v1/discover` 返回集合的子集。它表示 B 已经准备好接收 A 发来的这些扩展，不表示 B 会向 A
+发送它们。B 可以异步、分批启用 discover 中声明的能力；未启用项不出现在 Health。
 
 只有请求由 B 已固定的 A identity 验证成功，且 body binding 和查询权限有效时，B 才可以（MAY）返回
 `available` 或 `degraded`：
@@ -518,7 +537,8 @@ B 只能返回以下三个 closed object 之一：
 - `available` 和 `degraded` 都证明 B 已提交“A 认可 B”的 inbound direction fact、识别 A 的 pinned identity、
   本次签名请求成功往返；差异只描述 B 自己观察到的连接状态。
 
-以下情况必须（MUST）统一返回 HTTP `200` 和 `{"status":"unavailable"}`：
+以下情况必须（MUST）统一返回 HTTP `200` 和
+`{"status":"unavailable","selectedProtocolVersion":null,"acceptedExtensions":null}`：
 
 - peer/domain 不存在，或本方从未固定并认可该 identity；
 - 签名无法由已有 identity 验证，验证所需的当前 signing certificate 无法取得，或 body domain 与 signer 不同；
@@ -526,7 +546,7 @@ B 只能返回以下三个 closed object 之一：
 - reset in progress 或其他不可安全公开的身份/版本状态；
 - 其他不能安全公开的本地连接状态。
 
-对上述情况，接收方必须（MUST）返回完全相同的 `{"status":"unavailable"}`，不得（MUST NOT）通过 HTTP
+对上述情况，接收方必须（MUST）返回完全相同的 unavailable object，不得（MUST NOT）通过 HTTP
 status、错误码、额外字段或诊断信息泄露具体原因。
 实现应该（SHOULD）尽量减少明显的响应时间差异，并必须（MUST）对 source、domain 和全局请求速率限流。
 临时限流可以（MAY）返回通用 `503 RATE_LIMITED`；无法解析 HTTP/JSON shape 的请求可以（MAY）返回通用
@@ -553,6 +573,11 @@ A 不得（MUST NOT）仅根据 `unavailable` 推断 B 观察到的真实原因�
 `halted`。`halted` 需要第 8 节定义的来自目标 peer 的可认证、非可自动恢复 HTTP error，或 A 自己独立验证的
 硬安全证据。
 
+A 向 B 发送 extension `E` 前，`E` 必须同时存在于最近成功验证的 B v1 discover response 和最近有效
+Health 的 `acceptedExtensions`。Health 可以收紧当前生效集合，不能授权 discover 未声明的 extension。
+收到对端 `discover` 请求后，A 可以继续发送两份旧缓存交集中的 extension，直到异步刷新完成；刷新发现
+删除后必须停止，刷新发现新增后仍须等待后续 Health 明确接受才可发送。
+
 ### 9.3 其他可达证明与收敛优化
 
 除 Healthy 外，任一 recognized peer 发起的、成功认证并完成协议处理的正常 S2S 请求，以及本方发出请求后
@@ -564,6 +589,33 @@ A 不得（MUST NOT）仅根据 `unavailable` 推断 B 观察到的真实原因�
 `OK` 前已经按第 5.2 节完成 `localServiceAvailable`，所以这个 `OK` 同时提供
 `remoteServiceReachable` 的等价证明。A 因为第一次 `OK` 可能丢失，必须（MUST）继续幂等重试原方向 Recognize；
 无论 B 的 Healthy 返回何种 status，都不能补齐 A 的 outbound confirmation。
+
+### 9.4 v1 capability discover
+
+已知 peer A 查询 B 或通知自身能力变化时，向 `POST /s2s/v1/discover` 发送 closed request：
+
+```json
+{ "origin": "a.example" }
+```
+
+请求使用 lightweight-signed 验证边界，`origin` 必须等于 signer domain。成功响应是裸 closed object：
+
+```ts
+interface V1DiscoveryResult {
+  extensions: ExtensionId[];
+  software?: string;
+}
+```
+
+`extensions` 必须出现，可以为空；最多 64 项，按 ASCII lexicographic 顺序且无重复。`software` 仅供诊断，
+不得参与 identity、授权、协议选择或实现特例。响应不重复主版本、root key 或 signing key；请求路径已经
+绑定 v1，跨版本与身份信息只从 well-known 验证。未知、无权或无法安全验证的请求按公共签名、认可和
+错误规则拒绝；不得为回答请求建立首次 identity pin。
+
+接收方必须立即返回自身当前 capability view，并合并同一 peer 的重复 pending reverse refresh；不得同步
+阻塞 response 等待外部 fetch。请求可丢失、重复、乱序，不携带调用方 capability 内容或 revision。自动
+刷新和管理员手动触发都可以使用同一 operation；具体管理 API、调度时间和 UI 不属于 SOCFP。接收方必须
+采用有上限、带抖动的刷新策略，避免请求造成 fetch amplification。
 
 ## 10. 完整 HTTP 构造示例（Complete HTTP Construction Examples）
 

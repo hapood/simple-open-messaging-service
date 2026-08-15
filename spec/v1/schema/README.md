@@ -1,7 +1,7 @@
 # Federation v1 机器可读发布包
 
 状态：`RELEASE CANDIDATE`
-发布：`v1.0-rc.2`
+发布：`v1.0.0-rc.0`
 
 本目录作为非规范性验证资源与 v1 规范正文一起发布，使用 JSON Schema Draft 2020-12。正文定义
 事务、权限、签名、cursor 和状态机语义；Schema 定义可机械检查的 JSON shape。二者冲突时以正文
@@ -10,8 +10,9 @@
 ## 文件
 
 - `common.schema.json`：identity、时间、cursor、digest、address 等 Federation 共享类型。
-- `discovery.schema.json`：`/.well-known/socfp`，包括多版本 `protocolVersions`。
-- `identity.schema.json`：Recognize、Healthy 与 feed-head hint 的 closed JSON shape。
+- `discovery.schema.json`：`/.well-known/socfp` 的跨版本 bootstrap 与 key discovery。
+- `identity.schema.json`：Recognize、Healthy、v1 capability discover/exchange 与 feed-head hint 的
+  closed JSON shape。
 - `state-feed.schema.json`：完整 page 与六种 event body。
 - `message-feed.schema.json`：消息索引型压缩 feed page 与 `thread + messageEndSeq` item。
 - `message-tombstone-feed.schema.json`：墓碑索引型压缩 feed page 与 `thread + tombstoneEndSeq` item。

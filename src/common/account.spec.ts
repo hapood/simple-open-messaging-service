@@ -4,6 +4,9 @@ import {
   GROUP_ACCOUNT_RE,
   normalizeAccount,
   isValidUserAccount,
+  isValidSocfpDomain,
+  isValidSocfpUserAccount,
+  parseSocfpUserAddress,
   isValidGroupAccount,
   isValidAccount,
   isGroupAccount,
@@ -23,19 +26,18 @@ describe('account grammar + minting', () => {
       'h2user',
       'alice2',
       'a.b2',
+      'a',
+      'al',
+      '2alice',
+      'alice_',
+      'alice-bob',
+      'a..b',
     ])('accepts %s', (v) => {
       expect(isValidUserAccount(v)).toBe(true);
     });
     it.each([
-      'a', // too short (< 3)
-      'al', // too short
-      'alice.bob.charlie.delta.echo.foxtrot.golf.hotel.india', // too long (> 31)
-      'alice.', // trailing dot
-      '.alice', // leading dot
-      'alice..bob', // consecutive dots
-      '2alice', // starts with a digit (must start with a letter)
-      'alice_', // underscore
-      'alice-bob', // hyphen
+      'a'.repeat(31), // too long (> 30)
+      '.alice', // first character must be alphanumeric
       'al ice', // space
       'alice@bob', // @ separator
       '!alice', // sigil
@@ -67,7 +69,7 @@ describe('account grammar + minting', () => {
   it('isValidAccount accepts either grammar', () => {
     expect(isValidAccount('alice')).toBe(true);
     expect(isValidAccount('!' + '0'.repeat(26))).toBe(true);
-    expect(isValidAccount('alice_')).toBe(false);
+    expect(isValidAccount('alice_')).toBe(true);
     expect(isValidAccount('')).toBe(false);
   });
 
@@ -75,6 +77,29 @@ describe('account grammar + minting', () => {
     expect(normalizeAccount('ALICE')).toBe('alice');
     expect(normalizeAccount('Alice.Bob')).toBe('alice.bob');
     expect(normalizeAccount('!01HZ')).toBe('!01hz');
+  });
+
+  it('validates already-canonical SOCFP wire identities', () => {
+    expect(isValidSocfpUserAccount('a')).toBe(true);
+    expect(isValidSocfpUserAccount('Alice')).toBe(false);
+    expect(isValidSocfpDomain('chat.example')).toBe(true);
+    expect(isValidSocfpDomain('local')).toBe(false);
+    expect(isValidSocfpDomain('printer.local')).toBe(false);
+    expect(parseSocfpUserAddress('a@chat.example')).toEqual({
+      account: 'a',
+      domain: 'chat.example',
+    });
+    for (const value of [
+      'a',
+      '@chat.example',
+      'A@chat.example',
+      'a@@chat.example',
+      'a@bad_domain',
+      'a@local',
+      'a@printer.local',
+    ]) {
+      expect(parseSocfpUserAddress(value)).toBeNull();
+    }
   });
 
   it('isGroupAccount discriminates by the sigil', () => {

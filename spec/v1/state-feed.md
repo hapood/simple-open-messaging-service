@@ -1,6 +1,6 @@
 # Simple Open Chat Federation Protocol v1 State Feed
 
-状态：`RELEASE CANDIDATE`（`v1.0-rc.2`）
+状态：`RELEASE CANDIDATE`（`v1.0.0-rc.0`）
 规范性：本文全部为规范性要求，除非段落明确标记为“非规范性实现说明”。
 
 本文定义状态快照型压缩 feed `GET /s2s/v1/state-feed`。它与两个索引型 feed 共享
@@ -152,8 +152,14 @@ interface ProfileBody {
   bio: string;
   avatar: ProfileAvatar | null;
   deleted: boolean;
+  extensions?: Record<ExtensionId, JsonObject>;
 }
 ```
+
+`extensions` 遵循[主协议第 2.1 节](./protocol.md#21-extension-capability)。publisher 只能包含目标 peer
+在最近有效 Health 中接受且仍存在于 v1 discover response 的 entry；省略等价于空 object。extension 数据是完整 profile snapshot 的一部分，
+已发送 entry 的增加、修改或移除必须分配更大的 profile `revision`。consumer 严格验证自己支持的 entry，
+有界忽略未知 entry，不得因未知 entry 拒绝整个合法 `PROFILE`。
 
 `revision` 是该主体的 profile revision。`deleted: true` 是账号资料 tombstone；它不重置 server identity，
 也不自动撤销已经独立发布的关系方向。publisher MUST 只向当前存在直接 P2P/群资料可见性，或为建立
@@ -175,8 +181,12 @@ interface ProfileBody {
 interface MemberProfileBody {
   displayName: string;
   avatar: ProfileAvatar | null;
+  extensions?: Record<ExtensionId, JsonObject>;
 }
 ```
+
+`MEMBER_PROFILE.extensions` 使用与 `PROFILE.extensions` 相同的单向 capability、完整 snapshot 和 revision
+规则；它仍只是 source-scoped 展示 metadata，不授予群成员资格或其他权限。
 
 publisher MUST 为每个 `(target peer, member Address)` 维护完整的当前可见性来源集合：
 
@@ -334,11 +344,6 @@ consumer 向自己的客户端同步时 MUST 保留 `(source signer domain, memb
 中继的快照。客户端只有在固定 `stateRevision` 目标完整提交后才能清理已无引用的 source-scoped 展示
 缓存，并必须保留历史消息中的稳定 author Address。
 
-feed-head hint 不携带任何业务 body，也不能代替 state-feed。重启、提示丢失、重复 page、乱序 hint、
+feed-head hint 不携带核心业务 body；可选 `extensions` 也不能代替 state-feed 或改变三个 drain target。
+重启、提示丢失、重复 page、乱序 hint、
 compacted 中间 revision 缺失和 page 重排，都必须通过 stable key 最新快照得到同一最终投影。
-
-### 非规范性实现说明
-
-实现可以用关系方向表共享 P2P、invite 和 join 的 revision/expiry 状态机，同时保留不同关系种类的本地
-外键。人员可见性适合以 `(peer, member, sourceType, sourceId)` 唯一来源行表达；是否存在来源通过
-`EXISTS` 或可重建缓存计算。数据库表名、事务 helper、mutex 类型和 JSON 序列化 helper 都不属于协议。

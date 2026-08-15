@@ -159,12 +159,12 @@ export class AdminCreateUserDto {
   @ApiProperty({
     example: 'alice',
     description:
-      'Login unique name: 3-31 chars, letters + digits + dots, start with a letter, case-insensitive',
+      'Login unique name: 1-30 chars; starts alphanumeric; then letters, digits, dot, underscore or hyphen; case-insensitive',
   })
   @Transform(({ value }) => normalizeAccount(value))
   @Matches(USER_ACCOUNT_RE, {
     message:
-      'account must be 3-31 chars: letters + digits + dots, start with a letter',
+      'account must be 1-30 chars: start alphanumeric, then letters, digits, dot, underscore or hyphen',
   })
   account!: string;
 

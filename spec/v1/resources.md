@@ -1,6 +1,6 @@
 # Federation v1 资源接口（Resources）
 
-状态：`RELEASE CANDIDATE`（`v1.0-rc.2`）
+状态：`RELEASE CANDIDATE`（`v1.0.0-rc.0`）
 规范性：本文全部为规范性要求，除非段落明确标记为“非规范性实现说明”。
 
 本文定义 Federation v1 的用户资料、媒体和转发包三个读取 operation。实现必须（MUST）同时遵守：

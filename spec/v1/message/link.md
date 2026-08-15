@@ -1,6 +1,6 @@
 # `LINK` Message
 
-状态：`RELEASE CANDIDATE`（`v1.0-rc.2`）
+状态：`RELEASE CANDIDATE`（`v1.0.0-rc.0`）
 
 本文定义带页面 metadata 和可选 CAS 缩略图的 `LINK` 卡片。正文中的普通 URL 仍属于 `PURE_TEXT`，
 不使用本类型。共用消息外层结构见 [Message Envelope](./envelope.md)。
@@ -12,22 +12,22 @@ interface LinkPreviewContent {
   url: string;
   title: string;
   description: string;
-  siteName?: string;
+  siteName: string;
   imageDigest?: Sha256Hex;
   faviconDigest?: Sha256Hex;
 }
 ```
 
-这是 closed schema。`url/title/description` 始终必须出现；后三个字段是真正可以独立省略的字段，不得用
-`null` 代替省略。
+这是 closed schema。`url/title/description/siteName` 始终必须出现；两个 digest 字段可以独立省略，
+不得用 `null` 代替省略。
 
 ## 2. 字段规则
 
 - `url` MUST 是绝对 `http` 或 `https` URL。
 - `url` 是用户可见的业务链接，不是媒体下载地址或资源授权 proof。
 - consumer 不得仅因为收到 LINK message 就自动访问页面 URL。
-- `title` 和 `description` 可以是空字符串。
-- `siteName` 存在时必须是 string；v1 不要求它非空。
+- `title`、`description` 和 `siteName` 可以是空字符串。空字符串表示 publisher 未取得可用值，不表示
+  远端页面权威声明了空值。
 - `imageDigest/faviconDigest` 存在时必须是 `Sha256Hex`，并分别对应消息外层结构中同 digest 的 asset
   descriptor。
 - 两个 digest 可以相同。消息外层结构的 `assets` 是二者去重后的完整集合，因此长度可以是 0、1 或 2。
@@ -48,9 +48,8 @@ interface LinkPreviewContent {
   "originSeq": null,
   "originCreatedAt": null,
   "createdAt": 1770000010000,
-  "clientMessageId": null,
   "contentType": "LINK",
-  "content": "{\"url\":\"https://example.com/article\",\"title\":\"Example article\",\"description\":\"A short summary\"}",
+  "content": "{\"url\":\"https://example.com/article\",\"title\":\"Example article\",\"description\":\"A short summary\",\"siteName\":\"\"}",
   "assets": []
 }
 ```
@@ -96,7 +95,7 @@ interface LinkPreviewContent {
 consumer MUST 拒绝至少以下情况：
 
 - `url` 不是绝对 HTTP(S) URL；
-- `title` 或 `description` 缺失或不是 string；
+- `title`、`description` 或 `siteName` 缺失或不是 string；
 - 可选字段使用 `null`；
 - digest 不是 `Sha256Hex`；
 - content digest 的去重集合与消息外层结构的 `assets` 不相等；
