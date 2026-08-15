@@ -342,7 +342,7 @@ async function validateManifest(ajv: Ajv2020Instance): Promise<void> {
 
 async function validateErrorRegistry(): Promise<void> {
   const markdown = await readFile(join(normativeSpecDir, 'errors.md'), 'utf8');
-  const heading = '## 稳定错误码注册表（Stable Code Registry）';
+  const heading = '## Stable code registry';
   const start = markdown.indexOf(heading);
   if (start < 0)
     throw new Error('errors.md is missing the stable code registry');

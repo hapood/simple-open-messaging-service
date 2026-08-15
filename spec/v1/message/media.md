@@ -1,27 +1,22 @@
 # Media Messages
 
-状态：`RELEASE CANDIDATE`（`v1.0.0-rc.0`）
+Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
-本文定义 `IMAGE`、`VIDEO`、`AUDIO`、`FILE` 和 `GALLERY`。共用消息外层结构、asset status、坐标和
-接收规则见 [Message Envelope](./envelope.md)，媒体 HTTP operation 见 [Resources](../resources.md) 第 3 节。
+This document defines `IMAGE`, `VIDEO`, `AUDIO`, `FILE`, and `GALLERY`. See [Message Envelope](./envelope.md) for the shared outer message shape, asset status, coordinates, and receive rules, and [Resources, Section 3](../resources.md#3-media-resources) for media HTTP operations.
 
-## 1. 通用规则
+## 1. Common rules
 
-media content 不携带 publisher 展示 URL。每项资源使用 `digest` 与消息外层结构的 `assets` descriptor
-关联。`assets` 的元素使用 [Message Envelope](./envelope.md#1-wire-类型) 定义的共享
-`BlobDescriptor { digest, bytes }`；`bytes` 是资源的唯一声明长度。consumer 根据已验证消息的
-thread、author、seq 和 digest 构造媒体请求。
+Media content carries no publisher display URL. Each resource is associated by `digest` with a descriptor in the outer message `assets`. Each `assets` entry uses the shared `BlobDescriptor { digest, bytes }` defined in [Message Envelope](./envelope.md#1-wire-types); `bytes` is the resource's sole declared length. The consumer constructs a media request from the validated message thread, author, sequence, and digest.
 
-- `digest` 必须是 `Sha256Hex`。
-- 每个 content digest 必须能在消息外层结构的 `assets` 中找到唯一的同 digest `BlobDescriptor`。
-- consumer 可以在下载前根据 `BlobDescriptor.bytes` 执行本地大小和 quota 检查；下载完成后仍必须验证
-  实际字节数等于 `bytes`，且实际 bytes 的 SHA-256 等于 `digest`。
-- `w/h` 是 `PositiveSafeInteger` 像素。
-- `duration` 是正有限秒数。
-- `name/mimeType` 是非空、不可信的展示字符串，不能用于路径、安全判定或主动内容执行。
-- 每个 object 都是 closed schema；与媒体 kind 无关的字段必须省略。
+- `digest` MUST be `Sha256Hex`.
+- Every content digest MUST have exactly one `BlobDescriptor` with the same digest in the outer message `assets`.
+- A consumer may enforce local size and quota limits using `BlobDescriptor.bytes` before download. After download, it MUST still verify that the actual byte count equals `bytes` and that the SHA-256 of the actual bytes equals `digest`.
+- `w/h` are `PositiveSafeInteger` pixel dimensions.
+- `duration` is a positive finite number of seconds.
+- `name/mimeType` are non-empty, untrusted display strings. They MUST NOT be used as paths, security assertions, or instructions to execute active content.
+- Every object is a closed schema; fields unrelated to its media kind MUST be omitted.
 
-## 2. 单资源类型
+## 2. Single-resource types
 
 ```ts
 interface ImageContent {
@@ -49,13 +44,11 @@ interface AudioContent extends NamedMediaContent {
 }
 ```
 
-`IMAGE`、`VIDEO`、`AUDIO` 和 `FILE` 必须各引用恰好一个 digest；消息外层结构的 `assets` 必须包含
-恰好一个同 digest descriptor。
+Each `IMAGE`, `VIDEO`, `AUDIO`, and `FILE` MUST reference exactly one digest. The outer message `assets` MUST contain exactly one descriptor with that digest.
 
-## 3. 单资源 content 示例
+## 3. Single-resource content examples
 
-下列左侧 object 是对消息外层结构的 `content` 执行一次 JSON 解析后的结果；传输时必须再编码成 JSON
-string。示例 digest 使用重复字符只是为了便于阅读，长度均为 64 个小写十六进制字符。
+Each object below is the result of parsing the outer message `content` once as JSON; on the wire it MUST be encoded as a JSON string. The example digests use repeated characters only for readability and are all 64 lowercase hexadecimal characters long.
 
 ### 3.1 IMAGE
 
@@ -67,7 +60,7 @@ string。示例 digest 使用重复字符只是为了便于阅读，长度均为
 }
 ```
 
-对应消息外层字段：
+Corresponding outer message fields:
 
 ```json
 {
@@ -116,8 +109,7 @@ string。示例 digest 使用重复字符只是为了便于阅读，长度均为
 }
 ```
 
-VIDEO、AUDIO 和 FILE 的消息外层结构与 IMAGE 示例相同：`contentType` 使用对应值，`content` 是上述
-object 的 JSON string，`assets` 包含一个 digest 相同的 descriptor；其 `bytes` 是资源的声明长度。
+The outer message shape for VIDEO, AUDIO, and FILE follows the IMAGE example: `contentType` uses the corresponding value, `content` is the JSON string encoding of the object above, and `assets` contains one descriptor with the same digest. Its `bytes` is the resource's declared length.
 
 ## 4. GALLERY
 
@@ -165,10 +157,9 @@ interface GalleryContent {
 }
 ```
 
-`items` 必须非空并保持展示顺序。同一 digest 可以被多项引用并共享唯一 descriptor；所有 item digest
-的去重集合必须与消息外层结构的 `assets` digest 集合完全相等。
+`items` MUST be non-empty and preserve display order. Multiple items may reference the same digest and share one descriptor. The deduplicated set of all item digests MUST exactly equal the digest set in the outer message `assets`.
 
-### 4.1 混合 GALLERY 示例
+### 4.1 Mixed GALLERY example
 
 ```json
 {
@@ -205,18 +196,17 @@ interface GalleryContent {
 }
 ```
 
-消息外层结构的 `assets` 必须包含上述四个 digest，每个只出现一次。若多个 item 使用同一 digest，
-`assets` 仍只包含一个 descriptor。
+The outer message `assets` MUST contain the four digests above, each exactly once. If multiple items use the same digest, `assets` still contains only one descriptor for it.
 
-## 5. 必须拒绝
+## 5. Required rejections
 
-consumer MUST 拒绝至少以下情况：
+A consumer MUST reject at least the following cases:
 
-- 单资源类型的 digest 或 descriptor 数量不是一个；
-- content digest 与 `assets` digest 集合不同；
-- digest、descriptor bytes、w、h 或 duration 不符合对应数值类型；
-- `name/mimeType` 缺失或为空；
-- GALLERY `items` 为空；
-- item 缺少其 kind 的必填字段；
-- item 带有其他 kind 才允许的字段，例如 IMAGE 带 `duration`；
-- object 含未知字段。
+- A single-resource type has other than one digest or descriptor.
+- The content-digest set differs from the `assets` digest set.
+- A digest, descriptor `bytes`, `w`, `h`, or `duration` violates its required type.
+- `name/mimeType` is absent or empty.
+- GALLERY `items` is empty.
+- An item lacks a field required by its kind.
+- An item carries a field allowed only for another kind, such as `duration` on IMAGE.
+- An object contains an unknown field.

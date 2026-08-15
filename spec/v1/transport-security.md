@@ -1,20 +1,16 @@
-# Simple Open Chat Federation Protocol v1 传输与安全（Transport and Security）
+# Simple Open Chat Federation Protocol v1 Transport and Security
 
-状态：`RELEASE CANDIDATE`（`v1.0.0-rc.0`）
+Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
-本文定义 Federation v1 的发现文档、root identity、签名密钥证书、网络发现、TLS、HTTP request target、
-Content-Digest 和 HTTP Message Signature profile。它是 [Simple Open Chat Federation Protocol v1](./protocol.md)
-明确引用的规范性组成部分；operation 文档不能放宽本文的身份、传输或签名安全要求。
+This document defines the Federation v1 discovery document, root identity, signing-key certificates, network discovery, TLS, HTTP request targets, Content-Digest, and HTTP Message Signature profile. It is a normative component explicitly referenced by the [Simple Open Chat Federation Protocol v1](./protocol.md). An operation document cannot weaken its identity, transport, or signature-security requirements.
 
-规范词 `必须（MUST）`、`不得（MUST NOT）`、`应该（SHOULD）`、`不应该（SHOULD NOT）` 和
-`可以（MAY）` 按 RFC 2119/RFC 8174 解释。
+The key words `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, and `MAY` are to be interpreted as described in RFC 2119 and RFC 8174.
 
-## 1. Well-Known 发现与签名密钥（Well-Known Discovery and Signing Keys）
+## 1. Well-known discovery and signing keys
 
-### 1.1 公开发现模式（Public Discovery Mode）
+### 1.1 Public discovery mode
 
-无 query 的 `GET /.well-known/socfp` 是公开 discovery request，不使用 HTTP Message Signature。成功响应
-必须（MUST）使用 `Content-Type: application/json` 并返回以下裸 JSON object：
+`GET /.well-known/socfp` without a query is a public discovery request and does not use an HTTP Message Signature. A successful response MUST use `Content-Type: application/json` and return this bare JSON object:
 
 ```ts
 interface DiscoveryDocumentV1View {
@@ -27,53 +23,37 @@ interface DiscoveryDocumentV1View {
 }
 ```
 
-上面的 interface 是选择 v1 后必须（MUST）验证的视图，不表示跨版本 well-known 只能包含这些字段。
-例如同时发布 `[1, 2]` 的节点可以（MAY）保留全部 v1 共享字段并增加 v2 字段；v1 consumer 忽略新增
-字段，v2 consumer 则按 v2 规范验证其必选性和含义。
+The interface above is the view that MUST be validated after selecting v1; it does not restrict a cross-version well-known object to those fields. A node publishing `[1, 2]`, for example, MAY retain all shared v1 fields and add v2 fields. A v1 consumer ignores the additions, while a v2 consumer validates their presence and meaning under v2.
 
-`software` 是可选、不可信的 opaque diagnostic string。若存在，UTF-8 编码后 必须（MUST）为 1–128 bytes，
-不得（MUST NOT）包含 Unicode control character；建议使用 `product/version`，但 consumer 不得（MUST NOT）解析或依赖其
-格式，不得（MUST NOT）用它进行版本协商、能力判断、身份验证、授权或实现特例。它始终是不可信的诊断输入。
+`software` is an optional, untrusted opaque diagnostic string. If present, its UTF-8 encoding MUST be 1–128 bytes and MUST NOT contain a Unicode control character. A consumer MUST NOT parse or depend on its format and MUST NOT use it for version negotiation, capability decisions, authentication, authorization, or implementation-specific behavior.
 
-`protocolVersions` 必须（MUST）符合[主协议](./protocol.md)第 2 节。`rootKey` 是服务器身份锚对象（server identity anchor object），
-本身只是包含 root 公钥的对象容器；真正的 Ed25519 root 公钥值位于 `rootKey.ed25519`。
+`protocolVersions` MUST follow [Core Protocol, Section 2](./protocol.md). `rootKey` is the server-identity anchor object: a container whose actual Ed25519 root public-key value is `rootKey.ed25519`.
 
-`keys` 必须（MUST）是非空数组，可同时包含旧、当前和尚未生效的 signing key certificate。同一文档中
-`keyId` 不得（MUST NOT）重复，并且至少一个 certificate 必须（MUST）在响应生成时有效。root key 和 HTTP signing key
-是不同的角色，不得（MUST NOT）以两者 public key 相等作为协议要求。
+`keys` MUST be a non-empty array and may contain old, current, and not-yet-active signing-key certificates simultaneously. `keyId` values MUST NOT repeat within one document, and at least one certificate MUST be valid when the response is generated. Root keys and HTTP signing keys have distinct roles; equality of their public-key values MUST NOT be a protocol requirement.
 
-| JSON key                        | 必选 | 角色与示例                                                                                                                                                                        |
-| ------------------------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `software`                      | 否   | 不可信诊断文本，例如 `example-server/1.4.2`；不参与任何协议判断                                                                                                                   |
-| `protocolVersions`              | 是   | 完整支持的主版本集合，例如 `[1, 2]`                                                                                                                                               |
-| `rootKey`                       | 是   | 长期服务器身份锚对象；是对象容器，不是独立的公钥值                                                                                                                                |
-| `rootKey.ed25519`               | 是   | Ed25519 root public key，例如 `A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=`；不直接签普通 HTTP request                                                                           |
-| `keys`                          | 是   | root 授权的 signing key certificate 数组；允许轮换 overlap                                                                                                                        |
-| `keys[].keyId`                  | 是   | certificate 的 domain-bound 名称，例如 `a.example/key-1`；不是 public key 或秘密                                                                                                  |
-| `keys[].ed25519`                | 是   | 在线 HTTP/claim signing public key，例如 `Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=`                                                                                           |
-| `keys[].notBefore`/`notAfter`   | 是   | certificate 的半开有效区间 `[notBefore, notAfter)`，单位为 Unix epoch milliseconds                                                                                                |
-| `keys[].authorizationSignature` | 是   | root private key 对第 1.3 节 certificate statement 的 Ed25519 signature；完整可验证示例见 [服务器认可](./recognition.md#10-完整-http-构造示例complete-http-construction-examples) |
+| JSON key | Required | Role and example |
+| --- | --- | --- |
+| `software` | No | Untrusted diagnostic text such as `example-server/1.4.2`; never used for protocol decisions. |
+| `protocolVersions` | Yes | The complete set of fully supported majors, such as `[1, 2]`. |
+| `rootKey` | Yes | The long-lived server-identity anchor object; a container rather than a standalone public-key value. |
+| `rootKey.ed25519` | Yes | The Ed25519 root public key, such as `A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=`; it does not directly sign ordinary HTTP requests. |
+| `keys` | Yes | Root-authorized signing-key certificates, permitting rotation overlap. |
+| `keys[].keyId` | Yes | A domain-bound certificate name such as `a.example/key-1`; neither a public key nor a secret. |
+| `keys[].ed25519` | Yes | The online HTTP/claim signing public key, such as `Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=`. |
+| `keys[].notBefore` / `notAfter` | Yes | The half-open validity interval `[notBefore, notAfter)` in Unix epoch milliseconds. |
+| `keys[].authorizationSignature` | Yes | An Ed25519 signature by the root private key over the Section 1.3 certificate statement. See [Peer Recognition, Section 10](./recognition.md#10-complete-http-construction-examples) for a complete verifiable example. |
 
-选择 v1 的 consumer 必须（MUST）忽略 v1 未定义的 well-known 字段，但不得（MUST NOT）据此形成 v1
-接口、授权或安全行为分支。v1 不通过 well-known 发布运行时 limits。page、body、media、quota、
-群容量和 retention 等限制按各 operation 的确定响应处理。
+A consumer selecting v1 MUST ignore well-known fields undefined by v1 and MUST NOT create v1 surface, authorization, or security branches from them. v1 does not publish runtime limits through well-known. Each operation's deterministic responses govern page, body, media, quota, group-capacity, and retention limits.
 
-### 1.2 根密钥验证与固定（Root Key Verification and Pinning）
+### 1.2 Root-key validation and pinning
 
-root public key 不能通过 self-signature 自行建立首次信任。首次信任来自 hostname 验证成功的 HTTPS；
-root signature 把可轮换 signing key 绑定到该 root；HTTP Message Signature 证明请求方持有 signing
-private key。三者用途不得（MUST NOT）混淆。
+A root public key cannot establish first trust through a self-signature. First trust comes from hostname-validated HTTPS. A root signature binds a rotatable signing key to that root, and an HTTP Message Signature proves possession of the signing private key. These purposes MUST NOT be conflated.
 
-root public key 的 strict base64 规则、逐字节固定、首次 Recognize 验证顺序、domain binding 和 pin 事务由
-[Federation v1 服务器认可](./recognition.md#4-身份验证认可与固定identity-verification-recognition-and-pinning) 定义。不得（MUST NOT）仅因成功读取 well-known
-就建立认可关系。
+[Federation v1 Peer Recognition, Section 4](./recognition.md#4-identity-verification-recognition-and-pinning) defines strict base64 handling, byte-for-byte root pinning, the first-Recognize validation order, domain binding, and the pin transaction. Successfully reading well-known alone MUST NOT establish recognition.
 
-已建立 peer 的后续验证必须（MUST）使用本地 pinned root，而不是把新获取的 root 当作新的信任锚。重新获取
-well-known 时，root public key 必须（MUST）与 pin 逐字节完全一致；不一致是 identity contradiction，
-必须（MUST）进入 `halted`、记录 identity mismatch 原因并拒绝普通 S2S operation。v1 不支持在原认可关系上轮换
-root key；采用新 root 必须（MUST）执行 destructive reset 和 fresh bidirectional Recognize。
+Subsequent validation of an established peer MUST use the local pinned root rather than treating a newly fetched root as a new trust anchor. On a well-known refresh, the root public key MUST exactly equal the pin byte for byte. A mismatch is an identity contradiction: the peer MUST enter `halted`, record the identity-mismatch reason, and reject ordinary S2S operations. v1 does not rotate a root key within an existing recognition relationship. Adopting a new root requires a destructive reset and fresh bidirectional Recognize.
 
-### 1.3 根授权签名密钥证书（Root-Authorized Signing Key Certificate）
+### 1.3 Root-authorized signing-key certificate
 
 ```ts
 interface SigningKeyCertificate {
@@ -85,91 +65,46 @@ interface SigningKeyCertificate {
 }
 ```
 
-`keyId` 的 domain 必须（MUST）等于 publisher 的 server domain，并且 `notBefore < notAfter`。因此
-certificate statement 不重复 `domain` 字段；domain binding 由完整、canonical `keyId` 提供。同一 root
-identity 下的 `keyId` 一旦发布就永久绑定到同一 `ed25519`，publisher 不得（MUST NOT）使用已用
-`keyId` 标识另一把 public key。
+The domain in `keyId` MUST equal the publisher's server domain, and `notBefore < notAfter`. The certificate statement therefore does not repeat a `domain` field; its complete canonical `keyId` provides domain binding. Once published under one root identity, a `keyId` is permanently bound to the same `ed25519`. The publisher MUST NOT reuse it for another public key.
 
-`authorizationSignature` 是 root private key 对以下规范 certificate statement 的 Ed25519 signature。
-statement 使用固定字段顺序、无额外空白的 JSON，编码为 UTF-8；`notBefore` 和 `notAfter` 使用
-certificate 中的 JSON integer 字面值：
+`authorizationSignature` is an Ed25519 signature by the root private key over this canonical certificate statement. The statement is UTF-8 JSON with fixed field order and no extra whitespace. `notBefore` and `notAfter` use the JSON integer literals from the certificate:
 
 ```text
 {"keyId":"<key-id>","ed25519":"<base64-key>","usage":"socfp-http-message-signature","notBefore":<epoch-ms>,"notAfter":<epoch-ms>}
 ```
 
-上面的 statement 是 v1 验证 `authorizationSignature` 时使用的精确签名输入。后续主版本可以（MAY）
-继续复用这个共享 certificate 核心，也可以（MAY）增加自己的 certificate 字段；但不得（MUST NOT）
-改变现有字段或 `authorizationSignature` 的 v1 含义。新增字段若影响 key authorization，新主版本
-必须（MUST）定义新的、可独立验证的签名字段或签名结构。well-known 中不需要独立的
-`certificateVersion`，因为适用要求由已选择的 Federation 主版本决定。
+The statement above is the exact signed input used by v1 to validate `authorizationSignature`. A later major MAY reuse this shared certificate core or add its own certificate fields, but MUST NOT change existing fields or the v1 meaning of `authorizationSignature`. If an added field affects key authorization, the new major MUST define a new independently verifiable signature field or structure. Well-known needs no separate `certificateVersion`; the selected Federation major determines the applicable requirements.
 
-consumer 必须（MUST）使用 discovery document 的 root public key（已建立 peer 使用已 pinned root public key）
-验证 `authorizationSignature`。certificate 只在 `notBefore <= now < notAfter` 时可用于生成或验证
-HTTP Message Signature。过期或尚未生效的 certificate 不得（MUST NOT）用于接受请求，但未生效 certificate
-可以（MAY）预先缓存。
+A consumer MUST validate `authorizationSignature` with the discovery document's root public key, or the pinned root public key for an established peer. A certificate may generate or validate an HTTP Message Signature only while `notBefore <= now < notAfter`. An expired or not-yet-active certificate MUST NOT be used to accept a request, although a consumer MAY cache one before activation.
 
-### 1.4 签名密钥轮换与按需发现（Signing Key Rotation and On-Demand Discovery）
+### 1.4 Signing-key rotation and on-demand discovery
 
-计划轮换时，publisher 应该（SHOULD）先在 `keys` 中发布新 certificate，使新 key 的 `notBefore` 早于
-旧 key 的 `notAfter`，并在 overlap 期间保留两个 certificate。publisher 不得（MUST NOT）在 certificate 的
-`notAfter` 之前从 well-known 移除它，也不得（MUST NOT）使用尚未到 `notBefore` 或已过 `notAfter` 的 key
-发送请求。
+For a rotation, a publisher SHOULD first publish the new certificate in `keys`, set its `notBefore` earlier than the old key's `notAfter`, and retain both certificates during the overlap. The publisher MUST NOT remove a certificate from well-known before its `notAfter` and MUST NOT send a request with a key before `notBefore` or at or after `notAfter`.
 
-consumer 可以（MAY）缓存已经 pinned root 验证的 certificate 直到 `notAfter`。收到未缓存的 `keyid` 时，
-consumer 应该（SHOULD）在 per-domain 限速下立即重新获取 well-known，验证 pinned root、certificate 和有效期后
-再验证原 HTTP request。well-known 暂时不可达是可重试的 key-fetch failure，不是 identity loss。
-请求使用未发布、root 授权无效或当前无效的 `keyid` 时，接收方必须（MUST）拒绝该请求。
+A consumer MAY cache a certificate validated by the pinned root until `notAfter`. On receiving an uncached `keyid`, it SHOULD immediately refetch well-known subject to a per-domain rate limit, validate the pinned root, certificate, and validity interval, and then validate the original HTTP request. Temporary well-known unavailability is a retryable key-fetch failure, not identity loss. A receiver MUST reject a request using a `keyid` that is unpublished, invalidly authorized by the root, or not currently valid.
 
-经 pinned root 正确授权的 signing key 增加、激活、过期和移除是正常轮换，不得（MUST NOT）改变
-peer identity、首次认可确认时间、cursor、mirror 或已有 authorization。root public key 与已 pinned 值逐字节
-不一致仍是 identity contradiction，必须（MUST）以 fail-closed 方式处理。
+Addition, activation, expiration, and removal of a signing key correctly authorized by the pinned root are normal rotation and MUST NOT change peer identity, initial-recognition confirmation time, cursors, mirrors, or existing authorization. A root public key differing byte for byte from the pin remains an identity contradiction and MUST be handled fail closed.
 
-## 2. 网络发现、传输与签名安全（Network Discovery, Transport, and Signature Security）
+## 2. Network discovery, transport, and signature security
 
-Federation peer 是服务器侧配置和信任的 domain identity，不是面向客户端的任意 URL 资源。
+A Federation peer is a server-configured and recognized domain identity, not an arbitrary client-facing URL resource.
 
-### 2.1 强制 SRV 解析（Mandatory SRV Resolution）
+### 2.1 Mandatory SRV resolution
 
-给定 canonical peer `Domain` 值 `D`，实现必须（MUST）查询 exact owner name `_socfp._tcp.D` 的 DNS SRV
-RRset。发布有效 SRV record 是 server 启用 Federation 的必选条件；v1 不允许绕过 SRV 后直接解析
-`D`，也不定义默认 `443` 或本地直连配置等替代发现路径：
+Given canonical peer `Domain` value `D`, an implementation MUST query the DNS SRV RRset at the exact owner name `_socfp._tcp.D`. Publishing a valid SRV record is mandatory for a server enabling Federation. v1 does not permit bypassing SRV to resolve `D` directly and defines no alternative discovery path such as default port `443` or local direct-connect configuration:
 
-1. 收到非空、语法有效的 SRV RRset 时，按 RFC 2782 的最低 `priority` 优先和同 priority `weight`
-   随机选择规则处理。`priority`、`weight` 必须（MUST）是 `0..65535`；非 `.` target 的 `port` 必须（MUST）是
-   `1..65535`，target 必须（MUST）是可规范化为[主协议](./protocol.md)第 6.2 节 `Domain` 的 DNS hostname。target 不得（MUST NOT）是 IPv4
-   或 IPv6 address literal；带方括号的 IPv6、十进制 IPv4 及其他直接 IP 表示均无效。target 可以（MAY）位于
-   `D` 之外，但按 RFC 2782 不得（MUST NOT）是 CNAME alias。
-2. 对选中的 target 解析 A/AAAA，并连接该 target 的选定 port。每个可连接 target 必须（MUST）至少解析出一个
-   可用的 A 或 AAAA record，不要求同时支持 IPv4 和 IPv6。v1 不规定地址族或同族地址的优先级；调用方
-   可以（MAY）根据本地路由、历史成功率、连接延迟和当前网络状况选择、交错或并行尝试连接。连接失败后
-   应该（SHOULD）继续尝试尚未尝试的地址和 SRV record，并继续遵守 SRV priority/weight 语义。A/AAAA 结果
-   只是 hostname 的替代连接地址，不是 SRV target、peer identity、TLS name 或 HTTP authority。
-   target 没有任何可用 A/AAAA 结果时，该 record 不可连接；不得（MUST NOT）把 target 文本按其他 IP 表示法解释。
-3. publisher 必须（MUST）保证同一 SRV target 发布的全部 A/AAAA 地址，以及同一 SRV RRset 中用于同一
-   logical peer domain 的全部 target，提供相同的 Federation identity、协议版本和一致的 durable
-   state，并共享 operation 定义的幂等 key、recognition 与 cursor 状态。调用方从 IPv4 切换到 IPv6、
-   从 IPv6 切换到 IPv4 或切换 target，不得（MUST NOT）使同一合规重试产生第二份业务副作用。
-4. 地址级并行只表示并行建立连接。除非对应 operation 明确定义该请求可用相同幂等 key 安全重试，
-   调用方不得（MUST NOT）因多个地址可达而并行发送同一个有副作用的 HTTP request。连接结果不确定后的重试
-   仍必须（MUST）遵守[主协议](./protocol.md)第 7.4 节和对应 operation 的幂等规则。
-5. SRV 查询得到确定的 `NXDOMAIN` 或 `NODATA` 表示 `D` 当前未发布 Federation 服务。调用方不得（MUST NOT）
-   发起 Federation 请求，也不得（MUST NOT）尝试 `D:443` 或其他推测位置；仅可在 negative DNS TTL 到期或管理员
-   明确触发后重新查询。
-6. DNS timeout、`SERVFAIL`、`REFUSED` 或其他临时解析失败是可重试的 discovery failure。调用方必须（MUST）
-   退避并保留已有 pin、cursor 和 mirror，不得（MUST NOT）把它解释成未发布服务或 identity loss。
-7. sole SRV target `.` 明确表示该 domain 不提供 SOCFP；该特殊 record 的 port 应该（SHOULD）为
-   `0`，且不得（MUST NOT）发起连接。`.` 与其他 target 混合、IP literal、非法 hostname/port 或无法唯一解释的
-   RRset 是配置错误。
-8. 尝试完有效 RRset 中的可用 target 仍无法连接时，本次操作以连接失败结束，不得（MUST NOT）改为直接解析 `D`、
-   尝试裸 IP 或其他常见 port，也不得（MUST NOT）从 well-known/HTTP redirect 猜测替代位置。
+1. For a non-empty, syntactically valid SRV RRset, apply RFC 2782: lowest `priority` first and weighted random selection among records of equal priority. `priority` and `weight` MUST be in `0..65535`. For a target other than `.`, `port` MUST be in `1..65535`, and the target MUST be a DNS hostname normalizable as the `Domain` in [Core Protocol, Section 6.2](./protocol.md). A target MUST NOT be an IPv4 or IPv6 address literal; bracketed IPv6, decimal IPv4, and every other direct IP representation are invalid. A target MAY be outside `D` but MUST NOT be a CNAME alias under RFC 2782.
+2. Resolve A/AAAA for a selected target and connect to its selected port. Each connectable target MUST resolve to at least one usable A or AAAA record; supporting both IPv4 and IPv6 is not required. v1 does not prescribe address-family or same-family address priority. A caller MAY select, interleave, or race connection attempts according to local routing, historical success, connection latency, and current network conditions. After a failed connection, it SHOULD continue with untried addresses and SRV records while preserving SRV priority and weight semantics. An A/AAAA result is only a substitute connection address for the hostname, not an SRV target, peer identity, TLS name, or HTTP authority. A target without a usable A/AAAA result is not connectable; its text MUST NOT be interpreted as another IP notation.
+3. A publisher MUST ensure that every A/AAAA address for one SRV target, and every target in the same SRV RRset serving the same logical peer domain, provides the same Federation identity, protocol versions, and consistent durable state and shares the operation-defined idempotency keys, recognition state, and cursor state. Switching between IPv4, IPv6, or targets MUST NOT cause one conformant retry to produce a second business side effect.
+4. Address-level racing means racing connection establishment only. Unless the operation explicitly makes the request safely retryable under the same idempotency key, a caller MUST NOT send the same side-effecting HTTP request concurrently merely because multiple addresses are reachable. A retry after an uncertain connection result remains subject to [Core Protocol, Section 7.4](./protocol.md) and the operation's idempotency rules.
+5. A definitive `NXDOMAIN` or `NODATA` SRV answer means `D` does not currently publish Federation service. The caller MUST NOT issue a Federation request or try `D:443` or another guessed location. It may query again only after the negative DNS TTL expires or an administrator explicitly triggers it.
+6. DNS timeout, `SERVFAIL`, `REFUSED`, or another temporary resolution failure is a retryable discovery failure. The caller MUST back off and retain existing pins, cursors, and mirrors. It MUST NOT interpret the failure as an unpublished service or identity loss.
+7. A sole SRV target `.` explicitly states that the domain provides no SOCFP service. This special record SHOULD use port `0`, and no connection MUST be attempted. Mixing `.` with another target, using an IP literal or invalid hostname or port, or returning an RRset without one unambiguous interpretation is a configuration error.
+8. If every usable target in a valid RRset fails to connect, the operation ends with connection failure. The caller MUST NOT fall back to resolving `D` directly, try a bare IP or another common port, or infer an alternative location from well-known or an HTTP redirect.
 
-SRV/A/AAAA 的正负缓存不得（MUST NOT）超过 DNS resolver 提供的有效 TTL；TTL 到期后的重新解析可以（MAY）改变连接
-位置，但不得（MUST NOT）改变 peer identity。v1 不要求 DNSSEC，因为 DNS/SRV 只提供不可信 routing input；实现
-可以（MAY）使用 DNSSEC、固定 resolver、IP/egress policy 或其他本地加固，但不得（MUST NOT）用 DNS 结果跳过 HTTPS、root
-pin 或 request signature 验证。
+Positive and negative SRV/A/AAAA caching MUST NOT exceed the effective TTL supplied by the DNS resolver. Resolution after TTL expiry MAY change the connection location but MUST NOT change peer identity. v1 does not require DNSSEC because DNS and SRV provide only untrusted routing input. An implementation MAY use DNSSEC, a fixed resolver, IP or egress policy, or other local hardening, but MUST NOT use a DNS result to skip HTTPS, root-pin, or request-signature validation.
 
-最小有效发布示例：
+Minimal valid publication example:
 
 ```dns
 _socfp._tcp.chat.example. 3600 IN SRV 0 0 443 chat.example.
@@ -177,145 +112,98 @@ chat.example.            3600 IN A   192.0.2.10
 chat.example.            3600 IN AAAA 2001:db8::10
 ```
 
-这里同时列出 A 和 AAAA 只是双栈示例；部署者只发布其中任意一种也符合 v1。SRV target 是
-`chat.example`，不是 `192.0.2.10` 或 `[2001:db8::10]`。target 也可以（MAY）按前述规则委派给其他有效
-hostname；无论 target 是什么，服务端在选定 port 上都必须（MUST）提供对 logical peer domain
-`chat.example` 有效的 TLS certificate。
+Listing both A and AAAA only illustrates both address families; publishing either one alone conforms to v1. The SRV target is `chat.example`, not `192.0.2.10` or `[2001:db8::10]`. Under the rules above, the target MAY delegate to another valid hostname. Regardless of target, the selected port MUST serve a TLS certificate valid for logical peer domain `chat.example`.
 
-### 2.2 逻辑 Authority、TLS 与重定向（Logical Authority, TLS, and Redirects）
+### 2.2 Logical authority, TLS, and redirects
 
-SRV 只把 TCP 连接委派到 target `T` 和 port `P`。逻辑请求目标始终是 peer domain `D`：
+SRV delegates only the TCP connection to target `T` and port `P`. The logical request target remains peer domain `D`:
 
-- TCP 连接到 `T:P`，但 TLS SNI 必须（MUST）发送 `D`，TLS certificate hostname 必须（MUST）按 `D` 验证，不得（MUST NOT）改为
-  验证 SRV target `T`。
-- HTTPS request authority、HTTP/2/3 `:authority` 和 HTTP/1.1 `Host` 必须（MUST）为 `D`；当 `P != 443` 时
-  必须（MUST）为 `D:P`。SRV target `T` 不得（MUST NOT）出现在 request authority 中。
-- HTTP Message Signature 的 `@authority` 必须（MUST）覆盖上述实际发送的 logical authority。
-- well-known 和全部 S2S operation 不得（MUST NOT）自动跟随 HTTP redirect。任何 `3xx` 都是当前 operation
-  失败；不得（MUST NOT）把 redirect target 当作新 peer、建立 pin、接受 response data 或推进 cursor。
+- TCP connects to `T:P`, but TLS SNI MUST send `D`, and the TLS certificate hostname MUST be validated against `D`, not SRV target `T`.
+- HTTPS request authority, HTTP/2 or HTTP/3 `:authority`, and HTTP/1.1 `Host` MUST be `D`, or `D:P` when `P != 443`. SRV target `T` MUST NOT appear in request authority.
+- The HTTP Message Signature `@authority` MUST cover the logical authority actually sent.
+- Well-known and every S2S operation MUST NOT automatically follow an HTTP redirect. Any `3xx` fails the current operation. A redirect target MUST NOT become a new peer, establish a pin, supply accepted response data, or advance a cursor.
 
-例如 `_socfp._tcp.chat.example` 返回 target `edge.provider.example`、port `8443` 时，client 连接
-`edge.provider.example:8443`，但发送 TLS SNI `chat.example`，验证 certificate 中的
-`chat.example`，发送 `Host: chat.example:8443`，并签名 `"@authority": chat.example:8443`。
+For example, if `_socfp._tcp.chat.example` returns target `edge.provider.example` and port `8443`, the client connects to `edge.provider.example:8443` but sends TLS SNI `chat.example`, validates `chat.example` in the certificate, sends `Host: chat.example:8443`, and signs `"@authority": chat.example:8443`.
 
-DNS/SRV 结果只决定连接位置，不得（MUST NOT）改变已经 pinned 的 root identity 或双向认可事实。DNS
-变化后出现 identity contradiction 时必须（MUST）以 fail-closed 方式处理，不能把域名当前控制者自动视为原 peer。
+DNS and SRV results determine only connection location and MUST NOT change a pinned root identity or bidirectional recognition fact. An identity contradiction after a DNS change MUST be handled fail closed; the current domain controller cannot automatically be treated as the original peer.
 
-### 2.3 身份恢复与传输要求（Identity Recovery and Transport Requirements）
+### 2.3 Identity recovery and transport requirements
 
-identity contradiction 发生后，自动流程必须（MUST）保持 `halted`，不得（MUST NOT）因 DNS 再次变化而自动恢复。
-DNS 已修复时，管理员可以（MAY）发起非破坏性原身份恢复。恢复时必须（MUST）重新解析连接位置，并通过
-主机名验证成功的 HTTPS 重新取得发现文档（discovery document）。只有其中的 root public key 与 identity
-contradiction 前的 pin 逐字节一致，且当前 signing key certificate 能由该 root
-正确验证时，才可恢复原认可关系。signing key 或 certificate 集合可因正常轮换而不同，不要求与
-旧缓存逐项相等。该恢复必须（MUST）保留双向认可事实、首次确认时间、cursor、mirror 与既有
-authorization；root identity 不同必须（MUST）继续 fail closed。采用新 root identity 只能按
-[主协议](./protocol.md)第 10 节的安全底线执行 destructive reset；具体管理流程不属于 Federation v1。
+After an identity contradiction, automatic processing MUST remain `halted` and MUST NOT recover merely because DNS changes again. After DNS is repaired, an administrator MAY initiate nondestructive recovery of the original identity. Recovery MUST resolve the connection location again and retrieve discovery over hostname-validated HTTPS. The original recognition relationship may resume only if the discovered root public key equals the pre-contradiction pin byte for byte and that root correctly validates a current signing-key certificate. The signing key or certificate set may differ through normal rotation and need not equal the old cache entry by entry. Recovery MUST preserve bidirectional recognition facts, initial-confirmation time, cursors, mirrors, and existing authorization. A different root identity MUST remain fail closed. Adopting a new root requires destructive reset under [Core Protocol, Section 10](./protocol.md); Federation v1 does not define its administrative workflow.
 
-身份连续性不依赖额外的公开证明接口（proof endpoint）：接收入站请求时，由 HTTP Message Signature 证明对端
-持有当前 signing private key，并由已 pinned root 对 certificate 的签名把该 key 绑定到原 Federation
-identity；主动连接和读取响应时，由已验证 hostname 的 HTTPS 认证当前域名端点，well-known 中的
-root 则必须（MUST）与本地 pin 一致。任一检查失败都不得（MUST NOT）开放普通 S2S operation。
+Identity continuity requires no additional public proof endpoint. For an inbound request, the HTTP Message Signature proves possession of the current signing private key, and the pinned root's certificate signature binds that key to the original Federation identity. For an outbound connection and response, hostname-validated HTTPS authenticates the current domain endpoint, and the well-known root MUST equal the local pin. Failure of any check MUST NOT open ordinary S2S operations.
 
-Federation v1 通信必须（MUST）使用 HTTPS 并验证逻辑 peer domain 的 TLS hostname；使用明文 HTTP 的交互
-不符合 Federation v1。节点采用何种 DNS resolver、IP 分类、连接器或出站网络策略属于本地实现，
-不得（MUST NOT）改变 v1 的 identity 与 signature 验证语义。
+Federation v1 communication MUST use HTTPS and validate the TLS hostname of the logical peer domain. Plain HTTP is nonconformant. Choice of DNS resolver, IP classification, connector, or outbound network policy is local implementation behavior and MUST NOT change v1 identity or signature-validation semantics.
 
-## 3. 请求构造总览（Request Construction Overview）
+## 3. Request construction overview
 
-除公开 well-known 外，发送方必须（MUST）按以下唯一顺序构造 v1 request：
+Except for public well-known discovery, a sender MUST construct a v1 request in this order:
 
-1. 按 operation 规范选择 method、path template、query fields 和 body shape，并选择符合第 1.3、1.4 节的 signing key。
-2. 按第 3.1 节构造最终 method、path、query 和 authority。
-3. 按第 3.2 节把 body 序列化为最终 UTF-8 bytes，并计算 `Content-Digest`；无 body 时使用空 byte string。
-4. 生成 `created`、`expires` 和 `Date`，再按第 3.3 节构造全部请求头。
-5. 按第 3.4 节构造 `Signature-Input`、签名基串和 `Signature`。
-6. 原样发送第 2–5 步确定的 request target、header values 和 body bytes；签名后不得（MUST NOT）重新
-   序列化 body、改写 URI、改变 authority 或修改任何已覆盖 header。
+1. Select the method, path template, query fields, and body shape under the operation specification, and select a signing key satisfying Sections 1.3 and 1.4.
+2. Construct the final method, path, query, and authority under Section 3.1.
+3. Serialize the body to its final UTF-8 bytes and calculate `Content-Digest` under Section 3.2; use an empty byte string for an operation without a body.
+4. Generate `created`, `expires`, and `Date`, then construct all request headers under Section 3.3.
+5. Construct `Signature-Input`, the signature base, and `Signature` under Section 3.4.
+6. Send exactly the request target, header values, and body bytes established in Steps 2–5. After signing, the sender MUST NOT reserialize the body, rewrite the URI, change authority, or modify a covered header.
 
-具体 operation 决定业务字段位于 path、query 还是 body；本节只规定这些值如何转换为唯一的 HTTP 表示。
+An operation determines whether a business field belongs in path, query, or body. This section defines only how those values become one HTTP representation.
 
-### 3.1 请求目标构造（Request Target Construction）
+### 3.1 Request-target construction
 
-method 必须（MUST）与 operation 规范给出的大小写完全一致。path template 中作为结构分隔符的 `/`
-必须（MUST）原样发送；每个 path variable 必须（MUST）独立进行 URI percent-encoding，不能先拼接再编码。
-未保留字符 `ALPHA / DIGIT / "-" / "." / "_" / "~"` 不编码，其他 UTF-8 byte 使用大写十六进制
-`%HH`；变量值中的 `/` 必须（MUST）编码为 `%2F`，空格必须（MUST）编码为 `%20`，不得（MUST NOT）编码为 `+`。
+The method MUST exactly match the case specified by the operation. A `/` used as a structural separator in a path template MUST be sent unchanged. Each path variable MUST be URI percent-encoded independently rather than concatenated before encoding. Unreserved characters `ALPHA / DIGIT / "-" / "." / "_" / "~"` are not encoded. Every other UTF-8 byte uses upper-case hexadecimal `%HH`. A `/` in a variable value MUST become `%2F`; a space MUST become `%20` and MUST NOT become `+`.
 
-query 的 `?`、field 之间的 `&` 和 key/value 之间的 `=` 是结构字符，必须（MUST）原样发送。operation
-文档按出现顺序列出固定 ASCII query key，发送方必须（MUST）使用该顺序，并对每个 value 独立应用上述
-percent-encoding。不得（MUST NOT）发送 operation 未定义的空 query marker；没有 query 时 request target
-不携带 `?`，但签名派生组件 `@query` 按下文固定为单个字符 `?`。
+The query `?`, `&` between fields, and `=` between key and value are structural characters and MUST be sent unchanged. An operation document lists fixed ASCII query keys in appearance order. The sender MUST use that order and independently apply the encoding above to each value. A sender MUST NOT append an empty query marker not defined by the operation. With no query, the request target has no `?`, while the derived signature component `@query` is the single character `?` as defined below.
 
-重复 query key、未知 key、缺失必选值、空值、非法 percent-encoding 或越界值均是 malformed request。
-`@path` 是收到的 absolute path，不含 query。`@query` 是以 `?` 开头的原始 query；没有 query 时
-固定为单个字符 `?`。验签时不得（MUST NOT）对 path 或 query 重新排序、解码再编码或规范化。
+A duplicate or unknown query key, missing required value, empty value, invalid percent-encoding, or out-of-range value is a malformed request. `@path` is the received absolute path without query. `@query` is the raw query beginning with `?`, or the single character `?` when no query is present. During signature validation, path and query MUST NOT be reordered, decoded and re-encoded, or normalized.
 
-`@authority` 是按第 2.2 节构造并实际发送的 logical HTTP request authority：小写 peer domain，
-非默认 HTTPS 端口必须（MUST）保留，HTTPS `443` 必须（MUST）省略。HTTP/2 和 HTTP/3 使用
-`:authority`；HTTP/1.1 使用 `Host`。SRV target 不得（MUST NOT）出现在 `@authority` 中；signer identity
-始终从已验证 `keyid` 得出，不从 authority 推导。
+`@authority` is the logical HTTP request authority constructed and actually sent under Section 2.2: the lower-case peer domain, retaining a non-default HTTPS port and omitting HTTPS port `443`. HTTP/2 and HTTP/3 use `:authority`; HTTP/1.1 uses `Host`. An SRV target MUST NOT appear in `@authority`. Signer identity always comes from validated `keyid`, never from authority.
 
-### 3.2 请求体与内容摘要（Request Body and Content Digest）
+### 3.2 Request body and content digest
 
-有 body 的 operation 必须（MUST）先按[主协议](./protocol.md)第 6.1 节和对应 operation 的字段顺序要求生成最终 UTF-8 bytes；
-无 body 的 operation 使用长度为零的 byte string。`Content-Digest` 必须（MUST）按 RFC 9530 对这组精确
-bytes 计算，固定为 `sha-256=:<base64-sha256>:`。验证完成前，发送方和接收方均不得（MUST NOT）通过
-JSON 重建、重新序列化、空白整理或 Unicode/数字规范化替换这些 bytes。
+An operation with a body MUST first produce its final UTF-8 bytes according to [Core Protocol, Section 6.1](./protocol.md) and any operation-specific field-order requirement. An operation without a body uses a zero-length byte string. `Content-Digest` MUST be calculated over those exact bytes according to RFC 9530 and has the fixed form `sha-256=:<base64-sha256>:`. Before validation is complete, neither sender nor receiver may replace those bytes through JSON reconstruction, reserialization, whitespace formatting, or Unicode or number normalization.
 
-`Content-Digest` 本身不认证发送方，因为任何人都能为替换后的 body 重新计算摘要。HTTP Message Signature
-不直接包含 body bytes，而是覆盖 `content-digest` header：摘要把 body bytes 绑定到 header，签名再把该
-header 与 method、request target、authority 和时间绑定到 signer。接收方必须（MUST）同时验证摘要和签名；
-不得（MUST NOT）把其中任意一个视为另一个的替代品。
+`Content-Digest` alone does not authenticate the sender because anyone can recompute a digest for a substituted body. The HTTP Message Signature covers the `content-digest` header rather than body bytes directly: the digest binds body bytes to the header, then the signature binds that header together with method, request target, authority, and time to the signer. A receiver MUST validate both digest and signature and MUST NOT treat either as a substitute for the other.
 
-### 3.3 已签名请求头（Signed Request Headers）
+### 3.3 Signed request headers
 
-除公开 well-known 外，全部 v1 request（包括 `recognize` 和 `healthy`）必须（MUST）使用以下固定 HTTP
-Message Signature profile。[主协议](./protocol.md)第 3 节的鉴权上下文只改变 key resolution 和
-recognition/authorization gate，不改变本节
-wire format。
+Except for public well-known discovery, every v1 request, including `recognize` and `healthy`, MUST use this fixed HTTP Message Signature profile. The authentication contexts in [Core Protocol, Section 3](./protocol.md) change only key resolution and recognition or authorization gates, not this wire format.
 
-| Header            | 要求                                                                               |
-| ----------------- | ---------------------------------------------------------------------------------- |
-| `Content-Type`    | 有 JSON body 时 必须（MUST）为 `application/json`；无 body 时 不得（MUST NOT）发送 |
-| `Accept`          | 可以（MAY）发送 `application/json`；不参与签名，不改变 v1 response shape           |
-| `Date`            | 必须（MUST）发送 IMF-fixdate，表示与 `created` 相同的整秒                          |
-| `Content-Digest`  | 必须（MUST）发送；按第 3.2 节对最终 body bytes 计算，无 body 时覆盖空 byte string  |
-| `Signature-Input` | 必须（MUST）发送；恰好一个 label `sig1`                                            |
-| `Signature`       | 必须（MUST）发送；恰好一个 label `sig1`                                            |
-| `Range`           | 仅 media operation 可以（MAY）发送；单 bytes range，不参与 v1 request signature    |
+| Header | Requirement |
+| --- | --- |
+| `Content-Type` | MUST be `application/json` with a JSON body; MUST NOT be sent without a body. |
+| `Accept` | MAY be sent as `application/json`; not signed and does not change the v1 response shape. |
+| `Date` | MUST be sent as IMF-fixdate representing the same whole second as `created`. |
+| `Content-Digest` | MUST be sent; calculated over final body bytes under Section 3.2, or over the empty byte string without a body. |
+| `Signature-Input` | MUST be sent with exactly one label, `sig1`. |
+| `Signature` | MUST be sent with exactly one label, `sig1`. |
+| `Range` | MAY be sent only by the media operation; a single bytes range, not covered by the v1 request signature. |
 
-header name 大小写不敏感，但签名组件名使用上表给出的小写形式。`Date`、`Content-Digest`、
-`Signature-Input` 或 `Signature` 任一出现多个 field line、多个 dictionary member 或无法无歧义
-解析的合并值时，接收方必须（MUST）拒绝请求。`Content-Length`、`User-Agent` 和 hop-by-hop header 不参与
-v1 签名。
+Header names are case-insensitive, but signature component names use the lower-case forms in the table. A receiver MUST reject a request if `Date`, `Content-Digest`, `Signature-Input`, or `Signature` appears in multiple field lines, has multiple dictionary members, or has a combined value that cannot be parsed unambiguously. `Content-Length`, `User-Agent`, and hop-by-hop headers are not covered by the v1 signature.
 
-### 3.4 HTTP 消息签名构造（HTTP Message Signature Construction）
+### 3.4 HTTP Message Signature construction
 
-| 项目      | Federation v1 固定值或规则                                                                          |
-| --------- | --------------------------------------------------------------------------------------------------- |
-| 签名标准  | RFC 9421 wire format，单一 label `sig1`                                                             |
-| 算法      | `ed25519`                                                                                           |
-| 覆盖组件  | `"@method" "@path" "@query" "@authority" "date" "content-digest"`，顺序固定                         |
-| `keyid`   | signer 在 well-known 发布且符合鉴权上下文的 signing key ID；第一个 `/` 前是 canonical signer domain |
-| `created` | Unix epoch seconds 安全整数                                                                         |
-| `expires` | Unix epoch seconds 安全整数，`created <= expires <= created + 300`                                  |
-| `alg`     | 固定为 `"ed25519"`                                                                                  |
+| Item | Federation v1 fixed value or rule |
+| --- | --- |
+| Signature standard | RFC 9421 wire format with the single label `sig1`. |
+| Algorithm | `ed25519`. |
+| Covered components | `"@method" "@path" "@query" "@authority" "date" "content-digest"` in this fixed order. |
+| `keyid` | A signing-key ID published by the signer in well-known and valid for the authentication context; the substring before the first `/` is the canonical signer domain. |
+| `created` | A safe integer in Unix epoch seconds. |
+| `expires` | A safe integer in Unix epoch seconds satisfying `created <= expires <= created + 300`. |
+| `alg` | Fixed to `"ed25519"`. |
 
-完成第 3.1、3.2 节的 request target、body bytes 和 `Content-Digest` 后，发送方必须（MUST）按以下
-顺序构造时间字段和签名：
+After completing the request target, body bytes, and `Content-Digest` under Sections 3.1 and 3.2, the sender MUST construct time fields and the signature in this order:
 
-1. 设 `created = floor(nowMilliseconds / 1000)`、`expires = created + 300`，并以 `created` 表示的同一
-   UTC 整秒构造 `Date`。
-2. 按下列精确参数顺序构造 `Signature-Input`。
-3. 使用最终 method、raw path、raw query、authority、`Date` 和 `Content-Digest` 构造 RFC 9421 签名基串。
-4. 使用 `keyid` 对应的 Ed25519 signing private key 签名基串，并构造 `Signature`。
+1. Set `created = floor(nowMilliseconds / 1000)` and `expires = created + 300`, and construct `Date` for the same whole UTC second represented by `created`.
+2. Construct `Signature-Input` in the exact parameter order below.
+3. Construct the RFC 9421 signature base using the final method, raw path, raw query, authority, `Date`, and `Content-Digest`.
+4. Sign the signature base with the Ed25519 signing private key identified by `keyid` and construct `Signature`.
 
 ```text
 sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=<seconds>;expires=<seconds>;keyid="<key-id>";alg="ed25519"
 ```
 
-签名基串由 RFC 9421 构造，对应以下七行，行之间使用 `LF`，最后一行之后没有额外 `LF`：
+The RFC 9421 signature base consists of these seven lines separated by `LF`, with no additional `LF` after the final line:
 
 ```text
 "@method": <uppercase-method>
@@ -327,46 +215,32 @@ sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=<
 "@signature-params": ("@method" "@path" "@query" "@authority" "date" "content-digest");created=<seconds>;expires=<seconds>;keyid="<key-id>";alg="ed25519"
 ```
 
-`Signature` 的值是 `sig1=:<base64-ed25519-signature>:`。签名 base64 解码后 必须（MUST）恰好为 64 bytes。
-固定、非秘密的完整样例见
-[`schema/vectors/http-message-signature.json`](./schema/vectors/http-message-signature.json)。
+`Signature` is `sig1=:<base64-ed25519-signature>:`. The signature's base64 value MUST decode to exactly 64 bytes. See [`schema/vectors/http-message-signature.json`](./schema/vectors/http-message-signature.json) for the complete fixed, non-secret vector.
 
-### 3.5 验证顺序与失败边界（Verification Order and Failure Boundaries）
+### 3.5 Validation order and failure boundaries
 
-接收方必须（MUST）按以下安全边界验证 signed request；实现可以（MAY）合并不会改变可观察结果的内部步骤，
-但不得（MUST NOT）在完成对应安全检查前执行后续业务副作用：
+A receiver MUST validate a signed request according to these security boundaries. An implementation MAY combine internal steps that do not change observable results, but MUST NOT perform a later business side effect before completing its prerequisite security check:
 
-1. 限制 request line、header 和 body 大小，拒绝重复或无法唯一解析的安全 header。
-2. 解析 `Signature-Input` 和 `Signature`，检查唯一 label、固定组件顺序、参数集合和 `alg`。
-3. 从 `keyid` 提取 canonical signer domain，按[主协议](./protocol.md)第 3 节的鉴权上下文执行
-   recognition/authorization gate 并选择 key；
-   `recognized signed` 不得（MUST NOT）把纯传输 `degraded` 当作授权失败。
-4. 检查 `created <= expires <= created + 300`、`Date` 解析后的 Unix epoch seconds 精确等于 `created`，并拒绝
-   `created < now - 300`、`created > now + 60` 或 `expires < now`。
-5. 用收到的原始 body bytes 验证 `Content-Digest`；该 Structured Fields dictionary 必须（MUST）恰好只含一个
-   无参数 `sha-256` byte sequence。
-6. 使用收到的 method、raw path、raw query、authority 和 header value 验证 Ed25519 signature。
-7. 解析 JSON，验证 operation shape、Federation 共享类型、signer/body/resource binding 与业务授权。
-8. 只在上述检查全部成功后执行 operation 副作用。
+1. Bound request-line, header, and body sizes, and reject duplicate or ambiguously parseable security headers.
+2. Parse `Signature-Input` and `Signature`; check the single label, fixed component order, parameter set, and `alg`.
+3. Extract the canonical signer domain from `keyid`, apply the recognition or authorization gate for the authentication context in [Core Protocol, Section 3](./protocol.md), and select the key. `recognized signed` MUST NOT treat transport-only `degraded` as an authorization failure.
+4. Check `created <= expires <= created + 300` and that `Date`, parsed as Unix epoch seconds, equals `created` exactly. Reject `created < now - 300`, `created > now + 60`, or `expires < now`.
+5. Validate `Content-Digest` over the received raw body bytes. Its Structured Fields dictionary MUST contain exactly one parameterless `sha-256` byte sequence.
+6. Validate the Ed25519 signature using the received method, raw path, raw query, authority, and header values.
+7. Parse JSON and validate the operation shape, shared Federation types, signer/body/resource binding, and business authorization.
+8. Perform operation side effects only after every preceding check succeeds.
 
-operation body 如果包含 `origin` 或 `{ account, domain }` 形式的 `from`，该 domain 必须（MUST）等于
-signer domain。不携带这些字段的 operation 直接使用 signer domain 作为发送 server identity。
+If an operation body contains `origin` or a `from` of the form `{ account, domain }`, that domain MUST equal the signer domain. An operation without those fields uses the signer domain directly as the sending server identity.
 
-Header/profile 解析错误、digest 不匹配和 signature 不匹配不得（MUST NOT）降级为业务拒绝。具体 HTTP status、
-stable code 和 caller action 由错误码注册表定义。
+A header or profile parsing error, digest mismatch, or signature mismatch MUST NOT be downgraded to a business rejection. The Stable Error Registry defines the exact HTTP status, stable code, and caller action.
 
-`healthy` 是状态查询 operation。request line、JSON 或签名结构无法解析时可以（MAY）返回通用 malformed
-error；结构可解析时，peer 未知、身份无法由已有 pin 验证、binding/权限失败或本地状态不可公开都属于该
-operation 的正常查询结果，必须（MUST）按 recognition.md 返回 HTTP `200` 的 `unavailable`，且不得
-（MUST NOT）执行任何副作用。
+`healthy` is a status-query operation. An unparseable request line, JSON value, or signature structure MAY receive a generic malformed error. Once the structure is parseable, an unknown peer, an identity that cannot be verified through an existing pin, a binding or permission failure, or local state that cannot safely be disclosed is a normal query result. Under recognition.md, it MUST return HTTP `200` with `unavailable` and MUST NOT cause a side effect.
 
-Federation v1 不对普通 JSON response 再加 HTTP Message Signature；response 来源和完整性由已验证
-hostname 的 TLS 连接提供。media operation 另行定义的 response digest 规则不受此句影响。
+Federation v1 does not add an HTTP Message Signature to an ordinary JSON response; hostname-validated TLS provides response origin and integrity. This does not alter response-digest rules separately defined by the media operation.
 
-### 3.6 完整已签名请求示例（Complete Signed Request Example）
+### 3.6 Complete signed request example
 
-以下固定示例使用公开测试 public key
-`A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=`，不得（MUST NOT）将对应测试 private key 用于生产：
+The following fixed example uses public test key `A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=`. Its corresponding test private key MUST NOT be used in production:
 
 ```http
 POST /s2s/v1/feed-heads HTTP/1.1
@@ -380,9 +254,4 @@ Signature: sig1=:YB4YJhZ8Gx8fq4WI2wOszIppKsOZzrmiFMTcPoQqcS0Y9A/x0jPmwO4JrO+gAf1
 {"origin":"a.example","stateFeedEndId":"12","messageFeedEndId":"34","tombstoneFeedEndId":"9"}
 ```
 
-body 最后一行的精确 UTF-8 bytes 同时用于 `Content-Digest` 和签名；示例排版中的末尾换行不属于 body。
-`Host` 产生签名组件 `"@authority": b.example`，该 request 无 query，因此签名组件为
-`"@query": ?`。完整签名基串及非秘密 private test key 见
-[`schema/vectors/http-message-signature.json`](./schema/vectors/http-message-signature.json)。Recognize 和
-Healthy 的 certificate、request、response 与签名基串完整示例见
-[Federation v1 服务器认可](./recognition.md#10-完整-http-构造示例complete-http-construction-examples)。
+The exact UTF-8 bytes of the final body line are used for both `Content-Digest` and the signature; the trailing newline shown by formatting is not part of the body. `Host` produces signature component `"@authority": b.example`. The request has no query, so its signature component is `"@query": ?`. The complete signature base and non-secret private test key are in [`schema/vectors/http-message-signature.json`](./schema/vectors/http-message-signature.json). [Federation v1 Peer Recognition, Section 10](./recognition.md#10-complete-http-construction-examples) contains complete certificates, requests, responses, and signature bases for Recognize and Healthy.

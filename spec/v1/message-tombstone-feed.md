@@ -1,13 +1,15 @@
 # Simple Open Chat Federation Protocol v1 Message Tombstone Feed and Query
 
-状态：`RELEASE CANDIDATE`（`v1.0.0-rc.0`）
-规范性：本文全部为规范性要求。
+Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
-本文定义墓碑索引型压缩 feed `GET /s2s/v1/message-tombstone-feed` 和按 thread 读取权威
-删除事实的 `GET /s2s/v1/message-tombstones`。feed 不携带具体 tombstone，只携带
-`thread + tombstoneEndSeq`。
+This document is entirely normative.
 
-## 1. 删除事实与权威
+This document defines the compact tombstone index feed
+`GET /s2s/v1/message-tombstone-feed` and the per-thread authoritative deletion
+query `GET /s2s/v1/message-tombstones`. The feed contains only
+`thread + tombstoneEndSeq`; it does not contain tombstones.
+
+## 1. Authoritative deletion facts
 
 ```ts
 type MessageTombstoneType = 'WITHDRAW' | 'REPORT';
@@ -21,32 +23,49 @@ interface MessageTombstone {
 }
 ```
 
-`WITHDRAW` 是作者撤回；`REPORT` 是 thread authority 已生效的治理删除。两者均是不可逆的
-不可见终态。稳定目标是 `(publisher domain, thread, messageSeq)`。其中 `messageSeq` 必须等于
-当前 tombstone publisher 当初通过 message query 向该 consumer 发布目标消息时的 `FederatedMessage.seq`；
-它与该 publisher 的 thread message sequence 使用同一坐标，不是目标消息外层 nullable `originSeq` 的原样复制，
-也不是跨任意 publisher 不变的全局坐标。
+`WITHDRAW` is an author withdrawal. `REPORT` is a moderation deletion enacted
+by the thread authority. Both are irreversible terminal states in which the
+message is no longer visible.
 
-P2P `WITHDRAW` 的 authority 是目标消息作者所在 domain。群消息的权威 publisher 始终是 group origin；
-第三方成员 home server 只能向 origin 提交本域作者的 `WITHDRAW`，origin 验证并形成群权威事实后
-再分发给 mirrors。`REPORT` 只能由 group origin 的治理流程产生。mirror 不得继续转发。
+The stable target is `(publisher domain, thread, messageSeq)`. `messageSeq`
+MUST equal the `FederatedMessage.seq` with which the current tombstone
+publisher originally exposed the target message to this consumer through the
+message query. It therefore uses that publisher's thread-message coordinate.
+It is neither a copy of the target message's nullable outer `originSeq` nor a
+globally stable coordinate across arbitrary publishers.
 
-`deletionSeq` 是墓碑自身的独立正整数 ID。对同一 thread 必须严格递增且不复用；协议不要求连续，
-也不要求不同 thread 使用相互独立的分配器。它与 message
-`seq`、`messageSeq`、feed ID 都是独立坐标。publisher MUST 永久保留权威 tombstone 事实；不得因
-容量、时间、peer ACK、好友重加或成员重新入群而丢弃或重置 deletion sequence。
+For a P2P `WITHDRAW`, the authority is the target message author's domain. For
+a group message, the authoritative publisher is always the group origin. A
+third-party member home server MAY only submit a `WITHDRAW` for its local
+author to the origin. The origin validates the submission, creates the
+authoritative group fact, and distributes it to mirrors. Only the group
+origin's moderation process MAY create a `REPORT`. A mirror MUST NOT relay a
+group tombstone further.
 
-consumer 应用 tombstone 时，使用持久保存的 source domain、thread 和 source message `seq` 映射定位
-本地目标。群成员 home server 向 group origin 提交 `WITHDRAW` 时使用自己曾向 origin 发布该消息的 `seq`；
-group origin 形成权威 tombstone 并向 mirror 发布时，改用 origin 曾向该 mirror 发布目标消息的 `seq`。
-任一 publisher 都不得把上一跳的 `messageSeq` 未经坐标转换直接继续发布。
+`deletionSeq` is the tombstone's independent positive-integer identifier. It
+MUST strictly increase without reuse within a thread. The protocol requires
+neither contiguous values nor a separate allocator for every thread. It is
+independent of message `seq`, `messageSeq`, and feed IDs. A publisher MUST
+retain authoritative tombstones permanently and MUST NOT discard them or
+reset their sequence because of capacity, age, peer acknowledgement, renewed
+friendship, or group re-entry.
+
+To apply a tombstone, a consumer locates its local target using the persistently
+stored source domain, thread, and source message `seq`. When a group member's
+home server submits a `WITHDRAW` to the group origin, it uses the `seq` with
+which it exposed that message to the origin. When the origin publishes the
+resulting authoritative tombstone to a mirror, it instead uses the `seq` with
+which the origin exposed the target message to that mirror. A publisher MUST
+NOT forward the previous hop's `messageSeq` without translating coordinates.
 
 ## 2. Tombstone feed
 
-feed 请求参数是可选 `after`、`take`、`through`，其 shape、bootstrap、左开右闭窗口、page 计算、
-不维护 source ACK 以及不验证 consumer cursor 单调性的规则，与
-[Message Feed 第 1 节](./message-feed.md#1-message-feed) 完全相同。省略 `after` 时返回
-`FEDERATION_FEED_CURSOR_UNAVAILABLE { resumeAfter }`。
+The optional feed parameters are `after`, `take`, and `through`. Their shapes,
+bootstrap behavior, half-open/half-closed window, page calculation, lack of
+source-side acknowledgements, and absence of consumer-cursor monotonicity
+checks are identical to [Message Feed Section 1](./message-feed.md#1-message-feed).
+When `after` is omitted, the source returns
+`FEDERATION_FEED_CURSOR_UNAVAILABLE { resumeAfter }` instead of a page.
 
 ```ts
 interface MessageTombstoneFeedPage {
@@ -63,43 +82,61 @@ interface MessageTombstoneFeedItem {
 }
 ```
 
-stable key 是 `(target peer, thread)`。当该 peer 有权得知的 `tombstoneEndSeq` 严格增加时，source MUST
-为它分配新的、全 feed 历史更大的 `feedId`，并用新 item 取代旧 item。相同或更小上界是 no-op。
+The stable key is `(target peer, thread)`. Whenever the `tombstoneEndSeq`
+visible to that peer strictly increases, the source MUST allocate a new
+`feedId` greater than every earlier ID in that feed and replace the previous
+item with the new item. An equal or lower end is a no-op.
 
-tombstone feed 是持久压缩索引。source 可删除被新 item 覆盖的旧索引 item。对仍有当前
-audience 或仍允许查询的 thread，source 不得因压缩、历史清理或重启删除当前投影，
-也不得要求 consumer 提高 feed `after`。更新 item 必须使用更大 `feedId`，不得在
-consumer 已可能越过的 ID 上原地改写。
+The tombstone feed is a durable compact index. The source may remove an older
+index item superseded by a newer item. For a thread that still has a current
+audience or remains queryable, the source MUST NOT remove the current
+projection because of compaction, history cleanup, or restart, and MUST NOT
+require the consumer to advance `after`. An update MUST use a greater
+`feedId`; it MUST NOT rewrite an ID that a consumer may already have passed.
 
-P2P 好友关系解除后，source MAY 独立删除该 peer/thread 的当前 tombstone-feed 投影；
-删除不分配新 `feedId`，也不回退 `tombstoneFeedEndId`。message feed 和 tombstone feed
-的 thread 集合不要求相同：从未发生撤回的 thread 没有 tombstone stable key 是正常状态。
-关系重新建立后，若需重建该投影，即使 `tombstoneEndSeq` 未变，也 MUST 分配新的、
-更大的 `feedId`。
+After a P2P friendship ends, the source MAY independently remove that
+peer/thread's current tombstone-feed projection. Removal neither allocates a
+new `feedId` nor decreases `tombstoneFeedEndId`. The message and tombstone feeds
+need not contain the same set of threads: a thread with no withdrawals has no
+tombstone stable key. If the relationship is later restored and the projection
+must be recreated, the source MUST allocate a new, greater `feedId` even when
+`tombstoneEndSeq` has not changed.
 
-feed item 只是查询发现索引，不是删除事实，不能单独导致本地 message 删除。consumer 原子合并
-每个 thread 的最大 `tombstoneEndSeq` 和 feed `scannedThrough`，然后通过 query 取得具体事实。
+A feed item is only a query-discovery index, not a deletion fact, and cannot by
+itself cause a local message deletion. The consumer atomically merges the
+greatest `tombstoneEndSeq` for each thread with feed `scannedThrough`, then uses
+the query to retrieve the corresponding facts.
 
 ## 3. Tombstone query
 
-`GET /s2s/v1/message-tombstones` 使用与 message query 完全相同的 P2P/GROUP thread query union，
-并使用可选 `after`、`through`、`take`、`includeSelf`。此处 `after` 和 `through` 属于 thread-local
-`deletionSeq` 空间，不是 tombstone feed ID。`take` 和 `through` 只能与 `after` 一起出现；携带
-`through` 时必须满足 `through >= after`，否则返回 `400 FEDERATION_MALFORMED`。
+`GET /s2s/v1/message-tombstones` uses the same P2P/GROUP thread-query union as
+the message query. It accepts optional `after`, `through`, `take`, and
+`includeSelf`. Here, `after` and `through` belong to the thread-local
+`deletionSeq` space, not the tombstone-feed ID space. `take` and `through` may
+only appear with `after`. If present, `through` MUST be greater than or equal
+to `after`; otherwise the source returns `400 FEDERATION_MALFORMED`.
 
-`includeSelf` 的 wire、默认值和分页规则与 message query 相同。`includeSelf=false` 使 source 根据其
-权威目标消息记录，不返回作者 domain 等于已验证 signer domain 的 tombstone。作者不因此成为
-tombstone wire 字段。被过滤的 `deletionSeq` 是可扫描空洞，
-不阻止 `scannedThrough` 推进；该过滤不删除 tombstone 权威事实。
+The wire representation, default, and pagination behavior of `includeSelf`
+are identical to the message query. With `includeSelf=false`, the source uses
+its authoritative target-message record to omit tombstones whose author domain
+equals the verified signer domain. The author does not thereby become a
+tombstone wire field. A filtered `deletionSeq` is a scannable gap and does not
+prevent `scannedThrough` from advancing. Filtering does not delete the
+authoritative tombstone.
 
-GROUP tombstone 只有两个合法方向：成员 home server 只向 group origin 提供本域作者的
-`WITHDRAW` submission；group origin 只向持有该群 mirror 的 peer 提供已生效的权威 tombstone。
-mirror 不得（MUST NOT）向非 origin peer 返回该群 tombstone，也不得（MUST NOT）产生或中继 `REPORT`。
+There are exactly two valid directions for group tombstones: a member home
+server provides the group origin with a `WITHDRAW` submission for its local
+author, and the group origin provides enacted authoritative tombstones to a
+peer holding a mirror of that group. A mirror MUST NOT return a group tombstone
+to a non-origin peer and MUST NOT create or relay a `REPORT`.
 
-省略 `after` 时，source 返回 `FEDERATION_FEED_CURSOR_UNAVAILABLE { resumeAfter }` 而不返回 page。
-起点由 source 对该 thread 的授权视图定义；协议不要求为 `0`。由于 tombstone 事实永久保留，
-已携带的、语法合法且不大于当前 `tombstoneEndSeq` 的 `after` MUST 可读；source 不得以清理为由
-返回更大 `resumeAfter`。明显大于当前 end 的 `after` MAY 获得有效的修正起点。
+When `after` is omitted, the source returns
+`FEDERATION_FEED_CURSOR_UNAVAILABLE { resumeAfter }` instead of a page. The
+source defines the starting point for that thread's authorized view; it need
+not be `0`. Because tombstones are retained permanently, a syntactically valid
+`after` no greater than the current `tombstoneEndSeq` MUST remain readable. A
+source MUST NOT return a greater `resumeAfter` on the basis of cleanup. An
+`after` clearly beyond the current end MAY receive a corrected starting point.
 
 ```ts
 interface MessageTombstoneQueryPage {
@@ -109,49 +146,76 @@ interface MessageTombstoneQueryPage {
 }
 ```
 
-查询窗口是 `(after, min(through, currentTombstoneEndSeq)]`，返回项按 `deletionSeq` 严格递增。
-`candidates` 是窗口内该 peer 有权获知的全部权威 tombstone；page 前缀、`scannedThrough`、`hasMore`、
-空洞和固定 `through` 的计算与 message query 第 2.2 节一致。空页可推进到本请求上界，但不得跳过区间内
-存在且该 peer 有权获知的权威事实。
+The query window is `(after, min(through, currentTombstoneEndSeq)]`, and results
+are ordered by strictly increasing `deletionSeq`. `candidates` consists of all
+authoritative tombstones in the window that this peer may learn. The page
+prefix, `scannedThrough`, `hasMore`, gaps, and fixed-`through` calculations are
+identical to Message Query Section 2.2. An empty page may advance to this
+request's upper bound but MUST NOT skip an authoritative fact in the interval
+that this peer may learn.
 
-source MUST 在 query 时重新校验 thread authority、目标 peer 是否曾被授予目标消息的可见性，以及
-当前 block 和本地策略。feed item 不是授权 proof。权限计算 MAY 幂等物化已有 durable facts 推导的
-即时好友/群有效状态，但不得因 GET 本身创建或扩大授权。
+For every query, the source MUST revalidate thread authority, whether the
+target peer was granted visibility of the target message, current blocking,
+and local policy. A feed item is not proof of authorization. Authorization
+evaluation MAY idempotently materialize immediate friendship or group state
+derived from existing durable facts, but the GET request itself MUST NOT create
+or broaden authorization.
 
-consumer 收到关系终止的 state-feed 状态后 MUST 使该 peer/thread 的当前 tombstone-feed
-目标失效。若 tombstone query 先因当前关系失效返回 `FORBIDDEN`，consumer MUST 停止该
-thread 的 query、使当前待处理 end 失效并优先重新排空 state feed。不得因此回退全局
-tombstone-feed cursor，也不得撤销已提交的权威 tombstone 事实。
+After receiving relationship termination through the state feed, a consumer
+MUST invalidate that peer/thread's current tombstone-feed target. If a
+tombstone query first returns `FORBIDDEN` because the current relationship is
+invalid, the consumer MUST stop querying that thread, invalidate its pending
+end, and prioritize draining the state feed again. It MUST NOT decrease the
+global tombstone-feed cursor or undo an applied authoritative tombstone.
 
-实现方配额耗尽时，query MAY 返回 HTTP `200 FEDERATION_QUOTA_EXCEEDED` 和唯一结构化数据
-`{ retryAfter }`。consumer 不推进 thread deletion cursor、不改变 peer lifecycle，并至少等待该秒数后重试。
-配额阈值、单位、窗口和算法不属于协议，也不得作为结构化字段返回。
+When the source cannot serve the query because its quota is exhausted, it MAY
+return HTTP `200 FEDERATION_QUOTA_EXCEEDED` with the sole structured data
+`{ retryAfter }`. The consumer MUST NOT advance the thread deletion cursor or
+change peer lifecycle state, and MUST wait at least that many seconds before
+retrying. Quota thresholds, units, windows, and algorithms are outside this
+protocol and MUST NOT be returned as structured fields.
 
-## 4. Consumer 应用与竞态
+## 4. Consumer application and races
 
-consumer 必须校验 authority binding：P2P source 必须是目标消息作者 domain；群 tombstone source 必须是已知 group
-origin。若 tombstone 先于目标消息到达，consumer 按 `(source domain, thread, messageSeq)` 保存 pending 事实，
-并在目标消息到达时完成作者 binding 校验；失配必须保持消息不可见、停止该 page 的提交并记录审计冲突。
-第三方成员提交给 origin 的撤回 command 不是 mirror 可应用的权威 query item。
+The consumer MUST validate the authority binding: a P2P source MUST be the
+target message author's domain, and a group tombstone source MUST be the known
+group origin. If a tombstone arrives before its target message, the consumer
+retains a pending fact keyed by `(source domain, thread, messageSeq)` and
+completes author-binding validation when the message arrives. A mismatch MUST
+leave the message invisible, prevent the page from being committed, and be
+recorded as an audit conflict. A member's withdrawal submission to the origin
+is not an authoritative query item that a mirror can apply.
 
-一个 query page 与本地 thread deletion cursor 必须在同一事务中提交。每个 tombstone 按稳定目标幂等应用：
+A query page and the local thread deletion cursor MUST commit atomically. Each
+tombstone is applied idempotently to its stable target:
 
-- message 已存在时，使其进入不可见终态，并更新 preview、search、unread、quote、forward 和本地删除日志；
-- message 尚未到达时，保存 pending tombstone，阻止后到或重放消息复活；
-- 停止目标消息尚未完成的 media/bundle 本地化和新资源授权；
-- 已有语义相同事实是 no-op；同一稳定目标的 authority、type 或 `deletedAt` 矛盾必须回滚 page 并审计。
+- If the message exists, it enters the irreversible invisible state. Any
+  derived local views MUST reflect that state.
+- If the message has not arrived, a pending tombstone prevents a later or
+  replayed copy from reviving it.
+- The consumer stops unfinished localization of the target message's media or
+  bundle and grants no new resource access for it.
+- An existing semantically identical fact is a no-op. Conflicting authority,
+  `type`, or `deletedAt` for the same stable target MUST roll back the page and
+  produce an audit conflict.
 
-message 插入、media promote 和 tombstone 应用必须共享稳定目标串行化边界。tombstone 先到和 message
-先到都必须收敛为相同删除结果。权威 tombstone 的目标暂时不存在不是 query 失败，也不得阻塞
-query cursor。
+Message acceptance, resource promotion, and tombstone application MUST share a
+serialization boundary for the stable target. Whether the tombstone or message
+arrives first, the outcome MUST converge to the same deleted state. A
+temporarily absent tombstone target is not a query failure and MUST NOT block
+the query cursor.
 
-## 5. 与轻量推送的关系
+## 5. Relationship to lightweight push
 
-`feed-heads` 的三个核心 drain target 仍是 `stateFeedEndId`、`messageFeedEndId`、
-`tombstoneFeedEndId`；可选 extension 不改变其含义。consumer 先排空
-state feed，再排空 tombstone 和 message 索引 feed，合并其 thread end seq，最后按 thread 调用两个 query。
-提示可丢失、重复或乱序；启动和周期 reconciliation 必须直接读取三个 feed。
+The three core drain targets in `feed-heads` remain `stateFeedEndId`,
+`messageFeedEndId`, and `tombstoneFeedEndId`; optional extensions do not alter
+their meanings. The consumer first drains the state feed, then the tombstone
+and message index feeds, merges their per-thread end sequences, and finally
+invokes both per-thread queries. Hints may be lost, duplicated, or reordered,
+so startup and periodic reconciliation MUST read all three feeds directly.
 
-删除应先于消息正文应用。对同一轮发现的 thread，consumer SHOULD 先把 tombstone query 排空到
-`tombstoneEndSeq`，再把 message query 排空到 `messageEndSeq`；即使到达顺序相反，第 4 节的 pending 机制仍必须
-保证收敛。
+Deletion SHOULD be applied before message content. For a thread discovered in
+the same reconciliation pass, the consumer SHOULD drain the tombstone query to
+`tombstoneEndSeq` before draining the message query to `messageEndSeq`. If they
+arrive in the opposite order, the pending mechanism in Section 4 MUST still
+ensure convergence.

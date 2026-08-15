@@ -1,12 +1,10 @@
 # Message Envelope
 
-状态：`RELEASE CANDIDATE`（`v1.0.0-rc.0`）
+Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
-本文定义 federation message query 中每个 message 共用的外层 wire 结构、来源坐标、幂等规则和
-processing receipt。具体 `contentType` 的解析后结构见 [Message 总览](../message.md#4-contenttype)
-及其分主题文档；分页语义见 [Message Feed and Query](../message-feed.md)。
+This document defines the outer wire shape, origin coordinates, idempotency rules, and processing receipts shared by every message in a federation message query. See the [Message overview](../message.md#4-contenttype) and its topic documents for each parsed `contentType` shape, and [Message Feed and Query](../message-feed.md) for pagination semantics.
 
-## 1. Wire 类型
+## 1. Wire types
 
 ```ts
 interface Address {
@@ -46,46 +44,38 @@ interface FederatedMessage extends EncodedMessageContent {
 }
 ```
 
-`JsonObjectString` 表示 UTF-8 JSON object 的字符串编码，不是任意文本。consumer MUST 先校验外层
-`FederatedMessage`，再根据 `contentType` 处理 `content`。已知类型必须执行一次 JSON 解析并严格校验对应
-closed schema；解析结果不是 object、包含该类型未知字段或不符合对应类型时必须拒绝。合法但未知的
-extension type 使用 [Message 第 4 节](../message.md#4-contenttype)的有界跳过规则。
+`JsonObjectString` is a string encoding of a UTF-8 JSON object, not arbitrary text. A consumer MUST validate the outer `FederatedMessage` before processing `content` according to `contentType`. For a known type, it MUST parse the string once as JSON and strictly validate the corresponding closed schema. It MUST reject a result that is not an object, contains fields unknown to that type, or otherwise violates the type. A valid but unknown extension type follows the bounded skip rules in [Message, Section 4](../message.md#4-contenttype).
 
-## 2. Thread 与 author
+## 2. Thread and author
 
-- GROUP identity 由 `thread.account/domain` 标识，`account` 必须是 `GroupAccount`。
-- P2P `participants` MUST 恰好包含两个不同 Address，必须包含 `author`，顺序无语义。
-- message author 和 P2P participant 的 `account` 必须是 `UserAccount`。
-- consumer 以规范化 Address 的 `(domain, account)` ASCII lexicographic 顺序构造 P2P 本地唯一键。
+- GROUP identity is identified by `thread.account/domain`; `account` MUST be a `GroupAccount`.
+- P2P `participants` MUST contain exactly two distinct addresses and MUST include `author`; ordering has no semantics.
+- The `account` of a message author or P2P participant MUST be a `UserAccount`.
+- A consumer constructs the local P2P unique key by sorting normalized addresses in ASCII lexicographic `(domain, account)` order.
 
-## 3. 顺序与来源时间
+## 3. Ordering and origin time
 
-message wire 没有客户端权威的 `date` 字段：
+The message wire has no client-authoritative `date` field:
 
-- `seq` 是当前 publisher 把该副本写入本地 thread 时分配的 thread-local 顺序。consumer 落库时分配
-  自己的本地 `seq`，不得强行复用 wire `seq`。
-- `createdAt` 是当前 publisher 首次持久化该副本的 epoch milliseconds，不是客户端发送时间、设备时间
-  或跨 server 排序时间。
-- 权威源发布 timeline message 时，`originSeq/originCreatedAt` 必须是 `null/null`。
-- consumer 从直接 publisher 拉取并形成非权威副本时，其 origin pair 必须等于 incoming
-  `seq/createdAt`。
-- `originSeq/originCreatedAt` 必须同时为 null 或同时非 null。它们是单跳来源坐标，不得跨 publisher
-  原样复制。
+- `seq` is the thread-local sequence assigned when the current publisher writes this copy into its local thread. A consumer assigns its own local `seq` on persistence and MUST NOT force reuse of the wire `seq`.
+- `createdAt` is the epoch-millisecond time at which the current publisher first persisted this copy. It is not client send time, device time, or a cross-server ordering time.
+- When the authoritative origin publishes a timeline message, `originSeq/originCreatedAt` MUST be `null/null`.
+- When a consumer pulls from its direct publisher and creates a non-authoritative copy, its origin pair MUST equal the incoming `seq/createdAt`.
+- `originSeq/originCreatedAt` MUST either both be null or both be non-null. They are single-hop origin coordinates and MUST NOT be copied unchanged across publishers.
 
-content 内的业务时间，例如 CALL 的 `startedAt/endedAt`，不能替代外层 `createdAt`。
+An application time inside content, such as CALL `startedAt/endedAt`, cannot replace the outer `createdAt`.
 
-## 4. Identity 与不可变性
+## 4. Identity and immutability
 
-incoming message 的直接来源 identity 是：
+The direct-origin identity of an incoming message is:
 
 ```text
 (source domain, normalized thread, wire seq)
 ```
 
-consumer 必须持久保存该坐标与本地副本的映射。同一来源坐标的普通消息重放必须幂等合并；不得按时间、
-preview 或本地记录 ID 去重。
+A consumer MUST durably store the mapping from this coordinate to its local copy. An ordinary message replay at the same origin coordinate MUST merge idempotently; it MUST NOT be deduplicated by time, preview, or local record ID.
 
-同一来源坐标下，以下字段全部不可变：
+All of the following fields are immutable at a given origin coordinate:
 
 - `thread`
 - `author`
@@ -93,69 +83,64 @@ preview 或本地记录 ID 去重。
 - `originSeq/originCreatedAt`
 - `createdAt`
 - `contentType`
-- 解析后的 `content`
+- parsed `content`
 - `quoteTarget`
 - `assets`
 
-任一字段冲突都是坏 item，不得用较新的时间、较大的 seq 或接收顺序覆盖。v1 不定义消息编辑；撤回和
-治理删除由 [Message Tombstone Feed](../message-tombstone-feed.md) 表达。
+A conflict in any field makes the item invalid. It MUST NOT be overwritten using a newer time, larger sequence, or receive order. v1 does not define message editing; [Message Tombstone Feed](../message-tombstone-feed.md) expresses retraction and governance deletion.
 
-## 5. 条件字段
+## 5. Conditional fields
 
-字段声明中的 `?` 只表示字段在某些合法状态下省略，不表示 publisher 可以任意选择：
+`?` in a field declaration means the field is omitted in certain valid states; it does not give the publisher an arbitrary choice:
 
-| 字段 | 必须出现 | 必须省略 |
+| Field | Required when | Omitted when |
 | ---- | -------- | -------- |
-| `quoteTarget` | `PURE_TEXT` message 是引用回复 | message 不是引用回复，或类型不是 `PURE_TEXT` |
-其他类型专属条件字段由对应 content 文档定义。
+| `quoteTarget` | A `PURE_TEXT` message is a quoted reply | The message is not a quoted reply, or its type is not `PURE_TEXT` |
 
-## 6. Asset 清单
+The corresponding content document defines type-specific conditional fields.
 
-`assets` 是 content 直接引用 CAS bytes 的权威清单：
+## 6. Asset manifest
 
-| `contentType` | digest 与 `assets` |
+`assets` is the authoritative manifest of CAS bytes directly referenced by content:
+
+| `contentType` | Digests and `assets` |
 | ------------- | ------------------ |
-| `PURE_TEXT`、`INVITE`、`CALL`、`FORWARD` | 不直接引用 digest，必须为空 |
-| `IMAGE`、`VIDEO`、`AUDIO`、`FILE` | 恰好一个 digest 和同 digest descriptor |
-| `GALLERY` | item digest 的去重完整集合 |
-| `LINK` | `imageDigest/faviconDigest` 的去重完整集合，可以为 0、1 或 2 项 |
+| `PURE_TEXT`, `INVITE`, `CALL`, `FORWARD` | Reference no digest directly; MUST be empty |
+| `IMAGE`, `VIDEO`, `AUDIO`, `FILE` | Exactly one digest and a descriptor for that digest |
+| `GALLERY` | The complete deduplicated set of item digests |
+| `LINK` | The complete deduplicated set of `imageDigest/faviconDigest`, containing zero, one, or two entries |
 
-- 每个 digest 最多出现一次。
-- content 引用 digest 的去重集合必须与 `assets` 完全相等。
-- `BlobDescriptor.bytes` 是资源的唯一声明长度。consumer 可以在下载前用它执行本地大小和 quota
-  检查；完整下载后仍必须同时验证实际字节数和 digest。
-- 资源当前是否存在只由资源 operation 的响应表达；消息 descriptor 不携带可用状态。
+- Each digest appears at most once.
+- The deduplicated set of digests referenced by content MUST exactly equal `assets`.
+- `BlobDescriptor.bytes` is the resource's sole declared length. A consumer may use it for local size and quota checks before download; after a complete download, it MUST still validate both the actual byte count and digest.
+- Resource operations alone express whether a resource currently exists; a message descriptor carries no availability state.
 
-## 7. 引用坐标
+## 7. Reference coordinates
 
-只有 `PURE_TEXT` reply 可以携带 `quoteTarget`。`quoteTarget.targetSeq` 指向同一 thread 中当前权威
-publisher 的目标 `seq`。
+Only a `PURE_TEXT` reply may carry `quoteTarget`. `quoteTarget.targetSeq` identifies the target `seq` assigned by the current authoritative publisher in the same thread.
 
-consumer 使用 `(source domain, thread, targetSeq)` 查找目标副本，再投影为本地 seq。引用不携带远端
-preview；目标不可用时仍保存 reply，并显示本地的不可用占位。
+The consumer locates the target copy using `(source domain, thread, targetSeq)`, then projects it to a local sequence. A quote carries no remote preview. If the target is unavailable, the consumer still stores the reply and displays a local unavailable placeholder.
 
-## 8. Processing receipt
+## 8. Processing receipts
 
-consumer 成功持久化 incoming message 后，应该（SHOULD）使该非权威副本可由直接 publisher 查询，
-作为 processing receipt。副本的 origin pair 等于 publisher 原 item 的 `seq/createdAt`。
+After successfully persisting an incoming message, a consumer SHOULD make the non-authoritative copy queryable by its direct publisher as a processing receipt. The copy's origin pair equals the publisher's original item `seq/createdAt`.
 
-publisher 读取 receipt 时：
+When reading a receipt, the publisher:
 
-- 使用 `(thread, author, originSeq)` 关联自己先前发布的 message；
-- 只把 receipt 的 `seq/createdAt` 用作对方副本坐标和诊断时间；
-- 不得创建 timeline message、修改原消息、产生新 receipt 或继续分发；
-- 不得把 receipt 的 origin pair 反写到原消息。
+- Uses `(thread, author, originSeq)` to associate a message it previously published.
+- Uses the receipt's `seq/createdAt` only as the peer-copy coordinate and diagnostic time.
+- MUST NOT create a timeline message, modify the original message, produce another receipt, or distribute it further.
+- MUST NOT write the receipt's origin pair back to the original message.
 
-未观察到 receipt 不能证明处理失败，也不能区分尚未处理、传输延迟、本地隔离或丢弃。
+The absence of an observed receipt does not prove processing failure and cannot distinguish pending processing, transport delay, local quarantine, or discard.
 
-## 9. 通用接收顺序
+## 9. Common receive order
 
-1. 校验 thread、author、query seq 和所有外层字段。
-2. 根据 `contentType` 解析并校验 `content`。
-3. 校验 `assets` 与 content digest 集合完全一致。
-4. 使用直接来源 identity 幂等接收并记录坐标映射。
-5. 将未下载资源保存为 durable pending work。
-6. 按本地策略提交合法 item、隔离坏 item，并推进允许推进的 query cursor。
+1. Validate the thread, author, query sequence, and every outer field.
+2. Parse and validate `content` according to `contentType`.
+3. Validate that `assets` exactly matches the set of content digests.
+4. Receive idempotently using the direct-origin identity and record the coordinate mapping.
+5. Store unfetched resources as durable pending work.
+6. Under local policy, commit valid items, quarantine invalid items, and advance the query cursor where allowed.
 
-单条坏消息和后续资源失败不得永久阻塞同页其他消息或 cursor，也不得留下可被视为合法 message、资源
-授权 proof 或其他业务事实的部分写入。
+One invalid message or a later resource failure MUST NOT permanently block other messages on the same page or the cursor, and MUST NOT leave a partial write that could be treated as a valid message, resource-authorization proof, or other application fact.

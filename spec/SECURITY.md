@@ -1,19 +1,15 @@
 # SOCFP Security Policy
 
-## 支持范围
+## Supported versions
 
-当前尚未公开发布的 `v1.0.0-rc.0` 接受协议安全修订。Release candidate 可能通过新的 RC 发布不兼容修复；协议不得为了
-保持 RC 兼容而保留已确认的安全缺陷。
+The not-yet-published `v1.0.0-rc.0` accepts protocol security corrections. A release candidate may include an incompatible security fix; the protocol must not retain a confirmed vulnerability merely to preserve RC compatibility.
 
-## 报告
+## Reporting
 
-普通安全问题通过 GitHub Issue 提交。涉及可直接利用的身份冒充、签名绕过、重放或授权泄漏时，报告者
-应使用 GitHub 的 private vulnerability reporting，避免先在公开 Issue 披露攻击细节。仓库启用该功能前，
-本文件只说明限制，不要求报告者改用邮件或其他平台。
+Report ordinary security issues through a GitHub Issue. For directly exploitable identity impersonation, signature bypass, replay, or authorization disclosure, reporters should use GitHub private vulnerability reporting to avoid publishing attack details first. Until that feature is enabled for the repository, this file states the limitation but does not require reporters to switch to email or another platform.
 
-非敏感协议问题和修改统一通过 GitHub Issues 和 Pull Requests 处理。
+Use GitHub Issues and Pull Requests for non-sensitive protocol issues and changes.
 
-## 处理原则
+## Response principles
 
-维护者应确认报告、区分协议缺陷与实现缺陷，并在必要时协调受影响实现。协议修复必须同步规范正文、
-changelog、Schema、向量和 conformance；实现修复不能静默改变 wire contract。
+Maintainers should acknowledge a report, distinguish protocol defects from implementation defects, and coordinate affected implementations when necessary. A protocol fix must update the normative text, changelog, Schema, vectors, and conformance checks together. An implementation fix cannot silently alter the wire contract.

@@ -1,69 +1,59 @@
-# Simple Open Chat Federation Protocol v1 服务器认可（Peer Recognition）
+# Simple Open Chat Federation Protocol v1 Peer Recognition
 
-状态：`RELEASE CANDIDATE`（`v1.0.0-rc.0`）
+Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
 Operations：
 
 - `POST /s2s/v1/recognize`
 - `POST /s2s/v1/healthy`
 
-本文定义服务器认可（peer recognition）的方向语义、双向建立时序、身份固定、成功确认、失败处理，
-以及健康查询（health query）的隐私保护行为。Federation 基础类型和响应封装由
-[Simple Open Chat Federation Protocol v1](./protocol.md) 定义；HTTPS、发现、密钥证书和 HTTP Message Signature 由
-[传输与安全](./transport-security.md)定义；错误分类由 [错误码注册表](./errors.md)定义。
+This document defines the directional semantics and bidirectional establishment timing of peer recognition, identity pinning, success confirmation, failure handling, and the privacy-preserving behavior of health queries. [Simple Open Chat Federation Protocol v1](./protocol.md) defines shared Federation types and response envelopes; [Transport and Security](./transport-security.md) defines HTTPS, discovery, key certificates, and HTTP Message Signatures; the [Stable Error Registry](./errors.md) defines error classification.
 
-规范词 `必须（MUST）`、`不得（MUST NOT）`、`应该（SHOULD）`、`不应该（SHOULD NOT）` 和
-`可以（MAY）` 按 RFC 2119/RFC 8174 解释。
+The key words `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, and `MAY` are to be interpreted as described in RFC 2119 and RFC 8174.
 
-## 1. 核心语义（Core Semantics）
+## 1. Core semantics
 
-`A → B Recognize` 的唯一协议含义是：
+The sole protocol meaning of `A → B Recognize` is:
 
-> A 已通过 B 的 HTTPS well-known 验证并认可 B 当前的 Federation 身份，请求 B 持久记录“A 认可 B”。
+> A has validated and recognized B's current Federation identity through B's HTTPS well-known document and asks B to durably record “A recognizes B.”
 
-B 返回 `OK` 的唯一协议含义是：
+The sole protocol meaning of B returning `OK` is:
 
-> B 已确认请求来自 A，并已持久提交“A 认可 B”这个方向事实。
+> B has confirmed that the request came from A and durably committed the directional fact “A recognizes B.”
 
-一次 Recognize 只完成一个方向，不表示 B 认可 A，也不表示双方连接已经健康。B 为验证 A 的请求而读取
-A 的 well-known 只是身份验证（authentication）；B 对 A 的认可必须（MUST）通过反向
-`B → A Recognize` 明确表达。
+One Recognize completes only one direction. It does not mean B recognizes A or that the connection is healthy. B's retrieval of A's well-known document to validate A's request is authentication only. B MUST explicitly express recognition of A through reverse `B → A Recognize`.
 
-完整建立由两个相反方向的 Recognize 组成：
+Complete establishment consists of two opposite Recognize operations:
 
 ```text
 A recognizes B  ── B returns OK
 B recognizes A  ── A returns OK
 ```
 
-只有两个方向的认可、双方服务准备和 identity/policy 要求都收敛后，peer 才是 `available`。通常证据是两个
-Recognize `OK`。如果第一个 `OK` 丢失，调用方可以（MAY）幂等重试原方向；Healthy 只能取得可达性证明，
-不能代替丢失的 Recognize `OK`。反向 Recognize 也不提供该证明，因为
-双方可能独立并发发起。请求方必须（MUST）幂等重试原方向 Recognize，直到收到有效 `OK` 或可认证的硬错误。
-Recognize 不交换 feed cursor，不初始化业务 mirror，也不证明用户、群组或消息权限。
+The peer becomes `available` only after both directions of recognition, service readiness on both sides, and identity and policy requirements converge. The usual evidence is two Recognize `OK` responses. If the first `OK` is lost, the caller MAY idempotently retry the original direction. Healthy provides only reachability evidence and cannot replace a lost Recognize `OK`. Reverse Recognize does not provide that confirmation either because both sides may initiate concurrently and independently. The caller MUST idempotently retry its original Recognize until it receives a valid `OK` or an authenticated hard error. Recognize does not exchange feed cursors, initialize business mirrors, or prove user, group, or message permissions.
 
-## 2. 操作概要（Operation Overview）
+## 2. Operation overview
 
-| 项目         | Recognize                         | Healthy                                        |
-| ------------ | --------------------------------- | ---------------------------------------------- |
-| Method       | `POST`                            | `POST`                                         |
-| Path         | `/s2s/v1/recognize`               | `/s2s/v1/healthy`                              |
-| Query        | 无；签名中的 `@query` 为 `?`      | 无；签名中的 `@query` 为 `?`                   |
-| Request      | 裸 `DomainRequest` JSON           | 裸 `DomainRequest` JSON                        |
-| Request auth | bootstrap signed                  | status signed                                  |
-| Success      | HTTP `200`，裸 `RecognizeOk`      | HTTP `200`，裸 `HealthResult`                  |
-| 幂等坐标     | `(signerDomain, recipientDomain)` | 无副作用查询                                   |
-| 状态作用     | 提交一个方向的认可                | handler 无副作用；响应可供调用方更新远端可用性 |
+| Item | Recognize | Healthy |
+| --- | --- | --- |
+| Method | `POST` | `POST` |
+| Path | `/s2s/v1/recognize` | `/s2s/v1/healthy` |
+| Query | None; signed `@query` is `?` | None; signed `@query` is `?` |
+| Request | Bare `DomainRequest` JSON | Bare `DomainRequest` JSON |
+| Request auth | bootstrap signed | status signed |
+| Success | HTTP `200`, bare `RecognizeOk` | HTTP `200`, bare `HealthResult` |
+| Idempotency coordinate | `(signerDomain, recipientDomain)` | Side-effect-free query |
+| State effect | Commits one recognition direction | Handler has no side effect; caller may update remote availability from the response |
 
-v1 capability 查询和刷新提示合并为一个附加控制面 operation：
+v1 combines capability querying and a refresh hint in one additional control-plane operation:
 
-| 项目 | Discover |
+| Item | Discover |
 | --- | --- |
 | Method / path | `POST /s2s/v1/discover` |
-| Request | 裸 `{ origin: Domain }` |
+| Request | Bare `{ origin: Domain }` |
 | Request auth | lightweight signed |
-| Success | HTTP `200`，裸 `V1DiscoveryResult` |
-| 状态作用 | 返回本方能力，并合并一个异步反向 capability refresh hint |
+| Success | HTTP `200`, bare `V1DiscoveryResult` |
+| State effect | Returns local capabilities and coalesces an asynchronous reverse capability-refresh hint |
 
 ```ts
 interface DomainRequest {
@@ -81,48 +71,36 @@ interface HealthResult {
 }
 ```
 
-本节列出的 core object 以及 Discover request/result 都是 closed object：除明确标为可选的
-`V1DiscoveryResult.software` 外，列出的字段全部必选，重复字段和未知字段均不允许。Health 只有
-`unavailable` 分支使用 `null`，规则见第 9 节。
+The core objects listed here and the Discover request and result are closed objects. Every listed field is required except explicitly optional `V1DiscoveryResult.software`; duplicate and unknown fields are forbidden. Only the `unavailable` Health branch uses `null`, as defined in Section 9.
 
-## 3. 双向状态模型（Bidirectional State Model）
+## 3. Bidirectional state model
 
-以下名称描述协议事实，不要求实现使用同名数据库字段：
+The following names describe protocol facts and do not require an implementation to use identically named database fields:
 
-| 协议事实                       | 含义                                   | 何时成立                                                                                              |
-| ------------------------------ | -------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `recognizesPeer`               | 本方已验证并认可对方 root identity     | 本方发送 Recognize 前原子固定对方 root 时                                                             |
-| `outboundRecognitionConfirmed` | 对方已提交“本方认可对方”               | 本方收到原方向 Recognize 的有效 `OK`                                                                  |
-| `inboundRecognitionConfirmed`  | 本方已提交“对方认可本方”               | 本方成功处理入站 Recognize、返回 `OK` 前                                                              |
-| `lightweightInboundReady`      | 本方已获准安全接受该 peer 的轻量请求   | 与 inbound confirmation 在返回 `OK` 前原子提交                                                        |
-| `localServiceAvailable`        | 本方已准备好为该 peer 提供认可后的服务 | 发送反向 Recognize 前原子提交；接收反向 Recognize 时在返回 `OK` 前提交                                |
-| `remoteServiceReachable`       | 已观察到对方服务和一次有效协议往返     | 有效 Healthy `available`/`degraded`、反向 Recognize 的 `OK`，或任一成功认证并处理的正常 S2S 请求/响应 |
+| Protocol fact | Meaning | Becomes true when |
+| --- | --- | --- |
+| `recognizesPeer` | The local node validated and recognizes the peer root identity | The local node atomically pins the peer root before sending Recognize |
+| `outboundRecognitionConfirmed` | The peer committed “the local node recognizes the peer” | The local node receives valid `OK` for its original Recognize direction |
+| `inboundRecognitionConfirmed` | The local node committed “the peer recognizes the local node” | The local node successfully processes inbound Recognize, before returning `OK` |
+| `lightweightInboundReady` | The local node can safely accept the peer's lightweight requests | Atomically with inbound confirmation before returning `OK` |
+| `localServiceAvailable` | The local node is ready to provide post-recognition service to the peer | Atomically before sending reverse Recognize; or before returning `OK` when receiving reverse Recognize |
+| `remoteServiceReachable` | The peer's service and one valid protocol round trip have been observed | Valid Healthy `available`/`degraded`, reverse Recognize `OK`, or any normally authenticated and processed S2S request or response |
 
-peer 的 lifecycle 是以下 closed enum。它只表示对该 peer 的通信是否可自动继续，不把每个失败原因复制为
-独立 lifecycle：
+The peer lifecycle is this closed enum. It states only whether communication with the peer may continue automatically and does not duplicate every failure cause as a lifecycle value:
 
-| 状态           | 精确定义                                                                                             |
-| -------------- | ---------------------------------------------------------------------------------------------------- |
-| `unrecognized` | 尚无可用的 pinned/recognition identity                                                               |
-| `establishing` | 已固定并认可 peer，但双向 Recognize 或服务准备事实尚未收敛；只允许握手控制面和已按方向开放的轻量请求 |
-| `available`    | 双向认可、服务准备、有效往返、identity、版本和 policy 全部有效，且没有未恢复的传输降级               |
-| `degraded`     | 双向认可关系已建立，但当前可达性证明缺失，或发生可重试的传输/服务故障                                |
-| `halted`       | 已有可验证的硬失败证据，自动 Recognize、Healthy 重试和数据面通信全部停止，等待本地管理员处理         |
+| State | Exact definition |
+| --- | --- |
+| `unrecognized` | No usable pinned/recognition identity exists. |
+| `establishing` | The peer is pinned and recognized, but bidirectional Recognize or service-readiness facts have not converged; only handshake control operations and directionally opened lightweight requests are allowed. |
+| `available` | Bidirectional recognition, service readiness, a valid round trip, identity, version, and policy are all valid, with no unresolved transport degradation. |
+| `degraded` | Bidirectional recognition is established, but current reachability evidence is absent or a retryable transport or service failure occurred. |
+| `halted` | Verifiable hard-failure evidence exists; automatic Recognize, Healthy retries, and data-plane communication stop pending local administrator action. |
 
-节点必须（MUST）在 lifecycle 之外保留导致 `halted` 的原始证据和原因，例如目标 peer 返回的稳定 HTTP
-error code、本地 policy block、pinned-root contradiction 或无共同版本。这些原因仍保留各自的 wire 错误和安全
-含义，但不是 lifecycle 状态。实现可以（MAY）使用额外 pending 或诊断字段，但不得（MUST NOT）把 Healthy
-的 `unavailable` 返回值持久化为同名 lifecycle。
+A node MUST retain outside the lifecycle the original evidence and reason causing `halted`, such as a stable HTTP error from the target peer, a local policy block, pinned-root contradiction, or absence of a common version. Each cause retains its distinct wire error and security meaning but is not a lifecycle state. An implementation MAY use additional pending or diagnostic fields but MUST NOT persist Healthy's `unavailable` result as a same-named lifecycle state.
 
-Healthy 的 `available | degraded | unavailable` 是上述本地状态和查询权限的隐私投影，不是 lifecycle
-状态集合。Healthy 只可以（MAY）为本地 `available`/`degraded` 升降级提供可达性证明，不得（MUST NOT）
-提交或补造 recognition direction fact，也不得（MUST NOT）使本地 peer 进入 `halted`。普通 operation 也不得
-（MUST NOT）仅按 `available`/`degraded` 标签授权：完整双向认可事实、pinned
-identity、共同版本、policy 和 operation 业务授权均有效时，纯传输 `degraded` peer 仍可以（MAY）发送和接收
-普通数据面。`establishing` peer 只能使用 `recognize`、`healthy` 和按方向开放的
-`feed-heads`、`discover`。
+Healthy's `available | degraded | unavailable` is a privacy projection of local state and query permission, not the lifecycle enum. Healthy MAY provide reachability evidence for transitions between local `available` and `degraded`; it MUST NOT commit or invent a recognition-direction fact or cause the local peer to enter `halted`. An ordinary operation MUST NOT authorize solely from the `available` or `degraded` label. If complete bidirectional recognition facts, pinned identity, common version, policy, and operation-specific business authorization remain valid, a transport-only `degraded` peer MAY still send and receive the ordinary data plane. An `establishing` peer MAY use only `recognize`, `healthy`, and directionally opened `feed-heads` and `discover`.
 
-本地 `available` 按下式计算：
+Local `available` is calculated as:
 
 ```text
 available =
@@ -139,147 +117,115 @@ available =
 ```mermaid
 stateDiagram-v2
     [*] --> unrecognized
-    unrecognized --> establishing: 固定 peer root 并主动认可
-    establishing --> establishing: 等待双向 Recognize 收敛
-    establishing --> available: 双向 Recognize + 服务可达证明
-    available --> degraded: Healthy unavailable / 临时故障
-    degraded --> available: Healthy available/degraded / 有效协议往返
-    unrecognized --> halted: 本地 policy 硬停止
-    establishing --> halted: 可验证硬失败
-    available --> halted: 可验证硬失败
-    degraded --> halted: 可验证硬失败
+    unrecognized --> establishing: pin peer root and initiate recognition
+    establishing --> establishing: await bidirectional Recognize convergence
+    establishing --> available: bidirectional Recognize + reachability evidence
+    available --> degraded: Healthy unavailable / transient failure
+    degraded --> available: Healthy available/degraded / valid protocol round trip
+    unrecognized --> halted: local policy hard stop
+    establishing --> halted: verifiable hard failure
+    available --> halted: verifiable hard failure
+    degraded --> halted: verifiable hard failure
 ```
 
-状态转换必须（MUST）按下表处理；“重新计算”表示在同一事务中根据本节的 `available` 计算公式和当前 facts
-得到下一状态：
+State transitions MUST follow this table. “Recompute” means deriving the next state in the same transaction from the `available` formula above and the current facts.
 
-| 事件                                                         | 前置状态                              | 本地事实变更                                                             | 下一状态与处理                      |
-| ------------------------------------------------------------ | ------------------------------------- | ------------------------------------------------------------------------ | ----------------------------------- |
-| 主动认可并固定 peer root                                     | `unrecognized`                        | 设置 `recognizesPeer`，保留待发送 Recognize                              | `establishing`                      |
-| 成功处理入站 Recognize                                       | `establishing`/`available`/`degraded` | 设置 inbound confirmation 和 lightweight gate                            | 重新计算；不得单凭该请求补 outbound |
-| 本方向收到 Recognize `OK`                                    | `establishing`                        | 设置 outbound confirmation                                               | 重新计算                            |
-| Healthy 返回 `available`/`degraded`                          | `establishing`/`degraded`/`available` | 仅设置 remote reachable 并清除传输降级；不得补方向事实                   | 重新计算                            |
-| Healthy 返回 `unavailable`、timeout 或非法响应               | `available`/`degraded`                | 清除 remote reachable，记录 transport degradation                        | `degraded`；不得进入 `halted`       |
-| Healthy 返回 `unavailable`、timeout 或非法响应               | `establishing`                        | 保留未收敛方向事实，记录本次可达性失败                                   | 保持 `establishing`                 |
-| 成功认证并处理正常 S2S 请求或确定响应                        | `available`/`degraded`                | 设置 remote reachable，清除纯传输降级；不得补 recognition direction fact | 重新计算                            |
-| 网络失败、timeout 或 HTTP `503`                              | `available`/`degraded`                | 清除 remote reachable，保留 pin、方向事实和业务状态                      | `degraded`                          |
-| Recognize 的可重试失败                                       | `establishing`                        | 保留 pin、已提交方向事实和待重试工作                                     | 保持 `establishing`                 |
-| 来自目标 peer 的可认证硬错误响应，或本方独立验证的硬安全证据 | 非 `halted`                           | 保留原响应/证据和原因，清除运行时可达性，停止自动通信                    | `halted`                            |
-| 本地管理策略硬停止                                           | 任意非 `halted` 状态                  | 记录本地 policy 原因，停止自动通信                                       | `halted`                            |
+| Event | Prior state | Local fact change | Next state and handling |
+| --- | --- | --- | --- |
+| Initiate recognition and pin peer root | `unrecognized` | Set `recognizesPeer`; retain pending Recognize work | `establishing` |
+| Successfully process inbound Recognize | `establishing` / `available` / `degraded` | Set inbound confirmation and lightweight gate | Recompute; this request alone cannot supply outbound confirmation |
+| Receive Recognize `OK` for the local direction | `establishing` | Set outbound confirmation | Recompute |
+| Healthy returns `available` / `degraded` | `establishing` / `degraded` / `available` | Set only remote reachable and clear transport degradation; do not supply direction facts | Recompute |
+| Healthy returns `unavailable`, times out, or is invalid | `available` / `degraded` | Clear remote reachable and record transport degradation | `degraded`; do not enter `halted` |
+| Healthy returns `unavailable`, times out, or is invalid | `establishing` | Retain unconverged direction facts and record reachability failure | Remain `establishing` |
+| Successfully authenticate and process a normal S2S request or definitive response | `available` / `degraded` | Set remote reachable and clear transport-only degradation; do not supply recognition direction facts | Recompute |
+| Network failure, timeout, or HTTP `503` | `available` / `degraded` | Clear remote reachable; retain pin, direction facts, and business state | `degraded` |
+| Retryable Recognize failure | `establishing` | Retain pin, committed direction facts, and retry work | Remain `establishing` |
+| Authenticated hard-error response from the target peer, or independently validated hard-security evidence | Any non-`halted` | Retain original response or evidence and cause, clear runtime reachability, stop automatic communication | `halted` |
+| Local administrative policy hard stop | Any non-`halted` | Record local policy cause and stop automatic communication | `halted` |
 
-只有来自本次请求目标 peer（同一 hostname-verified TLS connection/authority）的 HTTP `409`，并携带本节注册的
-fatal code，或本方独立验证的 pinned-root/版本/policy 硬冲突，才可以（MAY）触发 `halted`。来源不可验证的
-proxy response、TLS/连接失败、timeout、HTTP `503`、malformed response 或 Healthy `unavailable` 都不得触发
-`halted`；已建立的 peer 对这些可用性失败进入 `degraded`。
+Only an HTTP `409` carrying a fatal code registered here from the target peer of this request, over the same hostname-verified TLS connection and authority, or a locally validated hard pinned-root, version, or policy conflict MAY trigger `halted`. An unauthenticated proxy response, TLS or connection failure, timeout, HTTP `503`, malformed response, or Healthy `unavailable` MUST NOT trigger `halted`; an established peer enters `degraded` for those availability failures.
 
-进入 `halted` 后，协议不定义自动恢复路径，也不规定管理界面、审批、重置或恢复操作。何时以及如何离开
-`halted` 属于本地管理行为。在管理员明确处理前，实现不得（MUST NOT）自动重试 Recognize/Healthy、恢复数据面或替换
-root pin。Healthy 对 `halted` 及其所有原因统一投影为 `unavailable`。
+After entering `halted`, the protocol defines no automatic recovery path or administration, approval, reset, or recovery interface. When and how to leave `halted` is local administration. Before explicit administrator action, an implementation MUST NOT automatically retry Recognize or Healthy, resume the data plane, or replace the root pin. Healthy projects `halted` and every cause of it uniformly as `unavailable`.
 
-operation gate 与 lifecycle 分开计算：
+Operation gates are calculated separately from lifecycle:
 
-| Operation 类别           | 必须（MUST）满足的 gate                                                                                             |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------- |
-| `recognize`              | bootstrap signed 和对应 admission；不要求已有 lifecycle                                                             |
-| `healthy`                | status signed；失败统一投影为 `unavailable`                                                                         |
-| `feed-heads` / `discover` | 该 signer 方向的 `lightweightInboundReady`                                                                          |
-| 普通 recognized data     | pinned identity、双方 direction confirmation、共同版本、policy 和 operation 业务授权；纯传输 `degraded` 不关闭 gate |
-| 已有活动 call 的终止收敛 | calls.md 定义的现有 binding/tombstone 规则；不得仅因 health cache 降级而阻止                                        |
+| Operation class | Required gate |
+| --- | --- |
+| `recognize` | bootstrap signed and its admission rule; no existing lifecycle required |
+| `healthy` | status signed; failures uniformly project as `unavailable` |
+| `feed-heads` / `discover` | `lightweightInboundReady` in that signer direction |
+| Ordinary recognized data | Pinned identity, both direction confirmations, common version, policy, and operation-specific business authorization; transport-only `degraded` does not close the gate |
+| Termination convergence for an existing active call | Existing binding and tombstone rules in calls.md; health-cache degradation alone cannot block it |
 
-发送 Recognize、加入重试队列、读取 well-known 或仅验证请求签名都不得（MUST NOT）提前设置对应的
-confirmed fact。网络 socket 是否仍连接不是认可事实；短暂断线不得（MUST NOT）删除 identity pin 或方向事实，
-但可以（MAY）把当前可用状态从 `available` 降为 `degraded`。
+Sending Recognize, enqueuing a retry, reading well-known, or merely validating a request signature MUST NOT set the corresponding confirmed fact early. A connected network socket is not a recognition fact. A transient disconnect MUST NOT delete an identity pin or direction fact, although it MAY change current availability from `available` to `degraded`.
 
-Recognize 发出后发生 timeout、DNS/TLS/connect failure、响应中断或可重试 server failure 时，本方已经完成的
-`recognizesPeer` 事实保留，并保持 `establishing`；不得（MUST NOT）伪造 outbound confirmation。
-`degraded` 仅用于已完成双向认可、但当前可达性受损的 peer；握手未收敛使用 `establishing`。
+After Recognize is sent, a timeout, DNS/TLS/connect failure, interrupted response, or retryable server failure retains the already established `recognizesPeer` fact and remains `establishing`; it MUST NOT invent outbound confirmation. `degraded` applies only to a peer with completed bidirectional recognition and impaired current reachability. An unconverged handshake uses `establishing`.
 
-普通 feed、call、user、media 和 forward-bundle operation 使用 protocol.md 的 `recognized signed`
-鉴权上下文，不以本地缓存的 `available` 标签作为协议门禁。本文所说的轻量请求只包括 `feed-heads` 与
-`discover`：接收方在发送 Recognize `OK` 前必须（MUST）准备好接收该 signer 的两种请求；发送方
-只有收到 `OK` 后才可以（MAY）向该方向发送。hint 可丢失且不携带 durable payload，因此这个方向性
-门禁不等于在握手未收敛时开放其他数据面。
+Ordinary feed, call, user, media, and forward-bundle operations use the `recognized signed` context from protocol.md and do not use the cached `available` label as a protocol gate. Lightweight requests here mean only `feed-heads` and `discover`. Before sending Recognize `OK`, the receiver MUST be ready to accept both from that signer. The sender MAY send them in that direction only after receiving `OK`. Their lossy, non-durable payload does not open another data-plane operation before the handshake converges.
 
-`localServiceAvailable` 与本地 peer lifecycle 的 `available` 不是同一个量：前者表示“本服务器已经准备好”，
-可以（MAY）在反向请求发出前成立；后者还要求成功确认远端。Healthy 接口返回本方当前 lifecycle 的隐私安全视图，
-但 Healthy 的 `available` 和 `degraded` 都表示“认可关系存在且允许该签名 peer 查询”。
+`localServiceAvailable` is distinct from local peer lifecycle `available`: the former means “this server is ready” and MAY become true before sending the reverse request, while the latter also requires successful confirmation of the remote peer. Healthy returns a privacy-safe view of the local lifecycle. Both Healthy `available` and `degraded` mean that a recognition relationship exists and the signed peer may query it.
 
-## 4. 身份验证、认可与固定（Identity Verification, Recognition, and Pinning）
+## 4. Identity verification, recognition, and pinning
 
-### 4.1 发起方认可接收方
+### 4.1 The initiator recognizes the recipient
 
-向 peer domain `B` 发送 Recognize 前，A 必须（MUST）：
+Before sending Recognize to peer domain `B`, A MUST:
 
-1. 按 protocol.md 的 SRV、TLS 和 authority 规则定位 B。
-2. 通过 hostname 验证成功的 HTTPS 获取 B 的 `/.well-known/socfp`。
-3. 选择最高共同主版本，并要求选中版本为路径中的 `1`。
-4. 严格解码 `rootKey.ed25519` 为恰好 32 bytes。
-5. 验证 B 至少一份当前有效的 root-authorized signing key certificate。
-6. 在本地原子固定 B 的 root public key、记录 `recognizesPeer`，并把该 peer 的 lifecycle 设置为
-   `establishing`，然后才构造和发送 HTTP request。
+1. Locate B using the SRV, TLS, and authority rules in protocol.md.
+2. Fetch B's `/.well-known/socfp` over HTTPS with successful hostname verification.
+3. Select the highest common major version and require the selected version to be `1`, matching the request path.
+4. Strictly decode `rootKey.ed25519` to exactly 32 bytes.
+5. Validate at least one currently valid, root-authorized signing-key certificate for B.
+6. Atomically pin B's root public key, record `recognizesPeer`, and set the peer lifecycle to `establishing` before constructing and sending the HTTP request.
 
-仅成功读取 well-known 不构成认可；只有调用方完成上述验证并作出本地认可决定后，才可以（MAY）发送
-Recognize。对已固定 peer，再次读取的 root 必须（MUST）与 pin 逐字节相同。
+Successfully reading well-known alone does not constitute recognition. The caller MAY send Recognize only after completing these checks and making the local recognition decision. For an already pinned peer, the newly read root MUST byte-for-byte match the pin.
 
-第 6 步是主动发起方的必选提交边界。即使随后发生 timeout、连接重置或 HTTP `503`，该本地认可和
-`establishing` 状态仍然成立。只有第 8 节定义的硬拒绝或安全失败才能使本次认可变为不可用；实现不得（MUST NOT）
-把普通网络不确定性误判为拒绝或 identity loss。
+Step 6 is the mandatory commit boundary for the initiator. The local recognition and `establishing` state remain valid even if the subsequent operation times out, the connection resets, or the server returns HTTP `503`. Only a hard rejection or security failure defined in Section 8 can make this recognition unavailable. An implementation MUST NOT misclassify ordinary network uncertainty as rejection or identity loss.
 
-### 4.2 接收方验证认可声明
+### 4.2 The recipient validates the recognition claim
 
-B 收到 A 的 Recognize 后，必须（MUST）：
+After receiving A's Recognize request, B MUST:
 
-1. 从 HTTP Message Signature 的 `keyid` 提取 canonical signer domain A。
-2. 要求 body 的 `domain` 与 A 完全相等；body 里的 `domain` 是认可声明者，不是接收方 B。
-3. 通过 A 的 hostname-verified HTTPS well-known 验证 A 的 root、certificate 和请求签名。
-4. 若已有 A 的 root pin 或先前认证记录，要求新取得的 root 与其逐字节相同。
-5. 应用本地 admission policy，并检查 B 当前是否允许建立该 peer。
+1. Extract canonical signer domain A from the HTTP Message Signature `keyid`.
+2. Require the body `domain` to equal A exactly. This field identifies the party making the recognition claim, not recipient B.
+3. Use A's hostname-verified HTTPS well-known document to validate A's root, certificate, and request signature.
+4. If a root pin or prior authenticated record exists for A, require the newly obtained root to match it byte for byte.
+5. Apply local admission policy and verify that B currently permits establishing this peer.
 
-B 获取并验证 A 的 well-known 只证明“请求由 A 当前的 Federation signing key 发出”。在 B 的反向
-Recognize 成功前，不得（MUST NOT）把这一步描述为“B 已经得到 A 对 B 的反向确认”。
+Fetching and validating A's well-known document proves only that the request was made with A's current Federation signing key. Until B's reverse Recognize succeeds, this step MUST NOT be described as B having received A's reverse confirmation of B.
 
-### 4.3 根密钥与签名密钥连续性（Root and Signing Key Continuity）
+### 4.3 Root and signing-key continuity
 
-`rootKey.ed25519` 必须（MUST）按 RFC 4648 padded base64 严格解码，拒绝非 canonical base64、非法
-padding 和尾随数据，结果必须（MUST）恰好为 32 bytes。首次提交方向事实时，接收方必须（MUST）把该
-root 与方向事实原子保存。
+`rootKey.ed25519` MUST be strictly decoded as RFC 4648 padded base64. Non-canonical base64, invalid padding, and trailing data MUST be rejected, and the result MUST be exactly 32 bytes. When committing the first direction fact, the recipient MUST atomically store the root with that fact.
 
-后续 root 不一致是 identity contradiction，不是 signing key rotation。节点必须（MUST）保留旧 pin，记录 identity
-contradiction 原因，进入 `halted`、撤销 `available` 可用性并拒绝普通数据面。root 授权的 signing certificate 正常增加、
-重叠、过期和移除不得（MUST NOT）清除已经确认的方向事实。
+A later root mismatch is an identity contradiction, not signing-key rotation. The node MUST retain the old pin, record the identity-contradiction reason, enter `halted`, revoke `available`, and reject the ordinary data plane. Normal addition, overlap, expiration, and removal of root-authorized signing certificates MUST NOT clear confirmed direction facts.
 
-## 5. Recognize 请求与成功提交（Recognize Request and Successful Commit）
+## 5. Recognize request and successful commit
 
-### 5.1 请求体
+### 5.1 Request body
 
-假设 A 向 B 发送请求，后续固定向量使用的精确业务 body bytes 为：
+For a request from A to B, the exact application body bytes used by the fixed vectors below are:
 
 ```text
 {"domain":"a.example"}
 ```
 
-`domain` 必须（MUST）是 protocol.md 定义的 canonical `Domain`，并必须（MUST）等于 HTTP signer domain。
-接收方 domain 由已签名的 `@authority` 确定，协议版本由 `/s2s/v1` 确定，因此 body 不重复它们。
+`domain` MUST be a canonical `Domain` as defined in protocol.md and MUST equal the HTTP signer domain. The recipient domain is established by the signed `@authority`, and the protocol version by `/s2s/v1`, so the body does not repeat either value.
 
-请求必须（MUST）按 protocol.md 的统一顺序构造：最终 compact JSON UTF-8 bytes → `Content-Digest` →
-`Date`/签名参数 → RFC 9421 签名基串 → Ed25519 `Signature`。协议不要求 JSON object 一般采用 compact
-serialization，但 digest 和签名必须（MUST）覆盖实际发送的精确 bytes；签名后不得（MUST NOT）重新序列化。
+The request MUST be constructed in the common order defined in protocol.md: final compact JSON UTF-8 bytes, `Content-Digest`, `Date` and signature parameters, RFC 9421 signature base, then Ed25519 `Signature`. The protocol does not generally require compact serialization for JSON objects, but the digest and signature MUST cover the exact bytes sent. The body MUST NOT be serialized again after signing.
 
-### 5.2 接收事务与 `OK`
+### 5.2 Recipient transaction and `OK`
 
-所有验证和 policy 均成功后，B 必须（MUST）在返回响应前原子完成：
+After all validation and policy checks succeed, B MUST atomically complete the following before returning a response:
 
-1. 固定或核对 A 的 root identity。
-2. 提交 `inboundRecognitionConfirmed`，且保留首次确认时间。
-3. 提交 `lightweightInboundReady`，使 A 在收到 `OK` 后立即发送的 `feed-heads` 或 `discover` 不会被尚未就绪的
-   admission gate 拒绝。
-4. 确保反向 `B → A Recognize` 会被执行；崩溃恢复后也必须（MUST）能够继续该工作。
-5. 如果 B 在处理请求前已经存在 `recognizesPeer(A)`，B 必须（MUST）在返回 `OK` 前设置
-   `localServiceAvailable`。B 不得（MUST NOT）仅凭该入站请求设置 `outboundRecognitionConfirmed`：该请求
-   可能是反向方向，也可能是双方独立发起的并发请求，不能证明 A 已提交 B 先前发送的 Recognize。
+1. Pin or verify A's root identity.
+2. Commit `inboundRecognitionConfirmed` while preserving the time of first confirmation.
+3. Commit `lightweightInboundReady`, so a `feed-heads` or `discover` sent by A immediately after receiving `OK` is not rejected by an unready admission gate.
+4. Ensure that reverse `B → A Recognize` work will execute and can resume after crash recovery.
+5. If `recognizesPeer(A)` existed before B began processing the request, B MUST set `localServiceAvailable` before returning `OK`. B MUST NOT set `outboundRecognitionConfirmed` merely because of this inbound request: it may be the reverse direction or an independently initiated concurrent request, and does not prove that A committed a Recognize previously sent by B.
 
-提交成功后返回一个 `RecognizeOk` closed JSON object。例如下面的格式化 JSON 是完整有效响应；空白和换行
-不属于业务语义：
+After a successful commit, return a closed `RecognizeOk` JSON object. The formatted JSON below is a complete valid response; whitespace and line breaks have no application semantics:
 
 ```http
 HTTP/1.1 200 OK
@@ -290,34 +236,24 @@ Content-Type: application/json
 }
 ```
 
-接收方必须（MUST）先按 `application/json` 解析 body，再要求结果是仅含一个 member `ok`、且其 JSON
-boolean 值为 `true` 的 object。因此 `{"ok":true}` 和上面的格式化表示都有效；`{"ok":1}`、
-`{"ok":true,"extra":null}`、`[true]`、空 body 和尾随非空白数据都无效。实现不得（MUST NOT）按原始
-UTF-8 bytes、空白或 object member 排版判断成功。
+The recipient MUST first parse the body as `application/json`, then require an object containing exactly one member, `ok`, whose JSON Boolean value is `true`. Thus `{"ok":true}` and the formatted representation above are valid; `{"ok":1}`, `{"ok":true,"extra":null}`, `[true]`, an empty body, and trailing non-whitespace data are invalid. An implementation MUST NOT determine success from the raw UTF-8 bytes, whitespace, or object-member layout.
 
-不得（MUST NOT）在事务提交前返回 `OK`。A 只有收到 HTTP `200`、严格验证上述 `RecognizeOk` 结构且确认
-响应来自与请求相同的 TLS connection/authority 后，才能原子设置
-`outboundRecognitionConfirmed`。timeout 或网络错误不能代替该确认；握手中的 peer 保持 `establishing`，已经完成
-双向认可的 peer 才进入 `degraded`。
+B MUST NOT return `OK` before committing the transaction. A may atomically set `outboundRecognitionConfirmed` only after receiving HTTP `200`, strictly validating the `RecognizeOk` shape above, and confirming that the response came from the same TLS connection and authority as the request. A timeout or network error cannot substitute for this confirmation. A peer with an incomplete handshake remains `establishing`; only a peer that previously completed bidirectional recognition may enter `degraded`.
 
-response 不额外使用 detached signature；hostname-verified HTTPS 认证响应方，request 的 direction fact
-已经由 B 的事务和固定响应语义确认。
+The response does not use an additional detached signature. Hostname-verified HTTPS authenticates the responder, while B's transaction and the fixed response semantics confirm the request direction fact.
 
-### 5.3 反向 Recognize 的发送前准备（Preflight before Reverse Recognize）
+### 5.3 Preflight before reverse Recognize
 
-B 成功提交 `A → B` 并返回第一次 `OK` 后，开始 `B → A` 前必须（MUST）先完成本地准备。发送 HTTP request
-之前，B 必须（MUST）在一个事务中：
+After successfully committing `A → B` and returning the first `OK`, B MUST complete local preparation before starting `B → A`. Before sending the HTTP request, B MUST perform the following in one transaction:
 
-1. 作出并持久化 `recognizesPeer(A)`；验证时使用的 A root 成为固定身份锚。
-2. 准备处理 A 随后可能到达的已授权请求，包括两种 lightweight hint 接收路径所需的状态。
-3. 设置 `localServiceAvailable`，使 A 随后的有效 Healthy 查询至少能够返回 `degraded`，而不是
-   `unavailable`。
-4. 持久记录反向 Recognize 待发送工作，使崩溃不会留下“服务已经准备、但永远不发送反向认可”的状态。
+1. Make and persist `recognizesPeer(A)`; the A root used during validation becomes the pinned identity anchor.
+2. Prepare to process authorized requests that A may subsequently send, including the state needed by both lightweight-hint receive paths.
+3. Set `localServiceAvailable`, so A's subsequent valid Healthy query can return at least `degraded` rather than `unavailable`.
+4. Durably record pending reverse-Recognize work, so a crash cannot leave the service prepared but the reverse recognition permanently unsent.
 
-只有该事务提交后，B 才可以（MAY）发送反向 HTTP Recognize。`localServiceAvailable` 表示 B 已就绪，不表示
-A 已收到反向请求；因此 B 在得到 A 的反向 `OK` 前仍不得（MUST NOT）假定 `remoteServiceReachable`。
+B MAY send the reverse HTTP Recognize only after this transaction commits. `localServiceAvailable` means B is ready; it does not mean A received the reverse request. B therefore MUST NOT assume `remoteServiceReachable` before receiving A's reverse `OK`.
 
-## 6. 完整时序（Complete Sequence）
+## 6. Complete sequence
 
 ```mermaid
 sequenceDiagram
@@ -327,29 +263,28 @@ sequenceDiagram
 
     A->>B: GET /.well-known/socfp
     B-->>A: B versions, root, signing certificates
-    Note over A: 验证并固定 B root<br/>A recognizes B
+    Note over A: Validate and pin B root<br/>A recognizes B
     A->>B: POST /s2s/v1/recognize {domain: a.example}
-    Note over B: 获取 A well-known并验签<br/>原子提交 inboundRecognitionConfirmed<br/>与 lightweightInboundReady
+    Note over B: Fetch A well-known and verify signature<br/>Atomically commit inboundRecognitionConfirmed<br/>and lightweightInboundReady
     B-->>A: 200 {ok: true}
-    Note over A: 提交 outboundRecognitionConfirmed<br/>现在可向 B 发送 feed-heads
+    Note over A: Commit outboundRecognitionConfirmed<br/>feed-heads may now be sent to B
 
-    Note over B: 发送前固定 A root并完成服务准备<br/>Healthy 至少可返回 degraded
+    Note over B: Pin A root and prepare service before sending<br/>Healthy can return at least degraded
     B->>A: POST /s2s/v1/recognize {domain: b.example}
-    Note over A: 提交 inbound、轻量门禁<br/>与 localServiceAvailable<br/>不单凭反向请求补 outbound
+    Note over A: Commit inbound fact, lightweight gate,<br/>and localServiceAvailable<br/>Do not infer outbound from reverse request
     A-->>B: 200 {ok: true}
-    Note over B: 提交 outboundRecognitionConfirmed<br/>与 remoteServiceReachable，状态 = available
+    Note over B: Commit outboundRecognitionConfirmed<br/>and remoteServiceReachable; status = available
 
     A->>B: POST /s2s/v1/healthy {domain: a.example}
     B-->>A: 200 {status: available | degraded}
-    Note over A: Healthy 只更新 remoteServiceReachable<br/>完整事实已收敛时状态 = available
+    Note over A: Healthy updates only remoteServiceReachable<br/>status = available once all facts converge
 
-    Note over A,B: 双方均 available<br/>允许普通 signed S2S operation
+    Note over A,B: Both peers are available<br/>Ordinary signed S2S operations are allowed
 ```
 
-B 可以（MAY）复用为验证第一个请求而获取、仍在有效缓存期内的 A well-known；不要求为反向请求重复下载。
-B 不得（MUST NOT）等待反向 Recognize 完成后才返回第一次 `OK`，否则两个对称实现可能互相等待。
+B MAY reuse A's well-known document fetched to validate the first request while it remains valid in cache; the reverse request does not require another fetch. B MUST NOT wait for reverse Recognize to complete before returning the first `OK`, because two symmetric implementations could otherwise wait for each other.
 
-### 6.1 第一次 `OK` 丢失后的恢复（Recovery after a Lost First OK）
+### 6.1 Recovery after a lost first `OK`
 
 ```mermaid
 sequenceDiagram
@@ -358,124 +293,96 @@ sequenceDiagram
     participant B as Peer B
 
     A->>B: Recognize A → B
-    Note over B: 已提交“A 认可 B”与轻量接收门禁
-    B--xA: 200 OK 丢失/timeout
-    Note over A: 保留 B root 与 recognizesPeer<br/>状态 = establishing
+    Note over B: Commit "A recognizes B" and lightweight receive gate
+    B--xA: 200 OK lost or timed out
+    Note over A: Retain B root and recognizesPeer<br/>status = establishing
 
-    Note over B: 发送前完成服务准备<br/>Healthy status 至少为 degraded
-    B->>A: 反向 Recognize B → A
-    Note over A: 准备服务并提交轻量接收门禁<br/>反向请求本身不补 outbound
+    Note over B: Prepare service before sending<br/>Healthy status is at least degraded
+    B->>A: Reverse Recognize B → A
+    Note over A: Prepare service and commit lightweight gate<br/>Reverse request does not infer outbound
     A-->>B: 200 {ok: true}
-    Note over B: 对方 OK 证明 A 已准备完成<br/>状态 = available
+    Note over B: Peer OK proves A is prepared<br/>status = available
 
-    A->>B: Healthy（事件触发，不是周期轮询）
+    A->>B: Healthy (event-triggered, not periodic polling)
     B-->>A: 200 {status: available | degraded}
-    Note over A: 只更新可达性<br/>不补 outbound confirmation<br/>仍为 establishing
+    Note over A: Update reachability only<br/>Do not infer outbound confirmation<br/>still establishing
 
-    A->>B: 幂等重试原方向 Recognize
+    A->>B: Idempotently retry original-direction Recognize
     B-->>A: 200 {ok: true}
-    Note over A: 提交 outboundRecognitionConfirmed<br/>完整事实收敛后状态 = available
+    Note over A: Commit outboundRecognitionConfirmed<br/>status = available once all facts converge
 ```
 
-如果 A 的第一次请求根本没有到达 B，B 不会因为该请求发起反向 Recognize；A 保持 `establishing` 并按第 8 节
-重试。如果双方恰好独立发起 Recognize，上述规则仍按两个方向的幂等事实收敛。
+If A's first request never reached B, B does not initiate reverse Recognize because of that request. A remains `establishing` and retries under Section 8. If both parties independently initiate Recognize, the same rules converge through the two idempotent direction facts.
 
-## 7. 重试、重复和并发（Retries, Duplicates, and Concurrency）
+## 7. Retries, duplicates, and concurrency
 
-Recognize 的业务幂等坐标是 `(signerDomain, recipientDomain)`，不需要 nonce。HTTP signature 的短时间窗限制
-旧请求重放；operation 本身的幂等性保证时间窗内的重放不会重复产生认可副作用。
+The application-level idempotency coordinate for Recognize is `(signerDomain, recipientDomain)`; no nonce is required. The short HTTP-signature time window limits replay of old requests, while operation idempotency prevents replays within that window from duplicating recognition side effects.
 
-- 相同方向首次成功：提交方向事实并返回 `OK`。
-- 相同 root identity 的重复请求：不得（MUST NOT）重置首次确认时间、cursor、mirror 或业务授权；返回同一
-  `OK` 语义，并确保缺失的反向 Recognize 仍可继续。
-- 同一 domain 携带不同 root：必须（MUST）按 identity mismatch 失败，不得（MUST NOT）覆盖 pin。
-- 两个方向并发：可以（MAY）独立提交；每个方向只由自己的有效 `OK` 确认，不得（MUST NOT）仅因已经存在
-  `recognizesPeer` 或收到 Healthy 结果而补齐 outbound fact。最终结果必须（MUST）与任一
-  串行顺序相同。
-- 响应丢失：接收方已经提交的方向事实保留；发送方保持 outbound 未确认并安全重试 Recognize。
+- First success in a direction: commit the direction fact and return `OK`.
+- Duplicate request with the same root identity: MUST NOT reset the first-confirmation time, cursor, mirror, or application authorization; return the same `OK` semantics and ensure missing reverse-Recognize work can continue.
+- Same domain with a different root: MUST fail as an identity mismatch and MUST NOT replace the pin.
+- Concurrent directions: MAY commit independently. Each direction is confirmed only by its own valid `OK`; an implementation MUST NOT infer an outbound fact merely from an existing `recognizesPeer` fact or a Healthy result. The final result MUST equal either serial ordering.
+- Lost response: retain direction facts already committed by the recipient; the sender keeps outbound unconfirmed and safely retries Recognize.
 
-每次 HTTP 重试使用相同 JSON 业务语义，但必须（MUST）重新生成 `Date`、`created`、`expires` 和
-HTTP signature。因为 body 没有时间或 nonce，body bytes 和 `Content-Digest` 可以（MAY）保持不变。
+Each HTTP retry uses the same JSON application semantics but MUST regenerate `Date`, `created`, `expires`, and the HTTP signature. Because the body contains neither time nor nonce, its bytes and `Content-Digest` MAY remain unchanged.
 
-## 8. 未返回 `OK` 与错误处理（Non-OK and Error Handling）
+## 8. Non-`OK` results and error handling
 
-本节使用 A 表示 Recognize 请求方，B 表示接收方。B 负责验证请求、提交或拒绝方向事实并生成
-HTTP 响应；A 只能根据已验证的响应或本方独立取得的安全证据更新本地状态。
+In this section, A is the Recognize requester and B is the recipient. B validates the request, commits or rejects the direction fact, and generates the HTTP response. A may update local state only from a validated response or security evidence obtained independently by A.
 
-### 8.1 接收方 B：验证、本地状态与响应
+### 8.1 Recipient B: validation, local state, and response
 
-B 按第 4.2 节验证 A 的 Recognize。全部验证和 policy 成功时，B 必须（MUST）按第 5.2 节先提交
-方向事实，再返回 HTTP `200` 和 `{"ok":true}`。否则 Recognize 使用通用 error envelope：
+B validates A's Recognize under Section 4.2. When all validation and policy checks succeed, B MUST commit the direction fact under Section 5.2 before returning HTTP `200` with `{"ok":true}`. Otherwise, Recognize uses the common error envelope:
 
-| B 观察到的条件                                           | HTTP | Stable code                               | B 的本地处理                                            |
+| Condition observed by B | HTTP | Stable code | B's local action |
 | -------------------------------------------------------- | ---: | ----------------------------------------- | ------------------------------------------------------- |
-| JSON/header/type malformed                               |  400 | `FEDERATION_MALFORMED`                    | 不提交新的方向事实                                      |
-| 路径版本未启用或无共同版本                               |  409 | `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED` | 记录版本原因并进入 `halted`；不提交新事实               |
-| certificate 或 HTTP signature 无效                       |  401 | `FEDERATION_BAD_SIGNATURE`                | 不提交新的方向事实；不得仅因验签失败更换 root pin       |
-| signer domain 与 body `domain` 不同                      |  401 | `FEDERATION_BINDING_VIOLATION`            | 不提交新的方向事实                                      |
-| 本地策略阻止 A                                           |  409 | `FEDERATION_PEER_BLOCKED`                 | 记录 policy 原因并进入 `halted`；不提交新事实           |
-| 通过 hostname-verified HTTPS 取得的 A root 与旧 pin 不同 |  409 | `FEDERATION_IDENTITY_MISMATCH`            | 保留旧 pin，记录 identity contradiction 并进入 `halted` |
-| A 已因 identity contradiction 被停止                     |  409 | `FEDERATION_IDENTITY_MISMATCH`            | 保持 `halted`                                           |
-| 请求过于频繁                                             |  503 | `RATE_LIMITED`                            | 不提交方向事实，按限流策略处理                          |
-| well-known 暂时无法获取                                  |  503 | `INTERNAL`                                | 保留已有 pin 和 lifecycle；不判定 identity loss         |
-| B 的本地身份材料不可用                                   |  503 | `FEDERATION_LOCAL_IDENTITY_LOST`          | 不提交新的方向事实                                      |
-| 提交失败或临时内部错误                                   |  503 | `INTERNAL`                                | 不暴露未提交事实，保留先前已提交状态                    |
+| Malformed JSON, header, or type | 400 | `FEDERATION_MALFORMED` | Do not commit a new direction fact |
+| Path version disabled or no common version | 409 | `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED` | Record the version reason and enter `halted`; do not commit a new fact |
+| Invalid certificate or HTTP signature | 401 | `FEDERATION_BAD_SIGNATURE` | Do not commit a new direction fact; do not replace a root pin merely because signature verification failed |
+| Signer domain differs from body `domain` | 401 | `FEDERATION_BINDING_VIOLATION` | Do not commit a new direction fact |
+| Local policy blocks A | 409 | `FEDERATION_PEER_BLOCKED` | Record the policy reason and enter `halted`; do not commit a new fact |
+| A root obtained through hostname-verified HTTPS differs from its old pin | 409 | `FEDERATION_IDENTITY_MISMATCH` | Retain the old pin, record an identity contradiction, and enter `halted` |
+| A is already halted for an identity contradiction | 409 | `FEDERATION_IDENTITY_MISMATCH` | Remain `halted` |
+| Request rate is too high | 503 | `RATE_LIMITED` | Do not commit a direction fact; apply rate-limit policy |
+| Well-known is temporarily unavailable | 503 | `INTERNAL` | Retain any existing pin and lifecycle; do not infer identity loss |
+| B's local identity material is unavailable | 503 | `FEDERATION_LOCAL_IDENTITY_LOST` | Do not commit a new direction fact |
+| Commit failure or transient internal error | 503 | `INTERNAL` | Do not expose uncommitted facts; retain previously committed state |
 
-B 在返回任何 error 时不得（MUST NOT）因本次请求提交新的方向事实、轻量门禁或反向工作。更早成功的
-幂等请求已提交的事实不因后续失败而回滚。HTTP 签名验证失败本身不是 root identity 已变更的证据；
-只有通过 hostname-verified HTTPS 独立取得且与旧 pin 冲突的 root，才可以（MAY）触发 identity mismatch。
-相同 pinned root 授权的 signing certificate 正常轮换不是 identity mismatch。
+When returning any error, B MUST NOT commit a new direction fact, lightweight gate, or reverse work because of this request. Facts committed by an earlier successful idempotent request are not rolled back by a later failure. HTTP signature failure alone is not evidence that the root identity changed. Only a root independently obtained through hostname-verified HTTPS that conflicts with the existing pin MAY trigger identity mismatch. Normal rotation of signing certificates authorized by the same pinned root is not identity mismatch.
 
-### 8.2 请求方 A：消费响应并更新本地状态
+### 8.2 Requester A: consuming the response and updating local state
 
-A 在 HTTP request 发出前已经处于 `establishing`，但不得（MUST NOT）仅根据“请求已经发出”推测
-B 提交成功。A 必须（MUST）按下表处理结果：
+A is already `establishing` before the HTTP request is sent, but MUST NOT infer that B committed merely because the request was sent. A MUST handle the result as follows:
 
-| A 观察到的结果                                         | A 的本地状态                                   | A 的规定动作                                      |
+| Result observed by A | A's local state | Required action by A |
 | ------------------------------------------------------ | ---------------------------------------------- | ------------------------------------------------- |
-| HTTP `200` + 有效 `{"ok":true}`                        | 设置 outbound confirmed；按完整 facts 重新计算 | 等待反向 Recognize；可向已返回 OK 的方向发送 hint |
-| timeout、DNS/连接失败、TLS transport 中断、响应截断    | 保持 outbound 未确认和 `establishing`          | 退避后重试；不得（MUST NOT）撤销已固定 root       |
-| HTTP `503`                                             | 保持 outbound 未确认和 `establishing`          | 保留 pin，按 code 的重试信息或本地策略退避        |
-| HTTP `200` 但 body 非法或不是 `OK`                     | 保持 `establishing`                            | 记录协议响应错误；不得当成成功或紧密循环重试      |
-| malformed、bad signature、binding violation            | 保留 lifecycle、pin 和已提交事实               | 停止原样自动重试，修正请求或实现后重新开始        |
-| HTTP `409` + `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED` | `halted`，保留版本原因                         | 停止自动通信；不得透明降级到其他版本              |
-| HTTP `409` + `FEDERATION_PEER_BLOCKED`                 | `halted`，保留 remote-blocked 原因             | 停止自动通信                                      |
-| HTTP `409` + `FEDERATION_IDENTITY_MISMATCH`            | `halted`，清除可达性并保留旧 pin               | fail closed，停止自动通信                         |
-| A 本方直接验证出 B root 与 pin 不同                    | `halted`，保留独立安全证据                     | 不得（MUST NOT）按普通网络错误继续握手            |
+| HTTP `200` with valid `{"ok":true}` | Set outbound confirmed; recompute from all facts | Await reverse Recognize; hints may be sent in the direction that returned `OK` |
+| Timeout, DNS/connect failure, TLS interruption, or truncated response | Keep outbound unconfirmed and remain `establishing` | Retry with backoff; MUST NOT revoke the pinned root |
+| HTTP `503` | Keep outbound unconfirmed and remain `establishing` | Retain the pin and back off using code retry information or local policy |
+| HTTP `200` with an invalid body or non-`OK` result | Remain `establishing` | Record a protocol-response error; do not treat it as success or retry in a tight loop |
+| Malformed, bad signature, or binding violation | Retain lifecycle, pin, and committed facts | Stop identical automatic retries; resume after fixing the request or implementation |
+| HTTP `409` + `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED` | `halted`; retain version reason | Stop automatic communication; do not transparently downgrade |
+| HTTP `409` + `FEDERATION_PEER_BLOCKED` | `halted`; retain remote-blocked reason | Stop automatic communication |
+| HTTP `409` + `FEDERATION_IDENTITY_MISMATCH` | `halted`; clear reachability and retain old pin | Fail closed and stop automatic communication |
+| A directly verifies that B's root differs from its pin | `halted`; retain independent security evidence | MUST NOT continue the handshake as an ordinary network error |
 
-可认证的 HTTP error response 不是一律触发 `halted`，必须（MUST）按 stable code 分类。`FEDERATION_MALFORMED`、
-`FEDERATION_BAD_SIGNATURE`、`FEDERATION_BINDING_VIOLATION`、`RATE_LIMITED` 和通用 `INTERNAL` 只拒绝或延迟当前请求，
-不会单独使 peer 进入 `halted`。仅上表三个 HTTP `409` + fatal code 组合以及 A 直接验证出的 pinned-root 安全冲突
-才触发 `halted`。无法解析的 proxy body、TLS/连接失败、timeout 和 HTTP `503` 都不得触发 `halted`。
-对于未知 HTTP status 或 status/code 冲突，A 必须（MUST）按 protocol.md 采用更安全动作，但不得（MUST NOT）
-在没有 identity contradiction 时覆盖或删除 root pin。
+An authenticated HTTP error response does not always trigger `halted`; it MUST be classified by stable code. `FEDERATION_MALFORMED`, `FEDERATION_BAD_SIGNATURE`, `FEDERATION_BINDING_VIOLATION`, `RATE_LIMITED`, and generic `INTERNAL` reject or delay only the current request and do not independently halt the peer. Only the three fatal HTTP `409` and code combinations above, plus a pinned-root conflict directly verified by A, trigger `halted`. An unparseable proxy body, TLS or connection failure, timeout, or HTTP `503` MUST NOT trigger `halted`. For an unknown HTTP status or a status/code conflict, A MUST take the safer action defined in protocol.md, but MUST NOT replace or delete a root pin without an identity contradiction.
 
-### 8.3 响应丢失与反向 Recognize 收敛
+### 8.3 Lost responses and reverse-Recognize convergence
 
-有效 `OK` 会推进 A 的 outbound confirmation。B 随后发来的有效反向 Recognize 只触发 A 的服务准备和 Healthy
-收敛，不能单独证明 B 已经提交前一方向。Healthy 只更新可达性；只有原方向幂等重试得到的有效 `OK` 才可以
-（MAY）补齐因响应丢失而缺少的 outbound confirmation。
+Valid `OK` advances A's outbound confirmation. A subsequent valid reverse Recognize from B triggers only A's service preparation and Healthy convergence; it cannot independently prove that B committed the earlier direction. Healthy updates reachability only. Only a valid `OK` from an idempotent retry in the original direction MAY supply outbound confirmation missing because the response was lost.
 
-如果第一次 `A → B` 没有得到有效 `OK`，A 保持 `establishing`，不得（MUST NOT）进入 `available`。B 只有在请求
-验证和提交成功后才能发起反向 Recognize；如果只是响应在提交后丢失，B 仍必须（MUST）继续反向流程。
-反向 Recognize 本身不证明 B 已提交第一方向。A 必须（MUST）保留缺失的 outbound confirmation 并幂等重试原方向；
-任何 Healthy 结果都不得（MUST NOT）补齐该事实。
+If the first `A → B` attempt does not yield a valid `OK`, A remains `establishing` and MUST NOT become `available`. B can initiate reverse Recognize only after successfully validating and committing the request. If only the response was lost after commit, B MUST still continue the reverse flow. Reverse Recognize itself does not prove that B committed the first direction. A MUST retain the missing outbound confirmation and idempotently retry the original direction; no Healthy result may fill that fact.
 
-如果第一次 `OK` 成功但反向 `B → A` 失败，已完成的方向事实必须（MUST）保留，双方保持 `establishing`。
-B 根据错误类别重试反向请求或等待管理员处理；不得（MUST NOT）回滚第一次认可，也不得（MUST NOT）开放普通
-数据面作为补偿。
+If the first `OK` succeeds but reverse `B → A` fails, completed direction facts MUST be retained and both parties remain `establishing`. B retries the reverse request according to the error class or awaits administrator action. It MUST NOT roll back the first recognition or open the ordinary data plane as compensation.
 
-### 8.4 黑名单（Blocklist）
+### 8.4 Blocklist
 
-实现可以（MAY）由管理员把 canonical peer domain 加入本地黑名单。黑名单必须（MUST）在提交新的入站
-Recognize 之前检查；命中时返回 HTTP `409` 和 `FEDERATION_PEER_BLOCKED`，不得（MUST NOT）提交方向事实、
-轻量接收门禁、反向工作或 service availability。
+An implementation MAY allow an administrator to add a canonical peer domain to a local blocklist. The blocklist MUST be checked before committing a new inbound Recognize. On a match, return HTTP `409` with `FEDERATION_PEER_BLOCKED` and MUST NOT commit a direction fact, lightweight receive gate, reverse work, or service availability.
 
-收到该明确错误的发起方必须（MUST）记录 remote-blocked 原因、进入 `halted` 并停止全部自动通信。Healthy 对
-因 block 进入的 `halted` 仍统一返回 `unavailable`，不得（MUST NOT）暴露原因。何时与如何解除由本地管理员决定，
-不属于 Federation v1 wire protocol。
+An initiator receiving this explicit error MUST record a remote-blocked reason, enter `halted`, and stop all automatic communication. Healthy still returns the uniform `unavailable` projection for a peer halted by blocking and MUST NOT expose the reason. The local administrator determines whether and how to remove the block; that decision is outside the Federation v1 wire protocol.
 
-黑名单拒绝的完整响应示例是：
+A complete blocklist rejection response is:
 
 ```http
 HTTP/1.1 409 Conflict
@@ -484,30 +391,25 @@ Content-Type: application/json
 {"code":50009,"message":"peer blocked","data":null}
 ```
 
-`message` 只供诊断，调用方必须（MUST）按 `code` 而不是文本识别明确拒绝。Recognize 处理时临时无法
-取得 well-known 使本次操作失败，使用通用 `503 INTERNAL`；调用方保留原 pin 并按退避策略重试。
+`message` is diagnostic only. The caller MUST identify the explicit rejection by `code`, not by text. If well-known is temporarily unavailable while processing Recognize, fail the operation with generic `503 INTERNAL`; the caller retains its existing pin and retries with backoff.
 
-## 9. Healthy 查询与隐私（Health Query and Privacy）
+## 9. Health query and privacy
 
-Healthy 用于查询已知 peer 的可达性与隐私安全状态，不是业务保活（keepalive）。何时触发、首次延迟、
-周期和停止条件属于本地实现；自动查询应该（SHOULD）采用有上限、带抖动（jitter）的退避，并不得
-（MUST NOT）形成紧密轮询或流量放大。
+Healthy queries the reachability and privacy-safe status of a known peer; it is not an application keepalive. Trigger timing, initial delay, cadence, and stopping conditions are local concerns. Automatic queries SHOULD use bounded, jittered backoff and MUST NOT create tight polling or traffic amplification.
 
-A 查询 B 时发送：
+A sends the following when querying B:
 
 ```json
 { "domain": "a.example" }
 ```
 
-请求使用与 Recognize 相同的 HTTP Message Signature profile，`domain` 同样必须（MUST）声明 signer A。
+The request uses the same HTTP Message Signature profile as Recognize. `domain` likewise MUST identify signer A.
 
-### 9.1 接收方 B：验证请求并生成隐私投影
+### 9.1 Recipient B: validating the request and producing the privacy projection
 
-B 只可以（MAY）使用已有的 pinned/recognition identity 尝试验证 Healthy。对于完全未知的 domain，B 不应
-（SHOULD NOT）仅为回答查询而主动获取其 well-known，避免把接口变成任意 DNS/HTTP fetch oracle。对已有 pinned
-identity 的 A，B 可以（MAY）按 signing key 轮换规则刷新 well-known，但不得（MUST NOT）因查询而替换 root pin。
+B MAY attempt to validate Healthy only with an existing pinned or recognized identity. For a completely unknown domain, B SHOULD NOT fetch well-known merely to answer the query, because that would turn the endpoint into an arbitrary DNS/HTTP fetch oracle. For A with an existing pinned identity, B MAY refresh well-known under the signing-key rotation rules, but MUST NOT replace the root pin because of the query.
 
-B 只能返回以下三个 closed object 之一；`acceptedExtensions` 是 B 当前已对 A 实际启用的单向接收能力：
+B MUST return exactly one of the following three closed objects. `acceptedExtensions` lists the one-way receive capabilities B has actually enabled for A:
 
 ```json
 { "status": "available", "selectedProtocolVersion": 1, "acceptedExtensions": ["socfp.message.sticker.v1"] }
@@ -521,84 +423,56 @@ B 只能返回以下三个 closed object 之一；`acceptedExtensions` 是 B 当
 { "status": "unavailable", "selectedProtocolVersion": null, "acceptedExtensions": null }
 ```
 
-`available` 和 `degraded` 的 `selectedProtocolVersion` 必须是 B 当前为 A 选择的唯一共同 wire major。
-`acceptedExtensions` 必须按 ASCII lexicographic 顺序、无重复，且必须是 B 当前
-`POST /s2s/v1/discover` 返回集合的子集。它表示 B 已经准备好接收 A 发来的这些扩展，不表示 B 会向 A
-发送它们。B 可以异步、分批启用 discover 中声明的能力；未启用项不出现在 Health。
+For `available` and `degraded`, `selectedProtocolVersion` MUST be the single common wire major B currently selects for A. `acceptedExtensions` MUST be sorted in ASCII lexicographic order without duplicates and MUST be a subset of B's current `POST /s2s/v1/discover` result. It means B is ready to receive these extensions from A; it does not mean B will send them to A. B may enable capabilities declared through discover asynchronously and incrementally. Capabilities not yet enabled do not appear in Health.
 
-只有请求由 B 已固定的 A identity 验证成功，且 body binding 和查询权限有效时，B 才可以（MAY）返回
-`available` 或 `degraded`：
+Only when the request validates against A's identity pinned by B, and both body binding and query authorization are valid, MAY B return `available` or `degraded`:
 
-- B 的本地 peer lifecycle 为 `available` 时返回 `available`。
-- B 已经提交 `inboundRecognitionConfirmed(A)`，且 `localServiceAvailable=true`，但 B 自己的 outbound
-  confirmation、远端往返或可恢复传输状态尚未收敛时返回 `degraded`。反向 Recognize 的发送方必须（MUST）
-  在发送 HTTP request 前完成服务准备；如果最初 `A → B` 确已提交，A 随后的 Healthy 至少得到
-  `degraded`。若双方只是独立并发发起且 B 尚未提交 `A → B`，B 必须（MUST）返回 `unavailable`。
-- `available` 和 `degraded` 都证明 B 已提交“A 认可 B”的 inbound direction fact、识别 A 的 pinned identity、
-  本次签名请求成功往返；差异只描述 B 自己观察到的连接状态。
+- Return `available` when B's local peer lifecycle is `available`.
+- Return `degraded` when B has committed `inboundRecognitionConfirmed(A)` and `localServiceAvailable=true`, but B's own outbound confirmation, remote round trip, or recoverable transport state has not converged. A reverse-Recognize sender MUST prepare its service before sending the HTTP request. If the original `A → B` was committed, A's subsequent Healthy receives at least `degraded`. If the parties only initiated concurrently and B has not committed `A → B`, B MUST return `unavailable`.
+- Both `available` and `degraded` prove that B committed the inbound direction fact “A recognizes B,” recognizes A's pinned identity, and successfully completed this signed request round trip. They differ only in B's own view of connection state.
 
-以下情况必须（MUST）统一返回 HTTP `200` 和
-`{"status":"unavailable","selectedProtocolVersion":null,"acceptedExtensions":null}`：
+The following cases MUST uniformly return HTTP `200` with `{"status":"unavailable","selectedProtocolVersion":null,"acceptedExtensions":null}`:
 
-- peer/domain 不存在，或本方从未固定并认可该 identity；
-- 签名无法由已有 identity 验证，验证所需的当前 signing certificate 无法取得，或 body domain 与 signer 不同；
-- 请求方无权查询，或 B 已因任何原因将该 peer 置为 `halted`；
-- reset in progress 或其他不可安全公开的身份/版本状态；
-- 其他不能安全公开的本地连接状态。
+- The peer or domain does not exist, or B has never pinned and recognized that identity.
+- The signature cannot be validated by the existing identity, the current signing certificate needed for validation is unavailable, or the body domain differs from the signer.
+- The requester lacks query authorization, or B has placed the peer in `halted` for any reason.
+- A reset is in progress, or another identity or version state cannot safely be disclosed.
+- Any other local connection state that cannot safely be disclosed.
 
-对上述情况，接收方必须（MUST）返回完全相同的 unavailable object，不得（MUST NOT）通过 HTTP
-status、错误码、额外字段或诊断信息泄露具体原因。
-实现应该（SHOULD）尽量减少明显的响应时间差异，并必须（MUST）对 source、domain 和全局请求速率限流。
-临时限流可以（MAY）返回通用 `503 RATE_LIMITED`；无法解析 HTTP/JSON shape 的请求可以（MAY）返回通用
-`400 FEDERATION_MALFORMED`，这两者不表达任何 peer 是否存在。
+For all cases above, the recipient MUST return exactly the same unavailable object and MUST NOT disclose the specific reason through HTTP status, error code, additional fields, or diagnostics. Implementations SHOULD minimize obvious response-timing differences and MUST rate-limit by source, domain, and globally. Temporary rate limiting MAY return generic `503 RATE_LIMITED`; an unparseable HTTP or JSON shape MAY return generic `400 FEDERATION_MALFORMED`. Neither response indicates whether a peer exists.
 
-上述 `unavailable` 只是对外隐私投影，不抹除 B 对真实本地原因的处理。例如，B 依据独立的 hostname-verified
-HTTPS 证据确认 root 冲突时，仍必须（MUST）保留旧 pin，记录原因并进入 `halted`，但对 A 的 Healthy 响应仍为
-`200 unavailable`。
+This `unavailable` result is only an external privacy projection; it does not erase B's handling of the actual local cause. For example, if B confirms a root conflict using independent hostname-verified HTTPS evidence, B still MUST retain the old pin, record the reason, and enter `halted`, while returning `200 unavailable` to A's Healthy query.
 
-### 9.2 请求方 A：消费 Healthy 结果
+### 9.2 Requester A: consuming a Healthy result
 
-| A 观察到的结果                            | A 必须（MUST）采取的本地动作                                                                               |
+| Result observed by A | Local action A MUST take |
 | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| 有效 `available` 或 `degraded`            | 仅设置 remote reachable 并清除纯传输降级；不得设置 outbound confirmed 或其他方向事实                       |
-| 有效 `unavailable`                        | 已建立 peer 清除 remote reachable 并进入 `degraded`；`establishing` peer 保持原状态；均保留 pin 和方向事实 |
-| timeout、网络错误、HTTP `503` 或非法 body | 与 `unavailable` 相同地处理可达性；不接受任何响应中的状态证明                                              |
-| HTTP `400`、`401` 或其他意外 status       | 仅判定本次查询失败；不得仅因此改变 peer lifecycle                                                          |
+| Valid `available` or `degraded` | Set only remote reachable and clear transport-only degradation; do not set outbound confirmed or another direction fact |
+| Valid `unavailable` | For an established peer, clear remote reachable and enter `degraded`; an `establishing` peer remains unchanged; retain pins and direction facts in both cases |
+| Timeout, network error, HTTP `503`, or invalid body | Handle reachability like `unavailable`; accept no state assertion from the response |
+| HTTP `400`, `401`, or another unexpected status | Treat only this query as failed; do not change peer lifecycle solely for this reason |
 
-A 收到有效 `available` 或 `degraded` 时，如果本方的双向认可事实已经独立完成，且 `localServiceAvailable`、identity、
-版本和 policy 也全部有效，则原子升级为 `available`。B 返回 `degraded` 不阻止 A 升级，因为该值描述 B 自己的观察。
-如果方向事实尚未收敛，A 必须（MUST）保持 `establishing` 并继续 Recognize，不得（MUST NOT）用 Healthy 跳过握手。
+A receiving valid `available` or `degraded` atomically becomes `available` if its bidirectional recognition facts were independently completed and `localServiceAvailable`, identity, version, and policy are all valid. B returning `degraded` does not prevent this transition because the value describes B's own observation. If direction facts have not converged, A MUST remain `establishing` and continue Recognize; it MUST NOT use Healthy to bypass the handshake.
 
-A 不得（MUST NOT）仅根据 `unavailable` 推断 B 观察到的真实原因，也不得（MUST NOT）仅因该结果把本地状态置为
-`halted`。`halted` 需要第 8 节定义的来自目标 peer 的可认证、非可自动恢复 HTTP error，或 A 自己独立验证的
-硬安全证据。
+A MUST NOT infer B's actual reason from `unavailable`, nor enter `halted` solely because of that result. `halted` requires either an authenticated, non-automatically-recoverable HTTP error from the target peer as defined in Section 8 or hard security evidence independently verified by A.
 
-A 向 B 发送 extension `E` 前，`E` 必须同时存在于最近成功验证的 B v1 discover response 和最近有效
-Health 的 `acceptedExtensions`。Health 可以收紧当前生效集合，不能授权 discover 未声明的 extension。
-收到对端 `discover` 请求后，A 可以继续发送两份旧缓存交集中的 extension，直到异步刷新完成；刷新发现
-删除后必须停止，刷新发现新增后仍须等待后续 Health 明确接受才可发送。
+Before A sends extension `E` to B, `E` MUST appear both in B's most recently validated v1 discover response and in the most recent valid Health `acceptedExtensions`. Health MAY narrow the active set, but MUST NOT authorize an extension absent from discover. After receiving a discover request from the peer, A MAY continue sending extensions in the intersection of the two old cached sets until asynchronous refresh completes. A MUST stop sending an extension when refresh observes its removal. A newly observed extension still requires explicit acceptance in a subsequent Health result.
 
-### 9.3 其他可达证明与收敛优化
+### 9.3 Other reachability evidence and convergence optimization
 
-除 Healthy 外，任一 recognized peer 发起的、成功认证并完成协议处理的正常 S2S 请求，以及本方发出请求后
-收到并验证的成功或确定业务响应，都可以（MAY）作为 `remoteServiceReachable` 的新证明并清除纯传输降级。
-业务拒绝只要证明对方正常处理了请求，也可以（MAY）恢复 reachability；malformed proxy response、网络错误、
-不可验证响应和 `5xx` 不提供该证明。该规则不得（MUST NOT）补造尚未成立的 recognition direction fact。
+In addition to Healthy, a normal S2S request initiated by a recognized peer that is successfully authenticated and processed, or a validated success or definitive application response to a locally initiated request, MAY serve as fresh evidence of `remoteServiceReachable` and clear transport-only degradation. An application rejection MAY also restore reachability when it proves that the peer processed the request normally. A malformed proxy response, network error, unverifiable response, or `5xx` provides no such evidence. This rule MUST NOT invent an unestablished recognition direction fact.
 
-当 B 发送反向 Recognize 并收到 A 的 `OK` 时，B 可以（MAY）不再额外调用 A 的 Healthy：A 在返回该反向
-`OK` 前已经按第 5.2 节完成 `localServiceAvailable`，所以这个 `OK` 同时提供
-`remoteServiceReachable` 的等价证明。A 因为第一次 `OK` 可能丢失，必须（MUST）继续幂等重试原方向 Recognize；
-无论 B 的 Healthy 返回何种 status，都不能补齐 A 的 outbound confirmation。
+When B sends reverse Recognize and receives A's `OK`, B MAY omit an additional Healthy call to A: before returning that reverse `OK`, A completed `localServiceAvailable` under Section 5.2, so the `OK` also provides equivalent evidence of `remoteServiceReachable`. Because the first `OK` may have been lost, A MUST continue idempotently retrying the original-direction Recognize. No status returned by B's Healthy can supply A's missing outbound confirmation.
 
-### 9.4 v1 capability discover
+### 9.4 v1 capability discovery
 
-已知 peer A 查询 B 或通知自身能力变化时，向 `POST /s2s/v1/discover` 发送 closed request：
+When known peer A queries B or signals that its own capabilities changed, it sends this closed request to `POST /s2s/v1/discover`:
 
 ```json
 { "origin": "a.example" }
 ```
 
-请求使用 lightweight-signed 验证边界，`origin` 必须等于 signer domain。成功响应是裸 closed object：
+The request uses the lightweight-signed validation boundary, and `origin` MUST equal the signer domain. A successful response is a bare closed object:
 
 ```ts
 interface V1DiscoveryResult {
@@ -607,21 +481,13 @@ interface V1DiscoveryResult {
 }
 ```
 
-`extensions` 必须出现，可以为空；最多 64 项，按 ASCII lexicographic 顺序且无重复。`software` 仅供诊断，
-不得参与 identity、授权、协议选择或实现特例。响应不重复主版本、root key 或 signing key；请求路径已经
-绑定 v1，跨版本与身份信息只从 well-known 验证。未知、无权或无法安全验证的请求按公共签名、认可和
-错误规则拒绝；不得为回答请求建立首次 identity pin。
+`extensions` is required and may be empty. It contains at most 64 entries, sorted in ASCII lexicographic order without duplicates. `software` is diagnostic only and MUST NOT affect identity, authorization, protocol selection, or implementation-specific behavior. The response does not repeat the major version, root key, or signing key: the request path binds v1, while cross-version and identity information is validated only through well-known. Reject unknown, unauthorized, or unsafe-to-validate requests under the common signature, recognition, and error rules. A server MUST NOT establish a first identity pin merely to answer this request.
 
-接收方必须立即返回自身当前 capability view，并合并同一 peer 的重复 pending reverse refresh；不得同步
-阻塞 response 等待外部 fetch。请求可丢失、重复、乱序，不携带调用方 capability 内容或 revision。自动
-刷新和管理员手动触发都可以使用同一 operation；具体管理 API、调度时间和 UI 不属于 SOCFP。接收方必须
-采用有上限、带抖动的刷新策略，避免请求造成 fetch amplification。
+The recipient MUST immediately return its current capability view and coalesce duplicate pending reverse refreshes for the same peer; it MUST NOT block the response while waiting for an external fetch. Requests may be lost, duplicated, or reordered and carry neither the caller's capability content nor a revision. Automatic refresh and administrator-triggered refresh may use the same operation. Management APIs, scheduling, and UI are outside SOCFP. The recipient MUST use bounded, jittered refresh behavior to prevent fetch amplification.
 
-## 10. 完整 HTTP 构造示例（Complete HTTP Construction Examples）
+## 10. Complete HTTP construction examples
 
-以下向量使用公开测试 signing private key
-`ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=`，绝不能部署为生产秘密；其 Ed25519 public key 是
-`Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=`。对应的 `a.example` well-known v1 视图是：
+The following vectors use the public test signing private key `ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=`, which MUST NEVER be deployed as a production secret. Its Ed25519 public key is `Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=`. The corresponding `a.example` well-known v1 view is:
 
 ```json
 {
@@ -641,9 +507,7 @@ interface V1DiscoveryResult {
 }
 ```
 
-`authorizationSignature` 覆盖的精确证书声明（certificate statement）由
-[传输与安全](./transport-security.md)第 1.3 节定义；上述 root、
-certificate 和签名共同用于验证 root → signing key 的授权链。
+The exact certificate statement covered by `authorizationSignature` is defined in Section 1.3 of [Transport and security](./transport-security.md). The root, certificate, and signature above jointly validate the root-to-signing-key authorization chain.
 
 ### 10.1 Recognize
 
@@ -659,7 +523,7 @@ Signature: sig1=:PtsaJMgwkw7G0O9yU/x0v19BkUcWqG0I8Mvm14wWt447gZ9jgYLAjjgsaZg4WIR
 {"domain":"a.example"}
 ```
 
-签名基串是：
+The signature base is:
 
 ```text
 "@method": POST
@@ -673,7 +537,7 @@ Signature: sig1=:PtsaJMgwkw7G0O9yU/x0v19BkUcWqG0I8Mvm14wWt447gZ9jgYLAjjgsaZg4WIR
 
 ### 10.2 Healthy
 
-相同 body 产生相同 `Content-Digest`，但 path 改变会产生不同签名：
+The same body produces the same `Content-Digest`, but changing the path produces a different signature:
 
 ```http
 POST /s2s/v1/healthy HTTP/1.1
@@ -687,11 +551,8 @@ Signature: sig1=:Jv1eXss7aa+STTFpi1gXoyJWoF6gzWPutSQWxTPL6zkzD9uwF/HTxkPnLKlIJrj
 {"domain":"a.example"}
 ```
 
-## 11. 管理边界（Administrative Boundary）
+## 11. Administrative boundary
 
-普通网络失败、服务重启、SRV 变化或同一 pinned root 下的 signing key 轮换不得（MUST NOT）使 peer 进入
-`halted`，也不得（MUST NOT）删除 pin、方向事实、cursor、mirror 或授权。
+Ordinary network failure, service restart, SRV change, or signing-key rotation under the same pinned root MUST NOT place a peer in `halted` and MUST NOT delete pins, direction facts, cursors, mirrors, or authorizations.
 
-`halted` 之后的诊断、审批、恢复、重置或重新认可流程都属于本地管理行为，Federation v1 不定义其端点、
-交互或自动化策略。唯一的协议安全底线是：在管理员明确处理前不得（MUST NOT）自动恢复通信，且任何新 root
-都不得（MUST NOT）自动继承旧 identity 的认可事实或业务授权。
+Diagnosis, approval, recovery, reset, and re-recognition after `halted` are local administrative actions. Federation v1 defines no endpoint, interaction, or automation policy for them. The protocol safety floor is that communication MUST NOT resume automatically before explicit administrative handling, and a new root MUST NOT automatically inherit the old identity's recognition facts or application authorizations.

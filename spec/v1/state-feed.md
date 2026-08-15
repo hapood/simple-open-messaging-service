@@ -1,40 +1,49 @@
 # Simple Open Chat Federation Protocol v1 State Feed
 
-状态：`RELEASE CANDIDATE`（`v1.0.0-rc.0`）
-规范性：本文全部为规范性要求，除非段落明确标记为“非规范性实现说明”。
+Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
-本文定义状态快照型压缩 feed `GET /s2s/v1/state-feed`。它与两个索引型 feed 共享
-`feedId/after/through/take` 扫描模型，但 item 直接携带可幂等合并的当前业务快照，不需要再调用
-query 获取内容。通用身份、签名、响应和错误规则见 [主协议](./protocol.md)。
+This document is entirely normative.
 
-## 1. 请求
+This document defines the compact snapshot feed `GET /s2s/v1/state-feed`. It
+shares the `feedId/after/through/take` scan model with the two index feeds, but
+each item directly contains an idempotently mergeable current state snapshot;
+no additional query is required. Common identity, signing, response, and error
+rules are defined in the [core protocol](./protocol.md).
 
-请求 query 是 closed 参数集合：
+## 1. Request
 
-| 字段      | 类型                               | 要求                                                                                       |
-| --------- | ---------------------------------- | ------------------------------------------------------------------------------------------ |
-| `after`   | `DecimalString` query string       | 可选；consumer 的 exclusive 扫描位置；省略时只返回 `resumeAfter`，不返回 page。            |
-| `take`    | `PositiveSafeInteger` query string | 可选；consumer 建议的本页最大 item 数。publisher MAY 返回更少，但不得返回更多。            |
-| `through` | `DecimalString` query string       | 可选；本轮扫描的 inclusive 上界，MUST 大于或等于 `after`。连续有界分页 MUST 保持同一个值。 |
+The query is a closed parameter set:
 
-`take` 不保证 page 一定包含该数量，也不是响应 bytes 的安全承诺。publisher 必须（MUST）接受任意符合
-`PositiveSafeInteger` 的 `take`，并可以（MAY）按本地有限的 item/page-byte 上限返回更少 item；
-不得（MUST NOT）仅因 `take` 大于本地 page size 而返回 `FEDERATION_MALFORMED`。publisher 必须（MUST）保证
-已分配到 feed 的单个状态快照可由自己的 endpoint 完整返回。v1 不规定 JSON/JSONB 的共同 byte 上限，
-但不得（MUST NOT）返回或提交截断快照。consumer 超过本地能力时可以（MAY）中止读取；
-`through` 只冻结读取窗口，不确认、删除或降级任何状态。
+| Field | Type | Requirement |
+| --- | --- | --- |
+| `after` | `DecimalString` query string | Optional exclusive consumer scan position. When omitted, only `resumeAfter` is returned, not a page. |
+| `take` | `PositiveSafeInteger` query string | Optional requested maximum number of items. The publisher MAY return fewer but MUST NOT return more. |
+| `through` | `DecimalString` query string | Optional inclusive upper bound for this scan. It MUST be greater than or equal to `after` and remain unchanged across bounded pagination. |
 
-省略 `after` 时不得携带 `take` 或 `through`。source MUST 返回 HTTP `200`
-`FEDERATION_FEED_CURSOR_UNAVAILABLE`，data 只含当前可用 exclusive cursor `resumeAfter`。consumer 原子
-保存后以 `after=resumeAfter` 开始正常读取；不得猜测初始 ID。该起点由 publisher 定义；
-feed item ID MUST 为正整数，cursor/end MUST 为非负整数；
-`0` 是第一个 item 之前的 exclusive cursor，不是 item ID。
-从 `resumeAfter` 开始排空 MUST 能重建当前完整 state projection；若当前存在 item，publisher 不得把
-`stateFeedEndId` 直接当作 bootstrap 起点而跳过它们。
+`take` neither guarantees a page of that size nor promises a safe response byte
+size. A publisher MUST accept every valid `PositiveSafeInteger` and MAY return
+fewer items to enforce finite local item or response-byte limits. It MUST NOT
+return `FEDERATION_MALFORMED` merely because `take` exceeds its page size. Every
+individual snapshot allocated to the feed MUST be returnable in full by that
+publisher. v1 specifies no common JSON byte limit, but a snapshot MUST NOT be
+truncated. A consumer MAY stop if a response exceeds its local capacity.
+`through` only freezes the scan window; it does not acknowledge, delete, or
+downgrade state.
 
-## 2. Page 与可靠 cursor
+When `after` is omitted, `take` and `through` MUST also be omitted. The source
+MUST return HTTP `200 FEDERATION_FEED_CURSOR_UNAVAILABLE` whose data contains
+only the currently available exclusive cursor `resumeAfter`. The consumer
+atomically stores that value and starts normal reads with `after=resumeAfter`;
+it MUST NOT guess an initial ID. The publisher defines this starting point.
+Feed item IDs are positive integers, while cursors and ends are non-negative
+integers. `0` is the exclusive cursor before the first item, not an item ID.
+Draining from `resumeAfter` MUST reconstruct the complete current state
+projection. If current items exist, the publisher MUST NOT use
+`stateFeedEndId` as the bootstrap point and thereby skip them.
 
-成功 envelope 的 `data` MUST 是以下 closed object：
+## 2. Pages and reliable cursors
+
+The `data` of a successful envelope MUST be this closed object:
 
 ```ts
 interface StateFeedPage {
@@ -45,38 +54,47 @@ interface StateFeedPage {
 }
 ```
 
-publisher 在一个一致 source snapshot 上读取 `stateFeedEndId`，并计算：
+The publisher reads `stateFeedEndId` from one consistent source snapshot and
+calculates:
 
 ```text
 scanEnd = through is present ? min(stateFeedEndId, through) : stateFeedEndId
 ```
 
-每个成功 page MUST 满足：
+Every successful page MUST satisfy all of the following:
 
-1. `after <= scannedThrough <= scanEnd <= stateFeedEndId`；
-2. 每个 `item.feedId` 位于 `(after, scannedThrough]`，并按数值严格递增；
-3. `hasMore` 当且仅当 `scannedThrough < scanEnd`；
-4. `hasMore: true` 时 `scannedThrough > after`；
-5. `hasMore: false` 时 `scannedThrough === scanEnd`；
-6. page 可以没有 item；空洞和 compacted key 不阻止 `scannedThrough` 前进；
-7. 同一 stable key 在 page 中最多出现一次。
+1. `after <= scannedThrough <= scanEnd <= stateFeedEndId`.
+2. Every `item.feedId` is in `(after, scannedThrough]`, in strictly increasing
+   numeric order.
+3. `hasMore` is true if and only if `scannedThrough < scanEnd`.
+4. If `hasMore` is true, `scannedThrough > after`.
+5. If `hasMore` is false, `scannedThrough === scanEnd`.
+6. A page may contain no items; gaps and compacted keys do not prevent
+   `scannedThrough` from advancing.
+7. A stable key appears at most once in a page.
 
-consumer MUST 完整验证 page，并在同一事务中提交全部副作用与 `scannedThrough`。任一 item malformed、
-identity/binding 不一致或授权失败时，整个 page 与 cursor MUST 回滚。`hasMore: true` 时下一页 MUST
-使用本页 `scannedThrough`；有界排空还 MUST 复用原 `through`。
+The consumer MUST fully validate a page and atomically commit all its effects
+with `scannedThrough`. A malformed item, identity or binding mismatch, or
+authorization failure MUST roll back the entire page and cursor. After
+`hasMore: true`, the next page MUST use this page's `scannedThrough`; a bounded
+drain MUST also reuse the original `through`.
 
-### 2.1 无 Source ACK 的压缩投影
+### 2.1 Compact projection without source acknowledgements
 
-publisher 不为 consumer 维护 `acknowledgedThrough`、`lastServedThrough` 或其他验证游标。任意位于
-`[0, stateFeedEndId]` 的 `after` 都可读，包括重复和较旧位置。publisher 不得把 `after` 当作 ACK，也不得
-因 consumer 读取而删除当前投影。
+The publisher does not maintain `acknowledgedThrough`, `lastServedThrough`, or
+another consumer cursor. Every `after` in `[0, stateFeedEndId]` is readable,
+including repeated or older positions. The publisher MUST NOT treat `after` as
+an acknowledgement or remove the current projection because it was read.
 
-publisher MUST 持久保存每个当前 stable key 的最新快照。更高业务 revision 覆盖旧版本时，必须分配
-比该 feed 历史所有 ID 都大的新 `feedId`；不得复用旧 ID 或在 consumer 已可能越过的 ID 上原地
-改写。旧版本可以立即 compact。省略 `after` 或者 `after > stateFeedEndId` 时可返回有效
-`resumeAfter`；压缩本身不得导致 cursor unavailable。
+The publisher MUST durably retain the latest snapshot for every current stable
+key. When a greater business revision supersedes it, the publisher MUST
+allocate a `feedId` greater than every earlier ID in that feed. It MUST NOT
+reuse an old ID or rewrite an ID a consumer may have passed. The older version
+may be compacted immediately. An omitted `after` or an `after` greater than
+`stateFeedEndId` may receive a valid `resumeAfter`; compaction alone MUST NOT
+make a cursor unavailable.
 
-## 3. 通用 Item 与身份
+## 3. Common item and identity
 
 ```ts
 type StateEventType =
@@ -99,30 +117,34 @@ interface StateFeedItem {
 }
 ```
 
-所有 item 和 body 都是 closed object。stable key 是：
+Every item and body is a closed object. The stable key is:
 
 ```text
 (domain, account, eventType, subjectDomain, subjectAccount)
 ```
 
-`revision` 是该 stable key 的业务版本。业务内容只能在 `revision` 严格增加时变化；相同或更旧
-revision 不得改写 body。consumer 按 stable key 与 `revision` 幂等合并，不得用 `feedId` 代替业务
-revision。consumer 已保存相同 revision 但收到语义不同 body 时 MUST 拒绝 page，并记录协议冲突。
-除第 6 节的 member-before-group dependency repair 外，相同 revision/body 不分配新 `feedId`。
+`revision` is the business version of that stable key. Business content may
+change only with a strictly greater revision; an equal or lower revision MUST
+NOT replace the body. Consumers merge idempotently by stable key and revision,
+not by `feedId`. If an already stored revision arrives with a semantically
+different body, the consumer MUST reject the page and record a protocol
+conflict. Except for the member-before-group dependency repair in Section 6,
+an identical revision and body does not receive a new `feedId`.
 
-`PROFILE`、`MEMBER_PROFILE`、`GROUP_META` 的 subject 两字段 MUST 都是 `""`。三个 intent 的 subject
-两字段 MUST 构成完整非空 `Address`。事件绑定如下：
+For `PROFILE`, `MEMBER_PROFILE`, and `GROUP_META`, both subject fields MUST be
+`""`. For each intent, the subject fields MUST form a complete non-empty
+`Address`.
 
-| event                 | `account/domain` | `subjectAccount/subjectDomain` | signer 要求                                                                                    |
-| --------------------- | ---------------- | ------------------------------ | ---------------------------------------------------------------------------------------------- |
-| `PROFILE`             | 资料主体         | 空                             | `domain` MUST 等于 signer domain。                                                             |
-| `MEMBER_PROFILE`      | 人员资料主体     | 空                             | signer 是该 source-scoped 快照的 publisher；主体可以来自第三方 domain。                        |
-| `P2P_INTENT`          | 本方向 actor     | 另一方                         | actor domain MUST 等于 signer，subject domain MUST 等于 consumer。两端都必须是 `UserAccount`。 |
-| `GROUP_INVITE_INTENT` | origin-owned 群  | 被邀请成员                     | 群 domain MUST 等于 signer，成员 domain MUST 等于 consumer。                                   |
-| `GROUP_JOIN_INTENT`   | origin-owned 群  | 申请成员                       | 群 domain MUST 等于 consumer，成员 domain MUST 等于 signer。                                   |
-| `GROUP_META`          | origin-owned 群  | 空                             | 群 domain MUST 等于 pinned signer/origin。                                                     |
+| Event | `account/domain` | `subjectAccount/subjectDomain` | Signer requirement |
+| --- | --- | --- | --- |
+| `PROFILE` | Profile subject | Empty | `domain` MUST equal the signer domain. |
+| `MEMBER_PROFILE` | Member profile subject | Empty | The signer publishes this source-scoped snapshot; the subject may belong to another domain. |
+| `P2P_INTENT` | Actor for this direction | Other party | Actor domain MUST equal the signer and subject domain MUST equal the consumer. Both accounts MUST be `UserAccount`. |
+| `GROUP_INVITE_INTENT` | Origin-owned group | Invited member | Group domain MUST equal the signer and member domain MUST equal the consumer. |
+| `GROUP_JOIN_INTENT` | Origin-owned group | Applying member | Group domain MUST equal the consumer and member domain MUST equal the signer. |
+| `GROUP_META` | Origin-owned group | Empty | Group domain MUST equal the pinned signer/origin. |
 
-## 4. 展示资料类型与最小披露
+## 4. Display profiles and minimum disclosure
 
 ```ts
 interface ProfileAvatar {
@@ -134,17 +156,22 @@ interface ProfileAvatar {
 }
 ```
 
-`base64` MUST 是无空白的 RFC 4648 padded Base64，严格解码后必须是非空图片 bytes；`digest` MUST
-等于这些 bytes 的 SHA-256。`width`、`height` MUST 等于解码图片的实际尺寸，且乘积不得超过
-`16000000`。`mimeType` MUST 是与实际图片格式一致的非空 MIME string。
+`base64` MUST be whitespace-free RFC 4648 padded Base64 that strictly decodes
+to non-empty image bytes. `digest` MUST equal the SHA-256 of those bytes.
+`width` and `height` MUST equal the decoded image's actual dimensions, and
+their product MUST NOT exceed `16000000`. `mimeType` MUST be a non-empty MIME
+string matching the actual image format.
 
-`displayName` 是 1–30 个 Unicode code point，`bio` 是 0–120 个 Unicode code point；二者不得含未配对
-surrogate。展示字段、头像和简介都不得授予身份、关系、群成员资格、消息或资源权限。
+`displayName` contains 1–30 Unicode code points and `bio` contains 0–120. They
+MUST NOT contain unpaired surrogates. Display fields, avatars, and biographies
+grant no identity, relationship, membership, message, or resource permission.
 
 ### 4.1 `PROFILE`
 
-`PROFILE` 是 identity home server 向具有直接资料可见性的 peer 发布的完整账号资料。主体可以是
-`UserAccount`（精确 P2P 建立或现有 P2P 关系）或 origin-owned `GroupAccount`（群邀请或群 audience）：
+`PROFILE` is the complete account profile published by an identity home server
+to a peer with direct profile visibility. The subject may be a `UserAccount`
+needed for an exact P2P request or existing P2P relationship, or an
+origin-owned `GroupAccount` needed for a group invitation or audience.
 
 ```ts
 interface ProfileBody {
@@ -156,26 +183,35 @@ interface ProfileBody {
 }
 ```
 
-`extensions` 遵循[主协议第 2.1 节](./protocol.md#21-extension-capability)。publisher 只能包含目标 peer
-在最近有效 Health 中接受且仍存在于 v1 discover response 的 entry；省略等价于空 object。extension 数据是完整 profile snapshot 的一部分，
-已发送 entry 的增加、修改或移除必须分配更大的 profile `revision`。consumer 严格验证自己支持的 entry，
-有界忽略未知 entry，不得因未知 entry 拒绝整个合法 `PROFILE`。
+`extensions` follows [Core Protocol Section 2.1](./protocol.md#21-extension-capability).
+The publisher MAY include only entries accepted by the target peer in the most
+recent valid Health response and still advertised by that peer's v1 discovery
+response. Omission is equivalent to an empty object. Extension data is part of
+the complete profile snapshot; adding, changing, or removing a sent entry MUST
+allocate a greater profile `revision`. A consumer strictly validates supported
+entries and ignores unsupported entries within their bounded values. It MUST
+NOT reject an otherwise valid `PROFILE` because an entry is unsupported.
 
-`revision` 是该主体的 profile revision。`deleted: true` 是账号资料 tombstone；它不重置 server identity，
-也不自动撤销已经独立发布的关系方向。publisher MUST 只向当前存在直接 P2P/群资料可见性，或为建立
-精确 P2P 请求、群邀请 mirror 所必需的目标 peer 分配该资料。
+`revision` is the subject's profile revision. `deleted: true` is an account
+profile tombstone; it neither resets server identity nor implicitly revokes an
+independently published relationship direction. A publisher MUST allocate the
+profile only to a peer that currently has direct P2P or group profile
+visibility, or needs it for an exact P2P request or group-invitation mirror.
 
-精确用户查询与本事件是不同的披露场景。`GET /users/:account` 只返回资源规范定义的最小公共身份卡，
-不得因为 `PROFILE` 包含 `bio` 或 tombstone 状态而扩大查询响应。consumer 代理该查询时 MUST NOT 因查询
-结果创建持久 `User` stub、关系或 state projection。人类用户的 home-authored `PROFILE` 可以先按 Address
-保存为已验证资料投影，但收到 `REQUESTED` 或 `REVOKED` 仍不得创建 stub；只有收到有效 `ACCEPTED`，且
-已保存该 identity home 发布的非删除 `PROFILE` 时，才可把投影物化成持久 stub。群 mirror 的惰性物化不受
-这条人类用户规则影响。
+Exact user lookup is a separate disclosure context. `GET /users/:account`
+returns only the minimum public identity card defined by the resource
+specification and MUST NOT be expanded merely because `PROFILE` contains `bio`
+or tombstone state. A consumer MUST NOT treat a proxied lookup result as a
+relationship or state projection. A human user's home-authored profile is not
+sufficient to establish a persistent relationship identity: a valid
+`ACCEPTED` intent and a non-deleted profile from that identity home are both
+required. This rule does not constrain lazy materialization of group mirrors.
 
 ### 4.2 `MEMBER_PROFILE`
 
-`MEMBER_PROFILE` 表示目标 peer 因共享群等明确来源需要保存的人员展示资料；它不表示该人员属于某个
-特定群。实际 roster 只能由 `GROUP_META.members` 表达。
+`MEMBER_PROFILE` is display metadata that a target peer needs for an explicit
+source such as a shared group. It does not assert membership in any particular
+group; only `GROUP_META.members` defines the roster.
 
 ```ts
 interface MemberProfileBody {
@@ -185,34 +221,48 @@ interface MemberProfileBody {
 }
 ```
 
-`MEMBER_PROFILE.extensions` 使用与 `PROFILE.extensions` 相同的单向 capability、完整 snapshot 和 revision
-规则；它仍只是 source-scoped 展示 metadata，不授予群成员资格或其他权限。
+Its `extensions` follow the same unidirectional capability, complete-snapshot,
+and revision rules as `PROFILE.extensions`. They remain source-scoped display
+metadata and grant no membership or other permission.
 
-publisher MUST 为每个 `(target peer, member Address)` 维护完整的当前可见性来源集合：
+For each `(target peer, member Address)`, the publisher MUST maintain the
+complete current set of visibility sources:
 
-- 第一个来源出现时发布完整 `MEMBER_PROFILE`；
-- 仍有至少一个来源时，新增或删其他来源不得移除快照；
-- 人员资料 revision 增加时，只向仍有来源的 peer 发布新快照；
-- 最后一个来源消失时，publisher 直接从当前 state-feed projection 删除该 stable key，
-  不分配 `REMOVED` item，也不保留可见 tombstone。
+- When the first source appears, it publishes a complete `MEMBER_PROFILE`.
+- While at least one source remains, adding or removing another source does not
+  remove the snapshot.
+- A profile revision is published only to peers that still have a source.
+- When the last source disappears, the publisher removes the stable key from
+  the current projection without allocating a removal item or retaining a
+  visibility tombstone.
 
-来源集合是权威事实；来源数量只能从集合衍生，不得作为另一份独立权威。具体表、引用计数缓存或 GC
-实现不属于协议要求。
+The source set is authoritative; a source count is only derived data. A
+consumer MUST scope snapshots by `(signer domain, member Address)`. Snapshots
+of the same member from different signers may diverge and MUST NOT be merged by
+member address or profile revision across signers.
 
-consumer MUST 按 `(signer domain, member Address)` 隔离保存快照。由不同 signer 发布的同一人员可以分叉，
-不得按人员 Address 或 profile revision 跨 signer 合并。一次可清理的完整排空必须固定 state drain target：
-target 可以来自 feed-head hint，或本轮第一个未携带 `through` 的成功 page 所返回的 `stateFeedEndId`；后一种
-情况下该首 page 计入本轮，后续 page 必须固定使用 `through=target`。只有达到
-`hasMore: false && scannedThrough === target`，且所有 page 的状态副作用和最终 cursor 都已提交，才可针对
-该 signer 做一次 source-scoped mark-and-sweep。sweep 必须使用此时本地最新
-已提交的 P2P 关系和 `GROUP_META` replacement roster：同时不再是本域成员好友、也不再与本域成员共享任一群
-的 member 快照应被删除。不得在单个 page 之间、失败 page 后或尚未达到固定 target 时清理。历史消息的
-author Address 必须保留；删除展示快照不得删除消息。排空期间被重新索引到更大 feed ID 的状态由后续 hint
-或周期 reconciliation 处理；仍被本地已提交关系或 roster 引用的 member 不会在本轮被 sweep。
+Projection omission is not a deletion event. A consumer may remove an
+unreferenced source-scoped snapshot only after atomically completing a bounded
+state-feed drain to a fixed target. That target is either a feed-head hint or
+the `stateFeedEndId` returned by the first successful page in a drain that did
+not specify `through`; that first page is part of the same drain, and every
+later page MUST use `through=target`. Cleanup is permitted only after committing
+all page effects and the final cursor with
+`hasMore: false && scannedThrough === target`.
 
-## 5. 统一方向意图
+The consumer then evaluates snapshots against the latest committed P2P
+relationships and complete replacement group rosters from that signer. A
+member snapshot may be removed only when the member is neither a friend of a
+local user nor shares any group with a local user. Cleanup MUST NOT occur
+between pages, after a failed page, or before reaching the target. Removing
+display metadata MUST NOT remove messages or their stable author addresses.
+State re-indexed beyond the fixed target is reconciled by a later hint or
+periodic drain.
 
-P2P、群邀请和群申请共享同一方向状态：
+## 5. Directional intents
+
+P2P relationships, group invitations, and group join requests share one
+directional state:
 
 ```ts
 type IntentStatus = 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
@@ -224,55 +274,69 @@ interface IntentBody {
   expiresAt: EpochMilliseconds | null;
 }
 
-// Closed shape: P2P_INTENT has no additional fields.
 type P2PIntentBody = IntentBody;
 ```
 
-- `REQUESTED` 表示本方向当前有效地请求或同意建立关系；`requestedAt` MUST 非空。
-- `ACCEPTED` 表示本方向已经观察并确认双方流程的成功结果；`expiresAt` MUST 是 `null`。
-- `REVOKED` 表示本方向拒绝、撤回或终止；`expiresAt` MUST 是 `null`。
-- `note` 只描述本方向，不授予权限，最多 255 个 Unicode code point。
-- expiry 只使 `REQUESTED` 失去效力，不隐式增加 revision。过期 `REQUESTED` 可以从当前 feed projection
-  直接省略，不要求发布 `REVOKED` 或其他删除通知；consumer 无论是否再次看到该 key，都必须按绝对时间
-  停止把它当作有效申请。
+- `REQUESTED` means this direction currently requests or agrees to establish
+  the relationship. `requestedAt` MUST be non-null.
+- `ACCEPTED` means this direction has observed and confirmed successful
+  completion of both sides' flow. `expiresAt` MUST be `null`.
+- `REVOKED` means this direction rejects, withdraws, or terminates the
+  relationship. `expiresAt` MUST be `null`.
+- `note` describes only this direction, grants no permission, and contains at
+  most 255 Unicode code points.
+- Expiry invalidates only `REQUESTED` and does not implicitly increase its
+  revision. An expired request may be omitted from the current projection
+  without a `REVOKED` event. A consumer MUST stop treating it as effective at
+  its absolute expiry time whether or not the key appears again.
 
-三种 intent 的 `REQUESTED` 都必须有非空 `expiresAt`，并满足
-`requestedAt < expiresAt <= requestedAt + 7 days`。协议不允许永久 pending 的好友申请、群邀请或群申请。
+For every intent type, `REQUESTED` MUST have a non-null `expiresAt` satisfying
+`requestedAt < expiresAt <= requestedAt + 7 days`. v1 does not permit a
+permanently pending friend request, group invitation, or group join request.
 
-`REVOKED` 没有语义有效期，`expiresAt` 必须为 `null`。它是拒绝、撤回或终止的 best-effort 状态通知：
-publisher SHOULD 按服务能力尽量长期保留其当前 projection，但 MAY 在之后直接省略该 key，不需要删除
-通知。consumer 不得把 projection 缺失解释为关系重新有效；当前关系/授权查询和 message query 的即时
-拒绝是清理后的兜底收敛机制。
+`REVOKED` has no semantic expiry. It is a best-effort notification of refusal,
+withdrawal, or termination. The publisher SHOULD retain its current projection
+as long as practical but MAY later omit the key without a removal event. A
+consumer MUST NOT interpret omission as restoration. Current authorization
+checks and immediate message-query refusal provide eventual convergence after
+cleanup.
 
 ### 5.1 P2P
 
-P2P 关系只有双方最新方向都为 `ACCEPTED` 时成立。收到对方有效 `REQUESTED` 时，已有有效本地方向的
-实现可以把本方向推进为 `ACCEPTED` 并回传；双方交叉请求必须通过 stable key revision 幂等收敛。任一方
-发布 `REVOKED` 后关系立即失效，并停止该已关闭 audience 的未来 P2P message allocation；另一方向不会
-因此被伪造成该方 author 的状态。
+A P2P relationship exists only when the latest direction from each party is
+`ACCEPTED`. On receiving a valid peer `REQUESTED`, an implementation with an
+effective local direction may advance its direction to `ACCEPTED` and return
+it. Crossing requests converge idempotently through stable-key revisions. As
+soon as either party publishes `REVOKED`, the relationship becomes invalid and
+future P2P message allocation to that closed audience stops. The other
+direction is not rewritten as if authored by the revoking party.
 
-`P2P_INTENT` 是 closed body，不得携带 `messageFeedEndId`、`tombstoneFeedEndId`、任何
-data-feed cursor 或历史授权边界。feed end 只是对应全局索引 feed 的扫描上界，不是
-thread 关系关闭边界。收到 `REVOKED` 后，consumer MUST
-使对应 peer/thread 的当前 message/tombstone query 目标失效并停止重试；source MAY 从
-两个索引 feed 中分别删除该 thread 的当前投影。这两个投影彼此独立，无需同时存在或
-同时删除。若 query 在 state 收敛前返回 `FORBIDDEN`，consumer 以相同方式使当前目标失效，
-并优先重新排空 state feed 作为兜底对账。
+`P2P_INTENT` is a closed body. It MUST NOT contain `messageFeedEndId`,
+`tombstoneFeedEndId`, a data-feed cursor, or a historical authorization
+boundary. Feed ends are global index scan bounds, not thread-closure bounds.
+After receiving `REVOKED`, a consumer MUST invalidate current message and
+tombstone query targets for that peer/thread and stop retrying them. The source
+MAY independently remove the thread's current projections from the two index
+feeds. If a query returns `FORBIDDEN` before state convergence, the consumer
+MUST perform the same invalidation and prioritize another state-feed drain.
 
-好友关系关闭或重新建立后，message/tombstone query 由 source 根据 durable 状态和本地策略
-即时判断可读范围；不得把 per-peer feed ID 解释为 thread 消息权限，也不得因关系重建而
-回退已提交的 thread-local query cursor。
+After a relationship closes or is restored, the source determines the
+currently readable message and tombstone ranges from durable facts and local
+policy. A per-peer feed ID MUST NOT be interpreted as thread-message
+authorization, and restoration MUST NOT decrease a committed thread-local
+query cursor.
 
-### 5.2 群邀请与申请
+### 5.2 Group invitations and join requests
 
-群邀请 MUST 通过邀请者与被邀请者已经成立的 P2P 会话发起；publisher 不得借群邀请绕过好友关系
-准入。因为该 P2P 关系已经成立，邀请者的 home `PROFILE` 在被邀请者节点上 MUST 已完成验证并物化。
-创建群邀请的业务事务 MUST 同时写入对应的 `GROUP_INVITE_INTENT` 和展示该邀请所需的群 `PROFILE`；
-若同一事务发布或重发引用 roster 的 `GROUP_META`，还 MUST 先写入该目标 peer 缺少或需要更新的
-`MEMBER_PROFILE`。事务提交后才能发送 state-feed push，consumer 不得依赖后续用户查询补齐邀请所需
-资料。
+A group invitation MUST be initiated through an established P2P relationship
+between the inviter and invitee; it MUST NOT bypass friendship admission. The
+state projection visible to the invitee MUST contain the inviter profile and
+the group profile needed to present the invitation. Any referenced group
+roster MUST also satisfy the member-before-group ordering in Section 6. A
+consumer MUST NOT rely on a later user lookup to complete invitation state.
 
-`GROUP_INVITE_INTENT` body 额外携带创建惰性 mirror 所需的当前 owner：
+`GROUP_INVITE_INTENT` additionally carries the current owner needed to create a
+lazy mirror:
 
 ```ts
 interface GroupInviteIntentBody extends IntentBody {
@@ -280,14 +344,18 @@ interface GroupInviteIntentBody extends IntentBody {
 }
 ```
 
-`owner` 必须是 origin domain 托管的 `UserAccount`。`GROUP_JOIN_INTENT` body 就是 closed
-`IntentBody`，不得包含 `owner`、历史消息边界或 feed cursor。
+`owner` MUST be a `UserAccount` hosted by the origin domain.
+`GROUP_JOIN_INTENT` has exactly the closed `IntentBody`; it MUST NOT contain an
+owner, historical message boundary, or feed cursor.
 
-一个有效 invite `REQUESTED` 与一个有效 join `REQUESTED` 收敛后，origin MAY 执行容量、封禁等本地准入
-检查。准入成功后，origin 发布更高 revision 的 invite `ACCEPTED` 和权威 `GROUP_META`；member server
-观察到包含该成员的权威 roster 后发布更高 revision 的 join `ACCEPTED`。任一方向 `REVOKED` 都阻止新的
-准入或要求 origin 撤销现有成员，但群权限的最终事实始终是 `GROUP_META`，intent 本身不得授权消息、
-媒体或群资源。
+After an effective invite `REQUESTED` and join `REQUESTED` converge, the origin
+MAY apply local admission policy. On admission, the origin publishes a greater
+revision of the invite as `ACCEPTED` and an authoritative `GROUP_META`. After
+the member server observes that member in the authoritative roster, it
+publishes a greater revision of the join as `ACCEPTED`. Either direction's
+`REVOKED` prevents new admission or requests removal of an existing member,
+but `GROUP_META` remains the final membership authority. An intent alone grants
+no message, media, or group-resource permission.
 
 ## 6. `GROUP_META`
 
@@ -303,47 +371,70 @@ interface GroupMetaBody {
 }
 ```
 
-`revision` 是 origin 对该群分配的 roster revision。`members` 是完整 replacement，不是 patch，并 MUST
-按 `(domain ASCII ascending, account ASCII ascending)` 排序；Address 必须唯一。排序只提供确定性编码、
-查重和测试，不赋予数组位置业务含义。
+`revision` is the roster revision allocated by the origin. `members` is a
+complete replacement, not a patch. It MUST be sorted by domain in ascending
+ASCII order and then account in ascending ASCII order, with unique addresses.
+Ordering provides deterministic encoding and duplicate detection only; array
+position has no business meaning.
 
-未解散群必须恰好包含一个 `OWNER`，且与非空 `owner` 相同；owner MUST 由 origin domain 托管。
-`dissolved: true` 时 `active` MUST 为 `false`、`owner` MUST 为 `null`、`members` MUST 为空。
+An undissolved group MUST contain exactly one `OWNER`, equal to the non-null
+`owner`, and that owner MUST be hosted by the origin domain. When
+`dissolved: true`, `active` MUST be false, `owner` MUST be null, and `members`
+MUST be empty.
 
-`active` 是该 target peer 的服务器级 audience 投影：当且仅当未解散 roster 至少包含一个由 target peer
-托管的成员时为 `true`。Federation v1 不在同一 peer 内为不同本地成员提供传输级或密码学历史隔离；
-consumer 可以执行更严格的本地展示策略，但不得把它解释成 origin 可验证的成员级访问控制。
+`active` is the server-level audience projection for the target peer. It is
+true if and only if the undissolved roster contains at least one member hosted
+by that peer. Federation v1 provides no transport-level or cryptographic
+history isolation among local members on the same peer. A consumer may apply a
+stricter local display policy but MUST NOT interpret it as origin-verifiable
+per-member access control.
 
-publisher MUST 在同一原子提交中形成目标 peer 的权威 `GROUP_META` 更新和对应群消息 audience 开放或
-关闭事实。依赖新 audience 的 message-feed allocation 只能在该提交成功后发生。consumer MUST 先提交
-state-feed，再处理随后拉取的数据 feed。
+The publisher MUST make the authoritative `GROUP_META` update and the
+corresponding opening or closing of that peer's group-message audience visible
+atomically. Message-feed allocation that depends on a new audience may occur
+only afterward. A consumer MUST commit state-feed effects before processing
+subsequently fetched data-feed items.
 
-对 `GROUP_META.members` 中每个新增 member，publisher MUST 在分配该 `GROUP_META` feed ID 前，保证
-目标 peer 的当前 state-feed projection 已存在对应 `MEMBER_PROFILE`，且其 `feedId` 更小。若后续
-member profile 更新使它的新 `feedId` 超过仍引用该 member 的 `GROUP_META`，publisher MUST 重新索引
-相关 `GROUP_META`，使当前压缩投影仍保持 member-before-group 顺序。这种 dependency-repair allocation
-MAY 在 body 和业务 revision 不变时只分配新 `feedId`；consumer 对相同 revision/body 幂等 no-op。
-一个一致 page snapshot 不得同时返回仍引用 member 的 group 快照和不可解析的 member 投影。
+For each member newly referenced by `GROUP_META.members`, the publisher MUST
+ensure that the target peer's current state projection contains the matching
+`MEMBER_PROFILE` with a lower `feedId` before allocating the `GROUP_META`
+`feedId`. If a later member-profile update receives a `feedId` above a
+`GROUP_META` that still references it, the publisher MUST re-index the related
+`GROUP_META` so the compact current projection preserves member-before-group
+order. This dependency repair MAY allocate a new `feedId` while retaining an
+identical body and business revision; consumers treat it as an idempotent
+no-op while still advancing the feed cursor. A consistent page snapshot MUST
+NOT contain a group snapshot whose referenced member projection cannot be
+resolved.
 
-`active: false` 撤销未来 allocation，并使 message query 的当前访问结果为 `FORBIDDEN`，但不删除此前在
-有效 audience 期间形成的历史 allocation proof，也不重置 query 坐标。同一 account 的 audience 重新有效
-后，只恢复读取这些历史 proof 与重新有效后的新 allocation；无有效 audience 期间的消息不回填。
-publisher 必须持久保存足以在重启、重复拉取、audience 关闭和重新打开后重建该结果的事实，不得只根据
-当前 roster 推断历史可见范围。具体锁、内部 thread seq 和存储结构不属于协议要求。
+`active: false` revokes future allocation and makes current message-query
+access return `FORBIDDEN`, but does not erase historical allocation proofs or
+reset query coordinates. If the audience later becomes effective again, it
+restores access only to those historical proofs and to new allocations made
+after restoration; messages created during the inactive interval are not
+backfilled. The publisher MUST retain enough facts to reproduce this result
+across restart, replay, audience closure, and restoration.
 
-## 7. 应用、恢复与安全
+## 7. Application, recovery, and safety
 
-consumer MUST 先按 wire `feedId` 验证 page、身份、binding 和每个 stable key revision。全页验证成功后，
-按 feed 顺序先物化 `PROFILE/MEMBER_PROFILE`，再物化引用它们的 `GROUP_META` 和 intent。相同或较旧业务
-revision 不得覆盖新快照；dependency-repair 产生的相同 revision/body 是 no-op，但其 feed cursor 仍正常推进。
+The consumer MUST validate page structure, identity, bindings, and each stable
+key revision in wire `feedId` order. After the entire page validates, it first
+applies `PROFILE` and `MEMBER_PROFILE`, then the `GROUP_META` and intent items
+that reference them. An equal or lower business revision does not replace a
+newer snapshot. A dependency-repair item with an identical revision and body
+is a no-op, but its feed cursor still advances.
 
-`MEMBER_PROFILE` 的可见性在 publisher 生成投影时由当前来源集决定。consumer 只在完整排空后做引用闭包
-清理，不把 feed 投影 omission 解释为删除事件。malformed、signer binding 错误或跨 signer 合并必须使整页失败。
-consumer 向自己的客户端同步时 MUST 保留 `(source signer domain, member Address)` 作用域；群成员列表中的
-展示资料还必须关联其 `source signer domain`，不得只按本地 `userId` 或 member Address 合并不同 peer
-中继的快照。客户端只有在固定 `stateRevision` 目标完整提交后才能清理已无引用的 source-scoped 展示
-缓存，并必须保留历史消息中的稳定 author Address。
+`MEMBER_PROFILE` visibility is determined by the publisher's current source
+set. Consumers perform reference-closure cleanup only after a complete bounded
+drain and do not interpret projection omission as a deletion event. A malformed
+item, signer-binding error, or cross-signer merge MUST fail the entire page.
+Source-scoped member metadata MUST remain keyed by
+`(source signer domain, member Address)` wherever it is exposed locally; it
+MUST NOT be merged solely by a local identifier or member address. Stable
+author addresses in historical messages MUST be retained.
 
-feed-head hint 不携带核心业务 body；可选 `extensions` 也不能代替 state-feed 或改变三个 drain target。
-重启、提示丢失、重复 page、乱序 hint、
-compacted 中间 revision 缺失和 page 重排，都必须通过 stable key 最新快照得到同一最终投影。
+A feed-head hint contains no core business body, and optional `extensions`
+cannot replace the state feed or alter the three drain targets. Restart, lost
+hints, repeated pages, reordered hints, compacted intermediate revisions, and
+page boundaries MUST all converge to the same final projection through the
+latest snapshot for each stable key.

@@ -1,9 +1,8 @@
 # `INVITE` Message
 
-状态：`RELEASE CANDIDATE`（`v1.0.0-rc.0`）
+Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
-本文定义 P2P timeline 中的群邀请展示卡片。它是发送时的 snapshot，不是 membership authority；群成员
-权威状态由 state-feed 收敛。共用消息外层结构见 [Message Envelope](./envelope.md)。
+This document defines the group-invitation display card in a P2P timeline. It is a snapshot taken at send time, not membership authority; authoritative group membership converges through state-feed. See [Message Envelope](./envelope.md) for the shared outer message shape.
 
 ## 1. Content schema
 
@@ -15,20 +14,19 @@ interface GroupInviteContent {
 }
 ```
 
-这是没有可选字段的 closed schema。
+This is a closed schema with no optional fields.
 
-## 2. 联合约束
+## 2. Combined constraints
 
-- 消息外层结构的 thread 必须是 inviter 与 invitee 组成的 P2P thread。
-- 消息外层结构的 `author` 表示 inviter；content 不重复传输 inviter。
-- `group` 必须是以 `!` 开头的合法 `GroupAccount`。
-- `group/groupDomain` 必须组成合法 GROUP `ThreadAddress` identity。
-- `groupName` 是不可信的展示 snapshot。v1 只要求它是 string，不要求非空。
-- 消息外层结构的 `assets` 必须为空；群头像必须从权威 group state/profile 解析。
-- 接受或拒绝邀请必须通过 state-feed 的 membership intent 和 origin `GROUP_META` 收敛，不能通过修改
-  INVITE message 表达。
+- The outer message thread MUST be the P2P thread containing the inviter and invitee.
+- The outer message `author` identifies the inviter; content does not repeat the inviter.
+- `group` MUST be a valid `GroupAccount` beginning with `!`.
+- `group/groupDomain` MUST form a valid GROUP `ThreadAddress` identity.
+- `groupName` is an untrusted display snapshot. v1 requires only a string and does not require it to be non-empty.
+- The outer message `assets` MUST be empty; the group avatar is resolved from authoritative group state or profile.
+- Invitation acceptance or rejection MUST converge through a state-feed membership intent and origin `GROUP_META`; it cannot be expressed by modifying the INVITE message.
 
-## 3. 完整示例
+## 3. Complete example
 
 ```json
 {
@@ -50,14 +48,14 @@ interface GroupInviteContent {
 }
 ```
 
-## 4. 必须拒绝
+## 4. Required rejections
 
-consumer MUST 拒绝至少以下情况：
+A consumer MUST reject at least the following cases:
 
-- 消息位于 GROUP thread；
-- P2P participants 不包含 inviter，或不是恰好两个不同 Address；
-- content 重复携带 inviter、invitee、头像 locator 或其他未知字段；
-- `group` 不是合法 `GroupAccount`；
-- `groupDomain` 不是规范化 Domain；
-- `groupName` 不是 string；
-- 消息外层结构的 `assets` 非空。
+- The message is in a GROUP thread.
+- P2P participants do not include the inviter or are not exactly two distinct addresses.
+- Content repeats the inviter or invitee, carries an avatar locator, or contains another unknown field.
+- `group` is not a valid `GroupAccount`.
+- `groupDomain` is not a canonical Domain.
+- `groupName` is not a string.
+- The outer message `assets` is non-empty.

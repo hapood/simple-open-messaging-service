@@ -1,9 +1,8 @@
 # `LINK` Message
 
-状态：`RELEASE CANDIDATE`（`v1.0.0-rc.0`）
+Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
-本文定义带页面 metadata 和可选 CAS 缩略图的 `LINK` 卡片。正文中的普通 URL 仍属于 `PURE_TEXT`，
-不使用本类型。共用消息外层结构见 [Message Envelope](./envelope.md)。
+This document defines a `LINK` card containing page metadata and optional CAS thumbnails. An ordinary URL in message text remains `PURE_TEXT` and does not use this type. See [Message Envelope](./envelope.md) for the shared outer message shape.
 
 ## 1. Content schema
 
@@ -18,21 +17,18 @@ interface LinkPreviewContent {
 }
 ```
 
-这是 closed schema。`url/title/description/siteName` 始终必须出现；两个 digest 字段可以独立省略，
-不得用 `null` 代替省略。
+This is a closed schema. `url`, `title`, `description`, and `siteName` are always required. The two digest fields may be omitted independently and MUST NOT use `null` in place of omission.
 
-## 2. 字段规则
+## 2. Field rules
 
-- `url` MUST 是绝对 `http` 或 `https` URL。
-- `url` 是用户可见的业务链接，不是媒体下载地址或资源授权 proof。
-- consumer 不得仅因为收到 LINK message 就自动访问页面 URL。
-- `title`、`description` 和 `siteName` 可以是空字符串。空字符串表示 publisher 未取得可用值，不表示
-  远端页面权威声明了空值。
-- `imageDigest/faviconDigest` 存在时必须是 `Sha256Hex`，并分别对应消息外层结构中同 digest 的 asset
-  descriptor。
-- 两个 digest 可以相同。消息外层结构的 `assets` 是二者去重后的完整集合，因此长度可以是 0、1 或 2。
+- `url` MUST be an absolute `http` or `https` URL.
+- `url` is the user-visible application link, not a media-download address or resource-authorization proof.
+- A consumer MUST NOT automatically visit the page URL merely because it received a LINK message.
+- `title`, `description`, and `siteName` may be empty strings. An empty string means the publisher obtained no usable value; it does not mean the remote page authoritatively declared an empty value.
+- When present, `imageDigest/faviconDigest` MUST be `Sha256Hex` values and each MUST have a matching asset descriptor with the same digest in the outer message.
+- The two digests may be equal. The outer message `assets` is their complete deduplicated set and therefore contains zero, one, or two entries.
 
-## 3. 无缩略图示例
+## 3. Example without thumbnails
 
 ```json
 {
@@ -54,9 +50,9 @@ interface LinkPreviewContent {
 }
 ```
 
-## 4. 两个缩略图示例
+## 4. Example with two thumbnails
 
-解析后的 content：
+Parsed content:
 
 ```json
 {
@@ -69,7 +65,7 @@ interface LinkPreviewContent {
 }
 ```
 
-消息外层结构必须包含：
+The outer message MUST contain:
 
 ```json
 {
@@ -88,15 +84,15 @@ interface LinkPreviewContent {
 }
 ```
 
-如果 `imageDigest === faviconDigest`，`assets` 只能包含一个 descriptor。
+If `imageDigest === faviconDigest`, `assets` MUST contain exactly one descriptor.
 
-## 5. 必须拒绝
+## 5. Required rejections
 
-consumer MUST 拒绝至少以下情况：
+A consumer MUST reject at least the following cases:
 
-- `url` 不是绝对 HTTP(S) URL；
-- `title`、`description` 或 `siteName` 缺失或不是 string；
-- 可选字段使用 `null`；
-- digest 不是 `Sha256Hex`；
-- content digest 的去重集合与消息外层结构的 `assets` 不相等；
-- content 或消息外层结构包含该 schema 不允许的未知字段。
+- `url` is not an absolute HTTP(S) URL.
+- `title`, `description`, or `siteName` is absent or is not a string.
+- An optional field uses `null`.
+- A digest is not `Sha256Hex`.
+- The deduplicated set of content digests differs from the outer message `assets`.
+- Content or the outer message contains a field not permitted by its schema.

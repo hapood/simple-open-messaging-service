@@ -1,40 +1,30 @@
 # SOCFP Governance
 
-Simple Open Chat Federation Protocol（SOCFP）由本仓库维护，但协议与任何单一实现相互独立。SOMS 是
-参考实现，不拥有改变规范含义的特殊权力。
+This repository maintains the Simple Open Chat Federation Protocol (SOCFP), but the protocol is independent of any single implementation. SOMS is the reference implementation and has no special authority to change the meaning of the specification.
 
-## 变更入口
+## Proposing changes
 
-协议问题和修改只通过本仓库的 GitHub Issues 和 Pull Requests 接收。贡献者不需要提交标准组织申请、
-登记表或额外流程文档；能说明问题和修改内容即可。维护者在 Pull Request 中审查兼容性、安全影响、规范
-正文和测试是否需要同步。实现代码的行为不能单独构成协议变更。
+Protocol issues and changes are accepted through this repository's GitHub Issues and Pull Requests. Contributors need no standards-body application, registration form, or additional process document; a clear description of the problem and proposed change is sufficient. In each Pull Request, maintainers review compatibility, security impact, and whether normative text and tests must change together. Implementation behavior alone does not constitute a protocol change.
 
-编辑性修订可以在同一 release candidate 内合并；任何新增、删除或改变可观察 wire 行为的修订都必须发布
-新的 release candidate，并写入该版本的 changelog。`FINAL` 后的不兼容变更必须进入新的 major URL
-版本。
+Editorial corrections may be merged within the same release candidate. Any addition, removal, or change to observable wire behavior requires a new release candidate and an entry in that version's changelog. After `FINAL`, incompatible changes require a new major URL version.
 
-## 决策与发布
+## Decisions and releases
 
-维护者通过 GitHub Pull Request 的可审查历史决定修改和发布。RC 按可冻结协议的质量要求维护，但不会
-因此自动升级为 `FINAL`。发布时保持以下内容同版本：
+Maintainers decide changes and releases through the reviewable history of GitHub Pull Requests. Release candidates are maintained to the quality level of a freezable protocol but are not automatically promoted to `FINAL`. A release keeps the following artifacts at the same version:
 
-- 规范正文及其状态；
-- JSON Schema、HTTP manifest 和测试向量；
-- changelog；
-- conformance 工具版本或可重现运行说明。
+- normative text and its status;
+- JSON Schema, HTTP manifest, and test vectors;
+- changelog; and
+- the conformance tool version or reproducible instructions for running it.
 
-`spec/` 必须可以作为独立目录分发，至少自带版本元数据、许可证、规范入口、机器可读制品和验证说明；
-不得要求接收者读取 SOMS 源码才能解释 wire contract。
+`spec/` MUST be independently distributable and include, at minimum, version metadata, a license, a specification entry point, machine-readable artifacts, and validation instructions. A recipient must not need to read SOMS source code to interpret the wire contract.
 
-发布包是最小状态单位。普通章节没有独立成熟度；可独立实现和测试的扩展规范可以拥有自己的版本、状态、
-依赖与 conformance 要求。
+The release package is the smallest unit with a release status. Ordinary chapters do not have independent maturity levels. An extension specification may have its own version, status, dependencies, and conformance requirements only if it can be implemented and tested independently.
 
-## 实现中立性
+## Implementation neutrality
 
-规范正文只能约束对端可观察行为。SOMS 特有的数据库、配置、部署、客户端和迁移策略属于 `docs/`。
-参考实现可以提供协议之外的兼容入口，但不得把这些入口发布为 SOCFP v1 的协商能力或合规要求。
+Normative text may constrain only behavior observable by a peer. SOMS-specific database, configuration, deployment, client, and migration policy belongs in `docs/`. The reference implementation may provide compatibility endpoints outside the protocol, but it must not publish them as negotiated SOCFP v1 capabilities or conformance requirements.
 
-## 许可与安全
+## License and security
 
-规范文本和验证制品按发布包内的 [MIT License](./LICENSE) 发布。安全问题按
-[Security Policy](./SECURITY.md) 处理。
+The specification text and validation artifacts are distributed under the [MIT License](./LICENSE) included in the release package. Security issues follow the [Security Policy](./SECURITY.md).

@@ -1,12 +1,11 @@
-# Simple Open Chat Federation Protocol v1 错误码注册表
+# Simple Open Chat Federation Protocol v1 Error Code Registry
 
-状态：`RELEASE CANDIDATE`（`v1.0.0-rc.0`）
-规范性：本文分别定义 S2S HTTP 失败分类、HTTP `200` 业务结果、稳定 `code`、结构化 `data` 和调用方动作。
+Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
+Normative scope: this document defines S2S HTTP failure classes, HTTP `200` application results, stable `code` values, structured `data`, and caller actions.
 
-## 错误封装（Error Envelope）
+## Error envelope
 
-除 `healthy` 的隐私状态结果和原始媒体响应（raw media response）外，S2S JSON operation 的非零结果
-必须（MUST）使用：
+Except for the privacy-preserving `healthy` status result and raw media responses, every non-zero result from an S2S JSON operation MUST use:
 
 ```ts
 interface FederationError<T = null> {
@@ -16,32 +15,26 @@ interface FederationError<T = null> {
 }
 ```
 
-`code` 必须（MUST）是下表中的非零 JSON 安全整数。`message` 必须（MUST）是 string，只供人类诊断；
-consumer 不得（MUST NOT）解析其文本决定行为。`data` 的存在性和 shape 由本文件“结构化错误数据”一节
-定义。未知顶层字段必须（MUST）被忽略，且不得（MUST NOT）改变错误分类、调用方动作、identity 或 cursor
-语义。JSON 重复 member、编码和基础类型仍按 protocol.md 的公共 JSON 规则拒绝。
+`code` MUST be a non-zero JSON safe integer from the table below. `message` MUST be a string and is for human diagnostics only; a consumer MUST NOT parse its text to determine behavior. The [Structured error data](#structured-error-data) section defines the presence and shape of `data`. The envelope is closed; an unknown top-level field makes the response malformed and MUST NOT be used for error classification, caller action, identity, or cursor semantics. Duplicate JSON members, encoding, and primitive types remain subject to the common JSON rejection rules in protocol.md.
 
-JSON response 必须（MUST）使用 `Content-Type: application/json`。HTTP status 只表达请求是否进入业务层以及
-peer 关系能否继续；业务结果只由 `code` 表达，不借用 HTTP error status。发送方必须（MUST）使用下文规定的组合。
+JSON responses MUST use `Content-Type: application/json`. HTTP status expresses only whether the request reached application processing and whether the peer relationship can continue. Application results are expressed only by `code`, not by borrowing an HTTP error status. A sender MUST use the combinations defined below.
 
-## HTTP 层（HTTP Layer）
+## HTTP layer
 
-Federation v1 JSON 接口只定义以下非成功 HTTP status：
+Federation v1 JSON endpoints define only these non-success HTTP statuses:
 
-|  HTTP | 层级语义                                             | Peer lifecycle                                                 |
+| HTTP | Layer semantics | Peer lifecycle |
 | ----: | ---------------------------------------------------- | -------------------------------------------------------------- |
-| `400` | HTTP、JSON 或协议结构无法进入业务处理                | 不改变                                                         |
-| `401` | 请求认证、签名、certificate 或 identity binding 失败 | 不直接改变                                                     |
-| `409` | 已认证的 federation 关系存在注册的不可自动恢复冲突   | 合法 fatal code 才进入 `halted`                                |
-| `503` | 目标 peer 暂时无法提供 federation 服务               | 已建立 peer 进入 `degraded`；握手中的 peer 保持 `establishing` |
+| `400` | HTTP, JSON, or protocol shape cannot enter application processing | No change |
+| `401` | Request authentication, signature, certificate, or identity binding failed | No direct change |
+| `409` | The authenticated federation relationship has a registered non-automatically-recoverable conflict | Enter `halted` only with a valid fatal code |
+| `503` | The target peer is temporarily unable to provide federation service | An established peer enters `degraded`; a peer in handshake remains `establishing` |
 
-正常成功和所有普通业务结果都使用 HTTP `200`。业务结果包括资源不存在、权限或能力拒绝、配额耗尽、payload
-业务上限、cursor 冲突和并发冲突；这些结果不得（MUST NOT）改变 peer lifecycle。网络失败、timeout 和
-Healthy 的 `200 unavailable` 与 HTTP `503` 具有相同的可用性降级效果。
+Normal success and all ordinary application results use HTTP `200`. Application results include resource absence, permission or capability denial, quota exhaustion, operation payload limits, cursor conflicts, and concurrency conflicts. These results MUST NOT change peer lifecycle. Network failure, timeout, and Healthy `200 unavailable` have the same availability-degradation effect as HTTP `503`.
 
-Raw media response 的 `206`、`416` 及相关 header 属于 HTTP Range 机制，是上述 JSON status 集合的明确例外。
+Raw media response statuses `206` and `416`, with their associated headers, belong to HTTP Range semantics and are explicit exceptions to the JSON status set above.
 
-通用、无结构化恢复数据的完整错误示例是：
+A complete generic error without structured recovery data is:
 
 ```http
 HTTP/1.1 400 Bad Request
@@ -50,76 +43,63 @@ Content-Type: application/json
 {"code":50007,"message":"request body is malformed","data":null}
 ```
 
-对于不携带结构化恢复数据的 code，`data` 也可以（MAY）省略。consumer 必须（MUST）按 `code` 而不是
-`message` 识别错误。
+For a code without structured recovery data, `data` MAY be omitted. A consumer MUST identify the error by `code`, not `message`.
 
-consumer 收到 status/code 冲突时必须（MUST）拒绝响应 `data` 和业务副作用，不得（MUST NOT）用 code 把
-`200` 业务结果提升为 HTTP lifecycle 信号，也不得（MUST NOT）仅因冲突响应删除 pin、cursor 或已经提交的
-认可事实。
+On a status/code conflict, a consumer MUST reject response `data` and application side effects. It MUST NOT use a code to promote an HTTP `200` application result into an HTTP lifecycle signal, nor delete a pin, cursor, or committed recognition fact solely because of the conflicting response.
 
-HTTP `200` 中的未知非零 code 必须（MUST）视为当前 operation 的业务失败，不得（MUST NOT）接受 `data`、
-提交业务副作用或推进 cursor。非 `200` response 中的未知 code 或 status/code 冲突不得提供细类语义；consumer
-只按 HTTP 大类处理：`503` 仍触发可用性降级，`400`/`401` 仍只拒绝当前请求，`409` 未携带已注册 fatal code
-时不得触发 `halted`。未知 code 不得触发 identity replacement、destructive reset 或永久授权变更。
+An unknown non-zero code in HTTP `200` MUST be treated as an application failure of the current operation. The consumer MUST NOT accept its `data`, commit application side effects, or advance a cursor. An unknown code or status/code conflict in a non-`200` response provides no finer-grained semantics; the consumer handles only the HTTP class: `503` still degrades availability, `400` and `401` still reject only the current request, and `409` without a registered fatal code MUST NOT trigger `halted`. An unknown code MUST NOT trigger identity replacement, destructive reset, or a permanent authorization change.
 
-### 对等节点生命周期映射（Peer Lifecycle Mapping）
+### Peer lifecycle mapping
 
-peer lifecycle 动作必须（MUST）同时由响应来源、HTTP status 和必要时的 stable code 决定：
+A peer-lifecycle action MUST be determined jointly by response provenance, HTTP status, and, where required, stable code:
 
-| 类别             | Wire 特征                                                                                          | Peer lifecycle 动作                                          |
+| Class | Wire characteristics | Peer lifecycle action |
 | ---------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| 硬停止           | hostname-verified 目标 peer/authority 返回 HTTP `409`，且 envelope 是本注册表明确列出的 fatal code | 记录精确 code 和证据，进入 `halted`，停止自动通信            |
-| 可重试可用性失败 | timeout、断连、HTTP `503` 或 Healthy 的有效 `unavailable`                                          | 已建立 peer 进入 `degraded`；握手未完成则保持 `establishing` |
-| 当前请求失败     | HTTP `400`、`401`，或 HTTP `200` 非零业务 code                                                     | 按 code 修正或处理当前 operation；不直接改变 peer lifecycle  |
+| Hard stop | A hostname-verified target peer or authority returns HTTP `409` with a fatal code explicitly listed in this registry | Record the exact code and evidence, enter `halted`, and stop automatic communication |
+| Retryable availability failure | Timeout, disconnect, HTTP `503`, or valid Healthy `unavailable` | An established peer enters `degraded`; an incomplete handshake remains `establishing` |
+| Current-request failure | HTTP `400`, `401`, or a non-zero application code in HTTP `200` | Correct or handle the current operation according to code; do not directly change peer lifecycle |
 
-HTTP `409` 本身不足以触发 `halted`。只有 `FEDERATION_PEER_BLOCKED`、
-`FEDERATION_IDENTITY_MISMATCH` 或 `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED` 与 HTTP `409` 的组合才是 peer
-关系硬停止。status/code 冲突、未知 code 或无法证明来源为目标 peer 的响应都不得（MUST NOT）触发 `halted`。
+HTTP `409` alone is insufficient to trigger `halted`. Only HTTP `409` combined with `FEDERATION_PEER_BLOCKED`, `FEDERATION_IDENTITY_MISMATCH`, or `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED` is a hard stop for the peer relationship. A status/code conflict, unknown code, or response not provably originating from the target peer MUST NOT trigger `halted`.
 
-## 稳定错误码注册表（Stable Code Registry）
+## Stable code registry
 
-|  code | 名称                                               | HTTP | 调用方动作                                                                                                                         |
+| code | Name | HTTP | Caller action |
 | ----: | -------------------------------------------------- | ---: | ---------------------------------------------------------------------------------------------------------------------------------- |
-| 10000 | `VALIDATION_FAILED`                                |  200 | 修正业务请求；不得（MUST NOT）原样重试。                                                                                           |
-| 10001 | `NOT_FOUND`                                        |  200 | 当前资源不存在；仅在业务状态改变后重试。                                                                                           |
-| 10004 | `FORBIDDEN`                                        |  200 | 当前业务身份无权访问资源；不得（MUST NOT）原样重试。                                                                               |
-| 10005 | `RATE_LIMITED`                                     |  503 | 对端临时限流；按本地有上限、带 jitter 的退避策略重试。                                                                             |
-| 10999 | `INTERNAL`                                         |  503 | 保留 pin 和 cursor，退避重试。                                                                                                     |
-| 50001 | `FEDERATION_RECOGNITION_REQUIRED`                  |  401 | 缺少 operation 所需的 pinned identity 或双向认可事实；停止数据面请求并补齐缺失认可。纯传输 `degraded` 不得（MUST NOT）产生此错误。 |
-| 50002 | `FEDERATION_BAD_SIGNATURE`                         |  401 | 停止原样重试并审计 signature、digest、keyId 或 certificate；不得（MUST NOT）接受响应数据。                                         |
-| 50003 | `FEDERATION_BINDING_VIOLATION`                     |  401 | 修正 signer/body/address binding；不得（MUST NOT）原样重试。                                                                       |
-| 50007 | `FEDERATION_MALFORMED`                             |  400 | 修正 JSON/header profile、基础类型、时间参数、query、media type 或 content coding；不得（MUST NOT）原样重试。                      |
-| 50009 | `FEDERATION_PEER_BLOCKED`                          |  409 | Fatal：记录 remote-blocked 原因并进入 `halted`，停止自动通信。                                                                     |
-| 50010 | `FEDERATION_GROUP_AUTHOR_LEFT`                     |  200 | 该 author 路径已终止；停止此 stream，不影响其他 stream。                                                                           |
-| 50011 | `FEDERATION_QUOTA_EXCEEDED`                        |  200 | 按 `data.retryAfter` 秒数退避；不得（MUST NOT）把 peer 置为 degraded 或推进失败 page cursor。                                      |
-| 50012 | `FEDERATION_PAYLOAD_TOO_LARGE`                     |  200 | 为已发布 wire code 保留；v1 当前没有 operation 使用该结果，consumer 收到时停止原样自动重试。                                       |
-| 50013 | `FEDERATION_CAPABILITY_DISABLED`                   |  200 | 对端策略禁用该业务类别；停止自动重试，等待配置变化。                                                                               |
-| 50014 | `FEDERATION_LOCAL_IDENTITY_LOST`                   |  503 | 对端暂时无法安全提供 federation 服务；保留原 pin 并退避重试。                                                                      |
-| 50015 | `FEDERATION_IDENTITY_MISMATCH`                     |  409 | Fatal：保留原 pin，记录 identity contradiction 并进入 `halted`；不得（MUST NOT）自动采用新身份。                                   |
-| 50019 | `FEDERATION_FEED_CURSOR_UNAVAILABLE`               |  200 | 不应用 page；验证并原子保存 `data.resumeAfter`。用于 bootstrap、明显越界 cursor，以及 message query 已清理正文。                   |
-| 50020 | `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED`          |  409 | Fatal：记录版本原因并进入 `halted`；不得（MUST NOT）透明降级。                                                                     |
-| 50021 | `FEDERATION_RANGE_NOT_SATISFIABLE`                 |  416 | 当前单 Range 不可满足；按 media 规则读取 `Content-Range`，不得（MUST NOT）把资源解释为不存在。                                     |
-| 50023 | `FEDERATION_PROFILE_NOT_DISCLOSED`                 |  200 | 用户选择不向当前 peer 展示公开资料；停止原样重试。publisher 可改用 `NOT_FOUND` 隐藏账号是否存在。                                  |
-| 50024 | `FEDERATION_MESSAGE_QUERY_RATE_LIMITED`            |  200 | Message query 请求过频；不推进 query cursor，至少等待 `data.retryAfter` 秒后带 jitter 重试，不改变 peer lifecycle。                |
-| 50025 | `FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE` |  200 | Message query 暂时不能产生一致 page；不推进 query cursor，至少等待 `data.retryAfter` 秒后带 jitter 重试，不改变 peer lifecycle。   |
-| 70001 | `CALL_NOT_ALLOWED`                                 |  200 | 未知 callSid，或隐私合并后的账号、关系、block、租户及呼叫准入失败；终止本次呼叫，不得（MUST NOT）把 peer 置为 degraded。           |
-| 70004 | `CALL_BUSY`                                        |  200 | 对端参与者正忙；终止或稍后使用新 `callSid` 发起，不得（MUST NOT）重放同一 incoming frame。                                         |
-| 70007 | `CALL_CANCELLED`                                   |  200 | 通话已由 caller 取消；本地收敛为 cancelled，停止媒体、计时器和依赖 frame，不得（MUST NOT）把 peer 置为 degraded。                  |
-| 70008 | `CALL_TERMINATED`                                  |  200 | 通话已由其他终态结束；本地收敛为 terminal，停止媒体、计时器和依赖 frame，不得（MUST NOT）把 peer 置为 degraded。                   |
+| 10000 | `VALIDATION_FAILED` | 200 | Correct the application request; MUST NOT retry unchanged. |
+| 10001 | `NOT_FOUND` | 200 | The current resource does not exist; retry only after application state changes. |
+| 10004 | `FORBIDDEN` | 200 | The current application identity may not access the resource; MUST NOT retry unchanged. |
+| 10005 | `RATE_LIMITED` | 503 | The peer is temporarily rate-limiting; retry using locally bounded, jittered backoff. |
+| 10999 | `INTERNAL` | 503 | Retain pins and cursors; retry with backoff. |
+| 50001 | `FEDERATION_RECOGNITION_REQUIRED` | 401 | The operation lacks a required pinned identity or bidirectional recognition fact. Stop data-plane requests and complete the missing recognition. Transport-only `degraded` MUST NOT produce this error. |
+| 50002 | `FEDERATION_BAD_SIGNATURE` | 401 | Stop unchanged retries and audit the signature, digest, keyId, or certificate; MUST NOT accept response data. |
+| 50003 | `FEDERATION_BINDING_VIOLATION` | 401 | Correct signer/body/address binding; MUST NOT retry unchanged. |
+| 50007 | `FEDERATION_MALFORMED` | 400 | Correct the JSON/header profile, primitive type, time parameter, query, media type, or content coding; MUST NOT retry unchanged. |
+| 50009 | `FEDERATION_PEER_BLOCKED` | 409 | Fatal: record the remote-blocked reason, enter `halted`, and stop automatic communication. |
+| 50010 | `FEDERATION_GROUP_AUTHOR_LEFT` | 200 | This author path has terminated; stop this stream without affecting other streams. |
+| 50011 | `FEDERATION_QUOTA_EXCEEDED` | 200 | Back off for `data.retryAfter` seconds; MUST NOT degrade the peer or advance the failed page cursor. |
+| 50013 | `FEDERATION_CAPABILITY_DISABLED` | 200 | Peer policy disabled this application category; stop automatic retries until configuration changes. |
+| 50014 | `FEDERATION_LOCAL_IDENTITY_LOST` | 503 | The peer temporarily cannot provide federation service safely; retain the old pin and retry with backoff. |
+| 50015 | `FEDERATION_IDENTITY_MISMATCH` | 409 | Fatal: retain the old pin, record the identity contradiction, and enter `halted`; MUST NOT automatically adopt the new identity. |
+| 50019 | `FEDERATION_FEED_CURSOR_UNAVAILABLE` | 200 | Do not apply the page; validate and atomically store `data.resumeAfter`. Used for bootstrap, a clearly out-of-range cursor, and message-query content that has been purged. |
+| 50020 | `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED` | 409 | Fatal: record the version reason and enter `halted`; MUST NOT transparently downgrade. |
+| 50021 | `FEDERATION_RANGE_NOT_SATISFIABLE` | 416 | The current single range is unsatisfiable; read `Content-Range` under the media rules and MUST NOT interpret the resource as absent. |
+| 50023 | `FEDERATION_PROFILE_NOT_DISCLOSED` | 200 | The user chose not to disclose a public profile to this peer; stop unchanged retries. A publisher may use `NOT_FOUND` instead to conceal whether the account exists. |
+| 50024 | `FEDERATION_MESSAGE_QUERY_RATE_LIMITED` | 200 | The message query rate is too high. Do not advance its cursor; wait at least `data.retryAfter` seconds and retry with jitter without changing peer lifecycle. |
+| 50025 | `FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE` | 200 | The message query temporarily cannot produce a consistent page. Do not advance its cursor; wait at least `data.retryAfter` seconds and retry with jitter without changing peer lifecycle. |
+| 70001 | `CALL_NOT_ALLOWED` | 200 | Unknown callSid or privacy-collapsed account, relationship, block, tenant, or call-admission failure. Terminate this call and MUST NOT degrade the peer. |
+| 70004 | `CALL_BUSY` | 200 | The remote participant is busy. Terminate, or initiate later with a new `callSid`; MUST NOT replay the same incoming frame. |
+| 70007 | `CALL_CANCELLED` | 200 | The caller cancelled the call. Converge locally to cancelled and stop media, timers, and dependent frames; MUST NOT degrade the peer. |
+| 70008 | `CALL_TERMINATED` | 200 | Another terminal outcome ended the call. Converge locally to terminal and stop media, timers, and dependent frames; MUST NOT degrade the peer. |
 
-`FEDERATION_CAPABILITY_DISABLED` 是为兼容既有 wire code 保留的稳定标识符；这里的 `capability` 只表示某类
-核心业务操作被对端策略关闭，不是主协议第 2.1 节的 extension capability，也不能据此推导可选接口。
-`FEDERATION_PAYLOAD_TOO_LARGE` 同样只为兼容已发布 wire code 保留；它不是 JSON/JSONB、page、bundle 或媒体的上限协商机制。
+`FEDERATION_CAPABILITY_DISABLED` means that peer policy has disabled a category of core application operations. Here, `capability` does not mean an extension capability under core protocol Section 2.1 and provides no evidence that an optional endpoint exists.
 
-## 结构化错误数据（Structured Error Data）
+## Structured error data
 
-除本节明确列出的 code 外，`data` 必须（MUST）省略或为 JSON `null`。下面的 object 都是 closed object，未知字段、
-缺失字段、`null`、错误类型和非安全整数均必须（MUST）视为错误响应 malformed；consumer 不得（MUST NOT）
-采用其中数据。
+Except for codes explicitly listed in this section, `data` MUST be omitted or JSON `null`. Every object below is closed. An unknown field, missing field, `null`, wrong type, or non-safe integer makes the error response malformed; the consumer MUST NOT use its data.
 
 ```ts
 interface FederationQuotaExceededData {
-  // 非负整数 delta-seconds；从完整接收响应时开始计算。
+  // Non-negative integer delta-seconds, measured from complete receipt.
   retryAfter: SafeInteger;
 }
 
@@ -128,35 +108,25 @@ interface FederationCapabilityDisabledData {
 }
 
 interface FederationFeedCursorUnavailableData {
-  // 下一次请求必须原样用作 exclusive `after`。
+  // The next request MUST use this unchanged as exclusive `after`.
   resumeAfter: DecimalString;
 }
 
 interface FederationQueryRetryData {
-  // 从完整收到响应时开始计算的非负整数秒。
+  // Non-negative integer seconds, measured from complete receipt.
   retryAfter: SafeInteger;
 }
 ```
 
-`FEDERATION_QUOTA_EXCEEDED` 必须（MUST）携带 `FederationQuotaExceededData`，其中
-`retryAfter >= 0`。operation 本身定义受限的业务类型；响应不得携带 category、limit、计量单位、窗口或
-服务端策略参数。实现可以把具体配额原因写入仅供诊断的 `message`，consumer 不得解析该文本决定行为。
-`FEDERATION_CAPABILITY_DISABLED` 必须（MUST）携带
-`FederationCapabilityDisabledData`。
-`FEDERATION_FEED_CURSOR_UNAVAILABLE` 必须（MUST）携带
-`FederationFeedCursorUnavailableData`。省略 `after` 时，`resumeAfter` 必须是该 operation 当前有效的
-exclusive 起点；所有 operation 的起点都必须非负。携带 `after` 时有且只有两种可采用的修正：旧 message
-正文已清理时 `resumeAfter > after`；请求位置
-明显大于当前 operation end 时 `resumeAfter < after`。相等值无进展，必须拒绝。三个压缩 feed 不得因历史
-删除或压缩使用该结果；tombstone query 不得以清理为由跳过永久删除事实。
+`FEDERATION_QUOTA_EXCEEDED` MUST carry `FederationQuotaExceededData` with `retryAfter >= 0`. The operation itself identifies the limited application category; the response MUST NOT carry a category, limit, unit, window, or server-policy parameter. An implementation may place a specific quota reason in diagnostic-only `message`; a consumer MUST NOT parse that text to determine behavior.
 
-`FEDERATION_MESSAGE_QUERY_RATE_LIMITED` 和
-`FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE` 必须（MUST）携带
-`FederationQueryRetryData`，且只能由 `GET /s2s/v1/messages` 使用。两者都是已经通过 HTTP 与身份认证后的
-业务暂缓，不得用于掩盖 signature、binding、授权或 malformed 错误，也不得用于 tombstone query、三个 feed
-或整个 federation 服务不可用。它们不使用 HTTP `Retry-After` header。
+`FEDERATION_CAPABILITY_DISABLED` MUST carry `FederationCapabilityDisabledData`.
 
-完整 wire 示例：
+`FEDERATION_FEED_CURSOR_UNAVAILABLE` MUST carry `FederationFeedCursorUnavailableData`. When `after` is omitted, `resumeAfter` MUST be the operation's current valid exclusive starting point; every operation's starting point MUST be non-negative. When `after` is present, exactly two corrections are usable: `resumeAfter > after` when old message content was purged, or `resumeAfter < after` when the requested position is clearly beyond the operation's current end. An equal value makes no progress and MUST be rejected. The three compacted feeds MUST NOT use this result because of historical deletion or compaction, and a tombstone query MUST NOT skip permanent deletion facts because of cleanup.
+
+`FEDERATION_MESSAGE_QUERY_RATE_LIMITED` and `FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE` MUST carry `FederationQueryRetryData` and may be used only by `GET /s2s/v1/messages`. Both are application deferrals after HTTP and identity authentication. They MUST NOT conceal signature, binding, authorization, or malformed errors, and MUST NOT be used by tombstone query, any of the three feeds, or for federation-wide service unavailability. They do not use the HTTP `Retry-After` header.
+
+Complete wire example:
 
 ```http
 HTTP/1.1 200 OK
@@ -165,9 +135,7 @@ Content-Type: application/json
 {"code":50011,"message":"message query quota exceeded","data":{"retryAfter":60}}
 ```
 
-该业务结果只承诺当前 operation 至少等待 `60` 秒后可以重试；它不公开配额阈值、单位、窗口或算法。
-下例是 message query
-中请求正文已清理区间的有效修正：
+This application result promises only that the current operation may be retried after waiting at least `60` seconds. It discloses no quota threshold, unit, window, or algorithm. The following is a valid correction for a message query into a range whose content has been purged:
 
 ```json
 {
@@ -177,7 +145,7 @@ Content-Type: application/json
 }
 ```
 
-上例是有效的正文保留 floor 响应。下面是对应的无效反例：
+The example above is a valid content-retention-floor response. The following is the corresponding invalid counterexample:
 
 ```json
 {
@@ -187,52 +155,32 @@ Content-Type: application/json
 }
 ```
 
-假设 query `after=100` 且该位置并未超过 source 当前 end，反例的 `resumeAfter` 没有严格前进；consumer
-必须（MUST）拒绝采用它。若请求本身明显超过当前 end，则 source 返回严格更小的有效位置属于另一种
-越界修正，不适用本例。
+Assuming query `after=100` and that position is not beyond the source's current end, the counterexample `resumeAfter` does not advance strictly; the consumer MUST reject it. If the request itself is clearly beyond the current end, the source returning a strictly smaller valid position is the other out-of-range correction and is not covered by this example.
 
-Federation v1 的业务配额只使用 `data.retryAfter`，不得（MUST NOT）为它发送 HTTP `Retry-After`，以免把业务
-结果误解成 HTTP 可用性失败。该值 malformed 时 consumer 必须（MUST）忽略它并使用本地有上限、带 jitter 的退避。
+Federation v1 application quotas use only `data.retryAfter`. HTTP `Retry-After` MUST NOT be sent for them, to avoid confusing an application result with an HTTP availability failure. If this value is malformed, the consumer MUST ignore it and use locally bounded, jittered backoff.
 
-## 共享验证失败映射（Shared Validation Failure Mapping）
+## Shared validation-failure mapping
 
-除 operation 文档明确给出更严格映射外，signed request 的公共 HTTP 验证管线必须（MUST）按下表处理。
-本表只消除多个 code 之间容易产生歧义的公共验证失败，不重复 lifecycle、discovery 或 operation 业务错误。
-这些条件不得（MUST NOT）映射为其他 4xx。
+Unless an operation document explicitly defines a stricter mapping, the common HTTP validation pipeline for a signed request MUST use the table below. This table only disambiguates common validation failures that could map to multiple codes; it does not repeat lifecycle, discovery, or operation-specific application errors. These conditions MUST NOT map to another 4xx response.
 
-| 条件                                                                       | HTTP / code                              |
+| Condition | HTTP / code |
 | -------------------------------------------------------------------------- | ---------------------------------------- |
-| JSON/header/query/path shape、重复安全 header、签名 profile 或时间参数非法 | `400 FEDERATION_MALFORMED`               |
-| `Content-Type`、content coding 或字符编码不符合 v1                         | `400 FEDERATION_MALFORMED`               |
-| request/header/body 在解析前已超过接收方有限的本地 HTTP/JSON 上限          | `400 FEDERATION_MALFORMED`               |
-| Content-Digest 不匹配、Ed25519 验证失败、keyId 未授权或 certificate 无效   | `401 FEDERATION_BAD_SIGNATURE`           |
-| signer 与 body、address、resource identity 不绑定                          | `401 FEDERATION_BINDING_VIOLATION`       |
-| pinned identity 或双向认可事实不足，但不存在 identity contradiction        | `401 FEDERATION_RECOGNITION_REQUIRED`    |
-| 纯传输 `degraded`，其余 recognition/identity/authorization 均有效          | 继续处理；不得（MUST NOT）仅因此返回错误 |
+| Invalid JSON/header/query/path shape, duplicate security header, signature profile, or time parameter | `400 FEDERATION_MALFORMED` |
+| `Content-Type`, content coding, or character encoding violates v1 | `400 FEDERATION_MALFORMED` |
+| Request, header, or body exceeds the recipient's finite local HTTP/JSON limit before parsing | `400 FEDERATION_MALFORMED` |
+| Content-Digest mismatch, Ed25519 verification failure, unauthorized keyId, or invalid certificate | `401 FEDERATION_BAD_SIGNATURE` |
+| Signer is not bound to body, address, or resource identity | `401 FEDERATION_BINDING_VIOLATION` |
+| Pinned identity or bidirectional recognition facts are insufficient, with no identity contradiction | `401 FEDERATION_RECOGNITION_REQUIRED` |
+| Transport-only `degraded`, with recognition, identity, and authorization otherwise valid | Continue processing; MUST NOT return an error solely for this reason |
 
-Block、identity contradiction、协议版本、local identity、业务 quota 和 server failure 的映射
-直接使用上方错误码主表及对应 operation 文档，不在本表重复。
+Block, identity contradiction, protocol version, local identity, application quota, and server-failure mappings use the registry above and the corresponding operation documents directly and are not repeated here.
 
-`media` 的不可满足 Range 使用 HTTP `416` 和 `FEDERATION_RANGE_NOT_SATISFIABLE`，`data` 为 `null`，
-并按 media operation 要求发送 `Content-Range: bytes */<current-length>`；这不表示资源本身不存在。
-[资源接口第 3.3 节](./resources.md#33-媒体错误)进一步区分 audience/message proof 不足的 `FORBIDDEN`、
-digest binding 或 CAS blob 不存在的 `NOT_FOUND`、不可满足 Range 与临时存储故障。前三者不得（MUST NOT）
-使 peer degraded；只有注册的 HTTP `503` 可用性失败触发该 lifecycle 动作。
+An unsatisfiable media Range uses HTTP `416` with `FEDERATION_RANGE_NOT_SATISFIABLE` and `data: null`, and sends `Content-Range: bytes */<current-length>` as required by the media operation. This does not mean the resource itself is absent. [Resources, Section 3.3](./resources.md#33-media-errors) further distinguishes `FORBIDDEN` for insufficient audience or message proof, `NOT_FOUND` for a missing digest binding or CAS blob, an unsatisfiable Range, and transient storage failure. The first three MUST NOT degrade the peer; only a registered HTTP `503` availability failure triggers that lifecycle action.
 
-media 的 HTTP `200` 可能是 `application/octet-stream` 完整资源成功，也可能是 `application/json` 非零业务
-error envelope。consumer 必须（MUST）同时按请求是否携带 Range、HTTP status、`Content-Type` 与 envelope
-判别，不得（MUST NOT）把 JSON error bytes 写入 CAS。response header 已发送后发生的 stream failure 不再
-具有可发送 JSON error 的边界；publisher 必须终止 stream，consumer 必须丢弃不完整 range 并通过长度与
-digest 校验发现失败。
+Media HTTP `200` may be either a complete `application/octet-stream` resource success or an `application/json` non-zero error envelope. A consumer MUST distinguish them using the presence of Range on the request, HTTP status, `Content-Type`, and envelope together, and MUST NOT write JSON error bytes into CAS. A stream failure after response headers have been sent is beyond the boundary at which a JSON error can be returned. The publisher MUST terminate the stream, and the consumer MUST discard the incomplete range and detect failure through length and digest validation.
 
-资源 `NOT_FOUND` 对应的 mirror message 如何展示、保留或标记属于 consumer 本地策略；它本身不是 message
-删除或 tombstone。具体边界见 resources.md 第 3.3、4.4 节。
+How a mirror displays, retains, or marks a message whose resource returned `NOT_FOUND` is local consumer policy. The result is not itself message deletion or a tombstone. See Resources Sections 3.3 and 4.4 for the precise boundaries.
 
-未列出的实现本地客户端业务码不属于 Federation v1 wire registry，S2S publisher 不得（MUST NOT）把它们
-作为协议错误发送。增加新的稳定错误语义属于 additive v1 修订；改变已有 code 的含义、重试性或 identity
-action 属于不兼容变化。
+Unlisted local client application codes are not part of the Federation v1 wire registry. An S2S publisher MUST NOT send them as protocol errors. Adding a stable error semantic is an additive v1 revision; changing an existing code's meaning, retryability, or identity action is incompatible.
 
-`POST /s2s/v1/healthy` 是状态查询 operation。对可解析请求的未知 peer、未被本方认可、无权限、binding
-或已有 identity 验证失败，`unavailable` 是 recognition.md 定义的正常查询结果，不属于本注册表的 error。
-通用 malformed HTTP/JSON 使用 `400 FEDERATION_MALFORMED`；独立于 peer 是否存在的临时限流和 server failure
-统一使用 HTTP `503`，并分别使用 `RATE_LIMITED` 或 `INTERNAL` 提供诊断细类。
+`POST /s2s/v1/healthy` is a status-query operation. For a parseable request involving an unknown peer, a peer not recognized locally, insufficient authorization, binding failure, or failure to verify an existing identity, `unavailable` is the normal query result defined by recognition.md and is not an error in this registry. Generic malformed HTTP or JSON uses `400 FEDERATION_MALFORMED`. Temporary rate limiting and server failure independent of peer existence uniformly use HTTP `503`, with `RATE_LIMITED` or `INTERNAL`, respectively, for diagnostic classification.

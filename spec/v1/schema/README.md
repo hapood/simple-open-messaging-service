@@ -1,52 +1,44 @@
-# Federation v1 机器可读发布包
+# Federation v1 Machine-readable Release Package
 
-状态：`RELEASE CANDIDATE`
-发布：`v1.0.0-rc.0`
+Status: `RELEASE CANDIDATE`
 
-本目录作为非规范性验证资源与 v1 规范正文一起发布，使用 JSON Schema Draft 2020-12。正文定义
-事务、权限、签名、cursor 和状态机语义；Schema 定义可机械检查的 JSON shape。二者冲突时以正文
-为准并修复发布包。
+Release: `v1.0.0-rc.0`
 
-## 文件
+This directory ships with the v1 normative text as a non-normative validation resource and uses JSON Schema Draft 2020-12. The normative text defines transaction, permission, signature, cursor, and state-machine semantics. The schemas define mechanically checkable JSON shapes. If they conflict, the normative text prevails and the release package must be corrected.
 
-- `common.schema.json`：identity、时间、cursor、digest、address 等 Federation 共享类型。
-- `discovery.schema.json`：`/.well-known/socfp` 的跨版本 bootstrap 与 key discovery。
-- `identity.schema.json`：Recognize、Healthy、v1 capability discover/exchange 与 feed-head hint 的
-  closed JSON shape。
-- `state-feed.schema.json`：完整 page 与六种 event body。
-- `message-feed.schema.json`：消息索引型压缩 feed page 与 `thread + messageEndSeq` item。
-- `message-tombstone-feed.schema.json`：墓碑索引型压缩 feed page 与 `thread + tombstoneEndSeq` item。
-- `message-query.schema.json`、`message-tombstone-query.schema.json`：thread query 返回的消息和权威删除事实。
-- `message-content.schema.json`：二次解析后的 11 种 message content。
-- `call.schema.json`：全部 call lifecycle、signal，以及每个 op 的 closed 条件字段集合。
-- `profile.schema.json`、`forward-bundle.schema.json`、`error.schema.json`：其他 JSON operation。
-- `http-parameters.schema.json`：规范化后的 query/path 参数对象。
+## Files
 
-JSON Schema 检查参数的 closed shape、依赖关系和十进制规范形式。`PositiveSafeInteger` query string 的
-数值上限以及 `through >= after` 这类跨字段数值关系必须在解析为精确整数后执行语义校验；不得先转换为
-可能丢失精度的浮点数。语义失败按对应 operation 返回 `400 FEDERATION_MALFORMED`。
+- `common.schema.json`: shared Federation types for identity, time, cursors, digests, and addresses.
+- `discovery.schema.json`: cross-version bootstrap and key discovery at `/.well-known/socfp`.
+- `identity.schema.json`: closed JSON shapes for Recognize, Healthy, v1 capability discovery, and feed-head hints.
+- `state-feed.schema.json`: complete pages and all six event bodies.
+- `message-feed.schema.json`: message index feed pages and `thread + messageEndSeq` items.
+- `message-tombstone-feed.schema.json`: tombstone index feed pages and `thread + tombstoneEndSeq` items.
+- `message-query.schema.json` and `message-tombstone-query.schema.json`: messages and authoritative deletion facts returned by thread queries.
+- `message-content.schema.json`: all parsed core message-content variants selected by `contentType`, plus the extension branch.
+- `call.schema.json`: every call lifecycle and signal operation with its closed conditional field set.
+- `profile.schema.json`, `forward-bundle.schema.json`, and `error.schema.json`: the remaining JSON operations.
+- `http-parameters.schema.json`: normalized query and path parameter objects.
 
-- `http-manifest.json`：完整 operation surface、鉴权、status、media type 和 Schema 映射。
-- `vectors/valid.json`、`vectors/invalid.json`：正反 JSON 向量。
-- `vectors/http-message-signature.json`：通用固定 Ed25519 HTTP Message Signature 向量。
-- `vectors/call-http-message-signature.json`：完整签名 `/s2s/v1/call` 向量。
-- `vectors/feed-query-semantics.json`：state-first、固定 `through`、关系恢复、query 暂缓和未知 thread
-  恢复的结构化时序断言，供实现级状态机测试使用。
+JSON Schema checks closed shapes, dependencies, and canonical decimal forms. The numeric upper bound of a `PositiveSafeInteger` query string and cross-field numeric relations such as `through >= after` MUST be checked semantically after parsing into an exact integer. Implementations MUST NOT first convert such values to a potentially lossy floating-point number. A semantic failure returns `400 FEDERATION_MALFORMED` for the relevant operation.
 
-## 校验
+- `http-manifest.json`: the complete operation surface and its authentication, status, media-type, and schema mappings.
+- `vectors/valid.json` and `vectors/invalid.json`: positive and negative JSON vectors.
+- `vectors/http-message-signature.json`: a general fixed Ed25519 HTTP Message Signature vector.
+- `vectors/call-http-message-signature.json`: a completely signed `/s2s/v1/call` vector.
+- `vectors/feed-query-semantics.json`: structured state-machine assertions for state-first processing, fixed `through`, relationship restoration, deferred queries, and unknown-thread recovery.
 
-仓库根目录执行：
+## Validation
+
+Run from the repository root:
 
 ```bash
 npm run federation:conformance
 ```
 
-它会编译全部 Schema、校验正反向量、验证 message `content` 的二次解析、检查严格递增版本数组、
-核对 HTTP manifest 的完整 v1 surface，严格比较错误码正文注册表与 error Schema，并验证固定签名向量。
-该 CLI 不导入 SOMS `src/` 中的实现常量或服务。仓库单测另外把 manifest、
-Schema enum、规范正文和 Nest route metadata 相互比对，防止发布制品与实现漂移。
+The command compiles every schema; validates positive and negative vectors; verifies secondary parsing of message `content`; checks strictly increasing version arrays; verifies the complete HTTP manifest; compares the normative error registry exactly with the error schema; and verifies fixed signature vectors. The CLI does not import implementation constants or services from SOMS `src/`. Repository unit tests additionally compare the manifest, schema enums, normative text, and Nest route metadata to prevent drift between release artifacts and the reference implementation.
 
-第三方实现可以验证自己的 JSON：
+Third-party implementations can validate their own JSON:
 
 ```bash
 npm run federation:conformance -- \
@@ -54,4 +46,4 @@ npm run federation:conformance -- \
   --file ./call-frame.json
 ```
 
-此 CLI 是离线 conformance 工具，不参与节点运行时协商，也不需要向生产节点提供测试私钥。
+The CLI is an offline conformance tool. It does not participate in runtime negotiation and does not require test private keys to be exposed by production nodes.
