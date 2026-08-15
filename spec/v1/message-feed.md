@@ -1,6 +1,6 @@
-# SOMS Federation v1 Message Feed and Query
+# Simple Open Chat Federation Protocol v1 Message Feed and Query
 
-状态：`RELEASE CANDIDATE`（`v1.0-rc.1`）
+状态：`RELEASE CANDIDATE`（`v1.0-rc.2`）
 规范性：本文全部为规范性要求。
 
 本文定义消息索引型压缩 feed `GET /s2s/v1/message-feed` 和按 thread 读取消息正文的
@@ -23,11 +23,13 @@ query 是 closed 参数集：
 `take` 和 `through` 只能在携带 `after` 时出现。未知、重复或 malformed 参数返回
 `400 FEDERATION_MALFORMED`。`after` 、`through` 和所有 feed 坐标都是非负规范十进制字符串；
 feed item ID 为正整数。`0` 是第一个 item 之前的 exclusive cursor，不是 item ID。
-`take` 不保证响应一定达到该数量，也不放宽 source 公开的 page-byte 上限；单个合法 feed item 超过
-operation 上限时返回 `FEDERATION_PAYLOAD_TOO_LARGE`。
+`take` 不保证响应一定达到该数量，也不放宽 source 本地的 page-byte 上限。source 必须（MUST）
+保证已分配到 feed 的单个 item 可由自己的 endpoint 完整返回。
+任意符合 `PositiveSafeInteger` 的 `take` 都必须（MUST）被接受；source 可以（MAY）按本地有限上限返回更少 item，
+不得（MUST NOT）仅因请求值大于本地 page size 而返回 `FEDERATION_MALFORMED`。
 
 省略 `after` 时，source MUST 返回 HTTP `200 FEDERATION_FEED_CURSOR_UNAVAILABLE`，data 只含
-`resumeAfter`。该值由 source 定义；SOMS 新建的 per-peer feed 使用 `"0"`。consumer 必须原子保存它，
+`resumeAfter`。该值由 source 定义。consumer 必须原子保存它，
 再以该值作为 `after` 请求。重新加好友、重新入群或同一 account 的关系 epoch 变化不得使
 已保存的 feed cursor 后退、换人或重置。
 
@@ -95,7 +97,7 @@ consumer MUST 验证 page，原子合并每个 thread 的最大 `messageEndSeq` 
 
 ### 2.1 Thread query union
 
-`GET /s2s/v1/messages` 使用 closed query。通用字段是 `after`、`through` 和 `take`；其中 `after`
+`GET /s2s/v1/messages` 使用 closed query。通用字段是 `after`、`through`、`take` 和 `includeSelf`；其中 `after`
 可选，`through` 是本次有界排空固定使用的 inclusive `messageEndSeq` 上界，`take` 是建议的最大返回消息数。
 `after` 与 `through` 使用非负 `DecimalString`，并且数值不得超过 `SafeInteger` 上限。
 `take` 和 `through` 只能在携带 `after` 时出现；携带 `through` 时必须满足 `through >= after`，否则返回
@@ -110,12 +112,32 @@ consumer MUST 验证 page，原子合并每个 thread 的最大 `messageEndSeq` 
 两种 shape 的字段不得混用。请求中的 thread 必须与 feed item 的 `ThreadAddress` 规范化后完全
 相同。source 不接受请求方声明的 peer domain；该 domain 只来自验证后的 HTTP Message Signature。
 
+`includeSelf` 可选，wire 值只能是小写 `true` 或 `false`，省略时默认为 `true`。`includeSelf=false`
+使 source 不返回 `message.author.domain` 等于已验证 signer domain 的消息。该比较只使用 canonical Domain，
+不得（MUST NOT）使用本地 user ID、publisher-local `seq` 或 `originSeq` 推断。被过滤的 sequence 是可扫描空洞，
+不阻止 `scannedThrough` 推进。该参数只影响本次 page 投影，不删除 processing receipt、allocation proof 或消息。
+固定 query key 顺序是 thread shape 字段、`after`、`through`、`take`、`includeSelf`；省略的可选字段不保留空位。
+
+GROUP message query 只有三个合法方向：
+
+- 成员 home server 只可以（MAY）向 group origin 返回本域用户 authored 的 submission；该数据在 origin 验证并持久接受前不是群权威事实。
+- group origin 只可以（MAY）向持有该群 mirror 的 peer 返回已接受的权威 timeline。
+- mirror 成功持久从 group origin 直接拉取的权威 message 后，应该（SHOULD）向该 origin 返回本地持久化副本作为
+  processing receipt；如果返回，则必须（MUST）只向该 origin 返回。该副本的 `originSeq/originCreatedAt`
+  等于 origin 原 item 的 `seq/createdAt`，origin 据此关联自己先前的权威发布。
+
+mirror 不得（MUST NOT）向非该 message 直接 publisher 的 peer 返回该群 message；成员 home server 也不得（MUST NOT）
+在 submission 中返回非本域 author 的 message。source 必须（MUST）在生成 page 前按 signer domain、group origin、
+author domain、持久群成员事实和副本的直接来源区分这三个方向。origin 收到 processing receipt 时按
+`(thread, author, originSeq)` 关联本地 `(thread, author, seq)`，不创建消息或新的 message-feed item，且不得反写原消息。
+群消息的 v1 拓扑到此终止，不存在 mirror 向其他 peer 中继或 receipt 后续分发的协议步骤。
+
 未携带 `after` 表示该 thread query 的 bootstrap。source 返回
 `FEDERATION_FEED_CURSOR_UNAVAILABLE { resumeAfter }`，不返回消息。这个起点由 source 根据该 thread、已验证 peer、
 当前关系状态和保留策略定义。协议不要求它为 `0`。同一 account 重新建立好友关系或重新入群不会
 创建一个较小的 query 坐标空间，也不允许 consumer 用较小 `after` 替换本地已提交位置。
 `0` 表示首个合法 message sequence 之前的 exclusive cursor。message sequence 的最小值为 `1`，但
-source 可以（MAY）从更大的值开始分配且不要求连续。SOMS source 在没有更高保留起点时返回 `"0"`。
+source 可以（MAY）从更大的值开始分配且不要求连续。
 
 ### 2.2 Query page
 
@@ -134,16 +156,23 @@ queryEnd = through is present ? min(through, currentMessageEndSeq) : currentMess
 candidates = 当前 peer 有权读取且正文仍保留、seq 位于 (after, queryEnd] 的消息，按 seq 排序
 ```
 
-source 返回不超过自身公开 item/page-byte 上限和有效 `take` 的 candidate 前缀，不得跳过前缀中的可查询
-消息；source MAY 返回更少，但不得超过请求的 `take`。单条合法消息超过 operation page-byte 上限时返回
-`FEDERATION_PAYLOAD_TOO_LARGE`，不得用永久空页跳过它。
+source 返回不超过自身本地 item/page-byte 上限和有效 `take` 的 candidate 前缀，不得跳过前缀中的可查询
+消息；source MAY 返回更少，但不得超过请求的 `take`。source 必须（MUST）能完整返回已分配的单条消息，
+不得用永久空页跳过它。
+
+`take` 只是 item 数量建议。source 必须（MUST）接受任意符合 `PositiveSafeInteger` 的值，并可以（MAY）
+按本地有限的 item/page-byte 上限返回更少 item；不得（MUST NOT）仅因 `take` 大于本地 page size 而返回
+`FEDERATION_MALFORMED`。单个 item 不得（MUST NOT）拆分到多个 page。publisher 和 consumer 可以（MAY）为 JSON object、
+page 和持久 JSON/JSONB 设置各自有限的本地 byte 上限，v1 不规定共同数值。对端单个合法对象超过 consumer 本地能力时，
+consumer 可以（MAY）中止读取或将入站 item 按 message.md 的隔离规则处理；任一方都不得（MUST NOT）
+提交截断 JSON 或可被当作合法业务事实的部分对象。
 若返回后仍有 candidate，`scannedThrough` 等于本页最后一条消息的 `seq` 且 `hasMore: true`；否则
 `scannedThrough=queryEnd` 且 `hasMore: false`。不存在 candidate 的空页直接推进到 `queryEnd`。返回消息按
 source thread `seq` 严格递增，且均位于 `(after, scannedThrough]`。sequence 中未分配、未向该 peer
 allocation 或已有权威 tombstone 的位置是可扫描空洞，不阻止 `scannedThrough` 前进。连续有界分页 MUST
 保持最初的 `through` 不变。对同一 snapshot 和同一组参数的重复 GET 必须语义幂等。
 
-source MAY 按公开保留策略清理旧消息正文。当 `after` 早于该 thread 当前可服务的
+source MAY 按本地保留策略清理旧消息正文。当 `after` 早于该 thread 当前可服务的
 exclusive floor 时，source MAY 返回 `FEDERATION_FEED_CURSOR_UNAVAILABLE { resumeAfter }`，此时 consumer 只能在
 `resumeAfter > after` 时原子采用它。若 `after` 明显超过当前 thread end，source MAY 返回严格更小的有效
 `resumeAfter` 纠正越界位置。两种规则只属于各自明确条件，不得用来跳过 message feed。
@@ -167,7 +196,7 @@ consumer 收到关系终止的 state-feed 状态后 MUST 将该 peer/thread 的�
 好友有效性或群 audience 有效性。这种 reconciliation 必须幂等，不得仅因为 peer 发起了 GET 就创建
 邀请、接受好友、加入群或扩大当前请求的权限。
 
-consumer 按 `(thread, author, originSeq)` 幂等合并消息。插入或展示任何消息前，必须先应用已查询的
+consumer 按 `(source domain, thread, seq)` 幂等接收消息。插入或展示任何消息前，必须先应用已查询的
 权威 tombstone，防止迟到消息复活。媒体与 forward bundle 继续使用 [Resources](./resources.md) 的
 精确消息绑定。
 

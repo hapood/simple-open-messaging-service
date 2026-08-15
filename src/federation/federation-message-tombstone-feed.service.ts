@@ -10,7 +10,6 @@ import {
   federationTombstoneFeedIndex,
   federationTombstoneServeCursor,
   message,
-  messageThread,
   threadAudience,
   threadParticipant,
   user,
@@ -31,10 +30,7 @@ const MAX_PAGE_SIZE = 200;
 export interface FederationMessageTombstoneItem {
   deletionSeq: string;
   thread: FederationThreadAddress;
-  target: {
-    creator: { account: string; domain: string };
-    originSeq: number;
-  };
+  messageSeq: number;
   type: MessageDeleteType;
   deletedAt: number;
 }
@@ -76,6 +72,7 @@ export class FederationMessageTombstoneFeedService {
   }
 
   state(_peerDomain: string): FederationFeedFillState {
+    void _peerDomain;
     return FederationFeedFillState.CAUGHT_UP;
   }
 
@@ -159,6 +156,7 @@ export class FederationMessageTombstoneFeedService {
     peerDomain: string,
     _maxWork: number,
   ): Promise<FederationFeedFillQuantumResult> {
+    void _maxWork;
     await this.fill(peerDomain);
     return { state: FederationFeedFillState.CAUGHT_UP, work: 1 };
   }
@@ -274,8 +272,6 @@ export class FederationMessageTombstoneFeedService {
           deletedAt: deletedMessage.createdAt,
           messageSeq: message.seq,
           originSeq: message.originSeq,
-          creatorAccount: user.account,
-          creatorDomain: user.domain,
         })
         .from(deletedMessage)
         .innerJoin(
@@ -285,7 +281,6 @@ export class FederationMessageTombstoneFeedService {
             eq(message.seq, deletedMessage.seq),
           ),
         )
-        .innerJoin(user, eq(user.id, message.creator))
         .where(
           and(
             eq(deletedMessage.threadId, threadId),
@@ -302,13 +297,7 @@ export class FederationMessageTombstoneFeedService {
       const tombstones = selected.map((row) => ({
         deletionSeq: row.deletionId.toString(),
         thread,
-        target: {
-          creator: {
-            account: row.creatorAccount,
-            domain: this.wireDomain(row.creatorDomain),
-          },
-          originSeq: row.originSeq ?? row.messageSeq,
-        },
+        messageSeq: row.originSeq ?? row.messageSeq,
         type: row.type,
         deletedAt: row.deletedAt.getTime(),
       }));

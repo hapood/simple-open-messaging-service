@@ -20,6 +20,7 @@ import {
 @Injectable()
 export class PasswordLoginEnabledGuard implements CanActivate {
   canActivate(_context: ExecutionContext): boolean {
+    void _context;
     if (!isPasswordLoginEnabled(PUBLIC_CONFIG.loginMode)) {
       throw new BusinessException(
         BusinessCode.LOGIN_METHOD_DISABLED,

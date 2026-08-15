@@ -14,12 +14,18 @@ import {
 
 describe('account grammar + minting', () => {
   describe('USER_ACCOUNT_RE', () => {
-    it.each(['alice', 'john.smith', 'a.b.c', 'ALICE', 'Alice.Bob', 'h2user', 'alice2', 'a.b2'])(
-      'accepts %s',
-      (v) => {
-        expect(isValidUserAccount(v)).toBe(true);
-      },
-    );
+    it.each([
+      'alice',
+      'john.smith',
+      'a.b.c',
+      'ALICE',
+      'Alice.Bob',
+      'h2user',
+      'alice2',
+      'a.b2',
+    ])('accepts %s', (v) => {
+      expect(isValidUserAccount(v)).toBe(true);
+    });
     it.each([
       'a', // too short (< 3)
       'al', // too short
@@ -44,12 +50,18 @@ describe('account grammar + minting', () => {
       expect(isValidGroupAccount('!' + '0'.repeat(26))).toBe(true);
       expect(isValidGroupAccount('!ab')).toBe(true);
     });
-    it.each(['ab', '!', '!!ab', 'alice', '!a', '!' + '0'.repeat(31), '!ab_cd', '!a-b'])(
-      'rejects %s',
-      (v) => {
-        expect(isValidGroupAccount(v)).toBe(false);
-      },
-    );
+    it.each([
+      'ab',
+      '!',
+      '!!ab',
+      'alice',
+      '!a',
+      '!' + '0'.repeat(31),
+      '!ab_cd',
+      '!a-b',
+    ])('rejects %s', (v) => {
+      expect(isValidGroupAccount(v)).toBe(false);
+    });
   });
 
   it('isValidAccount accepts either grammar', () => {

@@ -38,7 +38,7 @@ type TemplateMap = {
 };
 
 const TEMPLATES: Record<SupportedLocale, TemplateMap> = {
-  'en': {
+  en: {
     one: '{{name}} sent you a message',
     many: '{{name}} sent you {{count}} messages',
     two: '{{a}}, {{b}} sent you {{count}} messages',
@@ -90,7 +90,10 @@ export function buildSummaryBody(
   locale: SupportedLocale,
   overflow = false,
 ): string {
-  const total = items.reduce((sum, it) => sum + (it.unreadCount > 0 ? it.unreadCount : 0), 0);
+  const total = items.reduce(
+    (sum, it) => sum + (it.unreadCount > 0 ? it.unreadCount : 0),
+    0,
+  );
   if (total <= 0) return '';
   const count: string | number = overflow ? '999+' : total;
   const t = TEMPLATES[locale] ?? TEMPLATES['en'];
@@ -132,7 +135,7 @@ export function buildMentionTitle(locale: SupportedLocale): string {
  *  renders verbatim) so a button's text is consistent with the body's locale. Add an id here when a new
  *  action is introduced. */
 const ACTION_LABELS: Record<SupportedLocale, Record<string, string>> = {
-  'en': {
+  en: {
     dismiss: 'Dismiss',
     reply: 'Reply',
   },

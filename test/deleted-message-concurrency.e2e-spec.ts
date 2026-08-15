@@ -71,8 +71,7 @@ describe('federated message deletion transaction ordering', () => {
   async function apply(remoteDeletedId: bigint) {
     return deletions.applyFederated({
       threadId,
-      creatorId,
-      originSeq: 7,
+      messageSeq: 7,
       authorityDomain: 'peer.test',
       sourceDomain: 'peer.test',
       remoteDeletedId,
@@ -92,7 +91,7 @@ describe('federated message deletion transaction ordering', () => {
       await DeletedMessageService.lockFederatedIdentity(
         tx,
         threadId,
-        creatorId,
+        'peer.test',
         7,
       );
       gates?.locked();
@@ -101,8 +100,8 @@ describe('federated message deletion transaction ordering', () => {
       const tombstone = await tx.query.federatedMessageTombstone.findFirst({
         where: and(
           eq(federatedMessageTombstone.threadId, threadId),
-          eq(federatedMessageTombstone.creatorId, creatorId),
-          eq(federatedMessageTombstone.originSeq, 7),
+          eq(federatedMessageTombstone.sourceDomain, 'peer.test'),
+          eq(federatedMessageTombstone.messageSeq, 7),
         ),
         columns: { type: true, sourceDomain: true },
       });
@@ -117,6 +116,7 @@ describe('federated message deletion transaction ordering', () => {
           threadId,
           creator: creatorId,
           originSeq: 7,
+          federationSourceDomain: 'peer.test',
           seq,
           contentType: 'PURE_TEXT',
           content: JSON.stringify({ text: 'federated' }),
@@ -142,8 +142,8 @@ describe('federated message deletion transaction ordering', () => {
           .where(
             and(
               eq(federatedMessageTombstone.threadId, threadId),
-              eq(federatedMessageTombstone.creatorId, creatorId),
-              eq(federatedMessageTombstone.originSeq, 7),
+              eq(federatedMessageTombstone.sourceDomain, 'peer.test'),
+              eq(federatedMessageTombstone.messageSeq, 7),
             ),
           );
       }

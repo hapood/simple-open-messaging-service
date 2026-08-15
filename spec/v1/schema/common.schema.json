@@ -1,8 +1,22 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:soms:federation:v1:common",
-  "title": "SOMS Federation v1 common wire scalars",
+  "$id": "urn:socfp:v1:common",
+  "title": "Simple Open Chat Federation Protocol v1 common wire scalars",
   "$defs": {
+    "contentType": {
+      "enum": [
+        "PURE_TEXT",
+        "INVITE",
+        "IMAGE",
+        "VIDEO",
+        "FILE",
+        "AUDIO",
+        "LINK",
+        "CALL",
+        "FORWARD",
+        "GALLERY"
+      ]
+    },
     "userAccount": {
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9._-]{1,29}$"

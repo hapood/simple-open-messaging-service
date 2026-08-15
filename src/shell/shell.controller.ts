@@ -64,7 +64,10 @@ export class ShellController {
     const version = this.shell.manifest().webVersion;
     reply
       .header('content-type', 'application/gzip')
-      .header('content-disposition', `attachment; filename="soms-web-${version}.tar.gz"`)
+      .header(
+        'content-disposition',
+        `attachment; filename="soms-web-${version}.tar.gz"`,
+      )
       .header('x-content-type-options', 'nosniff')
       .send(this.shell.bundleStream(path));
   }

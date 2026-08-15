@@ -68,7 +68,7 @@ RUN npm prune --omit=dev
 #   docker build -t soms-base:latest -f Dockerfile.base .   (scripts/build-image.sh does this for you)
 FROM ${SOMS_BASE} AS runtime
 # App version, injected at build time (scripts/build-image.sh reads package.json). Surfaces in
-# `docker image inspect`, /api/v1/health (reads package.json), and /.well-known/soms. Default "dev".
+# `docker image inspect`, /api/v1/health (reads package.json), and /.well-known/socfp. Default "dev".
 ARG APP_VERSION=dev
 LABEL org.opencontainers.image.version="${APP_VERSION}"
 WORKDIR /app

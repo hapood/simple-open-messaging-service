@@ -1,17 +1,17 @@
 {
-  "protocol": "SOMS Federation",
+  "protocol": "Simple Open Chat Federation Protocol",
   "majorVersion": 1,
   "s2sPrefix": "/s2s/v1",
-  "discoveryPath": "/.well-known/soms",
+  "discoveryPath": "/.well-known/socfp",
   "operations": [
     {
       "id": "wellKnown",
       "method": "GET",
-      "path": "/.well-known/soms",
+      "path": "/.well-known/socfp",
       "authentication": "public-tls",
       "successStatus": [200],
       "responseMediaType": "application/json",
-      "responseSchema": "urn:soms:federation:v1:discovery"
+      "responseSchema": "urn:socfp:v1:discovery"
     },
     {
       "id": "recognize",
@@ -20,8 +20,8 @@
       "authentication": "bootstrap-http-message-signature",
       "successStatus": [200],
       "requestMediaType": "application/json",
-      "requestSchema": "urn:soms:federation:v1:identity#/$defs/recognizeRequest",
-      "responseSchema": "urn:soms:federation:v1:identity#/$defs/recognizeOk"
+      "requestSchema": "urn:socfp:v1:identity#/$defs/recognizeRequest",
+      "responseSchema": "urn:socfp:v1:identity#/$defs/recognizeOk"
     },
     {
       "id": "healthy",
@@ -30,8 +30,8 @@
       "authentication": "status-http-message-signature",
       "successStatus": [200],
       "requestMediaType": "application/json",
-      "requestSchema": "urn:soms:federation:v1:identity#/$defs/recognizeRequest",
-      "responseSchema": "urn:soms:federation:v1:identity#/$defs/healthResult"
+      "requestSchema": "urn:socfp:v1:identity#/$defs/recognizeRequest",
+      "responseSchema": "urn:socfp:v1:identity#/$defs/healthResult"
     },
     {
       "id": "feedHeads",
@@ -40,7 +40,7 @@
       "authentication": "lightweight-http-message-signature",
       "successStatus": [200],
       "requestMediaType": "application/json",
-      "requestSchema": "urn:soms:federation:v1:identity#/$defs/feedHeadHint"
+      "requestSchema": "urn:socfp:v1:identity#/$defs/feedHeadHint"
     },
     {
       "id": "stateFeed",
@@ -48,8 +48,8 @@
       "path": "/s2s/v1/state-feed",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
-      "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/feedQuery",
-      "responseSchema": "urn:soms:federation:v1:state-feed",
+      "parameterSchema": "urn:socfp:v1:http-parameters#/$defs/feedQuery",
+      "responseSchema": "urn:socfp:v1:state-feed",
       "responseEnvelope": true
     },
     {
@@ -58,8 +58,8 @@
       "path": "/s2s/v1/message-feed",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
-      "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/messageFeedQuery",
-      "responseSchema": "urn:soms:federation:v1:message-feed",
+      "parameterSchema": "urn:socfp:v1:http-parameters#/$defs/messageFeedQuery",
+      "responseSchema": "urn:socfp:v1:message-feed",
       "responseEnvelope": true
     },
     {
@@ -68,8 +68,8 @@
       "path": "/s2s/v1/message-tombstone-feed",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
-      "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/tombstoneFeedQuery",
-      "responseSchema": "urn:soms:federation:v1:message-tombstone-feed",
+      "parameterSchema": "urn:socfp:v1:http-parameters#/$defs/tombstoneFeedQuery",
+      "responseSchema": "urn:socfp:v1:message-tombstone-feed",
       "responseEnvelope": true
     },
     {
@@ -78,10 +78,10 @@
       "path": "/s2s/v1/messages",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
-      "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/threadDataQuery",
-      "responseSchema": "urn:soms:federation:v1:message-query",
+      "parameterSchema": "urn:socfp:v1:http-parameters#/$defs/threadDataQuery",
+      "responseSchema": "urn:socfp:v1:message-query",
       "responseEnvelope": true,
-      "secondaryContentSchema": "urn:soms:federation:v1:message-content"
+      "secondaryContentSchema": "urn:socfp:v1:message-content"
     },
     {
       "id": "messageTombstoneQuery",
@@ -89,8 +89,8 @@
       "path": "/s2s/v1/message-tombstones",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
-      "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/threadDataQuery",
-      "responseSchema": "urn:soms:federation:v1:message-tombstone-query",
+      "parameterSchema": "urn:socfp:v1:http-parameters#/$defs/threadDataQuery",
+      "responseSchema": "urn:socfp:v1:message-tombstone-query",
       "responseEnvelope": true
     },
     {
@@ -107,7 +107,7 @@
         "Signature-Input",
         "Signature"
       ],
-      "requestSchema": "urn:soms:federation:v1:call",
+      "requestSchema": "urn:socfp:v1:call",
       "responseEnvelope": true
     },
     {
@@ -116,14 +116,14 @@
       "path": "/s2s/v1/users/:account",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
-      "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/userProfileParameters",
+      "parameterSchema": "urn:socfp:v1:http-parameters#/$defs/userProfileParameters",
       "requestHeaders": [
         "Date",
         "Content-Digest",
         "Signature-Input",
         "Signature"
       ],
-      "responseSchema": "urn:soms:federation:v1:profile",
+      "responseSchema": "urn:socfp:v1:profile",
       "responseEnvelope": true
     },
     {
@@ -132,7 +132,7 @@
       "path": "/s2s/v1/media/:digest",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200, 206],
-      "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/mediaParameters",
+      "parameterSchema": "urn:socfp:v1:http-parameters#/$defs/mediaParameters",
       "requestHeaders": [
         "Date",
         "Content-Digest",
@@ -154,16 +154,16 @@
       "path": "/s2s/v1/forward-bundles/:bundleId",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
-      "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/forwardBundleParameters",
+      "parameterSchema": "urn:socfp:v1:http-parameters#/$defs/forwardBundleParameters",
       "requestHeaders": [
         "Date",
         "Content-Digest",
         "Signature-Input",
         "Signature"
       ],
-      "responseSchema": "urn:soms:federation:v1:forward-bundle",
+      "responseSchema": "urn:socfp:v1:forward-bundle",
       "responseEnvelope": true
     }
   ],
-  "errorSchema": "urn:soms:federation:v1:error"
+  "errorSchema": "urn:socfp:v1:error"
 }

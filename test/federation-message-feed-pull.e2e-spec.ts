@@ -83,7 +83,10 @@ describe('FederationMessageFeedPullService', () => {
     await service.run(peerDomain, callbacks);
 
     expect(requested).toEqual([0n, 2n]);
-    expect(applied).toEqual([['1', '2'], ['3', '5']]);
+    expect(applied).toEqual([
+      ['1', '2'],
+      ['3', '5'],
+    ]);
     const cursor = await database.db.query.federationPullCursor.findFirst({
       where: eq(federationPullCursor.peerDomain, peerDomain),
     });
@@ -93,8 +96,7 @@ describe('FederationMessageFeedPullService', () => {
   it('observes a push arriving during the final request and continues', async () => {
     const requested: Array<bigint | undefined> = [];
     let pushed = false;
-    let callbacks!: FederationMessageFeedPullCallbacks;
-    callbacks = {
+    const callbacks: FederationMessageFeedPullCallbacks = {
       fetch: async (after) => {
         requested.push(after);
         if (!pushed) {

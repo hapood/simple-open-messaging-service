@@ -26,7 +26,8 @@ export const Public = () => SetMetadata(IS_PUBLIC, true);
  * those are the only actions a locked user may take — every other authenticated route is rejected with
  * {@link BusinessCode.MUST_CHANGE_PASSWORD} until `auth/set-password` clears the flag.
  */
-export const IS_MUST_CHANGE_PASSWORD_ESCAPE_HATCH = 'isMustChangePasswordEscapeHatch';
+export const IS_MUST_CHANGE_PASSWORD_ESCAPE_HATCH =
+  'isMustChangePasswordEscapeHatch';
 
 /**
  * Mark a route as usable during the forced-password-change lock — the escape hatch from the

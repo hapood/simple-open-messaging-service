@@ -116,8 +116,8 @@ export class SerializeInterceptor implements NestInterceptor {
       context.getHandler(),
       context.getClass(),
     ]);
-    return next.handle().pipe(
-      map((data) => serializeBody(isRaw ? data : envelopeFor(data))),
-    );
+    return next
+      .handle()
+      .pipe(map((data) => serializeBody(isRaw ? data : envelopeFor(data))));
   }
 }

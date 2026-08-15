@@ -1,6 +1,6 @@
-# SOMS Federation v1 错误码注册表
+# Simple Open Chat Federation Protocol v1 错误码注册表
 
-状态：`RELEASE CANDIDATE`（`v1.0-rc.1`）
+状态：`RELEASE CANDIDATE`（`v1.0-rc.2`）
 规范性：本文分别定义 S2S HTTP 失败分类、HTTP `200` 业务结果、稳定 `code`、结构化 `data` 和调用方动作。
 
 ## 错误封装（Error Envelope）
@@ -92,7 +92,7 @@ HTTP `409` 本身不足以触发 `halted`。只有 `FEDERATION_PEER_BLOCKED`、
 | 50009 | `FEDERATION_PEER_BLOCKED`                          |  409 | Fatal：记录 remote-blocked 原因并进入 `halted`，停止自动通信。                                                                     |
 | 50010 | `FEDERATION_GROUP_AUTHOR_LEFT`                     |  200 | 该 author 路径已终止；停止此 stream，不影响其他 stream。                                                                           |
 | 50011 | `FEDERATION_QUOTA_EXCEEDED`                        |  200 | 按 `data.retryAfter` 秒数退避；不得（MUST NOT）把 peer 置为 degraded 或推进失败 page cursor。                                      |
-| 50012 | `FEDERATION_PAYLOAD_TOO_LARGE`                     |  200 | 已解析 item 超出 operation limit；仅在 operation 允许拆分或缩小请求时重构后重试。                                                  |
+| 50012 | `FEDERATION_PAYLOAD_TOO_LARGE`                     |  200 | 为已发布 wire code 保留；v1 当前没有 operation 使用该结果，consumer 收到时停止原样自动重试。                                       |
 | 50013 | `FEDERATION_CAPABILITY_DISABLED`                   |  200 | 对端策略禁用该业务类别；停止自动重试，等待配置变化。                                                                               |
 | 50014 | `FEDERATION_LOCAL_IDENTITY_LOST`                   |  503 | 对端暂时无法安全提供 federation 服务；保留原 pin 并退避重试。                                                                      |
 | 50015 | `FEDERATION_IDENTITY_MISMATCH`                     |  409 | Fatal：保留原 pin，记录 identity contradiction 并进入 `halted`；不得（MUST NOT）自动采用新身份。                                   |
@@ -109,6 +109,7 @@ HTTP `409` 本身不足以触发 `halted`。只有 `FEDERATION_PEER_BLOCKED`、
 
 `FEDERATION_CAPABILITY_DISABLED` 是为兼容已发布 wire code 保留的稳定标识符；这里的 `capability` 只表示某类业务
 操作被对端策略关闭，不表示 v1 存在能力协商（capability negotiation），也不能据此推导可选接口。
+`FEDERATION_PAYLOAD_TOO_LARGE` 同样只为兼容已发布 wire code 保留；它不是 JSON/JSONB、page、bundle 或媒体的上限协商机制。
 
 ## 结构化错误数据（Structured Error Data）
 
@@ -203,7 +204,7 @@ Federation v1 的业务配额只使用 `data.retryAfter`，不得（MUST NOT）�
 | -------------------------------------------------------------------------- | ---------------------------------------- |
 | JSON/header/query/path shape、重复安全 header、签名 profile 或时间参数非法 | `400 FEDERATION_MALFORMED`               |
 | `Content-Type`、content coding 或字符编码不符合 v1                         | `400 FEDERATION_MALFORMED`               |
-| request/header/body 在解析前已超过公开的 HTTP/JSON 上限                    | `400 FEDERATION_MALFORMED`               |
+| request/header/body 在解析前已超过接收方有限的本地 HTTP/JSON 上限          | `400 FEDERATION_MALFORMED`               |
 | Content-Digest 不匹配、Ed25519 验证失败、keyId 未授权或 certificate 无效   | `401 FEDERATION_BAD_SIGNATURE`           |
 | signer 与 body、address、resource identity 不绑定                          | `401 FEDERATION_BINDING_VIOLATION`       |
 | pinned identity 或双向认可事实不足，但不存在 identity contradiction        | `401 FEDERATION_RECOGNITION_REQUIRED`    |
@@ -227,7 +228,7 @@ digest 校验发现失败。
 资源 `NOT_FOUND` 对应的 mirror message 如何展示、保留或标记属于 consumer 本地策略；它本身不是 message
 删除或 tombstone。具体边界见 resources.md 第 3.3、4.4 节。
 
-未列出的 SOMS 本地客户端业务码不属于 Federation v1 wire registry，S2S publisher 不得（MUST NOT）把它们
+未列出的实现本地客户端业务码不属于 Federation v1 wire registry，S2S publisher 不得（MUST NOT）把它们
 作为协议错误发送。增加新的稳定错误语义属于 additive v1 修订；改变已有 code 的含义、重试性或 identity
 action 属于不兼容变化。
 

@@ -72,7 +72,9 @@ export function mintGroupAccount(): string {
   // a future ULID-library swap can't silently mint an illegal account. Internal invariant → a thrown Error
   // (5xx), NOT a user-facing BusinessException — this is a "the mint is broken" bug, not user input.
   if (!isValidGroupAccount(account)) {
-    throw new Error(`mintGroupAccount invariant violated: produced invalid account [${account}]`);
+    throw new Error(
+      `mintGroupAccount invariant violated: produced invalid account [${account}]`,
+    );
   }
   return account;
 }

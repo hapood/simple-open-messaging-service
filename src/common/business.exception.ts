@@ -1,5 +1,4 @@
 import { HttpException, HttpStatus } from '@nestjs/common';
-import { BusinessCode } from './business-code.js';
 
 /**
  * A business-logic failure carrying a domain BusinessCode.

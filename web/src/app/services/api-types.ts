@@ -3418,7 +3418,7 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  '/.well-known/soms': {
+  '/.well-known/socfp': {
     parameters: {
       query?: never;
       header?: never;

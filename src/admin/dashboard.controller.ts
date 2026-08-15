@@ -32,7 +32,8 @@ export class DashboardController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/dashboard')
   @ApiOperation({
-    summary: 'Console overview: online, sessions, federation health, media, recent admin actions',
+    summary:
+      'Console overview: online, sessions, federation health, media, recent admin actions',
   })
   async summary() {
     return this.dashboard.summary();
@@ -42,7 +43,8 @@ export class DashboardController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/media/stats')
   @ApiOperation({
-    summary: 'Media storage overview: DB bytes/count/reclaimable + on-disk per-extension breakdown',
+    summary:
+      'Media storage overview: DB bytes/count/reclaimable + on-disk per-extension breakdown',
   })
   async mediaStats() {
     return this.gc.stats();

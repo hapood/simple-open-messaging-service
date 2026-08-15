@@ -17,7 +17,8 @@ import { PUBLIC_CONFIG, PublicConfigDto } from '../config/public-config.js';
 export class ConfigController {
   @Get('config')
   @ApiOperation({
-    summary: 'Public site configuration (registration flag + enabled login methods).',
+    summary:
+      'Public site configuration (registration flag + enabled login methods).',
   })
   config(): PublicConfigDto {
     return { ...PUBLIC_CONFIG };

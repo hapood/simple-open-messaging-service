@@ -65,21 +65,12 @@ export interface CallContent {
   durationMs?: number;
 }
 
-export interface FederatedCallAddress {
-  account: string;
-  domain: string;
-}
-
-/** CALL's federation projection. Local numeric user ids never cross S2S. */
+/** CALL's federation projection. Caller/callee are derived from the outer P2P message. */
 export interface FederatedCallContent {
-  type: 'CALL';
   callType: CallMediaType;
   status: CallOutcome;
-  caller: FederatedCallAddress;
-  callee: FederatedCallAddress;
   startedAt?: number;
-  endedAt?: number;
-  durationMs?: number;
+  endedAt: number;
 }
 
 /** Serialize a CALL bubble's content. The caller fills every field; `type` is pinned here. */
@@ -87,20 +78,15 @@ export function buildCallContent(c: Omit<CallContent, 'type'>): string {
   return JSON.stringify({ type: 'CALL', ...c });
 }
 
-export function buildFederatedCallContent(
-  local: CallContent,
-  caller: FederatedCallAddress,
-  callee: FederatedCallAddress,
-): string {
+export function buildFederatedCallContent(local: CallContent): string {
+  if (local.endedAt === undefined) {
+    throw new Error('terminal CALL is missing endedAt');
+  }
   return JSON.stringify({
-    type: 'CALL',
     callType: local.callType,
     status: local.status,
-    caller,
-    callee,
     ...(local.startedAt === undefined ? {} : { startedAt: local.startedAt }),
-    ...(local.endedAt === undefined ? {} : { endedAt: local.endedAt }),
-    ...(local.durationMs === undefined ? {} : { durationMs: local.durationMs }),
+    endedAt: local.endedAt,
   } satisfies FederatedCallContent);
 }
 
@@ -115,81 +101,32 @@ export function parseFederatedCallContent(
   }
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
   const record = obj as Record<string, unknown>;
-  const allowed = new Set([
-    'type',
-    'callType',
-    'status',
-    'caller',
-    'callee',
-    'startedAt',
-    'endedAt',
-    'durationMs',
-  ]);
+  const allowed = new Set(['callType', 'status', 'startedAt', 'endedAt']);
   if (Object.keys(record).some((key) => !allowed.has(key))) return null;
-  const caller = parseFederatedCallAddress(record['caller']);
-  const callee = parseFederatedCallAddress(record['callee']);
   if (
-    record['type'] !== 'CALL' ||
     (record['callType'] !== 'AUDIO' && record['callType'] !== 'VIDEO') ||
     typeof record['status'] !== 'string' ||
     !CALL_OUTCOMES.includes(record['status'] as CallOutcome) ||
-    !caller ||
-    !callee ||
-    sameFederatedCallAddress(caller, callee) ||
     (record['startedAt'] !== undefined && !isFiniteMs(record['startedAt'])) ||
     (record['endedAt'] !== undefined && !isFiniteMs(record['endedAt'])) ||
-    (record['durationMs'] !== undefined && !isFiniteMs(record['durationMs'])) ||
     !isFiniteMs(record['endedAt']) ||
-    (record['startedAt'] === undefined) !==
-      (record['durationMs'] === undefined) ||
     (isFiniteMs(record['startedAt']) &&
-      (record['endedAt'] < record['startedAt'] ||
-        record['durationMs'] !== record['endedAt'] - record['startedAt'])) ||
+      record['endedAt'] < record['startedAt']) ||
     (['cancelled', 'declined', 'missed', 'unreachable'].includes(
       record['status'],
     ) &&
-      (record['startedAt'] !== undefined || record['durationMs'] !== undefined))
+      record['startedAt'] !== undefined)
   ) {
     return null;
   }
   return {
-    type: 'CALL',
     callType: record['callType'],
     status: record['status'] as CallOutcome,
-    caller,
-    callee,
     ...(isFiniteMs(record['startedAt'])
       ? { startedAt: record['startedAt'] }
       : {}),
-    ...(isFiniteMs(record['endedAt']) ? { endedAt: record['endedAt'] } : {}),
-    ...(isFiniteMs(record['durationMs'])
-      ? { durationMs: record['durationMs'] }
-      : {}),
+    endedAt: record['endedAt'] as number,
   };
-}
-
-function parseFederatedCallAddress(
-  value: unknown,
-): FederatedCallAddress | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  if (
-    Object.keys(record).some((key) => key !== 'account' && key !== 'domain') ||
-    typeof record['account'] !== 'string' ||
-    record['account'].length === 0 ||
-    typeof record['domain'] !== 'string' ||
-    record['domain'].length === 0
-  ) {
-    return null;
-  }
-  return { account: record['account'], domain: record['domain'] };
-}
-
-export function sameFederatedCallAddress(
-  left: FederatedCallAddress,
-  right: FederatedCallAddress,
-): boolean {
-  return left.account === right.account && left.domain === right.domain;
 }
 
 /**

@@ -19,12 +19,7 @@ import {
 } from './federation-test-helpers.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { MessageThreadType } from '../src/database/enums.js';
-import {
-  friendRequest,
-  message,
-  threadParticipant,
-  user,
-} from '../src/database/schema.js';
+import { message, threadParticipant, user } from '../src/database/schema.js';
 
 /**
  * Federated 1:1 call e2e — a SELF-CONTAINED two-server suite (own bootFederationPair + own DBs + a

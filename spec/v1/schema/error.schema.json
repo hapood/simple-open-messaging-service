@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:soms:federation:v1:error",
+  "$id": "urn:socfp:v1:error",
   "title": "Federation v1 JSON error envelope",
   "type": "object",
   "required": ["code", "message"],
@@ -83,7 +83,7 @@
       "required": ["resumeAfter"],
       "properties": {
         "resumeAfter": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+          "$ref": "urn:socfp:v1:common#/$defs/decimalString"
         }
       },
       "additionalProperties": false

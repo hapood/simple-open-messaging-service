@@ -38,7 +38,9 @@ describe('parseGoogleServicesJson', () => {
           android_client_info: { package_name: EXPECTED_ANDROID_PACKAGE },
         },
         oauth_client: [],
-        api_key: [{ current_key: 'AIzaSyabcdefghijklmnopqrstuvwxyz1234567890' }],
+        api_key: [
+          { current_key: 'AIzaSyabcdefghijklmnopqrstuvwxyz1234567890' },
+        ],
         services: {},
       },
     ],
@@ -60,9 +62,15 @@ describe('parseGoogleServicesJson', () => {
   });
 
   it('rejects missing project_info fields', () => {
-    const noNumber = JSON.stringify({ project_info: { project_id: 'x' }, client: [] });
+    const noNumber = JSON.stringify({
+      project_info: { project_id: 'x' },
+      client: [],
+    });
     expect(() => parseGoogleServicesJson(noNumber)).toThrow(/project_number/);
-    const noId = JSON.stringify({ project_info: { project_number: '123' }, client: [] });
+    const noId = JSON.stringify({
+      project_info: { project_number: '123' },
+      client: [],
+    });
     expect(() => parseGoogleServicesJson(noId)).toThrow(/project_id/);
   });
 
@@ -75,11 +83,15 @@ describe('parseGoogleServicesJson', () => {
             mobilesdk_app_id: '1:123:android:abcd',
             android_client_info: { package_name: 'com.example.other' },
           },
-          api_key: [{ current_key: 'AIzaSyabcdefghijklmnopqrstuvwxyz1234567890' }],
+          api_key: [
+            { current_key: 'AIzaSyabcdefghijklmnopqrstuvwxyz1234567890' },
+          ],
         },
       ],
     });
-    expect(() => parseGoogleServicesJson(wrongPkg)).toThrow(/com\.soms\.client/);
+    expect(() => parseGoogleServicesJson(wrongPkg)).toThrow(
+      /com\.soms\.client/,
+    );
   });
 
   it('rejects when the matched client is missing api_key / mobilesdk_app_id', () => {
@@ -87,8 +99,12 @@ describe('parseGoogleServicesJson', () => {
       project_info: { project_number: '123', project_id: 'x' },
       client: [
         {
-          client_info: { android_client_info: { package_name: EXPECTED_ANDROID_PACKAGE } },
-          api_key: [{ current_key: 'AIzaSyabcdefghijklmnopqrstuvwxyz1234567890' }],
+          client_info: {
+            android_client_info: { package_name: EXPECTED_ANDROID_PACKAGE },
+          },
+          api_key: [
+            { current_key: 'AIzaSyabcdefghijklmnopqrstuvwxyz1234567890' },
+          ],
         },
       ],
     });
@@ -111,7 +127,9 @@ describe('parseGoogleServicesJson', () => {
 
 describe('firebase field validators', () => {
   it('apiKey: long base64url-ish token', () => {
-    expect(isValidApiKey('AIzaSyabcdefghijklmnopqrstuvwxyz1234567890')).toBe(true);
+    expect(isValidApiKey('AIzaSyabcdefghijklmnopqrstuvwxyz1234567890')).toBe(
+      true,
+    );
     expect(isValidApiKey('short')).toBe(false); // too short
     expect(isValidApiKey('has space in it and that is bad!!!')).toBe(false);
   });
@@ -134,8 +152,15 @@ describe('firebase field validators', () => {
   });
 
   it('assertValidFirebaseConfig throws on any bad field', () => {
-    const good = { apiKey: 'AIzaSyabcdefghijklmnopqrstuvwxyz1234567890', projectId: 'x-y', appId: '1:9:android:abcd', gcmSenderId: '9' };
+    const good = {
+      apiKey: 'AIzaSyabcdefghijklmnopqrstuvwxyz1234567890',
+      projectId: 'x-y',
+      appId: '1:9:android:abcd',
+      gcmSenderId: '9',
+    };
     expect(() => assertValidFirebaseConfig(good)).not.toThrow();
-    expect(() => assertValidFirebaseConfig({ ...good, projectId: 'BAD' })).toThrow(/projectId/);
+    expect(() =>
+      assertValidFirebaseConfig({ ...good, projectId: 'BAD' }),
+    ).toThrow(/projectId/);
   });
 });

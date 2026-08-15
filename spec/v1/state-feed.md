@@ -1,6 +1,6 @@
-# SOMS Federation v1 State Feed
+# Simple Open Chat Federation Protocol v1 State Feed
 
-状态：`RELEASE CANDIDATE`（`v1.0-rc.1`）
+状态：`RELEASE CANDIDATE`（`v1.0-rc.2`）
 规范性：本文全部为规范性要求，除非段落明确标记为“非规范性实现说明”。
 
 本文定义状态快照型压缩 feed `GET /s2s/v1/state-feed`。它与两个索引型 feed 共享
@@ -17,14 +17,17 @@ query 获取内容。通用身份、签名、响应和错误规则见 [主协议
 | `take`    | `PositiveSafeInteger` query string | 可选；consumer 建议的本页最大 item 数。publisher MAY 返回更少，但不得返回更多。            |
 | `through` | `DecimalString` query string       | 可选；本轮扫描的 inclusive 上界，MUST 大于或等于 `after`。连续有界分页 MUST 保持同一个值。 |
 
-`take` 不保证 page 一定包含该数量，也不是响应 bytes 的安全承诺。publisher MUST 同时执行公开、确定的
-item 和 page-byte 上限，并取其中更严格者；请求值不受支持时返回 `FEDERATION_MALFORMED`，单个合法状态快照超过 operation 上限时返回
-`FEDERATION_PAYLOAD_TOO_LARGE`。`through` 只冻结读取窗口，不确认、删除或降级任何状态。
+`take` 不保证 page 一定包含该数量，也不是响应 bytes 的安全承诺。publisher 必须（MUST）接受任意符合
+`PositiveSafeInteger` 的 `take`，并可以（MAY）按本地有限的 item/page-byte 上限返回更少 item；
+不得（MUST NOT）仅因 `take` 大于本地 page size 而返回 `FEDERATION_MALFORMED`。publisher 必须（MUST）保证
+已分配到 feed 的单个状态快照可由自己的 endpoint 完整返回。v1 不规定 JSON/JSONB 的共同 byte 上限，
+但不得（MUST NOT）返回或提交截断快照。consumer 超过本地能力时可以（MAY）中止读取；
+`through` 只冻结读取窗口，不确认、删除或降级任何状态。
 
 省略 `after` 时不得携带 `take` 或 `through`。source MUST 返回 HTTP `200`
 `FEDERATION_FEED_CURSOR_UNAVAILABLE`，data 只含当前可用 exclusive cursor `resumeAfter`。consumer 原子
 保存后以 `after=resumeAfter` 开始正常读取；不得猜测初始 ID。该起点由 publisher 定义；
-SOMS 新建的 per-peer state feed 使用 `"0"`。feed item ID MUST 为正整数，cursor/end MUST 为非负整数；
+feed item ID MUST 为正整数，cursor/end MUST 为非负整数；
 `0` 是第一个 item 之前的 exclusive cursor，不是 item ID。
 从 `resumeAfter` 开始排空 MUST 能重建当前完整 state projection；若当前存在 item，publisher 不得把
 `stateFeedEndId` 直接当作 bootstrap 起点而跳过它们。
@@ -336,6 +339,6 @@ compacted 中间 revision 缺失和 page 重排，都必须通过 stable key 最
 
 ### 非规范性实现说明
 
-SOMS 可以用关系方向表共享 P2P、invite 和 join 的 revision/expiry 状态机，同时保留不同关系种类的本地
+实现可以用关系方向表共享 P2P、invite 和 join 的 revision/expiry 状态机，同时保留不同关系种类的本地
 外键。人员可见性适合以 `(peer, member, sourceType, sourceId)` 唯一来源行表达；是否存在来源通过
 `EXISTS` 或可重建缓存计算。数据库表名、事务 helper、mutex 类型和 JSON 序列化 helper 都不属于协议。

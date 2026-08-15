@@ -21,4 +21,7 @@ export const ADMIN_AUDIT_KEY = 'admin:audit';
  * route), when, and whether it succeeded. Apply to every destructive admin action.
  */
 export const Audit = (action: string, options?: AdminAuditOptions) =>
-  SetMetadata(ADMIN_AUDIT_KEY, { action, options } satisfies AdminAuditMetadata);
+  SetMetadata(ADMIN_AUDIT_KEY, {
+    action,
+    options,
+  } satisfies AdminAuditMetadata);

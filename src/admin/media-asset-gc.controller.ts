@@ -167,8 +167,7 @@ export class MediaAssetGcController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/media/pending-federated-deletions')
   @ApiOperation({
-    summary:
-      'List federated deletion facts still awaiting their local message',
+    summary: 'List federated deletion facts still awaiting their local message',
   })
   pendingFederatedDeletions(
     @Body() dto: AdminListPendingFederatedDeletionsDto,

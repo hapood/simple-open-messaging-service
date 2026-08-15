@@ -14,4 +14,6 @@ import { resolveFileSecret } from '../auth/jwt-secret.js';
  */
 const TWO_FACTOR_KEY_MATERIAL = resolveFileSecret('2fa.key');
 
-export const twoFactorKey: Buffer = createHash('sha256').update(TWO_FACTOR_KEY_MATERIAL).digest();
+export const twoFactorKey: Buffer = createHash('sha256')
+  .update(TWO_FACTOR_KEY_MATERIAL)
+  .digest();

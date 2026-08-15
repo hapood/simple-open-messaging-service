@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:soms:federation:v1:message-content",
+  "$id": "urn:socfp:v1:message-content",
   "title": "Parsed Federation v1 message content selected by contentType",
   "$defs": {
     "positiveNumber": { "type": "number", "exclusiveMinimum": 0 },
@@ -8,20 +8,7 @@
       "type": "object",
       "required": ["text"],
       "properties": {
-        "text": { "type": "string" },
-        "quote": {
-          "type": "object",
-          "required": ["seq"],
-          "properties": {
-            "seq": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
-            },
-            "author": { "type": "string" },
-            "body": { "type": "string" },
-            "contentType": { "type": "string" }
-          },
-          "additionalProperties": false
-        }
+        "text": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": false
     },
@@ -29,15 +16,15 @@
       "type": "object",
       "required": ["digest", "w", "h", "size"],
       "properties": {
-        "digest": { "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex" },
+        "digest": { "$ref": "urn:socfp:v1:common#/$defs/sha256Hex" },
         "w": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
+          "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
         },
         "h": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
+          "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
         },
         "size": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+          "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
         }
       },
       "additionalProperties": false
@@ -46,10 +33,10 @@
       "type": "object",
       "required": ["digest", "name", "size", "mimeType"],
       "properties": {
-        "digest": { "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex" },
+        "digest": { "$ref": "urn:socfp:v1:common#/$defs/sha256Hex" },
         "name": { "type": "string", "minLength": 1 },
         "size": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+          "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
         },
         "mimeType": { "type": "string", "minLength": 1 }
       },
@@ -59,17 +46,17 @@
       "type": "object",
       "required": ["digest", "name", "size", "mimeType", "w", "h", "duration"],
       "properties": {
-        "digest": { "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex" },
+        "digest": { "$ref": "urn:socfp:v1:common#/$defs/sha256Hex" },
         "name": { "type": "string", "minLength": 1 },
         "size": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+          "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
         },
         "mimeType": { "type": "string", "minLength": 1 },
         "w": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
+          "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
         },
         "h": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
+          "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
         },
         "duration": { "$ref": "#/$defs/positiveNumber" }
       },
@@ -79,10 +66,10 @@
       "type": "object",
       "required": ["digest", "name", "size", "mimeType", "duration"],
       "properties": {
-        "digest": { "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex" },
+        "digest": { "$ref": "urn:socfp:v1:common#/$defs/sha256Hex" },
         "name": { "type": "string", "minLength": 1 },
         "size": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+          "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
         },
         "mimeType": { "type": "string", "minLength": 1 },
         "duration": { "$ref": "#/$defs/positiveNumber" }
@@ -97,16 +84,16 @@
           "properties": {
             "kind": { "const": "IMAGE" },
             "digest": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex"
+              "$ref": "urn:socfp:v1:common#/$defs/sha256Hex"
             },
             "size": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+              "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
             },
             "w": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
+              "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
             },
             "h": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
+              "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
             }
           },
           "additionalProperties": false
@@ -126,18 +113,18 @@
           "properties": {
             "kind": { "const": "VIDEO" },
             "digest": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex"
+              "$ref": "urn:socfp:v1:common#/$defs/sha256Hex"
             },
             "size": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+              "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
             },
             "name": { "type": "string" },
             "mimeType": { "type": "string" },
             "w": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
+              "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
             },
             "h": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
+              "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
             },
             "duration": { "$ref": "#/$defs/positiveNumber" }
           },
@@ -156,10 +143,10 @@
           "properties": {
             "kind": { "const": "AUDIO" },
             "digest": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex"
+              "$ref": "urn:socfp:v1:common#/$defs/sha256Hex"
             },
             "size": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+              "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
             },
             "name": { "type": "string" },
             "mimeType": { "type": "string" },
@@ -173,10 +160,10 @@
           "properties": {
             "kind": { "const": "FILE" },
             "digest": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex"
+              "$ref": "urn:socfp:v1:common#/$defs/sha256Hex"
             },
             "size": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+              "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
             },
             "name": { "type": "string" },
             "mimeType": { "type": "string" }
@@ -206,35 +193,32 @@
         "description": { "type": "string" },
         "siteName": { "type": "string" },
         "imageDigest": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex"
+          "$ref": "urn:socfp:v1:common#/$defs/sha256Hex"
         },
         "faviconDigest": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex"
+          "$ref": "urn:socfp:v1:common#/$defs/sha256Hex"
         }
       },
       "additionalProperties": false
     },
     "invite": {
       "type": "object",
-      "required": ["type", "from", "group", "groupName", "groupDomain"],
+      "required": ["group", "groupName", "groupDomain"],
       "properties": {
-        "type": { "const": "GROUP_INVITE" },
-        "from": { "$ref": "urn:soms:federation:v1:common#/$defs/userAccount" },
         "group": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/groupAccount"
+          "$ref": "urn:socfp:v1:common#/$defs/groupAccount"
         },
         "groupName": { "type": "string" },
         "groupDomain": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/domain"
+          "$ref": "urn:socfp:v1:common#/$defs/domain"
         }
       },
       "additionalProperties": false
     },
     "call": {
       "type": "object",
-      "required": ["type", "callType", "status", "caller", "callee", "endedAt"],
+      "required": ["callType", "status", "endedAt"],
       "properties": {
-        "type": { "const": "CALL" },
         "callType": { "enum": ["AUDIO", "VIDEO"] },
         "status": {
           "enum": [
@@ -246,32 +230,14 @@
             "unreachable"
           ]
         },
-        "caller": { "$ref": "urn:soms:federation:v1:common#/$defs/address" },
-        "callee": { "$ref": "urn:soms:federation:v1:common#/$defs/address" },
         "startedAt": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+          "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds"
         },
         "endedAt": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
-        },
-        "durationMs": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+          "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds"
         }
       },
       "allOf": [
-        {
-          "oneOf": [
-            { "required": ["startedAt", "durationMs"] },
-            {
-              "not": {
-                "anyOf": [
-                  { "required": ["startedAt"] },
-                  { "required": ["durationMs"] }
-                ]
-              }
-            }
-          ]
-        },
         {
           "if": {
             "properties": {
@@ -282,12 +248,7 @@
             "required": ["status"]
           },
           "then": {
-            "not": {
-              "anyOf": [
-                { "required": ["startedAt"] },
-                { "required": ["durationMs"] }
-              ]
-            }
+              "not": { "required": ["startedAt"] }
           }
         }
       ],
@@ -295,31 +256,13 @@
     },
     "forward": {
       "type": "object",
-      "required": [
-        "version",
-        "bundleId",
-        "summaryLines",
-        "messageCount",
-        "assetCount"
-      ],
+      "required": ["bundleId"],
       "properties": {
-        "version": { "const": 1 },
         "bundleId": {
           "type": "string",
           "minLength": 1,
           "maxLength": 26,
           "pattern": "^[^/\\u0000]+$"
-        },
-        "summaryLines": {
-          "type": "array",
-          "maxItems": 3,
-          "items": { "type": "string", "minLength": 1 }
-        },
-        "messageCount": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
-        },
-        "assetCount": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
         }
       },
       "additionalProperties": false
@@ -329,18 +272,7 @@
   "required": ["contentType", "content"],
   "properties": {
     "contentType": {
-      "enum": [
-        "PURE_TEXT",
-        "INVITE",
-        "IMAGE",
-        "VIDEO",
-        "FILE",
-        "AUDIO",
-        "LINK",
-        "CALL",
-        "FORWARD",
-        "GALLERY"
-      ]
+      "$ref": "urn:socfp:v1:common#/$defs/contentType"
     },
     "content": { "type": "object" }
   },

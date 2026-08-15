@@ -112,7 +112,7 @@ export class FederationSelfCheckService {
     const target = await this.resolveTarget(resolver, domain, config);
     checks.push(
       await this.runOne(
-        { key: 'dns-srv', group: 'dns', title: 'SRV record _soms._tcp' },
+        { key: 'dns-srv', group: 'dns', title: 'SRV record _socfp._tcp' },
         () => this.checkDnsSrv(domain, target),
       ),
     );
@@ -184,7 +184,7 @@ export class FederationSelfCheckService {
         {
           key: 'well-known',
           group: 'well-known',
-          title: '.well-known/soms (per IP)',
+          title: '.well-known/socfp (per IP)',
         },
         () => this.checkWellKnown(ips, wkProbes),
       ),
@@ -342,7 +342,7 @@ export class FederationSelfCheckService {
     if (!target.hasSrv) {
       return {
         status: 'warn',
-        detail: `no _soms._tcp.${domain} SRV record — peers fall back to https://${domain}:443 (set SRV if not on :443)`,
+        detail: `no _socfp._tcp.${domain} SRV record — peers fall back to https://${domain}:443 (set SRV if not on :443)`,
         evidence: {
           domain,
           record: null,
@@ -465,7 +465,7 @@ export class FederationSelfCheckService {
     const sample = probes.find((p) => p.doc);
     const detail =
       okCount === probes.length
-        ? `all ${probes.length} IP(s) serve a valid .well-known/soms`
+        ? `all ${probes.length} IP(s) serve a valid .well-known/socfp`
         : `${okCount}/${probes.length} IP(s) ok — see per-IP detail`;
     return {
       status,
@@ -490,7 +490,7 @@ export class FederationSelfCheckService {
       return {
         status: 'skip',
         detail:
-          '.well-known/soms unavailable — published key comparison was not run',
+          '.well-known/socfp unavailable — published key comparison was not run',
         blockedBy: 'well-known',
         evidence: { localPubB64: localPub, localPubSha256: localSha, keyId },
       };
@@ -535,7 +535,8 @@ export class FederationSelfCheckService {
     if (!doc || doc.keys.length === 0) {
       return {
         status: 'skip',
-        detail: '.well-known/soms unavailable — signature loopback was not run',
+        detail:
+          '.well-known/socfp unavailable — signature loopback was not run',
         blockedBy: 'well-known',
         evidence: { authority },
       };
@@ -703,7 +704,7 @@ export class FederationSelfCheckService {
       const baseOpts = {
         host: ip, // dial this specific IP …
         port,
-        path: '/.well-known/soms',
+        path: '/.well-known/socfp',
         method: 'GET',
         timeout: config.callTimeoutSec * 1000,
         headers: { host, accept: 'application/json' }, // … but send Host: <public hostname>
@@ -793,7 +794,7 @@ export class FederationSelfCheckService {
       });
       const req = client.request({
         [http2Constants.HTTP2_HEADER_METHOD]: 'GET',
-        [http2Constants.HTTP2_HEADER_PATH]: '/.well-known/soms',
+        [http2Constants.HTTP2_HEADER_PATH]: '/.well-known/socfp',
         [http2Constants.HTTP2_HEADER_AUTHORITY]: host,
         accept: 'application/json',
       });
@@ -1026,7 +1027,7 @@ export class FederationSelfCheckService {
     let srvRecord: string | null = null;
     let hasSrv = false;
     try {
-      const records = await resolver.resolveSrv(`_soms._tcp.${domain}`);
+      const records = await resolver.resolveSrv(`_socfp._tcp.${domain}`);
       if (records.length > 0) {
         records.sort((a, b) => a.priority - b.priority || a.weight - b.weight);
         const top = records[0];

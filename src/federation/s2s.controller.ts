@@ -313,6 +313,7 @@ export class S2sController {
     @Query('after') afterParam?: string,
     @Query('take') takeParam?: string,
     @Query('through') throughParam?: string,
+    @Query('includeSelf') includeSelfParam?: string,
   ) {
     this.assertQueryShape(req, [
       'type',
@@ -323,6 +324,7 @@ export class S2sController {
       'after',
       'take',
       'through',
+      'includeSelf',
     ]);
     const selector = this.parseThreadQuery(
       type,
@@ -332,6 +334,18 @@ export class S2sController {
       groupDomain,
     );
     const peerDomain = this.signerDomain(req);
+    if (
+      includeSelfParam !== undefined &&
+      includeSelfParam !== 'true' &&
+      includeSelfParam !== 'false'
+    ) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'includeSelf must be true or false',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const includeSelf = includeSelfParam !== 'false';
     if (afterParam === undefined) {
       if (takeParam !== undefined || throughParam !== undefined) {
         throw new BusinessException(
@@ -351,7 +365,14 @@ export class S2sController {
       throughParam === undefined
         ? undefined
         : this.parseThreadSequence(throughParam, 'through');
-    return this.messageFeed.query(peerDomain, selector, after, take, through);
+    return this.messageFeed.query(
+      peerDomain,
+      selector,
+      after,
+      take,
+      through,
+      includeSelf,
+    );
   }
 
   @Get('state-feed')
@@ -563,7 +584,6 @@ export class S2sController {
         { name: 'fromDomain' },
         { name: 'toAccount' },
         { name: 'seq' },
-        { name: 'bundleId', optional: true },
       ],
     });
     const digest = requireSha256Hex(parsed.pathValue, 'digest');
@@ -574,10 +594,6 @@ export class S2sController {
     const fromDomain = requireDomain(parsed.query.fromDomain, 'fromDomain');
     const toAccount = requireAccount(parsed.query.toAccount, 'toAccount');
     const seq = requireSafeDecimal(parsed.query.seq, 'seq');
-    const bundleId =
-      parsed.query.bundleId === undefined
-        ? undefined
-        : requireBundleId(parsed.query.bundleId);
     const signer = this.signerDomain(req);
     const { absPath, bytes } = await this.resourceOperation(() =>
       this.federation.resolveMediaFile(
@@ -587,7 +603,6 @@ export class S2sController {
         signer,
         digest,
         seq,
-        bundleId,
       ),
     );
     const range = parseFederationRange(req.headers.range, bytes);

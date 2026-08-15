@@ -8,7 +8,7 @@ version; bodies do not repeat a version field. The current endpoint-level contra
 ## Identity and recovery
 
 Nodes discover the root public key, root-authorized signing-key certificates and supported major versions
-through `/.well-known/soms`. First contact uses signed, idempotent `POST /s2s/v1/recognize` in both
+through `/.well-known/socfp`. First contact uses signed, idempotent `POST /s2s/v1/recognize` in both
 directions. Ordinary data traffic opens only after both directions and local availability facts converge.
 
 `POST /s2s/v1/healthy` checks an existing pinned relationship without becoming a key-fetch oracle.
@@ -87,7 +87,7 @@ capability negotiation. See the normative [call specification](../../spec/v1/cal
 
 ## Current S2S surface
 
-- `GET /.well-known/soms`
+- `GET /.well-known/socfp`
 - `POST /s2s/v1/recognize`
 - `POST /s2s/v1/healthy`
 - `POST /s2s/v1/feed-heads`

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:soms:federation:v1:http-parameters",
+  "$id": "urn:socfp:v1:http-parameters",
   "title": "Federation v1 normalized HTTP path/query parameter objects",
   "$defs": {
     "userProfileParameters": {
@@ -8,7 +8,7 @@
       "required": ["account"],
       "properties": {
         "account": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/userAccount"
+          "$ref": "urn:socfp:v1:common#/$defs/userAccount"
         }
       },
       "additionalProperties": false
@@ -18,11 +18,11 @@
       "dependentRequired": { "take": ["after"], "through": ["after"] },
       "properties": {
         "after": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+          "$ref": "urn:socfp:v1:common#/$defs/decimalString"
         },
         "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" },
         "through": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+          "$ref": "urn:socfp:v1:common#/$defs/decimalString"
         }
       },
       "additionalProperties": false
@@ -32,11 +32,11 @@
       "dependentRequired": { "take": ["after"], "through": ["after"] },
       "properties": {
         "after": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+          "$ref": "urn:socfp:v1:common#/$defs/decimalString"
         },
         "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" },
         "through": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+          "$ref": "urn:socfp:v1:common#/$defs/decimalString"
         }
       },
       "additionalProperties": false
@@ -46,11 +46,11 @@
       "dependentRequired": { "take": ["after"], "through": ["after"] },
       "properties": {
         "after": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+          "$ref": "urn:socfp:v1:common#/$defs/decimalString"
         },
         "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" },
         "through": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+          "$ref": "urn:socfp:v1:common#/$defs/decimalString"
         }
       },
       "additionalProperties": false
@@ -64,18 +64,19 @@
           "properties": {
             "type": { "const": "P2P" },
             "account": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/userAccount"
+              "$ref": "urn:socfp:v1:common#/$defs/userAccount"
             },
             "peerAccount": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/userAccount"
+              "$ref": "urn:socfp:v1:common#/$defs/userAccount"
             },
             "after": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+              "$ref": "urn:socfp:v1:common#/$defs/decimalString"
             },
             "through": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+              "$ref": "urn:socfp:v1:common#/$defs/decimalString"
             },
-            "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" }
+            "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" },
+            "includeSelf": { "enum": ["true", "false"] }
           },
           "additionalProperties": false
         },
@@ -86,18 +87,19 @@
           "properties": {
             "type": { "const": "GROUP" },
             "groupAccount": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/groupAccount"
+              "$ref": "urn:socfp:v1:common#/$defs/groupAccount"
             },
             "groupDomain": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/domain"
+              "$ref": "urn:socfp:v1:common#/$defs/domain"
             },
             "after": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+              "$ref": "urn:socfp:v1:common#/$defs/decimalString"
             },
             "through": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+              "$ref": "urn:socfp:v1:common#/$defs/decimalString"
             },
-            "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" }
+            "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" },
+            "includeSelf": { "enum": ["true", "false"] }
           },
           "additionalProperties": false
         }
@@ -107,17 +109,16 @@
       "type": "object",
       "required": ["digest", "fromAccount", "fromDomain", "toAccount", "seq"],
       "properties": {
-        "digest": { "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex" },
+        "digest": { "$ref": "urn:socfp:v1:common#/$defs/sha256Hex" },
         "fromAccount": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/userAccount"
+          "$ref": "urn:socfp:v1:common#/$defs/userAccount"
         },
-        "fromDomain": { "$ref": "urn:soms:federation:v1:common#/$defs/domain" },
-        "toAccount": { "$ref": "urn:soms:federation:v1:common#/$defs/account" },
+        "fromDomain": { "$ref": "urn:socfp:v1:common#/$defs/domain" },
+        "toAccount": { "$ref": "urn:socfp:v1:common#/$defs/account" },
         "seq": {
           "type": "string",
           "pattern": "^[1-9][0-9]{0,15}$"
-        },
-        "bundleId": { "type": "string", "minLength": 1, "maxLength": 26 }
+        }
       },
       "additionalProperties": false
     },

@@ -1,14 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:soms:federation:v1:profile",
+  "$id": "urn:socfp:v1:profile",
   "title": "GET /s2s/v1/users/:account response data",
   "type": "object",
   "required": ["account", "domain", "displayName", "avatar", "profileRev"],
   "properties": {
     "account": {
-      "$ref": "urn:soms:federation:v1:common#/$defs/userAccount"
+      "$ref": "urn:socfp:v1:common#/$defs/userAccount"
     },
-    "domain": { "$ref": "urn:soms:federation:v1:common#/$defs/domain" },
+    "domain": { "$ref": "urn:socfp:v1:common#/$defs/domain" },
     "displayName": { "type": "string", "minLength": 1, "maxLength": 30 },
     "avatar": {
       "oneOf": [
@@ -23,10 +23,10 @@
               "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
             },
             "w": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
+              "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
             },
             "h": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
+              "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
             }
           },
           "additionalProperties": false
@@ -35,7 +35,7 @@
       ]
     },
     "profileRev": {
-      "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+      "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
     }
   },
   "additionalProperties": false

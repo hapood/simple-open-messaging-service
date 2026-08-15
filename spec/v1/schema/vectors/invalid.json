@@ -2,7 +2,7 @@
   "vectors": [
     {
       "name": "well-known scalar version is obsolete",
-      "schema": "urn:soms:federation:v1:discovery",
+      "schema": "urn:socfp:v1:discovery",
       "value": {
         "software": "example/1.0",
         "protocolVersion": 1,
@@ -20,7 +20,7 @@
     },
     {
       "name": "well-known version list must be strictly increasing",
-      "schema": "urn:soms:federation:v1:discovery",
+      "schema": "urn:socfp:v1:discovery",
       "semantic": "protocolVersions",
       "value": {
         "software": "example/1.0",
@@ -39,7 +39,7 @@
     },
     {
       "name": "recognize rejects unknown nonce fields",
-      "schema": "urn:soms:federation:v1:identity#/$defs/recognizeRequest",
+      "schema": "urn:socfp:v1:identity#/$defs/recognizeRequest",
       "value": {
         "domain": "a.example",
         "nonce": "abcdefghijklmnopqrstuv"
@@ -47,7 +47,7 @@
     },
     {
       "name": "profile snapshot cannot have a directional subject",
-      "schema": "urn:soms:federation:v1:state-feed",
+      "schema": "urn:socfp:v1:state-feed",
       "value": {
         "items": [
           {
@@ -73,12 +73,12 @@
     },
     {
       "name": "unknown message content type",
-      "schema": "urn:soms:federation:v1:message-content",
+      "schema": "urn:socfp:v1:message-content",
       "value": { "contentType": "STICKER", "content": {} }
     },
     {
       "name": "media content rejects publisher display URL",
-      "schema": "urn:soms:federation:v1:message-content",
+      "schema": "urn:socfp:v1:message-content",
       "value": {
         "contentType": "IMAGE",
         "content": { "url": "/asset/0", "w": 1, "h": 1, "size": 1 }
@@ -86,7 +86,7 @@
     },
     {
       "name": "invite rejects publisher-local fields",
-      "schema": "urn:soms:federation:v1:message-content",
+      "schema": "urn:socfp:v1:message-content",
       "value": {
         "contentType": "INVITE",
         "content": {
@@ -101,7 +101,7 @@
     },
     {
       "name": "terminal call content requires endedAt",
-      "schema": "urn:soms:federation:v1:message-content",
+      "schema": "urn:socfp:v1:message-content",
       "value": {
         "contentType": "CALL",
         "content": {
@@ -115,7 +115,7 @@
     },
     {
       "name": "unconnected call outcome rejects duration",
-      "schema": "urn:soms:federation:v1:message-content",
+      "schema": "urn:socfp:v1:message-content",
       "value": {
         "contentType": "CALL",
         "content": {
@@ -132,7 +132,7 @@
     },
     {
       "name": "message page rejects retired page fields",
-      "schema": "urn:soms:federation:v1:message-feed",
+      "schema": "urn:socfp:v1:message-feed",
       "value": {
         "messages": [],
         "scannedThrough": "0",
@@ -143,7 +143,7 @@
     },
     {
       "name": "connected call requires startedAt",
-      "schema": "urn:soms:federation:v1:call",
+      "schema": "urn:socfp:v1:call",
       "value": {
         "callSid": "550e8400-e29b-41d4-a716-446655440000",
         "op": "connected",
@@ -152,7 +152,7 @@
     },
     {
       "name": "video upgrade must carry VIDEO type",
-      "schema": "urn:soms:federation:v1:call",
+      "schema": "urn:socfp:v1:call",
       "value": {
         "callSid": "550e8400-e29b-41d4-a716-446655440000",
         "op": "video-upgraded",
@@ -161,7 +161,7 @@
     },
     {
       "name": "call frame rejects unknown fields",
-      "schema": "urn:soms:federation:v1:call",
+      "schema": "urn:socfp:v1:call",
       "value": {
         "callSid": "550e8400-e29b-41d4-a716-446655440000",
         "op": "incoming",
@@ -172,7 +172,7 @@
     },
     {
       "name": "incoming call rejects ended-only field",
-      "schema": "urn:soms:federation:v1:call",
+      "schema": "urn:socfp:v1:call",
       "value": {
         "callSid": "550e8400-e29b-41d4-a716-446655440000",
         "op": "incoming",
@@ -182,7 +182,7 @@
     },
     {
       "name": "signal call rejects connected-only field",
-      "schema": "urn:soms:federation:v1:call",
+      "schema": "urn:socfp:v1:call",
       "value": {
         "callSid": "550e8400-e29b-41d4-a716-446655440000",
         "op": "signal",
@@ -197,7 +197,7 @@
     },
     {
       "name": "ended call rejects signal-only fields",
-      "schema": "urn:soms:federation:v1:call",
+      "schema": "urn:socfp:v1:call",
       "value": {
         "callSid": "550e8400-e29b-41d4-a716-446655440000",
         "op": "ended",
@@ -207,7 +207,7 @@
     },
     {
       "name": "ended call requires an explicit end reason",
-      "schema": "urn:soms:federation:v1:call",
+      "schema": "urn:socfp:v1:call",
       "value": {
         "callSid": "550e8400-e29b-41d4-a716-446655440000",
         "op": "ended",
@@ -216,7 +216,7 @@
     },
     {
       "name": "callSid rejects ULID",
-      "schema": "urn:soms:federation:v1:call",
+      "schema": "urn:socfp:v1:call",
       "value": {
         "callSid": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
         "op": "incoming",
@@ -226,7 +226,7 @@
     },
     {
       "name": "callSid rejects UUID version zero",
-      "schema": "urn:soms:federation:v1:call",
+      "schema": "urn:socfp:v1:call",
       "value": {
         "callSid": "550e8400-e29b-01d4-a716-446655440000",
         "op": "incoming",
@@ -236,24 +236,24 @@
     },
     {
       "name": "media authorization requires source coordinates",
-      "schema": "urn:soms:federation:v1:http-parameters#/$defs/mediaParameters",
+      "schema": "urn:socfp:v1:http-parameters#/$defs/mediaParameters",
       "value": {
         "digest": "0000000000000000000000000000000000000000000000000000000000000000"
       }
     },
     {
       "name": "success is not an error envelope",
-      "schema": "urn:soms:federation:v1:error",
+      "schema": "urn:socfp:v1:error",
       "value": { "code": 0, "message": "ok" }
     },
     {
       "name": "quota error omits its structured data",
-      "schema": "urn:soms:federation:v1:error",
+      "schema": "urn:socfp:v1:error",
       "value": { "code": 50011, "message": "peer quota exceeded" }
     },
     {
       "name": "quota error exposes implementation policy",
-      "schema": "urn:soms:federation:v1:error",
+      "schema": "urn:socfp:v1:error",
       "value": {
         "code": 50011,
         "message": "peer quota exceeded",
@@ -262,7 +262,7 @@
     },
     {
       "name": "ordinary error carries unregistered structured data",
-      "schema": "urn:soms:federation:v1:error",
+      "schema": "urn:socfp:v1:error",
       "value": {
         "code": 50007,
         "message": "malformed",
@@ -271,7 +271,7 @@
     },
     {
       "name": "cursor error uses obsolete fields",
-      "schema": "urn:soms:federation:v1:error",
+      "schema": "urn:socfp:v1:error",
       "value": {
         "code": 50019,
         "message": "requested cursor is below retained floor",
@@ -280,7 +280,7 @@
     },
     {
       "name": "message-query retry error omits retryAfter",
-      "schema": "urn:soms:federation:v1:error",
+      "schema": "urn:socfp:v1:error",
       "value": {
         "code": 50024,
         "message": "message query rate limited",

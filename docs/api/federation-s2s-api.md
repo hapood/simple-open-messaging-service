@@ -1,4 +1,4 @@
-# SOMS Federation S2S API
+# SOMS Simple Open Chat Federation Protocol S2S API 实现参考
 
 > 当前 `/s2s/v1` 的非规范性 SOMS 实现参考。规范性 wire contract 以
 > [Federation Protocol v1](../../spec/v1/protocol.md) 为准。

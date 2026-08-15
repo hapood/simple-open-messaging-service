@@ -1,20 +1,20 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:soms:federation:v1:state-feed",
+  "$id": "urn:socfp:v1:state-feed",
   "title": "GET /s2s/v1/state-feed response data",
   "$defs": {
     "profileAvatar": {
       "type": "object",
       "required": ["digest", "mimeType", "base64", "width", "height"],
       "properties": {
-        "digest": { "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex" },
+        "digest": { "$ref": "urn:socfp:v1:common#/$defs/sha256Hex" },
         "mimeType": { "type": "string", "minLength": 1 },
         "base64": { "type": "string", "minLength": 4, "maxLength": 1048576 },
         "width": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
+          "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
         },
         "height": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
+          "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
         }
       },
       "additionalProperties": false
@@ -24,13 +24,13 @@
       "note": { "type": "string" },
       "requestedAt": {
         "oneOf": [
-          { "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds" },
+          { "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds" },
           { "type": "null" }
         ]
       },
       "expiresAt": {
         "oneOf": [
-          { "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds" },
+          { "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds" },
           { "type": "null" }
         ]
       }
@@ -68,7 +68,7 @@
         "requestedAt": {
           "oneOf": [
             {
-              "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+              "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds"
             },
             { "type": "null" }
           ]
@@ -76,7 +76,7 @@
         "expiresAt": {
           "oneOf": [
             {
-              "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+              "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds"
             },
             { "type": "null" }
           ]
@@ -108,7 +108,7 @@
         "requestedAt": {
           "oneOf": [
             {
-              "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+              "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds"
             },
             { "type": "null" }
           ]
@@ -116,12 +116,12 @@
         "expiresAt": {
           "oneOf": [
             {
-              "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+              "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds"
             },
             { "type": "null" }
           ]
         },
-        "owner": { "$ref": "urn:soms:federation:v1:common#/$defs/address" }
+        "owner": { "$ref": "urn:socfp:v1:common#/$defs/address" }
       },
       "allOf": [
         {
@@ -149,7 +149,7 @@
         "requestedAt": {
           "oneOf": [
             {
-              "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+              "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds"
             },
             { "type": "null" }
           ]
@@ -157,7 +157,7 @@
         "expiresAt": {
           "oneOf": [
             {
-              "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+              "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds"
             },
             { "type": "null" }
           ]
@@ -189,7 +189,7 @@
         "dissolved": { "type": "boolean" },
         "owner": {
           "oneOf": [
-            { "$ref": "urn:soms:federation:v1:common#/$defs/address" },
+            { "$ref": "urn:socfp:v1:common#/$defs/address" },
             { "type": "null" }
           ]
         },
@@ -201,10 +201,10 @@
             "required": ["account", "domain", "role"],
             "properties": {
               "account": {
-                "$ref": "urn:soms:federation:v1:common#/$defs/userAccount"
+                "$ref": "urn:socfp:v1:common#/$defs/userAccount"
               },
               "domain": {
-                "$ref": "urn:soms:federation:v1:common#/$defs/domain"
+                "$ref": "urn:socfp:v1:common#/$defs/domain"
               },
               "role": { "enum": ["OWNER", "ADMIN", "MEMBER"] }
             },
@@ -242,16 +242,16 @@
         "body"
       ],
       "properties": {
-        "account": { "$ref": "urn:soms:federation:v1:common#/$defs/account" },
-        "domain": { "$ref": "urn:soms:federation:v1:common#/$defs/domain" },
+        "account": { "$ref": "urn:socfp:v1:common#/$defs/account" },
+        "domain": { "$ref": "urn:socfp:v1:common#/$defs/domain" },
         "eventType": { "type": "string" },
         "subjectAccount": { "type": "string" },
         "subjectDomain": { "type": "string" },
         "revision": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+          "$ref": "urn:socfp:v1:common#/$defs/decimalString"
         },
         "feedId": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/positiveDecimalString"
+          "$ref": "urn:socfp:v1:common#/$defs/positiveDecimalString"
         },
         "body": { "type": "object" }
       }
@@ -272,7 +272,7 @@
           "$ref": "#/$defs/itemBase",
           "properties": {
             "account": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/userAccount"
+              "$ref": "urn:socfp:v1:common#/$defs/userAccount"
             },
             "eventType": { "const": "MEMBER_PROFILE" },
             "subjectAccount": { "const": "" },
@@ -285,14 +285,14 @@
           "$ref": "#/$defs/itemBase",
           "properties": {
             "account": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/userAccount"
+              "$ref": "urn:socfp:v1:common#/$defs/userAccount"
             },
             "eventType": { "const": "P2P_INTENT" },
             "subjectAccount": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/userAccount"
+              "$ref": "urn:socfp:v1:common#/$defs/userAccount"
             },
             "subjectDomain": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/domain"
+              "$ref": "urn:socfp:v1:common#/$defs/domain"
             },
             "body": { "$ref": "#/$defs/p2pIntentBody" }
           },
@@ -302,14 +302,14 @@
           "$ref": "#/$defs/itemBase",
           "properties": {
             "account": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/groupAccount"
+              "$ref": "urn:socfp:v1:common#/$defs/groupAccount"
             },
             "eventType": { "const": "GROUP_INVITE_INTENT" },
             "subjectAccount": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/userAccount"
+              "$ref": "urn:socfp:v1:common#/$defs/userAccount"
             },
             "subjectDomain": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/domain"
+              "$ref": "urn:socfp:v1:common#/$defs/domain"
             },
             "body": { "$ref": "#/$defs/groupInviteIntentBody" }
           },
@@ -319,14 +319,14 @@
           "$ref": "#/$defs/itemBase",
           "properties": {
             "account": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/groupAccount"
+              "$ref": "urn:socfp:v1:common#/$defs/groupAccount"
             },
             "eventType": { "const": "GROUP_JOIN_INTENT" },
             "subjectAccount": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/userAccount"
+              "$ref": "urn:socfp:v1:common#/$defs/userAccount"
             },
             "subjectDomain": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/domain"
+              "$ref": "urn:socfp:v1:common#/$defs/domain"
             },
             "body": { "$ref": "#/$defs/groupJoinIntentBody" }
           },
@@ -336,7 +336,7 @@
           "$ref": "#/$defs/itemBase",
           "properties": {
             "account": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/groupAccount"
+              "$ref": "urn:socfp:v1:common#/$defs/groupAccount"
             },
             "eventType": { "const": "GROUP_META" },
             "subjectAccount": { "const": "" },
@@ -353,10 +353,10 @@
   "properties": {
     "items": { "type": "array", "items": { "$ref": "#/$defs/item" } },
     "scannedThrough": {
-      "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+      "$ref": "urn:socfp:v1:common#/$defs/decimalString"
     },
     "stateFeedEndId": {
-      "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+      "$ref": "urn:socfp:v1:common#/$defs/decimalString"
     },
     "hasMore": { "type": "boolean" }
   },

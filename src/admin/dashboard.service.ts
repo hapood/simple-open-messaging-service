@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, count, desc, eq, gt, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, count, desc, gt, isNull, or, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import {
   adminActionLog,

@@ -42,6 +42,7 @@ export class FederationMessageFeedIndexerService {
     peerDomain: string,
     _maxWork: number,
   ): Promise<FederationFeedFillQuantumResult> {
+    void _maxWork;
     await this.fill(peerDomain);
     return { state: FederationFeedFillState.CAUGHT_UP, work: 1 };
   }
@@ -51,10 +52,13 @@ export class FederationMessageFeedIndexerService {
     _threadId: number,
     _messageSeq: number,
   ): Promise<FederationFeedFillState> {
+    void _threadId;
+    void _messageSeq;
     return this.fill(peerDomain);
   }
 
   state(_peerDomain: string): FederationFeedFillState {
+    void _peerDomain;
     return FederationFeedFillState.CAUGHT_UP;
   }
 }

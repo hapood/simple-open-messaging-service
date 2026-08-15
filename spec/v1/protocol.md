@@ -1,13 +1,15 @@
-# SOMS Federation Protocol v1
+# Simple Open Chat Federation Protocol v1
 
-- 状态：`RELEASE CANDIDATE`（`v1.0-rc.1`）
+- 状态：`RELEASE CANDIDATE`（`v1.0-rc.2`）
 - 协议标识：`1`
 - S2S API 前缀：`/s2s/v1`
+- 跨版本发现路径：`/.well-known/socfp`
+- DNS SRV 服务名：`_socfp._tcp`
 
 本文是 Federation v1 的基础协议，定义版本、HTTP 接口面（HTTP surface）、传输、Federation 共享类型
 （Shared Federation Types）、
 请求签名、通用响应、错误分类、重试和 cursor 基础语义。各 operation 的业务 body、
-授权和状态机由它引用的规范性文档定义。SOMS 的数据库字段、worker、队列、配置和
+授权和状态机由它引用的规范性文档定义。任何实现的数据库字段、worker、队列、配置和
 本地产品限制不构成协议要求。
 
 规范词 `必须（MUST）`、`不得（MUST NOT）`、`应该（SHOULD）`、`不应该（SHOULD NOT）` 和 `可以（MAY）` 按 RFC 2119/RFC 8174
@@ -25,7 +27,7 @@ Federation v1 的规范性要求由本文及其明确引用的 [传输与安全]
 选择较宽松的解释。
 
 `schema/` 中的 JSON Schema、HTTP manifest 和向量在 v1 文档收敛期间是验证制品，不能覆盖
-规范性正文。发布 `v1.0 FINAL` 前，必须（MUST）将其与正文逐字段对齐，并由 conformance 检查
+规范性正文。发布后续公开 release candidate 前，必须（MUST）将其与正文逐字段对齐，并由 conformance 检查
 防止漂移。
 
 ## 1. 范围、角色与术语（Scope, Roles, and Terminology）
@@ -66,12 +68,12 @@ Federation v1 的数据平面采用固定权威拓扑：P2P authored message/wit
 ## 2. 版本与兼容性（Versioning and Compatibility）
 
 Federation v1 的所有 S2S 数据面端点都位于 `/s2s/v1/*`。公开发现端点固定为
-`/.well-known/soms`，因为调用方在读取发现文档前不能依赖 API 前缀。
+`/.well-known/socfp`，因为调用方在读取发现文档前不能依赖 API 前缀。
 
-`/.well-known/soms` 是跨版本发现文档（cross-version discovery document），不是某个 Federation 主版本
+`/.well-known/socfp` 是跨版本发现文档（cross-version discovery document），不是某个 Federation 主版本
 （Federation major version）独占的
 响应。`protocolVersions` 是 Federation 永久的跨版本引导字段（cross-version bootstrap field）：任何
-现在或未来的主版本只要使用 `/.well-known/soms`，都必须（MUST）支持并返回该字段，且不得（MUST NOT）
+现在或未来的主版本只要使用 `/.well-known/socfp`，都必须（MUST）支持并返回该字段，且不得（MUST NOT）
 删除、重命名、改变类型或改变选择语义。它必须（MUST）是非空 JSON number array，元素是严格递增、
 无重复的正安全整数，并且必须（MUST）完整列出节点当前启用且完整实现的所有 Federation 主版本。节点
 不得（MUST NOT）发布只实现了部分必选行为的主版本。
@@ -112,7 +114,7 @@ object 的兼容规则；删除或重命名字段、改变字段含义、改变�
 
 | Method | Absolute path                       | 鉴权上下文         | Request                   | Success     | Response               |
 | ------ | ----------------------------------- | ------------------ | ------------------------- | ----------- | ---------------------- |
-| `GET`  | `/.well-known/soms`                 | 公开 TLS           | 无 query、无 body         | `200`       | 裸 discovery object    |
+| `GET`  | `/.well-known/socfp`                | 公开 TLS           | 无 query、无 body         | `200`       | 裸 discovery object    |
 | `POST` | `/s2s/v1/recognize`                 | bootstrap signed   | JSON signer domain        | `200`       | 裸 recognize OK        |
 | `POST` | `/s2s/v1/healthy`                   | status signed      | JSON signer domain        | `200`       | 裸 privacy-safe status |
 | `POST` | `/s2s/v1/feed-heads`                | lightweight signed | JSON feed-head hint       | `200`       | success ack envelope   |
@@ -311,7 +313,9 @@ operation 规范 必须（MUST）明确定义 `data: null`。
 identity conflict 不得（MUST NOT）原样无限重试。`Retry-After` 出现时必须（MUST）是非负十进制 delta-seconds；
 consumer 应该（SHOULD）遵守它，并在缺失时使用有上限、带 jitter 的指数退避。
 
-cursor 只能在 response 完整验证且本地副作用与 cursor 同事务提交后推进。HTTP 超时、连接中断、
+cursor 只能在 response 完成 operation 规定的验证且本地副作用与 cursor 同事务提交后推进。
+operation 可以（MAY）明确把单个 item 定义为可隔离失败；该 item 按 operation 规则被隔离且未产生有效业务事实后，
+不妨碍其他合法 item 与 cursor 提交。HTTP 超时、连接中断、
 非零 code、malformed success body 或未知 code 均不得（MUST NOT）推进 cursor。operation 文档必须（MUST）定义其重复请求的
 幂等 key 和可观察结果；不得（MUST NOT）仅因 HTTP request 换了新签名就将同一业务命令当作新命令。
 
@@ -329,7 +333,7 @@ revision 是完整 no-op。P2P 只有双方方向均为 `ACCEPTED` 才成立；�
 [Federation v1 Message Tombstone Feed](./message-tombstone-feed.md) 定义。三者与本文
 共同构成 v1 规范性正文，概要不能覆盖其字段级要求。
 
-一对一实时通话采用 WebRTC media/JSEP，并以签名 `/s2s/v1/call` frame 承载 SOMS 联邦信令。完整 HTTP
+一对一实时通话采用 WebRTC media/JSEP，并以签名 `/s2s/v1/call` frame 承载本协议的联邦信令。完整 HTTP
 operation、frame、生命周期、失败语义以及同一连接上的 AUDIO→VIDEO 单向升级由
 [Federation v1 语音与视频通话](./calls.md) 定义。实时 frame 不进入 feed；终态历史是普通 `CALL`
 message。
@@ -349,20 +353,23 @@ hint 或普通消息 payload。
   不是“排除请求方本人内容”的作者过滤视图。
 - `state-feed` 可以（MAY）返回由请求方最初提出、随后被发布方持久化并确认、否定或升版的方向事实。
   consumer 必须（MUST）按 compacted key 和 business revision 幂等合并，不得（MUST NOT）把“作者是自己”当作丢弃条件。
-- message item 的 `originSeq` 必须（MUST）是作者服务器分配的稳定源序列；publisher 的本地排序序列不得（MUST NOT）
-  改写它。item 的 `createdAt` 必须（MUST）表示 publisher 将该副本持久化的时间。
-- publisher 从 peer X 拉取并提交一条由 X authored 的消息后，必须（MUST）推进回 X 的该 thread
-  `messageEndSeq`，并以新的 message-feed 索引 item 通知 X。X 随后通过 `/messages` query 读回该
-  self-authored message；query 中的 `originSeq` 指明 X 的哪条发布已被接收，`createdAt` 给出 publisher
-  的持久化时间。因此 delivery acknowledgement 来自 query message，不是 message-feed item 本身。
-- consumer query 到 self-authored message 时必须（MUST）用稳定 `(thread, author, originSeq)` 坐标关联原
-  发布，不得（MUST NOT）创建重复消息。consumer 如何保存或展示回执属于本地实现，不属于 protocol contract。
+- message item 的 `seq/createdAt` 是当前 publisher 的本地副本坐标和持久化时间。当前 publisher 作为
+  timeline 权威源发布的消息，其 `originSeq/originCreatedAt` 必须为 `null/null`；拉取形成的非权威副本必须把直接 publisher 的
+  `seq/createdAt` 保存为自己的 `originSeq/originCreatedAt`。
+- consumer B 从 publisher A 拉取并成功持久一条消息后，应该（SHOULD）使 B 的持久化副本可由 A 通过 message query 读取，作为 processing receipt，
+  分配回 A，推进 B 面向 A 的该 thread `messageEndSeq`，并以新 message-feed 索引 item 通知 A。A 随后通过
+  B 的 `/messages` query 读回该副本；`(thread, author, originSeq)` 指明 A 先前发布的哪条消息已被 B 持久处理，
+  B 的 publisher-local `seq/createdAt` 表达 B 的本地副本坐标和时间，`originSeq/originCreatedAt` 等于 A 原 item 的 `seq/createdAt`。因此 processing acknowledgement
+  来自 query message，不是 message-feed item 本身。
+- A 必须（MUST）用 receipt 的 `(thread, author, originSeq)` 关联自己先前发布的 `(thread, author, seq)`，不创建重复消息、不改写原消息，也不为其分配新的
+  message-feed item。processing receipt 只对该副本的直接 publisher 可见；v1 的固定拓扑不存在 receipt 的后续分发步骤。
+  receipt 是推荐的诊断能力，不是可靠 ACK；receipt 缺失只表示 A 尚未观察到成功持久副本，不能证明 B 未接收、已丢弃或以某个原因隔离。
 - 群 origin 从成员 home server 接收第三方 authored submission 后，必须先验证作者、群成员资格和内容并
   持久接受；随后只能由 origin 向各 mirror 权威分发。mirror 只接受已知 group origin 作为该群分发 source，
   不得继续发布给其他 peer。v1 不携带 author server 的端到端 message signature；mirror 信任的是已认证
   group origin 对已接受群 timeline 的权威断言，而不是任意 thread participant 的转述。
-- `(thread, author, originSeq)` 标识的 v1 authored message 不可变；重复副本的 authored content、资源和
-  identity 字段必须语义相同。v1 不用 publisher-local `updatedAt` 表达编辑、撤回或删除；撤回与生效
+- 同一 `(source domain, thread, seq)` 的 v1 item 不可变；重复 item 的 authored content、资源和
+  坐标字段必须语义相同。v1 message wire 不传输 publisher-local `updatedAt`，也不用它表达编辑、撤回或删除；撤回与生效
   治理删除通过独立 `message-tombstone-feed` 表达。
 
 ### 9.1 Feed 坐标词汇
@@ -385,8 +392,8 @@ hint 或普通消息 payload。
 feed 和 thread query 的 cursor/end 使用非负十进制字符串，item ID 与业务 sequence 使用正整数。
 `0` 表示第一个合法 ID 或 sequence 之前的 exclusive cursor，本身不是 item ID 或业务 sequence。
 实现可以（MAY）从大于 `1` 的值开始分配，也可以（MAY）保留空洞；只要已分配的值严格增加、永不复用，
-并且 bootstrap `resumeAfter` 不会使 consumer 漏掉当前应可见的数据。SOMS 新 feed 和 thread query 从
-`after=0` 开始；其他实现可以（MAY）返回满足上述条件的其他非负 `resumeAfter`。
+并且 bootstrap `resumeAfter` 不会使 consumer 漏掉当前应可见的数据。实现可以（MAY）返回满足上述条件的
+任意非负 `resumeAfter`。
 
 ### 9.2 通用 Feed 规则
 

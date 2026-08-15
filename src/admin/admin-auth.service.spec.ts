@@ -8,7 +8,6 @@ import { BruteForceService } from '../auth/brute-force.service.js';
 import { PasswordHasher } from '../auth/password-hasher.service.js';
 import { jwtConstants } from '../auth/constants.js';
 import { BusinessCode } from '../common/business-code.js';
-import { BusinessException } from '../common/business.exception.js';
 import {
   admin as adminTable,
   adminLoginChallenge,
@@ -55,7 +54,9 @@ async function setup(o: Overrides = {}) {
 
   const secret = new Secret({ size: 20 }).base32;
   // Encrypt via the real service's private helper (pure — depends only on the module-level key).
-  const cipher = (twoFactor as unknown as { encrypt: (s: string) => string }).encrypt(secret);
+  const cipher = (
+    twoFactor as unknown as { encrypt: (s: string) => string }
+  ).encrypt(secret);
 
   const admin = {
     id: 7,
@@ -78,30 +79,40 @@ async function setup(o: Overrides = {}) {
   };
 
   // o.backupCode is a BARE 16-char canonical code; store its HMAC (exactly what consume looks up).
-  const backupRows = o.backupCode ? [{ id: 1, codeHash: hashBackupCode(o.backupCode) }] : [];
+  const backupRows = o.backupCode
+    ? [{ id: 1, codeHash: hashBackupCode(o.backupCode) }]
+    : [];
 
   const store = {
     user: { findUnique: vi.fn(async () => user) },
     admin: {
       findUnique: vi.fn(async () => (o.adminPresent === false ? null : admin)),
-      update: vi.fn(async (_args: { data: Record<string, unknown> }) => ({})),
+      update: vi.fn(async () => ({})),
     },
     adminSession: {
-      create: vi.fn(async (args: { data: Record<string, unknown> }) => ({ ...args.data, id: 1 })),
+      create: vi.fn(async (args: { data: Record<string, unknown> }) => ({
+        ...args.data,
+        id: 1,
+      })),
       updateMany: vi.fn(async () => ({ count: 0 })), // revokeSessionsByAdmin routes here
     },
     twoFactorBackupCode: {
       // consume is now an indexed findFirst by codeHash; return the seeded row iff the HMAC matches.
-      findFirst: vi.fn(
-        async ({ where }: { where: { codeHash?: string } }) =>
-          backupRows.some((r) => r.codeHash === where.codeHash) ? { id: 1 } : null,
+      findFirst: vi.fn(async ({ where }: { where: { codeHash?: string } }) =>
+        backupRows.some((r) => r.codeHash === where.codeHash)
+          ? { id: 1 }
+          : null,
       ),
       updateMany: vi.fn(async () => ({ count: 1 })),
     },
     // AdminLoginChallenge: signChallenge creates a row (single-use jti); consumeChallenge flips it.
     // Default updateMany returns count 1 (first consume wins) — individual tests override to test replay.
     adminLoginChallenge: {
-      create: vi.fn(async (args: { data: { jti: string; adminId: number } }) => ({ ...args.data })),
+      create: vi.fn(
+        async (args: { data: { jti: string; adminId: number } }) => ({
+          ...args.data,
+        }),
+      ),
       updateMany: vi.fn(async () => ({ count: 1 })),
       deleteMany: vi.fn(async () => ({ count: 0 })),
     },
@@ -112,31 +123,35 @@ async function setup(o: Overrides = {}) {
       user: { findFirst: store.user.findUnique },
       admin: { findFirst: store.admin.findUnique },
       twoFactorBackupCode: {
-        findFirst: vi.fn(async () => (backupRows.length > 0 ? { id: 1 } : null)),
+        findFirst: vi.fn(async () =>
+          backupRows.length > 0 ? { id: 1 } : null,
+        ),
       },
     },
     insert: vi.fn((table: unknown) => ({
       values: async (data: Record<string, unknown>) => {
         if (table === adminSession) return store.adminSession.create({ data });
-        if (table === adminLoginChallenge) return store.adminLoginChallenge.create({ data: data as never });
+        if (table === adminLoginChallenge)
+          return store.adminLoginChallenge.create({ data: data as never });
       },
     })),
     update: vi.fn((table: unknown) => {
       let operation: Promise<unknown> = Promise.resolve(undefined);
       const query = {
         set: (data: Record<string, unknown>) => {
-          operation = table === adminTable
-            ? store.admin.update({ data })
-            : table === adminLoginChallenge
-              ? store.adminLoginChallenge.updateMany()
-              : table === twoFactorBackupCode
-                ? store.twoFactorBackupCode.updateMany()
-                : store.adminSession.updateMany();
+          operation =
+            table === adminTable
+              ? store.admin.update({ data })
+              : table === adminLoginChallenge
+                ? store.adminLoginChallenge.updateMany()
+                : table === twoFactorBackupCode
+                  ? store.twoFactorBackupCode.updateMany()
+                  : store.adminSession.updateMany();
           return query;
         },
         where: () => query,
         returning: async () => {
-          const result = await operation as { count?: number };
+          const result = (await operation) as { count?: number };
           return result?.count === 0 ? [] : [{ id: 1, jti: 'claimed' }];
         },
         then: (resolve: (value: unknown) => unknown) => operation.then(resolve),
@@ -152,12 +167,27 @@ async function setup(o: Overrides = {}) {
   // WebAuthnService is stubbed at the orchestration level: the admin-auth specs test ban/issuance
   // branching, not the assertion crypto (that is covered in webauthn.service.spec.ts).
   const webAuthn = {
-    beginAssertion: vi.fn(async () => ({ options: { challenge: 'c' }, pendingToken: 'pt' })),
+    beginAssertion: vi.fn(async () => ({
+      options: { challenge: 'c' },
+      pendingToken: 'pt',
+    })),
     verifyAssertion: vi.fn(async () => ({ ok: o.webauthnVerifyOk ?? true })),
-    completeRegistration: vi.fn(async () => ({ id: 'cred-1', nickname: 'phone', deviceType: 'platform', backed: true })),
+    completeRegistration: vi.fn(async () => ({
+      id: 'cred-1',
+      nickname: 'phone',
+      deviceType: 'platform',
+      backed: true,
+    })),
     removeCredential: vi.fn(async () => ({ remaining: 0 })),
   } as unknown as WebAuthnService;
-  const svc = new AdminAuthService(database as never, jwt, bruteForce, twoFactorBound, passwordHasher, webAuthn);
+  const svc = new AdminAuthService(
+    database as never,
+    jwt,
+    bruteForce,
+    twoFactorBound,
+    passwordHasher,
+    webAuthn,
+  );
 
   return {
     svc,
@@ -167,7 +197,8 @@ async function setup(o: Overrides = {}) {
     secret,
     challengeToken: async () => {
       const r = await svc.login('admin', PASSWORD);
-      if (!('twoFactorRequired' in r)) throw new Error('expected a 2FA challenge');
+      if (!('twoFactorRequired' in r))
+        throw new Error('expected a 2FA challenge');
       return r.challengeToken;
     },
   };
@@ -194,7 +225,8 @@ describe('AdminAuthService two-factor orchestration', () => {
     const r = await svc.login('admin', PASSWORD);
     expect('twoFactorRequired' in r).toBe(false);
     // Narrow the union so sessionToken is reachable (expect().toBe() does not narrow).
-    if ('twoFactorRequired' in r) throw new Error('expected a session, not a 2FA challenge');
+    if ('twoFactorRequired' in r)
+      throw new Error('expected a session, not a 2FA challenge');
     expect(typeof r.sessionToken).toBe('string');
     expect(r.sessionToken.length).toBeGreaterThan(32);
   });
@@ -211,51 +243,82 @@ describe('AdminAuthService two-factor orchestration', () => {
 
   it('rejects a wrong password with INVALID_CREDENTIALS (non-revealing)', async () => {
     const { svc } = await setup({ twoFactorEnabled: false });
-    await expectBiz(svc.login('admin', 'wrong-password'), BusinessCode.INVALID_CREDENTIALS);
+    await expectBiz(
+      svc.login('admin', 'wrong-password'),
+      BusinessCode.INVALID_CREDENTIALS,
+    );
   });
 
   it('escalates to RATE_LIMITED after the password brute-force threshold (progressive ban)', async () => {
     const { svc } = await setup({ twoFactorEnabled: false });
     for (let i = 0; i < 5; i++) {
-      await expectBiz(svc.login('admin', 'wrong'), BusinessCode.INVALID_CREDENTIALS);
+      await expectBiz(
+        svc.login('admin', 'wrong'),
+        BusinessCode.INVALID_CREDENTIALS,
+      );
     }
     // 6th failure crosses the count:5 tier → RATE_LIMITED + bannedUntil.
     await expectBiz(svc.login('admin', 'wrong'), BusinessCode.RATE_LIMITED);
   });
 
   it('collapses a disabled / missing admin to INVALID_CREDENTIALS (no enumeration)', async () => {
-    const disabled = await setup({ twoFactorEnabled: false, adminEnabled: false });
-    await expectBiz(disabled.svc.login('admin', PASSWORD), BusinessCode.INVALID_CREDENTIALS);
+    const disabled = await setup({
+      twoFactorEnabled: false,
+      adminEnabled: false,
+    });
+    await expectBiz(
+      disabled.svc.login('admin', PASSWORD),
+      BusinessCode.INVALID_CREDENTIALS,
+    );
 
-    const missing = await setup({ twoFactorEnabled: false, adminPresent: false });
-    await expectBiz(missing.svc.login('admin', PASSWORD), BusinessCode.INVALID_CREDENTIALS);
+    const missing = await setup({
+      twoFactorEnabled: false,
+      adminPresent: false,
+    });
+    await expectBiz(
+      missing.svc.login('admin', PASSWORD),
+      BusinessCode.INVALID_CREDENTIALS,
+    );
   });
 
   // ── verifyLogin (the second step) ─────────────────────────────────────────────
 
   it('completes login on a valid TOTP and advances the replay counter', async () => {
-    const { svc, store, secret, challengeToken } = await setup({ twoFactorEnabled: true });
+    const { svc, store, secret, challengeToken } = await setup({
+      twoFactorEnabled: true,
+    });
     const token = await challengeToken();
     const r = await svc.verifyLogin(token, codeFor(secret), undefined);
     expect(typeof r.sessionToken).toBe('string');
     // The accepted step counter was written back as the replay guard.
     const update = store.admin.update.mock.calls[0][0].data;
-    expect(update.twoFactorLastUsedCounter).toBe(Math.floor(FIXED_NOW / 30_000));
+    expect(update.twoFactorLastUsedCounter).toBe(
+      Math.floor(FIXED_NOW / 30_000),
+    );
   });
 
   it('rejects a wrong TOTP with TWO_FACTOR_INVALID', async () => {
     const { svc, challengeToken } = await setup({ twoFactorEnabled: true });
     const token = await challengeToken();
-    await expectBiz(svc.verifyLogin(token, '000000', undefined), BusinessCode.TWO_FACTOR_INVALID);
+    await expectBiz(
+      svc.verifyLogin(token, '000000', undefined),
+      BusinessCode.TWO_FACTOR_INVALID,
+    );
   });
 
   it('escalates to RATE_LIMITED after the 2FA brute-force threshold', async () => {
     const { svc, challengeToken } = await setup({ twoFactorEnabled: true });
     const token = await challengeToken();
     for (let i = 0; i < 5; i++) {
-      await expectBiz(svc.verifyLogin(token, '000000', undefined), BusinessCode.TWO_FACTOR_INVALID);
+      await expectBiz(
+        svc.verifyLogin(token, '000000', undefined),
+        BusinessCode.TWO_FACTOR_INVALID,
+      );
     }
-    await expectBiz(svc.verifyLogin(token, '000000', undefined), BusinessCode.RATE_LIMITED);
+    await expectBiz(
+      svc.verifyLogin(token, '000000', undefined),
+      BusinessCode.RATE_LIMITED,
+    );
   });
 
   it('completes login on a valid backup code (single-use consumed)', async () => {
@@ -294,13 +357,18 @@ describe('AdminAuthService two-factor orchestration', () => {
     const { svc } = await setup({ webauthnEnabled: true });
     const r = await svc.login('admin', PASSWORD);
     expect('twoFactorRequired' in r).toBe(true);
-    if ('twoFactorRequired' in r) expect(r.factors).toEqual({ totp: false, webauthn: true });
+    if ('twoFactorRequired' in r)
+      expect(r.factors).toEqual({ totp: false, webauthn: true });
   });
 
   it('login advertises both factors when TOTP and a passkey are enrolled', async () => {
-    const { svc } = await setup({ twoFactorEnabled: true, webauthnEnabled: true });
+    const { svc } = await setup({
+      twoFactorEnabled: true,
+      webauthnEnabled: true,
+    });
     const r = await svc.login('admin', PASSWORD);
-    if ('twoFactorRequired' in r) expect(r.factors).toEqual({ totp: true, webauthn: true });
+    if ('twoFactorRequired' in r)
+      expect(r.factors).toEqual({ totp: true, webauthn: true });
   });
 
   it('login issues an opaque session directly when no second factor is enrolled', async () => {
@@ -312,22 +380,40 @@ describe('AdminAuthService two-factor orchestration', () => {
   it('verifyWebAuthnLogin completes the session on a valid assertion', async () => {
     const { svc, challengeToken } = await setup({ webauthnEnabled: true });
     const challenge = await challengeToken();
-    const r = await svc.verifyWebAuthnLogin(challenge, 'pending-token', {} as never, 'http://localhost:5180');
+    const r = await svc.verifyWebAuthnLogin(
+      challenge,
+      'pending-token',
+      {} as never,
+      'http://localhost:5180',
+    );
     expect(typeof r.sessionToken).toBe('string');
   });
 
   it('verifyWebAuthnLogin rejects a failed assertion with TWO_FACTOR_INVALID, then RATE_LIMITED at the threshold', async () => {
-    const { svc, challengeToken } = await setup({ webauthnEnabled: true, webauthnVerifyOk: false });
+    const { svc, challengeToken } = await setup({
+      webauthnEnabled: true,
+      webauthnVerifyOk: false,
+    });
     const challenge = await challengeToken();
     for (let i = 0; i < 5; i++) {
       await expectBiz(
-        svc.verifyWebAuthnLogin(challenge, 'pending-token', {} as never, 'http://localhost:5180'),
+        svc.verifyWebAuthnLogin(
+          challenge,
+          'pending-token',
+          {} as never,
+          'http://localhost:5180',
+        ),
         BusinessCode.TWO_FACTOR_INVALID,
       );
     }
     // 6th failed assertion crosses the count:5 tier → RATE_LIMITED.
     await expectBiz(
-      svc.verifyWebAuthnLogin(challenge, 'pending-token', {} as never, 'http://localhost:5180'),
+      svc.verifyWebAuthnLogin(
+        challenge,
+        'pending-token',
+        {} as never,
+        'http://localhost:5180',
+      ),
       BusinessCode.RATE_LIMITED,
     );
   });

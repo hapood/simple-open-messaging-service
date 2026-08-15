@@ -255,29 +255,22 @@ describe('Media asset garbage collection', () => {
 
   it('detects and manually removes an unreachable forward bundle', async () => {
     const id = `01GC${String(Date.now()).padStart(22, '0').slice(-22)}`;
-    const manifest = {
-      schemaVersion: 1,
-      bundleId: id,
-      depth: 1,
-      children: [],
-      messages: [
-        {
-          sender: {
-            displayName: 'GC fixture',
-            account: 'gc',
-            domain: 'local',
-          },
-          contentType: 'PURE_TEXT',
-          content: 'orphan',
-          sentAt: Date.now(),
+    const messages = [
+      {
+        id: 1,
+        author: {
+          displayName: 'GC fixture',
+          account: 'gc',
+          domain: 'local',
         },
-      ],
-    };
+        contentType: 'PURE_TEXT',
+        content: 'orphan',
+        sentAt: Date.now(),
+      },
+    ];
     await database.db.insert(forwardBundle).values({
       id,
-      depth: 1,
-      manifest,
-      manifestDigest: '0'.repeat(64),
+      messages,
       messageCount: 1,
       assetCount: 0,
       totalBytes: 0n,
@@ -407,6 +400,67 @@ describe('Media asset garbage collection', () => {
       .delete(user)
       .where(eq(user.id, userId))
       .catch(() => {});
+  });
+
+  it('cleanInboxBatch recursively deletes quotes waiting on the abandoned target', async () => {
+    const { threadId, userId } = await seedThreadAndUser();
+    const originDomain = 'quote-gc.example';
+    const [target, quote, nestedQuote] = await database.db
+      .insert(pendingMedia)
+      .values([
+        {
+          threadId,
+          creatorId: userId,
+          contentType: 'FILE' as const,
+          content: '{}',
+          originSeq: 10,
+          originDomain,
+          direction: 'INBOUND' as const,
+          updatedAt: new Date(),
+        },
+        {
+          threadId,
+          creatorId: userId,
+          contentType: 'PURE_TEXT' as const,
+          content: JSON.stringify({ text: 'quote' }),
+          originSeq: 11,
+          originDomain,
+          dependsOnOriginSeq: 10,
+          direction: 'INBOUND' as const,
+          fileCnt: 0,
+          updatedAt: new Date(),
+        },
+        {
+          threadId,
+          creatorId: userId,
+          contentType: 'PURE_TEXT' as const,
+          content: JSON.stringify({ text: 'nested quote' }),
+          originSeq: 12,
+          originDomain,
+          dependsOnOriginSeq: 11,
+          direction: 'INBOUND' as const,
+          fileCnt: 0,
+          updatedAt: new Date(),
+        },
+      ])
+      .returning();
+
+    await expect(gc.cleanInboxBatch(target.batchId)).resolves.toMatchObject({
+      clearedBatch: true,
+      clearedDependents: 2,
+    });
+    for (const stage of [target, quote, nestedQuote]) {
+      expect(
+        await database.db.query.pendingMedia.findFirst({
+          where: eq(pendingMedia.id, stage.id),
+        }),
+      ).toBeUndefined();
+    }
+
+    await database.db
+      .delete(messageThread)
+      .where(eq(messageThread.id, threadId));
+    await database.db.delete(user).where(eq(user.id, userId));
   });
 
   it('gcStalePending keeps the file when a committed MediaMessage references the digest', async () => {

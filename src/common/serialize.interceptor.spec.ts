@@ -2,7 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { of } from 'rxjs';
 import type { CallHandler, ExecutionContext } from '@nestjs/common';
 import type { Reflector } from '@nestjs/core';
-import { SerializeInterceptor, serializeBody } from './serialize.interceptor.js';
+import {
+  SerializeInterceptor,
+  serializeBody,
+} from './serialize.interceptor.js';
 import { envelope, type ApiResult } from './api-result.js';
 import { BusinessCode } from './business-code.js';
 
@@ -103,9 +106,9 @@ const ctx = {
 /** Run the interceptor against `data` and return the synchronous mapped output. */
 function run(ic: SerializeInterceptor, data: unknown): unknown {
   let out: unknown;
-  ic
-    .intercept(ctx, { handle: () => of(data) } as CallHandler)
-    .subscribe((v) => (out = v));
+  ic.intercept(ctx, { handle: () => of(data) } as CallHandler).subscribe(
+    (v) => (out = v),
+  );
   return out;
 }
 
@@ -125,7 +128,11 @@ describe('SerializeInterceptor — envelope wrapping', () => {
   it('wraps a {code,message,…} object as raw data — no pre-built-envelope special-case (always wrap)', () => {
     // Phase C dropped the compat shim; a {code,message} object is now wrapped as `data` like anything
     // else. No handler returns this shape anymore, so it never double-wraps in practice.
-    const out = run(makeInterceptor(false), { code: 0, message: 'x', extra: 1 }) as ApiResult;
+    const out = run(makeInterceptor(false), {
+      code: 0,
+      message: 'x',
+      extra: 1,
+    }) as ApiResult;
     expect(out.code).toBe(BusinessCode.OK);
     expect(out.message).toBe('successful');
     expect(out.data).toEqual({ code: 0, message: 'x', extra: 1 });
@@ -145,10 +152,10 @@ describe('SerializeInterceptor — envelope wrapping', () => {
 
   it('does NOT wrap a @Raw handler return — serializeBody only', () => {
     // Absent code/message = no envelope; BigInt → string proves serializeBody still ran.
-    const out = run(makeInterceptor(true), { domain: 'x', count: BigInt(5) }) as Record<
-      string,
-      unknown
-    >;
+    const out = run(makeInterceptor(true), {
+      domain: 'x',
+      count: BigInt(5),
+    }) as Record<string, unknown>;
     expect(out.code).toBeUndefined();
     expect(out.message).toBeUndefined();
     expect(out.domain).toBe('x');
@@ -156,7 +163,10 @@ describe('SerializeInterceptor — envelope wrapping', () => {
   });
 
   it('serializes BigInt/Date inside a wrapped envelope', () => {
-    const out = run(makeInterceptor(false), { id: BigInt(9), at: new Date(0) }) as ApiResult;
+    const out = run(makeInterceptor(false), {
+      id: BigInt(9),
+      at: new Date(0),
+    }) as ApiResult;
     expect((out.data as Record<string, unknown>).id).toBe('9');
     expect((out.data as Record<string, unknown>).at).toBe(0);
   });

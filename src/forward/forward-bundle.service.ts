@@ -1,7 +1,7 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
-import { dirname, extname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { mintUlid } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -29,7 +29,6 @@ import {
 import {
   extractDigestEntries,
   extractDigests,
-  parseFileExt,
 } from '../upload/file-content.js';
 import { toDisplayText } from '../common/message-entity.js';
 import {
@@ -39,9 +38,14 @@ import {
 import { MessageService } from '../message/message.service.js';
 import { UserBlockService } from '../user-block/user-block.service.js';
 import { MessageVisibilityService } from '../message/message-visibility.service.js';
+import type {
+  FederationAddress,
+  FederationByteDescriptor,
+  FederatedMessagePayload,
+} from '../federation/federated-message-types.js';
 
-export const FORWARD_MAX_DEPTH = 3;
-export const FORWARD_MAX_MESSAGES = 100;
+export const FORWARD_MAX_MESSAGES = 500;
+export const FORWARD_MAX_ASSETS = 500;
 export const FORWARD_SUMMARY_LINES = 3;
 export const FORWARD_SUMMARY_CHARS = 100;
 export const FORWARD_QUOTE_PREVIEW_CHARS = 100;
@@ -53,69 +57,41 @@ export interface ForwardSourceMessage {
   seq: number;
 }
 
-export interface ForwardAssetDocument {
-  digest: string;
-  kind: 'avatar' | 'image' | 'file' | 'video' | 'audio' | 'link';
-  extension: string;
-  bytes: number;
-  filename?: string;
-  mime?: string;
+export interface ForwardAuthorSnapshot extends FederationAddress {
+  displayName: string;
+  avatarDigest?: string;
 }
 
-export interface ForwardManifestMessage {
-  /** Positive Bundle-local identity used only by quotes within this manifest. */
+export interface ForwardBundleMessage extends FederatedMessagePayload {
+  /** Positive identity used only by quotes in this enclosing messages array. */
   id: number;
-  sender: {
-    displayName: string;
-    account: string;
-    domain: string;
-    avatarDigest?: string;
-  };
-  contentType: string;
-  content: string;
+  author: ForwardAuthorSnapshot;
   sentAt: number;
   childBundleId?: string;
-  quote?: {
-    preview: string;
-    /** Bundle-local id of the quoted message; absent when it was not selected for this bundle. */
-    targetId?: number;
-  };
+  quoteTargetId?: number;
 }
 
-export interface ForwardManifest {
-  schemaVersion: 1;
-  bundleId: string;
-  depth: number;
-  children: string[];
-  messages: ForwardManifestMessage[];
+export interface ForwardWireChild {
+  id: string;
+  messages: ForwardBundleMessage[];
 }
 
 export interface ForwardWireBundle {
   id: string;
-  depth: number;
-  manifestDigest: string;
-  manifest: ForwardManifest;
-  assets: ForwardAssetDocument[];
-}
-
-export interface ForwardWireClosure {
-  schemaVersion: 1;
-  rootBundleId: string;
-  bundles: ForwardWireBundle[];
-  assets: ForwardAssetDocument[];
-  accessContext?: { threadId: number; seq: number };
+  messages: ForwardBundleMessage[];
+  children: ForwardWireChild[];
+  assets: FederationByteDescriptor[];
 }
 
 export interface PreparedForwardBundle {
   bundleId: string;
-  depth: number;
   content: string;
-  manifest: ForwardManifest;
-  manifestDigest: string;
-  assets: ForwardAssetDocument[];
+  messages: ForwardBundleMessage[];
+  assets: FederationByteDescriptor[];
+  /** Every nested bundle id, flattened for one-pass storage/query. */
+  childBundleIds: string[];
+  messageCount: number;
   createdBy: number;
-  /** Number of bundles in the closure (root + all descendants) — each counts as ONE file for quota. */
-  bundleCount: number;
 }
 
 export interface DirectForwardSource {
@@ -235,7 +211,6 @@ export class ForwardBundleService {
     sources: ForwardSourceMessage[],
   ): Promise<{
     bundleId: string;
-    depth: number;
     content: string;
   }> {
     const prepared = await this.prepareFromMessages(userId, sources);
@@ -365,34 +340,23 @@ export class ForwardBundleService {
       quoteFilters,
     );
 
-    const childBundles = sourceRows
-      .map((row) => row!.forwardMessage?.bundle)
-      .filter(
-        (bundle): bundle is NonNullable<typeof bundle> => bundle !== undefined,
-      );
-    const deepestChild = childBundles.reduce(
-      (max, bundle) => Math.max(max, bundle.depth),
-      0,
-    );
-    const depth = deepestChild + 1;
-    if (depth > FORWARD_MAX_DEPTH) {
-      throw new BusinessException(
-        BusinessCode.FORWARD_MAX_DEPTH_EXCEEDED,
-        `forward nesting depth cannot exceed ${FORWARD_MAX_DEPTH}`,
-      );
-    }
-
     const bundleId = mintUlid();
-    const assets = new Map<string, ForwardAssetDocument>();
+    const assets = new Map<string, FederationByteDescriptor>();
     const selectedIndex = new Map(
       sources.map((source, index) => [
         `${source.threadId}:${source.seq}`,
         index,
       ]),
     );
-    const messages: ForwardManifestMessage[] = [];
+    const messages: ForwardBundleMessage[] = [];
     for (const [index, row] of sourceRows.entries()) {
       const message = row!;
+      if (message.contentType === ContentType.SYSTEM) {
+        throw new BusinessException(
+          BusinessCode.FORWARD_INVALID_BUNDLE,
+          'system messages cannot be forwarded',
+        );
+      }
       const avatar = await this.snapshotAvatar(message.creatorItem.avatar);
       if (avatar) assets.set(this.assetKey(avatar), avatar);
       const mediaAssets = await this.assetsFromContent(
@@ -402,7 +366,7 @@ export class ForwardBundleService {
       for (const asset of mediaAssets) assets.set(this.assetKey(asset), asset);
       messages.push({
         id: index + 1,
-        sender: {
+        author: {
           displayName: message.creatorItem.name,
           account: message.creatorItem.account,
           domain:
@@ -421,28 +385,15 @@ export class ForwardBundleService {
         ...(message.forwardMessage
           ? { childBundleId: message.forwardMessage.bundleId }
           : {}),
-        ...(parseTextMessageContent(enrichedRows[index].content)?.quote
+        ...(parseTextMessageContent(enrichedRows[index].content)?.quote &&
+        selectedIndex.get(
+          `${message.threadId}:${parseTextMessageContent(message.content)!.quote!.seq}`,
+        ) !== undefined
           ? {
-              quote: {
-                preview: (() => {
-                  const reply = parseTextMessageContent(
-                    enrichedRows[index].content,
-                  )?.quote;
-                  return reply
-                    ? `${reply.author ?? ''}：${reply.body ?? ''}`
-                    : '';
-                })(),
-                ...(selectedIndex.get(
+              quoteTargetId:
+                selectedIndex.get(
                   `${message.threadId}:${parseTextMessageContent(message.content)!.quote!.seq}`,
-                ) !== undefined
-                  ? {
-                      targetId:
-                        selectedIndex.get(
-                          `${message.threadId}:${parseTextMessageContent(message.content)!.quote!.seq}`,
-                        )! + 1,
-                    }
-                  : {}),
-              },
+                )! + 1,
             }
           : {}),
       });
@@ -452,23 +403,23 @@ export class ForwardBundleService {
         messages.flatMap((m) => (m.childBundleId ? [m.childBundleId] : [])),
       ),
     ];
-    const manifest: ForwardManifest = {
-      schemaVersion: 1,
-      bundleId,
-      depth,
-      children,
-      messages,
-    };
-    const descendantBundles = new Map<string, ForwardWireBundle>();
+    const descendantBundles = new Map<string, ForwardWireChild>();
+    let descendantMessageCount = 0;
     for (const childBundleId of children) {
       const closure = await this.buildClosure(childBundleId);
-      for (const bundle of closure.bundles)
-        descendantBundles.set(bundle.id, bundle);
+      descendantBundles.set(closure.id, {
+        id: closure.id,
+        messages: closure.messages,
+      });
+      for (const child of closure.children)
+        descendantBundles.set(child.id, child);
+      for (const asset of closure.assets)
+        assets.set(this.assetKey(asset), asset);
     }
-    // Quota: each bundle in the closure (root + all descendant child bundles) counts as ONE file; inner
-    // messages no longer count toward msg cnt (only the outer forward message does).
-    const bundleCount = 1 + descendantBundles.size;
-    const manifestDigest = digestManifest(manifest);
+    descendantMessageCount = [...descendantBundles.values()].reduce(
+      (sum, bundle) => sum + bundle.messages.length,
+      0,
+    );
     const assetList = [...assets.values()];
     const content = JSON.stringify({
       version: 1,
@@ -476,18 +427,17 @@ export class ForwardBundleService {
       summaryLines: messages
         .slice(0, FORWARD_SUMMARY_LINES)
         .map((message) => this.summaryLine(message)),
-      messageCount: messages.length,
+      messageCount: messages.length + descendantMessageCount,
       assetCount: assetList.length,
     });
     return {
       bundleId,
-      depth,
       content,
-      manifest,
-      manifestDigest,
+      messages,
       assets: assetList,
+      childBundleIds: [...descendantBundles.keys()],
+      messageCount: messages.length + descendantMessageCount,
       createdBy: userId,
-      bundleCount,
     };
   }
 
@@ -497,10 +447,8 @@ export class ForwardBundleService {
   ): Promise<void> {
     await tx.insert(forwardBundle).values({
       id: prepared.bundleId,
-      depth: prepared.depth,
-      manifest: prepared.manifest,
-      manifestDigest: prepared.manifestDigest,
-      messageCount: prepared.manifest.messages.length,
+      messages: prepared.messages,
+      messageCount: prepared.messageCount,
       assetCount: prepared.assets.length,
       totalBytes: prepared.assets.reduce(
         (sum, asset) => sum + BigInt(asset.bytes),
@@ -508,9 +456,9 @@ export class ForwardBundleService {
       ),
       createdBy: prepared.createdBy,
     });
-    if (prepared.manifest.children.length > 0) {
+    if (prepared.childBundleIds.length > 0) {
       await tx.insert(forwardBundleDependency).values(
-        prepared.manifest.children.map((childBundleId, ordinal) => ({
+        prepared.childBundleIds.map((childBundleId, ordinal) => ({
           parentBundleId: prepared.bundleId,
           childBundleId,
           ordinal,
@@ -523,11 +471,7 @@ export class ForwardBundleService {
           bundleId: prepared.bundleId,
           ordinal,
           digest: asset.digest,
-          kind: asset.kind,
-          extension: asset.extension,
           bytes: BigInt(asset.bytes),
-          filename: asset.filename,
-          mime: asset.mime,
         })),
       );
     }
@@ -536,21 +480,7 @@ export class ForwardBundleService {
   async getClosureForUser(
     userId: number,
     rootBundleId: string,
-  ): Promise<ForwardWireClosure> {
-    const ancestors = await this.database.db.execute(sql<{ bundleId: string }>`
-      WITH RECURSIVE ancestors("bundleId") AS (
-        SELECT ${rootBundleId}::varchar
-        UNION
-        SELECT dependency."parentBundleId"
-        FROM ancestors current
-        JOIN "ForwardBundleDependency" dependency
-          ON dependency."childBundleId" = current."bundleId"
-      )
-      SELECT "bundleId" FROM ancestors
-    `);
-    const ancestorIds = (ancestors.rows as Array<{ bundleId: string }>).map(
-      (row) => row.bundleId,
-    );
+  ): Promise<ForwardWireBundle> {
     const carriers = await this.database.db
       .select({ threadId: message.threadId, seq: message.seq })
       .from(forwardMessage)
@@ -565,7 +495,7 @@ export class ForwardBundleService {
       )
       .where(
         and(
-          inArray(forwardMessage.bundleId, ancestorIds),
+          eq(forwardMessage.bundleId, rootBundleId),
           eq(message.isDeleted, false),
           sql`${message.seq} > COALESCE(${threadParticipant.clearedSeq}, 0)`,
         ),
@@ -589,511 +519,296 @@ export class ForwardBundleService {
         'forward bundle not found',
       );
     }
-    const closure = await this.buildClosure(rootBundleId);
-    return {
-      ...closure,
-      accessContext: carrier,
-    };
+    return this.buildClosure(rootBundleId);
   }
 
-  async buildClosure(rootBundleId: string): Promise<ForwardWireClosure> {
-    const orderedIds: string[] = [];
-    const visiting = new Set<string>();
-    const visited = new Set<string>();
-    const visit = async (id: string): Promise<void> => {
-      if (visiting.has(id))
-        throw this.invalidWire('forward bundle contains a cycle');
-      if (visited.has(id)) return;
-      if (visited.size + visiting.size >= FORWARD_MAX_CLOSURE_BUNDLES) {
-        throw this.invalidWire(
-          `forward closure cannot exceed ${FORWARD_MAX_CLOSURE_BUNDLES} bundles`,
-        );
-      }
-      visiting.add(id);
-      const row = await this.database.db.query.forwardBundle.findFirst({
-        where: eq(forwardBundle.id, id),
-        with: {
-          forwardBundleDependencies_parentBundleId: {
-            orderBy: asc(forwardBundleDependency.ordinal),
-          },
-        },
-      });
-      if (!row) throw this.invalidWire('forward child bundle is missing');
-      for (const child of row.forwardBundleDependencies_parentBundleId)
-        await visit(child.childBundleId);
-      visiting.delete(id);
-      visited.add(id);
-      orderedIds.push(id);
-    };
-    await visit(rootBundleId);
-    const rows = await this.database.db.query.forwardBundle.findMany({
-      where: inArray(forwardBundle.id, orderedIds),
+  async buildClosure(rootBundleId: string): Promise<ForwardWireBundle> {
+    const root = await this.database.db.query.forwardBundle.findFirst({
+      where: eq(forwardBundle.id, rootBundleId),
       with: {
+        forwardBundleDependencies_parentBundleId: {
+          orderBy: asc(forwardBundleDependency.ordinal),
+        },
         forwardBundleAssets: { orderBy: asc(forwardBundleAsset.ordinal) },
       },
     });
-    const byId = new Map(rows.map((row) => [row.id, row]));
-    const bundles = orderedIds.map((id) => {
-      const row = byId.get(id)!;
-      const storedManifest = row.manifest as unknown as ForwardManifest;
-      const manifest: ForwardManifest = {
-        ...storedManifest,
-        messages: storedManifest.messages.map((message) => ({
-          ...message,
-          content: projectForwardContentToWire(
-            message.contentType,
-            message.content,
-          ),
-        })),
-      };
-      return {
-        id: row.id,
-        depth: row.depth,
-        manifestDigest: digestManifest(manifest),
-        manifest,
-        assets: row.forwardBundleAssets.map((asset) =>
-          this.assetDocument(asset),
-        ),
-      };
-    });
-    const assets = new Map<string, ForwardAssetDocument>();
-    for (const bundle of bundles) {
-      for (const asset of bundle.assets)
-        assets.set(this.assetKey(asset), asset);
-    }
-    const closure: ForwardWireClosure = {
-      schemaVersion: 1,
-      rootBundleId,
-      bundles,
-      assets: [...assets.values()],
-    };
-    if (
-      Buffer.byteLength(JSON.stringify(closure)) > FORWARD_MAX_WIRE_JSON_BYTES
-    ) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_PAYLOAD_TOO_LARGE,
-        'forward bundle JSON exceeds 2 MiB',
-        HttpStatus.OK,
+    if (!root) throw this.invalidWire('forward root bundle is missing');
+    const childIds = root.forwardBundleDependencies_parentBundleId.map(
+      (dependency) => dependency.childBundleId,
+    );
+    if (childIds.length > FORWARD_MAX_CLOSURE_BUNDLES) {
+      throw this.invalidWire(
+        `forward bundle cannot exceed ${FORWARD_MAX_CLOSURE_BUNDLES} children`,
       );
     }
-    return closure;
+    const rows = await this.database.db.query.forwardBundle.findMany({
+      where: inArray(forwardBundle.id, childIds),
+    });
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    const projectMessages = (row: typeof root) => {
+      const storedMessages = row.messages as ForwardBundleMessage[];
+      return storedMessages.map((message) => ({
+        ...message,
+        content: projectForwardContentToWire(
+          message.contentType,
+          message.content,
+        ),
+      }));
+    };
+    const messages = projectMessages(root);
+    const children = childIds.map((id) => {
+      const row = byId.get(id);
+      if (!row) throw this.invalidWire('forward child bundle is missing');
+      return { id, messages: projectMessages(row as typeof root) };
+    });
+    return {
+      id: rootBundleId,
+      messages,
+      children,
+      assets: (root.forwardBundleAssets ?? []).map((asset) =>
+        this.assetDocument(asset),
+      ),
+    };
   }
 
   /**
-   * Validate and localize a peer's complete JSON closure. Every remote id is replaced with a fresh
-   * local ULID; sourceDomain/sourceBundleId preserve import idempotency. Children are inserted before
-   * parents, matching buildClosure's topological wire order.
+   * Validate and localize a peer's complete flat bundle. Every wire id is replaced with a fresh local
+   * ULID. Only the queryable parent id participates in cross-request import idempotency; child ids are
+   * scoped to this one parent document and must never become global source identities.
    */
   async importClosure(
     sourceDomain: string,
-    closure: ForwardWireClosure,
+    closure: ForwardWireBundle,
     transaction?: DatabaseTransaction,
   ): Promise<{ localRootBundleId: string }> {
-    const bytes = Buffer.byteLength(JSON.stringify(closure));
-    if (bytes > FORWARD_MAX_WIRE_JSON_BYTES) {
-      throw this.invalidWire('forward bundle JSON exceeds 2 MiB');
-    }
     if (
-      closure.schemaVersion !== 1 ||
-      !Array.isArray(closure.bundles) ||
+      Buffer.byteLength(JSON.stringify(closure)) >
+        FORWARD_MAX_WIRE_JSON_BYTES ||
+      !isForwardBundleId(closure.id) ||
+      !Array.isArray(closure.messages) ||
+      !Array.isArray(closure.children) ||
       !Array.isArray(closure.assets) ||
-      closure.bundles.length === 0 ||
-      closure.bundles.length > FORWARD_MAX_CLOSURE_BUNDLES
+      closure.children.length > FORWARD_MAX_CLOSURE_BUNDLES
     ) {
-      throw this.invalidWire('invalid forward bundle envelope');
+      throw this.invalidWire('invalid flat forward bundle envelope');
     }
-    const remote = new Map(
-      closure.bundles.map((bundle) => [bundle.id, bundle]),
-    );
-    if (
-      !remote.has(closure.rootBundleId) ||
-      remote.size !== closure.bundles.length
-    ) {
-      throw this.invalidWire('duplicate or missing root bundle');
-    }
-    const calculated = new Map<string, number>();
-    const visiting = new Set<string>();
-    const depthOf = (id: string): number => {
-      const cached = calculated.get(id);
-      if (cached !== undefined) return cached;
-      if (visiting.has(id))
-        throw this.invalidWire('forward bundle contains a cycle');
-      const bundle = remote.get(id);
-      if (!bundle || bundle.manifest.bundleId !== id) {
-        throw this.invalidWire('forward child bundle is missing');
-      }
+    const childIds = new Set<string>();
+    for (const child of closure.children) {
       if (
-        digestManifest(bundle.manifest) !== bundle.manifestDigest ||
-        !Array.isArray(bundle.manifest.children) ||
-        !Array.isArray(bundle.manifest.messages) ||
-        bundle.manifest.messages.length < 1 ||
-        bundle.manifest.messages.length > FORWARD_MAX_MESSAGES ||
-        !Array.isArray(bundle.assets)
+        !isForwardBundleId(child.id) ||
+        child.id === closure.id ||
+        childIds.has(child.id) ||
+        !Array.isArray(child.messages)
       ) {
-        throw this.invalidWire('forward manifest digest mismatch');
+        throw this.invalidWire('invalid flat forward child');
       }
-      for (const asset of bundle.assets) this.validateWireAsset(asset);
-      const messageIds = new Set<number>();
-      const expectedAssetDigests = new Set<string>();
-      const childReferences: string[] = [];
-      for (const message of bundle.manifest.messages) {
+      childIds.add(child.id);
+    }
+    const expectedDigests = new Set<string>();
+    const validateMessages = (messages: ForwardBundleMessage[]): void => {
+      const ids = new Set<number>();
+      for (const message of messages) {
         if (
           !Number.isSafeInteger(message.id) ||
           message.id < 1 ||
-          messageIds.has(message.id) ||
+          ids.has(message.id) ||
+          typeof message.author?.displayName !== 'string' ||
+          typeof message.author?.account !== 'string' ||
+          typeof message.author?.domain !== 'string' ||
+          !Number.isSafeInteger(message.sentAt) ||
+          message.sentAt < 0 ||
+          !isFederatedContentType(message.contentType) ||
           typeof message.content !== 'string' ||
-          typeof message.contentType !== 'string' ||
-          typeof message.sender?.displayName !== 'string' ||
-          typeof message.sender?.account !== 'string' ||
-          typeof message.sender?.domain !== 'string' ||
-          !Number.isFinite(message.sentAt) ||
           (message.childBundleId !== undefined &&
-            !bundle.manifest.children.includes(message.childBundleId))
+            !childIds.has(message.childBundleId))
         ) {
-          throw this.invalidWire('invalid forward message descriptor');
+          throw this.invalidWire('invalid flat forward message');
         }
-        messageIds.add(message.id);
-        if (!isFederatedContentType(message.contentType)) {
-          throw this.invalidWire('invalid forward content type');
-        }
-        if (message.sender.avatarDigest !== undefined) {
-          if (!/^[0-9a-f]{64}$/.test(message.sender.avatarDigest)) {
-            throw this.invalidWire('invalid forward sender avatar digest');
-          }
-          expectedAssetDigests.add(message.sender.avatarDigest);
+        ids.add(message.id);
+        if (message.author.avatarDigest !== undefined) {
+          if (!/^[a-f0-9]{64}$/.test(message.author.avatarDigest))
+            throw this.invalidWire('invalid forward author avatar digest');
+          expectedDigests.add(message.author.avatarDigest);
         }
         try {
           for (const digest of federatedContentDigests(
             message.contentType,
             message.content,
-          )) {
-            expectedAssetDigests.add(digest);
-          }
+          ))
+            expectedDigests.add(digest);
           projectForwardContentFromWire(message.contentType, message.content);
         } catch {
           throw this.invalidWire('invalid forward message content');
         }
-        if (message.childBundleId !== undefined) {
-          if (message.contentType !== ContentType.FORWARD) {
-            throw this.invalidWire(
-              'forward child is attached to a non-FORWARD message',
-            );
-          }
-          let card: unknown;
-          try {
-            card = JSON.parse(message.content);
-          } catch {
-            throw this.invalidWire('invalid inner FORWARD card');
-          }
-          if (
-            !card ||
-            typeof card !== 'object' ||
-            Array.isArray(card) ||
-            (card as Record<string, unknown>)['bundleId'] !==
-              message.childBundleId
-          ) {
-            throw this.invalidWire(
-              'inner FORWARD card does not match its child',
-            );
-          }
-          childReferences.push(message.childBundleId);
-        } else if (message.contentType === ContentType.FORWARD) {
-          throw this.invalidWire('inner FORWARD message is missing its child');
+        if (
+          (message.contentType === ContentType.FORWARD) !==
+          (message.childBundleId !== undefined)
+        ) {
+          throw this.invalidWire('forward child reference is inconsistent');
         }
-        const mediaKind = forwardMediaKind(message.contentType);
-        if (mediaKind) {
-          let mediaContent: unknown;
+        if (message.contentType === ContentType.FORWARD) {
           try {
-            mediaContent = JSON.parse(message.content);
+            const card = parseForwardCard(message.content);
+            if (card.bundleId !== message.childBundleId) {
+              throw new Error('child id mismatch');
+            }
           } catch {
-            throw this.invalidWire('invalid forward media content');
-          }
-          if (typeof mediaContent !== 'object' || mediaContent === null) {
-            throw this.invalidWire('invalid forward media content');
-          }
-          let localized: string;
-          try {
-            localized = projectForwardContentFromWire(
-              message.contentType,
-              message.content,
-            );
-          } catch {
-            throw this.invalidWire('invalid forward media content');
-          }
-          const digests = extractDigests(localized);
-          if (
-            digests.length !== 1 ||
-            !bundle.assets.some(
-              (asset) =>
-                asset.kind === mediaKind && asset.digest === digests[0],
-            )
-          ) {
-            throw this.invalidWire(
-              'forward media content is not bound to a bundle asset',
-            );
-          }
-        }
-        // GALLERY: validate the items[] envelope and that every item digest is bound to a bundle asset
-        // (the single-media bind check above only covers IMAGE/FILE/VIDEO/AUDIO).
-        if (message.contentType === ContentType.GALLERY) {
-          let galleryParsed: unknown;
-          try {
-            galleryParsed = JSON.parse(message.content);
-          } catch {
-            throw this.invalidWire('invalid forward gallery content');
-          }
-          const galleryItems = Array.isArray(
-            (galleryParsed as { items?: unknown })?.items,
-          )
-            ? (galleryParsed as { items: unknown[] }).items
-            : null;
-          if (!galleryItems) {
-            throw this.invalidWire('invalid forward gallery content');
-          }
-          let localized: string;
-          try {
-            localized = projectForwardContentFromWire(
-              message.contentType,
-              message.content,
-            );
-          } catch {
-            throw this.invalidWire('invalid forward gallery content');
-          }
-          const galleryDigests = extractDigests(localized);
-          if (
-            galleryDigests.length === 0 ||
-            galleryDigests.some(
-              (d) => !bundle.assets.some((a) => a.digest === d),
-            )
-          ) {
-            throw this.invalidWire(
-              'forward gallery content is not bound to bundle assets',
-            );
+            throw this.invalidWire('forward card references a different child');
           }
         }
       }
-      const declaredAssetDigests = new Set(
-        bundle.assets.map((asset) => asset.digest),
-      );
-      if (
-        declaredAssetDigests.size !== bundle.assets.length ||
-        declaredAssetDigests.size !== expectedAssetDigests.size ||
-        [...expectedAssetDigests].some(
-          (digest) => !declaredAssetDigests.has(digest),
-        )
-      ) {
-        throw this.invalidWire('forward bundle assets do not match content');
+      for (const message of messages) {
+        if (
+          message.quoteTargetId !== undefined &&
+          (!Number.isSafeInteger(message.quoteTargetId) ||
+            message.quoteTargetId < 1 ||
+            !ids.has(message.quoteTargetId))
+        ) {
+          throw this.invalidWire('invalid forward quote target');
+        }
       }
-      if (
-        new Set(bundle.manifest.children).size !==
-          bundle.manifest.children.length ||
-        childReferences.length !== bundle.manifest.children.length ||
-        new Set(childReferences).size !== childReferences.length ||
-        childReferences.some(
-          (child) => !bundle.manifest.children.includes(child),
-        )
-      ) {
-        throw this.invalidWire(
-          'forward child references do not match children',
-        );
-      }
-      if (
-        bundle.manifest.messages.some((message) => {
-          const quote = message.quote;
-          if (quote === undefined) return false;
-          if (
-            quote === null ||
-            typeof quote !== 'object' ||
-            Array.isArray(quote) ||
-            typeof quote.preview !== 'string' ||
-            truncateGraphemes(quote.preview, FORWARD_QUOTE_PREVIEW_CHARS) !==
-              quote.preview ||
-            (quote.targetId !== undefined &&
-              (!Number.isInteger(quote.targetId) ||
-                !messageIds.has(quote.targetId)))
-          ) {
-            return true;
-          }
-          return false;
-        })
-      ) {
-        throw this.invalidWire('invalid forward quote descriptor');
-      }
-      visiting.add(id);
-      const childDepth = bundle.manifest.children.reduce(
-        (max, child) => Math.max(max, depthOf(child)),
-        0,
-      );
-      visiting.delete(id);
-      const depth = childDepth + 1;
-      if (
-        depth > FORWARD_MAX_DEPTH ||
-        bundle.depth !== depth ||
-        bundle.manifest.depth !== depth
-      ) {
-        throw this.invalidWire('forward nesting depth is invalid');
-      }
-      calculated.set(id, depth);
-      return depth;
     };
-    depthOf(closure.rootBundleId);
-    if (calculated.size !== remote.size) {
-      throw this.invalidWire('wire contains bundles outside the root closure');
-    }
-    const derivedAssets = this.assetsFromClosure(closure);
+    validateMessages(closure.messages);
+    for (const child of closure.children) validateMessages(child.messages);
     for (const asset of closure.assets) this.validateWireAsset(asset);
-    const declaredAssets = new Map(
-      closure.assets.map((asset) => [this.assetKey(asset), asset]),
+    const declaredDigests = new Set(
+      closure.assets.map((asset) => asset.digest),
     );
+    const actualMessageCount =
+      closure.messages.length +
+      closure.children.reduce((sum, child) => sum + child.messages.length, 0);
     if (
-      declaredAssets.size !== derivedAssets.length ||
-      derivedAssets.some((asset) => {
-        const declared = declaredAssets.get(this.assetKey(asset));
-        return (
-          !declared ||
-          declared.extension !== asset.extension ||
-          declared.bytes !== asset.bytes ||
-          declared.filename !== asset.filename ||
-          declared.mime !== asset.mime
-        );
-      })
+      actualMessageCount > FORWARD_MAX_MESSAGES ||
+      closure.assets.length > FORWARD_MAX_ASSETS ||
+      declaredDigests.size !== closure.assets.length ||
+      declaredDigests.size !== expectedDigests.size ||
+      [...expectedDigests].some((digest) => !declaredDigests.has(digest))
     ) {
-      throw this.invalidWire(
-        'forward closure asset summary does not match its bundles',
-      );
+      throw this.invalidWire('flat forward counts or assets do not match');
     }
 
     const client = transaction ?? this.database.db;
-    const [existing] = await client
-      .select({ id: forwardBundle.id })
-      .from(forwardBundle)
-      .where(
-        and(
-          eq(forwardBundle.sourceDomain, sourceDomain),
-          eq(forwardBundle.sourceBundleId, closure.rootBundleId),
-        ),
-      )
-      .limit(1);
+    const existing = await client.query.forwardBundle.findFirst({
+      where: and(
+        eq(forwardBundle.sourceDomain, sourceDomain),
+        eq(forwardBundle.sourceBundleId, closure.id),
+      ),
+      columns: { id: true },
+    });
     if (existing) return { localRootBundleId: existing.id };
 
-    const orderedBundles = [...closure.bundles].sort(
-      (a, b) => calculated.get(a.id)! - calculated.get(b.id)!,
-    );
-    const idMap = new Map<string, string>(
-      orderedBundles.map((bundle) => [bundle.id, mintUlid()]),
-    );
-    const persist = async (tx: DatabaseTransaction) => {
-      for (const wire of orderedBundles) {
-        const localId = idMap.get(wire.id)!;
-        const localManifest: ForwardManifest = {
-          ...wire.manifest,
-          bundleId: localId,
-          children: wire.manifest.children.map((child) => idMap.get(child)!),
-          messages: wire.manifest.messages.map((message) => ({
-            ...message,
-            content: projectForwardContentFromWire(
-              message.contentType,
-              message.content,
-            ),
-            ...(message.childBundleId
-              ? { childBundleId: idMap.get(message.childBundleId)! }
-              : {}),
-          })),
-        };
+    const idMap = new Map<string, string>([
+      [closure.id, mintUlid()],
+      ...closure.children.map((child) => [child.id, mintUlid()] as const),
+    ]);
+    const localizeMessages = (
+      messages: ForwardBundleMessage[],
+    ): ForwardBundleMessage[] =>
+      messages.map((message) => ({
+        ...message,
+        content: projectForwardContentFromWire(
+          message.contentType,
+          message.content,
+        ),
+        ...(message.childBundleId
+          ? {
+              childBundleId: idMap.get(message.childBundleId)!,
+              content: rewriteForwardCardBundleId(
+                projectForwardContentFromWire(
+                  message.contentType,
+                  message.content,
+                ),
+                idMap.get(message.childBundleId)!,
+              ),
+            }
+          : {}),
+      }));
+    const localRootId = idMap.get(closure.id)!;
+    const persist = async (tx: DatabaseTransaction): Promise<void> => {
+      const flat = [
+        { remoteId: closure.id, messages: closure.messages, root: true },
+        ...closure.children.map((child) => ({
+          remoteId: child.id,
+          messages: child.messages,
+          root: false,
+        })),
+      ];
+      for (const item of flat) {
+        const localMessages = localizeMessages(item.messages);
+        const localId = idMap.get(item.remoteId)!;
         await tx.insert(forwardBundle).values({
           id: localId,
-          depth: calculated.get(wire.id)!,
-          manifest: localManifest,
-          manifestDigest: digestManifest(localManifest),
-          messageCount: localManifest.messages.length,
-          assetCount: wire.assets.length,
-          totalBytes: wire.assets.reduce(
-            (sum, asset) => sum + BigInt(asset.bytes),
-            0n,
-          ),
+          messages: localMessages,
+          messageCount: item.root ? actualMessageCount : localMessages.length,
+          assetCount: item.root ? closure.assets.length : 0,
+          totalBytes: item.root
+            ? closure.assets.reduce(
+                (sum, asset) => sum + BigInt(asset.bytes),
+                0n,
+              )
+            : 0n,
           sourceDomain,
-          sourceBundleId: wire.id,
+          sourceBundleId: item.root ? closure.id : null,
         });
-        if (localManifest.children.length > 0) {
-          await tx.insert(forwardBundleDependency).values(
-            localManifest.children.map((childBundleId, ordinal) => ({
-              parentBundleId: localId,
-              childBundleId,
-              ordinal,
-            })),
-          );
-        }
-        if (wire.assets.length > 0) {
-          await tx.insert(forwardBundleAsset).values(
-            wire.assets.map((asset, ordinal) => ({
-              bundleId: localId,
-              ordinal,
-              digest: asset.digest,
-              kind: asset.kind,
-              extension: asset.extension,
-              bytes: BigInt(asset.bytes),
-              filename: asset.filename,
-              mime: asset.mime,
-            })),
-          );
-        }
+      }
+      if (closure.children.length > 0) {
+        await tx.insert(forwardBundleDependency).values(
+          closure.children.map((child, ordinal) => ({
+            parentBundleId: localRootId,
+            childBundleId: idMap.get(child.id)!,
+            ordinal,
+          })),
+        );
+      }
+      if (closure.assets.length > 0) {
+        await tx.insert(forwardBundleAsset).values(
+          closure.assets.map((asset, ordinal) => ({
+            bundleId: localRootId,
+            ordinal,
+            digest: asset.digest,
+            bytes: BigInt(asset.bytes),
+          })),
+        );
       }
     };
     if (transaction) await persist(transaction);
     else await this.database.db.transaction(persist);
-    return { localRootBundleId: idMap.get(closure.rootBundleId)! };
+    return { localRootBundleId: localRootId };
   }
 
   private async assetsFromContent(
     contentType: ContentType,
     content: string,
-  ): Promise<ForwardAssetDocument[]> {
+  ): Promise<FederationByteDescriptor[]> {
     if (contentType === ContentType.GALLERY) {
       return this.galleryAssetsFromContent(content);
     }
-    const kind =
-      contentType === ContentType.IMAGE
-        ? 'image'
-        : contentType === ContentType.FILE
-          ? 'file'
-          : contentType === ContentType.VIDEO
-            ? 'video'
-            : contentType === ContentType.AUDIO
-              ? 'audio'
-              : contentType === ContentType.LINK
-                ? 'link'
-                : null;
-    if (!kind) return [];
-    let meta: { name?: string; mimeType?: string; size?: number } = {};
+    if (!isForwardDirectMedia(contentType) && contentType !== ContentType.LINK)
+      return [];
+    let meta: { size?: number } = {};
     try {
       meta = JSON.parse(content) as typeof meta;
     } catch {
       // IMAGE legacy content may not be JSON; digest extraction remains authoritative.
     }
-    const result: ForwardAssetDocument[] = [];
-    for (const { digest, ext } of extractDigestEntries(content)) {
-      const presentationExt = parseFileExt(meta.name ?? '') || ext || 'bin';
+    const result: FederationByteDescriptor[] = [];
+    for (const { digest } of extractDigestEntries(content)) {
       const row = await this.database.db.query.mediaAsset.findFirst({
         where: eq(mediaAsset.digest, digest),
       });
       result.push({
         digest,
-        kind,
-        extension: presentationExt,
         bytes: Math.max(1, meta.size ?? Number(row?.bytes ?? 1n)),
-        ...(meta.name ? { filename: meta.name } : {}),
-        ...(meta.mimeType ? { mime: meta.mimeType } : {}),
       });
     }
     return result;
   }
 
-  /** Build one ForwardAssetDocument per GALLERY item, each tagged with the item's own kind (a gallery may
-   *  mix image/video/file/audio). Digest comes from the item's CAS url; bytes fall back to the live
+  /** Build one digest/byte descriptor per GALLERY item. Digest comes from the item's CAS url; bytes fall back to the live
    *  MediaAsset row when the item omits size. */
   private async galleryAssetsFromContent(
     content: string,
-  ): Promise<ForwardAssetDocument[]> {
+  ): Promise<FederationByteDescriptor[]> {
     let items: Array<Record<string, unknown>> = [];
     try {
       const parsed = JSON.parse(content) as { items?: unknown };
@@ -1103,34 +818,18 @@ export class ForwardBundleService {
     } catch {
       // malformed gallery content → no assets
     }
-    const result: ForwardAssetDocument[] = [];
+    const result: FederationByteDescriptor[] = [];
     for (const item of items) {
       const url = typeof item['url'] === 'string' ? item['url'] : undefined;
       const digest = url ? extractDigests(url)[0] : undefined;
       if (!digest) continue;
-      const k = item['kind'];
-      const kind: ForwardAssetDocument['kind'] =
-        k === 'IMAGE'
-          ? 'image'
-          : k === 'VIDEO'
-            ? 'video'
-            : k === 'AUDIO'
-              ? 'audio'
-              : 'file';
-      const name = typeof item['name'] === 'string' ? item['name'] : undefined;
-      const mimeType =
-        typeof item['mimeType'] === 'string' ? item['mimeType'] : undefined;
       const size = typeof item['size'] === 'number' ? item['size'] : undefined;
       const row = await this.database.db.query.mediaAsset.findFirst({
         where: eq(mediaAsset.digest, digest),
       });
       result.push({
         digest,
-        kind,
-        extension: parseFileExt(name ?? '') || 'bin',
         bytes: Math.max(1, size ?? Number(row?.bytes ?? 1n)),
-        ...(name ? { filename: name } : {}),
-        ...(mimeType ? { mime: mimeType } : {}),
       });
     }
     return result;
@@ -1138,7 +837,7 @@ export class ForwardBundleService {
 
   private async snapshotAvatar(
     url: string,
-  ): Promise<ForwardAssetDocument | null> {
+  ): Promise<FederationByteDescriptor | null> {
     if (!url.startsWith('/uploads/')) return null;
     try {
       const source = join(
@@ -1149,7 +848,6 @@ export class ForwardBundleService {
       );
       const buffer = await readFile(source);
       const digest = createHash('sha256').update(buffer).digest('hex');
-      const extension = extname(source).slice(1).toLowerCase() || 'webp';
       const target = join(
         process.cwd(),
         'data',
@@ -1177,17 +875,14 @@ export class ForwardBundleService {
         });
       return {
         digest,
-        kind: 'avatar',
-        extension,
         bytes: buffer.length,
-        mime: 'image/webp',
       };
     } catch {
       return null;
     }
   }
 
-  private summaryLine(message: ForwardManifestMessage): string {
+  private summaryLine(message: ForwardBundleMessage): string {
     const label =
       message.contentType === ContentType.IMAGE
         ? '[图片]'
@@ -1207,55 +902,53 @@ export class ForwardBundleService {
                       .replace(/\s+/g, ' ')
                       .trim();
     return truncateGraphemes(
-      `${message.sender.displayName}：${label}`,
+      `${message.author.displayName}：${label}`,
       FORWARD_SUMMARY_CHARS,
     );
   }
 
   private assetDocument(asset: {
     digest: string;
-    kind: string;
-    extension: string;
     bytes: bigint;
-    filename: string | null;
-    mime: string | null;
-  }): ForwardAssetDocument {
+  }): FederationByteDescriptor {
     return {
       digest: asset.digest,
-      kind: asset.kind as ForwardAssetDocument['kind'],
-      extension: asset.extension,
       bytes: Number(asset.bytes),
-      ...(asset.filename ? { filename: asset.filename } : {}),
-      ...(asset.mime ? { mime: asset.mime } : {}),
     };
   }
 
-  private assetKey(asset: ForwardAssetDocument): string {
+  private assetKey(asset: FederationByteDescriptor): string {
     return asset.digest;
   }
 
-  private validateWireAsset(asset: ForwardAssetDocument): void {
+  private validateWireAsset(asset: FederationByteDescriptor): void {
     if (
       !/^[0-9a-f]{64}$/.test(asset.digest) ||
-      !/^[A-Za-z0-9]{1,16}$/.test(asset.extension) ||
       !Number.isSafeInteger(asset.bytes) ||
-      asset.bytes < 1 ||
-      !['avatar', 'image', 'file', 'video', 'audio', 'link'].includes(
-        asset.kind,
-      )
+      asset.bytes < 1
     ) {
       throw this.invalidWire('invalid forward asset descriptor');
     }
   }
 
-  assetsFromClosure(closure: ForwardWireClosure): ForwardAssetDocument[] {
-    const assets = new Map<string, ForwardAssetDocument>();
-    for (const bundle of closure.bundles) {
-      for (const asset of bundle.assets) {
-        assets.set(this.assetKey(asset), asset);
-      }
-    }
-    return [...assets.values()];
+  assetsFromClosure(closure: ForwardWireBundle): FederationByteDescriptor[] {
+    return closure.assets;
+  }
+
+  localCardContent(closure: ForwardWireBundle, localBundleId: string): string {
+    const messages = [
+      ...closure.messages,
+      ...closure.children.flatMap((child) => child.messages),
+    ];
+    return JSON.stringify({
+      version: 1,
+      bundleId: localBundleId,
+      summaryLines: messages
+        .slice(0, FORWARD_SUMMARY_LINES)
+        .map((message) => this.summaryLine(message)),
+      messageCount: messages.length,
+      assetCount: closure.assets.length,
+    });
   }
 
   private invalidWire(message: string): BusinessException {
@@ -1265,20 +958,6 @@ export class ForwardBundleService {
       HttpStatus.BAD_REQUEST,
     );
   }
-}
-
-export function digestManifest(manifest: ForwardManifest): string {
-  return createHash('sha256').update(canonicalJson(manifest)).digest('hex');
-}
-
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-    .join(',')}}`;
 }
 
 function truncateGraphemes(value: string, max: number): string {
@@ -1294,22 +973,47 @@ function truncateGraphemes(value: string, max: number): string {
         .join('')}…`;
 }
 
-function forwardMediaKind(
-  contentType: string,
-): ForwardAssetDocument['kind'] | null {
-  return contentType === ContentType.IMAGE
-    ? 'image'
-    : contentType === ContentType.FILE
-      ? 'file'
-      : contentType === ContentType.VIDEO
-        ? 'video'
-        : contentType === ContentType.AUDIO
-          ? 'audio'
-          : null;
+function isForwardDirectMedia(contentType: string): boolean {
+  return (
+    contentType === ContentType.IMAGE ||
+    contentType === ContentType.FILE ||
+    contentType === ContentType.VIDEO ||
+    contentType === ContentType.AUDIO
+  );
 }
 
 function isFederatedContentType(value: string): value is ContentType {
-  return Object.values(ContentType).includes(value as ContentType);
+  return (
+    value !== ContentType.SYSTEM &&
+    Object.values(ContentType).includes(value as ContentType)
+  );
+}
+
+function isForwardBundleId(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    Buffer.byteLength(value, 'utf8') <= 26 &&
+    !value.includes('\0') &&
+    !value.includes('/')
+  );
+}
+
+function parseForwardCard(content: string): { bundleId: string } {
+  const value = JSON.parse(content) as { bundleId?: unknown };
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    typeof value.bundleId !== 'string'
+  ) {
+    throw new Error('invalid forward card');
+  }
+  return { bundleId: value.bundleId };
+}
+
+function rewriteForwardCardBundleId(content: string, bundleId: string): string {
+  const value = JSON.parse(content) as Record<string, unknown>;
+  return JSON.stringify({ ...value, bundleId });
 }
 
 function projectForwardContentToWire(
@@ -1317,7 +1021,11 @@ function projectForwardContentToWire(
   content: string,
 ): string {
   if (!isFederatedContentType(contentType)) return content;
-  return toFederatedMessageContent(contentType, content);
+  return toFederatedMessageContent(
+    contentType,
+    content,
+    process.env.SOMS_DOMAIN ?? 'local',
+  );
 }
 
 function projectForwardContentFromWire(
@@ -1341,7 +1049,7 @@ function projectForwardContentFromWire(
 export function localizeForwardMediaContent(
   contentType: string,
   content: string,
-  assets: ForwardAssetDocument[],
+  assets: FederationByteDescriptor[],
 ): string {
   // GALLERY: rebind every item's url to the canonical CAS path from its digest (only for items whose
   // digest is bound to a bundle asset — unbound items are left untouched).
@@ -1367,15 +1075,11 @@ export function localizeForwardMediaContent(
       return content;
     }
   }
-  const kind = forwardMediaKind(contentType);
-  if (!kind) return content;
+  if (!isForwardDirectMedia(contentType)) return content;
   const digests = extractDigests(content);
   const asset =
     digests.length === 1
-      ? assets.find(
-          (candidate) =>
-            candidate.kind === kind && candidate.digest === digests[0],
-        )
+      ? assets.find((candidate) => candidate.digest === digests[0])
       : undefined;
   if (!asset) return content;
   try {

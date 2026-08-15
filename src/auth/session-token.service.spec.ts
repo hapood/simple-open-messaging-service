@@ -30,6 +30,7 @@ describe('SessionTokenService', () => {
     }),
   }));
   const select = vi.fn((selection?: Record<string, unknown>) => {
+    void selection;
     let table: unknown;
     const resolve = async () => {
       if (table === user) {

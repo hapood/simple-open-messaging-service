@@ -2,6 +2,11 @@ import { ContentType } from '../database/enums.js';
 import { extractDigests } from '../upload/file-content.js';
 import { isValidGroupAccount, isValidUserAccount } from '../common/account.js';
 import { parseFederatedCallContent } from '../calls/call-content.js';
+import {
+  parseMessageEntities,
+  serializeUserMention,
+  transformMessageEntities,
+} from '../common/message-entity.js';
 
 const SHA256_RE = /^[a-f0-9]{64}$/;
 
@@ -12,13 +17,11 @@ export interface FederationAuthoredMessageSnapshot {
   content: string;
   clientMessageId: string | null;
   quoteTarget?: {
-    creator: { account: string; domain: string };
-    originSeq: number;
+    targetSeq: number;
   };
   assets: Array<{
     digest: string;
     bytes: number;
-    status: 'READY' | 'DELETED';
   }>;
 }
 
@@ -129,39 +132,47 @@ function validateSingleFields(value: JsonObject, extra: string[]): void {
 }
 
 function validateForwardCard(value: JsonObject): void {
-  assertKeys(value, [
-    'version',
-    'bundleId',
-    'summaryLines',
-    'messageCount',
-    'assetCount',
-  ]);
+  assertKeys(value, ['bundleId']);
   if (
-    value['version'] !== 1 ||
     typeof value['bundleId'] !== 'string' ||
     Buffer.byteLength(value['bundleId'], 'utf8') < 1 ||
     Buffer.byteLength(value['bundleId'], 'utf8') > 26 ||
     value['bundleId'].includes('/') ||
-    value['bundleId'].includes('\0') ||
-    !Array.isArray(value['summaryLines']) ||
-    value['summaryLines'].length > 3 ||
-    value['summaryLines'].some(
-      (line) => typeof line !== 'string' || line.length === 0,
-    )
+    value['bundleId'].includes('\0')
   ) {
     throw new Error('invalid forward card');
   }
-  assertSafeInteger(value['messageCount']);
-  assertSafeInteger(value['assetCount']);
 }
 
 function projectTextContent(
   value: JsonObject,
   strictQuote = false,
+  domainMapping?: { from: string; to: string },
 ): JsonObject {
-  assertKeys(value, ['text'], ['quote']);
-  if (typeof value['text'] !== 'string') throw new Error('invalid text');
-  if (value['quote'] === undefined) return { text: value['text'] };
+  assertKeys(value, ['text'], strictQuote ? [] : ['quote']);
+  if (typeof value['text'] !== 'string' || value['text'].length === 0)
+    throw new Error('invalid text');
+  for (const segment of parseMessageEntities(value['text'])) {
+    if (
+      segment.kind === 'entity' &&
+      segment.entityType === 'user' &&
+      !segment.entityId.includes('@')
+    ) {
+      throw new Error('federated user mention must use a full address');
+    }
+  }
+  const text = domainMapping
+    ? transformMessageEntities(value['text'], (entity) => {
+        if (entity.entityType !== 'user') return entity.raw;
+        const separator = entity.entityId.lastIndexOf('@');
+        const account = entity.entityId.slice(0, separator);
+        const domain = entity.entityId.slice(separator + 1);
+        return domain === domainMapping.from
+          ? serializeUserMention(entity.label, `${account}@${domainMapping.to}`)
+          : entity.raw;
+      })
+    : value['text'];
+  if (value['quote'] === undefined) return { text };
   if (
     !value['quote'] ||
     typeof value['quote'] !== 'object' ||
@@ -183,12 +194,7 @@ function projectTextContent(
       throw new Error('invalid quote preview');
     }
   }
-  return {
-    text: value['text'],
-    quote: withoutUndefined(
-      Object.fromEntries(allowed.map((field) => [field, quote[field]])),
-    ),
-  };
+  return { text };
 }
 
 function localCasUrl(digest: string): string {
@@ -211,11 +217,14 @@ function withoutUndefined(value: JsonObject): JsonObject {
 export function toFederatedMessageContent(
   contentType: ContentType,
   content: string,
+  localDomain: string,
 ): string {
   const value = parseObject(content);
   switch (contentType) {
     case ContentType.PURE_TEXT:
-      return JSON.stringify(projectTextContent(value));
+      return JSON.stringify(
+        projectTextContent(value, false, { from: 'local', to: localDomain }),
+      );
     case ContentType.IMAGE:
       return JSON.stringify(
         withoutUndefined(projectSingleToWire(value, ['w', 'h'])),
@@ -326,15 +335,22 @@ export function toFederatedMessageContent(
         throw new Error('invalid invite content');
       }
       return JSON.stringify({
-        type: value['type'],
-        from: value['from'],
         group: value['group'],
         groupName: value['groupName'],
         groupDomain: value['groupDomain'],
       });
     case ContentType.FORWARD:
-      validateForwardCard(value);
-      return content;
+      assertKeys(value, [
+        'version',
+        'bundleId',
+        'summaryLines',
+        'messageCount',
+        'assetCount',
+      ]);
+      if (typeof value['bundleId'] !== 'string')
+        throw new Error('invalid forward card');
+      validateForwardCard({ bundleId: value['bundleId'] });
+      return JSON.stringify({ bundleId: value['bundleId'] });
     case ContentType.SYSTEM:
       throw new Error('SYSTEM is not a federated content type');
     default:
@@ -347,6 +363,7 @@ export function fromFederatedMessageContent(
   contentType: ContentType,
   content: string,
   localDomain: string,
+  inviterAccount?: string,
 ): string {
   const value = parseObject(content);
   const single = (extra: string[]): string => {
@@ -363,7 +380,9 @@ export function fromFederatedMessageContent(
   };
   switch (contentType) {
     case ContentType.PURE_TEXT:
-      return JSON.stringify(projectTextContent(value, true));
+      return JSON.stringify(
+        projectTextContent(value, true, { from: localDomain, to: 'local' }),
+      );
     case ContentType.IMAGE:
       return single(['w', 'h']);
     case ContentType.FILE:
@@ -445,11 +464,8 @@ export function fromFederatedMessageContent(
           : {}),
       });
     case ContentType.INVITE:
-      assertKeys(value, ['type', 'from', 'group', 'groupName', 'groupDomain']);
+      assertKeys(value, ['group', 'groupName', 'groupDomain']);
       if (
-        value['type'] !== 'GROUP_INVITE' ||
-        typeof value['from'] !== 'string' ||
-        !isValidUserAccount(value['from']) ||
         typeof value['group'] !== 'string' ||
         !isValidGroupAccount(value['group']) ||
         typeof value['groupName'] !== 'string' ||
@@ -460,6 +476,9 @@ export function fromFederatedMessageContent(
       }
       return JSON.stringify({
         ...value,
+        ...(inviterAccount === undefined
+          ? {}
+          : { type: 'GROUP_INVITE', from: inviterAccount }),
         groupAvatar: '',
         groupIsLocal: value['groupDomain'] === localDomain,
       });

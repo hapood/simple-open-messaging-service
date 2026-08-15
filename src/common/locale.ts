@@ -37,7 +37,10 @@ export function parseAcceptLanguage(
   header: string | undefined | null,
 ): { tag: string; q: number }[] {
   if (!header) return [];
-  const parts = header.slice(0, MAX_HEADER_LEN).split(',', MAX_ENTRIES + 1).slice(0, MAX_ENTRIES);
+  const parts = header
+    .slice(0, MAX_HEADER_LEN)
+    .split(',', MAX_ENTRIES + 1)
+    .slice(0, MAX_ENTRIES);
   const out: { tag: string; q: number }[] = [];
   for (const part of parts) {
     const segs = part.trim().split(';');

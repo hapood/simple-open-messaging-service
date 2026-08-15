@@ -55,7 +55,9 @@ export class AdminManageController {
   @Audit('admin.disable', { targetType: 'admin', targetParam: 'id' })
   @HttpCode(HttpStatus.OK)
   @Post('admin/admins/:id/disable')
-  @ApiOperation({ summary: 'Disable an admin (revokes all their sessions immediately)' })
+  @ApiOperation({
+    summary: 'Disable an admin (revokes all their sessions immediately)',
+  })
   async disable(@Param('id') id: string) {
     return this.svc.disable(Number(id));
   }
@@ -71,7 +73,9 @@ export class AdminManageController {
   @Audit('admin.role', { targetType: 'admin', targetParam: 'id' })
   @HttpCode(HttpStatus.OK)
   @Post('admin/admins/:id/role')
-  @ApiOperation({ summary: "Change an admin's role (demotion revokes their sessions)" })
+  @ApiOperation({
+    summary: "Change an admin's role (demotion revokes their sessions)",
+  })
   async setRole(@Param('id') id: string, @Body() dto: AdminSetRoleDto) {
     return this.svc.setRole(Number(id), dto);
   }
@@ -79,7 +83,10 @@ export class AdminManageController {
   @Audit('admin.reset_2fa', { targetType: 'admin', targetParam: 'id' })
   @HttpCode(HttpStatus.OK)
   @Post('admin/admins/:id/reset-2fa')
-  @ApiOperation({ summary: "Reset (disable) an admin's 2FA — lockout recovery when a device is lost" })
+  @ApiOperation({
+    summary:
+      "Reset (disable) an admin's 2FA — lockout recovery when a device is lost",
+  })
   async reset2fa(@Param('id') id: string) {
     return this.svc.resetTwoFactor(Number(id));
   }

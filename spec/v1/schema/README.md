@@ -1,7 +1,7 @@
 # Federation v1 机器可读发布包
 
 状态：`RELEASE CANDIDATE`
-发布：`v1.0-rc.1`
+发布：`v1.0-rc.2`
 
 本目录作为非规范性验证资源与 v1 规范正文一起发布，使用 JSON Schema Draft 2020-12。正文定义
 事务、权限、签名、cursor 和状态机语义；Schema 定义可机械检查的 JSON shape。二者冲突时以正文
@@ -10,7 +10,7 @@
 ## 文件
 
 - `common.schema.json`：identity、时间、cursor、digest、address 等 Federation 共享类型。
-- `discovery.schema.json`：`/.well-known/soms`，包括多版本 `protocolVersions`。
+- `discovery.schema.json`：`/.well-known/socfp`，包括多版本 `protocolVersions`。
 - `identity.schema.json`：Recognize、Healthy 与 feed-head hint 的 closed JSON shape。
 - `state-feed.schema.json`：完整 page 与六种 event body。
 - `message-feed.schema.json`：消息索引型压缩 feed page 与 `thread + messageEndSeq` item。
@@ -41,15 +41,15 @@ npm run federation:conformance
 ```
 
 它会编译全部 Schema、校验正反向量、验证 message `content` 的二次解析、检查严格递增版本数组、
-核对 HTTP manifest 的完整 v1 surface 与实现版本常量，严格比较错误码正文注册表、error Schema 与代码
-wire enum，并验证固定签名向量。仓库单测另外把 manifest、
+核对 HTTP manifest 的完整 v1 surface，严格比较错误码正文注册表与 error Schema，并验证固定签名向量。
+该 CLI 不导入 SOMS `src/` 中的实现常量或服务。仓库单测另外把 manifest、
 Schema enum、规范正文和 Nest route metadata 相互比对，防止发布制品与实现漂移。
 
 第三方实现可以验证自己的 JSON：
 
 ```bash
 npm run federation:conformance -- \
-  --schema urn:soms:federation:v1:call \
+  --schema urn:socfp:v1:call \
   --file ./call-frame.json
 ```
 

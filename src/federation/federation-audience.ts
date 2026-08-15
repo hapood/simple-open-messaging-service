@@ -52,18 +52,9 @@ export async function advanceFederatedAudienceInTx(
       eligible: boolean;
     }>(sql`
       SELECT target.id::text AS "messageId", target.seq AS "messageSeq",
-             (
-               target."contentType" <> 'SYSTEM'
-               AND NOT (
-                 thread.type = 'GROUP'
-                 AND group_user.domain <> 'local'
-                 AND (creator."isForeigner" OR target."originSeq" IS NOT NULL)
-               )
-             ) AS eligible
+             target."contentType" <> 'SYSTEM' AS eligible
       FROM "Message" target
       JOIN "MessageThread" thread ON thread.id = target."threadId"
-      JOIN "User" creator ON creator.id = target.creator
-      LEFT JOIN "User" group_user ON group_user.id = thread."groupUserId"
       WHERE target."threadId" = ${threadId}
         AND target.seq > ${scanned}
         AND target.seq <= ${thread.curSeq}

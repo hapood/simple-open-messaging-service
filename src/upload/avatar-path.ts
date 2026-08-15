@@ -49,7 +49,9 @@ export function parseAvatarBase(path: string): string | null {
 /** True iff `value` is a valid avatar URL OR the empty string (empty = clear the avatar). The empty
  *  allowance is what @IsValidAvatarPath builds on so a client can unset a group avatar. */
 export function isAvatarUrlOrEmpty(value: unknown): boolean {
-  return typeof value === 'string' && (value === '' || AVATAR_URL_RE.test(value));
+  return (
+    typeof value === 'string' && (value === '' || AVATAR_URL_RE.test(value))
+  );
 }
 
 /**

@@ -54,14 +54,20 @@ export class AdminDiagnosticsController {
   @Raw()
   @Get('admin/diagnostics/:id/download')
   @ApiOperation({ summary: 'Download a diagnostic bundle (.tar.gz)' })
-  async download(@Param('id') id: string, @Res() reply: FastifyReply): Promise<void> {
+  async download(
+    @Param('id') id: string,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
     const reportId = Number(id);
     const abs = await this.diagnostics.resolveBundlePath(reportId);
     // Mark viewed off the critical path; a concurrent GC simply makes it a no-op.
     void this.diagnostics.markViewed(reportId);
     reply
       .header('Content-Type', 'application/gzip')
-      .header('Content-Disposition', `attachment; filename="report-${reportId}.tar.gz"`)
+      .header(
+        'Content-Disposition',
+        `attachment; filename="report-${reportId}.tar.gz"`,
+      )
       .send(createReadStream(abs));
   }
 
@@ -69,7 +75,9 @@ export class AdminDiagnosticsController {
   @Audit('diagnostics.gc')
   @HttpCode(HttpStatus.OK)
   @Post('admin/diagnostics/gc')
-  @ApiOperation({ summary: 'Garbage-collect expired/orphaned diagnostic bundles' })
+  @ApiOperation({
+    summary: 'Garbage-collect expired/orphaned diagnostic bundles',
+  })
   async triggerGc() {
     const expired = await this.gc.gcExpiredReports();
     const orphan = await this.gc.gcOrphanedBundles();
@@ -85,7 +93,10 @@ export class AdminDiagnosticsController {
   @Audit('diagnostics.delete')
   @HttpCode(HttpStatus.OK)
   @Post('admin/diagnostics/:id/delete')
-  @ApiOperation({ summary: 'Soft-delete one diagnostic report (+ unlink its bundle if unreferenced)' })
+  @ApiOperation({
+    summary:
+      'Soft-delete one diagnostic report (+ unlink its bundle if unreferenced)',
+  })
   async delete(@Param('id') id: string) {
     return this.gc.deleteReport(Number(id));
   }

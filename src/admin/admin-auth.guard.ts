@@ -1,4 +1,9 @@
-import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  CanActivate,
+  ExecutionContext,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
 import { AdminAuthService } from './admin-auth.service.js';
 import { ADMIN_SESSION_COOKIE } from './admin-session.js';

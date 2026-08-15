@@ -1,19 +1,19 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:soms:federation:v1:message-tombstone-feed",
+  "$id": "urn:socfp:v1:message-tombstone-feed",
   "title": "GET /s2s/v1/message-tombstone-feed response data",
   "$defs": {
-    "thread": { "$ref": "urn:soms:federation:v1:message-feed#/$defs/thread" },
+    "thread": { "$ref": "urn:socfp:v1:message-feed#/$defs/thread" },
     "item": {
       "type": "object",
       "required": ["feedId", "thread", "tombstoneEndSeq"],
       "properties": {
         "feedId": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/positiveDecimalString"
+          "$ref": "urn:socfp:v1:common#/$defs/positiveDecimalString"
         },
         "thread": { "$ref": "#/$defs/thread" },
         "tombstoneEndSeq": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+          "$ref": "urn:socfp:v1:common#/$defs/decimalString"
         }
       },
       "additionalProperties": false
@@ -24,10 +24,10 @@
   "properties": {
     "items": { "type": "array", "items": { "$ref": "#/$defs/item" } },
     "scannedThrough": {
-      "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+      "$ref": "urn:socfp:v1:common#/$defs/decimalString"
     },
     "tombstoneFeedEndId": {
-      "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+      "$ref": "urn:socfp:v1:common#/$defs/decimalString"
     },
     "hasMore": { "type": "boolean" }
   },

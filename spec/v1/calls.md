@@ -1,9 +1,9 @@
-# SOMS Federation v1 通话信令（Call Signaling）
+# Simple Open Chat Federation Protocol v1 通话信令（Call Signaling）
 
-状态：`RELEASE CANDIDATE`（`v1.0-rc.1`）
+状态：`RELEASE CANDIDATE`（`v1.0-rc.2`）
 
-本文定义 SOMS 服务器之间一对一通话的完整协议契约（protocol contract）。Federation v1 只定义签名的
-`POST /s2s/v1/call` 和其中的 SOMS 生命周期事件；媒体、SDP、ICE、STUN 和 TURN 遵循第 13 节列出的
+本文定义协议服务器之间一对一通话的完整协议契约（protocol contract）。Federation v1 只定义签名的
+`POST /s2s/v1/call` 和其中的协议生命周期事件；媒体、SDP、ICE、STUN 和 TURN 遵循第 13 节列出的
 外部标准，本文不重新定义它们。
 
 本文建立在 Federation v1 [主协议](./protocol.md)定义的 Federation 共享类型（Shared Federation Types）和
@@ -18,14 +18,14 @@ JSON 响应封装（JSON envelope）、[传输与安全](./transport-security.md
 Federation v1 负责：
 
 - 在 caller server 与 callee server 之间建立临时通话状态；
-- 原样中继终端产生的 SDP、ICE 和 SOMS `video-state` 载荷（payload）；
+- 原样中继终端产生的 SDP、ICE 和协议 `video-state` 载荷（payload）；
 - 同步振铃、接听、连接、结束以及 AUDIO→VIDEO 升级事件；
 - 定义 frame 的顺序、重试、幂等、竞态收敛和有限墓碑记录（tombstone）。
 
-音视频媒体不进入 `/s2s/v1/call`、state-feed 或 message-feed。SOMS 联邦服务器不得（MUST NOT）解密、转码、
+音视频媒体不进入 `/s2s/v1/call`、state-feed 或 message-feed。联邦服务器不得（MUST NOT）解密、转码、
 混合或转发媒体，也不得（MUST NOT）解析或改写 SDP/ICE 来替终端作协商决定。
 
-WebRTC/JSEP 不定义 SOMS 使用的应用层信令传输，因此 `/s2s/v1/call` 的投递、幂等和错误处理由本文
+WebRTC/JSEP 不定义本协议使用的应用层信令传输，因此 `/s2s/v1/call` 的投递、幂等和错误处理由本文
 完整定义，不能从 SDP、ICE 或 WebRTC transport 推导。
 
 ## 2. 角色、身份与关联键（Roles, Identities, and Correlation Keys）
@@ -134,7 +134,7 @@ interface RTCIceCandidateInit {
   usernameFragment?: string | null; // default: null
 }
 
-// SOMS 自有对象；这是 closed object，不能有其他字段。
+// 本协议定义的对象；这是 closed object，不能有其他字段。
 interface VideoState {
   enabled: boolean;
 }
@@ -183,7 +183,7 @@ type CallFrame =
 | 字段       | 类型与约束         | 语义                    |
 | ---------- | ------------------ | ----------------------- |
 | `callSid`  | 规范小写 RFC UUID  | 活动通话关联键          |
-| `op`       | `CallOp`           | 本 frame 唯一 SOMS 操作 |
+| `op`       | `CallOp`           | 本 frame 唯一协议操作 |
 | `callType` | `AUDIO` 或 `VIDEO` | 当前通话业务类型        |
 
 除 `video-upgraded` 外，活动通话中每个 frame 的 `callType` 必须（MUST）等于接收方保存的当前类型。升级协商
@@ -199,7 +199,7 @@ caller server 负责终态竞态仲裁并产生权威通话结果；callee serve
 Federation lifecycle 阶段只有 `ringing`、`accepted`、`connected` 和 `terminal`；实现可以（MAY）使用
 `accepting`、`cancelling` 等内部 pending 状态，但不得（MUST NOT）改变本文定义的外部可观察协议行为。
 
-本文的“阶段”是 server 对 `(peer domain, callSid)` 已提交的 SOMS 生命周期状态，不是终端界面
+本文的“阶段”是 server 对 `(peer domain, callSid)` 已提交的协议生命周期状态，不是终端界面
 文案，也不是 `RTCPeerConnection.signalingState`、`iceConnectionState` 或 `connectionState`。两台 server
 在 frame 传输期间可以（MAY）短暂处于不同阶段；接收方在返回 `200/code=0` 前提交目标阶段，发送方收到该响应后
 才认为该变更已经完成联邦提交。
@@ -412,7 +412,7 @@ state 缓存、应用。初次协商须等待 callee server 的
 
 ## 9. AUDIO→VIDEO 升级（AUDIO-to-VIDEO Upgrade）
 
-Federation v1 固定主叫终端为所有 offer 的产生方，被叫终端为 answer 产生方。这是 SOMS
+Federation v1 固定主叫终端为所有 offer 的产生方，被叫终端为 answer 产生方。这是本协议
 为避免 offer glare 选择的应用层 profile，不是 RFC 3264 对 offerer 的限制。
 
 被叫用户希望把 AUDIO 通话升级为 VIDEO 时，被叫终端先发送 `video-state {"enabled":true}`；主叫终端收到

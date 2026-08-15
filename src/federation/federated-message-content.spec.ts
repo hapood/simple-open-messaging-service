@@ -65,7 +65,13 @@ describe('federated message content projection', () => {
     ],
   ] as const)('projects %s without a URL', (contentType, local, wire) => {
     expect(
-      JSON.parse(toFederatedMessageContent(contentType, JSON.stringify(local))),
+      JSON.parse(
+        toFederatedMessageContent(
+          contentType,
+          JSON.stringify(local),
+          'local.test',
+        ),
+      ),
     ).toEqual(wire);
     expect(
       JSON.parse(
@@ -92,7 +98,11 @@ describe('federated message content projection', () => {
       ],
     };
     const wire = JSON.parse(
-      toFederatedMessageContent(ContentType.GALLERY, JSON.stringify(local)),
+      toFederatedMessageContent(
+        ContentType.GALLERY,
+        JSON.stringify(local),
+        'local.test',
+      ),
     ) as { items: Array<Record<string, unknown>> };
 
     expect(wire.items.map((item) => item['digest'])).toEqual([
@@ -116,6 +126,7 @@ describe('federated message content projection', () => {
           image: cas(digestA),
           favicon: cas(digestB),
         }),
+        'local.test',
       ),
     );
 
@@ -140,44 +151,79 @@ describe('federated message content projection', () => {
         groupAvatar: '/avatar',
         groupIsLocal: false,
       }),
+      'local.test',
     );
 
     expect(JSON.parse(wire)).not.toHaveProperty('groupAvatar');
+    expect(JSON.parse(wire)).not.toHaveProperty('type');
+    expect(JSON.parse(wire)).not.toHaveProperty('from');
     expect(
       JSON.parse(
-        fromFederatedMessageContent(ContentType.INVITE, wire, 'local.test'),
+        fromFederatedMessageContent(
+          ContentType.INVITE,
+          wire,
+          'local.test',
+          'alice',
+        ),
       ),
-    ).toMatchObject({ groupAvatar: '', groupIsLocal: true });
+    ).toMatchObject({
+      type: 'GROUP_INVITE',
+      from: 'alice',
+      groupAvatar: '',
+      groupIsLocal: true,
+    });
   });
 
   it('drops local quote media previews on publish and rejects them on wire input', () => {
     const local = JSON.stringify({
-      text: 'hello [@Alice](soms://user/alice%40example.test?v=1)',
+      text: 'hello [@Alice](socfp://user/alice%40example.test)',
       quote: { seq: 1, body: 'preview', image: cas(digestA) },
     });
-    const wire = toFederatedMessageContent(ContentType.PURE_TEXT, local);
+    const wire = toFederatedMessageContent(
+      ContentType.PURE_TEXT,
+      local,
+      'local.test',
+    );
     expect(JSON.parse(wire)).toEqual({
-      text: 'hello [@Alice](soms://user/alice%40example.test?v=1)',
-      quote: { seq: 1, body: 'preview' },
+      text: 'hello [@Alice](socfp://user/alice%40example.test)',
     });
     expect(() =>
       fromFederatedMessageContent(ContentType.PURE_TEXT, local, 'local.test'),
-    ).toThrow('invalid quote');
+    ).toThrow('invalid fields');
+  });
+
+  it('maps the local mention domain only at the federation boundary', () => {
+    const stored = JSON.stringify({
+      text: 'hello [@Alice](socfp://user/alice%40local)',
+    });
+    const wire = toFederatedMessageContent(
+      ContentType.PURE_TEXT,
+      stored,
+      'local.test',
+    );
+    expect(JSON.parse(wire)).toEqual({
+      text: 'hello [@Alice](socfp://user/alice%40local.test)',
+    });
+    expect(
+      JSON.parse(
+        fromFederatedMessageContent(ContentType.PURE_TEXT, wire, 'local.test'),
+      ),
+    ).toEqual(JSON.parse(stored));
   });
 
   it('compares immutable authored snapshots semantically', () => {
     const first = authoredMessageSnapshot({
       contentType: ContentType.PURE_TEXT,
-      content: '{"text":"hello","quote":{"seq":1}}',
+      content: '{"text":"hello"}',
       clientMessageId: null,
       assets: [
-        { digest: digestB, bytes: 2, status: 'READY' },
-        { digest: digestA, bytes: 1, status: 'DELETED' },
+        { digest: digestB, bytes: 2 },
+        { digest: digestA, bytes: 1 },
       ],
     });
     const equivalent = authoredMessageSnapshot({
       contentType: ContentType.PURE_TEXT,
-      content: '{"quote":{"seq":1},"text":"hello"}',
+      content: '{"text":"hello"}',
       clientMessageId: null,
       assets: [...first.assets].reverse(),
     });

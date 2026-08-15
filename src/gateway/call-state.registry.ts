@@ -35,7 +35,10 @@ export class CallStateRegistry {
   }
 
   /** Patch one participant's entry (state + startedAt); a no-op if they have no active call. */
-  patch(userId: number, patch: Partial<Pick<ActiveCallSummary, 'state' | 'startedAt'>>): void {
+  patch(
+    userId: number,
+    patch: Partial<Pick<ActiveCallSummary, 'state' | 'startedAt'>>,
+  ): void {
     const cur = this.byUser.get(userId);
     if (cur) this.byUser.set(userId, { ...cur, ...patch });
   }

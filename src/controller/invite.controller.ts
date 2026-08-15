@@ -3,7 +3,6 @@ import {
   Post,
   Body,
   Request,
-  UseGuards,
   HttpStatus,
   HttpCode,
 } from '@nestjs/common';
@@ -12,10 +11,7 @@ import type { FastifyRequest } from 'fastify';
 import { UserService } from '../user/user.service.js';
 import { InviteService } from '../invite/invite.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
-import {
-  FederationService,
-  S2sResponseError,
-} from '../federation/federation.service.js';
+import { FederationService } from '../federation/federation.service.js';
 import { ApiResultResponse, envelope } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -35,22 +31,6 @@ import { eq } from 'drizzle-orm';
 import * as tables from '../database/schema.js';
 import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
 import type { PendingThreadRevision } from '../thread-revision/thread-revision.service.js';
-
-function rethrowFederationPolicy(error: unknown): void {
-  if (
-    error instanceof S2sResponseError &&
-    (error.code === BusinessCode.FEDERATION_QUOTA_EXCEEDED ||
-      error.code === BusinessCode.FEDERATION_CAPABILITY_DISABLED ||
-      error.code === BusinessCode.FEDERATION_PAYLOAD_TOO_LARGE)
-  ) {
-    throw new BusinessException(
-      error.code,
-      error.message,
-      HttpStatus.OK,
-      error.data,
-    );
-  }
-}
 
 /**
  * Invite endpoints — the single API for friend-add (and, when wired, group-invite). The service owns

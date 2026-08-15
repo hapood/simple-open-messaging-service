@@ -323,9 +323,7 @@ describe('parseLinkContent', () => {
       parseLinkContent(JSON.stringify({ ...base, siteName: 'X' })),
     ).toMatchObject({ siteName: 'X' });
     expect(
-      parseLinkContent(
-        JSON.stringify({ ...base, siteName: 'X'.repeat(101) }),
-      ),
+      parseLinkContent(JSON.stringify({ ...base, siteName: 'X'.repeat(101) })),
     ).toBeNull();
     expect(
       parseLinkContent(JSON.stringify({ ...base, version: 1 })),

@@ -13,7 +13,9 @@ function resolvePinoLevel(raw: string | undefined): pino.LevelWithSilent {
   const v = (raw ?? 'log').toLowerCase();
   if (v === 'log') return 'info';
   if (v === 'verbose') return 'trace';
-  if (['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'].includes(v)) {
+  if (
+    ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'].includes(v)
+  ) {
     return v as pino.LevelWithSilent;
   }
   return 'info';

@@ -1,4 +1,4 @@
-# SOMS Federation 实现文档
+# SOMS 的 Simple Open Chat Federation Protocol 实现文档
 
 本目录记录 SOMS 对 Federation 协议的实现方式、审计结果和历史设计。面向独立实现者的规范已作为
 一级发布制品移至 [`spec/`](../../spec/)。本目录中的实现细节不能覆盖规范性 wire contract。

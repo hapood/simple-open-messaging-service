@@ -58,7 +58,8 @@ describe('KvStoreService.incrWithExpire — fixed window', () => {
       const kvStore = new KvStoreService();
       // 65 increments with no time advancing → all within window A.
       const counts: number[] = [];
-      for (let i = 0; i < 65; i++) counts.push(await kvStore.incrWithExpire('rl:burst', 60));
+      for (let i = 0; i < 65; i++)
+        counts.push(await kvStore.incrWithExpire('rl:burst', 60));
       expect(counts[0]).toBe(1);
       expect(counts[59]).toBe(60); // last allowed — ThrottleGuard rejects only when n > limit
       expect(counts[60]).toBe(61); // first to trip a limit of 60
@@ -102,7 +103,9 @@ describe('KvStoreService persistent entries', () => {
     expect(await kvStore.getPersistent('session:a')).toBe('v2');
 
     expect(await kvStore.delPersistent('session:a')).toBe(1);
-    expect(await kvStore.updatePersistent('session:a', 'stale', null)).toBe(false);
+    expect(await kvStore.updatePersistent('session:a', 'stale', null)).toBe(
+      false,
+    );
     expect(await kvStore.getPersistent('session:a')).toBeNull();
   });
 
@@ -114,7 +117,11 @@ describe('KvStoreService persistent entries', () => {
       vi.advanceTimersByTime(10_000);
       expect(await kvStore.getPersistent('session:web')).toBeNull();
       expect(
-        await kvStore.updatePersistent('session:web', 'stale', Date.now() + 10_000),
+        await kvStore.updatePersistent(
+          'session:web',
+          'stale',
+          Date.now() + 10_000,
+        ),
       ).toBe(false);
     } finally {
       vi.useRealTimers();

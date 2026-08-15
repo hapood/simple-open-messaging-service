@@ -27,7 +27,10 @@ export class ApiResult<T = unknown> {
   })
   code!: number;
 
-  @ApiProperty({ example: 'successful', description: 'Human-readable status message' })
+  @ApiProperty({
+    example: 'successful',
+    description: 'Human-readable status message',
+  })
   message!: string;
 
   /**

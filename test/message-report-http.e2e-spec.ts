@@ -23,7 +23,6 @@ import {
   messageReport,
   messageThread,
   threadParticipant,
-  user,
 } from '../src/database/schema.js';
 import { seedSession, seedUser } from './seed.js';
 

@@ -6,7 +6,8 @@ function setup(batchIds: string[]) {
     .fn()
     .mockResolvedValue(batchIds.map((batchId) => ({ batchId })));
   const innerJoin = vi.fn().mockReturnValue({ where });
-  const from = vi.fn().mockReturnValue({ innerJoin });
+  const leftJoin = vi.fn().mockReturnValue({ where });
+  const from = vi.fn().mockReturnValue({ innerJoin, leftJoin });
   const selectDistinct = vi.fn().mockReturnValue({ from });
   const recoverInboundBatch = vi.fn().mockResolvedValue({
     batchId: batchIds[0] ?? '',

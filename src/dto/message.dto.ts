@@ -7,7 +7,6 @@ import {
   IsIn,
   IsInt,
   IsNotEmpty,
-  IsNumber,
   IsOptional,
   IsString,
   IsUUID,
@@ -35,7 +34,7 @@ export class SendMessageDto {
   })
   @IsString()
   @IsNotEmpty()
-  // JSON escaping can expand a 5,000-character text body substantially; the controller validates
+  // JSON escaping can expand a 4,000-code-point text body substantially; the controller validates
   // the decoded `text` field against the product limit.
   @MaxLength(32000, { message: 'content envelope is too large' })
   content!: string;

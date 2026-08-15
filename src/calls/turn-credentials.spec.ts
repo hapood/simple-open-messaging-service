@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { createHmac } from 'node:crypto';
-import { mintTurnCredential, buildIceServers, DEFAULT_TURN_TTL_SECONDS } from './turn-credentials.js';
+import {
+  mintTurnCredential,
+  buildIceServers,
+  DEFAULT_TURN_TTL_SECONDS,
+} from './turn-credentials.js';
 
 describe('mintTurnCredential', () => {
   it('encodes <expiry>:<userId> as the username', () => {
@@ -11,7 +15,9 @@ describe('mintTurnCredential', () => {
 
   it('produces base64 HMAC-SHA1(secret, username) coturn expects', () => {
     const c = mintTurnCredential('s3cr3t', 42, 600, 1_000_000);
-    const expected = createHmac('sha1', 's3cr3t').update(c.username).digest('base64');
+    const expected = createHmac('sha1', 's3cr3t')
+      .update(c.username)
+      .digest('base64');
     expect(c.credential).toBe(expected);
   });
 
@@ -41,7 +47,8 @@ describe('buildIceServers', () => {
 
   it('adds TURN REST creds when SOMS_TURN_URLS + SOMS_TURN_REST_SECRET are set', () => {
     process.env.SOMS_STUN_URLS = 'stun:turn.example:3478';
-    process.env.SOMS_TURN_URLS = 'turn:turn.example:3478?transport=udp,turns:turn.example:5349?transport=tcp';
+    process.env.SOMS_TURN_URLS =
+      'turn:turn.example:3478?transport=udp,turns:turn.example:5349?transport=tcp';
     process.env.SOMS_TURN_REST_SECRET = 's3cr3t';
     process.env.SOMS_TURN_TTL = '600';
     try {
@@ -55,7 +62,9 @@ describe('buildIceServers', () => {
       // username carries the injected now + ttl
       expect(turn.username).toBe(`1000600:7`);
       // credential is the coturn HMAC
-      expect(turn.credential).toBe(createHmac('sha1', 's3cr3t').update('1000600:7').digest('base64'));
+      expect(turn.credential).toBe(
+        createHmac('sha1', 's3cr3t').update('1000600:7').digest('base64'),
+      );
     } finally {
       delete process.env.SOMS_STUN_URLS;
       delete process.env.SOMS_TURN_URLS;
@@ -68,7 +77,9 @@ describe('buildIceServers', () => {
     process.env.SOMS_STUN_URLS = 'stun:turn.example:3478';
     process.env.SOMS_TURN_URLS = 'turn:turn.example:3478';
     try {
-      expect(() => buildIceServers(7, 1_000_000)).toThrow(/TURN misconfiguration/);
+      expect(() => buildIceServers(7, 1_000_000)).toThrow(
+        /TURN misconfiguration/,
+      );
     } finally {
       delete process.env.SOMS_STUN_URLS;
       delete process.env.SOMS_TURN_URLS;
@@ -78,7 +89,9 @@ describe('buildIceServers', () => {
   it('throws when only SOMS_TURN_REST_SECRET is set (no URLs) — symmetric misconfiguration', () => {
     process.env.SOMS_TURN_REST_SECRET = 's3cr3t';
     try {
-      expect(() => buildIceServers(7, 1_000_000)).toThrow(/TURN misconfiguration/);
+      expect(() => buildIceServers(7, 1_000_000)).toThrow(
+        /TURN misconfiguration/,
+      );
     } finally {
       delete process.env.SOMS_TURN_REST_SECRET;
     }

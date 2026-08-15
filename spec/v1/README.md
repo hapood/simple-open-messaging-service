@@ -1,14 +1,14 @@
-# SOMS Federation v1
+# Simple Open Chat Federation Protocol v1
 
 状态：`RELEASE CANDIDATE`
-发布：`v1.0-rc.1`
+发布：`v1.0-rc.2`
 
-本目录是 Federation Protocol v1.0-rc.1 的规范发布包。协议模型和必选功能已经闭合；v1.0 发布前仍可
+本目录是 Simple Open Chat Federation Protocol v1.0-rc.2 的规范发布包。协议模型和必选功能已经闭合；v1.0 发布前仍可
 进行编辑性澄清、一致性修正，以及对评审中发现的协议缺口作有记录的修复。正文只规定独立实现之间可观察的传输契约（wire contract）、
 状态转换和安全边界；数据库表、工作进程（worker）、队列、用户界面（UI）、部署参数和本地产品限制
 不属于协议，除非某项本地行为会改变对端可观察的结果并被正文明确约束。
 
-中文稿是 v1.0-rc.1 的当前工作文本。未来发布中英文版本时，以英文版为准；在英文版正式发布前，
+中文稿是 v1.0-rc.2 的当前工作文本。未来发布中英文版本时，以英文版为准；在英文版正式发布前，
 不得用尚未批准的英文翻译改变中文稿的规范含义。
 
 规范词“必须（MUST）”“不得（MUST NOT）”“应该（SHOULD）”“不应该（SHOULD NOT）”和
@@ -19,6 +19,9 @@ wire 字段、枚举、HTTP header、标准名和稳定错误码（stable code�
 示例、图、TypeScript 记法和 `schema/` 制品用于说明或验证正文，不独立产生协议要求。
 
 ## 阅读顺序
+
+发布历史见 [CHANGELOG](./CHANGELOG.md)，完整合规范围和模块依赖见
+[CONFORMANCE](./CONFORMANCE.md)，发布元数据见 [`RELEASE.json`](../RELEASE.json)。
 
 1. [主协议](./protocol.md)：角色、版本、HTTP 接口面（HTTP surface）、共享类型、响应、持久状态和演进规则。
 2. [传输与安全](./transport-security.md)：well-known、根密钥/签名密钥（root/signing key）、SRV、TLS、逻辑权威（authority）、摘要（digest）和 HTTP Message Signature。
@@ -33,9 +36,11 @@ wire 字段、枚举、HTTP header、标准名和稳定错误码（stable code�
 11. [机器可读发布包](./schema/README.md)：JSON Schema、HTTP 清单（manifest）、正反向量与一致性测试 CLI（conformance CLI）。
 
 主协议定义共享规则；传输与安全文档定义所有操作（operation）共用的发现、TLS 和签名配置（profile）；
-其余 operation 文档只定义自己的 body、授权、状态与幂等语义。operation 文档可以收紧共享规则，但不能
+其余 operation 文档只定义自己的 body、授权、状态与幂等语义。本目录各正文文件共同构成一个版本化
+发布包，状态属于整个发布包，而不是普通章节。只有能够独立实现、独立测试并明确声明依赖关系的扩展
+规范，才可以拥有独立发布状态。operation 文档可以收紧共享规则，但不能
 放宽传输或身份安全要求。若规范性正文之间冲突，应视为规范缺陷并按主协议的优先级规则处理，不应从
-schema、示例或当前 SOMS 实现反推另一套语义。
+schema、示例或任一现有实现反推另一套语义。
 
 同目录的 JSON Schema、HTTP manifest、正反向量和 conformance CLI 与规范性正文一起发布，作为
 非规范性验证资源。它们不是节点运行时协商的一部分，也不能改变规范性正文；发现阶段只通过

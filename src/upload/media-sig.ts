@@ -58,7 +58,8 @@ const SIGS: Sig[] = [
   {
     family: 'image',
     ext: 'jpg',
-    match: (b) => b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
+    match: (b) =>
+      b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
   },
   {
     family: 'image',

@@ -20,8 +20,8 @@ const item = (
   originSeq: Number(sequence),
   contentType: 'PURE_TEXT',
   content: JSON.stringify({ text: `message ${sequence}` }),
-  createdAt: Date.now(),
-  updatedAt: Date.now(),
+  createdAt: 1_700_000_001_000,
+  originCreatedAt: 1_700_000_000_000,
   clientMessageId: null,
   assets: [],
 });
@@ -31,9 +31,7 @@ describe('federation message context isolation', () => {
     const service = Object.create(
       FederationService.prototype,
     ) as FederationService & Record<string, unknown>;
-    const updateWhere = vi.fn().mockResolvedValue(undefined);
-    const updateSet = vi.fn(() => ({ where: updateWhere }));
-    const update = vi.fn(() => ({ set: updateSet }));
+    const update = vi.fn();
     Object.assign(service, {
       config: { domain: 'local.test' },
       logger: { error: vi.fn() },
@@ -52,8 +50,7 @@ describe('federation message context isolation', () => {
         message: {
           findFirst: vi.fn().mockResolvedValue({
             id: 1n,
-            originSeq: null,
-            originServerTime: null,
+            createdAt: new Date(1_700_000_000_000),
           }),
         },
       },
@@ -75,11 +72,7 @@ describe('federation message context isolation', () => {
       ),
     ).resolves.toEqual([]);
 
-    expect(update).toHaveBeenCalledTimes(1);
-    expect(updateSet).toHaveBeenCalledWith({
-      originSeq: 1,
-      originServerTime: expect.any(Date),
-    });
+    expect(update).not.toHaveBeenCalled();
   });
 
   it('rolls back a page that references an unknown thread', async () => {

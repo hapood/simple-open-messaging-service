@@ -1,9 +1,4 @@
-import {
-  mkdirSync,
-  readdirSync,
-  statSync,
-  unlinkSync,
-} from 'node:fs';
+import { mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { createStream, type RotatingFileStream } from 'rotating-file-stream';
 import { optionalIntEnv } from '../common/env.js';
@@ -90,7 +85,8 @@ function pruneOld(): void {
   }
   const cutoff = Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000;
   for (const name of entries) {
-    if (!name.startsWith(ARCHIVE_PREFIX) || !name.endsWith(ARCHIVE_SUFFIX)) continue;
+    if (!name.startsWith(ARCHIVE_PREFIX) || !name.endsWith(ARCHIVE_SUFFIX))
+      continue;
     const abs = join(LOG_DIR, name);
     try {
       if (statSync(abs).mtimeMs < cutoff) unlinkSync(abs);

@@ -65,6 +65,9 @@ import { ThreadRevisionService } from '../thread-revision/thread-revision.servic
 import {
   parseTextMessageContent,
   stringifyTextMessageContent,
+  TEXT_MESSAGE_MAX_CODE_POINTS,
+  unicodeCodePointLength,
+  hasUnpairedSurrogate,
 } from '../../shared/text-message-content.js';
 
 @ApiTags('message')
@@ -233,10 +236,18 @@ export class MessageController {
       if (!textContent.text.trim()) {
         throw new BusinessException(BusinessCode.MESSAGE_EMPTY, 'no content');
       }
-      if (textContent.text.length > 5000) {
+      if (hasUnpairedSurrogate(textContent.text)) {
         throw new BusinessException(
           BusinessCode.VALIDATION_FAILED,
-          'text must be at most 5000 characters',
+          'text must contain valid Unicode',
+        );
+      }
+      if (
+        unicodeCodePointLength(textContent.text) > TEXT_MESSAGE_MAX_CODE_POINTS
+      ) {
+        throw new BusinessException(
+          BusinessCode.VALIDATION_FAILED,
+          `text must be at most ${TEXT_MESSAGE_MAX_CODE_POINTS} Unicode code points`,
         );
       }
       dto.content = stringifyTextMessageContent({
@@ -383,15 +394,14 @@ export class MessageController {
       dto.clientMessageId,
       bundle.bundleId,
       async (tx) => {
-        // Quota: the outer forward counts as ONE message; each bundle in the closure counts as ONE file
-        // (inner messages no longer count individually; bundle asset bytes are excluded by design).
+        // The outer forward is one sent message; each distinct bundled asset is one file.
         await this.userQuota.tickLax(req.user.userId, 'messages', tx, 1);
-        if (bundle.bundleCount > 0) {
+        if (bundle.assets.length > 0) {
           await this.userQuota.tickLax(
             req.user.userId,
             'files',
             tx,
-            bundle.bundleCount,
+            bundle.assets.length,
           );
         }
         await this.forwardBundles.persistPrepared(tx, bundle);
@@ -423,15 +433,13 @@ export class MessageController {
     content: string,
   ): Promise<string> {
     const entities: Array<{
-      entityType: string;
+      entityType: 'user' | 'audience';
       entityId: string;
-      version: number;
     }> = [];
     transformMessageEntities(content, (entity) => {
       if (
-        entity.version === 1 &&
-        (entity.entityType === 'user' ||
-          (entity.entityType === 'audience' && entity.entityId === 'all'))
+        entity.entityType === 'user' ||
+        (entity.entityType === 'audience' && entity.entityId === 'all')
       ) {
         entities.push(entity);
       }
@@ -454,20 +462,33 @@ export class MessageController {
     const roster = await this.participantService.getRoster(
       req.threadAccess.threadId,
     );
-    const membersByAccount = new Map(
-      roster.map((member) => [member.user.account, member.user]),
-    );
     return transformMessageEntities(content, (entity) => {
-      if (entity.version !== 1) return entity.raw;
       if (entity.entityType === 'user') {
-        const user = membersByAccount.get(entity.entityId);
-        if (!user) {
+        const separator = entity.entityId.lastIndexOf('@');
+        const requestedAccount =
+          separator < 0 ? entity.entityId : entity.entityId.slice(0, separator);
+        const requestedDomain =
+          separator < 0 ? null : entity.entityId.slice(separator + 1);
+        const matches = roster.filter(({ user }) => {
+          return (
+            user.account === requestedAccount &&
+            (requestedDomain === null ||
+              user.domain === requestedDomain ||
+              (user.domain === 'local' &&
+                requestedDomain === this.federation.ourDomain))
+          );
+        });
+        if (matches.length !== 1) {
           throw new BusinessException(
             BusinessCode.GROUP_TARGET_NOT_MEMBER,
-            `mention target is not an active member: ${entity.entityId}`,
+            `mention target is not a unique active member: ${entity.entityId}`,
           );
         }
-        return serializeUserMention(user.name, user.account);
+        const user = matches[0].user;
+        return serializeUserMention(
+          user.name,
+          `${user.account}@${user.domain}`,
+        );
       }
       if (entity.entityType === 'audience' && entity.entityId === 'all') {
         const role = req.threadAccess.participant.role;

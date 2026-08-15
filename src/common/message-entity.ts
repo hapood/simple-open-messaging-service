@@ -6,17 +6,15 @@ export interface MessageTextSegment {
 export interface MessageEntitySegment {
   kind: 'entity';
   raw: string;
-  sigil: '@' | '#';
+  sigil: '@';
   label: string;
-  entityType: string;
+  entityType: 'user' | 'audience';
   entityId: string;
-  version: number;
-  params: Readonly<Record<string, string>>;
 }
 
 export type MessageSegment = MessageTextSegment | MessageEntitySegment;
 
-export const ALL_MENTION_ID = 'soms:audience:all';
+export const ALL_MENTION_ID = 'socfp:audience:all';
 
 interface ParsedAt {
   entity: MessageEntitySegment;
@@ -27,7 +25,7 @@ interface ParsedAt {
 export function serializeUserMention(label: string, account: string): string {
   if (!label) throw new Error('mention label must not be empty');
   if (!account) throw new Error('mention account must not be empty');
-  return `[@${escapeLabel(label)}](soms://user/${encodeURIComponent(account)}?v=1)`;
+  return `[@${escapeLabel(label)}](socfp://user/${encodeURIComponent(account)})`;
 }
 
 /** Serialize the canonical v1 representation of a group-wide mention. */
@@ -36,11 +34,11 @@ export function serializeAudienceMention(
   audience: 'all',
 ): string {
   if (!label) throw new Error('mention label must not be empty');
-  return `[@${escapeLabel(label)}](soms://audience/${audience}?v=1)`;
+  return `[@${escapeLabel(label)}](socfp://audience/${audience})`;
 }
 
 /**
- * Encode an editor plain-text node for storage. A complete SOMS entity typed or
+ * Encode an editor plain-text node for storage. A complete SOCFP entity typed or
  * pasted as text is escaped at its opening bracket; a real editor entity node
  * bypasses this function and calls its entity serializer instead.
  */
@@ -103,7 +101,7 @@ export function parseMessageEntities(content: string): MessageSegment[] {
   return segments;
 }
 
-/** Produce copy/search/preview text without exposing the SOMS URI. */
+/** Produce copy/search/preview text without exposing the SOCFP URI. */
 export function toDisplayText(content: string): string {
   return parseMessageEntities(content)
     .map((segment) =>
@@ -139,14 +137,11 @@ export function transformMessageEntities(
 }
 
 function parseEntityAt(content: string, start: number): ParsedAt | null {
-  if (
-    content[start] !== '[' ||
-    (content[start + 1] !== '@' && content[start + 1] !== '#')
-  ) {
+  if (content[start] !== '[' || content[start + 1] !== '@') {
     return null;
   }
 
-  const sigil = content[start + 1] as '@' | '#';
+  const sigil = '@';
   const labelResult = readLabel(content, start + 2);
   if (!labelResult || !labelResult.label) return null;
   const uriStart = labelResult.end + 2;
@@ -161,11 +156,11 @@ function parseEntityAt(content: string, start: number): ParsedAt | null {
   } catch {
     return null;
   }
-  if (url.protocol !== 'soms:' || !url.hostname || url.pathname.length <= 1) {
+  if (url.protocol !== 'socfp:' || !url.hostname || url.pathname.length <= 1) {
     return null;
   }
-  const versionText = url.searchParams.get('v');
-  if (!versionText || !/^[1-9]\d*$/.test(versionText)) return null;
+  if (url.search || url.hash || url.port || url.username || url.password)
+    return null;
 
   let entityId: string;
   try {
@@ -175,10 +170,20 @@ function parseEntityAt(content: string, start: number): ParsedAt | null {
   }
   if (!entityId || entityId.includes('/')) return null;
 
-  const params: Record<string, string> = {};
-  url.searchParams.forEach((value, key) => {
-    if (key !== 'v') params[key] = value;
-  });
+  const entityType =
+    url.hostname === 'user'
+      ? 'user'
+      : url.hostname === 'audience'
+        ? 'audience'
+        : null;
+  const canonical =
+    entityType === 'user'
+      ? `socfp://user/${encodeURIComponent(entityId)}`
+      : entityType === 'audience' && entityId === 'all'
+        ? 'socfp://audience/all'
+        : null;
+  if (entityType === null || canonical === null || uriText !== canonical)
+    return null;
   const end = closeParen + 1;
   return {
     entity: {
@@ -186,10 +191,8 @@ function parseEntityAt(content: string, start: number): ParsedAt | null {
       raw: content.slice(start, end),
       sigil,
       label: labelResult.label,
-      entityType: url.hostname,
+      entityType,
       entityId,
-      version: Number(versionText),
-      params,
     },
     end,
   };

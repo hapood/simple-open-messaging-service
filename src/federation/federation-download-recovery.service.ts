@@ -3,12 +3,9 @@ import {
   Logger,
   type OnApplicationBootstrap,
 } from '@nestjs/common';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, or } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import {
-  fileSyncProgress,
-  pendingMedia,
-} from '../database/schema.js';
+import { fileSyncProgress, pendingMedia } from '../database/schema.js';
 import { FederationService } from './federation.service.js';
 
 /**
@@ -32,14 +29,17 @@ export class FederationDownloadRecoveryService
       const batches = await this.database.db
         .selectDistinct({ batchId: pendingMedia.batchId })
         .from(pendingMedia)
-        .innerJoin(
+        .leftJoin(
           fileSyncProgress,
           eq(fileSyncProgress.batchId, pendingMedia.batchId),
         )
         .where(
           and(
             eq(pendingMedia.direction, 'INBOUND'),
-            inArray(fileSyncProgress.status, ['PENDING', 'DOWNLOADING']),
+            or(
+              inArray(fileSyncProgress.status, ['PENDING', 'DOWNLOADING']),
+              isNotNull(pendingMedia.dependsOnOriginSeq),
+            ),
           ),
         );
 

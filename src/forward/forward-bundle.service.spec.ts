@@ -2,14 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { ContentType } from '../database/enums.js';
-import { forwardBundle, forwardBundleDependency } from '../database/schema.js';
+import { forwardBundle } from '../database/schema.js';
 import {
-  digestManifest,
   FORWARD_MAX_WIRE_JSON_BYTES,
   ForwardBundleService,
   localizeForwardMediaContent,
-  type ForwardManifest,
-  type ForwardWireClosure,
 } from './forward-bundle.service.js';
 
 function sourceRow(childDepth: number) {
@@ -102,48 +99,34 @@ function databaseFake(childDepth: number, tx?: unknown) {
         forwardBundle: {
           findFirst: vi.fn().mockResolvedValue({
             id: '01childbundle00000000000000',
-            depth: childDepth,
-            manifestDigest: 'a'.repeat(64),
-            manifest: {
-              schemaVersion: 1,
-              bundleId: '01childbundle00000000000000',
-              depth: childDepth,
-              children: [],
+            messages: [
+              {
+                id: 1,
+                author: { displayName: 'A', account: 'a', domain: 'local' },
+                contentType: 'PURE_TEXT',
+                content: JSON.stringify({ text: 'nested' }),
+                sentAt: 1,
+              },
+            ],
+            forwardBundleDependencies_parentBundleId: [],
+            forwardBundleAssets: [],
+          }),
+          findMany: vi.fn().mockResolvedValue([
+            {
+              id: '01childbundle00000000000000',
               messages: [
                 {
-                  sender: { displayName: 'A', account: 'a', domain: 'local' },
+                  id: 1,
+                  author: {
+                    displayName: 'A',
+                    account: 'a',
+                    domain: 'local',
+                  },
                   contentType: 'PURE_TEXT',
                   content: JSON.stringify({ text: 'nested' }),
                   sentAt: 1,
                 },
               ],
-            },
-            forwardBundleDependencies_parentBundleId: [],
-          }),
-          findMany: vi.fn().mockResolvedValue([
-            {
-              id: '01childbundle00000000000000',
-              depth: childDepth,
-              manifestDigest: 'a'.repeat(64),
-              manifest: {
-                schemaVersion: 1,
-                bundleId: '01childbundle00000000000000',
-                depth: childDepth,
-                children: [],
-                messages: [
-                  {
-                    sender: {
-                      displayName: 'A',
-                      account: 'a',
-                      domain: 'local',
-                    },
-                    contentType: 'PURE_TEXT',
-                    content: JSON.stringify({ text: 'nested' }),
-                    sentAt: 1,
-                  },
-                ],
-              },
-              forwardBundleAssets: [],
             },
           ]),
         },
@@ -159,9 +142,10 @@ const messageServiceFake = {
   attachQuotePreviews: vi.fn(
     async (
       rows: ReturnType<typeof textQueryRow>[],
-      _filters?: Map<number, unknown>,
+      filters?: Map<number, unknown>,
     ) =>
       rows.map((row) => {
+        void filters;
         const content = JSON.parse(row.content) as {
           text?: string;
           quote?: { seq: number; preview?: string };
@@ -285,8 +269,6 @@ describe('ForwardBundleService', () => {
       [
         {
           digest,
-          kind: 'image',
-          extension: 'webp',
           bytes: 10,
         },
       ],
@@ -345,15 +327,12 @@ describe('ForwardBundleService', () => {
       { threadId: 4, seq: 7 },
     ]);
 
-    expect(prepared.manifest.messages[0]).toMatchObject({ id: 1 });
-    expect(prepared.manifest.messages[1]).toMatchObject({ id: 2 });
-    expect(prepared.manifest.messages[1].quote).toEqual({
-      preview: 'Alice：original',
-      targetId: 1,
-    });
+    expect(prepared.messages[0]).toMatchObject({ id: 1 });
+    expect(prepared.messages[1]).toMatchObject({ id: 2 });
+    expect(prepared.messages[1].quoteTargetId).toBe(1);
   });
 
-  it('keeps an unselected quote as a non-jumpable preview without adding it', async () => {
+  it('omits an unselected quote target', async () => {
     const reply = textQueryRow(
       7,
       JSON.stringify({ text: 'reply', quote: { seq: 4 } }),
@@ -367,11 +346,9 @@ describe('ForwardBundleService', () => {
       { threadId: 4, seq: 7 },
     ]);
 
-    expect(prepared.manifest.messages).toHaveLength(1);
-    expect(prepared.manifest.messages[0]).toMatchObject({ id: 1 });
-    expect(prepared.manifest.messages[0].quote).toEqual({
-      preview: 'Alice：original',
-    });
+    expect(prepared.messages).toHaveLength(1);
+    expect(prepared.messages[0]).toMatchObject({ id: 1 });
+    expect(prepared.messages[0].quoteTargetId).toBeUndefined();
   });
 
   it('reuses cleared-history and P2P-block filters when resolving quote previews', async () => {
@@ -464,70 +441,12 @@ describe('ForwardBundleService', () => {
     expect(database.db.query.message.findFirst).not.toHaveBeenCalled();
   });
 
-  it('rejects forwarding an existing depth-3 bundle because the result would be depth 4', async () => {
-    const service = forwardService(databaseFake(3));
-
-    await expect(
-      service.createFromMessages(9, [{ threadId: 4, seq: 7 }]),
-    ).rejects.toMatchObject<Partial<BusinessException>>({
-      bizCode: BusinessCode.FORWARD_MAX_DEPTH_EXCEEDED,
-    });
-  });
-
-  it('stores children as a JSON array and a searchable dependency when result depth is 3', async () => {
-    const createBundle = vi.fn().mockResolvedValue(undefined);
-    const createDependencies = vi.fn().mockResolvedValue(undefined);
-    const tx = {
-      insert: vi.fn((table: unknown) => ({
-        values:
-          table === forwardBundle
-            ? createBundle
-            : table === forwardBundleDependency
-              ? createDependencies
-              : vi.fn(),
-      })),
-    };
-    const service = forwardService(databaseFake(2, tx));
-    const result = await service.createFromMessages(9, [
-      { threadId: 4, seq: 7 },
-    ]);
-
-    expect(result.depth).toBe(3);
-    const manifest = createBundle.mock.calls[0][0].manifest as ForwardManifest;
-    expect(manifest.children).toEqual(['01childbundle00000000000000']);
-    expect(createDependencies).toHaveBeenCalledWith([
-      {
-        parentBundleId: result.bundleId,
-        childBundleId: '01childbundle00000000000000',
-        ordinal: 0,
-      },
-    ]);
-  });
-
-  it('hashes manifests canonically rather than depending on object key insertion order', () => {
-    const first = {
-      schemaVersion: 1,
-      bundleId: '01bundle0000000000000000000',
-      depth: 1,
-      children: [],
-      messages: [],
-    } as ForwardManifest;
-    const second = {
-      messages: [],
-      children: [],
-      depth: 1,
-      bundleId: '01bundle0000000000000000000',
-      schemaVersion: 1,
-    } as ForwardManifest;
-    expect(digestManifest(first)).toBe(digestManifest(second));
-  });
-
   it.each([
     [
       'non-positive message id',
       {
         id: 0,
-        sender: { displayName: 'A', account: 'a', domain: 'peer.test' },
+        author: { displayName: 'A', account: 'a', domain: 'peer.test' },
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'hello' }),
         sentAt: 1,
@@ -537,7 +456,7 @@ describe('ForwardBundleService', () => {
       'missing quote target',
       {
         id: 1,
-        sender: { displayName: 'A', account: 'a', domain: 'peer.test' },
+        author: { displayName: 'A', account: 'a', domain: 'peer.test' },
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'reply' }),
         sentAt: 1,
@@ -548,7 +467,7 @@ describe('ForwardBundleService', () => {
       'null quote descriptor',
       {
         id: 1,
-        sender: { displayName: 'A', account: 'a', domain: 'peer.test' },
+        author: { displayName: 'A', account: 'a', domain: 'peer.test' },
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'reply' }),
         sentAt: 1,
@@ -556,28 +475,105 @@ describe('ForwardBundleService', () => {
       },
     ],
   ])('rejects federated %s', async (_label, wireMessage) => {
-    const manifest = {
-      schemaVersion: 1,
-      bundleId: '01badquote00000000000000000',
-      depth: 1,
-      children: [],
-      messages: [wireMessage],
-    } as unknown as ForwardManifest;
+    const bundleId = '01badquote00000000000000000';
     const service = forwardService({});
 
     await expect(
       service.importClosure('peer.test', {
-        schemaVersion: 1,
-        rootBundleId: manifest.bundleId,
-        bundles: [
+        id: bundleId,
+        messages: [wireMessage],
+        children: [],
+        assets: [],
+        messageCount: 1,
+        assetCount: 0,
+      }),
+    ).rejects.toMatchObject<Partial<BusinessException>>({
+      bizCode: BusinessCode.FEDERATION_MALFORMED,
+    });
+  });
+
+  it('imports cyclic child references and scopes message ids per bundle', async () => {
+    const insertedBundles: Array<{
+      id: string;
+      sourceBundleId: string | null;
+      messages: Array<{ id: number; childBundleId?: string; content: string }>;
+    }> = [];
+    const tx = {
+      query: {
+        forwardBundle: { findFirst: vi.fn().mockResolvedValue(undefined) },
+      },
+      insert: vi.fn((table: unknown) => ({
+        values: vi.fn(async (value: unknown) => {
+          if (table === forwardBundle) {
+            insertedBundles.push(value as (typeof insertedBundles)[number]);
+          }
+        }),
+      })),
+    };
+    const service = forwardService({});
+    const card = (bundleId: string) => JSON.stringify({ bundleId });
+    const message = (childBundleId: string) => ({
+      id: 1,
+      author: { displayName: 'A', account: 'alice', domain: 'peer.test' },
+      contentType: ContentType.FORWARD,
+      content: card(childBundleId),
+      sentAt: 1,
+      childBundleId,
+      quoteTargetId: 1,
+    });
+
+    await expect(
+      service.importClosure(
+        'peer.test',
+        {
+          id: 'root',
+          messages: [message('a')],
+          children: [
+            { id: 'a', messages: [message('b')] },
+            { id: 'b', messages: [message('a')] },
+          ],
+          assets: [],
+        },
+        tx as never,
+      ),
+    ).resolves.toHaveProperty('localRootBundleId');
+
+    expect(insertedBundles).toHaveLength(3);
+    expect(insertedBundles.map((bundle) => bundle.sourceBundleId)).toEqual([
+      'root',
+      null,
+      null,
+    ]);
+    const localIds = new Set(insertedBundles.map((bundle) => bundle.id));
+    for (const bundle of insertedBundles) {
+      expect(bundle.messages[0].id).toBe(1);
+      expect(localIds).toContain(bundle.messages[0].childBundleId);
+      expect(JSON.parse(bundle.messages[0].content).bundleId).toBe(
+        bundle.messages[0].childBundleId,
+      );
+    }
+  });
+
+  it('rejects a FORWARD card whose bundleId differs from childBundleId', async () => {
+    const service = forwardService({});
+    await expect(
+      service.importClosure('peer.test', {
+        id: 'root',
+        messages: [
           {
-            id: manifest.bundleId,
-            depth: 1,
-            manifest,
-            manifestDigest: digestManifest(manifest),
-            assets: [],
+            id: 1,
+            author: {
+              displayName: 'A',
+              account: 'alice',
+              domain: 'peer.test',
+            },
+            contentType: ContentType.FORWARD,
+            content: JSON.stringify({ bundleId: 'different' }),
+            sentAt: 1,
+            childBundleId: 'child',
           },
         ],
+        children: [{ id: 'child', messages: [] }],
         assets: [],
       }),
     ).rejects.toMatchObject<Partial<BusinessException>>({
@@ -585,96 +581,25 @@ describe('ForwardBundleService', () => {
     });
   });
 
-  it('rejects a cyclic federated closure before writing any bundle', async () => {
-    const manifestA: ForwardManifest = {
-      schemaVersion: 1,
-      bundleId: '01cyclea0000000000000000000',
-      depth: 2,
-      children: ['01cycleb0000000000000000000'],
-      messages: [
-        {
-          sender: { displayName: 'A', account: 'a', domain: 'peer.test' },
-          contentType: 'FORWARD',
-          content: '{}',
-          sentAt: 1,
-          childBundleId: '01cycleb0000000000000000000',
-        },
-      ],
-    };
-    const manifestB: ForwardManifest = {
-      schemaVersion: 1,
-      bundleId: '01cycleb0000000000000000000',
-      depth: 2,
-      children: ['01cyclea0000000000000000000'],
-      messages: [
-        {
-          sender: { displayName: 'B', account: 'b', domain: 'peer.test' },
-          contentType: 'FORWARD',
-          content: '{}',
-          sentAt: 1,
-          childBundleId: '01cyclea0000000000000000000',
-        },
-      ],
-    };
-    const closure: ForwardWireClosure = {
-      schemaVersion: 1,
-      rootBundleId: manifestA.bundleId,
-      bundles: [
-        {
-          id: manifestA.bundleId,
-          depth: 2,
-          manifest: manifestA,
-          manifestDigest: digestManifest(manifestA),
-          assets: [],
-        },
-        {
-          id: manifestB.bundleId,
-          depth: 2,
-          manifest: manifestB,
-          manifestDigest: digestManifest(manifestB),
-          assets: [],
-        },
-      ],
-      assets: [],
-    };
-    const service = forwardService({});
-    await expect(
-      service.importClosure('peer.test', closure),
-    ).rejects.toMatchObject<Partial<BusinessException>>({
-      bizCode: BusinessCode.FEDERATION_MALFORMED,
-    });
-  });
-
   it('rejects federated closure JSON over the wire limit', async () => {
-    const manifest: ForwardManifest = {
-      schemaVersion: 1,
-      bundleId: '01oversize00000000000000000',
-      depth: 1,
-      children: [],
-      messages: [
-        {
-          sender: { displayName: 'A', account: 'a', domain: 'peer.test' },
-          contentType: 'PURE_TEXT',
-          content: 'x'.repeat(FORWARD_MAX_WIRE_JSON_BYTES),
-          sentAt: 1,
-        },
-      ],
-    };
+    const messages = [
+      {
+        id: 1,
+        author: { displayName: 'A', account: 'a', domain: 'peer.test' },
+        contentType: 'PURE_TEXT',
+        content: 'x'.repeat(FORWARD_MAX_WIRE_JSON_BYTES),
+        sentAt: 1,
+      },
+    ];
     const service = forwardService({});
     await expect(
       service.importClosure('peer.test', {
-        schemaVersion: 1,
-        rootBundleId: manifest.bundleId,
-        bundles: [
-          {
-            id: manifest.bundleId,
-            depth: 1,
-            manifest,
-            manifestDigest: digestManifest(manifest),
-            assets: [],
-          },
-        ],
+        id: '01oversize00000000000000000',
+        messages,
+        children: [],
         assets: [],
+        messageCount: 1,
+        assetCount: 0,
       }),
     ).rejects.toMatchObject<Partial<BusinessException>>({
       bizCode: BusinessCode.FEDERATION_MALFORMED,

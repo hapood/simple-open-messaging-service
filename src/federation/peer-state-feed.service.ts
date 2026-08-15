@@ -50,7 +50,6 @@ export interface PeerStateFeedPage {
 const DEFAULT_TAKE = 100;
 const MAX_TAKE = 200;
 const PAGE_BYTES = 4 * 1024 * 1024;
-const ITEM_BYTES = 8 * 1024 * 1024;
 
 @Injectable()
 export class PeerStateFeedService {
@@ -300,12 +299,6 @@ export class PeerStateFeedService {
           body: row.body,
         };
         const itemBytes = Buffer.byteLength(JSON.stringify(item));
-        if (itemBytes > ITEM_BYTES)
-          throw new BusinessException(
-            BusinessCode.FEDERATION_PAYLOAD_TOO_LARGE,
-            'state feed item exceeds byte limit',
-            HttpStatus.OK,
-          );
         if (items.length > 0 && bytes + itemBytes > PAGE_BYTES) break;
         items.push(item);
         bytes += itemBytes;

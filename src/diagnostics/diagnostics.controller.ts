@@ -7,7 +7,12 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
-import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiConsumes,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -48,7 +53,10 @@ export class DiagnosticsController {
     if (typeof userId !== 'number') {
       // Defense-in-depth only (the guard already rejected unauthenticated calls). Thrown as HTTP 200 +
       // UNAUTHENTICATED to match the prior wire; the global AllExceptionsFilter renders the body.
-      throw new BusinessException(BusinessCode.UNAUTHENTICATED, 'unauthenticated');
+      throw new BusinessException(
+        BusinessCode.UNAUTHENTICATED,
+        'unauthenticated',
+      );
     }
     const { buffer, manifest } = await this.diagnostics.consumeBundle(req);
     const { id } = await this.diagnostics.storeReport(userId, buffer, manifest);

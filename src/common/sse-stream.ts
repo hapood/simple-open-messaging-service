@@ -38,7 +38,10 @@ export const SSE_HEARTBEAT_MS = 25000;
  * exact Origin (never a wildcard, never `Access-Control-Allow-Credentials`) mirrors the global
  * `origin:true` posture: Bearer-header auth, no credentialed cross-origin surface.
  */
-export function initSseResponse(res: ServerResponse, origin?: string): NodeJS.Timeout {
+export function initSseResponse(
+  res: ServerResponse,
+  origin?: string,
+): NodeJS.Timeout {
   const isH2 = (res as unknown as { stream?: unknown }).stream !== undefined;
   const headers: Record<string, string> = {
     'Content-Type': 'text/event-stream',

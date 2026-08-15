@@ -92,6 +92,7 @@ export class TwoFactorService {
 
   /** Build the provisioning URI + a fresh random 160-bit secret, and sign a pending token carrying it. */
   beginSetup(adminId: number, account: string, name: string): SetupBundle {
+    void name;
     const secret = new Secret({ size: 20 }); // 160 bits — RFC 4226 §4 recommends ≥160
     const base32 = secret.base32;
     const totp = this.totp(base32, account);

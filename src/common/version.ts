@@ -8,12 +8,16 @@ import { resolve } from 'node:path';
  * be wasteful. Falls back to 'unknown' rather than throwing — version display must never crash the
  * process (a liveness probe must never 500 on a config quirk).
  *
- * Shared by HealthController (/api/v1/health) and WellKnownController (/.well-known/soms software).
+ * Shared by HealthController (/api/v1/health) and WellKnownController (/.well-known/socfp software).
  */
 export const SERVER_VERSION: string = (() => {
   try {
-    const pkg = JSON.parse(readFileSync(resolve(process.cwd(), 'package.json'), 'utf8'));
-    return typeof pkg.version === 'string' && pkg.version ? pkg.version : 'unknown';
+    const pkg = JSON.parse(
+      readFileSync(resolve(process.cwd(), 'package.json'), 'utf8'),
+    );
+    return typeof pkg.version === 'string' && pkg.version
+      ? pkg.version
+      : 'unknown';
   } catch {
     return 'unknown';
   }

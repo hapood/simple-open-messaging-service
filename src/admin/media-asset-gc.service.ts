@@ -419,8 +419,11 @@ export class MediaAssetGcService {
     const groupIdentity = alias(user, 'pending_deletion_group');
     const predicate = and(
       eq(message.threadId, federatedMessageTombstone.threadId),
-      eq(message.creator, federatedMessageTombstone.creatorId),
-      eq(message.originSeq, federatedMessageTombstone.originSeq),
+      eq(
+        message.federationSourceDomain,
+        federatedMessageTombstone.sourceDomain,
+      ),
+      eq(message.originSeq, federatedMessageTombstone.messageSeq),
     );
     const [totalRow, rows] = await Promise.all([
       this.database.db
@@ -433,10 +436,10 @@ export class MediaAssetGcService {
           threadType: messageThread.type,
           groupAccount: groupIdentity.account,
           groupDomain: groupIdentity.domain,
-          creatorId: federatedMessageTombstone.creatorId,
+          creatorId: message.creator,
           creatorAccount: creator.account,
           creatorDomain: creator.domain,
-          originSeq: federatedMessageTombstone.originSeq,
+          originSeq: federatedMessageTombstone.messageSeq,
           authorityDomain: federatedMessageTombstone.authorityDomain,
           sourceDomain: federatedMessageTombstone.sourceDomain,
           remoteFeedId: federatedMessageTombstone.remoteDeletedId,
@@ -448,16 +451,16 @@ export class MediaAssetGcService {
           matchedDeleted: message.isDeleted,
         })
         .from(federatedMessageTombstone)
-        .innerJoin(creator, eq(creator.id, federatedMessageTombstone.creatorId))
         .innerJoin(
           messageThread,
           eq(messageThread.id, federatedMessageTombstone.threadId),
         )
+        .leftJoin(message, predicate)
+        .leftJoin(creator, eq(creator.id, message.creator))
         .leftJoin(
           groupIdentity,
           eq(groupIdentity.id, messageThread.groupUserId),
         )
-        .leftJoin(message, predicate)
         .orderBy(
           desc(federatedMessageTombstone.createdAt),
           desc(federatedMessageTombstone.id),
@@ -500,21 +503,55 @@ export class MediaAssetGcService {
   /** Drop a staged inbound batch for good by deleting PendingMedia + FileSyncProgress in one tx.
    *  Shared CAS blobs and resumable temp artifacts are deliberately untouched: removing the task rows
    *  makes them unclaimed, and the ordinary GC/TTL paths decide when they are safe to reclaim. */
-  async cleanInboxBatch(
-    batchId: string,
-  ): Promise<{ clearedBatch: boolean; fileRows: number; tempFiles: number }> {
+  async cleanInboxBatch(batchId: string): Promise<{
+    clearedBatch: boolean;
+    clearedDependents: number;
+    fileRows: number;
+    tempFiles: number;
+  }> {
     const clearedBatch = await this.database.db.transaction(async (tx) => {
+      const doomedBatchIds = await this.dependentStageBatchIds(tx, batchId);
+      if (doomedBatchIds.length === 0) {
+        return { clearedBatch: false, clearedDependents: 0, fileRows: 0 };
+      }
       const files = await tx
         .delete(fileSyncProgress)
-        .where(eq(fileSyncProgress.batchId, batchId))
+        .where(inArray(fileSyncProgress.batchId, doomedBatchIds))
         .returning({ id: fileSyncProgress.id });
       const gone = await tx
         .delete(pendingMedia)
-        .where(eq(pendingMedia.batchId, batchId))
+        .where(inArray(pendingMedia.batchId, doomedBatchIds))
         .returning({ id: pendingMedia.id });
-      return { clearedBatch: gone.length > 0, fileRows: files.length };
+      return {
+        clearedBatch: gone.length > 0,
+        clearedDependents: Math.max(0, gone.length - 1),
+        fileRows: files.length,
+      };
     });
     return { ...clearedBatch, tempFiles: 0 };
+  }
+
+  /** Resolve a staged message plus every transitive quote waiting on its origin coordinate. */
+  private async dependentStageBatchIds(
+    tx: DatabaseTransaction,
+    rootBatchId: string,
+  ): Promise<string[]> {
+    const result = await tx.execute<{ batchId: string }>(sql`
+      WITH RECURSIVE doomed AS (
+        SELECT "batchId", "threadId", "originDomain", "originSeq"
+          FROM "PendingMedia"
+         WHERE "batchId" = ${rootBatchId}
+        UNION
+        SELECT child."batchId", child."threadId", child."originDomain", child."originSeq"
+          FROM "PendingMedia" child
+          JOIN doomed parent
+            ON child."threadId" = parent."threadId"
+           AND child."originDomain" = parent."originDomain"
+           AND child."dependsOnOriginSeq" = parent."originSeq"
+      )
+      SELECT "batchId" FROM doomed
+    `);
+    return (result.rows ?? []).map((row) => row.batchId);
   }
 
   /** Find immutable bundles that are not reachable from any visible ForwardMessage root. This is
@@ -734,7 +771,11 @@ export class MediaAssetGcService {
         const cutoff = new Date(Date.now() - ttlMs);
         const failedCutoff = new Date(Date.now() - failedTtlMs);
         const stale = await tx
-          .select({ id: pendingMedia.id, digest: pendingMedia.digest })
+          .select({
+            id: pendingMedia.id,
+            batchId: pendingMedia.batchId,
+            digest: pendingMedia.digest,
+          })
           .from(pendingMedia)
           .where(
             and(
@@ -755,13 +796,28 @@ export class MediaAssetGcService {
               )`,
             ),
           );
-        for (const { id } of stale) {
-          await tx.delete(pendingMedia).where(eq(pendingMedia.id, id));
+        const doomed = new Set<string>();
+        for (const { batchId } of stale) {
+          for (const dependent of await this.dependentStageBatchIds(
+            tx,
+            batchId,
+          )) {
+            doomed.add(dependent);
+          }
+        }
+        if (doomed.size > 0) {
+          const batchIds = [...doomed];
+          await tx
+            .delete(fileSyncProgress)
+            .where(inArray(fileSyncProgress.batchId, batchIds));
+          await tx
+            .delete(pendingMedia)
+            .where(inArray(pendingMedia.batchId, batchIds));
         }
         this.logger.log(
-          `gcStalePending: swept ${stale.length} stale stage(s); blobs remain for manual space GC.`,
+          `gcStalePending: swept ${doomed.size} stale/dependent stage(s); blobs remain for manual space GC.`,
         );
-        return { sweptRows: stale.length, reapedFiles: 0 };
+        return { sweptRows: doomed.size, reapedFiles: 0 };
       }),
     );
   }

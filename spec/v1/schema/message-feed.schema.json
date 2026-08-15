@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:soms:federation:v1:message-feed",
+  "$id": "urn:socfp:v1:message-feed",
   "title": "GET /s2s/v1/message-feed response data",
   "$defs": {
     "thread": {
@@ -11,9 +11,9 @@
           "properties": {
             "type": { "const": "GROUP" },
             "account": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/groupAccount"
+              "$ref": "urn:socfp:v1:common#/$defs/groupAccount"
             },
-            "domain": { "$ref": "urn:soms:federation:v1:common#/$defs/domain" }
+            "domain": { "$ref": "urn:socfp:v1:common#/$defs/domain" }
           },
           "additionalProperties": false
         },
@@ -28,7 +28,7 @@
               "maxItems": 2,
               "uniqueItems": true,
               "items": {
-                "$ref": "urn:soms:federation:v1:common#/$defs/address"
+                "$ref": "urn:socfp:v1:common#/$defs/address"
               }
             }
           },
@@ -41,11 +41,11 @@
       "required": ["feedId", "thread", "messageEndSeq"],
       "properties": {
         "feedId": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/positiveDecimalString"
+          "$ref": "urn:socfp:v1:common#/$defs/positiveDecimalString"
         },
         "thread": { "$ref": "#/$defs/thread" },
         "messageEndSeq": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+          "$ref": "urn:socfp:v1:common#/$defs/decimalString"
         }
       },
       "additionalProperties": false
@@ -56,10 +56,10 @@
   "properties": {
     "items": { "type": "array", "items": { "$ref": "#/$defs/item" } },
     "scannedThrough": {
-      "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+      "$ref": "urn:socfp:v1:common#/$defs/decimalString"
     },
     "messageFeedEndId": {
-      "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+      "$ref": "urn:socfp:v1:common#/$defs/decimalString"
     },
     "hasMore": { "type": "boolean" }
   },

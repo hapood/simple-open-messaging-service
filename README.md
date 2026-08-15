@@ -107,7 +107,7 @@ simple-open-chat-service/
 ├── admin-web/                # React administration console
 ├── src-tauri/                # Tauri desktop/mobile shell and Android native code
 ├── deploy/                   # Public and NAS Docker Compose templates
-├── spec/                     # Versioned SOMS Federation protocol specification
+├── spec/                     # Versioned Simple Open Chat Federation Protocol specification
 ├── docs/                     # Architecture, API, operations and implementation notes
 └── package.json
 ```
@@ -176,7 +176,7 @@ npm run dev --prefix admin-web
 | Location                                                               | Setting                                                                        | Description                                                                     |
 | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
 | `.env` → `DATABASE_URL` or `PGHOST`/`PGDATABASE`/`PGUSER`/`PGPASSWORD` | PostgreSQL connection                                                          | URL form remains supported; Docker deployment uses the standard `PG*` variables |
-| `.env` → `SOMS_DOMAIN`                                                 | Public domain of this service (federation identity)                            | Required (`@user@<domain>`, host of `/.well-known/soms`)                        |
+| `.env` → `SOMS_DOMAIN`                                                 | Public domain of this service (federation identity)                            | Required (`@user@<domain>`, host of `/.well-known/socfp`)                       |
 | `.env` → `SOMS_WEB_DOMAIN`                                             | Optional public Web/native-client entry hostname; defaults to `SOMS_DOMAIN`    |
 | `.env` → `ADMIN_BOOTSTRAP_PASSWORD`                                    | Password used to create the first `admin` account when no administrator exists |
 | `.env` → `SOMS_TLS_MODE`                                               | Public origin mode: `standard`, `single-port`, or `disabled`                   |

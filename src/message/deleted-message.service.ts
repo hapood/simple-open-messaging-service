@@ -198,10 +198,10 @@ export class DeletedMessageService {
   static lockFederatedIdentity(
     tx: DatabaseTransaction,
     threadId: number,
-    creatorId: number,
-    originSeq: number,
+    sourceDomain: string,
+    messageSeq: number,
   ) {
-    const identity = `${threadId}:${creatorId}:${originSeq}`;
+    const identity = `${threadId}:${sourceDomain}:${messageSeq}`;
     return tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtextextended(${identity}, 0))`,
     );
@@ -249,8 +249,7 @@ export class DeletedMessageService {
 
   async applyFederated(params: {
     threadId: number;
-    creatorId: number;
-    originSeq: number;
+    messageSeq: number;
     authorityDomain: string;
     sourceDomain: string;
     remoteDeletedId: bigint;
@@ -270,8 +269,7 @@ export class DeletedMessageService {
     tx: DatabaseTransaction,
     params: {
       threadId: number;
-      creatorId: number;
-      originSeq: number;
+      messageSeq: number;
       authorityDomain: string;
       sourceDomain: string;
       remoteDeletedId: bigint;
@@ -298,22 +296,22 @@ export class DeletedMessageService {
     await DeletedMessageService.lockFederatedIdentity(
       tx,
       params.threadId,
-      params.creatorId,
-      params.originSeq,
+      params.sourceDomain,
+      params.messageSeq,
     );
     const target = await tx.query.message.findFirst({
       where: and(
         eq(message.threadId, params.threadId),
-        eq(message.creator, params.creatorId),
-        eq(message.originSeq, params.originSeq),
+        eq(message.federationSourceDomain, params.sourceDomain),
+        eq(message.originSeq, params.messageSeq),
       ),
       columns: { seq: true, isDeleted: true },
     });
     const pending = await tx.query.federatedMessageTombstone.findFirst({
       where: and(
         eq(federatedMessageTombstone.threadId, params.threadId),
-        eq(federatedMessageTombstone.creatorId, params.creatorId),
-        eq(federatedMessageTombstone.originSeq, params.originSeq),
+        eq(federatedMessageTombstone.sourceDomain, params.sourceDomain),
+        eq(federatedMessageTombstone.messageSeq, params.messageSeq),
       ),
       columns: {
         authorityDomain: true,
@@ -347,8 +345,7 @@ export class DeletedMessageService {
           .insert(federatedMessageTombstone)
           .values({
             threadId: params.threadId,
-            creatorId: params.creatorId,
-            originSeq: params.originSeq,
+            messageSeq: params.messageSeq,
             authorityDomain: params.authorityDomain,
             sourceDomain: params.sourceDomain,
             remoteDeletedId: params.remoteDeletedId,
@@ -367,8 +364,8 @@ export class DeletedMessageService {
         .where(
           and(
             eq(message.threadId, params.threadId),
-            eq(message.creator, params.creatorId),
-            eq(message.originSeq, params.originSeq),
+            eq(message.federationSourceDomain, params.sourceDomain),
+            eq(message.originSeq, params.messageSeq),
           ),
         );
       const [created] = await tx
@@ -395,8 +392,8 @@ export class DeletedMessageService {
         .where(
           and(
             eq(federatedMessageTombstone.threadId, params.threadId),
-            eq(federatedMessageTombstone.creatorId, params.creatorId),
-            eq(federatedMessageTombstone.originSeq, params.originSeq),
+            eq(federatedMessageTombstone.sourceDomain, params.sourceDomain),
+            eq(federatedMessageTombstone.messageSeq, params.messageSeq),
           ),
         );
     }
@@ -409,8 +406,8 @@ export class DeletedMessageService {
     const staged = await tx.query.pendingMedia.findFirst({
       where: and(
         eq(pendingMedia.threadId, params.threadId),
-        eq(pendingMedia.creatorId, params.creatorId),
-        eq(pendingMedia.originSeq, params.originSeq),
+        eq(pendingMedia.originDomain, params.sourceDomain),
+        eq(pendingMedia.originSeq, params.messageSeq),
       ),
       columns: { batchId: true },
     });
@@ -432,6 +429,45 @@ export class DeletedMessageService {
           updatedAt: new Date(),
         })
         .where(eq(pendingMedia.batchId, staged.batchId));
+
+      // A quote waiting for this staged target can never acquire a local seq after the authoritative
+      // deletion. It has no useful terminal representation, so remove the whole dependent chain.
+      await tx.execute(sql`
+        WITH RECURSIVE dependents AS (
+          SELECT child."batchId", child."threadId", child."originDomain", child."originSeq"
+            FROM "PendingMedia" child
+           WHERE child."threadId" = ${params.threadId}
+             AND child."originDomain" = ${params.sourceDomain}
+             AND child."dependsOnOriginSeq" = ${params.messageSeq}
+          UNION
+          SELECT child."batchId", child."threadId", child."originDomain", child."originSeq"
+            FROM "PendingMedia" child
+            JOIN dependents parent
+              ON child."threadId" = parent."threadId"
+             AND child."originDomain" = parent."originDomain"
+             AND child."dependsOnOriginSeq" = parent."originSeq"
+        )
+        DELETE FROM "FileSyncProgress"
+         WHERE "batchId" IN (SELECT "batchId" FROM dependents)
+      `);
+      await tx.execute(sql`
+        WITH RECURSIVE dependents AS (
+          SELECT child."batchId", child."threadId", child."originDomain", child."originSeq"
+            FROM "PendingMedia" child
+           WHERE child."threadId" = ${params.threadId}
+             AND child."originDomain" = ${params.sourceDomain}
+             AND child."dependsOnOriginSeq" = ${params.messageSeq}
+          UNION
+          SELECT child."batchId", child."threadId", child."originDomain", child."originSeq"
+            FROM "PendingMedia" child
+            JOIN dependents parent
+              ON child."threadId" = parent."threadId"
+             AND child."originDomain" = parent."originDomain"
+             AND child."dependsOnOriginSeq" = parent."originSeq"
+        )
+        DELETE FROM "PendingMedia"
+         WHERE "batchId" IN (SELECT "batchId" FROM dependents)
+      `);
     }
 
     if (params.cursor) {

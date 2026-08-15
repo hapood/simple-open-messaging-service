@@ -7,8 +7,6 @@ process.env.SOMS_DOMAIN ??= 'soms.io';
 import { FederationService, S2sResponseError } from './federation.service.js';
 import { BusinessCode } from '../common/business-code.js';
 
-const OUR = 'soms.io'; // == SOMS_DOMAIN (config.domain)
-
 /** Build a FederationService wired with hand-rolled fakes (the project's spec style — direct
  *  construction, not the Nest DI container). */
 function makeStubs() {
@@ -707,18 +705,19 @@ describe('FederationService quote coordinates', () => {
         resolveLocalQuoteSeq: (
           tx: unknown,
           threadId: number,
+          sourceDomain: string,
           target: {
             creator: { account: string; domain: string };
-            originSeq: number;
+            targetSeq: number;
           },
         ) => Promise<number>;
       }
     ).resolveLocalQuoteSeq.bind(svc);
 
     await expect(
-      resolveLocalQuoteSeq(tx, 10, {
+      resolveLocalQuoteSeq(tx, 10, 'peer.example', {
         creator: { account: 'alice', domain: 'peer.example' },
-        originSeq: 7,
+        targetSeq: 7,
       }),
     ).resolves.toBe(41);
     expect(legacy.message.findUnique).toHaveBeenCalled();
@@ -734,10 +733,9 @@ const foreignUser = (userId: number, account: string, domain: string) => ({
   user: { account, domain, isForeigner: true },
 });
 
-describe('FederationService.signalOutbound — the loop-safety routing rule', () => {
-  // The ONE rule that closes both back-notify paths: dest domains MINUS fetchedFromDomain. A mirror
-  // pulling from origin signals nothing (its only dest IS its fetch source); the origin re-signals
-  // every foreign domain EXCEPT the source. P2P: each foreign peer except the author + the source.
+describe('FederationService.signalOutbound — fixed-topology routing', () => {
+  // A persisted pulled copy is exposed once to its direct source as a processing receipt. Normal
+  // authority distribution excludes that source, so each destination is notified at most once.
 
   it('P2P: signals every foreign peer except the author', async () => {
     const { svc, store } = makeStubs();
@@ -756,7 +754,7 @@ describe('FederationService.signalOutbound — the loop-safety routing rule', ()
     expect(push.mock.calls).toEqual([['b.com'], ['c.com']]);
   });
 
-  it('P2P: excludes fetchedFromDomain (a pulled message does not re-notify its source)', async () => {
+  it('P2P: returns a receipt to fetchedFromDomain and signals other destinations', async () => {
     const { svc, store } = makeStubs();
     const push = vi.spyOn(svc, 'pushDiscoveryHwm').mockResolvedValue();
     store.messageThread.findUnique.mockResolvedValue({
@@ -770,10 +768,10 @@ describe('FederationService.signalOutbound — the loop-safety routing rule', ()
 
     await svc.signalOutbound(10, 1, 5, 'b.com');
 
-    expect(push).toHaveBeenCalledExactlyOnceWith('c.com');
+    expect(push.mock.calls).toEqual([['b.com'], ['c.com']]);
   });
 
-  it('GROUP origin: signals every foreign member-DOMAIN (deduped) except the fetch source', async () => {
+  it('GROUP origin: returns a receipt to the submission source and distributes to other mirrors', async () => {
     const { svc, store } = makeStubs();
     const push = vi.spyOn(svc, 'pushDiscoveryHwm').mockResolvedValue();
     store.messageThread.findUnique.mockResolvedValue({
@@ -791,13 +789,13 @@ describe('FederationService.signalOutbound — the loop-safety routing rule', ()
 
     expect(push.mock.calls).toEqual([['b.com'], ['c.com']]);
 
-    // ...and the fetch source is excluded (the origin re-signals everyone EXCEPT where it pulled from).
+    // The source receives the acceptance copy as its receipt; other mirrors receive normal distribution.
     push.mockClear();
     await svc.signalOutbound(10, 1, 7, 'b.com');
-    expect(push).toHaveBeenCalledExactlyOnceWith('c.com');
+    expect(push.mock.calls).toEqual([['b.com'], ['c.com']]);
   });
 
-  it('GROUP mirror: signals ONLY {originDomain} — and nothing when that was the fetch source', async () => {
+  it('GROUP mirror: signals only the origin, including as a processing receipt', async () => {
     const { svc, store } = makeStubs();
     const push = vi.spyOn(svc, 'pushDiscoveryHwm').mockResolvedValue();
     store.messageThread.findUnique.mockResolvedValue({
@@ -809,10 +807,10 @@ describe('FederationService.signalOutbound — the loop-safety routing rule', ()
     await svc.signalOutbound(10, 1, 7, undefined);
     expect(push).toHaveBeenCalledExactlyOnceWith('origin.com');
 
-    // ...which is exactly the domain it just pulled from → excluded → signals nothing (loop closed).
+    // A copy pulled from the origin is queryable by that origin as a processing receipt.
     push.mockClear();
     await svc.signalOutbound(10, 1, 7, 'origin.com');
-    expect(push).not.toHaveBeenCalled();
+    expect(push).toHaveBeenCalledExactlyOnceWith('origin.com');
   });
 
   it('is a no-op when the thread is missing or the author is not a participant', async () => {

@@ -60,7 +60,7 @@ export class DiscoveryService {
     );
   }
 
-  /** Resolve the mandatory SOMS SRV record while keeping the logical peer as HTTP/TLS authority. */
+  /** Resolve the mandatory SOCFP SRV record while keeping the logical peer as HTTP/TLS authority. */
   async resolveBase(domain: string): Promise<string> {
     const normalized = this.normalizeDomain(domain);
     const ttlMs = this.config.keyCacheTtlSec * 1000;
@@ -89,17 +89,17 @@ export class DiscoveryService {
 
     let records;
     try {
-      records = await resolveSrv(`_soms._tcp.${normalized}`);
+      records = await resolveSrv(`_socfp._tcp.${normalized}`);
     } catch (error) {
       throw new Error(
         `SRV discovery for ${normalized} failed: ${(error as Error).message}`,
       );
     }
     if (records.length === 0)
-      throw new Error(`${normalized} does not publish SOMS Federation SRV`);
+      throw new Error(`${normalized} does not publish SOCFP SRV`);
     if (records.some((record) => record.name === '.')) {
       if (records.length === 1)
-        throw new Error(`${normalized} explicitly disables SOMS Federation`);
+        throw new Error(`${normalized} explicitly disables SOCFP`);
       throw new Error(`${normalized} publishes an invalid mixed SRV RRset`);
     }
     const valid = records.filter(
@@ -113,7 +113,7 @@ export class DiscoveryService {
         record.weight <= 65_535,
     );
     if (valid.length !== records.length)
-      throw new Error(`${normalized} publishes an invalid SOMS SRV RRset`);
+      throw new Error(`${normalized} publishes an invalid SOCFP SRV RRset`);
     const priority = Math.min(...valid.map((record) => record.priority));
     const candidates = valid.filter((record) => record.priority === priority);
     const selected = this.weightedRecord(candidates);
@@ -163,7 +163,7 @@ export class DiscoveryService {
     const base = await this.resolveBase(domain);
     const release = await this.acquireRequestSlot(domain);
     try {
-      const response = await this.request(`${base}/.well-known/soms`, {
+      const response = await this.request(`${base}/.well-known/socfp`, {
         signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
         headers: { accept: 'application/json' },
       });

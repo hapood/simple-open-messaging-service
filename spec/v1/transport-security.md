@@ -1,9 +1,9 @@
-# SOMS Federation v1 传输与安全（Transport and Security）
+# Simple Open Chat Federation Protocol v1 传输与安全（Transport and Security）
 
-状态：`RELEASE CANDIDATE`（`v1.0-rc.1`）
+状态：`RELEASE CANDIDATE`（`v1.0-rc.2`）
 
 本文定义 Federation v1 的发现文档、root identity、签名密钥证书、网络发现、TLS、HTTP request target、
-Content-Digest 和 HTTP Message Signature profile。它是 [SOMS Federation Protocol v1](./protocol.md)
+Content-Digest 和 HTTP Message Signature profile。它是 [Simple Open Chat Federation Protocol v1](./protocol.md)
 明确引用的规范性组成部分；operation 文档不能放宽本文的身份、传输或签名安全要求。
 
 规范词 `必须（MUST）`、`不得（MUST NOT）`、`应该（SHOULD）`、`不应该（SHOULD NOT）` 和
@@ -13,7 +13,7 @@ Content-Digest 和 HTTP Message Signature profile。它是 [SOMS Federation Prot
 
 ### 1.1 公开发现模式（Public Discovery Mode）
 
-无 query 的 `GET /.well-known/soms` 是公开 discovery request，不使用 HTTP Message Signature。成功响应
+无 query 的 `GET /.well-known/socfp` 是公开 discovery request，不使用 HTTP Message Signature。成功响应
 必须（MUST）使用 `Content-Type: application/json` 并返回以下裸 JSON object：
 
 ```ts
@@ -44,7 +44,7 @@ interface DiscoveryDocumentV1View {
 
 | JSON key                        | 必选 | 角色与示例                                                                                                                                                                        |
 | ------------------------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `software`                      | 否   | 不可信诊断文本，例如 `soms/1.4.2`；不参与任何协议判断                                                                                                                             |
+| `software`                      | 否   | 不可信诊断文本，例如 `example-server/1.4.2`；不参与任何协议判断                                                                                                                   |
 | `protocolVersions`              | 是   | 完整支持的主版本集合，例如 `[1, 2]`                                                                                                                                               |
 | `rootKey`                       | 是   | 长期服务器身份锚对象；是对象容器，不是独立的公钥值                                                                                                                                |
 | `rootKey.ed25519`               | 是   | Ed25519 root public key，例如 `A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=`；不直接签普通 HTTP request                                                                           |
@@ -95,7 +95,7 @@ statement 使用固定字段顺序、无额外空白的 JSON，编码为 UTF-8�
 certificate 中的 JSON integer 字面值：
 
 ```text
-{"keyId":"<key-id>","ed25519":"<base64-key>","usage":"soms-http-message-signature","notBefore":<epoch-ms>,"notAfter":<epoch-ms>}
+{"keyId":"<key-id>","ed25519":"<base64-key>","usage":"socfp-http-message-signature","notBefore":<epoch-ms>,"notAfter":<epoch-ms>}
 ```
 
 上面的 statement 是 v1 验证 `authorizationSignature` 时使用的精确签名输入。后续主版本可以（MAY）
@@ -131,7 +131,7 @@ Federation peer 是服务器侧配置和信任的 domain identity，不是面向
 
 ### 2.1 强制 SRV 解析（Mandatory SRV Resolution）
 
-给定 canonical peer `Domain` 值 `D`，实现必须（MUST）查询 exact owner name `_soms._tcp.D` 的 DNS SRV
+给定 canonical peer `Domain` 值 `D`，实现必须（MUST）查询 exact owner name `_socfp._tcp.D` 的 DNS SRV
 RRset。发布有效 SRV record 是 server 启用 Federation 的必选条件；v1 不允许绕过 SRV 后直接解析
 `D`，也不定义默认 `443` 或本地直连配置等替代发现路径：
 
@@ -158,7 +158,7 @@ RRset。发布有效 SRV record 是 server 启用 Federation 的必选条件；v
    明确触发后重新查询。
 6. DNS timeout、`SERVFAIL`、`REFUSED` 或其他临时解析失败是可重试的 discovery failure。调用方必须（MUST）
    退避并保留已有 pin、cursor 和 mirror，不得（MUST NOT）把它解释成未发布服务或 identity loss。
-7. sole SRV target `.` 明确表示该 domain 不提供 SOMS Federation；该特殊 record 的 port 应该（SHOULD）为
+7. sole SRV target `.` 明确表示该 domain 不提供 SOCFP；该特殊 record 的 port 应该（SHOULD）为
    `0`，且不得（MUST NOT）发起连接。`.` 与其他 target 混合、IP literal、非法 hostname/port 或无法唯一解释的
    RRset 是配置错误。
 8. 尝试完有效 RRset 中的可用 target 仍无法连接时，本次操作以连接失败结束，不得（MUST NOT）改为直接解析 `D`、
@@ -172,7 +172,7 @@ pin 或 request signature 验证。
 最小有效发布示例：
 
 ```dns
-_soms._tcp.chat.example. 3600 IN SRV 0 0 443 chat.example.
+_socfp._tcp.chat.example. 3600 IN SRV 0 0 443 chat.example.
 chat.example.            3600 IN A   192.0.2.10
 chat.example.            3600 IN AAAA 2001:db8::10
 ```
@@ -194,7 +194,7 @@ SRV 只把 TCP 连接委派到 target `T` 和 port `P`。逻辑请求目标始�
 - well-known 和全部 S2S operation 不得（MUST NOT）自动跟随 HTTP redirect。任何 `3xx` 都是当前 operation
   失败；不得（MUST NOT）把 redirect target 当作新 peer、建立 pin、接受 response data 或推进 cursor。
 
-例如 `_soms._tcp.chat.example` 返回 target `edge.provider.example`、port `8443` 时，client 连接
+例如 `_socfp._tcp.chat.example` 返回 target `edge.provider.example`、port `8443` 时，client 连接
 `edge.provider.example:8443`，但发送 TLS SNI `chat.example`，验证 certificate 中的
 `chat.example`，发送 `Host: chat.example:8443`，并签名 `"@authority": chat.example:8443`。
 

@@ -2,7 +2,7 @@
   "vectors": [
     {
       "name": "well-known supports v1 and a future major",
-      "schema": "urn:soms:federation:v1:discovery",
+      "schema": "urn:socfp:v1:discovery",
       "value": {
         "software": "example/1.0",
         "protocolVersions": [1, 2],
@@ -15,21 +15,21 @@
             "ed25519": "Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=",
             "notBefore": 1699990000000,
             "notAfter": 1800000000000,
-            "authorizationSignature": "sfjYJ8fpmatbR3e2S0rflH8CgsPqBnDxvKoTrH2gwVXW00Xb8BNz4YA75j9pwF8beG8qV6DPalT4j7j2UAdkCw=="
+            "authorizationSignature": "8EdLNT/RRgHP2Y9PVmWGNunRHOYE6hBppJlOEw9TPS4XycCYDm07y9rRqimiWMloRfc8/bV5+dESdvrwP6bgAA=="
           }
         ]
       }
     },
     {
       "name": "recognize request",
-      "schema": "urn:soms:federation:v1:identity#/$defs/recognizeRequest",
+      "schema": "urn:socfp:v1:identity#/$defs/recognizeRequest",
       "value": {
         "domain": "a.example"
       }
     },
     {
       "name": "healthy result",
-      "schema": "urn:soms:federation:v1:identity#/$defs/healthResult",
+      "schema": "urn:socfp:v1:identity#/$defs/healthResult",
       "values": [
         { "status": "available" },
         { "status": "degraded" },
@@ -38,7 +38,7 @@
     },
     {
       "name": "feed head wake-up",
-      "schema": "urn:soms:federation:v1:identity#/$defs/feedHeadHint",
+      "schema": "urn:socfp:v1:identity#/$defs/feedHeadHint",
       "value": {
         "origin": "a.example",
         "stateFeedEndId": "12",
@@ -48,7 +48,7 @@
     },
     {
       "name": "state page covers all event types",
-      "schema": "urn:soms:federation:v1:state-feed",
+      "schema": "urn:socfp:v1:state-feed",
       "value": {
         "items": [
           {
@@ -152,7 +152,7 @@
     },
     {
       "name": "message compacted feed page",
-      "schema": "urn:soms:federation:v1:message-feed",
+      "schema": "urn:socfp:v1:message-feed",
       "value": {
         "items": [
           {
@@ -174,7 +174,7 @@
     },
     {
       "name": "message query page with parsed text content",
-      "schema": "urn:soms:federation:v1:message-query",
+      "schema": "urn:socfp:v1:message-query",
       "value": {
         "messages": [
           {
@@ -187,11 +187,11 @@
             },
             "author": { "account": "alice", "domain": "a.example" },
             "seq": 1,
-            "originSeq": 1,
+            "originSeq": null,
             "contentType": "PURE_TEXT",
             "content": "{\"text\":\"hello\"}",
             "createdAt": 1700000000000,
-            "updatedAt": 1700000000000,
+            "originCreatedAt": null,
             "clientMessageId": "550e8400-e29b-41d4-a716-446655440000",
             "assets": []
           }
@@ -202,19 +202,17 @@
     },
     {
       "name": "all message content discriminators",
-      "schema": "urn:soms:federation:v1:message-content",
+      "schema": "urn:socfp:v1:message-content",
       "values": [
         {
           "contentType": "PURE_TEXT",
           "content": {
-            "text": "hello [@Bob](soms://user/bob%40b.example?v=1)"
+            "text": "hello [@Bob](socfp://user/bob%40b.example)"
           }
         },
         {
           "contentType": "INVITE",
           "content": {
-            "type": "GROUP_INVITE",
-            "from": "alice",
             "group": "!group",
             "groupName": "Group",
             "groupDomain": "a.example"
@@ -271,24 +269,16 @@
         {
           "contentType": "CALL",
           "content": {
-            "type": "CALL",
             "callType": "AUDIO",
             "status": "completed",
-            "caller": { "account": "alice", "domain": "a.example" },
-            "callee": { "account": "bob", "domain": "b.example" },
             "startedAt": 1700000000000,
-            "endedAt": 1700000001000,
-            "durationMs": 1000
+            "endedAt": 1700000001000
           }
         },
         {
           "contentType": "FORWARD",
           "content": {
-            "version": 1,
-            "bundleId": "b1",
-            "summaryLines": [],
-            "messageCount": 0,
-            "assetCount": 0
+            "bundleId": "b1"
           }
         },
         {
@@ -309,7 +299,7 @@
     },
     {
       "name": "call frame variants",
-      "schema": "urn:soms:federation:v1:call",
+      "schema": "urn:socfp:v1:call",
       "values": [
         {
           "callSid": "550e8400-e29b-41d4-a716-446655440000",
@@ -403,7 +393,7 @@
     },
     {
       "name": "profile response",
-      "schema": "urn:soms:federation:v1:profile",
+      "schema": "urn:socfp:v1:profile",
       "value": {
         "account": "alice",
         "domain": "a.example",
@@ -414,43 +404,29 @@
     },
     {
       "name": "minimal forward closure",
-      "schema": "urn:soms:federation:v1:forward-bundle",
+      "schema": "urn:socfp:v1:forward-bundle",
       "value": {
-        "schemaVersion": 1,
-        "rootBundleId": "b1",
-        "bundles": [
+        "id": "b1",
+        "messages": [
           {
-            "id": "b1",
-            "depth": 1,
-            "manifestDigest": "9879e786f60d6c4550e5c9609410c33affc459c43ae28afda29e3f59e0815428",
-            "manifest": {
-              "schemaVersion": 1,
-              "bundleId": "b1",
-              "depth": 1,
-              "children": [],
-              "messages": [
-                {
-                  "id": 1,
-                  "sender": {
-                    "displayName": "Alice",
-                    "account": "alice",
-                    "domain": "a.example"
-                  },
-                  "contentType": "PURE_TEXT",
-                  "content": "{\"text\":\"hello\"}",
-                  "sentAt": 1
-                }
-              ]
+            "id": 1,
+            "author": {
+              "displayName": "Alice",
+              "account": "alice",
+              "domain": "a.example"
             },
-            "assets": []
+            "contentType": "PURE_TEXT",
+            "content": "{\"text\":\"hello\"}",
+            "sentAt": 1
           }
         ],
+        "children": [],
         "assets": []
       }
     },
     {
       "name": "media authorization parameters",
-      "schema": "urn:soms:federation:v1:http-parameters#/$defs/mediaParameters",
+      "schema": "urn:socfp:v1:http-parameters#/$defs/mediaParameters",
       "value": {
         "digest": "0000000000000000000000000000000000000000000000000000000000000000",
         "fromAccount": "alice",
@@ -461,7 +437,7 @@
     },
     {
       "name": "tombstone compacted feed page",
-      "schema": "urn:soms:federation:v1:message-tombstone-feed",
+      "schema": "urn:socfp:v1:message-tombstone-feed",
       "value": {
         "items": [
           {
@@ -481,7 +457,7 @@
     },
     {
       "name": "tombstone query page",
-      "schema": "urn:soms:federation:v1:message-tombstone-query",
+      "schema": "urn:socfp:v1:message-tombstone-query",
       "value": {
         "tombstones": [
           {
@@ -491,10 +467,7 @@
               "account": "!group",
               "domain": "a.example"
             },
-            "target": {
-              "creator": { "account": "alice", "domain": "a.example" },
-              "originSeq": 7
-            },
+            "messageSeq": 7,
             "type": "WITHDRAW",
             "deletedAt": 1700000000000
           }
@@ -505,12 +478,12 @@
     },
     {
       "name": "error envelope",
-      "schema": "urn:soms:federation:v1:error",
+      "schema": "urn:socfp:v1:error",
       "value": { "code": 50007, "message": "malformed" }
     },
     {
       "name": "quota error envelope",
-      "schema": "urn:soms:federation:v1:error",
+      "schema": "urn:socfp:v1:error",
       "value": {
         "code": 50011,
         "message": "peer quota exceeded",
@@ -519,7 +492,7 @@
     },
     {
       "name": "capability-disabled error envelope",
-      "schema": "urn:soms:federation:v1:error",
+      "schema": "urn:socfp:v1:error",
       "value": {
         "code": 50013,
         "message": "federation capability disabled",
@@ -528,7 +501,7 @@
     },
     {
       "name": "message-query cursor correction envelope",
-      "schema": "urn:soms:federation:v1:error",
+      "schema": "urn:socfp:v1:error",
       "value": {
         "code": 50019,
         "message": "requested message history is no longer retained",
@@ -537,7 +510,7 @@
     },
     {
       "name": "message-query rate-limited envelope",
-      "schema": "urn:soms:federation:v1:error",
+      "schema": "urn:socfp:v1:error",
       "value": {
         "code": 50024,
         "message": "message query rate limited",
@@ -546,7 +519,7 @@
     },
     {
       "name": "message-query temporarily-unavailable envelope",
-      "schema": "urn:soms:federation:v1:error",
+      "schema": "urn:socfp:v1:error",
       "value": {
         "code": 50025,
         "message": "message query temporarily unavailable",

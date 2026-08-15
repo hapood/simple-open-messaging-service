@@ -27,7 +27,9 @@ export class GroupManageController {
 
   @HttpCode(HttpStatus.OK)
   @Post('admin/groups')
-  @ApiOperation({ summary: 'Group threads list (member count + owner + federation origin)' })
+  @ApiOperation({
+    summary: 'Group threads list (member count + owner + federation origin)',
+  })
   async list(@Body() dto: AdminGroupsListDto) {
     return this.svc.list(dto);
   }

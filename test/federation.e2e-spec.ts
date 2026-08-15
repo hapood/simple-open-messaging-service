@@ -28,13 +28,10 @@ import {
 } from '../src/database/enums.js';
 import { and, count, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
-  deletedMessage,
   federatedPeer,
   federatedFriendRequest,
   federatedPeerEvent,
   federatedPeerReset,
-  federatedMessageTombstone,
-  federationDeletedCursor,
   federationMessageFeedIndex,
   federationTombstoneFeedIndex,
   federationTombstoneServeCursor,
@@ -126,32 +123,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     return result.rows[0];
   }
 
-  async function countPendingInvites(
-    app: FedApp,
-    firstUserId: number,
-    secondUserId: number,
-  ): Promise<number> {
-    const [row] = await app.database
-      .select({ count: sql<number>`count(*)::int` })
-      .from(friendRequest)
-      .where(
-        and(
-          eq(friendRequest.status, 'REQUESTED'),
-          or(
-            and(
-              eq(friendRequest.requesterUserId, firstUserId),
-              eq(friendRequest.targetUserId, secondUserId),
-            ),
-            and(
-              eq(friendRequest.requesterUserId, secondUserId),
-              eq(friendRequest.targetUserId, firstUserId),
-            ),
-          ),
-        ),
-      );
-    return row.count;
-  }
-
   async function countMessages(app: FedApp, condition: ReturnType<typeof eq>) {
     const [row] = await app.database
       .select({ count: count() })
@@ -196,7 +167,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         threadId: message.threadId,
         seq: message.seq,
         bundleId: forwardMessage.bundleId,
-        depth: forwardBundle.depth,
+        messageCount: forwardBundle.messageCount,
       })
       .from(message)
       .innerJoin(forwardMessage, eq(forwardMessage.messageId, message.id))
@@ -215,7 +186,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           seq: row.seq,
           forwardMessage: {
             bundleId: row.bundleId,
-            bundle: { depth: row.depth },
+            bundle: { messageCount: row.messageCount },
           },
         }
       : undefined;
@@ -490,7 +461,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     aliceStubIdOnB = friendship.localStubIdOnRemote;
   }
 
-  async function sendFederatedImage(bytes: Buffer, dimension: number) {
+  async function sendFederatedImage(bytes: Buffer) {
     const clientMessageId = randomUUID();
     const stage = await request(appA.baseUrl)
       .post('/api/v1/send-media')
@@ -642,12 +613,15 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     let importedOnB: {
       threadId: number;
       seq: number;
-      forwardMessage: { bundleId: string; bundle: { depth: number } } | null;
+      forwardMessage: {
+        bundleId: string;
+        bundle: { messageCount: number };
+      } | null;
     } | null = null;
     await vi.waitFor(
       async () => {
         importedOnB = await findLatestForwardMessage(appB, aliceStubIdOnB);
-        expect(importedOnB?.forwardMessage?.bundle.depth).toBe(1);
+        expect(importedOnB?.forwardMessage?.bundle.messageCount).toBe(1);
       },
       { timeout: 5000 },
     );
@@ -670,7 +644,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await vi.waitFor(
       async () => {
         const relayed = await findLatestForwardMessage(appA, bobStubIdOnA);
-        expect(relayed?.forwardMessage?.bundle.depth).toBe(2);
+        expect(relayed?.forwardMessage?.bundle.messageCount).toBe(2);
         const closure =
           await appA.database.query.forwardBundleDependency.findMany({
             where: eq(
@@ -1456,10 +1430,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         const joinDirection =
           await appB.database.query.groupMembershipRequest.findFirst({
             where: and(
-              eq(
-                groupMembershipRequest.groupUserId,
-                firstMirrorGroupUserBId,
-              ),
+              eq(groupMembershipRequest.groupUserId, firstMirrorGroupUserBId),
               eq(groupMembershipRequest.memberUserId, daveLocalIdB),
               eq(groupMembershipRequest.direction, 'JOIN'),
             ),
@@ -1530,19 +1501,15 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({ groupId: firstGroupThreadA, userIds: [daveStubIdOnA] });
     expect(reinvite.body.code).toBe(BusinessCode.OK);
-    expect(
-      reinvite.body.data.invited,
-      JSON.stringify(reinvite.body),
-    ).toContain(daveStubIdOnA);
+    expect(reinvite.body.data.invited, JSON.stringify(reinvite.body)).toContain(
+      daveStubIdOnA,
+    );
     await vi.waitFor(
       async () => {
         const requestRow =
           await appB.database.query.groupMembershipRequest.findFirst({
             where: and(
-              eq(
-                groupMembershipRequest.groupUserId,
-                firstMirrorGroupUserBId,
-              ),
+              eq(groupMembershipRequest.groupUserId, firstMirrorGroupUserBId),
               eq(groupMembershipRequest.memberUserId, daveLocalIdB),
               eq(groupMembershipRequest.direction, 'INVITE'),
             ),

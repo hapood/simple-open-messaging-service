@@ -10,7 +10,6 @@ import {
   gte,
   lt,
   lte,
-  ne,
   notInArray,
   or,
   sql,
@@ -23,7 +22,6 @@ import {
 import { ContentType, MessageThreadType } from '../database/enums.js';
 import {
   forwardMessage,
-  group,
   mediaAsset,
   messageAsset,
   message,
@@ -1554,8 +1552,8 @@ export class MessageService {
       counts.set(row.creator, (counts.get(row.creator) ?? 0) + 1);
       if (
         row.contentType === 'PURE_TEXT' &&
-        (row.content.includes('](soms://user/') ||
-          row.content.includes('](soms://audience/all?v=1)'))
+        (row.content.includes('](socfp://user/') ||
+          row.content.includes('](socfp://audience/all)'))
       ) {
         mentionContents.push(row.content);
       }
@@ -1733,8 +1731,8 @@ export class MessageService {
           ARRAY_AGG(m.content::text) FILTER (
             WHERE m."contentType" = 'PURE_TEXT'
               AND (
-                strpos(m.content ->> 'text', '](soms://user/') > 0
-                OR strpos(m.content ->> 'text', '](soms://audience/all?v=1)') > 0
+                strpos(m.content ->> 'text', '](socfp://user/') > 0
+                OR strpos(m.content ->> 'text', '](socfp://audience/all)') > 0
               )
           ),
           ARRAY[]::text[]
@@ -1827,8 +1825,8 @@ export class MessageService {
           ARRAY_AGG(s.content::text) FILTER (
             WHERE s."contentType" = 'PURE_TEXT'
               AND (
-                strpos(s.content ->> 'text', '](soms://user/') > 0
-                OR strpos(s.content ->> 'text', '](soms://audience/all?v=1)') > 0
+                strpos(s.content ->> 'text', '](socfp://user/') > 0
+                OR strpos(s.content ->> 'text', '](socfp://audience/all)') > 0
               )
           ),
           ARRAY[]::text[]
@@ -1956,8 +1954,8 @@ export class MessageService {
           ARRAY_AGG(content::text) FILTER (
             WHERE "contentType" = 'PURE_TEXT'
               AND (
-                strpos(content ->> 'text', '](soms://user/') > 0
-                OR strpos(content ->> 'text', '](soms://audience/all?v=1)') > 0
+                strpos(content ->> 'text', '](socfp://user/') > 0
+                OR strpos(content ->> 'text', '](socfp://audience/all)') > 0
               )
           ),
           ARRAY[]::text[]
@@ -2058,12 +2056,7 @@ export class MessageService {
     for (const content of contents) {
       const text = parseTextMessageContent(content)?.text ?? '';
       for (const segment of parseMessageEntities(text)) {
-        if (
-          segment.kind !== 'entity' ||
-          segment.version !== 1 ||
-          segment.sigil !== '@'
-        )
-          continue;
+        if (segment.kind !== 'entity') continue;
         if (
           segment.entityType === 'user' &&
           segment.entityId.trim().toLocaleLowerCase() === normalizedSelf
@@ -2079,7 +2072,7 @@ export class MessageService {
 
   /**
    * Whether each requested thread's unread range contains a semantic mention of the viewer. SQL narrows the
-   * scan to text rows that resemble a SOMS mention, then the canonical parser is the authority (so escaped
+   * scan to text rows that resemble a SOCFP mention, then the canonical parser is the authority (so escaped
    * protocol-looking plain text cannot create a false mention). `me` outranks `all`.
    */
   async unreadMentionStates(
@@ -2102,8 +2095,8 @@ export class MessageService {
         AND tp."threadId" IN (${this.joinSql(threadIds)})
         AND m."contentType" = 'PURE_TEXT'
         AND (
-          strpos(m.content ->> 'text', '](soms://user/') > 0
-          OR strpos(m.content ->> 'text', '](soms://audience/all?v=1)') > 0
+          strpos(m.content ->> 'text', '](socfp://user/') > 0
+          OR strpos(m.content ->> 'text', '](socfp://audience/all)') > 0
         )
     `;
     const contents = new Map<number, string[]>();
@@ -2151,8 +2144,8 @@ export class MessageService {
         AND m."contentType" = 'PURE_TEXT'
         ${threadClause}
         AND (
-          strpos(m.content ->> 'text', '](soms://user/') > 0
-          OR strpos(m.content ->> 'text', '](soms://audience/all?v=1)') > 0
+          strpos(m.content ->> 'text', '](socfp://user/') > 0
+          OR strpos(m.content ->> 'text', '](socfp://audience/all)') > 0
         )
     `;
     const contents = new Map<number, string[]>();

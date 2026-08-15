@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:soms:federation:v1:identity",
+  "$id": "urn:socfp:v1:identity",
   "title": "Federation v1 recognition and feed revision objects",
   "$defs": {
     "recognizeRequest": {
       "type": "object",
       "required": ["domain"],
       "properties": {
-        "domain": { "$ref": "urn:soms:federation:v1:common#/$defs/domain" }
+        "domain": { "$ref": "urn:socfp:v1:common#/$defs/domain" }
       },
       "additionalProperties": false
     },
@@ -34,15 +34,15 @@
         "tombstoneFeedEndId"
       ],
       "properties": {
-        "origin": { "$ref": "urn:soms:federation:v1:common#/$defs/domain" },
+        "origin": { "$ref": "urn:socfp:v1:common#/$defs/domain" },
         "stateFeedEndId": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+          "$ref": "urn:socfp:v1:common#/$defs/decimalString"
         },
         "messageFeedEndId": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+          "$ref": "urn:socfp:v1:common#/$defs/decimalString"
         },
         "tombstoneFeedEndId": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+          "$ref": "urn:socfp:v1:common#/$defs/decimalString"
         }
       },
       "additionalProperties": false

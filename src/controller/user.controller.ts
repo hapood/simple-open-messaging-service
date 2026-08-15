@@ -6,7 +6,6 @@ import {
   Query,
   Res,
   Request,
-  UseGuards,
   HttpStatus,
   HttpCode,
   forwardRef,
@@ -44,7 +43,6 @@ import { normalizeAccount } from '../common/account.js';
 import { ConversationItemDto, UserResponseDto } from '../dto/response.dto.js';
 import { RegisterDto } from '../dto/auth.dto.js';
 import {
-  UserIdDto,
   DeleteFriendDto,
   ThreadIdDto,
   UserResolveDto,
@@ -203,7 +201,7 @@ export class UserController {
         'invalid image',
       );
     }
-    const updated = await this.userService.updateAvatar(req.user.userId, url);
+    await this.userService.updateAvatar(req.user.userId, url);
     // Self-profile-rev push so the editor's OTHER tabs/devices learn their own profile changed and re-
     // fetch (multi-device self refresh); the native HELLO cache also merges it for a fresh webview replay.
     return { avatar: url };
@@ -385,29 +383,25 @@ export class UserController {
     const me = req.user.userId;
     // Read the raw ADD/DELETE op log in (from, to], then plan it (last-op-wins per thread). The client
     // applies a single response: it never re-plans or batch-hydrates — the server is authoritative on both.
-    const [
-      ops,
-      profileOps,
-      memberProfileOps,
-      clientStateItems,
-    ] = await Promise.all([
-      this.threadRevisionService.queryDelta(
-        me,
-        dto.fromRevision,
-        dto.toRevision,
-      ),
-      this.threadRevisionService.queryProfileDelta(
-        me,
-        dto.fromRevision,
-        dto.toRevision,
-      ),
-      this.threadRevisionService.queryMemberProfileDelta(
-        me,
-        dto.fromRevision,
-        dto.toRevision,
-      ),
-      this.clientStateFeed.query(me, dto.fromRevision, dto.toRevision),
-    ]);
+    const [ops, profileOps, memberProfileOps, clientStateItems] =
+      await Promise.all([
+        this.threadRevisionService.queryDelta(
+          me,
+          dto.fromRevision,
+          dto.toRevision,
+        ),
+        this.threadRevisionService.queryProfileDelta(
+          me,
+          dto.fromRevision,
+          dto.toRevision,
+        ),
+        this.threadRevisionService.queryMemberProfileDelta(
+          me,
+          dto.fromRevision,
+          dto.toRevision,
+        ),
+        this.clientStateFeed.query(me, dto.fromRevision, dto.toRevision),
+      ]);
     const { addIds, removeIds } = planThreadDelta(ops);
     // Hydrate ONLY the net-ADD threads in one batched pass. leftAt:null is the strict "currently a member"
     // guard; a net-ADD whose participant row is gone (a reaped edge) simply drops — the client won't insert

@@ -264,10 +264,9 @@ describe('federation directed-state boundaries', () => {
     );
 
     expect(secondId).toBe(firstId);
-    const refreshed =
-      await database.db.query.groupMembershipRequest.findFirst({
-        where: eq(groupMembershipRequest.id, BigInt(firstId)),
-      });
+    const refreshed = await database.db.query.groupMembershipRequest.findFirst({
+      where: eq(groupMembershipRequest.id, BigInt(firstId)),
+    });
     expect(refreshed).toMatchObject({ status: 'REQUESTED', revision: 2 });
     expect(refreshed!.expiresAt!.getTime()).toBeGreaterThan(Date.now());
   });

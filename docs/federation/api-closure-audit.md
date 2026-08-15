@@ -33,7 +33,7 @@ SOMS 实现已有对应生产者、消费者和回归证据；它不表示内部
 
 | Endpoint                            | 状态   | 闭环说明                                                                       |
 | ----------------------------------- | ------ | ------------------------------------------------------------------------------ |
-| `/.well-known/soms`                 | CLOSED | 发布 root/signing identity 和 protocol version；无 capability 分支。           |
+| `/.well-known/socfp`                | CLOSED | 发布 root/signing identity 和 protocol version；无 capability 分支。           |
 | `/s2s/v1/recognize`                 | CLOSED | 单方向事实、反向持久调度、root pin、cursor 初始化与双向收敛。                  |
 | `/s2s/v1/healthy`                   | CLOSED | pinned cache 验签、统一 unavailable 隐私响应与 degraded/healthy 恢复。         |
 | `/s2s/v1/feed-heads`                | CLOSED | wake-up 可丢、重复、乱序；只 max-coalesce，不持久化为事实。                    |

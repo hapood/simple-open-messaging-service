@@ -8,8 +8,7 @@ import type { DatabaseTransaction } from '../database/database.service.js';
  * protocol: another implementation may choose a different origin-group limit.
  */
 export const SERVER_MAX_GROUP_MEMBERS = 999;
-export const SERVER_GROUP_FULL_REASON =
-  `Group has reached this server's ${SERVER_MAX_GROUP_MEMBERS}-member limit.`;
+export const SERVER_GROUP_FULL_REASON = `Group has reached this server's ${SERVER_MAX_GROUP_MEMBERS}-member limit.`;
 
 /**
  * Serialize joins at the origin group and reserve one local membership slot.

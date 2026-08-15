@@ -37,14 +37,21 @@ import {
 } from './admin.dto.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import { PUBLIC_CONFIG, isPasswordLoginEnabled } from '../config/public-config.js';
+import {
+  PUBLIC_CONFIG,
+  isPasswordLoginEnabled,
+} from '../config/public-config.js';
 import { AuthService } from '../auth/auth.service.js';
 import { OtpLoginService } from '../auth/otp-login.service.js';
 import { BruteForceService } from '../auth/brute-force.service.js';
 import { UserManageService } from '../user-manage/user-manage.service.js';
 import { SseService } from '../gateway/sse.service.js';
 import { PushService } from '../push/push.service.js';
-import { ADMIN_SESSION_COOKIE, clearAdminSessionCookie, setAdminSessionCookie } from './admin-session.js';
+import {
+  ADMIN_SESSION_COOKIE,
+  clearAdminSessionCookie,
+  setAdminSessionCookie,
+} from './admin-session.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
 
 /**
@@ -77,7 +84,9 @@ export class AdminController {
   @Throttle(5, 60) // 5 attempts/min per IP — brute-force ceiling over the account-dim progressive ban + argon2
   @HttpCode(HttpStatus.OK)
   @Post('admin/login')
-  @ApiOperation({ summary: 'Admin login (password → session, or 2FA challenge when enrolled)' })
+  @ApiOperation({
+    summary: 'Admin login (password → session, or 2FA challenge when enrolled)',
+  })
   async login(
     @Body() dto: AdminLoginDto,
     @Headers('user-agent') userAgent: string,
@@ -87,7 +96,12 @@ export class AdminController {
     // Throws BusinessException(INVALID_CREDENTIALS | RATE_LIMITED) on failure — the global filter renders it.
     // On success sets the httpOnly admin_session cookie and returns { authenticated: true };
     // otherwise a { twoFactorRequired, challengeToken, factors } challenge.
-    const result = await this.adminAuthService.login(dto.account, dto.password, ip, userAgent);
+    const result = await this.adminAuthService.login(
+      dto.account,
+      dto.password,
+      ip,
+      userAgent,
+    );
     if ('sessionToken' in result) {
       setAdminSessionCookie(reply, result.sessionToken);
       return { authenticated: true };
@@ -99,7 +113,9 @@ export class AdminController {
   @Throttle(5, 60) // per-IP ceiling on the 6-digit guess; the account-dim progressive ban lives in the service
   @HttpCode(HttpStatus.OK)
   @Post('admin/login/verify')
-  @ApiOperation({ summary: 'Admin 2FA login verify (TOTP or backup code) → session' })
+  @ApiOperation({
+    summary: 'Admin 2FA login verify (TOTP or backup code) → session',
+  })
   async loginVerify(
     @Body() dto: AdminLoginVerifyDto,
     @Headers('user-agent') userAgent: string,
@@ -107,7 +123,11 @@ export class AdminController {
     @Res({ passthrough: true }) reply: FastifyReply,
   ) {
     const result = await this.adminAuthService.verifyLogin(
-      dto.challengeToken, dto.code, dto.backupCode, ip, userAgent,
+      dto.challengeToken,
+      dto.code,
+      dto.backupCode,
+      ip,
+      userAgent,
     );
     setAdminSessionCookie(reply, result.sessionToken);
     return { authenticated: true };
@@ -117,7 +137,9 @@ export class AdminController {
   @Throttle(5, 60) // per-IP ceiling; the account-dim 2FA progressive ban lives in the service
   @HttpCode(HttpStatus.OK)
   @Post('admin/webauthn/login/begin')
-  @ApiOperation({ summary: 'Admin passkey login begin (challenge token → assertion options)' })
+  @ApiOperation({
+    summary: 'Admin passkey login begin (challenge token → assertion options)',
+  })
   async webauthnLoginBegin(@Body() dto: WebAuthnLoginBeginDto) {
     return this.adminAuthService.beginWebAuthnLogin(dto.challengeToken);
   }
@@ -134,12 +156,12 @@ export class AdminController {
     @Res({ passthrough: true }) reply: FastifyReply,
   ) {
     const result = await this.adminAuthService.verifyWebAuthnLogin(
-        dto.challengeToken,
-        dto.pendingToken,
-        dto.assertionResponse,
-        ip,
-        userAgent,
-      );
+      dto.challengeToken,
+      dto.pendingToken,
+      dto.assertionResponse,
+      ip,
+      userAgent,
+    );
     setAdminSessionCookie(reply, result.sessionToken);
     return { authenticated: true };
   }
@@ -148,7 +170,10 @@ export class AdminController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/logout')
   @ApiOperation({ summary: 'Admin logout' })
-  async logout(@Req() req: FastifyRequest, @Res({ passthrough: true }) reply: FastifyReply): Promise<void> {
+  async logout(
+    @Req() req: FastifyRequest,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ): Promise<void> {
     const token = req.cookies?.[ADMIN_SESSION_COOKIE];
     if (token) await this.adminAuthService.revokeAdminSessionToken(token);
     clearAdminSessionCookie(reply);
@@ -157,14 +182,25 @@ export class AdminController {
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/me')
-  @ApiOperation({ summary: 'Current admin identity (account + role) for the console header + role gating' })
+  @ApiOperation({
+    summary:
+      'Current admin identity (account + role) for the console header + role gating',
+  })
   async me(@Req() req: FastifyRequest) {
     const adminId = (req.user as { adminId?: number } | undefined)?.adminId;
     // Defense-in-depth: AdminAuthGuard already guarantees adminId for a non-@Public route. Thrown as
     // HTTP 200 + UNAUTHENTICATED (the prior wire) — the global AllExceptionsFilter renders the body.
-    if (!adminId) throw new BusinessException(BusinessCode.UNAUTHENTICATED, 'no admin session');
+    if (!adminId)
+      throw new BusinessException(
+        BusinessCode.UNAUTHENTICATED,
+        'no admin session',
+      );
     const me = await this.adminAuthService.me(adminId);
-    if (!me) throw new BusinessException(BusinessCode.UNAUTHENTICATED, 'no admin profile');
+    if (!me)
+      throw new BusinessException(
+        BusinessCode.UNAUTHENTICATED,
+        'no admin profile',
+      );
     return me;
   }
 
@@ -188,7 +224,11 @@ export class AdminController {
     // loginMode policy: a password is required iff password login is the active method (ALL / PASSWORD_ONLY).
     // In APP_OTP_AND_QR the account has no password — it bootstraps via the one-time code issued next.
     if (isPasswordLoginEnabled(PUBLIC_CONFIG.loginMode) && !dto.password) {
-      throw new BusinessException(BusinessCode.VALIDATION_FAILED, 'password is required', HttpStatus.BAD_REQUEST);
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'password is required',
+        HttpStatus.BAD_REQUEST,
+      );
     }
     return this.userManageService.createUser({
       account: dto.account,
@@ -202,24 +242,36 @@ export class AdminController {
   @Audit('user.issue_login_code', { targetType: 'user', targetParam: 'id' })
   @HttpCode(HttpStatus.OK)
   @Post('admin/users/:id/issue-login-code')
-  @ApiOperation({ summary: 'Issue a one-time login code for a user (plaintext returned once)' })
+  @ApiOperation({
+    summary: 'Issue a one-time login code for a user (plaintext returned once)',
+  })
   async issueLoginCode(@Req() req: FastifyRequest, @Param('id') id: string) {
     const adminId = (req.user as { adminId?: number } | undefined)?.adminId;
-    if (!adminId) throw new BusinessException(BusinessCode.UNAUTHENTICATED, 'no admin session');
+    if (!adminId)
+      throw new BusinessException(
+        BusinessCode.UNAUTHENTICATED,
+        'no admin session',
+      );
     return this.otpLoginService.issueCode(adminId, Number(id));
   }
 
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/users/:id/login-codes')
-  @ApiOperation({ summary: "Audit list of a user's one-time login codes (never the code/token value)" })
+  @ApiOperation({
+    summary:
+      "Audit list of a user's one-time login codes (never the code/token value)",
+  })
   async listLoginCodes(@Param('id') id: string) {
     return this.otpLoginService.listCodes(Number(id));
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
   @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
-  @Audit('user.revoke_login_code', { targetType: 'login_code', targetParam: 'id' })
+  @Audit('user.revoke_login_code', {
+    targetType: 'login_code',
+    targetParam: 'id',
+  })
   @HttpCode(HttpStatus.OK)
   @Post('admin/login-codes/:id/revoke')
   @ApiOperation({ summary: 'Revoke an unused one-time login code' })
@@ -232,7 +284,10 @@ export class AdminController {
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/push/tokens')
-  @ApiOperation({ summary: 'Push device-token list (paginated + searchable) + FCM/Web Push config status' })
+  @ApiOperation({
+    summary:
+      'Push device-token list (paginated + searchable) + FCM/Web Push config status',
+  })
   async listPushTokens(@Body() dto: AdminListPushTokensDto) {
     const { list, total } = await this.pushService.listTokens({
       skip: dto.skip ?? 0,
@@ -262,11 +317,17 @@ export class AdminController {
   @Audit('push.test', { targetType: 'push_token', targetParam: 'id' })
   @HttpCode(HttpStatus.OK)
   @Post('admin/push/test')
-  @ApiOperation({ summary: 'Send a test push to a given device token (FCM / Web Push)' })
+  @ApiOperation({
+    summary: 'Send a test push to a given device token (FCM / Web Push)',
+  })
   async sendPushTest(@Body() dto: AdminPushTestDto) {
     // The push may legitimately fail (transport unconfigured, dead token) — surface that as a normal
     // result (code OK + data.ok=false) rather than an API error, so the admin sees the reason.
-    const r = await this.pushService.sendTestPush(dto.id, dto.title, dto.body ?? '');
+    const r = await this.pushService.sendTestPush(
+      dto.id,
+      dto.title,
+      dto.body ?? '',
+    );
     return r.ok ? { ok: true } : { ok: false, error: r.error };
   }
 
@@ -313,17 +374,22 @@ export class AdminController {
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/users/:id/detail')
-  @ApiOperation({ summary: 'User 360° detail: profile + groups + sessions + push tokens' })
+  @ApiOperation({
+    summary: 'User 360° detail: profile + groups + sessions + push tokens',
+  })
   async userDetail(@Param('id') id: string) {
     const data = await this.userManageService.getUserDetail(Number(id));
-    if (!data) throw new BusinessException(BusinessCode.NOT_FOUND, 'user not found');
+    if (!data)
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'user not found');
     return data;
   }
 
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/users/:id/quota')
-  @ApiOperation({ summary: "View a local user's personal quota policy and today's usage" })
+  @ApiOperation({
+    summary: "View a local user's personal quota policy and today's usage",
+  })
   async userQuota(@Param('id') id: string) {
     return this.userQuotaService.getState(Number(id));
   }
@@ -351,15 +417,24 @@ export class AdminController {
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
   @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
-  @Audit('user.generate_initial_password', { targetType: 'user', targetParam: 'id' })
+  @Audit('user.generate_initial_password', {
+    targetType: 'user',
+    targetParam: 'id',
+  })
   @HttpCode(HttpStatus.OK)
   @Post('admin/users/:id/generate-initial-password')
-  @ApiOperation({ summary: "(Re-)generate the user's initial password (random, reveal-once; forces a set on next login)" })
+  @ApiOperation({
+    summary:
+      "(Re-)generate the user's initial password (random, reveal-once; forces a set on next login)",
+  })
   async generateInitialPassword(@Param('id') id: string) {
     // The admin can never choose or change a user's password — only (re-)initialize it (server-generated).
     // Refuse outright when password login isn't enabled: no point minting a password that can't be used.
     if (!isPasswordLoginEnabled(PUBLIC_CONFIG.loginMode)) {
-      throw new BusinessException(BusinessCode.LOGIN_METHOD_DISABLED, 'password login is disabled');
+      throw new BusinessException(
+        BusinessCode.LOGIN_METHOD_DISABLED,
+        'password login is disabled',
+      );
     }
     return this.userManageService.generateInitialPassword(Number(id));
   }
@@ -369,7 +444,10 @@ export class AdminController {
   @Audit('user.batch', { targetType: 'user' })
   @HttpCode(HttpStatus.OK)
   @Post('admin/users/batch')
-  @ApiOperation({ summary: 'Apply an action to many users at once (disable / enable / force-logout)' })
+  @ApiOperation({
+    summary:
+      'Apply an action to many users at once (disable / enable / force-logout)',
+  })
   async batchUsers(@Body() dto: AdminUserBatchDto) {
     // Each id goes through the same path as its single-user counterpart, so disable still
     // force-logs-out, etc. One summary audit row is written by the interceptor (per-user state
@@ -382,7 +460,9 @@ export class AdminController {
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/bans')
-  @ApiOperation({ summary: 'List active login bans (IP / account — password + OTP)' })
+  @ApiOperation({
+    summary: 'List active login bans (IP / account — password + OTP)',
+  })
   async listBans() {
     return this.bruteForce.listBans();
   }
@@ -392,7 +472,10 @@ export class AdminController {
   @Audit('ban.unban')
   @HttpCode(HttpStatus.OK)
   @Post('admin/bans/unban')
-  @ApiOperation({ summary: 'Unban (IP and/or account — clears every account-keyed dimension: password + OTP)' })
+  @ApiOperation({
+    summary:
+      'Unban (IP and/or account — clears every account-keyed dimension: password + OTP)',
+  })
   async unban(@Body() dto: AdminUnbanDto): Promise<void> {
     this.bruteForce.unban({ ip: dto.ip, account: dto.account });
   }
@@ -402,7 +485,10 @@ export class AdminController {
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/sessions')
-  @ApiOperation({ summary: 'System-wide active session overview (cross-user; filter by userId/ip)' })
+  @ApiOperation({
+    summary:
+      'System-wide active session overview (cross-user; filter by userId/ip)',
+  })
   async listAllSessions(@Body() dto: AdminListSessionsDto) {
     return this.authService.listAllSessions(dto);
   }
@@ -412,7 +498,10 @@ export class AdminController {
   @Audit('session.purge_all')
   @HttpCode(HttpStatus.OK)
   @Post('admin/sessions/purge')
-  @ApiOperation({ summary: 'Purge all active sessions in one shot (forces every user to re-login; access tokens expire immediately)' })
+  @ApiOperation({
+    summary:
+      'Purge all active sessions in one shot (forces every user to re-login; access tokens expire immediately)',
+  })
   async purgeAllSessions() {
     return this.authService.purgeAllSessions();
   }
@@ -422,13 +511,20 @@ export class AdminController {
   @Audit('session.revoke', { targetType: 'user_session', targetParam: 'id' })
   @HttpCode(HttpStatus.OK)
   @Post('admin/sessions/:id/revoke')
-  @ApiOperation({ summary: 'Revoke a single active user session (kicks only that device; the user stays online on every other device)' })
+  @ApiOperation({
+    summary:
+      'Revoke a single active user session (kicks only that device; the user stays online on every other device)',
+  })
   async revokeSession(@Param('id') id: string): Promise<void> {
     // Surgical counterpart to force-logout: only the picked device is force-logged-out; the user's other
     // sessions are untouched. Idempotent — a not-found / already-revoked id surfaces as NOT_FOUND so a
     // stale list row doesn't masquerade as a successful revoke.
     const ok = await this.authService.revokeSessionAdmin(Number(id));
-    if (!ok) throw new BusinessException(BusinessCode.NOT_FOUND, 'session not found or already revoked');
+    if (!ok)
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'session not found or already revoked',
+      );
   }
 
   // ===== Live connection observability (SSE online stream, in-memory, read-only) =====
@@ -436,7 +532,9 @@ export class AdminController {
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/connections')
-  @ApiOperation({ summary: 'Online SSE connection overview (aggregated per user)' })
+  @ApiOperation({
+    summary: 'Online SSE connection overview (aggregated per user)',
+  })
   async listConnections() {
     const snap = this.sseService.snapshot();
     if (snap.clients.length === 0) {
@@ -449,7 +547,10 @@ export class AdminController {
     return {
       total: snap.total,
       uniqueUsers: snap.uniqueUsers,
-      clients: snap.clients.map((c) => ({ ...c, account: nameMap.get(c.userId) ?? null })),
+      clients: snap.clients.map((c) => ({
+        ...c,
+        account: nameMap.get(c.userId) ?? null,
+      })),
     };
   }
 
@@ -458,14 +559,19 @@ export class AdminController {
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/admin-sessions')
-  @ApiOperation({ summary: 'Admin active session list (joins Admin → linked user account)' })
+  @ApiOperation({
+    summary: 'Admin active session list (joins Admin → linked user account)',
+  })
   async listAdminSessions(@Body() dto: AdminListSessionsDto) {
     return this.adminAuthService.listAdminSessions(dto);
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
   @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
-  @Audit('admin_session.revoke', { targetType: 'admin_session', targetParam: 'id' })
+  @Audit('admin_session.revoke', {
+    targetType: 'admin_session',
+    targetParam: 'id',
+  })
   @HttpCode(HttpStatus.OK)
   @Post('admin/admin-sessions/:id/revoke')
   @ApiOperation({ summary: 'Revoke an opaque admin session immediately' })

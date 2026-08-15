@@ -1,4 +1,4 @@
-import { Controller, Get, Req, Res, UseGuards } from '@nestjs/common';
+import { Controller, Get, Req, Res } from '@nestjs/common';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { Raw } from '../common/raw.decorator.js';
 import { SseService } from './sse.service.js';
@@ -29,6 +29,11 @@ export class EventsController {
     // Forward the request Origin: hijack bypasses @fastify/cors, so the reflected CORS header must be
     // written on the raw stream or cross-origin clients (Tauri desktop/Android) can never read it.
     // sessionId lets SseService target this exact session for FORCE_LOGOUT on a device-revoke.
-    this.sseService.register(user.userId, user.sessionId, reply.raw, req.headers.origin);
+    this.sseService.register(
+      user.userId,
+      user.sessionId,
+      reply.raw,
+      req.headers.origin,
+    );
   }
 }

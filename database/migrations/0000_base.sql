@@ -882,10 +882,7 @@ ALTER SEQUENCE public."FileSyncProgress_id_seq" OWNED BY public."FileSyncProgres
 
 CREATE TABLE public."ForwardBundle" (
     id character varying(26) NOT NULL,
-    "schemaVersion" integer DEFAULT 1 NOT NULL,
-    depth integer NOT NULL,
-    manifest jsonb NOT NULL,
-    "manifestDigest" character varying(64) NOT NULL,
+    messages jsonb NOT NULL,
     "messageCount" integer NOT NULL,
     "assetCount" integer NOT NULL,
     "totalBytes" bigint NOT NULL,
@@ -894,10 +891,8 @@ CREATE TABLE public."ForwardBundle" (
     "createdBy" integer,
     "createdAt" timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT "ForwardBundle_asset_count_check" CHECK (("assetCount" >= 0)),
-    CONSTRAINT "ForwardBundle_depth_check" CHECK (((depth >= 1) AND (depth <= 3))),
-    CONSTRAINT "ForwardBundle_manifest_shape_check" CHECK (((jsonb_typeof(manifest) = 'object'::text) AND (jsonb_typeof((manifest -> 'children'::text)) = 'array'::text) AND (jsonb_typeof((manifest -> 'messages'::text)) = 'array'::text) AND (((manifest ->> 'schemaVersion'::text))::integer = 1))),
-    CONSTRAINT "ForwardBundle_message_count_check" CHECK ((("messageCount" >= 1) AND ("messageCount" <= 100))),
-    CONSTRAINT "ForwardBundle_schema_version_check" CHECK (("schemaVersion" = 1)),
+    CONSTRAINT "ForwardBundle_messages_shape_check" CHECK ((jsonb_typeof(messages) = 'array'::text)),
+    CONSTRAINT "ForwardBundle_message_count_check" CHECK ((("messageCount" >= 0) AND ("messageCount" <= 500))),
     CONSTRAINT "ForwardBundle_total_bytes_check" CHECK (("totalBytes" >= 0))
 );
 
@@ -910,10 +905,6 @@ CREATE TABLE public."ForwardBundleAsset" (
     "bundleId" character varying(26) NOT NULL,
     digest character varying(64) NOT NULL,
     ordinal integer NOT NULL,
-    kind character varying(16) NOT NULL,
-    extension character varying(16) NOT NULL,
-    filename text,
-    mime text,
     bytes bigint NOT NULL
 );
 
@@ -2977,10 +2968,10 @@ CREATE INDEX "FileSyncProgress_status_updatedAt_idx" ON public."FileSyncProgress
 
 
 --
--- Name: ForwardBundleAsset_bundleId_digest_kind_key; Type: INDEX; Schema: public; Owner: -
+-- Name: ForwardBundleAsset_bundleId_digest_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX "ForwardBundleAsset_bundleId_digest_kind_key" ON public."ForwardBundleAsset" USING btree ("bundleId", digest, kind);
+CREATE UNIQUE INDEX "ForwardBundleAsset_bundleId_digest_key" ON public."ForwardBundleAsset" USING btree ("bundleId", digest);
 
 
 --

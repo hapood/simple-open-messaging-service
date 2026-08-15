@@ -1,0 +1,13 @@
+{
+  "protocol": "Simple Open Chat Federation Protocol",
+  "abbreviation": "SOCFP",
+  "version": "1.0.0-rc.2",
+  "major": 1,
+  "status": "release-candidate",
+  "language": "zh-CN",
+  "authoritativeLanguage": "zh-CN",
+  "normativeEntryPoint": "v1/README.md",
+  "license": "MIT",
+  "licenseFile": "LICENSE",
+  "conformance": "v1/CONFORMANCE.md"
+}

@@ -1,8 +1,4 @@
-import {
-  CanActivate,
-  ExecutionContext,
-  Injectable,
-} from '@nestjs/common';
+import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import type { FastifyRequest } from 'fastify';
 import { ADMIN_ROLES_KEY } from './admin-roles.decorator.js';

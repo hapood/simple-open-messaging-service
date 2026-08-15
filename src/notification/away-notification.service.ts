@@ -1,5 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import { NotificationQueryService, type MissedCursor } from './notification-query.service.js';
+import {
+  NotificationQueryService,
+  type MissedCursor,
+} from './notification-query.service.js';
 import type { NotificationDescriptor } from './notification-descriptor.js';
 
 /**

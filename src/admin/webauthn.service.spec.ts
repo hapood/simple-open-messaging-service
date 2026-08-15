@@ -38,21 +38,32 @@ function makeService(overrides: Record<string, unknown> = {}) {
     webAuthnCredential: {
       findMany: vi.fn(async () => [] as unknown[]),
       findUnique: vi.fn(async () => null),
-      create: vi.fn(async (args: { data: Record<string, unknown> }) => ({ id: 1n, ...args.data })),
+      create: vi.fn(async (args: { data: Record<string, unknown> }) => ({
+        id: 1n,
+        ...args.data,
+      })),
       updateMany: vi.fn(async () => ({ count: 1 })),
       update: vi.fn(async () => ({})),
       deleteMany: vi.fn(async () => ({ count: 1 })),
       count: vi.fn(async () => 0),
     },
-    admin: { update: vi.fn(async () => ({})), updateMany: vi.fn(async () => ({ count: 1 })) },
-    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(store)),
+    admin: {
+      update: vi.fn(async () => ({})),
+      updateMany: vi.fn(async () => ({ count: 1 })),
+    },
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn(store),
+    ),
     ...overrides,
   };
   const db = {
     query: {
       webAuthnCredential: {
-        findMany: (...args: unknown[]) => store.webAuthnCredential.findMany?.(...args) ?? Promise.resolve([]),
-        findFirst: (...args: unknown[]) => store.webAuthnCredential.findUnique?.(...args) ?? Promise.resolve(null),
+        findMany: (...args: unknown[]) =>
+          store.webAuthnCredential.findMany?.(...args) ?? Promise.resolve([]),
+        findFirst: (...args: unknown[]) =>
+          store.webAuthnCredential.findUnique?.(...args) ??
+          Promise.resolve(null),
       },
     },
     insert: (table: unknown) => ({
@@ -68,14 +79,18 @@ function makeService(overrides: Record<string, unknown> = {}) {
       let operation: Promise<unknown> = Promise.resolve(undefined);
       const query = {
         set: (data: Record<string, unknown>) => {
-          operation = table === adminTable
-            ? store.admin.updateMany?.({ data }) ?? store.admin.update?.({ data }) ?? Promise.resolve(undefined)
-            : store.webAuthnCredential.updateMany?.({ data }) ?? Promise.resolve({ count: 0 });
+          operation =
+            table === adminTable
+              ? (store.admin.updateMany?.({ data }) ??
+                store.admin.update?.({ data }) ??
+                Promise.resolve(undefined))
+              : (store.webAuthnCredential.updateMany?.({ data }) ??
+                Promise.resolve({ count: 0 }));
           return query;
         },
         where: () => query,
         returning: async () => {
-          const result = await operation as { count?: number };
+          const result = (await operation) as { count?: number };
           return result?.count === 0 ? [] : [{ id: 1n }];
         },
         then: (resolve: (value: unknown) => unknown) => operation.then(resolve),
@@ -85,14 +100,22 @@ function makeService(overrides: Record<string, unknown> = {}) {
     delete: () => ({
       where: () => ({
         returning: async () => {
-          const result = await store.webAuthnCredential.deleteMany?.() as { count?: number } | undefined;
+          const result = (await store.webAuthnCredential.deleteMany?.()) as
+            | { count?: number }
+            | undefined;
           return result?.count === 0 ? [] : [{ id: 1n }];
         },
       }),
     }),
     select: () => {
-      const resolve = async () => [{ value: await store.webAuthnCredential.count?.() ?? 0 }];
-      const query = { from: () => query, where: () => query, then: (fn: (v: unknown[]) => unknown) => resolve().then(fn) };
+      const resolve = async () => [
+        { value: (await store.webAuthnCredential.count?.()) ?? 0 },
+      ];
+      const query = {
+        from: () => query,
+        where: () => query,
+        then: (fn: (v: unknown[]) => unknown) => resolve().then(fn),
+      };
       return query;
     },
     transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(db),
@@ -104,7 +127,9 @@ describe('WebAuthnService', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRegOptions.mockResolvedValue({ challenge: 'reg-challenge' } as never);
-    mockAuthOptions.mockResolvedValue({ challenge: 'assert-challenge' } as never);
+    mockAuthOptions.mockResolvedValue({
+      challenge: 'assert-challenge',
+    } as never);
   });
 
   // ── registration ──────────────────────────────────────────────────────────────
@@ -122,19 +147,37 @@ describe('WebAuthnService', () => {
     mockVerifyReg.mockResolvedValue({
       verified: true,
       registrationInfo: {
-        credential: { id: 'cred-id-1', publicKey: new Uint8Array([1, 2, 3]), counter: 0 },
+        credential: {
+          id: 'cred-id-1',
+          publicKey: new Uint8Array([1, 2, 3]),
+          counter: 0,
+        },
         credentialDeviceType: 'multiDevice',
         credentialBackedUp: true,
       },
     } as never);
-    const credCreate = vi.fn(async (args: { data: Record<string, unknown> }) => ({ id: 42n, ...args.data }));
+    const credCreate = vi.fn(
+      async (args: { data: Record<string, unknown> }) => ({
+        id: 42n,
+        ...args.data,
+      }),
+    );
     const adminUpdate = vi.fn(async () => ({ count: 1 }));
     const { svc } = makeService({
-      webAuthnCredential: { create: credCreate, findMany: vi.fn(async () => []), count: vi.fn(async () => 1) },
+      webAuthnCredential: {
+        create: credCreate,
+        findMany: vi.fn(async () => []),
+        count: vi.fn(async () => 1),
+      },
       admin: { updateMany: adminUpdate },
     });
     // Mint a real pending token via begin, then complete.
-    const { pendingToken } = await svc.beginRegistration(7, 'admin', 'admin', 'MacBook');
+    const { pendingToken } = await svc.beginRegistration(
+      7,
+      'admin',
+      'admin',
+      'MacBook',
+    );
     const created = await svc.completeRegistration(7, pendingToken, {
       response: { transports: ['internal', 'hybrid'] },
     } as never);
@@ -149,7 +192,9 @@ describe('WebAuthnService', () => {
     expect(Buffer.isBuffer(data.publicKey)).toBe(true);
     // The hint flips only when currently false — the updateMany precondition is { id, webauthnEnabled: false }.
     const adminArgs = adminUpdate.mock.calls[0][0];
-    expect(adminArgs.data).toEqual(expect.objectContaining({ webauthnEnabled: true }));
+    expect(adminArgs.data).toEqual(
+      expect.objectContaining({ webauthnEnabled: true }),
+    );
   });
 
   it('completeRegistration throws WEBAUTHN_VERIFICATION_FAILED when the lib throws', async () => {
@@ -158,14 +203,23 @@ describe('WebAuthnService', () => {
     const { pendingToken } = await svc.beginRegistration(7, 'admin', 'admin');
     await expect(
       svc.completeRegistration(7, pendingToken, {} as never),
-    ).rejects.toMatchObject({ bizCode: BusinessCode.WEBAUTHN_VERIFICATION_FAILED });
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.WEBAUTHN_VERIFICATION_FAILED,
+    });
   });
 
   // ── assertion ─────────────────────────────────────────────────────────────────
 
   it('beginAssertion throws TWO_FACTOR_NOT_ENABLED when the admin has no credentials (stale-true guard)', async () => {
-    const { svc } = makeService({ webAuthnCredential: { count: vi.fn(async () => 0), findMany: vi.fn(async () => []) } });
-    await expect(svc.beginAssertion(7)).rejects.toMatchObject({ bizCode: BusinessCode.TWO_FACTOR_NOT_ENABLED });
+    const { svc } = makeService({
+      webAuthnCredential: {
+        count: vi.fn(async () => 0),
+        findMany: vi.fn(async () => []),
+      },
+    });
+    await expect(svc.beginAssertion(7)).rejects.toMatchObject({
+      bizCode: BusinessCode.TWO_FACTOR_NOT_ENABLED,
+    });
   });
 
   it('verifyAssertion advances the counter via a compare-and-swap updateMany on success', async () => {
@@ -173,12 +227,28 @@ describe('WebAuthnService', () => {
       verified: true,
       authenticationInfo: { newCounter: 5 },
     } as never);
-    const findUnique = vi.fn(async () => ({ id: 9n, adminId: 7, publicKey: Buffer.from([1]), counter: 3 }));
+    const findUnique = vi.fn(async () => ({
+      id: 9n,
+      adminId: 7,
+      publicKey: Buffer.from([1]),
+      counter: 3,
+    }));
     const updateMany = vi.fn(async () => ({ count: 1 }));
-    const { svc } = makeService({ webAuthnCredential: { findUnique, updateMany, findMany: vi.fn(async () => [{ credentialId: 'cred-id-1', transports: null }]), count: vi.fn(async () => 1) } });
+    const { svc } = makeService({
+      webAuthnCredential: {
+        findUnique,
+        updateMany,
+        findMany: vi.fn(async () => [
+          { credentialId: 'cred-id-1', transports: null },
+        ]),
+        count: vi.fn(async () => 1),
+      },
+    });
 
     const { pendingToken } = await svc.beginAssertion(7);
-    const r = await svc.verifyAssertion(7, pendingToken, { id: 'cred-id-1' } as never);
+    const r = await svc.verifyAssertion(7, pendingToken, {
+      id: 'cred-id-1',
+    } as never);
     expect(r).toEqual({ ok: true });
     // CAS: update only if the stored counter is still exactly what we read (3).
     expect(updateMany).toHaveBeenCalledWith({
@@ -188,20 +258,51 @@ describe('WebAuthnService', () => {
 
   it('verifyAssertion returns {ok:false} when the lib throws (clone / tamper)', async () => {
     mockVerifyAuth.mockRejectedValue(new Error('counter regression') as never);
-    const findUnique = vi.fn(async () => ({ id: 9n, adminId: 7, publicKey: Buffer.from([1]), counter: 3 }));
+    const findUnique = vi.fn(async () => ({
+      id: 9n,
+      adminId: 7,
+      publicKey: Buffer.from([1]),
+      counter: 3,
+    }));
     const updateMany = vi.fn(async () => ({ count: 1 }));
-    const { svc } = makeService({ webAuthnCredential: { findUnique, updateMany, findMany: vi.fn(async () => [{ credentialId: 'cred-id-1', transports: null }]), count: vi.fn(async () => 1) } });
+    const { svc } = makeService({
+      webAuthnCredential: {
+        findUnique,
+        updateMany,
+        findMany: vi.fn(async () => [
+          { credentialId: 'cred-id-1', transports: null },
+        ]),
+        count: vi.fn(async () => 1),
+      },
+    });
     const { pendingToken } = await svc.beginAssertion(7);
-    const r = await svc.verifyAssertion(7, pendingToken, { id: 'cred-id-1' } as never);
+    const r = await svc.verifyAssertion(7, pendingToken, {
+      id: 'cred-id-1',
+    } as never);
     expect(r).toEqual({ ok: false });
     expect(updateMany).not.toHaveBeenCalled();
   });
 
   it('verifyAssertion returns {ok:false} when the credential belongs to another admin', async () => {
-    const findUnique = vi.fn(async () => ({ id: 9n, adminId: 999, publicKey: Buffer.from([1]), counter: 0 }));
-    const { svc } = makeService({ webAuthnCredential: { findUnique, findMany: vi.fn(async () => [{ credentialId: 'cred-id-1', transports: null }]), count: vi.fn(async () => 1) } });
+    const findUnique = vi.fn(async () => ({
+      id: 9n,
+      adminId: 999,
+      publicKey: Buffer.from([1]),
+      counter: 0,
+    }));
+    const { svc } = makeService({
+      webAuthnCredential: {
+        findUnique,
+        findMany: vi.fn(async () => [
+          { credentialId: 'cred-id-1', transports: null },
+        ]),
+        count: vi.fn(async () => 1),
+      },
+    });
     const { pendingToken } = await svc.beginAssertion(7);
-    const r = await svc.verifyAssertion(7, pendingToken, { id: 'cred-id-1' } as never);
+    const r = await svc.verifyAssertion(7, pendingToken, {
+      id: 'cred-id-1',
+    } as never);
     expect(r).toEqual({ ok: false });
     expect(mockVerifyAuth).not.toHaveBeenCalled();
   });
@@ -209,9 +310,23 @@ describe('WebAuthnService', () => {
   // ── pending-token scope isolation ─────────────────────────────────────────────
 
   it('a reg-pending token cannot be used as an assert-pending token (scopes are isolated)', async () => {
-    mockVerifyAuth.mockResolvedValue({ verified: true, authenticationInfo: { newCounter: 1 } } as never);
-    const findUnique = vi.fn(async () => ({ id: 9n, adminId: 7, publicKey: Buffer.from([1]), counter: 0 }));
-    const { svc } = makeService({ webAuthnCredential: { findUnique, findMany: vi.fn(async () => [{ credentialId: 'c', transports: null }]), count: vi.fn(async () => 1) } });
+    mockVerifyAuth.mockResolvedValue({
+      verified: true,
+      authenticationInfo: { newCounter: 1 },
+    } as never);
+    const findUnique = vi.fn(async () => ({
+      id: 9n,
+      adminId: 7,
+      publicKey: Buffer.from([1]),
+      counter: 0,
+    }));
+    const { svc } = makeService({
+      webAuthnCredential: {
+        findUnique,
+        findMany: vi.fn(async () => [{ credentialId: 'c', transports: null }]),
+        count: vi.fn(async () => 1),
+      },
+    });
     const { pendingToken } = await svc.beginRegistration(7, 'admin', 'admin');
     // A reg-pending token passed to verifyAssertion → decoded as assert-pending → null → {ok:false}.
     const r = await svc.verifyAssertion(7, pendingToken, { id: 'c' } as never);
@@ -224,7 +339,7 @@ describe('WebAuthnService', () => {
   it('removeCredential flips webauthnEnabled off when the last credential is deleted', async () => {
     const deleteMany = vi.fn(async () => ({ count: 1 }));
     const adminUpdate = vi.fn(async () => ({ count: 1 }));
-    let remaining = 0; // the delete leaves zero credentials
+    const remaining = 0; // the delete leaves zero credentials
     const { svc } = makeService({
       webAuthnCredential: { deleteMany, count: vi.fn(async () => remaining) },
       admin: { update: vi.fn(async () => ({})), updateMany: adminUpdate },
@@ -232,18 +347,32 @@ describe('WebAuthnService', () => {
     const r = await svc.removeCredential(7, 42n);
     expect(r).toEqual({ remaining: 0 });
     expect(deleteMany).toHaveBeenCalled();
-    expect(adminUpdate).toHaveBeenCalledWith({ data: expect.objectContaining({ webauthnEnabled: false }) });
+    expect(adminUpdate).toHaveBeenCalledWith({
+      data: expect.objectContaining({ webauthnEnabled: false }),
+    });
   });
 
   it('removeCredential throws NOT_FOUND when the credential belongs to another admin (deleteMany count 0)', async () => {
     const deleteMany = vi.fn(async () => ({ count: 0 }));
-    const { svc } = makeService({ webAuthnCredential: { deleteMany, count: vi.fn(async () => 2) } });
-    await expect(svc.removeCredential(7, 42n)).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
+    const { svc } = makeService({
+      webAuthnCredential: { deleteMany, count: vi.fn(async () => 2) },
+    });
+    await expect(svc.removeCredential(7, 42n)).rejects.toMatchObject({
+      bizCode: BusinessCode.NOT_FOUND,
+    });
   });
 
   it('listCredentials projects the row shape and never exposes publicKey / counter', async () => {
     const findMany = vi.fn(async () => [
-      { id: 1n, nickname: 'Mac', deviceType: 'multiDevice', backed: true, transports: '["internal"]', createdAt: new Date(0), lastUsedAt: null },
+      {
+        id: 1n,
+        nickname: 'Mac',
+        deviceType: 'multiDevice',
+        backed: true,
+        transports: '["internal"]',
+        createdAt: new Date(0),
+        lastUsedAt: null,
+      },
     ]);
     const { svc } = makeService({ webAuthnCredential: { findMany } });
     const list = await svc.listCredentials(7);

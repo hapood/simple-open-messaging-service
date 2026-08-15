@@ -19,7 +19,11 @@ export class ThreadListSyncService {
   catchUp(
     userId: number,
     opts: { from?: MissedCursor | null; to: MissedCursor; take: number },
-  ): Promise<{ items: MissedThreadItem[]; hasMore: boolean; nextCursor: MissedCursor | null }> {
+  ): Promise<{
+    items: MissedThreadItem[];
+    hasMore: boolean;
+    nextCursor: MissedCursor | null;
+  }> {
     return this.readModel.buildSummary(userId, opts);
   }
 }

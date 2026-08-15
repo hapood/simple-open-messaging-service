@@ -29,7 +29,9 @@ describe('@Raw invariant', () => {
   it('every controller that hijacks the reply or uses a non-passthrough @Res() is @Raw', () => {
     const offenders = files
       .map((f) => ({ f, src: readFileSync(f, 'utf8') }))
-      .filter(({ src }) => src.includes('reply.hijack(') || /@Res\(\)/.test(src))
+      .filter(
+        ({ src }) => src.includes('reply.hijack(') || /@Res\(\)/.test(src),
+      )
       .filter(({ src }) => !src.includes('@Raw'))
       .map(({ f }) => f);
     expect(

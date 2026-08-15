@@ -34,15 +34,22 @@ describe('Shell dynamic-update endpoints (GET /api/v1/shell/*)', () => {
   const webVersion = '0.0.1';
   // Arbitrary bytes — the server STREAMS the bundle verbatim (tar integrity is the shell's job, not the
   // server's), so the roundtrip only needs bytes whose sha256 we know.
-  const bundleBytes = Buffer.from('pretend-this-is-a-gzip-tarball-of-the-web-spa-browser-build');
+  const bundleBytes = Buffer.from(
+    'pretend-this-is-a-gzip-tarball-of-the-web-spa-browser-build',
+  );
   const sha256 = createHash('sha256').update(bundleBytes).digest('hex');
 
   beforeAll(async () => {
     shellDir = mkdtempSync(join(tmpdir(), 'soms-shell-e2e-'));
     writeFileSync(join(shellDir, `soms-web-${webVersion}.tar.gz`), bundleBytes);
-    writeFileSync(join(shellDir, 'manifest.json'), JSON.stringify({ webVersion, sha256 }));
+    writeFileSync(
+      join(shellDir, 'manifest.json'),
+      JSON.stringify({ webVersion, sha256 }),
+    );
 
-    const moduleFixture: TestingModule = await Test.createTestingModule({ imports: [AppModule] })
+    const moduleFixture: TestingModule = await Test.createTestingModule({
+      imports: [AppModule],
+    })
       .overrideProvider(SHELL_DIR)
       .useValue(shellDir)
       .compile();
@@ -80,7 +87,9 @@ describe('Shell dynamic-update endpoints (GET /api/v1/shell/*)', () => {
   });
 
   it('web-manifest returns the descriptor the shell integrity-verifies against', async () => {
-    const res = await request(app.getHttpServer()).get('/api/v1/shell/web-manifest');
+    const res = await request(app.getHttpServer()).get(
+      '/api/v1/shell/web-manifest',
+    );
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(BusinessCode.OK);
     expect(res.body.data).toMatchObject({
@@ -112,7 +121,11 @@ describe('Shell dynamic-update endpoints (GET /api/v1/shell/*)', () => {
     expect(Buffer.isBuffer(res.body)).toBe(true);
     // Raw bytes, not {code,message,data} — proves the @Res() send bypassed SerializeInterceptor.
     expect((res.body as Buffer).equals(bundleBytes)).toBe(true);
-    expect(createHash('sha256').update(res.body as Buffer).digest('hex')).toBe(sha256);
+    expect(
+      createHash('sha256')
+        .update(res.body as Buffer)
+        .digest('hex'),
+    ).toBe(sha256);
   });
 
   it('rate-limits the manifest route past its ceiling (ThrottleGuard → HTTP 429 + RATE_LIMITED)', async () => {
@@ -123,7 +136,9 @@ describe('Shell dynamic-update endpoints (GET /api/v1/shell/*)', () => {
     const N = 40;
     const responses = [];
     for (let i = 0; i < N; i++) {
-      responses.push(await request(app.getHttpServer()).get('/api/v1/shell/web-manifest'));
+      responses.push(
+        await request(app.getHttpServer()).get('/api/v1/shell/web-manifest'),
+      );
     }
     const codes = responses.map((r) => r.body?.code);
 

@@ -69,7 +69,7 @@ export interface AudioContent {
 
 /** Max stored length of a LINK card's display fields. LinkPreviewService caps these at the source
  *  (page probe); re-checked here so a hand-crafted payload can never store a megabyte of title.
- *  Comfortably within the 5000-char content budget. */
+ *  Comfortably within the local 4000-code-point input budget. */
 const MAX_LINK_TITLE_LEN = 300;
 const MAX_LINK_DESC_LEN = 500;
 const MAX_LINK_SITE_NAME_LEN = 100;

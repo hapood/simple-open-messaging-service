@@ -20,19 +20,14 @@ describe('uploadCacheControl', () => {
     },
   );
 
-  it.each([
-    'mp3',
-    'ogg',
-    'opus',
-    'wav',
-    'm4a',
-    'flac',
-    'aac',
-  ])('caches .%s audio responses privately for one day', (ext) => {
-    expect(uploadCacheControl(`/uploads/item.${ext}`)).toBe(
-      'private, max-age=86400, immutable',
-    );
-  });
+  it.each(['mp3', 'ogg', 'opus', 'wav', 'm4a', 'flac', 'aac'])(
+    'caches .%s audio responses privately for one day',
+    (ext) => {
+      expect(uploadCacheControl(`/uploads/item.${ext}`)).toBe(
+        'private, max-age=86400, immutable',
+      );
+    },
+  );
 
   it('keeps the existing policy for generic downloads', () => {
     expect(uploadCacheControl('/uploads/item.pdf')).toBe(

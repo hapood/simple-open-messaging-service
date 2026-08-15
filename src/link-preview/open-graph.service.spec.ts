@@ -54,9 +54,7 @@ describe('OpenGraphService.parse', () => {
       <meta property="og:image:width" content="1200">
       <meta property="og:image" content="/note.jpg">
     `;
-    expect(og.parse(html, base).image).toBe(
-      'https://example.com/platform.png',
-    );
+    expect(og.parse(html, base).image).toBe('https://example.com/platform.png');
     expect(og.parse(html, base, 'last').image).toBe(
       'https://example.com/note.jpg',
     );

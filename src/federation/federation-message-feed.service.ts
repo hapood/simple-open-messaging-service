@@ -26,6 +26,11 @@ import {
 } from './federated-message-content.js';
 import { loadFederationConfig } from './federation.config.js';
 import { FederationMessageFeedIndexerService } from './federation-message-feed-indexer.service.js';
+import type {
+  FederationAddress,
+  FederationByteDescriptor,
+  FederatedMessagePayload,
+} from './federated-message-types.js';
 
 export const FEDERATION_MESSAGE_FEED_DEFAULT_PAGE_SIZE = 100;
 export const FEDERATION_MESSAGE_FEED_MAX_PAGE_SIZE = 200;
@@ -37,32 +42,26 @@ export type FederationThreadAddress =
   | { type: 'GROUP'; account: string; domain: string }
   | {
       type: 'P2P';
-      participants: Array<{ account: string; domain: string }>;
+      participants: FederationAddress[];
     };
 
 export type FederationThreadQuery =
   | { type: 'GROUP'; groupAccount: string; groupDomain: string }
   | { type: 'P2P'; account: string; peerAccount: string };
 
-export interface FederationMessageFeedAsset {
-  digest: string;
-  bytes: number;
-  status: 'READY' | 'DELETED';
-}
+export type FederationMessageFeedAsset = FederationByteDescriptor;
 
-export interface FederationMessageFeedMessage {
+export interface FederationMessageFeedMessage
+  extends FederatedMessagePayload<string> {
   thread: FederationThreadAddress;
-  author: { account: string; domain: string };
+  author: FederationAddress;
   seq: number;
-  originSeq: number;
-  contentType: string;
-  content: string;
+  originSeq: number | null;
+  originCreatedAt: number | null;
   createdAt: number;
-  updatedAt: number;
   clientMessageId: string | null;
   quoteTarget?: {
-    creator: { account: string; domain: string };
-    originSeq: number;
+    targetSeq: number;
   };
   assets: FederationMessageFeedAsset[];
 }
@@ -183,6 +182,7 @@ export class FederationMessageFeedService {
     after: number,
     requestedTake?: number,
     through?: number,
+    includeSelf = true,
   ): Promise<FederationMessageQueryPage> {
     const take = this.pageSize(requestedTake);
     if (after < 0 || (through !== undefined && through < 0))
@@ -219,10 +219,10 @@ export class FederationMessageFeedService {
                 threadId: message.threadId,
                 seq: message.seq,
                 originSeq: message.originSeq,
+                originServerTime: message.originServerTime,
                 contentType: message.contentType,
                 content: message.content,
                 createdAt: message.createdAt,
-                updatedAt: message.updatedAt,
                 clientMessageId: message.clientMessageId,
                 federationAuthoredSnapshot: message.federationAuthoredSnapshot,
                 threadType: messageThread.type,
@@ -240,21 +240,17 @@ export class FederationMessageFeedService {
                   lte(message.seq, queryEnd),
                   eq(message.isDeleted, false),
                   ne(message.contentType, ContentType.SYSTEM),
-                  sql`NOT (
-                    ${messageThread.type} = 'GROUP'
-                    AND EXISTS (
-                      SELECT 1 FROM "User" group_user
-                      WHERE group_user.id = ${messageThread.groupUserId}
-                        AND group_user.domain <> 'local'
-                    )
-                    AND (${user.isForeigner} OR ${message.originSeq} IS NOT NULL)
-                  )`,
+                  includeSelf ? undefined : ne(user.domain, peerDomain),
                 ),
               )
               .orderBy(asc(message.seq))
               .limit(take + 1);
       const selected = rows.slice(0, take);
-      const messages = await this.serializeMessagesInTx(tx, selected);
+      const messages = await this.serializeMessagesInTx(
+        tx,
+        selected,
+        peerDomain,
+      );
       const scannedThrough =
         rows.length > take ? selected.at(-1)!.seq : queryEnd;
       return {
@@ -272,10 +268,10 @@ export class FederationMessageFeedService {
       threadId: number;
       seq: number;
       originSeq: number | null;
+      originServerTime: Date | null;
       contentType: ContentType;
       content: string;
       createdAt: Date;
-      updatedAt: Date;
       clientMessageId: string | null;
       federationAuthoredSnapshot: typeof message.$inferSelect.federationAuthoredSnapshot;
       threadType: 'P2P' | 'GROUP';
@@ -283,6 +279,7 @@ export class FederationMessageFeedService {
       authorAccount: string;
       authorDomain: string;
     }>,
+    peerDomain: string,
   ): Promise<FederationMessageFeedMessage[]> {
     if (rows.length === 0) return [];
     const messageIds = rows.map((row) => row.messageId);
@@ -294,9 +291,6 @@ export class FederationMessageFeedService {
         messageId: messageAsset.messageId,
         digest: messageAsset.digest,
         bytes: mediaAsset.bytes,
-        status: sql<
-          'READY' | 'DELETED'
-        >`CASE WHEN ${mediaAsset.isDeleted} THEN 'DELETED' ELSE 'READY' END`,
       })
       .from(messageAsset)
       .innerJoin(mediaAsset, eq(mediaAsset.digest, messageAsset.digest))
@@ -307,7 +301,6 @@ export class FederationMessageFeedService {
       current.push({
         digest: asset.digest,
         bytes: Number(asset.bytes),
-        status: asset.status,
       });
       assets.set(asset.messageId, current);
     }
@@ -344,11 +337,7 @@ export class FederationMessageFeedService {
       quoted.map((row) => [
         JSON.stringify([row.threadId, row.seq]),
         {
-          creator: {
-            account: row.account,
-            domain: this.wireDomain(row.domain),
-          },
-          originSeq: row.originSeq ?? row.seq,
+          targetSeq: row.seq,
         },
       ]),
     );
@@ -361,55 +350,63 @@ export class FederationMessageFeedService {
         domain: this.wireDomain(row.authorDomain),
       };
       const quoteSeq =
-        !row.federationAuthoredSnapshot &&
+        (!row.federationAuthoredSnapshot ||
+          (thread.type === 'GROUP' && thread.domain === this.localDomain)) &&
         row.contentType === ContentType.PURE_TEXT
           ? parseTextMessageContent(row.content)?.quote?.seq
           : undefined;
+      const authoritativeGroupProjection =
+        thread.type === 'GROUP' && thread.domain === this.localDomain;
       const quoteTarget =
-        row.federationAuthoredSnapshot?.quoteTarget ??
+        (!authoritativeGroupProjection
+          ? row.federationAuthoredSnapshot?.quoteTarget
+          : undefined) ??
         (quoteSeq === undefined
           ? undefined
           : quoteTargets.get(JSON.stringify([row.threadId, quoteSeq])));
       let content =
-        row.federationAuthoredSnapshot?.content ??
-        toFederatedMessageContent(row.contentType, row.content);
+        (!authoritativeGroupProjection
+          ? row.federationAuthoredSnapshot?.content
+          : undefined) ??
+        toFederatedMessageContent(
+          row.contentType,
+          row.content,
+          this.localDomain,
+        );
       if (
         !row.federationAuthoredSnapshot &&
         row.contentType === ContentType.CALL
       ) {
         const local = parseCallContent(row.content);
-        const callee =
-          thread.type === 'P2P'
-            ? thread.participants.find(
-                (participant) =>
-                  participant.account !== author.account ||
-                  participant.domain !== author.domain,
-              )
-            : undefined;
-        if (!local || !callee)
+        if (!local || thread.type !== 'P2P')
           throw new Error('invalid federated CALL projection');
-        content = buildFederatedCallContent(local, author, callee);
+        content = buildFederatedCallContent(local);
       }
+      const isProcessingReceipt =
+        row.originSeq !== null &&
+        (thread.type === 'P2P'
+          ? author.domain === peerDomain
+          : thread.domain === peerDomain);
       const item: FederationMessageFeedMessage = {
         thread,
         author,
         seq: row.seq,
-        originSeq: row.originSeq ?? row.seq,
+        originSeq: isProcessingReceipt ? row.originSeq : null,
+        originCreatedAt: isProcessingReceipt
+          ? (row.originServerTime?.getTime() ?? null)
+          : null,
         contentType: row.contentType,
         content,
         createdAt: row.createdAt.getTime(),
-        // Message.updatedAt is supplied by the application while createdAt is a database default;
-        // clock/statement ordering can therefore make a fresh row's updatedAt a few milliseconds
-        // earlier. The wire invariant is updatedAt >= createdAt.
-        updatedAt: Math.max(row.updatedAt.getTime(), row.createdAt.getTime()),
         clientMessageId: row.federationAuthoredSnapshot
           ? row.federationAuthoredSnapshot.clientMessageId
           : row.clientMessageId,
         ...(quoteTarget ? { quoteTarget } : {}),
-        assets:
-          row.federationAuthoredSnapshot?.assets ??
-          assets.get(row.messageId) ??
-          [],
+        assets: authoritativeGroupProjection
+          ? (assets.get(row.messageId) ?? [])
+          : (row.federationAuthoredSnapshot?.assets ??
+            assets.get(row.messageId) ??
+            []),
       };
       result.push(item);
       if (!row.federationAuthoredSnapshot) {

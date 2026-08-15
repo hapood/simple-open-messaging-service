@@ -137,7 +137,7 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
         {
           deletionSeq: deletion.id.toString(),
           type: MessageDeleteType.WITHDRAW,
-          target: { originSeq: 1 },
+          messageSeq: 1,
         },
       ],
     });

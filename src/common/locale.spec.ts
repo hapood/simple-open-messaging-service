@@ -20,7 +20,9 @@ describe('parseAcceptLanguage', () => {
   });
 
   it('lowercases + trims whitespace', () => {
-    expect(parseAcceptLanguage('  EN-US ; q=0.5 ')).toEqual([{ tag: 'en-us', q: 0.5 }]);
+    expect(parseAcceptLanguage('  EN-US ; q=0.5 ')).toEqual([
+      { tag: 'en-us', q: 0.5 },
+    ]);
   });
 
   it('empty / null / undefined → []', () => {

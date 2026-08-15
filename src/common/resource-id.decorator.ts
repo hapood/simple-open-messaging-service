@@ -19,6 +19,5 @@ export const RESOURCE_ID_KEY = 'access:resourceIdField';
  *
  * Usage: `@ResourceId<MarkReadDto>('threadId')` alongside `@UseGuards(..., ThreadAccessGuard)`.
  */
-export const ResourceId =
-  <T extends object>(field: keyof T) =>
-    SetMetadata(RESOURCE_ID_KEY, field);
+export const ResourceId = <T extends object>(field: keyof T) =>
+  SetMetadata(RESOURCE_ID_KEY, field);

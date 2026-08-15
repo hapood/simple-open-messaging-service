@@ -105,7 +105,7 @@ export class AdminQuotaController {
   @Post('admin/quota/nodes/:domain/continue')
   @ApiOperation({
     summary:
-      'Add today\'s additive quota to a tripped federated peer and clear its breaker if within limits',
+      "Add today's additive quota to a tripped federated peer and clear its breaker if within limits",
   })
   async continuePeer(
     @Param('domain') domain: string,

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GroupRole } from '../database/enums.js';
-import { group, messageThread, threadParticipant } from '../database/schema.js';
+import { group } from '../database/schema.js';
 import { BusinessCode } from '../common/business-code.js';
 import { GroupService } from './group.service.js';
 

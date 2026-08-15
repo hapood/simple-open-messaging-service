@@ -1,6 +1,6 @@
 # Federation v1 资源接口（Resources）
 
-状态：`RELEASE CANDIDATE`（`v1.0-rc.1`）
+状态：`RELEASE CANDIDATE`（`v1.0-rc.2`）
 规范性：本文全部为规范性要求，除非段落明确标记为“非规范性实现说明”。
 
 本文定义 Federation v1 的用户资料、媒体和转发包三个读取 operation。实现必须（MUST）同时遵守：
@@ -190,13 +190,13 @@ Content-Type: application/json
 ### 3.1 Operation 与精确授权坐标
 
 ```http
-GET /s2s/v1/media/:digest?fromAccount=:fromAccount&fromDomain=:fromDomain&toAccount=:toAccount&seq=:seq[&bundleId=:bundleId]
+GET /s2s/v1/media/:digest?fromAccount=:fromAccount&fromDomain=:fromDomain&toAccount=:toAccount&seq=:seq
 ```
 
 | 项目           | 要求                                                        |
 | -------------- | ----------------------------------------------------------- |
 | Path variable  | `digest: Sha256Hex`                                         |
-| Query          | 第 3.1 节定义的四个必选、一个条件可选字段                   |
+| Query          | 第 3.1 节定义的四个必选字段                                 |
 | Request header | 第 1 节公共 header；另可带一个第 3.2 节定义的 `Range`       |
 | Request body   | 第 1 节定义的零长度 body                                    |
 | Success        | HTTP `200` 完整 raw bytes，或 HTTP `206` 单 Range raw bytes |
@@ -204,28 +204,26 @@ GET /s2s/v1/media/:digest?fromAccount=:fromAccount&fromDomain=:fromDomain&toAcco
 
 参数是 closed set，且具有以下契约：
 
-| 参数          | 位置  | 必选 | grammar 与语义                                                                        |
-| ------------- | ----- | ---- | ------------------------------------------------------------------------------------- |
-| `digest`      | path  | 是   | `Sha256Hex`；所请求完整资源 bytes 的 SHA-256                                          |
-| `fromAccount` | query | 是   | `UserAccount`；精确消息作者 account                                                   |
-| `fromDomain`  | query | 是   | `Domain`；精确消息作者 domain                                                         |
-| `toAccount`   | query | 是   | `Account`；P2P 时为签名 peer 的接收者，群聊时为 `GroupAccount`                        |
-| `seq`         | query | 是   | `PositiveDecimalString` 且数值不超过 `SafeInteger`；精确 outer message 的 `originSeq` |
-| `bundleId`    | query | 否   | 非空、26 字符以内的 opaque string；仅在 digest 来自该转发 closure 时出现              |
+| 参数          | 位置  | 必选 | grammar 与语义                                                                  |
+| ------------- | ----- | ---- | ------------------------------------------------------------------------------- |
+| `digest`      | path  | 是   | `Sha256Hex`；所请求完整资源 bytes 的 SHA-256                                    |
+| `fromAccount` | query | 是   | `UserAccount`；精确消息作者 account                                             |
+| `fromDomain`  | query | 是   | `Domain`；精确消息作者 domain                                                   |
+| `toAccount`   | query | 是   | `Account`；P2P 时为签名 peer 的接收者，群聊时为 `GroupAccount`                  |
+| `seq`         | query | 是   | `PositiveDecimalString` 且数值不超过 `SafeInteger`；精确消息外层结构的 `seq` |
 
-Federated media content 不携带可下载 URL。consumer 必须先校验 content 中的显式 digest 与 outer
-`assets` descriptor，再只从 outer `FederatedMessage` 派生本表坐标；不得使用 publisher-local `seq`、
-`feedId`、展示 metadata 或自行猜测的 message 坐标。LINK 的页面 `url` 也不参与本 operation。
+Federated media content 不携带可下载 URL。consumer 必须先校验 content 中的显式 digest 与消息外层结构的
+`assets` descriptor，再只从 `FederatedMessage` 派生本表坐标；不得使用 `originSeq`、`feedId`、
+展示 metadata 或自行猜测的 message 坐标。LINK 的页面 `url` 也不参与本 operation。
 
-query key 的 wire 顺序固定为 `fromAccount`、`fromDomain`、`toAccount`、`seq`、可选 `bundleId`；不得
-（MUST NOT）排序为其他顺序。`seq` 的数值范围是 `1..9007199254740991`。`bundleId` 按 UTF-8 编码后不得
-超过 26 bytes，且不得包含 NUL 或 `/`；需要 percent-encoding 的 byte 按传输与安全第 3.1 节处理。
+query key 的 wire 顺序固定为 `fromAccount`、`fromDomain`、`toAccount`、`seq`；不得
+（MUST NOT）排序为其他顺序。`seq` 的数值范围是 `1..9007199254740991`。
 
 签名者 domain 只能（MUST）来自已验证的 HTTP Message Signature，不在 query 中重复声明。publisher 必须
 （MUST）证明：由 `(fromAccount, fromDomain, toAccount, seq)` 唯一定位的未删除消息曾持久分配给签名
-peer 对应的 thread audience，并且 `digest` 直接绑定该消息；若出现 `bundleId`，还必须（MUST）证明该
-bundle 绑定同一消息且 digest 位于该 bundle 的完整 closure。仅拥有 digest、曾收到 feed page、猜中
-bundle ID 或当前存在联邦关系均不足以授权。feed change 被确认或物理清理不得（MUST NOT）单独撤销已
+peer 对应的 thread audience，并且 `digest` 直接绑定该消息，或者该消息绑定的父转发包包含该 digest。
+bundle ID 不进入 media 请求或授权坐标。仅拥有 digest、曾收到 feed page、猜中 bundle ID 或当前存在
+联邦关系均不足以授权。feed change 被确认或物理清理不得（MUST NOT）单独撤销已
 持久分配消息的历史读取 proof；消息/资源删除或 audience 授权事实终止后的行为按其持久状态决定。
 
 ### 3.2 Range 请求与成功响应
@@ -235,6 +233,11 @@ bundle ID 或当前存在联邦关系均不足以授权。feed change 被确认�
 - `Content-Type: application/octet-stream`
 - `Content-Length: <完整长度>`
 - `Accept-Ranges: bytes`
+
+v1 不规定媒体资源的统一最大长度。`BlobDescriptor.bytes` 允许 consumer 在发起任何 byte
+请求前按本地存储、流量或产品策略决定不下载该资源。不下载、中止或保留不可用占位属于本地实现，
+不得（MUST NOT）阻塞 message/query cursor，不改变 peer lifecycle，也不产生 message tombstone。publisher 也可以（MAY）
+按本地配额或服务能力拒绝提供 bytes，并必须（MUST）按第 3.3 节返回对应的确定结果。
 
 v1 支持一个 RFC 9110 byte range，包括 `bytes=start-end`、`bytes=start-` 与 `bytes=-suffixLength`。
 成功单 Range 为 HTTP `206`，并必须（MUST）发送 `Content-Length`、`Accept-Ranges: bytes` 及精确
@@ -260,7 +263,7 @@ v1 支持一个 RFC 9110 byte range，包括 `bytes=start-end`、`bytes=start-` 
 | pinned identity、双向认可或签名不满足公共验证                                                                          | errors.md 对应 `401` code              | 拒绝响应数据；按注册表处理；不得从错误文本推断文件状态                                             |
 | 找不到由 `(fromAccount, fromDomain, toAccount, seq)` 指定且已分配给 signer 的消息，或 signer 不属于其 durable audience | `200 FORBIDDEN`                        | 视为永久业务拒绝；不得将 peer 置为 `degraded`，不改用猜测的消息坐标重试                            |
 | 授权消息存在，但 digest 未绑定该消息                                                                                   | `200 NOT_FOUND`                        | 当前资源不存在；仅在消息/资源状态改变或人工重试后再请求                                            |
-| `bundleId` 未绑定该 outer FORWARD message，或 digest 不在该 root closure                                               | `200 NOT_FOUND`                        | 拒绝该 asset；不得改用 child ID、inner sender 或其他 publisher 猜测下载                            |
+| 外层 FORWARD message 未绑定父 bundle，或 digest 不在其 assets                                                          | `200 NOT_FOUND`                        | 拒绝该 asset；不得改用 child ID、inner author 或其他 publisher 猜测下载                            |
 | digest binding 存在，但 CAS 记录已删除、标记 deleted、blob 文件缺失或无法作为完整资源读取                              | `200 NOT_FOUND`                        | 保留消息/closure；把 asset 标为 unavailable/retryable-by-state-change，不得将 peer 置为 `degraded` |
 | 实现方为本 media operation 定义的配额已经耗尽                                                                          | `200 FEDERATION_QUOTA_EXCEEDED`        | 不接受任何资源 byte；只按 `data.retryAfter` 退避，不改变 peer lifecycle                            |
 | 单 Range grammar 合法，但起点超出当前长度或 `start > end`                                                              | `416 FEDERATION_RANGE_NOT_SATISFIABLE` | 验证 `Content-Range` 后停止当前 offset；不得解释为文件不存在                                       |
@@ -333,75 +336,69 @@ GET /s2s/v1/forward-bundles/:bundleId
 | Path variable  | `bundleId`；第 4.1 节定义的 bounded opaque ID                      |
 | Query          | 不允许                                                             |
 | Request body   | 第 1 节定义的零长度 body                                           |
-| Success        | HTTP `200` success data envelope；data 是完整 `ForwardWireClosure` |
-| Business error | HTTP `200 NOT_FOUND` 或 `FEDERATION_PAYLOAD_TOO_LARGE`             |
+| Success        | HTTP `200` success data envelope；data 是完整 `ForwardWireBundle` |
+| Business error | HTTP `200 NOT_FOUND`                                               |
 
 `bundleId` 必须（MUST）是非空、26 字符以内的 opaque string；其比较区分大小写。请求不得携带 query 或
 body。publisher 必须（MUST）证明该 bundle 绑定至少一条未删除的 FORWARD message，且该消息已持久分配
 给签名 peer 对应的 thread audience。bundle ID 的知识、子 bundle 引用或当前 recognition 本身均不授权。
 path 解码后的 `bundleId` 按 UTF-8 编码不得超过 26 bytes，且不得包含 NUL 或 `/`。
 
-### 4.2 成功响应与 closure 不变量
+### 4.2 成功响应与 bundle 不变量
 
 成功为 HTTP `200`、`Content-Type: application/json`，`data` 是
-[Message 第 11 节](./message.md#11-forward)定义的 `ForwardWireClosure` closed object。该节列出的
-closure、bundle、manifest、message、sender、quote、asset 与 `accessContext` 字段、必选性和类型全部适用；
+[Message 第 11 节](./message.md#11-forward)定义的 `ForwardWireBundle` closed object。该节列出的
+bundle、child、message、author、quote 与 asset 字段、必选性和类型全部适用；
 除这些字段规则外，还必须（MUST）满足：
 
-- `rootBundleId` 必须等于 path `bundleId`，并且在 `bundles[].id` 中恰好出现一次。
-- `bundles[].id` 必须唯一；每个 `manifest.bundleId` 必须等于其 enclosing bundle 的 `id`。
-- `manifest.children` 中的每个 ID 必须在 `bundles` 中恰好解析一次；从 root 可达的 bundle 必须正好等于
-  返回集合，不得存在缺失 child、额外 bundle、环、重复 child 引用或多 parent child。
-- 每个 `manifestDigest` 必须等于对应 manifest 的 canonical JSON SHA-256；consumer 必须先验证 digest，
-  再信任 messages、children 或 assets。
-- `bundles` 最多 500 项；每个 manifest 最多 100 条 message；closure UTF-8 JSON body 最多 2 MiB。
-  超限不得（MUST NOT）返回截断的成功 closure。
-- 叶 bundle 的 `depth` 必须（MUST）为 1，parent depth 必须（MUST）为直接 children 最大 depth 加 1；
-  `bundles[].depth` 与 `manifest.depth` 必须一致，root depth 不得超过 3。
-- 顶层 `assets` 必须是完整 closure 中资产的去重集合；每个 bundle 的 `assets` 只列出该 bundle manifest
-  引用的资产。相同 digest 的 descriptor 必须一致。
-- consumer 通过 outer `ForwardCardContent` 获取 closure 时，所有 manifest 的 message 数之和必须等于
-  card `messageCount`，顶层去重 asset 数必须等于 card `assetCount`；不一致时拒绝整个 closure。
-- `accessContext` 若出现仅供诊断；consumer 不得（MUST NOT）用其中的本地 numeric ID 授权或定位自己的
-  thread。
-
-canonical manifest 和 `manifestDigest` 唯一按 [Message 第 11.1 节](./message.md#111-manifest-canonicalization-与-digest)
-的 RFC 8785 JCS 规则及固定测试向量计算。consumer 不得（MUST NOT）直接对收到的、可能带缩进或不同
-member 顺序的 response substring 计算 digest。
+- `id` 必须等于 path `bundleId`。只有该父 ID 可以 query；`children[].id` 不得作为独立请求目标。
+- `children[]` 是全部层级子 bundle 的扁平 JSON 集合，ID 在当前响应内唯一。内部引用允许成环，不执行
+  递归可达性或 depth 校验。
+- 父和每个 child 的 message ID 空间彼此独立；`quoteTargetId` 只在 enclosing `messages[]` 内解析。
+- v1 不规定 closure UTF-8 bytes、child 数或 message 数的共同最大值。
+  publisher 必须（MUST）能完整返回自己已发布的 closure；consumer 可以（MAY）按本地有限的存储、流量、
+  解析或产品上限决定不下载或中止读取。不得（MUST NOT）提交部分 closure，也不得（MUST NOT）
+  使其阻塞承载该 FORWARD card 的 message/query cursor。
+- `assets` 必须是父和全部 child message/author 引用资产的去重全集。
+- consumer 必须按实际 messages、children 和 assets 计数并执行本地 quota；验证后可以把派生 count
+  保存在本地，但 publisher 不在 wire 中声明这些 count。
+- consumer 必须（MUST）保存 closure 与发现它的外层 FORWARD message 之间的关联，不得使用
+  publisher-local numeric thread ID 授权或定位自己的 thread。
 
 closure 是不可变 snapshot。对同一 publisher 与 `bundleId` 重复成功读取必须（MUST）返回语义相同、
-digest 相同的 closure。二进制资产不内联，使用第 3 节媒体 operation，并携带同一 `bundleId` 及原
-FORWARD message 的精确授权坐标。
+的 closure。二进制资产不内联，使用第 3 节媒体 operation及原 FORWARD message 的精确授权坐标。
 
 ### 4.3 Closure 资产获取（Closure Asset Retrieval）
 
-`GET /s2s/v1/forward-bundles/:bundleId` 只返回 JSON closure，不内联 `ForwardAsset` 的 bytes。consumer 必须（MUST）
+`GET /s2s/v1/forward-bundles/:bundleId` 只返回 JSON closure，不内联 asset bytes。consumer 必须（MUST）
 先完整验证并提交第 4.2 节 closure，再对实际需要且本地尚未具备的 digest 使用第 3 节 media operation。
-每个 asset request 的参数必须（MUST）从承载该 closure 的 outer `FederatedMessage` 和已验证 closure 派生：
+每个 asset request 的参数必须（MUST）从承载该 closure 的 `FederatedMessage` 和已验证 closure 派生：
 
 | Media 参数    | 唯一来源与要求                                                                                         |
 | ------------- | ------------------------------------------------------------------------------------------------------ |
-| `digest`      | 某个 `bundles[].assets[]` 中的 `ForwardAsset.digest`；顶层 `assets` 只是去重摘要，不能单独授权         |
-| `fromAccount` | outer `FederatedMessage.author.account`                                                                |
-| `fromDomain`  | outer `FederatedMessage.author.domain`                                                                 |
-| `toAccount`   | P2P：outer `thread.participants` 中由 consumer signer domain 托管的账号；GROUP：outer `thread.account` |
-| `seq`         | outer `FederatedMessage.originSeq`，编码为 `PositiveDecimalString`                                     |
-| `bundleId`    | outer `ForwardCardContent.bundleId`，且必须等于 closure `rootBundleId`                                 |
+| `digest`      | 父 bundle `assets[]` 中的 `BlobDescriptor.digest`                                                      |
+| `fromAccount` | `FederatedMessage.author.account`                                                                      |
+| `fromDomain`  | `FederatedMessage.author.domain`                                                                       |
+| `toAccount`   | P2P：消息外层结构 `thread.participants` 中由 signer domain 托管的账号；GROUP：`thread.account`         |
+| `seq`         | `FederatedMessage.seq`，编码为 `PositiveDecimalString`                                                 |
 
-`bundleId` 必须始终使用 remote root bundle ID；即使 asset 只由某个 child manifest 引用，也不得（MUST NOT）
-改用 child `bundles[].id`。inner `ForwardManifestMessage.sender`、inner message `id`、`accessContext`、asset
-`extension`、`filename` 或 `mime` 都不进入授权 query。publisher 必须（MUST）重新证明 root bundle 与 outer
-FORWARD message 的绑定、outer message 对签名 peer 的 durable thread audience，以及 digest 位于该 root 的
+media 请求不得携带 bundle ID。inner author、child ID 和 message ID 都不进入授权 query。publisher 必须
+根据外层消息的本地 bundle 绑定重新证明
+FORWARD message 的绑定、该消息对签名 peer 的 durable thread audience，以及 digest 位于该 root 的
 完整 closure；其中任一条件不成立都不得返回 bytes。
 
-同一 digest 在多个 bundle 中出现时 consumer 可以（MAY）只下载一次；多个 asset 的下载顺序无协议语义。
+本表的消息外层 `seq` 是权威 publisher 的真实 thread-local message sequence。bundle 内的
+`ForwardBundleMessage.id` 只是所属 `messages[]` 内的局部标记，不是服务端 message `seq`；
+`quoteTargetId` 也只引用该局部 `id`。二者均不得用于 bundle/media 授权。
+
+同一 digest 被多个 message 引用时 consumer 可以（MAY）只下载一次；多个 asset 的下载顺序无协议语义。
 Range retry 必须（MUST）保持全部授权 query 不变，只改变 `Range`。asset 下载失败不使已经验证的 closure
 变为合法或非法，也不得（MUST NOT）把缺失 bytes 伪装成成功本地化；consumer 可以持久保存 retry work，
-但只有重组后的完整长度等于 `ForwardAsset.bytes` 且完整 digest 验证成功后才能把该 asset 标记为可用。
+但只有重组后的完整长度等于 `BlobDescriptor.bytes` 且完整 digest 验证成功后才能把该 asset 标记为可用。
 第 3.3 节错误映射完整适用；`NOT_FOUND` 表示当前 asset bytes 不可取得，不授权 consumer 从任意其他
 publisher 按 digest 猜测下载。
 
-例如，假设 outer FORWARD message 中与资产授权有关的字段如下；这是字段摘录，不是可独立验证的完整
+例如，假设外层 FORWARD message 中与资产授权有关的字段如下；这是字段摘录，不是可独立验证的完整
 `FederatedMessage`：
 
 ```json
@@ -414,9 +411,9 @@ publisher 按 digest 猜测下载。
       { "account": "bob", "domain": "a.example" }
     ]
   },
-  "originSeq": 42,
+  "seq": 42,
   "contentType": "FORWARD",
-  "content": "{\"version\":1,\"bundleId\":\"01hzy3m8x7v6t5r4q2p1n0k9jc\",\"summaryLines\":[\"Alice: hello\"],\"messageCount\":1,\"assetCount\":1}"
+  "content": "{\"bundleId\":\"01hzy3m8x7v6t5r4q2p1n0k9jc\"}"
 }
 ```
 
@@ -425,7 +422,7 @@ publisher 按 digest 猜测下载。
 Range request 是：
 
 ```http
-GET /s2s/v1/media/d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa?fromAccount=alice&fromDomain=b.example&toAccount=bob&seq=42&bundleId=01hzy3m8x7v6t5r4q2p1n0k9jc HTTP/1.1
+GET /s2s/v1/media/d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa?fromAccount=alice&fromDomain=b.example&toAccount=bob&seq=42 HTTP/1.1
 Host: b.example
 Date: Tue, 14 Nov 2023 22:13:20 GMT
 Content-Digest: sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:
@@ -441,7 +438,6 @@ Signature: sig1=:j+HRgnN5UrLHamIKxt7FBEha9Q0Cw0RAfhTGBZXuJn5dxQPkwHOfJzdR/u9Y5qs
 
 - path parameter malformed：HTTP `400 FEDERATION_MALFORMED`。
 - bundle 不存在、已不可见或没有对签名 peer 的 message/audience binding：HTTP `200 NOT_FOUND`。
-- closure 超出公开上限：HTTP `200 FEDERATION_PAYLOAD_TOO_LARGE`，不得返回部分 closure。
 - 实现方为本 bundle operation 定义的配额耗尽：HTTP `200 FEDERATION_QUOTA_EXCEEDED`，只携带
   `{ retryAfter }`；consumer 不提交部分 closure、不改变 peer lifecycle，并至少等待该秒数后重试。
 - 公共签名、认可、identity、策略及服务故障：按 errors.md。
@@ -450,8 +446,9 @@ bundle 的有效 `NOT_FOUND` 同样允许（MAY）consumer 按本地策略处理
 的转发卡片、隐藏入口或标记修复；这不是源站消息删除信号，不得（MUST NOT）据此生成、传播或推断 message
 tombstone。consumer 也不得用 card 摘要或已经保存的部分 closure 伪造完整 bundle。
 
-consumer 必须（MUST）在一个提交边界内验证整个 closure 的 closed shape、大小、图闭合、无环、全部
-manifest digest 与 descriptor 一致性；任一失败必须（MUST）拒绝整个 closure，不得保存可授权的部分图。
+consumer 必须（MUST）在一个提交边界内验证整个 bundle 的 closed shape、扁平引用闭合、局部 message
+ID 作用域、实际数量上限以及 digest 与 descriptor 一致性；内部环是合法引用。任一失败必须（MUST）拒绝整个
+bundle，不得保存可授权的部分图。
 
 ### 4.5 完整 HTTP 示例
 
@@ -474,42 +471,27 @@ Content-Type: application/json
   "code": 0,
   "message": "successful",
   "data": {
-    "schemaVersion": 1,
-    "rootBundleId": "01hzy3m8x7v6t5r4q2p1n0k9jc",
-    "bundles": [
+    "id": "01hzy3m8x7v6t5r4q2p1n0k9jc",
+    "messages": [
       {
-        "id": "01hzy3m8x7v6t5r4q2p1n0k9jc",
-        "depth": 1,
-        "manifestDigest": "c5562ebda1bd03bc489d7c5ff2c2cf02365a8a430ea1776719d5fb5d2ed3d65c",
-        "manifest": {
-          "schemaVersion": 1,
-          "bundleId": "01hzy3m8x7v6t5r4q2p1n0k9jc",
-          "depth": 1,
-          "children": [],
-          "messages": [
-            {
-              "id": 1,
-              "sender": {
-                "displayName": "Alice",
-                "account": "alice",
-                "domain": "b.example"
-              },
-              "contentType": "PURE_TEXT",
-              "content": "{\"text\":\"hello\"}",
-              "sentAt": 1700000000000
-            }
-          ]
+        "id": 1,
+        "author": {
+          "displayName": "Alice",
+          "account": "alice",
+          "domain": "b.example"
         },
-        "assets": []
+        "contentType": "PURE_TEXT",
+        "content": "{\"text\":\"hello\"}",
+        "sentAt": 1700000000000
       }
     ],
+    "children": [],
     "assets": []
   }
 }
 ```
 
-`manifestDigest` 是上述 `manifest` 按 Message 第 11.1 节 JCS 规则序列化后的真实 SHA-256；
-HTTP 示例为了可读性使用缩进，这些响应 bytes 本身不参与 `manifestDigest`。不可见 bundle 的响应示例：
+不可见 bundle 的响应示例：
 
 ```http
 HTTP/1.1 200 OK

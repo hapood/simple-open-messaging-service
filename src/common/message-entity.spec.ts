@@ -9,7 +9,7 @@ import {
 } from './message-entity.js';
 
 describe('message entity codec', () => {
-  const mention = '[@张三](soms://user/zhangsan%40example.com?v=1)';
+  const mention = '[@张三](socfp://user/zhangsan%40example.com)';
 
   it('serializes and parses a canonical user mention', () => {
     expect(serializeUserMention('张三', 'zhangsan@example.com')).toBe(mention);
@@ -22,8 +22,6 @@ describe('message entity codec', () => {
         label: '张三',
         entityType: 'user',
         entityId: 'zhangsan@example.com',
-        version: 1,
-        params: {},
       },
     ]);
     expect(toDisplayText(`你好 ${mention}`)).toBe('你好 @张三');
@@ -42,7 +40,7 @@ describe('message entity codec', () => {
     const inputs = [
       String.raw`C:\Users\张三`,
       mention,
-      String.raw`\[@张三](soms://user/a?v=1)`,
+      String.raw`\[@张三](socfp://user/a)`,
       '普通 [@张三] 不是实体',
       'emoji 😀 before ' + mention,
     ];
@@ -51,54 +49,42 @@ describe('message entity codec', () => {
     }
   });
 
-  it('supports escaped label punctuation and extension parameters', () => {
+  it('supports escaped label punctuation', () => {
     const encoded = serializeUserMention('研[发]\\一组', 'dev@example.com');
     expect(toDisplayText(encoded)).toBe('@研[发]\\一组');
-    const segment = parseMessageEntities(
-      '[#发布](soms://topic/release?v=2&source=composer)',
-    )[0];
-    expect(segment).toMatchObject({
-      kind: 'entity',
-      sigil: '#',
-      label: '发布',
-      entityType: 'topic',
-      entityId: 'release',
-      version: 2,
-      params: { source: 'composer' },
-    });
   });
 
   it('serializes the extensible all-members audience', () => {
     const all = serializeAudienceMention('所有人', 'all');
-    expect(all).toBe('[@所有人](soms://audience/all?v=1)');
+    expect(all).toBe('[@所有人](socfp://audience/all)');
     expect(parseMessageEntities(all)[0]).toMatchObject({
       kind: 'entity',
       entityType: 'audience',
       entityId: 'all',
-      version: 1,
     });
     expect(toDisplayText(all)).toBe('@所有人');
   });
 
   it('transforms real entities without touching escaped protocol text', () => {
-    const escaped = String.raw`\[@Fake](soms://user/fake%40example.com?v=1)`;
+    const escaped = String.raw`\[@Fake](socfp://user/fake%40example.com)`;
     const content = `${escaped} ${mention}`;
     expect(
       transformMessageEntities(content, (entity) =>
         serializeUserMention('张三（规范）', entity.entityId),
       ),
-    ).toBe(
-      `${escaped} [@张三（规范）](soms://user/zhangsan%40example.com?v=1)`,
-    );
+    ).toBe(`${escaped} [@张三（规范）](socfp://user/zhangsan%40example.com)`);
   });
 
   it('treats malformed tokens as ordinary text', () => {
     const malformed = [
       '[@张三]',
       '[@张三](https://example.com)',
-      '[@张三](soms://user/a)',
-      '[@张三](soms://user/?v=1)',
-      '[@张三](soms://user/a?v=0)',
+      '[@张三](socfp://user/)',
+      '[@张三](socfp://user/a?v=0)',
+      '[@张三](socfp://user/%61lice%40example.com)',
+      '[@张三](socfp://USER/alice%40example.com)',
+      '[@张三](socfp://user/alice%40example.com?extra=1)',
+      '[@发布](socfp://topic/release)',
     ];
     for (const value of malformed) {
       expect(parseMessageEntities(value)).toEqual([

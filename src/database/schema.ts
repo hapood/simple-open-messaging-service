@@ -191,10 +191,7 @@ export const forwardBundle = pgTable(
   'ForwardBundle',
   {
     id: varchar({ length: 26 }).primaryKey().notNull(),
-    schemaVersion: integer().default(1).notNull(),
-    depth: integer().notNull(),
-    manifest: jsonb().notNull(),
-    manifestDigest: varchar({ length: 64 }).notNull(),
+    messages: jsonb().notNull(),
     messageCount: integer().notNull(),
     assetCount: integer().notNull(),
     // You can use { mode: "bigint" } if numbers are exceeding js number limitations
@@ -217,16 +214,14 @@ export const forwardBundle = pgTable(
       table.sourceBundleId.asc().nullsLast().op('text_ops'),
     ),
     check('ForwardBundle_asset_count_check', sql`"assetCount" >= 0`),
-    check('ForwardBundle_depth_check', sql`(depth >= 1) AND (depth <= 3)`),
     check(
-      'ForwardBundle_manifest_shape_check',
-      sql`(jsonb_typeof(manifest) = 'object'::text) AND (jsonb_typeof((manifest -> 'children'::text)) = 'array'::text) AND (jsonb_typeof((manifest -> 'messages'::text)) = 'array'::text) AND (((manifest ->> 'schemaVersion'::text))::integer = 1)`,
+      'ForwardBundle_messages_shape_check',
+      sql`jsonb_typeof(messages) = 'array'::text`,
     ),
     check(
       'ForwardBundle_message_count_check',
-      sql`("messageCount" >= 1) AND ("messageCount" <= 100)`,
+      sql`("messageCount" >= 0) AND ("messageCount" <= 500)`,
     ),
-    check('ForwardBundle_schema_version_check', sql`"schemaVersion" = 1`),
     check('ForwardBundle_total_bytes_check', sql`"totalBytes" >= 0`),
   ],
 );
@@ -649,18 +644,18 @@ export const message = pgTable(
     clientMessageId: varchar({ length: 36 }),
     originSeq: integer(),
     originServerTime: timestamp({ precision: 3, mode: 'date' }),
+    /** Direct publisher whose thread-local seq is stored in originSeq. Null for local originals. */
+    federationSourceDomain: varchar({ length: 255 }),
     federationAuthoredSnapshot: jsonb().$type<{
       contentType: string;
       content: string;
       clientMessageId: string | null;
       quoteTarget?: {
-        creator: { account: string; domain: string };
-        originSeq: number;
+        targetSeq: number;
       };
       assets: Array<{
         digest: string;
         bytes: number;
-        status: 'READY' | 'DELETED';
       }>;
     }>(),
   },
@@ -696,6 +691,12 @@ export const message = pgTable(
       'btree',
       table.threadId.asc().nullsLast().op('int4_ops'),
       table.creator.asc().nullsLast().op('int4_ops'),
+      table.originSeq.asc().nullsLast().op('int4_ops'),
+    ),
+    uniqueIndex('Message_threadId_source_originSeq_key').using(
+      'btree',
+      table.threadId.asc().nullsLast().op('int4_ops'),
+      table.federationSourceDomain.asc().nullsLast().op('text_ops'),
       table.originSeq.asc().nullsLast().op('int4_ops'),
     ),
     uniqueIndex('Message_threadId_seq_key').using(
@@ -762,14 +763,13 @@ export const deletedMessage = pgTable(
 );
 
 /** A deletion received before its federated message. It deliberately has no local seq: matching is by
- * the stable cross-server identity (thread, creator, originSeq). */
+ * the stable publisher coordinate (thread, sourceDomain, messageSeq). */
 export const federatedMessageTombstone = pgTable(
   'FederatedMessageTombstone',
   {
     id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
     threadId: integer().notNull(),
-    creatorId: integer().notNull(),
-    originSeq: integer().notNull(),
+    messageSeq: integer().notNull(),
     authorityDomain: varchar({ length: 255 }).notNull(),
     sourceDomain: varchar({ length: 255 }).notNull(),
     remoteDeletedId: bigint({ mode: 'bigint' }).notNull(),
@@ -786,14 +786,14 @@ export const federatedMessageTombstone = pgTable(
   },
   (table) => [
     check(
-      'FederatedMessageTombstone_origin_seq_check',
-      sql`${table.originSeq} > 0`,
+      'FederatedMessageTombstone_message_seq_check',
+      sql`${table.messageSeq} > 0`,
     ),
     uniqueIndex('FederatedMessageTombstone_target_key').using(
       'btree',
       table.threadId.asc().nullsLast().op('int4_ops'),
-      table.creatorId.asc().nullsLast().op('int4_ops'),
-      table.originSeq.asc().nullsLast().op('int4_ops'),
+      table.sourceDomain.asc().nullsLast().op('text_ops'),
+      table.messageSeq.asc().nullsLast().op('int4_ops'),
     ),
     uniqueIndex('FederatedMessageTombstone_source_event_key').using(
       'btree',
@@ -807,13 +807,6 @@ export const federatedMessageTombstone = pgTable(
     })
       .onUpdate('cascade')
       .onDelete('cascade'),
-    foreignKey({
-      columns: [table.creatorId],
-      foreignColumns: [user.id],
-      name: 'FederatedMessageTombstone_creatorId_fkey',
-    })
-      .onUpdate('cascade')
-      .onDelete('restrict'),
   ],
 );
 
@@ -1067,18 +1060,20 @@ export const pendingMedia = pgTable(
     digest: varchar({ length: 64 }),
     clientMessageId: varchar({ length: 36 }),
     originSeq: integer(),
+    // Immutable author-home creation time carried by federation. Nullable for local/outbound staging.
+    originServerTime: timestamp({ precision: 3, mode: 'date' }),
+    /** Direct publisher whose thread-local seq is stored in originSeq. */
+    federationSourceDomain: varchar({ length: 255 }),
     federationAuthoredSnapshot: jsonb().$type<{
       contentType: string;
       content: string;
       clientMessageId: string | null;
       quoteTarget?: {
-        creator: { account: string; domain: string };
-        originSeq: number;
+        targetSeq: number;
       };
       assets: Array<{
         digest: string;
         bytes: number;
-        status: 'READY' | 'DELETED';
       }>;
     }>(),
     status: varchar({ length: 12 }).default('pending').notNull(),
@@ -1096,11 +1091,18 @@ export const pendingMedia = pgTable(
     anyFailed: boolean().default(false).notNull(),
     originDomain: varchar({ length: 63 }),
     expectedFederationVersion: integer(),
+    // A pulled text message may quote an earlier message whose media is still localizing. Keep the
+    // wire coordinate durable until that target is promoted and has a receiver-local Message.seq.
+    dependsOnOriginSeq: integer(),
   },
   (table) => [
     check(
       'PendingMedia_origin_seq_check',
       sql`${table.originSeq} IS NULL OR ${table.originSeq} > 0`,
+    ),
+    check(
+      'PendingMedia_depends_on_origin_seq_check',
+      sql`${table.dependsOnOriginSeq} IS NULL OR ${table.dependsOnOriginSeq} > 0`,
     ),
     index('PendingMedia_batchId_idx').on(table.batchId),
     uniqueIndex('PendingMedia_clientMessageId_key').using(
@@ -1121,6 +1123,11 @@ export const pendingMedia = pgTable(
     index('PendingMedia_threadId_idx').using(
       'btree',
       table.threadId.asc().nullsLast().op('int4_ops'),
+    ),
+    index('PendingMedia_quote_dependency_idx').on(
+      table.threadId,
+      table.originDomain,
+      table.dependsOnOriginSeq,
     ),
     foreignKey({
       columns: [table.threadId],
@@ -2739,19 +2746,14 @@ export const forwardBundleAsset = pgTable(
     bundleId: varchar({ length: 26 }).notNull(),
     digest: varchar({ length: 64 }).notNull(),
     ordinal: integer().notNull(),
-    kind: varchar({ length: 16 }).notNull(),
-    extension: varchar({ length: 16 }).notNull(),
-    filename: text(),
-    mime: text(),
     // You can use { mode: "bigint" } if numbers are exceeding js number limitations
     bytes: bigint({ mode: 'bigint' }).notNull(),
   },
   (table) => [
-    uniqueIndex('ForwardBundleAsset_bundleId_digest_kind_key').using(
+    uniqueIndex('ForwardBundleAsset_bundleId_digest_key').using(
       'btree',
       table.bundleId.asc().nullsLast().op('text_ops'),
       table.digest.asc().nullsLast().op('text_ops'),
-      table.kind.asc().nullsLast().op('text_ops'),
     ),
     index('ForwardBundleAsset_digest_idx').using(
       'btree',

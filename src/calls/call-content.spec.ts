@@ -7,7 +7,7 @@ import {
 } from './call-content.js';
 
 describe('CALL content federation projection', () => {
-  it('replaces local numeric ids with stable addresses', () => {
+  it('omits identities derived from the outer P2P message', () => {
     const local = parseCallContent(
       buildCallContent({
         callType: 'VIDEO',
@@ -20,22 +20,14 @@ describe('CALL content federation projection', () => {
       }),
     );
     expect(local).not.toBeNull();
-    const wire = buildFederatedCallContent(
-      local!,
-      { account: 'alice', domain: 'a.example' },
-      { account: 'bob', domain: 'b.example' },
-    );
+    const wire = buildFederatedCallContent(local!);
     expect(wire).not.toContain('callerId');
     expect(wire).not.toContain('calleeId');
     expect(parseFederatedCallContent(wire)).toEqual({
-      type: 'CALL',
       callType: 'VIDEO',
       status: 'completed',
-      caller: { account: 'alice', domain: 'a.example' },
-      callee: { account: 'bob', domain: 'b.example' },
       startedAt: 1_000,
       endedAt: 1_500,
-      durationMs: 500,
     });
   });
 
@@ -43,22 +35,20 @@ describe('CALL content federation projection', () => {
     expect(
       parseFederatedCallContent(
         JSON.stringify({
-          type: 'CALL',
           callType: 'AUDIO',
           status: 'missed',
           callerId: 1,
           calleeId: 2,
+          endedAt: 1_000,
         }),
       ),
     ).toBeNull();
     expect(
       parseFederatedCallContent(
         JSON.stringify({
-          type: 'CALL',
           callType: 'AUDIO',
           status: 'missed',
-          caller: { account: 'alice', domain: 'a.example' },
-          callee: { account: 'bob', domain: 'b.example' },
+          endedAt: 1_000,
           displayOnly: true,
         }),
       ),

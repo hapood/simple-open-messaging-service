@@ -704,9 +704,9 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         lastMessageAt: 300,
       }),
     );
-    expect(
-      await (await webdb.db()).get('threads', 2),
-    ).toEqual(jasmine.objectContaining({ lastMessageSeq: 7 }));
+    expect(await (await webdb.db()).get('threads', 2)).toEqual(
+      jasmine.objectContaining({ lastMessageSeq: 7 }),
+    );
   });
 
   // ── mutations (each writes through to IDB + emits a fine-grained signal update) ───────────────
@@ -796,24 +796,40 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     queryThreadDeltaSpy.and.returnValue(
       of({
         code: 0,
-        data: [{
-          direction: 'CLIENT_STATE',
-          revision: 6,
-          account: 'remote',
-          domain: 'peer.test',
-          eventType: 'P2P_INTENT',
-          subjectAccount: 'local',
-          subjectDomain: 'local',
-          businessRevision: 1,
-          body: {
-            status: 'REQUESTED',
-            note: '',
-            requestedAt: 10,
-            expiresAt: 20,
-            actor: { id: 2, account: 'remote', name: 'Remote', avatar: '', domain: 'peer.test', isForeigner: true },
-            subject: { id: 1, account: 'local', name: 'Local', avatar: '', domain: 'local', isForeigner: false },
+        data: [
+          {
+            direction: 'CLIENT_STATE',
+            revision: 6,
+            account: 'remote',
+            domain: 'peer.test',
+            eventType: 'P2P_INTENT',
+            subjectAccount: 'local',
+            subjectDomain: 'local',
+            businessRevision: 1,
+            body: {
+              status: 'REQUESTED',
+              note: '',
+              requestedAt: 10,
+              expiresAt: 20,
+              actor: {
+                id: 2,
+                account: 'remote',
+                name: 'Remote',
+                avatar: '',
+                domain: 'peer.test',
+                isForeigner: true,
+              },
+              subject: {
+                id: 1,
+                account: 'local',
+                name: 'Local',
+                avatar: '',
+                domain: 'local',
+                isForeigner: false,
+              },
+            },
           },
-        }],
+        ],
       }),
     );
 
@@ -1264,7 +1280,7 @@ describe('rawPreview', () => {
       rawPreview(
         'PURE_TEXT',
         JSON.stringify({
-          text: '你好 [@张三](soms://user/zhangsan%40example.com?v=1)',
+          text: '你好 [@张三](socfp://user/zhangsan%40example.com)',
           quote: {
             seq: 7,
             author: '李四',

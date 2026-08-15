@@ -101,15 +101,15 @@ One row per (device, user); `token` globally unique (FCM registration token for 
 
 ### MessageThread — Conversation
 
-| Field                                                     | Type                   | Description                                                                          |
-| --------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------ |
-| `id`                                                      | Int (PK)               |                                                                                      |
-| `type`                                                    | MessageThreadType      | `P2P` \| `GROUP`                                                                     |
+| Field                                                     | Type                   | Description                                                                              |
+| --------------------------------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------- |
+| `id`                                                      | Int (PK)               |                                                                                          |
+| `type`                                                    | MessageThreadType      | `P2P` \| `GROUP`                                                                         |
 | `curSeq`                                                  | Int                    | last-allocated `Message.seq` (0 = no message yet); atomic counter backing seq allocation |
-| `pullUntil`                                               | Int                    | federation pull cursor (REMOTE thread seq pulled up to); seeded by invite `sinceSeq` |
-| `lastMessageSeq` / `lastMessagePreview` / `lastMessageAt` |                        | denormalized "last message" cache for the conversation list (hot read)               |
-| `groupUserId`                                             | Int? (unique, FK→User) | the `!`-sigil group-User row (GROUP only); null for P2P                              |
-| `createdAt` / `updatedAt`                                 |                        |                                                                                      |
+| `pullUntil`                                               | Int                    | federation pull cursor (REMOTE thread seq pulled up to); seeded by invite `sinceSeq`     |
+| `lastMessageSeq` / `lastMessagePreview` / `lastMessageAt` |                        | denormalized "last message" cache for the conversation list (hot read)                   |
+| `groupUserId`                                             | Int? (unique, FK→User) | the `!`-sigil group-User row (GROUP only); null for P2P                                  |
+| `createdAt` / `updatedAt`                                 |                        |                                                                                          |
 
 ### ThreadParticipant — Membership (the single source of truth)
 
@@ -184,12 +184,12 @@ Unique: `@@unique([threadId, seq])` (seq identity + keyset cursor), `@@unique([t
 
 - **MediaAsset** — content-addressed asset: `digest` = sha256 of the raw bytes, stored once at `data/cas/<dd>/<dd>/<digest>` with no filename or extension. It stores `bytes` and `PENDING | READY | DELETING | DELETED`; GC retains `DELETED` tombstones. Liveness is derived from non-deleted ordinary messages and active staging, never a cached refcount; forward bundles deliberately do not keep blobs alive.
 - **MediaMessage** — per-object authz index (1:1 with a media-bearing Message): `(messageId, threadId, digest)`. The `/uploads/cas/*` gate answers "may this user read this READY digest?" with one indexed EXISTS joined to ThreadParticipant.
-- **PendingMedia** — in-flight staging: a media message is NOT committed as a `Message` until its bytes are confirmed. LOCAL: `clientMessageId` idempotency + display meta (CAS url injected at promote). FEDERATED: pulled content + `originSeq` dedup. `status` pending|failed. Created BEFORE the file write so a crash always leaves an attributable record for the GC.
+- **PendingMedia** — in-flight staging: a media message is NOT committed as a `Message` until its bytes are confirmed. LOCAL: `clientMessageId` idempotency + display meta (CAS url injected at promote). FEDERATED: pulled content + `originSeq` dedup; a text message quoting staged media is also retained here with `dependsOnOriginSeq` and zero files until the target receives a local `Message.seq`. `status` pending|failed. Created BEFORE the file write so a crash always leaves an attributable record for the GC. Admin clean, tombstone handling, and stale GC recursively delete dependent quote stages when the target is abandoned.
 
 ### Federation protocol-to-local mappings
 
 The normative identities and derivation rules are defined by
-[Federation v1 Message](../../spec/v1/message.md#31-协议-identity-与坐标派生) and
+[Federation v1 Message Envelope](../../spec/v1/message/envelope.md#4-identity-与不可变性) and
 [Federation v1 Resources](../../spec/v1/resources.md). SOMS maps them as follows; these database
 columns are implementation details and never replace the wire coordinates:
 

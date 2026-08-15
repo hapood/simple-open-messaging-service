@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, asc, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import {
   DatabaseService,
   type Database,
@@ -8,7 +8,6 @@ import {
 import {
   group,
   messageThread,
-  threadAudience,
   threadParticipant,
   user,
 } from '../database/schema.js';

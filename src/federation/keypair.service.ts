@@ -15,7 +15,7 @@ import {
 } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
-import { eq, sql } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';

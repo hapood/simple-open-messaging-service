@@ -8,7 +8,7 @@
 
 | Method | Path                                | 鉴权与用途                                          |
 | ------ | ----------------------------------- | --------------------------------------------------- |
-| `GET`  | `/.well-known/soms`                 | 公开服务器身份、公钥和能力发现。                    |
+| `GET`  | `/.well-known/socfp`                | 公开服务器身份、公钥和能力发现。                    |
 | `POST` | `/s2s/v1/recognize`                 | 建立一个认可方向并持久调度反向认可。                |
 | `POST` | `/s2s/v1/healthy`                   | 查询既有认可关系的可用性，不为未知方取 key。        |
 | `POST` | `/s2s/v1/feed-heads`                | 轻量 state/message/tombstone feed end-ID wake-up。  |
@@ -34,7 +34,7 @@
 
 ### SOMS 网络实现边界
 
-本节非规范。SOMS Federation discovery 当前以 SRV/apex 解析配合原生 HTTP fetch 连接服务器侧
+本节非规范。SOMS 对 Simple Open Chat Federation Protocol discovery 的实现当前以 SRV/apex 解析配合原生 HTTP fetch 连接服务器侧
 受控 peer，没有复用 link-preview 的任意 URL SSRF-safe connector。IP 分类、connect-time DNS
 pinning 和出站防火墙属于节点部署选择，不是 Federation v1 wire contract。
 

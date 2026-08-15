@@ -41,7 +41,8 @@ export class MissedDto {
   @ApiProperty({
     type: MissedCursorDto,
     required: false,
-    description: 'High-water mark (threadId, seq): the newest message accounted before backgrounding. Absent on first-ever → clear (no notification).',
+    description:
+      'High-water mark (threadId, seq): the newest message accounted before backgrounding. Absent on first-ever → clear (no notification).',
   })
   @IsOptional()
   @ValidateNested()
@@ -62,7 +63,7 @@ export class MissedDto {
   @ApiProperty({
     required: false,
     description:
-      'The client\'s per-thread dismiss HWM map { threadId: seq }. For a thread present here, its notification starts after that seq; other threads start after the global cursor.',
+      "The client's per-thread dismiss HWM map { threadId: seq }. For a thread present here, its notification starts after that seq; other threads start after the global cursor.",
   })
   @IsOptional()
   threadHwms?: Record<number, number>;
@@ -80,7 +81,8 @@ export class MissedSummaryDto {
   @ApiProperty({
     type: MissedCursorDto,
     required: false,
-    description: 'High-water mark (threadId, seq), exclusive lower bound. Absent on first boot.',
+    description:
+      'High-water mark (threadId, seq), exclusive lower bound. Absent on first boot.',
   })
   @IsOptional()
   @ValidateNested()
@@ -89,13 +91,19 @@ export class MissedSummaryDto {
 
   @ApiProperty({
     type: MissedCursorDto,
-    description: 'The newest SSE signal (threadId, seq), inclusive upper bound — pinned for this walk.',
+    description:
+      'The newest SSE signal (threadId, seq), inclusive upper bound — pinned for this walk.',
   })
   @ValidateNested()
   @Type(() => MissedCursorDto)
   to!: MissedCursorDto;
 
-  @ApiProperty({ required: false, default: 200, maximum: 200, description: 'Page size (threads).' })
+  @ApiProperty({
+    required: false,
+    default: 200,
+    maximum: 200,
+    description: 'Page size (threads).',
+  })
   @Type(() => Number)
   @IsInt()
   @Min(1)
@@ -117,12 +125,17 @@ const MAX_REPLY_TEXT = 2000;
  * (telemetry only — the client opens the thread itself).
  */
 export class ReportActionDto {
-  @ApiProperty({ description: "The notification's tag (which notification's action fired)." })
+  @ApiProperty({
+    description: "The notification's tag (which notification's action fired).",
+  })
   @IsString()
   @IsNotEmpty()
   tag!: string;
 
-  @ApiProperty({ description: "The action id ('reply' | 'open' | …; 'dismiss' is handled client-side)." })
+  @ApiProperty({
+    description:
+      "The action id ('reply' | 'open' | …; 'dismiss' is handled client-side).",
+  })
   @IsString()
   @IsNotEmpty()
   actionId!: string;
@@ -132,12 +145,18 @@ export class ReportActionDto {
   @IsOptional()
   threadId?: number;
 
-  @ApiProperty({ required: false, description: 'reply: the target message seq (routing).' })
+  @ApiProperty({
+    required: false,
+    description: 'reply: the target message seq (routing).',
+  })
   @IsInt()
   @IsOptional()
   seq?: number;
 
-  @ApiProperty({ required: false, description: 'reply: the inline-typed reply text.' })
+  @ApiProperty({
+    required: false,
+    description: 'reply: the inline-typed reply text.',
+  })
   @IsString()
   @MaxLength(MAX_REPLY_TEXT)
   @IsOptional()

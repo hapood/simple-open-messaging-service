@@ -15,7 +15,6 @@ import {
   pendingMedia,
   threadParticipant,
   user,
-  userQuotaDailyUsage,
 } from '../src/database/schema';
 import { ContentType } from '../src/database/enums';
 import { MessageService } from '../src/message/message.service';

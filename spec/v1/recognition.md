@@ -1,6 +1,6 @@
-# SOMS Federation v1 服务器认可（Peer Recognition）
+# Simple Open Chat Federation Protocol v1 服务器认可（Peer Recognition）
 
-状态：`RELEASE CANDIDATE`（`v1.0-rc.1`）
+状态：`RELEASE CANDIDATE`（`v1.0-rc.2`）
 
 Operations：
 
@@ -9,7 +9,7 @@ Operations：
 
 本文定义服务器认可（peer recognition）的方向语义、双向建立时序、身份固定、成功确认、失败处理，
 以及健康查询（health query）的隐私保护行为。Federation 基础类型和响应封装由
-[SOMS Federation Protocol v1](./protocol.md) 定义；HTTPS、发现、密钥证书和 HTTP Message Signature 由
+[Simple Open Chat Federation Protocol v1](./protocol.md) 定义；HTTPS、发现、密钥证书和 HTTP Message Signature 由
 [传输与安全](./transport-security.md)定义；错误分类由 [错误码注册表](./errors.md)定义。
 
 规范词 `必须（MUST）`、`不得（MUST NOT）`、`应该（SHOULD）`、`不应该（SHOULD NOT）` 和
@@ -197,7 +197,7 @@ feed-head hint：接收方在发送 Recognize `OK` 前必须（MUST）准备好�
 向 peer domain `B` 发送 Recognize 前，A 必须（MUST）：
 
 1. 按 protocol.md 的 SRV、TLS 和 authority 规则定位 B。
-2. 通过 hostname 验证成功的 HTTPS 获取 B 的 `/.well-known/soms`。
+2. 通过 hostname 验证成功的 HTTPS 获取 B 的 `/.well-known/socfp`。
 3. 选择最高共同主版本，并要求选中版本为路径中的 `1`。
 4. 严格解码 `rootKey.ed25519` 为恰好 32 bytes。
 5. 验证 B 至少一份当前有效的 root-authorized signing key certificate。
@@ -311,7 +311,7 @@ sequenceDiagram
     participant A as Peer A
     participant B as Peer B
 
-    A->>B: GET /.well-known/soms
+    A->>B: GET /.well-known/socfp
     B-->>A: B versions, root, signing certificates
     Note over A: 验证并固定 B root<br/>A recognizes B
     A->>B: POST /s2s/v1/recognize {domain: a.example}

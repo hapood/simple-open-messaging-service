@@ -29,7 +29,9 @@ export function mintTurnCredential(
 ): TurnRestCredential {
   const expiry = nowSeconds + ttlSeconds;
   const username = `${expiry}:${userId}`;
-  const credential = createHmac('sha1', secret).update(username).digest('base64');
+  const credential = createHmac('sha1', secret)
+    .update(username)
+    .digest('base64');
   return { username, credential };
 }
 
@@ -58,8 +60,12 @@ export function buildIceServers(
 
   const stunRaw = process.env.SOMS_STUN_URLS;
   if (stunRaw) {
-    const urls = stunRaw.split(',').map((s) => s.trim()).filter(Boolean);
-    if (urls.length > 0) iceServers.push({ urls: urls.length === 1 ? urls[0] : urls });
+    const urls = stunRaw
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (urls.length > 0)
+      iceServers.push({ urls: urls.length === 1 ? urls[0] : urls });
   }
 
   const turnRaw = process.env.SOMS_TURN_URLS;
@@ -71,10 +77,17 @@ export function buildIceServers(
         'TURN misconfiguration: SOMS_TURN_URLS and SOMS_TURN_REST_SECRET must both be set, or both unset (STUN-only).',
       );
     }
-    const urls = turnRaw.split(',').map((s) => s.trim()).filter(Boolean);
+    const urls = turnRaw
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
     const ttl = Number(process.env.SOMS_TURN_TTL) || DEFAULT_TURN_TTL_SECONDS;
     const cred = mintTurnCredential(secret, userId, ttl, nowSeconds);
-    iceServers.push({ urls: urls.length === 1 ? urls[0] : urls, username: cred.username, credential: cred.credential });
+    iceServers.push({
+      urls: urls.length === 1 ? urls[0] : urls,
+      username: cred.username,
+      credential: cred.credential,
+    });
   }
 
   return { iceServers };

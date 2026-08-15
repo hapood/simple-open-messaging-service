@@ -61,10 +61,14 @@ export function parseGoogleServicesJson(raw: string): FirebaseClientConfig {
   const projectNumber = json.project_info?.project_number;
   const projectId = json.project_info?.project_id;
   if (!projectNumber || !projectId) {
-    throw new Error('google-services.json is missing project_info.project_number / project_id');
+    throw new Error(
+      'google-services.json is missing project_info.project_number / project_id',
+    );
   }
   const client = (json.client ?? []).find(
-    (c) => c.client_info?.android_client_info?.package_name === EXPECTED_ANDROID_PACKAGE,
+    (c) =>
+      c.client_info?.android_client_info?.package_name ===
+      EXPECTED_ANDROID_PACKAGE,
   );
   if (!client) {
     throw new Error(
@@ -74,9 +78,16 @@ export function parseGoogleServicesJson(raw: string): FirebaseClientConfig {
   const appId = client.client_info?.mobilesdk_app_id;
   const apiKey = client.api_key?.[0]?.current_key;
   if (!appId || !apiKey) {
-    throw new Error('google-services.json client is missing mobilesdk_app_id / api_key.current_key');
+    throw new Error(
+      'google-services.json client is missing mobilesdk_app_id / api_key.current_key',
+    );
   }
-  const cfg: FirebaseClientConfig = { apiKey, projectId, appId, gcmSenderId: projectNumber };
+  const cfg: FirebaseClientConfig = {
+    apiKey,
+    projectId,
+    appId,
+    gcmSenderId: projectNumber,
+  };
   assertValidFirebaseConfig(cfg);
   return cfg;
 }
@@ -87,10 +98,14 @@ export function parseGoogleServicesJson(raw: string): FirebaseClientConfig {
  * operator immediately rather than as a silent on-device failure.
  */
 export function assertValidFirebaseConfig(cfg: FirebaseClientConfig): void {
-  if (!isValidApiKey(cfg.apiKey)) throw new Error('apiKey is missing or malformed');
-  if (!isValidProjectId(cfg.projectId)) throw new Error('projectId is missing or malformed');
-  if (!isValidAppId(cfg.appId)) throw new Error('appId is missing or malformed');
-  if (!isValidSenderId(cfg.gcmSenderId)) throw new Error('gcmSenderId is missing or malformed');
+  if (!isValidApiKey(cfg.apiKey))
+    throw new Error('apiKey is missing or malformed');
+  if (!isValidProjectId(cfg.projectId))
+    throw new Error('projectId is missing or malformed');
+  if (!isValidAppId(cfg.appId))
+    throw new Error('appId is missing or malformed');
+  if (!isValidSenderId(cfg.gcmSenderId))
+    throw new Error('gcmSenderId is missing or malformed');
 }
 
 /** Firebase Android API keys are long base64url-ish tokens (typically starting "AIzaSy"). */

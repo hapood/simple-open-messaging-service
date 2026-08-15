@@ -6,7 +6,6 @@ import { jwtConstants } from '../auth/constants.js';
 import {
   admin as adminTable,
   adminLoginChallenge,
-  twoFactorBackupCode,
 } from '../database/schema.js';
 
 /**
@@ -38,33 +37,43 @@ function makeService(overrides: Record<string, unknown> = {}) {
     // signChallenge creates a single-use challenge row; consumeChallenge flips consumedAt (count 1 = first
     // consume wins, count 0 = replay). Individual tests override updateMany to test replay.
     adminLoginChallenge: {
-      create: vi.fn(async (args: { data: { jti: string; adminId: number } }) => ({ ...args.data })),
+      create: vi.fn(
+        async (args: { data: { jti: string; adminId: number } }) => ({
+          ...args.data,
+        }),
+      ),
       updateMany: vi.fn(async () => ({ count: 1 })),
       deleteMany: vi.fn(async () => ({ count: 0 })),
     },
-    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(store)),
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn(store),
+    ),
     ...overrides,
   };
   const db = {
     query: {
       twoFactorBackupCode: {
-        findFirst: (...args: unknown[]) => store.twoFactorBackupCode.findFirst(...args),
+        findFirst: (...args: unknown[]) =>
+          store.twoFactorBackupCode.findFirst(...args),
       },
     },
     update: (table: unknown) => {
       let operation: Promise<unknown> = Promise.resolve(undefined);
       const query = {
         set: (data: Record<string, unknown>) => {
-          operation = table === adminTable
-            ? store.admin.update?.({ data }) ?? Promise.resolve(undefined)
-            : table === adminLoginChallenge
-              ? store.adminLoginChallenge.updateMany?.() ?? Promise.resolve({ count: 0 })
-              : store.twoFactorBackupCode.updateMany?.({ data }) ?? Promise.resolve({ count: 0 });
+          operation =
+            table === adminTable
+              ? (store.admin.update?.({ data }) ?? Promise.resolve(undefined))
+              : table === adminLoginChallenge
+                ? (store.adminLoginChallenge.updateMany?.() ??
+                  Promise.resolve({ count: 0 }))
+                : (store.twoFactorBackupCode.updateMany?.({ data }) ??
+                  Promise.resolve({ count: 0 }));
           return query;
         },
         where: () => query,
         returning: async () => {
-          const result = await operation as { count?: number };
+          const result = (await operation) as { count?: number };
           return result?.count === 0 ? [] : [{ id: 1, jti: 'claimed' }];
         },
         then: (resolve: (value: unknown) => unknown) => operation.then(resolve),
@@ -72,14 +81,20 @@ function makeService(overrides: Record<string, unknown> = {}) {
       return query;
     },
     delete: (table: unknown) => ({
-      where: () => table === adminLoginChallenge
-        ? store.adminLoginChallenge.deleteMany?.() ?? Promise.resolve(undefined)
-        : store.twoFactorBackupCode.deleteMany?.() ?? Promise.resolve(undefined),
+      where: () =>
+        table === adminLoginChallenge
+          ? (store.adminLoginChallenge.deleteMany?.() ??
+            Promise.resolve(undefined))
+          : (store.twoFactorBackupCode.deleteMany?.() ??
+            Promise.resolve(undefined)),
     }),
     insert: (table: unknown) => ({
-      values: (data: unknown) => table === adminLoginChallenge
-        ? store.adminLoginChallenge.create?.({ data }) ?? Promise.resolve(undefined)
-        : store.twoFactorBackupCode.createMany?.({ data }) ?? Promise.resolve(undefined),
+      values: (data: unknown) =>
+        table === adminLoginChallenge
+          ? (store.adminLoginChallenge.create?.({ data }) ??
+            Promise.resolve(undefined))
+          : (store.twoFactorBackupCode.createMany?.({ data }) ??
+            Promise.resolve(undefined)),
     }),
     transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(db),
   };
@@ -121,7 +136,9 @@ describe('TwoFactorService', () => {
 
   it('AES tamper detection: a modified ciphertext fails to decrypt (GCM auth tag)', () => {
     const { svc } = makeService();
-    const cipher = (svc as unknown as CryptoInternals).encrypt('JBSWY3DPEHPK3PXP');
+    const cipher = (svc as unknown as CryptoInternals).encrypt(
+      'JBSWY3DPEHPK3PXP',
+    );
     // Flip the last character — GCM must reject the altered ciphertext/tag.
     const tampered = cipher.slice(0, -1) + (cipher.endsWith('A') ? 'B' : 'A');
     expect(() => svc.decryptSecret(tampered)).toThrow();
@@ -164,8 +181,12 @@ describe('TwoFactorService', () => {
   it('verifyTotp accepts the previous and next step within the ±1 window', () => {
     const { svc } = makeService();
     const b32 = new Secret({ size: 20 }).base32;
-    expect(svc.verifyTotp(b32, codeFor(b32, Date.now() - 30_000), null).ok).toBe(true); // previous
-    expect(svc.verifyTotp(b32, codeFor(b32, Date.now() + 30_000), null).ok).toBe(true); // next
+    expect(
+      svc.verifyTotp(b32, codeFor(b32, Date.now() - 30_000), null).ok,
+    ).toBe(true); // previous
+    expect(
+      svc.verifyTotp(b32, codeFor(b32, Date.now() + 30_000), null).ok,
+    ).toBe(true); // next
   });
 
   // ── challenge + pending tokens (signed with the admin secret, distinct scope) ──
@@ -183,12 +204,18 @@ describe('TwoFactorService', () => {
   it('consumeChallenge is single-use: the first consume wins, the second returns false (closes the counter=0 passkey replay window)', async () => {
     const updateMany = vi.fn(async () => ({ count: 1 }));
     const { svc, store } = makeService({
-      adminLoginChallenge: { create: vi.fn(async () => ({})), updateMany, deleteMany: vi.fn(async () => ({ count: 0 })) },
+      adminLoginChallenge: {
+        create: vi.fn(async () => ({})),
+        updateMany,
+        deleteMany: vi.fn(async () => ({ count: 0 })),
+      },
     });
     const decoded = svc.verifyChallenge(await svc.signChallenge(42))!;
     expect(await svc.consumeChallenge(decoded.jti)).toBe(true);
     // Second consume: the row is already consumed → updateMany returns count 0 → false (replay rejected).
-    (store.adminLoginChallenge.updateMany as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ count: 0 });
+    (
+      store.adminLoginChallenge.updateMany as ReturnType<typeof vi.fn>
+    ).mockResolvedValueOnce({ count: 0 });
     expect(await svc.consumeChallenge(decoded.jti)).toBe(false);
   });
 
@@ -240,7 +267,9 @@ describe('TwoFactorService', () => {
     });
 
     // Second consume with no matching unconsumed row → false (single-use).
-    (store.twoFactorBackupCode.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    (
+      store.twoFactorBackupCode.findFirst as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(null);
     expect(await svc.consumeBackupCode(42, 'ABCD-EFGH-IJKL-MNOP')).toBe(false);
   });
 
@@ -256,7 +285,9 @@ describe('TwoFactorService', () => {
 
     // Malformed (not 16 base32 chars) → normalized to null → no DB lookup at all.
     expect(await svc.consumeBackupCode(42, 'short')).toBe(false);
-    expect((store.twoFactorBackupCode.findFirst as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1); // only the unknown-code lookup
+    expect(
+      store.twoFactorBackupCode.findFirst as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledTimes(1); // only the unknown-code lookup
   });
 
   // ── enable / disable / regenerate (atomic Admin-row state) ─────────────────────
@@ -284,7 +315,9 @@ describe('TwoFactorService', () => {
     expect(data.twoFactorLastUsedCounter).toBeNull();
     expect(deleteMany).toHaveBeenCalled();
     expect(created).toHaveLength(10);
-    expect(created.every((c) => c.adminId === 7 && c.codeHash.length > 0)).toBe(true);
+    expect(created.every((c) => c.adminId === 7 && c.codeHash.length > 0)).toBe(
+      true,
+    );
   });
 
   it('enable → consume round-trip: a returned backup code resolves to its stored HMAC', async () => {
@@ -294,17 +327,35 @@ describe('TwoFactorService', () => {
       return { count: args.data.length };
     });
     const enabler = makeService({
-      twoFactorBackupCode: { deleteMany: vi.fn(async () => ({ count: 0 })), createMany },
+      twoFactorBackupCode: {
+        deleteMany: vi.fn(async () => ({ count: 0 })),
+        createMany,
+      },
     }).svc;
-    const { backupCodes } = await enabler.enableWithBackupCodes(7, 'JBSWY3DPEHPK3PXP');
+    const { backupCodes } = await enabler.enableWithBackupCodes(
+      7,
+      'JBSWY3DPEHPK3PXP',
+    );
 
     // Feed the captured HMACs back as the store; findFirst matches by codeHash. Each returned plaintext
     // (in its dashed display form) must resolve to the stored HMAC of its bare canonical form.
-    expect(created.some((c) => c.codeHash === hashBackupCode(backupCodes[0].replaceAll('-', '')))).toBe(true);
-    expect(created.some((c) => c.codeHash === hashBackupCode(backupCodes[3].replaceAll('-', '')))).toBe(true);
+    expect(
+      created.some(
+        (c) =>
+          c.codeHash === hashBackupCode(backupCodes[0].replaceAll('-', '')),
+      ),
+    ).toBe(true);
+    expect(
+      created.some(
+        (c) =>
+          c.codeHash === hashBackupCode(backupCodes[3].replaceAll('-', '')),
+      ),
+    ).toBe(true);
     const findFirst = vi.fn(async () => ({ id: 1 }));
     const updateMany = vi.fn(async () => ({ count: 1 }));
-    const consumer = makeService({ twoFactorBackupCode: { findFirst, updateMany } }).svc;
+    const consumer = makeService({
+      twoFactorBackupCode: { findFirst, updateMany },
+    }).svc;
     expect(await consumer.consumeBackupCode(7, backupCodes[0])).toBe(true);
     expect(await consumer.consumeBackupCode(7, backupCodes[3])).toBe(true);
   });
@@ -329,7 +380,9 @@ describe('TwoFactorService', () => {
 
   it('regenerateBackupCodes replaces all codes without touching the Admin row (secret unchanged)', async () => {
     const deleteMany = vi.fn(async () => ({ count: 0 }));
-    const createMany = vi.fn(async (args: { data: unknown[] }) => ({ count: args.data.length }));
+    const createMany = vi.fn(async (args: { data: unknown[] }) => ({
+      count: args.data.length,
+    }));
     const adminUpdate = vi.fn(async () => ({}));
     const { svc } = makeService({
       admin: { update: adminUpdate },

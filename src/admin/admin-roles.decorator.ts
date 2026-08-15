@@ -12,4 +12,5 @@ export const ADMIN_ROLES_KEY = 'admin:roles';
  * Usage: `@UseGuards(AdminAuthGuard, AdminRolesGuard)` + `@Roles(AdminRole.SUPER_ADMIN)`.
  * Routes with no @Roles pass through — list/view endpoints stay open to every admin role.
  */
-export const Roles = (...roles: AdminRole[]) => SetMetadata(ADMIN_ROLES_KEY, roles);
+export const Roles = (...roles: AdminRole[]) =>
+  SetMetadata(ADMIN_ROLES_KEY, roles);

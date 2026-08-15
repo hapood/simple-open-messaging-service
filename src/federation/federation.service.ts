@@ -8,11 +8,7 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { createHash, randomUUID } from 'node:crypto';
-import {
-  mintUlid,
-  normalizeAccount,
-  isValidAccount,
-} from '../common/account.js';
+import { normalizeAccount, isValidAccount } from '../common/account.js';
 import {
   DatabaseService,
   type DatabaseTransaction,
@@ -28,7 +24,6 @@ import { DeletedMessageService } from '../message/deleted-message.service.js';
 import * as tables from '../database/schema.js';
 import {
   and,
-  asc,
   count,
   desc,
   eq,
@@ -37,7 +32,6 @@ import {
   inArray,
   isNull,
   lt,
-  max,
   ne,
   or,
   sql,
@@ -47,7 +41,7 @@ import { LinkPreviewService } from '../link-preview/link-preview.service.js';
 import {
   FORWARD_MAX_WIRE_JSON_BYTES,
   ForwardBundleService,
-  type ForwardWireClosure,
+  type ForwardWireBundle,
 } from '../forward/forward-bundle.service.js';
 import { contentDigest, SignatureService } from './signature.service.js';
 import { DiscoveryService } from './discovery.service.js';
@@ -86,7 +80,6 @@ import {
 import {
   buildCallContent,
   parseFederatedCallContent,
-  sameFederatedCallAddress,
 } from '../calls/call-content.js';
 import {
   assertS2SCallFrame,
@@ -287,16 +280,11 @@ export interface PeerResponseToken {
 }
 
 export interface S2SQuoteTarget {
-  creator: S2SAddress;
-  originSeq: number;
+  targetSeq: number;
 }
 
 interface FederatedForwardCard {
-  version: number;
   bundleId: string;
-  summaryLines: string[];
-  messageCount: number;
-  assetCount: number;
 }
 
 interface MissedPageEffect {
@@ -311,7 +299,7 @@ interface MissedPageEffect {
   message?: Message;
   deletionId?: string;
   restored: Array<{ userId: number; revision: number }>;
-  forwardClosure?: ForwardWireClosure;
+  forwardClosure?: ForwardWireBundle;
   remoteForwardBundleId?: string;
 }
 
@@ -324,13 +312,6 @@ interface StatePageEffect {
     type: SystemMessageType;
     subjectUserId?: number;
   }>;
-}
-
-interface S2SDeletedMessage {
-  id: string;
-  target: { creator: S2SAddress; originSeq: number };
-  type: MessageDeleteType;
-  deletedAt: number;
 }
 
 /**
@@ -517,9 +498,9 @@ export class FederationService {
   }
 
   /**
-   * The direct-authority routing entry. A group submission pulled from its author is signalled back
-   * once because the origin-allocated item is the acceptance receipt. The remaining origin audience
-   * is notified directly; a mirror consuming the origin copy has no outbound destination.
+   * The direct-authority routing entry. A successfully persisted pulled copy is signalled back to its
+   * direct source once as a processing receipt. The remaining authority-defined audience is notified
+   * directly; receipt replay matches an existing stable identity and allocates no further message.
    * P2P → each foreign peer except the author; GROUP → (origin: all foreign member-domains; mirror:
    * {originDomain}). Best-effort: logs + swallows.
    */
@@ -551,8 +532,7 @@ export class FederationService {
       if (!trd) return;
       const author = participants.find((p) => p.userId === authorUserId);
       if (!author) return;
-      const authorDomain = this.effectiveDomain(author.user);
-      if (fetchedFromDomain && authorDomain === fetchedFromDomain) {
+      if (fetchedFromDomain) {
         void this.offerAndPushMessage(
           fetchedFromDomain,
           threadId,
@@ -584,8 +564,8 @@ export class FederationService {
         }
         return;
       }
-      // GROUP federated. dest = origin → all mirror domains, mirror → origin for a local submission.
-      // The source submission domain already received its origin acceptance above.
+      // GROUP federated. dest = origin → all mirror domains, mirror → origin. The direct fetch source
+      // already received the processing-receipt notification above.
       const destDomains = new Set<string>();
       if (groupDomain === 'local') {
         for (const p of participants)
@@ -5202,11 +5182,17 @@ export class FederationService {
             'unknown federated message content type',
             HttpStatus.BAD_REQUEST,
           );
+        const hasOriginSeq = item.originSeq !== null;
+        const hasOriginCreatedAt = item.originCreatedAt !== null;
         if (
-          !Number.isSafeInteger(item.originSeq) ||
-          item.originSeq < 1 ||
           !Number.isSafeInteger(item.seq) ||
-          item.seq < 1
+          item.seq < 1 ||
+          hasOriginSeq !== hasOriginCreatedAt ||
+          (hasOriginSeq &&
+            (!Number.isSafeInteger(item.originSeq) || item.originSeq! < 1)) ||
+          (hasOriginCreatedAt &&
+            (!Number.isSafeInteger(item.originCreatedAt) ||
+              item.originCreatedAt! < 0))
         ) {
           throw new BusinessException(
             BusinessCode.FEDERATION_MALFORMED,
@@ -5220,13 +5206,11 @@ export class FederationService {
           domain,
           false,
         );
-        const originTime = new Date(item.createdAt);
+        const sourceTime = new Date(item.createdAt);
         if (
           !Number.isSafeInteger(item.createdAt) ||
           item.createdAt < 0 ||
-          !Number.isSafeInteger(item.updatedAt) ||
-          item.updatedAt < item.createdAt ||
-          Number.isNaN(originTime.getTime()) ||
+          Number.isNaN(sourceTime.getTime()) ||
           (item.clientMessageId !== null &&
             !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
               item.clientMessageId,
@@ -5246,12 +5230,23 @@ export class FederationService {
             : null;
         if (
           item.contentType === ContentType.PURE_TEXT &&
-          (!incomingText ||
-            Boolean(incomingText.quote) !== Boolean(item.quoteTarget))
+          (!incomingText || incomingText.quote !== undefined)
         ) {
           throw new BusinessException(
             BusinessCode.FEDERATION_MALFORMED,
             'invalid federated text quote',
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+        if (
+          item.quoteTarget !== undefined &&
+          (item.contentType !== ContentType.PURE_TEXT ||
+            !Number.isSafeInteger(item.quoteTarget.targetSeq) ||
+            item.quoteTarget.targetSeq < 1)
+        ) {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_MALFORMED,
+            'invalid federated reply target',
             HttpStatus.BAD_REQUEST,
           );
         }
@@ -5261,9 +5256,20 @@ export class FederationService {
           item.contentType as ContentType,
           item.content,
           this.config.domain,
+          item.author.account,
         );
 
         if (item.author.domain === this.config.domain) {
+          if (item.originSeq === null || item.originCreatedAt === null) {
+            this.logger.error(
+              `self-authored message diagnostic is missing source coordinates: ${federatedMessageLogContext(
+                domain,
+                item,
+                'SOURCE_COORDINATES_MISSING',
+              )}`,
+            );
+            continue;
+          }
           const localSourceMessage = await tx.query.message.findFirst({
             where: and(
               eq(tables.message.threadId, route.threadId),
@@ -5272,8 +5278,7 @@ export class FederationService {
             ),
             columns: {
               id: true,
-              originSeq: true,
-              originServerTime: true,
+              createdAt: true,
               federationAuthoredSnapshot: true,
             },
           });
@@ -5291,32 +5296,16 @@ export class FederationService {
               continue;
             }
             if (
-              localSourceMessage.originSeq === null &&
-              localSourceMessage.originServerTime === null
-            ) {
-              await tx
-                .update(tables.message)
-                .set({
-                  originSeq: item.originSeq,
-                  originServerTime: originTime,
-                })
-                .where(eq(tables.message.id, localSourceMessage.id));
-            } else if (
-              localSourceMessage.originSeq !== item.originSeq ||
-              localSourceMessage.originServerTime?.getTime() !==
-                originTime.getTime()
+              localSourceMessage.createdAt.getTime() !== item.originCreatedAt
             ) {
               this.logger.error(
-                `refused to overwrite a conflicting self-authored message receipt: ${JSON.stringify(
+                `ignored a self-authored message diagnostic with conflicting source time: ${JSON.stringify(
                   {
                     messageId: localSourceMessage.id.toString(),
                     peerDomain: domain,
                     receiptOriginSeq: item.originSeq,
-                    receiptOriginServerTime: originTime.toISOString(),
-                    existingOriginSeq: localSourceMessage.originSeq,
-                    existingOriginServerTime:
-                      localSourceMessage.originServerTime?.toISOString() ??
-                      null,
+                    receiptOriginCreatedAt: item.originCreatedAt,
+                    localCreatedAt: localSourceMessage.createdAt.getTime(),
                   },
                 )}`,
               );
@@ -5333,13 +5322,7 @@ export class FederationService {
           continue;
         }
         if (item.contentType === ContentType.INVITE) {
-          const inviteContent = JSON.parse(item.content) as {
-            from: string;
-          };
-          if (
-            item.thread.type !== 'P2P' ||
-            inviteContent.from !== item.author.account
-          ) {
+          if (item.thread.type !== 'P2P') {
             throw new BusinessException(
               BusinessCode.FEDERATION_MALFORMED,
               'invalid federated INVITE content',
@@ -5349,22 +5332,9 @@ export class FederationService {
         }
         if (item.contentType === ContentType.CALL) {
           const call = parseFederatedCallContent(item.content);
-          const participantMatch =
-            item.thread.type === 'P2P' &&
-            item.thread.participants.some((participant) =>
-              sameFederatedCallAddress(
-                participant,
-                call?.callee ?? {
-                  account: '',
-                  domain: '',
-                },
-              ),
-            );
           if (
             !call ||
             item.thread.type !== 'P2P' ||
-            !sameFederatedCallAddress(call.caller, item.author) ||
-            !participantMatch ||
             route.recipients.length !== 1
           ) {
             throw new BusinessException(
@@ -5382,9 +5352,9 @@ export class FederationService {
               ? {}
               : { startedAt: call.startedAt }),
             ...(call.endedAt === undefined ? {} : { endedAt: call.endedAt }),
-            ...(call.durationMs === undefined
+            ...(call.startedAt === undefined
               ? {}
-              : { durationMs: call.durationMs }),
+              : { durationMs: call.endedAt - call.startedAt }),
           });
         }
 
@@ -5392,17 +5362,25 @@ export class FederationService {
           where: and(
             eq(tables.message.threadId, route.threadId),
             eq(tables.message.creator, route.creatorId),
-            eq(tables.message.originSeq, item.originSeq),
+            eq(tables.message.originSeq, item.seq),
           ),
-          columns: { id: true, federationAuthoredSnapshot: true },
+          columns: {
+            id: true,
+            originServerTime: true,
+            federationAuthoredSnapshot: true,
+          },
         });
         const existingPending = await tx.query.pendingMedia.findFirst({
           where: and(
             eq(tables.pendingMedia.threadId, route.threadId),
             eq(tables.pendingMedia.creatorId, route.creatorId),
-            eq(tables.pendingMedia.originSeq, item.originSeq),
+            eq(tables.pendingMedia.originSeq, item.seq),
           ),
-          columns: { id: true, federationAuthoredSnapshot: true },
+          columns: {
+            id: true,
+            originServerTime: true,
+            federationAuthoredSnapshot: true,
+          },
         });
         const previousSnapshot =
           existingMessage?.federationAuthoredSnapshot ??
@@ -5418,11 +5396,24 @@ export class FederationService {
               HttpStatus.BAD_REQUEST,
             );
           }
+          const previousOriginTime =
+            existingMessage?.originServerTime ??
+            existingPending?.originServerTime;
+          if (
+            previousOriginTime &&
+            previousOriginTime.getTime() !== sourceTime.getTime()
+          ) {
+            throw new BusinessException(
+              BusinessCode.FEDERATION_MALFORMED,
+              'conflicting immutable federated message originCreatedAt',
+              HttpStatus.BAD_REQUEST,
+            );
+          }
           continue;
         }
 
         let forwardCard: FederatedForwardCard | undefined;
-        let forwardClosure: ForwardWireClosure | undefined;
+        let forwardClosure: ForwardWireBundle | undefined;
         if (item.contentType === ContentType.FORWARD) {
           try {
             forwardCard = JSON.parse(item.content) as FederatedForwardCard;
@@ -5434,10 +5425,8 @@ export class FederationService {
             );
           }
           if (
-            forwardCard.version !== 1 ||
             typeof forwardCard.bundleId !== 'string' ||
-            !Array.isArray(forwardCard.summaryLines) ||
-            forwardCard.summaryLines.length > 3
+            Object.keys(forwardCard).some((key) => key !== 'bundleId')
           ) {
             throw new BusinessException(
               BusinessCode.FEDERATION_MALFORMED,
@@ -5445,7 +5434,7 @@ export class FederationService {
               HttpStatus.BAD_REQUEST,
             );
           }
-          forwardClosure = await this.getSigned<ForwardWireClosure>(
+          forwardClosure = await this.getSigned<ForwardWireBundle>(
             `/s2s/v1/forward-bundles/${encodeURIComponent(forwardCard.bundleId)}`,
             domain,
             FORWARD_MAX_WIRE_JSON_BYTES + 64 * 1024,
@@ -5456,9 +5445,8 @@ export class FederationService {
           threadId: route.threadId,
           creator: route.creatorId,
           fetchedFromDomain: domain,
-          authorDomain: item.author.domain,
           message: {
-            originSeq: item.originSeq,
+            originSeq: item.seq,
             clientMessageId: item.clientMessageId,
             contentType: item.contentType,
             content: storedContent,
@@ -5469,11 +5457,9 @@ export class FederationService {
           incomingText,
           forwardCard,
           forwardClosure,
-          originTime,
+          originTime: sourceTime,
           authoredSnapshot,
-          hasUnavailableAssets: item.assets.some(
-            (asset) => asset.status === 'DELETED',
-          ),
+          hasUnavailableAssets: false,
           downloadAuth: {
             fromAccount: item.author.account,
             fromDomain: item.author.domain,
@@ -5485,7 +5471,7 @@ export class FederationService {
             kind: 'pending',
             threadId: route.threadId,
             creatorId: route.creatorId,
-            originSeq: item.originSeq,
+            originSeq: item.seq,
             recipients: route.recipients,
             toAccount: route.toAccount,
             author: item.author,
@@ -5537,7 +5523,7 @@ export class FederationService {
           kind: 'message',
           threadId: route.threadId,
           creatorId: route.creatorId,
-          originSeq: item.originSeq,
+          originSeq: item.seq,
           recipients: route.recipients,
           toAccount: route.toAccount,
           author: item.author,
@@ -5600,7 +5586,6 @@ export class FederationService {
             effect.author.domain,
             effect.toAccount,
             effect.originSeq,
-            undefined,
             offset,
           ),
         ).catch(() => undefined);
@@ -5655,7 +5640,6 @@ export class FederationService {
         await this.localizeForwardAssets(
           effect.forwardClosure,
           domain,
-          effect.remoteForwardBundleId,
           await this.resolveForwardAssetAuth(effect.message!),
         );
       }
@@ -5681,10 +5665,7 @@ export class FederationService {
           HttpStatus.BAD_REQUEST,
         );
       }
-      if (
-        (asset.status !== 'READY' && asset.status !== 'DELETED') ||
-        described.has(asset.digest)
-      ) {
+      if (described.has(asset.digest)) {
         throw new BusinessException(
           BusinessCode.FEDERATION_MALFORMED,
           'invalid or duplicate missed asset descriptor',
@@ -5769,7 +5750,7 @@ export class FederationService {
         'contentType',
         'content',
         'createdAt',
-        'updatedAt',
+        'originCreatedAt',
         'clientMessageId',
         'assets',
       ],
@@ -5807,11 +5788,10 @@ export class FederationService {
       }
     }
     if (item.quoteTarget) {
-      const target = assertFields(item.quoteTarget, ['creator', 'originSeq']);
-      assertFields(target['creator'], ['account', 'domain']);
+      assertFields(item.quoteTarget, ['targetSeq']);
     }
     for (const asset of item.assets) {
-      assertFields(asset, ['digest', 'bytes', 'status']);
+      assertFields(asset, ['digest', 'bytes']);
     }
   }
 
@@ -5965,6 +5945,70 @@ export class FederationService {
     };
   }
 
+  private async resolveTombstoneThreadInTransaction(
+    tx: DatabaseTransaction,
+    thread: FederationThreadAddress,
+    sourceDomain: string,
+  ): Promise<{
+    threadId: number;
+    federationVersion: number;
+    recipients: number[];
+  }> {
+    if (thread.type === 'P2P') {
+      const author = thread.participants.find(
+        (participant) => participant.domain === sourceDomain,
+      );
+      if (!author)
+        throw new BusinessException(
+          BusinessCode.FEDERATION_BINDING_VIOLATION,
+          'P2P tombstone source is not a thread participant',
+          HttpStatus.UNAUTHORIZED,
+        );
+      return this.resolveMissedThreadInTransaction(
+        tx,
+        { thread, author } as FederationMessageFeedMessage,
+        sourceDomain,
+        true,
+      );
+    }
+
+    const groupDomain =
+      thread.domain === this.config.domain ? 'local' : thread.domain;
+    const rows = await tx.execute<{
+      threadId: number;
+      federationVersion: number;
+    }>(sql`
+      SELECT message_thread.id AS "threadId",
+             message_thread."federationVersion"
+      FROM "MessageThread" message_thread
+      JOIN "User" group_user ON group_user.id = message_thread."groupUserId"
+      WHERE message_thread.type = 'GROUP'
+        AND message_thread."federationTruncated" = false
+        AND group_user.account = ${normalizeAccount(thread.account)}
+        AND group_user.domain = ${groupDomain}
+      LIMIT 1
+      FOR SHARE OF message_thread
+    `);
+    const route = rows.rows[0];
+    if (!route)
+      throw new FederationMessageContextError(
+        'tombstone has no retained local group thread',
+      );
+    const recipientRows = await tx.execute<{ userId: number }>(sql`
+      SELECT participant."userId"
+      FROM "ThreadParticipant" participant
+      JOIN "User" member ON member.id = participant."userId"
+      WHERE participant."threadId" = ${route.threadId}
+        AND participant."leftAt" IS NULL
+        AND member.domain = 'local'
+      FOR SHARE OF participant
+    `);
+    return {
+      ...route,
+      recipients: recipientRows.rows.map((row) => row.userId),
+    };
+  }
+
   /** Domains with incomplete recognition or degraded reachability. */
   async listRecoverablePeerDomains(): Promise<string[]> {
     const rows = await this.database.db.query.federatedPeer.findMany({
@@ -6063,7 +6107,6 @@ export class FederationService {
     signerDomain: string,
     digest: string,
     sourceSeq: number,
-    forwardBundleId?: string,
   ): Promise<{ absPath: string; bytes: number }> {
     // Resource authorization is deliberately independent from compacted feed-index lifetime. Durable
     // delivery proof allows already-authorized history to finish localizing its referenced resources.
@@ -6094,7 +6137,7 @@ export class FederationService {
         and(
           eq(tables.user.account, normalizeAccount(fromAccount)),
           eq(tables.message.isDeleted, false),
-          sql`COALESCE(${tables.message.originSeq}, ${tables.message.seq}) = ${sourceSeq}`,
+          eq(tables.message.seq, sourceSeq),
         ),
       );
     let sourceMessage: { id: bigint; threadId: number } | undefined;
@@ -6127,29 +6170,6 @@ export class FederationService {
         'message was not historically delivered to peer',
       );
     }
-    if (forwardBundleId) {
-      const binding = await this.database.db.query.forwardMessage.findFirst({
-        where: and(
-          eq(tables.forwardMessage.messageId, sourceMessage.id),
-          eq(tables.forwardMessage.bundleId, forwardBundleId),
-        ),
-        columns: { bundleId: true },
-      });
-      if (!binding) {
-        throw new BusinessException(
-          BusinessCode.NOT_FOUND,
-          'forward bundle is not bound to message',
-        );
-      }
-      const closure = await this.forwardBundles.buildClosure(forwardBundleId);
-      if (!closure.assets.some((asset) => asset.digest === digest)) {
-        throw new BusinessException(
-          BusinessCode.NOT_FOUND,
-          'digest not in forward bundle',
-        );
-      }
-      return this.resolveCasFile(digest);
-    }
     const binding = await this.database.db.query.messageAsset.findFirst({
       where: and(
         eq(tables.messageAsset.messageId, sourceMessage.id),
@@ -6157,10 +6177,25 @@ export class FederationService {
       ),
       columns: { messageId: true },
     });
-    if (!binding) {
+    if (binding) return this.resolveCasFile(digest);
+    const forwardBinding =
+      await this.database.db.query.forwardMessage.findFirst({
+        where: eq(tables.forwardMessage.messageId, sourceMessage.id),
+        columns: { bundleId: true },
+      });
+    if (!forwardBinding) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         'digest is not bound to message',
+      );
+    }
+    const closure = await this.forwardBundles.buildClosure(
+      forwardBinding.bundleId,
+    );
+    if (!closure.assets.some((asset) => asset.digest === digest)) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'digest is not bound to forward message',
       );
     }
     return this.resolveCasFile(digest);
@@ -6409,7 +6444,6 @@ export class FederationService {
       threadId: number;
       creator: number | S2SAddress;
       fetchedFromDomain: string;
-      authorDomain: string;
       message: {
         originSeq: number;
         clientMessageId: string | null;
@@ -6421,7 +6455,7 @@ export class FederationService {
       expectedFederationVersion: number;
       incomingText: ReturnType<typeof parseTextMessageContent>;
       forwardCard?: FederatedForwardCard;
-      forwardClosure?: ForwardWireClosure;
+      forwardClosure?: ForwardWireBundle;
       originTime: Date;
       authoredSnapshot: ReturnType<typeof authoredMessageSnapshot>;
       hasUnavailableAssets?: boolean;
@@ -6444,7 +6478,6 @@ export class FederationService {
       threadId,
       creator,
       fetchedFromDomain,
-      authorDomain,
       message: incoming,
       expectedFederationVersion,
       incomingText,
@@ -6472,25 +6505,57 @@ export class FederationService {
     await DeletedMessageService.lockFederatedIdentity(
       tx,
       threadId,
-      creatorId,
+      fetchedFromDomain,
       incoming.originSeq,
     );
     const tombstone = await tx.query.federatedMessageTombstone.findFirst({
       where: and(
         eq(tables.federatedMessageTombstone.threadId, threadId),
-        eq(tables.federatedMessageTombstone.creatorId, creatorId),
-        eq(tables.federatedMessageTombstone.originSeq, incoming.originSeq),
+        eq(tables.federatedMessageTombstone.sourceDomain, fetchedFromDomain),
+        eq(tables.federatedMessageTombstone.messageSeq, incoming.originSeq),
       ),
       columns: { type: true, sourceDomain: true },
     });
 
-    // Media (non-deleted) is staged in PendingMedia + FileSyncProgress and promoted only after every
-    // referenced file localizes (federation design doc §12). No seq/Message is allocated here — both
-    // happen at promote time — so a not-yet-localized media message is invisible to receivers by design.
+    let waitsForQuoteTarget = false;
+    const quoteTargetSeq = incoming.quoteTarget?.targetSeq;
+    if (!tombstone && incomingText && quoteTargetSeq !== undefined) {
+      const quotedMessage = await tx.query.message.findFirst({
+        where: and(
+          eq(tables.message.threadId, threadId),
+          eq(tables.message.federationSourceDomain, fetchedFromDomain),
+          eq(tables.message.originSeq, quoteTargetSeq),
+        ),
+        columns: { id: true },
+      });
+      if (!quotedMessage) {
+        const quotedPending = await tx.query.pendingMedia.findFirst({
+          where: and(
+            eq(tables.pendingMedia.threadId, threadId),
+            eq(tables.pendingMedia.originDomain, fetchedFromDomain),
+            eq(tables.pendingMedia.originSeq, quoteTargetSeq),
+          ),
+          columns: { id: true },
+        });
+        if (!quotedPending) {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_MALFORMED,
+            'quoted message is missing from the ordered pull stream',
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+        waitsForQuoteTarget = true;
+      }
+    }
+
+    // Media and messages quoting staged media are kept in the durable inbound inbox. Neither gets a
+    // local seq until its files/dependency are ready, so receiver-visible quote coordinates are never
+    // fabricated and both states survive a restart.
     if (
       !tombstone &&
       !hasUnavailableAssets &&
-      this.isMediaContentType(incoming.contentType as ContentType)
+      (this.isMediaContentType(incoming.contentType as ContentType) ||
+        waitsForQuoteTarget)
     ) {
       const batchId = randomUUID();
       const digests = extractDigestEntries(incoming.content);
@@ -6501,12 +6566,15 @@ export class FederationService {
         content: incoming.content,
         clientMessageId: incoming.clientMessageId,
         originSeq: incoming.originSeq,
+        originServerTime: originTime,
+        federationSourceDomain: fetchedFromDomain,
         federationAuthoredSnapshot: authoredSnapshot,
         direction: 'INBOUND',
         batchId,
         fileCnt: digests.length,
         originDomain: fetchedFromDomain,
         expectedFederationVersion,
+        dependsOnOriginSeq: waitsForQuoteTarget ? quoteTargetSeq : null,
         updatedAt: new Date(),
       });
       for (const { digest, size } of digests) {
@@ -6537,10 +6605,10 @@ export class FederationService {
         tx,
       );
       localForwardBundleId = imported.localRootBundleId;
-      storedContent = JSON.stringify({
-        ...forwardCard,
-        bundleId: localForwardBundleId,
-      });
+      storedContent = this.forwardBundles.localCardContent(
+        forwardClosure,
+        localForwardBundleId,
+      );
     }
     const [{ curSeq: seq }] = await tx
       .update(tables.messageThread)
@@ -6548,10 +6616,11 @@ export class FederationService {
       .where(eq(tables.messageThread.id, threadId))
       .returning({ curSeq: tables.messageThread.curSeq });
     storedContent = contextualizeCasUrls(storedContent, threadId, seq);
-    if (incomingText?.quote && incoming.quoteTarget) {
+    if (incomingText && incoming.quoteTarget) {
       const localQuoteSeq = await this.resolveLocalQuoteSeq(
         tx,
         threadId,
+        fetchedFromDomain,
         incoming.quoteTarget,
       );
       storedContent = stringifyTextMessageContent({
@@ -6570,6 +6639,7 @@ export class FederationService {
         originSeq: incoming.originSeq,
         clientMessageId: incoming.clientMessageId,
         originServerTime: originTime,
+        federationSourceDomain: fetchedFromDomain,
         federationAuthoredSnapshot: authoredSnapshot,
         isDeleted: tombstone !== undefined,
         updatedAt: new Date(),
@@ -6593,8 +6663,11 @@ export class FederationService {
         .where(
           and(
             eq(tables.federatedMessageTombstone.threadId, threadId),
-            eq(tables.federatedMessageTombstone.creatorId, creatorId),
-            eq(tables.federatedMessageTombstone.originSeq, incoming.originSeq),
+            eq(
+              tables.federatedMessageTombstone.sourceDomain,
+              fetchedFromDomain,
+            ),
+            eq(tables.federatedMessageTombstone.messageSeq, incoming.originSeq),
           ),
         );
     }
@@ -6613,7 +6686,7 @@ export class FederationService {
         fetchedFromDomain,
         'files',
         tx,
-        forwardClosure.bundles.length,
+        forwardClosure.children.length + 1,
       );
     }
     return { kind: 'message', message, storedContent, localForwardBundleId };
@@ -6622,27 +6695,14 @@ export class FederationService {
   private async resolveLocalQuoteSeq(
     tx: DatabaseTransaction,
     threadId: number,
+    sourceDomain: string,
     target: S2SQuoteTarget,
   ): Promise<number> {
-    const candidates = await tx.query.user.findMany({
-      where: eq(tables.user.account, normalizeAccount(target.creator.account)),
-      columns: { id: true, domain: true, isForeigner: true },
-    });
-    const creator = candidates.find(
-      (candidate) => this.effectiveDomain(candidate) === target.creator.domain,
-    );
-    if (!creator) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'quoted message creator is unknown',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
     const message = await tx.query.message.findFirst({
       where: and(
         eq(tables.message.threadId, threadId),
-        eq(tables.message.creator, creator.id),
-        eq(tables.message.originSeq, target.originSeq),
+        eq(tables.message.federationSourceDomain, sourceDomain),
+        eq(tables.message.originSeq, target.targetSeq),
       ),
       columns: { seq: true },
     });
@@ -6657,9 +6717,8 @@ export class FederationService {
   }
 
   private async localizeForwardAssets(
-    closure: ForwardWireClosure,
+    closure: ForwardWireBundle,
     peerDomain: string,
-    remoteRootBundleId: string,
     authorization: {
       fromAccount: string;
       fromDomain: string;
@@ -6680,7 +6739,7 @@ export class FederationService {
         });
         if (have) continue;
         await this.upload.saveCasFromStream(
-          asset.extension,
+          'bin',
           (offset) =>
             this.fetchMediaChunks(
               peerDomain,
@@ -6689,7 +6748,6 @@ export class FederationService {
               authorization.fromDomain,
               authorization.toAccount,
               authorization.sourceSeq,
-              remoteRootBundleId,
               offset,
             ),
           asset.digest,
@@ -7115,8 +7173,8 @@ export class FederationService {
         }> = [];
         for (const item of page.tombstones ?? []) {
           if (
-            !Number.isSafeInteger(item.target.originSeq) ||
-            item.target.originSeq < 1 ||
+            !Number.isSafeInteger(item.messageSeq) ||
+            item.messageSeq < 1 ||
             !Number.isSafeInteger(item.deletedAt) ||
             item.deletedAt < 0 ||
             ![MessageDeleteType.WITHDRAW, MessageDeleteType.REPORT].includes(
@@ -7129,22 +7187,12 @@ export class FederationService {
               HttpStatus.BAD_REQUEST,
             );
           }
-          if (
-            item.thread.type === 'P2P' &&
-            domain !== item.target.creator.domain
-          ) {
-            throw new BusinessException(
-              BusinessCode.FEDERATION_BINDING_VIOLATION,
-              'P2P tombstone source is not the author domain',
-              HttpStatus.UNAUTHORIZED,
-            );
-          }
           const acceptingGroupSubmission =
             item.thread.type === 'GROUP' &&
             item.thread.domain === this.config.domain;
           if (item.thread.type === 'GROUP') {
             const expectedSource = acceptingGroupSubmission
-              ? item.target.creator.domain
+              ? domain
               : item.thread.domain;
             if (domain !== expectedSource)
               throw new BusinessException(
@@ -7164,23 +7212,16 @@ export class FederationService {
                 HttpStatus.UNAUTHORIZED,
               );
           }
-          const route = await this.resolveMissedThreadInTransaction(
+          const route = await this.resolveTombstoneThreadInTransaction(
             tx,
-            {
-              thread: item.thread,
-              author: item.target.creator,
-            } as FederationMessageFeedMessage,
+            item.thread,
             domain,
-            true,
           );
           const result = await this.deletedMessages.applyFederatedInTx(tx, {
             threadId: route.threadId,
-            creatorId: route.creatorId,
-            originSeq: item.target.originSeq,
+            messageSeq: item.messageSeq,
             authorityDomain:
-              item.thread.type === 'GROUP'
-                ? item.thread.domain
-                : item.target.creator.domain,
+              item.thread.type === 'GROUP' ? item.thread.domain : domain,
             sourceDomain: domain,
             remoteDeletedId: BigInt(item.deletionSeq),
             type: item.type,
@@ -7294,6 +7335,10 @@ export class FederationService {
         HttpStatus.NOT_FOUND,
       );
     }
+    if (batch.dependsOnOriginSeq !== null) {
+      await this.promotePendingMessage(batchId);
+      return { batchId, resetFiles: 0 };
+    }
     // Admin retry resets FAILED too; startup recovery resets only crash-stranded DOWNLOADING rows.
     // SUCCEEDED and protocol-terminal TOMBSTONED files are always left as-is.
     const reset = await this.database.db
@@ -7344,7 +7389,6 @@ export class FederationService {
         fromDomain,
         toAccount,
         originSeq,
-        undefined,
         offset,
       ),
     ).catch(() => undefined);
@@ -7353,8 +7397,8 @@ export class FederationService {
   }
 
   /**
-   * Promote a staged inbound media message into the Message table once every referenced file is
-   * SUCCEEDED (§12.5). Replicates storePulledMessageInTransaction's direct-path work — seq allocation,
+   * Promote a staged inbound message once every referenced file is SUCCEEDED and any quote target has
+   * a receiver-local seq (§12.5). Replicates storePulledMessageInTransaction's direct-path work — seq allocation,
    * CAS-URL contextualization, tombstone re-check (may have arrived while pending), MessageAsset authz
    * rows, last-message cache, quota — then SSE-fans the now-visible message and re-signals the hub. A
    * not-yet-ready batch (any file PENDING/DOWNLOADING/FAILED) is a no-op; a later runFileSyncBatch retry
@@ -7378,6 +7422,9 @@ export class FederationService {
       const threadId = batch.threadId;
       const creatorId = batch.creatorId;
       const originSeq = batch.originSeq!;
+      if (!batch.originServerTime) {
+        throw new Error('inbound pending media is missing originCreatedAt');
+      }
       await this.assertThreadResponseWritable(
         tx,
         threadId,
@@ -7387,23 +7434,49 @@ export class FederationService {
       await DeletedMessageService.lockFederatedIdentity(
         tx,
         threadId,
-        creatorId,
+        batch.originDomain!,
         originSeq,
       );
       const tombstone = await tx.query.federatedMessageTombstone.findFirst({
         where: and(
           eq(tables.federatedMessageTombstone.threadId, threadId),
-          eq(tables.federatedMessageTombstone.creatorId, creatorId),
-          eq(tables.federatedMessageTombstone.originSeq, originSeq),
+          eq(
+            tables.federatedMessageTombstone.sourceDomain,
+            batch.originDomain!,
+          ),
+          eq(tables.federatedMessageTombstone.messageSeq, originSeq),
         ),
         columns: { type: true, sourceDomain: true },
       });
+      let localQuoteSeq: number | undefined;
+      const quoteTarget = batch.federationAuthoredSnapshot?.quoteTarget;
+      if (!tombstone && quoteTarget) {
+        const quoted = await tx.query.message.findFirst({
+          where: and(
+            eq(tables.message.threadId, threadId),
+            eq(tables.message.federationSourceDomain, batch.originDomain!),
+            eq(tables.message.originSeq, quoteTarget.targetSeq),
+          ),
+          columns: { seq: true },
+        });
+        // A zero-file dependent batch is intentionally retried by its target's successful promotion.
+        if (!quoted) return null;
+        localQuoteSeq = quoted.seq;
+      }
       const [{ curSeq: seq }] = await tx
         .update(tables.messageThread)
         .set({ curSeq: sql`${tables.messageThread.curSeq} + 1` })
         .where(eq(tables.messageThread.id, threadId))
         .returning({ curSeq: tables.messageThread.curSeq });
-      const storedContent = contextualizeCasUrls(batch.content, threadId, seq);
+      let storedContent = contextualizeCasUrls(batch.content, threadId, seq);
+      if (localQuoteSeq !== undefined) {
+        const text = parseTextMessageContent(batch.content);
+        if (!text) throw new Error('pending quote has invalid text content');
+        storedContent = stringifyTextMessageContent({
+          text: text.text,
+          quote: { seq: localQuoteSeq },
+        });
+      }
       const [message] = await tx
         .insert(tables.message)
         .values({
@@ -7414,7 +7487,8 @@ export class FederationService {
           seq,
           originSeq,
           clientMessageId: batch.clientMessageId,
-          originServerTime: batch.createdAt,
+          originServerTime: batch.originServerTime,
+          federationSourceDomain: batch.originDomain,
           federationAuthoredSnapshot: batch.federationAuthoredSnapshot,
           isDeleted: tombstone !== undefined,
           updatedAt: new Date(),
@@ -7438,8 +7512,11 @@ export class FederationService {
           .where(
             and(
               eq(tables.federatedMessageTombstone.threadId, threadId),
-              eq(tables.federatedMessageTombstone.creatorId, creatorId),
-              eq(tables.federatedMessageTombstone.originSeq, originSeq),
+              eq(
+                tables.federatedMessageTombstone.sourceDomain,
+                batch.originDomain!,
+              ),
+              eq(tables.federatedMessageTombstone.messageSeq, originSeq),
             ),
           );
       } else {
@@ -7552,6 +7629,20 @@ export class FederationService {
         () => undefined,
       );
     }
+
+    // Wake every durable quote that was waiting for this wire coordinate. Each successful child
+    // promotion performs the same lookup again, naturally draining quote chains without polling.
+    const dependents = await this.database.db.query.pendingMedia.findMany({
+      where: and(
+        eq(tables.pendingMedia.threadId, threadId),
+        eq(tables.pendingMedia.originDomain, originDomain),
+        eq(tables.pendingMedia.dependsOnOriginSeq, originSeq),
+      ),
+      columns: { batchId: true },
+    });
+    for (const dependent of dependents) {
+      await this.promotePendingMessage(dependent.batchId);
+    }
   }
 
   /** Apply the participant's thread-scoped delivery block to federation-originated live signals too. */
@@ -7622,7 +7713,6 @@ export class FederationService {
                 fromDomain,
                 toAccount,
                 sourceSeq,
-                undefined,
                 offset,
               ),
             digest,
@@ -7781,7 +7871,6 @@ export class FederationService {
       await this.localizeForwardAssets(
         closure,
         root.sourceDomain,
-        root.sourceBundleId,
         await this.resolveForwardAssetAuth(msg),
       );
     }
@@ -7914,7 +8003,6 @@ export class FederationService {
     fromDomain: string,
     toAccount: string,
     sourceSeq: number,
-    forwardBundleId?: string,
     startOffset = 0,
   ): AsyncGenerator<Buffer> {
     const chunkBytes = this.config.mediaChunkBytes;
@@ -7925,7 +8013,6 @@ export class FederationService {
       toAccount,
       seq: String(sourceSeq),
     });
-    if (forwardBundleId) params.set('bundleId', forwardBundleId);
     const path = `/s2s/v1/media/${digest}?${params.toString()}`;
     const url = new URL(`${base}${path}`);
     let offset = startOffset;

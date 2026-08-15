@@ -56,12 +56,9 @@ describe('Federation v1 protocol documentation', () => {
         };
       };
     }>('state-feed.schema.json');
-    const message = readSchema<{
-      $defs: { message: { properties: { contentType: { enum: string[] } } } };
-    }>('message-query.schema.json');
-    const content = readSchema<{
-      properties: { contentType: { enum: string[] } };
-    }>('message-content.schema.json');
+    const common = readSchema<{
+      $defs: { contentType: { enum: string[] } };
+    }>('common.schema.json');
     const call = readSchema<{
       $defs: { signalKind: { enum: string[] } };
       oneOf: Array<{
@@ -76,10 +73,7 @@ describe('Federation v1 protocol documentation', () => {
         .map((item) => item.properties.eventType.const)
         .sort(),
     ).toEqual([...peerStateEventType.enumValues].sort());
-    expect(message.$defs.message.properties.contentType.enum).toEqual(
-      FEDERATED_MESSAGE_CONTENT_TYPES,
-    );
-    expect(content.properties.contentType.enum).toEqual(
+    expect(common.$defs.contentType.enum).toEqual(
       FEDERATED_MESSAGE_CONTENT_TYPES,
     );
     expect(call.$defs.signalKind.enum).toEqual(CALL_SIGNAL_KINDS);
@@ -108,7 +102,7 @@ describe('Federation v1 protocol documentation', () => {
         (operation) => `${operation.method} ${operation.path}`,
       ),
     ).toEqual([
-      'GET /.well-known/soms',
+      'GET /.well-known/socfp',
       'POST /s2s/v1/recognize',
       'POST /s2s/v1/healthy',
       'POST /s2s/v1/feed-heads',

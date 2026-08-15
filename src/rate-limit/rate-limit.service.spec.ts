@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Logger } from '@nestjs/common';
 import { RateLimitService } from './rate-limit.service.js';
 import type { RateLimitPolicy } from './rate-limit.types.js';

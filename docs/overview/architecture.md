@@ -38,7 +38,7 @@ This document describes the system architecture, module responsibilities, authen
 - **HTTP handles "writes and queries"**: registration, login, sending messages, querying history, creating groups, invites, calls, federation — all go through HTTP `POST` (JSON body; `multipart/form-data` for uploads).
 - **SSE handles "push"**: the server pushes **identity-only signals** and the full message body one-way via SSE (`GET /api/v1/events`). SSE is a downstream-only channel — all client→server upstream business traffic goes through HTTP.
 
-The web/admin SPAs are served by Caddy (not the app). `@fastify/static` serves only `/uploads/*` (auth-gated media). The app runs on Fastify (HTTP/1.1 plain, or HTTP/2-over-TLS when `TLS_CERT`/`TLS_KEY` are set), global prefix `/api/v1` (excluding `/.well-known/soms`).
+The web/admin SPAs are served by Caddy (not the app). `@fastify/static` serves only `/uploads/*` (auth-gated media). The app runs on Fastify (HTTP/1.1 plain, or HTTP/2-over-TLS when `TLS_CERT`/`TLS_KEY` are set), global prefix `/api/v1` (excluding `/.well-known/socfp`).
 
 ## Backend Module Responsibilities
 
@@ -98,7 +98,7 @@ All sit under `/api/v1` (set in `bootstrap.ts`). Most use `@Controller()` with t
 | HealthController / ConfigController | [src/controller/health.controller.ts](../../src/controller/health.controller.ts) · [src/controller/config.controller.ts](../../src/controller/config.controller.ts) | `health` / `config` (both `@Public`, GET)                                                                                                                       |
 | EventsController                    | [src/gateway/events.controller.ts](../../src/gateway/events.controller.ts)                                                                                          | `GET /events` (SSE stream)                                                                                                                                      |
 
-Admin routes (`admin/*`) and federation routes (`s2s/*`, `.well-known/soms`) are registered inside their own modules; see [api.md](../api/api.md) and [federation-s2s-api.md](../api/federation-s2s-api.md).
+Admin routes (`admin/*`) and federation routes (`s2s/*`, `.well-known/socfp`) are registered inside their own modules; see [api.md](../api/api.md) and [federation-s2s-api.md](../api/federation-s2s-api.md).
 
 ## Frontend Structure
 

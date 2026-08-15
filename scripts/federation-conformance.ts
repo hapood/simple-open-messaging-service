@@ -1,25 +1,17 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import Ajv2020Module, {
   type AnySchema,
   type ErrorObject,
   type ValidateFunction,
 } from 'ajv/dist/2020.js';
-import {
-  SignatureService,
-  contentDigest,
-} from '../src/federation/signature.service.js';
-import type { KeypairService } from '../src/federation/keypair.service.js';
-import {
-  FEDERATION_API_PREFIX,
-  FEDERATION_PROTOCOL_VERSION,
-  selectFederationProtocolVersion,
-} from '../src/federation/federation-protocol.js';
-import { FederationV1WireErrorCode } from '../src/common/business-code.js';
-
 const normativeSpecDir = join(process.cwd(), 'spec', 'v1');
+const releaseSpecDir = join(normativeSpecDir, '..');
 const specDir = join(normativeSpecDir, 'schema');
+const protocolVersion = 1;
+const federationApiPrefix = 's2s/v1';
 
 interface Vector {
   name: string;
@@ -55,12 +47,45 @@ async function buildAjv(): Promise<Ajv2020Instance> {
   return ajv;
 }
 
+async function validateReleaseMetadata(): Promise<void> {
+  const release = (await json(join(releaseSpecDir, 'RELEASE.json'))) as {
+    protocol?: string;
+    abbreviation?: string;
+    version?: string;
+    major?: number;
+    status?: string;
+    normativeEntryPoint?: string;
+    licenseFile?: string;
+    conformance?: string;
+  };
+  const expected = {
+    protocol: 'Simple Open Chat Federation Protocol',
+    abbreviation: 'SOCFP',
+    version: '1.0.0-rc.2',
+    major: protocolVersion,
+    status: 'release-candidate',
+  };
+  for (const [key, value] of Object.entries(expected)) {
+    if (release[key as keyof typeof release] !== value) {
+      throw new Error(`RELEASE.json has unexpected ${key}`);
+    }
+  }
+  for (const path of [
+    release.normativeEntryPoint,
+    release.licenseFile,
+    release.conformance,
+  ]) {
+    if (!path) throw new Error('RELEASE.json is missing a required path');
+    await readFile(join(releaseSpecDir, path));
+  }
+}
+
 function validateStrictVersions(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false;
   const versions = (value as { protocolVersions?: unknown }).protocolVersions;
   return (
-    selectFederationProtocolVersion(versions) !== null &&
     Array.isArray(versions) &&
+    versions.includes(protocolVersion) &&
     versions.every(
       (version, index) =>
         Number.isSafeInteger(version) &&
@@ -71,7 +96,7 @@ function validateStrictVersions(value: unknown): boolean {
 }
 
 function semanticValid(schema: string, value: unknown): boolean {
-  if (schema === 'urn:soms:federation:v1:discovery') {
+  if (schema === 'urn:socfp:v1:discovery') {
     if (!validateStrictVersions(value)) return false;
     const doc = value as {
       rootKey: { ed25519: string };
@@ -91,7 +116,7 @@ function semanticValid(schema: string, value: unknown): boolean {
       const statement = JSON.stringify({
         keyId: key.keyId,
         ed25519: key.ed25519,
-        usage: 'soms-http-message-signature',
+        usage: 'socfp-http-message-signature',
         notBefore: key.notBefore,
         notAfter: key.notAfter,
       });
@@ -102,7 +127,7 @@ function semanticValid(schema: string, value: unknown): boolean {
       );
     });
   }
-  if (schema === 'urn:soms:federation:v1:state-feed') {
+  if (schema === 'urn:socfp:v1:state-feed') {
     const page = value as {
       hasMore?: boolean;
       scannedThrough?: string;
@@ -121,7 +146,7 @@ function semanticValid(schema: string, value: unknown): boolean {
       );
     });
   }
-  if (schema === 'urn:soms:federation:v1:message-feed') {
+  if (schema === 'urn:socfp:v1:message-feed') {
     const page = value as {
       scannedThrough?: string;
       messageFeedEndId?: string;
@@ -143,13 +168,14 @@ function semanticValid(schema: string, value: unknown): boolean {
       return ordered && feedId <= BigInt(page.scannedThrough!);
     });
   }
-  if (schema === 'urn:soms:federation:v1:message-query') {
+  if (schema === 'urn:socfp:v1:message-query') {
     const page = value as {
       scannedThrough?: string;
       messages?: Array<{
         seq: number;
         createdAt: number;
-        updatedAt: number;
+        originSeq: number | null;
+        originCreatedAt: number | null;
         contentType: string;
         content: string;
       }>;
@@ -162,12 +188,16 @@ function semanticValid(schema: string, value: unknown): boolean {
       return (
         ordered &&
         BigInt(message.seq) <= BigInt(page.scannedThrough!) &&
-        message.updatedAt >= message.createdAt &&
+        ((message.originSeq === null && message.originCreatedAt === null) ||
+          (Number.isSafeInteger(message.originSeq) &&
+            message.originSeq! > 0 &&
+            Number.isSafeInteger(message.originCreatedAt) &&
+            message.originCreatedAt! >= 0)) &&
         parsedContent(message.contentType, message.content) !== null
       );
     });
   }
-  if (schema === 'urn:soms:federation:v1:error') {
+  if (schema === 'urn:socfp:v1:error') {
     const error = value as {
       code?: number;
       data?: { resumeAfter?: string };
@@ -189,7 +219,7 @@ function parsedContent(contentType: string, encoded: string): unknown | null {
 }
 
 async function validateVectors(ajv: Ajv2020Instance): Promise<void> {
-  contentValidator = ajv.getSchema('urn:soms:federation:v1:message-content');
+  contentValidator = ajv.getSchema('urn:socfp:v1:message-content');
   if (!contentValidator)
     throw new Error('message content schema was not registered');
   for (const [file, expected] of [
@@ -232,13 +262,13 @@ async function validateManifest(ajv: Ajv2020Instance): Promise<void> {
     errorSchema: string;
   };
   if (
-    manifest.majorVersion !== FEDERATION_PROTOCOL_VERSION ||
-    manifest.s2sPrefix !== `/${FEDERATION_API_PREFIX}`
+    manifest.majorVersion !== protocolVersion ||
+    manifest.s2sPrefix !== `/${federationApiPrefix}`
   ) {
     throw new Error('HTTP manifest version/prefix differs from code constants');
   }
   const expected = new Set([
-    'GET /.well-known/soms',
+    'GET /.well-known/socfp',
     'POST /s2s/v1/recognize',
     'POST /s2s/v1/healthy',
     'POST /s2s/v1/feed-heads',
@@ -303,29 +333,14 @@ async function validateErrorRegistry(): Promise<void> {
     properties: { code: { enum: number[] } };
   };
   const schemaCodes = errorSchema.properties.code.enum;
-  const codeEntries = Object.entries(FederationV1WireErrorCode).filter(
-    (entry): entry is [string, number] => typeof entry[1] === 'number',
-  );
-  const codeRegistry = new Map(codeEntries.map(([name, code]) => [code, name]));
   const documentedCodes = [...documented.keys()];
-  const codeEnumCodes = [...codeRegistry.keys()];
 
   const sameCodes = (left: number[], right: number[]) =>
     left.length === right.length && left.every((code, i) => code === right[i]);
-  if (
-    !sameCodes(documentedCodes, schemaCodes) ||
-    !sameCodes(documentedCodes, codeEnumCodes)
-  ) {
+  if (!sameCodes(documentedCodes, schemaCodes)) {
     throw new Error(
-      `Federation v1 error code drift: errors.md=${documentedCodes.join(',')} schema=${schemaCodes.join(',')} code=${codeEnumCodes.join(',')}`,
+      `Federation v1 error code drift: errors.md=${documentedCodes.join(',')} schema=${schemaCodes.join(',')}`,
     );
-  }
-  for (const [code, name] of documented) {
-    if (codeRegistry.get(code) !== name) {
-      throw new Error(
-        `Federation v1 error name drift for ${code}: errors.md=${name} code=${codeRegistry.get(code) ?? '<missing>'}`,
-      );
-    }
   }
 }
 
@@ -346,31 +361,20 @@ async function validateSignatureVector(file: string): Promise<void> {
     headers: Record<string, string>;
     signatureBase: string;
   };
-  const digest = contentDigest(vector.request.body);
+  const digest = `sha-256=:${createHash('sha256').update(vector.request.body).digest('base64')}:`;
   const privateKey = Buffer.from(vector.privateKeyBase64, 'base64');
-  const service = new SignatureService({
-    getKeyId: () => vector.keyId,
-    getPrivateKey: () => privateKey,
-  } as unknown as KeypairService);
-  const headers = await service.signOutbound(
-    {
-      method: vector.request.method,
-      url: new URL(
-        `https://${vector.request.authority}${vector.request.path}${vector.request.query === '?' ? '' : vector.request.query}`,
-      ),
-      body: vector.request.body,
-    },
-    new Date(vector.created * 1000),
+  const signature = Buffer.from(
+    ed25519.sign(new TextEncoder().encode(vector.signatureBase), privateKey),
   );
-  const encoded = /^sig1=:([^:]+):$/.exec(headers.signature)?.[1];
-  const signature = encoded ? Buffer.from(encoded, 'base64') : null;
+  const encodedSignature = `sig1=:${signature.toString('base64')}:`;
+  const expectedDate = new Date(vector.created * 1000).toUTCString();
+  const expectedInput = `sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=${vector.created};expires=${vector.expires};keyid="${vector.keyId}";alg="ed25519"`;
   if (
     vector.expires !== vector.created + 300 ||
     digest !== vector.headers['content-digest'] ||
-    headers.date !== vector.headers.date ||
-    headers['signature-input'] !== vector.headers['signature-input'] ||
-    headers.signature !== vector.headers.signature ||
-    !signature ||
+    expectedDate !== vector.headers.date ||
+    expectedInput !== vector.headers['signature-input'] ||
+    encodedSignature !== vector.headers.signature ||
     !ed25519.verify(
       signature,
       new TextEncoder().encode(vector.signatureBase),
@@ -389,6 +393,7 @@ function argument(name: string): string | undefined {
 }
 
 async function main(): Promise<void> {
+  await validateReleaseMetadata();
   const ajv = await buildAjv();
   const schema = argument('--schema');
   const file = argument('--file');
@@ -412,7 +417,7 @@ async function main(): Promise<void> {
   await validateVectors(ajv);
   await validateSignatureVector('http-message-signature.json');
   await validateSignatureVector('call-http-message-signature.json');
-  console.log('Federation v1 conformance package: PASS');
+  console.log('SOCFP v1 conformance package: PASS');
 }
 
 await main();

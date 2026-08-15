@@ -85,7 +85,8 @@ export class LogStreamStore {
     return new Writable({
       write: (chunk: Buffer | string, _enc, callback) => {
         try {
-          const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+          const text =
+            typeof chunk === 'string' ? chunk : chunk.toString('utf8');
           const trimmed = text.trim();
           if (trimmed) this.push(JSON.parse(trimmed) as LogRecord);
         } catch {

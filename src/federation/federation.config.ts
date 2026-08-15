@@ -4,7 +4,7 @@ import { requireEnv } from '../common/env.js';
  * Federation (S2S) configuration. Loaded from env at module-init time (fail-fast via requireEnv).
  */
 export interface FederationConfig {
-  /** This server's public domain — the domain in @user@domain handles and in .well-known/soms. */
+  /** This server's public domain — the domain in @user@domain handles and in .well-known/socfp. */
   domain: string;
   /** File path to the persisted Ed25519 S2S keypair (generated on first boot). */
   keyPath: string;

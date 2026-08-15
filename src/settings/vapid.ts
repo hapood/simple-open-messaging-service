@@ -1,4 +1,8 @@
-import { createPrivateKey, createPublicKey, type JsonWebKey } from 'node:crypto';
+import {
+  createPrivateKey,
+  createPublicKey,
+  type JsonWebKey,
+} from 'node:crypto';
 
 /** A Web Push VAPID keypair + contact subject (RFC 8292). All fields are base64url strings. */
 export interface VapidConfig {
@@ -76,7 +80,8 @@ export function pairMatchesKey(publicKey: string, privateKey: string): boolean {
   try {
     const pub = Buffer.from(publicKey, 'base64url');
     const priv = Buffer.from(privateKey, 'base64url');
-    if (pub.length !== 65 || pub[0] !== 0x04 || priv.length !== 32) return false;
+    if (pub.length !== 65 || pub[0] !== 0x04 || priv.length !== 32)
+      return false;
     const jwk = {
       kty: 'EC' as const,
       crv: 'P-256',
@@ -85,7 +90,9 @@ export function pairMatchesKey(publicKey: string, privateKey: string): boolean {
       d: priv.toString('base64url'),
     };
     const privKey = createPrivateKey({ key: jwk, format: 'jwk' });
-    const derived = createPublicKey(privKey).export({ format: 'jwk' }) as JsonWebKey;
+    const derived = createPublicKey(privKey).export({
+      format: 'jwk',
+    }) as JsonWebKey;
     return derived.x === jwk.x && derived.y === jwk.y;
   } catch {
     return false;

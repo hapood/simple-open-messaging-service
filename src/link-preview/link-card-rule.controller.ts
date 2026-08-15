@@ -15,5 +15,4 @@ export class LinkCardRuleController {
   list() {
     return this.rules.list();
   }
-
 }

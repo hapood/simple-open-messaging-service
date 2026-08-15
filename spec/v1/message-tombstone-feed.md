@@ -1,6 +1,6 @@
-# SOMS Federation v1 Message Tombstone Feed and Query
+# Simple Open Chat Federation Protocol v1 Message Tombstone Feed and Query
 
-状态：`RELEASE CANDIDATE`（`v1.0-rc.1`）
+状态：`RELEASE CANDIDATE`（`v1.0-rc.2`）
 规范性：本文全部为规范性要求。
 
 本文定义墓碑索引型压缩 feed `GET /s2s/v1/message-tombstone-feed` 和按 thread 读取权威
@@ -13,34 +13,40 @@
 type MessageTombstoneType = 'WITHDRAW' | 'REPORT';
 
 interface MessageTombstone {
-  deletionSeq: DecimalString;
+  deletionSeq: PositiveDecimalString;
   thread: ThreadAddress;
-  target: {
-    creator: Address;
-    originSeq: SafeInteger;
-  };
+  messageSeq: SafeInteger;
   type: MessageTombstoneType;
   deletedAt: EpochMilliseconds;
 }
 ```
 
 `WITHDRAW` 是作者撤回；`REPORT` 是 thread authority 已生效的治理删除。两者均是不可逆的
-不可见终态。稳定目标是 `(thread, target.creator, target.originSeq)`。
+不可见终态。稳定目标是 `(publisher domain, thread, messageSeq)`。其中 `messageSeq` 必须等于
+当前 tombstone publisher 当初通过 message query 向该 consumer 发布目标消息时的 `FederatedMessage.seq`；
+它与该 publisher 的 thread message sequence 使用同一坐标，不是目标消息外层 nullable `originSeq` 的原样复制，
+也不是跨任意 publisher 不变的全局坐标。
 
-P2P `WITHDRAW` 的 authority 是 `target.creator.domain`。群消息的权威 publisher 始终是 group origin；
+P2P `WITHDRAW` 的 authority 是目标消息作者所在 domain。群消息的权威 publisher 始终是 group origin；
 第三方成员 home server 只能向 origin 提交本域作者的 `WITHDRAW`，origin 验证并形成群权威事实后
 再分发给 mirrors。`REPORT` 只能由 group origin 的治理流程产生。mirror 不得继续转发。
 
-`deletionSeq` 是 authority 在该 thread 中分配的正整数删除序列，严格递增且不复用。它与 message
-`seq`、`originSeq`、feed ID 都是独立坐标。publisher MUST 永久保留权威 tombstone 事实；不得因
+`deletionSeq` 是墓碑自身的独立正整数 ID。对同一 thread 必须严格递增且不复用；协议不要求连续，
+也不要求不同 thread 使用相互独立的分配器。它与 message
+`seq`、`messageSeq`、feed ID 都是独立坐标。publisher MUST 永久保留权威 tombstone 事实；不得因
 容量、时间、peer ACK、好友重加或成员重新入群而丢弃或重置 deletion sequence。
+
+consumer 应用 tombstone 时，使用持久保存的 source domain、thread 和 source message `seq` 映射定位
+本地目标。群成员 home server 向 group origin 提交 `WITHDRAW` 时使用自己曾向 origin 发布该消息的 `seq`；
+group origin 形成权威 tombstone 并向 mirror 发布时，改用 origin 曾向该 mirror 发布目标消息的 `seq`。
+任一 publisher 都不得把上一跳的 `messageSeq` 未经坐标转换直接继续发布。
 
 ## 2. Tombstone feed
 
 feed 请求参数是可选 `after`、`take`、`through`，其 shape、bootstrap、左开右闭窗口、page 计算、
 不维护 source ACK 以及不验证 consumer cursor 单调性的规则，与
 [Message Feed 第 1 节](./message-feed.md#1-message-feed) 完全相同。省略 `after` 时返回
-`FEDERATION_FEED_CURSOR_UNAVAILABLE { resumeAfter }`；SOMS 新 feed 的起点为 `"0"`。
+`FEDERATION_FEED_CURSOR_UNAVAILABLE { resumeAfter }`。
 
 ```ts
 interface MessageTombstoneFeedPage {
@@ -77,9 +83,18 @@ feed item 只是查询发现索引，不是删除事实，不能单独导致本�
 ## 3. Tombstone query
 
 `GET /s2s/v1/message-tombstones` 使用与 message query 完全相同的 P2P/GROUP thread query union，
-并使用可选 `after`、`through`、`take`。此处 `after` 和 `through` 属于 thread-local
+并使用可选 `after`、`through`、`take`、`includeSelf`。此处 `after` 和 `through` 属于 thread-local
 `deletionSeq` 空间，不是 tombstone feed ID。`take` 和 `through` 只能与 `after` 一起出现；携带
 `through` 时必须满足 `through >= after`，否则返回 `400 FEDERATION_MALFORMED`。
+
+`includeSelf` 的 wire、默认值和分页规则与 message query 相同。`includeSelf=false` 使 source 根据其
+权威目标消息记录，不返回作者 domain 等于已验证 signer domain 的 tombstone。作者不因此成为
+tombstone wire 字段。被过滤的 `deletionSeq` 是可扫描空洞，
+不阻止 `scannedThrough` 推进；该过滤不删除 tombstone 权威事实。
+
+GROUP tombstone 只有两个合法方向：成员 home server 只向 group origin 提供本域作者的
+`WITHDRAW` submission；group origin 只向持有该群 mirror 的 peer 提供已生效的权威 tombstone。
+mirror 不得（MUST NOT）向非 origin peer 返回该群 tombstone，也不得（MUST NOT）产生或中继 `REPORT`。
 
 省略 `after` 时，source 返回 `FEDERATION_FEED_CURSOR_UNAVAILABLE { resumeAfter }` 而不返回 page。
 起点由 source 对该 thread 的授权视图定义；协议不要求为 `0`。由于 tombstone 事实永久保留，
@@ -114,8 +129,10 @@ tombstone-feed cursor，也不得撤销已提交的权威 tombstone 事实。
 
 ## 4. Consumer 应用与竞态
 
-consumer 必须校验 authority binding：P2P source 必须是作者 domain；群 tombstone source 必须是已知 group
-origin。第三方成员提交给 origin 的撤回 command 不是 mirror 可应用的权威 query item。
+consumer 必须校验 authority binding：P2P source 必须是目标消息作者 domain；群 tombstone source 必须是已知 group
+origin。若 tombstone 先于目标消息到达，consumer 按 `(source domain, thread, messageSeq)` 保存 pending 事实，
+并在目标消息到达时完成作者 binding 校验；失配必须保持消息不可见、停止该 page 的提交并记录审计冲突。
+第三方成员提交给 origin 的撤回 command 不是 mirror 可应用的权威 query item。
 
 一个 query page 与本地 thread deletion cursor 必须在同一事务中提交。每个 tombstone 按稳定目标幂等应用：
 

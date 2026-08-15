@@ -248,7 +248,7 @@ export class AuthService {
   }) {
     const where = and(
       isNull(sessionToken.revokedAt),
-        gt(sessionToken.expiresAt, new Date()),
+      gt(sessionToken.expiresAt, new Date()),
       opts.userId ? eq(sessionToken.userId, opts.userId) : undefined,
       opts.ip
         ? or(
