@@ -15,12 +15,12 @@ import {
   verifySigningCertificate,
 } from './federation-certificate.js';
 import { loadFederationConfig } from './federation.config.js';
+import { FederationTransportConfigService } from './federation-transport-config.service.js';
 import { KeypairService } from './keypair.service.js';
 import { selectFederationProtocolVersion } from './federation-protocol.js';
 import { FederationHttpScheduler } from './federation-http-scheduler.js';
 
-const KEY_REFRESH_MS =
-  Number(process.env.SOMS_KEY_CACHE_TTL_SEC ?? 6 * 60 * 60) * 1000;
+const KEY_REFRESH_POLL_MS = 60_000;
 const DOMAIN_RE =
   /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/;
 
@@ -44,15 +44,24 @@ export class DiscoveryService {
   private readonly logger = new Logger(DiscoveryService.name);
   private readonly config = loadFederationConfig();
   private readonly routes = new Map<string, CachedRoute>();
+  private lastKeyRefreshAt = 0;
 
   constructor(
     private readonly database: DatabaseService,
     private readonly keypair: KeypairService,
     private readonly httpScheduler: FederationHttpScheduler,
+    private readonly transportConfig: FederationTransportConfigService,
   ) {}
 
-  @Interval(KEY_REFRESH_MS)
+  @Interval(KEY_REFRESH_POLL_MS)
   periodicRefresh(): void {
+    const now = Date.now();
+    if (
+      now - this.lastKeyRefreshAt <
+      this.transportConfig.get().keyCacheTtlSec * 1000
+    )
+      return;
+    this.lastKeyRefreshAt = now;
     void this.refreshAll().catch((error) =>
       this.logger.warn(
         `proactive key-refresh round failed: ${(error as Error).message}`,
@@ -63,7 +72,7 @@ export class DiscoveryService {
   /** Resolve the mandatory SOCFP SRV record while keeping the logical peer as HTTP/TLS authority. */
   async resolveBase(domain: string): Promise<string> {
     const normalized = this.normalizeDomain(domain);
-    const ttlMs = this.config.keyCacheTtlSec * 1000;
+    const ttlMs = this.transportConfig.get().keyCacheTtlSec * 1000;
     const cached = this.routes.get(normalized);
     if (cached && Date.now() - cached.fetchedAt < ttlMs) return cached.baseUrl;
 
@@ -139,6 +148,11 @@ export class DiscoveryService {
     this.routes.delete(normalized);
   }
 
+  invalidateAllRoutes(): void {
+    for (const route of this.routes.values()) void route.dispatcher?.close();
+    this.routes.clear();
+  }
+
   /** Federation HTTP transport: never follows redirects and preserves logical authority across SRV routing. */
   async request(url: URL | string, init: RequestInit = {}): Promise<Response> {
     const parsed = typeof url === 'string' ? new URL(url) : url;
@@ -164,7 +178,9 @@ export class DiscoveryService {
     const release = await this.acquireRequestSlot(domain);
     try {
       const response = await this.request(`${base}/.well-known/socfp`, {
-        signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
+        signal: AbortSignal.timeout(
+          this.transportConfig.get().callTimeoutSec * 1000,
+        ),
         headers: { accept: 'application/json' },
       });
       if (response.status !== 200)
@@ -366,7 +382,7 @@ export class DiscoveryService {
 
   private createDispatcher(domain: string, connectHost: string): Agent {
     return new Agent({
-      connectTimeout: this.config.connectTimeoutSec * 1000,
+      connectTimeout: this.transportConfig.get().connectTimeoutSec * 1000,
       connect: {
         servername: domain,
         lookup: (_hostname, options, callback) => {

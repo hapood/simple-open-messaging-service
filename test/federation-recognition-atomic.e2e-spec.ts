@@ -64,6 +64,7 @@ describe('FederationRecognitionService atomic commit', () => {
       {} as never,
       new FederationCursorService(database),
       stateFeed,
+      { get: () => ({ callTimeoutSec: 12 }) } as never,
     );
   }
 

@@ -18,8 +18,12 @@ import { SettingsService } from '../settings/settings.service.js';
 import { PushService } from '../push/push.service.js';
 import {
   OtpTtlDto,
+  AdminSessionPolicyDto,
   FederationDownloadLimitsDto,
   FederationHttpLimitsDto,
+  FederationQuotaDefaultsDto,
+  FederationTransportDto,
+  UserQuotaDefaultsDto,
 } from './admin-settings.dto.js';
 import { getManagedSecretStatus } from '../auth/jwt-secret.js';
 import { KeypairService } from '../federation/keypair.service.js';
@@ -27,6 +31,9 @@ import { FederationDownloadScheduler } from '../federation/federation-download-s
 import { FederationHttpScheduler } from '../federation/federation-http-scheduler.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
 import { QuotaService } from '../quota/quota.service.js';
+import { AdminAuthService } from './admin-auth.service.js';
+import { FederationTransportConfigService } from '../federation/federation-transport-config.service.js';
+import { DiscoveryService } from '../federation/discovery.service.js';
 
 /**
  * Admin runtime settings and read-only server-key inventory. Application-owned keys are generated in
@@ -47,16 +54,18 @@ export class AdminSettingsController {
     private readonly keypair: KeypairService,
     private readonly userQuota: UserQuotaService,
     private readonly quota: QuotaService,
+    private readonly adminAuth: AdminAuthService,
+    private readonly transportConfig: FederationTransportConfigService,
+    private readonly discovery: DiscoveryService,
   ) {}
 
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
-  @Post('admin/settings/notifications')
+  @Post('admin/settings')
   @ApiOperation({
-    summary:
-      'Notification transport config — VAPID status (subject + publicKey, never privateKey), FCM status, server domain',
+    summary: 'Read the complete admin-managed runtime settings model',
   })
-  async getNotifications() {
+  async getSettings() {
     const [
       vapid,
       otpTtlMinutes,
@@ -78,7 +87,43 @@ export class AdminSettingsController {
       federationHttpLimits,
       userQuotaDefaults: this.userQuota.getDefaultLimits(),
       federationQuotaDefaults: this.quota.getDefaultLimits(),
+      adminSessionPolicy: this.adminAuth.getSessionPolicy(),
+      federationTransport: this.transportConfig.get(),
     };
+  }
+
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
+  @Audit('settings.federation-transport.save')
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/settings/federation-transport')
+  async setFederationTransport(@Body() body: FederationTransportDto) {
+    try {
+      const value = await this.transportConfig.set(body);
+      this.discovery.invalidateAllRoutes();
+      return value;
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error
+          ? error.message
+          : 'invalid federation transport settings',
+      );
+    }
+  }
+
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
+  @Audit('settings.admin-session-policy.save')
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/settings/admin-session-policy')
+  async setAdminSessionPolicy(@Body() body: AdminSessionPolicyDto) {
+    try {
+      return await this.adminAuth.setSessionPolicy({ ...body });
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : 'invalid session policy',
+      );
+    }
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
@@ -86,9 +131,9 @@ export class AdminSettingsController {
   @Audit('settings.federation-quota-defaults.save')
   @HttpCode(HttpStatus.OK)
   @Post('admin/settings/federation-quota-defaults')
-  async setFederationQuotaDefaults(@Body() body: Record<string, unknown>) {
+  async setFederationQuotaDefaults(@Body() body: FederationQuotaDefaultsDto) {
     try {
-      return await this.quota.setDefaultLimits(body);
+      return await this.quota.setDefaultLimits({ ...body });
     } catch (error) {
       throw new BadRequestException(
         error instanceof Error ? error.message : 'invalid quota defaults',
@@ -101,9 +146,9 @@ export class AdminSettingsController {
   @Audit('settings.user-quota-defaults.save')
   @HttpCode(HttpStatus.OK)
   @Post('admin/settings/user-quota-defaults')
-  async setUserQuotaDefaults(@Body() body: Record<string, unknown>) {
+  async setUserQuotaDefaults(@Body() body: UserQuotaDefaultsDto) {
     try {
-      return await this.userQuota.setDefaultLimits(body as never);
+      return await this.userQuota.setDefaultLimits(body);
     } catch (error) {
       throw new BadRequestException(
         error instanceof Error ? error.message : 'invalid quota defaults',
@@ -198,7 +243,7 @@ export class AdminSettingsController {
   }
 
   // Firebase client config is file-based (data/google-services.json), not DB-backed,
-  // so there is no admin upload/clear surface here — its status is surfaced read-only in getNotifications
+  // so there is no admin upload/clear surface here — its status is surfaced read-only in getSettings
   // above (the `firebase` descriptor + `fcmConfigured`). See SettingsService.getFirebaseConfig.
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)

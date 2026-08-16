@@ -1,9 +1,14 @@
-import { Injectable, HttpStatus } from '@nestjs/common';
+import { Injectable, HttpStatus, OnModuleInit } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { createHash, randomBytes } from 'crypto';
 import { and, count, desc, eq, gt, isNull, like } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { admin, adminSession, user } from '../database/schema.js';
+import {
+  admin,
+  adminSession,
+  systemSetting,
+  user,
+} from '../database/schema.js';
 import { normalizeAccount } from '../common/account.js';
 import { AdminRole } from '../database/enums.js';
 import {
@@ -25,10 +30,6 @@ import {
 import { WEBAUTHN_CONFIG } from './webauthn.config.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import {
-  ADMIN_SESSION_IDLE_MS,
-  ADMIN_SESSION_TTL_MS,
-} from './admin-session.js';
 
 /**
  * Admin auth service: mirrors AuthService's family-based + reuse-detection algorithm. Identity (account + password)
@@ -36,6 +37,31 @@ import {
  * a separate adminSecret carrying scope:'admin' (physically isolated from user auth — the two never interoperate).
  */
 type AdminSessionOpts = { ip?: string; userAgent?: string };
+
+const ADMIN_SESSION_POLICY_KEY = 'admin:sessionPolicy';
+
+function parseAdminSessionPolicy(raw: string) {
+  return validateAdminSessionPolicy(JSON.parse(raw) as Record<string, unknown>);
+}
+
+function validateAdminSessionPolicy(input: Record<string, unknown>) {
+  const ttlHours = input.ttlHours;
+  const idleMinutes = input.idleMinutes;
+  if (
+    !Number.isInteger(ttlHours) ||
+    (ttlHours as number) < 1 ||
+    (ttlHours as number) > 24
+  )
+    throw new Error('ttlHours must be an integer from 1 to 24');
+  if (
+    !Number.isInteger(idleMinutes) ||
+    (idleMinutes as number) < 0 ||
+    (idleMinutes as number) > 8 * 60 ||
+    ((idleMinutes as number) > 0 && (idleMinutes as number) < 15)
+  )
+    throw new Error('idleMinutes must be 0 or an integer from 15 to 480');
+  return { ttlHours: ttlHours as number, idleMinutes: idleMinutes as number };
+}
 
 /** Account-dimension progressive-ban steps for admin password login (the IP ceiling is the route @Throttle).
  *  Same shape as the user-side password path: escalating lockouts, sliding 15-min window in BruteForceService. */
@@ -64,7 +90,8 @@ export type AdminLoginResult =
     };
 
 @Injectable()
-export class AdminAuthService {
+export class AdminAuthService implements OnModuleInit {
+  private sessionPolicy = { ttlHours: 12, idleMinutes: 60 };
   constructor(
     private database: DatabaseService,
     private jwtService: JwtService,
@@ -73,6 +100,41 @@ export class AdminAuthService {
     private passwordHasher: PasswordHasher,
     private webAuthn: WebAuthnService,
   ) {}
+
+  async onModuleInit(): Promise<void> {
+    const row = await this.database.db.query.systemSetting.findFirst({
+      where: eq(systemSetting.key, ADMIN_SESSION_POLICY_KEY),
+    });
+    if (row) this.sessionPolicy = parseAdminSessionPolicy(row.value);
+  }
+
+  getSessionPolicy() {
+    return { ...this.sessionPolicy };
+  }
+
+  get sessionTtlMs(): number {
+    return this.sessionPolicy.ttlHours * 60 * 60 * 1000;
+  }
+
+  private get sessionIdleMs(): number | null {
+    return this.sessionPolicy.idleMinutes === 0
+      ? null
+      : this.sessionPolicy.idleMinutes * 60 * 1000;
+  }
+
+  async setSessionPolicy(input: Record<string, unknown>) {
+    const policy = validateAdminSessionPolicy(input);
+    const value = JSON.stringify(policy);
+    await this.database.db
+      .insert(systemSetting)
+      .values({ key: ADMIN_SESSION_POLICY_KEY, value, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: systemSetting.key,
+        set: { value, updatedAt: new Date() },
+      });
+    this.sessionPolicy = policy;
+    return this.getSessionPolicy();
+  }
 
   /** Admin login: identity is on the linked User (single account namespace) → verify User.hashPwd → require an
    *  enabled Admin profile. When 2FA is enrolled, the password verifying issues a short-lived CHALLENGE token (no
@@ -86,7 +148,8 @@ export class AdminAuthService {
     userAgent?: string,
   ): Promise<AdminLoginResult> {
     const acct = normalizeAccount(account);
-    // Pre-check the account-dimension lock before the (slow) argon2 verify. The IP ceiling is @Throttle(5,60).
+    // Pre-check the account-dimension lock before the slow argon2 verify. A named fixed-window policy
+    // supplies the separate IP ceiling at the controller boundary.
     const ban = this.bruteForce.activeBanUntil([
       { dimension: BAN_DIM_ADMIN_PWD, value: acct },
     ]);
@@ -767,7 +830,7 @@ export class AdminAuthService {
       tokenHash: hashToken(token),
       ip: opts.ip ?? null,
       userAgent: opts.userAgent ?? null,
-      expiresAt: new Date(Date.now() + ADMIN_SESSION_TTL_MS),
+      expiresAt: new Date(Date.now() + this.sessionTtlMs),
     });
     return token;
   }
@@ -799,8 +862,8 @@ export class AdminAuthService {
       rec.revokedAt ||
       rec.expiresAt <= new Date() ||
       !rec.admin.enabled ||
-      (ADMIN_SESSION_IDLE_MS !== null &&
-        Date.now() - rec.lastAccessedAt.getTime() > ADMIN_SESSION_IDLE_MS)
+      (this.sessionIdleMs !== null &&
+        Date.now() - rec.lastAccessedAt.getTime() > this.sessionIdleMs)
     )
       return null;
     if (Date.now() - rec.lastAccessedAt.getTime() >= 5 * 60 * 1000) {

@@ -881,7 +881,51 @@
   },
   "settings": {
     "title": "设置",
-    "desc": "运维管理的运行时配置（服务器身份、一次性登录码有效期）。",
+    "desc": "运维管理的运行时配置与部署所有的服务器身份。",
+    "sections": {
+      "identity": "服务器身份",
+      "identityDesc": "由部署配置持有的身份和公开地址。",
+      "transport": "联邦传输",
+      "transportDesc": "运行时并发与媒体传输控制。",
+      "quotas": "默认配额",
+      "quotasDesc": "未设置账户或节点覆盖值时使用的基线。",
+      "security": "安全",
+      "securityDesc": "认证有效期与一次性凭据。"
+    },
+    "transport": {
+      "title": "联邦请求与媒体策略",
+      "desc": "配置超时、节点公钥缓存时长、媒体分块大小和重试上限；修改立即生效。",
+      "keyCacheTtl": "公钥缓存 TTL（秒）",
+      "connectTimeout": "连接超时（秒）",
+      "callTimeout": "请求超时（秒）",
+      "mediaChunkBytes": "媒体分块字节数",
+      "mediaChunkTimeout": "分块超时（秒）",
+      "mediaChunkRetries": "分块重试次数",
+      "save": "保存传输策略",
+      "saved": "联邦传输设置已保存"
+    },
+    "quotas": {
+      "userTitle": "本地用户默认配额",
+      "userDesc": "本地账户每日默认值；单用户覆盖值仍然优先。",
+      "federationTitle": "联邦默认配额",
+      "federationDesc": "未自定义覆盖值的节点共享每日默认值；信令帧仅有全局值。",
+      "messages": "消息数",
+      "requests": "请求数",
+      "signals": "信令数",
+      "files": "文件数",
+      "fileBytes": "文件字节数",
+      "save": "保存默认值",
+      "userSaved": "用户默认配额已保存",
+      "federationSaved": "联邦默认配额已保存"
+    },
+    "sessions": {
+      "title": "管理员会话",
+      "desc": "已有会话保留原绝对过期时间；空闲超时修改立即生效。",
+      "lifetime": "有效期（小时）",
+      "idle": "空闲超时（分钟；0 表示禁用）",
+      "save": "保存会话策略",
+      "saved": "管理员会话策略已保存"
+    },
     "identity": {
       "title": "服务器身份",
       "desc": "本服务器的公开域名——联邦身份（@user@domain）。",
@@ -1041,6 +1085,18 @@
   "rateLimits": {
     "title": "认证限流监控",
     "desc": "只读展示最近 24 小时的聚合指标与保守调参建议；服务重启会清空页面历史。",
+    "saved": "限流配置已保存",
+    "save": "保存策略",
+    "observe": "仅观察",
+    "fixedWindow": {
+      "title": "固定窗口路由策略",
+      "desc": "为高频和滥用敏感路由设置精确请求上限。修改立即生效，不改变固定窗口算法。",
+      "policy": "策略",
+      "limit": "请求上限",
+      "window": "窗口（秒）",
+      "save": "保存固定窗口策略",
+      "saved": "固定窗口配置已保存"
+    },
     "evaluated": "请求数",
     "wouldBlock": "模拟拦截",
     "blocked": "实际拦截",

@@ -40,7 +40,7 @@ export class DiagnosticsController {
   constructor(private readonly diagnostics: DiagnosticsService) {}
 
   @UseGuards(ThrottleGuard)
-  @Throttle(5, 60) // per-IP burst ceiling; the per-user window lives in the service
+  @Throttle('diagnostics.report')
   @HttpCode(HttpStatus.OK)
   @Post('diagnostics/report')
   @ApiConsumes('multipart/form-data')

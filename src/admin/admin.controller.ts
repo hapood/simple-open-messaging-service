@@ -81,7 +81,7 @@ export class AdminController {
   ) {}
 
   @UseGuards(ThrottleGuard)
-  @Throttle(5, 60) // 5 attempts/min per IP — brute-force ceiling over the account-dim progressive ban + argon2
+  @Throttle('admin.login')
   @HttpCode(HttpStatus.OK)
   @Post('admin/login')
   @ApiOperation({
@@ -103,14 +103,18 @@ export class AdminController {
       userAgent,
     );
     if ('sessionToken' in result) {
-      setAdminSessionCookie(reply, result.sessionToken);
+      setAdminSessionCookie(
+        reply,
+        result.sessionToken,
+        this.adminAuthService.sessionTtlMs,
+      );
       return { authenticated: true };
     }
     return result;
   }
 
   @UseGuards(ThrottleGuard)
-  @Throttle(5, 60) // per-IP ceiling on the 6-digit guess; the account-dim progressive ban lives in the service
+  @Throttle('admin.login.verify')
   @HttpCode(HttpStatus.OK)
   @Post('admin/login/verify')
   @ApiOperation({
@@ -129,12 +133,16 @@ export class AdminController {
       ip,
       userAgent,
     );
-    setAdminSessionCookie(reply, result.sessionToken);
+    setAdminSessionCookie(
+      reply,
+      result.sessionToken,
+      this.adminAuthService.sessionTtlMs,
+    );
     return { authenticated: true };
   }
 
   @UseGuards(ThrottleGuard)
-  @Throttle(5, 60) // per-IP ceiling; the account-dim 2FA progressive ban lives in the service
+  @Throttle('admin.login.webauthn-begin')
   @HttpCode(HttpStatus.OK)
   @Post('admin/webauthn/login/begin')
   @ApiOperation({
@@ -145,7 +153,7 @@ export class AdminController {
   }
 
   @UseGuards(ThrottleGuard)
-  @Throttle(5, 60)
+  @Throttle('admin.login.webauthn-finish')
   @HttpCode(HttpStatus.OK)
   @Post('admin/webauthn/login/finish')
   @ApiOperation({ summary: 'Admin passkey login finish (assertion) → session' })
@@ -162,7 +170,11 @@ export class AdminController {
       ip,
       userAgent,
     );
-    setAdminSessionCookie(reply, result.sessionToken);
+    setAdminSessionCookie(
+      reply,
+      result.sessionToken,
+      this.adminAuthService.sessionTtlMs,
+    );
     return { authenticated: true };
   }
 

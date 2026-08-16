@@ -33,7 +33,7 @@ export class DeviceController {
   constructor(private readonly pushService: PushService) {}
 
   @UseGuards(ThrottleGuard)
-  @Throttle(10, 60) // token rotation is rare: 10 registers/min per user is ample headroom
+  @Throttle('device.register')
   @HttpCode(HttpStatus.OK)
   @Post('devices/register')
   @ApiOperation({

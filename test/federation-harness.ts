@@ -146,10 +146,16 @@ export function makeInMemoryKeypair(domain: string): InMemoryKeypair {
  * corrupt header is silently swallowed by save() (raw bytes) but throws inside saveAvatars (sharp).
  * `red` varies the bytes so two uploads produce distinct files (for the re-pull test).
  */
-export async function makePng(red: number, size = 16): Promise<Buffer> {
+export async function makePng(
+  red: number,
+  size = 16,
+  noisy = false,
+): Promise<Buffer> {
   const raw = Buffer.alloc(size * size * 4);
   for (let i = 0; i < size * size; i++) {
-    raw[i * 4] = red;
+    raw[i * 4] = noisy ? (red + i * 31) % 256 : red;
+    if (noisy) raw[i * 4 + 1] = (red + i * 67) % 256;
+    if (noisy) raw[i * 4 + 2] = (red + i * 113) % 256;
     raw[i * 4 + 3] = 255; // alpha
   }
   return sharp(raw, { raw: { width: size, height: size, channels: 4 } })

@@ -90,7 +90,7 @@ export class MessageController {
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @ResourceId<CreateMessageReportsDto>('threadId')
-  @Throttle(20, 60)
+  @Throttle('message.report')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('message-reports')
@@ -162,7 +162,7 @@ export class MessageController {
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @ResourceId<SendMessageDto>('threadId')
-  @Throttle(60, 60) // anti-spam ceiling: 60 sends/min
+  @Throttle('message.send')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('send-message')
@@ -316,7 +316,7 @@ export class MessageController {
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @ResourceId<SendForwardDto>('threadId')
-  @Throttle(60, 60)
+  @Throttle('message.forward')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('send-forward')
@@ -517,7 +517,7 @@ export class MessageController {
    */
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @ResourceId<SendMediaDto>('threadId')
-  @Throttle(60, 60)
+  @Throttle('message.media-stage')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('send-media')
@@ -669,7 +669,7 @@ export class MessageController {
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @ResourceId<MarkReadDto>('threadId')
-  @Throttle(60, 60)
+  @Throttle('thread.mark-read')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('thread/mark-read')
@@ -705,7 +705,7 @@ export class MessageController {
   }
 
   @UseGuards(ThrottleGuard)
-  @Throttle(60, 60)
+  @Throttle('thread.read-delta')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('thread/read-delta')
@@ -731,7 +731,7 @@ export class MessageController {
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @ResourceId<SetMutedDto>('threadId')
-  @Throttle(30, 60)
+  @Throttle('thread.set-muted')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('thread/set-muted')
@@ -752,7 +752,7 @@ export class MessageController {
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @ResourceId<SetBlockedDto>('threadId')
-  @Throttle(30, 60)
+  @Throttle('thread.set-blocked')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('thread/set-blocked')
@@ -784,7 +784,7 @@ export class MessageController {
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @ResourceId<SetPinnedDto>('threadId')
-  @Throttle(30, 60)
+  @Throttle('thread.set-pinned')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('thread/set-pinned')
@@ -804,7 +804,7 @@ export class MessageController {
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @ResourceId<ClearHistoryDto>('threadId')
-  @Throttle(10, 60)
+  @Throttle('thread.clear-history')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('thread/clear-history')
@@ -821,7 +821,7 @@ export class MessageController {
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @ResourceId<SetAliasDto>('threadId')
-  @Throttle(30, 60)
+  @Throttle('thread.set-alias')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('thread/set-alias')
@@ -842,7 +842,7 @@ export class MessageController {
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @ResourceId<SearchMessagesDto>('threadId')
-  @Throttle(30, 60)
+  @Throttle('message.search')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('search-messages')
@@ -870,7 +870,7 @@ export class MessageController {
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @ResourceId<RelocalizeMediaDto>('threadId')
-  @Throttle(10, 60) // retry ceiling: 10 re-localize attempts/min (each is a peer fetch when not cached)
+  @Throttle('message.relocalize-media')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('relocalize-media')

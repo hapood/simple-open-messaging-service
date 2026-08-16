@@ -687,8 +687,8 @@ export interface FirebaseConfigDescriptor {
   gcmSenderId?: string;
 }
 
-/** Response of /admin/settings/notifications — the Settings page's read model. */
-export interface NotificationSettings {
+/** Response of /admin/settings — the Settings page's read model. */
+export interface AdminSettings {
   vapid: VapidDescriptor;
   firebase: FirebaseConfigDescriptor;
   /** FCM SEND transport configured (data/firebase-service-account.json loaded server-side). */
@@ -705,6 +705,14 @@ export interface NotificationSettings {
     global: number;
     perPeer: number;
   };
+  federationTransport: {
+    keyCacheTtlSec: number;
+    connectTimeoutSec: number;
+    callTimeoutSec: number;
+    mediaChunkBytes: number;
+    mediaChunkTimeoutSec: number;
+    mediaMaxChunkRetries: number;
+  };
   userQuotaDefaults: {
     dailyMsgLimit: number;
     dailyRequestLimit: number;
@@ -717,6 +725,10 @@ export interface NotificationSettings {
     dailySignalLimit: number;
     dailyFileLimit: number;
     dailyFileBytesLimit: number;
+  };
+  adminSessionPolicy: {
+    ttlHours: number;
+    idleMinutes: number;
   };
 }
 

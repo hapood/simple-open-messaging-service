@@ -67,7 +67,7 @@ export class GroupController {
   ) {}
 
   @UseGuards(ThrottleGuard)
-  @Throttle(10, 60)
+  @Throttle('group.create')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('group/create')
@@ -408,7 +408,7 @@ export class GroupController {
   }
 
   @UseGuards(ThrottleGuard)
-  @Throttle(20, 60)
+  @Throttle('group.join-request')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('group/join-request')
@@ -426,7 +426,7 @@ export class GroupController {
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
-  @Throttle(20, 60)
+  @Throttle('group.leave')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @ResourceId<GroupTerminalActionDto>('groupId')
@@ -453,7 +453,7 @@ export class GroupController {
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
-  @Throttle(10, 60)
+  @Throttle('group.dissolve')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @ResourceId<GroupTerminalActionDto>('groupId')
@@ -476,7 +476,7 @@ export class GroupController {
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
-  @Throttle(20, 60)
+  @Throttle('group.kick')
   @Roles(GroupRole.OWNER, GroupRole.ADMIN)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
@@ -496,7 +496,7 @@ export class GroupController {
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
-  @Throttle(20, 60)
+  @Throttle('group.transfer')
   @Roles(GroupRole.OWNER)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
@@ -516,7 +516,7 @@ export class GroupController {
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
-  @Throttle(20, 60)
+  @Throttle('group.set-role')
   @Roles(GroupRole.OWNER)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
@@ -537,7 +537,7 @@ export class GroupController {
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
-  @Throttle(20, 60)
+  @Throttle('group.update')
   @Roles(GroupRole.OWNER, GroupRole.ADMIN)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)

@@ -46,6 +46,7 @@ import {
 import { contentDigest, SignatureService } from './signature.service.js';
 import { DiscoveryService } from './discovery.service.js';
 import { loadFederationConfig } from './federation.config.js';
+import { FederationTransportConfigService } from './federation-transport-config.service.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { QuotaService } from '../quota/quota.service.js';
@@ -440,6 +441,7 @@ export class FederationService {
     private readonly recognition: FederationRecognitionService,
     private readonly federationCursor: FederationCursorService,
     private readonly downloadScheduler: FederationDownloadScheduler,
+    private readonly transportConfig: FederationTransportConfigService,
     private readonly stateFeedPull: PeerStateFeedPullService,
     private readonly stateFeed: PeerStateFeedService,
     private readonly clientStateFeed: ClientStateFeedService,
@@ -1966,7 +1968,7 @@ export class FederationService {
           method: 'POST',
           headers: { 'content-type': 'application/json', ...headers },
           body,
-          signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
+          signal: AbortSignal.timeout(this.transportConfig.get().callTimeoutSec * 1000),
         });
       } catch (e) {
         await this.recognition.markTransportDegraded(
@@ -2041,7 +2043,7 @@ export class FederationService {
         res = await this.discovery.request(url, {
           method: 'GET',
           headers: { ...headers },
-          signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
+          signal: AbortSignal.timeout(this.transportConfig.get().callTimeoutSec * 1000),
         });
       } catch (e) {
         await this.recognition.markTransportDegraded(
@@ -8005,7 +8007,7 @@ export class FederationService {
     sourceSeq: number,
     startOffset = 0,
   ): AsyncGenerator<Buffer> {
-    const chunkBytes = this.config.mediaChunkBytes;
+    const chunkBytes = this.transportConfig.get().mediaChunkBytes;
     const base = await this.discovery.resolveBase(peerDomain);
     const params = new URLSearchParams({
       fromAccount,
@@ -8052,7 +8054,7 @@ export class FederationService {
             throw new Error(`unit digest mismatch at offset ${offset}`);
           }
         } catch (e) {
-          if (++retries > this.config.mediaMaxChunkRetries) {
+          if (++retries > this.transportConfig.get().mediaMaxChunkRetries) {
             throw new Error(
               `media fetch retries exhausted at offset ${offset}: ${(e as Error).message}`,
             );
@@ -8099,7 +8101,9 @@ export class FederationService {
       res = await this.discovery.request(url, {
         method: 'GET',
         headers: { ...headers, range: `bytes=${start}-${end}` },
-        signal: AbortSignal.timeout(this.config.mediaChunkTimeoutSec * 1000),
+        signal: AbortSignal.timeout(
+          this.transportConfig.get().mediaChunkTimeoutSec * 1000,
+        ),
       });
     } catch (e) {
       await this.recognition.markTransportDegraded(

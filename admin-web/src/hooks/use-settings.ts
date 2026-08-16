@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-  getNotificationSettings,
+  getAdminSettings,
   getServerKeys,
   runVapidHealthCheck,
   setOtpTtl,
@@ -8,12 +8,30 @@ import {
   setFederationHttpLimits,
   setUserQuotaDefaults,
   setFederationQuotaDefaults,
+  setAdminSessionPolicy,
+  setFederationTransport,
 } from '@/api/settings';
 
-/** Invalidate the settings read model — every mutation that changes VAPID state calls this. */
+export function useSetFederationTransport() {
+  const invalidate = useInvalidateSettings();
+  return useMutation({
+    mutationFn: setFederationTransport,
+    onSuccess: invalidate,
+  });
+}
+
+/** Invalidate the complete settings read model after any settings mutation. */
 function useInvalidateSettings() {
   const qc = useQueryClient();
   return () => qc.invalidateQueries({ queryKey: ['admin', 'settings'] });
+}
+
+export function useSetAdminSessionPolicy() {
+  const invalidate = useInvalidateSettings();
+  return useMutation({
+    mutationFn: setAdminSessionPolicy,
+    onSuccess: invalidate,
+  });
 }
 
 export function useSetFederationQuotaDefaults() {
@@ -58,11 +76,10 @@ export function useSetFederationDownloadLimits() {
   });
 }
 
-/** Notification transport config (VAPID/FCM/domain). Read by the Settings page. */
-export function useNotificationSettings() {
+export function useAdminSettings() {
   return useQuery({
-    queryKey: ['admin', 'settings', 'notifications'],
-    queryFn: () => getNotificationSettings(),
+    queryKey: ['admin', 'settings'],
+    queryFn: () => getAdminSettings(),
   });
 }
 

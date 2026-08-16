@@ -8,7 +8,7 @@
       fill="#f8f4ec"
       stroke="#ded6ca"
       stroke-width="1.5"
-      d="M54 17 C76 17 93 32 93 52 C93 72 76 86 55 86 C48 86 41 85 35 82 L25 87 L28 74 C20 68 15 61 15 52 C15 32 32 17 54 17 Z"
+      d="M54 17 C76 17 93 32 93 52 C93 72 76 86 55 86 C48 86 41 85 35 82 L25 87 L28 76 C20 68 15 61 15 52 C15 32 32 17 54 17 Z"
     />
     <g transform="translate(1 -2)">
       <path d="M34 68 V40 L54 57 L74 40 V68" fill="none" stroke="#19212a" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />

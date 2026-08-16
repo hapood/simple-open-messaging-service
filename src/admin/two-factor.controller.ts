@@ -38,7 +38,7 @@ import { BusinessException } from '../common/business.exception.js';
 @ApiBearerAuth()
 @Public()
 @UseGuards(AdminAuthGuard, ThrottleGuard)
-@Throttle(10, 60) // defense-in-depth ceiling on the authenticated 2FA endpoints (argon2 + JWT signing)
+@Throttle('admin.two-factor')
 @Controller()
 export class TwoFactorController {
   constructor(private readonly adminAuth: AdminAuthService) {}

@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
-  useNotificationSettings,
+  useAdminSettings,
   useServerKeys,
   useVapidHealthCheck,
 } from '@/hooks/use-settings';
@@ -42,7 +42,7 @@ const KEY_NAMES: Record<ServerKeyStatus['id'], string> = {
 /** Read-only inventory for application-owned keys and external push transport status. */
 export function TransportConfigPanel() {
   const { t } = useTranslation();
-  const settings = useNotificationSettings();
+  const settings = useAdminSettings();
   const keys = useServerKeys();
   const healthCheck = useVapidHealthCheck();
   const [report, setReport] = useState<VapidHealthReport | null>(null);

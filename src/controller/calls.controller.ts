@@ -38,7 +38,7 @@ export class CallsController {
   constructor(private readonly calls: CallsService) {}
 
   @UseGuards(ThrottleGuard)
-  @Throttle(20, 60) // initiate ceiling: 20 new calls/min (abuse / accidental-flood guard)
+  @Throttle('call.initiate')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('calls/initiate')
@@ -50,7 +50,7 @@ export class CallsController {
   }
 
   @UseGuards(ThrottleGuard)
-  @Throttle(60, 60)
+  @Throttle('call.accept')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('calls/accept')
@@ -63,7 +63,7 @@ export class CallsController {
   }
 
   @UseGuards(ThrottleGuard)
-  @Throttle(60, 60)
+  @Throttle('call.ringing')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('calls/ringing')
@@ -79,7 +79,7 @@ export class CallsController {
   }
 
   @UseGuards(ThrottleGuard)
-  @Throttle(60, 60)
+  @Throttle('call.connected')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('calls/connected')
@@ -94,7 +94,7 @@ export class CallsController {
   }
 
   @UseGuards(ThrottleGuard)
-  @Throttle(30, 60)
+  @Throttle('call.upgrade-video')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('calls/upgrade-video')
@@ -109,7 +109,7 @@ export class CallsController {
   }
 
   @UseGuards(ThrottleGuard)
-  @Throttle(60, 60)
+  @Throttle('call.decline')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('calls/decline')
@@ -122,7 +122,7 @@ export class CallsController {
   }
 
   @UseGuards(ThrottleGuard)
-  @Throttle(60, 60)
+  @Throttle('call.cancel')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('calls/cancel')
@@ -137,7 +137,7 @@ export class CallsController {
   }
 
   @UseGuards(ThrottleGuard)
-  @Throttle(60, 60)
+  @Throttle('call.end')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('calls/end')
@@ -150,7 +150,7 @@ export class CallsController {
   }
 
   @UseGuards(ThrottleGuard)
-  @Throttle(300, 60) // ICE trickling is bursty — 300 relay frames/min (the client may also batch candidates)
+  @Throttle('call.signal')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('calls/signal')
@@ -178,7 +178,7 @@ export class CallsController {
   }
 
   @UseGuards(ThrottleGuard)
-  @Throttle(30, 60) // fetched ~once per accept (an offline-then-online callee); low, bursty
+  @Throttle('call.signaling')
   @ApiBearerAuth()
   @Get('calls/:callSid/signaling')
   @ApiOperation({

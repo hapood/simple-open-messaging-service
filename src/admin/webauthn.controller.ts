@@ -39,7 +39,7 @@ import { BusinessException } from '../common/business.exception.js';
 @ApiBearerAuth()
 @Public()
 @UseGuards(AdminAuthGuard, ThrottleGuard)
-@Throttle(10, 60) // defense-in-depth ceiling on the authenticated passkey endpoints
+@Throttle('admin.webauthn')
 @Controller()
 export class WebAuthnController {
   constructor(private readonly adminAuth: AdminAuthService) {}

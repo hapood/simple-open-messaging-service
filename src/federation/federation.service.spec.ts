@@ -82,6 +82,16 @@ function makeStubs() {
     recognition as never,
     { readAllocatedThrough: vi.fn().mockResolvedValue(0n) } as never, // federationCursor
     {} as never, // downloadScheduler
+    {
+      get: () => ({
+        keyCacheTtlSec: 21_600,
+        connectTimeoutSec: 12,
+        callTimeoutSec: 12,
+        mediaChunkBytes: 8 * 1024 * 1024,
+        mediaChunkTimeoutSec: 120,
+        mediaMaxChunkRetries: 5,
+      }),
+    } as never, // transportConfig
     {} as never, // stateFeedPull
     {} as never, // stateFeed
     {} as never, // groupMembershipState

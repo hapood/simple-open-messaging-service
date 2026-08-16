@@ -23,6 +23,12 @@ import {
 } from '../federation/federation.config.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
+import {
+  FederationTransportConfigService,
+  type FederationTransportConfig,
+} from '../federation/federation-transport-config.service.js';
+
+type SelfCheckConfig = FederationConfig & FederationTransportConfig;
 
 /**
  * S2S handshake self-check — diagnoses whether THIS server's federation prerequisites are correctly
@@ -58,6 +64,7 @@ export class FederationSelfCheckService {
   constructor(
     private readonly keypair: KeypairService,
     private readonly signature: SignatureService,
+    private readonly transportConfig: FederationTransportConfigService,
   ) {}
 
   /** Run the full probe set. Rate-limited + single-flight (a second concurrent call reuses the running one). */
@@ -80,7 +87,10 @@ export class FederationSelfCheckService {
 
   private async doRun(opts: RunOptions): Promise<SelfCheckReport> {
     const startedAt = Date.now();
-    const config = loadFederationConfig();
+    const config: SelfCheckConfig = {
+      ...loadFederationConfig(),
+      ...this.transportConfig.get(),
+    };
     const domain = config.domain;
     const resolver = this.makeResolver(opts.dnsResolver);
     const ntpServer =
@@ -237,7 +247,7 @@ export class FederationSelfCheckService {
 
   // ─────────────────────────── checks ───────────────────────────
 
-  private async checkConfig(config: FederationConfig): Promise<CheckBody> {
+  private async checkConfig(config: SelfCheckConfig): Promise<CheckBody> {
     const issues: string[] = [];
     let keyOk = true;
     try {
@@ -283,7 +293,7 @@ export class FederationSelfCheckService {
     };
   }
 
-  private async checkKeyFile(config: FederationConfig): Promise<CheckBody> {
+  private async checkKeyFile(config: SelfCheckConfig): Promise<CheckBody> {
     try {
       const path = resolvePath(config.keyPath);
       const st = statSync(path);
@@ -395,7 +405,7 @@ export class FederationSelfCheckService {
     ips: { ip: string; family: 4 | 6 }[],
     probes: IpTlsProbe[],
     target: ResolvedTarget,
-    config: FederationConfig,
+    config: SelfCheckConfig,
   ): Promise<CheckBody> {
     if (config.allowInsecureHttp) {
       return {
@@ -606,7 +616,7 @@ export class FederationSelfCheckService {
     family: 4 | 6,
     host: string,
     port: number,
-    config: FederationConfig,
+    config: SelfCheckConfig,
   ): Promise<IpTlsProbe> {
     return new Promise((resolve) => {
       let settled = false;
@@ -693,7 +703,7 @@ export class FederationSelfCheckService {
     host: string,
     port: number,
     scheme: 'https' | 'http',
-    config: FederationConfig,
+    config: SelfCheckConfig,
     negotiatedAlpn: string | null,
   ): Promise<IpWellKnownProbe> {
     if (scheme === 'https' && negotiatedAlpn === 'h2') {
@@ -754,7 +764,7 @@ export class FederationSelfCheckService {
     family: 4 | 6,
     host: string,
     port: number,
-    config: FederationConfig,
+    config: SelfCheckConfig,
   ): Promise<IpWellKnownProbe> {
     return new Promise((resolve) => {
       let settled = false;
@@ -1016,7 +1026,7 @@ export class FederationSelfCheckService {
   private async resolveTarget(
     resolver: Resolver,
     domain: string,
-    config: FederationConfig,
+    config: SelfCheckConfig,
   ): Promise<ResolvedTarget> {
     const scheme: 'https' | 'http' = config.allowInsecureHttp
       ? 'http'

@@ -13,11 +13,15 @@ and incident analysis. Treat suggestions as review prompts rather than automatic
 warnings usually call for checking client retries/shared NAT before increasing `BURST`, while sustained
 legitimate traffic may justify reviewing `RATE_PER_SECOND`.
 
-The six migrated authentication policies default to `enforce`. They return HTTP 429 when an enforced
-bucket is exhausted and emit a structured `rate_limit_summary` every five minutes. Their former
-fixed-window throttles have been removed; unrelated endpoints retain the legacy throttler until they
-are migrated separately. Password and OTP account buckets are deliberately observation-only to avoid
-letting an attacker lock out a named account.
+The six authentication policies use token buckets and default to `enforce`. They return HTTP 429 when
+an enforced bucket is exhausted and emit a structured `rate_limit_summary` every five minutes.
+Password and OTP account buckets are deliberately observation-only to avoid letting an attacker lock
+out a named account.
+
+Other abuse-sensitive routes use named fixed-window policies. These are intentionally a separate
+mechanism: exact request ceilings suit high-frequency polling and data APIs better than refill-based
+authentication buckets. Their limits and window lengths are also database-backed and editable on the
+same page. Counters remain process-local, bounded to the configured window, and reset on restart.
 
 ## Configuration
 
@@ -43,6 +47,11 @@ defaults apply:
 | `AUTH_QR_SCAN`        | `QR_TOKEN`    |           1 |     2 | yes                     |
 | `AUTH_QR_CONFIRM`     | `USER`        |         0.5 |     5 | yes                     |
 | `AUTH_QR_CONFIRM`     | `QR_TOKEN`    |           1 |     2 | yes                     |
+
+The fixed-window table lists every supported stable policy ID with its request limit and window in
+seconds. Saving replaces the complete supported set, rejects unknown or missing IDs, and starts a new
+counter namespace so a changed window takes effect immediately. Fixed-window policies do not expose
+token-bucket modes or refill rates.
 
 At startup, `rate_limit_auth_config` logs the effective mode and thresholds for all policies. That
 event contains no client identifiers or secrets.

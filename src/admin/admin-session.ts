@@ -18,33 +18,18 @@ export type AdminPrincipal = {
  * next request 401'd and forceLogout bounced back to /admin/login.
  */
 export const ADMIN_SESSION_COOKIE = 'admin_session';
-const configuredHours = Number(process.env.ADMIN_SESSION_TTL_HOURS ?? 12);
-export const ADMIN_SESSION_TTL_MS =
-  Math.min(
-    24,
-    Math.max(1, Number.isFinite(configuredHours) ? configuredHours : 12),
-  ) *
-  60 *
-  60 *
-  1000;
-const configuredIdleMinutes = Number(
-  process.env.ADMIN_SESSION_IDLE_MINUTES ?? 60,
-);
-export const ADMIN_SESSION_IDLE_MS =
-  configuredIdleMinutes <= 0
-    ? null
-    : Math.min(8 * 60, Math.max(15, configuredIdleMinutes)) * 60 * 1000;
 
 export function setAdminSessionCookie(
   reply: FastifyReply,
   token: string,
+  ttlMs: number,
 ): void {
   reply.setCookie(ADMIN_SESSION_COOKIE, token, {
     httpOnly: true,
     secure: 'auto',
     sameSite: 'strict',
     path: '/',
-    maxAge: Math.floor(ADMIN_SESSION_TTL_MS / 1000),
+    maxAge: Math.floor(ttlMs / 1000),
   });
 }
 

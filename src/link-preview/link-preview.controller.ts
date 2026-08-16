@@ -79,7 +79,7 @@ export class LinkPreviewController {
   constructor(private readonly linkPreview: LinkPreviewService) {}
 
   @UseGuards(ThrottleGuard)
-  @Throttle(20, 60) // 20 previews/min/user — outbound-fetch amplification ceiling
+  @Throttle('link-preview.generate')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('link-preview/generations')

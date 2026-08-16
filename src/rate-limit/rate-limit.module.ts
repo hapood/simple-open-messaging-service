@@ -4,6 +4,7 @@ import { ClientIdentityService } from './client-identity.service.js';
 import { AuthPolicyRegistry } from './auth-policy.registry.js';
 import { RateLimitGuard } from './rate-limit.guard.js';
 import { RateLimitModeService } from './rate-limit-mode.service.js';
+import { FixedWindowPolicyService } from './fixed-window-policy.service.js';
 
 /** Authentication policy engine with per-policy enforce, shadow, and disabled modes. */
 @Global()
@@ -14,6 +15,7 @@ import { RateLimitModeService } from './rate-limit-mode.service.js';
     AuthPolicyRegistry,
     RateLimitGuard,
     RateLimitModeService,
+    FixedWindowPolicyService,
   ],
   // Controllers declared by AppModule use RateLimitGuard directly via @UseGuards.
   // Export the guard's complete dependency graph so Nest can resolve that
@@ -24,6 +26,7 @@ import { RateLimitModeService } from './rate-limit-mode.service.js';
     AuthPolicyRegistry,
     RateLimitModeService,
     RateLimitGuard,
+    FixedWindowPolicyService,
   ],
 })
 export class RateLimitModule {}

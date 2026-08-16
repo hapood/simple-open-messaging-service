@@ -9,8 +9,8 @@
     <group android:pivotX="54" android:pivotY="54" android:scaleX="0.82" android:scaleY="0.82">
         <path
             android:fillColor="#FFF8F4EC"
-            android:pathData="M54,17 C76,17 93,32 93,52 C93,72 76,86 55,86 C48,86 41,85 35,82 L20,90 24,75 C18,69 15,61 15,52 C15,32 32,17 54,17 Z"
-            android:strokeColor="#FFD6CBBD"
+            android:pathData="M54,17 C76,17 93,32 93,52 C93,72 76,86 55,86 C48,86 41,85 35,82 L25,87 28,76 C20,68 15,61 15,52 C15,32 32,17 54,17 Z"
+            android:strokeColor="#FFDED6CA"
             android:strokeWidth="1.5" />
         <path
             android:fillColor="@android:color/transparent"

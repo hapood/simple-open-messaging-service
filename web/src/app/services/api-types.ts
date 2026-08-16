@@ -242,6 +242,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/thread/set-blocked': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Block / unblock new-message delivery for one conversation */
+    post: operations['MessageController_setBlocked'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/thread/set-pinned': {
     parameters: {
       query?: never;
@@ -643,8 +660,24 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Resolve a user by {account, domain} (local lookup, or federated via S2S) */
+    /** Resolve a local user by account */
     post: operations['UserController_resolveUser'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/user/resolve-federated-stream': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations['UserController_resolveFederatedUserStream'];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -900,6 +933,23 @@ export interface paths {
     put?: never;
     /** Send a friend invite (federated targets delivered via S2S automatically) */
     post: operations['InviteController_sendFriendInvite'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/invite/federated-friend': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Send a federated friend request by Address without creating a foreign User stub */
+    post: operations['InviteController_sendFederatedFriendInvite'];
     delete?: never;
     options?: never;
     head?: never;
@@ -1442,7 +1492,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Report the media leg is up (either party) — the real connect marker */
+    /** Report the media leg is up (callee-authoritative connect marker) */
     post: operations['CallsController_connected'];
     delete?: never;
     options?: never;
@@ -1459,7 +1509,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Permanently upgrade an established audio call to video */
+    /** Caller commits an established audio call upgrade to video */
     post: operations['CallsController_upgradeVideo'];
     delete?: never;
     options?: never;
@@ -2249,7 +2299,7 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  '/api/v1/admin/settings/notifications': {
+  '/api/v1/admin/settings': {
     parameters: {
       query?: never;
       header?: never;
@@ -2258,8 +2308,88 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Notification transport config — VAPID status (subject + publicKey, never privateKey), FCM status, server domain */
-    post: operations['AdminSettingsController_getNotifications'];
+    /** Read the complete admin-managed runtime settings model */
+    post: operations['AdminSettingsController_getSettings'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/settings/federation-transport': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: operations['AdminSettingsController_setFederationTransport'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/settings/admin-session-policy': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: operations['AdminSettingsController_setAdminSessionPolicy'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/settings/federation-quota-defaults': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: operations['AdminSettingsController_setFederationQuotaDefaults'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/settings/user-quota-defaults': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: operations['AdminSettingsController_setUserQuotaDefaults'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/settings/federation-http': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: operations['AdminSettingsController_setFederationHttpLimits'];
     delete?: never;
     options?: never;
     head?: never;
@@ -2282,7 +2412,7 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  '/api/v1/admin/settings/vapid/generate': {
+  '/api/v1/admin/settings/keys': {
     parameters: {
       query?: never;
       header?: never;
@@ -2291,42 +2421,8 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Generate a fresh VAPID keypair server-side and persist it (privateKey never returned) */
-    post: operations['AdminSettingsController_generateVapid'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/settings/vapid/save': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Save (paste) a VAPID keypair — validates first, rejects malformed / mismatched pairs */
-    post: operations['AdminSettingsController_saveVapid'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/settings/vapid/clear': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Remove the VAPID keypair — disables Web Push */
-    post: operations['AdminSettingsController_clearVapid'];
+    /** Read-only status for every application-owned server key */
+    post: operations['AdminSettingsController_getKeys'];
     delete?: never;
     options?: never;
     head?: never;
@@ -2410,7 +2506,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** A peer trust-lifecycle event timeline (trust → demote → re-trust …) */
+    /** A peer trust-lifecycle event timeline (available → degraded → available …) */
     post: operations['AdminFederationController_peerEvents'];
     delete?: never;
     options?: never;
@@ -2427,7 +2523,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Preview the destructive scope of an identity-lost peer reset (read-only) */
+    /** Preview the destructive scope of an identity-mismatch halted peer reset (read-only) */
     post: operations['AdminFederationController_resetPreview'];
     delete?: never;
     options?: never;
@@ -2444,8 +2540,25 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Freeze an identity-lost domain and mark its related threads for resumable truncation */
+    /** Freeze an identity-mismatch halted domain and mark its related threads for resumable truncation */
     post: operations['AdminFederationController_resetPeer'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/federation/peers/{domain}/recover-identity': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Recover an identity-mismatch halted peer only when the original pinned identity is reachable again */
+    post: operations['AdminFederationController_recoverPeerIdentity'];
     delete?: never;
     options?: never;
     head?: never;
@@ -2786,6 +2899,23 @@ export interface paths {
     get: operations['MediaAssetGcController_inbox'];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/media/pending-federated-deletions': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** List federated deletion facts still awaiting their local message */
+    post: operations['MediaAssetGcController_pendingFederatedDeletions'];
     delete?: never;
     options?: never;
     head?: never;
@@ -3367,6 +3497,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/admin/rate-limits/fixed-window-configuration': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Replace fixed-window route-limit configuration */
+    post: operations['RateLimitMonitoringController_setFixedWindowConfiguration'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/rate-limits/configuration': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Replace authentication rate-limit configuration */
+    post: operations['RateLimitMonitoringController_setConfiguration'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/admin/message-reports': {
     parameters: {
       query?: never;
@@ -3434,7 +3598,7 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  '/s2s/v1/feed-revisions': {
+  '/s2s/v1/feed-heads': {
     parameters: {
       query?: never;
       header?: never;
@@ -3450,6 +3614,54 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/s2s/v1/discover': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: operations['S2sController_discover'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/s2s/v1/message-tombstone-feed': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations['S2sController_getMessageTombstones'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/s2s/v1/message-tombstones': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations['S2sController_queryMessageTombstones'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/s2s/v1/message-feed': {
     parameters: {
       query?: never;
@@ -3458,6 +3670,22 @@ export interface paths {
       cookie?: never;
     };
     get: operations['S2sController_getMissed'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/s2s/v1/messages': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations['S2sController_queryMessages'];
     put?: never;
     post?: never;
     delete?: never;
@@ -3546,7 +3774,7 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  '/s2s/v1/ignite': {
+  '/s2s/v1/recognize': {
     parameters: {
       query?: never;
       header?: never;
@@ -3555,23 +3783,23 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    post: operations['S2sIgniteController_postInit'];
+    post: operations['S2sRecognitionController_recognize'];
     delete?: never;
     options?: never;
     head?: never;
     patch?: never;
     trace?: never;
   };
-  '/s2s/v1/identity': {
+  '/s2s/v1/healthy': {
     parameters: {
       query?: never;
       header?: never;
       path?: never;
       cookie?: never;
     };
-    get: operations['S2sIgniteController_getIdentity'];
+    get?: never;
     put?: never;
-    post?: never;
+    post: operations['S2sRecognitionController_healthy'];
     delete?: never;
     options?: never;
     head?: never;
@@ -3847,6 +4075,18 @@ export interface components {
        * @example true
        */
       muted: boolean;
+    };
+    SetBlockedDto: {
+      /**
+       * @description Conversation (MessageThread) id
+       * @example 12
+       */
+      threadId: number;
+      /**
+       * @description true = block new messages, false = resume delivery
+       * @example true
+       */
+      blocked: boolean;
     };
     SetPinnedDto: {
       /**
@@ -4174,6 +4414,11 @@ export interface components {
        */
       description: string;
       /**
+       * @description Whether ordinary members may invite users to this group
+       * @example true
+       */
+      membersCanInvite: boolean;
+      /**
        * @description The group's home (origin) domain. Empty for a locally-originated group (this server is the origin); a peer domain for a federated mirror. Drives the federated-badge the way UserResponseDto.domain does for a P2P peer — empty self-hides the badge.
        * @example soms.io
        */
@@ -4253,7 +4498,7 @@ export interface components {
        */
       clearedSeq: number | null;
       /**
-       * @description Whether the caller has blocked the peer (P2P conversations only). Absent on GROUP. Drives the Block ↔ Unblock label + the blocked banner.
+       * @description Whether the caller blocks new messages from this conversation. Applies to P2P and GROUP.
        * @example false
        */
       blocked?: boolean;
@@ -4281,7 +4526,7 @@ export interface components {
     };
     RegisterDto: {
       /**
-       * @description Login unique name: 3-31 chars, letters + digits + dots, must start with a letter, case-insensitive
+       * @description Login unique name: 1-30 chars; starts alphanumeric; then letters, digits, dot, underscore or hyphen; case-insensitive
        * @example alice
        */
       account: string;
@@ -4454,10 +4699,15 @@ export interface components {
        * @example Frontend team sync
        */
       description?: string;
+      /**
+       * @description Whether ordinary members may invite users
+       * @example false
+       */
+      membersCanInvite?: boolean;
     };
     SendFriendInviteDto: {
       /**
-       * @description Target user id (local user OR federated stub id)
+       * @description Target local user id or existing federated stub id
        * @example 1
        */
       toUserId: number;
@@ -4467,12 +4717,34 @@ export interface components {
        */
       note?: string;
     };
-    InviteIdDto: {
+    SendFederatedFriendInviteDto: {
       /**
-       * @description Invite id (stringified BigInt)
-       * @example 123456789
+       * @description Federated target account. Used with domain instead of toUserId.
+       * @example alice
        */
-      inviteId: string;
+      account: string;
+      /**
+       * @description Federated target home domain. Used with account instead of toUserId.
+       * @example peer.example
+       */
+      domain: string;
+      /** @description Untrusted pending-card display snapshot. */
+      displayName?: string;
+      /** @description Untrusted pending-card avatar URL/data URL. */
+      avatar?: string;
+      /**
+       * @description Invite note (≤255 chars)
+       * @example Hi from the conference
+       */
+      note?: string;
+    };
+    FriendInviteActionDto: {
+      /** @description Local invite id */
+      inviteId?: string;
+      /** @description Federated peer account */
+      account?: string;
+      /** @description Federated peer domain */
+      domain?: string;
     };
     InviteUserDto: {
       id: number;
@@ -4534,6 +4806,13 @@ export interface components {
       /** @description The caller accepted a federated invite and is waiting for the origin server to confirm membership. */
       joinRequested: boolean;
       fromUser: components['schemas']['InviteUserDto'];
+    };
+    InviteIdDto: {
+      /**
+       * @description Invite id (stringified BigInt)
+       * @example 123456789
+       */
+      inviteId: string;
     };
     RegisterDeviceDto: {
       /**
@@ -4787,7 +5066,7 @@ export interface components {
     };
     AdminCreateUserDto: {
       /**
-       * @description Login unique name: 3-31 chars, letters + digits + dots, start with a letter, case-insensitive
+       * @description Login unique name: 1-30 chars; starts alphanumeric; then letters, digits, dot, underscore or hyphen; case-insensitive
        * @example alice
        */
       account: string;
@@ -4904,6 +5183,49 @@ export interface components {
        */
       ip?: string;
     };
+    FederationTransportDto: {
+      /** @example 21600 */
+      keyCacheTtlSec: number;
+      /** @example 12 */
+      connectTimeoutSec: number;
+      /** @example 12 */
+      callTimeoutSec: number;
+      /** @example 8388608 */
+      mediaChunkBytes: number;
+      /** @example 120 */
+      mediaChunkTimeoutSec: number;
+      /** @example 5 */
+      mediaMaxChunkRetries: number;
+    };
+    AdminSessionPolicyDto: {
+      /** @example 12 */
+      ttlHours: number;
+      /**
+       * @description 0 disables idle expiry; otherwise 15-480 minutes.
+       * @example 60
+       */
+      idleMinutes: number;
+    };
+    FederationQuotaDefaultsDto: {
+      dailyMsgLimit: number;
+      dailyRequestLimit: number;
+      dailySignalLimit: number;
+      dailyFileLimit: number;
+      dailyFileBytesLimit: number;
+    };
+    UserQuotaDefaultsDto: {
+      dailyMsgLimit: number;
+      dailyRequestLimit: number;
+      dailyFileLimit: number;
+      /** @example 1073741824 */
+      dailyFileBytesLimit: string;
+    };
+    FederationHttpLimitsDto: {
+      /** @example 16 */
+      global: number;
+      /** @example 8 */
+      perPeer: number;
+    };
     FederationDownloadLimitsDto: {
       /** @example 10 */
       global: number;
@@ -4914,24 +5236,6 @@ export interface components {
        * @example false
        */
       chunkDigestEnabled: boolean;
-    };
-    GenerateVapidDto: {
-      /**
-       * @description Contact URL (mailto: or https:); optional — defaults to mailto:noreply@soms.local
-       * @example mailto:admin@example.com
-       */
-      subject?: string;
-    };
-    SaveVapidDto: {
-      /**
-       * @description Contact URL (mailto: or https:)
-       * @example mailto:admin@example.com
-       */
-      subject: string;
-      /** @description Base64url uncompressed P-256 public key (65 bytes, leading 0x04) */
-      publicKey: string;
-      /** @description Base64url P-256 private key scalar (32 bytes) */
-      privateKey: string;
     };
     OtpTtlDto: {
       /**
@@ -4957,8 +5261,8 @@ export interface components {
        */
       search?: string;
       /**
-       * @description Filter by trust level: pending | trusted | demoted | blocked (optional)
-       * @example trusted
+       * @description Filter by lifecycle: unrecognized | establishing | available | degraded | halted
+       * @example available
        */
       status?: string;
     };
@@ -4972,6 +5276,13 @@ export interface components {
     AdminFederationResetDto: {
       /**
        * @description Type the federation domain again to confirm reset
+       * @example peer.example
+       */
+      confirmDomain: string;
+    };
+    AdminFederationIdentityRecoverDto: {
+      /**
+       * @description Type the federation domain again; recovery succeeds only if the original pinned identity is reachable
        * @example peer.example
        */
       confirmDomain: string;
@@ -5011,6 +5322,12 @@ export interface components {
        * @example 1073741824
        */
       addFileBytes?: number;
+    };
+    AdminListPendingFederatedDeletionsDto: {
+      /** @default 0 */
+      skip: Record<string, never>;
+      /** @default 20 */
+      take: Record<string, never>;
     };
     AdminAuditQueryDto: {
       /** @default 0 */
@@ -5493,6 +5810,27 @@ export interface operations {
     requestBody: {
       content: {
         'application/json': components['schemas']['SetMutedDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  MessageController_setBlocked: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SetBlockedDto'];
       };
     };
     responses: {
@@ -6023,6 +6361,28 @@ export interface operations {
       };
     };
   };
+  UserController_resolveFederatedUserStream: {
+    parameters: {
+      query: {
+        /** @description Account (a local account, or the peer user's account) */
+        account: string;
+        /** @description Peer domain. Omitted/empty = local lookup. */
+        domain?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
   UserController_searchUsers: {
     parameters: {
       query?: never;
@@ -6346,6 +6706,27 @@ export interface operations {
       };
     };
   };
+  InviteController_sendFederatedFriendInvite: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SendFederatedFriendInviteDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
   InviteController_acceptInvite: {
     parameters: {
       query?: never;
@@ -6355,7 +6736,7 @@ export interface operations {
     };
     requestBody: {
       content: {
-        'application/json': components['schemas']['InviteIdDto'];
+        'application/json': components['schemas']['FriendInviteActionDto'];
       };
     };
     responses: {
@@ -6376,7 +6757,7 @@ export interface operations {
     };
     requestBody: {
       content: {
-        'application/json': components['schemas']['InviteIdDto'];
+        'application/json': components['schemas']['FriendInviteActionDto'];
       };
     };
     responses: {
@@ -6397,7 +6778,7 @@ export interface operations {
     };
     requestBody: {
       content: {
-        'application/json': components['schemas']['InviteIdDto'];
+        'application/json': components['schemas']['FriendInviteActionDto'];
       };
     };
     responses: {
@@ -7948,7 +8329,7 @@ export interface operations {
       };
     };
   };
-  AdminSettingsController_getNotifications: {
+  AdminSettingsController_getSettings: {
     parameters: {
       query?: never;
       header?: never;
@@ -7956,6 +8337,111 @@ export interface operations {
       cookie?: never;
     };
     requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  AdminSettingsController_setFederationTransport: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['FederationTransportDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  AdminSettingsController_setAdminSessionPolicy: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['AdminSessionPolicyDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  AdminSettingsController_setFederationQuotaDefaults: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['FederationQuotaDefaultsDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  AdminSettingsController_setUserQuotaDefaults: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['UserQuotaDefaultsDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  AdminSettingsController_setFederationHttpLimits: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['FederationHttpLimitsDto'];
+      };
+    };
     responses: {
       200: {
         headers: {
@@ -7986,49 +8472,7 @@ export interface operations {
       };
     };
   };
-  AdminSettingsController_generateVapid: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['GenerateVapidDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminSettingsController_saveVapid: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['SaveVapidDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  AdminSettingsController_clearVapid: {
+  AdminSettingsController_getKeys: {
     parameters: {
       query?: never;
       header?: never;
@@ -8177,6 +8621,29 @@ export interface operations {
     requestBody: {
       content: {
         'application/json': components['schemas']['AdminFederationResetDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  AdminFederationController_recoverPeerIdentity: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        domain: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['AdminFederationIdentityRecoverDto'];
       };
     };
     responses: {
@@ -8557,6 +9024,27 @@ export interface operations {
       cookie?: never;
     };
     requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  MediaAssetGcController_pendingFederatedDeletions: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['AdminListPendingFederatedDeletionsDto'];
+      };
+    };
     responses: {
       200: {
         headers: {
@@ -9232,6 +9720,40 @@ export interface operations {
       };
     };
   };
+  RateLimitMonitoringController_setFixedWindowConfiguration: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  RateLimitMonitoringController_setConfiguration: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
   MessageReportAdminController_list: {
     parameters: {
       query?: never;
@@ -9317,7 +9839,71 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      202: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  S2sController_discover: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  S2sController_getMessageTombstones: {
+    parameters: {
+      query: {
+        after: string;
+        take: string;
+        through: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  S2sController_queryMessageTombstones: {
+    parameters: {
+      query: {
+        type: string;
+        account: string;
+        peerAccount: string;
+        groupAccount: string;
+        groupDomain: string;
+        after: string;
+        take: string;
+        through: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
         headers: {
           [name: string]: unknown;
         };
@@ -9330,6 +9916,34 @@ export interface operations {
       query: {
         after: string;
         take: string;
+        through: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  S2sController_queryMessages: {
+    parameters: {
+      query: {
+        type: string;
+        account: string;
+        peerAccount: string;
+        groupAccount: string;
+        groupDomain: string;
+        after: string;
+        take: string;
+        through: string;
+        includeSelf: string;
       };
       header?: never;
       path?: never;
@@ -9350,6 +9964,7 @@ export interface operations {
       query: {
         after: string;
         take: string;
+        through: string;
       };
       header?: never;
       path?: never;
@@ -9374,7 +9989,7 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      202: {
+      200: {
         headers: {
           [name: string]: unknown;
         };
@@ -9386,9 +10001,7 @@ export interface operations {
     parameters: {
       query?: never;
       header?: never;
-      path: {
-        account: string;
-      };
+      path?: never;
       cookie?: never;
     };
     requestBody?: never;
@@ -9403,17 +10016,9 @@ export interface operations {
   };
   S2sController_getFile: {
     parameters: {
-      query: {
-        fromAccount: string;
-        fromDomain: string;
-        toAccount: string;
-        seq: string;
-        bundleId: string;
-      };
+      query?: never;
       header?: never;
-      path: {
-        digest: string;
-      };
+      path?: never;
       cookie?: never;
     };
     requestBody?: never;
@@ -9430,9 +10035,7 @@ export interface operations {
     parameters: {
       query?: never;
       header?: never;
-      path: {
-        bundleId: string;
-      };
+      path?: never;
       cookie?: never;
     };
     requestBody?: never;
@@ -9445,7 +10048,7 @@ export interface operations {
       };
     };
   };
-  S2sIgniteController_postInit: {
+  S2sRecognitionController_recognize: {
     parameters: {
       query?: never;
       header?: never;
@@ -9454,7 +10057,7 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      202: {
+      200: {
         headers: {
           [name: string]: unknown;
         };
@@ -9462,11 +10065,9 @@ export interface operations {
       };
     };
   };
-  S2sIgniteController_getIdentity: {
+  S2sRecognitionController_healthy: {
     parameters: {
-      query: {
-        nonce: string;
-      };
+      query?: never;
       header?: never;
       path?: never;
       cookie?: never;

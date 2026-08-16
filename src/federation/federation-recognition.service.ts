@@ -13,6 +13,7 @@ import { DiscoveryService, type WellKnownDoc } from './discovery.service.js';
 import { loadFederationConfig } from './federation.config.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
 import { SignatureService } from './signature.service.js';
+import { FederationTransportConfigService } from './federation-transport-config.service.js';
 
 export type FederationHealthStatus = 'available' | 'degraded' | 'unavailable';
 const FEDERATION_EXTENSION_ID =
@@ -42,6 +43,7 @@ export class FederationRecognitionService {
     private readonly signature: SignatureService,
     private readonly cursor: FederationCursorService,
     private readonly stateFeed: PeerStateFeedService,
+    private readonly transportConfig: FederationTransportConfigService,
   ) {}
 
   async recognize(peerDomain: string): Promise<void> {
@@ -138,7 +140,7 @@ export class FederationRecognitionService {
           method: 'POST',
           headers: { 'content-type': 'application/json', ...headers },
           body,
-          signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
+          signal: AbortSignal.timeout(this.transportConfig.get().callTimeoutSec * 1000),
         });
       } catch (error) {
         await this.markTransportDegraded(
@@ -455,7 +457,7 @@ export class FederationRecognitionService {
           method: 'POST',
           headers: { 'content-type': 'application/json', ...headers },
           body,
-          signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
+          signal: AbortSignal.timeout(this.transportConfig.get().callTimeoutSec * 1000),
         });
       } catch (error) {
         await this.markTransportDegraded(
@@ -526,7 +528,8 @@ export class FederationRecognitionService {
   }
 
   private async awaitBidirectionalConvergence(domain: string): Promise<void> {
-    const deadline = Date.now() + this.config.callTimeoutSec * 1000;
+    const deadline =
+      Date.now() + this.transportConfig.get().callTimeoutSec * 1000;
     let lastStatus: FederationHealthStatus = 'unavailable';
     while (Date.now() < deadline) {
       const peer = await this.database.db.query.federatedPeer.findFirst({

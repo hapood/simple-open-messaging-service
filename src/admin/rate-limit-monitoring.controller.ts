@@ -18,6 +18,7 @@ import { AdminRolesGuard } from './admin-roles.guard.js';
 import { Roles } from './admin-roles.decorator.js';
 import { Audit } from './audit.decorator.js';
 import { AdminRole } from '../database/enums.js';
+import { FixedWindowPolicyService } from '../rate-limit/fixed-window-policy.service.js';
 
 @ApiTags('admin')
 @ApiBearerAuth()
@@ -28,6 +29,7 @@ export class RateLimitMonitoringController {
   constructor(
     private readonly rateLimits: RateLimitService,
     private readonly modes: RateLimitModeService,
+    private readonly fixedWindows: FixedWindowPolicyService,
   ) {}
 
   @Post()
@@ -43,6 +45,7 @@ export class RateLimitMonitoringController {
       generatedAt: now,
       intervalSeconds: 300,
       retentionIntervals: 288,
+      fixedWindowPolicies: this.fixedWindows.list(),
       policies: this.modes.monitoringConfig().map((config) => {
         const samples = intervals.flatMap((interval) =>
           interval.policies
@@ -75,6 +78,22 @@ export class RateLimitMonitoringController {
         };
       }),
     };
+  }
+
+  @Post('fixed-window-configuration')
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
+  @Audit('settings.rate-limits.fixed-window.save')
+  @ApiOperation({ summary: 'Replace fixed-window route-limit configuration' })
+  async setFixedWindowConfiguration(@Body() body: unknown) {
+    try {
+      return await this.fixedWindows.set(body);
+    } catch (error) {
+      if (error instanceof Error && error.message !== 'database is unavailable') {
+        throw new BadRequestException(error.message);
+      }
+      throw error;
+    }
   }
 
   @Post('configuration')

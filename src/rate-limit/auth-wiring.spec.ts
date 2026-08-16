@@ -61,10 +61,9 @@ describe('authentication policy wiring', () => {
     },
   );
 
-  it('retains legacy throttling on authentication routes not yet migrated', () => {
-    expect(legacyThrottle(AuthController.prototype, 'logout')).toEqual({
-      limit: 30,
-      ttlSec: 60,
-    });
+  it('keeps non-login authentication routes on named fixed-window policies', () => {
+    expect(legacyThrottle(AuthController.prototype, 'logout')).toBe(
+      'auth.logout',
+    );
   });
 });

@@ -8,8 +8,9 @@ import {
   type RateLimitMode,
   type RateLimitPolicyConfiguration,
   type RateLimitPolicyView,
+  saveFixedWindowConfiguration,
+  type FixedWindowPolicy,
 } from '@/api/rate-limits';
-import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -30,12 +31,6 @@ import {
 } from '@/components/ui/table';
 import { formatApiError } from '@/lib/format-error';
 import { toast } from 'sonner';
-
-const MODE_VARIANT = {
-  disabled: 'destructive',
-  shadow: 'secondary',
-  enforce: 'default',
-} as const;
 
 const ADVICE_KEYS = {
   disabled: 'rateLimits.advice.disabled',
@@ -74,7 +69,17 @@ export function RateLimitsPage() {
   const save = useMutation({
     mutationFn: saveRateLimitConfiguration,
     onSuccess: () => {
-      toast.success('Rate-limit configuration saved');
+      toast.success(t('rateLimits.saved'));
+      void queryClient.invalidateQueries({
+        queryKey: ['admin', 'rate-limits'],
+      });
+    },
+    onError: (error) => toast.error(formatApiError(error)),
+  });
+  const saveFixedWindows = useMutation({
+    mutationFn: saveFixedWindowConfiguration,
+    onSuccess: () => {
+      toast.success(t('rateLimits.fixedWindow.saved'));
       void queryClient.invalidateQueries({
         queryKey: ['admin', 'rate-limits'],
       });
@@ -123,11 +128,116 @@ export function RateLimitsPage() {
             policy={policy}
             saving={save.isPending}
             onSave={savePolicy}
-            t={t}
           />
         ))}
       </div>
+      {data?.fixedWindowPolicies ? (
+        <FixedWindowPolicies
+          policies={data.fixedWindowPolicies}
+          saving={saveFixedWindows.isPending}
+          onSave={(policies) => saveFixedWindows.mutate(policies)}
+        />
+      ) : null}
     </div>
+  );
+}
+
+function FixedWindowPolicies({
+  policies,
+  saving,
+  onSave,
+}: {
+  policies: FixedWindowPolicy[];
+  saving: boolean;
+  onSave: (policies: FixedWindowPolicy[]) => void;
+}) {
+  const { t } = useTranslation();
+  const [draft, setDraft] = useState(policies);
+  useEffect(() => setDraft(policies), [policies]);
+  const invalid = draft.some(
+    ({ limit, windowSeconds }) =>
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 100_000 ||
+      !Number.isInteger(windowSeconds) ||
+      windowSeconds < 1 ||
+      windowSeconds > 86_400,
+  );
+  const update = (
+    index: number,
+    field: 'limit' | 'windowSeconds',
+    value: number,
+  ) =>
+    setDraft((current) =>
+      current.map((policy, itemIndex) =>
+        itemIndex === index ? { ...policy, [field]: value } : policy,
+      ),
+    );
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{t('rateLimits.fixedWindow.title')}</CardTitle>
+        <p className="text-sm text-muted-foreground">
+          {t('rateLimits.fixedWindow.desc')}
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="max-h-[36rem] overflow-auto rounded-md border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t('rateLimits.fixedWindow.policy')}</TableHead>
+                <TableHead>{t('rateLimits.fixedWindow.limit')}</TableHead>
+                <TableHead>{t('rateLimits.fixedWindow.window')}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {draft.map((policy, index) => (
+                <TableRow key={policy.policy}>
+                  <TableCell className="font-mono text-xs">
+                    {policy.policy}
+                  </TableCell>
+                  <TableCell>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={100_000}
+                      value={policy.limit}
+                      onChange={(event) =>
+                        update(index, 'limit', Number(event.target.value))
+                      }
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={86_400}
+                      value={policy.windowSeconds}
+                      onChange={(event) =>
+                        update(
+                          index,
+                          'windowSeconds',
+                          Number(event.target.value),
+                        )
+                      }
+                    />
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+        <Button
+          size="sm"
+          disabled={saving || invalid}
+          onClick={() => onSave(draft)}
+        >
+          {t('rateLimits.fixedWindow.save')}
+        </Button>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -135,13 +245,12 @@ function PolicyCard({
   policy,
   saving,
   onSave,
-  t,
 }: {
   policy: RateLimitPolicyView;
   saving: boolean;
   onSave: (policy: RateLimitPolicyConfiguration) => void;
-  t: ReturnType<typeof useTranslation>['t'];
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState<RateLimitPolicyConfiguration>({
     policy: policy.policy,
     mode: policy.mode,
@@ -169,9 +278,13 @@ function PolicyCard({
           <CardTitle className="font-mono text-base">{policy.policy}</CardTitle>
           <Select
             value={draft.mode}
-            onValueChange={(mode: RateLimitMode) =>
-              setDraft((value) => ({ ...value, mode }))
-            }
+            onValueChange={(mode) => {
+              if (mode)
+                setDraft((value) => ({
+                  ...value,
+                  mode: mode as RateLimitMode,
+                }));
+            }}
           >
             <SelectTrigger className="w-32">
               <SelectValue />
@@ -200,7 +313,7 @@ function PolicyCard({
           />
           <Metric label={t('rateLimits.hitRatio')} value={ratio(policy)} />
         </div>
-        <Trend policy={policy} label={t('rateLimits.recentTrend')} />
+        <Trend policy={policy} label={String(t('rateLimits.recentTrend'))} />
         <div className="overflow-x-auto rounded-md border">
           <Table>
             <TableHeader>
@@ -215,7 +328,7 @@ function PolicyCard({
                 <TableRow key={bucket.name}>
                   <TableCell className="font-mono text-xs">
                     {bucket.name}
-                    {bucket.enforce ? '' : ' (observe)'}
+                    {bucket.enforce ? '' : ` (${t('rateLimits.observe')})`}
                   </TableCell>
                   <TableCell>
                     <Input
@@ -281,7 +394,7 @@ function PolicyCard({
           disabled={saving || invalid}
           onClick={() => onSave(draft)}
         >
-          Save policy
+          {t('rateLimits.save')}
         </Button>
       </CardContent>
     </Card>

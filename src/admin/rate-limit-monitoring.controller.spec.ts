@@ -32,6 +32,7 @@ describe('RateLimitMonitoringController', () => {
     const result = new RateLimitMonitoringController(
       service,
       modes,
+      { list: () => [] } as never,
     ).getSnapshot();
 
     expect(result.policies[0]).toMatchObject({

@@ -63,7 +63,8 @@ console remain fully self-hostable.
 - Direct and group conversations with message history, search, replies, mentions, link
   previews, unread state, mute, pin, and history clearing
 - Images, video, audio, files, avatars, and access-controlled media storage
-- Password, OTP, and QR sign-in with per-device sessions, trusted devices, and remote revocation
+- OTP and QR sign-in with per-device sessions, trusted devices, and remote revocation; registration
+  and password sign-in are temporarily hidden in the client UI
 - Real-time delivery over SSE, Web Push and FCM notifications, plus missed-message summaries
 - One-to-one audio/video calls with WebRTC signaling and optional TURN credentials
 - Administration console with RBAC, audit logs, quotas, diagnostics, federation controls, 2FA, and
@@ -89,8 +90,8 @@ calls.
 
 | Platform  | Status            | Distribution                                                                                    |
 | --------- | ----------------- | ----------------------------------------------------------------------------------------------- |
-| Web / PWA | **First release** | Runs in modern desktop and mobile browsers                                                      |
-| Android   | **First release** | Tauri application with native calling and FCM integration                                       |
+| Web / PWA | **Released**      | Runs in modern desktop and mobile browsers                                                      |
+| Android   | **Released**      | Tauri application with native calling and FCM integration                                       |
 | Windows   | Planned           | Tauri desktop application                                                                       |
 | macOS     | Planned           | Tauri desktop application                                                                       |
 | Linux     | Planned           | Tauri desktop application                                                                       |

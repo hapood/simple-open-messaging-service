@@ -39,6 +39,7 @@ function service() {
     {
       acquire: async () => () => undefined,
     } as never,
+    { get: () => ({ keyCacheTtlSec: 21_600 }) } as never,
   );
 }
 

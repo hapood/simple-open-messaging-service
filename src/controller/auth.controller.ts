@@ -127,7 +127,7 @@ export class AuthController {
   }
 
   @Public()
-  @Throttle(30, 60)
+  @Throttle('auth.logout')
   @HttpCode(HttpStatus.OK)
   @Post('auth/logout')
   @ApiOperation({ summary: 'Logout (revoke the presented session token)' })
@@ -169,7 +169,7 @@ export class AuthController {
   }
 
   @ApiBearerAuth()
-  @Throttle(10, 60)
+  @Throttle('auth.change-password')
   @HttpCode(HttpStatus.OK)
   @Post('auth/change-password')
   @ApiOperation({
@@ -199,7 +199,7 @@ export class AuthController {
 
   @ApiBearerAuth()
   @MustChangePasswordEscapeHatch()
-  @Throttle(10, 60)
+  @Throttle('auth.set-password')
   @HttpCode(HttpStatus.OK)
   @Post('auth/set-password')
   @ApiOperation({

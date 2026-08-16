@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import { ed25519 } from '@noble/curves/ed25519.js';
+import { sql } from 'drizzle-orm';
 import {
   bootFederationPair,
   truncateFederationDbs,
@@ -193,15 +194,32 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   }
 
   beforeAll(async () => {
-    // Force tiny media chunks so a modest fixture file spans multiple Range requests — exercises the
-    // resumable multi-chunk transport without allocating a multi-MB blob. Set BEFORE boot so the config
-    // (loaded at FederationService field-init in each subprocess) picks it up.
-    process.env.SOMS_MEDIA_CHUNK_BYTES = '64';
     // Boot appA (aaa.local) + appB (bbb.local) in SEPARATE processes on SEPARATE databases. Each app is
     // its own Node process (isolated global state — Passport's `local` strategy etc. are per-app, not
     // cross-app leaks) + its own DB (a group's groupUser.account is @unique per DB). A transparent S2S proxy
     // sits on appB→appA (for the resume test's fault injection). bootFederationPair asserts the DBs differ.
     ({ appA, appB, proxy } = await bootFederationPair());
+    // Persist a small, valid range size so the fixture crosses multiple requests. Restarting verifies
+    // that subprocesses load runtime policy from their own database rather than process env.
+    const transport = JSON.stringify({
+      keyCacheTtlSec: 21_600,
+      connectTimeoutSec: 12,
+      callTimeoutSec: 12,
+      mediaChunkBytes: 262_144,
+      mediaChunkTimeoutSec: 120,
+      mediaMaxChunkRetries: 5,
+    });
+    await Promise.all(
+      [appA, appB].map((app) =>
+        app.database.execute(sql`
+          INSERT INTO "SystemSetting" ("key", "value", "updatedAt")
+          VALUES ('federation:transport', ${transport}, NOW())
+          ON CONFLICT ("key") DO UPDATE
+          SET "value" = EXCLUDED."value", "updatedAt" = EXCLUDED."updatedAt"
+        `),
+      ),
+    );
+    await Promise.all([appA.restart(), appB.restart()]);
     await truncateFederationDbs(appA, appB);
 
     // Seed alice @ appA + bob @ appB via the real register+login HTTP path (Passport's `local` strategy is
@@ -697,13 +715,12 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   });
 
   it('Step 2: a federated file localizes over multiple Range chunks (resumable transport)', async () => {
-    // A 48x48 PNG spans several 64-byte chunks (chunk size forced small in beforeAll). The file can ONLY
+    // A noisy PNG spans multiple configured chunks. The file can ONLY
     // localize if appB fetches /media/:digest as signed Range GETs + reassembles them — so a
     // byte-exact result here PROVES the multi-chunk path.
     proxy.clearRequestLog();
     const { url, size, digest } = await sendFederatedImage(
-      await makePng(77, 48),
-      48,
+      await makePng(77, 512, true),
     );
 
     // appB (its own DB) has never seen this asset → localizeMedia fetches it over /media/:digest + writes a

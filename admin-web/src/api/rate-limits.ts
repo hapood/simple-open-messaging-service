@@ -41,6 +41,13 @@ export interface RateLimitMonitoring {
   intervalSeconds: number;
   retentionIntervals: number;
   policies: RateLimitPolicyView[];
+  fixedWindowPolicies: FixedWindowPolicy[];
+}
+
+export interface FixedWindowPolicy {
+  policy: string;
+  limit: number;
+  windowSeconds: number;
 }
 
 export function getRateLimitMonitoring(): Promise<RateLimitMonitoring> {
@@ -57,6 +64,15 @@ export function saveRateLimitConfiguration(
 ): Promise<RateLimitPolicyConfiguration[]> {
   return request<RateLimitPolicyConfiguration[]>(
     '/admin/rate-limits/configuration',
+    policies,
+  );
+}
+
+export function saveFixedWindowConfiguration(
+  policies: FixedWindowPolicy[],
+): Promise<FixedWindowPolicy[]> {
+  return request<FixedWindowPolicy[]>(
+    '/admin/rate-limits/fixed-window-configuration',
     policies,
   );
 }

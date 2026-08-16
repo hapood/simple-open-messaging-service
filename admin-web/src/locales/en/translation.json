@@ -884,7 +884,51 @@
   },
   "settings": {
     "title": "Settings",
-    "desc": "Operator-managed runtime configuration (server identity, one-time-code validity).",
+    "desc": "Operator-managed runtime configuration and deployment-owned server identity.",
+    "sections": {
+      "identity": "Server identity",
+      "identityDesc": "Deployment-owned identity and public addressing.",
+      "transport": "Federation transport",
+      "transportDesc": "Runtime concurrency and media-transfer controls.",
+      "quotas": "Default quotas",
+      "quotasDesc": "Baselines used when no account or peer override is configured.",
+      "security": "Security",
+      "securityDesc": "Authentication lifetimes and one-time credentials."
+    },
+    "transport": {
+      "title": "Federation request and media policy",
+      "desc": "Timeouts, peer-key cache lifetime, media range size, and retry limit. Changes apply immediately.",
+      "keyCacheTtl": "Key cache TTL (s)",
+      "connectTimeout": "Connect timeout (s)",
+      "callTimeout": "Call timeout (s)",
+      "mediaChunkBytes": "Media chunk bytes",
+      "mediaChunkTimeout": "Chunk timeout (s)",
+      "mediaChunkRetries": "Chunk retries",
+      "save": "Save transport policy",
+      "saved": "Federation transport settings saved"
+    },
+    "quotas": {
+      "userTitle": "Default local-user quotas",
+      "userDesc": "Daily defaults for local accounts. Per-user overrides continue to take precedence.",
+      "federationTitle": "Default federation quotas",
+      "federationDesc": "Daily defaults shared by peers without a custom override. Signal frames are global-only.",
+      "messages": "Messages",
+      "requests": "Requests",
+      "signals": "Signals",
+      "files": "Files",
+      "fileBytes": "File bytes",
+      "save": "Save defaults",
+      "userSaved": "Default user quotas saved",
+      "federationSaved": "Default federation quotas saved"
+    },
+    "sessions": {
+      "title": "Admin sessions",
+      "desc": "Existing sessions retain their absolute expiry; idle-timeout changes apply immediately.",
+      "lifetime": "Lifetime (hours)",
+      "idle": "Idle timeout (minutes; 0 disables)",
+      "save": "Save session policy",
+      "saved": "Admin session policy saved"
+    },
     "identity": {
       "title": "Server identity",
       "desc": "This server's public domain — the federation identity (@user@domain).",
@@ -1044,6 +1088,18 @@
   "rateLimits": {
     "title": "Authentication rate limits",
     "desc": "Read-only aggregate metrics and conservative tuning hints for the last 24 hours; process restarts clear page history.",
+    "saved": "Rate-limit configuration saved",
+    "save": "Save policy",
+    "observe": "observe",
+    "fixedWindow": {
+      "title": "Fixed-window route policies",
+      "desc": "Exact request ceilings for high-frequency and abuse-sensitive routes. Changes apply immediately without changing the fixed-window algorithm.",
+      "policy": "Policy",
+      "limit": "Request limit",
+      "window": "Window (seconds)",
+      "save": "Save fixed-window policies",
+      "saved": "Fixed-window configuration saved"
+    },
     "evaluated": "Requests",
     "wouldBlock": "Would block",
     "blocked": "Blocked",

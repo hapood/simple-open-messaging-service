@@ -22,7 +22,7 @@ import { ShellCompatDto, ShellWebManifestDto } from './shell.dto.js';
  * surface (anyone can pull the bundle repeatedly). `ThrottleGuard` is applied at the class level (its
  * deps — `KvStoreService` is `@Global`, `Reflector` is core — are resolvable from `AppModule` exactly
  * as they are for `MessageController`'s existing `@UseGuards(ThrottleGuard)`), and each method carries
- * its own `@Throttle(limit, 60s)` ceiling. The guard keys on `req.ip`+`req.url`; on exceed it throws
+ * its own named fixed-window policy. The guard keys on policy + client IP + route; on exceed it throws
  * `HttpException(429)` → `AllExceptionsFilter` → HTTP 429 + `RATE_LIMITED(10005)`.
  */
 @ApiTags('shell')
@@ -33,7 +33,7 @@ export class ShellController {
   constructor(private readonly shell: ShellService) {}
 
   @Get('compat')
-  @Throttle(30, 60) // tiny JSON; 30/min/IP covers wizard back-and-forth + multiple devices behind a NAT
+  @Throttle('shell.compat')
   @ApiOperation({
     summary:
       'Reports this server version AND the public login policy (registrationOpen + loginMode). The shell owns compatibility (a hard-coded backend-version upper bound) and decides itself; the server sets no shell floor. The login policy is folded in so the shell gets it in the same round-trip (mirrors GET /api/v1/config).',
@@ -43,7 +43,7 @@ export class ShellController {
   }
 
   @Get('web-manifest')
-  @Throttle(30, 60) // tiny JSON; 30/min/IP
+  @Throttle('shell.manifest')
   @ApiOperation({
     summary:
       'The current web-bundle descriptor (version + sha256). The shell recomputes the downloaded bytes sha256 and refuses to install on mismatch.',
@@ -54,7 +54,7 @@ export class ShellController {
 
   @Raw()
   @Get('web-bundle')
-  @Throttle(10, 60) // the MB-scale download: 10/min/IP is the bandwidth-amplification ceiling
+  @Throttle('shell.bundle')
   @ApiOperation({
     summary:
       'Streamed application/gzip tarball of the web SPA browser build. NOT enveloped in ApiResult (raw bytes).',

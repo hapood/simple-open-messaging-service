@@ -1,13 +1,12 @@
 import { request } from '@/api/client';
 import type {
-  NotificationSettings,
+  AdminSettings,
   ServerKeyStatus,
   VapidHealthReport,
 } from '@/types/api';
 
-/** Notification transport config — VAPID status (subject + publicKey, never privateKey), FCM status, server domain. */
-export function getNotificationSettings(): Promise<NotificationSettings> {
-  return request<NotificationSettings>('/admin/settings/notifications');
+export function getAdminSettings(): Promise<AdminSettings> {
+  return request<AdminSettings>('/admin/settings');
 }
 
 export function getServerKeys(): Promise<ServerKeyStatus[]> {
@@ -46,20 +45,38 @@ export function setFederationHttpLimits(global: number, perPeer: number) {
   );
 }
 
-export function setUserQuotaDefaults(
-  value: NotificationSettings['userQuotaDefaults'],
+export function setFederationTransport(
+  value: AdminSettings['federationTransport'],
 ) {
-  return request<NotificationSettings['userQuotaDefaults']>(
+  return request<AdminSettings['federationTransport']>(
+    '/admin/settings/federation-transport',
+    value,
+  );
+}
+
+export function setUserQuotaDefaults(
+  value: AdminSettings['userQuotaDefaults'],
+) {
+  return request<AdminSettings['userQuotaDefaults']>(
     '/admin/settings/user-quota-defaults',
     value,
   );
 }
 
 export function setFederationQuotaDefaults(
-  value: NotificationSettings['federationQuotaDefaults'],
+  value: AdminSettings['federationQuotaDefaults'],
 ) {
-  return request<NotificationSettings['federationQuotaDefaults']>(
+  return request<AdminSettings['federationQuotaDefaults']>(
     '/admin/settings/federation-quota-defaults',
+    value,
+  );
+}
+
+export function setAdminSessionPolicy(
+  value: AdminSettings['adminSessionPolicy'],
+) {
+  return request<AdminSettings['adminSessionPolicy']>(
+    '/admin/settings/admin-session-policy',
     value,
   );
 }

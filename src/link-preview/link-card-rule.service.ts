@@ -1,13 +1,9 @@
 import {
   ConflictException,
   Injectable,
-  Logger,
   NotFoundException,
-  OnApplicationBootstrap,
 } from '@nestjs/common';
 import { asc, eq, inArray } from 'drizzle-orm';
-import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
 import { DatabaseService } from '../database/database.service.js';
 import { linkCardRule } from '../database/schema.js';
 
@@ -32,37 +28,8 @@ export interface LinkCardRuleInput {
 }
 
 @Injectable()
-export class LinkCardRuleService implements OnApplicationBootstrap {
-  private readonly logger = new Logger(LinkCardRuleService.name);
-
+export class LinkCardRuleService {
   constructor(private readonly database: DatabaseService) {}
-
-  async onApplicationBootstrap(): Promise<void> {
-    const path = resolve(
-      process.env.LINK_CARD_RULES_FILE ?? 'config/link-card-rules.json',
-    );
-    try {
-      const parsed = JSON.parse(await readFile(path, 'utf8')) as unknown;
-      if (!Array.isArray(parsed)) throw new Error('root must be an array');
-      let inserted = 0;
-      for (const item of parsed) {
-        const input = parseConfigRule(item);
-        const rows = await this.database.db
-          .insert(linkCardRule)
-          .values(input)
-          .onConflictDoNothing({ target: linkCardRule.hostname })
-          .returning({ id: linkCardRule.id });
-        inserted += rows.length;
-      }
-      this.logger.log(
-        `link-card defaults loaded (${inserted} inserted, ${parsed.length - inserted} already present)`,
-      );
-    } catch (error) {
-      this.logger.warn(
-        `link-card defaults not loaded from ${path}: ${(error as Error).message}`,
-      );
-    }
-  }
 
   list(): Promise<ClientLinkCardRule[]> {
     return this.database.db
@@ -178,27 +145,6 @@ function normalizeInput(input: LinkCardRuleInput): LinkCardRuleInput {
     imageSelection: input.imageSelection ?? 'first',
     descriptionSelection: input.descriptionSelection ?? 'first',
   };
-}
-
-function parseConfigRule(value: unknown): LinkCardRuleInput {
-  if (!value || typeof value !== 'object') throw new Error('invalid rule');
-  const item = value as Record<string, unknown>;
-  if (typeof item.hostname !== 'string') {
-    throw new Error('each rule needs hostname');
-  }
-  return normalizeInput({
-    hostname: item.hostname,
-    note: typeof item.note === 'string' ? item.note : undefined,
-    imageSelection:
-      item.imageSelection === 'last' || item.imageSelection === 'first'
-        ? item.imageSelection
-        : undefined,
-    descriptionSelection:
-      item.descriptionSelection === 'last' ||
-      item.descriptionSelection === 'first'
-        ? item.descriptionSelection
-        : undefined,
-  });
 }
 
 function isUniqueViolation(error: unknown): boolean {

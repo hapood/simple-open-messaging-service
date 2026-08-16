@@ -3,12 +3,14 @@ import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { Clock, Download, Gauge, Globe, Loader2, Network } from 'lucide-react';
 import {
-  useNotificationSettings,
+  useAdminSettings,
   useSetFederationDownloadLimits,
   useSetFederationHttpLimits,
   useSetOtpTtl,
   useSetUserQuotaDefaults,
   useSetFederationQuotaDefaults,
+  useSetAdminSessionPolicy,
+  useSetFederationTransport,
 } from '@/hooks/use-settings';
 import { useMe } from '@/hooks/use-me';
 import { Badge } from '@/components/ui/badge';
@@ -30,7 +32,7 @@ import { formatApiError } from '@/lib/format-error';
  *  window (DB-backed, admin-managed). RBAC: saving the TTL requires ADMIN+. */
 export function SettingsPage() {
   const { t } = useTranslation();
-  const { data, isLoading, error } = useNotificationSettings();
+  const { data, isLoading, error } = useAdminSettings();
   const { data: me } = useMe();
   const role = me?.role;
   const canEdit = role === 'ADMIN' || role === 'SUPER_ADMIN';
@@ -40,6 +42,8 @@ export function SettingsPage() {
   const setHttpLimits = useSetFederationHttpLimits();
   const setUserQuotaDefaults = useSetUserQuotaDefaults();
   const setFederationQuotaDefaults = useSetFederationQuotaDefaults();
+  const setAdminSessionPolicy = useSetAdminSessionPolicy();
+  const setFederationTransport = useSetFederationTransport();
   const [ttlInput, setTtlInput] = useState('');
   const [globalDownloads, setGlobalDownloads] = useState('');
   const [peerDownloads, setPeerDownloads] = useState('');
@@ -58,6 +62,18 @@ export function SettingsPage() {
     dailySignalLimit: '',
     dailyFileLimit: '',
     dailyFileBytesLimit: '',
+  });
+  const [sessionPolicy, setSessionPolicy] = useState({
+    ttlHours: '',
+    idleMinutes: '',
+  });
+  const [transport, setTransport] = useState({
+    keyCacheTtlSec: '',
+    connectTimeoutSec: '',
+    callTimeoutSec: '',
+    mediaChunkBytes: '',
+    mediaChunkTimeoutSec: '',
+    mediaMaxChunkRetries: '',
   });
   // Sync the TTL input from the server value (initial load + after a save invalidates + refetches).
   useEffect(() => {
@@ -97,6 +113,37 @@ export function SettingsPage() {
       ) as typeof federationQuota,
     );
   }, [data?.federationQuotaDefaults]);
+  useEffect(() => {
+    if (!data?.adminSessionPolicy) return;
+    setSessionPolicy({
+      ttlHours: String(data.adminSessionPolicy.ttlHours),
+      idleMinutes: String(data.adminSessionPolicy.idleMinutes),
+    });
+  }, [data?.adminSessionPolicy]);
+  useEffect(() => {
+    if (!data?.federationTransport) return;
+    setTransport(
+      Object.fromEntries(
+        Object.entries(data.federationTransport).map(([key, value]) => [
+          key,
+          String(value),
+        ]),
+      ) as typeof transport,
+    );
+  }, [data?.federationTransport]);
+
+  async function onSaveTransport() {
+    try {
+      await setFederationTransport.mutateAsync(
+        Object.fromEntries(
+          Object.entries(transport).map(([key, value]) => [key, Number(value)]),
+        ) as unknown as NonNullable<typeof data>['federationTransport'],
+      );
+      toast.success(t('settings.transport.saved'));
+    } catch (e) {
+      toast.error(formatApiError(e));
+    }
+  }
 
   async function onSaveTtl() {
     const n = Number(ttlInput);
@@ -142,7 +189,7 @@ export function SettingsPage() {
         dailyFileLimit: Math.trunc(Number(userQuota.dailyFileLimit)),
         dailyFileBytesLimit: userQuota.dailyFileBytesLimit,
       });
-      toast.success('Default user quotas saved');
+      toast.success(t('settings.quotas.userSaved'));
     } catch (e) {
       toast.error(formatApiError(e));
     }
@@ -161,7 +208,19 @@ export function SettingsPage() {
           Number(federationQuota.dailyFileBytesLimit),
         ),
       });
-      toast.success('Default federation quotas saved');
+      toast.success(t('settings.quotas.federationSaved'));
+    } catch (e) {
+      toast.error(formatApiError(e));
+    }
+  }
+
+  async function onSaveSessionPolicy() {
+    try {
+      await setAdminSessionPolicy.mutateAsync({
+        ttlHours: Math.trunc(Number(sessionPolicy.ttlHours)),
+        idleMinutes: Math.trunc(Number(sessionPolicy.idleMinutes)),
+      });
+      toast.success(t('settings.sessions.saved'));
     } catch (e) {
       toast.error(formatApiError(e));
     }
@@ -176,7 +235,15 @@ export function SettingsPage() {
         <p className="text-sm text-muted-foreground">{t('settings.desc')}</p>
       </div>
 
-      {/* Server identity — read-only (SOMS_DOMAIN env, the federation identity) */}
+      <div className="pt-2">
+        <h2 className="text-lg font-semibold">
+          {t('settings.sections.identity')}
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          {t('settings.sections.identityDesc')}
+        </p>
+      </div>
+
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
@@ -197,6 +264,75 @@ export function SettingsPage() {
           <span className="text-xs text-muted-foreground">
             {t('settings.identity.envNote')}
           </span>
+        </CardContent>
+      </Card>
+
+      <div className="pt-2">
+        <h2 className="text-lg font-semibold">
+          {t('settings.sections.transport')}
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          {t('settings.sections.transportDesc')}
+        </p>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Gauge className="size-4" />
+            {t('settings.transport.title')}
+          </CardTitle>
+          <CardDescription>{t('settings.transport.desc')}</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-wrap items-end gap-3">
+          {(
+            [
+              ['keyCacheTtlSec', 'keyCacheTtl', 60, 604800],
+              ['connectTimeoutSec', 'connectTimeout', 1, 120],
+              ['callTimeoutSec', 'callTimeout', 1, 600],
+              ['mediaChunkBytes', 'mediaChunkBytes', 262144, 67108864],
+              ['mediaChunkTimeoutSec', 'mediaChunkTimeout', 5, 3600],
+              ['mediaMaxChunkRetries', 'mediaChunkRetries', 0, 20],
+            ] as const
+          ).map(([key, label, min, max]) => (
+            <div className="flex flex-col gap-1" key={key}>
+              <Label
+                htmlFor={`transport-${key}`}
+                className="text-xs text-muted-foreground"
+              >
+                {t(`settings.transport.${label}`)}
+              </Label>
+              <Input
+                id={`transport-${key}`}
+                type="number"
+                min={min}
+                max={max}
+                value={transport[key]}
+                onChange={(event) =>
+                  setTransport((current) => ({
+                    ...current,
+                    [key]: event.target.value,
+                  }))
+                }
+                className="w-40"
+                disabled={!canEdit}
+              />
+            </div>
+          ))}
+          <Button
+            size="sm"
+            onClick={onSaveTransport}
+            disabled={
+              !canEdit ||
+              setFederationTransport.isPending ||
+              Object.values(transport).some((value) => value === '')
+            }
+          >
+            {setFederationTransport.isPending && (
+              <Loader2 className="size-3.5 animate-spin" />
+            )}
+            {t('settings.transport.save')}
+          </Button>
         </CardContent>
       </Card>
 
@@ -284,6 +420,7 @@ export function SettingsPage() {
               min={1}
               max={100}
               value={globalDownloads}
+              disabled={!canEdit}
               onChange={(e) => setGlobalDownloads(e.target.value)}
               className="w-28"
             />
@@ -301,6 +438,7 @@ export function SettingsPage() {
               min={1}
               max={100}
               value={peerDownloads}
+              disabled={!canEdit}
               onChange={(e) => setPeerDownloads(e.target.value)}
               className="w-28"
             />
@@ -332,33 +470,42 @@ export function SettingsPage() {
         </CardContent>
       </Card>
 
+      <div className="pt-2">
+        <h2 className="text-lg font-semibold">
+          {t('settings.sections.quotas')}
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          {t('settings.sections.quotasDesc')}
+        </p>
+      </div>
+
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
-            <Gauge className="size-4" /> Default local-user quotas
+            <Gauge className="size-4" /> {t('settings.quotas.userTitle')}
           </CardTitle>
-          <CardDescription>
-            Daily defaults for local accounts. Per-user overrides continue to
-            take precedence.
-          </CardDescription>
+          <CardDescription>{t('settings.quotas.userDesc')}</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-wrap items-end gap-3">
           {(
             [
-              ['dailyMsgLimit', 'Messages'],
-              ['dailyRequestLimit', 'Requests'],
-              ['dailyFileLimit', 'Files'],
-              ['dailyFileBytesLimit', 'File bytes'],
+              ['dailyMsgLimit', 'messages'],
+              ['dailyRequestLimit', 'requests'],
+              ['dailyFileLimit', 'files'],
+              ['dailyFileBytesLimit', 'fileBytes'],
             ] as const
           ).map(([key, label]) => (
             <div className="flex flex-col gap-1" key={key}>
-              <Label className="text-xs text-muted-foreground">{label}</Label>
+              <Label className="text-xs text-muted-foreground">
+                {t(`settings.quotas.${label}`)}
+              </Label>
               <Input
                 className="w-40"
                 type="number"
                 min={0}
                 step={1}
                 value={userQuota[key]}
+                disabled={!canEdit}
                 onChange={(event) =>
                   setUserQuota((value) => ({
                     ...value,
@@ -380,7 +527,7 @@ export function SettingsPage() {
             {setUserQuotaDefaults.isPending && (
               <Loader2 className="size-3.5 animate-spin" />
             )}
-            Save defaults
+            {t('settings.quotas.save')}
           </Button>
         </CardContent>
       </Card>
@@ -388,31 +535,34 @@ export function SettingsPage() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
-            <Network className="size-4" /> Default federation quotas
+            <Network className="size-4" />{' '}
+            {t('settings.quotas.federationTitle')}
           </CardTitle>
           <CardDescription>
-            Daily defaults shared by peers without a custom override. Signal
-            frames are global-only.
+            {t('settings.quotas.federationDesc')}
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-wrap items-end gap-3">
           {(
             [
-              ['dailyMsgLimit', 'Messages'],
-              ['dailyRequestLimit', 'Requests'],
-              ['dailySignalLimit', 'Signals'],
-              ['dailyFileLimit', 'Files'],
-              ['dailyFileBytesLimit', 'File bytes'],
+              ['dailyMsgLimit', 'messages'],
+              ['dailyRequestLimit', 'requests'],
+              ['dailySignalLimit', 'signals'],
+              ['dailyFileLimit', 'files'],
+              ['dailyFileBytesLimit', 'fileBytes'],
             ] as const
           ).map(([key, label]) => (
             <div className="flex flex-col gap-1" key={key}>
-              <Label className="text-xs text-muted-foreground">{label}</Label>
+              <Label className="text-xs text-muted-foreground">
+                {t(`settings.quotas.${label}`)}
+              </Label>
               <Input
                 className="w-40"
                 type="number"
                 min={0}
                 step={1}
                 value={federationQuota[key]}
+                disabled={!canEdit}
                 onChange={(event) =>
                   setFederationQuota((value) => ({
                     ...value,
@@ -434,7 +584,80 @@ export function SettingsPage() {
             {setFederationQuotaDefaults.isPending && (
               <Loader2 className="size-3.5 animate-spin" />
             )}
-            Save defaults
+            {t('settings.quotas.save')}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <div className="pt-2">
+        <h2 className="text-lg font-semibold">
+          {t('settings.sections.security')}
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          {t('settings.sections.securityDesc')}
+        </p>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Clock className="size-4" /> {t('settings.sessions.title')}
+          </CardTitle>
+          <CardDescription>{t('settings.sessions.desc')}</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-wrap items-end gap-3">
+          <div className="flex flex-col gap-1">
+            <Label className="text-xs text-muted-foreground">
+              {t('settings.sessions.lifetime')}
+            </Label>
+            <Input
+              className="w-36"
+              type="number"
+              min={1}
+              max={24}
+              value={sessionPolicy.ttlHours}
+              disabled={!canEdit}
+              onChange={(event) =>
+                setSessionPolicy((value) => ({
+                  ...value,
+                  ttlHours: event.target.value,
+                }))
+              }
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <Label className="text-xs text-muted-foreground">
+              {t('settings.sessions.idle')}
+            </Label>
+            <Input
+              className="w-36"
+              type="number"
+              min={0}
+              max={480}
+              value={sessionPolicy.idleMinutes}
+              disabled={!canEdit}
+              onChange={(event) =>
+                setSessionPolicy((value) => ({
+                  ...value,
+                  idleMinutes: event.target.value,
+                }))
+              }
+            />
+          </div>
+          <Button
+            size="sm"
+            onClick={onSaveSessionPolicy}
+            disabled={
+              !canEdit ||
+              setAdminSessionPolicy.isPending ||
+              !sessionPolicy.ttlHours ||
+              sessionPolicy.idleMinutes === ''
+            }
+          >
+            {setAdminSessionPolicy.isPending && (
+              <Loader2 className="size-3.5 animate-spin" />
+            )}
+            {t('settings.sessions.save')}
           </Button>
         </CardContent>
       </Card>
