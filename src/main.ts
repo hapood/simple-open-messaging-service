@@ -10,6 +10,7 @@ import { randomUUID } from 'crypto';
 import { AppModule } from './app.module.js';
 import { configureApp } from './bootstrap.js';
 import { parseTrustedProxyConfig } from './rate-limit/trusted-proxy.js';
+import { resolveDirectTlsPaths } from './common/direct-tls.js';
 
 // HTTP/2 requires TLS — browsers do not negotiate h2 over cleartext. When both TLS_CERT and
 // TLS_KEY (PEM file paths) are provided the service speaks real ALPN h2 directly, which is
@@ -20,9 +21,8 @@ import { parseTrustedProxyConfig } from './rate-limit/trusted-proxy.js';
 // The options object is built inline so TypeScript checks it against FastifyAdapter's
 // constructor union (FastifyServerOptions | FastifyHttp2SecureOptions | ...); pre-typing it as
 // FastifyServerOptions would reject http2/https, which live on the h2-secure superset.
-const tlsCert = process.env.TLS_CERT;
-const tlsKey = process.env.TLS_KEY;
-const enableH2 = Boolean(tlsCert && tlsKey);
+const directTls = resolveDirectTlsPaths(process.env);
+const enableH2 = Boolean(directTls);
 
 async function bootstrap() {
   const trustedProxies = parseTrustedProxyConfig(
@@ -40,8 +40,8 @@ async function bootstrap() {
           genReqId: () => randomUUID(),
           http2: true,
           https: {
-            cert: readFileSync(tlsCert as string),
-            key: readFileSync(tlsKey as string),
+            cert: readFileSync(directTls!.cert),
+            key: readFileSync(directTls!.key),
           },
           // Global cap on every inbound request body (JSON API + S2S payloads). Multipart
           // uploads are NOT affected — @fastify/multipart enforces its own fileSize/fieldSize,

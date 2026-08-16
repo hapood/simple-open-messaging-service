@@ -121,17 +121,31 @@ but does not create an administrator.
 
 ## Updates and Backups
 
-Back up `data/` and PostgreSQL before updating. The directory contains application-owned identities
-such as federation, VAPID, JWT, password-pepper, and 2FA keys; existing files are reused and missing
-files are generated on startup. It may also contain the two operator-provided Firebase files. Then pull
-the intended source revision, rebuild
-`soms:latest` with `./scripts/build-image.sh`, and run `docker compose up -d` from the deployment
-directory. Check the migration exit status and app logs.
+Back up `data/` and PostgreSQL before updating. The following application-owned identity files are
+generated on first use and reused on subsequent starts:
+
+| File                       | Purpose                                      |
+| -------------------------- | -------------------------------------------- |
+| `data/soms-s2s-key.json`   | Federation server identity and signing key   |
+| `data/vapid-key.json`      | Web Push application-server identity         |
+| `data/jwt-admin.key`       | Administration-session signing key           |
+| `data/password-pepper.key` | Server-side password hashing secret           |
+| `data/2fa.key`             | Encryption key for stored 2FA material       |
+
+Treat these files as secrets and restore them together with the matching database snapshot. Losing
+or replacing one changes the corresponding identity or makes protected data and sessions unusable;
+do not regenerate keys as part of a routine update. The directory may also contain the
+operator-provided `data/firebase-service-account.json` secret and public Android client configuration
+at `data/google-services.json`, plus persistent Caddy state under `data/caddy/`.
+
+After taking the backup, pull the intended source revision, rebuild `soms:latest` with
+`./scripts/build-image.sh`, and run `docker compose up -d` from the deployment directory. Check the
+migration exit status and app logs.
 
 Keep the copied `docker-compose.yml` aligned with the source revision when templates change, but
 preserve secrets in `.env`. `docker compose down` retains PostgreSQL unless `-v` is supplied; never use
 `down -v` for a normal update.
 
 Read the [federated deployment guide](overview/federation-protocol.md) for DNS discovery, pinned keys,
-peer recognition, and recovery. Back up the federation signing state under `data/`; losing it affects
-how existing peers validate the server identity.
+peer recognition, and recovery. Losing `data/soms-s2s-key.json` changes the server identity seen by
+existing peers and requires an explicit recovery procedure.

@@ -8,10 +8,10 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$HERE/.."
-SRC="$ROOT/web/public/logo.svg"
-ICONS="$ROOT/web/public/icons"
-PUBLIC="$ROOT/web/public"
+WEB_ROOT="$HERE/.."
+SRC="$WEB_ROOT/public/logo.svg"
+ICONS="$WEB_ROOT/public/icons"
+PUBLIC="$WEB_ROOT/public"
 
 command -v rsvg-convert >/dev/null || { echo "rsvg-convert (librsvg) is required" >&2; exit 1; }
 command -v convert      >/dev/null || { echo "ImageMagick 'convert' is required" >&2; exit 1; }

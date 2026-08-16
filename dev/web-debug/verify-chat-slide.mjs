@@ -11,37 +11,51 @@
  * NOT a unit test — it needs the full stack running. Requirements:
  *   - web dev server: `npm --prefix web run start` (HTTPS by default — the script ignores cert errors)
  *   - API + DB up (the home shell is auth-gated and needs ≥1 conversation for the test account)
- *   - google-chrome on PATH (or set CHROME_PATH)
- *   - puppeteer-core resolvable: run with `NODE_PATH=$(pwd)/node_modules node scripts/verify-chat-slide.js`
- *     from `web/`, or `NODE_PATH=web/node_modules node web/scripts/verify-chat-slide.js` from the repo root.
+ *   - Chrome or Chromium installed (set CHROME_PATH when it cannot be auto-detected)
  *
- * Config (env vars, defaults shown):
- *   SOMS_BASE=https://localhost:4200  SOMS_USER=hapood  SOMS_PASS=123456  OUT_DIR=/tmp
+ * Config: SOMS_USER and SOMS_PASS are required. Optional values are
+ * SOMS_BASE=https://localhost:4200 and SOMS_OUT_DIR=/tmp.
  *
  * Usage:
- *   NODE_PATH=web/node_modules node web/scripts/verify-chat-slide.js
+ *   SOMS_USER=user SOMS_PASS=password node dev/web-debug/verify-chat-slide.mjs
  * Exit code 0 on PASS, 1 on FAIL/script error. Screenshots: $OUT_DIR/pg-{1-list,2-open,3-loaded,4-closed}.png.
  */
-const puppeteer = require('puppeteer-core');
-const { execSync } = require('child_process');
+import { browserExecutable, puppeteer } from './browser-executable.mjs';
 
 const BASE = process.env.SOMS_BASE || 'https://localhost:4200';
-const USER = process.env.SOMS_USER || 'hapood';
-const PASS = process.env.SOMS_PASS || '123456';
+const USER = process.env.SOMS_USER;
+const PASS = process.env.SOMS_PASS;
 const OUT = process.env.SOMS_OUT_DIR || process.env.OUT_DIR || '/tmp';
-const CHROME = process.env.CHROME_PATH || execSync('which google-chrome').toString().trim();
+const CHROME = browserExecutable();
 const log = (...a) => console.log(...a);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+if (!USER || !PASS) {
+  throw new Error('SOMS_USER and SOMS_PASS are required');
+}
 
 (async () => {
   const browser = await puppeteer.launch({
     executablePath: CHROME,
     headless: 'new',
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled', '--ignore-certificate-errors'],
-    defaultViewport: { width: 390, height: 844, isMobile: true, hasTouch: true },
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-blink-features=AutomationControlled',
+      '--ignore-certificate-errors',
+    ],
+    defaultViewport: {
+      width: 390,
+      height: 844,
+      isMobile: true,
+      hasTouch: true,
+    },
   });
   const page = await browser.newPage();
-  page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') log('[browser]', m.type(), m.text()); });
+  page.on('console', (m) => {
+    if (m.type() === 'error' || m.type() === 'warning')
+      log('[browser]', m.type(), m.text());
+  });
   page.on('pageerror', (e) => log('[pageerror]', e.message));
 
   await page.goto(BASE, { waitUntil: 'networkidle2', timeout: 30000 });
@@ -51,11 +65,18 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await page.type('input[name="uniqName"]', USER);
   await page.type('input[name="password"]', PASS);
   // zoneless: wait for CD to enable the submit button before clicking, else the click is a no-op.
-  await page.waitForSelector('button.submit-btn:not([disabled])', { timeout: 5000 });
+  await page.waitForSelector('button.submit-btn:not([disabled])', {
+    timeout: 5000,
+  });
   await sleep(300);
   await page.click('button.submit-btn');
   await page.waitForSelector('.thread-item', { timeout: 20000 });
-  log('2. logged in:', page.url(), '| threads:', await page.$$eval('.thread-item', (e) => e.length));
+  log(
+    '2. logged in:',
+    page.url(),
+    '| threads:',
+    await page.$$eval('.thread-item', (e) => e.length),
+  );
   await page.screenshot({ path: `${OUT}/pg-1-list.png` });
 
   const slotState = () =>
@@ -108,12 +129,20 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     return m ? parseFloat(m[1]) : 0;
   };
   const closedTx = txOf({ transform: listSlotTransform });
-  const translating = samples.filter((s) => txOf(s) > 0 && txOf(s) < closedTx - 1);
+  const translating = samples.filter(
+    (s) => txOf(s) > 0 && txOf(s) < closedTx - 1,
+  );
   const realChatWhileSliding = translating.some((s) => s.hasThread);
   const emptyWhileSliding = translating.some((s) => s.hasEmpty && !s.hasThread);
 
   log('4. close triggered from', beforeUrl, '→', page.url());
-  log('samples:', samples.length, '| actively translating:', translating.length, '(closedTx=' + closedTx + ')');
+  log(
+    'samples:',
+    samples.length,
+    '| actively translating:',
+    translating.length,
+    '(closedTx=' + closedTx + ')',
+  );
   log('   first:', JSON.stringify(samples[0]));
   log('   mid:  ', JSON.stringify(samples[Math.floor(samples.length / 2)]));
   log('   last: ', JSON.stringify(samples[samples.length - 1]));
@@ -127,8 +156,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   log(`screenshots: ${OUT}/pg-{1-list,2-open,3-loaded,4-closed}.png`);
 
   const pass = realChatWhileSliding && !emptyWhileSliding;
-  log('VERDICT:', pass
-    ? 'PASS — real chat slides out; ChatEmpty only after the post-slide reset (no empty-logo flash)'
-    : 'FAIL — empty logo appears mid-slide');
+  log(
+    'VERDICT:',
+    pass
+      ? 'PASS — real chat slides out; ChatEmpty only after the post-slide reset (no empty-logo flash)'
+      : 'FAIL — empty logo appears mid-slide',
+  );
   process.exit(pass ? 0 : 1);
-})().catch((e) => { console.error('SCRIPT FAIL:', e); process.exit(1); });
+})().catch((e) => {
+  console.error('SCRIPT FAIL:', e);
+  process.exit(1);
+});

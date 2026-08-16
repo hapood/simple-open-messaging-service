@@ -33,12 +33,15 @@ jobs:
 
       - name: Build and test server
         run: |
+          npm run version:check
           npm run build
           npm test
           npm run federation:conformance
 
-      - name: Build web client
-        run: npm run build --prefix web
+      - name: Build and test web client
+        run: |
+          npm run build --prefix web
+          npm test --prefix web
 
       - name: Build and test administration console
         run: |

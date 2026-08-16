@@ -1,6 +1,6 @@
 {
   "name": "simple-open-s-service",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.0",
   "description": "a simple message service , easy to connect by third part apps.",
   "author": "",
   "private": true,
@@ -9,6 +9,7 @@
   "scripts": {
     "build": "nest build && npm run build:migrations",
     "build:migrations": "tsc -p tsconfig.migrations.json",
+    "version:check": "node scripts/check-version-sync.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.build.json",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
@@ -27,8 +28,8 @@
     "test:cov": "vitest run --coverage",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "federation:conformance": "tsx scripts/federation-conformance.ts",
-    "federation:lab": "./dev/federation-lab/up.sh",
-    "federation:lab:reset": "./dev/federation-lab/reset.sh",
+    "federation:lab": "node dev/federation-lab/lab.mjs",
+    "federation:lab:reset": "node dev/federation-lab/reset.mjs",
     "db:migrate": "tsx scripts/migrate-db.ts migrate",
     "db:baseline": "tsx scripts/migrate-db.ts baseline",
     "db:status": "tsx scripts/migrate-db.ts status",

@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, symlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from 'pg';
@@ -18,11 +18,11 @@ if (!baseDatabaseUrl) {
 }
 
 const nodes = [
-  { name: 'alpha', domain: 'alpha.local', edgePort: 3101, backendPort: 3201 },
-  { name: 'bravo', domain: 'bravo.local', edgePort: 3102, backendPort: 3202 },
+  { name: 'alpha', domain: 'alpha.test', edgePort: 3101, backendPort: 3201 },
+  { name: 'bravo', domain: 'bravo.test', edgePort: 3102, backendPort: 3202 },
   {
     name: 'charlie',
-    domain: 'charlie.local',
+    domain: 'charlie.test',
     edgePort: 3103,
     backendPort: 3203,
   },
@@ -119,6 +119,36 @@ for (const node of nodes) {
 const routes = Object.fromEntries(
   nodes.map((node) => [node.domain, `http://127.0.0.1:${node.backendPort}`]),
 );
+
+function labEnvironment(node, peerRoutes) {
+  const env = {
+    ...process.env,
+    NODE_ENV: 'development',
+    PORT: String(node.backendPort),
+    SOMS_DOMAIN: node.domain,
+    SOMS_TLS_MODE: 'disabled',
+    SOMS_ALLOW_INSECURE_HTTP: '1',
+    SOMS_DEV_FEDERATION_ROUTES: JSON.stringify(peerRoutes),
+    DATABASE_URL: databaseUrl(node.database),
+    LOG_DIR: join(runtimeDir, node.name, 'data', 'logs'),
+    LOG_LEVEL: process.env.FED_LAB_LOG_LEVEL ?? 'warn',
+  };
+
+  // Deployment-specific values from the repository .env must not change the
+  // lab topology or enable direct TLS in its HTTP-only backend processes.
+  for (const name of [
+    'TLS_CERT',
+    'TLS_KEY',
+    'SOMS_WEB_DOMAIN',
+    'SOMS_LAN_DOMAIN',
+    'SOMS_WEBAUTHN_RP_ID',
+    'SOMS_WEBAUTHN_ALLOWED_ORIGINS',
+  ]) {
+    delete env[name];
+  }
+  return env;
+}
+
 const children = [];
 let stopping = false;
 let finish;
@@ -146,19 +176,7 @@ for (const node of nodes) {
   const child = spawn('node', [join(root, 'dist', 'src', 'main.js')], {
     cwd: join(runtimeDir, node.name),
     stdio: 'inherit',
-    env: {
-      ...process.env,
-      NODE_ENV: 'development',
-      PORT: String(node.backendPort),
-      SOMS_DOMAIN: node.domain,
-      SOMS_TLS_MODE: 'disabled',
-      SOMS_ALLOW_INSECURE_HTTP: '1',
-      SOMS_DEV_FEDERATION_ROUTES: JSON.stringify(peerRoutes),
-      SOMS_S2S_KEY_PATH: './data/soms-s2s-key.json',
-      DATABASE_URL: databaseUrl(node.database),
-      LOG_DIR: join(runtimeDir, node.name, 'data', 'logs'),
-      LOG_LEVEL: process.env.FED_LAB_LOG_LEVEL ?? 'warn',
-    },
+    env: labEnvironment(node, peerRoutes),
   });
   children.push(child);
   child.once('exit', (code, signal) => {

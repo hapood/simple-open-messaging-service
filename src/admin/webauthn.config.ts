@@ -1,37 +1,56 @@
-import { requireEnv } from '../common/env.js';
 import { deriveOrigin } from '../common/origin.js';
+import { getDomain } from 'tldts';
 
 /**
- * WebAuthn relying-party configuration. Loaded once at module-init (fail-fast via requireEnv, mirroring
- * loadFederationConfig in src/federation/federation.config.ts).
+ * WebAuthn relying-party configuration. Loaded once at module initialization and validated fail-fast.
  *
  * The admin console is SAME-ORIGIN with the API (Caddy serves the SPA at /admin/ and reverse-proxies
  * /api → Fastify), so there is exactly one origin to authorize. The RP ID is a registrable domain the
  * credential is scoped to; the allowed-origins list is the exact scheme://host[:port] strings that
  * @simplewebauthn/server's verifyRegistration/AuthenticationResponse accepts.
  *
- * Derivation: rpId = SOMS_DOMAIN verbatim in production (the admin is served at https://SOMS_DOMAIN/admin/,
- * so the full registered domain is the correct RP ID — no eTLD+1/PSL computation needed); in dev the
- * admin-web Vite server runs at http://localhost:5180, whose registrable domain is `localhost`, so rpId
- * defaults to `localhost` there. Both are overridable for unusual topologies (multi-subdomain, custom
- * port) via SOMS_WEBAUTHN_RP_ID / SOMS_WEBAUTHN_ALLOWED_ORIGINS. When SOMS_LAN_DOMAIN is set, its origin
- * is also added to allowed-origins (same backend) — ensure rpId is a shared registrable suffix (set
- * SOMS_WEBAUTHN_RP_ID to the apex if SOMS_DOMAIN is itself a subdomain).
+ * In production, the RP ID is the Public-Suffix-List-aware registrable domain shared by SOMS_DOMAIN,
+ * SOMS_WEB_DOMAIN and SOMS_LAN_DOMAIN. This lets one credential work at the public and LAN entry points
+ * without operator-maintained WebAuthn settings. Different registrable domains fail startup because no
+ * valid RP ID can span them. Existing explicit overrides remain supported for compatibility.
  */
 
 const isProd = process.env.NODE_ENV === 'production';
-const tlsMode = process.env.SOMS_TLS_MODE ?? 'standard';
 
-function loadWebAuthnConfig() {
-  const overrideOrigins = process.env.SOMS_WEBAUTHN_ALLOWED_ORIGINS?.trim();
+export function loadWebAuthnConfig(
+  env: NodeJS.ProcessEnv,
+  production: boolean,
+) {
+  const overrideOrigins = env.SOMS_WEBAUTHN_ALLOWED_ORIGINS?.trim();
+
+  const requireFrom = (key: string): string => {
+    const value = env[key]?.trim();
+    if (!value) throw new Error(`Missing required env var: ${key}`);
+    return value;
+  };
 
   // Dev: the admin-web browser origin is http://localhost:5180 (Vite), registrable domain `localhost`.
-  // Prod: the registered deployment domain. Explicit override always wins (multi-subdomain / custom port).
-  // rpId MUST be a bare registrable domain — strip any accidental `:port` (e.g. SOMS_DOMAIN="host:7667"),
-  // which would be an invalid RP ID the browser would never match.
-  const rawRpId =
-    process.env.SOMS_WEBAUTHN_RP_ID?.trim() ||
-    (isProd ? requireEnv('SOMS_DOMAIN') : 'localhost');
+  // Prod: derive one registrable domain shared by every configured entry point. getDomain uses the PSL,
+  // so domains such as chat.example.co.uk correctly produce example.co.uk rather than co.uk.
+  const identityDomain = production ? requireFrom('SOMS_DOMAIN') : 'localhost';
+  const entryDomains = production
+    ? [
+        identityDomain,
+        env.SOMS_WEB_DOMAIN?.trim() || identityDomain,
+        ...(env.SOMS_LAN_DOMAIN?.trim() ? [env.SOMS_LAN_DOMAIN.trim()] : []),
+      ]
+    : ['localhost'];
+  const registrableDomains = new Set(
+    entryDomains.map((domain) => getDomain(domain) ?? domain),
+  );
+  if (registrableDomains.size !== 1) {
+    throw new Error(
+      `SOMS_DOMAIN, SOMS_WEB_DOMAIN and SOMS_LAN_DOMAIN must share one registrable domain for WebAuthn (got: ${[...registrableDomains].join(', ')})`,
+    );
+  }
+
+  // Explicit override remains a compatibility escape hatch. RP IDs cannot contain a port.
+  const rawRpId = env.SOMS_WEBAUTHN_RP_ID?.trim() || [...registrableDomains][0];
   const rpId = rawRpId.split(':')[0];
 
   const allowedOrigins = overrideOrigins
@@ -39,28 +58,32 @@ function loadWebAuthnConfig() {
         .split(',')
         .map((o) => o.trim())
         .filter(Boolean)
-    : isProd
+    : production
       ? [
-          deriveOrigin(
-            process.env.SOMS_WEB_DOMAIN?.trim() || requireEnv('SOMS_DOMAIN'),
-            tlsMode,
-          ),
-          // When a LAN domain is configured, admins may reach the console over it (same backend, same
-          // secure context). Both domains share SOMS_DOMAIN's apex (enforced by docker/init.sh), so the
-          // default rpId (= SOMS_DOMAIN) authorizes it only if SOMS_DOMAIN IS that apex; otherwise set
-          // SOMS_WEBAUTHN_RP_ID to the shared apex.
-          ...(process.env.SOMS_LAN_DOMAIN
-            ? [deriveOrigin(process.env.SOMS_LAN_DOMAIN, tlsMode)]
-            : []),
+          ...new Set([
+            deriveOrigin(
+              env.SOMS_WEB_DOMAIN?.trim() || identityDomain,
+              env.SOMS_TLS_MODE ?? 'standard',
+            ),
+            ...(env.SOMS_LAN_DOMAIN?.trim()
+              ? [
+                  deriveOrigin(
+                    env.SOMS_LAN_DOMAIN.trim(),
+                    env.SOMS_TLS_MODE ?? 'standard',
+                  ),
+                ]
+              : []),
+          ]),
         ]
       : ['http://localhost:5180']; // the Vite dev browser origin (localhost is a secure context)
 
   // WebAuthn needs a secure context. `disabled` TLS over a non-localhost origin is not secure; the
   // browser is the ultimate enforcer (window.isSecureContext), this flag is the server-side hint the
   // status endpoint surfaces so the UI can hide the passkey affordance proactively.
-  const available = tlsMode !== 'disabled' || !isProd;
+  const available =
+    (env.SOMS_TLS_MODE ?? 'standard') !== 'disabled' || !production;
 
   return { rpId, allowedOrigins, available };
 }
 
-export const WEBAUTHN_CONFIG = loadWebAuthnConfig();
+export const WEBAUTHN_CONFIG = loadWebAuthnConfig(process.env, isProd);

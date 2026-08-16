@@ -8,9 +8,9 @@ state/message feeds, media, and persistence remain real.
 
 | Node | Federation identity | Browser URL             | Backend origin          | Database               |
 | ---- | ------------------- | ----------------------- | ----------------------- | ---------------------- |
-| A    | `alpha.local`       | `http://localhost:3101` | `http://127.0.0.1:3201` | `soms_fed_lab_alpha`   |
-| B    | `bravo.local`       | `http://localhost:3102` | `http://127.0.0.1:3202` | `soms_fed_lab_bravo`   |
-| C    | `charlie.local`     | `http://localhost:3103` | `http://127.0.0.1:3203` | `soms_fed_lab_charlie` |
+| A    | `alpha.test`        | `http://localhost:3101` | `http://127.0.0.1:3201` | `soms_fed_lab_alpha`   |
+| B    | `bravo.test`        | `http://localhost:3102` | `http://127.0.0.1:3202` | `soms_fed_lab_bravo`   |
+| C    | `charlie.test`      | `http://localhost:3103` | `http://127.0.0.1:3203` | `soms_fed_lab_charlie` |
 
 Each backend has its own database, `data/` directory, S2S root/signing keys, JWT secrets, logs,
 uploads, and media CAS. All three use the PostgreSQL server and credentials from the repository
@@ -28,7 +28,7 @@ Install the repository, web, and admin dependencies first, and configure a reach
 three lab databases.
 
 ```bash
-./dev/federation-lab/up.sh
+npm run federation:lab
 ```
 
 Use `Ctrl+C` to stop all six child processes. Data persists under
@@ -37,17 +37,20 @@ Use `Ctrl+C` to stop all six child processes. Data persists under
 To avoid rebuilding unchanged code and frontends during a quick restart:
 
 ```bash
-./dev/federation-lab/up.sh --skip-build
+npm run federation:lab -- --skip-build
 ```
 
 To start over, stop the lab and run:
 
 ```bash
-./dev/federation-lab/reset.sh
+npm run federation:lab:reset
 ```
 
 Reset permanently drops only the three explicitly named `soms_fed_lab_*` databases and removes the
 lab runtime directory.
+
+If the runtime was created by a version of the lab that used `*.local` identities, reset it before
+starting this version. Federation identities are persisted and cannot be renamed in place.
 
 ## Browser sessions
 
@@ -63,7 +66,8 @@ The admin console for each node is:
 
 `ADMIN_BOOTSTRAP_PASSWORD` and other ordinary application settings are inherited from the repository
 `.env`. The lab always overrides `NODE_ENV`, domain, database, ports, data paths, and development peer
-routes.
+routes. Deployment-only domain, WebAuthn, and direct-TLS values are removed only from the child
+process environments; the repository `.env`, invoking shell, and system environment are not changed.
 
 Never expose these ports outside a trusted development machine. The application itself also rejects
 the insecure transport and static routing variables whenever `NODE_ENV=production`.

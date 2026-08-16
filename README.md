@@ -13,6 +13,7 @@
   <a href="https://github.com/hapood/simple-open-chat-service/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/hapood/simple-open-chat-service/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://github.com/hapood/simple-open-chat-service/actions/workflows/pages.yml"><img alt="Playground deployment" src="https://github.com/hapood/simple-open-chat-service/actions/workflows/pages.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2f855a.svg"></a>
+  <img alt="SOMS 0.1.0 alpha 0" src="https://img.shields.io/badge/SOMS-0.1.0--alpha.0-7c3aed.svg">
   <a href="spec/v1/README.md"><img alt="SOCFP v1 release candidate" src="https://img.shields.io/badge/SOCFP-v1.0.0--rc.0-e95420.svg"></a>
 </p>
 
@@ -27,8 +28,9 @@
 </p>
 
 > [!IMPORTANT]
-> SOMS is under active development and has not published its first stable release. The federation
-> protocol is currently `v1.0.0-rc.0`; operators should expect changes before the v1.0 freeze.
+> SOMS `0.1.0-alpha.0` is under active development and has not published its first stable release.
+> The independently versioned federation protocol is currently `v1.0.0-rc.0`; operators should
+> expect changes before the v1.0 freeze.
 
 ## Why SOMS?
 

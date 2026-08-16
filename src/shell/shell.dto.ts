@@ -56,7 +56,7 @@ export class ShellFirebaseConfigDto {
 
 export class ShellCompatDto {
   @ApiProperty({
-    example: '0.1.0',
+    example: '0.1.0-alpha.0',
     description: 'The server version (root package.json, same as /health).',
   })
   serverVersion!: string;
@@ -114,7 +114,7 @@ export class ShellCompatDto {
  */
 export class ShellWebManifestDto {
   @ApiProperty({
-    example: '0.1.0',
+    example: '0.1.0-alpha.0',
     description:
       'The web SPA version this bundle contains (web/package.json). Display + filename only.',
   })

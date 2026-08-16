@@ -59,4 +59,19 @@ if env -i PATH="$PATH" SOMS_TLS_MODE=disabled PGPASSWORD=pw \
   exit 1
 fi
 
+for direct_tls_var in TLS_CERT TLS_KEY; do
+  conflict_output="$SANDBOX/$direct_tls_var-conflict.log"
+  if env -i PATH="$PATH" SOMS_DOMAIN=test.local SOMS_TLS_MODE=standard \
+    CLOUDFLARE_API_TOKEN=cf-token PGPASSWORD=pw ADMIN_BOOTSTRAP_PASSWORD=admin \
+    DATABASE_POOL_MAX=10 SOMS_RUN_DIR="$SANDBOX/run" \
+    "$direct_tls_var=/etc/ssl/chat/test.pem" "$INIT" > /dev/null 2>"$conflict_output"; then
+    echo "renderer accepted $direct_tls_var in the Caddy-managed full image" >&2
+    exit 1
+  fi
+  grep -Fq 'conflicting TLS configuration: TLS_CERT/TLS_KEY cannot be used with Caddy automatic DNS-01 TLS (SOMS_TLS_MODE=standard); remove TLS_CERT and TLS_KEY' "$conflict_output" || {
+    echo "renderer did not explain the $direct_tls_var/Caddy TLS conflict" >&2
+    exit 1
+  }
+done
+
 echo 'Caddyfile renderer tests passed'

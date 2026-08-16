@@ -1,6 +1,6 @@
 {
   "name": "soms-web",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.0",
   "scripts": {
     "ng": "ng",
     "start": "ng serve",
@@ -9,6 +9,7 @@
     "postbuild": "node scripts/inline-sourcemaps.mjs",
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
+    "icons:generate": "./scripts/gen-icons.sh",
     "gen:api": "openapi-typescript http://localhost:3000/api/v1/docs-json -o src/app/services/api-types.ts"
   },
   "private": true,

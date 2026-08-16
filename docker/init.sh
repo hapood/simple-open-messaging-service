@@ -26,6 +26,14 @@ case "${SOMS_TLS_MODE:-}" in
   single-port|standard|disabled) ;;
   *) die "SOMS_TLS_MODE must be one of: single-port | standard | disabled (got '${SOMS_TLS_MODE:-<unset>}')" ;;
 esac
+# This image always runs Caddy as its only TLS edge and connects to the Node origin over loopback HTTP.
+# Direct Fastify TLS would make that upstream protocol (and the container healthcheck) disagree with Node.
+if [ -n "${TLS_CERT:-}" ] || [ -n "${TLS_KEY:-}" ]; then
+  if [ "$SOMS_TLS_MODE" = "standard" ] || [ "$SOMS_TLS_MODE" = "single-port" ]; then
+    die "conflicting TLS configuration: TLS_CERT/TLS_KEY cannot be used with Caddy automatic DNS-01 TLS (SOMS_TLS_MODE=$SOMS_TLS_MODE); remove TLS_CERT and TLS_KEY"
+  fi
+  die "TLS_CERT and TLS_KEY are unsupported in the full Docker image because Caddy requires a plaintext loopback origin; remove TLS_CERT and TLS_KEY"
+fi
 # Admin area exposure. `public` (default) leaves /admin + /api/v1/admin open to all; `lan` restricts both to
 # private-range IPs (a @not_lan guard in the Caddyfile — see emit_handlers). Backward-compatible: an existing
 # .env without this var stays open.
