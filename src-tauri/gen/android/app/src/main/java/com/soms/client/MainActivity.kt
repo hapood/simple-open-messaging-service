@@ -1764,8 +1764,8 @@ class MainActivity : TauriActivity() {
             }
         }
 
-        /** Hand the server's Firebase client config (the 4 fields the web fetched from
-         *  `GET /push/firebase-config`) to native. Persists it in EncryptedSharedPreferences and
+        /** Hand the server's Firebase client config (the 4 fields from the web's `/shell/compat` payload)
+         *  to native. Persists it in EncryptedSharedPreferences and
          *  (re)initializes FirebaseApp via [SomsFirebase.reconfigure]: a different project → deleteToken +
          *  deleteApp + re-init + a fresh token that flows back through `window.__SOMS_FCM_TOKEN__`. Pass
          *  null/empty to clear (server returned `{configured:false}`). Hops to the UI thread — Firebase's

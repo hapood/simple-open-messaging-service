@@ -12,7 +12,7 @@ import org.json.JSONObject
  *
  * The APK ships WITHOUT google-services.json — each server operator runs their own Firebase project, so the
  * client can't bake one in. Instead the server publishes its 4 Firebase client fields at
- * `GET /push/firebase-config`; the web layer fetches them (`PushService.refreshFirebaseConfig`) and hands
+ * the `/shell/compat` payload; the web layer receives them (`PushService.applyFirebaseConfig`) and hands
  * them here via the `SomsFcm.setFirebaseConfig` `@JavascriptInterface`. This object persists them in
  * [SomsSecureStore] and (re)initializes [FirebaseApp].
  *

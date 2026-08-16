@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
-import { Clock, Download, Globe, Loader2, Network } from 'lucide-react';
+import { Clock, Download, Gauge, Globe, Loader2, Network } from 'lucide-react';
 import {
   useNotificationSettings,
   useSetFederationDownloadLimits,
   useSetFederationHttpLimits,
   useSetOtpTtl,
+  useSetUserQuotaDefaults,
+  useSetFederationQuotaDefaults,
 } from '@/hooks/use-settings';
 import { useMe } from '@/hooks/use-me';
 import { Badge } from '@/components/ui/badge';
@@ -36,12 +38,27 @@ export function SettingsPage() {
   const setOtpTtl = useSetOtpTtl();
   const setDownloadLimits = useSetFederationDownloadLimits();
   const setHttpLimits = useSetFederationHttpLimits();
+  const setUserQuotaDefaults = useSetUserQuotaDefaults();
+  const setFederationQuotaDefaults = useSetFederationQuotaDefaults();
   const [ttlInput, setTtlInput] = useState('');
   const [globalDownloads, setGlobalDownloads] = useState('');
   const [peerDownloads, setPeerDownloads] = useState('');
   const [chunkDigestEnabled, setChunkDigestEnabled] = useState(false);
   const [globalHttp, setGlobalHttp] = useState('');
   const [peerHttp, setPeerHttp] = useState('');
+  const [userQuota, setUserQuota] = useState({
+    dailyMsgLimit: '',
+    dailyRequestLimit: '',
+    dailyFileLimit: '',
+    dailyFileBytesLimit: '',
+  });
+  const [federationQuota, setFederationQuota] = useState({
+    dailyMsgLimit: '',
+    dailyRequestLimit: '',
+    dailySignalLimit: '',
+    dailyFileLimit: '',
+    dailyFileBytesLimit: '',
+  });
   // Sync the TTL input from the server value (initial load + after a save invalidates + refetches).
   useEffect(() => {
     if (typeof data?.otpTtlMinutes === 'number')
@@ -60,6 +77,26 @@ export function SettingsPage() {
       setPeerHttp(String(data.federationHttpLimits.perPeer));
     }
   }, [data?.federationHttpLimits]);
+  useEffect(() => {
+    if (!data?.userQuotaDefaults) return;
+    setUserQuota({
+      dailyMsgLimit: String(data.userQuotaDefaults.dailyMsgLimit),
+      dailyRequestLimit: String(data.userQuotaDefaults.dailyRequestLimit),
+      dailyFileLimit: String(data.userQuotaDefaults.dailyFileLimit),
+      dailyFileBytesLimit: data.userQuotaDefaults.dailyFileBytesLimit,
+    });
+  }, [data?.userQuotaDefaults]);
+  useEffect(() => {
+    if (!data?.federationQuotaDefaults) return;
+    setFederationQuota(
+      Object.fromEntries(
+        Object.entries(data.federationQuotaDefaults).map(([key, value]) => [
+          key,
+          String(value),
+        ]),
+      ) as typeof federationQuota,
+    );
+  }, [data?.federationQuotaDefaults]);
 
   async function onSaveTtl() {
     const n = Number(ttlInput);
@@ -92,6 +129,39 @@ export function SettingsPage() {
         perPeer: Math.trunc(Number(peerHttp)),
       });
       toast.success(t('settings.federationHttp.saved'));
+    } catch (e) {
+      toast.error(formatApiError(e));
+    }
+  }
+
+  async function onSaveUserQuota() {
+    try {
+      await setUserQuotaDefaults.mutateAsync({
+        dailyMsgLimit: Math.trunc(Number(userQuota.dailyMsgLimit)),
+        dailyRequestLimit: Math.trunc(Number(userQuota.dailyRequestLimit)),
+        dailyFileLimit: Math.trunc(Number(userQuota.dailyFileLimit)),
+        dailyFileBytesLimit: userQuota.dailyFileBytesLimit,
+      });
+      toast.success('Default user quotas saved');
+    } catch (e) {
+      toast.error(formatApiError(e));
+    }
+  }
+
+  async function onSaveFederationQuota() {
+    try {
+      await setFederationQuotaDefaults.mutateAsync({
+        dailyMsgLimit: Math.trunc(Number(federationQuota.dailyMsgLimit)),
+        dailyRequestLimit: Math.trunc(
+          Number(federationQuota.dailyRequestLimit),
+        ),
+        dailySignalLimit: Math.trunc(Number(federationQuota.dailySignalLimit)),
+        dailyFileLimit: Math.trunc(Number(federationQuota.dailyFileLimit)),
+        dailyFileBytesLimit: Math.trunc(
+          Number(federationQuota.dailyFileBytesLimit),
+        ),
+      });
+      toast.success('Default federation quotas saved');
     } catch (e) {
       toast.error(formatApiError(e));
     }
@@ -258,6 +328,113 @@ export function SettingsPage() {
               <Loader2 className="size-3.5 animate-spin" />
             )}
             {t('settings.federationDownload.save')}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Gauge className="size-4" /> Default local-user quotas
+          </CardTitle>
+          <CardDescription>
+            Daily defaults for local accounts. Per-user overrides continue to
+            take precedence.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-wrap items-end gap-3">
+          {(
+            [
+              ['dailyMsgLimit', 'Messages'],
+              ['dailyRequestLimit', 'Requests'],
+              ['dailyFileLimit', 'Files'],
+              ['dailyFileBytesLimit', 'File bytes'],
+            ] as const
+          ).map(([key, label]) => (
+            <div className="flex flex-col gap-1" key={key}>
+              <Label className="text-xs text-muted-foreground">{label}</Label>
+              <Input
+                className="w-40"
+                type="number"
+                min={0}
+                step={1}
+                value={userQuota[key]}
+                onChange={(event) =>
+                  setUserQuota((value) => ({
+                    ...value,
+                    [key]: event.target.value,
+                  }))
+                }
+              />
+            </div>
+          ))}
+          <Button
+            size="sm"
+            onClick={onSaveUserQuota}
+            disabled={
+              !canEdit ||
+              setUserQuotaDefaults.isPending ||
+              Object.values(userQuota).some((value) => value === '')
+            }
+          >
+            {setUserQuotaDefaults.isPending && (
+              <Loader2 className="size-3.5 animate-spin" />
+            )}
+            Save defaults
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Network className="size-4" /> Default federation quotas
+          </CardTitle>
+          <CardDescription>
+            Daily defaults shared by peers without a custom override. Signal
+            frames are global-only.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-wrap items-end gap-3">
+          {(
+            [
+              ['dailyMsgLimit', 'Messages'],
+              ['dailyRequestLimit', 'Requests'],
+              ['dailySignalLimit', 'Signals'],
+              ['dailyFileLimit', 'Files'],
+              ['dailyFileBytesLimit', 'File bytes'],
+            ] as const
+          ).map(([key, label]) => (
+            <div className="flex flex-col gap-1" key={key}>
+              <Label className="text-xs text-muted-foreground">{label}</Label>
+              <Input
+                className="w-40"
+                type="number"
+                min={0}
+                step={1}
+                value={federationQuota[key]}
+                onChange={(event) =>
+                  setFederationQuota((value) => ({
+                    ...value,
+                    [key]: event.target.value,
+                  }))
+                }
+              />
+            </div>
+          ))}
+          <Button
+            size="sm"
+            onClick={onSaveFederationQuota}
+            disabled={
+              !canEdit ||
+              setFederationQuotaDefaults.isPending ||
+              Object.values(federationQuota).some((value) => value === '')
+            }
+          >
+            {setFederationQuotaDefaults.isPending && (
+              <Loader2 className="size-3.5 animate-spin" />
+            )}
+            Save defaults
           </Button>
         </CardContent>
       </Card>

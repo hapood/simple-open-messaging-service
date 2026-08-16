@@ -947,9 +947,9 @@
       "projectId": "项目 ID",
       "appId": "应用 ID",
       "senderId": "发送方 ID",
-      "fileHint": "将 google-services.json（Android 应用包名 com.soms.client）放在 FIREBASE_CLIENT_CONFIG 指向的路径（默认 data/google-services.json）并重启后端。APK 运行时拉取已发布的字段。",
+      "fileHint": "将 google-services.json（Android 应用包名 com.soms.client）放在 data/google-services.json 并重启后端。APK 运行时拉取已发布的字段。",
       "sendLabel": "发送凭据",
-      "sendHint": "通过 GOOGLE_APPLICATION_CREDENTIALS 服务账号 JSON 配置（环境变量，不在此处编辑）。"
+      "sendHint": "通过 data/firebase-service-account.json 配置（此处只读）。"
     },
     "health": {
       "title": "健康检测",

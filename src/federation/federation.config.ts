@@ -109,7 +109,7 @@ export function loadFederationConfig(): FederationConfig {
   }
   return {
     domain,
-    keyPath: process.env.SOMS_S2S_KEY_PATH ?? './data/soms-s2s-key.json',
+    keyPath: './data/soms-s2s-key.json',
     keyCacheTtlSec: Number(process.env.SOMS_KEY_CACHE_TTL_SEC ?? 6 * 60 * 60), // 6h
     connectTimeoutSec: Number(process.env.SOMS_CONNECT_TIMEOUT_SEC ?? 12),
     callTimeoutSec: Number(process.env.SOMS_CALL_TIMEOUT_SEC ?? 12),
@@ -145,20 +145,4 @@ export interface QuotaConfig {
   /** Total file bytes/day per node for the file-total-size breaker dimension (uploads + downloads, actual
    *  bytes). Bundles contribute 0 bytes. */
   dailyFileBytesLimit: number;
-}
-
-export function loadQuotaConfig(): QuotaConfig {
-  return {
-    dailyRequestLimit: Number(
-      process.env.SOMS_QUOTA_DAILY_REQUEST_LIMIT ?? 100,
-    ),
-    dailyMsgLimit: Number(process.env.SOMS_QUOTA_DAILY_MSG_LIMIT ?? 5000),
-    dailySignalLimit: Number(
-      process.env.SOMS_QUOTA_DAILY_SIGNAL_LIMIT ?? 50_000,
-    ),
-    dailyFileLimit: Number(process.env.SOMS_QUOTA_DAILY_FILE_LIMIT ?? 500),
-    dailyFileBytesLimit: Number(
-      process.env.SOMS_QUOTA_DAILY_FILE_BYTES_LIMIT ?? 5 * 1024 * 1024 * 1024,
-    ),
-  };
 }

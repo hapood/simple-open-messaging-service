@@ -27,7 +27,7 @@ fn tls_posture_ip_host_is_permissive_even_over_https() {
     // LAN self-hosted over HTTPS+IP → permissive (no valid cert expected for a bare-IP host).
     assert_eq!(tls_posture_for("https://10.0.0.5"), TlsPosture::Permissive);
     assert_eq!(
-        tls_posture_for("https://192.168.88.8:8443"),
+        tls_posture_for("https://10.0.0.8:8443"),
         TlsPosture::Permissive
     );
     assert_eq!(
@@ -72,7 +72,7 @@ fn validate_origin_rejects_non_http_schemes_and_schemeless_garbage() {
 
 #[test]
 fn origin_host_is_ip_detects_v4_v6_and_rejects_dns() {
-    assert!(origin_host_is_ip("http://192.168.1.10"));
+    assert!(origin_host_is_ip("http://10.0.0.10"));
     assert!(origin_host_is_ip("https://10.0.0.5:3000"));
     assert!(origin_host_is_ip("https://[::1]:8443"));
     assert!(!origin_host_is_ip("https://example.com"));

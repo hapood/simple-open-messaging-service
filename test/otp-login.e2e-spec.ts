@@ -30,7 +30,6 @@ describe('OTP login e2e', () => {
     // This suite exercises the OTP state machine, not throttling. Its many
     // intentional attempts share supertest's loopback IP and would otherwise
     // consume one production-sized bucket across independent test cases.
-    process.env.RATE_LIMIT_AUTH_OTP_LOGIN_MODE = 'disabled';
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();

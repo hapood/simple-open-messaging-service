@@ -9,7 +9,7 @@ import android.content.Context
  *
  * This is the load-bearing hook for dynamic FCM. The APK ships WITHOUT `google-services.json` — each server
  * operator runs their own Firebase project, so the client can't bake one in. The web layer fetches the 4
- * Firebase client fields from `GET /push/firebase-config` (PushService.refreshFirebaseConfig) and hands them
+ * Firebase client fields from the `/shell/compat` payload (PushService.applyFirebaseConfig) and hands them
  * to [SomsFirebase] via the `SomsFcm.setFirebaseConfig` `@JavascriptInterface`, which persists them in
  * [SomsSecureStore]. `Application.onCreate` runs at process start, ahead of every component — critically
  * ahead of [SomsMessagingService], which a background data-only high-priority FCM can wake directly without

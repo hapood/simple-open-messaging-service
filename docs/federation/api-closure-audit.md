@@ -1,54 +1,59 @@
-# SOMS 联邦 API 闭环审计
+# SOMS Federation API Closure Audit
 
-> SOMS 协议/实现差距审计，更新于 2026-08-13。端点字段见
-> [S2S API](../api/federation-s2s-api.md)，规范要求见
-> [Federation v1](../../spec/v1/README.md)。
+> SOMS protocol/implementation gap audit, verified on 2026-08-16. See the
+> [S2S API reference](../api/federation-s2s-api.md) for endpoint summaries and
+> [Federation v1](../../spec/v1/README.md) for normative requirements.
 
-## 当前闭环
+## Closed recovery loop
 
 ```text
 first contact
-  → well-known
-  → signed Recognize in both directions
-  → persist recognition facts and pin root
+  -> well-known discovery
+  -> signed Recognize in both directions
+  -> persist recognition facts and pin the root identity
 
-restart / transient failure
-  → Healthy using the pinned certificate cache
-  → fresh Recognize only when recognition facts are missing
-  → state-feed
-  → message/tombstone index feeds
-  → per-thread message/tombstone queries
+restart or transient failure
+  -> Healthy using the pinned certificate cache
+  -> fresh Recognize only when recognition facts are missing
+  -> state feed
+  -> message and tombstone index feeds
+  -> per-thread message and tombstone queries
 
 local business transaction
-  → mutate fact/snapshot and increment business revision
-  → compact per-peer state snapshot / thread end-seq indexes
-  → commit
-  → lightweight feed-heads wake-up
+  -> mutate a fact or snapshot and increment its business revision
+  -> compact the per-peer state projection or thread end-sequence indexes
+  -> commit
+  -> send a lightweight feed-heads wake-up
 ```
 
-v1 surface、字段、错误和恢复规则已并入[正式协议](../../spec/v1/protocol.md)。下表 `CLOSED` 表示当前
-SOMS 实现已有对应生产者、消费者和回归证据；它不表示内部实现不能继续优化。
+The v1 surface, fields, errors, and recovery rules are part of the
+[formal protocol](../../spec/v1/protocol.md). `CLOSED` means the current SOMS
+implementation has a producer, consumer, recovery path, and regression evidence;
+it does not imply that internal implementation work has ended.
 
-## Surface 审计
+## Surface audit
 
-| Endpoint                            | 状态   | 闭环说明                                                                       |
-| ----------------------------------- | ------ | ------------------------------------------------------------------------------ |
-| `/.well-known/socfp`                | CLOSED | 发布 root/signing identity 和 protocol version；无 capability 分支。           |
-| `/s2s/v1/recognize`                 | CLOSED | 单方向事实、反向持久调度、root pin、cursor 初始化与双向收敛。                  |
-| `/s2s/v1/healthy`                   | CLOSED | pinned cache 验签、统一 unavailable 隐私响应与 degraded/healthy 恢复。         |
-| `/s2s/v1/feed-heads`                | CLOSED | wake-up 可丢、重复、乱序；只 max-coalesce，不持久化为事实。                    |
-| `/s2s/v1/state-feed`                | TODO   | 迁移到无 source ACK/cursor 验证，并实现 member omission 与 dependency repair。 |
-| `/s2s/v1/message-feed`              | TODO   | 改为 `thread + messageEndSeq` 持久压缩索引。                                   |
-| `/s2s/v1/message-tombstone-feed`    | TODO   | 改为 `thread + tombstoneEndSeq` 持久压缩索引。                                 |
-| `/s2s/v1/messages`                  | TODO   | 新增 thread message query、实时权限验证与可修正正文 cursor。                   |
-| `/s2s/v1/message-tombstones`        | TODO   | 新增永久 tombstone thread query 与 pending-delete 收敛。                       |
-| `/s2s/v1/users/:account`            | CLOSED | 仅用于首次显式 profile 查询，不用于 chat-open freshness probe。                |
-| `/s2s/v1/call`                      | CLOSED | 临时信令；终态记录走普通 message feed，进程崩溃中的实时信令不保证恢复。        |
-| `/s2s/v1/media/:digest`             | CLOSED | Range、精确 message/thread/source-seq/digest ownership、恢复、GC 与墓碑覆盖。  |
-| `/s2s/v1/forward-bundles/:bundleId` | CLOSED | closure digest、depth、资源和消息可见性校验。                                  |
+| Endpoint | Status | Closure evidence |
+| --- | --- | --- |
+| `/.well-known/socfp` | CLOSED | Publishes the root/signing identity and protocol version without capability forks. |
+| `/s2s/v1/recognize` | CLOSED | Persists the directional fact, schedules reverse recognition, pins the root, initializes cursors, and converges bidirectionally. |
+| `/s2s/v1/healthy` | CLOSED | Verifies through the pinned cache, returns a uniform privacy-preserving unavailable response, and recovers degraded peers. |
+| `/s2s/v1/feed-heads` | CLOSED | Treats wake-ups as lossy, duplicate, and unordered; coordinates are max-coalesced and never persisted as facts. |
+| `/s2s/v1/state-feed` | CLOSED | Uses consumer-owned cursors, projection omission, dependency repair, fixed drain bounds, and atomic page application. |
+| `/s2s/v1/message-feed` | CLOSED | Serves a durable compacted `(peer, thread) -> messageEndSeq` index with bootstrap and reset handling. |
+| `/s2s/v1/message-tombstone-feed` | CLOSED | Serves the independent durable `(peer, thread) -> tombstoneEndSeq` index. |
+| `/s2s/v1/messages` | CLOSED | Queries thread message windows with live authorization, bounded drains, retry outcomes, and correctable body cursors. |
+| `/s2s/v1/message-tombstones` | CLOSED | Queries permanent authoritative deletion facts and converges pending deletions. |
+| `/s2s/v1/users/:account` | CLOSED | Supports bounded explicit first-contact profile lookup and is not used as a chat-open freshness probe. |
+| `/s2s/v1/call` | CLOSED | Relays ephemeral signalling; terminal records use ordinary messages, while in-flight signalling is not crash-durable. |
+| `/s2s/v1/media/:digest` | CLOSED | Enforces Range behavior, exact message/thread/source-sequence/digest ownership, resume, garbage collection, and tombstone revocation. |
+| `/s2s/v1/forward-bundles/:bundleId` | CLOSED | Validates closure digest, depth, resources, and message visibility. |
 
-关系和群成员变化统一由 state feed 传输；消息发送只依据本地已经收敛的状态，不同步查询远端。
+Relationship and group membership changes travel through the state feed. Message
+sends rely on locally converged state and do not synchronously query a remote node.
 
-正式规范中的字段 union 由单元测试与代码枚举比对；route manifest、数据库 E2E 和双节点 E2E 分别
-验证 surface、事务恢复和互操作闭环。JSON Schema、向量与离线 conformance 工具已经随 v1 发布；
-它们不是 endpoint 闭环或运行时互操作的前置条件。
+Unit tests compare normative field unions with code enums. The route-manifest,
+PostgreSQL E2E, and two-node E2E suites cover the surface, transaction recovery,
+and interoperable recovery loop respectively. JSON Schema, vectors, and the
+offline conformance tool ship with v1 but are not prerequisites for endpoint
+closure or runtime interoperability.

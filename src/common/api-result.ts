@@ -7,7 +7,7 @@ import {
 } from '@nestjs/swagger';
 
 /**
- * Unified response envelope. Every HTTP endpoint returns this structure (see protocol-plan §5.1).
+ * Unified response envelope. See docs/api/api.md for the public response contract.
  * - code: 0 = success; non-zero = business error code, segmented by domain (see src/common/business-code.ts).
  *   Business failures always return HTTP 200 + business code; only unauthenticated (401) / not-found (404) /
  *   conflict (409) / server-error (500) retain their HTTP status.

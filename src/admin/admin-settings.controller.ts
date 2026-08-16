@@ -1,5 +1,6 @@
 import { Public } from '../common/public.decorator.js';
 import {
+  BadRequestException,
   Controller,
   Post,
   Body,
@@ -13,33 +14,23 @@ import { AdminRolesGuard } from './admin-roles.guard.js';
 import { Roles } from './admin-roles.decorator.js';
 import { Audit } from './audit.decorator.js';
 import { AdminRole } from '../database/enums.js';
-import { BusinessCode } from '../common/business-code.js';
-import { BusinessException } from '../common/business.exception.js';
 import { SettingsService } from '../settings/settings.service.js';
-import type { VapidConfig } from '../settings/vapid.js';
 import { PushService } from '../push/push.service.js';
 import {
-  SaveVapidDto,
-  GenerateVapidDto,
   OtpTtlDto,
   FederationDownloadLimitsDto,
   FederationHttpLimitsDto,
 } from './admin-settings.dto.js';
+import { getManagedSecretStatus } from '../auth/jwt-secret.js';
+import { KeypairService } from '../federation/keypair.service.js';
 import { FederationDownloadScheduler } from '../federation/federation-download-scheduler.js';
 import { FederationHttpScheduler } from '../federation/federation-http-scheduler.js';
+import { UserQuotaService } from '../quota/user-quota.service.js';
+import { QuotaService } from '../quota/quota.service.js';
 
 /**
- * Admin-managed runtime settings — the DB-backed "Settings" console page. Today this is the Web Push
- * VAPID keypair (enable / generate / paste / rotate / clear) plus a deterministic health check. The VAPID
- * keys live in the SystemSetting KV table (SettingsService), NOT env, so an admin can toggle Web Push
- * with no redeploy or shell access.
- *
- * RBAC: read + health-check are open to every admin role (VIEWER incl.); generate/save require ADMIN+
- * (rotation breaks existing Web Push subscriptions → clients re-subscribe, so it's gated like other
- * routine mutations); clear is SUPER_ADMIN-only (disables Web Push entirely). Every mutation is audited.
- *
- * Security: the VAPID private key is WRITE-ONLY from this surface — only publicKey + subject are ever
- * returned. Generate creates the pair server-side so the private key never transits the browser at all.
+ * Admin runtime settings and read-only server-key inventory. Application-owned keys are generated in
+ * fixed files and can never be created, replaced, or removed through HTTP.
  *
  * Handlers return raw data (or void for acks); the global SerializeInterceptor wraps the ApiResult
  * envelope. Failures throw BusinessException (the global AllExceptionsFilter renders the body).
@@ -53,6 +44,9 @@ export class AdminSettingsController {
     private readonly pushService: PushService,
     private readonly downloadScheduler: FederationDownloadScheduler,
     private readonly httpScheduler: FederationHttpScheduler,
+    private readonly keypair: KeypairService,
+    private readonly userQuota: UserQuotaService,
+    private readonly quota: QuotaService,
   ) {}
 
   @UseGuards(AdminAuthGuard)
@@ -82,7 +76,39 @@ export class AdminSettingsController {
       otpTtlMinutes,
       federationDownloadLimits,
       federationHttpLimits,
+      userQuotaDefaults: this.userQuota.getDefaultLimits(),
+      federationQuotaDefaults: this.quota.getDefaultLimits(),
     };
+  }
+
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
+  @Audit('settings.federation-quota-defaults.save')
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/settings/federation-quota-defaults')
+  async setFederationQuotaDefaults(@Body() body: Record<string, unknown>) {
+    try {
+      return await this.quota.setDefaultLimits(body);
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : 'invalid quota defaults',
+      );
+    }
+  }
+
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
+  @Audit('settings.user-quota-defaults.save')
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/settings/user-quota-defaults')
+  async setUserQuotaDefaults(@Body() body: Record<string, unknown>) {
+    try {
+      return await this.userQuota.setDefaultLimits(body as never);
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : 'invalid quota defaults',
+      );
+    }
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
@@ -115,68 +141,63 @@ export class AdminSettingsController {
     };
   }
 
-  @UseGuards(AdminAuthGuard, AdminRolesGuard)
-  @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
-  @Audit('settings.vapid.generate')
+  @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
-  @Post('admin/settings/vapid/generate')
+  @Post('admin/settings/keys')
   @ApiOperation({
-    summary:
-      'Generate a fresh VAPID keypair server-side and persist it (privateKey never returned)',
+    summary: 'Read-only status for every application-owned server key',
   })
-  async generateVapid(@Body() dto: GenerateVapidDto) {
-    // WARNING surfaced by the UI: generating/rotating the keypair breaks existing Web Push subscriptions
-    // — browsers bound the subscription to the old VAPID publicKey and must re-subscribe.
-    const cfg = this.settings.generateVapid(dto.subject);
-    await this.settings.setVapid(cfg);
-    return { configured: true, subject: cfg.subject, publicKey: cfg.publicKey };
+  getKeys() {
+    const federation = this.keypair.getStatus();
+    return [
+      {
+        id: 'federation-root',
+        kind: 'asymmetric',
+        ...federation,
+        publicKey: federation.available
+          ? this.keypair.getRootPublicKeyB64()
+          : undefined,
+        fingerprint: federation.available
+          ? this.keypair.getRootKeyFingerprint()
+          : undefined,
+      },
+      {
+        id: 'federation-signing',
+        kind: 'asymmetric',
+        ...federation,
+        keyId: federation.available ? this.keypair.getKeyId() : undefined,
+        publicKey: federation.available
+          ? this.keypair.getPublicKeyB64()
+          : undefined,
+        createdAt: federation.available
+          ? this.keypair.getCreatedAt()
+          : undefined,
+      },
+      { id: 'vapid', kind: 'asymmetric', ...this.settings.getVapidKeyStatus() },
+      {
+        id: 'admin-jwt',
+        kind: 'symmetric',
+        ...getManagedSecretStatus('jwt-admin.key'),
+      },
+      {
+        id: 'password-pepper',
+        kind: 'symmetric',
+        ...getManagedSecretStatus('password-pepper.key'),
+      },
+      {
+        id: 'two-factor',
+        kind: 'symmetric',
+        ...getManagedSecretStatus('2fa.key'),
+      },
+      {
+        id: 'firebase-service-account',
+        kind: 'external',
+        ...this.pushService.getFcmCredentialStatus(),
+      },
+    ];
   }
 
-  @UseGuards(AdminAuthGuard, AdminRolesGuard)
-  @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
-  @Audit('settings.vapid.save')
-  @HttpCode(HttpStatus.OK)
-  @Post('admin/settings/vapid/save')
-  @ApiOperation({
-    summary:
-      'Save (paste) a VAPID keypair — validates first, rejects malformed / mismatched pairs',
-  })
-  async saveVapid(@Body() dto: SaveVapidDto) {
-    const cfg: VapidConfig = {
-      subject: dto.subject,
-      publicKey: dto.publicKey,
-      privateKey: dto.privateKey,
-    };
-    const report = this.settings.validateVapid(
-      cfg,
-      this.pushService.fcmConfigured,
-    );
-    if (
-      !report.pairMatches ||
-      !report.publicKeyValid ||
-      !report.privateKeyValid ||
-      !report.subjectValid
-    ) {
-      throw new BusinessException(
-        BusinessCode.VAPID_INVALID,
-        report.errors[0] ?? 'VAPID keypair invalid',
-      );
-    }
-    await this.settings.setVapid(cfg);
-    return { configured: true, subject: cfg.subject, publicKey: cfg.publicKey };
-  }
-
-  @UseGuards(AdminAuthGuard, AdminRolesGuard)
-  @Roles(AdminRole.SUPER_ADMIN)
-  @Audit('settings.vapid.clear')
-  @HttpCode(HttpStatus.OK)
-  @Post('admin/settings/vapid/clear')
-  @ApiOperation({ summary: 'Remove the VAPID keypair — disables Web Push' })
-  async clearVapid(): Promise<void> {
-    await this.settings.clearVapid();
-  }
-
-  // Firebase client config is file-based (google-services.json at FIREBASE_CLIENT_CONFIG), not DB-backed,
+  // Firebase client config is file-based (data/google-services.json), not DB-backed,
   // so there is no admin upload/clear surface here — its status is surfaced read-only in getNotifications
   // above (the `firebase` descriptor + `fcmConfigured`). See SettingsService.getFirebaseConfig.
 

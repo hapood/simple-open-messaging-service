@@ -42,7 +42,7 @@ apex_of() {
 }
 
 # Whether a hostname is already matched by the identity site's exact host or one-label wildcard.
-# Example: SOMS_DOMAIN=qifa.io already covers soms.qifa.io via *.qifa.io, so emitting a second Caddy
+# Example: SOMS_DOMAIN=example.com already covers chat.example.com via *.example.com, so emitting a second Caddy
 # site for SOMS_WEB_DOMAIN would be redundant. A sibling of a subdomain is not covered.
 covered_by_identity_site() {
   local candidate="$1" prefix

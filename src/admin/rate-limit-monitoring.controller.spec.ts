@@ -25,7 +25,6 @@ describe('RateLimitMonitoringController', () => {
         {
           policy: 'auth.password.login',
           mode: 'shadow',
-          modeEnv: 'RATE_LIMIT_AUTH_PASSWORD_LOGIN_MODE',
           buckets: [],
         },
       ]),

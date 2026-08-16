@@ -950,9 +950,9 @@
       "projectId": "Project ID",
       "appId": "App ID",
       "senderId": "Sender ID",
-      "fileHint": "Place google-services.json (Android app package com.soms.client) at FIREBASE_CLIENT_CONFIG — default data/google-services.json — and restart the backend. The APK fetches the published fields at runtime.",
+      "fileHint": "Place google-services.json (Android app package com.soms.client) at data/google-services.json and restart the backend. The APK fetches the published fields at runtime.",
       "sendLabel": "Send credential",
-      "sendHint": "configured via the GOOGLE_APPLICATION_CREDENTIALS service-account JSON (env, not editable here)."
+      "sendHint": "configured by data/firebase-service-account.json (read-only here)."
     },
     "health": {
       "title": "Health check",

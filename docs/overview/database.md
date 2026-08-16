@@ -189,7 +189,7 @@ Unique: `@@unique([threadId, seq])` (seq identity + keyset cursor), `@@unique([t
 ### Federation protocol-to-local mappings
 
 The normative identities and derivation rules are defined by
-[Federation v1 Message Envelope](../../spec/v1/message/envelope.md#4-identity-与不可变性) and
+[Federation v1 Message Envelope](../../spec/v1/message/envelope.md#4-identity-and-immutability) and
 [Federation v1 Resources](../../spec/v1/resources.md). SOMS maps them as follows; these database
 columns are implementation details and never replace the wire coordinates:
 
@@ -230,7 +230,7 @@ One row per (node, UTC day, category). A node is a domain — the local `SOMS_DO
 
 ### SystemSetting / DiagnosticsReport
 
-- **SystemSetting** — generic key→value for operator runtime config (VAPID keypair, Firebase config, login mode, …); typed facade in `SettingsService`.
+- **SystemSetting** — generic key→value for operator runtime configuration; application-owned cryptographic keys are not stored here.
 - **DiagnosticsReport** — client-uploaded support bundle (gzip tar of Rust logs + webview console + manifest); `bundlePath` under `data/diagnostics/`, sha256-addressed; soft-deleted, the blob file is hard-unlinked by GC.
 
 ## Enums

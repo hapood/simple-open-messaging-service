@@ -25,11 +25,6 @@ import { RateLimitService } from './rate-limit.service.js';
 
 const MANAGED_ENV = [
   'TRUSTED_PROXY_CIDRS',
-  'RATE_LIMIT_AUTH_QR_CREATE_MODE',
-  'RATE_LIMIT_AUTH_QR_CREATE_IP_RATE_PER_SECOND',
-  'RATE_LIMIT_AUTH_QR_CREATE_IP_BURST',
-  'RATE_LIMIT_AUTH_QR_CREATE_IPV6_PREFIX_RATE_PER_SECOND',
-  'RATE_LIMIT_AUTH_QR_CREATE_IPV6_PREFIX_BURST',
 ] as const;
 const originalEnv = Object.fromEntries(
   MANAGED_ENV.map((name) => [name, process.env[name]]),
@@ -121,18 +116,28 @@ async function createApp(
   mode: 'disabled' | 'shadow' | 'enforce',
   trustLoopback = false,
 ): Promise<INestApplication> {
-  process.env.RATE_LIMIT_AUTH_QR_CREATE_MODE = mode;
-  process.env.RATE_LIMIT_AUTH_QR_CREATE_IP_RATE_PER_SECOND = '0.01';
-  process.env.RATE_LIMIT_AUTH_QR_CREATE_IP_BURST = '1';
-  process.env.RATE_LIMIT_AUTH_QR_CREATE_IPV6_PREFIX_RATE_PER_SECOND = '0.01';
-  process.env.RATE_LIMIT_AUTH_QR_CREATE_IPV6_PREFIX_BURST = '1';
   process.env.TRUSTED_PROXY_CIDRS = trustLoopback ? '127.0.0.0/8,::1/128' : '';
+
+  const configuration = new RateLimitModeService().monitoringConfig();
+  const qrCreate = configuration.find(
+    (policy) => policy.policy === AUTH_RATE_LIMIT_POLICIES.qrCreate,
+  )!;
+  qrCreate.mode = mode;
+  qrCreate.buckets = qrCreate.buckets.map((bucket) => ({
+    ...bucket,
+    ratePerSecond: 0.01,
+    burst: 1,
+  }));
 
   const fixture = await Test.createTestingModule({
     controllers: [ProbeController],
     providers: [
       ClientIdentityService,
       RateLimitModeService,
+      {
+        provide: 'SOMS_TEST_RATE_LIMIT_CONFIGURATION',
+        useValue: configuration,
+      },
       RateLimitService,
       AuthPolicyRegistry,
       RateLimitGuard,

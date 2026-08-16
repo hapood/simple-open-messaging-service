@@ -1,11 +1,17 @@
 import { Logger } from '@nestjs/common';
-import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 /**
  * Persistence root for auto-generated secrets. Same directory the S2S keypair lives in
- * (SOMS_S2S_KEY_PATH defaults to ./data/soms-s2s-key.json), so a deployment persistent enough to
+ * (`./data/soms-s2s-key.json`), so a deployment persistent enough to
  * keep its federation identity is automatically persistent enough to keep these keys.
  */
 const SECRET_DIR = resolve('data');
@@ -14,40 +20,19 @@ const SECRET_DIR = resolve('data');
 const generatedPaths: string[] = [];
 
 /**
- * Resolve a long-lived secret with three-tier precedence:
- *   1. Explicit env var — operator-managed; REQUIRED for multi-instance deployments (every replica
- *      must share the same value), for rotation, and for external secret managers. Always wins.
- *   2. A file persisted under ./data on a prior first boot — lets restarts keep every existing
- *      token/secret valid instead of mass-logging-out the whole user base on each boot.
- *   3. Neither → mint a 256-bit key (matches the documented `openssl rand -hex 32`), persist it
- *      mode 0600, and use it. Recorded so reportGeneratedSecrets() can name it once.
- *
- * Why disk and not the DB: a signing/encryption key in the application DB would turn every DB backup
- * into token-forging / secret-decrypting material, blurring the data/secrets boundary that env-or-file
- * keeps clean. This mirrors the node-local-auto-generated-secret-on-disk pattern of KeypairService
- * (src/federation/keypair.service.ts). Shared by the admin JWT signing secret and the 2FA at-rest
- * encryption key (src/admin/two-factor.secret.ts).
- *
- * @param envName  the override env var, e.g. SOMS_PASSWORD_PEPPER.
- * @param filename the on-disk filename under ./data, e.g. 'jwt-admin.key'.
+ * Resolve an application-owned secret from its fixed file, generating it on first boot. Application
+ * keys deliberately have no env or path override: one conventional data directory is the backup and
+ * restore boundary, and an accidental deployment-variable change can never rotate server identity.
  */
-export function resolvePersistentSecret(
-  envName: string,
-  filename: string,
-): string {
-  // (1) Operator-managed env wins — explicit configuration always takes precedence.
-  const fromEnv = process.env[envName];
-  if (fromEnv && fromEnv.trim()) return fromEnv.trim();
-
+export function resolveFileSecret(filename: string): string {
   const path = resolve(SECRET_DIR, filename);
 
-  // (2) Reuse the secret persisted on a prior first boot (guard against an empty/stale file).
   if (existsSync(path)) {
     const existing = readFileSync(path, 'utf8').trim();
-    if (existing) return existing;
+    if (!existing) throw new Error(`managed secret file is empty: ${path}`);
+    return existing;
   }
 
-  // (3) First boot: mint + persist mode 0600 (same handling as soms-s2s-key.json).
   const generated = randomBytes(32).toString('hex');
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, generated, { mode: 0o600 });
@@ -55,20 +40,34 @@ export function resolvePersistentSecret(
   return generated;
 }
 
-/** Resolve an auto-managed secret from disk, generating it if absent. */
-export function resolveFileSecret(filename: string): string {
+export interface ManagedSecretStatus {
+  configured: boolean;
+  valid: boolean;
+  fingerprint?: string;
+  createdAt?: string;
+  permissionsSecure?: boolean;
+}
+
+/** Read-only metadata for Admin. Secret material never leaves this module. */
+export function getManagedSecretStatus(filename: string): ManagedSecretStatus {
   const path = resolve(SECRET_DIR, filename);
-
-  if (existsSync(path)) {
-    const existing = readFileSync(path, 'utf8').trim();
-    if (existing) return existing;
+  if (!existsSync(path)) return { configured: false, valid: false };
+  try {
+    const material = readFileSync(path, 'utf8').trim();
+    const stat = statSync(path);
+    return {
+      configured: true,
+      valid: material.length > 0,
+      fingerprint: createHash('sha256')
+        .update(material)
+        .digest('hex')
+        .slice(0, 16),
+      createdAt: stat.birthtime.toISOString(),
+      permissionsSecure: (stat.mode & 0o077) === 0,
+    };
+  } catch {
+    return { configured: true, valid: false };
   }
-
-  const generated = randomBytes(32).toString('hex');
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, generated, { mode: 0o600 });
-  generatedPaths.push(path);
-  return generated;
 }
 
 /**
@@ -84,7 +83,6 @@ export function reportGeneratedSecrets(): void {
     `Auto-generated ${generatedPaths.length} persistent secret(s): ${generatedPaths.join(', ')}. ` +
       'Persist ./data across restarts — losing these files logs out every user/admin on the next boot ' +
       '(JWT secret) and/or forces admins to re-enroll 2FA (2FA key); same requirement as ' +
-      'soms-s2s-key.json. To manage them explicitly (multi-instance, rotation, external secret store), ' +
-      'set the matching env var for operator-managed secrets where supported.',
+      'soms-s2s-key.json.',
   );
 }

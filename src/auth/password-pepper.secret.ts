@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto';
-import { resolvePersistentSecret } from './jwt-secret.js';
+import { resolveFileSecret } from './jwt-secret.js';
 
 /**
  * The pepper folded into every user/admin password hash via Argon2's spec'd secret parameter (K).
- * Resolved ONCE at module load from SOMS_PASSWORD_PEPPER (env) → ./data/password-pepper.key (prior first
- * boot) → auto-generated, exactly like the admin JWT signing secret and the 2FA at-rest key. The resolved
+ * Resolved ONCE at module load from ./data/password-pepper.key, or auto-generated on first boot, exactly
+ * like the admin JWT signing secret and the 2FA at-rest key. The resolved
  * string is the *key material*; the actual 32-byte pepper is SHA-256(key material) so any strong env
- * value yields a valid 32-byte secret regardless of its encoding, and rotating SOMS_PASSWORD_PEPPER
+ * value yields a valid 32-byte secret regardless of its encoding. Replacing this file manually
  * rekeys every password hash (existing hashes stop verifying → every user must reset, the correct
  * outcome of a pepper rotation: a pepper can NEVER be silently changed while keeping logins working).
  *
@@ -24,10 +24,7 @@ import { resolvePersistentSecret } from './jwt-secret.js';
  * server-generated tokens — backup codes — instead use a fast HMAC keyed by the 2FA key; the slow KDF is
  * pointless there. See src/admin/two-factor.service.ts.)
  */
-const PASSWORD_PEPPER_MATERIAL = resolvePersistentSecret(
-  'SOMS_PASSWORD_PEPPER',
-  'password-pepper.key',
-);
+const PASSWORD_PEPPER_MATERIAL = resolveFileSecret('password-pepper.key');
 
 export const passwordPepper: Buffer = createHash('sha256')
   .update(PASSWORD_PEPPER_MATERIAL)

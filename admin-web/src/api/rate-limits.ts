@@ -21,14 +21,11 @@ export interface RateLimitSample extends RateLimitStats {
 export interface RateLimitPolicyView {
   policy: string;
   mode: RateLimitMode;
-  modeEnv: string;
   buckets: Array<{
     name: string;
     ratePerSecond: number;
     burst: number;
     enforce: boolean;
-    rateEnv: string;
-    burstEnv: string;
   }>;
   totals: RateLimitStats;
   samples: RateLimitSample[];
@@ -48,4 +45,18 @@ export interface RateLimitMonitoring {
 
 export function getRateLimitMonitoring(): Promise<RateLimitMonitoring> {
   return request<RateLimitMonitoring>('/admin/rate-limits');
+}
+
+export type RateLimitPolicyConfiguration = Pick<
+  RateLimitPolicyView,
+  'policy' | 'mode' | 'buckets'
+>;
+
+export function saveRateLimitConfiguration(
+  policies: RateLimitPolicyConfiguration[],
+): Promise<RateLimitPolicyConfiguration[]> {
+  return request<RateLimitPolicyConfiguration[]>(
+    '/admin/rate-limits/configuration',
+    policies,
+  );
 }

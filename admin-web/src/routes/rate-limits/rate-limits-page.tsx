@@ -1,12 +1,25 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
 import { AlertTriangle, Info, ShieldAlert } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   getRateLimitMonitoring,
+  saveRateLimitConfiguration,
+  type RateLimitMode,
+  type RateLimitPolicyConfiguration,
   type RateLimitPolicyView,
 } from '@/api/rate-limits';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import {
   Table,
   TableBody,
@@ -16,6 +29,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { formatApiError } from '@/lib/format-error';
+import { toast } from 'sonner';
 
 const MODE_VARIANT = {
   disabled: 'destructive',
@@ -51,11 +65,36 @@ function AdviceIcon({ level }: { level: 'info' | 'warning' | 'critical' }) {
 
 export function RateLimitsPage() {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const { data, error, isLoading } = useQuery({
     queryKey: ['admin', 'rate-limits'],
     queryFn: getRateLimitMonitoring,
     refetchInterval: 30_000,
   });
+  const save = useMutation({
+    mutationFn: saveRateLimitConfiguration,
+    onSuccess: () => {
+      toast.success('Rate-limit configuration saved');
+      void queryClient.invalidateQueries({
+        queryKey: ['admin', 'rate-limits'],
+      });
+    },
+    onError: (error) => toast.error(formatApiError(error)),
+  });
+
+  function savePolicy(updated: RateLimitPolicyConfiguration) {
+    if (!data) return;
+    save.mutate(
+      data.policies.map((policy) => {
+        const source = policy.policy === updated.policy ? updated : policy;
+        return {
+          policy: source.policy,
+          mode: source.mode,
+          buckets: source.buckets,
+        };
+      }),
+    );
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -79,91 +118,173 @@ export function RateLimitsPage() {
       ) : null}
       <div className="grid gap-4 xl:grid-cols-2">
         {data?.policies.map((policy) => (
-          <Card key={policy.policy}>
-            <CardHeader className="pb-3">
-              <div className="flex items-center justify-between gap-3">
-                <CardTitle className="font-mono text-base">
-                  {policy.policy}
-                </CardTitle>
-                <Badge variant={MODE_VARIANT[policy.mode]}>{policy.mode}</Badge>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid grid-cols-4 gap-2 text-center">
-                <Metric
-                  label={t('rateLimits.evaluated')}
-                  value={policy.totals.evaluated}
-                />
-                <Metric
-                  label={t('rateLimits.wouldBlock')}
-                  value={policy.totals.wouldBlock}
-                />
-                <Metric
-                  label={t('rateLimits.blocked')}
-                  value={policy.totals.blocked}
-                />
-                <Metric
-                  label={t('rateLimits.hitRatio')}
-                  value={ratio(policy)}
-                />
-              </div>
-              <Trend policy={policy} label={t('rateLimits.recentTrend')} />
-              <div className="overflow-x-auto rounded-md border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>{t('rateLimits.dimension')}</TableHead>
-                      <TableHead>{t('rateLimits.rate')}</TableHead>
-                      <TableHead>{t('rateLimits.burst')}</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {policy.buckets.map((bucket) => (
-                      <TableRow key={bucket.name}>
-                        <TableCell className="font-mono text-xs">
-                          {bucket.name}
-                          {bucket.enforce ? '' : ' (observe)'}
-                        </TableCell>
-                        <TableCell>
-                          <div>{bucket.ratePerSecond}/s</div>
-                          <div className="font-mono text-[9px] text-muted-foreground">
-                            {bucket.rateEnv}
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <div>{bucket.burst}</div>
-                          <div className="font-mono text-[9px] text-muted-foreground">
-                            {bucket.burstEnv}
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-              <div className="space-y-2">
-                {policy.advice.map((item) => (
-                  <div
-                    key={item.code}
-                    className="flex gap-2 rounded-md bg-muted/60 px-3 py-2 text-xs"
-                  >
-                    <AdviceIcon level={item.level} />
-                    <span>
-                      {ADVICE_KEYS[item.code as keyof typeof ADVICE_KEYS]
-                        ? t(ADVICE_KEYS[item.code as keyof typeof ADVICE_KEYS])
-                        : item.message}
-                    </span>
-                  </div>
-                ))}
-              </div>
-              <div className="font-mono text-[11px] text-muted-foreground">
-                {policy.modeEnv}
-              </div>
-            </CardContent>
-          </Card>
+          <PolicyCard
+            key={policy.policy}
+            policy={policy}
+            saving={save.isPending}
+            onSave={savePolicy}
+            t={t}
+          />
         ))}
       </div>
     </div>
+  );
+}
+
+function PolicyCard({
+  policy,
+  saving,
+  onSave,
+  t,
+}: {
+  policy: RateLimitPolicyView;
+  saving: boolean;
+  onSave: (policy: RateLimitPolicyConfiguration) => void;
+  t: ReturnType<typeof useTranslation>['t'];
+}) {
+  const [draft, setDraft] = useState<RateLimitPolicyConfiguration>({
+    policy: policy.policy,
+    mode: policy.mode,
+    buckets: policy.buckets,
+  });
+  useEffect(() => {
+    setDraft({
+      policy: policy.policy,
+      mode: policy.mode,
+      buckets: policy.buckets,
+    });
+  }, [policy]);
+  const invalid = draft.buckets.some(
+    (bucket) =>
+      !Number.isFinite(bucket.ratePerSecond) ||
+      bucket.ratePerSecond <= 0 ||
+      !Number.isFinite(bucket.burst) ||
+      bucket.burst < bucket.ratePerSecond,
+  );
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle className="font-mono text-base">{policy.policy}</CardTitle>
+          <Select
+            value={draft.mode}
+            onValueChange={(mode: RateLimitMode) =>
+              setDraft((value) => ({ ...value, mode }))
+            }
+          >
+            <SelectTrigger className="w-32">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="enforce">enforce</SelectItem>
+              <SelectItem value="shadow">shadow</SelectItem>
+              <SelectItem value="disabled">disabled</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-4 gap-2 text-center">
+          <Metric
+            label={t('rateLimits.evaluated')}
+            value={policy.totals.evaluated}
+          />
+          <Metric
+            label={t('rateLimits.wouldBlock')}
+            value={policy.totals.wouldBlock}
+          />
+          <Metric
+            label={t('rateLimits.blocked')}
+            value={policy.totals.blocked}
+          />
+          <Metric label={t('rateLimits.hitRatio')} value={ratio(policy)} />
+        </div>
+        <Trend policy={policy} label={t('rateLimits.recentTrend')} />
+        <div className="overflow-x-auto rounded-md border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t('rateLimits.dimension')}</TableHead>
+                <TableHead>{t('rateLimits.rate')}</TableHead>
+                <TableHead>{t('rateLimits.burst')}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {draft.buckets.map((bucket, bucketIndex) => (
+                <TableRow key={bucket.name}>
+                  <TableCell className="font-mono text-xs">
+                    {bucket.name}
+                    {bucket.enforce ? '' : ' (observe)'}
+                  </TableCell>
+                  <TableCell>
+                    <Input
+                      type="number"
+                      min="0.000001"
+                      step="any"
+                      value={bucket.ratePerSecond}
+                      onChange={(event) =>
+                        setDraft((value) => ({
+                          ...value,
+                          buckets: value.buckets.map((item, index) =>
+                            index === bucketIndex
+                              ? {
+                                  ...item,
+                                  ratePerSecond: Number(event.target.value),
+                                }
+                              : item,
+                          ),
+                        }))
+                      }
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <Input
+                      type="number"
+                      min="0.000001"
+                      step="any"
+                      value={bucket.burst}
+                      onChange={(event) =>
+                        setDraft((value) => ({
+                          ...value,
+                          buckets: value.buckets.map((item, index) =>
+                            index === bucketIndex
+                              ? { ...item, burst: Number(event.target.value) }
+                              : item,
+                          ),
+                        }))
+                      }
+                    />
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+        <div className="space-y-2">
+          {policy.advice.map((item) => (
+            <div
+              key={item.code}
+              className="flex gap-2 rounded-md bg-muted/60 px-3 py-2 text-xs"
+            >
+              <AdviceIcon level={item.level} />
+              <span>
+                {ADVICE_KEYS[item.code as keyof typeof ADVICE_KEYS]
+                  ? t(ADVICE_KEYS[item.code as keyof typeof ADVICE_KEYS])
+                  : item.message}
+              </span>
+            </div>
+          ))}
+        </div>
+        <Button
+          size="sm"
+          disabled={saving || invalid}
+          onClick={() => onSave(draft)}
+        >
+          Save policy
+        </Button>
+      </CardContent>
+    </Card>
   );
 }
 

@@ -2,8 +2,8 @@
  * Firebase client config — the 4 fields the Android client needs to initialize `FirebaseApp` at runtime,
  * parsed from the operator's `google-services.json` file. This is a federated / self-hosted chat app — each
  * operator runs their own backend AND their own Firebase project — so the APK ships WITHOUT
- * google-services.json; the operator places theirs on the server (FIREBASE_CLIENT_CONFIG env, default
- * data/google-services.json — the same file-on-disk model as the send-side GOOGLE_APPLICATION_CREDENTIALS
+ * google-services.json; the operator places theirs at data/google-services.json — the same file-on-disk
+ * model as the send-side data/firebase-service-account.json
  * service-account key, NOT the DB-backed model the VAPID keypair uses), the server folds these 4 fields
  * into GET /shell/compat (the connect-time payload), and the native shell applies them at server setup so
  * the client initializes `FirebaseApp.initializeApp` at process start.

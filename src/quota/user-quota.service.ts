@@ -1,4 +1,4 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable, OnModuleInit } from '@nestjs/common';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -12,6 +12,7 @@ import {
   userQuotaDailyUsage,
   userQuotaFileByteUsage,
   userQuotaPolicy,
+  systemSetting,
 } from '../database/schema.js';
 import { BreakerFlags, type BreakerDim } from './breaker-flags.js';
 import type {
@@ -31,18 +32,47 @@ type UserQuotaCategory = Exclude<QuotaCategory, 'signals'>;
  * authoritative {@link preCheckFile} read.
  */
 @Injectable()
-export class UserQuotaService {
-  private readonly defaults: UserQuotaDefaults = {
-    dailyMsgLimit: quotaIntEnv('SOMS_USER_QUOTA_DAILY_MSG_LIMIT', 1000),
-    dailyRequestLimit: quotaIntEnv('SOMS_USER_QUOTA_DAILY_REQUEST_LIMIT', 50),
-    dailyFileLimit: quotaIntEnv('SOMS_USER_QUOTA_DAILY_FILE_LIMIT', 100),
-    dailyFileBytesLimit: BigInt(
-      quotaIntEnv('SOMS_USER_QUOTA_DAILY_FILE_BYTES_LIMIT', 500 * 1024 * 1024),
-    ),
-  };
+export class UserQuotaService implements OnModuleInit {
+  private defaults: UserQuotaDefaults = defaultUserQuotaLimits();
   private readonly breaker = new BreakerFlags();
 
   constructor(private readonly database: DatabaseService) {}
+
+  async onModuleInit(): Promise<void> {
+    const row = await this.database.db.query.systemSetting.findFirst({
+      where: eq(systemSetting.key, USER_QUOTA_DEFAULTS_KEY),
+    });
+    if (row) this.defaults = parseUserQuotaDefaults(row.value);
+  }
+
+  getDefaultLimits() {
+    return {
+      ...this.defaults,
+      dailyFileBytesLimit: this.defaults.dailyFileBytesLimit.toString(),
+    };
+  }
+
+  async setDefaultLimits(input: {
+    dailyMsgLimit: number;
+    dailyRequestLimit: number;
+    dailyFileLimit: number;
+    dailyFileBytesLimit: string;
+  }) {
+    const defaults = validateUserQuotaDefaults(input);
+    const value = JSON.stringify({
+      ...defaults,
+      dailyFileBytesLimit: defaults.dailyFileBytesLimit.toString(),
+    });
+    await this.database.db
+      .insert(systemSetting)
+      .values({ key: USER_QUOTA_DEFAULTS_KEY, value, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: systemSetting.key,
+        set: { value, updatedAt: new Date() },
+      });
+    this.defaults = defaults;
+    return this.getDefaultLimits();
+  }
 
   async getState(userId: number): Promise<UserQuotaState> {
     await this.assertLocalAccount(userId);
@@ -601,11 +631,44 @@ function retryAfterSeconds(): number {
   return Math.max(1, Math.ceil((next - now.getTime()) / 1000));
 }
 
-function quotaIntEnv(key: string, fallback: number): number {
-  const raw = process.env[key];
-  if (raw === undefined || raw === '') return fallback;
-  const value = Number(raw);
-  return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+const USER_QUOTA_DEFAULTS_KEY = 'quota:localUserDefaults';
+
+function defaultUserQuotaLimits(): UserQuotaDefaults {
+  return {
+    dailyMsgLimit: 1000,
+    dailyRequestLimit: 50,
+    dailyFileLimit: 100,
+    dailyFileBytesLimit: 500n * 1024n * 1024n,
+  };
+}
+
+function parseUserQuotaDefaults(raw: string): UserQuotaDefaults {
+  return validateUserQuotaDefaults(JSON.parse(raw) as Record<string, unknown>);
+}
+
+function validateUserQuotaDefaults(
+  input: Record<string, unknown>,
+): UserQuotaDefaults {
+  const integer = (name: string): number => {
+    const value = input[name];
+    if (!Number.isSafeInteger(value) || (value as number) < 0)
+      throw new Error(`${name} must be a non-negative safe integer`);
+    return value as number;
+  };
+  const rawBytes = input.dailyFileBytesLimit;
+  if (typeof rawBytes !== 'string' || !/^\d+$/.test(rawBytes))
+    throw new Error(
+      'dailyFileBytesLimit must be a non-negative integer string',
+    );
+  const dailyFileBytesLimit = BigInt(rawBytes);
+  if (dailyFileBytesLimit > BigInt(Number.MAX_SAFE_INTEGER))
+    throw new Error('dailyFileBytesLimit exceeds the safe supported range');
+  return {
+    dailyMsgLimit: integer('dailyMsgLimit'),
+    dailyRequestLimit: integer('dailyRequestLimit'),
+    dailyFileLimit: integer('dailyFileLimit'),
+    dailyFileBytesLimit,
+  };
 }
 
 function normalizeOverrides(input: QuotaOverrides): QuotaOverrides {

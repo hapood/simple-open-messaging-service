@@ -1,5 +1,5 @@
 // Backend base: same-origin relative path (dev via vite proxy /api → :3000; prod same-origin path-prefix).
-export const API_BASE = '/api/v1'
+export const API_BASE = '/api/v1';
 
 // Business codes (align with backend src/common/business-code.ts)
 export const CODE = {
@@ -27,12 +27,10 @@ export const CODE = {
   WEBAUTHN_CHALLENGE_EXPIRED: 10024,
   WEBAUTHN_VERIFICATION_FAILED: 10025,
   INTERNAL: 10999,
-  VAPID_INVALID: 60001,
-} as const
-
+} as const;
 
 // Password grammar (6-20 chars of [a-zA-Z0-9.@!#$%^&*()]); the same rule the backend enforces on every password input.
-export const PASSWORD_REGEX = /^([a-zA-Z0-9.@!#$%^&*()]){6,20}$/
+export const PASSWORD_REGEX = /^([a-zA-Z0-9.@!#$%^&*()]){6,20}$/;
 
 // Login-method policy advertised by the backend GET /config (mirrors src/config/public-config.ts).
 // A `const` object + derived type (not an enum): cleaner runtime output than an enum's IIFE, and the
@@ -41,16 +39,16 @@ export const LoginMode = {
   ALL: 1, // password everywhere; OTP on Android; QR on desktop/web
   APP_OTP_AND_QR: 2, // password disabled; Android logs in via OTP; desktop/web via QR
   PASSWORD_ONLY: 3, // password only on every client
-} as const
-export type LoginMode = (typeof LoginMode)[keyof typeof LoginMode]
+} as const;
+export type LoginMode = (typeof LoginMode)[keyof typeof LoginMode];
 
 /** Password login is available under ALL and PASSWORD_ONLY; disabled under APP_OTP_AND_QR. */
 export function isPasswordLoginEnabled(mode: number): boolean {
-  return mode === LoginMode.ALL || mode === LoginMode.PASSWORD_ONLY
+  return mode === LoginMode.ALL || mode === LoginMode.PASSWORD_ONLY;
 }
 
 /** Public site config (GET /config) — drives client-side gating (e.g. the create-user password field). */
 export interface PublicConfig {
-  registrationOpen: boolean
-  loginMode: number
+  registrationOpen: boolean;
+  loginMode: number;
 }

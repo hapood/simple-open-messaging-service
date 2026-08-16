@@ -1,7 +1,13 @@
-import { existsSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { HttpStatus, Injectable, Logger } from '@nestjs/common';
+import {
+  HttpStatus,
+  Inject,
+  Injectable,
+  Logger,
+  Optional,
+} from '@nestjs/common';
 import {
   applicationDefault,
   getApps,
@@ -61,15 +67,15 @@ type FcmProbeEntry = FcmProbeStatus & {
  *  - ANDROID / IOS → firebase-admin `sendEach` (data-only, high priority).
  *  - WEB           → `web-push` lib (standard Web Push + VAPID), payload is the JSON-stringified signal.
  *
- * Degradation: each transport is independently gated on its own config — GOOGLE_APPLICATION_CREDENTIALS
- * (default data/firebase-service-account.json) for FCM, the DB-backed VAPID keypair (SettingsService,
- * admin-managed) for Web Push. Either missing
+ * Degradation: each transport is independently gated on its own config — the operator-provided
+ * data/firebase-service-account.json for FCM and the managed VAPID keypair for Web Push. Either missing
  * → that transport no-ops (the other still works; both missing → SSE-only, the local/dev path).
  */
 @Injectable()
 export class PushService {
   private readonly logger = new Logger(PushService.name);
   private readonly messaging: Messaging | null;
+  private readonly fcmCredentialPath: string;
   private readonly fcmProbes = new Map<string, FcmProbeEntry>();
   private readonly fcmProbeCooldowns = new Map<string, number>();
 
@@ -77,30 +83,29 @@ export class PushService {
     private readonly database: DatabaseService,
     private readonly sse: SseService,
     private readonly settings: SettingsService,
+    @Optional()
+    @Inject('SOMS_TEST_FIREBASE_SERVICE_ACCOUNT_PATH')
+    testFirebaseServiceAccountPath?: string,
   ) {
-    // FCM: use the same <cwd>/data convention in local development and Docker (/app/data). An explicit
-    // GOOGLE_APPLICATION_CREDENTIALS overrides the conventional filename. applicationDefault() requires
-    // the resolved path in the environment, so populate it when the default file exists.
-    const explicitCredentialPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
-    const credentialPath =
-      explicitCredentialPath ||
+    this.fcmCredentialPath =
+      testFirebaseServiceAccountPath ??
       join(process.cwd(), 'data', 'firebase-service-account.json');
-    if (existsSync(credentialPath)) {
-      process.env.GOOGLE_APPLICATION_CREDENTIALS = credentialPath;
+    if (existsSync(this.fcmCredentialPath)) {
+      process.env.GOOGLE_APPLICATION_CREDENTIALS = this.fcmCredentialPath;
       const app = getApps().length
         ? getApp()
         : initializeApp({ credential: applicationDefault() });
       this.messaging = getMessaging(app);
       this.logger.log(
-        'FCM messaging initialized from GOOGLE_APPLICATION_CREDENTIALS',
+        `FCM messaging initialized from ${this.fcmCredentialPath}`,
       );
     } else {
       this.messaging = null;
       this.logger.warn(
-        `FCM service-account file not found at ${credentialPath} — FCM dispatch disabled`,
+        `FCM service-account file not found at ${this.fcmCredentialPath} — FCM dispatch disabled`,
       );
     }
-    // Web Push: VAPID keys are now DB-backed (SettingsService, admin-managed) and passed PER SEND as the
+    // Web Push: VAPID keys are fixed-file managed by SettingsService and passed PER SEND as the
     // vapidDetails option (see sendWebPush) — NOT the module-global setVapidDetails. Nothing to init here:
     // settings.isWebPushConfigured is the runtime gate, and an admin key rotation takes effect on the next
     // send with no restart.
@@ -359,7 +364,7 @@ export class PushService {
         }
       }
 
-      // Web Push path (browser/PWA). VAPID is read per send from SettingsService (DB-backed,
+      // Web Push path (browser/PWA). VAPID is read per send from SettingsService (file-backed,
       // admin-managed), so the gate is whether a keypair is configured. sendWebPush throws on failure →
       // 404/410 = subscription expired/gone (prune), anything else is transient.
       if (webSubs.length > 0 && this.settings.isWebPushConfigured) {
@@ -521,11 +526,51 @@ export class PushService {
 
   // ── admin surface ────────────────────────────────────────────────────────────
 
-  /** FCM transport configured (GOOGLE_APPLICATION_CREDENTIALS set + firebase-admin initialized). */
+  /** FCM transport configured (the conventional service-account file loaded successfully). */
   get fcmConfigured(): boolean {
     return this.messaging !== null;
   }
-  /** Web Push transport configured (a VAPID keypair is set in the settings DB). */
+
+  /** Read-only metadata for the operator-provided Firebase credential. Never exposes credential content. */
+  getFcmCredentialStatus() {
+    if (!existsSync(this.fcmCredentialPath)) {
+      return { configured: false, valid: false, reason: 'file not found' };
+    }
+    try {
+      const raw = readFileSync(this.fcmCredentialPath, 'utf8');
+      const value = JSON.parse(raw) as Record<string, unknown>;
+      const valid =
+        value.type === 'service_account' &&
+        typeof value.project_id === 'string' &&
+        typeof value.client_email === 'string' &&
+        typeof value.private_key === 'string';
+      const stat = statSync(this.fcmCredentialPath);
+      return {
+        configured: true,
+        valid,
+        projectId:
+          typeof value.project_id === 'string' ? value.project_id : undefined,
+        clientEmail:
+          typeof value.client_email === 'string'
+            ? value.client_email
+            : undefined,
+        fingerprint: createHash('sha256')
+          .update(raw)
+          .digest('hex')
+          .slice(0, 16),
+        createdAt: stat.birthtime.toISOString(),
+        permissionsSecure: (stat.mode & 0o077) === 0,
+        reason: valid ? undefined : 'invalid Firebase service-account JSON',
+      };
+    } catch {
+      return {
+        configured: true,
+        valid: false,
+        reason: 'invalid Firebase service-account JSON',
+      };
+    }
+  }
+  /** Web Push transport configured (the managed VAPID key file loaded successfully). */
   get webPushConfigured(): boolean {
     return this.settings.isWebPushConfigured;
   }

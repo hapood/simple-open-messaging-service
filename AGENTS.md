@@ -1,5 +1,14 @@
 # Repository Guidelines
 
+## Guiding Principle
+
+Make technical decisions according to the best practice for the scenario rather
+than development cost. Do not trade correctness, security, maintainability, or
+architectural cleanliness for faster delivery, fewer changes, or lower
+regression risk. This does not imply rewriting by default: make the smallest
+change when that is the best solution, and accept a larger change when it is
+necessary.
+
 ## Project Structure & Module Organization
 
 The NestJS API lives in `src/`. Keep domain logic in feature directories such as
@@ -34,6 +43,40 @@ as enforced by Prettier and ESLint. Follow NestJS suffixes such as
 PascalCase for classes/types, camelCase for variables and functions, and
 kebab-case for filenames and Angular component directories. Prefer focused
 feature modules.
+
+Write code comments and documentation in English. Do not mix languages within
+a single file or document.
+
+## Documentation References
+
+Keep source code and documentation decoupled: references run from documentation
+to source, never from source to documentation. Markdown documentation may link
+to source files for context. Source files, SQL, and configuration must explain
+their behavior directly and must not refer to documentation paths. This keeps
+source comments valid when documentation is reorganized.
+
+## CSS Integer-Pixel Rule
+
+Every value contributing to an element's rendered height must be an integer
+number of CSS pixels. This includes `height`, `min-height`, `max-height`,
+vertical padding, vertical border width, vertical gap, and especially
+`line-height`. Use an integer pixel length such as `line-height: 20px`; do not
+use unitless, `em`, or `normal` line heights for measured content.
+
+This rule keeps the virtual-scroll height model, which sums integer
+`offsetHeight` values, aligned with `scrollHeight`. Horizontal sizing may be
+fractional because it changes only the number of wrapped lines. Fractional
+values are also acceptable for non-box visual properties such as opacity,
+transforms, shadows, gradient angles, border radii, and animation timing.
+
+Keep inline content no taller than its line height. Oversized emoji or inline
+images can expand a line box beyond its declared integer height; chat images
+instead belong in album rows whose layout rounds every cell height.
+
+Do not replace `offsetHeight` with `getBoundingClientRect().height` to address
+height drift. Bounding rectangles include active scale transforms from chat-box
+animations and would introduce measurement jitter. Keep `offsetHeight` as the
+transform-invariant measurement API and enforce integer heights in CSS.
 
 ## Testing Guidelines
 

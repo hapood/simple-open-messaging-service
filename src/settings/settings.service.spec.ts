@@ -7,13 +7,12 @@ import type { DatabaseService } from '../database/database.service.js';
 
 /**
  * SettingsService Firebase client config (file-based, 2026-07-23): the 4 fields are read once at boot from
- * FIREBASE_CLIENT_CONFIG (default data/google-services.json) and cached for the process lifetime. These
+ * data/google-services.json and cached for the process lifetime. These
  * specs pin that boot-read contract — valid file → 4 fields; missing/malformed → null (unconfigured); and
  * the boot value is cached (a later file change is NOT picked up without a restart). Every test points
- * FIREBASE_CLIENT_CONFIG at a temp file so the real data/google-services.json is never touched.
+ * specs inject a temp path so the real data/google-services.json is never touched.
  */
 
-// The Firebase path only refreshes the absent VAPID row during boot.
 const databaseStub = {
   db: {
     query: { systemSetting: { findFirst: async () => undefined } },
@@ -35,31 +34,35 @@ const validJson = JSON.stringify({
 
 describe('SettingsService — Firebase client config (file-based, boot-loaded)', () => {
   let dir: string;
-  let savedEnv: string | undefined;
+  let savedDomain: string | undefined;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'soms-fb-'));
-    savedEnv = process.env.FIREBASE_CLIENT_CONFIG;
+    savedDomain = process.env.SOMS_DOMAIN;
+    process.env.SOMS_DOMAIN = 'settings.test';
   });
 
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
-    if (savedEnv === undefined) delete process.env.FIREBASE_CLIENT_CONFIG;
-    else process.env.FIREBASE_CLIENT_CONFIG = savedEnv;
+    if (savedDomain === undefined) delete process.env.SOMS_DOMAIN;
+    else process.env.SOMS_DOMAIN = savedDomain;
   });
 
   /** Boot a fresh service (runs onModuleInit → the eager disk read) and return it. No teardown needed:
    *  @Interval only schedules inside a Nest context, and this direct instantiation starts no timer. */
   async function boot(): Promise<SettingsService> {
-    const s = new SettingsService(databaseStub);
+    const s = new SettingsService(
+      databaseStub,
+      join(dir, 'vapid-key.json'),
+      join(dir, 'google-services.json'),
+    );
     await s.onModuleInit();
     return s;
   }
 
-  it('loads the 4 fields at boot from FIREBASE_CLIENT_CONFIG', async () => {
+  it('loads the 4 fields at boot from the conventional file', async () => {
     const p = join(dir, 'google-services.json');
     writeFileSync(p, validJson);
-    process.env.FIREBASE_CLIENT_CONFIG = p;
     const s = await boot();
     expect(s.getFirebaseConfig()).toEqual({
       apiKey: 'AIzaSyabcdefghijklmnopqrstuvwxyz1234567890',
@@ -70,7 +73,6 @@ describe('SettingsService — Firebase client config (file-based, boot-loaded)',
   });
 
   it('is unconfigured (null) when the file is missing', async () => {
-    process.env.FIREBASE_CLIENT_CONFIG = join(dir, 'nope.json'); // does not exist
     const s = await boot();
     expect(s.getFirebaseConfig()).toBeNull();
     expect(s.firebaseClientConfigured).toBe(false);
@@ -97,7 +99,6 @@ describe('SettingsService — Firebase client config (file-based, boot-loaded)',
   it('is unconfigured (null) when the file is malformed', async () => {
     const p = join(dir, 'bad.json');
     writeFileSync(p, '{not json');
-    process.env.FIREBASE_CLIENT_CONFIG = p;
     const s = await boot();
     expect(s.getFirebaseConfig()).toBeNull();
   });
@@ -105,7 +106,6 @@ describe('SettingsService — Firebase client config (file-based, boot-loaded)',
   it('caches the boot read — a later file change is not picked up without a restart', async () => {
     const p = join(dir, 'google-services.json');
     writeFileSync(p, validJson);
-    process.env.FIREBASE_CLIENT_CONFIG = p;
     const s = await boot();
     expect(s.getFirebaseConfig()).not.toBeNull();
     // Corrupt the file AFTER boot — the cached boot value still wins (proves it's read once at startup, not

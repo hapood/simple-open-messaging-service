@@ -9,9 +9,8 @@
  * - 40xxx   group domain
  * - 50xxx   federation S2S (recognition required / bad signature / binding violation / duplicate /
  *           unsupported type / malformed)
- * - 60xxx   admin settings (VAPID keypair validation)
  *
- * Convention (see protocol-plan §5.2): business outcomes always return HTTP 200 + a business code;
+ * Convention (see docs/api/api.md): business outcomes always return HTTP 200 + a business code;
  * only the protocol/system layer — unauthenticated(401) / not-found(404) / conflict(409) /
  * server-error(500) — retains its HTTP status code for the broad category, with body.code mapped
  * to the matching 10xxx segment. The S2S friend-op endpoints are entirely protocol/system-tier
@@ -119,7 +118,6 @@ export enum BusinessCode {
   FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE = 50025, // HTTP 200 + { retryAfter }; peer is not degraded
 
   // 60xxx settings (admin-managed runtime config)
-  VAPID_INVALID = 60001, // VAPID keypair failed validation (malformed / mismatched pair / bad subject)
 
   // 70xxx 1:1 WebRTC call domain (signaling coordinator + lifecycle; media is P2P)
   CALL_NOT_ALLOWED = 70001, // cannot call this user (not friends / no active P2P thread)

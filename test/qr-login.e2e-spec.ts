@@ -29,10 +29,6 @@ describe('QR login e2e', () => {
     // Rate-limit behavior has dedicated coverage. This suite intentionally
     // polls and recreates QR sessions from one loopback address, so isolate the
     // state-machine assertions from production-sized in-memory buckets.
-    process.env.RATE_LIMIT_AUTH_QR_CREATE_MODE = 'disabled';
-    process.env.RATE_LIMIT_AUTH_QR_POLL_MODE = 'disabled';
-    process.env.RATE_LIMIT_AUTH_QR_SCAN_MODE = 'disabled';
-    process.env.RATE_LIMIT_AUTH_QR_CONFIRM_MODE = 'disabled';
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();

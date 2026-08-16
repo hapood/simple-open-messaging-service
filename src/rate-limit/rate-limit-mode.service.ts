@@ -1,4 +1,7 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
+import { eq } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
+import { systemSetting } from '../database/schema.js';
 import type { RateLimitMode } from './rate-limit.types.js';
 
 export interface TokenBucketConfig {
@@ -19,27 +22,24 @@ export interface AuthRateLimitConfig {
 type BucketName = Exclude<keyof AuthRateLimitConfig, 'mode'>;
 
 interface PolicyDefinition {
-  envPrefix: string;
   buckets: Partial<Record<BucketName, TokenBucketConfig>>;
 }
 
 export interface AuthRateLimitPolicyConfigView {
   policy: string;
   mode: RateLimitMode;
-  modeEnv: string;
   buckets: Array<{
     name: BucketName;
     ratePerSecond: number;
     burst: number;
     enforce: boolean;
-    rateEnv: string;
-    burstEnv: string;
   }>;
 }
 
+const AUTH_RATE_LIMIT_SETTING_KEY = 'rateLimit:authPolicies';
+
 const POLICY_DEFINITIONS: Record<string, PolicyDefinition> = {
   'auth.password.login': {
-    envPrefix: 'RATE_LIMIT_AUTH_PASSWORD_LOGIN',
     buckets: {
       exactIp: bucket(1, 10),
       ipv6Prefix: bucket(5, 30),
@@ -47,7 +47,6 @@ const POLICY_DEFINITIONS: Record<string, PolicyDefinition> = {
     },
   },
   'auth.otp.login': {
-    envPrefix: 'RATE_LIMIT_AUTH_OTP_LOGIN',
     buckets: {
       exactIp: bucket(0.2, 3),
       ipv6Prefix: bucket(1, 10),
@@ -55,57 +54,54 @@ const POLICY_DEFINITIONS: Record<string, PolicyDefinition> = {
     },
   },
   'auth.qr.create': {
-    envPrefix: 'RATE_LIMIT_AUTH_QR_CREATE',
     buckets: {
       exactIp: bucket(0.2, 5),
       ipv6Prefix: bucket(1, 15),
     },
   },
   'auth.qr.poll': {
-    envPrefix: 'RATE_LIMIT_AUTH_QR_POLL',
     buckets: {
       exactIp: bucket(5, 15),
       qrToken: bucket(1, 3),
     },
   },
   'auth.qr.scan': {
-    envPrefix: 'RATE_LIMIT_AUTH_QR_SCAN',
     buckets: { user: bucket(0.5, 5), qrToken: bucket(1, 2) },
   },
   'auth.qr.confirm': {
-    envPrefix: 'RATE_LIMIT_AUTH_QR_CONFIRM',
     buckets: { user: bucket(0.5, 5), qrToken: bucket(1, 2) },
   },
-};
-
-const BUCKET_ENV_NAMES: Record<BucketName, string> = {
-  exactIp: 'IP',
-  ipv6Prefix: 'IPV6_PREFIX',
-  account: 'ACCOUNT',
-  qrToken: 'QR_TOKEN',
-  user: 'USER',
 };
 
 @Injectable()
 export class RateLimitModeService implements OnModuleInit {
   private readonly logger = new Logger(RateLimitModeService.name);
-  private readonly configs: Record<string, AuthRateLimitConfig>;
+  private configs: Record<string, AuthRateLimitConfig>;
 
-  constructor() {
-    this.configs = Object.fromEntries(
-      Object.entries(POLICY_DEFINITIONS).map(([policy, definition]) => [
-        policy,
-        resolvePolicyConfig(definition, process.env),
-      ]),
-    );
+  constructor(
+    @Optional() private readonly database?: DatabaseService,
+    @Optional()
+    @Inject('SOMS_TEST_RATE_LIMIT_CONFIGURATION')
+    private readonly testConfiguration?: unknown,
+  ) {
+    this.configs = testConfiguration
+      ? parseConfigurationInput(testConfiguration)
+      : defaultConfigs();
   }
 
-  onModuleInit(): void {
+  async onModuleInit(): Promise<void> {
+    if (this.database && !this.testConfiguration) {
+      const row = await this.database.db.query.systemSetting.findFirst({
+        where: eq(systemSetting.key, AUTH_RATE_LIMIT_SETTING_KEY),
+      });
+      if (row) this.configs = parseConfigs(row.value);
+    }
     this.logger.log({
       event: 'rate_limit_auth_config',
       policies: this.configs,
     });
   }
+
 
   forPolicy(name: string): AuthRateLimitConfig {
     const config = this.configs[name];
@@ -120,87 +116,121 @@ export class RateLimitModeService implements OnModuleInit {
       return {
         policy,
         mode: config.mode,
-        modeEnv: `${definition.envPrefix}_MODE`,
         buckets: (Object.keys(definition.buckets) as BucketName[]).map(
           (name) => {
             const value = config[name]!;
-            const prefix = `${definition.envPrefix}_${BUCKET_ENV_NAMES[name]}`;
             return {
               name,
               ratePerSecond: value.ratePerSecond,
               burst: value.burst,
               enforce: value.enforce,
-              rateEnv: `${prefix}_RATE_PER_SECOND`,
-              burstEnv: `${prefix}_BURST`,
             };
           },
         ),
       };
     });
   }
-}
 
-function resolvePolicyConfig(
-  definition: PolicyDefinition,
-  env: NodeJS.ProcessEnv,
-): AuthRateLimitConfig {
-  const result: AuthRateLimitConfig = {
-    mode: resolveRateLimitMode(
-      env[`${definition.envPrefix}_MODE`],
-      `${definition.envPrefix}_MODE`,
-    ),
-  };
-  for (const [name, defaults] of Object.entries(definition.buckets) as [
-    BucketName,
-    TokenBucketConfig,
-  ][]) {
-    const prefix = `${definition.envPrefix}_${BUCKET_ENV_NAMES[name]}`;
-    result[name] = {
-      ratePerSecond: resolvePositiveNumber(
-        env[`${prefix}_RATE_PER_SECOND`],
-        `${prefix}_RATE_PER_SECOND`,
-        defaults.ratePerSecond,
-      ),
-      burst: resolvePositiveNumber(
-        env[`${prefix}_BURST`],
-        `${prefix}_BURST`,
-        defaults.burst,
-      ),
-      enforce: defaults.enforce,
-    };
-    if (result[name]!.burst < result[name]!.ratePerSecond) {
-      throw new Error(
-        `${prefix}_BURST must be greater than or equal to ${prefix}_RATE_PER_SECOND`,
-      );
-    }
+  async setConfiguration(
+    input: unknown,
+  ): Promise<AuthRateLimitPolicyConfigView[]> {
+    if (!this.database) throw new Error('database is unavailable');
+    const configs = parseConfigurationInput(input);
+    const value = JSON.stringify(configurationView(configs));
+    await this.database.db
+      .insert(systemSetting)
+      .values({
+        key: AUTH_RATE_LIMIT_SETTING_KEY,
+        value,
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: systemSetting.key,
+        set: { value, updatedAt: new Date() },
+      });
+    this.configs = configs;
+    return this.monitoringConfig();
   }
-  return result;
 }
 
-export function resolveRateLimitMode(
-  raw: string | undefined,
-  variable: string,
-): RateLimitMode {
-  const value = raw?.trim().toLowerCase();
-  if (!value || value === 'enforce') return 'enforce';
-  if (value === 'shadow') return 'shadow';
-  if (value === 'enforce' || value === 'disabled') return value;
-  throw new Error(
-    `${variable} must be one of disabled, shadow, or enforce; received ${JSON.stringify(raw)}`,
+function defaultConfigs(): Record<string, AuthRateLimitConfig> {
+  return Object.fromEntries(
+    Object.entries(POLICY_DEFINITIONS).map(([policy, definition]) => [
+      policy,
+      { mode: 'enforce', ...structuredClone(definition.buckets) },
+    ]),
   );
 }
 
-export function resolvePositiveNumber(
-  raw: string | undefined,
-  variable: string,
-  defaultValue: number,
-): number {
-  if (raw === undefined || raw.trim() === '') return defaultValue;
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new Error(`${variable} must be a finite number greater than zero`);
+function parseConfigs(raw: string): Record<string, AuthRateLimitConfig> {
+  return parseConfigurationInput(JSON.parse(raw));
+}
+
+function configurationView(
+  configs: Record<string, AuthRateLimitConfig>,
+): AuthRateLimitPolicyConfigView[] {
+  return Object.entries(POLICY_DEFINITIONS).map(([policy, definition]) => ({
+    policy,
+    mode: configs[policy].mode,
+    buckets: (Object.keys(definition.buckets) as BucketName[]).map((name) => ({
+      name,
+      ...configs[policy][name]!,
+    })),
+  }));
+}
+
+function parseConfigurationInput(
+  input: unknown,
+): Record<string, AuthRateLimitConfig> {
+  if (!Array.isArray(input))
+    throw new Error('rate-limit configuration must be an array');
+  const result = defaultConfigs();
+  if (input.length !== Object.keys(result).length) {
+    throw new Error(
+      'rate-limit configuration must include every authentication policy',
+    );
   }
-  return value;
+  for (const item of input) {
+    if (!item || typeof item !== 'object')
+      throw new Error('invalid rate-limit policy');
+    const value = item as Record<string, unknown>;
+    const policy = value.policy;
+    if (typeof policy !== 'string' || !POLICY_DEFINITIONS[policy]) {
+      throw new Error('unknown authentication rate-limit policy');
+    }
+    const mode = value.mode;
+    if (mode !== 'disabled' && mode !== 'shadow' && mode !== 'enforce') {
+      throw new Error(`invalid mode for ${policy}`);
+    }
+    if (!Array.isArray(value.buckets))
+      throw new Error(`invalid buckets for ${policy}`);
+    const expected = POLICY_DEFINITIONS[policy].buckets;
+    const config: AuthRateLimitConfig = { mode };
+    if (value.buckets.length !== Object.keys(expected).length) {
+      throw new Error(`configuration must include every bucket for ${policy}`);
+    }
+    for (const rawBucket of value.buckets) {
+      if (!rawBucket || typeof rawBucket !== 'object')
+        throw new Error(`invalid bucket for ${policy}`);
+      const candidate = rawBucket as Record<string, unknown>;
+      const name = candidate.name as BucketName;
+      const defaults = expected[name];
+      if (!defaults) throw new Error(`unknown bucket for ${policy}`);
+      const ratePerSecond = Number(candidate.ratePerSecond);
+      const burst = Number(candidate.burst);
+      if (
+        !Number.isFinite(ratePerSecond) ||
+        ratePerSecond <= 0 ||
+        !Number.isFinite(burst) ||
+        burst < ratePerSecond
+      ) {
+        throw new Error(`invalid rate or burst for ${policy}.${name}`);
+      }
+      config[name] = { ratePerSecond, burst, enforce: defaults.enforce };
+    }
+    result[policy] = config;
+  }
+  return result;
 }
 
 function bucket(

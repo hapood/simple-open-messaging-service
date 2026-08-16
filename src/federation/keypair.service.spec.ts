@@ -63,26 +63,22 @@ describe('KeypairService identity continuity', () => {
   let directory: string;
   let keyPath: string;
   const originalDomain = process.env.SOMS_DOMAIN;
-  const originalKeyPath = process.env.SOMS_S2S_KEY_PATH;
 
   beforeEach(() => {
     directory = mkdtempSync(join(tmpdir(), 'soms-keypair-'));
     keyPath = join(directory, 'soms-s2s-key.json');
     process.env.SOMS_DOMAIN = 'node-a.example';
-    process.env.SOMS_S2S_KEY_PATH = keyPath;
   });
 
   afterEach(() => {
     rmSync(directory, { recursive: true, force: true });
     if (originalDomain === undefined) delete process.env.SOMS_DOMAIN;
     else process.env.SOMS_DOMAIN = originalDomain;
-    if (originalKeyPath === undefined) delete process.env.SOMS_S2S_KEY_PATH;
-    else process.env.SOMS_S2S_KEY_PATH = originalKeyPath;
   });
 
   it('generates and anchors a v1 identity only for a fresh database', async () => {
     const fake = fakeDatabase();
-    const service = new KeypairService(fake.database);
+    const service = new KeypairService(fake.database, keyPath);
 
     await service.initialize();
 
@@ -117,7 +113,7 @@ describe('KeypairService identity continuity', () => {
     };
     writeFileSync(keyPath, JSON.stringify(legacy), { mode: 0o600 });
     const fake = fakeDatabase();
-    const service = new KeypairService(fake.database);
+    const service = new KeypairService(fake.database, keyPath);
 
     await service.initialize();
 
@@ -130,7 +126,7 @@ describe('KeypairService identity continuity', () => {
 
   it('does not generate a replacement when federation history exists', async () => {
     const fake = fakeDatabase({ hasHistory: true });
-    const service = new KeypairService(fake.database);
+    const service = new KeypairService(fake.database, keyPath);
 
     await service.initialize();
 
@@ -149,20 +145,20 @@ describe('KeypairService identity continuity', () => {
 
   it('disables federation when the root key differs from the DB anchor', async () => {
     const firstDb = fakeDatabase();
-    const first = new KeypairService(firstDb.database);
+    const first = new KeypairService(firstDb.database, keyPath);
     await first.initialize();
     const anchor = firstDb.getAnchor();
     expect(anchor).toBeDefined();
 
     rmSync(keyPath);
     const replacementDb = fakeDatabase();
-    const replacement = new KeypairService(replacementDb.database);
+    const replacement = new KeypairService(replacementDb.database, keyPath);
     await replacement.initialize();
     const replacementFile = readFileSync(keyPath);
 
     const checkingDb = fakeDatabase({ anchor });
     writeFileSync(keyPath, replacementFile, { mode: 0o600 });
-    const checking = new KeypairService(checkingDb.database);
+    const checking = new KeypairService(checkingDb.database, keyPath);
     await checking.initialize();
 
     expect(checking.getStatus()).toMatchObject({
@@ -173,11 +169,11 @@ describe('KeypairService identity continuity', () => {
 
   it('disables federation when SOMS_DOMAIN changes', async () => {
     const fake = fakeDatabase();
-    const first = new KeypairService(fake.database);
+    const first = new KeypairService(fake.database, keyPath);
     await first.initialize();
 
     process.env.SOMS_DOMAIN = 'node-b.example';
-    const changed = new KeypairService(fake.database);
+    const changed = new KeypairService(fake.database, keyPath);
     await changed.initialize();
 
     expect(changed.getStatus()).toMatchObject({
@@ -188,7 +184,7 @@ describe('KeypairService identity continuity', () => {
 
   it('does not replace a malformed key file', async () => {
     writeFileSync(keyPath, '{not-json', { mode: 0o600 });
-    const service = new KeypairService(fakeDatabase().database);
+    const service = new KeypairService(fakeDatabase().database, keyPath);
 
     await service.initialize();
 

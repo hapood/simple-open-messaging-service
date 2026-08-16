@@ -2,7 +2,7 @@
  * Generate an RFC 4122 v4 UUID — always spec-compliant, in any context.
  *
  * `crypto.randomUUID()` is the natural source but is gated to SECURE contexts (https or localhost): it is `undefined`
- * on a plain-HTTP non-localhost origin (e.g. http://192.168.2.7:4200). The naïve `?? Date.now()+Math.random()` fallback
+ * on a plain-HTTP non-localhost origin (e.g. http://10.0.0.7:4200). The naïve `?? Date.now()+Math.random()` fallback
  * used in three call sites produced a NON-UUID string there, which the backend rejects for fields that validate UUID
  * format (`SendMessageDto.clientMessageId` → code 10000 "clientMessageId must be a UUID").
  *

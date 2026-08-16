@@ -653,8 +653,31 @@ export interface VapidDescriptor {
   updatedAt?: number;
 }
 
+export interface ServerKeyStatus {
+  id:
+    | 'federation-root'
+    | 'federation-signing'
+    | 'vapid'
+    | 'admin-jwt'
+    | 'password-pepper'
+    | 'two-factor'
+    | 'firebase-service-account';
+  kind: 'asymmetric' | 'symmetric' | 'external';
+  configured: boolean;
+  valid?: boolean;
+  available?: boolean;
+  reason?: string;
+  publicKey?: string;
+  fingerprint?: string;
+  keyId?: string;
+  createdAt?: string;
+  permissionsSecure?: boolean;
+  projectId?: string;
+  clientEmail?: string;
+}
+
 /** Firebase client config (FCM for Android) as seen by the admin read-only status view. Derived from the
- *  operator's google-services.json on disk (FIREBASE_CLIENT_CONFIG); apiKey is intentionally absent (not
+ *  operator's data/google-services.json on disk; apiKey is intentionally absent (not
  *  needed for the admin display — parallel to the VAPID descriptor omitting privateKey).
  *  projectId/appId/gcmSenderId are shown as proof of which Firebase project is configured. */
 export interface FirebaseConfigDescriptor {
@@ -668,7 +691,7 @@ export interface FirebaseConfigDescriptor {
 export interface NotificationSettings {
   vapid: VapidDescriptor;
   firebase: FirebaseConfigDescriptor;
-  /** FCM SEND transport configured (GOOGLE_APPLICATION_CREDENTIALS service-account set server-side). */
+  /** FCM SEND transport configured (data/firebase-service-account.json loaded server-side). */
   fcmConfigured: boolean;
   somsDomain: string;
   /** Admin-configured one-time-code validity window, in minutes (default 10). */
@@ -682,6 +705,19 @@ export interface NotificationSettings {
     global: number;
     perPeer: number;
   };
+  userQuotaDefaults: {
+    dailyMsgLimit: number;
+    dailyRequestLimit: number;
+    dailyFileLimit: number;
+    dailyFileBytesLimit: string;
+  };
+  federationQuotaDefaults: {
+    dailyMsgLimit: number;
+    dailyRequestLimit: number;
+    dailySignalLimit: number;
+    dailyFileLimit: number;
+    dailyFileBytesLimit: number;
+  };
 }
 
 /** Deterministic VAPID health-check report (POST /admin/settings/health-check). */
@@ -693,28 +729,9 @@ export interface VapidHealthReport {
   subjectValid: boolean;
   /** FCM send transport configured (env service-account). */
   fcmConfigured: boolean;
-  /** FCM CLIENT config present (a google-services.json is on disk at FIREBASE_CLIENT_CONFIG). Independent of fcmConfigured. */
+  /** FCM CLIENT config present (data/google-services.json is valid). Independent of fcmConfigured. */
   firebaseClientConfigured: boolean;
   webPushConfigured: boolean;
   somsDomain: string;
   errors: string[];
-}
-
-/** Result of generate / save — publicKey + subject (never privateKey). */
-export interface VapidMutationResult {
-  configured: boolean;
-  subject: string;
-  publicKey: string;
-}
-
-/** Paste-an-existing-keypair payload. */
-export interface SaveVapidPayload {
-  subject: string;
-  publicKey: string;
-  privateKey: string;
-}
-
-/** Generate payload — subject is optional. */
-export interface GenerateVapidPayload {
-  subject?: string;
 }

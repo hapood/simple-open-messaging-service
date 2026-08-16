@@ -110,7 +110,7 @@ Cargo fetches crates; to route through the local proxy or the Tsinghua sparse mi
 
 ```toml
 [http]
-proxy = "http://192.168.88.8:8080"
+proxy = "http://127.0.0.1:8080"
 
 [registries.crates-io]
 # Or use the mirror instead of (or alongside) the proxy:

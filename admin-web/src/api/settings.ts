@@ -1,10 +1,8 @@
 import { request } from '@/api/client';
 import type {
-  GenerateVapidPayload,
   NotificationSettings,
-  SaveVapidPayload,
+  ServerKeyStatus,
   VapidHealthReport,
-  VapidMutationResult,
 } from '@/types/api';
 
 /** Notification transport config — VAPID status (subject + publicKey, never privateKey), FCM status, server domain. */
@@ -12,26 +10,8 @@ export function getNotificationSettings(): Promise<NotificationSettings> {
   return request<NotificationSettings>('/admin/settings/notifications');
 }
 
-/** Generate a fresh VAPID keypair server-side and persist it (privateKey never returned). */
-export function generateVapid(
-  payload: GenerateVapidPayload,
-): Promise<VapidMutationResult> {
-  return request<VapidMutationResult>(
-    '/admin/settings/vapid/generate',
-    payload,
-  );
-}
-
-/** Save (paste) an existing VAPID keypair — validated first server-side. */
-export function saveVapid(
-  payload: SaveVapidPayload,
-): Promise<VapidMutationResult> {
-  return request<VapidMutationResult>('/admin/settings/vapid/save', payload);
-}
-
-/** Remove the VAPID keypair (disables Web Push). */
-export function clearVapid(): Promise<void> {
-  return request<void>('/admin/settings/vapid/clear');
+export function getServerKeys(): Promise<ServerKeyStatus[]> {
+  return request<ServerKeyStatus[]>('/admin/settings/keys');
 }
 
 /** Set the one-time-code validity window (minutes, clamped 1-1440 server-side). Returns the stored value. */
@@ -63,6 +43,24 @@ export function setFederationHttpLimits(global: number, perPeer: number) {
   return request<{ global: number; perPeer: number }>(
     '/admin/settings/federation-http',
     { global, perPeer },
+  );
+}
+
+export function setUserQuotaDefaults(
+  value: NotificationSettings['userQuotaDefaults'],
+) {
+  return request<NotificationSettings['userQuotaDefaults']>(
+    '/admin/settings/user-quota-defaults',
+    value,
+  );
+}
+
+export function setFederationQuotaDefaults(
+  value: NotificationSettings['federationQuotaDefaults'],
+) {
+  return request<NotificationSettings['federationQuotaDefaults']>(
+    '/admin/settings/federation-quota-defaults',
+    value,
   );
 }
 

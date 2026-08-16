@@ -25,14 +25,14 @@ runtime:
    `app/build.gradle.kts` `applicationId` and `src-tauri/tauri.conf.json` `identifier`). **Do NOT register
    SHA-1** — data-only FCM doesn't need it, and skipping it avoids the cross-project "same package+signing"
    conflict (only Google Sign-In / App Check need SHA-1, which this app doesn't use).
-2. Operator: place `google-services.json` on the server at `data/google-services.json` (or override the
-   path with the `FIREBASE_CLIENT_CONFIG` env var) and restart the backend. It parses + validates the file
+2. Operator: place `google-services.json` on the server at `data/google-services.json`, or configure the
+   `FIREBASE_CLIENT_CONFIG` environment variable, and restart the backend. It parses and validates the file
    (the Android client must target `com.soms.client`) and publishes the 4 client fields at the public
-   `GET /push/firebase-config`. The admin console (Push → Transport config) is read-only status only — the
-   file is not edited there. The APK fetches these after resolving its server origin and initializes
+   `GET /api/v1/shell/compat` response. The admin console (Push → Transport config) is read-only status only —
+   the file is not edited there. The APK receives these after resolving its server origin and initializes
    FirebaseApp at process start (see SomsApplication / SomsFirebase).
 3. Operator (server-side sending): Project Settings → Service Accounts → "Generate new private key" → set
-   `GOOGLE_APPLICATION_CREDENTIALS=/abs/path/to/sa.json` in the backend `.env`. This is the SEND credential,
+   `data/firebase-service-account.json`. This is the SEND credential,
    independent of the client config above. Spark (free) tier is ample for chat push volume.
 
 Nothing is baked into the APK — the same APK serves every operator's Firebase project.
@@ -218,7 +218,7 @@ release build.
 | Kotlin → JS (token rotation, warm deep link) | `WebView.evaluateJavascript` calling a global hook (`window.__SOMS_FCM_TOKEN__`, `window.__SOMS_DEEP_LINK__`) | Mirrors the origin init-script pattern |
 | JS → Kotlin (token read, permission request) | `@JavascriptInterface` named `SomsFcm`, attached in `onWebViewCreate` | Mirrors `Ipc.kt`'s `@JavascriptInterface` pattern |
 | JS → Kotlin (firebase client config hand-off) | `SomsFcm.setFirebaseConfig(json)` / `getFirebaseConfig()` `@JavascriptInterface` | web fetches the server's 4 fields and hands them to native, which persists + (re)initializes FirebaseApp; null clears it |
-| Backend → client (public firebase config) | `GET /api/v1/push/firebase-config` (`@Public`) | the 4 client fields when configured, else `{configured:false}` |
+| Backend → client (public firebase config) | `GET /api/v1/shell/compat` (`@Public`) | its `firebase` field contains the 4 client fields when configured, else `{configured:false}` |
 | JS → backend (register HTTP) | `POST /api/v1/devices/register` | standard |
 
 No `@tauri-apps/api` dependency, no Tauri event permission, no custom Rust plugin — the bridge reuses

@@ -2,10 +2,10 @@
 
 ## Monitoring and tuning
 
-The administration console exposes a read-only **Rate Limits** page backed by
-`POST /admin/rate-limits`. It shows the effective environment-based configuration, aggregate request
-outcomes, the latest five-minute intervals, and deterministic warnings. It never returns IP addresses,
-accounts, users, QR tokens, or hashed bucket keys, and it cannot change configuration.
+The administration console exposes a **Rate Limits** page backed by
+`POST /admin/rate-limits`. It shows and edits the database-backed configuration alongside aggregate
+request outcomes, the latest five-minute intervals, and deterministic warnings. It never returns IP
+addresses, accounts, users, QR tokens, or hashed bucket keys.
 
 The in-process page history is bounded to 288 intervals (24 hours) and resets on service restart.
 Five-minute `rate_limit_summary` events remain in the rotating structured logs for longer-lived audit
@@ -21,14 +21,11 @@ letting an attacker lock out a named account.
 
 ## Configuration
 
-Each policy mode is controlled by `RATE_LIMIT_<POLICY>_MODE`, where the supported values are
-`disabled`, `shadow`, and `enforce`. An unset mode defaults to `enforce`. An explicit environment
-value always takes precedence, so a deployment that already sets `shadow` remains in shadow mode.
-
-Each bucket can override its token refill rate and burst capacity with
-`RATE_LIMIT_<POLICY>_<BUCKET>_RATE_PER_SECOND` and `RATE_LIMIT_<POLICY>_<BUCKET>_BURST`. Values must be
-finite and greater than zero, and burst must be at least the per-second rate. A configured invalid
-mode or number prevents startup. Unset values retain these reviewed defaults:
+Administrators can set each policy to `disabled`, `shadow`, or `enforce` and edit its token refill
+rate and burst capacity directly on the Rate Limits page. Saving writes the complete policy set to
+`SystemSetting` and applies it immediately without restarting the service. Values must be finite and
+greater than zero, and burst must be at least the per-second rate. Until the first save, these reviewed
+defaults apply:
 
 | Policy prefix         | Bucket        | Rate/second | Burst | Rejects in enforce mode |
 | --------------------- | ------------- | ----------: | ----: | ----------------------- |
@@ -47,10 +44,8 @@ mode or number prevents startup. Unset values retain these reviewed defaults:
 | `AUTH_QR_CONFIRM`     | `USER`        |         0.5 |     5 | yes                     |
 | `AUTH_QR_CONFIRM`     | `QR_TOKEN`    |           1 |     2 | yes                     |
 
-For example, the password exact-IP variables are
-`RATE_LIMIT_AUTH_PASSWORD_LOGIN_IP_RATE_PER_SECOND` and
-`RATE_LIMIT_AUTH_PASSWORD_LOGIN_IP_BURST`. At startup, `rate_limit_auth_config` logs the effective
-mode and thresholds for all policies. That event contains no client identifiers or secrets.
+At startup, `rate_limit_auth_config` logs the effective mode and thresholds for all policies. That
+event contains no client identifiers or secrets.
 
 ## Threshold review and shadow evaluation
 
@@ -83,7 +78,6 @@ duration. Also exercise a normal authentication flow from IPv4, IPv6, and any su
 path. Record the command, effective configuration, result, reviewer, monitoring window, and rollback
 owner in the deployment change.
 
-Rollback does not require a code deployment: set only the affected `RATE_LIMIT_<POLICY>_MODE` to
-`shadow` and restart the service. Verify the startup `rate_limit_auth_config` event reports `shadow`,
-then confirm authentication succeeds and summaries report would-block rather than blocked decisions.
-After correction and review, restore `enforce` and restart again.
+Rollback does not require a deployment or restart: set only the affected policy to `shadow` in Admin
+and save it. Confirm authentication succeeds and summaries report would-block rather than blocked
+decisions. After correction and review, restore `enforce`.

@@ -28,14 +28,9 @@
                 "input": "public"
               }
             ],
-            "styles": [
-              "src/styles.scss"
-            ],
+            "styles": ["src/styles.scss"],
             "scripts": [],
-            "allowedCommonJsDependencies": [
-              "dayjs",
-              "@messageformat/core"
-            ]
+            "allowedCommonJsDependencies": ["dayjs", "@messageformat/core"]
           },
           "configurations": {
             "production": {
@@ -71,6 +66,12 @@
               "optimization": false,
               "extractLicenses": false,
               "sourceMap": true
+            },
+            "playground": {
+              "optimization": true,
+              "extractLicenses": true,
+              "sourceMap": false,
+              "outputHashing": "all"
             }
           },
           "defaultConfiguration": "production"
@@ -106,9 +107,7 @@
                 "input": "public"
               }
             ],
-            "styles": [
-              "src/styles.scss"
-            ],
+            "styles": ["src/styles.scss"],
             "scripts": []
           }
         }

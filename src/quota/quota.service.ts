@@ -9,11 +9,9 @@ import {
   quotaDailyAllowance,
   quotaDailyUsage,
   quotaFileByteUsage,
+  systemSetting,
 } from '../database/schema.js';
-import {
-  loadQuotaConfig,
-  type QuotaConfig,
-} from '../federation/federation.config.js';
+import type { QuotaConfig } from '../federation/federation.config.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BreakerFlags, type BreakerDim } from './breaker-flags.js';
@@ -38,7 +36,7 @@ import { BreakerFlags, type BreakerDim } from './breaker-flags.js';
  */
 @Injectable()
 export class QuotaService implements OnModuleInit {
-  private readonly cfg: QuotaConfig = loadQuotaConfig();
+  private cfg: QuotaConfig = defaultFederationQuotaLimits();
   private readonly breaker = new BreakerFlags();
   constructor(private readonly database: DatabaseService) {}
 
@@ -48,7 +46,34 @@ export class QuotaService implements OnModuleInit {
    * overshooting tick re-set them. Idempotent + cheap (one domain per reconcile).
    */
   async onModuleInit(): Promise<void> {
+    const row = await this.database.db.query.systemSetting.findFirst({
+      where: eq(systemSetting.key, FEDERATION_QUOTA_DEFAULTS_KEY),
+    });
+    if (row) this.cfg = parseFederationQuotaLimits(row.value);
     await this.refreshAll();
+  }
+
+  getDefaultLimits(): QuotaConfig {
+    return { ...this.cfg };
+  }
+
+  async setDefaultLimits(input: Record<string, unknown>): Promise<QuotaConfig> {
+    const cfg = validateFederationQuotaLimits(input);
+    const value = JSON.stringify(cfg);
+    await this.database.db
+      .insert(systemSetting)
+      .values({
+        key: FEDERATION_QUOTA_DEFAULTS_KEY,
+        value,
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: systemSetting.key,
+        set: { value, updatedAt: new Date() },
+      });
+    this.cfg = cfg;
+    await this.refreshAll();
+    return this.getDefaultLimits();
   }
 
   /** Recompute every peer's breaker flags from persisted counters (startup + admin tooling). */
@@ -655,6 +680,42 @@ export class QuotaService implements OnModuleInit {
       );
     }
   }
+}
+
+const FEDERATION_QUOTA_DEFAULTS_KEY = 'quota:federationDefaults';
+
+function defaultFederationQuotaLimits(): QuotaConfig {
+  return {
+    dailyRequestLimit: 100,
+    dailyMsgLimit: 5000,
+    dailySignalLimit: 50_000,
+    dailyFileLimit: 500,
+    dailyFileBytesLimit: 5 * 1024 * 1024 * 1024,
+  };
+}
+
+function parseFederationQuotaLimits(raw: string): QuotaConfig {
+  return validateFederationQuotaLimits(
+    JSON.parse(raw) as Record<string, unknown>,
+  );
+}
+
+function validateFederationQuotaLimits(
+  input: Record<string, unknown>,
+): QuotaConfig {
+  const value = (name: keyof QuotaConfig): number => {
+    const candidate = input[name];
+    if (!Number.isSafeInteger(candidate) || (candidate as number) < 0)
+      throw new Error(`${name} must be a non-negative safe integer`);
+    return candidate as number;
+  };
+  return {
+    dailyRequestLimit: value('dailyRequestLimit'),
+    dailyMsgLimit: value('dailyMsgLimit'),
+    dailySignalLimit: value('dailySignalLimit'),
+    dailyFileLimit: value('dailyFileLimit'),
+    dailyFileBytesLimit: value('dailyFileBytesLimit'),
+  };
 }
 
 // ── types ──────────────────────────────────────────────────────────────────

@@ -74,7 +74,7 @@ describe('ShellUpdateService', () => {
   });
 
   it('check() uses the configured LAN origin while Rust reports secondary mode', async () => {
-    const lan = 'http://192.168.88.208:3000';
+    const lan = 'http://10.0.0.1:3000';
     const status = aStatus();
     apiOriginSecondary.set(lan);
     invokeSpy.withArgs('get_active_api_origin', undefined).and.resolveTo(lan);

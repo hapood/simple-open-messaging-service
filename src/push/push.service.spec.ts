@@ -12,7 +12,7 @@ import { PushService } from './push.service.js';
  * Web sw-push.js) routes on. A regression here (a stray body/preview field, a renamed `type`) silently
  * breaks the wake-up routing on every platform.
  *
- * FCM is disabled in the test env (GOOGLE_APPLICATION_CREDENTIALS unset → messaging=null), so these
+ * FCM is disabled by an injected missing file path, so these
  * cases exercise the Web Push branch — the payload is identical across transports (FCM data = the same
  * flat string map; Web Push = its JSON.stringify).
  */
@@ -30,7 +30,6 @@ describe('PushService — identity-only payloads', () => {
 
   beforeEach(() => {
     sendNotification.mockReset();
-    delete process.env.GOOGLE_APPLICATION_CREDENTIALS; // FCM disabled → exercise the Web Push branch
     pushToken = { findMany: vi.fn(), findFirst: vi.fn() };
     settings = {
       isWebPushConfigured: true,
@@ -45,6 +44,7 @@ describe('PushService — identity-only payloads', () => {
       { db: { query: { pushToken } } } as never,
       sse as never,
       settings as never,
+      '/definitely-not-present/soms-firebase-service-account.json',
     );
   });
 

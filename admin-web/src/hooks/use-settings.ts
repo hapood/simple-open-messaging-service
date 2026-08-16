@@ -1,20 +1,35 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   getNotificationSettings,
-  generateVapid,
-  saveVapid,
-  clearVapid,
+  getServerKeys,
   runVapidHealthCheck,
   setOtpTtl,
   setFederationDownloadLimits,
   setFederationHttpLimits,
+  setUserQuotaDefaults,
+  setFederationQuotaDefaults,
 } from '@/api/settings';
-import type { GenerateVapidPayload, SaveVapidPayload } from '@/types/api';
 
 /** Invalidate the settings read model — every mutation that changes VAPID state calls this. */
 function useInvalidateSettings() {
   const qc = useQueryClient();
   return () => qc.invalidateQueries({ queryKey: ['admin', 'settings'] });
+}
+
+export function useSetFederationQuotaDefaults() {
+  const invalidate = useInvalidateSettings();
+  return useMutation({
+    mutationFn: setFederationQuotaDefaults,
+    onSuccess: invalidate,
+  });
+}
+
+export function useSetUserQuotaDefaults() {
+  const invalidate = useInvalidateSettings();
+  return useMutation({
+    mutationFn: setUserQuotaDefaults,
+    onSuccess: invalidate,
+  });
 }
 
 export function useSetFederationHttpLimits() {
@@ -51,27 +66,10 @@ export function useNotificationSettings() {
   });
 }
 
-export function useGenerateVapid() {
-  const invalidate = useInvalidateSettings();
-  return useMutation({
-    mutationFn: (payload: GenerateVapidPayload) => generateVapid(payload),
-    onSuccess: invalidate,
-  });
-}
-
-export function useSaveVapid() {
-  const invalidate = useInvalidateSettings();
-  return useMutation({
-    mutationFn: (payload: SaveVapidPayload) => saveVapid(payload),
-    onSuccess: invalidate,
-  });
-}
-
-export function useClearVapid() {
-  const invalidate = useInvalidateSettings();
-  return useMutation({
-    mutationFn: () => clearVapid(),
-    onSuccess: invalidate,
+export function useServerKeys() {
+  return useQuery({
+    queryKey: ['admin', 'settings', 'keys'],
+    queryFn: () => getServerKeys(),
   });
 }
 

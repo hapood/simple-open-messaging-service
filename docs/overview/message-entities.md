@@ -2,7 +2,7 @@
 
 > This document describes the SOMS editor, storage, and rendering implementation. The normative
 > wire grammar, validation, escaping, and failure behavior are defined only by
-> [Federation v1 Message](../../spec/v1/message.md#51-inline-entity-与-mention).
+> [Federation v1 Message](../../spec/v1/message.md#51-inline-entities-and-mentions).
 
 SOMS stores rich-text entities inline in `Message.content`. The database keeps the serialized text;
 it does not maintain a second entity table. This is an implementation choice, not a Federation

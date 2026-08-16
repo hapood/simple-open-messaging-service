@@ -315,7 +315,7 @@ const ANIM_SAFETY_MS = 450;
 
 /** Maximum tolerated drift (px) between the kernel height model (totalH = Σ integer offsetHeight + tailCap) and the
  *  live content.scrollHeight, asserted only in the dev-mode integer-height check. Under the integer line-height contract
- *  (CLAUDE.md: every height-contributing value is integer px) the two agree up to a single rounding seam, so 1 px is the
+ *  (every height-contributing value is integer px) the two agree up to a single rounding seam, so 1 px is the
  *  expected envelope. A larger |d| means a row is rendering at a fractional height — the warning re-points at _row-base.
  *  This is a dev-only regression guard; runtime comparisons carry their own tolerances (≥1 px; balance uses cfg.edge). */
 const VS_DRIFT_TOLERANCE_PX = 1;

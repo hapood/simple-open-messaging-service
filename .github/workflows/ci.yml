@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+            admin-web/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix web
+          npm ci --prefix admin-web
+
+      - name: Build and test server
+        run: |
+          npm run build
+          npm test
+          npm run federation:conformance
+
+      - name: Build web client
+        run: npm run build --prefix web
+
+      - name: Build and test administration console
+        run: |
+          npm run build --prefix admin-web
+          npm test --prefix admin-web
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build runtime bases
+        run: |
+          docker buildx build --load --cache-from type=gha,scope=runtime-base --cache-to type=gha,mode=max,scope=runtime-base -f Dockerfile.base -t soms-base:latest .
+          docker buildx build --load --cache-from type=gha,scope=build-base --cache-to type=gha,mode=max,scope=build-base -f Dockerfile.build-base -t soms-build-base:latest .
+      - name: Build SOMS image
+        run: docker buildx build --load --cache-from type=gha,scope=app --cache-to type=gha,mode=max,scope=app -t soms:ci .
+      - name: Inspect image
+        run: docker image inspect soms:ci
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+      - uses: android-actions/setup-android@v3
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install Android NDK
+        run: sdkmanager 'ndk;27.1.12297006'
+      - name: Install frontend and Tauri tooling
+        run: |
+          npm ci --prefix web
+          cargo install tauri-cli --version 2.11.4 --locked
+      - name: Build arm64 debug APK
+        run: make -C src-tauri apk-debug ABI=aarch64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: soms-android-debug-arm64
+          path: src-tauri/dist/android/*.apk
+          if-no-files-found: error

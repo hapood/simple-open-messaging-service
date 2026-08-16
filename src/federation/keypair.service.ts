@@ -1,8 +1,10 @@
 import {
   HttpStatus,
+  Inject,
   Injectable,
   Logger,
   OnApplicationBootstrap,
+  Optional,
 } from '@nestjs/common';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import {
@@ -76,7 +78,12 @@ export class KeypairService implements OnApplicationBootstrap {
     reason: 'federation identity has not been initialized',
   };
 
-  constructor(private readonly database: DatabaseService) {}
+  constructor(
+    private readonly database: DatabaseService,
+    @Optional()
+    @Inject('SOMS_TEST_S2S_KEY_PATH')
+    private readonly testKeyPath?: string,
+  ) {}
 
   async onApplicationBootstrap(): Promise<void> {
     await this.initialize();
@@ -84,7 +91,7 @@ export class KeypairService implements OnApplicationBootstrap {
 
   /** Public for focused startup tests; normal application startup calls it through the Nest hook. */
   async initialize(): Promise<void> {
-    const path = resolve(this.config.keyPath);
+    const path = resolve(this.testKeyPath ?? this.config.keyPath);
     try {
       const anchor = await this.readAnchor();
       if (!existsSync(path)) {

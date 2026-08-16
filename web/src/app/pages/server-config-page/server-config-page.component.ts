@@ -123,7 +123,7 @@ export class ServerConfigPageComponent implements OnInit {
 
   readonly url = new FormControl(canonicalOrigin(apiOrigin()), {
     nonNullable: true,
-    // `required` rejects empty; the pattern rejects scheme-less input (e.g. "192.168.1.10:3000") so the
+    // `required` rejects empty; the pattern rejects scheme-less input (e.g. "10.0.0.10:3000") so the
     // user is guided inline instead of sending a bare host to Rust and getting an opaque failure.
     validators: [Validators.required, Validators.pattern(/^https?:\/\//i)],
   });

@@ -1,4 +1,10 @@
-import { Controller, Post, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from '../common/public.decorator.js';
 import { RateLimitModeService } from '../rate-limit/rate-limit-mode.service.js';
@@ -8,6 +14,10 @@ import {
 } from '../rate-limit/rate-limit.service.js';
 import { rateLimitAdvice } from '../rate-limit/rate-limit-monitoring.js';
 import { AdminAuthGuard } from './admin-auth.guard.js';
+import { AdminRolesGuard } from './admin-roles.guard.js';
+import { Roles } from './admin-roles.decorator.js';
+import { Audit } from './audit.decorator.js';
+import { AdminRole } from '../database/enums.js';
 
 @ApiTags('admin')
 @ApiBearerAuth()
@@ -65,6 +75,22 @@ export class RateLimitMonitoringController {
         };
       }),
     };
+  }
+
+  @Post('configuration')
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
+  @Audit('settings.rate-limits.save')
+  @ApiOperation({ summary: 'Replace authentication rate-limit configuration' })
+  async setConfiguration(@Body() body: unknown) {
+    try {
+      return await this.modes.setConfiguration(body);
+    } catch (error) {
+      if (error instanceof Error && error.message !== 'database is unavailable') {
+        throw new BadRequestException(error.message);
+      }
+      throw error;
+    }
   }
 }
 
