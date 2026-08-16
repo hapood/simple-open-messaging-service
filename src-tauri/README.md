@@ -58,6 +58,17 @@ clone builds without `tauri android init`. **Signing keys are NOT committed** (g
 - **Release** keystore + `gen/android/keystore.properties` are **secrets** — back them up out-of-band
   and restore them to `gen/android/` on a fresh clone.
 
+The tag-triggered GitHub Release workflow builds signed `arm64-v8a`, `armeabi-v7a`, and `x86_64`
+APKs. Configure these repository Actions secrets before creating a `v<package.version>` tag:
+
+- `ANDROID_KEYSTORE_BASE64`: base64 encoding of the release keystore file
+- `ANDROID_KEYSTORE_PASSWORD`: keystore password
+- `ANDROID_KEY_ALIAS`: signing key alias
+- `ANDROID_KEY_PASSWORD`: signing key password
+
+The workflow reconstructs the ignored signing files only inside its temporary runner, publishes the
+three APKs plus `SHA256SUMS`, and never uploads the keystore.
+
 See `FCM_ANDROID_PATCH.md` for the native-side (FCM, bridges, dev shell) details.
 
 ## macOS desktop build (wired)

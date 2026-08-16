@@ -31,8 +31,10 @@ From the repository root:
 ./scripts/build-image.sh
 ```
 
-The script builds missing local base images, then creates `soms:<version>` and `soms:latest`. The
-Compose examples reference `soms:latest`; `docker compose up` does not build it automatically.
+The script invokes the repository's Buildx Bake graph and creates `soms:<version>` and `soms:latest`.
+The runtime and compiler bases are internal, cached build targets: they are rebuilt when their inputs
+change and do not need to be published or preinstalled locally. The Compose examples reference
+`soms:latest`; `docker compose up` does not build it automatically.
 
 ## 2. Copy an Example
 
