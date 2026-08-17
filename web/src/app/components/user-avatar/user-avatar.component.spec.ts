@@ -91,14 +91,14 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
     expect(fixture.componentInstance.groupFill().from).not.toBe(userColor);
   });
 
-  it('uses the display name as the color seed while an identity is not available', () => {
+  it('uses the empty color seed while an identity is not available', () => {
     fixture.componentRef.setInput('type', UserAvatarType.GROUP);
     fixture.componentRef.setInput('name', 'Draft group');
     const color = fixture.componentInstance.groupFill().from;
 
     fixture.componentRef.setInput('name', 'Renamed draft');
 
-    expect(fixture.componentInstance.groupFill().from).not.toBe(color);
+    expect(fixture.componentInstance.groupFill().from).toBe(color);
   });
 
   it('uses a separate stable color identity without changing the avatar cache identity', () => {

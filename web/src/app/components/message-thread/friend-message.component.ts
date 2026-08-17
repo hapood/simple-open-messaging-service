@@ -263,6 +263,7 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly contentRef =
     viewChild<ElementRef<HTMLDivElement>>('content');
   private readonly stickyOverlays = viewChild(ChatboxStickyOverlaysComponent);
+  private stickyOverlayFrame = 0;
   private readonly transferStackRef =
     viewChild<ElementRef<HTMLDivElement>>('transferStack');
   /** The chat header element — its bottom edge is the STABLE visible-top reference for the sticky-date
@@ -1752,7 +1753,6 @@ export class MessageThreadComponent implements OnDestroy {
     this.atBottom.set(atVisibleBottom);
     if (atVisibleBottom) this.newMessageCount.set(0);
     this.mountedMessageCount.set(info.mounted);
-    this.updateStickyOverlays();
     this.probe.schedule(this.threadId() ?? 0);
     this.updateUnreadBoundaryPosition(info);
     this.stableRead.noteScroll();
@@ -1815,7 +1815,18 @@ export class MessageThreadComponent implements OnDestroy {
     setTimeout(clear, 1600);
   }
 
-  private updateStickyOverlays(): void {
+  /** Paint-only viewport tracking runs directly from the native scroll event so the detached avatar overlay
+   *  does not wait for the virtual scroller's balance/emit cycle. Coalesce high-frequency events so geometry
+   *  reads and Angular signal updates happen at most once per paint. */
+  scheduleStickyOverlays(): void {
+    if (this.stickyOverlayFrame !== 0) return;
+    this.stickyOverlayFrame = requestAnimationFrame(() => {
+      this.stickyOverlayFrame = 0;
+      this.updateStickyOverlays();
+    });
+  }
+
+  updateStickyOverlays(): void {
     const vp = this.viewportRef()?.nativeElement;
     const ct = this.contentRef()?.nativeElement;
     if (!vp || !ct) {
@@ -3351,6 +3362,10 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private teardown(): void {
+    if (this.stickyOverlayFrame !== 0) {
+      cancelAnimationFrame(this.stickyOverlayFrame);
+      this.stickyOverlayFrame = 0;
+    }
     this.cancelPaste();
     this.nativeComposerDraft.set('');
     this.selectionMode.set(false);

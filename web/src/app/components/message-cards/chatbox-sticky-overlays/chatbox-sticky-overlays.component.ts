@@ -49,14 +49,15 @@ export class ChatboxStickyOverlaysComponent {
       header?.getBoundingClientRect().bottom ??
       viewport.getBoundingClientRect().top;
     this.refreshDate(content, visibleTop);
-    this.avatar.set(
-      resolveStickyAvatar(
-        content,
-        visibleTop,
-        container.getBoundingClientRect().top,
-        showSelfAvatar,
-      ),
+    const nextAvatar = resolveStickyAvatar(
+      content,
+      visibleTop,
+      container.getBoundingClientRect().top,
+      showSelfAvatar,
     );
+    const currentAvatar = this.avatar();
+    if (!sameStickyAvatar(currentAvatar, nextAvatar))
+      this.avatar.set(nextAvatar);
   }
 
   clear(): void {
@@ -102,4 +103,20 @@ export class ChatboxStickyOverlaysComponent {
       ).toFixed(2);
     }
   }
+}
+
+function sameStickyAvatar(
+  a: StickyAvatarView | null,
+  b: StickyAvatarView | null,
+): boolean {
+  return (
+    a === b ||
+    (a !== null &&
+      b !== null &&
+      a.name === b.name &&
+      a.src === b.src &&
+      a.identityId === b.identityId &&
+      a.side === b.side &&
+      a.top === b.top)
+  );
 }

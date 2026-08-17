@@ -100,6 +100,7 @@
       tabindex="0"
       role="region"
       [attr.aria-label]="'chat.messageListAria' | transloco"
+      (scroll)="scheduleStickyOverlays()"
       (transitionend)="onViewportTransitionEnd($event)"
     >
       @if (blockedPeer()) {
@@ -521,7 +522,7 @@
                   [type]="UserAvatarType.GROUP"
                   [name]="quote.imageLabel"
                   [identityId]="quote.imageIdentity"
-                  [colorIdentityId]="quote.imageIdentity || quote.imageLabel"
+                  [colorIdentityId]="quote.imageIdentity"
                   [src]="quote.image"
                 />
               } @else if (quote.image) {

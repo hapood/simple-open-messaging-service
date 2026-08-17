@@ -13,7 +13,7 @@ import { UserService } from '../../services/user.service'
  *    from the light/dark interactive brand color.
  *  · OTHER / GROUP: an identity-hashed deterministic palette. The stable key includes the avatar type,
  *    so a user and group with the same numeric id do not share an identity namespace. If an identity is not
- *    available yet (for example, a group being composed before creation), the name provides a preview color.
+ *    available yet, every unresolved identity uses the same empty seed; display names never affect identity color.
  *    The palette uses Material dark shades, reaching WCAG AA contrast against white text.
  *
  * Rounded square (WeChat-style, rx=20% → 8px under a 40px container, matching .msg-avatar in chats) + SVG
@@ -169,12 +169,12 @@ export class UserAvatarComponent {
     return value.toLocaleUpperCase()
   })
 
-  /** Deterministic 31× hash for fallback colors. Prefer the stable, namespaced identity (`u…` / `g…`);
-   *  a not-yet-created identity falls back to its display name so previews still receive a color. */
+  /** Deterministic 31× hash for fallback colors. Only a stable, namespaced identity (`u…` / `g…`)
+   *  participates; a missing identity hashes as empty so mutable display names cannot change the color. */
   private hashColorKey(): number {
     const id = this.colorIdentityId() ?? this.effectiveIdentityId()
     const n = id == null
-      ? (this.effectiveName() ?? '').trim() || '?'
+      ? ''
       : `${this.type() === UserAvatarType.GROUP ? 'g' : 'u'}${id}`
     let h = 0
     for (let i = 0; i < n.length; i++) h = (Math.imul(h, 31) + n.charCodeAt(i)) | 0

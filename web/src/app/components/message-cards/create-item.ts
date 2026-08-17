@@ -22,6 +22,7 @@ import { TextRowComponent } from './text-row/text-row.component';
 import { SystemRowComponent } from './system-row/system-row.component';
 import { MessagePressGesture } from './message-press-gesture';
 import { parseForwardCard } from './forward-row/forward-card';
+import { writeStickyAvatarIdentity } from '../../lib/sticky-avatar';
 
 /**
  * Common shape of the message-row components: they all bind the same 4 signal inputs. Used to type
@@ -231,11 +232,11 @@ export function createMsgCbElement(
       const message = nextItem.data;
       host.dataset['messageCreator'] = String(message.creator);
       host.dataset['messageSide'] = message.isSelf ? 'self' : 'other';
-      host.dataset['messageAvatarName'] = message.name;
-      host.dataset['messageAvatarSrc'] = message.avatar ?? '';
-      host.dataset['messageAvatarIdentity'] = String(
-        message.avatarIdentityId ?? '',
-      );
+      writeStickyAvatarIdentity(host, {
+        name: message.name,
+        src: message.avatar,
+        identityId: message.avatarIdentityId,
+      });
     }
   };
   const update = (

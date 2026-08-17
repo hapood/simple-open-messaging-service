@@ -49,9 +49,6 @@
   isolation: isolate;
   padding: var(--chat-timeline-gap-item) var(--chat-timeline-inset-inline) 0;
   box-sizing: border-box;
-  transition:
-    opacity 0.3s ease,
-    transform 0.3s ease;
   &.msg-self {
     justify-content: flex-end;
   }
@@ -325,6 +322,10 @@
 // tick is at the top-right corner, separate from the time, so it does not enter the shadow's width.)
 .msg-time-shadow {
   display: inline-block;
+  // The shadow uses a smaller font than the message body. Baseline-aligning those two font sizes can enlarge the
+  // containing line box by a fractional descent even though both have an integer 20px line-height. Top alignment
+  // keeps the inline-block inside the body's 20px line box, so it reserves width without affecting row height.
+  vertical-align: top;
   margin-left: 8px;
   font-size: 11px; // must match .msg-time's font-size → identical width
   white-space: nowrap;

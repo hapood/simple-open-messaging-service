@@ -71,7 +71,7 @@
                 [type]="UserAvatarType.GROUP"
                 [name]="quote.imageLabel"
                 [identityId]="quote.imageIdentity"
-                [colorIdentityId]="quote.imageIdentity || quote.imageLabel"
+                [colorIdentityId]="quote.imageIdentity"
                 [src]="quote.image"
               />
             } @else if (quote.image && isReplyImageGated(quote)) {
@@ -108,7 +108,7 @@
                 [type]="UserAvatarType.GROUP"
                 [name]="quote.imageLabel"
                 [identityId]="quote.imageIdentity"
-                [colorIdentityId]="quote.imageIdentity || quote.imageLabel"
+                [colorIdentityId]="quote.imageIdentity"
                 [src]="quote.image"
               />
             } @else if (quote.image && isReplyImageGated(quote)) {

@@ -387,7 +387,10 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
         pointer-events: auto;
       }
       .minimize-icon {
-        display: block;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        line-height: 0;
         transform: rotate(180deg);
       }
       /* Incoming calls get a little more visual focus without becoming a separate design language: the

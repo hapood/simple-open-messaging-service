@@ -2874,7 +2874,15 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       if (sh > this.vh) {
         // min-height saturated → scrollHeight reflects true content height (valid independent check)
         const t = this.totalH();
-        const d = Math.round(t - sh);
+        // The Angular shell keeps a top sentinel as a direct content child, while totalH deliberately models
+        // only message rows + the kernel-owned tail cap. Include that structural height before judging drift;
+        // otherwise the expected 1px sentinel consumes the entire tolerance and turns an ordinary rounding
+        // seam into a false warning.
+        const sentinel = this.content.querySelector<HTMLElement>(
+          '.msg-sentinel, .pg-sentinel',
+        );
+        const expectedDomHeight = t + (sentinel?.offsetHeight ?? 0);
+        const d = Math.round(expectedDomHeight - sh);
         if (Math.abs(d) > VS_DRIFT_TOLERANCE_PX) {
           const measuredRows = this.mounted.map((entry, index) => ({
             index,
@@ -2889,14 +2897,59 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
             (sum, row) => sum + row.actual,
             0,
           );
+          // offsetHeight is intentionally integer, so cached===actual cannot expose a repeated fractional
+          // border-box height. Rects retain that fraction; exclude active transform animations because their
+          // scale is paint-only and would create false suspects. Largest residues first makes the offending card
+          // type visible without expanding all mounted rows in DevTools.
+          const fractionalRows = this.mounted
+            .map((entry, index) => {
+              const style = getComputedStyle(entry.el);
+              const rectHeight = entry.el.getBoundingClientRect().height;
+              const inspectPart = (selector: string) => {
+                const element = entry.el.querySelector<HTMLElement>(selector);
+                if (!element) return null;
+                const computed = getComputedStyle(element);
+                return {
+                  selector,
+                  offsetHeight: element.offsetHeight,
+                  rectHeight: Number(
+                    element.getBoundingClientRect().height.toFixed(4),
+                  ),
+                  lineHeight: computed.lineHeight,
+                  paddingTop: computed.paddingTop,
+                  paddingBottom: computed.paddingBottom,
+                  borderTop: computed.borderTopWidth,
+                  borderBottom: computed.borderBottomWidth,
+                };
+              };
+              return {
+                index,
+                id: entry.item.id,
+                tag: entry.el.tagName.toLowerCase(),
+                className: entry.el.className,
+                offsetHeight: entry.el.offsetHeight,
+                rectHeight: Number(rectHeight.toFixed(4)),
+                fraction: Number(
+                  (rectHeight - entry.el.offsetHeight).toFixed(4),
+                ),
+                animated: style.transform !== 'none',
+                parts: [
+                  inspectPart('.msg-row'),
+                  inspectPart('.msg-col'),
+                  inspectPart('.msg-bubble'),
+                  inspectPart('.msg-bubble-text'),
+                  inspectPart('app-msg-date-row'),
+                ].filter((part) => part !== null),
+              };
+            })
+            .filter((row) => !row.animated && Math.abs(row.fraction) >= 0.01)
+            .sort((a, b) => Math.abs(b.fraction) - Math.abs(a.fraction))
+            .slice(0, 20);
           const tailCapActualH = this.tailCapEl?.offsetHeight ?? 0;
-          const sentinel = this.content.querySelector<HTMLElement>(
-            '.msg-sentinel, .pg-sentinel',
-          );
           const msSinceTailCapModeChange =
             performance.now() - this.tailCapModeChangedAt;
           console.warn(
-            `[vs.measure] height model drifted ${d}px past tolerance (n=${entries.length} mount=${this.mounted.length} totalH=${Math.round(t)} sh=${sh} vh=${this.vh}) — a row is likely rendering at a fractional line-height; re-audit _row-base.scss`,
+            `[vs.measure] height model drifted ${d}px past tolerance (n=${entries.length} mount=${this.mounted.length} expected=${Math.round(expectedDomHeight)} totalH=${Math.round(t)} sh=${sh} vh=${this.vh}) — inspect row fractional heights and unmodeled content children`,
             {
               rows: {
                 cachedTotal: this.mounted.reduce(
@@ -2905,6 +2958,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
                 ),
                 actualTotal: actualRowsH,
                 mismatches: rowMismatches,
+                fractional: fractionalRows,
               },
               tailCap: {
                 mode: this.tailCapMode,
