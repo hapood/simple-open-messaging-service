@@ -13,6 +13,8 @@ import { TranslocoModule } from '@jsverse/transloco';
 import { TranslocoService } from '@jsverse/transloco';
 import { CallEventService } from '../../services/call-event.service';
 import { CallAdapterService } from '../../services/call-adapter';
+import { CallRingtoneService } from '../../services/call-ringtone.service';
+import { CallPresentationService } from '../../services/call-presentation.service';
 import {
   UserAvatarComponent,
   UserAvatarType,
@@ -55,6 +57,19 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
         (pointerdown)="onScreenTap()"
         (mousemove)="onScreenMouseMove()"
       >
+        <button
+          class="minimize"
+          type="button"
+          (pointerdown)="$event.stopPropagation()"
+          (click)="minimize(); $event.stopPropagation()"
+          [attr.aria-label]="'call.minimize' | transloco"
+        >
+          <app-icon
+            class="minimize-icon"
+            [type]="AppIconType.CHEVRON_DOWN"
+            [style]="miniIconSize"
+          ></app-icon>
+        </button>
         @if (isVideo()) {
           <video
             class="remote-video"
@@ -205,6 +220,7 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
                 }}</span>
               </button>
             }
+            @case ('ended') {}
             @default {
               <button
                 class="call-action mute"
@@ -354,6 +370,25 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
           linear-gradient(160deg, #171a21 0%, #111216 58%, #0d0e12 100%);
         color: #fff;
         overflow: hidden;
+      }
+      .minimize {
+        position: fixed;
+        top: calc(12px + var(--soms-safe-top, 0px));
+        left: 12px;
+        width: 44px;
+        height: 44px;
+        display: grid;
+        place-items: center;
+        border: 0;
+        border-radius: 22px;
+        color: #fff;
+        background: rgba(0, 0, 0, 0.38);
+        z-index: 6;
+        pointer-events: auto;
+      }
+      .minimize-icon {
+        display: block;
+        transform: rotate(180deg);
       }
       /* Incoming calls get a little more visual focus without becoming a separate design language: the
          brand glow and surface geometry reuse the application's semantic tokens, while the dark base keeps
@@ -711,6 +746,9 @@ export class CallScreenComponent implements OnDestroy {
   readonly events = inject(CallEventService);
   readonly adapter = inject(CallAdapterService);
   private readonly transloco = inject(TranslocoService);
+  private readonly ringtone = inject(CallRingtoneService);
+  readonly presentation = inject(CallPresentationService);
+  readonly miniIconSize = { width: '22px', height: '22px' };
 
   readonly snap = computed(() => this.events.callState());
 
@@ -775,12 +813,34 @@ export class CallScreenComponent implements OnDestroy {
     // Auto-hide the chrome in a steady connected VIDEO call (immersive viewing); reveal it for every other
     //  phase (so ringing / connecting / reconnecting keep the controls reachable). Re-arms on each phase change.
     effect(() => {
+      if (this.presentation.minimized()) {
+        this.adapter.setVideoRect(null, null);
+        this.adapter.setVideoElements(null, null);
+      } else if (this.isVideo()) {
+        setTimeout(() => this.reportVideoRects());
+      }
+    });
+    effect(() => {
       const phase = this.snap().phase;
       if (this.isVideo() && phase === 'connected') this.scheduleHide();
       else {
         if (this.hideTimer) clearTimeout(this.hideTimer);
         this.controlsVisible.set(true);
       }
+    });
+    effect(() => {
+      const phase = this.snap().phase;
+      this.ringtone.setMode(
+        phase === 'incoming'
+          ? 'incoming'
+          : phase === 'ringing'
+            ? 'ringback'
+            : phase === 'ended' && this.snap().terminalReason === 'busy'
+              ? 'busy'
+              : phase === 'ended'
+                ? 'ended'
+            : null,
+      );
     });
     // AUDIO→VIDEO changes the rendered holes without remounting this component. Report after Angular has
     // created the self-view element so the media owner can attach both video renderers immediately.
@@ -976,6 +1036,23 @@ export class CallScreenComponent implements OnDestroy {
         return this.transloco.translate('call.ringing');
       case 'connecting':
         return this.transloco.translate('call.connecting');
+      case 'ended':
+        switch (this.snap().terminalReason) {
+          case 'declined':
+            return this.transloco.translate('call.peerDeclined');
+          case 'busy':
+            return this.transloco.translate('call.peerBusy');
+          case 'missed':
+            return this.transloco.translate('call.peerMissed');
+          case 'timeout':
+            return this.transloco.translate('call.peerTimeout');
+          case 'failed':
+            return this.transloco.translate('call.peerDisconnected');
+          case 'cancelled':
+            return this.transloco.translate('call.peerCancelled');
+          default:
+            return this.transloco.translate('call.ended');
+        }
       default:
         return '';
     }
@@ -1024,14 +1101,24 @@ export class CallScreenComponent implements OnDestroy {
     const sid = this.snap().callSid;
     if (sid) this.adapter.accept(sid);
   }
+  minimize(): void {
+    this.presentation.minimize();
+  }
+  restore(): void {
+    this.presentation.restore();
+  }
   decline(): void {
     const sid = this.snap().callSid;
-    if (sid) this.adapter.decline(sid);
+    if (sid) {
+      this.events.markLocalTermination(sid);
+      this.adapter.decline(sid);
+    }
   }
   hangUp(): void {
     const s = this.snap();
     const sid = s.callSid;
     if (!sid) return;
+    this.events.markLocalTermination(sid);
     // Pre-accept (the caller is still 'calling'/'ringing'): the server's /calls/end REJECTS a ringing call
     // (CALL_NOT_FOUND), which would leave it live server-side → busy lockout + the peer's incoming UI never
     // dismissed. /calls/cancel is the ringing-state terminal (releases both parties). Post-accept → end.
@@ -1047,6 +1134,9 @@ export class CallScreenComponent implements OnDestroy {
   }
   toggleMute(): void {
     this.adapter.setMuted(!this.snap().muted);
+  }
+  toggleSpeaker(): void {
+    this.adapter.setSpeakerEnabled(!this.snap().speakerEnabled);
   }
 
   /** One-way AUDIO→VIDEO transition. The media adapter owns permission + SDP renegotiation; audio remains
@@ -1074,6 +1164,7 @@ export class CallScreenComponent implements OnDestroy {
   ngOnDestroy(): void {
     clearInterval(this.timerHandle);
     if (this.hideTimer) clearTimeout(this.hideTimer);
+    this.ringtone.setMode(null);
     window.__SOMS_PIP__ = undefined;
     window.removeEventListener('resize', this.onViewportChange);
     window.removeEventListener('scroll', this.onViewportChange, true);

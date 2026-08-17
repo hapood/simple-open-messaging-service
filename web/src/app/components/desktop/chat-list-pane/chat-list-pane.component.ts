@@ -1,8 +1,9 @@
-import { Component, EventEmitter, Output, signal, viewChild } from '@angular/core';
+import { Component, EventEmitter, input, Output, signal, viewChild } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { ThreadListComponent } from '../../thread-list/thread-list.component';
 import { ConversationItem } from '../../../services/model';
 import { ThreadSearchInputComponent } from '../../thread-search-input/thread-search-input.component';
+import { CallBannerComponent } from '../../call-banner/call-banner.component';
 
 /**
  * Conversation pane: search + the shared thread list.
@@ -13,9 +14,13 @@ import { ThreadSearchInputComponent } from '../../thread-search-input/thread-sea
     ThreadListComponent,
     TranslocoPipe,
     ThreadSearchInputComponent,
+    CallBannerComponent,
   ],
   template: `
     <div class="chat-list-pane">
+      @if (showCallBanner()) {
+        <app-call-banner />
+      }
       <app-thread-search-input
         [value]="searchText()"
         [placeholder]="'chat.searchPlaceholder' | transloco"
@@ -48,6 +53,7 @@ import { ThreadSearchInputComponent } from '../../thread-search-input/thread-sea
   `]
 })
 export class ChatListPaneComponent {
+  readonly showCallBanner = input(false);
   readonly searchText = signal('')
   readonly threadListCmp = viewChild(ThreadListComponent)
 

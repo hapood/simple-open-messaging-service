@@ -6,6 +6,7 @@ import {
   IDLE_CALL,
   type CallPhase,
   type CallSnapshot,
+  type CallTerminalReason,
 } from './call-adapter';
 
 /**
@@ -24,6 +25,20 @@ interface CallEventPayload {
   startedAt?: number;
   endReason?: string;
 }
+
+const TERMINAL_DISPLAY_MS = 1400;
+const BUSY_TERMINAL_DISPLAY_MS = 1800;
+const CALL_TERMINAL_REASON: Record<string, CallTerminalReason> = {
+  declined: 'declined',
+  cancelled: 'cancelled',
+  missed: 'missed',
+};
+
+const CALL_END_REASON: Record<string, CallTerminalReason> = {
+  completed: 'completed',
+  timeout: 'timeout',
+  failed: 'failed',
+};
 
 /** Maps a CALL_EVENT `type` to the UI {@link CallPhase}. Terminal types (declined/cancelled/missed/ended)
  *  map to `'ended'`, which {@link commit} normalizes back to `'idle'` — the terminal CALL bubble in the
@@ -73,6 +88,11 @@ export class CallEventService implements OnDestroy {
   /** Fired (with the snapshot) when an incoming ring arrives — the shell mounts the incoming-call UI. */
   readonly incoming$ = new Subject<CallSnapshot>();
 
+  private terminalDisplayTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastOwnedCallSid: string | null = null;
+  private lastOwnedSnapshot: CallSnapshot | null = null;
+  private locallyTerminatedCallSid: string | null = null;
+
   private readonly sub: Subscription;
 
   constructor() {
@@ -106,18 +126,43 @@ export class CallEventService implements OnDestroy {
           this.handleCallEvent(m.data as CallEventPayload);
         }
       });
+    this.sub.add(
+      this.adapter.rejected$.subscribe((reason) => {
+        if (reason === 'busy' && this.lastOwnedCallSid) {
+          this.showTerminal(this.lastOwnedCallSid, 'busy');
+        }
+      }),
+    );
   }
 
   /** Set the call state, folding a terminal ('ended') to 'idle' so the overlay dismisses and the state is
    *  clean for the next call. The terminal CALL bubble in the thread is the user-visible record. */
   private commit(next: CallSnapshot): void {
-    const normalized = next.phase === 'ended' ? { ...IDLE_CALL } : next;
-    this.callState.set(normalized);
-    this.adapter.applyLifecycle(normalized);
+    this.rememberOwnedCall(next);
+    this.callState.set(next);
+    this.adapter.applyLifecycle(next);
   }
 
   private applyAdapter(next: CallSnapshot): void {
-    this.callState.set(next.phase === 'ended' ? { ...IDLE_CALL } : next);
+    this.rememberOwnedCall(next);
+    if (next.phase === 'ended' && next.callSid) {
+      this.showTerminal(next.callSid, next.terminalReason ?? 'completed');
+      return;
+    }
+    if (this.callState().phase === 'ended' && next.phase === 'idle') return;
+    this.callState.set(next);
+  }
+
+  private rememberOwnedCall(next: CallSnapshot): void {
+    if (next.phase !== 'idle' && next.callSid) {
+      this.lastOwnedCallSid = next.callSid;
+      this.lastOwnedSnapshot = next;
+    }
+  }
+
+  /** Marks a command initiated by this renderer so its echoed terminal event does not look peer-initiated. */
+  markLocalTermination(callSid: string): void {
+    this.locallyTerminatedCallSid = callSid;
   }
 
   /** Merge a native snapshot push. The native snapshot carries peerName + peerAvatar (the caller passes the
@@ -141,6 +186,11 @@ export class CallEventService implements OnDestroy {
     peerAvatar?: string;
     step?: string;
   }): void {
+    if (snap.phase === 'ended' && snap.callSid) {
+      this.showTerminal(snap.callSid, 'completed');
+      return;
+    }
+    if (this.callState().phase === 'ended' && snap.phase === 'idle') return;
     const cur = this.callState();
     const legacyVideo = snap.callType === 'VIDEO';
     this.commit({
@@ -171,7 +221,8 @@ export class CallEventService implements OnDestroy {
       return;
     }
     if (p.type === 'incoming') {
-      if (cur.phase !== 'idle') return;
+      if (cur.phase === 'ended') this.clearTerminalDisplay();
+      else if (cur.phase !== 'idle') return;
       const snap: CallSnapshot = {
         ...IDLE_CALL,
         phase: 'incoming',
@@ -194,19 +245,85 @@ export class CallEventService implements OnDestroy {
     if (!phase) return;
     // Account-wide lifecycle events also reach sibling devices. A renderer with no matching local call
     // must not materialize a phantom connecting/connected overlay.
-    if (cur.phase === 'idle' || cur.callSid !== p.callSid) return;
+    const ownsActiveCall = cur.phase !== 'idle' && cur.callSid === p.callSid;
+    const ownsRecentlyEndedCall =
+      phase === 'ended' && this.lastOwnedCallSid === p.callSid;
+    if (!ownsActiveCall && !ownsRecentlyEndedCall) return;
     // The caller's `ringing` (server Phase 1) only applies to the caller; the callee is already `incoming`.
     if (p.type === 'ringing' && !cur.isCaller) return;
-    this.commit({
-      ...cur,
-      phase,
-      ...(p.type === 'connected' && p.startedAt
-        ? { startedAt: p.startedAt }
-        : {}),
+    const terminalReason = this.terminalReason(p.type, p.endReason);
+    if (terminalReason) {
+      this.showTerminal(p.callSid, terminalReason);
+      return;
+    }
+    if (ownsActiveCall) {
+      this.commit({
+        ...cur,
+        phase,
+        ...(p.type === 'connected' && p.startedAt
+          ? { startedAt: p.startedAt }
+          : {}),
+      });
+    }
+  }
+
+  private terminalReason(
+    type: string,
+    endReason?: string,
+  ): CallTerminalReason | null {
+    const reason = CALL_TERMINAL_REASON[type];
+    if (reason) return reason;
+
+    if (type === 'ended' && endReason) {
+      return CALL_END_REASON[endReason] ?? null;
+    }
+
+    return null;
+  }
+
+  private showTerminal(
+    callSid: string,
+    terminalReason: CallTerminalReason,
+  ): void {
+    if (this.locallyTerminatedCallSid === callSid) {
+      this.locallyTerminatedCallSid = null;
+      this.clearTerminalDisplay();
+      this.callState.set({ ...IDLE_CALL });
+      return;
+    }
+    const current = this.callState();
+    const base =
+      current.callSid === callSid ? current : this.lastOwnedSnapshot;
+    if (!base || base.callSid !== callSid) return;
+
+    this.clearTerminalDisplay();
+    this.adapter.applyLifecycle({ ...IDLE_CALL });
+    this.callState.set({
+      ...base,
+      phase: 'ended',
+      mediaState: 'new',
+      step: '',
+      terminalReason,
     });
+    this.terminalDisplayTimer = setTimeout(() => {
+      this.terminalDisplayTimer = null;
+      if (this.callState().callSid === callSid) {
+        this.callState.set({ ...IDLE_CALL });
+      }
+    },
+    terminalReason === 'busy'
+      ? BUSY_TERMINAL_DISPLAY_MS
+      : TERMINAL_DISPLAY_MS,
+    );
+  }
+
+  private clearTerminalDisplay(): void {
+    if (this.terminalDisplayTimer) clearTimeout(this.terminalDisplayTimer);
+    this.terminalDisplayTimer = null;
   }
 
   ngOnDestroy(): void {
+    this.clearTerminalDisplay();
     this.sub.unsubscribe();
     this.adapter.setSnapshotListener(undefined);
     window.__SOMS_CALL_EVENT__ = undefined;

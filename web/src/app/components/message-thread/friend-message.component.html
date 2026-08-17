@@ -16,10 +16,15 @@
     appComposerWidthSource
     (pointerdown)="dismissContextMenuOnOutside($event)"
   >
+    @if (showCallBanner()) {
+      <app-call-banner class="chat-call-banner"></app-call-banner>
+    }
     <app-message-header
       #msgHeader
       [userMsgTrd]="userMsgTrd()"
       (searchJump)="onSearchJump($event)"
+      [style.--soms-safe-top]="showCallBanner() ? '0px' : null"
+      [style.--msg-header-h]="showCallBanner() ? '56px' : null"
     ></app-message-header>
 
     @if (messageContextMenu(); as menu) {

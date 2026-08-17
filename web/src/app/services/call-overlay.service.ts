@@ -3,6 +3,7 @@ import { Overlay, OverlayRef } from '@angular/cdk/overlay';
 import { ComponentPortal } from '@angular/cdk/portal';
 import { CallEventService } from './call-event.service';
 import { CallScreenComponent } from '../components/call-screen/call-screen.component';
+import { CallPresentationService } from './call-presentation.service';
 
 /**
  * Mounts the {@link CallScreenComponent} as a fullscreen BODY-LEVEL CDK overlay (a sibling of `<app-root>`,
@@ -31,6 +32,7 @@ import { CallScreenComponent } from '../components/call-screen/call-screen.compo
 export class CallOverlayService {
   private readonly overlay = inject(Overlay);
   private readonly events = inject(CallEventService);
+  private readonly presentation = inject(CallPresentationService);
   /** The active call overlay, or null when no call is active. Single-slot re-entrancy guard. */
   private ref: OverlayRef | null = null;
 
@@ -40,18 +42,23 @@ export class CallOverlayService {
     effect(() => {
       const state = this.events.callState();
       const active = state.phase !== 'idle';
-      const video = active && state.callType === 'VIDEO';
+      const minimized = this.presentation.minimized();
+      const video = active && !minimized && state.callType === 'VIDEO';
       // The transparency treatment is VIDEO-only — an AUDIO call keeps the opaque dark .call-screen bg.
       document.documentElement.classList.toggle('in-video-call', video);
-      if (active && !this.ref) this.open();
-      else if (!active && this.ref) this.close();
+      const fullscreen = active && !minimized;
+      if (fullscreen && !this.ref) this.open();
+      else if (!fullscreen && this.ref) this.close();
+      if (!active) this.presentation.restore();
     });
   }
 
   private open(): void {
     const ref = this.overlay.create({
       positionStrategy: this.overlay.position().global().top('0').left('0'),
-      scrollStrategy: this.overlay.scrollStrategies.block(),
+      // The fullscreen call surface blocks interaction itself. A noop strategy lets the chat remain scrollable
+      // while the same overlay renders the compact in-app call window.
+      scrollStrategy: this.overlay.scrollStrategies.noop(),
       panelClass: 'call-pane',
       // NOT disposeOnNavigation: a call persists across in-app navigation (the user may browse threads
       // mid-call); the callState signal — not navigation — owns this overlay's lifecycle.

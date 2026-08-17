@@ -14,6 +14,7 @@ import android.graphics.Color
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.media.AudioDeviceInfo
 import android.media.RingtoneManager
 import android.os.Build
 import android.os.Handler
@@ -270,6 +271,7 @@ class CallService : Service() {
         val am = audioManager
             ?: (getSystemService(Context.AUDIO_SERVICE) as AudioManager).also { audioManager = it }
         am.mode = AudioManager.MODE_IN_COMMUNICATION
+        setSpeakerEnabled(CallController.speakerEnabled)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val attrs = AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
@@ -289,11 +291,30 @@ class CallService : Service() {
         wl.acquire()
     }
 
+    fun setSpeakerEnabled(enabled: Boolean) {
+        val am = audioManager
+            ?: (getSystemService(Context.AUDIO_SERVICE) as AudioManager).also { audioManager = it }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val preferredType = if (enabled) {
+                AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+            } else {
+                AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+            }
+            am.availableCommunicationDevices
+                .firstOrNull { it.type == preferredType }
+                ?.let { am.setCommunicationDevice(it) }
+        } else {
+            @Suppress("DEPRECATION")
+            am.isSpeakerphoneOn = enabled
+        }
+    }
+
     private fun releaseAudio() {
         val am = audioManager ?: return
         focusRequest?.let { am.abandonAudioFocusRequest(it) }
         focusRequest = null
         am.mode = AudioManager.MODE_NORMAL
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) am.clearCommunicationDevice()
         wakeLock?.takeIf { it.isHeld }?.release()
         wakeLock = null
     }
@@ -384,6 +405,8 @@ class CallService : Service() {
                 NotificationChannel(CHANNEL_ONGOING, getString(R.string.call_channel_ongoing), NotificationManager.IMPORTANCE_LOW).apply {
                     description = "Ongoing call anchor"
                     setShowBadge(false)
+                    enableVibration(true)
+                    vibrationPattern = longArrayOf(0, 1000, 1000)
                 },
             )
         }

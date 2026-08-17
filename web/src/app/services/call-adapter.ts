@@ -4,6 +4,7 @@ import { TranslocoService } from '@jsverse/transloco';
 import { isAndroidNative } from './runtime';
 import { WebCallAdapter } from './web-call.adapter';
 import { ToastService } from './toast.service';
+import { Subject } from 'rxjs';
 
 /** The UI phase of a 1:1 call — the merged call-FSM ∪ RTCPeerConnection state (Phase 5 refines the labels
  *  + the reconnecting/weak UX). `idle` = no live call. */
@@ -17,6 +18,15 @@ export type CallPhase =
   | 'connected'
   | 'reconnecting'
   | 'ended';
+
+export type CallTerminalReason =
+  | 'declined'
+  | 'busy'
+  | 'missed'
+  | 'timeout'
+  | 'failed'
+  | 'cancelled'
+  | 'completed';
 
 /** The live call snapshot. Shape mirrors the native `CallController.snapshotJson()` (the authoritative
  *  source — the native FSM owns the RTCPeerConnection state); `peerName`/`peerAvatar` are added here from
@@ -34,6 +44,8 @@ export interface CallSnapshot {
   /** Connect epoch-ms (0 until connected) — authoritative value comes from the callee's /calls/connected. */
   startedAt: number;
   muted: boolean;
+  /** Whether call audio is explicitly routed to the built-in speaker. */
+  speakerEnabled: boolean;
   /** Whether this side is currently capturing/sending camera video. Turning it off never downgrades a
    *  VIDEO call back to AUDIO; it only pauses the local video track. */
   cameraEnabled: boolean;
@@ -53,6 +65,8 @@ export interface CallSnapshot {
    *  stable code the call UI localizes via the `call` i18n namespace (never display text). Shown when non-empty
    *  (more detail than {@link phase}). */
   step: string;
+  /** Present only while the UI briefly holds an ended call on screen before returning to idle. */
+  terminalReason: CallTerminalReason | null;
 }
 
 /** The no-call snapshot (the callState seed). */
@@ -66,6 +80,7 @@ export const IDLE_CALL: CallSnapshot = {
   mediaState: 'new',
   startedAt: 0,
   muted: false,
+  speakerEnabled: false,
   cameraEnabled: false,
   remoteCameraEnabled: false,
   videoUpgradeState: 'idle',
@@ -73,6 +88,7 @@ export const IDLE_CALL: CallSnapshot = {
   peerName: '',
   peerAvatar: '',
   step: '',
+  terminalReason: null,
 };
 
 export type CallSnapshotListener = (snapshot: CallSnapshot) => void;
@@ -262,6 +278,8 @@ export class CallAdapterService {
   readonly videoSupported: boolean;
   /** Browser/desktop video needs an HTMLVideoElement first-frame gate; Android renders into native surfaces. */
   readonly rendererOwnsVideo: boolean;
+  /** Native initiate failures that have user-visible call semantics rather than generic transport errors. */
+  readonly rejected$ = new Subject<'busy'>();
 
   constructor(
     http: HttpClient,
@@ -281,9 +299,7 @@ export class CallAdapterService {
         : new UnsupportedCallAdapter();
     if (isAndroidNative()) {
       window.__SOMS_CALL_REJECTED__ = (reason) => {
-        if (reason === 'busy') {
-          toast.warn(transloco.translate('call.busyEnding'));
-        }
+        if (reason === 'busy') this.rejected$.next(reason);
       };
     }
     this.supported = isAndroidNative() || webRtcSupported;
@@ -326,6 +342,9 @@ export class CallAdapterService {
   }
   setMuted(muted: boolean): void {
     this.adapter.setMuted(muted);
+  }
+  setSpeakerEnabled(enabled: boolean): void {
+    if (isAndroidNative()) window.SomsCall!.setSpeakerEnabled(enabled);
   }
   upgradeToVideo(): void {
     this.adapter.upgradeToVideo();

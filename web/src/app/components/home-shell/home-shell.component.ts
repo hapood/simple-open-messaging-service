@@ -29,6 +29,7 @@ import { ConversationItem } from '../../services/model';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { PreferenceStore } from '../../services/preference-store.service';
+import { CallBannerComponent } from '../call-banner/call-banner.component';
 
 const LIST_WIDTH_KEY = 'soms.client.listWidth';
 const MIN_LIST = 280,
@@ -125,6 +126,7 @@ const overlaySlide = trigger('overlaySlide', [
     GroupInfoComponent,
     HomeHeaderComponent,
     TranslocoPipe,
+    CallBannerComponent,
   ],
   templateUrl: './home-shell.component.html',
   styleUrl: './home-shell.component.scss',

@@ -79,6 +79,9 @@ object CallController {
     /** true = this side placed the call (caller); false = this side was rung (callee). */
     @Volatile var isCaller: Boolean = false
         private set
+    /** Whether call audio is explicitly routed to the built-in speaker. */
+    @Volatile var speakerEnabled: Boolean = false
+        private set
     /** Account-wide CALL_EVENT frames reach every signed-in device. Only the Android instance whose user
      *  tapped Accept may transition the callee into connecting; sibling devices dismiss on `accepted`. */
     @Volatile private var acceptingLocally: Boolean = false
@@ -1062,6 +1065,12 @@ object CallController {
         pushSnapshot()
     }
 
+    fun setSpeakerEnabled(value: Boolean) {
+        speakerEnabled = value
+        CallService.instance?.setSpeakerEnabled(value)
+        pushSnapshot()
+    }
+
     /** Synchronous JSON snapshot of the live call (or `{phase:"idle"}` when none) — the JS bridge returns
      *  this from window.SomsCall.getSnapshot() so a re-attached WebView re-derives the call UI instantly. */
     fun snapshotJson(): String = JSONObject()
@@ -1077,6 +1086,7 @@ object CallController {
         .put("step", step)
         .put("startedAt", startedAt)
         .put("muted", muted)
+        .put("speakerEnabled", speakerEnabled)
         .put("cameraEnabled", cameraEnabled)
         .put("remoteCameraEnabled", remoteCameraEnabled)
         .put("videoUpgradeState", videoUpgradeState)
@@ -1219,6 +1229,7 @@ object CallController {
         peerUserId = 0
         startedAt = 0L
         mediaState = "new"
+        speakerEnabled = false
         cameraEnabled = false
         remoteCameraEnabled = false
         videoUpgradeState = "idle"

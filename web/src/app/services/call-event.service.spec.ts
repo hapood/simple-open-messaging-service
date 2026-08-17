@@ -13,12 +13,16 @@ describe('CallEventService web call routing', () => {
     handleSignal: jasmine.createSpy('handleSignal'),
     onIncoming: jasmine.createSpy('onIncoming'),
     applyLifecycle: jasmine.createSpy('applyLifecycle'),
+    rejected$: new Subject<'busy'>(),
   };
 
   beforeEach(() => {
     events.observers.slice().forEach((observer) => observer.complete());
     Object.values(adapter)
-      .filter((value) => jasmine.isSpy(value))
+      .filter(
+        (value): value is jasmine.Spy =>
+          typeof value === 'function' && jasmine.isSpy(value),
+      )
       .forEach((spy) => spy.calls.reset());
     TestBed.configureTestingModule({
       providers: [
@@ -103,5 +107,45 @@ describe('CallEventService web call routing', () => {
 
     expect(service.callState().phase).toBe('idle');
     expect(adapter.applyLifecycle).not.toHaveBeenCalled();
+  });
+
+  it('holds a terminal result when an adapter reaches idle before SSE', () => {
+    jasmine.clock().install();
+    const service = TestBed.inject(CallEventService);
+    const listener = adapter.setSnapshotListener.calls.mostRecent().args[0];
+    listener({ ...IDLE_CALL, phase: 'ringing', callSid: 'call-4' });
+    listener({ ...IDLE_CALL });
+
+    events.next({
+      event: 'CALL_EVENT',
+      status: 200,
+      message: '',
+      data: { type: 'declined', callSid: 'call-4' },
+    });
+
+    expect(service.callState().phase).toBe('ended');
+    expect(service.callState().terminalReason).toBe('declined');
+    jasmine.clock().tick(1399);
+    expect(service.callState().phase).toBe('ended');
+    jasmine.clock().tick(1);
+    expect(service.callState()).toEqual({ ...IDLE_CALL });
+    jasmine.clock().uninstall();
+  });
+
+  it('shows native busy rejection as a terminal call state', () => {
+    jasmine.clock().install();
+    const service = TestBed.inject(CallEventService);
+    const listener = adapter.setSnapshotListener.calls.mostRecent().args[0];
+    listener({ ...IDLE_CALL, phase: 'ringing', callSid: 'call-5' });
+    listener({ ...IDLE_CALL });
+    adapter.rejected$.next('busy');
+
+    expect(service.callState().phase).toBe('ended');
+    expect(service.callState().terminalReason).toBe('busy');
+    jasmine.clock().tick(1799);
+    expect(service.callState().phase).toBe('ended');
+    jasmine.clock().tick(1);
+    expect(service.callState()).toEqual({ ...IDLE_CALL });
+    jasmine.clock().uninstall();
   });
 });

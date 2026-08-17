@@ -35,7 +35,7 @@
     </div>
     <div class="msg-actions">
       @if (canCall()) {
-        <button class="icon-btn" type="button" (click)="placeCall()" [attr.aria-label]="'chat.callAria' | transloco">
+        <button class="icon-btn" type="button" [disabled]="callActive()" (click)="placeCall()" [attr.aria-label]="'chat.callAria' | transloco">
           <app-icon [type]="AppIconType.PHONE" [style]="{ width: '22px', height: '22px' }"></app-icon>
         </button>
       }

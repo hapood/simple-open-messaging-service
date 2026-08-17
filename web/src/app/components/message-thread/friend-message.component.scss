@@ -49,6 +49,12 @@
   // acts as a fixed wallpaper that messages scroll over.
   @include chat-surface.wallpaper;
 }
+.chat-call-banner {
+  padding-top: var(--soms-safe-top, 0px);
+}
+.msg-container:has(.chat-call-banner) {
+  --sd-top: calc(104px + var(--soms-safe-top, 0px));
+}
 
 // A touch browser may pan the layout viewport to reveal the focused editor even though visualViewport
 // already reports the keyboard occlusion. Shrink the complete chat surface there so the header stays at

@@ -37,7 +37,8 @@ describe('playground call mock', () => {
     expect(state.callState()).toEqual({ ...IDLE_CALL });
   });
 
-  it('simulates a declined or busy peer without connecting media', async () => {
+  it('shows a declined or busy peer before dismissing the call', () => {
+    jasmine.clock().install();
     TestBed.configureTestingModule({
       providers: [provideZonelessChangeDetection()],
     });
@@ -48,9 +49,35 @@ describe('playground call mock', () => {
       state.opponentResponse.set(response);
       adapter.initiate(2, `call-${response}`, 'AUDIO', 'Alice', '');
       expect(state.callState().phase).toBe('ringing');
-      await waitForResponse();
+      jasmine.clock().tick(800);
+      expect(state.callState().phase).toBe('ended');
+      expect(state.callState().terminalReason).toBe(
+        response === 'decline' ? 'declined' : 'busy',
+      );
+      jasmine.clock().tick(response === 'busy' ? 1800 : 1400);
       expect(state.callState()).toEqual({ ...IDLE_CALL });
     }
+    jasmine.clock().uninstall();
+  });
+
+  it('simulates a peer who does not answer', () => {
+    jasmine.clock().install();
+    TestBed.configureTestingModule({
+      providers: [provideZonelessChangeDetection()],
+    });
+    const state = TestBed.inject(PlaygroundCallState);
+    const adapter = TestBed.inject(PlaygroundCallAdapter);
+    state.opponentResponse.set('no-answer');
+
+    adapter.initiate(2, 'call-no-answer', 'AUDIO', 'Alice', '');
+    jasmine.clock().tick(4999);
+    expect(state.callState().phase).toBe('ringing');
+    jasmine.clock().tick(1);
+    expect(state.callState().phase).toBe('ended');
+    expect(state.callState().terminalReason).toBe('missed');
+    jasmine.clock().tick(1400);
+    expect(state.callState()).toEqual({ ...IDLE_CALL });
+    jasmine.clock().uninstall();
   });
 
   it('shows mock video posters and swaps them without camera media', () => {

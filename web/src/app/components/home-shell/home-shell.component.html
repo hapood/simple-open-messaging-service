@@ -10,6 +10,7 @@
     <app-icon-rail class="rail" [onThreadListChanged]="refresh" />
     <app-chat-list-pane
       class="list"
+      [showCallBanner]="true"
       [style.width.px]="listWidth()"
       (selectThread)="openChat($event)"
     />
@@ -29,6 +30,9 @@
     ></div>
   } @else {
     <div class="drawer-body">
+      @if (mode() === 'medium' || !chatActive()) {
+        <app-call-banner />
+      }
       <!-- Account surfaces are page dialogs over this always-mounted Chats base. Keeping the list alive
            preserves avatar blob URLs and scroll/search state while Settings/Profile is open. -->
       <app-home-header class="header" [onThreadListChanged]="refresh" />

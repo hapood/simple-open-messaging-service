@@ -189,6 +189,9 @@ type KernelFieldKey =
               <mat-button-toggle value="busy">{{
                 'playground.callBusy' | transloco
               }}</mat-button-toggle>
+              <mat-button-toggle value="no-answer">{{
+                'playground.callNoAnswer' | transloco
+              }}</mat-button-toggle>
               <mat-button-toggle value="accept">{{
                 'playground.callAccept' | transloco
               }}</mat-button-toggle>

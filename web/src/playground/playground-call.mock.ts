@@ -1,12 +1,22 @@
-import { Injectable, signal } from '@angular/core';
+import { Injectable, OnDestroy, signal } from '@angular/core';
 import {
   IDLE_CALL,
   type CallSnapshot,
   type CallSnapshotListener,
+  type CallTerminalReason,
 } from '../app/services/call-adapter';
 
 export type PlaygroundCallMode = 'audio' | 'video';
-export type PlaygroundCallResponse = 'decline' | 'busy' | 'accept';
+export type PlaygroundCallResponse =
+  | 'decline'
+  | 'busy'
+  | 'no-answer'
+  | 'accept';
+
+const PEER_RESPONSE_DELAY_MS = 800;
+const NO_ANSWER_DELAY_MS = 5000;
+const TERMINAL_DISPLAY_MS = 1400;
+const BUSY_TERMINAL_DISPLAY_MS = 1800;
 
 function videoPoster(
   label: string,
@@ -39,10 +49,12 @@ export function readPlaygroundCallMode(
 /** Stable in-memory call state for visual QA. It deliberately never transitions to idle, so the playground
  * remains on the production call screen even when a terminal control is clicked. */
 @Injectable({ providedIn: 'root' })
-export class PlaygroundCallState {
+export class PlaygroundCallState implements OnDestroy {
   private readonly mode = readPlaygroundCallMode(
     typeof window === 'undefined' ? '' : window.location.search,
   );
+  private responseTimer: ReturnType<typeof setTimeout> | null = null;
+  private terminalTimer: ReturnType<typeof setTimeout> | null = null;
 
   readonly callState = signal<CallSnapshot>({
     ...IDLE_CALL,
@@ -83,10 +95,18 @@ export class PlaygroundCallState {
       peerAvatar,
     });
     const response = this.opponentResponse();
-    setTimeout(() => {
+    this.clearTimers();
+    this.responseTimer = setTimeout(() => {
+      this.responseTimer = null;
       if (this.callState().callSid !== callSid) return;
       if (response !== 'accept') {
-        this.disconnect();
+        this.showTerminal(
+          response === 'decline'
+            ? 'declined'
+            : response === 'busy'
+              ? 'busy'
+              : 'missed',
+        );
         return;
       }
       this.callState.update((state) => ({
@@ -95,7 +115,7 @@ export class PlaygroundCallState {
         mediaState: 'connected',
         startedAt: Date.now(),
       }));
-    }, 800);
+    }, response === 'no-answer' ? NO_ANSWER_DELAY_MS : PEER_RESPONSE_DELAY_MS);
   }
 
   setMuted(muted: boolean): void {
@@ -103,7 +123,43 @@ export class PlaygroundCallState {
   }
 
   disconnect(): void {
+    this.clearTimers();
     this.callState.set({ ...IDLE_CALL });
+  }
+
+  markLocalTermination(_callSid: string): void {}
+
+  private showTerminal(terminalReason: CallTerminalReason): void {
+    const callSid = this.callState().callSid;
+    if (!callSid) return;
+    this.callState.update((state) => ({
+      ...state,
+      phase: 'ended',
+      mediaState: 'new',
+      step: '',
+      terminalReason,
+    }));
+    this.terminalTimer = setTimeout(() => {
+      this.terminalTimer = null;
+      if (this.callState().callSid === callSid) {
+        this.callState.set({ ...IDLE_CALL });
+      }
+    },
+    terminalReason === 'busy'
+      ? BUSY_TERMINAL_DISPLAY_MS
+      : TERMINAL_DISPLAY_MS,
+    );
+  }
+
+  private clearTimers(): void {
+    if (this.responseTimer) clearTimeout(this.responseTimer);
+    if (this.terminalTimer) clearTimeout(this.terminalTimer);
+    this.responseTimer = null;
+    this.terminalTimer = null;
+  }
+
+  ngOnDestroy(): void {
+    this.clearTimers();
   }
 
   setCameraEnabled(cameraEnabled: boolean): void {

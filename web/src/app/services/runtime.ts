@@ -254,6 +254,7 @@ declare global {
       decline: (callSid: string) => void;
       cancel: (callSid: string) => void;
       end: (callSid: string, reason?: string) => void;
+      setSpeakerEnabled: (enabled: boolean) => void;
       signal: (
         callSid: string,
         toUserId: number,

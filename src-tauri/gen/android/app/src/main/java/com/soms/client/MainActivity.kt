@@ -2055,6 +2055,11 @@ class MainActivity : TauriActivity() {
             CallController.setMuted(muted)
         }
 
+        @JavascriptInterface
+        fun setSpeakerEnabled(enabled: Boolean) {
+            CallController.setSpeakerEnabled(enabled)
+        }
+
         /** One-way AUDIO→VIDEO upgrade. Camera permission is requested just in time; denying it leaves the
          *  established audio call untouched and only marks the upgrade attempt failed. */
         @JavascriptInterface

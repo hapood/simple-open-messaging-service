@@ -23,6 +23,7 @@ import { DebugLogFabComponent } from './components/debug-log/debug-log-fab.compo
 import { emitTauriEvent, isTauri, isAndroid } from './services/runtime';
 import { CallEventService } from './services/call-event.service';
 import { CallOverlayService } from './services/call-overlay.service';
+import { CallPresentationService } from './services/call-presentation.service';
 import { ChatAppearanceService } from './services/chat-appearance.service';
 import { UpdateBannerComponent } from './components/update-banner/update-banner.component';
 import { ComposerGeometryService } from './services/composer-geometry.service';
@@ -111,6 +112,7 @@ export class AppComponent {
   // through the transparent chrome. Eagerly constructed so its callState effect is live for the whole
   // session (an incoming ring can arrive at any time) — cf. the qr-scanning overlay architecture.
   private readonly callOverlay = inject(CallOverlayService);
+  private readonly callPresentation = inject(CallPresentationService);
   // Guards the incompatibility prompt to once per app session (re-armed only by a fresh app launch).
   private incompatiblePromptShown = false;
   private nativeShareDialogId: string | null = null;
@@ -122,6 +124,13 @@ export class AppComponent {
     // exits there. Dormant until the Kotlin side wires the callback (the Phase 3 Kotlin half).
     if (isTauri() && isAndroid()) {
       window.__SOMS_BACK__ = () => {
+        if (
+          this.callEvents.callState().phase !== 'idle' &&
+          !this.callPresentation.minimized()
+        ) {
+          this.callPresentation.minimize();
+          return;
+        }
         if (!this.nav.back()) window.SomsBack?.exit();
       };
     }

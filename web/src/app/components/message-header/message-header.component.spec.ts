@@ -13,6 +13,8 @@ import { UserService } from '../../services/user.service';
 import { GroupService } from '../../services/group.service';
 import { RouteService } from '../../services/route.service';
 import { CallAdapterService } from '../../services/call-adapter';
+import { CallEventService } from '../../services/call-event.service';
+import { IDLE_CALL } from '../../services/call-adapter';
 import { AvatarRepository } from '../../services/avatar-cache.service';
 import { ConversationItem } from '../../services/model';
 
@@ -65,6 +67,10 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
         { provide: GroupService, useValue: {} },
         { provide: RouteService, useValue: {} },
         { provide: CallAdapterService, useValue: {} },
+        {
+          provide: CallEventService,
+          useValue: { callState: signal({ ...IDLE_CALL }) },
+        },
         { provide: AvatarRepository, useValue: {} },
       ],
     });

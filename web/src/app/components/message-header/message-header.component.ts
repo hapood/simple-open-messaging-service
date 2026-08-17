@@ -23,6 +23,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
 import { RouteService, PopupType } from '../../services/route.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
 import { CallAdapterService } from '../../services/call-adapter';
+import { CallEventService } from '../../services/call-event.service';
 import { AvatarRepository } from '../../services/avatar-cache.service';
 import { uuid } from '../../lib/uuid';
 import { TranslocoService } from '@jsverse/transloco';
@@ -75,6 +76,8 @@ export class MessageHeaderComponent {
   private readonly convList = inject(ConversationListService);
   private readonly routeService = inject(RouteService);
   private readonly callAdapter = inject(CallAdapterService);
+  private readonly callEvents = inject(CallEventService);
+  readonly callActive = computed(() => this.callEvents.callState().phase !== 'idle');
   private readonly avatarRepo = inject(AvatarRepository);
   private readonly transloco = inject(TranslocoService);
   private readonly toast = inject(ToastService);
@@ -98,6 +101,7 @@ export class MessageHeaderComponent {
    *  base64 data URL so the native call notification (CallStyle Person) decodes it directly — NO /uploads
    *  fetch (the bytes are already on-device; the caller is in the peer's thread, so the avatar is cached). */
   async placeCall(): Promise<void> {
+    if (this.callActive()) return;
     const peer = this.userMsgTrd()?.peerUser;
     if (peer?.id === undefined) return;
     const avatarDataUrl = await this.avatarRepo.getCachedDataUrl(`u${peer.id}`);

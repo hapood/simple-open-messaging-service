@@ -9,6 +9,8 @@ import {
   CallSnapshot,
 } from '../../services/call-adapter';
 import { CallEventService } from '../../services/call-event.service';
+import { CallRingtoneService } from '../../services/call-ringtone.service';
+import { CallPresentationService } from '../../services/call-presentation.service';
 import { CallScreenComponent } from './call-screen.component';
 import { UserService } from '../../services/user.service';
 
@@ -20,6 +22,7 @@ describe('CallScreenComponent', () => {
     cancel: jasmine.createSpy('cancel'),
     end: jasmine.createSpy('end'),
     setMuted: jasmine.createSpy('setMuted'),
+    setSpeakerEnabled: jasmine.createSpy('setSpeakerEnabled'),
     upgradeToVideo: jasmine.createSpy('upgradeToVideo'),
     switchCamera: jasmine.createSpy('switchCamera'),
     setCameraEnabled: jasmine.createSpy('setCameraEnabled'),
@@ -28,6 +31,12 @@ describe('CallScreenComponent', () => {
     setSelfVideoPosition: jasmine.createSpy('setSelfVideoPosition'),
     swapVideo: jasmine.createSpy('swapVideo'),
     rendererOwnsVideo: true,
+  };
+  const ringtone = { setMode: jasmine.createSpy('setMode') };
+  const presentation = {
+    minimized: signal(false),
+    minimize: jasmine.createSpy('minimize'),
+    restore: jasmine.createSpy('restore'),
   };
 
   beforeEach(() => {
@@ -44,6 +53,10 @@ describe('CallScreenComponent', () => {
         (value): value is jasmine.Spy => typeof value === 'function',
       )
       .forEach((spy) => spy.calls.reset());
+    ringtone.setMode.calls.reset();
+    presentation.minimized.set(false);
+    presentation.minimize.calls.reset();
+    presentation.restore.calls.reset();
 
     TestBed.configureTestingModule({
       imports: [CallScreenComponent],
@@ -57,8 +70,16 @@ describe('CallScreenComponent', () => {
           },
           loader: InlineTranslocoLoader,
         }),
-        { provide: CallEventService, useValue: { callState } },
+        {
+          provide: CallEventService,
+          useValue: {
+            callState,
+            markLocalTermination: jasmine.createSpy('markLocalTermination'),
+          },
+        },
         { provide: CallAdapterService, useValue: adapter },
+        { provide: CallRingtoneService, useValue: ringtone },
+        { provide: CallPresentationService, useValue: presentation },
         { provide: UserService, useValue: { sessionProfile: signal(undefined) } },
         {
           provide: AvatarRepository,
@@ -69,6 +90,39 @@ describe('CallScreenComponent', () => {
         },
       ],
     });
+  });
+
+  it('maps incoming and ringing phases to distinct call tones', () => {
+    callState.update((state) => ({ ...state, phase: 'incoming' }));
+    const fixture = TestBed.createComponent(CallScreenComponent);
+    fixture.detectChanges();
+    expect(ringtone.setMode).toHaveBeenCalledWith('incoming');
+
+    callState.update((state) => ({ ...state, phase: 'ringing' }));
+    fixture.detectChanges();
+    expect(ringtone.setMode).toHaveBeenCalledWith('ringback');
+
+    callState.update((state) => ({ ...state, phase: 'connecting' }));
+    fixture.detectChanges();
+    expect(ringtone.setMode).toHaveBeenCalledWith(null);
+
+    callState.update((state) => ({
+      ...state,
+      phase: 'ended',
+      terminalReason: 'busy',
+    }));
+    fixture.detectChanges();
+    expect(ringtone.setMode).toHaveBeenCalledWith('busy');
+    expect(
+      (fixture.nativeElement as HTMLElement)
+        .querySelector('.status')
+        ?.textContent?.trim(),
+    ).toBe('The other side is busy');
+    expect(
+      (fixture.nativeElement as HTMLElement).querySelectorAll('.call-action')
+        .length,
+    ).toBe(0);
+    fixture.destroy();
   });
 
   afterEach(() => TestBed.resetTestingModule());
@@ -271,4 +325,18 @@ describe('CallScreenComponent', () => {
     ).toBe('Reconnecting…');
     fixture.destroy();
   });
+
+  it('minimizes the call from the independent top control', () => {
+    const fixture = TestBed.createComponent(CallScreenComponent);
+    fixture.detectChanges();
+
+    const button = (fixture.nativeElement as HTMLElement).querySelector(
+      '.minimize',
+    ) as HTMLButtonElement;
+    button.click();
+
+    expect(presentation.minimize).toHaveBeenCalledTimes(1);
+    fixture.destroy();
+  });
+
 });

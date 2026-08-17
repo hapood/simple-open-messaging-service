@@ -118,6 +118,8 @@ import {
   type NativeVoiceUploadEvent,
 } from '../../services/native-composer.service';
 import { ThemeService } from '../../services/theme.service';
+import { CallBannerComponent } from '../call-banner/call-banner.component';
+import { CallPresentationService } from '../../services/call-presentation.service';
 import { BusinessCode, translateBizResult } from '../../services/biz-code';
 import { tauriInvoke } from '../../services/runtime';
 import { ProfileRepository } from '../../services/profile-store.service';
@@ -215,6 +217,7 @@ const MESSAGE_CONTEXT_MENU_INSET = 8;
   standalone: true,
   imports: [
     MessageHeaderComponent,
+    CallBannerComponent,
     ChatInputComponent,
     PastePanelComponent,
     KbdOffsetDirective,
@@ -229,6 +232,13 @@ const MESSAGE_CONTEXT_MENU_INSET = 8;
   styleUrl: './friend-message.component.scss',
 })
 export class MessageThreadComponent implements OnDestroy {
+  private readonly callLayout = inject(LayoutService);
+  private readonly callPresentation = inject(CallPresentationService);
+  readonly showCallBanner = computed(
+    () =>
+      this.callLayout.mode() === 'compact' &&
+      this.callPresentation.minimized(),
+  );
   readonly assetUrl = assetUrl;
   readonly UserAvatarType = UserAvatarType;
   readonly threadId = input<number>();
