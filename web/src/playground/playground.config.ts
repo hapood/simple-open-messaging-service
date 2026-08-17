@@ -20,6 +20,12 @@ import { WebsocketService } from '../app/services/websocket.service';
 import { PlaygroundRealtime } from './playground-realtime.mock';
 import { LinkCardGenerationService } from '../app/services/link-card-generation.service';
 import { PlaygroundLinkGeneration } from './playground-link-generation.mock';
+import { CallAdapterService } from '../app/services/call-adapter';
+import { CallEventService } from '../app/services/call-event.service';
+import {
+  PlaygroundCallAdapter,
+  PlaygroundCallState,
+} from './playground-call.mock';
 
 /** Mock media is embedded as data/blob URLs, so this standalone entry never applies the production
  * remote-download size gate. The production app keeps its normal user-configurable service. */
@@ -62,6 +68,14 @@ export const playgroundConfig: ApplicationConfig = {
     {
       provide: LinkCardGenerationService,
       useExisting: PlaygroundLinkGeneration,
+    },
+    {
+      provide: CallEventService,
+      useExisting: PlaygroundCallState,
+    },
+    {
+      provide: CallAdapterService,
+      useExisting: PlaygroundCallAdapter,
     },
     provideTransloco({
       config: {

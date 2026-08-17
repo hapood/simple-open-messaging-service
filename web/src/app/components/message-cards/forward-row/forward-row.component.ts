@@ -25,7 +25,12 @@ export class ForwardRowComponent {
   readonly side = computed(() => (this.data().isSelf ? 'self' : 'other'));
   readonly showAvatar = computed(() => this.isShowHead());
   readonly pos = computed(() => (this.isShowHead() ? 'head' : 'body'));
-  readonly showName = computed(() => this.isShowHead() && !this.data().isSelf);
+  readonly showName = computed(
+    () =>
+      this.isShowHead() &&
+      this.data().isGroupConversation === true &&
+      !this.data().isSelf,
+  );
   readonly card = computed(() => parseForwardCard(this.data().text));
   readonly statusTick = computed(
     () => this.data().isSelf && !!this.data().status,

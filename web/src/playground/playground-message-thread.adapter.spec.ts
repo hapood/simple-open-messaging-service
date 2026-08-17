@@ -3,6 +3,31 @@ import type { ConversationItem } from '../app/services/model';
 import { PlaygroundMessageThreadAdapter } from './playground-message-thread.adapter';
 
 describe('PlaygroundMessageThreadAdapter', () => {
+  it('marks group history and generates messages from multiple members', async () => {
+    const adapter = new PlaygroundMessageThreadAdapter();
+    adapter.itemCount.set(100);
+    adapter.sourceLatency.set(0);
+    adapter.groupSenderCount.set(3);
+    const source = adapter.createSource(
+      { threadId: 2, type: 'GROUP' } as ConversationItem,
+      {
+        onNewerAvailable: () => undefined,
+        onMediaStatus: () => undefined,
+        onProfile: () => undefined,
+      },
+    );
+
+    const messages = await source.init(-1, 100, 0);
+    const incoming = messages.filter(
+      (item) => item.data.type === 'msg' && !item.data.isSelf,
+    );
+
+    expect(incoming.every((item) => item.data.isGroupConversation)).toBeTrue();
+    expect(
+      new Set(incoming.map((item) => item.data.name)).size,
+    ).toBeGreaterThan(1);
+  });
+
   it('serves search, moderation and forwarding entirely from memory', async () => {
     const adapter = new PlaygroundMessageThreadAdapter();
     adapter.itemCount.set(30);

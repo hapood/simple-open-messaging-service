@@ -1027,7 +1027,7 @@ export class MessageThreadComponent implements OnDestroy {
     if (!item) return;
     if (event.phase === 'completed') {
       this.transfers.complete(cid);
-      void this.markSent(item);
+      void this.markAccepted(item);
       this.nativeVoiceItems.delete(cid);
     } else {
       const reason =
@@ -2162,7 +2162,7 @@ export class MessageThreadComponent implements OnDestroy {
         throw new Error(failed.message);
       }
       this.transfers.complete(cid);
-      await this.markSent(item);
+      await this.markAccepted(item);
     } catch (error) {
       this.transfers.fail(cid, this.uploadFailureReason(error));
       await this.failPending(item);
@@ -2271,7 +2271,7 @@ export class MessageThreadComponent implements OnDestroy {
         throw new Error(failed.message);
       }
       this.transfers.complete(cid);
-      await this.markSent(item);
+      await this.markAccepted(item);
     } catch (error) {
       this.transfers.fail(cid, this.uploadFailureReason(error));
       await this.failPending(item);
@@ -2480,7 +2480,7 @@ export class MessageThreadComponent implements OnDestroy {
         throw new Error(response.message);
       }
       this.transfers.complete(cid);
-      await this.markSent(item);
+      await this.markAccepted(item);
     } catch (error) {
       if (error instanceof NativeUploadError && error.code !== undefined) {
         this.surfaceSendQuota({
@@ -2686,7 +2686,7 @@ export class MessageThreadComponent implements OnDestroy {
         if (res.code !== 0) {
           this.surfaceSendFailure(res, tid);
           void this.failPending(item);
-        } else void this.markSent(item); // 200 → spinner→check now, decoupled from the later SSE reorder
+        } else void this.markAccepted(item);
       })
       .catch(() => void this.failPending(item));
   }
@@ -2709,7 +2709,7 @@ export class MessageThreadComponent implements OnDestroy {
         if (res.code !== 0) {
           this.surfaceSendFailure(res, tid);
           void this.failPending(item);
-        } else void this.markSent(item);
+        } else void this.markAccepted(item);
       })
       .catch(() => void this.failPending(item));
   }
@@ -2873,7 +2873,7 @@ export class MessageThreadComponent implements OnDestroy {
         await this.failPending(item);
       } else {
         this.transfers.complete(cid);
-        await this.markSent(item); // upload done → spinner→check now, decoupled from the later SSE reorder
+        await this.markAccepted(item);
       }
     } catch (error) {
       this.transfers.fail(cid, this.uploadFailureReason(error));
@@ -2922,7 +2922,7 @@ export class MessageThreadComponent implements OnDestroy {
         await this.failPending(item);
       } else {
         this.transfers.complete(cid);
-        await this.markSent(item); // upload done → spinner→check now, decoupled from the later SSE reorder
+        await this.markAccepted(item);
       }
     } catch (error) {
       this.transfers.fail(cid, this.uploadFailureReason(error));
@@ -2983,7 +2983,7 @@ export class MessageThreadComponent implements OnDestroy {
         await this.failPending(item);
       } else {
         this.transfers.complete(cid);
-        await this.markSent(item); // upload done → spinner→check now, decoupled from the later SSE reorder
+        await this.markAccepted(item);
       }
     } catch (error) {
       this.transfers.fail(cid, this.uploadFailureReason(error));
@@ -3042,7 +3042,7 @@ export class MessageThreadComponent implements OnDestroy {
         await this.failPending(item);
       } else {
         this.transfers.complete(cid);
-        await this.markSent(item); // upload done → spinner→check now, decoupled from the later SSE reorder
+        await this.markAccepted(item);
       }
     } catch (error) {
       this.transfers.fail(cid, this.uploadFailureReason(error));
@@ -3240,18 +3240,15 @@ export class MessageThreadComponent implements OnDestroy {
     await scroller.reconcilePending();
   }
 
-  /** Mark an optimistic send SENT (the HTTP-200 / upload-success milestone): the source flips its pending entry to
-   *  status:'sent' in place (stable identity, stays at its tail position); the kernel's confirmPending morphs the
-   *  bubble in place (sending→sent) + tags cb-confirmed so the spinner→check→fade choreography plays WITHOUT touching
-   *  the reorder animation (owned by the later SSE echo). Self-heals the SSE-beats-HTTP race: if the echo already
-   *  dropped the pending entry, markPendingSent returns false and confirmPending is skipped — the real carries the
-   *  choreography instead. */
-  private async markSent(item: CbItem<ChatMsgData>): Promise<void> {
+  /** Record HTTP/upload acceptance without confirming delivery visually. The optimistic row becomes `accepted`:
+   *  its spinner stays visible, but cancellation and dimming stop. The push echo is the sole owner of the later
+   *  spinner→check choreography. If the echo already won the race it has removed pending, so this is a no-op. */
+  private async markAccepted(item: CbItem<ChatMsgData>): Promise<void> {
     const scroller = this.scroller;
     const source = this.source;
     if (!scroller || !source || item.clientMessageId === undefined) return;
-    if (!source.markPendingSent(item.clientMessageId)) return; // already confirmed/dropped — the real owns the choreography
-    scroller.confirmPending(item.clientMessageId);
+    if (!source.markPendingAccepted(item.clientMessageId)) return;
+    await scroller.reconcilePending();
     // A successful send means the local-user quota breaker is no longer tripped — drop the pause banner.
     this.sendPaused.set(false);
   }
@@ -3323,6 +3320,7 @@ export class MessageThreadComponent implements OnDestroy {
       msgId: placeholderId,
       creator: profile?.id ?? 0,
       isSelf: true,
+      isGroupConversation: this.userMsgTrd()?.type === 'GROUP',
       name: profile?.name ?? 'Me',
       text,
       time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,

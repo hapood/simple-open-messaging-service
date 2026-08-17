@@ -123,6 +123,31 @@ describe('CallScreenComponent', () => {
     fixture.destroy();
   });
 
+  it('keeps video controls visible while the mouse is moving', () => {
+    jasmine.clock().install();
+    callState.update((state) => ({
+      ...state,
+      callType: 'VIDEO',
+      cameraEnabled: true,
+      remoteCameraEnabled: true,
+    }));
+    const fixture = TestBed.createComponent(CallScreenComponent);
+    fixture.detectChanges();
+    const component = fixture.componentInstance;
+
+    jasmine.clock().tick(2999);
+    expect(component.controlsVisible()).toBeTrue();
+
+    component.onScreenMouseMove();
+    jasmine.clock().tick(2999);
+    expect(component.controlsVisible()).toBeTrue();
+
+    jasmine.clock().tick(1);
+    expect(component.controlsVisible()).toBeFalse();
+    fixture.destroy();
+    jasmine.clock().uninstall();
+  });
+
   it('moves the self view through the lightweight position bridge while dragging', () => {
     callState.update((state) => ({
       ...state,
@@ -190,6 +215,27 @@ describe('CallScreenComponent', () => {
     expect(root.querySelector('.call-kind')?.textContent?.trim()).toBe(
       'Video call',
     );
+    fixture.destroy();
+  });
+
+  it('moves camera-off placeholders with the native video swap state', () => {
+    callState.update((state) => ({
+      ...state,
+      callType: 'VIDEO',
+      cameraEnabled: false,
+      remoteCameraEnabled: false,
+      swapped: true,
+    }));
+    const fixture = TestBed.createComponent(CallScreenComponent);
+    fixture.detectChanges();
+
+    const root = fixture.nativeElement as HTMLElement;
+    expect(root.querySelector('.call-screen.swapped')).not.toBeNull();
+    expect(root.querySelector('.local-camera-off')?.textContent).toContain(
+      'Camera off',
+    );
+    expect(root.querySelector('.self-view .pip-peer-off')).not.toBeNull();
+    expect(root.querySelector('.self-view .self-off')).toBeNull();
     fixture.destroy();
   });
 

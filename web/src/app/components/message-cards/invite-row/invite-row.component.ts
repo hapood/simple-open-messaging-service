@@ -38,7 +38,12 @@ export class InviteRowComponent implements OnInit {
   readonly side = computed(() => (this.data().isSelf ? 'self' : 'other'));
   readonly showAvatar = computed(() => this.isShowHead());
   readonly pos = computed(() => (this.isShowHead() ? 'head' : 'body'));
-  readonly showName = computed(() => this.isShowHead() && !this.data().isSelf);
+  readonly showName = computed(
+    () =>
+      this.isShowHead() &&
+      this.data().isGroupConversation === true &&
+      !this.data().isSelf,
+  );
   /** Render a status tick only for self-sent messages with a delivery status. Inert for invites. */
   readonly statusTick = computed(() => this.data().isSelf && !!this.data().status);
   /** Dim while in flight (never true for invites). */

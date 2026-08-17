@@ -48,10 +48,12 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
       <div
         class="call-screen"
         [class.video]="isVideo()"
+        [class.swapped]="snap().swapped"
         [class.incoming]="snap().phase === 'incoming'"
         [class.controls-hidden]="!controlsVisible()"
         [class.pip]="inPip()"
         (pointerdown)="onScreenTap()"
+        (mousemove)="onScreenMouseMove()"
       >
         @if (isVideo()) {
           <video
@@ -62,7 +64,7 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
             (playing)="onRemoteVideoReady()"
             #remoteVideo
           ></video>
-          @if (showRemotePlaceholder()) {
+          @if (!snap().swapped && showRemotePlaceholder()) {
             <div class="remote-camera-off">
               <div class="remote-avatar">
                 <app-user-avatar
@@ -88,7 +90,11 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
                mainstream-app "picture-in-picture" self preview). Transparent until native attaches. -->
           <div
             class="self-view"
-            [class.off]="!snap().cameraEnabled"
+            [class.off]="
+              snap().swapped
+                ? showRemotePlaceholder()
+                : !snap().cameraEnabled
+            "
             [style.transform]="selfTransform()"
             (pointerdown)="onSelfPointerDown($event)"
             (pointermove)="onSelfPointerMove($event)"
@@ -97,7 +103,16 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
             #selfHole
           >
             <video autoplay muted playsinline #selfVideo></video>
-            @if (!snap().cameraEnabled) {
+            @if (snap().swapped && showRemotePlaceholder()) {
+              <div class="pip-peer-off">
+                <app-user-avatar
+                  [type]="UserAvatarType.OTHER"
+                  [name]="snap().peerName || '?'"
+                  [identityId]="snap().peerUserId"
+                  [src]="snap().peerAvatar"
+                ></app-user-avatar>
+              </div>
+            } @else if (!snap().swapped && !snap().cameraEnabled) {
               <app-icon
                 class="self-off-icon"
                 [type]="AppIconType.VIDEO_OFF"
@@ -106,6 +121,16 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
               <span class="self-off">{{ 'call.cameraOff' | transloco }}</span>
             }
           </div>
+          @if (snap().swapped && !snap().cameraEnabled) {
+            <div class="remote-camera-off local-camera-off">
+              <div class="remote-avatar">
+                <app-user-avatar
+                  [type]="UserAvatarType.SELF"
+                ></app-user-avatar>
+              </div>
+              <span>{{ 'call.cameraOff' | transloco }}</span>
+            </div>
+          }
         }
 
         <div class="top-bar">
@@ -424,6 +449,12 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
         line-height: 16px;
         opacity: 0.8;
       }
+      .pip-peer-off {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #292b31;
+      }
       .remote-camera-off {
         position: absolute;
         inset: 0;
@@ -497,7 +528,7 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
         width: 128px;
         height: 128px;
         border: 3px solid rgba(255, 255, 255, 0.16);
-        border-radius: 50%;
+        border-radius: 20%;
         overflow: hidden;
         box-shadow:
           0 14px 42px rgba(0, 0, 0, 0.32),
@@ -547,21 +578,13 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
         flex-wrap: wrap;
         justify-content: center;
         width: min(100%, 440px);
-        padding: 18px 16px;
+        padding: 0 16px;
         box-sizing: border-box;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 28px;
-        background: rgba(22, 23, 28, 0.78);
-        box-shadow: 0 14px 40px rgba(0, 0, 0, 0.28);
-        backdrop-filter: blur(18px);
-        -webkit-backdrop-filter: blur(18px);
       }
       .call-screen.incoming .controls {
         gap: clamp(40px, 15vw, 76px);
         width: min(100%, 360px);
-        padding: 16px 20px;
-        border-color: rgba(255, 255, 255, 0.08);
-        background: rgba(22, 23, 28, 0.58);
+        padding: 0 20px;
       }
       .call-screen.incoming .action-icon {
         width: 58px;
@@ -636,16 +659,12 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
         background: #fff;
         color: #16171b;
       }
-      .upgrade .action-icon {
-        background: #fff;
-        color: #16171b;
-      }
       .upgrade-spinner {
         width: 20px;
         height: 20px;
         box-sizing: border-box;
-        border: 2px solid rgba(22, 23, 27, 0.28);
-        border-top-color: #16171b;
+        border: 2px solid rgba(255, 255, 255, 0.32);
+        border-top-color: #fff;
         border-radius: 50%;
         animation: soms-call-spin 700ms linear infinite;
       }
@@ -973,6 +992,12 @@ export class CallScreenComponent implements OnDestroy {
   /** Any pointer down on the call screen reveals the controls + re-arms the auto-hide. The self-PiP is
    *  excluded (its pointerdown stops propagation — it swaps video, not chrome). */
   onScreenTap(): void {
+    this.revealControls();
+  }
+
+  /** Desktop pointer activity keeps the video controls visible. Every mouse movement restarts the inactivity
+   *  countdown; touch movement is intentionally excluded so a finger drag does not keep the chrome open. */
+  onScreenMouseMove(): void {
     this.revealControls();
   }
 

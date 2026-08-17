@@ -304,11 +304,12 @@ class VideoSurfaceManager(private val contextProvider: () -> Context?) {
      *  camera renders full-bleed and the peer's in the PiP (mirrors follow). The surfaces + z-order stay put;
      *  only the track→renderer mapping + the mirror flip. No-op if no video surfaces are mounted. Fires a
      *  view-level haptic (no VIBRATE permission; respects the system haptic setting). */
-    fun swapVideo() {
-        if (remoteRenderer == null && selfRenderer == null) return
+    fun swapVideo(): Boolean {
+        if (remoteRenderer == null && selfRenderer == null) return false
         swapped = !swapped
         relinkVideoSinks()
         mainHandler.post { SomsBridge.webView?.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY) }
+        return true
     }
 
     /** Reposition the self renderer to the reported CSS rect (× density → device px). */

@@ -44,7 +44,12 @@ export class TextRowComponent {
   readonly side = computed(() => (this.data().isSelf ? 'self' : 'other'));
   readonly showAvatar = computed(() => this.isShowHead());
   readonly pos = computed(() => (this.isShowHead() ? 'head' : 'body'));
-  readonly showName = computed(() => this.isShowHead() && !this.data().isSelf);
+  readonly showName = computed(
+    () =>
+      this.isShowHead() &&
+      this.data().isGroupConversation === true &&
+      !this.data().isSelf,
+  );
   /** Render a status tick (clock/check/retry) only for self-sent messages that carry a delivery status. */
   readonly statusTick = computed(
     () => this.data().isSelf && !!this.data().status,

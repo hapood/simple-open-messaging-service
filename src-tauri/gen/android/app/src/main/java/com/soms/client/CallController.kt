@@ -334,8 +334,11 @@ object CallController {
 
     fun setVideoGeometryListener(listener: (() -> Unit)?) = video.setGeometryListener(listener)
 
-    /** Swap which video is full-bleed vs PiP (tap the self PiP). No-op on an AUDIO call. */
-    fun swapVideo() = video.swapVideo()
+    /** Swap which video is full-bleed vs PiP (tap the self PiP). Push the changed presentation state so the
+     *  disposable Web chrome moves camera-off placeholders with the native tracks. No-op on an AUDIO call. */
+    fun swapVideo() {
+        if (video.swapVideo()) pushSnapshot()
+    }
 
     /** The remote video's rotated frame dimensions, or null until the first frame — for PiP aspect sizing. */
     fun remoteVideoDimensions(): Pair<Int, Int>? = video.remoteDimensions()

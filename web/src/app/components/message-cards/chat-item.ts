@@ -67,6 +67,8 @@ export interface ChatMsgData {
   creator: number;
   /** = creator === current user's userId. */
   isSelf: boolean;
+  /** Sender labels are useful in group chats but redundant beside avatars in a direct conversation. */
+  isGroupConversation?: boolean;
   /** Sender display name (profile.account; filled for self too — template decides via showName). */
   name: string;
   /** Cached sender profile data used by message-card avatars, including offline opens. */
@@ -123,10 +125,10 @@ export interface ChatMsgData {
   mediaStatus?: MediaStatus;
   /** Raw epoch milliseconds (drives date-separator decisions). */
   createdAtMs: number;
-  /** Delivery state for self-sent messages, rendered as a status tick (sending=animated spinner ring, sent=check,
-   *  failed=retry glyph — click on the row's retry output re-sends). Absent on received messages (no tick). The kernel
-   *  treats this opaquely; only the row component reads it. */
-  status?: 'sending' | 'sent' | 'failed';
+  /** Delivery state for self-sent messages. `sending` is still cancellable; `accepted` means the HTTP request
+   *  succeeded and keeps the spinner visible while awaiting the push echo; `sent` is the echoed server row and
+   *  renders the check; `failed` exposes retry. Absent on received messages. */
+  status?: 'sending' | 'accepted' | 'sent' | 'failed';
   /** Why a transient item exists — mirrors the playground insert orchestrator's `type` ('pending' = optimistic in
    *  flight, 'fake' = debug insert). Absent on history messages. Used by the dev badge / debug UI only; the kernel
    *  ignores it (a transient is a transient regardless of kind). */

@@ -47,7 +47,10 @@ export class CallRowComponent {
   readonly showAvatar = computed(() => this.isShowHead());
   readonly pos = computed(() => (this.isShowHead() ? 'head' : 'body'));
   readonly showName = computed(
-    () => this.isShowHead() && !this.data().isSelf,
+    () =>
+      this.isShowHead() &&
+      this.data().isGroupConversation === true &&
+      !this.data().isSelf,
   );
 
   private readonly content = computed<CallContent | null>(() => {

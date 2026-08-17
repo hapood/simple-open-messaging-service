@@ -1,4 +1,16 @@
 {
+  "playground": {
+    "general": "Playground settings",
+    "language": "Language",
+    "conversationType": "Conversation type",
+    "directChat": "Direct chat",
+    "groupChat": "Group chat",
+    "callResponse": "Peer call response",
+    "callDecline": "Hang up",
+    "callBusy": "Busy",
+    "callAccept": "Accept",
+    "callResponseHint": "Applies when you start a call from a direct chat. Group calls are not available."
+  },
   "transfer": {
     "sendingCount": "Sending {{count}}",
     "sendingOf": "Sending {{completed}}/{{total}}",

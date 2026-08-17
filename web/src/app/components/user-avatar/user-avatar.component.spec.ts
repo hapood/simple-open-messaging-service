@@ -35,12 +35,12 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
     sessionProfile.set(undefined);
   });
 
-  it('falls back to the initial letter when there is no src (no DB call)', () => {
+  it('falls back to the first two characters when there is no src (no DB call)', () => {
     fixture.componentRef.setInput('type', UserAvatarType.OTHER);
     fixture.componentRef.setInput('name', 'Bob');
     fixture.componentRef.setInput('src', undefined);
     expect(fixture.componentInstance.showImage()).toBe(false);
-    expect(fixture.componentInstance.initial()).toBe('B');
+    expect(fixture.componentInstance.initial()).toBe('BO');
     expect(getBlobSpy).not.toHaveBeenCalled();
   });
 
@@ -52,8 +52,26 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
 
     fixture.componentRef.setInput('name', 'Renamed Alice');
 
-    expect(fixture.componentInstance.initial()).toBe('R');
+    expect(fixture.componentInstance.initial()).toBe('RA');
     expect(fixture.componentInstance.bg()).toBe(color);
+  });
+
+  it('uses the first two word initials for a multi-word name', () => {
+    fixture.componentRef.setInput('name', 'Alice Smith');
+
+    expect(fixture.componentInstance.initial()).toBe('AS');
+  });
+
+  it('uses the first two Chinese characters rather than the last two', () => {
+    fixture.componentRef.setInput('name', '张小明');
+
+    expect(fixture.componentInstance.initial()).toBe('张小');
+  });
+
+  it('does not split a composed emoji grapheme', () => {
+    fixture.componentRef.setInput('name', '👩🏽\u200d💻Alice');
+
+    expect(fixture.componentInstance.initial()).toBe('👩🏽\u200d💻A');
   });
 
   it('uses the dedicated graphite token for the self fallback avatar', () => {
@@ -194,7 +212,7 @@ describe('UserAvatarComponent offline cold-start integration', () => {
     }
 
     expect(userService.sessionProfile()?.name).toBe('Cached Alice');
-    expect(fixture.componentInstance.initial()).toBe('C');
+    expect(fixture.componentInstance.initial()).toBe('CA');
     expect(fixture.componentInstance.imgSrc()).toMatch(/^blob:/);
     httpMock.expectNone('/uploads/avatars/self-512.webp');
   });

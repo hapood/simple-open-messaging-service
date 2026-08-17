@@ -369,7 +369,8 @@ $msg-retry: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' vi
     -webkit-mask-size: contain;
     -webkit-mask-repeat: no-repeat;
   }
-  &.msg-status--sending::after {
+  &.msg-status--sending::after,
+  &.msg-status--accepted::after {
     content: '';
     position: absolute;
     inset: 0;
@@ -387,7 +388,8 @@ $msg-retry: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' vi
     -webkit-mask-repeat: no-repeat;
     animation: msg-status-spin 0.8s linear infinite;
   }
-  &.msg-status--sending::before {
+  &.msg-status--sending::before,
+  &.msg-status--accepted::before {
     opacity: 0;
   }
   // Static sent check (default): a plain, persistent angular check for any status:'sent' row that is NOT an

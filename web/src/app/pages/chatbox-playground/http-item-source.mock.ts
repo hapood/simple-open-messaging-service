@@ -23,6 +23,20 @@ import type {
 } from '../../components/message-cards/chat-item';
 import type { StandardResponse, User } from '../../services/model';
 
+function mockUser(id: number, account: string): readonly [number, User] {
+  return [
+    id,
+    {
+      id,
+      account,
+      isForeigner: false,
+      createdAt: 0,
+      updatedAt: 0,
+      isDeleted: false,
+    } as User,
+  ];
+}
+
 /** Mock user table (id → User). Mirrors the production backend user table; MockItemSource.ensureProfiles looks up by creator here. */
 const MOCK_USERS: ReadonlyMap<number, User> = new Map([
   [
@@ -47,6 +61,9 @@ const MOCK_USERS: ReadonlyMap<number, User> = new Map([
       isDeleted: false,
     } as User,
   ],
+  mockUser(3, 'Maya'),
+  mockUser(4, 'Noah'),
+  mockUser(5, 'Olivia'),
 ]);
 
 /**
@@ -109,6 +126,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
   private readonly userService: MockUserService;
   /** Current user id (isSelf is decided as creator === userId). */
   private readonly userId: number;
+  private readonly isGroupConversation: boolean;
   /** User-info cache (creator → name/isSelf), filled by ensureProfiles looking up creators on userService — mirrors HttpItemSource.profiles. */
   private readonly profiles = new Map<
     number,
@@ -127,11 +145,17 @@ export class MockItemSource implements CbSource<ChatItemData> {
     latency: number,
     userService: MockUserService,
     userId: number,
+    isGroupConversation = false,
+    groupSenderCount = 1,
   ) {
-    this.full = buildItems(total);
+    this.full = buildItems(
+      total,
+      isGroupConversation ? Math.max(1, Math.min(4, groupSenderCount)) : 1,
+    );
     this.latency = latency;
     this.userService = userService;
     this.userId = userId;
+    this.isGroupConversation = isGroupConversation;
     this.nextMsgId = total + 1;
   }
 
@@ -421,7 +445,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
     return true;
   }
 
-  markPendingSent(clientMessageId: string): boolean {
+  markPendingAccepted(clientMessageId: string): boolean {
     const index = this.pending.findIndex(
       (item) => item.clientMessageId === clientMessageId,
     );
@@ -429,7 +453,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
     const item = this.pending[index];
     this.pending[index] = {
       ...item,
-      data: { ...item.data, status: 'sent', kind: undefined },
+      data: { ...item.data, status: 'accepted', kind: undefined },
     };
     return true;
   }
@@ -486,6 +510,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
       ...it.data,
       name: p?.name ?? 'Unknown',
       isSelf: p?.isSelf ?? it.data.creator === this.userId,
+      isGroupConversation: this.isGroupConversation,
     };
     return it.clientMessageId !== undefined
       ? { id: it.id, data, clientMessageId: it.clientMessageId }
@@ -599,7 +624,10 @@ const RATIOS: ReadonlyArray<[number, number]> = [
  * Random sender switching; naturally random heights (text length / album size differ). item.id === data.msgId (the
  *  generation index, a numeric seq), stable and addressable — mirrors production Message.seq (a number autoincrement).
  */
-function buildItems(count: number): CbItem<ChatItemData>[] {
+function buildItems(
+  count: number,
+  otherSenderCount = 1,
+): CbItem<ChatItemData>[] {
   const rand = mulberry32(count * 2654435761); // seed = count (scrambled by the Knuth multiplier)
   const items: CbItem<ChatItemData>[] = [];
   let lastCreator: number | null = null;
@@ -625,9 +653,14 @@ function buildItems(count: number): CbItem<ChatItemData>[] {
       lastCreator = null;
     }
     let creator: number;
-    if (lastCreator === null) creator = rand() < 0.5 ? 1 : 2;
-    else if (rand() < 0.35) creator = lastCreator === 1 ? 2 : 1;
-    else creator = lastCreator;
+    const maxCreator = 1 + Math.max(1, Math.min(4, otherSenderCount));
+    if (lastCreator === null)
+      creator = rand() < 0.5 ? 1 : 2 + Math.floor(rand() * (maxCreator - 1));
+    else if (rand() < 0.35) {
+      do {
+        creator = 1 + Math.floor(rand() * maxCreator);
+      } while (creator === lastCreator);
+    } else creator = lastCreator;
     lastCreator = creator;
 
     if (rand() < 0.12) {

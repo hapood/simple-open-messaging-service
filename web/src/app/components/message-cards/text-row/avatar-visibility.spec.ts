@@ -133,6 +133,14 @@ describe('TextRowComponent — avatar visibility vs data-show-self-avatar', () =
     }
   }
 
+  function senderNameShownFor(data: ChatMsgData): boolean {
+    const fixture = TestBed.createComponent(TextRowComponent);
+    fixture.componentRef.setInput('data', data);
+    fixture.componentRef.setInput('isShowHead', true);
+    fixture.detectChanges();
+    return fixture.nativeElement.querySelector('.msg-name') !== null;
+  }
+
   it('keeps the OTHER party avatar visible regardless of the preference (the reported bug guard)', () => {
     const other = buildMsg({ isSelf: false, creator: 2, name: 'Alice' });
     // Turning "show my avatar" OFF must hide only SELF avatars — never the other party's.
@@ -147,5 +155,21 @@ describe('TextRowComponent — avatar visibility vs data-show-self-avatar', () =
     expect(avatarDisplayFor(self, 'false')).toBe('none');
     expect(avatarDisplayFor(self, 'unset')).toBe('none');
     expect(avatarDisplayFor(self, 'true')).toBe('block');
+  });
+
+  it('hides the redundant sender name in a direct conversation', () => {
+    expect(
+      senderNameShownFor(
+        buildMsg({ isSelf: false, isGroupConversation: false }),
+      ),
+    ).toBe(false);
+  });
+
+  it('shows the sender name for an incoming group-conversation head', () => {
+    expect(
+      senderNameShownFor(
+        buildMsg({ isSelf: false, isGroupConversation: true }),
+      ),
+    ).toBe(true);
   });
 });

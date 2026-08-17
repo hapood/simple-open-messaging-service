@@ -46,7 +46,7 @@ export interface MessageThreadSource extends CbSource<ChatItemData> {
   failPending(clientMessageId: string): boolean;
   retryPending(clientMessageId: string): CbItem<ChatItemData> | undefined;
   discardPending(clientMessageId: string): boolean;
-  markPendingSent(clientMessageId: string): boolean;
+  markPendingAccepted(clientMessageId: string): boolean;
   finishLocalInit?(
     liveLatestSeq: number | undefined,
     persistedLatestSeq?: number | null,

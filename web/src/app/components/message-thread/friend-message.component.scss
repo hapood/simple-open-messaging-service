@@ -407,10 +407,9 @@ app-chat-input.msg-composer--dialog-hidden {
 
 .msg-latest {
   position: absolute;
-  // Track the composer's centered 800px content rail on wide panes; collapse to the normal
-  // 16px edge inset when the pane is narrower. This keeps the floating action visually tied
-  // to the input instead of drifting to the far edge of a desktop chat pane.
-  right: max(16px, calc((100% - 800px) / 2 + 16px));
+  // This is a chatbox navigation control, so anchor it to the chatbox edge rather than the
+  // narrower centered composer rail. Message rows can occupy the full pane on wide layouts.
+  right: 16px;
   bottom: 14px;
   min-width: 44px;
   height: 44px;

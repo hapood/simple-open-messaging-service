@@ -551,17 +551,9 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     return true;
   }
 
-  /**
-   * Mark an in-flight optimistic send SENT (the HTTP-200 / upload-success milestone) — flips the pending entry's
-   * status 'sending'→'sent' IN PLACE at its CURRENT tail position (unlike failPending, which sinks a failed send to
-   * the end). Stable identity + a fresh data ref let the kernel's confirmPending morph the bubble in place
-   * (sending→sent) and tag it cb-confirmed so the spinner→check→fade choreography plays WITHOUT a mount/unmount or
-   * reorder — decoupling the delivery-confirm visual from the later SSE-echo reconcile (which still owns the real's
-   * mount + the cb-move FLIP). The entry STAYS in `pending` until the SSE echo's real fulfills it (reconcilePending
-   * drops it) so a remount before the echo still reads 'sent'. Returns false if no pending entry matches (the echo
-   * already confirmed+dropped it → the real owns the choreography, the rare SSE-beats-HTTP race).
-   */
-  markPendingSent(clientMessageId: string): boolean {
+  /** Mark HTTP/upload acceptance without claiming delivery. The entry stays pending at its current position and
+   * keeps a spinner, but `accepted` removes cancellation/dimming. Only the push echo advances it to `sent`. */
+  markPendingAccepted(clientMessageId: string): boolean {
     const i = this.pending.findIndex(
       (p) => p.clientMessageId === clientMessageId,
     );
@@ -569,7 +561,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     const entry = this.pending[i];
     this.pending[i] = {
       ...entry,
-      data: { ...entry.data, status: 'sent', kind: undefined },
+      data: { ...entry.data, status: 'accepted', kind: undefined },
     }; // stay at the current position
     return true;
   }
@@ -660,16 +652,13 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       if (m.clientMessageId) {
         item.clientMessageId = m.clientMessageId;
         // Single-trigger "lock" on the real side: the spinner→check→fade choreography plays on THIS real only when
-        // the send-success milestone (HTTP 200 / upload done) has NOT already played it on the optimistic bubble —
-        // i.e. the pending entry is still 'sending' (SSE echo won the race). When 200 already fired, the pending
-        // entry is 'sent' and the optimistic already carried the choreography, so the real mounts SILENT (no status)
-        // and the cb-confirmed the kernel tags on it is inert (no .msg-status--sent to animate) → the animation fires
-        // exactly once. History / incoming (no pending match) never carry a tick. `this.pending` still holds the entry
-        // here: the source reconcilePending that drops fulfilled cids runs AFTER rawToItems (see getNewer / init).
+        // Push echo is the sole owner of the spinner→check choreography. HTTP success only changes the optimistic
+        // entry to `accepted` (spinner remains, cancel disappears), so any matching pending entry means this fresh
+        // server row must carry `sent`. History / incoming rows without a pending match carry no delivery tick.
         const pending = this.pending.find(
           (p) => p.clientMessageId === m.clientMessageId,
         );
-        if (pending && pending.data.status === 'sending')
+        if (pending)
           item.data = { ...item.data, status: 'sent' };
       }
       out.push(item);
@@ -712,6 +701,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       msgId: m.seq,
       creator: m.creator,
       isSelf: p?.isSelf ?? m.creator === this.selfUserId,
+      isGroupConversation: this.conv.type === 'GROUP',
       name: p?.name ?? '',
       avatar: p?.avatar ?? '',
       avatarIdentityId: m.creator,

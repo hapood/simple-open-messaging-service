@@ -212,4 +212,19 @@ describe('MockItemSource (cursor contract)', () => {
     expect(retrying!.data.msgId).toBe(201); // stable numeric id, unchanged across the retry flip
     expect(s.getPending().map((p) => p.clientMessageId)).toEqual(['cid-A']); // stayed at the end (its current position)
   });
+
+  it('markPendingAccepted keeps the optimistic entry and spinner until its push echo arrives', async () => {
+    const s = new MockItemSource(500, 0, new MockUserService(), 1);
+    await s.init(-1, 100, 0);
+    s.addPending({
+      ...msg(201),
+      clientMessageId: 'cid-A',
+      data: { ...msg(201).data, status: 'sending', kind: 'pending' },
+    });
+
+    expect(s.markPendingAccepted('cid-A')).toBe(true);
+    expect(s.getPending()[0].data.status).toBe('accepted');
+    expect(s.getPending()[0].data.kind).toBeUndefined();
+    expect(s.markPendingAccepted('missing')).toBe(false);
+  });
 });

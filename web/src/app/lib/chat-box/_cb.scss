@@ -236,7 +236,7 @@
 // .cb-jump-highlight: a one-shot highlight added to the target host after jumping to a specific message (triggered by the
 // highlight flag on scrollToIndex/openAround). Paint the animation on the inner .msg-row rather than the host: the host may
 // also contain a date separator, which belongs to the day instead of the target message and must not glow. Theme-specific
-// brand tints keep the cue distinct against both the pale chat canvas and the deep dark canvas. The animation event bubbles
+// subtle brand tints keep the cue visible without producing a harsh flash against either chat canvas. The animation event bubbles
 // from .msg-row to the host, so the kernel's existing animationend cleanup remains valid.
 .cb-jump-highlight > .msg-row > .msg-highlight-layer {
   animation: cb-jump-flash 0.9s ease-out;
@@ -261,10 +261,10 @@
 
 @keyframes cb-jump-flash {
   0% {
-    background-color: color-mix(in srgb, var(--app-brand) 24%, transparent);
-  } // saturated enough to remain visible on the light chat canvas
+    background-color: color-mix(in srgb, var(--app-brand) 14%, transparent);
+  } // restrained contrast keeps repeated navigation comfortable
   35% {
-    background-color: color-mix(in srgb, var(--app-brand) 24%, transparent);
+    background-color: color-mix(in srgb, var(--app-brand) 14%, transparent);
   } // brief hold for noticeability
   100% {
     background-color: transparent;
@@ -278,7 +278,7 @@
 @keyframes cb-jump-flash-dark {
   0%,
   35% {
-    background-color: color-mix(in srgb, var(--app-brand) 32%, transparent);
+    background-color: color-mix(in srgb, var(--app-brand) 20%, transparent);
   }
   100% {
     background-color: transparent;
@@ -321,7 +321,7 @@
   }
   @keyframes cb-jump-flash-reduced {
     from {
-      background-color: color-mix(in srgb, var(--app-brand) 20%, transparent);
+      background-color: color-mix(in srgb, var(--app-brand) 12%, transparent);
     }
     to {
       background-color: transparent;
@@ -329,7 +329,7 @@
   }
   @keyframes cb-jump-flash-reduced-dark {
     from {
-      background-color: color-mix(in srgb, var(--app-brand) 28%, transparent);
+      background-color: color-mix(in srgb, var(--app-brand) 18%, transparent);
     }
     to {
       background-color: transparent;

@@ -5,9 +5,10 @@ import { AvatarRepository } from '../../services/avatar-cache.service'
 import { UserService } from '../../services/user.service'
 
 /**
- * Initial-letter avatar (industry best-practice palette).
+ * Initials avatar (industry best-practice palette).
  *
- * The placeholder SVG has been removed — instead the first character of the name is centered, with a background color:
+ * The placeholder SVG has been removed — instead up to two characters derived from the name are centered,
+ * with a background color:
  *  · SELF: fixed graphite avatar color, recognizable as "you" and independent
  *    from the light/dark interactive brand color.
  *  · OTHER / GROUP: an identity-hashed deterministic palette. The stable key includes the avatar type,
@@ -30,6 +31,18 @@ const PALETTE = [
   '#3949AB', '#1E88E5', '#039BE5', '#00ACC1',
   '#00897B', '#43A043', '#6D4C41', '#546E7A',
 ];
+
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+
+function firstGraphemes(value: string, count: number): string {
+  return Array.from(graphemeSegmenter.segment(value), ({ segment }) => segment)
+    .slice(0, count)
+    .join('')
+}
+
+function firstGrapheme(value: string): string {
+  return firstGraphemes(value, 1)
+}
 
 @Component({
     selector: 'app-user-avatar',
@@ -76,7 +89,7 @@ export class UserAvatarComponent {
     this.name() || (this.type() === UserAvatarType.SELF ? this.userService.sessionProfile()?.name : undefined)
   )
 
-  /** Image load failure (corrupt/404) → fall back to the initial letter. Reset on src/identity change to retry the new image. */
+  /** Image load failure (corrupt/404) → fall back to initials. Reset on src/identity change to retry the new image. */
   readonly imgFailed = signal(false)
 
   /** The DB-backed blob URL for a server avatar (empty until resolved, or for local-preview/no-avatar). */
@@ -140,10 +153,20 @@ export class UserAvatarComponent {
   /** Whether to render the real image (valid src present and not failed). */
   readonly showImage = computed(() => !!this.imgSrc() && !this.imgFailed())
 
-  /** First character (Chinese: first character; English: first letter uppercased); empty-name fallback '?'. */
+  /**
+   * Up to two name characters for the fallback avatar. Multi-word names use the first grapheme of the
+   * first two words (`Alice Smith` → `AS`); single-word names use their first two graphemes (`Alice` →
+   * `AL`, `张小明` → `张小`). Intl.Segmenter keeps composed emoji and combining marks intact.
+   */
   readonly initial = computed(() => {
     const n = (this.effectiveName() ?? '').trim()
-    return n.length > 0 ? n.charAt(0).toUpperCase() : '?'
+    if (!n) return '?'
+
+    const words = n.split(/\s+/u)
+    const value = words.length > 1
+      ? words.slice(0, 2).map((word) => firstGrapheme(word)).join('')
+      : firstGraphemes(words[0], 2)
+    return value.toLocaleUpperCase()
   })
 
   /** Deterministic 31× hash for fallback colors. Prefer the stable, namespaced identity (`u…` / `g…`);

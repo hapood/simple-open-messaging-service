@@ -136,6 +136,7 @@ export class CallEventService implements OnDestroy {
     cameraEnabled?: boolean;
     remoteCameraEnabled?: boolean;
     videoUpgradeState?: 'idle' | 'upgrading' | 'failed';
+    swapped?: boolean;
     peerName?: string;
     peerAvatar?: string;
     step?: string;
