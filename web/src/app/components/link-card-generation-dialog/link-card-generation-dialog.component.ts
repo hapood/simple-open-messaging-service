@@ -16,6 +16,7 @@ import {
 } from '../../services/link-card-generation.service';
 import { RouteService } from '../../services/route.service';
 import { assetUrl } from '../../services/runtime';
+import { linkCardHost, linkCardSource } from '../../lib/link-card-display';
 
 export type LinkCardGenerationMode = 'composer' | 'share';
 
@@ -45,28 +46,24 @@ export class LinkCardGenerationDialogComponent implements OnInit {
 
   readonly status = signal<LinkCardGenerationStatus>('pending');
   readonly content = signal<LinkCardContent | undefined>(undefined);
+  /** A failed metadata fetch may still carry a safe default card. Render that card while retaining the
+   * failed status for the retry action and the red composer affordance. */
+  readonly displayStatus = computed<LinkCardGenerationStatus>(() =>
+    this.content() ? 'succeeded' : this.status(),
+  );
   readonly imageFailed = signal(false);
   readonly imageSrc = computed(() => assetUrl(this.content()?.image));
   readonly faviconSrc = computed(() => assetUrl(this.content()?.favicon));
-  readonly host = computed(() => {
-    const url = this.content()?.url;
-    if (!url) return '';
-    try {
-      return new URL(url).hostname;
-    } catch {
-      return url;
-    }
-  });
-  readonly source = computed(() => {
-    const siteName = this.content()?.siteName?.trim();
-    return siteName || this.host();
-  });
+  readonly host = computed(() => linkCardHost(this.content()?.url ?? ''));
+  readonly source = computed(() =>
+    linkCardSource(this.content()?.url ?? '', this.content()?.siteName),
+  );
   readonly canConfirm = computed(
     () =>
       this.status() === 'succeeded' ||
       (this.status() === 'failed' &&
-        this.mode() === 'share' &&
-        this.originalText().trim().length > 0),
+        (Boolean(this.content()) ||
+          (this.mode() === 'share' && this.originalText().trim().length > 0))),
   );
 
   private readonly syncGeneration = effect(() => {
@@ -97,7 +94,10 @@ export class LinkCardGenerationDialogComponent implements OnInit {
 
   confirm(): void {
     const content = this.content();
-    if (this.status() === 'succeeded' && content) {
+    if (
+      (this.status() === 'succeeded' || this.status() === 'failed') &&
+      content
+    ) {
       this.route.closeDlg({
         kind: 'link',
         generationId: this.generationId(),

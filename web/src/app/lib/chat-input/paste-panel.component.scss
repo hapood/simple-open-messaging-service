@@ -154,7 +154,7 @@
   border-radius: var(--app-radius-pill);
   border: 1px solid var(--app-border);
   cursor: pointer;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .pp-button--secondary {
@@ -163,9 +163,14 @@
 }
 
 .pp-button--primary {
-  border-color: var(--app-brand);
-  background: var(--app-brand);
-  color: white;
+  border-color: var(--app-action-primary);
+  background: var(--app-action-primary);
+  color: var(--app-on-action-primary);
+
+  &:hover:not(:disabled) {
+    border-color: var(--app-action-primary-hover);
+    background: var(--app-action-primary-hover);
+  }
 }
 
 .pp-button:disabled {

@@ -93,8 +93,8 @@ A conflict in any field makes the item invalid. It MUST NOT be overwritten using
 
 `?` in a field declaration means the field is omitted in certain valid states; it does not give the publisher an arbitrary choice:
 
-| Field | Required when | Omitted when |
-| ---- | -------- | -------- |
+| Field         | Required when                           | Omitted when                                                      |
+| ------------- | --------------------------------------- | ----------------------------------------------------------------- |
 | `quoteTarget` | A `PURE_TEXT` message is a quoted reply | The message is not a quoted reply, or its type is not `PURE_TEXT` |
 
 The corresponding content document defines type-specific conditional fields.
@@ -103,12 +103,11 @@ The corresponding content document defines type-specific conditional fields.
 
 `assets` is the authoritative manifest of CAS bytes directly referenced by content:
 
-| `contentType` | Digests and `assets` |
-| ------------- | ------------------ |
-| `PURE_TEXT`, `INVITE`, `CALL`, `FORWARD` | Reference no digest directly; MUST be empty |
-| `IMAGE`, `VIDEO`, `AUDIO`, `FILE` | Exactly one digest and a descriptor for that digest |
-| `GALLERY` | The complete deduplicated set of item digests |
-| `LINK` | The complete deduplicated set of `imageDigest/faviconDigest`, containing zero, one, or two entries |
+| `contentType`                                    | Digests and `assets`                                |
+| ------------------------------------------------ | --------------------------------------------------- |
+| `PURE_TEXT`, `LINK`, `INVITE`, `CALL`, `FORWARD` | Reference no digest directly; MUST be empty         |
+| `IMAGE`, `VIDEO`, `AUDIO`, `FILE`                | Exactly one digest and a descriptor for that digest |
+| `GALLERY`                                        | The complete deduplicated set of item digests       |
 
 - Each digest appears at most once.
 - The deduplicated set of digests referenced by content MUST exactly equal `assets`.

@@ -88,9 +88,12 @@ export function buildSettingsCategories(
           : 'settings.themeDark';
     return d.transloco.translate(key);
   };
-  const thresholdLabel = (kb: number): string => {
+  const thresholdLabel = (): string => {
     void d.language.lang();
-    if (kb <= 0) return d.transloco.translate('settings.noLimit');
+    const policy = d.mediaSize.policy();
+    if (policy.mode === 'unlimited')
+      return d.transloco.translate('settings.noLimit');
+    const kb = policy.bytes / 1024;
     if (kb >= 1024) return `${kb / 1024} MB`;
     return `${kb} KB`;
   };
@@ -162,7 +165,7 @@ export function buildSettingsCategories(
       id: 'media',
       icon: AppIconType.IMAGE,
       titleKey: 'settings.media',
-      summary: () => thresholdLabel(d.mediaSize.kb()),
+      summary: thresholdLabel,
       component: SettingsMediaComponent,
       visible: () => true,
       order: 2,

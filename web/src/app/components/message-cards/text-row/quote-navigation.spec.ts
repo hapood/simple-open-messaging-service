@@ -4,7 +4,6 @@ import {
   EnvironmentInjector,
   input,
   provideZonelessChangeDetection,
-  signal,
 } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import {
@@ -63,7 +62,7 @@ describe('TextRowComponent — forwarded quote navigation', () => {
         },
         {
           provide: MediaSizeThresholdService,
-          useValue: { threshold: signal(1024) },
+          useValue: { shouldDefer: (size: number) => size > 1024 },
         },
         {
           provide: LinkCardService,

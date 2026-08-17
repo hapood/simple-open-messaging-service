@@ -67,8 +67,17 @@
   }
 
   &--primary {
-    color: var(--app-brand);
-    font-weight: 600;
+    color: var(--app-action-primary);
+    font-weight: 500;
+
+    &:hover:not(:disabled) {
+      background: color-mix(
+        in srgb,
+        var(--app-action-primary) 10%,
+        transparent
+      );
+      color: var(--app-action-primary-hover);
+    }
   }
 
   &:disabled {

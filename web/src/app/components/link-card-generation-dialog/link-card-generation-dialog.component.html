@@ -1,6 +1,6 @@
 <div class="link-generation-dialog">
   <main class="link-generation-dialog__body">
-    @switch (status()) {
+    @switch (displayStatus()) {
       @case ('pending') {
         <div
           class="link-generation-card link-generation-card--skeleton"
@@ -53,8 +53,8 @@
         }
       }
       @case ('failed') {
-        <div class="link-generation-card link-generation-card--failed">
-          <span aria-hidden="true">!</span>
+        <div class="link-generation-failure" role="alert">
+          <span class="link-generation-failure__icon" aria-hidden="true">!</span>
           <strong>{{ 'linkCard.generateFailed' | transloco }}</strong>
           <p>{{ 'linkCard.generateFailedHint' | transloco }}</p>
         </div>
@@ -63,29 +63,41 @@
   </main>
 
   <footer class="link-generation-dialog__actions">
-    <button type="button" (click)="cancel()">
+    <button
+      type="button"
+      class="link-generation-dialog__cancel"
+      (click)="cancel()"
+    >
       {{ 'common.cancel' | transloco }}
     </button>
-    @if (status() === 'failed') {
-      <button
-        type="button"
-        class="link-generation-dialog__retry"
-        (click)="retry()"
-      >
-        {{ 'linkCard.retry' | transloco }}
-      </button>
-    }
-    @if (canConfirm()) {
-      <button
-        type="button"
-        class="link-generation-dialog__send"
-        (click)="confirm()"
-      >
-        {{
-          (status() === 'failed' ? 'linkCard.sendText' : 'linkCard.send')
-            | transloco
-        }}
-      </button>
-    }
+    <div class="link-generation-dialog__primary-actions">
+      @if (status() === 'failed') {
+        <button
+          type="button"
+          class="link-generation-dialog__retry"
+          (click)="retry()"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 11a8 8 0 1 0-2.34 5.66" />
+            <path d="M20 4v7h-7" />
+          </svg>
+          {{ 'linkCard.retry' | transloco }}
+        </button>
+      }
+      @if (canConfirm()) {
+        <button
+          type="button"
+          class="link-generation-dialog__send"
+          (click)="confirm()"
+        >
+          {{
+            (status() === 'failed' && !content()
+              ? 'linkCard.sendText'
+              : 'linkCard.send')
+              | transloco
+          }}
+        </button>
+      }
+    </div>
   </footer>
 </div>

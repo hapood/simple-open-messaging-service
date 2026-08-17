@@ -35,7 +35,7 @@ describe('MediaRowComponent — deferred image loading', () => {
         {
           provide: MediaSizeThresholdService,
           useValue: {
-            threshold: signal(1024),
+            shouldDefer: (size: number) => size > 1024,
             isLoaded: () => false,
             markLoaded: () => undefined,
           },
@@ -183,6 +183,15 @@ describe('MediaRowComponent — deferred image loading', () => {
     thumbnail.dispatchEvent(new Event('load'));
     expect(thumbnail.style.opacity).toBe('1');
     expect(markLoaded).not.toHaveBeenCalled();
+  });
+
+  it('treats an absent federated media status as ready', async () => {
+    const fixture = await render([image(1, 1024)]);
+
+    expect(
+      fixture.nativeElement.querySelector('.msg-media-status'),
+    ).toBeNull();
+    expect(fixture.nativeElement.textContent).not.toContain('Download failed');
   });
 
   it('uses five type icons plus an ellipsis when a group contains more than six files', async () => {

@@ -157,11 +157,7 @@ export class ForwardBundleService {
       visible.contentType === ContentType.VIDEO ||
       visible.contentType === ContentType.AUDIO;
     // GALLERY carries N item digests; single-file attached media must reference exactly one.
-    if (
-      isAttachedMedia ||
-      visible.contentType === ContentType.GALLERY ||
-      visible.contentType === ContentType.LINK
-    ) {
+    if (isAttachedMedia || visible.contentType === ContentType.GALLERY) {
       const digests = extractDigests(visible.content);
       if (isAttachedMedia && digests.length !== 1) {
         throw new BusinessException(
@@ -783,8 +779,7 @@ export class ForwardBundleService {
     if (contentType === ContentType.GALLERY) {
       return this.galleryAssetsFromContent(content);
     }
-    if (!isForwardDirectMedia(contentType) && contentType !== ContentType.LINK)
-      return [];
+    if (!isForwardDirectMedia(contentType)) return [];
     let meta: { size?: number } = {};
     try {
       meta = JSON.parse(content) as typeof meta;

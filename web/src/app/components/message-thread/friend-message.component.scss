@@ -1,4 +1,5 @@
 @use '../../assets/utils.scss' as *;
+@use '../../assets/chat-surface' as chat-surface;
 
 // fill-parent chain: host → wrapper → msg-container. Mobile full-screen popup
 // and desktop pane both rely on it to fill their container.
@@ -46,9 +47,7 @@
   // own background always paints behind its content, so no pseudo-element / z-index
   // is needed). The parent container does not scroll with the viewport → the pattern
   // acts as a fixed wallpaper that messages scroll over.
-  background-color: var(--im-chat-bg);
-  background-image: var(--im-chat-pattern);
-  background-repeat: repeat;
+  @include chat-surface.wallpaper;
 }
 
 // A touch browser may pan the layout viewport to reveal the focused editor even though visualViewport
@@ -126,11 +125,13 @@ app-chat-input {
   z-index: 4;
 }
 
-// A chatbox dialog visually replaces the composer, but the component must remain mounted until the dialog's
-// result callback has delivered its send intent. Destroying it with an `@if` first makes Angular reject the
-// subsequent OutputRef emission (NG0953).
+// A chatbox dialog visually replaces the composer, but both its DOM and measured geometry stay mounted until
+// the result callback has delivered its send intent. Collapsing it would publish a transient zero composer
+// height and move the virtual-scroll tail while the dialog opens.
 app-chat-input.msg-composer--dialog-hidden {
-  display: none;
+  opacity: 0;
+  pointer-events: none;
+  user-select: none;
 }
 
 // One stable transport row per state. Angular creates it beside the viewport, then the component moves it

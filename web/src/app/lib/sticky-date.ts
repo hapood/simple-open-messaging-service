@@ -1,6 +1,6 @@
 /**
  * Pure helpers for the Telegram-style sticky-date pill. Extracted from the host components
- * ({@link MessageThreadComponent} / {@link ChatboxPlaygroundComponent}) so the label-pick, the fade-band
+ * ({@link MessageThreadComponent}) so the label-pick, the fade-band
  * opacity, and the transitionend trigger are unit-testable without a rendered kernel + DOM.
  *
  * The load-bearing invariant — see {@link pickStickyDateLabel}'s `visibleTop` — is that the baseline is the

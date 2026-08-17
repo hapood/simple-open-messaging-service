@@ -3,140 +3,170 @@
   [class.cfg-viewport--dialog]="dialog()"
   appAuthViewport
 >
-@if (canGoBack()) {
-  <button
-    class="cfg-back"
-    type="button"
-    (click)="goBack()"
-    [attr.aria-label]="'serverConfig.backToApp' | transloco"
-  >
-    <span class="cfg-back__arrow" aria-hidden="true">‹</span>
-  </button>
-}
-
-<!-- Top overlays: determinate progress + the current step label. Both position:fixed so appearing /
-  disappearing during the connect flow never reflows the centered form below. -->
-@if (busy()) {
-  <mat-progress-bar class="cfg-progress" [mode]="progressMode()" [value]="progress()" />
-  @if (stepKey()) {
-    <p class="cfg-step" role="status" aria-live="polite">
-      {{ stepKey() | transloco }}
-      @if (downloadProgressText()) {
-        <span>{{ downloadProgressText() }}</span>
-      }
-    </p>
-  }
-}
-
-<!-- The only in-flow element: centered brand + title + form. Never unmounts (busy only toggles the
-  button + the fixed overlays above), so its position is identical in every phase. -->
-<div
-  class="cfg-shell"
-  [attr.role]="dialog() ? 'dialog' : null"
-  [attr.aria-modal]="dialog() ? 'true' : null"
->
-  @if (!dialog()) {
-    <app-brand-logo class="cfg-logo" [size]="80" />
-  }
-  <h1 class="cfg-title">{{ titleKey() | transloco }}</h1>
-  <p class="cfg-intro">{{ introKey() | transloco }}</p>
-
-  <form class="cfg-form" novalidate (submit)="save($event)">
-    <mat-form-field appearance="fill" class="cfg-field">
-      <mat-label>{{ 'serverConfig.urlLabel' | transloco }}</mat-label>
-      <input
-        #serverInput
-        matInput
-        type="url"
-        inputmode="url"
-        autocomplete="off"
-        spellcheck="false"
-        enterkeyhint="go"
-        [formControl]="url"
-        [placeholder]="'serverConfig.placeholder' | transloco"
-      />
-      @if (url.invalid && url.touched) {
-        <mat-error>{{ 'serverConfig.urlInvalidDetailed' | transloco }}</mat-error>
-      }
-    </mat-form-field>
-
+  @if (canGoBack()) {
     <button
-      mat-flat-button
-      color="primary"
-      type="submit"
-      class="cfg-action"
-      [disabled]="!canSubmit() || busy() || autoFill()"
+      class="cfg-back"
+      type="button"
+      (click)="goBack()"
+      [attr.aria-label]="'serverConfig.backToApp' | transloco"
     >
-      {{ (busy() ? 'serverConfig.connecting' : actionKey()) | transloco }}
+      <span class="cfg-back__arrow" aria-hidden="true">‹</span>
     </button>
+  }
 
-    <!-- Keep a two-line feedback area mounted below the primary action. Common warnings and failures can
+  <!-- Top overlays: determinate progress + the current step label. Both position:fixed so appearing /
+  disappearing during the connect flow never reflows the centered form below. -->
+  @if (busy()) {
+    <mat-progress-bar
+      class="cfg-progress"
+      [mode]="progressMode()"
+      [value]="progress()"
+    />
+    @if (stepKey()) {
+      <p class="cfg-step" role="status" aria-live="polite">
+        {{ stepKey() | transloco }}
+        @if (downloadProgressText()) {
+          <span>{{ downloadProgressText() }}</span>
+        }
+      </p>
+    }
+  }
+
+  <!-- The only in-flow element: centered brand + title + form. Never unmounts (busy only toggles the
+  button + the fixed overlays above), so its position is identical in every phase. -->
+  <div
+    class="cfg-shell"
+    [attr.role]="dialog() ? 'dialog' : null"
+    [attr.aria-modal]="dialog() ? 'true' : null"
+  >
+    @if (!dialog()) {
+      <app-brand-logo class="cfg-logo" [size]="80" />
+    }
+    <h1 class="cfg-title">{{ titleKey() | transloco }}</h1>
+    <p class="cfg-intro">{{ introKey() | transloco }}</p>
+
+    <form class="cfg-form" novalidate (submit)="save($event)">
+      <mat-form-field appearance="fill" class="cfg-field">
+        <mat-label>{{ 'serverConfig.urlLabel' | transloco }}</mat-label>
+        <input
+          #serverInput
+          matInput
+          type="url"
+          inputmode="url"
+          autocomplete="off"
+          spellcheck="false"
+          enterkeyhint="go"
+          [formControl]="url"
+          [placeholder]="'serverConfig.placeholder' | transloco"
+        />
+        @if (url.invalid && url.touched) {
+          <mat-error>{{
+            'serverConfig.urlInvalidDetailed' | transloco
+          }}</mat-error>
+        }
+      </mat-form-field>
+
+      <button
+        mat-flat-button
+        color="primary"
+        type="submit"
+        class="cfg-action"
+        [disabled]="!canSubmit() || busy() || autoFill()"
+      >
+        {{ (busy() ? 'serverConfig.connecting' : actionKey()) | transloco }}
+      </button>
+
+      <!-- Keep a two-line feedback area mounted below the primary action. Common warnings and failures can
       appear without moving the button; only an unusually long translation or expanded technical details
       grows the card. A connection failure takes precedence over the input-derived HTTP warning. -->
-    <div
-      class="cfg-feedback-slot"
-      [class.has-feedback]="errorKey() || (insecure() && url.value.trim() && !url.invalid)"
-    >
-      @if (errorKey()) {
-        <div class="cfg-error" role="alert">
-          <strong>{{ errorKey()! | transloco }}</strong>
-          @if (errorDetail()) {
-            <details>
-              <summary>{{ 'serverConfig.technicalDetails' | transloco }}</summary>
-              <code>{{ errorDetail() }}</code>
-            </details>
-          }
-        </div>
-      } @else if (insecure() && url.value.trim() && !url.invalid) {
-        <div class="cfg-security-note" role="note">
-          <strong>{{ 'serverConfig.unencryptedTitle' | transloco }}</strong>
-          <span>{{ 'serverConfig.unencryptedBody' | transloco }}</span>
-        </div>
-      }
-    </div>
-  </form>
-</div>
-
-@if (exitHint()) {
-  <div class="cfg-toast" role="status">{{ 'serverConfig.exitHint' | transloco }}</div>
-}
-
-<!-- Auto-fill confirmation modal: shown when /shell/compat supplied the field the user didn't enter. The
-  field already displays the filled value; the user confirms before it's trusted as a connection target. -->
-@if (autoFill()) {
-  <app-material-dialog [isShow]="true">
-    <div class="cfg-modal-frame">
-    <div
-      class="cfg-modal"
-      role="dialog"
-      aria-modal="true"
-      tabindex="-1"
-      cdkFocusInitial
-      cdkTrapFocus
-      [cdkTrapFocusAutoCapture]="true"
-    >
-      <h2 class="cfg-modal__title">{{ 'serverConfig.secondDetectedTitle' | transloco }}</h2>
-      <p class="cfg-modal__body">{{ 'serverConfig.secondDetectedBody' | transloco }}</p>
-      <dl class="cfg-modal__addresses">
-        <div class="cfg-modal__address-row">
-          <dt>{{ 'serverConfig.primaryAddress' | transloco }}</dt>
-          <dd><code>{{ autoFill()!.primary }}</code></dd>
-        </div>
-        <div class="cfg-modal__address-row">
-          <dt>{{ 'serverConfig.secondaryAddress' | transloco }}</dt>
-          <dd><code>{{ autoFill()!.lan }}</code></dd>
-        </div>
-      </dl>
-      <div class="cfg-modal__actions">
-        <button mat-button type="button" (click)="cancelAutoFill()">
-          {{ 'serverConfig.secondIgnore' | transloco }}
-        </button>
-        <button mat-flat-button color="primary" type="button" (click)="confirmAutoFill()">
-          {{ 'serverConfig.secondUse' | transloco }}
-        </button>
+      <div
+        class="cfg-feedback-slot"
+        [class.has-feedback]="
+          errorKey() || (insecure() && url.value.trim() && !url.invalid)
+        "
+      >
+        @if (errorKey()) {
+          <div class="cfg-error" role="alert">
+            <strong>{{ errorKey()! | transloco }}</strong>
+            @if (errorDetail()) {
+              <details>
+                <summary>
+                  {{ 'serverConfig.technicalDetails' | transloco }}
+                </summary>
+                <code>{{ errorDetail() }}</code>
+              </details>
+            }
+          </div>
+        } @else if (insecure() && url.value.trim() && !url.invalid) {
+          <div class="cfg-security-note" role="note">
+            <strong>{{ 'serverConfig.unencryptedTitle' | transloco }}</strong>
+            <span>{{ 'serverConfig.unencryptedBody' | transloco }}</span>
+          </div>
+        }
       </div>
+    </form>
+  </div>
+
+  @if (exitHint()) {
+    <div class="cfg-toast" role="status">
+      {{ 'serverConfig.exitHint' | transloco }}
     </div>
-    </div>
-  </app-material-dialog>
-}
+  }
+
+  <!-- Auto-fill confirmation modal: shown when /shell/compat supplied the field the user didn't enter. The
+  field already displays the filled value; the user confirms before it's trusted as a connection target. -->
+  @if (autoFill()) {
+    <app-material-dialog [isShow]="true">
+      <div class="cfg-modal-frame">
+        <div
+          class="cfg-modal"
+          role="dialog"
+          aria-modal="true"
+          tabindex="-1"
+          cdkFocusInitial
+          cdkTrapFocus
+          [cdkTrapFocusAutoCapture]="true"
+        >
+          <h2 class="cfg-modal__title">
+            {{ 'serverConfig.secondDetectedTitle' | transloco }}
+          </h2>
+          <p class="cfg-modal__body">
+            {{ 'serverConfig.secondDetectedBody' | transloco }}
+          </p>
+          <dl class="cfg-modal__addresses">
+            <div class="cfg-modal__address-row">
+              <dt>{{ 'serverConfig.primaryAddress' | transloco }}</dt>
+              <dd>
+                <code>{{ autoFill()!.primary }}</code>
+              </dd>
+            </div>
+            <div class="cfg-modal__address-row">
+              <dt>{{ 'serverConfig.secondaryAddress' | transloco }}</dt>
+              <dd>
+                <code>{{ autoFill()!.lan }}</code>
+              </dd>
+            </div>
+          </dl>
+          <div class="cfg-modal__actions">
+            <button
+              mat-button
+              class="app-secondary-action"
+              type="button"
+              (click)="cancelAutoFill()"
+            >
+              {{ 'serverConfig.secondIgnore' | transloco }}
+            </button>
+            <button
+              mat-flat-button
+              color="primary"
+              type="button"
+              (click)="confirmAutoFill()"
+            >
+              {{ 'serverConfig.secondUse' | transloco }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </app-material-dialog>
+  }
 </div>

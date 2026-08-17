@@ -177,7 +177,7 @@
 //   ② retry in flight = loading: the chat pagination spinner (independent from the SSE connection indicator).
 //  The height is MEASURED by the kernel (offsetHeight); CSS owns the dimension, the kernel reads it, so totalH stays
 //  exact even if the gap/spinner size is tuned here. It does NOT reuse .cb-ghost-loading: the playground sticky-date
-//  query targets .cb-ghost-loading (chatbox-playground.component.ts) meaning the TOP ghost — tagging the cap with it
+//  query targets .cb-ghost-loading, meaning the TOP ghost — tagging the cap with it
 //  would make that query match the bottom and wrongly suppress the date float.
 .cb-tail-cap {
   box-sizing: border-box;

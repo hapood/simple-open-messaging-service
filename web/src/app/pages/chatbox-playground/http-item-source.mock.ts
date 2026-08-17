@@ -135,6 +135,32 @@ export class MockItemSource implements CbSource<ChatItemData> {
     this.nextMsgId = total + 1;
   }
 
+  /** Search the same in-memory history rendered by the production thread shell. */
+  search(keyword: string, take: number): { seq: number; createdAt: number }[] {
+    const query = keyword.trim().toLocaleLowerCase();
+    if (!query) return [];
+    return this.sequence()
+      .filter(
+        (item) =>
+          item.data.type === 'msg' &&
+          `${item.data.text} ${item.data.file?.name ?? ''}`
+            .toLocaleLowerCase()
+            .includes(query),
+      )
+      .slice()
+      .sort((a, b) => b.id - a.id)
+      .slice(0, take)
+      .map((item) => ({ seq: item.id, createdAt: item.data.createdAtMs }));
+  }
+
+  /** Keep a withdrawn mock message absent from later pagination or search requests. */
+  withdraw(seq: number): void {
+    const fullIndex = this.full.findIndex((item) => item.id === seq);
+    if (fullIndex >= 0) this.full.splice(fullIndex, 1);
+    const liveIndex = this.live.findIndex((item) => item.id === seq);
+    if (liveIndex >= 0) this.live.splice(liveIndex, 1);
+  }
+
   /**
    * Initialize / re-anchor:
    *  - anchorId === -1: take the last `olderCount` items (the newest `olderCount`, including the anchor = newest),
@@ -376,6 +402,36 @@ export class MockItemSource implements CbSource<ChatItemData> {
     };
     this.pending[i] = retrying; // stay at the current position (the end)
     return retrying;
+  }
+
+  pendingByClientMessageId(
+    clientMessageId: string,
+  ): CbItem<ChatItemData> | undefined {
+    return this.pending.find(
+      (item) => item.clientMessageId === clientMessageId,
+    );
+  }
+
+  discardPending(clientMessageId: string): boolean {
+    const index = this.pending.findIndex(
+      (item) => item.clientMessageId === clientMessageId,
+    );
+    if (index < 0) return false;
+    this.pending.splice(index, 1);
+    return true;
+  }
+
+  markPendingSent(clientMessageId: string): boolean {
+    const index = this.pending.findIndex(
+      (item) => item.clientMessageId === clientMessageId,
+    );
+    if (index < 0) return false;
+    const item = this.pending[index];
+    this.pending[index] = {
+      ...item,
+      data: { ...item.data, status: 'sent', kind: undefined },
+    };
+    return true;
   }
 
   /** Allocate the next server msgId for a confirmed optimistic send (mock autoincrement, mirroring production

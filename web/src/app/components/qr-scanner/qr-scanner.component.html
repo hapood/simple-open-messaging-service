@@ -1,6 +1,10 @@
 <!-- Full-viewport transparent stage over the live camera. `--cutout` sizes the aim square; `.is-denied`
      swaps transparency for an opaque themed background (no camera when permission is denied). -->
-<div class="qr-scan-stage" [class.is-denied]="state() === 'denied'" [style.--cutout]="cutout">
+<div
+  class="qr-scan-stage"
+  [class.is-denied]="state() === 'denied'"
+  [style.--cutout]="cutout"
+>
   <header class="qr-scan-top">
     <h1 class="qr-scan-title">{{ 'session.scanTitle' | transloco }}</h1>
   </header>
@@ -18,16 +22,24 @@
         <span class="qr-scan-line"></span>
         @if (captured()) {
           <span class="qr-scan-badge">
-            <app-icon [type]="AppIconType.CHECK" [style]="{ width: '34px', height: '34px' }" />
+            <app-icon
+              [type]="AppIconType.CHECK"
+              [style]="{ width: '34px', height: '34px' }"
+            />
           </span>
         }
       </div>
     } @else {
       <div class="qr-scan-denied">
         <span class="qr-scan-denied__icon">
-          <app-icon [type]="AppIconType.INFO" [style]="{ width: '30px', height: '30px' }" />
+          <app-icon
+            [type]="AppIconType.INFO"
+            [style]="{ width: '30px', height: '30px' }"
+          />
         </span>
-        <p class="qr-scan-denied__text">{{ 'session.scanDenied' | transloco }}</p>
+        <p class="qr-scan-denied__text">
+          {{ 'session.scanDenied' | transloco }}
+        </p>
       </div>
     }
   </div>
@@ -38,11 +50,21 @@
 
   <footer class="qr-scan-bottom">
     @if (state() === 'denied') {
-      <button mat-flat-button color="primary" type="button" (click)="openSettings()">
+      <button
+        mat-flat-button
+        color="primary"
+        type="button"
+        (click)="openSettings()"
+      >
         {{ 'session.scanOpenSettings' | transloco }}
       </button>
     }
-    <button mat-button type="button" (click)="cancelScan()">
+    <button
+      mat-button
+      class="app-secondary-action"
+      type="button"
+      (click)="cancelScan()"
+    >
       {{ 'common.cancel' | transloco }}
     </button>
   </footer>

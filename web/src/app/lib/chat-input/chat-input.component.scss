@@ -337,8 +337,7 @@ app-chat-input {
     box-shadow 0.12s;
   &:focus-within {
     background: var(--im-composer-input-focus-bg);
-    box-shadow: 0 0 0 var(--im-composer-input-focus-ring-width)
-      var(--im-composer-input-focus-ring);
+    box-shadow: 0 3px 12px color-mix(in srgb, #000 10%, transparent);
   }
 }
 
@@ -362,6 +361,14 @@ app-chat-input {
   &:hover {
     background: var(--app-hover);
     color: var(--app-text);
+  }
+  &.ci-input-ico--active {
+    background: color-mix(
+      in srgb,
+      var(--app-brand) 16%,
+      var(--im-composer-input-bg)
+    );
+    color: var(--app-brand);
   }
 }
 
@@ -395,35 +402,186 @@ app-chat-input {
       var(--im-composer-input-bg)
     );
     color: var(--app-brand);
-    box-shadow: inset 0 0 0 1px
-      color-mix(in srgb, var(--app-brand) 28%, transparent);
+    box-shadow: none;
   }
   &:active {
     transform: scale(0.94);
   }
 }
 
-// The drawer occupies the current controls-row height and slides out from the attachment key. Its wrapper is
-// a size-query container: a one-line composer scrolls horizontally; once the composer grows, the same tiles
-// use the extra height and scroll vertically. No JS measurement is needed.
+// Attachment mode replaces only the visible input capsule. The editor remains mounted underneath, preserving
+// its draft, selection and measured height; closing the tray restores it without composer or message-list
+// movement. Fixed rail offsets keep the attachment and send controls available on both sides.
 .ci-attach-drawer-shell {
   position: absolute;
-  z-index: 1;
-  inset: 0 0 0 48px;
-  container-type: size;
+  z-index: 5;
+  inset: 0 56px 0 48px;
+  box-sizing: border-box;
   overflow: hidden;
+  padding: 4px;
+  border: 0;
   border-radius: 12px;
-  background: var(--im-composer-bar-bg);
+  background: color-mix(
+    in srgb,
+    var(--app-brand) 5%,
+    var(--im-composer-input-bg)
+  );
+  box-shadow: none;
   opacity: 0;
   pointer-events: none;
-  transform: translateX(-8px);
+  transform: scaleX(0.96);
+  transform-origin: left center;
   transition:
     opacity var(--app-motion-fast) var(--app-ease-enter),
     transform var(--app-motion-fast) var(--app-ease-standard);
   &--open {
     opacity: 1;
     pointer-events: auto;
-    transform: translateX(0);
+    transform: scaleX(1);
+  }
+}
+
+// Recording replaces the same editor area as attachment mode without changing composer geometry.
+.ci-record-shell {
+  position: absolute;
+  z-index: 6;
+  inset: 0 56px 0 48px;
+  min-width: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  border-radius: 12px;
+  background: var(--im-composer-input-focus-bg);
+  color: var(--app-text);
+  opacity: 0;
+  pointer-events: none;
+  transform: scaleX(0.98);
+  transform-origin: right center;
+  transition:
+    opacity var(--app-motion-fast) var(--app-ease-enter),
+    transform var(--app-motion-fast) var(--app-ease-standard);
+
+  &--open {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+
+  &--cancelled {
+    color: var(--app-danger, #d33);
+  }
+}
+
+.ci-record-wave {
+  flex: 1 1 auto;
+  min-width: 24px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  overflow: hidden;
+  direction: ltr;
+  mask-image: linear-gradient(to right, transparent, #000 22%, #000);
+}
+
+.ci-record-track {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 8px;
+  border-radius: 8px;
+  background: color-mix(in srgb, currentColor 5%, transparent);
+  overflow: hidden;
+}
+
+.ci-record-release-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: var(--app-font-weight-medium);
+  text-align: center;
+}
+
+.ci-record-wave-bar {
+  flex: 0 0 2px;
+  width: 2px;
+  height: 24px;
+  border-radius: 2px;
+  background: currentColor;
+  opacity: 0.7;
+  transform: scaleY(var(--ci-wave-level));
+  transition: transform 80ms linear;
+}
+
+// The cancel target follows the mic key at the controls rail's right edge. It floats outside the composer
+// geometry, while pointer capture on the mic keeps the gesture continuous beneath this paint-only target.
+.ci-record-cancel-target {
+  position: absolute;
+  z-index: 7;
+  // Match and align with the 48px composer action below so the gesture target stays spatially stable.
+  right: 0;
+  bottom: 60px;
+  width: 48px;
+  height: 62px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 5px 4px;
+  border: 1px solid color-mix(in srgb, var(--app-danger, #d33) 28%, transparent);
+  border-radius: 18px;
+  background: var(--app-surface-elevated, var(--app-surface));
+  color: var(--app-danger, #d33);
+  box-shadow: 0 6px 18px color-mix(in srgb, #000 16%, transparent);
+  font-size: 12px;
+  line-height: 16px;
+  text-align: center;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(8px) scale(0.9);
+  transform-origin: bottom center;
+  transition:
+    opacity var(--app-motion-fast) var(--app-ease-enter),
+    color var(--app-motion-fast) var(--app-ease-standard),
+    background var(--app-motion-fast) var(--app-ease-standard),
+    transform var(--app-motion-fast) var(--app-ease-standard);
+
+  &--open {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+
+  &--active {
+    background: var(--app-danger, #d33);
+    color: #fff;
+    transform: translateY(0) scale(1.08);
+  }
+}
+
+.ci-record-cancel-icon {
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 13px;
+
+  svg {
+    flex: none;
+    width: 18px;
+    height: 18px;
   }
 }
 
@@ -432,32 +590,34 @@ app-chat-input {
   height: 100%;
   box-sizing: border-box;
   display: flex;
-  align-items: stretch;
+  align-items: center;
+  justify-content: flex-start;
   gap: 4px;
-  padding: 2px 4px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  overscroll-behavior: contain;
-  scrollbar-width: thin;
 }
 
 .ci-attach-option {
-  flex: 0 0 72px;
-  min-height: 44px;
+  flex: 0 1 112px;
+  width: 112px;
+  min-width: 0;
+  height: 44px;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
   justify-content: center;
-  gap: 2px;
-  padding: 3px 6px;
+  gap: 8px;
+  padding: 0 8px;
   border: 0;
-  border-radius: var(--app-radius-md);
-  background: transparent;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--app-surface) 70%, transparent);
   color: var(--app-text);
   cursor: pointer;
   box-sizing: border-box;
+  text-align: left;
+  transition:
+    background 120ms,
+    color 120ms;
   &:hover {
-    background: var(--app-hover);
+    background: var(--app-hover-strong, var(--app-hover));
   }
   &:focus-visible {
     outline: 2px solid var(--app-brand);
@@ -465,37 +625,49 @@ app-chat-input {
   }
   &:active .ci-attach-option-icon {
     background: color-mix(in srgb, var(--app-brand) 18%, transparent);
+    transform: scale(0.94);
   }
 }
 .ci-attach-option-icon {
+  flex: 0 0 28px;
   display: grid;
   place-items: center;
-  width: 32px;
+  width: 28px;
   height: 28px;
   border-radius: var(--app-radius-pill);
+  background: color-mix(in srgb, var(--app-brand) 10%, transparent);
   color: var(--app-brand);
+  transition:
+    background 120ms,
+    transform 100ms;
 }
 .ci-attach-option-label {
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
-  line-height: 14px;
+  font-size: 14px;
+  line-height: 20px;
   font-weight: var(--app-font-weight-medium);
 }
 
-@container (min-height: 73px) {
-  .ci-attach-drawer {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
-    grid-auto-rows: 64px;
-    align-content: start;
-    overflow-x: hidden;
-    overflow-y: auto;
-  }
+@container (max-width: 360px) {
   .ci-attach-option {
-    min-width: 0;
+    flex-basis: 96px;
+    width: 96px;
+    gap: 4px;
+    padding-inline: 4px;
+  }
+  .ci-attach-option-icon {
+    flex-basis: 24px;
+    width: 24px;
+    height: 24px;
+  }
+  .ci-attach-option-label {
+    font-size: 12px;
+    line-height: 18px;
   }
 }
 
@@ -534,7 +706,7 @@ app-chat-input {
     max-height 380ms var(--app-ease-standard);
 }
 
-// Native parity: the action key keeps the brand surface for both mic and send states.
+// The primary composer action stays blue in its idle send state; holding it switches to recording styling.
 .ci-send {
   flex: 0 0 auto;
   width: 48px;
@@ -544,16 +716,17 @@ app-chat-input {
   justify-content: center;
   border: none;
   border-radius: var(--app-radius-pill);
-  background: var(--app-brand);
-  color: #fff;
-  box-shadow: 0 3px 10px color-mix(in srgb, var(--app-brand) 28%, transparent);
+  background: var(--im-composer-send-bg);
+  color: var(--im-composer-send-text);
+  box-shadow: 0 4px 14px
+    color-mix(in srgb, var(--im-composer-send-bg) 28%, transparent);
   cursor: pointer;
   transition:
     background 0.12s,
     transform 0.1s;
   &:hover {
-    background: var(--app-brand-hover);
-    color: #fff;
+    background: var(--im-composer-send-hover);
+    color: var(--im-composer-send-text);
   }
   &:active {
     transform: scale(0.94);
@@ -564,12 +737,20 @@ app-chat-input {
   }
 }
 .ci-send.ci-send--has-draft {
-  background: var(--app-brand);
-  color: #fff;
+  background: var(--im-composer-send-bg);
+  color: var(--im-composer-send-text);
+  box-shadow: 0 4px 14px
+    color-mix(in srgb, var(--im-composer-send-bg) 28%, transparent);
   &:hover {
-    background: var(--app-brand-hover);
-    color: #fff;
+    background: var(--im-composer-send-hover);
+    color: var(--im-composer-send-text);
   }
+}
+
+// Tilt the horizontal Material send glyph into a conversational paper plane. Its filled mass settles toward
+// the lower-left after rotation, so apply a small optical correction toward the upper-right inside the fixed box.
+.ci-send-glyph {
+  transform: translate(1px, -1px) rotate(-28deg);
 }
 
 // Mic-button states (the empty-draft send key). Recording ⇒ brand red; slide-up cancel ⇒ muted grey.
@@ -580,6 +761,53 @@ app-chat-input {
   background: var(--app-text-muted);
 }
 
+// Dark mode keeps the same functional-blue action while using a theme-specific lighter blue token.
+[data-theme='dark'] .ci-send {
+  box-sizing: border-box;
+  border: 1px solid
+    color-mix(in srgb, var(--im-composer-send-bg) 72%, var(--app-border));
+  background: var(--im-composer-send-bg);
+  color: var(--im-composer-send-text);
+  box-shadow: 0 4px 16px
+    color-mix(in srgb, var(--im-composer-send-bg) 26%, transparent);
+
+  &:hover {
+    background: var(--im-composer-send-hover);
+    color: var(--im-composer-send-text);
+  }
+}
+
+[data-theme='dark'] .ci-send.ci-send--has-draft {
+  border-color: color-mix(
+    in srgb,
+    var(--im-composer-send-bg) 72%,
+    var(--app-border)
+  );
+  background: var(--im-composer-send-bg);
+  color: var(--im-composer-send-text);
+  box-shadow: 0 4px 16px
+    color-mix(in srgb, var(--im-composer-send-bg) 26%, transparent);
+
+  &:hover {
+    background: var(--im-composer-send-hover);
+    color: var(--im-composer-send-text);
+  }
+}
+
+[data-theme='dark'] .ci-send.ci-send-recording {
+  border-color: color-mix(in srgb, var(--app-danger) 48%, var(--app-border));
+  background: color-mix(in srgb, var(--app-danger) 18%, var(--app-active));
+  color: color-mix(in srgb, var(--app-danger) 84%, #fff 16%);
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--app-danger) 16%, transparent);
+}
+
+[data-theme='dark'] .ci-send.ci-send-cancelled {
+  border-color: var(--app-border-strong);
+  background: var(--app-hover);
+  color: var(--app-text-muted);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.22);
+}
+
 @container (min-width: 720px) {
   .ci-input {
     min-height: 56px;
@@ -587,31 +815,6 @@ app-chat-input {
   }
 }
 
-// ── Recording indicator ───────────────────────────────────────────────────────────────────────
-// Keep recording state immediately to the LEFT of the mic, matching the native composer. This is the
-// established voice-message pattern: the finger stays on the right-hand action while elapsed time and the
-// cancel affordance remain visible beside it instead of jumping to an unrelated full-width banner.
-.ci-record {
-  position: absolute;
-  left: auto;
-  right: max(68px, calc((100% - 800px) / 2 + 68px));
-  bottom: 6px;
-  height: 40px;
-  max-width: calc(100% - 132px);
-  box-sizing: border-box;
-  display: none;
-  align-items: center;
-  gap: 8px;
-  padding: 0 14px;
-  background: var(--app-surface);
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius-sm);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
-  z-index: 4;
-  &--open {
-    display: flex;
-  }
-}
 .ci-record-dot {
   flex: 0 0 8px;
   width: 8px;
@@ -627,35 +830,6 @@ app-chat-input {
   font-size: 14px;
   line-height: 20px;
   color: var(--app-text);
-}
-.ci-record-hint {
-  flex: 0 1 auto;
-  font-size: 13px;
-  line-height: 20px;
-  color: var(--app-text-muted);
-  white-space: nowrap;
-  &--cancel {
-    color: #e53935;
-    font-weight: 600;
-  }
-}
-.ci-record-action {
-  min-width: 44px;
-  height: 30px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: var(--app-radius-pill);
-  font-size: 13px;
-  line-height: 20px;
-  cursor: pointer;
-}
-.ci-record-action--cancel {
-  background: transparent;
-  color: var(--app-danger, #d33);
-}
-.ci-record-action--send {
-  background: var(--app-brand);
-  color: #fff;
 }
 .ci-record-error {
   position: absolute;

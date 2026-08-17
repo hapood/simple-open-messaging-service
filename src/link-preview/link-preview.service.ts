@@ -14,8 +14,9 @@ import { LinkCardRuleService } from './link-card-rule.service.js';
  * downscaled to a small WebP thumbnail → shared message CAS → assemble the stored content. The result is
  * server-authoritative — the client supplies only the URL, so a sender cannot forge the metadata/assets.
  *
- * A page-fetch failure rejects generation. Optional image/favicon failures merely omit those fields;
- * absent metadata becomes required empty strings. Results are memoized in a bounded LRU so a repeatedly-
+ * A page-fetch failure produces a safe metadata-free card so a valid public URL remains shareable even
+ * when its page blocks crawlers or is temporarily unavailable. Optional image/favicon failures merely omit
+ * those fields; absent metadata becomes required empty strings. Results are memoized in a bounded LRU so a repeatedly-
  * shared URL (and the send path + the live-preview endpoint) hit the cache instead of re-fetching +
  * re-exposing the server's egress IP.
  */
@@ -194,13 +195,34 @@ export class LinkPreviewService {
       return card;
     } catch (e) {
       this.logger.debug(
-        `link-preview failed for ${rawUrl}: ${(e as Error).message}`,
+        `link-preview metadata unavailable for ${rawUrl}: ${(e as Error).message}`,
       );
-      if (e instanceof LinkPreviewGenerationError) throw e;
-      throw new LinkPreviewGenerationError('link card generation failed', {
-        cause: e,
-      });
+      const card = this.buildDefaultCard(rawUrl, fallbackText);
+      this.cacheSet(key, card);
+      return card;
     }
+  }
+
+  /** Build the server-authoritative fallback shown when the target exposes no usable preview. */
+  private buildDefaultCard(rawUrl: string, fallbackText: string): LinkContent {
+    let url: URL;
+    try {
+      url = new URL(rawUrl);
+    } catch (cause) {
+      throw new LinkPreviewGenerationError('invalid link URL', { cause });
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      throw new LinkPreviewGenerationError('unsupported link URL protocol');
+    }
+    const canonicalUrl = url.toString();
+    const title = url.hostname.replace(/^www\./i, '').slice(0, MAX_TITLE_LEN);
+    return {
+      url: canonicalUrl,
+      title,
+      description:
+        this.descriptionFallback(fallbackText, rawUrl) ||
+        canonicalUrl.slice(0, MAX_DESC_LEN),
+    };
   }
 
   private descriptionFallback(text: string, targetUrl: string): string {
@@ -334,6 +356,7 @@ const MAX_SRC_PIXELS = 4000 * 4000; // source-decode cap (decompression-bomb gua
 const CACHE_TTL = 24 * 60 * 60 * 1000; // 24h for a successfully-built card
 const CACHE_MAX = 512;
 const MAX_DESC_LEN = 500;
+const MAX_TITLE_LEN = 300;
 const GENERATION_TTL_MS = 5 * 60 * 1000;
 
 export type LinkCardGenerationStatus = 'pending' | 'succeeded' | 'failed';

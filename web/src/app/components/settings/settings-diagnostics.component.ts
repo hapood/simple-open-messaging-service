@@ -44,7 +44,12 @@ type ReportState = 'idle' | 'confirming' | 'sending' | 'done' | 'failed';
                   </button>
                 }
                 @case ('confirming') {
-                  <button mat-button type="button" (click)="cancel()">
+                  <button
+                    mat-button
+                    type="button"
+                    class="app-secondary-action"
+                    (click)="cancel()"
+                  >
                     {{ 'settings.diagnosticsCancel' | transloco }}
                   </button>
                   <button

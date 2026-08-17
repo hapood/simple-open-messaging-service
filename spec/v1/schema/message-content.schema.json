@@ -165,13 +165,7 @@
         "url": { "type": "string", "pattern": "^https?://" },
         "title": { "type": "string" },
         "description": { "type": "string" },
-        "siteName": { "type": "string" },
-        "imageDigest": {
-          "$ref": "urn:socfp:v1:common#/$defs/sha256Hex"
-        },
-        "faviconDigest": {
-          "$ref": "urn:socfp:v1:common#/$defs/sha256Hex"
-        }
+        "siteName": { "type": "string" }
       },
       "additionalProperties": false
     },

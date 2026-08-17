@@ -10,18 +10,18 @@ See [Message Feed and Query](./message-feed.md) for feed and query pagination se
 
 In the outer message shape, `content` is always a string containing an encoded JSON object. A consumer MUST validate `FederatedMessage` first. For core types and extension types supported by the consumer, it MUST parse `content` once as JSON and strictly validate the corresponding closed schema. Unknown extension types follow the bounded skip rules in this section.
 
-| `contentType` | Detailed specification | Semantics | Direct resources |
-| ------------- | -------- | -------- | -------- |
-| `PURE_TEXT` | [Text](./message/text.md) | Text, mentions, and an optional reply reference | None |
-| `IMAGE` | [Media](./message/media.md) | One image | One asset |
-| `VIDEO` | [Media](./message/media.md) | Video and display metadata | One asset |
-| `AUDIO` | [Media](./message/media.md) | Audio and display metadata | One asset |
-| `FILE` | [Media](./message/media.md) | General file | One asset |
-| `GALLERY` | [Media](./message/media.md#4-gallery) | Ordered mixed-media collection | Deduplicated set of item digests |
-| `LINK` | [Link](./message/link.md) | Page metadata and optional thumbnails | Zero, one, or two assets |
-| `INVITE` | [Invite](./message/invite.md) | Group-invitation snapshot in P2P | None |
-| `CALL` | [Call Record](./message/call-record.md) | Terminal P2P call record | None |
-| `FORWARD` | [Forward](./message/forward.md) | Bundle root card | No direct card asset |
+| `contentType` | Detailed specification                  | Semantics                                       | Direct resources                 |
+| ------------- | --------------------------------------- | ----------------------------------------------- | -------------------------------- |
+| `PURE_TEXT`   | [Text](./message/text.md)               | Text, mentions, and an optional reply reference | None                             |
+| `IMAGE`       | [Media](./message/media.md)             | One image                                       | One asset                        |
+| `VIDEO`       | [Media](./message/media.md)             | Video and display metadata                      | One asset                        |
+| `AUDIO`       | [Media](./message/media.md)             | Audio and display metadata                      | One asset                        |
+| `FILE`        | [Media](./message/media.md)             | General file                                    | One asset                        |
+| `GALLERY`     | [Media](./message/media.md#4-gallery)   | Ordered mixed-media collection                  | Deduplicated set of item digests |
+| `LINK`        | [Link](./message/link.md)               | Page metadata                                   | None                             |
+| `INVITE`      | [Invite](./message/invite.md)           | Group-invitation snapshot in P2P                | None                             |
+| `CALL`        | [Call Record](./message/call-record.md) | Terminal P2P call record                        | None                             |
+| `FORWARD`     | [Forward](./message/forward.md)         | Bundle root card                                | No direct card asset             |
 
 A consumer processes an item of a known type in this order:
 

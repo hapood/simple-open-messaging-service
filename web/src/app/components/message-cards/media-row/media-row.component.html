@@ -354,19 +354,19 @@
                 }
               }
             </span>
-            @if (data().mediaStatus !== MEDIA_STATUS.READY) {
+            @if (mediaStatus() !== MEDIA_STATUS.READY) {
               <span
                 class="msg-media-status msg-media-status--{{
-                  data().mediaStatus
+                  mediaStatus()
                 }}"
               >
-                @if (data().mediaStatus === MEDIA_STATUS.DOWNLOADING) {
+                @if (mediaStatus() === MEDIA_STATUS.DOWNLOADING) {
                   <mat-progress-spinner mode="indeterminate" [diameter]="12" />
                 } @else {
                   <mat-icon>error_outline</mat-icon>
                 }
                 {{
-                  (data().mediaStatus === MEDIA_STATUS.DOWNLOADING
+                  (mediaStatus() === MEDIA_STATUS.DOWNLOADING
                     ? 'chat.mediaDownloading'
                     : 'chat.mediaFailed'
                   ) | transloco

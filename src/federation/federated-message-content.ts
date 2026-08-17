@@ -315,12 +315,6 @@ export function toFederatedMessageContent(
         ...(value['siteName'] === undefined
           ? {}
           : { siteName: value['siteName'] }),
-        ...(value['image'] === undefined
-          ? {}
-          : { imageDigest: digestFromUrl(value['image']) }),
-        ...(value['favicon'] === undefined
-          ? {}
-          : { faviconDigest: digestFromUrl(value['favicon']) }),
       });
     }
     case ContentType.INVITE:
@@ -432,15 +426,7 @@ export function fromFederatedMessageContent(
       return JSON.stringify({ items });
     }
     case ContentType.LINK:
-      assertKeys(
-        value,
-        ['url', 'title', 'description'],
-        ['siteName', 'imageDigest', 'faviconDigest'],
-      );
-      if (value['imageDigest'] !== undefined)
-        assertDigest(value['imageDigest']);
-      if (value['faviconDigest'] !== undefined)
-        assertDigest(value['faviconDigest']);
+      assertKeys(value, ['url', 'title', 'description'], ['siteName']);
       let parsedUrl: URL;
       try {
         parsedUrl = new URL(String(value['url']));
@@ -463,12 +449,6 @@ export function fromFederatedMessageContent(
         ...(value['siteName'] === undefined
           ? {}
           : { siteName: value['siteName'] }),
-        ...(typeof value['imageDigest'] === 'string'
-          ? { image: localCasUrl(value['imageDigest']) }
-          : {}),
-        ...(typeof value['faviconDigest'] === 'string'
-          ? { favicon: localCasUrl(value['faviconDigest']) }
-          : {}),
       });
     case ContentType.INVITE:
       assertKeys(value, ['group', 'groupName', 'groupDomain']);
@@ -525,10 +505,6 @@ export function federatedContentDigests(
     result.push(
       ...value['items'].map((item) => (item as JsonObject)['digest']),
     );
-  } else if (contentType === ContentType.LINK) {
-    if (value['imageDigest'] !== undefined) result.push(value['imageDigest']);
-    if (value['faviconDigest'] !== undefined)
-      result.push(value['faviconDigest']);
   }
   const digests = new Set<string>();
   for (const digest of result) {

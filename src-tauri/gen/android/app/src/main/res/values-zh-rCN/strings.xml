@@ -33,6 +33,7 @@
     <string name="composer_recording_cancel_format">● %s  ·  松开取消</string>
     <string name="composer_record_slide_cancel">上滑取消</string>
     <string name="composer_record_release_cancel">松开取消</string>
+    <string name="composer_record_cancel">取消</string>
     <string name="composer_recording_failed">无法开始录音</string>
     <string name="composer_recording_permission_denied">需要麦克风权限</string>
     <string name="composer_recording_too_short">录音时间太短</string>

@@ -115,7 +115,7 @@ describe('federated message content projection', () => {
     ).toEqual([digestA, digestB]);
   });
 
-  it('keeps a LINK business URL while replacing media locators with digests', () => {
+  it('keeps LINK text metadata while dropping local artwork', () => {
     const wire = JSON.parse(
       toFederatedMessageContent(
         ContentType.LINK,
@@ -134,9 +134,34 @@ describe('federated message content projection', () => {
       url: 'https://example.test/article',
       title: 'Title',
       description: '',
-      imageDigest: digestA,
-      faviconDigest: digestB,
     });
+    expect(
+      federatedContentDigests(ContentType.LINK, JSON.stringify(wire)),
+    ).toEqual([]);
+    expect(
+      JSON.parse(
+        fromFederatedMessageContent(
+          ContentType.LINK,
+          JSON.stringify(wire),
+          'local.test',
+        ),
+      ),
+    ).toEqual(wire);
+  });
+
+  it('rejects removed LINK artwork fields on wire input', () => {
+    expect(() =>
+      fromFederatedMessageContent(
+        ContentType.LINK,
+        JSON.stringify({
+          url: 'https://example.test/article',
+          title: 'Title',
+          description: '',
+          imageDigest: digestA,
+        }),
+        'local.test',
+      ),
+    ).toThrow('invalid fields');
   });
 
   it('removes local-only INVITE fields and derives them on import', () => {

@@ -78,7 +78,7 @@
     </div>
     @if (editing()) {
       <div class="edit-actions">
-        <button mat-button (click)="cancelEdit()">
+        <button mat-button class="app-secondary-action" (click)="cancelEdit()">
           {{ 'common.cancel' | transloco }}
         </button>
         <button
@@ -291,7 +291,11 @@
                     'group.confirmPrompt'
                       | transloco: { action: actionLabel('kick'), name: m.name }
                   }}</span>
-                  <button mat-button (click)="cancelConfirm()">
+                  <button
+                    mat-button
+                    class="app-secondary-action"
+                    (click)="cancelConfirm()"
+                  >
                     {{ 'common.cancel' | transloco }}
                   </button>
                   <button mat-flat-button color="warn" (click)="doConfirm()">
@@ -369,7 +373,11 @@
                 </h3>
                 <p>{{ 'group.transferOwnerBody' | transloco }}</p>
                 <div>
-                  <button mat-button (click)="cancelConfirm()">
+                  <button
+                    mat-button
+                    class="app-secondary-action"
+                    (click)="cancelConfirm()"
+                  >
                     {{ 'common.cancel' | transloco }}
                   </button>
                   <button

@@ -23,7 +23,10 @@ import {
   type CbScrollInfo,
 } from '../../lib/chat-box/chat-box-scroller';
 import { isViewportTransformEnd } from '../../lib/sticky-date';
-import { HttpItemSource } from './http-item-source';
+import {
+  MESSAGE_THREAD_ADAPTER,
+  type MessageThreadSource,
+} from './message-thread-adapter';
 import { MediaProbeScheduler } from './media-probe-scheduler';
 import {
   createMsgCbElement,
@@ -261,6 +264,7 @@ export class MessageThreadComponent implements OnDestroy {
   });
   private readonly envInjector = inject(EnvironmentInjector);
   private readonly msgService = inject(MsgService);
+  private readonly threadAdapter = inject(MESSAGE_THREAD_ADAPTER);
   private readonly msgRepo = inject(MessageRepository);
   private readonly deletedSub: Subscription;
   private readonly userService = inject(UserService);
@@ -317,7 +321,7 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly nativeVoiceItems = new Map<string, CbItem<ChatItemData>>();
 
   private scroller?: ScrollerApi<ChatItemData>;
-  private source?: HttpItemSource;
+  private source?: MessageThreadSource;
   private currentTrdId: number | null = null;
   /** True only once `initScroller`'s async `init()` has settled (set in its `.finally`, cleared at init
    *  start + in `teardown`). Distinct from `currentTrdId === trd.id` (which is set synchronously at init
@@ -1046,39 +1050,31 @@ export class MessageThreadComponent implements OnDestroy {
         threadId: trd.threadId,
       });
     }
-    this.source = new HttpItemSource(
-      trd,
-      this.msgRepo,
-      this.userService,
-      this.sendOutbox,
-      {
-        onNewerAvailable: () => {
-          if (!this.atBottom())
-            this.newMessageCount.update((count) => count + 1);
-          this.scroller?.notifyNewerAvailable?.();
-        },
-        // mediaStatus change (MEDIA_STATUS SSE / scroll probe / retry ack) → re-render the one card in place.
-        // updateItemData is synchronous + height-neutral, so no async/catch and no anchor shift.
-        onMediaStatus: (seq: number, status: MediaStatus) => {
-          this.scroller?.updateItemData(seq, { mediaStatus: status });
-          this.probe.track(seq, status === MEDIA_STATUS.DOWNLOADING);
-        },
-        // Profile hydration is deliberately off the init critical path. Patch any currently mounted row
-        // once it arrives; album member ids resolve to their merged mounted entry in the kernel.
-        onProfile: (
-          seq: number,
-          profile: {
-            name: string;
-            avatar: string;
-            avatarIdentityId: number;
-            isSelf: boolean;
-          },
-        ) => {
-          this.scroller?.updateItemData(seq, profile);
-        },
+    this.source = this.threadAdapter.createSource(trd, {
+      onNewerAvailable: () => {
+        if (!this.atBottom()) this.newMessageCount.update((count) => count + 1);
+        this.scroller?.notifyNewerAvailable?.();
       },
-      this.profileRepo,
-    );
+      // mediaStatus change (MEDIA_STATUS SSE / scroll probe / retry ack) → re-render the one card in place.
+      // updateItemData is synchronous + height-neutral, so no async/catch and no anchor shift.
+      onMediaStatus: (seq: number, status: MediaStatus) => {
+        this.scroller?.updateItemData(seq, { mediaStatus: status });
+        this.probe.track(seq, status === MEDIA_STATUS.DOWNLOADING);
+      },
+      // Profile hydration is deliberately off the init critical path. Patch any currently mounted row
+      // once it arrives; album member ids resolve to their merged mounted entry in the kernel.
+      onProfile: (
+        seq: number,
+        profile: {
+          name: string;
+          avatar: string;
+          avatarIdentityId: number;
+          isSelf: boolean;
+        },
+      ) => {
+        this.scroller?.updateItemData(seq, profile);
+      },
+    });
     this.scroller = new ChatBoxScroller<ChatItemData>({
       viewport,
       content,
@@ -1104,10 +1100,14 @@ export class MessageThreadComponent implements OnDestroy {
       },
       // Reveal the locally cached latest page immediately. Older history is backfilled after ready,
       // so a one-message preview cache never makes pane switching wait for the network.
-      config: { deferInitFill: true },
+      config: {
+        ...this.threadAdapter.scrollerConfig(),
+        deferInitFill: true,
+      },
       // Immunity frame: hold the kernel's viewport reflow while a route-transition slide is in flight.
       isFrozen: () => this.layout.reflowFrozen(),
     });
+    this.threadAdapter.configureScroller(this.scroller);
     // The tail cap is created synchronously with the scroller. If transfers survived a pane remount, the
     // conditional stack may already exist and needs one post-construction placement pass.
     queueMicrotask(() => {
@@ -1162,7 +1162,7 @@ export class MessageThreadComponent implements OnDestroy {
         // BOTH remote ceilings and fall through to HTTP: the live-session HWM plus the durable thread
         // metadata. The latter is load-bearing after an IndexedDB→SQLite migration / fresh install, where
         // the thread row can say lastMessageSeq=258 while the local messages table is legitimately empty.
-        source.finishLocalInit(
+        source.finishLocalInit?.(
           this.convList.latestSeq(trd.threadId),
           trd.lastMessageSeq,
         );
@@ -1489,13 +1489,15 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private withdrawMessage(threadId: number, seq: number): void {
-    this.msgService.withdrawMessage({ threadId, seq }).subscribe({
+    this.threadAdapter.withdrawMessage({ threadId, seq }).subscribe({
       next: (res) => {
         if (res.code !== BusinessCode.OK) {
           this.toast.warn(translateBizResult(res, this.transloco));
           return;
         }
-        void this.msgRepo.syncDeleted(threadId);
+        this.scroller?.removeItem(seq);
+        if (this.threadAdapter.syncWithdrawalsAfterMutation())
+          void this.msgRepo.syncDeleted(threadId);
       },
       error: () =>
         this.toast.warn(this.transloco.translate('chat.withdrawFailed')),
@@ -1503,7 +1505,7 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private reportMessage(threadId: number, seq: number): void {
-    this.msgService.reportMessages({ threadId, seqs: [seq] }).subscribe({
+    this.threadAdapter.reportMessages({ threadId, seqs: [seq] }).subscribe({
       next: (res) => {
         if (res.code !== BusinessCode.OK) {
           this.toast.warn(translateBizResult(res, this.transloco));
@@ -1590,7 +1592,7 @@ export class MessageThreadComponent implements OnDestroy {
         }> => {
           try {
             const response = await firstValueFrom(
-              this.msgService.sendForward({
+              this.threadAdapter.sendForward({
                 threadId,
                 sourceMessages,
                 mode: result.mode,
@@ -2117,7 +2119,7 @@ export class MessageThreadComponent implements OnDestroy {
     });
     try {
       const staged = await firstValueFrom(
-        this.msgService.sendMedia({
+        this.threadAdapter.stageMedia({
           threadId,
           contentType: 'GALLERY',
           clientMessageId: cid,
@@ -2132,7 +2134,7 @@ export class MessageThreadComponent implements OnDestroy {
       const results = await Promise.all(
         parts.map((part) =>
           firstValueFrom(
-            this.msgService
+            this.threadAdapter
               .uploadPart(
                 part.file,
                 {
@@ -2233,7 +2235,7 @@ export class MessageThreadComponent implements OnDestroy {
     });
     try {
       const staged = await firstValueFrom(
-        this.msgService.sendMedia({
+        this.threadAdapter.stageMedia({
           threadId,
           contentType: 'GALLERY',
           clientMessageId: cid,
@@ -2448,8 +2450,8 @@ export class MessageThreadComponent implements OnDestroy {
             ? 'VIDEO'
             : 'FILE';
       const staged = await firstValueFrom(
-        this.msgService
-          .sendMedia({
+        this.threadAdapter
+          .stageMedia({
             threadId: tid,
             contentType,
             clientMessageId: cid,
@@ -2667,8 +2669,8 @@ export class MessageThreadComponent implements OnDestroy {
     const cid = item.clientMessageId!;
     const tid = this.threadId() ?? 0;
     if (!tid) return;
-    firstValueFrom(
-      this.msgService.sendMessage({
+    this.threadAdapter
+      .sendText({
         threadId: tid,
         content: stringifyTextMessageContent({
           text: item.data.wireText ?? item.data.text,
@@ -2676,10 +2678,10 @@ export class MessageThreadComponent implements OnDestroy {
             ? { quote: { seq: item.data.quote.seq } }
             : {}),
         }),
-        contentType: 'PURE_TEXT',
         clientMessageId: cid,
-      }),
-    )
+        optimistic: item,
+        source: this.source!,
+      })
       .then((res) => {
         if (res.code !== 0) {
           this.surfaceSendFailure(res, tid);
@@ -2697,14 +2699,12 @@ export class MessageThreadComponent implements OnDestroy {
     const cid = item.clientMessageId!;
     const tid = this.threadId() ?? 0;
     if (!tid) return;
-    firstValueFrom(
-      this.msgService.sendMessage({
+    this.threadAdapter
+      .sendLink({
         threadId: tid,
-        content: generationId,
-        contentType: 'LINK',
+        generationId,
         clientMessageId: cid,
-      }),
-    )
+      })
       .then((res) => {
         if (res.code !== 0) {
           this.surfaceSendFailure(res, tid);
@@ -2838,8 +2838,8 @@ export class MessageThreadComponent implements OnDestroy {
     if (await this.rejectOversizedUpload(cid, item, f, 10)) return;
     try {
       const staged = await firstValueFrom(
-        this.msgService
-          .sendMedia({
+        this.threadAdapter
+          .stageMedia({
             threadId: tid,
             contentType: 'IMAGE',
             clientMessageId: cid,
@@ -2854,7 +2854,7 @@ export class MessageThreadComponent implements OnDestroy {
         return;
       }
       const up = await firstValueFrom(
-        this.msgService
+        this.threadAdapter
           .uploadPart<{ url: string; w: number; h: number }>(
             f,
             {
@@ -2898,8 +2898,8 @@ export class MessageThreadComponent implements OnDestroy {
     if (await this.rejectOversizedUpload(cid, item, f, 50)) return;
     try {
       const staged = await firstValueFrom(
-        this.msgService
-          .sendMedia({
+        this.threadAdapter
+          .stageMedia({
             threadId: tid,
             contentType: 'FILE',
             clientMessageId: cid,
@@ -2948,8 +2948,8 @@ export class MessageThreadComponent implements OnDestroy {
     if (await this.rejectOversizedUpload(cid, item, f, 100)) return;
     try {
       const staged = await firstValueFrom(
-        this.msgService
-          .sendMedia({
+        this.threadAdapter
+          .stageMedia({
             threadId: tid,
             contentType: 'VIDEO',
             clientMessageId: cid,
@@ -2964,7 +2964,7 @@ export class MessageThreadComponent implements OnDestroy {
         return;
       }
       const up = await firstValueFrom(
-        this.msgService
+        this.threadAdapter
           .uploadPart(
             f,
             {
@@ -3007,8 +3007,8 @@ export class MessageThreadComponent implements OnDestroy {
     if (await this.rejectOversizedUpload(cid, item, f, 50)) return;
     try {
       const staged = await firstValueFrom(
-        this.msgService
-          .sendMedia({
+        this.threadAdapter
+          .stageMedia({
             threadId: tid,
             contentType: 'AUDIO',
             clientMessageId: cid,
@@ -3023,7 +3023,7 @@ export class MessageThreadComponent implements OnDestroy {
         return;
       }
       const up = await firstValueFrom(
-        this.msgService
+        this.threadAdapter
           .uploadPart(
             f,
             {
@@ -3102,7 +3102,7 @@ export class MessageThreadComponent implements OnDestroy {
       // Both upload paths report bytes through the callback but still reduce to the same final
       // {code,message,data} envelope here.
       const up = await firstValueFrom(
-        this.msgService
+        this.threadAdapter
           .uploadPart<{
             url: string;
             name: string;
@@ -3456,6 +3456,24 @@ export class MessageThreadComponent implements OnDestroy {
     if (found === false) {
       this.toast.warn(this.transloco.translate('chat.messageNotFound'));
     }
+  }
+
+  /** Host-level navigation controls. These preserve the chatbox abstraction without exposing its scroller. */
+  scrollToTop(): void {
+    this.scroller?.scrollToTop();
+  }
+
+  scrollInfo(): CbScrollInfo | undefined {
+    return this.scroller?.getInfo();
+  }
+
+  async jumpToMessage(id: number): Promise<boolean> {
+    return (await jumpToMessage(this.scroller, id)) !== false;
+  }
+
+  /** Recreate the injected source while keeping the production chatbox shell mounted. */
+  reload(): void {
+    this.reinit();
   }
 
   /** Resume delivery for this conversation. */

@@ -75,49 +75,6 @@
       }
     </div>
   </div>
-  <!-- Recording indicator — floats above the bar while the mic is held. position:absolute bottom:100% (like
-       the emoji panel; the form is the positioned/transformed containing block). A sibling of the capsule, so
-       it never enters the message kernel's height model. Integer-px heights per the project rule. -->
-  <div
-    class="ci-record"
-    [class.ci-record--open]="recording()"
-    role="status"
-    [attr.aria-label]="
-      recordCancelled()
-        ? ('chat.recordReleaseCancel' | transloco)
-        : ('chat.recordingAria' | transloco: { time: recordTimeLabel() })
-    "
-  >
-    <span class="ci-record-dot"></span>
-    <span class="ci-record-time">{{ recordTimeLabel() }}</span>
-    @if (desktopRecordingControls()) {
-      <button
-        type="button"
-        class="ci-record-action ci-record-action--cancel"
-        (click)="cancelDesktopRecording()"
-      >
-        {{ 'chat.recordCancel' | transloco }}
-      </button>
-      <button
-        type="button"
-        class="ci-record-action ci-record-action--send"
-        (click)="sendDesktopRecording()"
-      >
-        {{ 'chat.recordSend' | transloco }}
-      </button>
-    } @else {
-      <span
-        class="ci-record-hint"
-        [class.ci-record-hint--cancel]="recordCancelled()"
-      >
-        {{
-          recordCancelled()
-            ? ('chat.recordReleaseCancel' | transloco)
-            : ('chat.recordSlideCancel' | transloco)
-        }}
-      </span>
-    }
-  </div>
   @if (recordError()) {
     <div class="ci-record-error" role="alert">
       {{ recordError() | transloco }}
@@ -196,8 +153,13 @@
       class="ci-attach-drawer-shell"
       [class.ci-attach-drawer-shell--open]="attachOpen()"
       [attr.aria-hidden]="!attachOpen()"
+      (click)="onAttachDrawerClick($event)"
     >
-      <div class="ci-attach-drawer" role="menu">
+      <div
+        class="ci-attach-drawer"
+        role="menu"
+        [attr.aria-label]="'chat.attachAria' | transloco"
+      >
         @for (entry of attachEntries; track entry.key) {
           <button
             type="button"
@@ -220,6 +182,63 @@
         }
       </div>
     </div>
+    <div
+      class="ci-record-shell"
+      [class.ci-record-shell--open]="recording()"
+      [class.ci-record-shell--cancelled]="recordCancelled()"
+      role="status"
+      [attr.aria-hidden]="!recording()"
+      [attr.aria-label]="
+        recordCancelled()
+          ? ('chat.recordReleaseCancel' | transloco)
+          : ('chat.recordingAria' | transloco: { time: recordTimeLabel() })
+      "
+    >
+      <span class="ci-record-dot"></span>
+      <span class="ci-record-track">
+        @if (recordCancelled()) {
+          <span class="ci-record-release-copy">
+            {{ 'chat.recordReleaseCancel' | transloco }}
+          </span>
+        } @else {
+          <span class="ci-record-time">{{ recordTimeLabel() }}</span>
+          <span class="ci-record-wave" aria-hidden="true">
+            @for (level of recordWave(); track $index) {
+              <span
+                class="ci-record-wave-bar"
+                [style.--ci-wave-level]="level"
+              ></span>
+            }
+          </span>
+        }
+      </span>
+    </div>
+    <div
+      #recordCancelTarget
+      class="ci-record-cancel-target"
+      [class.ci-record-cancel-target--open]="recording()"
+      [class.ci-record-cancel-target--active]="recordCancelled()"
+      [attr.aria-hidden]="!recording()"
+    >
+      <span class="ci-record-cancel-icon" aria-hidden="true">
+        <svg
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M3 6h18" />
+          <path d="M8 6V4h8v2" />
+          <path d="M19 6l-1 14H6L5 6" />
+          <path d="M10 11v5M14 11v5" />
+        </svg>
+      </span>
+      <span>{{ 'chat.recordCancel' | transloco }}</span>
+    </div>
     <div class="ci-input-wrap">
       <!-- Host-owned context occupies the capsule's first row but stays outside the editor document, so
            Backspace edits only the draft and the context's close control is its sole removal path. -->
@@ -237,6 +256,7 @@
         type="button"
         class="ci-input-ico"
         appPreventFocusSteal
+        [class.ci-input-ico--active]="emojiOpen()"
         (click)="toggleEmoji()"
         [attr.aria-expanded]="emojiOpen()"
         [attr.aria-label]="'chat.emojiAria' | transloco"
@@ -258,8 +278,7 @@
         </svg>
       </button>
     </div>
-    <!-- Send key: draft present ⇒ emphasized paper plane; empty ⇒ neutral mic. Mouse/keyboard clicks
-         toggle recording; touch/pen use press-hold, release-to-send and slide-to-cancel. -->
+    <!-- Empty draft shows the blue mic; a text draft shows send. Holding the mic enters the red recording state. -->
     <button
       type="button"
       class="ci-send"
@@ -282,34 +301,16 @@
       "
     >
       @if (draftHtml()) {
-        <svg
-          width="22"
-          height="22"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <line x1="22" y1="2" x2="11" y2="13" />
-          <polygon points="22 2 15 22 11 13 2 9 22 2" />
-        </svg>
+        <app-icon
+          class="ci-send-glyph"
+          [type]="AppIconType.SEND"
+          [style]="{ width: '22px', height: '22px' }"
+        />
       } @else {
-        <svg
-          width="22"
-          height="22"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <rect x="9" y="3" width="6" height="11" rx="3" />
-          <path d="M5 11a7 7 0 0 0 14 0" />
-          <line x1="12" y1="18" x2="12" y2="21" />
-        </svg>
+        <app-icon
+          [type]="AppIconType.MIC"
+          [style]="{ width: '22px', height: '22px' }"
+        />
       }
     </button>
   </div>

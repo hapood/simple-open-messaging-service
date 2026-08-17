@@ -6767,20 +6767,21 @@ export class FederationService {
       t === ContentType.FILE ||
       t === ContentType.VIDEO ||
       t === ContentType.AUDIO ||
-      t === ContentType.LINK ||
       t === ContentType.GALLERY
     );
   }
 
-  /** Map an inbound message contentType to the FileSyncProgress kind (LINK's image counts as IMAGE;
-   *  GALLERY's per-item rows are tagged BUNDLE — the per-item family lives in the message content). */
+  /** Map an inbound message contentType to the FileSyncProgress kind. LINK_CARD is retained as an
+   * explicit pending-task category, although Federation v1 LINK messages carry no direct assets. GALLERY's
+   * per-item rows are tagged BUNDLE because the per-item family lives in the message content. */
   private fileSyncKindFor(
     t: ContentType,
-  ): 'IMAGE' | 'VIDEO' | 'FILE' | 'AUDIO' | 'BUNDLE' {
+  ): 'IMAGE' | 'VIDEO' | 'FILE' | 'AUDIO' | 'LINK_CARD' | 'BUNDLE' {
     switch (t) {
       case ContentType.IMAGE:
-      case ContentType.LINK:
         return 'IMAGE';
+      case ContentType.LINK:
+        return 'LINK_CARD';
       case ContentType.VIDEO:
         return 'VIDEO';
       case ContentType.AUDIO:

@@ -1,5 +1,6 @@
-// Chat shimmer skeleton — the single source of truth shared by production MessageThread and the playground
-// (both render this exact markup). Imported globally via styles.scss alongside _cb.scss.
+// Chat shimmer skeleton used by the playground's loading-state preview. It is imported globally alongside
+// _cb.scss so the standalone playground can reuse the normal stylesheet entry, but production MessageThread
+// does not render this markup and therefore never displays the effect.
 //
 // An absolute overlay that is a SIBLING of the kernel's .msg-content / .pg-content, so it stays out of the
 // kernel's measured-height model (the integer-px invariant). BOTTOM-anchored (justify-content:flex-end) to MIRROR

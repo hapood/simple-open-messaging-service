@@ -95,11 +95,9 @@ export class TextRowComponent {
   }
 
   isReplyImageGated(quote: NonNullable<ChatMsgData['quote']>): boolean {
-    const threshold = this.mediaThreshold.threshold();
     return (
       quote.contentType === 'IMAGE' &&
-      threshold > 0 &&
-      (quote.imageSize ?? 0) > threshold
+      this.mediaThreshold.shouldDefer(quote.imageSize ?? 0)
     );
   }
 

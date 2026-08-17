@@ -114,6 +114,7 @@ export const fileSyncKind = pgEnum('FileSyncKind', [
   'IMAGE',
   'VIDEO',
   'AUDIO',
+  'LINK_CARD',
   'BUNDLE',
 ]);
 

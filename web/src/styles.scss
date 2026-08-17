@@ -3,7 +3,7 @@
 @use 'photoswipe/dist/photoswipe.css';
 @use './app/assets/tokens';
 @use './app/lib/chat-box/cb'; // virtual-scroll kernel style contract (.cb-pending), co-located with the core library
-@use './app/lib/chat-box/cb-skeleton'; // shared chat shimmer skeleton (.cb-skeleton) — used by MessageThread + playground
+@use './app/lib/chat-box/cb-skeleton'; // optional playground shimmer preview; globally available but not rendered by production MessageThread
 
 // Shared sticky-avatar handoff: retain the natural head's 40px layout slot while the viewport-level copy paints.
 // The marker lives on that exact avatar so a later group from the same sender remains visible.
@@ -25,11 +25,7 @@
   padding: 12px max(16px, calc((100% - 800px) / 2 + 16px)) 8px;
   // Keep enough brand tint to remain scannable without laying a saturated accent across the wallpaper.
   // Mixing with semantic text/border tokens lets the divider settle naturally in both light and dark themes.
-  color: color-mix(
-    in srgb,
-    var(--app-text-muted) 68%,
-    var(--app-brand)
-  );
+  color: color-mix(in srgb, var(--app-text-muted) 68%, var(--app-brand));
   font-size: 12px;
   font-weight: 600;
   line-height: 18px;
@@ -40,11 +36,7 @@
     content: '';
     flex: 1 1 auto;
     height: 1px;
-    background: color-mix(
-      in srgb,
-      var(--app-border) 78%,
-      var(--app-brand)
-    );
+    background: color-mix(in srgb, var(--app-border) 78%, var(--app-brand));
   }
 
   > span {
@@ -65,38 +57,51 @@
  * Material still needs a complete tonal palette even though product controls consume the
  * semantic --app-* roles below. Use a true graphite primary palette here so component-local
  * Material tokens never fall back to a saturated brand red. Red remains the error/danger role. */
-$graphite-palette: map.merge(mat.$azure-palette, (
-  0: #000000,
-  10: #17191c,
-  20: #25282c,
-  25: #303438,
-  30: #3b3f43,
-  35: #474b4f,
-  40: #53575b,
-  50: #6c7175,
-  60: #868b90,
-  70: #a1a6ab,
-  80: #bdc2c7,
-  90: #d9dde1,
-  95: #e8ebed,
-  98: #f4f5f6,
-  99: #f9fafb,
-  100: #ffffff,
-));
+$graphite-palette: map.merge(
+  mat.$azure-palette,
+  (
+    0: #000000,
+    10: #17191c,
+    20: #25282c,
+    25: #303438,
+    30: #3b3f43,
+    35: #474b4f,
+    40: #53575b,
+    50: #6c7175,
+    60: #868b90,
+    70: #a1a6ab,
+    80: #bdc2c7,
+    90: #d9dde1,
+    95: #e8ebed,
+    98: #f4f5f6,
+    99: #f9fafb,
+    100: #ffffff,
+  )
+);
 
-$theme: mat.define-theme((
-  color: (
-    primary: $graphite-palette,
-    tertiary: $graphite-palette,
-  ),
-  typography: (
-    plain-family: ('-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto',
-                   'Helvetica', 'Arial', system-ui, sans-serif),
-  ),
-  density: (
-    scale: 0,
-  ),
-));
+$theme: mat.define-theme(
+  (
+    color: (
+      primary: $graphite-palette,
+      tertiary: $graphite-palette,
+    ),
+    typography: (
+      plain-family: (
+        '-apple-system',
+        'BlinkMacSystemFont',
+        'Segoe UI',
+        'Roboto',
+        'Helvetica',
+        'Arial',
+        system-ui,
+        sans-serif,
+      ),
+    ),
+    density: (
+      scale: 0,
+    ),
+  )
+);
 
 /* Dark M3 theme. Angular Material does NOT auto-flip on dark mode: its components
  * read Material's own --mat-sys-* tokens, which are independent of the app's
@@ -106,13 +111,15 @@ $theme: mat.define-theme((
  * — exactly the "ugly" login/register button + checkbox + inputs in dark mode.
  * Mirrors the same selector ThemeService sets on <html>; colors-only (typography
  * and density are identical across modes, so no point emitting them twice). */
-$dark-theme: mat.define-theme((
-  color: (
-    theme-type: dark,
-    primary: $graphite-palette,
-    tertiary: $graphite-palette,
-  ),
-));
+$dark-theme: mat.define-theme(
+  (
+    color: (
+      theme-type: dark,
+      primary: $graphite-palette,
+      tertiary: $graphite-palette,
+    ),
+  )
+);
 
 :root {
   @include mat.all-component-themes($theme);
@@ -120,7 +127,7 @@ $dark-theme: mat.define-theme((
   --mat-form-field-error-text-color: #ba1a1a;
 }
 
-[data-theme="dark"] {
+[data-theme='dark'] {
   @include mat.all-component-colors($dark-theme);
 }
 
@@ -128,7 +135,7 @@ $dark-theme: mat.define-theme((
  * writes its own system colors, so without this later binding dark auth controls would bypass the
  * graphite product tokens and use the generated palette directly. */
 :root,
-[data-theme="dark"] {
+[data-theme='dark'] {
   --mat-sys-primary: var(--app-brand);
   --mat-sys-on-primary: var(--app-on-brand);
   --mat-sys-primary-container: var(--app-brand-soft);
@@ -147,18 +154,38 @@ $dark-theme: mat.define-theme((
  * input adds — to the app's existing design-system tokens. `--mat-button-*` tokens are read only by
  * buttons, so scoping on `.mat-primary`/`.mat-warn` can't leak into other components. Light + dark
  * both resolve correctly through semantic tokens. Hierarchy stays flat. */
-.mat-primary {
-  --mat-button-filled-container-color: var(--app-brand);
-  --mat-button-filled-label-text-color: var(--app-on-brand);
-  --mat-button-filled-state-layer-color: var(--app-on-brand);
-  --mat-button-text-label-text-color: var(--app-brand);
-  --mat-button-text-state-layer-color: var(--app-brand);
-  --mat-button-outlined-label-text-color: var(--app-brand);
-  --mat-button-outlined-outline-color: var(--app-brand);
-  --mat-button-outlined-state-layer-color: var(--app-brand);
+.mat-primary,
+.mat-primary.mat-mdc-button,
+.mat-primary.mat-mdc-unelevated-button,
+.mat-primary.mat-mdc-raised-button,
+.mat-primary.mat-mdc-outlined-button {
+  --mat-button-filled-container-color: var(--app-action-primary);
+  --mat-button-filled-label-text-color: var(--app-on-action-primary);
+  --mat-button-filled-state-layer-color: var(--app-on-action-primary);
+  --mat-button-text-label-text-color: var(--app-action-primary);
+  --mat-button-text-state-layer-color: var(--app-action-primary);
+  --mat-button-outlined-label-text-color: var(--app-action-primary);
+  --mat-button-outlined-outline-color: var(--app-action-primary);
+  --mat-button-outlined-state-layer-color: var(--app-action-primary);
 }
 
-.mat-warn {
+.app-secondary-action,
+.app-secondary-action.mat-mdc-button,
+.app-secondary-action.mat-mdc-unelevated-button,
+.app-secondary-action.mat-mdc-raised-button,
+.app-secondary-action.mat-mdc-outlined-button {
+  --mat-button-text-label-text-color: var(--app-text-muted);
+  --mat-button-text-state-layer-color: var(--app-text-muted);
+  --mat-button-outlined-label-text-color: var(--app-text-muted);
+  --mat-button-outlined-outline-color: var(--app-border-strong);
+  --mat-button-outlined-state-layer-color: var(--app-text-muted);
+}
+
+.mat-warn,
+.mat-warn.mat-mdc-button,
+.mat-warn.mat-mdc-unelevated-button,
+.mat-warn.mat-mdc-raised-button,
+.mat-warn.mat-mdc-outlined-button {
   --mat-button-filled-container-color: var(--app-danger);
   --mat-button-filled-label-text-color: #fff;
   --mat-button-filled-state-layer-color: #fff;
@@ -174,21 +201,81 @@ $dark-theme: mat.define-theme((
  * strings — so the gradient stops (--g-from/--g-to) and icon color (--ic) animate smoothly, and the
  * palette sources (--c-*) compute to concrete rgb() that Motion reads as interpolation targets.
  * @property is a top-level at-rule and inherently global, so it lives here rather than in component CSS. */
-@property --g-from   { syntax: '<color>'; inherits: false; initial-value: #f5e9c8; }
-@property --g-to     { syntax: '<color>'; inherits: false; initial-value: #efd9a0; }
-@property --ic       { syntax: '<color>'; inherits: true;  initial-value: #b45309; }
-@property --c-amber-1 { syntax: '<color>'; inherits: true; initial-value: #f5e9c8; }
-@property --c-amber-2 { syntax: '<color>'; inherits: true; initial-value: #efd79a; }
-@property --c-green-1 { syntax: '<color>'; inherits: true; initial-value: #d6f5e0; }
-@property --c-green-2 { syntax: '<color>'; inherits: true; initial-value: #b3ecc8; }
-@property --c-red-1   { syntax: '<color>'; inherits: true; initial-value: #f7d7d7; }
-@property --c-red-2   { syntax: '<color>'; inherits: true; initial-value: #f0b6b6; }
-@property --c-amber   { syntax: '<color>'; inherits: true; initial-value: #b45309; }
-@property --c-green   { syntax: '<color>'; inherits: true; initial-value: #16a34a; }
-@property --c-red     { syntax: '<color>'; inherits: true; initial-value: #dc2626; }
-@property --c-brand-1 { syntax: '<color>'; inherits: true; initial-value: #e8e9ea; }
-@property --c-brand-2 { syntax: '<color>'; inherits: true; initial-value: #d7d9db; }
-@property --c-brand   { syntax: '<color>'; inherits: true; initial-value: #25282c; }
+@property --g-from {
+  syntax: '<color>';
+  inherits: false;
+  initial-value: #f5e9c8;
+}
+@property --g-to {
+  syntax: '<color>';
+  inherits: false;
+  initial-value: #efd9a0;
+}
+@property --ic {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #b45309;
+}
+@property --c-amber-1 {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #f5e9c8;
+}
+@property --c-amber-2 {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #efd79a;
+}
+@property --c-green-1 {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #d6f5e0;
+}
+@property --c-green-2 {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #b3ecc8;
+}
+@property --c-red-1 {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #f7d7d7;
+}
+@property --c-red-2 {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #f0b6b6;
+}
+@property --c-amber {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #b45309;
+}
+@property --c-green {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #16a34a;
+}
+@property --c-red {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #dc2626;
+}
+@property --c-brand-1 {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #e8e9ea;
+}
+@property --c-brand-2 {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #d7d9db;
+}
+@property --c-brand {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #25282c;
+}
 
 /* === Shared `.tonal-chip` shell — the M3 treatment both top-center indicators wear. ===
  * A two-stop <color>-var gradient (--g-from/--g-to) over the themed surface, M3 level-1 elevation, a
@@ -207,7 +294,7 @@ $dark-theme: mat.define-theme((
   background-image: linear-gradient(135deg, var(--g-from), var(--g-to));
   color: var(--ic);
   box-shadow:
-    0 1px 2px 0 rgba(0, 0, 0, 0.30),
+    0 1px 2px 0 rgba(0, 0, 0, 0.3),
     0 1px 3px 1px rgba(0, 0, 0, 0.15);
 }
 
@@ -261,7 +348,11 @@ $dark-theme: mat.define-theme((
 
 /* Semantic variants used by ToastService while retaining Material's standard snackbar structure. */
 .soms-snack-bar--warn.mat-mdc-snack-bar-container {
-  --mdc-snackbar-container-color: color-mix(in srgb, var(--app-warning) 28%, #211b12);
+  --mdc-snackbar-container-color: color-mix(
+    in srgb,
+    var(--app-warning) 28%,
+    #211b12
+  );
   --mdc-snackbar-supporting-text-color: #fff;
 }
 
@@ -297,9 +388,15 @@ $dark-theme: mat.define-theme((
  * scanner pane lives in the body-level CDK overlay container (a sibling of app-root, not a descendant),
  * so it is unaffected and its scrim + cutout + chrome keep drawing over the live feed. Removed the
  * instant the overlay disposes. */
-html.qr-scanning body { background-color: transparent; }
-html.qr-scanning app-root { opacity: 0; }
-html.qr-scanning .cdk-overlay-pane:not(.qr-scan-pane) { opacity: 0; }
+html.qr-scanning body {
+  background-color: transparent;
+}
+html.qr-scanning app-root {
+  opacity: 0;
+}
+html.qr-scanning .cdk-overlay-pane:not(.qr-scan-pane) {
+  opacity: 0;
+}
 
 /* === Video call overlay: same transparency treatment as qr-scanning, so the native remote video shows
  * through the transparent call chrome. CallController mounts the remote SurfaceViewRenderer as a sibling
@@ -314,9 +411,15 @@ html.qr-scanning .cdk-overlay-pane:not(.qr-scan-pane) { opacity: 0; }
  * body-level sibling of app-root (NOT a descendant), so it is unaffected by the app-root rule and keeps
  * drawing the chrome over the live video. AUDIO calls never set this class → the opaque .call-screen bg shows
  * (the centered avatar layout). Removed the instant the call goes idle. */
-html.in-video-call body { background-color: transparent; }
-html.in-video-call app-root { opacity: 0; }
-html.in-video-call .cdk-overlay-pane:not(.call-pane) { opacity: 0; }
+html.in-video-call body {
+  background-color: transparent;
+}
+html.in-video-call app-root {
+  opacity: 0;
+}
+html.in-video-call .cdk-overlay-pane:not(.call-pane) {
+  opacity: 0;
+}
 
 html,
 body {
@@ -362,7 +465,13 @@ body {
   // on every theme, and overscroll/areas outside a component surface match the themed page bg.
   color: var(--app-text);
   background-color: var(--app-bg);
-  font-family: var(--mat-app-text-font, -apple-system, BlinkMacSystemFont, system-ui, sans-serif);
+  font-family: var(
+    --mat-app-text-font,
+    -apple-system,
+    BlinkMacSystemFont,
+    system-ui,
+    sans-serif
+  );
 }
 
 // App-shell splash (the inline spinner inside <app-root> in index.html). Pure HTML/CSS, shown on first
@@ -376,8 +485,7 @@ body {
   justify-content: center;
   gap: 12px;
   height: 100vh;
-  background:
-    radial-gradient(
+  background: radial-gradient(
       circle at 50% 42%,
       color-mix(in srgb, var(--app-brand-soft) 42%, transparent),
       transparent 32%
@@ -431,8 +539,7 @@ body {
 
 [data-message-id].cb-message--pressing .msg-bubble,
 [data-message-id][role='listitem'] .msg-bubble {
-  transition:
-    transform var(--app-motion-instant) var(--app-ease-standard);
+  transition: transform var(--app-motion-instant) var(--app-ease-standard);
 }
 
 /* Reserve a real leading selection gutter instead of painting the control over the message content.
@@ -539,8 +646,12 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  [data-message-id] .msg-bubble { transition: none; }
-  [data-message-id].cb-message--pressing .msg-bubble { transform: none; }
+  [data-message-id] .msg-bubble {
+    transition: none;
+  }
+  [data-message-id].cb-message--pressing .msg-bubble {
+    transform: none;
+  }
 }
 
 [data-message-id].cb-message--selected .msg-row::before {
@@ -592,8 +703,7 @@ body {
 
 /* In selection mode each album cell becomes an independent target. Selected media uses Telegram's
  * inset-thumbnail treatment instead of a color wash; transforms keep the virtual-row measurements stable. */
-[data-message-id].cb-message--selection-mode.cb-message--album
-  .msg-media-cell {
+[data-message-id].cb-message--selection-mode.cb-message--album .msg-media-cell {
   cursor: pointer;
 }
 

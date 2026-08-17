@@ -71,7 +71,8 @@ class LinkCardGenerationStartDto {
  * client renders a resource-free skeleton until polling reports success or failure.
  *
  * Heavily rate-limited: every call is an outbound fetch, so this is an amplification surface. A page
- * fetch failure rejects generation; missing optional metadata or artwork still produces a valid card.
+ * fetch failure produces a metadata-free default card; missing optional metadata or artwork also produces
+ * a valid card.
  */
 @ApiTags('link-preview')
 @Controller()

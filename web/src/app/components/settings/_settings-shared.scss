@@ -67,7 +67,11 @@
     &.warn {
       color: var(--app-warning);
       // No dedicated -soft token for warning; derive a subtle wash over the surface (adapts to dark).
-      background: color-mix(in srgb, var(--app-warning) 14%, var(--app-surface));
+      background: color-mix(
+        in srgb,
+        var(--app-warning) 14%,
+        var(--app-surface)
+      );
       border-color: transparent;
     }
     &.error {
@@ -97,6 +101,8 @@
 
   // Compact the Material text button in an action row so the trailing cluster stays tidy.
   .check-btn {
+    --mat-button-text-label-text-color: var(--app-action-primary);
+    --mat-button-text-state-layer-color: var(--app-action-primary);
     --mdc-text-button-label-text-size: 13px;
     min-height: 32px;
   }

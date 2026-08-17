@@ -7,7 +7,6 @@ import { ForbiddenPageComponent } from './pages/forbidden-page/forbidden-page.co
 import { RegisterPageComponent } from './pages/register-page/register-page.component';
 import { authGuard, configGuard, guestGuard, registrationOpenGuard } from './auth.guard';
 import { isTauri } from './services/runtime';
-import { devRoutes } from './dev-tools';
 
 export const routes: Routes = [
   // App shell. NavStateMachineService drives chat/aside state — there are NO app-nav child routes and NO
@@ -55,8 +54,5 @@ export const routes: Routes = [
     canMatch: [() => isTauri()],
   },
   { path: 'forbidden', component: ForbiddenPageComponent },
-  // Dev-only routes (chatbox playground rig) come from dev-tools.ts, which the prod build swaps for
-  // dev-tools.prod.ts (empty devRoutes) — so the playground chunk is not emitted in prod. See dev-tools.ts.
-  ...devRoutes,
   { path: '**', component: PageNotFoundComponent },
 ];

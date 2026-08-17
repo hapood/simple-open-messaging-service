@@ -7,6 +7,7 @@ import {
   UserAvatarType,
 } from '../../user-avatar/user-avatar.component';
 import { assetUrl, openExternalUrl } from '../../../services/runtime';
+import { linkCardHost, linkCardSource } from '../../../lib/link-card-display';
 
 /** The LINK card payload stored as JSON in Message.content (built authoritatively server-side). */
 interface LinkCard {
@@ -79,16 +80,11 @@ export class LinkRowComponent {
   readonly faviconSrc = computed(() => assetUrl(this.link().favicon));
   /** The page host — the credibility cue shown in the meta bar so a reader can spot a phishing card. */
   readonly host = computed(() => {
-    try {
-      return new URL(this.link().url).hostname.replace(/^www\./i, '');
-    } catch {
-      return this.link().url;
-    }
+    return linkCardHost(this.link().url);
   });
-  readonly source = computed(() => {
-    const siteName = this.link().siteName?.trim();
-    return siteName || this.host();
-  });
+  readonly source = computed(() =>
+    linkCardSource(this.link().url, this.link().siteName),
+  );
 
   /** Set when the thumbnail <img> fails to load/decode (a corrupt or missing CAS asset) so the card
    *  reflows to text-only instead of showing a broken-image glyph. */

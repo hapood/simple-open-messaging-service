@@ -1,8 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import {
-  LinkPreviewGenerationError,
-  LinkPreviewService,
-} from './link-preview.service.js';
+import { LinkPreviewService } from './link-preview.service.js';
 
 function serviceWith(
   safeFetch: Record<string, unknown>,
@@ -197,14 +194,21 @@ describe('LinkPreviewService card generation', () => {
     ).resolves.toMatchObject({ title: '', description: 'hello world' });
   });
 
-  it('reports an unfetchable page as generation failure', async () => {
+  it('builds a domain card when the page cannot be fetched', async () => {
     const service = serviceWith(
       { fetchHtml: vi.fn().mockResolvedValue(null) },
       {},
     );
     await expect(
-      service.buildCardContent('https://example.com'),
-    ).rejects.toBeInstanceOf(LinkPreviewGenerationError);
+      service.buildCardContent(
+        'https://www.example.com/path',
+        'Read this https://www.example.com/path later',
+      ),
+    ).resolves.toEqual({
+      url: 'https://www.example.com/path',
+      title: 'example.com',
+      description: 'Read this later',
+    });
   });
 
   it('keeps an async generation private and grants its owner temporary CAS access', async () => {
@@ -252,7 +256,7 @@ describe('LinkPreviewService card generation', () => {
     );
   });
 
-  it('exposes only a failed state when generation cannot fetch the page', async () => {
+  it('completes generation with a default card when metadata cannot be fetched', async () => {
     const service = serviceWith(
       { fetchHtml: vi.fn().mockResolvedValue(null) },
       {},
@@ -261,13 +265,19 @@ describe('LinkPreviewService card generation', () => {
 
     await vi.waitFor(() => {
       expect(service.getGeneration(7, started.generationId)?.status).toBe(
-        'failed',
+        'succeeded',
       );
     });
-    expect(
-      service.getGeneration(7, started.generationId)?.content,
-    ).toBeUndefined();
-    expect(service.consumeGeneration(7, started.generationId)).toBeUndefined();
+    expect(service.getGeneration(7, started.generationId)?.content).toEqual({
+      url: 'https://example.com/',
+      title: 'example.com',
+      description: 'https://example.com/',
+    });
+    expect(service.consumeGeneration(7, started.generationId)).toEqual({
+      url: 'https://example.com/',
+      title: 'example.com',
+      description: 'https://example.com/',
+    });
   });
 
   it('lets the backend reuse a live task or replace a failed task on retry', async () => {
@@ -298,7 +308,7 @@ describe('LinkPreviewService card generation', () => {
     );
     expect(reused.generationId).toBe(pending.generationId);
 
-    const failed = service.startGeneration(7, 'https://failed.example.com');
+    const failed = service.startGeneration(7, 'not-a-url');
     await vi.waitFor(() => {
       expect(service.getGeneration(7, failed.generationId)?.status).toBe(
         'failed',
@@ -306,7 +316,7 @@ describe('LinkPreviewService card generation', () => {
     });
     const replaced = service.startGeneration(
       7,
-      'https://failed.example.com',
+      'not-a-url',
       '',
       failed.generationId,
     );

@@ -1,13 +1,36 @@
 <div [appFitDialog]="fitOpts">
   <div class="msg-header">
-    <button class="icon-btn" [disabled]="submitting()" (click)="onBack()" [attr.aria-label]="'common.back' | transloco"><app-icon [type]="AppIconType.BACK"
-        [style]="{width:'32px',height:'32px'}"></app-icon></button>
+    <button
+      class="icon-btn"
+      [disabled]="submitting()"
+      (click)="onBack()"
+      [attr.aria-label]="'common.back' | transloco"
+    >
+      <app-icon
+        [type]="AppIconType.BACK"
+        [style]="{ width: '32px', height: '32px' }"
+      ></app-icon>
+    </button>
     <span class="title">{{ 'newGroup.title' | transloco }}</span>
     @if (step() === 1) {
-      <button mat-button [disabled]="submitting()" (click)="goStep2()">{{ 'common.next' | transloco }}</button>
+      <button
+        mat-button
+        color="primary"
+        [disabled]="submitting()"
+        (click)="goStep2()"
+      >
+        {{ 'common.next' | transloco }}
+      </button>
     } @else {
-      <button mat-button [disabled]="submitting() || avatarUploading() || !name().trim()" (click)="confirm()">
-        {{ (submitting() ? 'newGroup.creating' : 'newGroup.create') | transloco }}
+      <button
+        mat-button
+        color="primary"
+        [disabled]="submitting() || avatarUploading() || !name().trim()"
+        (click)="confirm()"
+      >
+        {{
+          (submitting() ? 'newGroup.creating' : 'newGroup.create') | transloco
+        }}
       </button>
     }
   </div>
@@ -15,9 +38,18 @@
   <!-- STEP 1 — add members -->
   <div class="step step-1" [hidden]="step() !== 1">
     <div class="search">
-      <app-icon class="search-icon" [type]="AppIconType.SEARCH" [style]="{width:'18px',height:'18px'}"></app-icon>
-      <input type="text" [placeholder]="'newGroup.searchPlaceholder' | transloco" autocomplete="off"
-        [ngModel]="searchText()" (ngModelChange)="onSearchInput($event)" />
+      <app-icon
+        class="search-icon"
+        [type]="AppIconType.SEARCH"
+        [style]="{ width: '18px', height: '18px' }"
+      ></app-icon>
+      <input
+        type="text"
+        [placeholder]="'newGroup.searchPlaceholder' | transloco"
+        autocomplete="off"
+        [ngModel]="searchText()"
+        (ngModelChange)="onSearchInput($event)"
+      />
     </div>
 
     @if (selectedList().length) {
@@ -25,55 +57,109 @@
         @for (item of selectedList(); track item.id) {
           <div class="chip">
             <span class="chip-avatar">
-              <app-user-avatar [type]="UserAvatarType.OTHER" [name]="item.peerUser.name"
-                [identityId]="item.peerUser.id" [src]="item.peerUser.avatar"></app-user-avatar>
+              <app-user-avatar
+                [type]="UserAvatarType.OTHER"
+                [name]="item.peerUser.name"
+                [identityId]="item.peerUser.id"
+                [src]="item.peerUser.avatar"
+              ></app-user-avatar>
             </span>
             <span class="chip-name">{{ item.peerUser.name }}</span>
-            <button class="chip-x" type="button" (click)="removeMember(item)" [attr.aria-label]="'common.remove' | transloco">
-              <app-icon [type]="AppIconType.CLOSE" [style]="{width:'14px',height:'14px'}"></app-icon>
+            <button
+              class="chip-x"
+              type="button"
+              (click)="removeMember(item)"
+              [attr.aria-label]="'common.remove' | transloco"
+            >
+              <app-icon
+                [type]="AppIconType.CLOSE"
+                [style]="{ width: '14px', height: '14px' }"
+              ></app-icon>
             </button>
           </div>
         }
       </div>
     }
 
-    <app-user-list [filterText]="searchText()" [selectedDict]="selectedDict()"
-      (onSelect)="onTrdSelect($event)" />
+    <app-user-list
+      [filterText]="searchText()"
+      [selectedDict]="selectedDict()"
+      (onSelect)="onTrdSelect($event)"
+    />
   </div>
 
   <!-- STEP 2 — name + avatar -->
   <div class="step step-2" [hidden]="step() !== 2">
     <div class="identity">
       <div class="avatar">
-        <app-user-avatar [type]="UserAvatarType.GROUP" [name]="name() || '?'"
-          [src]="pendingAvatar()"></app-user-avatar>
-        <button class="avatar-edit" type="button" (click)="fileInput.click()" [disabled]="avatarUploading() || submitting()"
-          [attr.aria-label]="'newGroup.setPhotoAria' | transloco">
+        <app-user-avatar
+          [type]="UserAvatarType.GROUP"
+          [name]="name() || '?'"
+          [src]="pendingAvatar()"
+        ></app-user-avatar>
+        <button
+          class="avatar-edit"
+          type="button"
+          (click)="fileInput.click()"
+          [disabled]="avatarUploading() || submitting()"
+          [attr.aria-label]="'newGroup.setPhotoAria' | transloco"
+        >
           @if (avatarUploading()) {
             <span class="spin"></span>
           } @else {
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-              stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path
+                d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"
+              />
               <circle cx="12" cy="13" r="4" />
             </svg>
           }
         </button>
       </div>
       <div class="name-field">
-        <input class="name-input" type="text" [placeholder]="'newGroup.groupNamePlaceholder' | transloco" [maxlength]="NAME_MAX"
-          [disabled]="submitting()" [ngModel]="name()" (ngModelChange)="onNameInput($event)" (keydown.enter)="confirm()" />
+        <input
+          class="name-input"
+          type="text"
+          [placeholder]="'newGroup.groupNamePlaceholder' | transloco"
+          [maxlength]="NAME_MAX"
+          [disabled]="submitting()"
+          [ngModel]="name()"
+          (ngModelChange)="onNameInput($event)"
+          (keydown.enter)="confirm()"
+        />
         <div class="counter">{{ name().length }} / {{ NAME_MAX }}</div>
       </div>
     </div>
 
     <label class="desc-field">
-      <textarea class="desc-input" rows="2" [maxlength]="DESC_MAX"
+      <textarea
+        class="desc-input"
+        rows="2"
+        [maxlength]="DESC_MAX"
         [placeholder]="'newGroup.groupDescPlaceholder' | transloco"
-        [disabled]="submitting()" [ngModel]="description()" (ngModelChange)="onDescInput($event)"></textarea>
+        [disabled]="submitting()"
+        [ngModel]="description()"
+        (ngModelChange)="onDescInput($event)"
+      ></textarea>
       <span class="counter">{{ description().length }} / {{ DESC_MAX }}</span>
     </label>
   </div>
 
-  <input #fileInput type="file" accept="image/*" hidden (change)="pickAvatar($any($event.target))" />
+  <input
+    #fileInput
+    type="file"
+    accept="image/*"
+    hidden
+    (change)="pickAvatar($any($event.target))"
+  />
 </div>

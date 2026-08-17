@@ -1,7 +1,6 @@
 import { browserExecutable, puppeteer } from './browser-executable.mjs';
 
-const URL =
-  process.env.SOMS_BASE ?? 'https://localhost:4200/playground/chatbox';
+const URL = process.env.SOMS_BASE ?? 'https://localhost:4200/';
 const browser = await puppeteer.launch({
   executablePath: browserExecutable(),
   headless: 'new',

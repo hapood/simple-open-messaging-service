@@ -17,7 +17,6 @@ import { MessageSearchComponent } from '../message-search/message-search.compone
 import { ConversationItem, displayUserName } from '../../services/model';
 import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
 import { LayoutService } from '../../services/layout.service';
-import { MsgService } from '../../services/message.service';
 import { UserService } from '../../services/user.service';
 import { GroupService } from '../../services/group.service';
 import { ConversationListService } from '../../services/conversation-list.service';
@@ -31,6 +30,7 @@ import { translateBizResult } from '../../services/biz-code';
 import { ToastService } from '../../services/toast.service';
 import { ThreadDeletionLockService } from '../../services/thread-deletion-lock.service';
 import { firstValueFrom } from 'rxjs';
+import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter';
 
 /**
  * Chat surface header: back (mobile), the thread title (tap → peer-profile / group-info aside), and
@@ -69,7 +69,7 @@ export class MessageHeaderComponent {
   readonly searchJump = output<number>();
   private readonly nav = inject(NavStateMachineService);
   private readonly layout = inject(LayoutService);
-  private readonly msgService = inject(MsgService);
+  private readonly threadAdapter = inject(MESSAGE_THREAD_ADAPTER);
   private readonly userService = inject(UserService);
   private readonly groupService = inject(GroupService);
   private readonly convList = inject(ConversationListService);
@@ -322,7 +322,7 @@ export class MessageHeaderComponent {
   private toggleMute(threadId: number, muted: boolean): void {
     const next = !muted;
     this.convList.applyThreadMeta(threadId, { muted: next });
-    this.msgService.setMuted({ threadId, muted: next }).subscribe({
+    this.threadAdapter.setMuted({ threadId, muted: next }).subscribe({
       error: () => this.convList.applyThreadMeta(threadId, { muted }), // revert on failure
     });
   }
@@ -335,7 +335,7 @@ export class MessageHeaderComponent {
       pinned: next,
       pinnedAt: next ? Date.now() : null,
     });
-    this.msgService.setPinned({ threadId, pinned: next }).subscribe({
+    this.threadAdapter.setPinned({ threadId, pinned: next }).subscribe({
       error: () =>
         this.convList.applyThreadMeta(threadId, {
           pinned,
@@ -360,7 +360,7 @@ export class MessageHeaderComponent {
         if (ok)
           void this.runLockedDelete(
             threadId,
-            () => firstValueFrom(this.msgService.clearHistory({ threadId })),
+            () => firstValueFrom(this.threadAdapter.clearHistory({ threadId })),
             true,
             () => undefined,
             false,

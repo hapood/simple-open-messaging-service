@@ -6,7 +6,7 @@
 }
 
 // Effective keyboard lift, shared by the production message container (.msg-container in
-// friend-message.component.scss) and the playground stage (.pg-stage in chatbox-playground.component.scss).
+// friend-message.component.scss). The standalone playground mounts that production thread directly.
 // Both derive the SAME value, so the formula + rationale live once here and the two include sites can't drift.
 //
 // Effective lift = raw --kbd-lift (set on the host by KbdOffsetDirective from the IME inset) MINUS the

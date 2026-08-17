@@ -26,16 +26,12 @@ import {
 import { PreventFocusStealDirective } from '../../directives/prevent-focus-steal.directive';
 import { EMOJI_CATEGORIES } from './emoji-data';
 import { firstValueFrom } from 'rxjs';
-import { InputDeviceService } from '../../services/input-device.service';
 import { KeyboardInsetService } from '../../services/keyboard-inset.service';
 import {
   NativeUploadService,
   type NativeUploadSelection,
 } from '../../services/native-upload.service';
-import {
-  isVoiceRecordingTooShort,
-  nextVoiceCancelState,
-} from './voice-recording-state';
+import { isVoiceRecordingTooShort } from './voice-recording-state';
 import { PreferenceStore } from '../../services/preference-store.service';
 import {
   LinkCardGenerationService,
@@ -70,6 +66,7 @@ interface EmojiTab {
 
 const RECENTS_KEY = 'soms.chat.emojiRecents';
 const RECENTS_MAX = 32;
+const RECORD_HOLD_DELAY_MS = 320;
 
 /** Pick the best audio MIME the current browser can RECORD. MediaRecorder output varies by engine:
  *  Chrome / Android WebView / Tauri webview2 / webkit2gtk → audio/webm (opus); Safari / iOS / macOS
@@ -132,6 +129,7 @@ const MAX_RECORD_SECS = 60;
   encapsulation: ViewEncapsulation.None,
 })
 export class ChatInputComponent implements OnDestroy {
+  readonly AppIconType = AppIconType;
   private readonly nativeUploads = inject(NativeUploadService);
   /** @mention candidates (playground: mock; production group: member roster; production 1-on-1: []). Read into
    *  the editor; updates do NOT recreate the editor. */
@@ -154,8 +152,8 @@ export class ChatInputComponent implements OnDestroy {
     viewChild<ElementRef<HTMLInputElement>>('attachInput');
   private readonly fileInput =
     viewChild<ElementRef<HTMLInputElement>>('fileInput');
-  private readonly inputDevice = inject(InputDeviceService);
-  readonly desktopRecordingControls = this.inputDevice.hasPhysicalKeyboard;
+  private readonly recordCancelTarget =
+    viewChild<ElementRef<HTMLElement>>('recordCancelTarget');
   private readonly keyboardInset = inject(KeyboardInsetService);
   private readonly preferences = inject(PreferenceStore);
   private readonly generations = inject(LinkCardGenerationService);
@@ -362,6 +360,10 @@ export class ChatInputComponent implements OnDestroy {
       return;
     }
     if (this.linkState() === 'failed') {
+      if (this.linkGeneration()?.content) {
+        this.openGenerationDialog();
+        return;
+      }
       const generationId = this.generationId();
       this.openWhenStarted = true;
       void this.startGeneration(
@@ -506,48 +508,19 @@ export class ChatInputComponent implements OnDestroy {
     }
   }
 
-  /** Send key: draft present → send text. On pointer-accurate devices the empty mic toggles recording on
-   *  successive clicks; touch/pen keep the press-hold gesture handled by the pointer callbacks below. */
-  onSendClick(): void {
-    if (this.sending()) return;
-    if (this.draftHtml()) {
-      this.sendText();
-      return;
-    }
-    // A completed touch/pen gesture produces a compatibility click after pointerup. Its recording has
-    // already been stopped (and normally sent) there, so consuming that click prevents an immediate,
-    // surprising second recording from starting.
-    if (this.suppressNextMicClick) {
-      this.suppressNextMicClick = false;
-      return;
-    }
-    if (this.recording()) {
-      void this.stopRecording(false);
-      return;
-    }
-    this.startRecording();
-  }
-
-  /** Desktop recording has explicit actions because mouse users should not need to discover a drag gesture. */
-  sendDesktopRecording(): void {
-    if (this.recording()) void this.stopRecording(false);
-  }
-
-  cancelDesktopRecording(): void {
-    if (this.recording()) void this.stopRecording(true);
-  }
-
-  @HostListener('document:keydown.escape')
-  cancelDesktopRecordingWithEscape(): void {
-    if (this.desktopRecordingControls() && this.recording()) {
-      this.cancelDesktopRecording();
-    }
-  }
-
   /** Desktop Enter (the editor's `send` output): same as the text branch of the send key. */
   onEditorSend(): void {
     if (this.sending()) return;
     this.sendText();
+  }
+
+  /** A normal click sends text unless it is the synthetic click following a completed hold gesture. */
+  onSendClick(): void {
+    if (this.suppressNextSendClick) {
+      this.suppressNextSendClick = false;
+      return;
+    }
+    if (!this.sending() && this.draftHtml()) this.sendText();
   }
 
   private sendText(): void {
@@ -607,9 +580,9 @@ export class ChatInputComponent implements OnDestroy {
     input.value = '';
   }
 
-  // ── Attachment drawer (Photo / File) ───────────────────────────────────────────────────────────
+  // ── Attachment tray (Photo / File) ─────────────────────────────────────────────────────────────
 
-  /** Whether the in-composer attachment drawer is open. */
+  /** Whether the attachment action mode is covering the visible editor capsule. */
   readonly attachOpen = signal(false);
   readonly attachEntries = [
     {
@@ -629,8 +602,10 @@ export class ChatInputComponent implements OnDestroy {
   toggleAttach(): void {
     const opening = !this.attachOpen();
     this.closeEmoji();
-    if (opening && !this.inputDevice.hasPhysicalKeyboard())
+    if (opening) {
       this.editor()?.blur();
+      this.keyboardInset.setVisible(false);
+    }
     this.attachOpen.set(opening);
   }
   closeAttach(): void {
@@ -641,6 +616,13 @@ export class ChatInputComponent implements OnDestroy {
     this.attachOpen.set(false);
     if (key === 'photo') this.onAttachClick();
     else if (key === 'file') this.onFileClick();
+  }
+
+  /** Blank attachment-cover space behaves like an outside click; action buttons retain their own handling. */
+  onAttachDrawerClick(event: MouseEvent): void {
+    const target = event.target;
+    if (!(target instanceof Element) || !target.closest('.ci-attach-option'))
+      this.closeAttach();
   }
 
   // ── Voice recording (press-hold mic) ───────────────────────────────────────────────────────────
@@ -654,6 +636,8 @@ export class ChatInputComponent implements OnDestroy {
   readonly recordSecs = signal(0);
   /** True when the finger has slid up past the cancel threshold (release will discard). */
   readonly recordCancelled = signal(false);
+  /** Recent analyser samples are appended at the right, so the live waveform travels right-to-left. */
+  readonly recordWave = signal<number[]>(Array(28).fill(0.08));
   /** A transient error i18n KEY (permission denied / unsupported) shown above the bar; '' ⇒ none. Holds a
    *  transloco key — the template renders `{{ recordError() | transloco }}` — never the literal text. */
   readonly recordError = signal('');
@@ -667,9 +651,9 @@ export class ChatInputComponent implements OnDestroy {
   private chunks: Blob[] = [];
   private stream: MediaStream | null = null;
   private mimeForRecording = '';
-  private pointerStartY = 0;
-  /** Touch/pen pointerup is followed by a synthetic click; consume it after the hold gesture completes. */
-  private suppressNextMicClick = false;
+  private audioContext: AudioContext | null = null;
+  private analyser: AnalyserNode | null = null;
+  private waveFrame?: number;
   private recordStartedAt = 0;
   private pendingCancel = false;
   /** The 60s cap stops MediaRecorder, but the gesture stays live until pointerup decides send vs discard. */
@@ -688,20 +672,18 @@ export class ChatInputComponent implements OnDestroy {
   private tickTimer?: ReturnType<typeof setInterval>;
   private capTimer?: ReturnType<typeof setTimeout>;
   private errorTimer?: ReturnType<typeof setTimeout>;
+  private recordHoldTimer?: ReturnType<typeof setTimeout>;
+  private suppressSendResetTimer?: ReturnType<typeof setTimeout>;
+  private recordHoldPending = false;
+  private recordPressStartedWithDraft = false;
+  private suppressNextSendClick = false;
 
-  /** Press-hold start. Only the empty-draft state renders the mic, so this runs only then. Pointer capture
-   *  is taken synchronously so move/up keep arriving even as the finger roams (slide-to-cancel); the async
-   *  getUserMedia/MediaRecorder.start() follow, and recordAborted short-circuits a gesture that already ended. */
+  /** A deliberate hold starts voice recording while a short tap keeps the normal send behavior. Pointer
+   *  capture keeps the whole gesture on this control even after the composer changes state or the finger moves
+   *  into the cancel target. */
   onMicPointerDown(event: PointerEvent): void {
-    if (this.sending() || this.draftHtml() || this.recording()) return;
-    // Mouse users expect a button click, not a press-and-hold gesture. Let the subsequent click toggle
-    // recording; touch and pen retain hold/release/slide-to-cancel semantics.
-    if (event.pointerType === 'mouse') {
-      this.suppressNextMicClick = false;
-      return;
-    }
+    if (this.sending() || this.recording()) return;
     event.preventDefault();
-    this.suppressNextMicClick = true;
     const el = event.currentTarget as HTMLElement;
     // Capture before closing a keyboard: that layout change can move the button under the stationary
     // finger, but the active recording gesture must continue receiving move/up events.
@@ -710,13 +692,23 @@ export class ChatInputComponent implements OnDestroy {
     } catch {
       /* capture is best-effort */
     }
+    this.recordPressStartedWithDraft = Boolean(this.draftHtml());
+    this.recordHoldPending = true;
+    clearTimeout(this.recordHoldTimer);
+    this.recordHoldTimer = setTimeout(() => {
+      this.recordHoldPending = false;
+      this.activateRecordingGesture(el);
+    }, RECORD_HOLD_DELAY_MS);
+  }
+
+  private activateRecordingGesture(el: HTMLElement): void {
     // Voice recording is not a text-editing state: close the IME and ensure the touch target itself
     // cannot retain focus. This also prevents Android from restoring the keyboard during mic permission.
     this.closeEmoji();
+    this.closeAttach();
     this.editor()?.blur();
     this.keyboardInset.setVisible(false);
     el.blur();
-    this.pointerStartY = event.clientY;
     this.startRecording();
   }
 
@@ -779,6 +771,7 @@ export class ChatInputComponent implements OnDestroy {
       this.stream = null;
       return;
     }
+    this.startWaveform(stream);
     // Close the remaining race: the gesture may have ended in the window between the post-await check above
     // and rec.start(). If so, stop+discard now rather than running unattended until the 60s cap.
     if (this.recordSession !== session || this.destroyed) {
@@ -814,34 +807,64 @@ export class ChatInputComponent implements OnDestroy {
 
   /** Track the slide-up gesture (pointer capture keeps these arriving on the mic element). */
   onMicPointerMove(event: PointerEvent): void {
-    if (event.pointerType === 'mouse') return;
     if (!this.recording()) return;
-    this.recordCancelled.set(
-      nextVoiceCancelState(
-        this.recordCancelled(),
-        this.pointerStartY - event.clientY,
-      ),
-    );
+    this.recordCancelled.set(this.isInsideRecordCancelTarget(event));
   }
 
   /** Release → send unless the gesture slid into cancel territory. */
   onMicPointerUp(event: PointerEvent): void {
-    if (event.pointerType === 'mouse') return;
     event.preventDefault();
+    if (this.recordHoldPending) {
+      clearTimeout(this.recordHoldTimer);
+      this.recordHoldPending = false;
+      this.recordPressStartedWithDraft = false;
+      if (!this.sending() && this.draftHtml()) this.sendText();
+      return;
+    }
+    if (this.recordPressStartedWithDraft) this.suppressNextPointerClick();
+    this.recordPressStartedWithDraft = false;
     if (!this.recording()) {
       this.recordSession++;
       return;
     } // ended before start → invalidate the in-flight begin
-    void this.stopRecording(this.recordCancelled());
+    const cancel = this.isInsideRecordCancelTarget(event);
+    this.recordCancelled.set(cancel);
+    void this.stopRecording(cancel);
   }
 
   /** System interrupt (scroll / IME / etc.) → always cancel. */
   onMicPointerCancel(): void {
+    clearTimeout(this.recordHoldTimer);
+    this.recordHoldPending = false;
+    if (this.recordPressStartedWithDraft) this.suppressNextPointerClick();
+    this.recordPressStartedWithDraft = false;
     if (!this.recording()) {
       this.recordSession++;
       return;
     } // ended before start → invalidate the in-flight begin
     void this.stopRecording(true);
+  }
+
+  private suppressNextPointerClick(): void {
+    this.suppressNextSendClick = true;
+    clearTimeout(this.suppressSendResetTimer);
+    this.suppressSendResetTimer = setTimeout(() => {
+      this.suppressNextSendClick = false;
+    }, 0);
+  }
+
+  /** The visible target is intentionally smaller than its gesture hit area for comfortable thumb input. */
+  private isInsideRecordCancelTarget(event: PointerEvent): boolean {
+    const target = this.recordCancelTarget()?.nativeElement;
+    if (!target) return false;
+    const rect = target.getBoundingClientRect();
+    const tolerance = 14;
+    return (
+      event.clientX >= rect.left - tolerance &&
+      event.clientX <= rect.right + tolerance &&
+      event.clientY >= rect.top - tolerance &&
+      event.clientY <= rect.bottom + tolerance
+    );
   }
 
   private stopRecording(cancel: boolean): void {
@@ -854,6 +877,7 @@ export class ChatInputComponent implements OnDestroy {
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
     this.recording.set(false);
+    this.stopWaveform();
     if (rec.state !== 'inactive') {
       rec.stop(); // fires onstop → finalizeRecording
     } else if (this.recorderStopSettled) {
@@ -891,7 +915,49 @@ export class ChatInputComponent implements OnDestroy {
   private flashRecordError(key: string): void {
     this.recordError.set(key);
     clearTimeout(this.errorTimer);
+    clearTimeout(this.recordHoldTimer);
+    clearTimeout(this.suppressSendResetTimer);
     this.errorTimer = setTimeout(() => this.recordError.set(''), 3000);
+  }
+
+  private startWaveform(stream: MediaStream): void {
+    try {
+      const context = new AudioContext();
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 256;
+      context.createMediaStreamSource(stream).connect(analyser);
+      this.audioContext = context;
+      this.analyser = analyser;
+      const samples = new Uint8Array(analyser.fftSize);
+      const draw = () => {
+        if (!this.analyser || !this.recording()) return;
+        analyser.getByteTimeDomainData(samples);
+        let energy = 0;
+        for (const sample of samples) {
+          const normalized = (sample - 128) / 128;
+          energy += normalized * normalized;
+        }
+        const level = Math.min(
+          1,
+          Math.max(0.08, Math.sqrt(energy / samples.length) * 4),
+        );
+        this.recordWave.update((wave) => [...wave.slice(1), level]);
+        this.waveFrame = requestAnimationFrame(draw);
+      };
+      draw();
+    } catch {
+      // Recording remains functional when an engine exposes MediaRecorder but not Web Audio.
+    }
+  }
+
+  private stopWaveform(): void {
+    if (this.waveFrame !== undefined) cancelAnimationFrame(this.waveFrame);
+    this.waveFrame = undefined;
+    this.analyser = null;
+    const context = this.audioContext;
+    this.audioContext = null;
+    if (context) void context.close().catch(() => {});
+    this.recordWave.set(Array(28).fill(0.08));
   }
 
   ngOnDestroy(): void {
@@ -902,6 +968,7 @@ export class ChatInputComponent implements OnDestroy {
     this.recordSession++; // invalidate any in-flight beginRecording (permission prompt resolved post-teardown)
     // Stop an in-flight recording if the component is torn down mid-press (thread switch, route leave, etc.).
     if (this.recorder) this.stopRecording(true);
+    this.stopWaveform();
     clearTimeout(this.capTimer);
     clearInterval(this.tickTimer);
     clearTimeout(this.errorTimer);

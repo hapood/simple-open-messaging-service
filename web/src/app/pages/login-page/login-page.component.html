@@ -17,7 +17,12 @@
         @if (isTauri()) {
           <!-- Cancel the connection wait and return to the editable server dialog. The in-flight request
             is generation-guarded, so a later server choice cannot publish stale config. -->
-          <button mat-button class="server-link" type="button" (click)="cancelConnection()">
+          <button
+            mat-button
+            class="server-link app-secondary-action"
+            type="button"
+            (click)="cancelConnection()"
+          >
             {{ 'common.cancel' | transloco }}
           </button>
         }
@@ -49,18 +54,44 @@
       }
       @if (configFailed()) {
         <div class="login-error" role="alert">
-          <app-icon class="login-error__icon" [type]="AppIcon.REPORT" [style]="{ width: '20px', height: '20px' }" />
+          <app-icon
+            class="login-error__icon"
+            [type]="AppIcon.REPORT"
+            [style]="{ width: '20px', height: '20px' }"
+          />
           <div class="login-error__body">
             <p class="login-error__msg">
-              {{ (connectionCancelled() ? 'auth.connectionCancelled' : 'auth.serverUnreachable') | transloco }}
+              {{
+                (connectionCancelled()
+                  ? 'auth.connectionCancelled'
+                  : 'auth.serverUnreachable'
+                ) | transloco
+              }}
             </p>
             <div class="login-error__actions">
-              <button mat-flat-button color="primary" type="button" (click)="retry()">
-                <app-icon matButtonIcon [type]="AppIcon.REFRESH" [style]="{ width: '18px', height: '18px' }" />
+              <button
+                mat-flat-button
+                color="primary"
+                type="button"
+                (click)="retry()"
+              >
+                <app-icon
+                  matButtonIcon
+                  [type]="AppIcon.REFRESH"
+                  [style]="{ width: '18px', height: '18px' }"
+                />
                 {{ 'common.retry' | transloco }}
               </button>
-              <button mat-stroked-button type="button" (click)="reopenServerConfig()">
-                <app-icon matButtonIcon [type]="AppIcon.SETTINGS" [style]="{ width: '18px', height: '18px' }" />
+              <button
+                mat-stroked-button
+                type="button"
+                (click)="reopenServerConfig()"
+              >
+                <app-icon
+                  matButtonIcon
+                  [type]="AppIcon.SETTINGS"
+                  [style]="{ width: '18px', height: '18px' }"
+                />
                 {{ 'auth.reconfigure' | transloco }}
               </button>
             </div>
@@ -87,8 +118,17 @@
           }
         </div>
         @if (isTauri() && !configFailed()) {
-          <button mat-button class="server-link" type="button" (click)="reopenServerConfig()">
-            <app-icon matButtonIcon [type]="AppIcon.SETTINGS" [style]="{ width: '18px', height: '18px' }" />
+          <button
+            mat-button
+            class="server-link"
+            type="button"
+            (click)="reopenServerConfig()"
+          >
+            <app-icon
+              matButtonIcon
+              [type]="AppIcon.SETTINGS"
+              [style]="{ width: '18px', height: '18px' }"
+            />
             {{ 'serverConfig.entry' | transloco }}
           </button>
         }

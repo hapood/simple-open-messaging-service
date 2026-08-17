@@ -54,15 +54,19 @@ npm run dev
 
 This starts the NestJS API, Angular client, Vite administration console, and development web-bundle
 watcher. The API normally listens on `http://localhost:3000` and Angular on
-`http://localhost:4200`. The backend-free UI playground is available at `/playground/chatbox`.
+`http://localhost:4200`.
 
 Run one part independently when needed:
 
 ```bash
 npm run start:dev
 npm start --prefix web
+npm run start:playground --prefix web
 npm run dev --prefix admin-web
 ```
+
+The backend-free UI playground is served at `http://localhost:4200/` when started with
+`start:playground`.
 
 ## Build and Test
 

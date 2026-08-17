@@ -11,7 +11,11 @@ import {
 import { TranslocoPipe } from '@jsverse/transloco';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatIconModule } from '@angular/material/icon';
-import { MEDIA_STATUS, type AlbumImage, type ChatMsgData } from '../chat-item';
+import {
+  MEDIA_STATUS,
+  type AlbumImage,
+  type ChatMsgData,
+} from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
 import {
   UserAvatarComponent,
@@ -88,6 +92,10 @@ export class MediaRowComponent {
   readonly isFailed = computed(
     () => this.data().isSelf && this.data().status === 'failed',
   );
+  /** Federated media status defaults to ready on both the wire and persisted historical rows. */
+  readonly mediaStatus = computed(
+    () => this.data().mediaStatus ?? MEDIA_STATUS.READY,
+  );
   readonly retry = output<number>();
   readonly cancel = output<number>();
   readonly openImage = output<{ images: AlbumImage[]; index: number }>();
@@ -115,7 +123,6 @@ export class MediaRowComponent {
   });
   readonly galleryIcons = computed(() => {
     const items = this.data().images ?? [];
-    const threshold = this.threshold();
     this.downloads.tasks();
     this.downloads.thumbnailVersion();
     const visible = items.length > 6 ? items.slice(0, 5) : items.slice(0, 6);
@@ -131,8 +138,7 @@ export class MediaRowComponent {
       const oversized =
         item.kind === 'image' &&
         !localPreview &&
-        threshold > 0 &&
-        (item.size ?? 0) > threshold &&
+        this.thresholdSvc.shouldDefer(item.size ?? 0) &&
         !this.thresholdSvc.isLoaded(this.mediaKey(item, index)) &&
         !task?.blobUrl;
       return {
@@ -173,7 +179,6 @@ export class MediaRowComponent {
   readonly cells = computed(() => {
     const imgs = this.displayedImages();
     const failed = this.unplayableVideos();
-    const thr = this.threshold();
     this.downloads.tasks();
     // Read the service signal through isLoaded below. It is intentionally shared across row remounts.
     return this.layout().rects.map((rect, i) => {
@@ -186,8 +191,7 @@ export class MediaRowComponent {
         kind === 'video' && m ? this.nativeVideo.thumbnailUrl(m.src) : '';
       const gated =
         kind === 'image' &&
-        thr > 0 &&
-        size > thr &&
+        this.thresholdSvc.shouldDefer(size) &&
         !this.thresholdSvc.isLoaded(mediaKey) &&
         !task?.blobUrl;
       return {
@@ -267,7 +271,6 @@ export class MediaRowComponent {
 
   /** Size-tiered lazy load: large images remain an inert card placeholder. Clicking always opens the
    * gallery; only that surface starts/cancels the shared download task. */
-  readonly threshold = computed(() => this.thresholdSvc.threshold());
   /** Cell click: images and videos open the singleton mixed-media viewer (after the optional image
    *  size gate). Audio owns its interaction inside AudioPlayerComponent. */
   async onCellClick(i: number): Promise<void> {

@@ -100,7 +100,9 @@ describe('AudioPlayerComponent', () => {
     await fixture.whenStable();
 
     expect(fixture.componentInstance.inert()).toBe(false);
-    expect(fixture.nativeElement.querySelector('.ap-pending-ring')).not.toBeNull();
+    // Sending/upload state belongs to the message receipt and transfer rail; the play control must not
+    // render a second spinner that looks like audio buffering.
+    expect(fixture.nativeElement.querySelector('.ap-pending-ring')).toBeNull();
     expect(fixture.nativeElement.querySelector('.ap-btn').disabled).toBe(false);
     expect(fixture.nativeElement.querySelector('.ap-wave')).not.toBeNull();
   });

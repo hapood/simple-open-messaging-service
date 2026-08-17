@@ -5,7 +5,8 @@ import { MatRadioModule } from '@angular/material/radio';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import {
   MediaSizeThresholdService,
-  MEDIA_THRESHOLD_OPTIONS_KB,
+  MEDIA_LOAD_POLICY_OPTIONS,
+  type MediaLoadPolicy,
 } from '../../services/media-size-threshold.service';
 import {
   AttachmentUploadQueueService,
@@ -28,14 +29,14 @@ import {
     <section class="settings-group">
       <div class="settings-card">
         <mat-list>
-          @for (kb of options; track kb) {
-            <mat-list-item (click)="select(kb)">
-              <span matListItemTitle>{{ label(kb) }}</span>
+          @for (policy of options; track policy.mode + (policy.mode === 'limited' ? policy.bytes : 0)) {
+            <mat-list-item (click)="select(policy)">
+              <span matListItemTitle>{{ label(policy) }}</span>
               <mat-radio-button
                 matListItemMeta
                 name="media-threshold"
-                [checked]="current() === kb"
-                [attr.aria-label]="label(kb)"
+                [checked]="isSelected(policy)"
+                [attr.aria-label]="label(policy)"
               >
               </mat-radio-button>
             </mat-list-item>
@@ -148,10 +149,9 @@ export class SettingsMediaComponent {
   private readonly transloco = inject(TranslocoService);
   readonly nativeCache = inject(NativeMediaCacheService);
 
-  /** Current threshold in KB (0 = unlimited). */
-  readonly current = this.media.kb;
+  readonly current = this.media.policy;
   /** The offered threshold options. */
-  readonly options: readonly number[] = MEDIA_THRESHOLD_OPTIONS_KB;
+  readonly options = MEDIA_LOAD_POLICY_OPTIONS;
   readonly uploadConcurrency = this.uploadQueue.maxConcurrent;
   readonly uploadOptions: readonly number[] = UPLOAD_CONCURRENCY_OPTIONS;
   readonly showClearCache = this.nativeCache.available;
@@ -161,15 +161,26 @@ export class SettingsMediaComponent {
   readonly cacheCleared = signal(false);
   readonly cacheClearFailed = signal(false);
 
-  /** Display label for a threshold option: "512 KB" / "1 MB" / "2 MB" / "No limit". */
-  label(kb: number): string {
-    if (kb <= 0) return this.transloco.translate('settings.noLimit');
+  /** Display label for a policy: "512 KB" / "1 MB" / "2 MB" / "No limit". */
+  label(policy: MediaLoadPolicy): string {
+    if (policy.mode === 'unlimited')
+      return this.transloco.translate('settings.noLimit');
+    const kb = policy.bytes / 1024;
     if (kb >= 1024) return `${kb / 1024} MB`;
     return `${kb} KB`;
   }
 
-  select(kb: number): void {
-    this.media.setKb(kb);
+  isSelected(policy: MediaLoadPolicy): boolean {
+    const current = this.current();
+    return (
+      current.mode === policy.mode &&
+      (current.mode === 'unlimited' ||
+        (policy.mode === 'limited' && current.bytes === policy.bytes))
+    );
+  }
+
+  select(policy: MediaLoadPolicy): void {
+    this.media.setPolicy(policy);
   }
 
   selectUploadConcurrency(count: number): void {

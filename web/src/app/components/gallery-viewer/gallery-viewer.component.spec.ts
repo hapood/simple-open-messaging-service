@@ -42,7 +42,7 @@ describe('GalleryViewerComponent — deferred image actions', () => {
         { provide: ImageDownloadService, useValue: downloads },
         {
           provide: MediaSizeThresholdService,
-          useValue: { threshold: signal(1024) },
+          useValue: { shouldDefer: (size: number) => size > 1024 },
         },
         { provide: MsgService, useValue: {} },
         { provide: MessageRepository, useValue: {} },

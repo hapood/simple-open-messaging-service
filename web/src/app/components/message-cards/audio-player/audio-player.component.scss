@@ -20,40 +20,42 @@
   width: 26px;
   height: 26px;
   padding: 0;
-  border: none;
+  border: 1px solid color-mix(in srgb, var(--bubble-accent) 24%, transparent);
   border-radius: 50%;
-  background: var(--bubble-accent);
-  color: #fff;
+  background: color-mix(in srgb, var(--bubble-accent) 14%, var(--bubble-bg));
+  color: var(--bubble-accent);
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: transform 0.1s;
+  transition:
+    transform 0.1s,
+    background 0.16s,
+    color 0.16s;
+  &:hover {
+    background: color-mix(in srgb, var(--bubble-accent) 22%, var(--bubble-bg));
+  }
+  &:focus-visible {
+    outline: 2px solid var(--bubble-accent);
+    outline-offset: 2px;
+  }
   &:active {
     transform: scale(0.92);
   }
   &:disabled {
-    background: var(--bubble-muted);
+    border-color: transparent;
+    background: color-mix(in srgb, var(--bubble-muted) 18%, var(--bubble-bg));
+    color: var(--bubble-muted);
     cursor: not-allowed;
   }
 }
-.ap-pending-ring {
-  position: absolute;
-  top: 7px;
-  left: 7px;
-  width: 12px;
-  height: 12px;
-  fill: none;
-  stroke: rgba(255, 255, 255, 0.68);
-  stroke-width: 2px;
-  stroke-linecap: round;
-  stroke-dasharray: 56 32;
-  pointer-events: none;
-  animation: ap-pending-spin 0.85s linear infinite;
-}
-@keyframes ap-pending-spin {
-  to {
-    transform: rotate(360deg);
+.ap-btn--playing {
+  border-color: var(--bubble-accent);
+  background: var(--bubble-accent);
+  color: #fff;
+
+  &:hover {
+    background: color-mix(in srgb, var(--bubble-accent) 88%, #000);
   }
 }
 .ap-body {

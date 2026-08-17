@@ -413,9 +413,9 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   private shouldGate(media: AlbumImage): boolean {
-    const limit = this.threshold.threshold();
     return (
-      limit > 0 && (media.size ?? 0) > limit && !this.downloads.isLoaded(media)
+      this.threshold.shouldDefer(media.size ?? 0) &&
+      !this.downloads.isLoaded(media)
     );
   }
 

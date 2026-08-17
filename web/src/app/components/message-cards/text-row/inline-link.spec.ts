@@ -4,7 +4,6 @@ import {
   EnvironmentInjector,
   input,
   provideZonelessChangeDetection,
-  signal,
 } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import {
@@ -62,7 +61,7 @@ describe('TextRowComponent — inline link', () => {
         },
         {
           provide: MediaSizeThresholdService,
-          useValue: { threshold: signal(1024) },
+          useValue: { shouldDefer: (size: number) => size > 1024 },
         },
       ],
     });

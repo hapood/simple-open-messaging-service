@@ -1,0 +1,8 @@
+// Shared, non-scrolling chat wallpaper used by the production thread and the
+// standalone playground. Keeping this in one mixin prevents the demo surface
+// from drifting when the production theme tokens or painting behavior change.
+@mixin wallpaper {
+  background-color: var(--im-chat-bg);
+  background-image: var(--im-chat-pattern);
+  background-repeat: repeat;
+}

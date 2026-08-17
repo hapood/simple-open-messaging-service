@@ -25,7 +25,7 @@
   }
 }
 
-.msg-bubble.msg-media {
+.msg-bubble.msg-media:not(.msg-media--audio) {
   --bubble-bg: var(--chat-card-bg);
   --bubble-text: var(--chat-card-text);
   --bubble-muted: var(--app-text-muted);
@@ -116,7 +116,9 @@
 }
 
 // Audio is a real message bubble, not a media placeholder. Match text-message ownership colors instead
-// of inheriting the generic gray image/video loading canvas.
+// of inheriting the generic neutral image/video card surface. Audio has no separate sender meta bar, so
+// the bubble itself must retain the outgoing/incoming ownership cue from row-base.
+.msg-media--audio .msg-media-grid,
 .msg-media .msg-media-cell--audio {
   background: var(--bubble-bg);
 }
@@ -289,14 +291,16 @@ app-audio-player {
   opacity: 0.6;
 }
 
-// Media status tick: TOP-RIGHT corner over the image, in a small dark circle badge.
-.msg-media .msg-status {
+// Visual-media status tick: TOP-RIGHT over an image/video needs a dark contrast badge. Audio has an
+// opaque ownership-colored bubble, so it uses row-base's plain status glyph; keeping this badge there
+// would leave an empty dark circle after the confirmed check fades out.
+.msg-media:not(.msg-media--audio) .msg-status {
   right: 6px;
   top: 6px;
   padding: 1px;
   background: rgba(0, 0, 0, 0.45);
   border-radius: 50%;
-  color: #fff;
+  color: var(--app-success);
   &.msg-status--failed {
     color: var(--app-danger, #ff5252);
   }

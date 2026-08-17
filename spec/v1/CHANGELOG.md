@@ -16,7 +16,7 @@ The initial message wire format has these constraints:
 
 - A CALL record requires `callSid` in its own content.
 - `BlobDescriptor.bytes` is the sole declared media-resource length.
-- LINK requires string fields `url`, `title`, `description`, and `siteName`; the last three may be empty strings.
+- LINK requires string fields `url`, `title`, `description`, and `siteName`; the last three may be empty strings. LINK artwork is generated locally and is not federated.
 
 RC.0 includes a controlled, non-core extension mechanism:
 

@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://hapood.github.io/simple-open-chat-service/playground/chatbox"><strong>Try the live UI playground</strong></a>
+  <a href="https://hapood.github.io/simple-open-chat-service/"><strong>Try the live UI playground</strong></a>
   ·
   <a href="spec/README.md">Federation specification</a>
   ·
@@ -75,7 +75,7 @@ console remain fully self-hostable.
 
 ## UI Playground
 
-The [chat UI playground](https://hapood.github.io/simple-open-chat-service/playground/chatbox) is a
+The [chat UI playground](https://hapood.github.io/simple-open-chat-service/) is a
 static, interactive build of the real message-list and composer components. It uses deterministic
 in-memory data, so it needs no account, server, or network API. Use its controls to try responsive
 layouts, themes, virtual scrolling, loading states, optimistic sends, replies, media, and connection

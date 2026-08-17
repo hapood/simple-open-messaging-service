@@ -2292,6 +2292,9 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       entry.enterAbove = enterAbove;
       if (confirm) {
         entry.resortTarget = true;
+        // Gate the sent artwork in the same synchronous mount pass. Waiting until reconcileOptimistic can expose the
+        // unanimated, persistent check for a frame before the 0→1 check animation starts, which reads as a double flash.
+        entry.el.classList.add('cb-confirmed');
       }
       this.mounted.splice(insertIdx, 0, entry);
       this.mounted[insertIdx - 1]?.vs.updateNext?.(item);
@@ -2303,8 +2306,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
   /**
    * Optimistic-confirm reconciliation: remove every in-flight optimistic whose cid is fulfilled by a mounted real, and
-   * tag this batch's newly-mounted reals (resortTarget) cb-confirmed so the sent-check choreography (spinner→check→fade,
-   * scoped to these "special" items via :host(.cb-confirmed)) plays on them. Album-aware: a merged/absorbed album real
+   * finalize this batch's newly-mounted confirmed reals (resortTarget), whose cb-confirmed animation gate was installed
+   * synchronously at mount so no static-check frame can leak before the spinner→check→fade choreography. Album-aware: a merged/absorbed album real
    * fulfills EVERY member's cid (itemFulfilledCids), so a same-batch self-sent burst or a cross-signal absorb reconciles
    * all its members' optimistic bubbles — not just the head's.
    *
@@ -2353,12 +2356,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
         if (i < 0) continue;
         this.unmountAt(i);
       }
-      // A resortTarget real is already visible at its true position — the cb-confirmed tag alone gates the
-      // spinner→check→fade choreography on it. (When its source optimistic was already gone — e.g. a jump during pending
-      // unmounted it — toRemove did not include it, but the tag still plays so the user sees the send confirmed.)
+      // A resortTarget real is already visible at its true position and was tagged cb-confirmed during its synchronous
+      // mount. Clear the one-batch marker now; the CSS choreography continues independently.
       for (const t of targets) {
         t.resortTarget = false;
-        t.el.classList.add('cb-confirmed');
       }
       this.dirtyPrefix = true;
       this.measurePending();
@@ -2533,9 +2534,11 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     const idx = this.mounted.indexOf(e);
     const prev = idx > 0 ? this.mounted[idx - 1].item : null;
     this.measuring = true; // suppress onElHeight compensation/balance for the synchronous re-render (mirrors reconcilePending)
+    // Install the animation gate before rendering status:'sent'. Otherwise the update can briefly expose the static
+    // check at opacity 1 and then restart it from opacity 0 when cb-confirmed is added — a visible check→check flash.
+    e.el.classList.add('cb-confirmed');
     e.item = fresh;
     e.vs.update(fresh, prev); // re-render: status:'sent' renders the check + drops msg-sending (un-dims the bubble)
-    e.el.classList.add('cb-confirmed'); // gates the spinner→check→fade choreography (_row-base.scss :host(.cb-confirmed))
     const h = e.el.offsetHeight; // status morph is icon/opacity-only → height is stable, but stay honest
     if (h !== e.height) {
       e.height = h;

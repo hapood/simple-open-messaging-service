@@ -308,11 +308,13 @@ class NativeComposerController(
         includeFontPadding = false
     }
     private val recordingHint = TextView(activity).apply {
-        text = activity.getString(R.string.composer_record_slide_cancel)
+        text = activity.getString(R.string.composer_record_release_cancel)
         textSize = 13f
         setTextColor(hintColor)
         includeFontPadding = false
         setSingleLine(true)
+        ellipsize = android.text.TextUtils.TruncateAt.END
+        visibility = View.GONE
     }
     private val recordingStatus = LinearLayout(activity).apply {
         orientation = LinearLayout.HORIZONTAL
@@ -331,9 +333,36 @@ class NativeComposerController(
             ViewGroup.LayoutParams.WRAP_CONTENT,
         ).apply { leftMargin = dp(8) })
         addView(recordingHint, LinearLayout.LayoutParams(
+            0,
             ViewGroup.LayoutParams.WRAP_CONTENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
+            1f,
         ).apply { leftMargin = dp(8) })
+    }
+    private val recordCancelIcon = ImageView(activity).apply {
+        setImageResource(R.drawable.ic_composer_delete)
+        setColorFilter(RECORDING)
+    }
+    private val recordCancelLabel = TextView(activity).apply {
+        text = activity.getString(R.string.composer_record_cancel)
+        textSize = 12f
+        setTextColor(RECORDING)
+        includeFontPadding = false
+        gravity = Gravity.CENTER
+        setSingleLine(true)
+    }
+    private val recordCancelTarget = LinearLayout(activity).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER
+        visibility = View.GONE
+        setPadding(dp(2), dp(5), dp(2), dp(5))
+        background = rounded(surface, 18)
+        elevation = dp(6).toFloat()
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        addView(recordCancelIcon, LinearLayout.LayoutParams(dp(26), dp(26)))
+        addView(recordCancelLabel, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            dp(16),
+        ))
     }
     private val attachmentIcons = mutableListOf<ImageView>()
     private val attachmentLabels = mutableListOf<TextView>()
@@ -447,7 +476,6 @@ class NativeComposerController(
     private var deferredInsetsCommit: Runnable? = null
     private val actionIds = AtomicLong(System.currentTimeMillis() * 1000)
     private var pendingSend: Long? = null
-    private var voiceDownY = 0f
     private var voiceCancelArmed = false
 
     init {
@@ -571,6 +599,12 @@ class NativeComposerController(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                 ).apply { leftMargin = dp(48) },
             )
+            addView(
+                recordCancelTarget,
+                FrameLayout.LayoutParams(dp(48), dp(62), Gravity.END or Gravity.BOTTOM).apply {
+                    bottomMargin = dp(60)
+                },
+            )
         }
         root.addView(
             rowHost,
@@ -644,18 +678,13 @@ class NativeComposerController(
         }
         action.setOnTouchListener { _, event ->
             if (event.actionMasked == android.view.MotionEvent.ACTION_DOWN) {
-                voiceDownY = event.rawY
                 voiceCancelArmed = false
                 false
             } else if (
                 event.actionMasked == android.view.MotionEvent.ACTION_MOVE &&
                 activity.nativeVoiceRecording()
             ) {
-                val next = VoiceRecordingGesture.nextCancelState(
-                    voiceCancelArmed,
-                    voiceDownY - event.rawY,
-                    density,
-                )
+                val next = isInsideVoiceCancelTarget(event)
                 if (next && !voiceCancelArmed) {
                     action.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                 }
@@ -792,6 +821,7 @@ class NativeComposerController(
         recordingClock.base = android.os.SystemClock.elapsedRealtime()
         updateVoiceCancelState(false)
         recordingStatus.visibility = View.VISIBLE
+        recordCancelTarget.visibility = View.VISIBLE
         recordingClock.start()
         keyboard.visibility = View.INVISIBLE
         action.background = rounded(RECORDING, 24)
@@ -802,6 +832,7 @@ class NativeComposerController(
     fun onVoiceRecordingFinished() {
         recordingClock.stop()
         recordingStatus.visibility = View.GONE
+        recordCancelTarget.visibility = View.GONE
         keyboard.visibility = View.VISIBLE
         action.background = rounded(PRIMARY, 24)
         action.alpha = 1f
@@ -813,19 +844,30 @@ class NativeComposerController(
         recordingClock.stop()
     }
 
-    /** Keep the native recording chip in parity with Web: neutral "slide up" guidance while recording,
-     *  then an explicit red "release to cancel" confirmation once the gesture crosses the threshold. */
+    /** Keep the fixed cancel target locale-independent; the flexible status area owns the longer instruction. */
     private fun updateVoiceCancelState(cancel: Boolean) {
         recordingClock.setTextColor(onSurface)
-        recordingHint.text = activity.getString(
-            if (cancel) R.string.composer_record_release_cancel
-            else R.string.composer_record_slide_cancel,
-        )
-        recordingHint.setTextColor(if (cancel) RECORDING else hintColor)
+        recordingHint.visibility = if (cancel) View.VISIBLE else View.GONE
+        recordingHint.setTextColor(RECORDING)
+        recordCancelTarget.background = rounded(if (cancel) RECORDING else surface, 18)
+        recordCancelIcon.setColorFilter(if (cancel) Color.WHITE else RECORDING)
+        recordCancelLabel.setTextColor(if (cancel) Color.WHITE else RECORDING)
         action.background = rounded(if (cancel) secondary else RECORDING, 24)
         recordingStatus.contentDescription = activity.getString(
             if (cancel) R.string.composer_recording_cancel else R.string.composer_recording,
         )
+    }
+
+    /** The visible target matches the send key; a small invisible tolerance preserves comfortable thumb input. */
+    private fun isInsideVoiceCancelTarget(event: MotionEvent): Boolean {
+        if (recordCancelTarget.visibility != View.VISIBLE) return false
+        val location = IntArray(2)
+        recordCancelTarget.getLocationOnScreen(location)
+        val tolerance = dp(14)
+        return event.rawX >= location[0] - tolerance &&
+            event.rawX <= location[0] + recordCancelTarget.width + tolerance &&
+            event.rawY >= location[1] - tolerance &&
+            event.rawY <= location[1] + recordCancelTarget.height + tolerance
     }
 
     fun restoreAfterExternalPicker() {
@@ -846,6 +888,7 @@ class NativeComposerController(
             }
             KeyboardSurface.CLOSED -> Unit
         }
+        updateKeyboardButtonState()
     }
 
     fun hide(requestContextId: Long) {
@@ -1042,6 +1085,7 @@ class NativeComposerController(
         emojiGrid.visibility = View.VISIBLE
         keyboard.setImageResource(R.drawable.ic_composer_keyboard)
         keyboard.contentDescription = activity.getString(R.string.composer_system_keyboard)
+        updateKeyboardButtonState()
         updateBottom()
         root.post(::emitGeometry)
         root.post { requestNativeIme(false) }
@@ -1055,6 +1099,7 @@ class NativeComposerController(
             return
         }
         keyboardSurface = KeyboardSurface.TO_SYSTEM
+        updateKeyboardButtonState()
         input.requestFocus()
         requestNativeIme(true)
         input.postDelayed({
@@ -1075,6 +1120,7 @@ class NativeComposerController(
         emojiGrid.visibility = View.GONE
         keyboard.setImageResource(R.drawable.ic_composer_emoji)
         keyboard.contentDescription = activity.getString(R.string.composer_emoji)
+        updateKeyboardButtonState()
         input.clearFocus()
         requestNativeIme(false)
         updateBottom()
@@ -1086,6 +1132,7 @@ class NativeComposerController(
         emojiGrid.visibility = View.GONE
         keyboard.setImageResource(R.drawable.ic_composer_emoji)
         keyboard.contentDescription = activity.getString(R.string.composer_emoji)
+        updateKeyboardButtonState()
         updateBottom()
         root.post(::emitGeometry)
     }
@@ -1303,6 +1350,7 @@ class NativeComposerController(
         mentionPopup.dismiss()
         if (keyboardSurface == KeyboardSurface.EMOJI) dismissKeyboard()
         updateAttachmentButtonState()
+        updateKeyboardButtonState()
         updateAttachmentDrawerAxis()
         attachmentDrawer.animate().cancel()
         attachmentDrawer.visibility = View.VISIBLE
@@ -1492,6 +1540,7 @@ class NativeComposerController(
             12,
         )
         updateAttachmentButtonState()
+        updateKeyboardButtonState()
         attachmentIcons.forEach { it.setColorFilter(PRIMARY) }
         attachmentLabels.forEach { it.setTextColor(onSurface) }
         keyboard.setColorFilter(secondary)
@@ -1599,6 +1648,25 @@ class NativeComposerController(
             attach.background = surfaceRipple(18)
             attach.setColorFilter(secondary)
             attach.applySoftShadow(18, 2.5f)
+        }
+    }
+
+    private fun updateKeyboardButtonState() {
+        val active = keyboardSurface == KeyboardSurface.EMOJI ||
+            keyboardSurface == KeyboardSurface.TO_SYSTEM
+        if (active) {
+            val tonal = if (darkTheme) Color.rgb(42, 62, 88) else Color.rgb(222, 234, 251)
+            keyboard.background = RippleDrawable(
+                ColorStateList.valueOf(if (darkTheme) 0x33FFFFFF else 0x16000000),
+                rounded(tonal, 22),
+                rounded(Color.WHITE, 22),
+            )
+            keyboard.setColorFilter(PRIMARY)
+            keyboard.elevation = 0f
+        } else {
+            keyboard.background = transparentRipple(22)
+            keyboard.setColorFilter(secondary)
+            keyboard.elevation = dp(5).toFloat()
         }
     }
 

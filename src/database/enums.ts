@@ -83,6 +83,7 @@ export const FileSyncKind = {
   IMAGE: 'IMAGE',
   VIDEO: 'VIDEO',
   AUDIO: 'AUDIO',
+  LINK_CARD: 'LINK_CARD',
   BUNDLE: 'BUNDLE',
 } as const;
 export type FileSyncKind = (typeof FileSyncKind)[keyof typeof FileSyncKind];

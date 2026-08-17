@@ -51,7 +51,12 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
         >
       }
       <div class="actions">
-        <button type="button" mat-stroked-button (click)="cancel()">
+        <button
+          type="button"
+          mat-stroked-button
+          class="app-secondary-action"
+          (click)="cancel()"
+        >
           {{ cancelKey() | transloco }}
         </button>
         <button

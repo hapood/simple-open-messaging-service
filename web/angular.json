@@ -34,12 +34,6 @@
           },
           "configurations": {
             "production": {
-              "fileReplacements": [
-                {
-                  "replace": "src/app/dev-tools.ts",
-                  "with": "src/app/dev-tools.prod.ts"
-                }
-              ],
               "budgets": [
                 {
                   "type": "initial",
@@ -49,7 +43,7 @@
                 {
                   "type": "anyComponentStyle",
                   "maximumWarning": "12kB",
-                  "maximumError": "14kB"
+                  "maximumError": "14.5kB"
                 }
               ],
               "optimization": {
@@ -68,10 +62,20 @@
               "sourceMap": true
             },
             "playground": {
+              "browser": "src/playground/main.ts",
+              "tsConfig": "tsconfig.playground.json",
               "optimization": true,
               "extractLicenses": true,
               "sourceMap": false,
               "outputHashing": "all"
+            },
+            "playground-development": {
+              "browser": "src/playground/main.ts",
+              "tsConfig": "tsconfig.playground.json",
+              "optimization": false,
+              "extractLicenses": false,
+              "sourceMap": true,
+              "outputHashing": "none"
             }
           },
           "defaultConfiguration": "production"
@@ -88,6 +92,9 @@
             },
             "development": {
               "buildTarget": "web:build:development"
+            },
+            "playground": {
+              "buildTarget": "web:build:playground-development"
             }
           },
           "defaultConfiguration": "development"

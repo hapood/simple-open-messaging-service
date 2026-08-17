@@ -1,4 +1,11 @@
-import { afterNextRender, Component, computed, DestroyRef, inject, signal } from '@angular/core';
+import {
+  afterNextRender,
+  Component,
+  computed,
+  DestroyRef,
+  inject,
+  signal,
+} from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
@@ -34,7 +41,9 @@ interface DownloadProgress {
           <h2>SOMS</h2>
           <p>{{ 'settings.aboutTagline' | transloco }}</p>
         </div>
-        <span class="version-chip" (click)="debug.bumpGesture()">v{{ appVersion }}</span>
+        <span class="version-chip" (click)="debug.bumpGesture()"
+          >v{{ appVersion }}</span
+        >
       </header>
 
       @if (showBackend) {
@@ -43,32 +52,63 @@ interface DownloadProgress {
           aria-live="polite"
           [class.is-downloading]="downloading()"
           [class.is-error]="!!updateError()"
-          [class.is-current]="probed() && !webUpdateAvailable() && !incompatible() && !updateError()"
+          [class.is-current]="
+            probed() &&
+            !webUpdateAvailable() &&
+            !incompatible() &&
+            !updateError()
+          "
         >
           <div class="update-heading">
             <div class="status-orb" aria-hidden="true">
-              @if (downloading()) { <span class="download-arrow">↓</span> }
-              @else if (updateError() || incompatible()) { <span>!</span> }
-              @else if (webUpdateAvailable()) { <span class="download-arrow">↓</span> }
-              @else if (probed()) { <span>✓</span> }
-              @else { <span class="probe-dot"></span> }
+              @if (downloading()) {
+                <span class="download-arrow">↓</span>
+              } @else if (updateError() || incompatible()) {
+                <span>!</span>
+              } @else if (webUpdateAvailable()) {
+                <span class="download-arrow">↓</span>
+              } @else if (probed()) {
+                <span>✓</span>
+              } @else {
+                <span class="probe-dot"></span>
+              }
             </div>
             <div class="update-copy">
               <h3>
-                @if (downloading()) { {{ 'settings.updateDownloading' | transloco }} }
-                @else if (updateError()) { {{ 'settings.updateFailedTitle' | transloco }} }
-                @else if (incompatible()) { {{ 'settings.updateRequired' | transloco }} }
-                @else if (webUpdateAvailable()) { {{ 'settings.updateReady' | transloco }} }
-                @else if (probed()) { {{ 'settings.upToDate' | transloco }} }
-                @else { {{ 'settings.updateChecking' | transloco }} }
+                @if (downloading()) {
+                  {{ 'settings.updateDownloading' | transloco }}
+                } @else if (updateError()) {
+                  {{ 'settings.updateFailedTitle' | transloco }}
+                } @else if (incompatible()) {
+                  {{ 'settings.updateRequired' | transloco }}
+                } @else if (webUpdateAvailable()) {
+                  {{ 'settings.updateReady' | transloco }}
+                } @else if (probed()) {
+                  {{ 'settings.upToDate' | transloco }}
+                } @else {
+                  {{ 'settings.updateChecking' | transloco }}
+                }
               </h3>
               <p>
-                @if (downloading()) { {{ 'settings.updateDownloadingHint' | transloco }} }
-                @else if (updateError()) { {{ updateError() }} }
-                @else if (incompatible()) { {{ 'settings.appIncompatible' | transloco: { version: serverVersion() } }} }
-                @else if (webUpdateAvailable()) { {{ 'settings.updateAvailable' | transloco: { version: serverWebVersion() } }} }
-                @else if (probed()) { {{ 'settings.upToDateHint' | transloco }} }
-                @else { {{ 'settings.updateCheckingHint' | transloco }} }
+                @if (downloading()) {
+                  {{ 'settings.updateDownloadingHint' | transloco }}
+                } @else if (updateError()) {
+                  {{ updateError() }}
+                } @else if (incompatible()) {
+                  {{
+                    'settings.appIncompatible'
+                      | transloco: { version: serverVersion() }
+                  }}
+                } @else if (webUpdateAvailable()) {
+                  {{
+                    'settings.updateAvailable'
+                      | transloco: { version: serverWebVersion() }
+                  }}
+                } @else if (probed()) {
+                  {{ 'settings.upToDateHint' | transloco }}
+                } @else {
+                  {{ 'settings.updateCheckingHint' | transloco }}
+                }
               </p>
             </div>
             @if (downloading()) {
@@ -86,14 +126,26 @@ interface DownloadProgress {
               [attr.aria-valuenow]="downloadTotal() ? downloadPercent() : null"
               [class.indeterminate]="!downloadTotal()"
             >
-              <span [style.width.%]="downloadTotal() ? downloadPercent() : 34"></span>
+              <span
+                [style.width.%]="downloadTotal() ? downloadPercent() : 34"
+              ></span>
             </div>
           } @else if (updateError()) {
-            <button mat-flat-button type="button" (click)="update()">
+            <button
+              mat-flat-button
+              color="primary"
+              type="button"
+              (click)="update()"
+            >
               {{ 'settings.retry' | transloco }}
             </button>
           } @else if (webUpdateAvailable()) {
-            <button mat-flat-button color="primary" type="button" (click)="update()">
+            <button
+              mat-flat-button
+              color="primary"
+              type="button"
+              (click)="update()"
+            >
               {{ 'settings.updateBtn' | transloco }}
             </button>
           }
@@ -104,12 +156,26 @@ interface DownloadProgress {
         <h3>{{ 'settings.versionDetails' | transloco }}</h3>
         <dl>
           @if (showBackend) {
-            <div><dt>{{ 'settings.appVersion' | transloco }}</dt><dd>{{ shellVersion() || '—' }}</dd></div>
+            <div>
+              <dt>{{ 'settings.appVersion' | transloco }}</dt>
+              <dd>{{ shellVersion() || '—' }}</dd>
+            </div>
           }
-          <div><dt>{{ 'settings.webVersion' | transloco }}</dt><dd>{{ appVersion }}</dd></div>
+          <div>
+            <dt>{{ 'settings.webVersion' | transloco }}</dt>
+            <dd>{{ appVersion }}</dd>
+          </div>
           @if (showBackend) {
-            <div><dt>{{ 'settings.serverVersion' | transloco }}</dt><dd>{{ serverVersion() || '—' }}</dd></div>
-            <div><dt>{{ 'settings.backend' | transloco }}</dt><dd class="backend-value">{{ backendLabel() || ('settings.notConnected' | transloco) }}</dd></div>
+            <div>
+              <dt>{{ 'settings.serverVersion' | transloco }}</dt>
+              <dd>{{ serverVersion() || '—' }}</dd>
+            </div>
+            <div>
+              <dt>{{ 'settings.backend' | transloco }}</dt>
+              <dd class="backend-value">
+                {{ backendLabel() || ('settings.notConnected' | transloco) }}
+              </dd>
+            </div>
           }
         </dl>
       </section>
@@ -138,11 +204,15 @@ export class SettingsAboutComponent {
 
   readonly shellVersion = computed(() => this.status()?.shellVersion ?? '');
   readonly serverVersion = computed(() => this.status()?.serverVersion ?? '');
-  readonly serverWebVersion = computed(() => this.status()?.serverWebVersion ?? '');
+  readonly serverWebVersion = computed(
+    () => this.status()?.serverWebVersion ?? '',
+  );
   /** True once at least one probe has completed (so "up to date" only shows after we actually checked). */
   readonly probed = computed(() => this.status() !== null);
   readonly incompatible = computed(() => this.status()?.incompatible ?? false);
-  readonly webUpdateAvailable = computed(() => this.status()?.webUpdateAvailable ?? false);
+  readonly webUpdateAvailable = computed(
+    () => this.status()?.webUpdateAvailable ?? false,
+  );
   readonly backendLabel = computed(() => {
     return this.shellUpdate.probedOrigin() || null;
   });
@@ -169,11 +239,14 @@ export class SettingsAboutComponent {
   /** Subscribe to `web-download-progress` once; the handler ignores events outside a download. */
   private registerProgressListener(): void {
     void (async () => {
-      const unlisten = await listenEvent<DownloadProgress>('web-download-progress', (e) => {
-        if (!this.downloading()) return;
-        this.downloadReceived.set(e.payload.received);
-        this.downloadTotal.set(e.payload.total);
-      });
+      const unlisten = await listenEvent<DownloadProgress>(
+        'web-download-progress',
+        (e) => {
+          if (!this.downloading()) return;
+          this.downloadReceived.set(e.payload.received);
+          this.downloadTotal.set(e.payload.total);
+        },
+      );
       if (unlisten) this.destroyRef.onDestroy(unlisten);
     })();
   }

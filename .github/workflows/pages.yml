@@ -35,10 +35,7 @@ jobs:
         run: npm ci --prefix web
 
       - name: Build static playground
-        run: npm run build --prefix web -- --configuration playground --base-href /simple-open-chat-service/
-
-      - name: Add GitHub Pages SPA fallback
-        run: cp web/dist/web/browser/index.html web/dist/web/browser/404.html
+        run: npm run build:playground --prefix web -- --base-href /simple-open-chat-service/
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

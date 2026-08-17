@@ -1,5 +1,5 @@
 <div class="ap" [class.ap--failed]="failed()">
-  <button type="button" class="ap-btn" (click)="toggle()"
+  <button type="button" class="ap-btn" [class.ap-btn--playing]="playing()" (click)="toggle()"
           [attr.aria-label]="playing() ? 'Pause' : 'Play'" [disabled]="inert()">
     @if (playing()) {
       <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -9,11 +9,6 @@
     } @else {
       <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
         <path d="M8 5v14l11-7z" />
-      </svg>
-    }
-    @if (pending()) {
-      <svg class="ap-pending-ring" viewBox="0 0 32 32" aria-hidden="true">
-        <circle cx="16" cy="16" r="14"></circle>
       </svg>
     }
   </button>

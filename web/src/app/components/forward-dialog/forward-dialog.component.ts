@@ -37,6 +37,7 @@ import {
   type LinkCardContent,
 } from '../../services/link-card-generation.service';
 import type { ChatMsgData } from '../message-cards/chat-item';
+import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter';
 
 export type ForwardMode = 'DIRECT' | 'HISTORY';
 export type ForwardDialogPurpose = 'FORWARD' | 'NATIVE_SHARE';
@@ -81,6 +82,7 @@ export class ForwardDialogComponent {
   readonly selectedThreadIds = signal<ReadonlySet<number>>(new Set());
   readonly recentThreadIds = signal<readonly number[]>([]);
   private readonly conversations = inject(ConversationListService);
+  private readonly threadAdapter = inject(MESSAGE_THREAD_ADAPTER);
   private readonly route = inject(RouteService);
   private readonly user = inject(UserService);
   private readonly linkCards = inject(LinkCardService);
@@ -121,7 +123,7 @@ export class ForwardDialogComponent {
 
   readonly filteredConversations = computed(() => {
     const query = this.searchText().trim().toLocaleLowerCase();
-    const items = this.conversations.items();
+    const items = this.availableConversations();
     if (!query) return items;
     return items.filter((item) =>
       displayThreadName(item).toLocaleLowerCase().includes(query),
@@ -129,7 +131,7 @@ export class ForwardDialogComponent {
   });
   readonly recentConversations = computed(() => {
     const byId = new Map(
-      this.conversations.items().map((item) => [item.threadId, item]),
+      this.availableConversations().map((item) => [item.threadId, item]),
     );
     return this.recentThreadIds()
       .map((id) => byId.get(id))
@@ -140,9 +142,9 @@ export class ForwardDialogComponent {
   readonly selectedCount = computed(() => this.selectedThreadIds().size);
   readonly selectedConversations = computed(() => {
     const selected = this.selectedThreadIds();
-    return this.conversations
-      .items()
-      .filter((item) => selected.has(item.threadId));
+    return this.availableConversations().filter((item) =>
+      selected.has(item.threadId),
+    );
   });
   readonly displayName = displayThreadName;
   readonly avatarType = conversationAvatarType;
@@ -152,6 +154,10 @@ export class ForwardDialogComponent {
     const original = this.messages()[0]?.original;
     return original ? { ...original, isSelf: true, quote: undefined } : null;
   });
+
+  private readonly availableConversations = computed(
+    () => this.threadAdapter.forwardTargets() ?? this.conversations.items(),
+  );
 
   constructor() {
     this.recentThreadIds.set(this.readRecentThreadIds());

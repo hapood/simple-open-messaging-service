@@ -36,6 +36,9 @@ $app-gray-900: #111827;
   --app-brand-accent: #f04b3a;
   --app-on-brand: #ffffff;
   --app-on-brand-soft: #25282c;
+  --app-action-primary: #3568b8;
+  --app-action-primary-hover: #2e5ca5;
+  --app-on-action-primary: #ffffff;
   --app-focus-ring: #5c6268;
   // Generated SELF avatars are identity chrome, not controls. Keep their
   // contrast stable when the interactive brand flips light in dark mode.
@@ -80,6 +83,10 @@ $app-gray-900: #111827;
     var(--app-brand) 24%,
     transparent
   );
+  // Composer send is a functional action color, intentionally independent from the identity/logo palette.
+  --im-composer-send-bg: var(--app-action-primary);
+  --im-composer-send-hover: var(--app-action-primary-hover);
+  --im-composer-send-text: var(--app-on-action-primary);
 
   // Borders & interaction-state fills (replaces #cccccc/#dddddd/#e5e7eb/#e5e6eb/#e3e5e8/#d1d5db/#c9ced6)
   --app-border: #dedfdf;
@@ -365,6 +372,9 @@ $app-gray-900: #111827;
     var(--app-brand) 14%,
     transparent
   );
+  --im-composer-send-bg: var(--app-action-primary);
+  --im-composer-send-hover: var(--app-action-primary-hover);
+  --im-composer-send-text: var(--app-on-action-primary);
 
   // Dark elevation. Lift the floating-panel fill with an 8% primary tint (M3 dark tonal elevation — the
   // same convention as --im-sticky-date-bg) so the surface reads as a layer above the deep --app-bg, and
@@ -387,6 +397,9 @@ $app-gray-900: #111827;
   --app-brand-pressed: #c9cdd0;
   --app-on-brand: #17191b;
   --app-on-brand-soft: #e4e6e8;
+  --app-action-primary: #4f7fcb;
+  --app-action-primary-hover: #5b8bd6;
+  --app-on-action-primary: #ffffff;
   --app-focus-ring: #aeb3b7;
   --app-link: #d4d7d9;
   --app-link-visited: var(--app-link);
