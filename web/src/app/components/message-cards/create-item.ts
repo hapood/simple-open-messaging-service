@@ -23,6 +23,10 @@ import { SystemRowComponent } from './system-row/system-row.component';
 import { MessagePressGesture } from './message-press-gesture';
 import { parseForwardCard } from './forward-row/forward-card';
 import { writeStickyAvatarIdentity } from '../../lib/sticky-avatar';
+import {
+  UserAvatarComponent,
+  UserAvatarType,
+} from '../user-avatar/user-avatar.component';
 
 /**
  * Common shape of the message-row components: they all bind the same 4 signal inputs. Used to type
@@ -35,6 +39,11 @@ interface RowComponent {
   isGroupStart: InputSignal<boolean>;
   showDate: InputSignal<boolean>;
 }
+
+const DATE_SEPARATOR_HEIGHT_PX = 47;
+const MESSAGE_ITEM_TOP_GAP_PX = 6;
+const MESSAGE_GROUP_TOP_GAP_PX = 14;
+const UNREAD_DIVIDER_HEIGHT_PX = 38;
 
 /**
  * Compute a message row's grouping + date-separator inputs from its older neighbor `prev` — the shared logic behind
@@ -211,6 +220,31 @@ export function createMsgCbElement(
     isShowHead ? 'single' : 'tail',
   );
 
+  // Every message keeps a pre-mounted tail avatar. The sticky controller reveals only the tail of the
+  // active sender group at the exact fixed-avatar handoff; keeping the image component alive makes the
+  // reverse (above→viewport) handoff synchronous as well.
+  const tailAvatarRef = createComponent(UserAvatarComponent, {
+    environmentInjector: envInjector,
+  });
+  appRef.attachView(tailAvatarRef.hostView);
+  const tailAvatar = document.createElement('div');
+  tailAvatar.className = 'msg-avatar msg-avatar-tail';
+  tailAvatar.appendChild(tailAvatarRef.location.nativeElement);
+  (ref.location.nativeElement as HTMLElement)
+    .querySelector<HTMLElement>('.msg-row')
+    ?.appendChild(tailAvatar);
+  const updateTailAvatar = (message: ChatMsgData): void => {
+    tailAvatarRef.setInput(
+      'type',
+      message.isSelf ? UserAvatarType.SELF : UserAvatarType.OTHER,
+    );
+    tailAvatarRef.setInput('name', message.name);
+    tailAvatarRef.setInput('identityId', message.avatarIdentityId);
+    tailAvatarRef.setInput('src', message.avatar);
+    tailAvatarRef.changeDetectorRef.detectChanges();
+  };
+  updateTailAvatar(data);
+
   // In-place re-render (CbElement.update): recompute grouping + date from the (possibly new) prev and re-apply all four
   // signal inputs on the SAME component instance + DOM node, then drive change detection synchronously so the kernel's
   // immediate offsetHeight read reflects the new content. Used by reconcilePending to morph a pending send's status
@@ -237,7 +271,28 @@ export function createMsgCbElement(
         src: message.avatar,
         identityId: message.avatarIdentityId,
       });
+      const naturalAvatar = host.querySelector<HTMLElement>(
+        '.msg-has-avatar > .msg-avatar:not(.msg-avatar-tail)',
+      );
+      host.dataset['messageHasNaturalAvatar'] = naturalAvatar
+        ? 'true'
+        : 'false';
+      if (!naturalAvatar) {
+        delete host.dataset['messageNaturalAvatarOffset'];
+      }
     }
+  };
+  const applyAvatarOffset = (
+    host: HTMLElement,
+    nextShowDate: boolean,
+    nextIsGroupStart: boolean,
+  ): void => {
+    if (host.dataset['messageHasNaturalAvatar'] !== 'true') return;
+    host.dataset['messageNaturalAvatarOffset'] = String(
+      (unreadDividerLabel ? UNREAD_DIVIDER_HEIGHT_PX : 0) +
+        (nextShowDate ? DATE_SEPARATOR_HEIGHT_PX : 0) +
+        (nextIsGroupStart ? MESSAGE_GROUP_TOP_GAP_PX : MESSAGE_ITEM_TOP_GAP_PX),
+    );
   };
   const update = (
     nextItem: CbItem<ChatItemData>,
@@ -252,10 +307,14 @@ export function createMsgCbElement(
       ref.setInput('clientMessageId', nextItem.clientMessageId ?? '');
     }
     ref.changeDetectorRef.detectChanges();
+    updateTailAvatar(nextItem.data as ChatMsgData);
     applyGroupPosition(ref.location.nativeElement, flags.groupPosition);
     interactionItem = nextItem;
     interactionIsShowHead = flags.isShowHead;
-    if (selectionHost) applySelectionMetadata(selectionHost, nextItem);
+    if (selectionHost) {
+      applySelectionMetadata(selectionHost, nextItem);
+      applyAvatarOffset(selectionHost, flags.showDate, flags.isGroupStart);
+    }
   };
 
   const updateNext = (nextItem: CbItem<ChatItemData> | null): void => {
@@ -280,11 +339,14 @@ export function createMsgCbElement(
     wrapper.append(divider, ref.location.nativeElement);
     measuredHost = wrapper;
   }
-  const el = wrapEl(ref, update, updateNext, measuredHost, () =>
-    appRef.detachView(ref.hostView),
-  );
+  const el = wrapEl(ref, update, updateNext, measuredHost, () => {
+    appRef.detachView(tailAvatarRef.hostView);
+    tailAvatarRef.destroy();
+    appRef.detachView(ref.hostView);
+  });
   selectionHost = el.el;
   applySelectionMetadata(el.el, item);
+  applyAvatarOffset(el.el, showDate, isGroupStart);
   if (data.contentType === 'FORWARD' && onOpenForward) {
     const openForward = (event: MouseEvent): void => {
       if (

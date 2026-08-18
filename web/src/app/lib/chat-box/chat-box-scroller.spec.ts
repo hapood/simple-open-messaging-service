@@ -668,6 +668,33 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(entered).toEqual([0, 1, 2]);
   });
 
+  it('exposes mounted viewport geometry from cached heights including short-list bottom alignment', async () => {
+    const controlled = controllableHooks(100);
+    scroller = new ChatBoxScroller<number>({
+      viewport,
+      content,
+      hooks: controlled.hooks,
+      source: fakeSource(3),
+    });
+    await scroller.init();
+
+    const rows: Array<{ id: number; top: number; bottom: number }> = [];
+    const viewportGeometry = scroller.visitMountedGeometry((row) => {
+      rows.push({ id: row.item.id, top: row.top, bottom: row.bottom });
+    });
+    expect(viewportGeometry.contentAlignmentOffset).toBe(300);
+    expect(rows).toEqual([
+      { id: 0, top: 300, bottom: 400 },
+      { id: 1, top: 400, bottom: 500 },
+      { id: 2, top: 500, bottom: 600 },
+    ]);
+
+    controlled.setHeight(0, 120);
+    expect(scroller.getMountedGeometry(1)).toEqual(
+      jasmine.objectContaining({ top: 400, bottom: 500, height: 100 }),
+    );
+  });
+
   it('init does not mount rows when destroyed during the fetch (no orphan injection into reused content)', async () => {
     // Regression: init()'s normal path (startMsgId === null) awaits source.init() and once OMITTED the post-await
     // `destroyed` check that openAround already had. A coordinator teardown/re-init overtaking the fetch would

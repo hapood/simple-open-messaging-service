@@ -11,6 +11,30 @@
   visibility: hidden;
 }
 
+// createMsgCbElement appends the pre-mounted tail handoff after Angular has created the row view. Because
+// that DOM node does not carry the row component's generated `_ngcontent-*` attribute, this contract must
+// be global (like the source marker above), not inside the encapsulated `_row-base.scss` partial.
+.msg-row > .msg-avatar.msg-avatar-tail {
+  position: absolute;
+  box-sizing: border-box;
+  bottom: 0;
+  left: var(--chat-timeline-inset-inline);
+  display: block;
+  width: 40px;
+  height: 40px;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.msg-row.msg-self > .msg-avatar.msg-avatar-tail {
+  right: var(--chat-timeline-inset-inline);
+  left: auto;
+}
+
+.msg-row > .msg-avatar.msg-avatar-tail.cb-sticky-avatar-tail-visible {
+  visibility: visible;
+}
+
 // The unread boundary decorates the first real unread message; it is deliberately not a virtual source
 // item, so message cursors, sender grouping, albums, and previous-message avatar decisions stay untouched.
 .cb-unread-entry {

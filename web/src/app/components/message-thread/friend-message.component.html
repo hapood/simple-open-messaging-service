@@ -100,7 +100,6 @@
       tabindex="0"
       role="region"
       [attr.aria-label]="'chat.messageListAria' | transloco"
-      (scroll)="scheduleStickyOverlays()"
       (transitionend)="onViewportTransitionEnd($event)"
     >
       @if (blockedPeer()) {

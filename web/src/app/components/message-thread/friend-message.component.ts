@@ -22,7 +22,10 @@ import {
   type CbItem,
   type CbScrollInfo,
 } from '../../lib/chat-box/chat-box-scroller';
-import { isViewportTransformEnd } from '../../lib/sticky-date';
+import {
+  isViewportTransformEnd,
+  UNREAD_DIVIDER_HEIGHT_PX,
+} from '../../lib/sticky-date';
 import {
   MESSAGE_THREAD_ADAPTER,
   type MessageThreadSource,
@@ -236,8 +239,7 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly callPresentation = inject(CallPresentationService);
   readonly showCallBanner = computed(
     () =>
-      this.callLayout.mode() === 'compact' &&
-      this.callPresentation.minimized(),
+      this.callLayout.mode() === 'compact' && this.callPresentation.minimized(),
   );
   readonly assetUrl = assetUrl;
   readonly UserAvatarType = UserAvatarType;
@@ -263,7 +265,6 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly contentRef =
     viewChild<ElementRef<HTMLDivElement>>('content');
   private readonly stickyOverlays = viewChild(ChatboxStickyOverlaysComponent);
-  private stickyOverlayFrame = 0;
   private readonly transferStackRef =
     viewChild<ElementRef<HTMLDivElement>>('transferStack');
   /** The chat header element — its bottom edge is the STABLE visible-top reference for the sticky-date
@@ -1102,6 +1103,7 @@ export class MessageThreadComponent implements OnDestroy {
             : absorbAlbumTail(target, incoming),
       },
       onScroll: (info) => this.onScroll(info),
+      onViewportPaint: () => this.updateStickyOverlays(),
       onFullyVisibleEnter: (entries) => {
         for (const entry of entries) {
           this.pulseVisibleMention(entry.item, entry.el);
@@ -1772,20 +1774,13 @@ export class MessageThreadComponent implements OnDestroy {
 
   private updateUnreadBoundaryPosition(info: CbScrollInfo): void {
     const target = this.firstUnreadSeq;
-    const viewport = this.viewportRef()?.nativeElement;
-    if (target === null || !viewport) {
+    if (target === null || !this.scroller) {
       this.unreadBoundaryAbove.set(false);
       return;
     }
-    const divider =
-      this.contentRef()?.nativeElement.querySelector<HTMLElement>(
-        '.cb-unread-divider',
-      );
-    if (divider) {
-      this.unreadBoundaryAbove.set(
-        divider.getBoundingClientRect().bottom <
-          viewport.getBoundingClientRect().top + 8,
-      );
+    const geometry = this.scroller.getMountedGeometry(target);
+    if (geometry?.el.classList.contains('cb-unread-entry')) {
+      this.unreadBoundaryAbove.set(geometry.top + UNREAD_DIVIDER_HEIGHT_PX < 8);
       return;
     }
     this.unreadBoundaryAbove.set(
@@ -1815,21 +1810,11 @@ export class MessageThreadComponent implements OnDestroy {
     setTimeout(clear, 1600);
   }
 
-  /** Paint-only viewport tracking runs directly from the native scroll event so the detached avatar overlay
-   *  does not wait for the virtual scroller's balance/emit cycle. Coalesce high-frequency events so geometry
-   *  reads and Angular signal updates happen at most once per paint. */
-  scheduleStickyOverlays(): void {
-    if (this.stickyOverlayFrame !== 0) return;
-    this.stickyOverlayFrame = requestAnimationFrame(() => {
-      this.stickyOverlayFrame = 0;
-      this.updateStickyOverlays();
-    });
-  }
-
   updateStickyOverlays(): void {
     const vp = this.viewportRef()?.nativeElement;
     const ct = this.contentRef()?.nativeElement;
-    if (!vp || !ct) {
+    const scroller = this.scroller;
+    if (!vp || !ct || !scroller) {
       this.stickyOverlays()?.clear();
       return;
     }
@@ -1839,6 +1824,7 @@ export class MessageThreadComponent implements OnDestroy {
         content: ct,
         header: this.headerRef()?.nativeElement,
         container: this.containerRef()?.nativeElement ?? vp,
+        scroller,
       },
       document.documentElement.getAttribute('data-show-self-avatar') === 'true',
     );
@@ -1851,6 +1837,7 @@ export class MessageThreadComponent implements OnDestroy {
   onViewportTransitionEnd(event: TransitionEvent): void {
     if (!isViewportTransformEnd(event, this.viewportRef()?.nativeElement))
       return;
+    this.stickyOverlays()?.invalidateLayout();
     this.updateStickyOverlays();
   }
 
@@ -3362,10 +3349,6 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private teardown(): void {
-    if (this.stickyOverlayFrame !== 0) {
-      cancelAnimationFrame(this.stickyOverlayFrame);
-      this.stickyOverlayFrame = 0;
-    }
     this.cancelPaste();
     this.nativeComposerDraft.set('');
     this.selectionMode.set(false);

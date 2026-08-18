@@ -35,6 +35,20 @@ export interface StickyAvatarIdentity {
   readonly identityId?: number;
 }
 
+export interface StickyAvatarMeasuredRow extends StickyAvatarRow {
+  readonly name: string;
+  readonly src: string;
+  readonly identityId?: number;
+  readonly naturalAvatar?: HTMLElement;
+  readonly tailAvatar?: HTMLElement;
+}
+
+export interface StickyAvatarResolution {
+  readonly view: StickyAvatarView | null;
+  readonly hiddenHead?: HTMLElement;
+  readonly visibleTail?: HTMLElement;
+}
+
 /** Keep the DOM hand-off between a natural avatar and its floating copy lossless. */
 export function writeStickyAvatarIdentity(
   host: HTMLElement,
@@ -47,17 +61,6 @@ export function writeStickyAvatarIdentity(
   } else {
     host.dataset['messageAvatarIdentity'] = String(avatar.identityId);
   }
-}
-
-function readStickyAvatarIdentity(host: HTMLElement): StickyAvatarIdentity {
-  const rawIdentity = host.dataset['messageAvatarIdentity'];
-  const identity = rawIdentity === undefined ? undefined : Number(rawIdentity);
-  return {
-    name: host.dataset['messageAvatarName'] ?? '',
-    src: host.dataset['messageAvatarSrc'] ?? '',
-    identityId:
-      identity !== undefined && Number.isFinite(identity) ? identity : undefined,
-  };
 }
 
 /**
@@ -115,66 +118,51 @@ export function pickStickyAvatarPlacement(
   };
 }
 
-/** Shared DOM adapter used by production and the chatbox playground. */
+/**
+ * Resolve the natural-avatar handoff from kernel-owned row geometry. DOM writes belong to the stateful
+ * overlay controller so an unchanged phase never clears and reapplies visibility classes.
+ */
 export function resolveStickyAvatar(
-  content: HTMLElement,
-  visibleTop: number,
-  containerTop: number,
+  rows: ReadonlyArray<StickyAvatarMeasuredRow>,
+  stickyTop: number,
+  overlayOrigin: number,
   showSelfAvatar: boolean,
-): StickyAvatarView | null {
-  const hosts = Array.from(
-    content.querySelectorAll<HTMLElement>('[data-message-creator]'),
-  );
-  const measured = hosts.map((host) => {
-    const naturalAvatar = host.querySelector<HTMLElement>(
-      '.msg-has-avatar .msg-avatar',
-    );
-    const row = host.querySelector<HTMLElement>('.msg-row') ?? host;
-    const rect = row.getBoundingClientRect();
-    return {
-      creator: host.dataset['messageCreator'] ?? '',
-      side: (host.dataset['messageSide'] === 'self' ? 'self' : 'other') as
-        | 'self'
-      | 'other',
-      top: rect.top,
-      // `rect.height` / `rect.bottom - rect.top` includes cb-enter/cb-leave scale transforms (0.98),
-      // producing a fractional 1–2px tail error. offsetHeight is the integer, transform-invariant row height.
-      bottom: rect.top + row.offsetHeight,
-      hasNaturalAvatar: naturalAvatar !== null,
-      naturalAvatarTop: naturalAvatar?.getBoundingClientRect().top,
-    };
-  });
-  const placement = pickStickyAvatarPlacement(
-    measured,
-    visibleTop + STICKY_AVATAR_TOP_GAP_PX,
-  );
-  content
-    .querySelectorAll<HTMLElement>('.cb-sticky-avatar-source')
-    .forEach((avatar) => avatar.classList.remove('cb-sticky-avatar-source'));
-  if (!placement || (placement.side === 'self' && !showSelfAvatar)) return null;
+): StickyAvatarResolution {
+  const placement = pickStickyAvatarPlacement(rows, stickyTop);
+  if (!placement || (placement.side === 'self' && !showSelfAvatar))
+    return { view: null };
 
-  const host = hosts[placement.rowIndex];
-  if (!host) return null;
+  const row = rows[placement.rowIndex];
+  if (!row) return { view: null };
   // Hide only the natural avatar that handed off to the viewport overlay. Marking message hosts (or the
   // whole sender group) makes the selector reach unrelated natural avatars when rows are wrapped/reused.
   // In particular, A -> B -> A must keep A's lower, ordinary group-head avatar visible while the upper A
   // avatar remains sticky.
-  hosts
+  const naturalHead = rows
     .slice(placement.groupStartIndex, placement.groupEndIndex + 1)
-    .map((candidate) =>
-      candidate.querySelector<HTMLElement>('.msg-has-avatar .msg-avatar'),
-    )
-    .find((avatar): avatar is HTMLElement => avatar !== null)
-    ?.classList.add('cb-sticky-avatar-source');
-  const avatar = readStickyAvatarIdentity(host);
+    .map((candidate) => candidate.naturalAvatar)
+    .find((avatar): avatar is HTMLElement => avatar != null);
+  // Once the real tail reaches the fixed line it takes over at the exact same coordinate. It remains
+  // mounted and decoded while hidden, so this works without a create/destroy or async image gap in either
+  // scroll direction.
+  if (placement.top < stickyTop) {
+    return {
+      view: null,
+      hiddenHead: naturalHead,
+      visibleTail: rows[placement.groupEndIndex]?.tailAvatar,
+    };
+  }
   return {
-    name: avatar.name,
-    src: avatar.src ?? '',
-    identityId: avatar.identityId,
-    side: placement.side,
-    // DOM rectangles may carry sub-pixel viewport coordinates (device scale, compositor transforms). The
-    // natural avatar is laid out on the integer-pixel timeline grid; quantize only the final overlay-local
-    // coordinate so the hand-off cannot rasterize one edge 1–2px above its in-flow counterpart.
-    top: Math.round(placement.top - containerTop),
+    hiddenHead: naturalHead,
+    view: {
+      name: row.name,
+      src: row.src,
+      identityId: row.identityId,
+      side: placement.side,
+      // DOM rectangles may carry sub-pixel viewport coordinates (device scale, compositor transforms). The
+      // natural avatar is laid out on the integer-pixel timeline grid; quantize only the final overlay-local
+      // coordinate so the hand-off cannot rasterize one edge 1–2px above its in-flow counterpart.
+      top: Math.round(placement.top - overlayOrigin),
+    },
   };
 }

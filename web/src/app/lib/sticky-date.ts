@@ -28,6 +28,10 @@ export const STICKY_DATE_COLLISION_TOP_PX = 6;
 export const STICKY_DATE_COLLISION_BOTTOM_PX = 25;
 /** The inline-to-floating handoff happens exactly where the floating pill starts. */
 export const STICKY_DATE_PICK_FUZZ_PX = STICKY_DATE_COLLISION_TOP_PX;
+/** 12px top padding + 18px line box + 8px bottom padding; keep in sync with `.cb-unread-divider`. */
+export const UNREAD_DIVIDER_HEIGHT_PX = 38;
+/** Top padding inside the derived date-row host; keep in sync with `--chat-timeline-gap-separator`. */
+export const DATE_SEPARATOR_TOP_INSET_PX = 14;
 
 /**
  * Whether the unread divider intersects the floating date pill's vertical band.

@@ -1,7 +1,6 @@
 import {
   pickStickyAvatarPlacement,
   resolveStickyAvatar,
-  writeStickyAvatarIdentity,
 } from './sticky-avatar';
 
 describe('pickStickyAvatarPlacement', () => {
@@ -29,10 +28,7 @@ describe('pickStickyAvatarPlacement', () => {
 
   it('keeps a fully visible natural avatar when only its padded row crossed', () => {
     expect(
-      pickStickyAvatarPlacement(
-        [row('a', 8, true, 'other', 54, 14)],
-        12,
-      ),
+      pickStickyAvatarPlacement([row('a', 8, true, 'other', 54, 14)], 12),
     ).toBeNull();
   });
 
@@ -78,72 +74,64 @@ describe('pickStickyAvatarPlacement', () => {
 });
 
 describe('resolveStickyAvatar', () => {
-  function host(
-    creator: string,
-    top: number,
-    avatar = false,
-  ): HTMLElement {
-    const element = document.createElement('div');
-    element.dataset['messageCreator'] = creator;
-    element.dataset['messageSide'] = 'other';
-    element.dataset['messageAvatarName'] = creator;
-    const row = document.createElement('div');
-    row.className = avatar ? 'msg-row msg-has-avatar' : 'msg-row';
-    Object.defineProperty(row, 'offsetHeight', { value: 40 });
-    row.getBoundingClientRect = () =>
-      ({ top, bottom: top + 40 }) as DOMRect;
-    if (avatar) {
-      const image = document.createElement('div');
-      image.className = 'msg-avatar';
-      image.getBoundingClientRect = () =>
-        ({ top, bottom: top + 40 }) as DOMRect;
-      row.appendChild(image);
-    }
-    element.appendChild(row);
-    return element;
+  function measuredRow(creator: string, top: number, avatar = false) {
+    const naturalAvatar = avatar ? document.createElement('div') : undefined;
+    const tailAvatar = document.createElement('div');
+    return {
+      creator,
+      side: 'other' as const,
+      top,
+      bottom: top + 40,
+      hasNaturalAvatar: avatar,
+      naturalAvatarTop: avatar ? top : undefined,
+      naturalAvatar,
+      tailAvatar,
+      name: creator,
+      src: '',
+    };
   }
 
   it('hides only the handed-off natural avatar in an A -> B -> A sequence', () => {
-    const content = document.createElement('div');
-    const upperA = host('a', -30, true);
-    const middleB = host('b', 30, true);
-    const lowerA = host('a', 70, true);
-    content.append(upperA, middleB, lowerA);
+    const upperA = measuredRow('a', -30, true);
+    const middleB = measuredRow('b', 30, true);
+    const lowerA = measuredRow('a', 70, true);
 
-    expect(resolveStickyAvatar(content, 0, 0, true)?.name).toBe('a');
-    expect(
-      upperA.querySelector('.msg-avatar')?.classList,
-    ).toContain('cb-sticky-avatar-source');
-    expect(
-      lowerA.querySelector('.msg-avatar')?.classList,
-    ).not.toContain('cb-sticky-avatar-source');
+    const resolution = resolveStickyAvatar(
+      [upperA, middleB, lowerA],
+      12,
+      0,
+      true,
+    );
+    expect(resolution.view?.name).toBe('a');
+    expect(resolution.hiddenHead).toBe(upperA.naturalAvatar);
+    expect(resolution.hiddenHead).not.toBe(lowerA.naturalAvatar);
   });
 
   it('preserves a missing identity instead of coercing it to zero', () => {
-    const content = document.createElement('div');
-    const row = host('Alice', -30, true);
-    writeStickyAvatarIdentity(row, { name: 'Alice' });
-    content.append(row);
-
-    expect(resolveStickyAvatar(content, 0, 0, true)?.identityId).toBeUndefined();
+    const row = measuredRow('Alice', -30, true);
+    expect(
+      resolveStickyAvatar([row], 12, 0, true).view?.identityId,
+    ).toBeUndefined();
   });
 
   it('keeps the natural avatar at the viewport scroll origin', () => {
-    const content = document.createElement('div');
-    const first = host('Alice', 8, true);
-    content.append(first);
+    const first = measuredRow('Alice', 8, true);
 
-    expect(resolveStickyAvatar(content, 0, 0, true)).toBeNull();
-    expect(first.querySelector('.msg-avatar')?.classList).not.toContain(
-      'cb-sticky-avatar-source',
-    );
+    expect(resolveStickyAvatar([first], 12, 0, true)).toEqual({ view: null });
   });
 
   it('quantizes the final overlay position to the integer-pixel grid', () => {
-    const content = document.createElement('div');
-    const first = host('Alice', -39.6, true);
-    content.append(first);
+    const first = measuredRow('Alice', -39.6, true);
 
-    expect(resolveStickyAvatar(content, 0, 0.25, true)?.top).toBe(-40);
+    expect(resolveStickyAvatar([first], 12, 0.25, true).view?.top).toBe(-40);
+  });
+
+  it('hands off to the pre-mounted natural tail after it crosses the fixed line', () => {
+    const first = measuredRow('Alice', -30, true);
+    first.bottom = 21;
+    const resolution = resolveStickyAvatar([first], 12, 0, true);
+    expect(resolution.view).toBeNull();
+    expect(resolution.hiddenHead).toBe(first.naturalAvatar);
+    expect(resolution.visibleTail).toBe(first.tailAvatar);
   });
 });

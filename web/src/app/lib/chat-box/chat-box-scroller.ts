@@ -147,6 +147,8 @@ export interface CbOptions<T> {
   /** Passed through to source.init (chatId etc.). */
   initOpts?: { chatId?: number };
   onScroll?: (info: CbScrollInfo) => void;
+  /** Paint-only viewport work coalesced into the kernel's scroll RAF before onScroll is emitted. */
+  onViewportPaint?: () => void;
   /** Fires on the rising edge from not-fully-visible to fully visible. Visibility uses the kernel's measured
    *  prefix/height model, so consumers do not need a second DOM observer. */
   onFullyVisibleEnter?: (
@@ -172,6 +174,27 @@ export interface CbScrollInfo {
   atBottom: boolean;
   noOlder: boolean;
   noNewer: boolean;
+}
+
+/**
+ * Read-only geometry for one mounted item, expressed in the scroll viewport's local coordinate space.
+ * The kernel is the sole owner of item heights and prefix positions; paint-only consumers must use this
+ * model instead of measuring every mounted DOM row again during scroll.
+ */
+export interface CbMountedGeometry<T = unknown> {
+  readonly index: number;
+  readonly item: CbItem<T>;
+  readonly el: HTMLElement;
+  readonly top: number;
+  readonly bottom: number;
+  readonly height: number;
+}
+
+export interface CbViewportGeometry {
+  readonly scrollTop: number;
+  readonly viewportHeight: number;
+  /** Empty space above a short, bottom-aligned message stack. */
+  readonly contentAlignmentOffset: number;
 }
 
 /** Pure geometry behind the fully-visible callback. `totalHeight` includes the tail cap; when it is shorter
@@ -284,6 +307,12 @@ export interface ScrollerApi<T = unknown> {
    *  already confirmed (the cb-confirmed class is present) — so the choreography fires exactly once. */
   confirmPending(clientMessageId: string): void;
   getInfo(): CbScrollInfo;
+  /** Visit mounted items in DOM order using the kernel's cached integer heights and prefix sums. */
+  visitMountedGeometry(
+    visitor: (geometry: CbMountedGeometry<T>) => boolean | void,
+  ): CbViewportGeometry;
+  /** Resolve one mounted item (album-member aware) without reading layout from the DOM. */
+  getMountedGeometry(id: number): CbMountedGeometry<T> | null;
   refresh(): void;
   /** Re-render one mounted item's data IN PLACE (no remount, no height re-measure) — for a data-only
    *  change whose presentation never alters the cell's measured height (e.g. a mediaStatus flip: the
@@ -401,6 +430,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private readonly cfg: Required<CbConfig>;
   private readonly initOpts: { chatId?: number };
   private readonly onScroll?: (info: CbScrollInfo) => void;
+  private readonly onViewportPaint?: () => void;
   private readonly onFullyVisibleEnter?: CbOptions<T>['onFullyVisibleEnter'];
   private fullyVisibleIds = new Set<number>();
   private readonly isFrozen: () => boolean;
@@ -471,6 +501,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private measuring = false;
   private dirty = false;
   private rafId = 0;
+  private paintOnlyRafId = 0;
   private lastScrollTop = 0;
   /** Count of in-flight enter/exit (cb-enter/cb-leave) animations. While > 0, DOM balancing is deferred
    *  instead of scheduling a RAF — no load/trim runs during an animation. Mount/unmount/settle ops are NOT blocked:
@@ -503,6 +534,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.hooks = opts.hooks;
     this.source = opts.source;
     this.onScroll = opts.onScroll;
+    this.onViewportPaint = opts.onViewportPaint;
     this.onFullyVisibleEnter = opts.onFullyVisibleEnter;
     this.isFrozen = opts.isFrozen ?? (() => false);
     this.initOpts = opts.initOpts ?? {};
@@ -1171,6 +1203,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       cancelAnimationFrame(this.rafId);
       this.rafId = 0;
     }
+    if (this.paintOnlyRafId) {
+      cancelAnimationFrame(this.paintOnlyRafId);
+      this.paintOnlyRafId = 0;
+    }
     this.dirty = false;
     this.unmountAll();
     this.noOlder = false;
@@ -1210,6 +1246,54 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       atBottom: this.mounted.length > 0 && this.isAtBottom(),
       noOlder: this.noOlder,
       noNewer: this.noNewer,
+    };
+  }
+
+  visitMountedGeometry(
+    visitor: (geometry: CbMountedGeometry<T>) => boolean | void,
+  ): CbViewportGeometry {
+    this.flushPrefix();
+    const scrollTop = this.viewport.scrollTop;
+    const contentAlignmentOffset = Math.max(0, this.vh - this.totalH());
+    for (let index = 0; index < this.mounted.length; index += 1) {
+      const entry = this.mounted[index];
+      const top =
+        contentAlignmentOffset + (this.prefix[index] ?? 0) - scrollTop;
+      if (
+        visitor({
+          index,
+          item: entry.item,
+          el: entry.el,
+          top,
+          bottom: top + entry.height,
+          height: entry.height,
+        }) === false
+      )
+        break;
+    }
+    return {
+      scrollTop,
+      viewportHeight: this.vh,
+      contentAlignmentOffset,
+    };
+  }
+
+  getMountedGeometry(id: number): CbMountedGeometry<T> | null {
+    const index = this.indexOfId(id);
+    if (index < 0) return null;
+    this.flushPrefix();
+    const entry = this.mounted[index];
+    const top =
+      Math.max(0, this.vh - this.totalH()) +
+      (this.prefix[index] ?? 0) -
+      this.viewport.scrollTop;
+    return {
+      index,
+      item: entry.item,
+      el: entry.el,
+      top,
+      bottom: top + entry.height,
+      height: entry.height,
     };
   }
 
@@ -1258,6 +1342,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.cancelOlderDemand();
     this.cancelNewerDemand();
     cancelAnimationFrame(this.rafId);
+    cancelAnimationFrame(this.paintOnlyRafId);
+    this.paintOnlyRafId = 0;
     cancelAnimationFrame(this.vvRafId);
     this.vvRafId = 0;
     window.visualViewport?.removeEventListener(
@@ -1754,7 +1840,20 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private onViewportStateChanged(): void {
     if (this.destroyed) return;
     this.syncDemandRegions();
+    if (this.animating > 0) {
+      this.schedulePaintOnly();
+      this.deferBalance = true;
+      return;
+    }
     this.scheduleDomBalance();
+  }
+
+  private schedulePaintOnly(): void {
+    if (this.paintOnlyRafId || this.destroyed) return;
+    this.paintOnlyRafId = requestAnimationFrame(() => {
+      this.paintOnlyRafId = 0;
+      this.onViewportPaint?.();
+    });
   }
 
   private scheduleDomBalance(): void {
@@ -1845,6 +1944,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.scrollDir(st);
     this.lastScrollTop = st;
 
+    this.onViewportPaint?.();
     this.emit();
   }
 

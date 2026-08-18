@@ -9,7 +9,12 @@
   z-index: 1;
   width: 40px;
   height: 40px;
+  visibility: hidden;
   pointer-events: none;
+}
+
+.sa-avatar--visible {
+  visibility: visible;
 }
 
 .sa-avatar--other {
