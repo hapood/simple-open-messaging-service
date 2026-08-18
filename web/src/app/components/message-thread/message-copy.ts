@@ -12,6 +12,13 @@ export interface MessageCopyLabels {
   forward: string;
 }
 
+/** Media and file cards only have descriptive fallback text, so their context menu does not offer copy. */
+export function canCopyMessage(message: ChatMsgData): boolean {
+  return !['IMAGE', 'VIDEO', 'AUDIO', 'FILE', 'GALLERY'].includes(
+    message.contentType,
+  );
+}
+
 /** Turn a rendered message into portable plain text without leaking storage URLs or wire JSON. */
 export function messageCopyBody(
   message: ChatMsgData,

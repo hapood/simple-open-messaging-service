@@ -83,6 +83,7 @@ describe('WebdbService', () => {
       expect([...db!.objectStoreNames].sort()).toEqual([
         'avatars',
         'friendIntents',
+        'memberProfiles',
         'profiles',
         'settings',
         'threads',
@@ -94,7 +95,7 @@ describe('WebdbService', () => {
         'settings',
       ]);
       expect((await messageDb.get('settings', 'schemaVersion'))?.value).toBe(1);
-      expect(await webdb.getMeta('schemaVersion')).toBe(2);
+      expect(await webdb.getMeta('schemaVersion')).toBe(3);
       expect(webdb.ready()).toBe(true);
     });
 
@@ -143,7 +144,7 @@ describe('WebdbService', () => {
 
       await webdb.openForUser('1');
 
-      expect(await webdb.getMeta('schemaVersion')).toBe(2);
+      expect(await webdb.getMeta('schemaVersion')).toBe(3);
       expect(await webdb.getMeta('sentinel')).toBeUndefined();
     });
 
@@ -304,6 +305,39 @@ describe('WebdbService', () => {
       expect(await webdb.getMeta('stateRevision')).toBe(13);
     });
 
+    it('persists complete member-profile snapshots by thread and user', async () => {
+      await webdb.openForUser('1');
+      const snapshot = {
+        direction: 'MEMBER_PROFILE' as const,
+        revision: 12,
+        sourcePeerDomain: 'group.example',
+        memberAccount: 'alice',
+        memberDomain: 'home.example',
+        userId: 8,
+        threadIds: [7, 9],
+        displayName: 'Alice',
+        avatar: '/a.webp',
+        profileRevision: 6,
+      };
+
+      await webdb.applyThreadDelta([snapshot], 12);
+
+      expect(await webdb.getMemberProfile(7, 8)).toEqual({
+        threadId: 7,
+        userId: 8,
+        sourcePeerDomain: 'group.example',
+        memberAccount: 'alice',
+        memberDomain: 'home.example',
+        displayName: 'Alice',
+        avatar: '/a.webp',
+        profileRevision: 6,
+      });
+      expect(await webdb.listMemberProfiles(9)).toEqual([
+        jasmine.objectContaining({ userId: 8, displayName: 'Alice' }),
+      ]);
+      expect(await webdb.getMeta('stateRevision')).toBe(12);
+    });
+
     it('upserts compacted friend intents by stable key and business revision', async () => {
       await webdb.openForUser('1');
       const base = {
@@ -373,8 +407,22 @@ describe('WebdbService', () => {
           note: '',
           requestedAt: 10,
           expiresAt: 20,
-          actor: { id: 2, account: 'remote', name: 'Remote', avatar: '', domain: 'peer.test', isForeigner: true },
-          subject: { id: 1, account: 'local', name: 'Local', avatar: '', domain: 'local', isForeigner: false },
+          actor: {
+            id: 2,
+            account: 'remote',
+            name: 'Remote',
+            avatar: '',
+            domain: 'peer.test',
+            isForeigner: true,
+          },
+          subject: {
+            id: 1,
+            account: 'local',
+            name: 'Local',
+            avatar: '',
+            domain: 'local',
+            isForeigner: false,
+          },
         },
       };
       await webdb.applyThreadDelta([op], 17);

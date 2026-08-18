@@ -1,5 +1,9 @@
 import type { ChatMsgData } from '../message-cards/chat-item';
-import { messageCopyBody, selectedMessagesCopyText } from './message-copy';
+import {
+  canCopyMessage,
+  messageCopyBody,
+  selectedMessagesCopyText,
+} from './message-copy';
 
 const labels = {
   photo: '[图片]',
@@ -29,6 +33,19 @@ function message(overrides: Partial<ChatMsgData> = {}): ChatMsgData {
 }
 
 describe('message copy', () => {
+  it('hides context-menu copy for media and file cards', () => {
+    for (const contentType of [
+      'IMAGE',
+      'VIDEO',
+      'AUDIO',
+      'FILE',
+      'GALLERY',
+    ] as const) {
+      expect(canCopyMessage(message({ contentType }))).toBe(false);
+    }
+    expect(canCopyMessage(message({ contentType: 'PURE_TEXT' }))).toBe(true);
+  });
+
   it('copies visible rich text with mentions and line breaks', () => {
     expect(
       messageCopyBody(

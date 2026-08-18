@@ -207,8 +207,13 @@
   .aside-slot {
     position: fixed;
     inset: 0;
+    width: 100%;
+    height: 100%;
+    max-width: none;
     z-index: 40;
     background: var(--app-surface);
+    border-left: 0;
+    box-shadow: none;
     /* Full-screen; the shared .aside-slot padding-bottom carries the gesture-bar inset so the panel's
        scrollable content clears the bar while its background extends under it. */
     /* Same transform-driven show/hide as .chat-slot above: [@overlaySlide] slides this overlay in/out on

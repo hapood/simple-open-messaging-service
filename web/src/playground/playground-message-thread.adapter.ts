@@ -104,13 +104,43 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
     return { code: 0, message: 'ok' };
   }
 
-  override async sendLink(_request: {
+  override async sendLink(request: {
     threadId: number;
     generationId: string;
     clientMessageId: string;
   }): Promise<StandardResponse<unknown>> {
     await wait(this.confirmDelay());
-    return this.mockResponse();
+    if (this.sendError()) return { code: -1, message: 'Mock action failed' };
+    const source = this.source;
+    if (source) {
+      const optimistic = source.pendingByClientMessageId(
+        request.clientMessageId,
+      );
+      const sentId = source.allocateMsgId();
+      const now = new Date();
+      source.pushLive([
+        {
+          id: sentId,
+          clientMessageId: request.clientMessageId,
+          data: {
+            ...(optimistic?.data as ChatMsgData | undefined),
+            type: 'msg' as const,
+            msgId: sentId,
+            creator: 1,
+            isSelf: true,
+            name: 'Me',
+            text: optimistic?.data.text ?? '',
+            time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
+            contentType: 'LINK',
+            images: null,
+            file: null,
+            createdAtMs: now.getTime(),
+            status: 'sent',
+          },
+        },
+      ]);
+    }
+    return { code: 0, message: 'ok' };
   }
 
   override searchMessages(request: SearchMessagesRequest) {
@@ -136,6 +166,10 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
   }
 
   override setMuted(_request: { threadId: number; muted: boolean }) {
+    return of(this.mockResponse());
+  }
+
+  override setBlocked(_request: { threadId: number; blocked: boolean }) {
     return of(this.mockResponse());
   }
 

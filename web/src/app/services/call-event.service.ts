@@ -287,9 +287,6 @@ export class CallEventService implements OnDestroy {
   ): void {
     if (this.locallyTerminatedCallSid === callSid) {
       this.locallyTerminatedCallSid = null;
-      this.clearTerminalDisplay();
-      this.callState.set({ ...IDLE_CALL });
-      return;
     }
     const current = this.callState();
     const base =

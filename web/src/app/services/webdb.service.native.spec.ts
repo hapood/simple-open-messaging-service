@@ -120,6 +120,7 @@ describe('WebdbService native SQLite routing', () => {
       id: 8,
       kind: 'user',
       name: 'Alice',
+      account: 'alice',
       avatar: '/a.webp',
       bio: '',
       domain: '',
@@ -137,6 +138,36 @@ describe('WebdbService native SQLite routing', () => {
     expect(
       calls.find((call) => call.cmd === 'native_db_put_profile')?.args,
     ).toEqual(jasmine.objectContaining({ userId: 42, profileRev: 6, profile }));
+  });
+
+  it('reads source-scoped member profiles through native SQLite commands', async () => {
+    const profile = {
+      threadId: 9,
+      userId: 8,
+      sourcePeerDomain: 'group.example',
+      memberAccount: 'alice',
+      memberDomain: 'home.example',
+      displayName: 'Alice',
+      avatar: '/a.webp',
+      profileRevision: 6,
+    };
+    responses.set('native_db_get_member_profile', profile);
+    responses.set('native_db_list_member_profiles', [profile]);
+
+    expect(await service.getMemberProfile(9, 8)).toEqual(profile);
+    expect(await service.listMemberProfiles(9)).toEqual([profile]);
+    expect(calls).toContain(
+      jasmine.objectContaining({
+        cmd: 'native_db_get_member_profile',
+        args: { userId: 42, threadId: 9, memberUserId: 8 },
+      }),
+    );
+    expect(calls).toContain(
+      jasmine.objectContaining({
+        cmd: 'native_db_list_member_profiles',
+        args: { userId: 42, threadId: 9 },
+      }),
+    );
   });
 
   it('converts avatar blobs at the IPC boundary and reconstructs a Blob on read', async () => {

@@ -125,6 +125,11 @@ export abstract class MessageThreadAdapter {
     muted: boolean;
   }): Observable<StandardResponse>;
 
+  abstract setBlocked(request: {
+    threadId: number;
+    blocked: boolean;
+  }): Observable<StandardResponse>;
+
   abstract setPinned(request: {
     threadId: number;
     pinned: boolean;
@@ -225,6 +230,10 @@ export class ProductionMessageThreadAdapter extends MessageThreadAdapter {
 
   override sendForward(request: ForwardMessagesRequest) {
     return this.messages.sendForward(request);
+  }
+
+  override setBlocked(request: { threadId: number; blocked: boolean }) {
+    return this.messages.setBlocked(request);
   }
 
   override setMuted(request: { threadId: number; muted: boolean }) {

@@ -25,6 +25,23 @@ export class PlaygroundLinkGeneration {
     text = '',
     generationId = uuid(),
   ): Promise<LinkGenerationView> {
+    const pending: LinkGenerationView = {
+      generationId,
+      status: 'pending',
+      expiresAt: Date.now() + 60_000,
+      polling: true,
+    };
+    this.generations.update((items) => ({ ...items, [generationId]: pending }));
+    void this.complete(url, text, generationId);
+    return pending;
+  }
+
+  private async complete(
+    url: string,
+    text: string,
+    generationId: string,
+  ): Promise<void> {
+    await wait(2_000);
     const parsed = new URL(url);
     const generation: LinkGenerationView = {
       generationId,
@@ -37,11 +54,11 @@ export class PlaygroundLinkGeneration {
         description: descriptionFallback(text, url) || url,
       },
     };
+    if (!this.generations()[generationId]) return;
     this.generations.update((items) => ({
       ...items,
       [generationId]: generation,
     }));
-    return generation;
   }
 
   resume(generation: LinkCardGeneration): void {
@@ -58,6 +75,10 @@ export class PlaygroundLinkGeneration {
   }
 
   pause(_generationId: string): void {}
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function descriptionFallback(text: string, url: string): string {

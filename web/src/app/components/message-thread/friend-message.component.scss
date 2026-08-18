@@ -504,7 +504,7 @@ app-chat-input.msg-composer--dialog-hidden {
 // The sticky-date overlay is rendered by <app-sticky-date-overlay> (shared with the playground). Its top
 // offset reads --sd-top (set on .msg-container above = the header height).
 
-// P2P blocked banner: replaces the composer when the caller has blocked the peer. Tapping unblocks.
+// Blocked banner: replaces the composer while preserving readable history. Tapping resumes delivery.
 // Integer height (48px) keeps the flex-column measurement whole; sits in the input's normal-flow slot.
 .msg-blocked-banner {
   flex: 0 0 auto;
@@ -525,6 +525,11 @@ app-chat-input.msg-composer--dialog-hidden {
   text-align: center;
   cursor: pointer;
   border-top: 1px solid var(--app-border);
+  gap: 8px;
+  strong {
+    color: var(--app-primary);
+    font-weight: var(--app-font-weight-semibold);
+  }
   &:hover {
     background: var(--app-active, var(--app-hover));
   }
@@ -534,38 +539,6 @@ app-chat-input.msg-composer--dialog-hidden {
   }
 }
 
-.msg-viewport.blocked > :not(.msg-blocked-center) {
-  display: none;
-}
-.msg-blocked-center {
-  position: absolute;
-  inset: 0;
-  z-index: 3;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 24px;
-  text-align: center;
-  color: var(--app-text);
-  > span:last-child {
-    color: var(--app-text-muted);
-    font-size: 13px;
-  }
-}
-.msg-blocked-center-icon {
-  width: 64px;
-  height: 64px;
-  display: grid;
-  place-items: center;
-  margin-bottom: 6px;
-  border-radius: 20px;
-  background: var(--app-bg-muted);
-  color: var(--app-text-muted);
-  font-size: 36px;
-}
-
 .msg-context-backdrop {
   position: fixed;
   inset: 0;
@@ -573,6 +546,51 @@ app-chat-input.msg-composer--dialog-hidden {
   border: 0;
   background: transparent;
   pointer-events: none;
+}
+
+.member-profile-card {
+  position: fixed;
+  z-index: 22;
+  width: 280px;
+  min-height: 168px;
+  box-sizing: border-box;
+  padding: 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-lg);
+  color: var(--app-text);
+  background: var(--app-surface-elevated);
+  box-shadow: var(--app-shadow-3);
+
+  app-user-avatar {
+    width: 64px;
+    height: 64px;
+    flex: 0 0 auto;
+  }
+}
+
+.member-profile-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+
+  strong {
+    overflow: hidden;
+    font-size: 16px;
+    line-height: 22px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  span {
+    overflow-wrap: anywhere;
+    color: var(--app-text-muted);
+    font-size: 13px;
+    line-height: 19px;
+  }
 }
 
 .msg-context-menu {

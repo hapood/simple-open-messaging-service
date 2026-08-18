@@ -6,6 +6,7 @@ import {
   type DatabaseTransaction,
 } from '../database/database.service.js';
 import {
+  federatedMemberProfile,
   memberProfileStateRevision,
   profileStateRevision,
   threadParticipant,
@@ -235,12 +236,24 @@ export class ThreadRevisionService {
         ),
       )
       .orderBy(asc(memberProfileStateRevision.revision));
-    return Promise.all(
+    const hydrated = await Promise.all(
       rows.map(async (row) => {
+        const profile =
+          await this.database.db.query.federatedMemberProfile.findFirst({
+            where: and(
+              eq(federatedMemberProfile.sourcePeerDomain, row.sourcePeerDomain),
+              eq(federatedMemberProfile.memberAccount, row.memberAccount),
+              eq(federatedMemberProfile.memberDomain, row.memberDomain),
+              eq(federatedMemberProfile.availability, 'AVAILABLE'),
+            ),
+          });
+        if (!profile) return null;
         const threads = await this.database.db.execute<{
           threadId: number;
+          userId: number;
         }>(sql`
           SELECT DISTINCT thread.id AS "threadId"
+            , member_u.id AS "userId"
           FROM "MessageThread" thread
           JOIN "User" group_u ON group_u.id = thread."groupUserId"
             AND group_u.domain = ${row.sourcePeerDomain}
@@ -254,11 +267,20 @@ export class ThreadRevisionService {
                       THEN COALESCE((SELECT domain FROM "LocalFederationIdentity" LIMIT 1), 'local')
                       ELSE member_u.domain END) = ${row.memberDomain}
         `);
+        const memberUserId = threads.rows[0]?.userId;
+        if (memberUserId === undefined) return null;
         return {
           ...row,
+          userId: memberUserId,
           threadIds: threads.rows.map((thread) => thread.threadId),
+          displayName: profile.displayName!,
+          avatar: profile.avatar ?? '',
+          profileRevision: profile.revision,
         };
       }),
+    );
+    return hydrated.filter(
+      (item): item is NonNullable<(typeof hydrated)[number]> => item !== null,
     );
   }
 

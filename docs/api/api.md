@@ -122,12 +122,12 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 ### POST `/user/query-state/delta` — Client state delta
 
 - **Body**: `{ fromRevision: number, toRevision: number }` (revision range). Returns hydrated thread
-  ADD/DELETE, PROFILE/PROFILE_DELETE, MEMBER_PROFILE invalidation and compacted CLIENT_STATE entries since the
+  ADD/DELETE, PROFILE/PROFILE_DELETE, complete MEMBER_PROFILE snapshots and compacted CLIENT_STATE entries since the
   client's `stateRevision` cursor. An ADD is an authoritative replacement snapshot and may represent a
   group/roster/role change or a per-user thread-setting/read-state change, not only a new conversation.
   The current user's own avatar/name/bio update is included as PROFILE in this same log.
-  MEMBER_PROFILE carries `sourcePeerDomain + member Address + affected threadIds`; clients refetch those
-  rosters and never merge source-scoped displays by userId alone.
+  MEMBER_PROFILE carries the source-scoped address, local `userId`, display name, avatar, profile revision,
+  and affected thread ids. Clients persist it locally and never merge source-scoped displays by userId alone.
 
 ### POST `/user/query` · `/user/resolve` · `/user/search`
 
@@ -259,9 +259,11 @@ rows with independent notes and revisions; group invitation and join intent are 
 
 - **Body**: `{ groupId, userIds: number[] }` — mint GROUP invites for existing friends. `40002` non-friend.
 
-### POST `/group/info` · `/group/members`
+### POST `/group/info`
 
-- `info` / `members` (`{ groupId }`): group profile / roster. Federated freshness arrives through state revisions; there is no client-triggered sync endpoint.
+- `info` (`{ groupId }`): complete group profile plus authoritative membership/role facts. Conversation ADD
+  snapshots carry the same roster facts; member display metadata arrives as PROFILE/MEMBER_PROFILE state and
+  is read from the client's local database. There is no separate roster-fetch or client-triggered sync endpoint.
 
 ### POST `/group/{leave, kick, transfer, set-role, update}`
 

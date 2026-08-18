@@ -786,23 +786,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  '/api/v1/group/members': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Batch fetch group rosters (members only; caller membership filtered) */
-    post: operations['GroupController_getMembers'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   '/api/v1/group/join-request': {
     parameters: {
       query?: never;
@@ -4375,6 +4358,22 @@ export interface components {
        */
       take?: number;
     };
+    GroupMemberRefDto: {
+      /** @example 7 */
+      userId: number;
+      /** @example alice */
+      account: string;
+      /** @example example.com */
+      domain: string;
+      /** @example group-origin.example */
+      profileSourceDomain: string;
+      /** @enum {string} */
+      role: 'OWNER' | 'ADMIN' | 'MEMBER';
+      /** @example 1700000000000 */
+      joinedAt: number;
+      /** @example false */
+      isOwner: boolean;
+    };
     GroupResponseDto: {
       /** @example 12 */
       id: number;
@@ -4432,6 +4431,7 @@ export interface components {
       createdAt: number;
       /** @example 1700000000000 */
       updatedAt: number;
+      members: components['schemas']['GroupMemberRefDto'][];
     };
     ConversationItemDto: {
       /**
@@ -4606,16 +4606,6 @@ export interface components {
        * @example 12
        */
       groupId: number;
-    };
-    GroupMembersBatchDto: {
-      /**
-       * @description Group thread ids
-       * @example [
-       *       12,
-       *       13
-       *     ]
-       */
-      threadIds: number[];
     };
     GroupIdDto: {
       /**
@@ -6514,27 +6504,6 @@ export interface operations {
             data?: components['schemas']['GroupResponseDto'];
           };
         };
-      };
-    };
-  };
-  GroupController_getMembers: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['GroupMembersBatchDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
       };
     };
   };

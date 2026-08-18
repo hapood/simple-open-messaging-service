@@ -15,7 +15,7 @@ import type { MissedCursor } from './notification-descriptor.model';
 import { ConversationItem, ThreadReadState, User } from './model';
 import { ThreadDeletionLockService } from './thread-deletion-lock.service';
 import { MsgService } from './message.service';
-import { GroupStateStore } from './group-state-store.service';
+import { MemberProfileRepository } from './member-profile-store.service';
 
 /** Load status as a const object so it can be used as a VALUE in templates and as a TYPE. */
 export const ConversationLoadStatus = {
@@ -60,7 +60,7 @@ export class ThreadRepository {
   private readonly messageRepo = inject(MessageRepository);
   private readonly missedSync = inject(MissedSyncService);
   private readonly messages = inject(MsgService);
-  private readonly groupState = inject(GroupStateStore);
+  private readonly memberProfiles = inject(MemberProfileRepository);
 
   private readonly _items = signal<ConversationItem[]>([]);
   readonly items = this._items.asReadonly();
@@ -1143,14 +1143,11 @@ export class ThreadRepository {
           } else if (op.direction === 'PROFILE_DELETE') {
             this.applyPeerProfileRemoval(op.userId, op.account, op.domain);
           } else if (op.direction === 'MEMBER_PROFILE') {
-            for (const threadId of op.threadIds)
-              this.groupState.notifyRosterChanged(threadId);
+            this.memberProfiles.notifyChanged(op.threadIds);
           } else if (op.direction === 'DELETE') this.removeThread(op.threadId);
           else {
             if (!bulkHydrate) this.markTopOnNextUpdate(op.threadId); // FLIP only on an incremental ADD
             this.upsertThread(op.item);
-            if (op.item.type === 'GROUP')
-              this.groupState.notifyRosterChanged(op.threadId);
           }
         }
         this.userService.advanceStateRevCursor(toRev);

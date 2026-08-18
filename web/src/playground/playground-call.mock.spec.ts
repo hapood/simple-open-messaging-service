@@ -16,7 +16,7 @@ describe('playground call mock', () => {
     expect(readPlaygroundCallMode('?mock=messages')).toBeNull();
   });
 
-  it('rings before the configured peer accepts and returns to idle when ended', async () => {
+  it('rings before the configured peer accepts and previews local hang-up feedback', async () => {
     TestBed.configureTestingModule({
       providers: [provideZonelessChangeDetection()],
     });
@@ -32,9 +32,14 @@ describe('playground call mock', () => {
     await waitForResponse();
     expect(state.callState().phase).toBe('connected');
 
+    jasmine.clock().install();
     adapter.end();
 
+    expect(state.callState().phase).toBe('ended');
+    expect(state.callState().terminalReason).toBe('completed');
+    jasmine.clock().tick(1400);
     expect(state.callState()).toEqual({ ...IDLE_CALL });
+    jasmine.clock().uninstall();
   });
 
   it('shows a declined or busy peer before dismissing the call', () => {

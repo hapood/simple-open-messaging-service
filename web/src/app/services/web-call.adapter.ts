@@ -254,9 +254,12 @@ export class WebCallAdapter implements CallAdapter {
     void this.terminate('calls/end', { callSid, endReason: reason });
   }
 
-  private async terminate(path: string, body: object): Promise<void> {
-    await this.bestEffortPost(path, body);
+  private terminate(path: string, body: object): void {
+    // Ending media is a local user action and must not wait for a slow or unreachable server. Publish the
+    // terminal snapshot and release devices synchronously; the idempotent lifecycle report continues in the
+    // background and the peer learns the result through its server/SSE path.
     this.finish();
+    void this.bestEffortPost(path, body);
   }
 
   setMuted(muted: boolean): void {

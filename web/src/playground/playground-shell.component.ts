@@ -1,6 +1,7 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  computed,
   ElementRef,
   inject,
   signal,
@@ -18,6 +19,10 @@ import { MessageThreadComponent } from '../app/components/message-thread/friend-
 import type { ConversationItem } from '../app/services/model';
 import { ThemeService } from '../app/services/theme.service';
 import { PlaygroundMessageThreadAdapter } from './playground-message-thread.adapter';
+import { PeerProfileComponent } from '../app/components/peer-profile/peer-profile.component';
+import { GroupInfoComponent } from '../app/components/group-info/group-info.component';
+import { NavStateMachineService } from '../app/services/nav-state.service';
+import { PlaygroundConversationList } from './playground-conversation-list.mock';
 import {
   PlaygroundCallState,
   type PlaygroundCallResponse,
@@ -34,7 +39,8 @@ const DEMO_CONVERSATION = {
   conversationState: 'ACTIVE',
   peerUser: {
     id: 2,
-    account: 'Alice',
+    account: 'alice',
+    bio: 'Product designer · Shanghai',
     name: 'Alice',
     avatar: '',
     domain: '',
@@ -59,8 +65,31 @@ const DEMO_GROUP_CONVERSATION = {
     avatar: '',
     domain: '',
     profileRev: 1,
+    members: [
+      memberRef(1, 'me', 'OWNER'),
+      memberRef(2, 'alice', 'ADMIN'),
+      memberRef(3, 'maya', 'MEMBER'),
+      memberRef(4, 'noah', 'MEMBER'),
+      memberRef(5, 'olivia', 'MEMBER'),
+    ],
   },
 } as ConversationItem;
+
+function memberRef(
+  userId: number,
+  account: string,
+  role: 'OWNER' | 'ADMIN' | 'MEMBER',
+) {
+  return {
+    userId,
+    account,
+    domain: '',
+    profileSourceDomain: '',
+    role,
+    joinedAt: userId,
+    isOwner: role === 'OWNER',
+  };
+}
 
 type KernelFieldKey =
   | 'initBatch'
@@ -81,6 +110,8 @@ type KernelFieldKey =
     MatSlideToggleModule,
     TranslocoModule,
     MessageThreadComponent,
+    PeerProfileComponent,
+    GroupInfoComponent,
   ],
   template: `
     <main class="playground-shell">
@@ -92,6 +123,25 @@ type KernelFieldKey =
           [nativeComposerActive]="true"
         />
       </section>
+
+      @if (asidePanel()) {
+        <button
+          class="playground-profile-backdrop"
+          type="button"
+          (click)="nav.closeAside()"
+          aria-label="Close contact info"
+        ></button>
+        <aside class="playground-profile" aria-label="Contact info">
+          @switch (asidePanel()) {
+            @case ('profile') {
+              <app-peer-profile />
+            }
+            @case ('group-info') {
+              <app-group-info />
+            }
+          }
+        </aside>
+      }
 
       <button
         #settingsButton
@@ -197,6 +247,19 @@ type KernelFieldKey =
               }}</mat-button-toggle>
             </mat-button-toggle-group>
             <p>{{ 'playground.callResponseHint' | transloco }}</p>
+            <mat-slide-toggle
+              [checked]="!!conversation().muted"
+              (change)="setMuted($event.checked)"
+              >{{ 'playground.muted' | transloco }}</mat-slide-toggle
+            >
+            <mat-slide-toggle
+              [checked]="!!conversation().blocked"
+              (change)="setBlocked($event.checked)"
+              >{{ 'playground.blocked' | transloco }}</mat-slide-toggle
+            >
+            @if (conversation().blocked && conversation().muted) {
+              <p>{{ 'playground.blockedOverridesMuted' | transloco }}</p>
+            }
           </mat-expansion-panel>
 
           <mat-expansion-panel expanded>
@@ -443,8 +506,13 @@ type KernelFieldKey =
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class PlaygroundShellComponent {
-  readonly conversation = signal<ConversationItem>(DEMO_CONVERSATION);
+  private readonly conversations = inject(PlaygroundConversationList);
+  readonly conversation = computed(
+    () => this.conversations.current() ?? DEMO_CONVERSATION,
+  );
   readonly runtime = inject(PlaygroundMessageThreadAdapter);
+  readonly nav = inject(NavStateMachineService);
+  readonly asidePanel = computed(() => this.nav.asideTop()?.panel);
   readonly callState = inject(PlaygroundCallState);
   readonly i18n = inject(TranslocoService);
   readonly theme = inject(ThemeService);
@@ -473,6 +541,10 @@ export class PlaygroundShellComponent {
   private buttonStartY = 0;
   private buttonStartLeft = 0;
   private buttonStartTop = 0;
+
+  constructor() {
+    this.conversations.setConversation(DEMO_CONVERSATION);
+  }
 
   onSettingsButtonDown(event: PointerEvent): void {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
@@ -591,7 +663,8 @@ export class PlaygroundShellComponent {
   }
 
   setConversationType(type: 'P2P' | 'GROUP'): void {
-    this.conversation.set(
+    this.nav.closeAside();
+    this.conversations.setConversation(
       type === 'GROUP' ? DEMO_GROUP_CONVERSATION : DEMO_CONVERSATION,
     );
   }
@@ -603,6 +676,22 @@ export class PlaygroundShellComponent {
 
   setCallResponse(response: PlaygroundCallResponse): void {
     this.callState.opponentResponse.set(response);
+  }
+
+  setMuted(muted: boolean): void {
+    const threadId = this.conversation().threadId;
+    this.runtime.setMuted({ threadId, muted }).subscribe((result) => {
+      if (result.code === 0)
+        this.conversations.applyThreadMeta(threadId, { muted });
+    });
+  }
+
+  setBlocked(blocked: boolean): void {
+    const threadId = this.conversation().threadId;
+    this.runtime.setBlocked({ threadId, blocked }).subscribe((result) => {
+      if (result.code === 0)
+        this.conversations.applyThreadMeta(threadId, { blocked });
+    });
   }
 
   jump(): void {

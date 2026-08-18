@@ -48,6 +48,9 @@ describe('PlaygroundMessageThreadAdapter', () => {
     const report = await firstValueFrom(
       adapter.reportMessages({ threadId: 1, seqs: [1] }),
     );
+    const blocked = await firstValueFrom(
+      adapter.setBlocked({ threadId: 1, blocked: true }),
+    );
     const forward = await firstValueFrom(
       adapter.sendForward({
         threadId: 2,
@@ -60,6 +63,7 @@ describe('PlaygroundMessageThreadAdapter', () => {
     expect(search.code).toBe(0);
     expect(search.data?.length).toBeGreaterThan(0);
     expect(report.code).toBe(0);
+    expect(blocked.code).toBe(0);
     expect(forward.code).toBe(0);
     expect(adapter.forwardTargets().length).toBe(3);
     expect(adapter.syncWithdrawalsAfterMutation()).toBeFalse();

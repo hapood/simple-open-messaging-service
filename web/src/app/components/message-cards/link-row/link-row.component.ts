@@ -1,4 +1,4 @@
-import { Component, computed, input, output, signal } from '@angular/core';
+import { Component, computed, input, output } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import type { ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
@@ -8,6 +8,7 @@ import {
 } from '../../user-avatar/user-avatar.component';
 import { assetUrl, openExternalUrl } from '../../../services/runtime';
 import { linkCardHost, linkCardSource } from '../../../lib/link-card-display';
+import { LinkCardContentComponent } from '../link-card-content/link-card-content.component';
 
 /** The LINK card payload stored as JSON in Message.content (built authoritatively server-side). */
 interface LinkCard {
@@ -35,7 +36,12 @@ interface LinkCard {
 @Component({
   selector: 'app-msg-link-row',
   standalone: true,
-  imports: [UserAvatarComponent, DateRowComponent, TranslocoPipe],
+  imports: [
+    UserAvatarComponent,
+    DateRowComponent,
+    TranslocoPipe,
+    LinkCardContentComponent,
+  ],
   templateUrl: './link-row.component.html',
   styleUrl: './link-row.component.scss',
 })
@@ -80,8 +86,6 @@ export class LinkRowComponent {
       return { url: this.data().text, title: '', description: '' };
     }
   });
-  /** Resolve the stored same-origin CAS path for the current runtime. */
-  readonly imageSrc = computed(() => assetUrl(this.link().image));
   readonly faviconSrc = computed(() => assetUrl(this.link().favicon));
   /** The page host — the credibility cue shown in the meta bar so a reader can spot a phishing card. */
   readonly host = computed(() => {
@@ -90,10 +94,6 @@ export class LinkRowComponent {
   readonly source = computed(() =>
     linkCardSource(this.link().url, this.link().siteName),
   );
-
-  /** Set when the thumbnail <img> fails to load/decode (a corrupt or missing CAS asset) so the card
-   *  reflows to text-only instead of showing a broken-image glyph. */
-  readonly imgFailed = signal(false);
 
   /** Open the shared page in the system browser (Tauri) / a new tab (web). */
   async openUrl(): Promise<void> {
@@ -104,9 +104,5 @@ export class LinkRowComponent {
     } catch (error) {
       console.error('[link-row] Failed to open external URL', error);
     }
-  }
-
-  onImgError(): void {
-    this.imgFailed.set(true);
   }
 }

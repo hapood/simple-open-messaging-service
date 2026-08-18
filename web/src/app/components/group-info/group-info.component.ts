@@ -1,6 +1,7 @@
 import {
   Component,
   computed,
+  effect,
   inject,
   OnInit,
   OnDestroy,
@@ -8,7 +9,7 @@ import {
 } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { NavStateMachineService } from '../../services/nav-state.service';
-import { Subscription, filter, firstValueFrom } from 'rxjs';
+import { Subscription, firstValueFrom } from 'rxjs';
 import { UserListComponent } from '../user-list/user-list.component';
 import { RouteService, PopupType } from '../../services/route.service';
 import { IconComponent, AppIconType } from '../icon/icon.component';
@@ -16,7 +17,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { FormsModule } from '@angular/forms';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
-import { GroupService, GroupMember } from '../../services/group.service';
+import { GroupService } from '../../services/group.service';
 import { UserService } from '../../services/user.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { ConversationItem } from '../../services/model';
@@ -32,7 +33,10 @@ import { translateBizResult } from '../../services/biz-code';
 import { ToastService } from '../../services/toast.service';
 import { ThreadDeletionLockService } from '../../services/thread-deletion-lock.service';
 import { MsgService } from '../../services/message.service';
-import { GroupStateStore } from '../../services/group-state-store.service';
+import {
+  MemberProfileRepository,
+  type ResolvedMemberProfile,
+} from '../../services/member-profile-store.service';
 
 type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
 
@@ -67,7 +71,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
 
   private readonly nav = inject(NavStateMachineService);
   private readonly groupService = inject(GroupService);
-  private readonly groupState = inject(GroupStateStore);
+  private readonly memberProfiles = inject(MemberProfileRepository);
   private readonly userService = inject(UserService);
   private readonly convList = inject(ConversationListService);
   private readonly routeService = inject(RouteService);
@@ -88,11 +92,10 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       : undefined;
   });
 
-  /** Live roster refresh: when a GROUP_* membership/role event lands for THIS group while the panel
-   *  is open, reload the roster so joins/leaves/kicks/promotions show without a manual reopen. */
+  /** Live display-profile refresh subscription for the currently open group. */
   private rosterSub?: Subscription;
 
-  readonly roster = signal<GroupMember[]>([]);
+  readonly roster = signal<ResolvedMemberProfile[]>([]);
   readonly loading = signal(true);
   readonly busy = signal(false); // a mutation is in flight (disables action buttons)
 
@@ -162,51 +165,49 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     () => this.pendingAvatar() ?? this.group()?.avatar ?? '',
   );
 
+  constructor() {
+    effect(() => {
+      const threadId = this.threadId();
+      const members = this.group()?.members;
+      if (threadId !== undefined && members) void this.loadMembers();
+    });
+  }
+
   ngOnInit() {
-    this.loadMembers();
-    // The applied durable state delta invalidates this roster. The component is ephemeral, so the
-    // subscription is released on close (ngOnDestroy).
-    this.rosterSub = this.groupState.rosterChanged$
-      .pipe(filter((gid) => gid === this.groupId()))
-      .subscribe(() => this.loadMembers());
+    this.rosterSub = this.memberProfiles.changed$.subscribe((threadIds) => {
+      const threadId = this.threadId();
+      if (threadId !== undefined && threadIds.includes(threadId))
+        void this.loadMembers();
+    });
   }
 
   ngOnDestroy() {
     this.rosterSub?.unsubscribe();
   }
 
-  loadMembers() {
-    const id = this.groupId();
-    if (id === undefined) return;
+  async loadMembers() {
+    const threadId = this.threadId();
+    const members = this.group()?.members ?? [];
+    if (threadId === undefined) return;
     this.loading.set(true);
-    this.groupService.getThreadMembers(id).subscribe({
-      next: (res) => {
-        if (res.code === 0) {
-          const members = res.data ?? [];
-          this.roster.set(members);
-          const memberIds = new Set(members.map((member) => member.userId));
-          this.selectedList.update((list) =>
-            list.filter((item) => !memberIds.has(item.peerUser.id)),
-          );
-          this.selectedDict.update((dict) => {
-            const next = { ...dict };
-            for (const item of this.convList.items()) {
-              if (memberIds.has(item.peerUser?.id)) next[item.id] = false;
-            }
-            return next;
-          });
-        } else this.showBusinessError(res);
-        this.loading.set(false);
-      },
-      error: () => {
-        this.loading.set(false);
-        this.showNetworkError();
-      },
+    const resolved = await this.memberProfiles.resolveAll(threadId, members);
+    this.roster.set(resolved);
+    const memberIds = new Set(resolved.map((member) => member.userId));
+    this.selectedList.update((list) =>
+      list.filter((item) => !memberIds.has(item.peerUser.id)),
+    );
+    this.selectedDict.update((dict) => {
+      const next = { ...dict };
+      for (const item of this.convList.items()) {
+        if (memberIds.has(item.peerUser?.id)) next[item.id] = false;
+      }
+      return next;
     });
+    this.loading.set(false);
   }
 
   /** Whether the caller has any action available on this member row. */
-  canActOn(m: GroupMember): boolean {
+  canActOn(m: ResolvedMemberProfile): boolean {
     const me = this.myUserId();
     if (m.userId === me) return false; // never on self
     const role = this.myRole();
@@ -216,7 +217,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   }
 
   /** The non-current role an owner can switch a member to (admin↔member toggle; never OWNER). */
-  toggleRoleLabel(m: GroupMember): 'ADMIN' | 'MEMBER' {
+  toggleRoleLabel(m: ResolvedMemberProfile): 'ADMIN' | 'MEMBER' {
     return m.role === 'ADMIN' ? 'MEMBER' : 'ADMIN';
   }
   /** Localized role name for badges / the "Make …" action (reads the active language). */
@@ -235,7 +236,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
 
   // ── mutations: each reloads the roster so role badges / membership reflect the server ──
 
-  doSetRole(m: GroupMember) {
+  doSetRole(m: ResolvedMemberProfile) {
     const role = this.toggleRoleLabel(m);
     const id = this.groupId();
     if (id === undefined) return;
@@ -253,10 +254,10 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       });
   }
 
-  askKick(m: GroupMember) {
+  askKick(m: ResolvedMemberProfile) {
     this.confirmAction.set({ userId: m.userId, action: 'kick' });
   }
-  askTransfer(m: GroupMember) {
+  askTransfer(m: ResolvedMemberProfile) {
     this.confirmAction.set({ userId: m.userId, action: 'transfer' });
   }
   cancelConfirm() {
@@ -271,7 +272,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     else this.transfer(m);
   }
 
-  private kick(m: GroupMember) {
+  private kick(m: ResolvedMemberProfile) {
     const id = this.groupId();
     if (id === undefined) return;
     this.busy.set(true);
@@ -289,7 +290,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       });
   }
 
-  private transfer(m: GroupMember) {
+  private transfer(m: ResolvedMemberProfile) {
     const id = this.groupId();
     if (id === undefined) return;
     this.busy.set(true);

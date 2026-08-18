@@ -495,7 +495,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
     if (res.code === 0 && res.data) {
       for (const u of res.data)
         this.profiles.set(u.id, {
-          name: u.account,
+          name: u.name || u.account,
           isSelf: u.id === this.userId,
         });
     }

@@ -32,10 +32,21 @@ export type Message = Omit<S['MessageResponseDto'], 'contentType'> & {
   /** Monotonic status version — the anti-regression key for the client's reduceMediaStatus. */
   sv?: number;
 };
+export interface GroupMemberRef {
+  userId: number;
+  account: string;
+  domain: string;
+  profileSourceDomain: string;
+  role: 'OWNER' | 'ADMIN' | 'MEMBER';
+  joinedAt: number;
+  isOwner: boolean;
+}
+
 export type Group = S['GroupResponseDto'] & {
   profileRev: number;
   dissolvedAt?: number | null;
   membersCanInvite?: boolean;
+  members: GroupMemberRef[];
 };
 
 // peerUser/group are optional on the generated DTO (mutually exclusive by type), but templates branch on

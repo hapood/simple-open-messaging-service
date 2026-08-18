@@ -74,8 +74,12 @@ export type HydratedThreadDeltaOp =
       sourcePeerDomain: string;
       memberAccount: string;
       memberDomain: string;
+      userId: number;
       threadIds: number[];
       revision: number;
+      displayName: string;
+      avatar: string;
+      profileRevision: number;
     }
   | {
       direction: 'CLIENT_STATE';
@@ -661,7 +665,9 @@ export class UserService {
   }
 
   /** Accept an invite by id (friend → P2P thread; group → join). data carries the threadId. */
-  acceptInvite(params: { inviteId: string } | { account: string; domain: string }) {
+  acceptInvite(
+    params: { inviteId: string } | { account: string; domain: string },
+  ) {
     return this.http.post<StandardResponse<{ threadId?: number }>>(
       `${apiPrefix()}/invite/accept`,
       params,
@@ -676,7 +682,9 @@ export class UserService {
   }
 
   /** Reject an incoming invite by id. */
-  rejectInvite(params: { inviteId: string } | { account: string; domain: string }) {
+  rejectInvite(
+    params: { inviteId: string } | { account: string; domain: string },
+  ) {
     return this.http.post<StandardResponse>(
       `${apiPrefix()}/invite/reject`,
       params,
@@ -684,7 +692,9 @@ export class UserService {
   }
 
   /** Revoke my own outgoing invite by id. */
-  revokeInvite(params: { inviteId: string } | { account: string; domain: string }) {
+  revokeInvite(
+    params: { inviteId: string } | { account: string; domain: string },
+  ) {
     return this.http.post<StandardResponse>(
       `${apiPrefix()}/invite/revoke`,
       params,

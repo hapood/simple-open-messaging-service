@@ -645,24 +645,11 @@ body {
   background: transparent;
 }
 
-/* Reuse the jump target's dedicated paint layer for persistent multi-selection. */
-[data-message-id].cb-message--selected .msg-highlight-layer {
-  --cb-selection-highlight: color-mix(
-    in srgb,
-    var(--app-brand) 18%,
-    transparent
-  );
-  background-color: var(--cb-selection-highlight);
-}
-
-[data-theme='dark']
-  [data-message-id].cb-message--selected
-  .msg-highlight-layer {
-  --cb-selection-highlight: color-mix(
-    in srgb,
-    var(--app-brand) 24%,
-    transparent
-  );
+/* Selection and jump use separate visual language: ordinary selected messages inset their bubble,
+ * while jump feedback is the only state that paints a transient color flash. Album selection remains
+ * cell-level below, so the enclosing album bubble must not scale as a second selection target. */
+[data-message-id].cb-message--selected:not(.cb-message--album) .msg-bubble {
+  transform: scale(0.92);
 }
 
 [data-message-id].cb-message--selected.cb-message--pressing {
@@ -691,25 +678,6 @@ body {
  * indeterminate-checkbox convention without changing the control's geometry. */
 [data-message-id].cb-message--partially-selected {
   background: transparent;
-}
-
-[data-message-id].cb-message--partially-selected .msg-highlight-layer {
-  --cb-selection-highlight: color-mix(
-    in srgb,
-    var(--app-brand) 10%,
-    transparent
-  );
-  background-color: var(--cb-selection-highlight);
-}
-
-[data-theme='dark']
-  [data-message-id].cb-message--partially-selected
-  .msg-highlight-layer {
-  --cb-selection-highlight: color-mix(
-    in srgb,
-    var(--app-brand) 15%,
-    transparent
-  );
 }
 
 [data-message-id].cb-message--partially-selected .msg-row::before {

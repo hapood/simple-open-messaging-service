@@ -124,7 +124,7 @@ export class PlaygroundCallState implements OnDestroy {
 
   disconnect(): void {
     this.clearTimers();
-    this.callState.set({ ...IDLE_CALL });
+    this.showTerminal('completed');
   }
 
   markLocalTermination(_callSid: string): void {}

@@ -109,6 +109,7 @@ import { AttachmentUploadQueueService } from '../../services/attachment-upload-q
 import { DebugToolsService } from '../../services/debug-tools.service';
 import { ToastService } from '../../services/toast.service';
 import {
+  canCopyMessage,
   messageCopyBody,
   selectedMessagesCopyText,
   type MessageCopyLabels,
@@ -133,8 +134,10 @@ import {
 } from '../message-cards/file-meta.util';
 import { PopupType, RouteService } from '../../services/route.service';
 import { ChatboxPopupComponent } from '../chatbox-popup/chatbox-popup.component';
-import { GroupService } from '../../services/group.service';
-import { GroupStateStore } from '../../services/group-state-store.service';
+import {
+  MemberProfileRepository,
+  type ResolvedMemberProfile,
+} from '../../services/member-profile-store.service';
 import { ChatAppearanceService } from '../../services/chat-appearance.service';
 import {
   ALL_MENTION_ID,
@@ -306,8 +309,7 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly transloco = inject(TranslocoService);
   private readonly theme = inject(ThemeService);
   private readonly toast = inject(ToastService);
-  private readonly groupService = inject(GroupService);
-  private readonly groupState = inject(GroupStateStore);
+  private readonly memberProfiles = inject(MemberProfileRepository);
   private readonly chatAppearance = inject(ChatAppearanceService);
   private readonly http = inject(HttpClient);
   readonly nativeComposer = inject(NativeComposerService);
@@ -379,6 +381,11 @@ export class MessageThreadComponent implements OnDestroy {
     targetItem: CbItem<ChatItemData>;
     targetSeq: number;
     memberId?: number;
+    x: number;
+    y: number;
+  } | null>(null);
+  readonly memberProfileCard = signal<{
+    profile: ResolvedMemberProfile;
     x: number;
     y: number;
   } | null>(null);
@@ -565,27 +572,29 @@ export class MessageThreadComponent implements OnDestroy {
         return;
       }
       let active = true;
-      const load = () => {
-        this.groupService.getThreadMembers(threadId).subscribe((res) => {
-          if (!active || res.code !== 0) return;
-          const members = (res.data ?? []).map((member) => ({
-            id: member.account,
-            label: member.name,
-            avatarUrl: assetUrl(sizedAvatarUrl(member.avatar, 32)),
-          }));
-          if (trd.role === 'OWNER' || trd.role === 'ADMIN') {
-            members.unshift({
-              id: ALL_MENTION_ID,
-              label: this.transloco.translate('chat.mentionAll'),
-              avatarUrl: '',
-            });
-          }
-          this.mentionMembers.set(members);
-        });
+      const load = async () => {
+        const roster = await this.memberProfiles.resolveAll(
+          threadId,
+          trd.group.members ?? [],
+        );
+        if (!active) return;
+        const members = roster.map((member) => ({
+          id: member.account,
+          label: member.name,
+          avatarUrl: assetUrl(sizedAvatarUrl(member.avatar, 32)),
+        }));
+        if (trd.role === 'OWNER' || trd.role === 'ADMIN') {
+          members.unshift({
+            id: ALL_MENTION_ID,
+            label: this.transloco.translate('chat.mentionAll'),
+            avatarUrl: '',
+          });
+        }
+        this.mentionMembers.set(members);
       };
-      load();
-      const sub = this.groupState.rosterChanged$.subscribe((groupId) => {
-        if (groupId === trd.group.id) load();
+      void load();
+      const sub = this.memberProfiles.changed$.subscribe((threadIds) => {
+        if (threadIds.includes(threadId)) void load();
       });
       onCleanup(() => {
         active = false;
@@ -1230,6 +1239,7 @@ export class MessageThreadComponent implements OnDestroy {
         this.onMessageInteraction(event, selectedItem, pointer, memberId),
       (bundleId) => this.route.popupDlg(PopupType.FORWARD_DETAIL, { bundleId }),
       (seq) => this.onSearchJump(seq),
+      (userId, anchor) => void this.openMemberProfileCard(userId, anchor),
     );
     const contextId = this.messageContextMenu()?.targetSeq;
     applyMessageSelectionState(
@@ -1252,7 +1262,8 @@ export class MessageThreadComponent implements OnDestroy {
       const contextItem =
         memberId === undefined ? item : albumMemberItem(item, memberId);
       const menuItemCount =
-        3 +
+        2 +
+        (this.canCopyMessage(contextItem.data) ? 1 : 0) +
         (this.canQuote(contextItem.data) ? 1 : 0) +
         (this.canDirectForward(contextItem.data) ? 1 : 0) +
         (this.canWithdrawOrReport(contextItem.data) ? 1 : 0);
@@ -1328,7 +1339,7 @@ export class MessageThreadComponent implements OnDestroy {
 
   async copyContextMessage(): Promise<void> {
     const context = this.messageContextMenu();
-    if (!context) return;
+    if (!context || !this.canCopyMessage(context.targetItem.data)) return;
     this.closeContextMenu();
     await this.writeMessageClipboard(
       messageCopyBody(context.targetItem.data, this.messageCopyLabels()),
@@ -1403,12 +1414,52 @@ export class MessageThreadComponent implements OnDestroy {
 
   dismissContextMenuOnOutside(event: PointerEvent): void {
     if (
+      this.memberProfileCard() &&
+      !(
+        event.target instanceof Element &&
+        event.target.closest('.member-profile-card')
+      )
+    )
+      this.memberProfileCard.set(null);
+    if (
       !this.messageContextMenu() ||
       (event.target instanceof Element &&
         event.target.closest('.msg-context-menu'))
     )
       return;
     this.dismissContextMenu();
+  }
+
+  private async openMemberProfileCard(
+    userId: number,
+    anchor: DOMRect,
+  ): Promise<void> {
+    const threadId = this.threadId();
+    const member = this.userMsgTrd()?.group.members?.find(
+      (candidate) => candidate.userId === userId,
+    );
+    if (threadId === undefined || !member) return;
+    const profile = await this.memberProfiles.resolve(threadId, member);
+    const width = 280;
+    const height = 168;
+    const inset = 8;
+    const viewport = window.visualViewport;
+    const viewportLeft = viewport?.offsetLeft ?? 0;
+    const viewportTop = viewport?.offsetTop ?? 0;
+    const viewportRight = viewportLeft + (viewport?.width ?? window.innerWidth);
+    const viewportBottom =
+      viewportTop + (viewport?.height ?? window.innerHeight);
+    const preferredX = anchor.right + 8;
+    const x = Math.max(
+      viewportLeft + inset,
+      Math.min(preferredX, viewportRight - width - inset),
+    );
+    const y = Math.max(
+      viewportTop + inset,
+      Math.min(anchor.top, viewportBottom - height - inset),
+    );
+    this.dismissContextMenu();
+    this.memberProfileCard.set({ profile, x, y });
   }
 
   exitSelectionMode(): void {
@@ -1541,6 +1592,10 @@ export class MessageThreadComponent implements OnDestroy {
       message.contentType === 'LINK' ||
       message.contentType === 'FORWARD'
     );
+  }
+
+  canCopyMessage(message: ChatMsgData): boolean {
+    return canCopyMessage(message);
   }
 
   canQuote(message: ChatMsgData): boolean {
@@ -3486,7 +3541,7 @@ export class MessageThreadComponent implements OnDestroy {
   unblockPeer(): void {
     const trd = this.userMsgTrd();
     if (!trd) return;
-    this.msgService
+    this.threadAdapter
       .setBlocked({ threadId: trd.threadId, blocked: false })
       .subscribe((res) => {
         if (res.code === 0)

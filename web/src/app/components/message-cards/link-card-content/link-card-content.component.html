@@ -1,0 +1,28 @@
+<div class="link-card-content" [class.link-card-content--loading]="loading()">
+  <div class="link-card-content__image">
+    @if (loading()) {
+      <span class="link-card-content__skeleton-block"></span>
+    } @else if (imageSrc() && !imageFailed()) {
+      <img [src]="imageSrc()" alt="" loading="lazy" (error)="onImageError()" />
+    } @else {
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+        <path
+          d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"
+        />
+      </svg>
+    }
+  </div>
+  <div class="link-card-content__text">
+    @if (loading()) {
+      <span class="link-card-content__skeleton-line"></span>
+      <span class="link-card-content__skeleton-line"></span>
+      <span class="link-card-content__skeleton-line"></span>
+    } @else {
+      <div class="link-card-content__title">{{ content()?.title }}</div>
+      <div class="link-card-content__description">
+        {{ content()?.description }}
+      </div>
+    }
+  </div>
+</div>

@@ -132,6 +132,27 @@ describe('CallEventService web call routing', () => {
     jasmine.clock().uninstall();
   });
 
+  it('briefly presents a locally initiated hang-up before returning to idle', () => {
+    jasmine.clock().install();
+    const service = TestBed.inject(CallEventService);
+    const listener = adapter.setSnapshotListener.calls.mostRecent().args[0];
+    listener({ ...IDLE_CALL, phase: 'connected', callSid: 'call-local' });
+    service.markLocalTermination('call-local');
+
+    listener({
+      ...IDLE_CALL,
+      phase: 'ended',
+      callSid: 'call-local',
+      terminalReason: 'completed',
+    });
+
+    expect(service.callState().phase).toBe('ended');
+    expect(service.callState().terminalReason).toBe('completed');
+    jasmine.clock().tick(1400);
+    expect(service.callState()).toEqual({ ...IDLE_CALL });
+    jasmine.clock().uninstall();
+  });
+
   it('shows native busy rejection as a terminal call state', () => {
     jasmine.clock().install();
     const service = TestBed.inject(CallEventService);

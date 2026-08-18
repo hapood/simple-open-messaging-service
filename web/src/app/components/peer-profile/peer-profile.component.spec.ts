@@ -15,6 +15,8 @@ import { MsgService } from '../../services/message.service';
 import { RouteService } from '../../services/route.service';
 import { ThreadDeletionLockService } from '../../services/thread-deletion-lock.service';
 import { ToastService } from '../../services/toast.service';
+import { of } from 'rxjs';
+import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter';
 
 /**
  * PeerProfileComponent unit tests — profile resolution and panel navigation.
@@ -72,6 +74,10 @@ describe('PeerProfileComponent', () => {
         { provide: RouteService, useValue: {} },
         { provide: ThreadDeletionLockService, useValue: {} },
         { provide: ToastService, useValue: {} },
+        {
+          provide: MESSAGE_THREAD_ADAPTER,
+          useValue: { setBlocked: () => of({ code: 0 }) },
+        },
         {
           provide: ConversationListService,
           useValue: {

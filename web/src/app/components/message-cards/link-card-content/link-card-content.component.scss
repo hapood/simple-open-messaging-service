@@ -1,0 +1,130 @@
+:host {
+  display: block;
+}
+
+.link-card-content {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  overflow: hidden;
+  padding: 8px 10px;
+  background: var(--chat-card-bg);
+  color: var(--chat-card-text);
+}
+
+.link-card-content__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.link-card-content__title {
+  height: 18px;
+  overflow: hidden;
+  color: var(--chat-card-text);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.link-card-content__description {
+  height: 30px;
+  overflow: hidden;
+  color: var(--chat-card-text);
+  display: -webkit-box;
+  font-size: 12px;
+  line-height: 15px;
+  opacity: 0.7;
+  text-overflow: ellipsis;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.link-card-content__image {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 20%;
+  background: rgba(127, 127, 127, 0.16);
+}
+
+.link-card-content__image img,
+.link-card-content__skeleton-block {
+  width: 100%;
+  height: 100%;
+}
+
+.link-card-content__image img {
+  display: block;
+  object-fit: cover;
+}
+
+.link-card-content__image svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.64;
+}
+
+.link-card-content--loading::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-120%);
+  background: linear-gradient(
+    105deg,
+    transparent 34%,
+    rgba(255, 255, 255, 0.28) 48%,
+    transparent 62%
+  );
+  animation: link-card-content-glow 2.4s ease-in-out infinite;
+}
+
+.link-card-content__skeleton-block,
+.link-card-content__skeleton-line {
+  display: block;
+  border-radius: 5px;
+  background: rgba(127, 127, 127, 0.14);
+}
+
+.link-card-content__skeleton-line {
+  width: 100%;
+  height: 7px;
+}
+
+.link-card-content__skeleton-line:nth-child(2) {
+  width: 78%;
+}
+
+.link-card-content__skeleton-line:nth-child(3) {
+  width: 52%;
+}
+
+@keyframes link-card-content-glow {
+  0%,
+  35% {
+    transform: translateX(-120%);
+  }
+  75%,
+  100% {
+    transform: translateX(120%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .link-card-content--loading::after {
+    animation: none;
+  }
+}

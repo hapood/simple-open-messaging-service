@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use tauri::Manager;
 
 const DB_FILENAME: &str = "soms-local.sqlite3";
-const CACHE_SCHEMA_VERSION: i64 = 2;
+const CACHE_SCHEMA_VERSION: i64 = 3;
 
 fn db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app
@@ -61,7 +61,7 @@ fn open(app: &tauri::AppHandle) -> Result<Connection, String> {
 }
 
 fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
-    let mut version: i64 = conn
+    let version: i64 = conn
         .query_row(
             "SELECT CAST(value_json AS INTEGER) FROM client_preferences
              WHERE scope='cache' AND key='schemaVersion'",
@@ -69,21 +69,6 @@ fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
             |row| row.get(0),
         )
         .map_err(|e| format!("read native cache schema version: {e}"))?;
-    if version == 1 && CACHE_SCHEMA_VERSION == 2 {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS friend_intents (
-               user_id INTEGER NOT NULL,
-               stable_key TEXT NOT NULL,
-               business_revision INTEGER NOT NULL,
-               payload_json TEXT NOT NULL,
-               PRIMARY KEY (user_id, stable_key)
-             );
-             UPDATE client_preferences SET value_json='2', updated_at=strftime('%s','now') * 1000
-             WHERE scope='cache' AND key='schemaVersion';",
-        )
-        .map_err(|e| format!("upgrade native cache schema v1 to v2: {e}"))?;
-        version = 2;
-    }
     if version != CACHE_SCHEMA_VERSION {
         return Err(format!(
             "native cache schema version mismatch: expected {CACHE_SCHEMA_VERSION}, got {version}"
@@ -92,6 +77,7 @@ fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
     for object in [
         "threads",
         "profiles",
+        "member_profiles",
         "friend_intents",
         "sync_state",
         "notification_global_state",
@@ -144,6 +130,14 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
           payload_json TEXT NOT NULL,
           profile_rev INTEGER NOT NULL,
           PRIMARY KEY (user_id, identity)
+        );
+        CREATE TABLE IF NOT EXISTS member_profiles (
+          user_id INTEGER NOT NULL,
+          thread_id INTEGER NOT NULL,
+          member_user_id INTEGER NOT NULL,
+          payload_json TEXT NOT NULL,
+          profile_rev INTEGER NOT NULL,
+          PRIMARY KEY (user_id, thread_id, member_user_id)
         );
         CREATE TABLE IF NOT EXISTS friend_intents (
           user_id INTEGER NOT NULL,
@@ -395,6 +389,13 @@ pub(crate) struct ThreadDelta {
     subject_domain: Option<String>,
     business_revision: Option<i64>,
     body: Option<Value>,
+    source_peer_domain: Option<String>,
+    member_account: Option<String>,
+    member_domain: Option<String>,
+    thread_ids: Option<Vec<i64>>,
+    display_name: Option<String>,
+    avatar: Option<String>,
+    profile_revision: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -693,10 +694,33 @@ pub(crate) async fn native_db_apply_thread_delta(
                     )
                     .map_err(|e| format!("save friend-request state revision: {e}"))?;
                 }
-                // Control/invalidation op only. The Angular roster layer refetches the
-                // source-scoped group members; native storage must still advance the
-                // enclosing state revision atomically.
-                "MEMBER_PROFILE" => {}
+                "MEMBER_PROFILE" => {
+                    let member_user_id = op.user_id.ok_or_else(|| "MEMBER_PROFILE has no userId".to_string())?;
+                    let thread_ids = op.thread_ids.ok_or_else(|| "MEMBER_PROFILE has no threadIds".to_string())?;
+                    let profile_rev = op.profile_revision.ok_or_else(|| "MEMBER_PROFILE has no profileRevision".to_string())?;
+                    let payload = serde_json::json!({
+                        "userId": member_user_id,
+                        "sourcePeerDomain": op.source_peer_domain.ok_or_else(|| "MEMBER_PROFILE has no sourcePeerDomain".to_string())?,
+                        "memberAccount": op.member_account.ok_or_else(|| "MEMBER_PROFILE has no memberAccount".to_string())?,
+                        "memberDomain": op.member_domain.ok_or_else(|| "MEMBER_PROFILE has no memberDomain".to_string())?,
+                        "displayName": op.display_name.ok_or_else(|| "MEMBER_PROFILE has no displayName".to_string())?,
+                        "avatar": op.avatar.unwrap_or_default(),
+                        "profileRevision": profile_rev,
+                    });
+                    for thread_id in thread_ids {
+                        let mut record = payload.clone();
+                        record.as_object_mut().expect("member profile payload is an object")
+                            .insert("threadId".into(), Value::from(thread_id));
+                        tx.execute(
+                            "INSERT INTO member_profiles(user_id, thread_id, member_user_id, payload_json, profile_rev)
+                             VALUES(?1, ?2, ?3, ?4, ?5)
+                             ON CONFLICT(user_id, thread_id, member_user_id) DO UPDATE SET
+                               payload_json=excluded.payload_json, profile_rev=excluded.profile_rev
+                             WHERE excluded.profile_rev >= member_profiles.profile_rev",
+                            params![user_id, thread_id, member_user_id, json_text(&record)?, profile_rev],
+                        ).map_err(|e| format!("apply member profile state: {e}"))?;
+                    }
+                }
                 other => return Err(format!("unknown thread delta direction: {other}")),
             }
         }
@@ -769,6 +793,59 @@ pub(crate) async fn native_db_get_profile(
     })
     .await
     .map_err(|e| format!("join profile read: {e}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn native_db_get_member_profile(
+    app: tauri::AppHandle,
+    user_id: i64,
+    thread_id: i64,
+    member_user_id: i64,
+) -> Result<Option<Value>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let value = open(&app)?
+            .query_row(
+                "SELECT payload_json FROM member_profiles
+                 WHERE user_id = ?1 AND thread_id = ?2 AND member_user_id = ?3",
+                params![user_id, thread_id, member_user_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| format!("get member profile: {e}"))?;
+        value.map(parse_json).transpose()
+    })
+    .await
+    .map_err(|e| format!("join member profile read: {e}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn native_db_list_member_profiles(
+    app: tauri::AppHandle,
+    user_id: i64,
+    thread_id: i64,
+) -> Result<Vec<Value>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = open(&app)?;
+        let mut statement = conn
+            .prepare(
+                "SELECT payload_json FROM member_profiles
+                 WHERE user_id = ?1 AND thread_id = ?2 ORDER BY member_user_id",
+            )
+            .map_err(|e| format!("prepare member profile list: {e}"))?;
+        let rows = statement
+            .query_map(params![user_id, thread_id], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("query member profile list: {e}"))?;
+        let mut values = Vec::new();
+        for row in rows {
+            values.push(
+                row.map_err(|e| format!("read member profile row: {e}"))
+                    .and_then(parse_json)?,
+            );
+        }
+        Ok(values)
+    })
+    .await
+    .map_err(|e| format!("join member profile list: {e}"))?
 }
 
 #[tauri::command]

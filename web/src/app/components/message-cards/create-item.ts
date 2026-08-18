@@ -177,6 +177,7 @@ export function createMsgCbElement(
   ) => void,
   onOpenForward?: (bundleId: string) => void,
   onQuoteJump?: (seq: number) => void,
+  onOpenMemberProfile?: (userId: number, anchor: DOMRect) => void,
 ): CbElement<ChatItemData> {
   const data = item.data as ChatMsgData; // source returns only messages; date is derived at the render layer
 
@@ -347,6 +348,24 @@ export function createMsgCbElement(
   selectionHost = el.el;
   applySelectionMetadata(el.el, item);
   applyAvatarOffset(el.el, showDate, isGroupStart);
+  if (onOpenMemberProfile) {
+    const openMemberProfile = (event: MouseEvent): void => {
+      const avatar = (event.target as Element | null)?.closest<HTMLElement>(
+        '.msg-avatar:not(.msg-avatar-tail)',
+      );
+      const current = interactionItem.data as ChatMsgData;
+      if (!avatar || !current.isGroupConversation) return;
+      event.preventDefault();
+      event.stopPropagation();
+      onOpenMemberProfile(current.creator, avatar.getBoundingClientRect());
+    };
+    el.el.addEventListener('click', openMemberProfile);
+    const baseDestroy = el.destroy;
+    el.destroy = () => {
+      el.el.removeEventListener('click', openMemberProfile);
+      baseDestroy();
+    };
+  }
   if (data.contentType === 'FORWARD' && onOpenForward) {
     const openForward = (event: MouseEvent): void => {
       if (

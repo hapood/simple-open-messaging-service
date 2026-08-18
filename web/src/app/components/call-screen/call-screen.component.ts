@@ -672,8 +672,10 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
         line-height: 16px;
         opacity: 0.84;
       }
-      .call-action:hover .action-icon {
-        background: rgba(255, 255, 255, 0.22);
+      @media (hover: hover) and (pointer: fine) {
+        .call-action:hover .action-icon {
+          background: rgba(255, 255, 255, 0.22);
+        }
       }
       .call-action:active .action-icon {
         transform: scale(0.94);
@@ -691,6 +693,10 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
       .decline .action-icon,
       .end .action-icon {
         background: var(--app-danger, #dc2626);
+      }
+      .decline:active .action-icon,
+      .end:active .action-icon {
+        background: #b91c1c;
       }
       .mute.on .action-icon,
       .cam.on .action-icon {

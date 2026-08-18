@@ -157,11 +157,7 @@ export class ThreadParticipantService {
     });
   }
 
-  /**
-   * Active roster of a conversation with each member's profile (login name + display name +
-   * avatar) and role — the data behind group/members. Ordered by join time; the controller sorts
-   * by role for display. P2P threads have exactly two rows with role null.
-   */
+  /** Active roster used to build authoritative group conversation snapshots. */
   getRoster(threadId: number) {
     return this.database.db.query.threadParticipant.findMany({
       where: and(
@@ -173,8 +169,7 @@ export class ThreadParticipantService {
     });
   }
 
-  /** Batch roster fetch for multiple threads (mixed; group by threadId at the call site). Used by the
-   *  /group/members batch endpoint so the client can hydrate all group rosters in one request. */
+  /** Batch roster fetch used while hydrating conversation snapshots. */
   getRosters(threadIds: number[]) {
     if (threadIds.length === 0) return Promise.resolve([]);
     return this.database.db.query.threadParticipant.findMany({

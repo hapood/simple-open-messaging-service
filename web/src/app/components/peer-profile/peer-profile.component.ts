@@ -11,7 +11,7 @@ import { NavStateMachineService } from '../../services/nav-state.service';
 import { ConversationItem, displayUserName } from '../../services/model';
 import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
 import { UserService } from '../../services/user.service';
-import { MsgService } from '../../services/message.service';
+import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter';
 import { PopupType, RouteService } from '../../services/route.service';
 import { ThreadDeletionLockService } from '../../services/thread-deletion-lock.service';
 import { ToastService } from '../../services/toast.service';
@@ -67,6 +67,14 @@ import { translateBizResult } from '../../services/biz-code';
           />
           <app-federated-badge [domain]="peerDomain()"></app-federated-badge>
           <div class="name">{{ peerDisplayName() }}</div>
+          @if (peer()?.account) {
+            <div class="account">
+              {{ 'profile.account' | transloco }} · {{ peer()!.account }}
+              @if (peerDomain()) {
+                &#64;{{ peerDomain() }}
+              }
+            </div>
+          }
           @if (peer()?.bio) {
             <div class="bio">{{ peer()?.bio }}</div>
           }
@@ -182,6 +190,13 @@ import { translateBizResult } from '../../services/biz-code';
         line-height: 19px;
         text-align: center;
       }
+      .account {
+        color: var(--app-text-muted);
+        font-size: 13px;
+        line-height: 19px;
+        overflow-wrap: anywhere;
+        text-align: center;
+      }
       .relationship-card {
         overflow: hidden;
         border: 1px solid var(--app-border);
@@ -253,7 +268,7 @@ export class PeerProfileComponent {
   private readonly nav = inject(NavStateMachineService);
   private readonly convList = inject(ConversationListService);
   private readonly userService = inject(UserService);
-  private readonly msgService = inject(MsgService);
+  private readonly threadAdapter = inject(MESSAGE_THREAD_ADAPTER);
   private readonly route = inject(RouteService);
   private readonly deletionLock = inject(ThreadDeletionLockService);
   private readonly toast = inject(ToastService);
@@ -290,7 +305,7 @@ export class PeerProfileComponent {
     if (!trd) return;
     const next = !trd.blocked;
     const apply = () => {
-      this.msgService
+      this.threadAdapter
         .setBlocked({ threadId: trd.threadId, blocked: next })
         .subscribe({
           next: (res) => {

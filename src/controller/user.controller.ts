@@ -86,8 +86,12 @@ type HydratedThreadDeltaOp =
       sourcePeerDomain: string;
       memberAccount: string;
       memberDomain: string;
+      userId: number;
       threadIds: number[];
       revision: number;
+      displayName: string;
+      avatar: string;
+      profileRevision: number;
     }
   | {
       direction: 'CLIENT_STATE';
@@ -290,6 +294,17 @@ export class UserController {
       .map((p) => p.threadId);
     const groupByThread =
       await this.groupService.resolveGroupUsersByThreadIds(groupThreadIds);
+    const groupRosterRows =
+      await this.participantService.getRosters(groupThreadIds);
+    const groupRosterByThread = new Map<
+      number,
+      Array<(typeof groupRosterRows)[number]>
+    >();
+    for (const row of groupRosterRows) {
+      const bucket = groupRosterByThread.get(row.threadId);
+      if (bucket) bucket.push(row);
+      else groupRosterByThread.set(row.threadId, [row]);
+    }
     return list.map((p) => {
       const item = {
         id: p.id,
@@ -358,6 +373,21 @@ export class UserController {
               membersCanInvite: gu.group?.membersCanInvite ?? true,
               createdAt: gu.group?.createdAt ?? p.thread.createdAt,
               updatedAt: gu.group?.updatedAt ?? p.thread.updatedAt,
+              members: (groupRosterByThread.get(p.threadId) ?? []).map(
+                (member) => ({
+                  userId: member.userId,
+                  account: member.user.account,
+                  domain:
+                    !member.user.domain || member.user.domain === 'local'
+                      ? ''
+                      : member.user.domain,
+                  profileSourceDomain:
+                    !gu.domain || gu.domain === 'local' ? '' : gu.domain,
+                  role: member.role,
+                  joinedAt: member.joinedAt,
+                  isOwner: member.role === 'OWNER',
+                }),
+              ),
             }
           : undefined;
         item.conversationState =

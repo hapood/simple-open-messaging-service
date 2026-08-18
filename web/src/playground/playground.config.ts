@@ -26,6 +26,11 @@ import {
   PlaygroundCallAdapter,
   PlaygroundCallState,
 } from './playground-call.mock';
+import { ConversationListService } from '../app/services/conversation-list.service';
+import { PlaygroundConversationList } from './playground-conversation-list.mock';
+import { GroupService } from '../app/services/group.service';
+import { of, Subject } from 'rxjs';
+import { MemberProfileRepository } from '../app/services/member-profile-store.service';
 
 /** Mock media is embedded as data/blob URLs, so this standalone entry never applies the production
  * remote-download size gate. The production app keeps its normal user-configurable service. */
@@ -34,6 +39,39 @@ const playgroundMediaThreshold = {
   shouldDefer: () => false,
   isLoaded: () => true,
   markLoaded: () => undefined,
+};
+
+const playgroundGroupService = {
+  leaveGroup: () => of({ code: 0, message: 'ok' }),
+  dissolveGroup: () => of({ code: 0, message: 'ok' }),
+};
+
+const playgroundMemberNames = new Map([
+  [1, 'Me'],
+  [2, 'Alice'],
+  [3, 'Maya'],
+  [4, 'Noah'],
+  [5, 'Olivia'],
+]);
+const playgroundMemberProfiles = {
+  changed$: new Subject<readonly number[]>(),
+  resolve: async (
+    _threadId: number,
+    member: { userId: number; account: string },
+  ) => ({
+    ...member,
+    name: playgroundMemberNames.get(member.userId) ?? member.account,
+    avatar: '',
+  }),
+  resolveAll: async (
+    threadId: number,
+    members: Array<{ userId: number; account: string }>,
+  ) =>
+    Promise.all(
+      members.map((member) =>
+        playgroundMemberProfiles.resolve(threadId, member),
+      ),
+    ),
 };
 
 function readCspNonce(): string | null {
@@ -76,6 +114,15 @@ export const playgroundConfig: ApplicationConfig = {
     {
       provide: CallAdapterService,
       useExisting: PlaygroundCallAdapter,
+    },
+    {
+      provide: ConversationListService,
+      useExisting: PlaygroundConversationList,
+    },
+    { provide: GroupService, useValue: playgroundGroupService },
+    {
+      provide: MemberProfileRepository,
+      useValue: playgroundMemberProfiles,
     },
     provideTransloco({
       config: {

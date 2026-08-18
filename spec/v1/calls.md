@@ -436,6 +436,21 @@ Both servers MUST use finite unanswered and post-acceptance connection
 deadlines. Their durations and relative ordering are local policy. On
 acceptance, the unanswered deadline ceases and the connection deadline begins.
 
+For interoperable default behavior, an implementation SHOULD use 45 seconds
+for both the unanswered deadline and the post-acceptance connection deadline.
+A caller-side safety deadline used to cover peer-server failure or partition
+SHOULD be longer than the corresponding peer deadline plus an ordinary S2S
+retry window; 60 seconds is the recommended default. These values are not wire
+constants, and an implementation MAY choose different finite values for its
+deployment conditions.
+
+A transient S2S delivery failure does not extend a lifecycle deadline. The
+bounded retry permitted by Section 11 may allow an identical frame to arrive
+before that deadline, but the protocol does not guarantee that waiting restores
+delivery or an active call. Once either side commits a terminal result, the
+late-frame and tombstone rules apply and no delayed lifecycle or signal frame
+may revive the call.
+
 | Timeout | Sender | Required frame |
 | --- | --- | --- |
 | Callee unanswered timeout | callee server | `missed` |

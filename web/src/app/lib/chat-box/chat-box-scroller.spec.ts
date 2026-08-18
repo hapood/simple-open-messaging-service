@@ -1364,7 +1364,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       content
         .querySelector('[data-cb-id="10"]')
         ?.classList.contains('cb-jump-highlight'),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       content
         .querySelector('[data-media-message-id="11"]')

@@ -29,47 +29,46 @@ import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter
   imports: [FormsModule, TranslocoModule, IconComponent],
   template: `
     <div class="msg-search">
-      <app-icon
-        class="msg-search-lead"
-        [type]="AppIconType.SEARCH"
-        [style]="{ width: '18px', height: '18px' }"
-      ></app-icon>
-      <input
-        #input
-        type="text"
-        class="msg-search-input"
-        [placeholder]="'chat.searchInChatPlaceholder' | transloco"
-        [(ngModel)]="keyword"
-        (ngModelChange)="onInput()"
-      />
-      <span class="msg-search-count">
-        @if (hasNoResult()) {
-          {{ 'chat.searchNoResult' | transloco }}
-        } @else {
-          {{ countLabel() }}
-        }
-      </span>
+      <div class="msg-search-field">
+        <input
+          #input
+          type="text"
+          class="msg-search-input"
+          [placeholder]="'chat.searchInChatPlaceholder' | transloco"
+          [(ngModel)]="keyword"
+          (ngModelChange)="onInput()"
+        />
+        <span class="msg-search-count">
+          @if (hasNoResult()) {
+            {{ 'chat.searchNoResult' | transloco }}
+          } @else {
+            {{ countLabel() }}
+          }
+        </span>
+      </div>
+      <div class="msg-search-nav">
+        <button
+          type="button"
+          class="msg-search-btn"
+          (click)="prev()"
+          [disabled]="!canPrev()"
+          aria-label="Previous match"
+        >
+          ▲
+        </button>
+        <button
+          type="button"
+          class="msg-search-btn"
+          (click)="next()"
+          [disabled]="!canNext()"
+          aria-label="Next match"
+        >
+          ▼
+        </button>
+      </div>
       <button
         type="button"
-        class="msg-search-btn"
-        (click)="prev()"
-        [disabled]="!canPrev()"
-        aria-label="Previous match"
-      >
-        ▲
-      </button>
-      <button
-        type="button"
-        class="msg-search-btn"
-        (click)="next()"
-        [disabled]="!canNext()"
-        aria-label="Next match"
-      >
-        ▼
-      </button>
-      <button
-        type="button"
-        class="msg-search-btn"
+        class="msg-search-btn msg-search-close"
         (click)="close.emit()"
         aria-label="Close search"
       >
@@ -100,20 +99,15 @@ import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter
         padding: 0 6px;
         box-sizing: border-box;
       }
-      .msg-search-lead {
-        color: var(--app-text-soft, var(--app-text));
-        flex: 0 0 18px;
-        opacity: 0.7;
-      }
       .msg-search-input {
-        flex: 1 1 auto;
+        width: 100%;
         min-width: 0;
         height: 32px;
         border: 1px solid var(--app-border);
         border-radius: var(--app-radius-sm, 8px);
         background: var(--app-bg, transparent);
         color: var(--app-text);
-        padding: 0 10px;
+        padding: 0 70px 0 10px;
         font-size: 14px;
         line-height: 20px;
         box-sizing: border-box;
@@ -122,14 +116,33 @@ import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter
       .msg-search-input:focus {
         border-color: var(--app-brand);
       }
+      .msg-search-field {
+        position: relative;
+        flex: 1 1 auto;
+        min-width: 0;
+      }
       .msg-search-count {
-        flex: 0 0 auto;
-        min-width: 56px;
+        position: absolute;
+        top: 6px;
+        right: 10px;
+        max-width: 58px;
         text-align: right;
         font-size: 12px;
         line-height: 20px;
         color: var(--app-text-soft, var(--app-text));
         opacity: 0.8;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        pointer-events: none;
+      }
+      .msg-search-nav {
+        flex: 0 0 auto;
+        display: flex;
+        gap: 2px;
+      }
+      .msg-search-close {
+        margin-left: 2px;
       }
       .msg-search-btn {
         flex: 0 0 auto;

@@ -10,7 +10,10 @@
     "callBusy": "忙碌",
     "callNoAnswer": "无人接听",
     "callAccept": "接听",
-    "callResponseHint": "从单聊中发起通话时生效；群聊不支持通话。"
+    "callResponseHint": "从单聊中发起通话时生效；群聊不支持通话。",
+    "muted": "静音通知",
+    "blocked": "屏蔽新消息",
+    "blockedOverridesMuted": "屏蔽生效时静音状态会保留，但界面只突出屏蔽。"
   },
   "transfer": {
     "sendingCount": "正在发送 {{count}} 项",
@@ -230,6 +233,7 @@
     "unblock": "解除屏蔽",
     "blockConfirm": "屏蔽 {{name}} 的新消息？历史消息会保留。",
     "relationship": "好友关系管理",
+    "memberCardAria": "群成员资料",
     "blockHint": "不再接收新消息，历史记录仍会保留",
     "unfriendHint": "解除关系后仍可选择保留聊天记录",
     "avatarErrorFormat": "请选择 PNG、JPG、GIF 或 WebP 图片",
@@ -608,9 +612,9 @@
     "menuLeaveGroupConfirm": "退出此群聊？",
     "menuConfirm": "确认",
     "menuCancel": "取消",
-    "blockedBanner": "已屏蔽此会话的新消息。",
-    "blockedCenterTitle": "已屏蔽新消息",
-    "blockedCenterHint": "解除屏蔽后可继续查看历史消息",
+    "blockedContactBanner": "已屏蔽此联系人，不再接收新消息",
+    "blockedGroupBanner": "已暂停接收此群聊的新消息",
+    "unblockAction": "解除屏蔽",
     "quotaPausedBanner": "今日额度已用尽 — 发送已暂停，将于 00:00 (UTC) 重置或由管理员追加额度后恢复。",
     "groupDissolvedBanner": "群聊已解散。",
     "notFriendsBanner": "对方不是你的好友。",

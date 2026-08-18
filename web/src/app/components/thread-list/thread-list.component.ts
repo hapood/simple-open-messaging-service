@@ -224,7 +224,8 @@ export class ThreadListComponent implements OnInit {
     if ((t.mentionUnread?.length ?? 0) > 0) {
       parts.push(this.transloco.translate('threadList.mentionedYou'));
     }
-    if (t.muted) parts.push(this.transloco.translate('threadList.muted'));
+    if (t.muted && !t.blocked)
+      parts.push(this.transloco.translate('threadList.muted'));
     if (t.pinned) parts.push(this.transloco.translate('threadList.pinned'));
     return parts.filter(Boolean).join(', ');
   }

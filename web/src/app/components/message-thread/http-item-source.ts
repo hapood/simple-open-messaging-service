@@ -658,8 +658,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         const pending = this.pending.find(
           (p) => p.clientMessageId === m.clientMessageId,
         );
-        if (pending)
-          item.data = { ...item.data, status: 'sent' };
+        if (pending) item.data = { ...item.data, status: 'sent' };
       }
       out.push(item);
     }

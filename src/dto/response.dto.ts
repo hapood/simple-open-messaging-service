@@ -227,6 +227,34 @@ export class GroupResponseDto {
 
   @ApiProperty({ example: 1_700_000_000_000 })
   updatedAt!: number;
+
+  @ApiProperty({ type: () => [GroupMemberRefDto] })
+  members!: GroupMemberRefDto[];
+}
+
+/** Membership/role facts carried by the authoritative conversation snapshot.
+ * Display metadata is resolved from PROFILE or source-scoped MEMBER_PROFILE state. */
+export class GroupMemberRefDto {
+  @ApiProperty({ example: 7 })
+  userId!: number;
+
+  @ApiProperty({ example: 'alice' })
+  account!: string;
+
+  @ApiProperty({ example: 'example.com' })
+  domain!: string;
+
+  @ApiProperty({ example: 'group-origin.example' })
+  profileSourceDomain!: string;
+
+  @ApiProperty({ enum: GroupRole })
+  role!: GroupRole;
+
+  @ApiProperty({ example: 1_700_000_000_000 })
+  joinedAt!: number;
+
+  @ApiProperty({ example: false })
+  isOwner!: boolean;
 }
 
 /**
@@ -398,58 +426,4 @@ export class CreateGroupResponseDto {
   /** Friends who could not be invited (not a friend / no P2P thread / write failure). */
   @ApiProperty({ type: SkippedInviteDto, isArray: true })
   skipped!: SkippedInviteDto[];
-}
-
-/**
- * One row of a group roster (group/members). The caller's own row carries their role so the
- * client can show role-gated actions; isOwner is derived from the group's ownerId rather than
- * carried on the participant (the participant role is the source of truth, ownerId is a
- * denormalized O(1) pointer kept in sync on transfer).
- */
-export class GroupMemberDto {
-  @ApiProperty({ example: 7 })
-  userId!: number;
-
-  @ApiProperty({ example: 'alice', description: 'Login unique name' })
-  account!: string;
-
-  @ApiProperty({ example: 'Alice', description: 'Display name' })
-  name!: string;
-
-  @ApiProperty({ example: 'https://.../a.webp', description: 'Avatar URL' })
-  avatar!: string;
-
-  @ApiProperty({
-    example: false,
-    description: 'Whether this member is an external (federated) user',
-  })
-  isForeigner!: boolean;
-
-  @ApiProperty({
-    example: 'example.com',
-    description: 'Domain (empty for a local member)',
-  })
-  domain!: string;
-
-  @ApiProperty({
-    example: 'group-origin.example',
-    description:
-      'Publisher of the source-scoped display snapshot. Empty means the home-owned User profile.',
-  })
-  profileSourceDomain!: string;
-
-  @ApiProperty({ enum: GroupRole, description: 'Member role in this group' })
-  role!: GroupRole;
-
-  @ApiProperty({
-    example: 1_700_000_000_000,
-    description: 'Joined at (ms timestamp)',
-  })
-  joinedAt!: number;
-
-  @ApiProperty({
-    example: false,
-    description: 'Whether this member is the group owner',
-  })
-  isOwner!: boolean;
 }

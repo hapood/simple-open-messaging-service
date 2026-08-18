@@ -47,10 +47,23 @@ export interface ProfileRecord {
   id: number;
   kind: 'user' | 'group';
   name: string;
+  account: string;
   avatar: string;
   bio: string;
   domain: string;
   profileRev: number;
+}
+
+/** Source-scoped group-member display snapshot, materialized from MEMBER_PROFILE state. */
+export interface MemberProfileRecord {
+  threadId: number;
+  userId: number;
+  sourcePeerDomain: string;
+  memberAccount: string;
+  memberDomain: string;
+  displayName: string;
+  avatar: string;
+  profileRevision: number;
 }
 
 /** A value persisted in the stable `settings` store (keyPath `'key'`). One key is `'missedCursor'` — the
@@ -159,6 +172,7 @@ function clientStateKey(op: {
 export interface WebdbSchema extends DBSchema {
   avatars: { key: string; value: AvatarRecord };
   profiles: { key: string; value: ProfileRecord };
+  memberProfiles: { key: [number, number]; value: MemberProfileRecord };
   /** One record per conversation, keyed by `threadId` (the field is the keyPath). */
   threads: { key: number; value: ConversationItem };
   friendIntents: { key: string; value: ClientFriendIntent };
@@ -181,7 +195,7 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-const CACHE_SCHEMA_VERSION = 2;
+const CACHE_SCHEMA_VERSION = 3;
 const MESSAGE_CACHE_SCHEMA_VERSION = 1;
 const IDB_FORMAT_VERSION = 1;
 
@@ -461,6 +475,7 @@ export class WebdbService implements OnDestroy {
     const required = [
       'avatars',
       'profiles',
+      'memberProfiles',
       'threads',
       'friendIntents',
       'settings',
@@ -485,6 +500,9 @@ export class WebdbService implements OnDestroy {
           throw new Error('cache recreation expected an empty IndexedDB');
         db.createObjectStore('avatars', { keyPath: 'identity' });
         db.createObjectStore('profiles', { keyPath: 'identity' });
+        db.createObjectStore('memberProfiles', {
+          keyPath: ['threadId', 'userId'],
+        });
         db.createObjectStore('threads', { keyPath: 'threadId' });
         db.createObjectStore('friendIntents', { keyPath: 'key' });
         db.createObjectStore('settings', { keyPath: 'key' });
@@ -1013,7 +1031,14 @@ export class WebdbService implements OnDestroy {
     }
     const db = await this.db();
     const tx = db.transaction(
-      ['threads', 'profiles', 'avatars', 'friendIntents', 'settings'],
+      [
+        'threads',
+        'profiles',
+        'memberProfiles',
+        'avatars',
+        'friendIntents',
+        'settings',
+      ],
       'readwrite',
     );
     for (const op of delta) {
@@ -1052,6 +1077,7 @@ export class WebdbService implements OnDestroy {
             id: u.id,
             kind: 'user',
             name: u.name,
+            account: u.account,
             avatar: u.avatar,
             bio: u.bio ?? '',
             domain: u.domain ?? '',
@@ -1066,10 +1092,25 @@ export class WebdbService implements OnDestroy {
         await tx.objectStore('avatars').delete(identity);
         continue;
       }
-      // MEMBER_PROFILE is a durable invalidation marker. ThreadRepository emits the
-      // affected group ids to the live roster layer; there is no global member-profile
-      // record to persist because its identity is source-scoped, not userId-scoped.
-      if (op.direction === 'MEMBER_PROFILE') continue;
+      if (op.direction === 'MEMBER_PROFILE') {
+        const store = tx.objectStore('memberProfiles');
+        for (const threadId of op.threadIds) {
+          const key: [number, number] = [threadId, op.userId];
+          const previous = await store.get(key);
+          if (!previous || op.profileRevision >= previous.profileRevision)
+            await store.put({
+              threadId,
+              userId: op.userId,
+              sourcePeerDomain: op.sourcePeerDomain,
+              memberAccount: op.memberAccount,
+              memberDomain: op.memberDomain,
+              displayName: op.displayName,
+              avatar: op.avatar,
+              profileRevision: op.profileRevision,
+            });
+        }
+        continue;
+      }
       if (op.direction === 'DELETE')
         await tx.objectStore('threads').delete(op.threadId);
       else await tx.objectStore('threads').put(op.item);
@@ -1107,6 +1148,39 @@ export class WebdbService implements OnDestroy {
 
   async getProfile(identity: string): Promise<ProfileRecord | undefined> {
     return this.runAccountOperation(() => this.getProfileInternal(identity));
+  }
+
+  async getMemberProfile(
+    threadId: number,
+    userId: number,
+  ): Promise<MemberProfileRecord | undefined> {
+    return this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId != null)
+        return (
+          (await tauriInvoke<MemberProfileRecord | null>(
+            'native_db_get_member_profile',
+            {
+              userId: Number(this.currentUserId),
+              threadId,
+              memberUserId: userId,
+            },
+          )) ?? undefined
+        );
+      return (await this.db()).get('memberProfiles', [threadId, userId]);
+    });
+  }
+
+  async listMemberProfiles(threadId: number): Promise<MemberProfileRecord[]> {
+    return this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId != null)
+        return tauriInvoke<MemberProfileRecord[]>(
+          'native_db_list_member_profiles',
+          { userId: Number(this.currentUserId), threadId },
+        );
+      return (await (await this.db()).getAll('memberProfiles')).filter(
+        (profile) => profile.threadId === threadId,
+      );
+    });
   }
 
   private async getProfileInternal(

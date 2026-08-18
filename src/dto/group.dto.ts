@@ -94,7 +94,7 @@ export class InviteGroupDto {
   groupId!: number;
 }
 
-/** Shared by group/info, group/members, group/leave — any group route keyed only by groupId. */
+/** Shared by group/info and group/leave — any group route keyed only by groupId. */
 export class GroupIdDto {
   @ApiProperty({ example: 12, description: 'Group id' })
   @Type(() => Number)
@@ -111,21 +111,6 @@ export class GroupTerminalActionDto extends GroupIdDto {
   @IsOptional()
   @IsBoolean()
   deleteData?: boolean;
-}
-
-/** Body for /group/members (batch) — fetch rosters for multiple group threads in one request. The
- *  server returns rosters only for threads the caller is an active member of. */
-export class GroupMembersBatchDto {
-  @ApiProperty({
-    type: [Number],
-    example: [12, 13],
-    description: 'Group thread ids',
-  })
-  @Type(() => Number)
-  @IsArray()
-  @IsInt({ each: true })
-  @ArrayMinSize(1)
-  threadIds!: number[];
 }
 
 export class KickGroupDto {

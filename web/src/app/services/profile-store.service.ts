@@ -6,6 +6,7 @@ import { AvatarRepository } from './avatar-cache.service';
 export interface ProfileData {
   id: number;
   name: string;
+  account?: string;
   /** Avatar path (the version tag — a change here drives {@link AvatarRepository.refresh}). */
   avatar: string;
   bio?: string;
@@ -34,7 +35,11 @@ export class ProfileRepository {
    * {@link AvatarRepository.refresh} for that identity. Graceful no-op when IDB is unavailable
    * (prerender / no user) — a later miss re-fetches.
    */
-  async putProfile(identity: string, kind: 'user' | 'group', data: ProfileData): Promise<void> {
+  async putProfile(
+    identity: string,
+    kind: 'user' | 'group',
+    data: ProfileData,
+  ): Promise<void> {
     try {
       const prev = await this.webdb.getProfile(identity);
       if (prev && data.profileRev < prev.profileRev) return;
@@ -43,6 +48,7 @@ export class ProfileRepository {
         id: data.id,
         kind,
         name: data.name,
+        account: data.account ?? prev?.account ?? '',
         avatar: data.avatar,
         bio: data.bio ?? prev?.bio ?? '',
         domain: data.domain ?? prev?.domain ?? '',

@@ -103,7 +103,7 @@
                 } @else {
                   <span class="thread-msg">{{ previewText(thread) }}</span>
                 }
-                @if (thread.muted) {
+                @if (thread.muted && !thread.blocked) {
                   <span
                     class="thread-status-icon"
                     [title]="'threadList.muted' | transloco"

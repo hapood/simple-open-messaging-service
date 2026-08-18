@@ -223,7 +223,10 @@ describe('ThreadListComponent', () => {
     expect(row.querySelector('.thread-msg')).toBeNull();
     const rows = row.querySelectorAll('.thread-row');
     expect(rows[0].querySelectorAll('.thread-status-icon')).toHaveSize(1);
-    expect(rows[1].querySelectorAll('.thread-status-icon')).toHaveSize(1);
+    expect(rows[1].querySelectorAll('.thread-status-icon')).toHaveSize(0);
+    expect(row.getAttribute('aria-label')).not.toContain(
+      TestBed.inject(TranslocoService).translate('threadList.muted'),
+    );
   });
 
   it('native row activation emits the selected conversation', async () => {

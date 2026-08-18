@@ -2,7 +2,6 @@ import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { apiPrefix } from './constants';
 import { StandardResponse } from './model';
-import { map } from 'rxjs';
 
 export interface GrpCreateInfo {
   threadId: number;
@@ -11,30 +10,6 @@ export interface GrpCreateInfo {
   invited: number[];
   /** Friends who could not be invited (not a friend / no P2P thread / write failure). */
   skipped: { userId: number; reason: string }[];
-}
-
-/** One row of a group roster (group/members). Mirrors the backend GroupMemberDto. */
-export interface GroupMember {
-  userId: number;
-  account: string;
-  name: string;
-  avatar: string;
-  /** Whether this member is an external (federated) user — drives the federated-badge in the roster. */
-  isForeigner: boolean;
-  /** Home domain; empty for a local member (the badge self-hides). */
-  domain: string;
-  /** Publisher of this group-scoped display snapshot; empty means home-owned User profile. */
-  profileSourceDomain: string;
-  /** OWNER | ADMIN | MEMBER */
-  role: 'OWNER' | 'ADMIN' | 'MEMBER';
-  /** joined at, ms timestamp */
-  joinedAt: number;
-  isOwner: boolean;
-}
-
-export interface GroupRoster {
-  threadId: number;
-  members: GroupMember[];
 }
 
 @Injectable({
@@ -66,23 +41,6 @@ export class GroupService {
         skipped: { userId: number; reason: string }[];
       }>
     >(`${apiPrefix()}/group/invite`, params);
-  }
-
-  /** Fetch the active roster for one conversation. The backend endpoint is batch-shaped; keep that
-   *  transport detail here so composer/info consumers receive one flat member array. */
-  getThreadMembers(threadId: number) {
-    return this.http
-      .post<StandardResponse<GroupRoster[]>>(`${apiPrefix()}/group/members`, {
-        threadIds: [threadId],
-      })
-      .pipe(
-        map((res) => ({
-          ...res,
-          data:
-            res.data?.find((roster) => roster.threadId === threadId)?.members ??
-            [],
-        })),
-      );
   }
 
   leaveGroup(params: { groupId: number; deleteData?: boolean }) {

@@ -16,7 +16,8 @@ import {
 } from '../../services/link-card-generation.service';
 import { RouteService } from '../../services/route.service';
 import { assetUrl } from '../../services/runtime';
-import { linkCardHost, linkCardSource } from '../../lib/link-card-display';
+import { linkCardSource } from '../../lib/link-card-display';
+import { LinkCardContentComponent } from '../message-cards/link-card-content/link-card-content.component';
 
 export type LinkCardGenerationMode = 'composer' | 'share';
 
@@ -28,7 +29,7 @@ export type LinkCardGenerationDialogResult =
 @Component({
   selector: 'app-link-card-generation-dialog',
   standalone: true,
-  imports: [TranslocoPipe],
+  imports: [TranslocoPipe, LinkCardContentComponent],
   templateUrl: './link-card-generation-dialog.component.html',
   styleUrl: './link-card-generation-dialog.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -51,10 +52,7 @@ export class LinkCardGenerationDialogComponent implements OnInit {
   readonly displayStatus = computed<LinkCardGenerationStatus>(() =>
     this.content() ? 'succeeded' : this.status(),
   );
-  readonly imageFailed = signal(false);
-  readonly imageSrc = computed(() => assetUrl(this.content()?.image));
   readonly faviconSrc = computed(() => assetUrl(this.content()?.favicon));
-  readonly host = computed(() => linkCardHost(this.content()?.url ?? ''));
   readonly source = computed(() =>
     linkCardSource(this.content()?.url ?? '', this.content()?.siteName),
   );
@@ -115,9 +113,5 @@ export class LinkCardGenerationDialogComponent implements OnInit {
         text: this.originalText(),
       } satisfies LinkCardGenerationDialogResult);
     }
-  }
-
-  onImageError(): void {
-    this.imageFailed.set(true);
   }
 }

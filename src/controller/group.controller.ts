@@ -16,12 +16,11 @@ import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { ApiResultResponse } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import { serializeBody } from '../common/serialize.interceptor.js';
 import { GroupService } from '../group/group.service.js';
 import { InviteService } from '../invite/invite.service.js';
 import { FederationService } from '../federation/federation.service.js';
 import { UserService } from '../user/user.service.js';
-import { eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import { user } from '../database/schema.js';
 import { ThreadAccessGuard } from '../thread-participant/thread-access.guard.js';
@@ -34,7 +33,6 @@ import {
   InviteGroupDto,
   GroupIdDto,
   GroupTerminalActionDto,
-  GroupMembersBatchDto,
   KickGroupDto,
   TransferGroupDto,
   SetRoleGroupDto,
@@ -44,13 +42,6 @@ import {
   CreateGroupResponseDto,
   GroupResponseDto,
 } from '../dto/response.dto.js';
-
-/** Privilege rank for roster display ordering: OWNER, then ADMIN, then MEMBER. */
-const ROLE_DISPLAY_RANK: Record<GroupRole, number> = {
-  [GroupRole.OWNER]: 0,
-  [GroupRole.ADMIN]: 1,
-  [GroupRole.MEMBER]: 2,
-};
 
 @ApiTags('group')
 @Controller()
@@ -292,15 +283,15 @@ export class GroupController {
   @ApiOperation({ summary: 'Group info (members only)' })
   @ApiResultResponse(GroupResponseDto)
   async getGroupInfo(@Request() req: FastifyRequest) {
-    // Membership already enforced by ThreadAccessGuard. Build GroupResponseDto from the `!`-User
-    // (identity) + the Group row (ownerId + updatedAt). The roster is NOT loaded here — it has its own
-    // /group/members endpoint; group info carries only identity + owner + revision timestamps.
+    // Membership is already enforced by ThreadAccessGuard. The response is a complete group snapshot:
+    // identity metadata plus authoritative membership and role facts.
     const threadId = req.threadAccess!.threadId;
     const trd = await this.groupService.findGroupByThreadId(threadId);
     const gu = trd?.groupUser;
     if (!trd || !gu) {
       throw new BusinessException(BusinessCode.NOT_FOUND, 'group not found');
     }
+    const roster = await this.participantService.getRoster(threadId);
     return {
       id: threadId,
       account: gu.account,
@@ -316,95 +307,20 @@ export class GroupController {
       threadId,
       createdAt: trd.createdAt,
       updatedAt: gu.group?.updatedAt ?? trd.updatedAt,
+      members: roster.map((member) => ({
+        userId: member.userId,
+        account: member.user.account,
+        domain:
+          !member.user.domain || member.user.domain === 'local'
+            ? ''
+            : member.user.domain,
+        profileSourceDomain:
+          !gu.domain || gu.domain === 'local' ? '' : gu.domain,
+        role: member.role,
+        joinedAt: member.joinedAt,
+        isOwner: member.role === GroupRole.OWNER,
+      })),
     };
-  }
-
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @Post('group/members')
-  @ApiOperation({
-    summary:
-      'Batch fetch group rosters (members only; caller membership filtered)',
-  })
-  async getMembers(
-    @Request() req: FastifyRequest,
-    @Body() dto: GroupMembersBatchDto,
-  ) {
-    const me = req.user.userId;
-    const rows = await this.participantService.getRosters(dto.threadIds);
-    const scopedProfiles = dto.threadIds.length
-      ? await this.database.db.execute<{
-          threadId: number;
-          userId: number;
-          displayName: string;
-          avatar: string | null;
-          profileSourceDomain: string;
-        }>(sql`
-          SELECT thread.id AS "threadId", member_u.id AS "userId",
-            profile."displayName", profile.avatar,
-            profile."sourcePeerDomain" AS "profileSourceDomain"
-          FROM "MessageThread" thread
-          JOIN "User" group_u ON group_u.id = thread."groupUserId"
-          JOIN "ThreadParticipant" participant ON participant."threadId" = thread.id
-            AND participant."leftAt" IS NULL
-          JOIN "User" member_u ON member_u.id = participant."userId"
-          JOIN "FederatedMemberProfile" profile
-            ON profile."sourcePeerDomain" = group_u.domain
-           AND profile."memberAccount" = member_u.account
-           AND profile."memberDomain" = CASE
-             WHEN member_u."isForeigner" THEN member_u.domain
-             ELSE COALESCE((SELECT domain FROM "LocalFederationIdentity" LIMIT 1), 'local')
-           END
-           AND profile.availability = 'AVAILABLE'
-          WHERE thread.id IN (${sql.join(
-            dto.threadIds.map((threadId) => sql`${threadId}`),
-            sql`, `,
-          )})
-            AND group_u.domain <> 'local'
-        `)
-      : { rows: [] };
-    const scopedByMember = new Map(
-      scopedProfiles.rows.map((profile) => [
-        `${profile.threadId}:${profile.userId}`,
-        profile,
-      ]),
-    );
-    // Group by threadId; keep only threads where the caller is an active member (roster contains me).
-    const byThread = new Map<number, Array<(typeof rows)[number]>>();
-    for (const r of rows) {
-      const arr = byThread.get(r.threadId);
-      if (arr) arr.push(r);
-      else byThread.set(r.threadId, [r]);
-    }
-    return [...byThread.entries()]
-      .filter(([, members]) => members.some((m) => m.userId === me))
-      .map(([threadId, members]) => {
-        const mapped = members.map((r) => {
-          const scoped = scopedByMember.get(`${threadId}:${r.userId}`);
-          return {
-            userId: r.userId,
-            account: r.user.account,
-            name: scoped?.displayName ?? r.user.name,
-            avatar: scoped?.avatar ?? r.user.avatar,
-            // Pass through verbatim — a local member's User.domain is already '' (not the 'local' sentinel),
-            // so the badge self-hides for locals and shows the peer domain for federated stubs.
-            isForeigner: r.user.isForeigner,
-            domain: r.user.domain,
-            profileSourceDomain: scoped ? scoped.profileSourceDomain : '',
-            role: r.role,
-            joinedAt: r.joinedAt,
-            isOwner: r.role === GroupRole.OWNER,
-          };
-        });
-        // Owner first, then admins, then members; within a role, by join time.
-        mapped.sort(
-          (a, b) =>
-            ROLE_DISPLAY_RANK[a.role as GroupRole] -
-              ROLE_DISPLAY_RANK[b.role as GroupRole] ||
-            a.joinedAt.getTime() - b.joinedAt.getTime(),
-        );
-        return { threadId, members: serializeBody(mapped) };
-      });
   }
 
   @UseGuards(ThrottleGuard)

@@ -35,14 +35,16 @@
         [style.left.px]="menu.x"
         [style.top.px]="menu.y"
       >
-        <button
-          type="button"
-          role="menuitem"
-          (click)="copyContextMessage()"
-          [attr.title]="'chat.selection.copy' | transloco"
-        >
-          <span>{{ 'chat.selection.copy' | transloco }}</span>
-        </button>
+        @if (canCopyMessage(menu.targetItem.data)) {
+          <button
+            type="button"
+            role="menuitem"
+            (click)="copyContextMessage()"
+            [attr.title]="'chat.selection.copy' | transloco"
+          >
+            <span>{{ 'chat.selection.copy' | transloco }}</span>
+          </button>
+        }
         @if (canQuote(menu.targetItem.data)) {
           <button
             type="button"
@@ -90,6 +92,33 @@
       </div>
     }
 
+    @if (memberProfileCard(); as card) {
+      <section
+        class="member-profile-card"
+        [style.left.px]="card.x"
+        [style.top.px]="card.y"
+        [attr.aria-label]="'profile.memberCardAria' | transloco"
+      >
+        <app-user-avatar
+          [type]="UserAvatarType.OTHER"
+          [name]="card.profile.name"
+          [identityId]="card.profile.userId"
+          [src]="card.profile.avatar"
+        />
+        <div class="member-profile-copy">
+          <strong>{{ card.profile.name || card.profile.account }}</strong>
+          @if (card.profile.account) {
+            <span
+              >{{ 'profile.account' | transloco }} · {{ card.profile.account }}
+              @if (card.profile.domain) {
+                &#64;{{ card.profile.domain }}
+              }
+            </span>
+          }
+        </div>
+      </section>
+    }
+
     <!-- (transitionend) recomputes the sticky-date pill when the keyboard-lift transform settles: the
          transform fires no scroll event, so without this the pill would keep its pre-lift label until the
          next scroll. The handler filters to the viewport's own `transform` (ignoring bubbled item transitions). -->
@@ -102,13 +131,6 @@
       [attr.aria-label]="'chat.messageListAria' | transloco"
       (transitionend)="onViewportTransitionEnd($event)"
     >
-      @if (blockedPeer()) {
-        <div class="msg-blocked-center" role="status">
-          <span class="msg-blocked-center-icon" aria-hidden="true">⊘</span>
-          <strong>{{ 'chat.blockedCenterTitle' | transloco }}</strong>
-          <span>{{ 'chat.blockedCenterHint' | transloco }}</span>
-        </div>
-      }
       <!-- A plain list, deliberately not role="log": virtual-window remounts must not cause assistive
            technology to announce historical messages as if they were newly received. -->
       <div class="msg-content" #content role="list">
@@ -496,9 +518,15 @@
         {{ 'chat.leftGroupBanner' | transloco }}
       </div>
     } @else if (blockedPeer()) {
-      <div class="msg-blocked-banner">
-        {{ 'chat.blockedBanner' | transloco }}
-      </div>
+      <button type="button" class="msg-blocked-banner" (click)="unblockPeer()">
+        <span>{{
+          (userMsgTrd()?.type === 'GROUP'
+            ? 'chat.blockedGroupBanner'
+            : 'chat.blockedContactBanner'
+          ) | transloco
+        }}</span>
+        <strong>{{ 'chat.unblockAction' | transloco }}</strong>
+      </button>
     } @else if (sendPaused()) {
       <div class="msg-blocked-banner">
         {{ 'chat.quotaPausedBanner' | transloco }}

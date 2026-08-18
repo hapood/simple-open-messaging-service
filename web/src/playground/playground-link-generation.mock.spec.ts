@@ -2,6 +2,7 @@ import { PlaygroundLinkGeneration } from './playground-link-generation.mock';
 
 describe('PlaygroundLinkGeneration', () => {
   it('models a failed fetch with a sendable default card', async () => {
+    jasmine.clock().install();
     const service = new PlaygroundLinkGeneration();
 
     const generation = await service.begin(
@@ -9,9 +10,17 @@ describe('PlaygroundLinkGeneration', () => {
       'See https://www.zhihu.com/question/1',
       '00000000-0000-4000-8000-000000000001',
     );
+    expect(
+      service.snapshot('00000000-0000-4000-8000-000000000001')?.status,
+    ).toBe('pending');
+    expect(generation.status).toBe('pending');
+    jasmine.clock().tick(2_000);
+    await Promise.resolve();
+    const completed = service.snapshot(generation.generationId);
+    jasmine.clock().uninstall();
 
-    expect(generation.status).toBe('failed');
-    expect(generation.content).toEqual({
+    expect(completed?.status).toBe('failed');
+    expect(completed?.content).toEqual({
       url: 'https://www.zhihu.com/question/1',
       title: 'zhihu.com',
       description: 'See',

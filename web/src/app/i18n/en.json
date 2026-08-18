@@ -10,7 +10,10 @@
     "callBusy": "Busy",
     "callNoAnswer": "No answer",
     "callAccept": "Accept",
-    "callResponseHint": "Applies when you start a call from a direct chat. Group calls are not available."
+    "callResponseHint": "Applies when you start a call from a direct chat. Group calls are not available.",
+    "muted": "Mute notifications",
+    "blocked": "Block new messages",
+    "blockedOverridesMuted": "Mute is retained while blocked, but only the blocked state is emphasized."
   },
   "transfer": {
     "sendingCount": "Sending {{count}}",
@@ -230,6 +233,7 @@
     "unblock": "Unblock",
     "blockConfirm": "Block new messages from {{name}}? Existing history will remain.",
     "relationship": "Friend relationship",
+    "memberCardAria": "Member profile",
     "blockHint": "Stop receiving new messages while keeping existing history",
     "unfriendHint": "End the friendship with an option to keep chat history",
     "avatarErrorFormat": "Please choose a PNG, JPG, GIF, or WebP image",
@@ -608,9 +612,9 @@
     "menuLeaveGroupConfirm": "Exit this group?",
     "menuConfirm": "Confirm",
     "menuCancel": "Cancel",
-    "blockedBanner": "New messages from this conversation are blocked.",
-    "blockedCenterTitle": "New messages blocked",
-    "blockedCenterHint": "Unblock to view the retained history again",
+    "blockedContactBanner": "This contact is blocked; new messages are not received",
+    "blockedGroupBanner": "New messages from this group are paused",
+    "unblockAction": "Unblock",
     "quotaPausedBanner": "Your daily quota is exhausted — sending is paused until 00:00 UTC or until an administrator adds quota.",
     "groupDissolvedBanner": "This group has been dissolved.",
     "notFriendsBanner": "This person is not your friend.",

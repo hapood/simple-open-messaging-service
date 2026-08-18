@@ -11,20 +11,20 @@ recognition.
 
 ## Endpoints
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `POST` | `/recognize` | Establish one recognition direction and schedule reverse recognition. |
-| `POST` | `/healthy` | Privacy-preserving availability check for a recognized peer. |
-| `POST` | `/feed-heads` | Lossy wake-up containing three independent feed end IDs. |
-| `GET` | `/state-feed` | Read the compacted snapshot-bearing state feed. |
-| `GET` | `/message-feed` | Read the compacted `thread + messageEndSeq` index. |
-| `GET` | `/message-tombstone-feed` | Read the compacted `thread + tombstoneEndSeq` index. |
-| `GET` | `/messages` | Query message bodies by thread and sequence window. |
-| `GET` | `/message-tombstones` | Query authoritative deletion facts by thread and deletion-sequence window. |
-| `POST` | `/call` | Relay ephemeral WebRTC lifecycle, SDP, and ICE signalling. |
-| `GET` | `/users/:account` | Return the minimal public identity card needed for first contact. |
-| `GET` | `/media/:digest` | Download CAS content with exact-message authorization and Range support. |
-| `GET` | `/forward-bundles/:bundleId` | Return an authorized immutable forward-bundle closure. |
+| Method | Path                         | Purpose                                                                    |
+| ------ | ---------------------------- | -------------------------------------------------------------------------- |
+| `POST` | `/recognize`                 | Establish one recognition direction and schedule reverse recognition.      |
+| `POST` | `/healthy`                   | Privacy-preserving availability check for a recognized peer.               |
+| `POST` | `/feed-heads`                | Lossy wake-up containing three independent feed end IDs.                   |
+| `GET`  | `/state-feed`                | Read the compacted snapshot-bearing state feed.                            |
+| `GET`  | `/message-feed`              | Read the compacted `thread + messageEndSeq` index.                         |
+| `GET`  | `/message-tombstone-feed`    | Read the compacted `thread + tombstoneEndSeq` index.                       |
+| `GET`  | `/messages`                  | Query message bodies by thread and sequence window.                        |
+| `GET`  | `/message-tombstones`        | Query authoritative deletion facts by thread and deletion-sequence window. |
+| `POST` | `/call`                      | Relay ephemeral WebRTC lifecycle, SDP, and ICE signalling.                 |
+| `GET`  | `/users/:account`            | Return the minimal public identity card needed for first contact.          |
+| `GET`  | `/media/:digest`             | Download CAS content with exact-message authorization and Range support.   |
+| `GET`  | `/forward-bundles/:bundleId` | Return an authorized immutable forward-bundle closure.                     |
 
 Paths in this table are relative to `/s2s/v1`.
 
@@ -73,11 +73,11 @@ Expired `REQUESTED` entries may disappear silently. `REVOKED` has no expiry and
 should be retained as capacity permits, but may later be omitted; live message
 and resource authorization still rejects stale access.
 
-The unified state delta sent to local SOMS clients also carries
-`MEMBER_PROFILE` invalidations. Clients isolate a member profile by source peer
-and address and render group members in `(threadId, userId)` context. The server
-sweeps only after committing a complete fixed-bound drain, then refreshes affected
-rosters.
+The unified state delta sent to local SOMS clients also carries complete
+`MEMBER_PROFILE` snapshots. Clients persist each snapshot by source peer and
+address, then render group members in `(threadId, userId)` context without a
+follow-up roster request. The server sweeps only after committing a complete
+fixed-bound drain.
 
 ## Message and tombstone discovery
 

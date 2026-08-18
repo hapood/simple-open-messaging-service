@@ -76,7 +76,9 @@
   transform: translate(-50%, -50%);
   width: max-content;
   max-width: calc(100% - 196px);
-  overflow: hidden;
+  // The title text owns its own ellipsis. Keep this wrapper visible so the
+  // absolutely-positioned mute state beside the centered name is not clipped.
+  overflow: visible;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -85,6 +87,7 @@
 }
 
 .msg-title-line {
+  position: relative;
   max-width: 100%;
   min-width: 0;
   display: flex;
@@ -95,6 +98,15 @@
 
 .msg-title-line app-federated-badge {
   flex: 0 0 auto;
+}
+
+.thread-state-icon {
+  position: absolute;
+  left: calc(100% + 5px);
+  top: 2px;
+  width: 16px;
+  height: 16px;
+  color: var(--app-text-faint);
 }
 
 .msg-actions {
