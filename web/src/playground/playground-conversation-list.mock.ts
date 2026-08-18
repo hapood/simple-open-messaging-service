@@ -11,14 +11,22 @@ import type { ConversationItem } from '../app/services/model';
 @Injectable({ providedIn: 'root' })
 export class PlaygroundConversationList {
   readonly current = signal<ConversationItem | undefined>(undefined);
+  private readonly related = signal<readonly ConversationItem[]>([]);
   readonly items = computed(() => {
     const item = this.current();
-    return item ? [item] : [];
+    return [
+      ...(item ? [item] : []),
+      ...this.related().filter((candidate) => candidate.threadId !== item?.threadId),
+    ];
   });
   readonly openThreadId = computed(() => this.current()?.threadId);
 
   setConversation(item: ConversationItem): void {
     this.current.set({ ...item });
+  }
+
+  setRelatedConversations(items: readonly ConversationItem[]): void {
+    this.related.set(items.map((item) => ({ ...item })));
   }
 
   applyThreadMeta(

@@ -2,6 +2,7 @@ import {
   ApplicationConfig,
   CSP_NONCE,
   provideZonelessChangeDetection,
+  signal,
 } from '@angular/core';
 import { provideHttpClient, withFetch } from '@angular/common/http';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
@@ -31,6 +32,7 @@ import { PlaygroundConversationList } from './playground-conversation-list.mock'
 import { GroupService } from '../app/services/group.service';
 import { of, Subject } from 'rxjs';
 import { MemberProfileRepository } from '../app/services/member-profile-store.service';
+import { UserService } from '../app/services/user.service';
 
 /** Mock media is embedded as data/blob URLs, so this standalone entry never applies the production
  * remote-download size gate. The production app keeps its normal user-configurable service. */
@@ -72,6 +74,23 @@ const playgroundMemberProfiles = {
         playgroundMemberProfiles.resolve(threadId, member),
       ),
     ),
+};
+
+const playgroundUserService = {
+  sessionUserId: signal<number | null>(1),
+  sessionProfile: signal({
+    id: 1,
+    account: 'me',
+    name: 'Me',
+    avatar: '',
+    domain: '',
+    isForeigner: false,
+  }),
+  sendFriendInvite: () =>
+    of({ code: 0, message: 'ok', data: { inviteId: 'playground-invite' } }),
+  sendFederatedFriendInvite: () =>
+    of({ code: 0, message: 'ok', data: { inviteId: 'playground-invite' } }),
+  deleteFriend: () => of({ code: 0, message: 'ok' }),
 };
 
 function readCspNonce(): string | null {
@@ -124,6 +143,7 @@ export const playgroundConfig: ApplicationConfig = {
       provide: MemberProfileRepository,
       useValue: playgroundMemberProfiles,
     },
+    { provide: UserService, useValue: playgroundUserService },
     provideTransloco({
       config: {
         availableLangs: [

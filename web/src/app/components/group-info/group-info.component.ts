@@ -32,7 +32,7 @@ import { finalize } from 'rxjs';
 import { translateBizResult } from '../../services/biz-code';
 import { ToastService } from '../../services/toast.service';
 import { ThreadDeletionLockService } from '../../services/thread-deletion-lock.service';
-import { MsgService } from '../../services/message.service';
+import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter';
 import {
   MemberProfileRepository,
   type ResolvedMemberProfile,
@@ -80,7 +80,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   private readonly http = inject(HttpClient);
   private readonly transloco = inject(TranslocoService);
   private readonly toast = inject(ToastService);
-  private readonly msgService = inject(MsgService);
+  private readonly threadAdapter = inject(MESSAGE_THREAD_ADAPTER);
 
   /** The open thread id (template-bound for the alias editor). */
   readonly threadId = this.convList.openThreadId;
@@ -401,13 +401,15 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     const trd = this.userMsgTrd();
     if (!trd) return;
     const blocked = !trd.blocked;
-    this.msgService.setBlocked({ threadId: trd.threadId, blocked }).subscribe({
-      next: (res) => {
-        if (res.code !== 0) return this.showBusinessError(res);
-        this.convList.applyThreadMeta(trd.threadId, { blocked });
-      },
-      error: () => this.showNetworkError(),
-    });
+    this.threadAdapter
+      .setBlocked({ threadId: trd.threadId, blocked })
+      .subscribe({
+        next: (res) => {
+          if (res.code !== 0) return this.showBusinessError(res);
+          this.convList.applyThreadMeta(trd.threadId, { blocked });
+        },
+        error: () => this.showNetworkError(),
+      });
   }
 
   setMembersCanInvite(enabled: boolean): void {

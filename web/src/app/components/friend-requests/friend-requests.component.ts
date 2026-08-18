@@ -107,6 +107,10 @@ export class FriendRequestsComponent implements OnDestroy {
 
   subject = input<Subject<any> | undefined>(undefined);
   initialTab = input<'add' | 'pending'>('add');
+  /** Optional profile-card shortcut. Local targets can open the shared invite step immediately;
+   * federated targets first run the normal exact-address resolve so first-contact handshake progress
+   * remains visible and cancellable in this dialog. */
+  initialUser = input<User | undefined>(undefined);
   activeTab = signal(0);
   isShowBackBtn = signal(true);
 
@@ -129,6 +133,10 @@ export class FriendRequestsComponent implements OnDestroy {
   }
 
   goBack() {
+    if (this.initialUser()) {
+      this.routeService.closeDlg();
+      return;
+    }
     if (this.inviteUser()) {
       this.inviteUser.set(null);
       return;
@@ -286,6 +294,10 @@ export class FriendRequestsComponent implements OnDestroy {
     userId: number;
     status: 'OUTGOING_PENDING' | 'FRIEND';
   }) {
+    if (this.initialUser()) {
+      this.routeService.closeDlg(result);
+      return;
+    }
     this.relationshipStates.update((states) =>
       new Map(states).set(result.userId, result.status),
     );
@@ -513,6 +525,17 @@ export class FriendRequestsComponent implements OnDestroy {
   }
 
   ngOnInit() {
+    const initialUser = this.initialUser();
+    if (initialUser) {
+      this.activeTab.set(0);
+      if (initialUser.isForeigner && initialUser.domain) {
+        this.searchText.set(`${initialUser.account}@${initialUser.domain}`);
+        this.searchUser();
+      } else {
+        this.inviteUser.set(initialUser);
+      }
+      return;
+    }
     const initialTab = this.initialTab() === 'pending' ? 1 : 0;
     this.activeTab.set(initialTab);
     this.loadTab(initialTab);

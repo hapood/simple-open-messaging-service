@@ -510,6 +510,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
       ...it.data,
       name: p?.name ?? 'Unknown',
       isSelf: p?.isSelf ?? it.data.creator === this.userId,
+      avatarIdentityId: it.data.creator,
       isGroupConversation: this.isGroupConversation,
     };
     return it.clientMessageId !== undefined

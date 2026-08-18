@@ -3,6 +3,7 @@ import {
   Component,
   computed,
   ElementRef,
+  effect,
   inject,
   signal,
   viewChild,
@@ -543,7 +544,13 @@ export class PlaygroundShellComponent {
   private buttonStartTop = 0;
 
   constructor() {
-    this.conversations.setConversation(DEMO_CONVERSATION);
+    this.conversations.setConversation(DEMO_GROUP_CONVERSATION);
+    // Alice is an existing friend; the other group members exercise the add-friend path.
+    this.conversations.setRelatedConversations([DEMO_CONVERSATION]);
+    effect(() => {
+      if (this.nav.chatThreadId() === DEMO_CONVERSATION.threadId)
+        this.conversations.setConversation(DEMO_CONVERSATION);
+    });
   }
 
   onSettingsButtonDown(event: PointerEvent): void {

@@ -177,8 +177,10 @@ describe('MockItemSource (cursor contract)', () => {
     const other = items.find((i) => i.data.creator === 2)!;
     expect(self.data.name).toBe('Me'); // ensureProfiles from MockUserService (buildItems raw msg name placeholder '')
     expect(self.data.isSelf).toBe(true); // isSelf = creator === userId(1)
+    expect(self.data.avatarIdentityId).toBe(1);
     expect(other.data.name).toBe('Alice');
     expect(other.data.isSelf).toBe(false);
+    expect(other.data.avatarIdentityId).toBe(2);
   });
 
   // failPending / retryPending: a failed send stays the SAME entity (stable clientMessageId) and sinks to the tail of

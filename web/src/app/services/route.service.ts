@@ -33,6 +33,7 @@ import {
   type LinkCardGenerationDialogResult,
   type LinkCardGenerationMode,
 } from '../components/link-card-generation-dialog/link-card-generation-dialog.component';
+import type { User } from './model';
 
 export enum RoutePage {
   HOME,
@@ -101,6 +102,7 @@ export interface PopupInput {
   [PopupType.FRIEND_REQUESTS]: {
     subject?: Subject<any>;
     initialTab?: 'add' | 'pending';
+    initialUser?: User;
   };
   [PopupType.NEW_GROUP]: undefined;
   [PopupType.EDIT_PROFILE]: undefined;
@@ -137,7 +139,9 @@ export interface PopupInput {
 
 // per-popup result contracts — what a dialog passes back to its opener via closeDlg()
 export interface PopupResult {
-  [PopupType.FRIEND_REQUESTS]: undefined;
+  [PopupType.FRIEND_REQUESTS]:
+    | { userId: number; status: 'OUTGOING_PENDING' | 'FRIEND' }
+    | undefined;
   [PopupType.NEW_GROUP]: { groupId: number };
   [PopupType.EDIT_PROFILE]: boolean;
   // cropped File on Save; undefined on Cancel/back.

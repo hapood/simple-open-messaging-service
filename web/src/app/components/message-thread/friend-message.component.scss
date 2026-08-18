@@ -551,13 +551,13 @@ app-chat-input.msg-composer--dialog-hidden {
 .member-profile-card {
   position: fixed;
   z-index: 22;
-  width: 280px;
-  min-height: 168px;
+  width: 252px;
+  min-height: 112px;
   box-sizing: border-box;
-  padding: 20px;
+  padding: 12px;
   display: flex;
-  align-items: center;
-  gap: 16px;
+  flex-direction: column;
+  gap: 12px;
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius-lg);
   color: var(--app-text);
@@ -565,17 +565,25 @@ app-chat-input.msg-composer--dialog-hidden {
   box-shadow: var(--app-shadow-3);
 
   app-user-avatar {
-    width: 64px;
-    height: 64px;
+    width: 40px;
+    height: 40px;
     flex: 0 0 auto;
   }
+}
+
+.member-profile-summary {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .member-profile-copy {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 2px;
 
   strong {
     overflow: hidden;
@@ -590,6 +598,31 @@ app-chat-input.msg-composer--dialog-hidden {
     color: var(--app-text-muted);
     font-size: 13px;
     line-height: 19px;
+  }
+}
+
+.member-profile-action {
+  width: 100%;
+  flex: 0 0 auto;
+  height: 36px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--app-radius-md);
+  color: var(--app-on-brand);
+  background: var(--app-brand);
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 600;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--app-brand-hover);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--app-focus-ring);
+    outline-offset: 2px;
   }
 }
 

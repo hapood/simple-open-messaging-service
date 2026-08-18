@@ -89,6 +89,7 @@ import { FileDetailService } from '../file-detail-viewer/file-detail-viewer.serv
 import { NavStateMachineService } from '../../services/nav-state.service';
 import {
   displayThreadName,
+  displayUserAccount,
   type ConversationItem,
   type StandardResponse,
 } from '../../services/model';
@@ -246,6 +247,7 @@ export class MessageThreadComponent implements OnDestroy {
   );
   readonly assetUrl = assetUrl;
   readonly UserAvatarType = UserAvatarType;
+  readonly displayUserAccount = displayUserAccount;
   readonly threadId = input<number>();
   readonly userMsgTrd = input<ConversationItem>();
   /** The A/B host keeps two threads mounted; only the foreground layer may own the one native composer. */
@@ -283,6 +285,7 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly msgRepo = inject(MessageRepository);
   private readonly deletedSub: Subscription;
   private readonly userService = inject(UserService);
+  readonly selfUserId = computed(() => this.userService.sessionProfile()?.id);
   private readonly profileRepo = inject(ProfileRepository);
   private readonly wsService = inject(WebsocketService);
   private readonly layout = inject(LayoutService);
@@ -388,6 +391,7 @@ export class MessageThreadComponent implements OnDestroy {
     profile: ResolvedMemberProfile;
     x: number;
     y: number;
+    friendThreadId?: number;
   } | null>(null);
   private lastMessageScrollTop = 0;
   private contextMenuScrollTop = 0;
@@ -1239,7 +1243,7 @@ export class MessageThreadComponent implements OnDestroy {
         this.onMessageInteraction(event, selectedItem, pointer, memberId),
       (bundleId) => this.route.popupDlg(PopupType.FORWARD_DETAIL, { bundleId }),
       (seq) => this.onSearchJump(seq),
-      (userId, anchor) => void this.openMemberProfileCard(userId, anchor),
+      (userId, anchor) => void this.openSenderProfile(userId, anchor),
     );
     const contextId = this.messageContextMenu()?.targetSeq;
     applyMessageSelectionState(
@@ -1430,18 +1434,26 @@ export class MessageThreadComponent implements OnDestroy {
     this.dismissContextMenu();
   }
 
-  private async openMemberProfileCard(
+  private async openSenderProfile(
     userId: number,
     anchor: DOMRect,
   ): Promise<void> {
+    const conversation = this.userMsgTrd();
+    if (conversation?.type === 'P2P') {
+      if (conversation.peerUser?.id !== userId) return;
+      this.dismissContextMenu();
+      this.memberProfileCard.set(null);
+      this.nav.openAside('profile');
+      return;
+    }
     const threadId = this.threadId();
-    const member = this.userMsgTrd()?.group.members?.find(
+    const member = conversation?.group.members?.find(
       (candidate) => candidate.userId === userId,
     );
     if (threadId === undefined || !member) return;
     const profile = await this.memberProfiles.resolve(threadId, member);
-    const width = 280;
-    const height = 168;
+    const width = 252;
+    const height = 112;
     const inset = 8;
     const viewport = window.visualViewport;
     const viewportLeft = viewport?.offsetLeft ?? 0;
@@ -1459,7 +1471,37 @@ export class MessageThreadComponent implements OnDestroy {
       Math.min(anchor.top, viewportBottom - height - inset),
     );
     this.dismissContextMenu();
-    this.memberProfileCard.set({ profile, x, y });
+    const friendThreadId = this.convList
+      .items()
+      .find(
+        (item) =>
+          item.type === 'P2P' &&
+          item.peerUser?.id === userId &&
+          item.friendshipActive !== false,
+      )?.threadId;
+    this.memberProfileCard.set({ profile, x, y, friendThreadId });
+  }
+
+  openMemberAction(): void {
+    const card = this.memberProfileCard();
+    if (!card) return;
+    this.memberProfileCard.set(null);
+    if (card.friendThreadId !== undefined) {
+      this.nav.openChat(card.friendThreadId);
+      return;
+    }
+    const profile = card.profile;
+    const isForeigner = !!profile.domain;
+    this.route.popupDlg(PopupType.FRIEND_REQUESTS, {
+      initialUser: {
+        id: isForeigner ? 0 : profile.userId,
+        account: profile.account,
+        name: profile.name,
+        avatar: profile.avatar,
+        domain: profile.domain,
+        isForeigner,
+      } as import('../../services/model').User,
+    });
   }
 
   exitSelectionMode(): void {

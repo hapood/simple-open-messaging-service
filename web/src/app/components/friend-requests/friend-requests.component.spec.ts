@@ -12,6 +12,34 @@ import {
 } from './friend-requests.component';
 
 describe('FriendRequestsComponent federated search progress', () => {
+  it('opens the shared invite step directly for a local profile shortcut', () => {
+    const local = {
+      id: 7,
+      account: 'alice',
+      name: 'Alice',
+      isForeigner: false,
+    } as User;
+    TestBed.configureTestingModule({
+      imports: [FriendRequestsComponent],
+      providers: [
+        provideZonelessChangeDetection(),
+        { provide: UserService, useValue: {} },
+        { provide: RouteService, useValue: {} },
+        { provide: MatSnackBar, useValue: { open: jasmine.createSpy() } },
+        {
+          provide: TranslocoService,
+          useValue: { translate: (key: string) => key },
+        },
+      ],
+    }).overrideComponent(FriendRequestsComponent, { set: { template: '' } });
+    const fixture = TestBed.createComponent(FriendRequestsComponent);
+    fixture.componentRef.setInput('initialUser', local);
+
+    fixture.detectChanges();
+
+    expect(fixture.componentInstance.inviteUser()).toBe(local);
+  });
+
   it('uses exact resolution for a local account and exposes at most one result', () => {
     const local = {
       id: 7,

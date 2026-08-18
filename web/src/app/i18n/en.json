@@ -234,6 +234,7 @@
     "blockConfirm": "Block new messages from {{name}}? Existing history will remain.",
     "relationship": "Friend relationship",
     "memberCardAria": "Member profile",
+    "openChat": "Message",
     "blockHint": "Stop receiving new messages while keeping existing history",
     "unfriendHint": "End the friendship with an option to keep chat history",
     "avatarErrorFormat": "Please choose a PNG, JPG, GIF, or WebP image",

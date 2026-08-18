@@ -18,6 +18,9 @@ import { PlaygroundRootComponent } from './playground-root.component';
 @Component({ selector: 'app-call-screen', template: 'Call screen' })
 class TestCallScreenComponent {}
 
+@Component({ selector: 'app-root-popup', template: '' })
+class TestRootPopupComponent {}
+
 @Component({
   selector: 'app-playground-shell',
   imports: [CallBannerComponent],
@@ -68,7 +71,11 @@ describe('PlaygroundRootComponent', () => {
     });
     TestBed.overrideComponent(PlaygroundRootComponent, {
       set: {
-        imports: [TestCallScreenComponent, TestPlaygroundShellComponent],
+        imports: [
+          TestCallScreenComponent,
+          TestPlaygroundShellComponent,
+          TestRootPopupComponent,
+        ],
       },
     });
 

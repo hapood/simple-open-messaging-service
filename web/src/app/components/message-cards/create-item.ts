@@ -354,7 +354,7 @@ export function createMsgCbElement(
         '.msg-avatar:not(.msg-avatar-tail)',
       );
       const current = interactionItem.data as ChatMsgData;
-      if (!avatar || !current.isGroupConversation) return;
+      if (!avatar) return;
       event.preventDefault();
       event.stopPropagation();
       onOpenMemberProfile(current.creator, avatar.getBoundingClientRect());

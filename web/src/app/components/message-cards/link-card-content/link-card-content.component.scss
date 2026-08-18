@@ -15,10 +15,15 @@
 
 .link-card-content__text {
   flex: 1 1 auto;
+  height: 51px;
   min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 3px;
+}
+
+.link-card-content--loading .link-card-content__text {
+  justify-content: center;
 }
 
 .link-card-content__title {

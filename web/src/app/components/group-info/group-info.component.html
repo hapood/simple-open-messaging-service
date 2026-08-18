@@ -172,7 +172,11 @@
     <!-- Quiet action card: destructive choices are separated and confirmed. -->
     @if (!readOnly()) {
       <div class="group-actions">
-        <button type="button" (click)="toggleBlocked()">
+        <button
+          type="button"
+          [class.danger]="!userMsgTrd()?.blocked"
+          (click)="toggleBlocked()"
+        >
           <span>⊘</span>
           <span
             ><strong>{{

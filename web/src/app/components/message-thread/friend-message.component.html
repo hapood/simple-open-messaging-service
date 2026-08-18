@@ -95,27 +95,45 @@
     @if (memberProfileCard(); as card) {
       <section
         class="member-profile-card"
+        role="dialog"
         [style.left.px]="card.x"
         [style.top.px]="card.y"
         [attr.aria-label]="'profile.memberCardAria' | transloco"
       >
-        <app-user-avatar
-          [type]="UserAvatarType.OTHER"
-          [name]="card.profile.name"
-          [identityId]="card.profile.userId"
-          [src]="card.profile.avatar"
-        />
-        <div class="member-profile-copy">
-          <strong>{{ card.profile.name || card.profile.account }}</strong>
-          @if (card.profile.account) {
-            <span
-              >{{ 'profile.account' | transloco }} · {{ card.profile.account }}
-              @if (card.profile.domain) {
-                &#64;{{ card.profile.domain }}
-              }
-            </span>
-          }
+        <div class="member-profile-summary">
+          <app-user-avatar
+            [type]="UserAvatarType.OTHER"
+            [name]="card.profile.name"
+            [identityId]="card.profile.userId"
+            [src]="card.profile.avatar"
+          />
+          <div class="member-profile-copy">
+            <strong>{{ card.profile.name || card.profile.account }}</strong>
+            @if (card.profile.account) {
+              <span>{{
+                displayUserAccount({
+                  account: card.profile.account,
+                  domain: card.profile.domain,
+                  isForeigner: !!card.profile.domain,
+                })
+              }}</span>
+            }
+          </div>
         </div>
+        @if (card.profile.userId !== selfUserId()) {
+          <button
+            type="button"
+            class="member-profile-action"
+            (click)="openMemberAction()"
+          >
+            {{
+              (card.friendThreadId !== undefined
+                ? 'profile.openChat'
+                : 'friend.addAction'
+              ) | transloco
+            }}
+          </button>
+        }
       </section>
     }
 

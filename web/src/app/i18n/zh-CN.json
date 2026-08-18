@@ -234,6 +234,7 @@
     "blockConfirm": "屏蔽 {{name}} 的新消息？历史消息会保留。",
     "relationship": "好友关系管理",
     "memberCardAria": "群成员资料",
+    "openChat": "发消息",
     "blockHint": "不再接收新消息，历史记录仍会保留",
     "unfriendHint": "解除关系后仍可选择保留聊天记录",
     "avatarErrorFormat": "请选择 PNG、JPG、GIF 或 WebP 图片",

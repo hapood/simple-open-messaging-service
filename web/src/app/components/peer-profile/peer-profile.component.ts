@@ -88,6 +88,7 @@ import { translateBizResult } from '../../services/biz-code';
         >
           <button
             class="relationship-action"
+            [class.danger]="!userMsgTrd()?.blocked"
             type="button"
             (click)="toggleBlocked()"
           >
@@ -325,7 +326,7 @@ export class PeerProfileComponent {
         messageKey: 'profile.blockConfirm',
         confirmKey: 'profile.block',
         cancelKey: 'common.cancel',
-        danger: false,
+        danger: true,
         messageParams: { name: this.peerDisplayName() },
       },
       (result) => {
