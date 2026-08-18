@@ -60,7 +60,7 @@ describe('pickStickyAvatarPlacement', () => {
     );
     expect(
       pickStickyAvatarPlacement(
-        [row('a', -60, true), row('a', -30), row('b', 12, true, 'self')],
+        [row('a', -60, true), row('a', -30), row('b', 11, true, 'self')],
         12,
       ),
     ).toEqual(jasmine.objectContaining({ creator: 'b', side: 'self' }));
@@ -102,9 +102,10 @@ describe('resolveStickyAvatar', () => {
       0,
       true,
     );
-    expect(resolution.view?.name).toBe('a');
+    expect(resolution.view).toBeNull();
     expect(resolution.hiddenHead).toBe(upperA.naturalAvatar);
     expect(resolution.hiddenHead).not.toBe(lowerA.naturalAvatar);
+    expect(resolution.visibleTail).toBe(upperA.tailAvatar);
   });
 
   it('preserves a missing identity instead of coercing it to zero', () => {
@@ -117,13 +118,20 @@ describe('resolveStickyAvatar', () => {
   it('keeps the natural avatar at the viewport scroll origin', () => {
     const first = measuredRow('Alice', 8, true);
 
-    expect(resolveStickyAvatar([first], 12, 0, true)).toEqual({ view: null });
+    expect(resolveStickyAvatar([first], 12, 0, true)).toEqual({
+      view: null,
+      hiddenHead: first.naturalAvatar,
+      visibleTail: first.tailAvatar,
+    });
   });
 
   it('quantizes the final overlay position to the integer-pixel grid', () => {
     const first = measuredRow('Alice', -39.6, true);
+    const last = measuredRow('Alice', 12);
 
-    expect(resolveStickyAvatar([first], 12, 0.25, true).view?.top).toBe(-40);
+    expect(resolveStickyAvatar([first, last], 12, 0.25, true).view?.top).toBe(
+      12,
+    );
   });
 
   it('hands off to the pre-mounted natural tail after it crosses the fixed line', () => {
