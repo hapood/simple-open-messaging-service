@@ -6,6 +6,7 @@ import {
   inject,
   input,
   signal,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { ConversationListService } from '../../services/conversation-list.service';
@@ -70,6 +71,7 @@ export interface ForwardDialogResult {
     ForwardRowComponent,
   ],
   templateUrl: './forward-dialog.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './forward-dialog.component.scss',
 })
 export class ForwardDialogComponent {

@@ -27,30 +27,30 @@ describe('expanded conversation-list keyboard resizer', () => {
 
 describe('adaptive top-section reconciliation', () => {
   it('preserves state between compact and medium because they share the inline section model', () => {
-    expect(crossesExpandedLayout('compact', 'medium')).toBeFalse();
-    expect(crossesExpandedLayout('medium', 'compact')).toBeFalse();
+    expect(crossesExpandedLayout('compact', 'medium')).toBe(false);
+    expect(crossesExpandedLayout('medium', 'compact')).toBe(false);
   });
 
   it('reconciles the top section when either side of the transition is expanded', () => {
-    expect(crossesExpandedLayout('medium', 'expanded')).toBeTrue();
-    expect(crossesExpandedLayout('expanded', 'compact')).toBeTrue();
+    expect(crossesExpandedLayout('medium', 'expanded')).toBe(true);
+    expect(crossesExpandedLayout('expanded', 'compact')).toBe(true);
   });
 });
 
 describe('two-column thread selection', () => {
   it('closes the chatbox on PC when the open thread is selected again', () => {
-    expect(shouldCloseChatOnThreadSelect('expanded', 42, 42)).toBeTrue();
+    expect(shouldCloseChatOnThreadSelect('expanded', 42, 42)).toBe(true);
   });
 
   it('closes the chatbox on Pad when the open thread is selected again', () => {
-    expect(shouldCloseChatOnThreadSelect('medium', 42, 42)).toBeTrue();
+    expect(shouldCloseChatOnThreadSelect('medium', 42, 42)).toBe(true);
   });
 
   it('opens a different thread normally', () => {
-    expect(shouldCloseChatOnThreadSelect('expanded', 42, 7)).toBeFalse();
+    expect(shouldCloseChatOnThreadSelect('expanded', 42, 7)).toBe(false);
   });
 
   it('keeps the existing behavior in the compact single-column layout', () => {
-    expect(shouldCloseChatOnThreadSelect('compact', 42, 42)).toBeFalse();
+    expect(shouldCloseChatOnThreadSelect('compact', 42, 42)).toBe(false);
   });
 });

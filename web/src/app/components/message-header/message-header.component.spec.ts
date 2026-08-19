@@ -1,9 +1,12 @@
 import { TestBed } from '@angular/core/testing';
 import { signal, provideZonelessChangeDetection } from '@angular/core';
-import { provideTransloco, provideTranslocoTranspiler } from '@jsverse/transloco';
+import {
+  provideTransloco,
+  provideTranslocoTranspiler,
+} from '@jsverse/transloco';
 import { CspSafeIcuTranspiler } from '../../i18n/csp-safe-icu.transpiler';
 import { InlineTranslocoLoader } from '../../i18n/transloco.loader';
-import { provideHttpClient } from '@angular/common/http';
+import { provideHttpClient, withXhr } from '@angular/common/http';
 import { MessageHeaderComponent } from './message-header.component';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
@@ -33,10 +36,19 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
   /** Minimal ConversationItem — only threadId + unreadCount are exercised by the badge sum. */
   function item(threadId: number, unreadCount: number): ConversationItem {
     return {
-      threadId, id: threadId, type: 'P2P',
-      unreadCount, muted: false, pinned: false,
-      lastMessageAt: null, lastMessagePreview: null,
-      peerUser: { id: threadId * 10, account: `u${threadId}`, name: `User ${threadId}` } as ConversationItem['peerUser'],
+      threadId,
+      id: threadId,
+      type: 'P2P',
+      unreadCount,
+      muted: false,
+      pinned: false,
+      lastMessageAt: null,
+      lastMessagePreview: null,
+      peerUser: {
+        id: threadId * 10,
+        account: `u${threadId}`,
+        name: `User ${threadId}`,
+      } as ConversationItem['peerUser'],
     } as ConversationItem;
   }
 
@@ -49,10 +61,13 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
       imports: [MessageHeaderComponent],
       providers: [
         provideZonelessChangeDetection(),
-        provideHttpClient(),
+        provideHttpClient(withXhr()),
         provideTransloco({
           config: {
-            availableLangs: [{ id: 'en', label: 'English' }, { id: 'zh-CN', label: 'Simplified Chinese' }],
+            availableLangs: [
+              { id: 'en', label: 'English' },
+              { id: 'zh-CN', label: 'Simplified Chinese' },
+            ],
             defaultLang: 'en',
             reRenderOnLangChange: true,
           },
@@ -60,8 +75,16 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
         }),
         provideTranslocoTranspiler(CspSafeIcuTranspiler),
         { provide: ConversationListService, useValue: { items, openThreadId } },
-        { provide: NavStateMachineService, useValue: { searchOpen: signal(false) } },
-        { provide: LayoutService, useValue: { mode: signal<'compact' | 'medium' | 'expanded'>('compact') } },
+        {
+          provide: NavStateMachineService,
+          useValue: { searchOpen: signal(false) },
+        },
+        {
+          provide: LayoutService,
+          useValue: {
+            mode: signal<'compact' | 'medium' | 'expanded'>('compact'),
+          },
+        },
         { provide: MsgService, useValue: {} },
         { provide: UserService, useValue: {} },
         { provide: GroupService, useValue: {} },

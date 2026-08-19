@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { provideHttpClient } from '@angular/common/http';
+import { provideHttpClient, withXhr } from '@angular/common/http';
 import {
   HttpTestingController,
   provideHttpClientTesting,
@@ -23,7 +23,7 @@ describe('MissedSyncService', () => {
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
-        provideHttpClient(),
+        provideHttpClient(withXhr()),
         provideHttpClientTesting(),
         MissedSyncService,
       ],
@@ -125,13 +125,11 @@ describe('MissedSyncService', () => {
       { threadId: 9, seq: 9 },
     );
     expect((await p2).items).toEqual([]);
-    httpMock
-      .expectOne('/api/v1/thread-sync/catch-up')
-      .flush({
-        code: 0,
-        message: 'ok',
-        data: { items: [], hasMore: false, nextCursor: null },
-      });
+    httpMock.expectOne('/api/v1/thread-sync/catch-up').flush({
+      code: 0,
+      message: 'ok',
+      data: { items: [], hasMore: false, nextCursor: null },
+    });
     await p1;
   });
 

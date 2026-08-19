@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { TestBed, ComponentFixture } from '@angular/core/testing';
 import { signal, provideZonelessChangeDetection } from '@angular/core';
 import {
@@ -13,7 +14,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
 import { ConversationLoadStatus } from '../../services/thread-store.service';
 import { ConversationItem } from '../../services/model';
 import { InlineTranslocoLoader } from '../../i18n/transloco.loader';
-import { provideHttpClient } from '@angular/common/http';
+import { provideHttpClient, withXhr } from '@angular/common/http';
 
 /**
  * ThreadListComponent is a thin view over the shared ConversationListService. This spec covers the
@@ -32,14 +33,14 @@ import { provideHttpClient } from '@angular/common/http';
 describe('ThreadListComponent', () => {
   let fixture: ComponentFixture<ThreadListComponent>;
   let comp: ThreadListComponent;
-  let popupSpy: jasmine.Spy;
-  let loadSpy: jasmine.Spy;
+  let popupSpy: Mock;
+  let loadSpy: Mock;
   let items: ReturnType<typeof signal<ConversationItem[]>>;
   let status: ReturnType<typeof signal<ConversationLoadStatus>>;
 
   beforeEach(() => {
-    popupSpy = jasmine.createSpy('popupDlg');
-    loadSpy = jasmine.createSpy('load');
+    popupSpy = vi.fn().mockName('popupDlg');
+    loadSpy = vi.fn().mockName('load');
     items = signal<ConversationItem[]>([]);
     status = signal<ConversationLoadStatus>(ConversationLoadStatus.LOADING);
     localStorage.removeItem('soms.lang');
@@ -48,7 +49,7 @@ describe('ThreadListComponent', () => {
       imports: [ThreadListComponent],
       providers: [
         provideZonelessChangeDetection(),
-        provideHttpClient(),
+        provideHttpClient(withXhr()),
         provideTransloco({
           config: {
             availableLangs: [
@@ -222,8 +223,8 @@ describe('ThreadListComponent', () => {
     );
     expect(row.querySelector('.thread-msg')).toBeNull();
     const rows = row.querySelectorAll('.thread-row');
-    expect(rows[0].querySelectorAll('.thread-status-icon')).toHaveSize(1);
-    expect(rows[1].querySelectorAll('.thread-status-icon')).toHaveSize(0);
+    expect(rows[0].querySelectorAll('.thread-status-icon')).toHaveLength(1);
+    expect(rows[1].querySelectorAll('.thread-status-icon')).toHaveLength(0);
     expect(row.getAttribute('aria-label')).not.toContain(
       TestBed.inject(TranslocoService).translate('threadList.muted'),
     );

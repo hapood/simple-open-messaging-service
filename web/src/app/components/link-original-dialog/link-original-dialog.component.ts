@@ -1,4 +1,9 @@
-import { Component, inject, input } from '@angular/core';
+import {
+  Component,
+  inject,
+  input,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { RouteService } from '../../services/route.service';
 import { openExternalUrl } from '../../services/runtime';
@@ -22,6 +27,7 @@ import { openExternalUrl } from '../../services/runtime';
       </div>
     </section>
   `,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styles: [
     `
       .original {

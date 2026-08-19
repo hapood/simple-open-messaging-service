@@ -10,7 +10,9 @@ import {
   OnDestroy,
   output,
   signal,
+  untracked,
   viewChild,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import { firstValueFrom, Subscription, takeUntil } from 'rxjs';
 import { HttpClient } from '@angular/common/http';
@@ -236,6 +238,7 @@ const MESSAGE_CONTEXT_MENU_INSET = 8;
     TranslocoModule,
   ],
   templateUrl: './friend-message.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './friend-message.component.scss',
 })
 export class MessageThreadComponent implements OnDestroy {
@@ -633,7 +636,13 @@ export class MessageThreadComponent implements OnDestroy {
       const trd = this.userMsgTrd();
       if (!vp || !ct || !trd) return;
       if (this.blockedPeer()) {
-        this.teardown();
+        // teardown reads and resets several UI signals. Keep those reads out of this effect's dependency
+        // graph or their resets can continuously retrigger the blocked branch. Mark the pane cold as well,
+        // so unblocking the same conversation initializes a fresh kernel instead of matching the stale id.
+        if (this.currentTrdId !== null || this.scroller) {
+          untracked(() => this.teardown());
+          this.currentTrdId = null;
+        }
         return;
       }
       if (this.currentTrdId === trd.id) return;

@@ -3,7 +3,7 @@ import { ThreadSendOutbox } from './thread-send-outbox.service';
 describe('ThreadSendOutbox', () => {
   it('retains retry resources across thread bucket release and disposes them explicitly', () => {
     const outbox = new ThreadSendOutbox();
-    const dispose = jasmine.createSpy('dispose');
+    const dispose = vi.fn().mockName('dispose');
 
     outbox.retainResource('cid-native', {
       type: 'native-attachment',
@@ -24,20 +24,20 @@ describe('ThreadSendOutbox', () => {
 
   it('clear disposes every retained native resource', () => {
     const outbox = new ThreadSendOutbox();
-    const first = jasmine.createSpy('firstDispose');
-    const second = jasmine.createSpy('secondDispose');
+    const first = vi.fn().mockName('firstDispose');
+    const second = vi.fn().mockName('secondDispose');
     outbox.retainResource('cid-1', {
       type: 'native-attachment',
       partId: 'part-1',
       selection: {} as never,
-      release: jasmine.createSpy('firstRelease'),
+      release: vi.fn().mockName('firstRelease'),
       discard: first,
     });
     outbox.retainResource('cid-2', {
       type: 'native-attachment',
       partId: 'part-2',
       selection: {} as never,
-      release: jasmine.createSpy('secondRelease'),
+      release: vi.fn().mockName('secondRelease'),
       discard: second,
     });
 
@@ -51,7 +51,7 @@ describe('ThreadSendOutbox', () => {
 
   it('releases every preview owned by an atomic web gallery', () => {
     const outbox = new ThreadSendOutbox();
-    const revoke = spyOn(URL, 'revokeObjectURL');
+    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockReturnValue(undefined);
     outbox.retainResource('cid-gallery', {
       type: 'web-gallery',
       parts: [],
@@ -60,6 +60,9 @@ describe('ThreadSendOutbox', () => {
 
     outbox.releaseResource('cid-gallery');
 
-    expect(revoke.calls.allArgs()).toEqual([['blob:first'], ['blob:second']]);
+    expect(vi.mocked(revoke).mock.calls).toEqual([
+      ['blob:first'],
+      ['blob:second'],
+    ]);
   });
 });

@@ -7,6 +7,6 @@ describe('message row accessibility semantics', () => {
     applyMessageListItemSemantics(element);
 
     expect(element.getAttribute('role')).toBe('listitem');
-    expect(element.hasAttribute('aria-live')).toBeFalse();
+    expect(element.hasAttribute('aria-live')).toBe(false);
   });
 });

@@ -24,6 +24,6 @@ describe('filterMentionCandidates', () => {
       id: `zhang${i}@example.com`,
       label: `张${i}`,
     }));
-    expect(filterMentionCandidates(many, '张')).toHaveSize(12);
+    expect(filterMentionCandidates(many, '张')).toHaveLength(12);
   });
 });

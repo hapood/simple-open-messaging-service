@@ -1,7 +1,18 @@
-import { Component, input, output, signal, type WritableSignal } from '@angular/core';
+import type { Mock } from 'vitest';
+import {
+  Component,
+  input,
+  output,
+  signal,
+  type WritableSignal,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
-import { provideTransloco, provideTranslocoTranspiler } from '@jsverse/transloco';
+import {
+  provideTransloco,
+  provideTranslocoTranspiler,
+} from '@jsverse/transloco';
 import { By } from '@angular/platform-browser';
 import { ChatPaneComponent } from './chat-pane.component';
 import { MessageThreadComponent } from '../../message-thread/friend-message.component';
@@ -30,7 +41,12 @@ import type { ConversationItem } from '../../../services/model';
  * real-browser rendering and are exercised in the playground). The host cross-fades a pane in only after it
  * emits `ready`; tests emit `ready` manually to drive `promote`.
  */
-@Component({ selector: 'app-message-thread', template: '', standalone: true })
+@Component({
+  selector: 'app-message-thread',
+  template: '',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  standalone: true,
+})
 class StubThreadComponent {
   readonly threadId = input<number>();
   readonly userMsgTrd = input<ConversationItem>();
@@ -39,20 +55,31 @@ class StubThreadComponent {
   /** A child-internal signal read by reset. The host must not accidentally subscribe to it merely because
    *  it invokes reset from its coordinator effect (the real reset reads several input/view signals). */
   readonly resetDependency = signal(0);
-  readonly reset = jasmine
-    .createSpy('reset')
-    .and.callFake(() => void this.resetDependency());
-  readonly teardownKernel = jasmine.createSpy('teardownKernel');
+  readonly reset = vi
+    .fn()
+    .mockName('reset')
+    .mockImplementation(() => void this.resetDependency());
+  readonly teardownKernel = vi.fn().mockName('teardownKernel');
   /** Defaults to WARM (the common post-promote / resident case); a test flips it false to simulate a close
    *  having idled the kernel, so the fg-resident branch's cold path can be exercised. */
-  readonly isWarm = jasmine.createSpy('isWarm').and.returnValue(true);
+  readonly isWarm = vi.fn().mockName('isWarm').mockReturnValue(true);
 }
 
-@Component({ selector: 'app-chat-empty', template: '', standalone: true })
+@Component({
+  selector: 'app-chat-empty',
+  template: '',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  standalone: true,
+})
 class StubEmptyComponent {}
 
 const item = (threadId: number, name: string) =>
-  ({ id: threadId, threadId, type: 'P2P', peerUser: { id: threadId, account: name } } as ConversationItem);
+  ({
+    id: threadId,
+    threadId,
+    type: 'P2P',
+    peerUser: { id: threadId, account: name },
+  }) as ConversationItem;
 
 describe('ChatPaneComponent A/B coordinator', () => {
   let fixture: ReturnType<typeof TestBed.createComponent<ChatPaneComponent>>;
@@ -61,18 +88,22 @@ describe('ChatPaneComponent A/B coordinator', () => {
   let items: WritableSignal<ConversationItem[]>;
   let status: WritableSignal<string>;
   let mode: WritableSignal<'compact' | 'medium' | 'expanded'>;
-  let loadSpy: jasmine.Spy;
-  let closeChatSpy: jasmine.Spy;
+  let loadSpy: Mock;
+  let closeChatSpy: Mock;
 
   beforeEach(() => {
     openThreadId = signal<number | undefined>(undefined);
-    items = signal<ConversationItem[]>([item(1, 'alice'), item(2, 'bob'), item(3, 'carol')]);
+    items = signal<ConversationItem[]>([
+      item(1, 'alice'),
+      item(2, 'bob'),
+      item(3, 'carol'),
+    ]);
     status = signal('READY');
     // Default to expanded (the cross-fade path): existing coordinator assertions are layout-agnostic, and the
     // loading-gate regression below opts into compact explicitly.
     mode = signal<'compact' | 'medium' | 'expanded'>('expanded');
-    loadSpy = jasmine.createSpy('load');
-    closeChatSpy = jasmine.createSpy('closeChat');
+    loadSpy = vi.fn().mockName('load');
+    closeChatSpy = vi.fn().mockName('closeChat');
 
     TestBed.configureTestingModule({
       imports: [ChatPaneComponent],
@@ -82,7 +113,10 @@ describe('ChatPaneComponent A/B coordinator', () => {
         // template needs the inline loader when the spinner branch is exercised by the gate tests below.
         provideTransloco({
           config: {
-            availableLangs: [{ id: 'en', label: 'English' }, { id: 'zh-CN', label: 'Simplified Chinese' }],
+            availableLangs: [
+              { id: 'en', label: 'English' },
+              { id: 'zh-CN', label: 'Simplified Chinese' },
+            ],
             defaultLang: 'en',
             reRenderOnLangChange: true,
           },
@@ -90,10 +124,16 @@ describe('ChatPaneComponent A/B coordinator', () => {
         }),
         provideTranslocoTranspiler(CspSafeIcuTranspiler),
         // Minimal mock ConvList: real signals the coordinator reads, spy for the actions it takes.
-        { provide: ConversationListService, useValue: { openThreadId, items, status, load: loadSpy } },
+        {
+          provide: ConversationListService,
+          useValue: { openThreadId, items, status, load: loadSpy },
+        },
         {
           provide: NavStateMachineService,
-          useValue: { closeChat: closeChatSpy, consumeChatTransition: () => 'standard' },
+          useValue: {
+            closeChat: closeChatSpy,
+            consumeChatTransition: () => 'standard',
+          },
         },
         { provide: LayoutService, useValue: { mode } },
       ],
@@ -158,8 +198,11 @@ describe('ChatPaneComponent A/B coordinator', () => {
     await open(1);
     // The `.compact` class drives the CSS that snaps the outgoing pane away (spinner↔chatpane, no
     // chatpane↔chatpane cross-fade) — lock the binding so the demote can't silently regress to a dissolve.
-    expect(fixture.debugElement.query(By.css('.chat-pane'))!.nativeElement.classList.contains('compact'))
-      .toBe(true);
+    expect(
+      fixture.debugElement
+        .query(By.css('.chat-pane'))!
+        .nativeElement.classList.contains('compact'),
+    ).toBe(true);
     await ready(1); // promote → fg B (slot B = 1)
     expect(comp.fgSlot()).toBe('B');
     expect(comp.showLoading()).toBe(false);
@@ -204,7 +247,7 @@ describe('ChatPaneComponent A/B coordinator', () => {
     await open(1);
     await ready(1); // fg B (slot B = 1)
     await open(undefined); // close: teardownKernel fg → cold; slot B keeps 1
-    pane(1)!.isWarm.and.returnValue(false); // mirror the real cold pane so the fg-resident branch re-inits
+    pane(1)!.isWarm.mockReturnValue(false); // mirror the real cold pane so the fg-resident branch re-inits
     await open(1); // re-open same → fg-resident: reset() fg (slot B already = 1)
     expect(comp.showLoading()).toBe(false); // fg slot 1 === open thread 1 → no spinner, no wrong-chat reveal
     await ready(1);
@@ -217,7 +260,7 @@ describe('ChatPaneComponent A/B coordinator', () => {
     expect(comp.fgSlot()).toBe('A');
     await open(1);
     const pane1 = pane(1);
-    expect(pane1).withContext('bg pane mounted for the new thread').toBeTruthy();
+    expect(pane1, 'bg pane mounted for the new thread').toBeTruthy();
     expect(pane1!.reset).not.toHaveBeenCalled();
     await ready(1);
     expect(comp.fgSlot()).toBe('B');
@@ -241,7 +284,7 @@ describe('ChatPaneComponent A/B coordinator', () => {
     await open(2);
     await ready(2); // slot A = 2, fg A → pane1 (thread 1) demoted to bg, still mounted
     const pane1 = pane(1)!;
-    expect(pane1).withContext('demoted pane stays mounted — never destroyed').toBeTruthy();
+    expect(pane1, 'demoted pane stays mounted — never destroyed').toBeTruthy();
 
     await open(1); // 1 is RESIDENT in the bg slot → must reset, not strand
     expect(pane1.reset).toHaveBeenCalledTimes(1);
@@ -284,7 +327,7 @@ describe('ChatPaneComponent A/B coordinator', () => {
     const pane1 = pane(1)!;
     await open(undefined); // close → teardownKernel pane1 (kernel idled → cold)
     expect(pane1.teardownKernel).toHaveBeenCalledTimes(1);
-    pane1.isWarm.and.returnValue(false); // simulate the idled (cold) kernel
+    pane1.isWarm.mockReturnValue(false); // simulate the idled (cold) kernel
 
     await open(1); // fg still bound to 1, now cold → reset re-initializes
     expect(pane1.reset).toHaveBeenCalledTimes(1);

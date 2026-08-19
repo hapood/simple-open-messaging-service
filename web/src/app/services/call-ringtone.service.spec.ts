@@ -29,7 +29,7 @@ describe('CallRingtoneService', () => {
   it('does not schedule tones when browser autoplay rejects resume', async () => {
     const context = fakeContext(new Error('blocked'));
     installAudioContext(context);
-    spyOn(window, 'setInterval').and.callThrough();
+    vi.spyOn(window, 'setInterval');
 
     TestBed.inject(CallRingtoneService).setMode('incoming');
     await Promise.resolve();
@@ -55,7 +55,7 @@ describe('CallRingtoneService', () => {
     await Promise.resolve();
     expect(incoming.close).toHaveBeenCalledTimes(1);
     expect(audio.src).toBe('/audio/us-ringback-tone.ogg');
-    expect(audio.loop).toBeTrue();
+    expect(audio.loop).toBe(true);
     expect(audio.play).toHaveBeenCalledTimes(1);
 
     service.setMode('busy');
@@ -65,7 +65,7 @@ describe('CallRingtoneService', () => {
 
     service.setMode('ended');
     expect(audio.src).toBe('/audio/zip-tone.ogg');
-    expect(audio.loop).toBeFalse();
+    expect(audio.loop).toBe(false);
     expect(audio.play).toHaveBeenCalledTimes(3);
   });
 });
@@ -96,46 +96,50 @@ function fakeAudio(): HTMLAudioElement {
     loop: false,
     volume: 1,
     currentTime: 0,
-    play: jasmine.createSpy('play').and.resolveTo(),
-    pause: jasmine.createSpy('pause'),
-    removeAttribute: jasmine.createSpy('removeAttribute'),
-    load: jasmine.createSpy('load'),
+    play: vi.fn().mockName('play').mockResolvedValue(undefined),
+    pause: vi.fn().mockName('pause'),
+    removeAttribute: vi.fn().mockName('removeAttribute'),
+    load: vi.fn().mockName('load'),
   } as unknown as HTMLAudioElement;
 }
 
 function fakeContext(resumeError?: Error): AudioContext {
   const oscillator = {
     type: 'sine',
-    frequency: { setValueAtTime: jasmine.createSpy('setValueAtTime') },
-    connect: jasmine.createSpy('connect'),
-    disconnect: jasmine.createSpy('disconnect'),
-    addEventListener: jasmine.createSpy('addEventListener'),
-    start: jasmine.createSpy('start'),
-    stop: jasmine.createSpy('stop'),
+    frequency: { setValueAtTime: vi.fn().mockName('setValueAtTime') },
+    connect: vi.fn().mockName('connect'),
+    disconnect: vi.fn().mockName('disconnect'),
+    addEventListener: vi.fn().mockName('addEventListener'),
+    start: vi.fn().mockName('start'),
+    stop: vi.fn().mockName('stop'),
   };
   const gain = {
     gain: {
-      setValueAtTime: jasmine.createSpy('setValueAtTime'),
-      linearRampToValueAtTime: jasmine.createSpy('linearRampToValueAtTime'),
-      exponentialRampToValueAtTime: jasmine.createSpy(
-        'exponentialRampToValueAtTime',
-      ),
+      setValueAtTime: vi.fn().mockName('setValueAtTime'),
+      linearRampToValueAtTime: vi.fn().mockName('linearRampToValueAtTime'),
+      exponentialRampToValueAtTime: vi
+        .fn()
+        .mockName('exponentialRampToValueAtTime'),
     },
-    connect: jasmine.createSpy('connect'),
-    disconnect: jasmine.createSpy('disconnect'),
+    connect: vi.fn().mockName('connect'),
+    disconnect: vi.fn().mockName('disconnect'),
   };
-  const resume = jasmine.createSpy('resume');
-  if (resumeError) resume.and.rejectWith(resumeError);
-  else resume.and.resolveTo();
+  const resume = vi.fn().mockName('resume');
+  if (resumeError) resume.mockRejectedValue(resumeError);
+  else resume.mockResolvedValue(undefined);
   return {
     state: 'running',
     currentTime: 0,
     destination: {},
     resume,
-    close: jasmine.createSpy('close').and.resolveTo(),
-    createOscillator: jasmine
-      .createSpy('createOscillator')
-      .and.callFake(() => ({ ...oscillator })),
-    createGain: jasmine.createSpy('createGain').and.callFake(() => gain),
+    close: vi.fn().mockName('close').mockResolvedValue(undefined),
+    createOscillator: vi
+      .fn()
+      .mockName('createOscillator')
+      .mockImplementation(() => ({ ...oscillator })),
+    createGain: vi
+      .fn()
+      .mockName('createGain')
+      .mockImplementation(() => gain),
   } as unknown as AudioContext;
 }

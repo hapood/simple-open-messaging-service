@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { provideZonelessChangeDetection } from '@angular/core';
@@ -28,10 +29,10 @@ import { LanguageService } from '../../services/language.service';
  */
 describe('SettingsDevicesComponent', () => {
   let comp: SettingsDevicesComponent;
-  let getSessions: jasmine.Spy;
-  let getSessionSettings: jasmine.Spy;
-  let setSessionAutoTerminateDays: jasmine.Spy;
-  let revokeSession: jasmine.Spy;
+  let getSessions: Mock;
+  let getSessionSettings: Mock;
+  let setSessionAutoTerminateDays: Mock;
+  let revokeSession: Mock;
   let confirmCb: ((result: unknown) => void) | undefined;
 
   /** A minimal row factory (id + overrides) so each assertion reads only what it varies. */
@@ -55,22 +56,26 @@ describe('SettingsDevicesComponent', () => {
   beforeEach(() => {
     TestBed.resetTestingModule();
     confirmCb = undefined;
-    getSessions = jasmine
-      .createSpy('getSessions')
-      .and.returnValue(
+    getSessions = vi
+      .fn()
+      .mockName('getSessions')
+      .mockReturnValue(
         of({ code: 0, message: 'ok', data: [] as SessionInfo[] }),
       );
-    getSessionSettings = jasmine
-      .createSpy('getSessionSettings')
-      .and.returnValue(
+    getSessionSettings = vi
+      .fn()
+      .mockName('getSessionSettings')
+      .mockReturnValue(
         of({ code: 0, message: 'ok', data: { autoTerminateDays: 30 } }),
       );
-    setSessionAutoTerminateDays = jasmine
-      .createSpy('setSessionAutoTerminateDays')
-      .and.returnValue(of({ code: 0, message: 'ok' }));
-    revokeSession = jasmine
-      .createSpy('revokeSession')
-      .and.returnValue(of({ code: 0, message: 'ok' }));
+    setSessionAutoTerminateDays = vi
+      .fn()
+      .mockName('setSessionAutoTerminateDays')
+      .mockReturnValue(of({ code: 0, message: 'ok' }));
+    revokeSession = vi
+      .fn()
+      .mockName('revokeSession')
+      .mockReturnValue(of({ code: 0, message: 'ok' }));
 
     TestBed.configureTestingModule({
       providers: [
@@ -99,9 +104,10 @@ describe('SettingsDevicesComponent', () => {
         {
           provide: RouteService,
           useValue: {
-            popupDlg: jasmine
-              .createSpy('popupDlg')
-              .and.callFake(
+            popupDlg: vi
+              .fn()
+              .mockName('popupDlg')
+              .mockImplementation(
                 (_t: PopupType, _i: unknown, cb?: (r: unknown) => void) => {
                   confirmCb = cb;
                   return { id: 0 };
@@ -167,10 +173,10 @@ describe('SettingsDevicesComponent', () => {
   // ── revoke / terminateOthers (confirm-first) ───────────────────────────────────────────────
 
   it('revoke(s): confirms, then on confirm calls revokeSession with the row id and reloads', () => {
-    getSessions.and.returnValue(of({ code: 0, message: 'ok', data: [] }));
+    getSessions.mockReturnValue(of({ code: 0, message: 'ok', data: [] }));
     comp.revoke(row(7, { device: 'Pixel' }));
     expect(revokeSession).not.toHaveBeenCalled(); // nothing happens before confirm
-    expect(confirmCb).toEqual(jasmine.any(Function));
+    expect(confirmCb).toEqual(expect.any(Function));
     confirmCb!(true);
     expect(revokeSession).toHaveBeenCalledWith(7);
     expect(getSessions).toHaveBeenCalled(); // reload after revoke
@@ -187,7 +193,9 @@ describe('SettingsDevicesComponent', () => {
     comp.terminateOthers();
     expect(revokeSession).not.toHaveBeenCalled();
     confirmCb!(true);
-    expect(revokeSession.calls.allArgs().map((a) => a[0])).toEqual([2, 3, 4]);
+    expect(vi.mocked(revokeSession).mock.calls.map((a) => a[0])).toEqual([
+      2, 3, 4,
+    ]);
   });
 
   it('terminateOthers(): no-op when there are no other sessions (no confirm)', () => {

@@ -159,7 +159,7 @@ describe('MockItemSource (cursor contract)', () => {
     expect(items.every((i) => i.data.type === 'msg')).toBe(true);
     expect(items.some((i) => i.data.contentType === 'IMAGE')).toBe(true);
     const ms = items.map((i) => i.data.createdAtMs);
-    expect(Math.max(...ms) - Math.min(...ms)).toBeGreaterThan(86_400_000);
+    expect(Math.max(...ms) - Math.min(...ms)).toBeGreaterThan(86400000);
   });
 
   it('mirrors production: every IMAGE is a single image (consecutive same-creator merged by kernel mergeItems)', async () => {

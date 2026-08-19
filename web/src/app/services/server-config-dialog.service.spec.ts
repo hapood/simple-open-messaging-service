@@ -4,10 +4,10 @@ describe('ServerConfigDialogService', () => {
   it('opens and closes the optional reconfiguration dialog', () => {
     const service = new ServerConfigDialogService();
 
-    expect(service.visible()).toBeFalse();
+    expect(service.visible()).toBe(false);
     service.open();
-    expect(service.visible()).toBeTrue();
+    expect(service.visible()).toBe(true);
     service.close();
-    expect(service.visible()).toBeFalse();
+    expect(service.visible()).toBe(false);
   });
 });

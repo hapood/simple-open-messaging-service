@@ -20,7 +20,10 @@ describe('WebdbService native SQLite routing', () => {
   const tauriWindow = (): TauriWindow => window as unknown as TauriWindow;
 
   let service: WebdbService;
-  let calls: Array<{ cmd: string; args?: Record<string, unknown> }>;
+  let calls: Array<{
+    cmd: string;
+    args?: Record<string, unknown>;
+  }>;
   let responses: Map<string, unknown>;
 
   beforeEach(async () => {
@@ -57,30 +60,30 @@ describe('WebdbService native SQLite routing', () => {
     await service.replaceThreads([thread]);
     await service.deleteThread(9);
 
-    expect(calls).toContain(
-      jasmine.objectContaining({
+    expect(calls).toContainEqual(
+      expect.objectContaining({
         cmd: 'native_db_threads',
         args: { userId: 42 },
       }),
     );
-    expect(calls).toContain(
-      jasmine.objectContaining({
+    expect(calls).toContainEqual(
+      expect.objectContaining({
         cmd: 'native_db_put_thread',
-        args: jasmine.objectContaining({
+        args: expect.objectContaining({
           userId: 42,
           threadId: 9,
           item: thread,
         }),
       }),
     );
-    expect(calls).toContain(
-      jasmine.objectContaining({
+    expect(calls).toContainEqual(
+      expect.objectContaining({
         cmd: 'native_db_replace_threads',
         args: { userId: 42, items: [thread] },
       }),
     );
-    expect(calls).toContain(
-      jasmine.objectContaining({
+    expect(calls).toContainEqual(
+      expect.objectContaining({
         cmd: 'native_db_delete_thread',
         args: { userId: 42, threadId: 9 },
       }),
@@ -137,7 +140,7 @@ describe('WebdbService native SQLite routing', () => {
 
     expect(
       calls.find((call) => call.cmd === 'native_db_put_profile')?.args,
-    ).toEqual(jasmine.objectContaining({ userId: 42, profileRev: 6, profile }));
+    ).toEqual(expect.objectContaining({ userId: 42, profileRev: 6, profile }));
   });
 
   it('reads source-scoped member profiles through native SQLite commands', async () => {
@@ -156,14 +159,14 @@ describe('WebdbService native SQLite routing', () => {
 
     expect(await service.getMemberProfile(9, 8)).toEqual(profile);
     expect(await service.listMemberProfiles(9)).toEqual([profile]);
-    expect(calls).toContain(
-      jasmine.objectContaining({
+    expect(calls).toContainEqual(
+      expect.objectContaining({
         cmd: 'native_db_get_member_profile',
         args: { userId: 42, threadId: 9, memberUserId: 8 },
       }),
     );
-    expect(calls).toContain(
-      jasmine.objectContaining({
+    expect(calls).toContainEqual(
+      expect.objectContaining({
         cmd: 'native_db_list_member_profiles',
         args: { userId: 42, threadId: 9 },
       }),
@@ -179,7 +182,7 @@ describe('WebdbService native SQLite routing', () => {
     });
     const put = calls.find((call) => call.cmd === 'native_db_put_avatar');
     expect(put?.args).toEqual(
-      jasmine.objectContaining({
+      expect.objectContaining({
         userId: 42,
         identity: 'u8',
         path: '/a.webp',
@@ -243,8 +246,8 @@ describe('WebdbService native SQLite routing', () => {
     expect(await service.getNewestMessages([9])).toEqual([message]);
     await service.deleteMessagesByThread(9);
 
-    expect(calls).toContain(
-      jasmine.objectContaining({
+    expect(calls).toContainEqual(
+      expect.objectContaining({
         cmd: 'native_db_query_messages',
         args: {
           userId: 42,
@@ -255,8 +258,8 @@ describe('WebdbService native SQLite routing', () => {
         },
       }),
     );
-    expect(calls).toContain(
-      jasmine.objectContaining({
+    expect(calls).toContainEqual(
+      expect.objectContaining({
         cmd: 'native_db_put_messages',
         args: {
           userId: 42,
@@ -267,8 +270,8 @@ describe('WebdbService native SQLite routing', () => {
         },
       }),
     );
-    expect(calls).toContain(
-      jasmine.objectContaining({
+    expect(calls).toContainEqual(
+      expect.objectContaining({
         cmd: 'native_db_put_messages',
         args: {
           userId: 42,
@@ -279,26 +282,26 @@ describe('WebdbService native SQLite routing', () => {
         },
       }),
     );
-    expect(calls).toContain(
-      jasmine.objectContaining({
+    expect(calls).toContainEqual(
+      expect.objectContaining({
         cmd: 'native_db_message_section',
         args: { userId: 42, threadId: 9, seq: 5 },
       }),
     );
-    expect(calls).toContain(
-      jasmine.objectContaining({
+    expect(calls).toContainEqual(
+      expect.objectContaining({
         cmd: 'native_db_get_message',
         args: { userId: 42, threadId: 9, seq: 3 },
       }),
     );
-    expect(calls).toContain(
-      jasmine.objectContaining({
+    expect(calls).toContainEqual(
+      expect.objectContaining({
         cmd: 'native_db_newest_messages',
         args: { userId: 42, threadIds: [9] },
       }),
     );
-    expect(calls).toContain(
-      jasmine.objectContaining({
+    expect(calls).toContainEqual(
+      expect.objectContaining({
         cmd: 'native_db_delete_messages_by_thread',
         args: { userId: 42, threadId: 9 },
       }),

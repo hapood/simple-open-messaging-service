@@ -1,4 +1,9 @@
-import { computeCropRect, clampOffset, minCoverScale, clamp } from './crop-rect';
+import {
+  computeCropRect,
+  clampOffset,
+  minCoverScale,
+  clamp,
+} from './crop-rect';
 
 /**
  * Pure-math tests for the avatar cropper's transform model (no Angular/DOM):

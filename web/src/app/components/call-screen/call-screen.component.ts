@@ -8,6 +8,7 @@ import {
   OnDestroy,
   signal,
   viewChild,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import { TranslocoModule } from '@jsverse/transloco';
 import { TranslocoService } from '@jsverse/transloco';
@@ -106,9 +107,7 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
           <div
             class="self-view"
             [class.off]="
-              snap().swapped
-                ? showRemotePlaceholder()
-                : !snap().cameraEnabled
+              snap().swapped ? showRemotePlaceholder() : !snap().cameraEnabled
             "
             [style.transform]="selfTransform()"
             (pointerdown)="onSelfPointerDown($event)"
@@ -139,9 +138,7 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
           @if (snap().swapped && !snap().cameraEnabled) {
             <div class="remote-camera-off local-camera-off">
               <div class="remote-avatar">
-                <app-user-avatar
-                  [type]="UserAvatarType.SELF"
-                ></app-user-avatar>
+                <app-user-avatar [type]="UserAvatarType.SELF"></app-user-avatar>
               </div>
               <span>{{ 'call.cameraOff' | transloco }}</span>
             </div>
@@ -347,6 +344,7 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
     }
   `,
   imports: [TranslocoModule, UserAvatarComponent, IconComponent],
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styles: [
     `
       .call-screen {
@@ -361,8 +359,7 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
         padding: calc(24px + var(--soms-safe-top, 0px)) 24px
           calc(32px + var(--soms-safe-bottom, 0px));
         box-sizing: border-box;
-        background:
-          radial-gradient(
+        background: radial-gradient(
             circle at 50% 24%,
             color-mix(in srgb, var(--app-brand) 18%, transparent),
             transparent 38%
@@ -408,11 +405,7 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
         width: min(76vw, 520px);
         aspect-ratio: 1;
         top: -34%;
-        background: color-mix(
-          in srgb,
-          var(--app-brand) 12%,
-          transparent
-        );
+        background: color-mix(in srgb, var(--app-brand) 12%, transparent);
       }
       .call-screen.incoming::after {
         width: 240px;
@@ -848,7 +841,7 @@ export class CallScreenComponent implements OnDestroy {
               ? 'busy'
               : phase === 'ended'
                 ? 'ended'
-            : null,
+                : null,
       );
     });
     // AUDIO→VIDEO changes the rendered holes without remounting this component. Report after Angular has

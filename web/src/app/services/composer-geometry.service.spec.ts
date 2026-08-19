@@ -13,9 +13,7 @@ describe('ComposerGeometryService', () => {
     const stop = service.observe(retainedThread);
 
     expect(
-      document.documentElement.style.getPropertyValue(
-        '--soms-composer-height',
-      ),
+      document.documentElement.style.getPropertyValue('--soms-composer-height'),
     ).toBe('0px');
     stop();
   });
@@ -27,9 +25,7 @@ describe('ComposerGeometryService', () => {
     const stop = service.observe(temporarilyHidden);
 
     expect(
-      document.documentElement.style.getPropertyValue(
-        '--soms-composer-height',
-      ),
+      document.documentElement.style.getPropertyValue('--soms-composer-height'),
     ).toBe('74px');
     stop();
   });

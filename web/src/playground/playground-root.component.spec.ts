@@ -2,6 +2,7 @@ import {
   Component,
   provideZonelessChangeDetection,
   signal,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideTransloco } from '@jsverse/transloco';
@@ -15,15 +16,24 @@ import { UserService } from '../app/services/user.service';
 import { PlaygroundCallState } from './playground-call.mock';
 import { PlaygroundRootComponent } from './playground-root.component';
 
-@Component({ selector: 'app-call-screen', template: 'Call screen' })
+@Component({
+  selector: 'app-call-screen',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: 'Call screen',
+})
 class TestCallScreenComponent {}
 
-@Component({ selector: 'app-root-popup', template: '' })
+@Component({
+  selector: 'app-root-popup',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: '',
+})
 class TestRootPopupComponent {}
 
 @Component({
   selector: 'app-playground-shell',
   imports: [CallBannerComponent],
+  changeDetection: ChangeDetectionStrategy.OnPush,
   template: '<app-call-banner />',
 })
 class TestPlaygroundShellComponent {}
@@ -50,10 +60,10 @@ describe('PlaygroundRootComponent', () => {
         {
           provide: CallAdapterService,
           useValue: {
-            accept: jasmine.createSpy('accept'),
-            decline: jasmine.createSpy('decline'),
-            cancel: jasmine.createSpy('cancel'),
-            end: jasmine.createSpy('end'),
+            accept: vi.fn().mockName('accept'),
+            decline: vi.fn().mockName('decline'),
+            cancel: vi.fn().mockName('cancel'),
+            end: vi.fn().mockName('end'),
           },
         },
         {
@@ -113,7 +123,7 @@ describe('PlaygroundRootComponent', () => {
     returnToCall?.click();
     fixture.detectChanges();
 
-    expect(presentation.minimized()).toBeFalse();
+    expect(presentation.minimized()).toBe(false);
     expect(query('app-call-screen')).not.toBeNull();
     expect(query('.call-banner')).toBeNull();
   });

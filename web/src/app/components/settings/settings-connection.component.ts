@@ -1,11 +1,24 @@
-import { Component, computed, inject, signal } from '@angular/core';
+import {
+  Component,
+  computed,
+  inject,
+  signal,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { MatListModule } from '@angular/material/list';
 import { MatButtonModule } from '@angular/material/button';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
-import { WebsocketService, ConnectionState } from '../../services/websocket.service';
+import {
+  WebsocketService,
+  ConnectionState,
+} from '../../services/websocket.service';
 import { LanguageService } from '../../services/language.service';
 import { apiPrefix } from '../../services/constants';
-import { apiOrigin, getActiveApiOrigin, getOriginMode } from '../../services/runtime';
+import {
+  apiOrigin,
+  getActiveApiOrigin,
+  getOriginMode,
+} from '../../services/runtime';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { firstValueFrom, timeout, TimeoutError } from 'rxjs';
 
@@ -30,7 +43,8 @@ interface HealthResult {
  * A genuine thrown Error → its message; anything else → "network".
  */
 export function classifyProbeError(e: unknown): string {
-  if (e instanceof HttpErrorResponse) return e.status === 0 ? 'network' : `HTTP ${e.status}`;
+  if (e instanceof HttpErrorResponse)
+    return e.status === 0 ? 'network' : `HTTP ${e.status}`;
   if (e instanceof TimeoutError) return 'timeout';
   if (e instanceof Error) return e.message;
   return 'network';
@@ -62,25 +76,41 @@ export function classifyProbeError(e: unknown): string {
         <mat-list>
           <!-- Active server (primary vs LAN fallback) -->
           <mat-list-item>
-            <span matListItemTitle>{{ 'settings.activeServer' | transloco }}</span>
+            <span matListItemTitle>{{
+              'settings.activeServer' | transloco
+            }}</span>
             <span matListItemLine class="hint">{{ activeOriginHint() }}</span>
             <div matListItemMeta class="row-actions">
-              <span class="status-pill" [class.warn]="originMode() === 'secondary'">{{
-                originPillLabel()
-              }}</span>
+              <span
+                class="status-pill"
+                [class.warn]="originMode() === 'secondary'"
+                >{{ originPillLabel() }}</span
+              >
             </div>
           </mat-list-item>
 
           <!-- Realtime connection (SSE) -->
           <mat-list-item>
-            <span matListItemTitle>{{ 'settings.realtimeConnection' | transloco }}</span>
-            <span matListItemLine class="hint">{{ 'settings.realtimeDesc' | transloco }}</span>
+            <span matListItemTitle>{{
+              'settings.realtimeConnection' | transloco
+            }}</span>
+            <span matListItemLine class="hint">{{
+              'settings.realtimeDesc' | transloco
+            }}</span>
             <div matListItemMeta class="row-actions">
-              <span class="status-pill"
-                    [class.active]="connPillClass() === 'active'"
-                    [class.warn]="connPillClass() === 'warn'">{{ connLabel() }}</span>
-              <button mat-button type="button" class="check-btn"
-                      (click)="retry()" [disabled]="!canRetry()">
+              <span
+                class="status-pill"
+                [class.active]="connPillClass() === 'active'"
+                [class.warn]="connPillClass() === 'warn'"
+                >{{ connLabel() }}</span
+              >
+              <button
+                mat-button
+                type="button"
+                class="check-btn"
+                (click)="retry()"
+                [disabled]="!canRetry()"
+              >
                 {{ 'settings.retry' | transloco }}
               </button>
             </div>
@@ -88,15 +118,30 @@ export function classifyProbeError(e: unknown): string {
 
           <!-- Server health (liveness probe) -->
           <mat-list-item>
-            <span matListItemTitle>{{ 'settings.serverHealth' | transloco }}</span>
+            <span matListItemTitle>{{
+              'settings.serverHealth' | transloco
+            }}</span>
             <span matListItemLine class="hint">{{ healthHint() }}</span>
             <div matListItemMeta class="row-actions">
-              <span class="status-pill"
-                    [class.active]="healthPillClass() === 'active'"
-                    [class.error]="healthPillClass() === 'error'">{{ healthPillLabel() }}</span>
-              <button mat-button type="button" class="check-btn"
-                      (click)="check()" [disabled]="checking()">
-                {{ (checking() ? 'settings.healthChecking' : 'settings.healthCheck') | transloco }}
+              <span
+                class="status-pill"
+                [class.active]="healthPillClass() === 'active'"
+                [class.error]="healthPillClass() === 'error'"
+                >{{ healthPillLabel() }}</span
+              >
+              <button
+                mat-button
+                type="button"
+                class="check-btn"
+                (click)="check()"
+                [disabled]="checking()"
+              >
+                {{
+                  (checking()
+                    ? 'settings.healthChecking'
+                    : 'settings.healthCheck'
+                  ) | transloco
+                }}
               </button>
             </div>
           </mat-list-item>
@@ -104,6 +149,7 @@ export function classifyProbeError(e: unknown): string {
       </div>
     </section>
   `,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './sub-page.scss',
 })
 export class SettingsConnectionComponent {
@@ -146,7 +192,8 @@ export class SettingsConnectionComponent {
   });
   /** Retry is meaningful only mid-(re)connect — retryNow is a no-op when open or closed. */
   readonly canRetry = computed(
-    () => this.ws.state() === 'connecting' || this.ws.state() === 'reconnecting',
+    () =>
+      this.ws.state() === 'connecting' || this.ws.state() === 'reconnecting',
   );
 
   private connKey(s: ConnectionState): string {
@@ -177,7 +224,9 @@ export class SettingsConnectionComponent {
   readonly originPillLabel = computed(() => {
     void this.language.lang();
     return this.transloco.translate(
-      this.originMode() === 'secondary' ? 'settings.serverLan' : 'settings.serverPrimary',
+      this.originMode() === 'secondary'
+        ? 'settings.serverLan'
+        : 'settings.serverPrimary',
     );
   });
 
@@ -208,7 +257,9 @@ export class SettingsConnectionComponent {
     void this.language.lang();
     const h = this.health();
     if (!h) return this.transloco.translate('settings.healthIdle');
-    return this.transloco.translate(h.ok ? 'settings.healthOkShort' : 'settings.healthFailShort');
+    return this.transloco.translate(
+      h.ok ? 'settings.healthOkShort' : 'settings.healthFailShort',
+    );
   });
 
   readonly healthPillClass = computed<string>(() => {
@@ -228,7 +279,9 @@ export class SettingsConnectionComponent {
         ms: h.ms ?? '?',
       });
     }
-    return this.transloco.translate('settings.healthFailDetail', { error: h.error ?? '' });
+    return this.transloco.translate('settings.healthFailDetail', {
+      error: h.error ?? '',
+    });
   });
 
   /** Probe `GET /api/v1/health` (public), measure round-trip latency, store the result. Goes through
@@ -241,7 +294,9 @@ export class SettingsConnectionComponent {
     const t0 = performance.now();
     try {
       const json = await firstValueFrom(
-        this.http.get<{ data?: { version?: string } }>(`${apiPrefix()}/health`).pipe(timeout(this.probeTimeoutMs)),
+        this.http
+          .get<{ data?: { version?: string } }>(`${apiPrefix()}/health`)
+          .pipe(timeout(this.probeTimeoutMs)),
       );
       const ms = Math.round(performance.now() - t0);
       const version = json?.data?.version ?? '';

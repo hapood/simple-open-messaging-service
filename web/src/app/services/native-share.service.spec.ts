@@ -53,7 +53,7 @@ describe('NativeShareService', () => {
     service.releaseDraft();
     expect(service.draft()).toBeNull();
     service.claimRecipients(service.pending()!, [3, 7]);
-    expect(service.acknowledge('share-1')).toBeTrue();
+    expect(service.acknowledge('share-1')).toBe(true);
     expect(service.pending()).toBeNull();
   });
 });

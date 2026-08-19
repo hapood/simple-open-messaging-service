@@ -5,6 +5,7 @@ import {
   HostListener,
   effect,
   inject,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
 import { ThemeService } from './services/theme.service';
@@ -49,6 +50,7 @@ import { ServerConfigDialogService } from './services/server-config-dialog.servi
     ServerConfigPageComponent,
   ],
   templateUrl: './app.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './app.component.scss',
 })
 export class AppComponent {

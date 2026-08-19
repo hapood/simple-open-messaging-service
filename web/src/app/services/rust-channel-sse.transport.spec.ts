@@ -1,5 +1,9 @@
 import { RustChannelSseTransport } from './rust-channel-sse.transport';
-import type { ConnectionState, RealtimeSink, StandardMessage } from './realtime-transport';
+import type {
+  ConnectionState,
+  RealtimeSink,
+  StandardMessage,
+} from './realtime-transport';
 
 /**
  * RustChannelSseTransport unit tests — the Tauri DESKTOP event-routing seam.
@@ -27,27 +31,48 @@ function recordingSink() {
     onForceLogout: (reason) => forceLogouts.push(reason),
     onReconnectIn: (ms) => reconnectIns.push(ms),
   };
-  return { sink, events, states, reconnects: () => reconnects, forceLogouts: () => forceLogouts, reconnectIns: () => reconnectIns };
+  return {
+    sink,
+    events,
+    states,
+    reconnects: () => reconnects,
+    forceLogouts: () => forceLogouts,
+    reconnectIns: () => reconnectIns,
+  };
 }
 
 interface FakeTauri {
   /** Dispatch a Rust→JS event the way the supervisor's `app.emit` would. */
   emit: (event: string, payload: unknown) => void;
   /** Every command the transport invoked, in order. */
-  invokes: () => { cmd: string; args?: unknown }[];
+  invokes: () => {
+    cmd: string;
+    args?: unknown;
+  }[];
 }
 
 /** Install a minimal `window.__TAURI__` capturing `event.listen` handlers + recording `core.invoke`. */
 function installFakeTauri(initialState: ConnectionState = 'closed'): FakeTauri {
-  const listeners: Record<string, ((e: { payload: unknown }) => void) | undefined> = {};
-  const invokes: { cmd: string; args?: unknown }[] = [];
+  const listeners: Record<
+    string,
+    ((e: { payload: unknown }) => void) | undefined
+  > = {};
+  const invokes: {
+    cmd: string;
+    args?: unknown;
+  }[] = [];
   let nextState = initialState;
   const w = window as unknown as {
     __TAURI_INTERNALS__?: unknown;
     __TAURI__?: {
-      core?: { invoke: (cmd: string, args?: unknown) => Promise<unknown> };
+      core?: {
+        invoke: (cmd: string, args?: unknown) => Promise<unknown>;
+      };
       event?: {
-        listen: (event: string, h: (e: { payload: unknown }) => void) => Promise<() => void>;
+        listen: (
+          event: string,
+          h: (e: { payload: unknown }) => void,
+        ) => Promise<() => void>;
         emit: (event: string, payload?: unknown) => Promise<void> | void;
       };
     };
@@ -96,7 +121,10 @@ describe('RustChannelSseTransport', () => {
   afterEach(() => {
     for (const t of active) t.stop();
     active = [];
-    const w = window as unknown as { __TAURI_INTERNALS__?: unknown; __TAURI__?: unknown };
+    const w = window as unknown as {
+      __TAURI_INTERNALS__?: unknown;
+      __TAURI__?: unknown;
+    };
     delete w.__TAURI_INTERNALS__;
     delete w.__TAURI__;
   });
@@ -106,7 +134,7 @@ describe('RustChannelSseTransport', () => {
     const rec = recordingSink();
     make(rec.sink).start();
     await flush();
-    expect(t.invokes().some((i) => i.cmd === 'sse_start')).toBeTrue();
+    expect(t.invokes().some((i) => i.cmd === 'sse_start')).toBe(true);
     // The live state is seeded so a freshly-booted renderer's banner isn't blank until the next transition.
     expect(rec.states).toContain('reconnecting');
   });
@@ -116,9 +144,19 @@ describe('RustChannelSseTransport', () => {
     const rec = recordingSink();
     make(rec.sink).start();
     await flush();
-    t.emit('soms-sse-event', { event: 'NEW_MESSAGE', status: 0, message: 'new message', data: { id: 5 } });
+    t.emit('soms-sse-event', {
+      event: 'NEW_MESSAGE',
+      status: 0,
+      message: 'new message',
+      data: { id: 5 },
+    });
     expect(rec.events).toEqual([
-      { event: 'NEW_MESSAGE', status: 0, message: 'new message', data: { id: 5 } },
+      {
+        event: 'NEW_MESSAGE',
+        status: 0,
+        message: 'new message',
+        data: { id: 5 },
+      },
     ]);
   });
 
@@ -180,7 +218,16 @@ describe('RustChannelSseTransport', () => {
     const nets = t
       .invokes()
       .filter((i) => i.cmd === 'sse_net')
-      .map((i) => (i.args as { online?: boolean } | undefined)?.online);
+      .map(
+        (i) =>
+          (
+            i.args as
+              | {
+                  online?: boolean;
+                }
+              | undefined
+          )?.online,
+      );
     expect(nets).toEqual([false, true]);
   });
 
@@ -192,7 +239,17 @@ describe('RustChannelSseTransport', () => {
     await flush();
     transport.retryNow();
     await flush();
-    expect(t.invokes().some((i) => i.cmd === 'sse_net' && (i.args as { online?: boolean })?.online === true)).toBeTrue();
+    expect(
+      t.invokes().some(
+        (i) =>
+          i.cmd === 'sse_net' &&
+          (
+            i.args as {
+              online?: boolean;
+            }
+          )?.online === true,
+      ),
+    ).toBe(true);
   });
 
   it('retryNow() drops the scheduled countdown (the manual retry voids the backoff deadline)', async () => {
@@ -215,10 +272,15 @@ describe('RustChannelSseTransport', () => {
     // Remove from `active` so afterEach doesn't double-stop (stop is idempotent anyway).
     active = active.filter((x) => x !== transport);
     await flush();
-    expect(t.invokes().some((i) => i.cmd === 'sse_stop')).toBeTrue();
+    expect(t.invokes().some((i) => i.cmd === 'sse_stop')).toBe(true);
     expect(rec.states[rec.states.length - 1]).toBe('closed');
     // Listeners detached → a Rust emit no longer reaches the sink.
-    t.emit('soms-sse-event', { event: 'NEW_MESSAGE', status: 0, message: 'new message', data: { id: 9 } });
+    t.emit('soms-sse-event', {
+      event: 'NEW_MESSAGE',
+      status: 0,
+      message: 'new message',
+      data: { id: 9 },
+    });
     expect(rec.events.length).toBe(0);
   });
 
@@ -231,7 +293,9 @@ describe('RustChannelSseTransport', () => {
     const firstStarts = t.invokes().filter((i) => i.cmd === 'sse_start').length;
     transport.start();
     await flush();
-    const secondStarts = t.invokes().filter((i) => i.cmd === 'sse_start').length;
+    const secondStarts = t
+      .invokes()
+      .filter((i) => i.cmd === 'sse_start').length;
     expect(secondStarts).toBe(firstStarts);
   });
 });

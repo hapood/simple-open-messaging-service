@@ -141,7 +141,11 @@ describe('WebsocketService (reconnect countdown clock)', () => {
     const received: number[] = [];
     ws.eventSubject.subscribe((message) =>
       received.push(
-        (message.data as { stateRevision: number }).stateRevision,
+        (
+          message.data as {
+            stateRevision: number;
+          }
+        ).stateRevision,
       ),
     );
     deletionLock.begin(7);
@@ -168,7 +172,11 @@ describe('WebsocketService (reconnect countdown clock)', () => {
     const received: number[] = [];
     ws.eventSubject.subscribe((message) =>
       received.push(
-        (message.data as { stateRevision: number }).stateRevision,
+        (
+          message.data as {
+            stateRevision: number;
+          }
+        ).stateRevision,
       ),
     );
     deletionLock.begin(7);

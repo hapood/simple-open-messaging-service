@@ -18,7 +18,7 @@ describe('DebugLogFabComponent', () => {
         },
         {
           provide: DiagnosticsReportService,
-          useValue: { upload: jasmine.createSpy('upload') },
+          useValue: { upload: vi.fn().mockName('upload') },
         },
       ],
     }).compileComponents();
@@ -33,10 +33,12 @@ describe('DebugLogFabComponent', () => {
     const fab = fixture.nativeElement.querySelector(
       '.dbg-fab',
     ) as HTMLButtonElement;
-    const rect = fab.getBoundingClientRect();
+    const style = getComputedStyle(fab);
 
-    expect(rect.left + rect.width / 2).toBeCloseTo(window.innerWidth / 2, 0);
-    expect(rect.top + rect.height / 2).toBeCloseTo(window.innerHeight / 2, 0);
+    expect(style.left).toBe('calc(50% - 22px)');
+    expect(style.top).toBe('calc(50% - 22px)');
+    expect(style.width).toBe('44px');
+    expect(style.height).toBe('44px');
   });
 
   it('sets the viewer open on the first click while its lazy chunk loads', () => {
@@ -45,7 +47,7 @@ describe('DebugLogFabComponent', () => {
     ) as HTMLButtonElement;
     fab.click();
 
-    expect(fixture.componentInstance.open()).toBeTrue();
+    expect(fixture.componentInstance.open()).toBe(true);
   });
 
   it('suppresses the compatibility click immediately after dragging', () => {
@@ -53,8 +55,8 @@ describe('DebugLogFabComponent', () => {
     const fab = fixture.nativeElement.querySelector(
       '.dbg-fab',
     ) as HTMLButtonElement;
-    spyOn(fab, 'setPointerCapture');
-    spyOn(fab, 'releasePointerCapture');
+    vi.spyOn(fab, 'setPointerCapture').mockReturnValue(undefined);
+    vi.spyOn(fab, 'releasePointerCapture').mockReturnValue(undefined);
 
     component.onDown(
       new PointerEvent('pointerdown', {
@@ -84,8 +86,8 @@ describe('DebugLogFabComponent', () => {
     const click = new MouseEvent('click', { cancelable: true });
     component.onClick(click);
 
-    expect(component.open()).toBeFalse();
-    expect(click.defaultPrevented).toBeTrue();
+    expect(component.open()).toBe(false);
+    expect(click.defaultPrevented).toBe(true);
   });
 
   it('does not suppress a stationary long press', () => {
@@ -93,8 +95,8 @@ describe('DebugLogFabComponent', () => {
     const fab = fixture.nativeElement.querySelector(
       '.dbg-fab',
     ) as HTMLButtonElement;
-    spyOn(fab, 'setPointerCapture');
-    spyOn(fab, 'releasePointerCapture');
+    vi.spyOn(fab, 'setPointerCapture').mockReturnValue(undefined);
+    vi.spyOn(fab, 'releasePointerCapture').mockReturnValue(undefined);
 
     component.onDown(
       new PointerEvent('pointerdown', {
@@ -116,6 +118,6 @@ describe('DebugLogFabComponent', () => {
 
     component.onClick(new MouseEvent('click'));
 
-    expect(component.open()).toBeTrue();
+    expect(component.open()).toBe(true);
   });
 });

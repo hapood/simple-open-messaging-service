@@ -13,8 +13,12 @@ describe('RootPopupComponent presentation policy', () => {
   const dialogs = signal<DlgInfo[]>([]);
   const isAtLeastMedium = signal(false);
   const nav = {
-    paneStack: signal<readonly { kind: string }[]>([]),
-    back: jasmine.createSpy('back'),
+    paneStack: signal<
+      readonly {
+        kind: string;
+      }[]
+    >([]),
+    back: vi.fn().mockName('back'),
   };
   let component: RootPopupComponent;
 
@@ -22,7 +26,7 @@ describe('RootPopupComponent presentation policy', () => {
     dialogs.set([]);
     isAtLeastMedium.set(false);
     nav.paneStack.set([]);
-    nav.back.calls.reset();
+    nav.back.mockClear();
 
     TestBed.configureTestingModule({
       providers: [
@@ -73,20 +77,20 @@ describe('RootPopupComponent presentation policy', () => {
   it('retains instant backdrop close only for a compact page after its entry is removed', () => {
     dialogs.set([info('page')]);
     TestBed.inject(ApplicationRef).tick();
-    expect((component as any).instantBackdropHide()).toBeTrue();
+    expect((component as any).instantBackdropHide()).toBe(true);
 
     dialogs.set([]);
     TestBed.inject(ApplicationRef).tick();
-    expect((component as any).instantBackdropHide()).toBeTrue();
+    expect((component as any).instantBackdropHide()).toBe(true);
 
     dialogs.set([info('modal')]);
     TestBed.inject(ApplicationRef).tick();
-    expect((component as any).instantBackdropHide()).toBeFalse();
+    expect((component as any).instantBackdropHide()).toBe(false);
   });
 
   it('clears browser text selection when the top dialog changes', () => {
-    const removeAllRanges = jasmine.createSpy('removeAllRanges');
-    spyOn(document, 'getSelection').and.returnValue({
+    const removeAllRanges = vi.fn().mockName('removeAllRanges');
+    vi.spyOn(document, 'getSelection').mockReturnValue({
       removeAllRanges,
     } as unknown as Selection);
 
@@ -112,7 +116,7 @@ describe('RootPopupComponent presentation policy', () => {
 
     component.onEscape(event);
 
-    expect(event.defaultPrevented).toBeTrue();
+    expect(event.defaultPrevented).toBe(true);
     expect(nav.back).toHaveBeenCalled();
   });
 });

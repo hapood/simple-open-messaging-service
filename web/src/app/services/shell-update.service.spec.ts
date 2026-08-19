@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { ShellUpdateService, ShellUpdateStatus } from './shell-update.service';
@@ -22,19 +23,25 @@ import { apiOrigin, apiOriginSecondary } from './runtime';
 describe('ShellUpdateService', () => {
   type MockWindow = {
     __TAURI_INTERNALS__?: unknown;
-    __TAURI__?: { core: { invoke: jasmine.Spy } };
+    __TAURI__?: {
+      core: {
+        invoke: Mock;
+      };
+    };
   };
 
   let svc: ShellUpdateService;
-  let invokeSpy: jasmine.Spy;
+  let invokeSpy: Mock;
   const ORIGIN = 'https://server.example';
 
   beforeEach(() => {
     TestBed.resetTestingModule();
-    TestBed.configureTestingModule({ providers: [provideZonelessChangeDetection()] });
+    TestBed.configureTestingModule({
+      providers: [provideZonelessChangeDetection()],
+    });
     const w = window as unknown as MockWindow;
     w.__TAURI_INTERNALS__ = {}; // isTauri() → true
-    invokeSpy = jasmine.createSpy('invoke');
+    invokeSpy = vi.fn().mockName('invoke');
     w.__TAURI__ = { core: { invoke: invokeSpy } };
     apiOrigin.set(ORIGIN); // apiOriginIsEmpty() → false
     apiOriginSecondary.set(null);
@@ -50,7 +57,9 @@ describe('ShellUpdateService', () => {
     apiOriginSecondary.set(null);
   });
 
-  const aStatus = (over: Partial<ShellUpdateStatus> = {}): ShellUpdateStatus => ({
+  const aStatus = (
+    over: Partial<ShellUpdateStatus> = {},
+  ): ShellUpdateStatus => ({
     shellVersion: '0.1.0',
     serverVersion: '0.1.0',
     installedWebVersion: '0.2.0',
@@ -61,14 +70,22 @@ describe('ShellUpdateService', () => {
   });
 
   it('check() probes the active Rust origin and exposes it with the update status', async () => {
-    const status = aStatus({ serverWebVersion: '0.2.1', webUpdateAvailable: true });
-    invokeSpy.withArgs('get_active_api_origin', undefined).and.resolveTo(ORIGIN);
-    invokeSpy.withArgs('init_update_status', { origin: ORIGIN }).and.resolveTo(status);
+    const status = aStatus({
+      serverWebVersion: '0.2.1',
+      webUpdateAvailable: true,
+    });
+    invokeSpy.mockImplementation((command: string) =>
+      Promise.resolve(
+        command === 'get_active_api_origin' ? ORIGIN : status,
+      ),
+    );
 
     await svc.check();
 
     expect(invokeSpy).toHaveBeenCalledWith('get_active_api_origin', undefined);
-    expect(invokeSpy).toHaveBeenCalledWith('init_update_status', { origin: ORIGIN });
+    expect(invokeSpy).toHaveBeenCalledWith('init_update_status', {
+      origin: ORIGIN,
+    });
     expect(svc.updateStatus()).toEqual(status);
     expect(svc.probedOrigin()).toBe(ORIGIN);
   });
@@ -77,12 +94,15 @@ describe('ShellUpdateService', () => {
     const lan = 'http://10.0.0.1:3000';
     const status = aStatus();
     apiOriginSecondary.set(lan);
-    invokeSpy.withArgs('get_active_api_origin', undefined).and.resolveTo(lan);
-    invokeSpy.withArgs('init_update_status', { origin: lan }).and.resolveTo(status);
+    invokeSpy.mockImplementation((command: string) =>
+      Promise.resolve(command === 'get_active_api_origin' ? lan : status),
+    );
 
     await svc.check();
 
-    expect(invokeSpy).toHaveBeenCalledWith('init_update_status', { origin: lan });
+    expect(invokeSpy).toHaveBeenCalledWith('init_update_status', {
+      origin: lan,
+    });
     expect(svc.probedOrigin()).toBe(lan);
   });
 
@@ -106,21 +126,28 @@ describe('ShellUpdateService', () => {
   it('check() swallows a rejected probe (offline) — never throws, updateStatus untouched', async () => {
     const prior = aStatus({ webUpdateAvailable: true });
     svc.updateStatus.set(prior);
-    invokeSpy.and.rejectWith(new Error('offline'));
+    invokeSpy.mockRejectedValue(new Error('offline'));
 
-    await expectAsync(svc.check()).toBeResolved(); // does NOT throw
+    await expect(svc.check()).resolves.not.toThrow(); // does NOT throw
     expect(svc.updateStatus()).toEqual(prior); // unchanged — cached bundle keeps the app usable
   });
 
   it('downloadUpdate() invokes init_download_web, then re-probes so About flips to "up to date"', async () => {
-    const fresh = aStatus({ serverWebVersion: '0.2.0', webUpdateAvailable: false });
-    invokeSpy.withArgs('get_active_api_origin', undefined).and.resolveTo(ORIGIN);
-    invokeSpy.withArgs('init_download_web', { origin: ORIGIN }).and.resolveTo(undefined);
-    invokeSpy.withArgs('init_update_status', { origin: ORIGIN }).and.resolveTo(fresh);
+    const fresh = aStatus({
+      serverWebVersion: '0.2.0',
+      webUpdateAvailable: false,
+    });
+    invokeSpy.mockImplementation((command: string) => {
+      if (command === 'get_active_api_origin') return Promise.resolve(ORIGIN);
+      if (command === 'init_update_status') return Promise.resolve(fresh);
+      return Promise.resolve(undefined);
+    });
 
     await svc.downloadUpdate();
 
-    expect(invokeSpy).toHaveBeenCalledWith('init_download_web', { origin: ORIGIN });
+    expect(invokeSpy).toHaveBeenCalledWith('init_download_web', {
+      origin: ORIGIN,
+    });
     expect(svc.updateStatus()).toEqual(fresh);
   });
 

@@ -1,4 +1,9 @@
-import { Component, input, output } from '@angular/core';
+import {
+  Component,
+  input,
+  output,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { AppIconType, IconComponent } from '../icon/icon.component';
 
 @Component({
@@ -6,6 +11,7 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
   standalone: true,
   imports: [IconComponent],
   templateUrl: './thread-search-input.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './thread-search-input.component.scss',
 })
 export class ThreadSearchInputComponent {

@@ -1,4 +1,9 @@
-import { Component, computed, input } from '@angular/core';
+import {
+  Component,
+  computed,
+  input,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import type { ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
@@ -34,6 +39,7 @@ interface CallContent {
   standalone: true,
   imports: [DateRowComponent, UserAvatarComponent, TranslocoPipe],
   templateUrl: './call-row.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './call-row.component.scss',
 })
 export class CallRowComponent {
@@ -66,9 +72,7 @@ export class CallRowComponent {
   readonly isAlert = computed(() => {
     const status = this.content()?.status;
     return (
-      status === 'missed' ||
-      status === 'failed' ||
-      status === 'unreachable'
+      status === 'missed' || status === 'failed' || status === 'unreachable'
     );
   });
 

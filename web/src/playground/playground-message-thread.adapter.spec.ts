@@ -22,7 +22,7 @@ describe('PlaygroundMessageThreadAdapter', () => {
       (item) => item.data.type === 'msg' && !item.data.isSelf,
     );
 
-    expect(incoming.every((item) => item.data.isGroupConversation)).toBeTrue();
+    expect(incoming.every((item) => item.data.isGroupConversation)).toBe(true);
     expect(
       new Set(incoming.map((item) => item.data.name)).size,
     ).toBeGreaterThan(1);
@@ -66,7 +66,7 @@ describe('PlaygroundMessageThreadAdapter', () => {
     expect(blocked.code).toBe(0);
     expect(forward.code).toBe(0);
     expect(adapter.forwardTargets().length).toBe(3);
-    expect(adapter.syncWithdrawalsAfterMutation()).toBeFalse();
+    expect(adapter.syncWithdrawalsAfterMutation()).toBe(false);
   });
 
   it('completes mock uploads without an HTTP transport', async () => {
@@ -75,7 +75,9 @@ describe('PlaygroundMessageThreadAdapter', () => {
     let loaded = 0;
 
     const result = await firstValueFrom(
-      adapter.uploadPart<{ url: string }>(
+      adapter.uploadPart<{
+        url: string;
+      }>(
         file,
         {
           clientMessageId: 'media-1',

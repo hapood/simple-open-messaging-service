@@ -1,5 +1,9 @@
 import { NativeEventTransport } from './native-event.transport';
-import type { ConnectionState, RealtimeSink, StandardMessage } from './realtime-transport';
+import type {
+  ConnectionState,
+  RealtimeSink,
+  StandardMessage,
+} from './realtime-transport';
 import { SSE_EVENT_FORCE_LOGOUT, SSE_EVENT_PING } from './sse-worker-protocol';
 
 /**
@@ -28,21 +32,41 @@ function recordingSink() {
     onForceLogout: (reason) => forceLogouts.push(reason),
     onReconnectIn: (ms) => reconnectIns.push(ms),
   };
-  return { sink, events, states, reconnects: () => reconnects, forceLogouts: () => forceLogouts, reconnectIns: () => reconnectIns };
+  return {
+    sink,
+    events,
+    states,
+    reconnects: () => reconnects,
+    forceLogouts: () => forceLogouts,
+    reconnectIns: () => reconnectIns,
+  };
 }
 
 /** Install a minimal `window.SomsFcm` exposing what the transport reads on start plus the retry channel.
  *  `replayHello` is called whenever Kotlin reports an already-open retained stream: the fresh WebView
  *  missed that stream's one-shot HELLO and asks native to replay its cached copy. */
-function installFakeFcm(connState: string): { retryNows: () => number; helloReplays: () => number } {
+function installFakeFcm(connState: string): {
+  retryNows: () => number;
+  helloReplays: () => number;
+} {
   let retryNows = 0;
   let helloReplays = 0;
-  (window as unknown as {
-    SomsFcm: { getConnState: () => string; retryNow: () => void; replayHello: () => void };
-  }).SomsFcm = {
+  (
+    window as unknown as {
+      SomsFcm: {
+        getConnState: () => string;
+        retryNow: () => void;
+        replayHello: () => void;
+      };
+    }
+  ).SomsFcm = {
     getConnState: () => connState,
-    retryNow: () => { retryNows++; },
-    replayHello: () => { helloReplays++; },
+    retryNow: () => {
+      retryNows++;
+    },
+    replayHello: () => {
+      helloReplays++;
+    },
   };
   return { retryNows: () => retryNows, helloReplays: () => helloReplays };
 }
@@ -69,7 +93,11 @@ describe('NativeEventTransport', () => {
     window.__SOMS_EVENT__ = undefined;
     window.__SOMS_CONN_STATE__ = undefined;
     window.__SOMS_RECONNECT_IN__ = undefined;
-    (window as unknown as { SomsFcm?: unknown }).SomsFcm = undefined;
+    (
+      window as unknown as {
+        SomsFcm?: unknown;
+      }
+    ).SomsFcm = undefined;
   });
 
   it('seeds the connection banner from SomsFcm.getConnState() on start (Kotlin only pushes on transitions)', () => {
@@ -93,7 +121,12 @@ describe('NativeEventTransport', () => {
     new NativeEventTransport(rec.sink).start();
     fireEvent('NEW_MESSAGE', { id: 5, threadId: 42, body: 'hi' });
     expect(rec.events).toEqual([
-      { event: 'NEW_MESSAGE', status: 0, message: 'new message', data: { id: 5, threadId: 42, body: 'hi' } },
+      {
+        event: 'NEW_MESSAGE',
+        status: 0,
+        message: 'new message',
+        data: { id: 5, threadId: 42, body: 'hi' },
+      },
     ]);
   });
 

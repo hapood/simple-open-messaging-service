@@ -20,7 +20,7 @@ function message(
       contentType,
       images: null,
       file: null,
-      createdAtMs: 1_700_000_000_000 + msgId,
+      createdAtMs: 1700000000000 + msgId,
     },
   };
 }
@@ -30,13 +30,13 @@ describe('computeRowFlags', () => {
     const system = message(0, 2, 'SYSTEM');
     const firstChatMessage = message(1, 2);
 
-    expect(computeRowFlags(firstChatMessage, system).isShowHead).toBeTrue();
+    expect(computeRowFlags(firstChatMessage, system).isShowHead).toBe(true);
   });
 
   it('keeps consecutive ordinary messages from the same creator grouped', () => {
-    expect(
-      computeRowFlags(message(2, 2), message(1, 2)).isShowHead,
-    ).toBeFalse();
+    expect(computeRowFlags(message(2, 2), message(1, 2)).isShowHead).toBe(
+      false,
+    );
   });
 
   it('classifies a same-sender run as head, body and tail', () => {

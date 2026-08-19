@@ -1,4 +1,11 @@
-import { Component, computed, inject, input, signal } from '@angular/core';
+import {
+  Component,
+  computed,
+  inject,
+  input,
+  signal,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { OverlayModule } from '@angular/cdk/overlay';
 import { AppIconType, IconComponent } from '../icon/icon.component';
@@ -37,6 +44,7 @@ import { formatBytes } from '../message-cards/file-meta.util';
     TranslocoPipe,
   ],
   templateUrl: './home-header.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './home-header.component.scss',
 })
 export class HomeHeaderComponent {

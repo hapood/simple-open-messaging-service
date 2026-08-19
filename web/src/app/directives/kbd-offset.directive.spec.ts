@@ -1,4 +1,9 @@
-import { Component, computed, signal } from '@angular/core';
+import {
+  Component,
+  computed,
+  signal,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { By } from '@angular/platform-browser';
@@ -16,7 +21,11 @@ import { InputDeviceService } from '../services/input-device.service';
 // Zoneless: no fakeAsync/tick. Signal writes schedule a tick; fixture.detectChanges() flushes the
 // directive's effect + the host binding in one pass.
 
-@Component({ template: `<div appKbdOffset></div>`, imports: [KbdOffsetDirective] })
+@Component({
+  template: `<div appKbdOffset></div>`,
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [KbdOffsetDirective],
+})
 class HostComp {}
 
 describe('KbdOffsetDirective', () => {
@@ -52,21 +61,31 @@ describe('KbdOffsetDirective', () => {
         },
         {
           provide: LayoutService,
-          useValue: { reflowFrozen: reflowFrozen.asReadonly() } as unknown as LayoutService,
+          useValue: {
+            reflowFrozen: reflowFrozen.asReadonly(),
+          } as unknown as LayoutService,
         },
         {
           provide: InputDeviceService,
-          useValue: { hasPhysicalKeyboard: hasPhysicalKeyboard.asReadonly() } as unknown as InputDeviceService,
+          useValue: {
+            hasPhysicalKeyboard: hasPhysicalKeyboard.asReadonly(),
+          } as unknown as InputDeviceService,
         },
       ],
     });
   });
 
   /** Create the host, flush the initial effect, and surface the directive + its host element. */
-  function setup(): { directive: KbdOffsetDirective; host: HTMLElement; detect: () => void } {
+  function setup(): {
+    directive: KbdOffsetDirective;
+    host: HTMLElement;
+    detect: () => void;
+  } {
     const fixture = TestBed.createComponent(HostComp);
     fixture.detectChanges();
-    const debugEl = fixture.debugElement.query(By.directive(KbdOffsetDirective));
+    const debugEl = fixture.debugElement.query(
+      By.directive(KbdOffsetDirective),
+    );
     return {
       directive: debugEl.injector.get(KbdOffsetDirective),
       host: debugEl.nativeElement as HTMLElement,
@@ -175,7 +194,7 @@ describe('KbdOffsetDirective', () => {
     expect(directive.offset()).toBe(200);
 
     reflowFrozen.set(true); // a route-transition slide starts → freeze
-    inset.set(400);         // a native push mid-slide
+    inset.set(400); // a native push mid-slide
     detect();
     expect(directive.offset()).toBe(200); // held — the mid-slide push did NOT lift
 

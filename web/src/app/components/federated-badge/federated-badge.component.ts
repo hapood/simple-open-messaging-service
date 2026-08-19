@@ -1,4 +1,4 @@
-import { Component, input } from '@angular/core';
+import { Component, input, ChangeDetectionStrategy } from '@angular/core';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 
 /**
@@ -13,17 +13,27 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
   imports: [IconComponent],
   template: `
     @if (domain()) {
-      <span class="fed-badge" [class.compact]="compact()" [attr.title]="domain()">
-        <app-icon [type]="AppIconType.GLOBE" [style]="{ width: '12px', height: '12px' }"></app-icon>
+      <span
+        class="fed-badge"
+        [class.compact]="compact()"
+        [attr.title]="domain()"
+      >
+        <app-icon
+          [type]="AppIconType.GLOBE"
+          [style]="{ width: '12px', height: '12px' }"
+        ></app-icon>
         @if (!compact()) {
           <span class="fed-domain">{{ domain() }}</span>
         }
       </span>
     }
   `,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styles: [
     `
-      :host { display: inline-flex; }
+      :host {
+        display: inline-flex;
+      }
       .fed-badge {
         display: inline-flex;
         align-items: center;

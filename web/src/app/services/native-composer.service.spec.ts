@@ -26,12 +26,16 @@ describe('NativeComposerService global geometry', () => {
   };
 
   const inset = signal(0);
-  const animation = signal<{ target: number; durationMs: number } | null>(null);
+  const animation = signal<{
+    target: number;
+    durationMs: number;
+  } | null>(null);
   const layoutOverride = signal<number | null>(null);
   const viewportReduction = signal(0);
-  const setLayoutOverride = jasmine
-    .createSpy('setLayoutOverride')
-    .and.callFake((_owner: object, value: number | null) =>
+  const setLayoutOverride = vi
+    .fn()
+    .mockName('setLayoutOverride')
+    .mockImplementation((_owner: object, value: number | null) =>
       layoutOverride.set(value),
     );
   let originalUserAgent: string;
@@ -53,14 +57,14 @@ describe('NativeComposerService global geometry', () => {
     window.__TAURI_INTERNALS__ = {};
     window.SomsShell = {
       getSafeInsets: () => '{"top":0,"bottom":24}',
-      showComposer: jasmine.createSpy('showComposer'),
-      hideComposer: jasmine.createSpy('hideComposer'),
+      showComposer: vi.fn().mockName('showComposer'),
+      hideComposer: vi.fn().mockName('hideComposer'),
     };
     inset.set(0);
     animation.set(null);
     layoutOverride.set(null);
     viewportReduction.set(0);
-    setLayoutOverride.calls.reset();
+    setLayoutOverride.mockClear();
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),

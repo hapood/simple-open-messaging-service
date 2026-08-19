@@ -6,7 +6,10 @@ describe('classifyGroupFlags', () => {
   const B: GroupCtx = { creator: 2 };
 
   it('no prev (list first item / after a date separator) → group head isShowHead=true', () => {
-    expect(classifyGroupFlags(null, A, A)).toEqual({ isShowHead: true, isDateShrink: true });
+    expect(classifyGroupFlags(null, A, A)).toEqual({
+      isShowHead: true,
+      isDateShrink: true,
+    });
   });
 
   it('sender change → isShowHead=true (starts a new group)', () => {
@@ -28,6 +31,9 @@ describe('classifyGroupFlags', () => {
   });
 
   it('sole item (no prev, no next) → group head, not in-group', () => {
-    expect(classifyGroupFlags(null, A, null)).toEqual({ isShowHead: true, isDateShrink: false });
+    expect(classifyGroupFlags(null, A, null)).toEqual({
+      isShowHead: true,
+      isDateShrink: false,
+    });
   });
 });

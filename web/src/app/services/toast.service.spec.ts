@@ -4,10 +4,10 @@ import { MatSnackBar } from '@angular/material/snack-bar';
 import { ToastService } from './toast.service';
 
 describe('ToastService', () => {
-  const snackBar = { open: jasmine.createSpy('open') };
+  const snackBar = { open: vi.fn().mockName('open') };
 
   beforeEach(() => {
-    snackBar.open.calls.reset();
+    snackBar.open.mockClear();
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -23,9 +23,9 @@ describe('ToastService', () => {
     expect(snackBar.open).toHaveBeenCalledWith(
       'Saved',
       undefined,
-      jasmine.objectContaining({
+      expect.objectContaining({
         duration: 4000,
-        panelClass: jasmine.arrayContaining(['soms-snack-bar--passive']),
+        panelClass: expect.arrayContaining(['soms-snack-bar--passive']),
       }),
     );
   });
@@ -39,9 +39,9 @@ describe('ToastService', () => {
     expect(snackBar.open).toHaveBeenCalledWith(
       'Retry?',
       undefined,
-      jasmine.objectContaining({
+      expect.objectContaining({
         duration: 0,
-        panelClass: jasmine.arrayContaining(['soms-snack-bar--interactive']),
+        panelClass: expect.arrayContaining(['soms-snack-bar--interactive']),
       }),
     );
   });
@@ -52,9 +52,9 @@ describe('ToastService', () => {
     expect(snackBar.open).toHaveBeenCalledWith(
       'Warning',
       undefined,
-      jasmine.objectContaining({
+      expect.objectContaining({
         duration: 10000,
-        panelClass: jasmine.arrayContaining(['soms-snack-bar--passive']),
+        panelClass: expect.arrayContaining(['soms-snack-bar--passive']),
       }),
     );
   });

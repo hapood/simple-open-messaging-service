@@ -8,9 +8,9 @@
       <app-user-avatar
         [type]="UserAvatarType.SELF"
         [loading]="!sessionProfile()"
-        [name]="sessionProfile()?.name"
-        [identityId]="sessionProfile()?.id"
-        [src]="sessionProfile()?.avatar"
+        [name]="$safeNavigationMigration(sessionProfile()?.name)"
+        [identityId]="$safeNavigationMigration(sessionProfile()?.id)"
+        [src]="$safeNavigationMigration(sessionProfile()?.avatar)"
       />
     </span>
   </button>

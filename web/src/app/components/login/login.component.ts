@@ -5,6 +5,7 @@ import {
   Output,
   EventEmitter,
   inject,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
@@ -33,6 +34,7 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
     MatProgressBarModule,
   ],
   templateUrl: './login.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './login.component.scss',
 })
 export class LoginComponent {

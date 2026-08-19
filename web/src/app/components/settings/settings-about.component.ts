@@ -5,6 +5,7 @@ import {
   DestroyRef,
   inject,
   signal,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { MatSnackBar } from '@angular/material/snack-bar';
@@ -181,6 +182,7 @@ interface DownloadProgress {
       </section>
     </section>
   `,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './settings-about.component.scss',
 })
 export class SettingsAboutComponent {

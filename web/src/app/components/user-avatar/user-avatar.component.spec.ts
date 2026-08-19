@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { TestBed, ComponentFixture } from '@angular/core/testing';
 import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { UserAvatarComponent, UserAvatarType } from './user-avatar.component';
@@ -5,14 +6,17 @@ import { AvatarRepository } from '../../services/avatar-cache.service';
 import { UserService } from '../../services/user.service';
 import { WebdbService } from '../../services/webdb.service';
 import { ProfileRepository } from '../../services/profile-store.service';
-import { provideHttpClient } from '@angular/common/http';
-import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { provideHttpClient, withXhr } from '@angular/common/http';
+import {
+  HttpTestingController,
+  provideHttpClientTesting,
+} from '@angular/common/http/testing';
 import type { User } from '../../services/model';
 import { PreferenceStore } from '../../services/preference-store.service';
 
 describe('UserAvatarComponent (imgSrc branching)', () => {
   let fixture: ComponentFixture<UserAvatarComponent>;
-  let getBlobSpy: jasmine.Spy;
+  let getBlobSpy: Mock;
   const sessionProfile = signal<unknown>(undefined);
 
   beforeEach(() => {
@@ -24,14 +28,17 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
         {
           provide: AvatarRepository,
           useValue: {
-            getBlob: jasmine.createSpy('getBlob').and.resolveTo(new Blob(['x'])),
-            refreshTick: jasmine.createSpy('refreshTick').and.returnValue(0),
+            getBlob: vi
+              .fn()
+              .mockName('getBlob')
+              .mockResolvedValue(new Blob(['x'])),
+            refreshTick: vi.fn().mockName('refreshTick').mockReturnValue(0),
           },
         },
       ],
     });
     fixture = TestBed.createComponent(UserAvatarComponent);
-    getBlobSpy = TestBed.inject(AvatarRepository).getBlob as jasmine.Spy;
+    getBlobSpy = TestBed.inject(AvatarRepository).getBlob as Mock;
     sessionProfile.set(undefined);
   });
 
@@ -115,7 +122,9 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
   it('passes a local-preview src (blob:/data:) straight through without the DB', () => {
     fixture.componentRef.setInput('identityId', 9);
     fixture.componentRef.setInput('src', 'blob:http://localhost/abc');
-    expect(fixture.componentInstance.imgSrc()).toBe('blob:http://localhost/abc');
+    expect(fixture.componentInstance.imgSrc()).toBe(
+      'blob:http://localhost/abc',
+    );
     expect(getBlobSpy).not.toHaveBeenCalled();
   });
 
@@ -138,7 +147,10 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
     fixture.detectChanges();
     await fixture.whenStable();
 
-    expect(getBlobSpy).toHaveBeenCalledWith('u7', '/uploads/avatars/self-512.webp');
+    expect(getBlobSpy).toHaveBeenCalledWith(
+      'u7',
+      '/uploads/avatars/self-512.webp',
+    );
     expect(fixture.componentInstance.showImage()).toBe(true);
   });
 });
@@ -152,7 +164,7 @@ describe('UserAvatarComponent offline cold-start integration', () => {
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
-        provideHttpClient(),
+        provideHttpClient(withXhr()),
         provideHttpClientTesting(),
         UserService,
         WebdbService,
@@ -183,7 +195,12 @@ describe('UserAvatarComponent offline cold-start integration', () => {
       identity: 'u7',
       // A real 1×1 GIF: the component's <img> load handler must accept it, just as it would a cached WebP.
       blob: new Blob(
-        [Uint8Array.from(atob('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=='), (c) => c.charCodeAt(0))],
+        [
+          Uint8Array.from(
+            atob('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=='),
+            (c) => c.charCodeAt(0),
+          ),
+        ],
         { type: 'image/gif' },
       ),
       path: '/uploads/avatars/self-512.webp',

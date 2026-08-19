@@ -1,4 +1,9 @@
-import { Component, computed, input } from '@angular/core';
+import {
+  Component,
+  computed,
+  input,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { encode } from 'uqr';
 
 /**
@@ -16,6 +21,7 @@ import { encode } from 'uqr';
 @Component({
   selector: 'app-qr-code',
   templateUrl: './qr-code.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './qr-code.component.scss',
 })
 export class QrCodeComponent {

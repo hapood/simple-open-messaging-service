@@ -1,4 +1,4 @@
-import { Component, input } from '@angular/core';
+import { Component, input, ChangeDetectionStrategy } from '@angular/core';
 
 /**
  * Telegram-style floating sticky-date overlay: the text of the last date-separator row at/above the
@@ -18,9 +18,12 @@ import { Component, input } from '@angular/core';
   standalone: true,
   template: `
     @if (label(); as l) {
-      <div class="sd-pill" aria-hidden="true"><span>{{ l }}</span></div>
+      <div class="sd-pill" aria-hidden="true">
+        <span>{{ l }}</span>
+      </div>
     }
   `,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './sticky-date-overlay.component.scss',
 })
 export class StickyDateOverlayComponent {

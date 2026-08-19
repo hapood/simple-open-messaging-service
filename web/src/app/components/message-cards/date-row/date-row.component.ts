@@ -1,4 +1,12 @@
-import { ChangeDetectorRef, Component, computed, effect, inject, input } from '@angular/core';
+import {
+  ChangeDetectorRef,
+  Component,
+  computed,
+  effect,
+  inject,
+  input,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
 import { LanguageService } from '../../../services/language.service';
 import { formatDateSeparator } from '../date-format';
@@ -22,8 +30,11 @@ import { formatDateSeparator } from '../date-format';
   selector: 'app-msg-date-row',
   standalone: true,
   template: `
-    <div class="msg-date"><span>{{ label() }}</span></div>
+    <div class="msg-date">
+      <span>{{ label() }}</span>
+    </div>
   `,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './date-row.component.scss',
 })
 export class DateRowComponent {

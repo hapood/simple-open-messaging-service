@@ -1,4 +1,8 @@
-import { ApplicationRef, provideZonelessChangeDetection, signal } from '@angular/core';
+import {
+  ApplicationRef,
+  provideZonelessChangeDetection,
+  signal,
+} from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { NavStateMachineService } from './nav-state.service';
 import { UserService } from './user.service';
@@ -28,7 +32,7 @@ describe('NavStateMachineService', () => {
   // ── back() layering: pane → aside → search → chat → settingsCategoryStack → topSection → exit ──
 
   it('back() peels the topmost pane before anything beneath it', () => {
-    svc.openChat(1);                    // chat first, then a dialog stacked over it
+    svc.openChat(1); // chat first, then a dialog stacked over it
     svc.pushPane({ kind: 'dialog' });
     expect(svc.back()).toBe(true);
     expect(svc.paneStack().length).toBe(0);
@@ -75,22 +79,22 @@ describe('NavStateMachineService', () => {
     expect(svc.chatThreadId()).toBeUndefined();
     expect(svc.topSection()).toBe('settings'); // section survives the chat-close back…
     expect(svc.back()).toBe(true);
-    expect(svc.topSection()).toBe('chats');    // …then peels back to chats
+    expect(svc.topSection()).toBe('chats'); // …then peels back to chats
   });
 
   it('back() peels the Settings drill stack one level at a time (multi-level)', () => {
     svc.setTopSection('settings');
     svc.openSettingsCategory('a');
     svc.openSettingsCategory('b');
-    expect(svc.settingsCategoryTop()).toBe('b');        // deepest on top
+    expect(svc.settingsCategoryTop()).toBe('b'); // deepest on top
     expect(svc.back()).toBe(true);
-    expect(svc.settingsCategoryTop()).toBe('a');        // peeled b → a
-    expect(svc.topSection()).toBe('settings');          // still in the section
+    expect(svc.settingsCategoryTop()).toBe('a'); // peeled b → a
+    expect(svc.topSection()).toBe('settings'); // still in the section
     expect(svc.back()).toBe(true);
-    expect(svc.settingsCategoryTop()).toBeUndefined();  // peeled a → root
+    expect(svc.settingsCategoryTop()).toBeUndefined(); // peeled a → root
     expect(svc.topSection()).toBe('settings');
     expect(svc.back()).toBe(true);
-    expect(svc.topSection()).toBe('chats');             // root → leave the section
+    expect(svc.topSection()).toBe('chats'); // root → leave the section
   });
 
   it('back() returns false only at home (chats, nothing open)', () => {

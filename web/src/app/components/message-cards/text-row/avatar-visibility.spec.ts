@@ -4,6 +4,7 @@ import {
   EnvironmentInjector,
   input,
   provideZonelessChangeDetection,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import {
@@ -31,7 +32,12 @@ import { RouteService } from '../../../services/route.service';
  * The inner `<app-user-avatar>` is stubbed (its DB/HTTP layer is irrelevant to the slot's visibility, which
  * is owned by this row's own CSS), so the test isolates the cascade under test.
  */
-@Component({ selector: 'app-user-avatar', standalone: true, template: '' })
+@Component({
+  selector: 'app-user-avatar',
+  standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: '',
+})
 class StubUserAvatarComponent {
   readonly type = input<unknown>(undefined);
   readonly name = input<string | undefined | null>('');
@@ -51,7 +57,7 @@ function buildMsg(overrides: Partial<ChatMsgData>): ChatMsgData {
     contentType: 'PURE_TEXT',
     images: null,
     file: null,
-    createdAtMs: 1_700_000_000_000,
+    createdAtMs: 1700000000000,
     ...overrides,
   };
 }

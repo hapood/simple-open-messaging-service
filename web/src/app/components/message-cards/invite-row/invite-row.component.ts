@@ -1,8 +1,19 @@
-import { Component, computed, inject, input, signal, OnInit } from '@angular/core';
+import {
+  Component,
+  computed,
+  inject,
+  input,
+  signal,
+  OnInit,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import type { ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
-import { UserAvatarComponent, UserAvatarType } from '../../user-avatar/user-avatar.component';
+import {
+  UserAvatarComponent,
+  UserAvatarType,
+} from '../../user-avatar/user-avatar.component';
 import { FederatedBadgeComponent } from '../../federated-badge/federated-badge.component';
 import { InviteDetailService } from '../../invite-detail/invite-detail.service';
 
@@ -23,8 +34,14 @@ import { InviteDetailService } from '../../invite-detail/invite-detail.service';
 @Component({
   selector: 'app-msg-invite-row',
   standalone: true,
-  imports: [UserAvatarComponent, DateRowComponent, TranslocoPipe, FederatedBadgeComponent],
+  imports: [
+    UserAvatarComponent,
+    DateRowComponent,
+    TranslocoPipe,
+    FederatedBadgeComponent,
+  ],
   templateUrl: './invite-row.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './invite-row.component.scss',
 })
 export class InviteRowComponent implements OnInit {
@@ -45,9 +62,13 @@ export class InviteRowComponent implements OnInit {
       !this.data().isSelf,
   );
   /** Render a status tick only for self-sent messages with a delivery status. Inert for invites. */
-  readonly statusTick = computed(() => this.data().isSelf && !!this.data().status);
+  readonly statusTick = computed(
+    () => this.data().isSelf && !!this.data().status,
+  );
   /** Dim while in flight (never true for invites). */
-  readonly isSending = computed(() => this.data().isSelf && this.data().status === 'sending');
+  readonly isSending = computed(
+    () => this.data().isSelf && this.data().status === 'sending',
+  );
 
   readonly invite = signal<{
     groupName: string;

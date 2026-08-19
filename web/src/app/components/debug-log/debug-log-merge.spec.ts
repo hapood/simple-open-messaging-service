@@ -194,14 +194,14 @@ describe('debug-log-merge', () => {
   describe('compileLogSearch', () => {
     it('treats plain-search punctuation literally', () => {
       const matcher = compileLogSearch('request.*', false, false);
-      expect(matcher.regex?.test('REQUEST.* failed')).toBeTrue();
-      expect(matcher.regex?.test('request abc')).toBeFalse();
+      expect(matcher.regex?.test('REQUEST.* failed')).toBe(true);
+      expect(matcher.regex?.test('request abc')).toBe(false);
     });
 
     it('supports case-sensitive regular expressions', () => {
       const matcher = compileLogSearch('^ERR\\d+$', true, true);
-      expect(matcher.regex?.test('ERR42')).toBeTrue();
-      expect(matcher.regex?.test('err42')).toBeFalse();
+      expect(matcher.regex?.test('ERR42')).toBe(true);
+      expect(matcher.regex?.test('err42')).toBe(false);
     });
 
     it('reports an invalid regular expression without throwing', () => {

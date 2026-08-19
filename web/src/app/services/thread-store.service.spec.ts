@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import 'fake-indexeddb/auto';
 import { TestBed } from '@angular/core/testing';
 import { Subject, firstValueFrom, of } from 'rxjs';
@@ -70,18 +71,21 @@ function deleteOp(threadId: number): HydratedThreadDeltaOp {
 describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   let repo: ThreadRepository;
   let webdb: WebdbService;
-  let eventSubject: Subject<{ event: string; data?: unknown }>;
+  let eventSubject: Subject<{
+    event: string;
+    data?: unknown;
+  }>;
   let sessionUserId: ReturnType<typeof signal<number | null>>;
   let sessionProfile: ReturnType<typeof signal<User | undefined>>;
-  let establishSessionSpy: jasmine.Spy;
-  let queryThreadDeltaSpy: jasmine.Spy;
-  let getThreadInfoSpy: jasmine.Spy;
-  let queryReadDeltaSpy: jasmine.Spy;
-  let queryUserInfoSpy: jasmine.Spy;
-  let advanceCursorSpy: jasmine.Spy;
-  let applyFriendRequestStateRevisionSpy: jasmine.Spy;
+  let establishSessionSpy: Mock;
+  let queryThreadDeltaSpy: Mock;
+  let getThreadInfoSpy: Mock;
+  let queryReadDeltaSpy: Mock;
+  let queryUserInfoSpy: Mock;
+  let advanceCursorSpy: Mock;
+  let applyFriendRequestStateRevisionSpy: Mock;
   let cursorSignal: ReturnType<typeof signal<number | undefined>>;
-  let putProfileSpy: jasmine.Spy;
+  let putProfileSpy: Mock;
 
   beforeEach(async () => {
     eventSubject = new Subject();
@@ -98,29 +102,37 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         {
           provide: MsgService,
           useValue: {
-            queryMessageLog: jasmine.createSpy('queryMessageLog'),
-            getDeletedMessageHwm: jasmine
-              .createSpy('getDeletedMessageHwm')
-              .and.returnValue(of({ code: 0, data: { hwm: '0' } })),
+            queryMessageLog: vi.fn().mockName('queryMessageLog'),
+            getDeletedMessageHwm: vi
+              .fn()
+              .mockName('getDeletedMessageHwm')
+              .mockReturnValue(of({ code: 0, data: { hwm: '0' } })),
           },
         },
         {
           provide: ProfileRepository,
           useValue: {
-            putProfile: jasmine
-              .createSpy('putProfile')
-              .and.resolveTo(undefined),
-            getProfile: jasmine
-              .createSpy('getProfile')
-              .and.resolveTo(undefined),
+            putProfile: vi
+              .fn()
+              .mockName('putProfile')
+              .mockResolvedValue(undefined),
+            getProfile: vi
+              .fn()
+              .mockName('getProfile')
+              .mockResolvedValue(undefined),
           },
         },
         {
           provide: MissedSyncService,
           useValue: {
-            fetchMissedSummary: jasmine
-              .createSpy('fetchMissedSummary')
-              .and.resolveTo({ items: [], hasMore: false, nextCursor: null }),
+            fetchMissedSummary: vi
+              .fn()
+              .mockName('fetchMissedSummary')
+              .mockResolvedValue({
+                items: [],
+                hasMore: false,
+                nextCursor: null,
+              }),
           },
         },
         {
@@ -135,37 +147,43 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
             // Mirror the real establishSession's session-tracking input: the repo's reset effect watches
             // sessionUserId, so the mock sets it for the HELLO→establish→session-active lifecycle (+ the
             // logout→null→reset test). The per-user IDB is pre-opened for '1' below.
-            establishSession: (establishSessionSpy = jasmine
-              .createSpy('establishSession')
-              .and.callFake(async (userId: number) => {
+            establishSession: (establishSessionSpy = vi
+              .fn()
+              .mockName('establishSession')
+              .mockImplementation(async (userId: number) => {
                 sessionUserId.set(userId);
               })),
             stateRevCursor: () => cursorSignal(),
             seedStateRevCursor: (rev: number) => cursorSignal.set(rev),
-            advanceStateRevCursor: (advanceCursorSpy = jasmine
-              .createSpy('advanceStateRevCursor')
-              .and.callFake((r: number) => cursorSignal.set(r))),
-            queryThreadDelta: (queryThreadDeltaSpy =
-              jasmine.createSpy('queryThreadDelta')),
-            getThreadInfo: (getThreadInfoSpy = jasmine
-              .createSpy('getThreadInfo')
-              .and.returnValue(of({ code: 1 }))),
-            queryReadDelta: (queryReadDeltaSpy = jasmine
-              .createSpy('queryReadDelta')
-              .and.returnValue(
+            advanceStateRevCursor: (advanceCursorSpy = vi
+              .fn()
+              .mockName('advanceStateRevCursor')
+              .mockImplementation((r: number) => cursorSignal.set(r))),
+            queryThreadDelta: (queryThreadDeltaSpy = vi
+              .fn()
+              .mockName('queryThreadDelta')),
+            getThreadInfo: (getThreadInfoSpy = vi
+              .fn()
+              .mockName('getThreadInfo')
+              .mockReturnValue(of({ code: 1 }))),
+            queryReadDelta: (queryReadDeltaSpy = vi
+              .fn()
+              .mockName('queryReadDelta')
+              .mockReturnValue(
                 of({ code: 0, data: { readRevision: 0, items: [] } }),
               )),
-            queryUserInfo: (queryUserInfoSpy = jasmine
-              .createSpy('queryUserInfo')
-              .and.returnValue(of({ code: 0, data: [] }))),
+            queryUserInfo: (queryUserInfoSpy = vi
+              .fn()
+              .mockName('queryUserInfo')
+              .mockReturnValue(of({ code: 0, data: [] }))),
             applyStateProfile: (profile: User) => {
               if (profile.id === sessionProfile()?.id)
                 sessionProfile.set(profile);
             },
             applyFriendRequestStateRevision:
-              (applyFriendRequestStateRevisionSpy = jasmine.createSpy(
-                'applyFriendRequestStateRevision',
-              )),
+              (applyFriendRequestStateRevisionSpy = vi
+                .fn()
+                .mockName('applyFriendRequestStateRevision')),
             markRead: () => of({ code: 0 }),
           },
         },
@@ -173,7 +191,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     });
     repo = TestBed.inject(ThreadRepository);
     webdb = TestBed.inject(WebdbService);
-    putProfileSpy = TestBed.inject(ProfileRepository).putProfile as jasmine.Spy;
+    putProfileSpy = TestBed.inject(ProfileRepository).putProfile as Mock;
     await webdb.openForUser('1');
     TestBed.flushEffects();
   });
@@ -217,7 +235,11 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   /** Emit the HELLO connect handshake — the network-refresh half of boot (delta-replay + missed walk). */
   function emitHello(data: {
     userId?: number;
-    latestMessage?: { threadId: number; seq: number; ts: number } | null;
+    latestMessage?: {
+      threadId: number;
+      seq: number;
+      ts: number;
+    } | null;
     stateRevision: number;
     profileRev?: number;
     readRevision?: number;
@@ -244,7 +266,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     items: ConversationItem[],
     rev = 5,
   ): Promise<void> {
-    queryThreadDeltaSpy.and.returnValue(
+    queryThreadDeltaSpy.mockReturnValue(
       of({ code: 0, data: items.map(addOp) }),
     );
     emitHello({ userId: 1, stateRevision: rev });
@@ -278,7 +300,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   // must BAIL — a late IDB read must not revert the list to the (now stale) cache.
   it('load() bails if the list is already populated (a late cache read cannot clobber a fresher delta)', async () => {
     // Delta populates [1] (the fresher state) + writes it through to IDB.
-    queryThreadDeltaSpy.and.returnValue(
+    queryThreadDeltaSpy.mockReturnValue(
       of({ code: 0, data: [addOp(p2p(1, 11))] }),
     );
     emitHello({ userId: 1, stateRevision: 5 });
@@ -316,15 +338,15 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
 
     // Hold hydration open so this assertion observes the exact gap between the body-less delta replay and
     // the eventual IDB preview read. This was the Android restart flicker window.
-    spyOn(
+    vi.spyOn(
       TestBed.inject(MessageRepository),
       'getNewestMessages',
-    ).and.returnValue(new Promise<Map<number, Message>>(() => undefined));
+    ).mockReturnValue(new Promise<Map<number, Message>>(() => undefined));
     repo.load();
     await flush(20);
     expect(repo.items()[0].lastMessagePreview).toBe('cached preview');
 
-    queryThreadDeltaSpy.and.returnValue(
+    queryThreadDeltaSpy.mockReturnValue(
       of({
         code: 0,
         data: [addOp(p2p(1, 77, { lastMessageSeq: 5 }))],
@@ -340,7 +362,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   // ── HELLO (the network-refresh half: delta-replay + missed-summary walk) ───────────────────────
 
   it('HELLO without a userId is ignored (no session established, no fetch)', async () => {
-    queryThreadDeltaSpy.and.returnValue(of({ code: 0, data: [] }));
+    queryThreadDeltaSpy.mockReturnValue(of({ code: 0, data: [] }));
     emitHello({ stateRevision: 0 }); // no userId → onHello bails before establishing the session
     await flush(20);
     expect(establishSessionSpy).not.toHaveBeenCalled();
@@ -348,7 +370,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   });
 
   it('cold start: HELLO seeds cursor 0, replays (0,rev] with hydrated ADD ops, populates the list', async () => {
-    queryThreadDeltaSpy.and.returnValue(
+    queryThreadDeltaSpy.mockReturnValue(
       of({ code: 0, data: [addOp(p2p(1, 11)), addOp(p2p(2, 22))] }),
     );
     emitHello({ userId: 1, stateRevision: 5 });
@@ -385,7 +407,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(repo.topInserted()).toBeNull(); // cache-paint never arms a FLIP
 
     // The delta's LAST ADD is the rank-loser (lastMessageAt 100) — a force-top bug would jam it to index 0.
-    queryThreadDeltaSpy.and.returnValue(
+    queryThreadDeltaSpy.mockReturnValue(
       of({
         code: 0,
         data: [
@@ -409,7 +431,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     await populateViaDelta([p2p(1, 11, { lastMessageAt: 100 })], 5); // cursor → 5 (bulk, no FLIP)
     expect(repo.topInserted()).toBeNull();
 
-    queryThreadDeltaSpy.and.returnValue(
+    queryThreadDeltaSpy.mockReturnValue(
       of({ code: 0, data: [addOp(p2p(2, 22, { lastMessageAt: 50 }))] }),
     );
     eventSubject.next({
@@ -427,9 +449,9 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
 
   it('HELLO without a latestMessage does not trigger a missed-summary walk', async () => {
     const missed = TestBed.inject(MissedSyncService) as unknown as {
-      fetchMissedSummary: jasmine.Spy;
+      fetchMissedSummary: Mock;
     };
-    queryThreadDeltaSpy.and.returnValue(of({ code: 0, data: [] }));
+    queryThreadDeltaSpy.mockReturnValue(of({ code: 0, data: [] }));
     emitHello({ userId: 1, stateRevision: 5 }); // no latestMessage → no `to` to walk toward
     await flush(700);
     expect(missed.fetchMissedSummary).not.toHaveBeenCalled();
@@ -439,11 +461,11 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   // (from = the persisted HWM, null on first boot), caches bodies, advances the HWM to `to`.
   it('HELLO latestMessage → debounced (from,to] walk → HWM persists to `to`', async () => {
     const missed = TestBed.inject(MissedSyncService) as unknown as {
-      fetchMissedSummary: jasmine.Spy;
+      fetchMissedSummary: Mock;
     };
     await seedCachedThread(p2p(1, 77));
     await seedMessage(1, 5, 'hello world', 77);
-    missed.fetchMissedSummary.and.resolveTo({
+    missed.fetchMissedSummary.mockResolvedValue({
       items: [
         {
           threadId: 1,
@@ -468,7 +490,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       hasMore: false,
       nextCursor: null,
     });
-    queryThreadDeltaSpy.and.returnValue(of({ code: 0, data: [] }));
+    queryThreadDeltaSpy.mockReturnValue(of({ code: 0, data: [] }));
     emitHello({
       userId: 1,
       stateRevision: 5,
@@ -496,11 +518,11 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         .sort(),
     ).toEqual([1, 2]);
 
-    establishSessionSpy.calls.reset();
-    queryThreadDeltaSpy.calls.reset();
+    establishSessionSpy.mockClear();
+    queryThreadDeltaSpy.mockClear();
     // The reconnect re-pushes HELLO with the same userId + a newer revision → incremental (5, 6] (the
     // cursor survives in-memory across the reconnect, so it is NOT re-seeded to 0).
-    queryThreadDeltaSpy.and.returnValue(
+    queryThreadDeltaSpy.mockReturnValue(
       of({ code: 0, data: [addOp(p2p(3, 33))] }),
     );
     emitHello({ userId: 1, stateRevision: 6 });
@@ -535,6 +557,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     // drops the IN-MEMORY list + flips status back to LOADING. (The IDB wipe + cursor reset are
     // clearSession's own job — the repo owns only in-memory state.)
     sessionUserId.set(null);
+    TestBed.tick();
     await flush(20);
     expect(repo.items()).toEqual([]);
     expect(repo.status()).toBe('LOADING');
@@ -583,13 +606,13 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       data: { threadId: 1, seq: 6, ts: 250 },
     });
     expect(repo.items()[0].lastMessageSeq).toBe(4);
-    expect(repo.readCommitPending().has(1)).toBeTrue();
+    expect(repo.readCommitPending().has(1)).toBe(true);
 
     repo.finishReadCommit(1);
 
-    expect(repo.readCommitPending().has(1)).toBeFalse();
+    expect(repo.readCommitPending().has(1)).toBe(false);
     expect(repo.items()[0]).toEqual(
-      jasmine.objectContaining({
+      expect.objectContaining({
         lastMessageSeq: 7,
         lastMessageAt: 300,
       }),
@@ -598,7 +621,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
 
   it('drains a trailing missed-summary pull when messages arrive during an in-flight pull', async () => {
     const missed = TestBed.inject(MissedSyncService) as unknown as {
-      fetchMissedSummary: jasmine.Spy;
+      fetchMissedSummary: Mock;
     };
     let resolveFirst!: (value: {
       items: never[];
@@ -612,10 +635,11 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     }>((resolve) => {
       resolveFirst = resolve;
     });
-    missed.fetchMissedSummary.and.returnValues(
-      first,
-      Promise.resolve({ items: [], hasMore: false, nextCursor: null }),
-    );
+    missed.fetchMissedSummary
+      .mockReturnValueOnce(first)
+      .mockReturnValueOnce(
+        Promise.resolve({ items: [], hasMore: false, nextCursor: null }),
+      );
     await populate([p2p(1, 11)]);
 
     eventSubject.next({
@@ -623,7 +647,8 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       data: { threadId: 1, seq: 1, ts: 100 },
     });
     await flush(250); // first debounced pull is now in flight
-    expect(missed.fetchMissedSummary).toHaveBeenCalledOnceWith(null, {
+    expect(missed.fetchMissedSummary).toHaveBeenCalledTimes(1);
+    expect(missed.fetchMissedSummary).toHaveBeenCalledWith(null, {
       threadId: 1,
       seq: 1,
     });
@@ -636,8 +661,8 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     resolveFirst({ items: [], hasMore: false, nextCursor: null });
     await flush(50);
 
-    expect(missed.fetchMissedSummary.calls.count()).toBe(2);
-    expect(missed.fetchMissedSummary.calls.mostRecent().args).toEqual([
+    expect(vi.mocked(missed.fetchMissedSummary).mock.calls.length).toBe(2);
+    expect(vi.mocked(missed.fetchMissedSummary).mock.lastCall).toEqual([
       null,
       { threadId: 1, seq: 3 },
     ]);
@@ -678,7 +703,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       code: number;
       data?: ConversationItem;
     }>();
-    getThreadInfoSpy.and.returnValue(response);
+    getThreadInfoSpy.mockReturnValue(response);
 
     eventSubject.next({
       event: 'NEW_MESSAGE',
@@ -689,7 +714,9 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       data: { threadId: 2, seq: 7, ts: 300 },
     });
 
-    expect(getThreadInfoSpy).toHaveBeenCalledOnceWith({ threadId: 2 });
+    expect(getThreadInfoSpy).toHaveBeenCalledTimes(1);
+
+    expect(getThreadInfoSpy).toHaveBeenCalledWith({ threadId: 2 });
     response.next({
       code: 0,
       data: p2p(2, 22, { lastMessageSeq: 5, lastMessageAt: 200 }),
@@ -698,14 +725,14 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     await flush(20);
 
     expect(repo.items()[0]).toEqual(
-      jasmine.objectContaining({
+      expect.objectContaining({
         threadId: 2,
         lastMessageSeq: 7,
         lastMessageAt: 300,
       }),
     );
     expect(await (await webdb.db()).get('threads', 2)).toEqual(
-      jasmine.objectContaining({ lastMessageSeq: 7 }),
+      expect.objectContaining({ lastMessageSeq: 7 }),
     );
   });
 
@@ -770,7 +797,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     await populateViaDelta([p2p(1, 11), p2p(2, 22)], 5); // cursor → 5
 
     // Live delta: delete thread 1, add thread 3 (hydrated inline — no second fetch).
-    queryThreadDeltaSpy.and.returnValue(
+    queryThreadDeltaSpy.mockReturnValue(
       of({ code: 0, data: [deleteOp(1), addOp(p2p(3, 33))] }),
     );
     eventSubject.next({
@@ -793,7 +820,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
 
   it('derives an incoming friend-request badge from CLIENT_STATE', async () => {
     await populateViaDelta([p2p(1, 11)], 5);
-    queryThreadDeltaSpy.and.returnValue(
+    queryThreadDeltaSpy.mockReturnValue(
       of({
         code: 0,
         data: [
@@ -839,22 +866,23 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     });
     await flush(20);
 
-    expect(applyFriendRequestStateRevisionSpy).toHaveBeenCalledOnceWith(6);
+    expect(applyFriendRequestStateRevisionSpy).toHaveBeenCalledTimes(1);
+
+    expect(applyFriendRequestStateRevisionSpy).toHaveBeenCalledWith(6);
     expect(await webdb.getMeta('friendRequestStateRevision')).toBe(6);
     expect(cursorSignal()).toBe(6);
   });
 
   it('single-flights a revision burst and coalesces its tail to the highest target', async () => {
     await populateViaDelta([p2p(1, 11)], 5);
-    queryThreadDeltaSpy.calls.reset();
+    queryThreadDeltaSpy.mockClear();
     const first = new Subject<{
       code: number;
       data: HydratedThreadDeltaOp[];
     }>();
-    queryThreadDeltaSpy.and.returnValues(
-      first,
-      of({ code: 0, data: [addOp(p2p(2, 22))] }),
-    );
+    queryThreadDeltaSpy
+      .mockReturnValueOnce(first)
+      .mockReturnValueOnce(of({ code: 0, data: [addOp(p2p(2, 22))] }));
 
     eventSubject.next({
       event: 'STATE_REV_UPDATED',
@@ -875,7 +903,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     first.complete();
     await flush(20);
 
-    expect(queryThreadDeltaSpy.calls.allArgs()).toEqual([
+    expect(vi.mocked(queryThreadDeltaSpy).mock.calls).toEqual([
       [{ fromRevision: 5, toRevision: 6 }],
       [{ fromRevision: 6, toRevision: 9 }],
     ]);
@@ -884,7 +912,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
 
   it('ignores a stale or replayed revision without issuing another delta request', async () => {
     await populateViaDelta([p2p(1, 11)], 5);
-    queryThreadDeltaSpy.calls.reset();
+    queryThreadDeltaSpy.mockClear();
 
     eventSubject.next({
       event: 'STATE_REV_UPDATED',
@@ -902,10 +930,10 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
 
   it('does not apply or advance the cursor for a non-success delta response', async () => {
     await populateViaDelta([p2p(1, 11)], 5);
-    queryThreadDeltaSpy.calls.reset();
-    advanceCursorSpy.calls.reset();
-    const applySpy = spyOn(webdb, 'applyThreadDelta').and.callThrough();
-    queryThreadDeltaSpy.and.returnValue(of({ code: 1, data: [] }));
+    queryThreadDeltaSpy.mockClear();
+    advanceCursorSpy.mockClear();
+    const applySpy = vi.spyOn(webdb, 'applyThreadDelta');
+    queryThreadDeltaSpy.mockReturnValue(of({ code: 1, data: [] }));
 
     eventSubject.next({
       event: 'STATE_REV_UPDATED',
@@ -920,19 +948,19 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
 
   it('keeps both local state and cursor unchanged when durable delta application fails', async () => {
     await populateViaDelta([p2p(1, 11)], 5);
-    advanceCursorSpy.calls.reset();
-    queryThreadDeltaSpy.and.returnValue(of({ code: 0, data: [deleteOp(1)] }));
-    spyOn(webdb, 'applyThreadDelta').and.rejectWith(
+    advanceCursorSpy.mockClear();
+    queryThreadDeltaSpy.mockReturnValue(of({ code: 0, data: [deleteOp(1)] }));
+    vi.spyOn(webdb, 'applyThreadDelta').mockRejectedValue(
       new Error('IDB transaction aborted'),
     );
 
-    await expectAsync(
+    await expect(
       (
         repo as unknown as {
           pullDelta(toRev: number): Promise<void>;
         }
       ).pullDelta(6),
-    ).toBeRejectedWithError('IDB transaction aborted');
+    ).rejects.toThrowError('IDB transaction aborted');
 
     expect(repo.items().map((item) => item.threadId)).toEqual([1]);
     expect(advanceCursorSpy).not.toHaveBeenCalled();
@@ -943,7 +971,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   // guard. (onHello is the sole seeder now; there is no snapshot fetch to race against.)
   it('STATE_REV_UPDATED is dropped while the cursor is unseeded (no HELLO yet)', async () => {
     // cursorSignal starts undefined — do NOT emit HELLO.
-    queryThreadDeltaSpy.and.returnValue(of({ code: 0, data: [] }));
+    queryThreadDeltaSpy.mockReturnValue(of({ code: 0, data: [] }));
     eventSubject.next({
       event: 'STATE_REV_UPDATED',
       data: { stateRevision: 12 },
@@ -975,7 +1003,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       5,
     );
 
-    queryThreadDeltaSpy.and.returnValue(
+    queryThreadDeltaSpy.mockReturnValue(
       of({
         code: 0,
         data: [
@@ -1010,7 +1038,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(putProfileSpy).toHaveBeenCalledWith(
       'u11',
       'user',
-      jasmine.objectContaining({ name: 'New' }),
+      expect.objectContaining({ name: 'New' }),
     );
   });
 
@@ -1026,15 +1054,15 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       }),
     ]);
 
-    expect(repo.commitLocalRead(1, 7)).toBeTrue();
+    expect(repo.commitLocalRead(1, 7)).toBe(true);
     expect(repo.items()[0]).toEqual(
-      jasmine.objectContaining({
+      expect.objectContaining({
         lastReadSeq: 5,
         unreadCount: 3,
         mentionUnread: ['me'],
       }),
     );
-    expect(repo.commitLocalRead(1, 7)).toBeFalse();
+    expect(repo.commitLocalRead(1, 7)).toBe(false);
   });
 
   it('atomically applies the server read state', async () => {
@@ -1050,7 +1078,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     });
 
     expect(repo.items()[0]).toEqual(
-      jasmine.objectContaining({
+      expect.objectContaining({
         lastReadSeq: 7,
         unreadCount: 1,
         mentionUnread: ['all'],
@@ -1061,7 +1089,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   it('pulls read delta when HELLO exposes a revision gap', async () => {
     await populate([p2p(1, 11, { lastReadSeq: 2, unreadCount: 4 })]);
     await webdb.putMeta('readRevision', 2);
-    queryReadDeltaSpy.and.returnValue(
+    queryReadDeltaSpy.mockReturnValue(
       of({
         code: 0,
         data: {
@@ -1087,7 +1115,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       toRevision: 5,
     });
     expect(repo.items()[0]).toEqual(
-      jasmine.objectContaining({ lastReadSeq: 6, unreadCount: 0 }),
+      expect.objectContaining({ lastReadSeq: 6, unreadCount: 0 }),
     );
     expect(await webdb.getMeta('readRevision')).toBe(5);
   });
@@ -1095,10 +1123,10 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   it('the missed-summary pull applies the authoritative per-thread unreadCount', async () => {
     const fetchSpy = (
       TestBed.inject(MissedSyncService) as unknown as {
-        fetchMissedSummary: jasmine.Spy;
+        fetchMissedSummary: Mock;
       }
     ).fetchMissedSummary;
-    fetchSpy.and.resolveTo({
+    fetchSpy.mockResolvedValue({
       items: [
         {
           threadId: 1,
@@ -1129,10 +1157,10 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   it('the missed-summary pull refreshes preview and read state for the open thread', async () => {
     const fetchSpy = (
       TestBed.inject(MissedSyncService) as unknown as {
-        fetchMissedSummary: jasmine.Spy;
+        fetchMissedSummary: Mock;
       }
     ).fetchMissedSummary;
-    fetchSpy.and.resolveTo({
+    fetchSpy.mockResolvedValue({
       items: [
         {
           threadId: 1,
@@ -1177,7 +1205,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(repo.items()[0]).toEqual(
-      jasmine.objectContaining({
+      expect.objectContaining({
         lastMessagePreview: 'sent from the open thread',
         lastMessageSenderId: 1,
         lastReadSeq: 12,
@@ -1222,7 +1250,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
 
   it('loadThreadHwms hydrates from IDB on HELLO (boot restore of a persisted map)', async () => {
     await webdb.putMeta('threadHwms', { 7: 5, 9: 2 });
-    queryThreadDeltaSpy.and.returnValue(of({ code: 0, data: [] }));
+    queryThreadDeltaSpy.mockReturnValue(of({ code: 0, data: [] }));
     emitHello({ userId: 1, stateRevision: 5 });
     await flush(20);
     expect(repo.threadHwms()).toEqual({ 7: 5, 9: 2 });

@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import {
   BrowserNotificationAdapter,
   mapActions,
@@ -36,8 +37,8 @@ describe('BrowserNotificationAdapter (SW registration path)', () => {
     enabled: () => true,
     sound: () => true,
   } as unknown as ConstructorParameters<typeof BrowserNotificationAdapter>[0];
-  let showNotification: jasmine.Spy;
-  let getRegistration: jasmine.Spy;
+  let showNotification: Mock;
+  let getRegistration: Mock;
   let notificationCreates: number;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const g = globalThis as any;
@@ -45,7 +46,10 @@ describe('BrowserNotificationAdapter (SW registration path)', () => {
 
   /** A fake SW registration carrying spied show/getNotifications. */
   function fakeReg(
-    notifs: Array<{ tag: string; close: jasmine.Spy }> = [],
+    notifs: Array<{
+      tag: string;
+      close: Mock;
+    }> = [],
   ): ServiceWorkerRegistration {
     return {
       showNotification,
@@ -54,8 +58,11 @@ describe('BrowserNotificationAdapter (SW registration path)', () => {
   }
 
   beforeEach(() => {
-    showNotification = jasmine.createSpy('showNotification').and.resolveTo();
-    getRegistration = jasmine.createSpy('getRegistration');
+    showNotification = vi
+      .fn()
+      .mockName('showNotification')
+      .mockResolvedValue(undefined);
+    getRegistration = vi.fn().mockName('getRegistration');
     notificationCreates = 0;
     // Force the permission gate to 'granted' + give the fallback `new Notification` a counting no-op stub.
     g.Notification = class {
@@ -72,7 +79,7 @@ describe('BrowserNotificationAdapter (SW registration path)', () => {
       close() {}
     };
     if ('serviceWorker' in navigator) {
-      spyOn(navigator.serviceWorker, 'getRegistration').and.callFake(
+      vi.spyOn(navigator.serviceWorker, 'getRegistration').mockImplementation(
         getRegistration,
       );
     } else {
@@ -99,15 +106,15 @@ describe('BrowserNotificationAdapter (SW registration path)', () => {
   };
 
   it('renders via registration.showNotification with actions mapped (id→action)', async () => {
-    getRegistration.and.resolveTo(fakeReg());
+    getRegistration.mockResolvedValue(fakeReg());
     const adapter = new BrowserNotificationAdapter(prefs);
     await adapter.showDescriptor(threadDescriptor);
     expect(showNotification).toHaveBeenCalledTimes(1);
     expect(notificationCreates).toBe(0); // fallback NOT taken
-    const [title, options] = showNotification.calls.mostRecent().args;
+    const [title, options] = vi.mocked(showNotification).mock.lastCall!;
     expect(title).toBe('Alice');
     expect(options).toEqual(
-      jasmine.objectContaining({
+      expect.objectContaining({
         tag: 'soms-thread-7',
         body: 'sent you 3 messages',
         actions: [{ action: 'dismiss', title: 'Dismiss' }],
@@ -117,12 +124,12 @@ describe('BrowserNotificationAdapter (SW registration path)', () => {
   });
 
   it('clear() closes every soms-* notification on the registration, leaving foreign tags alone', async () => {
-    const soms = { tag: 'soms-thread-7', close: jasmine.createSpy('close7') };
+    const soms = { tag: 'soms-thread-7', close: vi.fn().mockName('close7') };
     const foreign = {
       tag: 'other-app',
-      close: jasmine.createSpy('closeOther'),
+      close: vi.fn().mockName('closeOther'),
     };
-    getRegistration.and.resolveTo(fakeReg([soms, foreign]));
+    getRegistration.mockResolvedValue(fakeReg([soms, foreign]));
     const adapter = new BrowserNotificationAdapter(prefs);
     await adapter.clear();
     expect(soms.close).toHaveBeenCalledTimes(1);
@@ -130,8 +137,8 @@ describe('BrowserNotificationAdapter (SW registration path)', () => {
   });
 
   it('kind:"clear" closes notifications by tag', async () => {
-    const same = { tag: 'soms-away', close: jasmine.createSpy('closeAway') };
-    getRegistration.and.resolveTo(fakeReg([same]));
+    const same = { tag: 'soms-away', close: vi.fn().mockName('closeAway') };
+    getRegistration.mockResolvedValue(fakeReg([same]));
     const adapter = new BrowserNotificationAdapter(prefs);
     await adapter.showDescriptor({
       ...threadDescriptor,
@@ -143,7 +150,7 @@ describe('BrowserNotificationAdapter (SW registration path)', () => {
   });
 
   it('falls back to in-page new Notification (no actions) when no SW registration is available', async () => {
-    getRegistration.and.resolveTo(null);
+    getRegistration.mockResolvedValue(null);
     const adapter = new BrowserNotificationAdapter(prefs);
     await adapter.showDescriptor(threadDescriptor);
     expect(showNotification).not.toHaveBeenCalled();
@@ -153,10 +160,10 @@ describe('BrowserNotificationAdapter (SW registration path)', () => {
   it('clear() awaits an in-flight showNotification before closing (no stray card)', async () => {
     // Hold showNotification open so the render stays in-flight while clear() runs.
     let resolveShow: () => void = () => {};
-    showNotification.and.returnValue(
+    showNotification.mockReturnValue(
       new Promise<void>((r) => (resolveShow = r)),
     );
-    getRegistration.and.resolveTo(fakeReg());
+    getRegistration.mockResolvedValue(fakeReg());
     const adapter = new BrowserNotificationAdapter(prefs);
     const showed = adapter.showDescriptor(threadDescriptor); // pending — show not resolved
     const cleared = adapter.clear();

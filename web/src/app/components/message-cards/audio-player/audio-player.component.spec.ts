@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { AudioPlayerComponent } from './audio-player.component';
@@ -21,17 +22,23 @@ describe('AudioPlayerComponent', () => {
 
   /** Render so the #audio viewChild resolves, then settle the zoneless change-detection queue. Returns
    *  the component, the <audio> element, and a play() spy (stubbed so no real network/decode happens). */
-  async function render(
-    status: MediaStatus = MEDIA_STATUS.READY,
-  ): Promise<{ comp: AudioPlayerComponent; audio: HTMLAudioElement; playSpy: jasmine.Spy }> {
+  async function render(status: MediaStatus = MEDIA_STATUS.READY): Promise<{
+    comp: AudioPlayerComponent;
+    audio: HTMLAudioElement;
+    playSpy: Mock;
+  }> {
     const fixture = TestBed.createComponent(AudioPlayerComponent);
     fixture.componentRef.setInput('src', '/uploads/cas/aa/bb/shard.mp3');
     fixture.componentRef.setInput('duration', 5);
     fixture.componentRef.setInput('status', status);
     fixture.detectChanges();
     await fixture.whenStable();
-    const audio = fixture.nativeElement.querySelector('audio') as HTMLAudioElement;
-    const playSpy = spyOn(audio, 'play').and.callFake(() => Promise.resolve());
+    const audio = fixture.nativeElement.querySelector(
+      'audio',
+    ) as HTMLAudioElement;
+    const playSpy = vi
+      .spyOn(audio, 'play')
+      .mockImplementation(() => Promise.resolve());
     return { comp: fixture.componentInstance, audio, playSpy };
   }
 
@@ -61,10 +68,14 @@ describe('AudioPlayerComponent', () => {
     fixture.componentRef.setInput('duration', 5);
     fixture.detectChanges();
     await fixture.whenStable();
-    const audio = fixture.nativeElement.querySelector('audio') as HTMLAudioElement;
-    const playSpy = spyOn(audio, 'play').and.resolveTo();
+    const audio = fixture.nativeElement.querySelector(
+      'audio',
+    ) as HTMLAudioElement;
+    const playSpy = vi.spyOn(audio, 'play').mockResolvedValue(undefined);
 
-    (fixture.nativeElement.querySelector('.ap-btn') as HTMLButtonElement).click();
+    (
+      fixture.nativeElement.querySelector('.ap-btn') as HTMLButtonElement
+    ).click();
 
     expect(playSpy).toHaveBeenCalledTimes(1);
   });
@@ -124,7 +135,9 @@ describe('AudioPlayerComponent', () => {
     fixture.detectChanges();
     await fixture.whenStable();
 
-    const rail = fixture.nativeElement.querySelector('.ap-transfer') as HTMLElement;
+    const rail = fixture.nativeElement.querySelector(
+      '.ap-transfer',
+    ) as HTMLElement;
     const fill = rail.querySelector('span') as HTMLElement;
     expect(rail).not.toBeNull();
     expect(rail.classList).not.toContain('ap-transfer--indeterminate');
@@ -139,7 +152,9 @@ describe('AudioPlayerComponent', () => {
     fixture.detectChanges();
     await fixture.whenStable();
 
-    const rail = fixture.nativeElement.querySelector('.ap-transfer') as HTMLElement;
+    const rail = fixture.nativeElement.querySelector(
+      '.ap-transfer',
+    ) as HTMLElement;
     expect(rail).not.toBeNull();
     expect(rail.classList).toContain('ap-transfer--indeterminate');
     expect(rail.classList).toContain('ap-transfer--download');
@@ -149,7 +164,7 @@ describe('AudioPlayerComponent', () => {
   it('seeks from the waveform and cycles 1x → 1.5x → 2x → 1x', async () => {
     const { comp, audio } = await render();
     const wave = document.createElement('button');
-    spyOn(wave, 'getBoundingClientRect').and.returnValue({
+    vi.spyOn(wave, 'getBoundingClientRect').mockReturnValue({
       left: 10,
       width: 100,
     } as DOMRect);

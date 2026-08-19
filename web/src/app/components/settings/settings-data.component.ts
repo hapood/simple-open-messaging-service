@@ -1,4 +1,10 @@
-import { Component, inject, OnInit, signal } from '@angular/core';
+import {
+  Component,
+  inject,
+  OnInit,
+  signal,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { MatListModule } from '@angular/material/list';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
@@ -52,6 +58,7 @@ import { ToastService } from '../../services/toast.service';
       <span class="hint">{{ 'settings.cacheStorageHint' | transloco }}</span>
     </section>
   `,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './sub-page.scss',
 })
 export class SettingsDataComponent implements OnInit {

@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import {
   NativeUploadError,
   NativeUploadSelection,
@@ -23,14 +24,14 @@ describe('NativeUploadService attempt routing', () => {
 
   beforeEach(() => {
     bridge = {
-      pickPhotos: jasmine.createSpy('pickPhotos'),
-      pickFile: jasmine.createSpy('pickFile'),
-      upload: jasmine.createSpy('upload'),
-      cancel: jasmine.createSpy('cancel'),
-      release: jasmine.createSpy('release'),
-      discard: jasmine.createSpy('discard'),
-      getState: jasmine.createSpy('getState').and.returnValue('selected'),
-      finish: jasmine.createSpy('finish'),
+      pickPhotos: vi.fn().mockName('pickPhotos'),
+      pickFile: vi.fn().mockName('pickFile'),
+      upload: vi.fn().mockName('upload'),
+      cancel: vi.fn().mockName('cancel'),
+      release: vi.fn().mockName('release'),
+      discard: vi.fn().mockName('discard'),
+      getState: vi.fn().mockName('getState').mockReturnValue('selected'),
+      finish: vi.fn().mockName('finish'),
     };
     window.SomsUpload = bridge;
     service = new NativeUploadService();
@@ -47,13 +48,15 @@ describe('NativeUploadService attempt routing', () => {
   it('ignores a stale completion and resolves only the matching attempt', async () => {
     let resolved = false;
     const result = service
-      .upload<{ code: number }>(selection, 'cid-1', {})
+      .upload<{
+        code: number;
+      }>(selection, 'cid-1', {})
       .then((value) => {
         resolved = true;
         return value;
       });
-    const args = (bridge.upload as jasmine.Spy).calls.mostRecent().args;
-    const attemptId = args[1] as string;
+    const args = vi.mocked(bridge.upload as Mock).mock.lastCall;
+    const attemptId = args![1] as string;
 
     window.__SOMS_UPLOAD_COMPLETED__?.({
       uploadId: selection.uploadId,
@@ -68,30 +71,31 @@ describe('NativeUploadService attempt routing', () => {
       attemptId,
       response: { code: 0 },
     });
-    await expectAsync(result).toBeResolvedTo({ code: 0 });
+    await expect(result).resolves.toEqual({ code: 0 });
   });
 
   it('cancel rejects the active attempt and passes its id to native', async () => {
     const result = service.upload(selection, 'cid-1', {});
-    const attemptId = (bridge.upload as jasmine.Spy).calls.mostRecent()
-      .args[1] as string;
+    const attemptId = vi.mocked(bridge.upload as Mock).mock
+      .lastCall![1] as string;
 
     service.cancel(selection.uploadId);
 
-    await expectAsync(result).toBeRejectedWithError('upload cancelled');
-    expect(bridge.cancel).toHaveBeenCalledOnceWith(
-      selection.uploadId,
-      attemptId,
-    );
+    await expect(result).rejects.toThrowError('upload cancelled');
+    expect(bridge.cancel).toHaveBeenCalledTimes(1);
+    expect(bridge.cancel).toHaveBeenCalledWith(selection.uploadId, attemptId);
   });
 
   it('release does not cancel or detach an active completion', async () => {
-    const result = service.upload<{ code: number }>(selection, 'cid-1', {});
-    const attemptId = (bridge.upload as jasmine.Spy).calls.mostRecent()
-      .args[1] as string;
+    const result = service.upload<{
+      code: number;
+    }>(selection, 'cid-1', {});
+    const attemptId = vi.mocked(bridge.upload as Mock).mock
+      .lastCall![1] as string;
 
     service.release(selection.uploadId);
-    expect(bridge.release).toHaveBeenCalledOnceWith(selection.uploadId);
+    expect(bridge.release).toHaveBeenCalledTimes(1);
+    expect(bridge.release).toHaveBeenCalledWith(selection.uploadId);
     expect(bridge.cancel).not.toHaveBeenCalled();
 
     window.__SOMS_UPLOAD_COMPLETED__?.({
@@ -99,13 +103,13 @@ describe('NativeUploadService attempt routing', () => {
       attemptId,
       response: { code: 0 },
     });
-    await expectAsync(result).toBeResolvedTo({ code: 0 });
+    await expect(result).resolves.toEqual({ code: 0 });
   });
 
   it('preserves structured server quota metadata without disabling retry', async () => {
     const result = service.upload(selection, 'cid-1', {});
-    const attemptId = (bridge.upload as jasmine.Spy).calls.mostRecent()
-      .args[1] as string;
+    const attemptId = vi.mocked(bridge.upload as Mock).mock
+      .lastCall![1] as string;
 
     window.__SOMS_UPLOAD_FAILED__?.({
       uploadId: selection.uploadId,
@@ -120,9 +124,9 @@ describe('NativeUploadService attempt routing', () => {
 
     try {
       await result;
-      fail('expected quota rejection');
+      throw new Error('expected quota rejection');
     } catch (error) {
-      expect(error).toEqual(jasmine.any(NativeUploadError));
+      expect(error).toEqual(expect.any(NativeUploadError));
       const uploadError = error as NativeUploadError;
       expect(uploadError.code).toBe(10008);
       expect(uploadError.retryAfter).toBe(3600);

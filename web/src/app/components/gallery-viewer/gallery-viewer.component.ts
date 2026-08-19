@@ -10,6 +10,7 @@ import {
   input,
   output,
   signal,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
@@ -54,6 +55,7 @@ type VideoPlaybackError = 'network' | 'unsupported';
   standalone: true,
   imports: [TranslocoPipe, MatProgressSpinnerModule],
   templateUrl: './gallery-viewer.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './gallery-viewer.component.scss',
 })
 export class GalleryViewerComponent implements AfterViewInit, OnDestroy {

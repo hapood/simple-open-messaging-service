@@ -1,42 +1,43 @@
 import { StableReadTracker } from './stable-read-tracker';
 
 describe('StableReadTracker', () => {
-  beforeEach(() => jasmine.clock().install());
-  afterEach(() => jasmine.clock().uninstall());
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
 
   it('commits the initial fully-visible HWM on start, then waits for 200ms of scroll quiet', () => {
-    const commit = jasmine.createSpy('commit');
+    const commit = vi.fn().mockName('commit');
     const tracker = new StableReadTracker(commit);
 
     tracker.noteFullyVisible([10, 11]);
-    jasmine.clock().tick(300);
+    vi.advanceTimersByTime(300);
     expect(commit).not.toHaveBeenCalled();
     tracker.start();
-    expect(commit).toHaveBeenCalledOnceWith(11);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(commit).toHaveBeenCalledWith(11);
 
     tracker.noteFullyVisible([9, 12]);
     tracker.noteScroll();
-    jasmine.clock().tick(199);
+    vi.advanceTimersByTime(199);
     expect(commit).toHaveBeenCalledTimes(1);
-    jasmine.clock().tick(1);
+    vi.advanceTimersByTime(1);
     expect(commit).toHaveBeenCalledWith(12);
   });
 
   it('reset discards an unstable candidate', () => {
-    const commit = jasmine.createSpy('commit');
+    const commit = vi.fn().mockName('commit');
     const tracker = new StableReadTracker(commit);
     tracker.noteFullyVisible([7]);
     tracker.start();
-    commit.calls.reset();
+    commit.mockClear();
     tracker.noteFullyVisible([8]);
-    jasmine.clock().tick(100);
+    vi.advanceTimersByTime(100);
     tracker.reset();
-    jasmine.clock().tick(200);
+    vi.advanceTimersByTime(200);
     expect(commit).not.toHaveBeenCalled();
   });
 
   it('flush commits the latest fully-visible HWM before teardown', () => {
-    const commit = jasmine.createSpy('commit');
+    const commit = vi.fn().mockName('commit');
     const tracker = new StableReadTracker(commit);
     tracker.noteFullyVisible([4]);
     tracker.start();
@@ -44,6 +45,6 @@ describe('StableReadTracker', () => {
 
     tracker.flush();
 
-    expect(commit.calls.allArgs()).toEqual([[4], [6]]);
+    expect(vi.mocked(commit).mock.calls).toEqual([[4], [6]]);
   });
 });

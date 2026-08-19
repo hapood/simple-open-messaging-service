@@ -1,4 +1,10 @@
-import { Component, computed, input, output } from '@angular/core';
+import {
+  Component,
+  computed,
+  input,
+  output,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatIconModule } from '@angular/material/icon';
@@ -8,7 +14,12 @@ import {
   UserAvatarComponent,
   UserAvatarType,
 } from '../../user-avatar/user-avatar.component';
-import { categorize, fileExt, formatBytes, type FileCategory } from '../file-meta.util';
+import {
+  categorize,
+  fileExt,
+  formatBytes,
+  type FileCategory,
+} from '../file-meta.util';
 
 /**
  * FILE message row: a compact, fixed-width bubble with a type-tinted icon, the filename, the size, and a download
@@ -24,8 +35,15 @@ import { categorize, fileExt, formatBytes, type FileCategory } from '../file-met
 @Component({
   selector: 'app-msg-file-row',
   standalone: true,
-  imports: [DateRowComponent, UserAvatarComponent, TranslocoPipe, MatProgressSpinnerModule, MatIconModule],
+  imports: [
+    DateRowComponent,
+    UserAvatarComponent,
+    TranslocoPipe,
+    MatProgressSpinnerModule,
+    MatIconModule,
+  ],
   templateUrl: './file-row.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './file-row.component.scss',
 })
 export class FileRowComponent {
@@ -46,7 +64,9 @@ export class FileRowComponent {
       this.data().isGroupConversation === true &&
       !this.data().isSelf,
   );
-  readonly statusTick = computed(() => this.data().isSelf && !!this.data().status);
+  readonly statusTick = computed(
+    () => this.data().isSelf && !!this.data().status,
+  );
   readonly isSending = computed(
     () => this.data().isSelf && this.data().status === 'sending',
   );

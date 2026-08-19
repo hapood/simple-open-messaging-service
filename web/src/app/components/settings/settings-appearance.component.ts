@@ -1,4 +1,4 @@
-import { Component, inject } from '@angular/core';
+import { Component, inject, ChangeDetectionStrategy } from '@angular/core';
 import { MatListModule } from '@angular/material/list';
 import { MatRadioModule } from '@angular/material/radio';
 import { TranslocoPipe } from '@jsverse/transloco';
@@ -23,7 +23,8 @@ import { ThemeService, ThemeMode } from '../../services/theme.service';
                 matListItemMeta
                 name="theme"
                 [checked]="mode() === m"
-                [attr.aria-label]="labelKey(m) | transloco">
+                [attr.aria-label]="labelKey(m) | transloco"
+              >
               </mat-radio-button>
             </mat-list-item>
           }
@@ -31,6 +32,7 @@ import { ThemeService, ThemeMode } from '../../services/theme.service';
       </div>
     </section>
   `,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './sub-page.scss',
 })
 export class SettingsAppearanceComponent {
@@ -42,11 +44,14 @@ export class SettingsAppearanceComponent {
 
   /** i18n key for a mode's label. */
   labelKey(m: ThemeMode): string {
-    return m === 'system' ? 'settings.themeSystem' : m === 'light' ? 'settings.themeLight' : 'settings.themeDark';
+    return m === 'system'
+      ? 'settings.themeSystem'
+      : m === 'light'
+        ? 'settings.themeLight'
+        : 'settings.themeDark';
   }
 
   select(m: ThemeMode): void {
     this.themeSvc.setMode(m);
   }
-
 }

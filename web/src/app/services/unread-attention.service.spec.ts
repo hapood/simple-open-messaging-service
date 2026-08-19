@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { Subject } from 'rxjs';
@@ -18,21 +19,29 @@ import { SOMS_NOTIF_MSG } from './sw-notif-protocol';
  */
 describe('UnreadAttentionService (SW message routing + threadHwms wiring)', () => {
   let svc: UnreadAttentionService;
-  let eventSubject: Subject<{ event: string; data?: unknown }>;
-  let recordThreadDismiss: jasmine.Spy;
-  let openChat: jasmine.Spy;
-  let fetchAway: jasmine.Spy;
+  let eventSubject: Subject<{
+    event: string;
+    data?: unknown;
+  }>;
+  let recordThreadDismiss: Mock;
+  let openChat: Mock;
+  let fetchAway: Mock;
 
   /** Dispatch a message as if the push SW postMessaged the page (the ctor registered the listener). */
   function swMessage(data: unknown): void {
-    navigator.serviceWorker.dispatchEvent(new MessageEvent('message', { data }));
+    navigator.serviceWorker.dispatchEvent(
+      new MessageEvent('message', { data }),
+    );
   }
 
   beforeEach(() => {
     eventSubject = new Subject();
-    recordThreadDismiss = jasmine.createSpy('recordThreadDismiss');
-    openChat = jasmine.createSpy('openChat');
-    fetchAway = jasmine.createSpy('fetchAwayNotifications').and.resolveTo([]);
+    recordThreadDismiss = vi.fn().mockName('recordThreadDismiss');
+    openChat = vi.fn().mockName('openChat');
+    fetchAway = vi
+      .fn()
+      .mockName('fetchAwayNotifications')
+      .mockResolvedValue([]);
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -44,12 +53,22 @@ describe('UnreadAttentionService (SW message routing + threadHwms wiring)', () =
             missedCursor: () => ({ threadId: 1, seq: 10 }),
             threadHwms: () => ({ 7: 3 }),
             recordThreadDismiss,
-            clearThreadDismiss: jasmine.createSpy('clearThreadDismiss'),
+            clearThreadDismiss: vi.fn().mockName('clearThreadDismiss'),
           },
         },
         { provide: WebsocketService, useValue: { eventSubject } },
-        { provide: MissedSyncService, useValue: { fetchAwayNotifications: fetchAway } },
-        { provide: NotificationPrefsService, useValue: { enabled: () => true, previewMode: () => 'message', sound: () => true } },
+        {
+          provide: MissedSyncService,
+          useValue: { fetchAwayNotifications: fetchAway },
+        },
+        {
+          provide: NotificationPrefsService,
+          useValue: {
+            enabled: () => true,
+            previewMode: () => 'message',
+            sound: () => true,
+          },
+        },
         { provide: NavStateMachineService, useValue: { openChat } },
       ],
     });
@@ -83,9 +102,16 @@ describe('UnreadAttentionService (SW message routing + threadHwms wiring)', () =
   it('forwards the threadHwms map on the away fetch (per-thread dismiss respected server-side)', async () => {
     // Away = window unfocused. A NEW_MESSAGE then arms the debounced pull + render.
     window.dispatchEvent(new Event('blur'));
-    eventSubject.next({ event: 'NEW_MESSAGE', data: { threadId: 7, seq: 11, ts: 1 } });
+    eventSubject.next({
+      event: 'NEW_MESSAGE',
+      data: { threadId: 7, seq: 11, ts: 1 },
+    });
     await new Promise((r) => setTimeout(r, 350)); // past the 300ms debounce
     expect(fetchAway).toHaveBeenCalledTimes(1);
-    expect(fetchAway).toHaveBeenCalledWith({ threadId: 1, seq: 10 }, 'message', { 7: 3 });
+    expect(fetchAway).toHaveBeenCalledWith(
+      { threadId: 1, seq: 10 },
+      'message',
+      { 7: 3 },
+    );
   });
 });

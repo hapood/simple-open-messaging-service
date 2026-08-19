@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { DiagnosticsReportService } from '../../services/diagnostics-report.service';
@@ -5,13 +6,12 @@ import { DebugLogOverlayComponent } from './debug-log-overlay.component';
 
 describe('DebugLogOverlayComponent diagnostics upload', () => {
   let fixture: ComponentFixture<DebugLogOverlayComponent>;
-  let reports: jasmine.SpyObj<DiagnosticsReportService>;
+  let reports: { upload: Mock };
 
   beforeEach(async () => {
-    reports = jasmine.createSpyObj<DiagnosticsReportService>(
-      'DiagnosticsReportService',
-      ['upload'],
-    );
+    reports = {
+      upload: vi.fn().mockName('DiagnosticsReportService.upload'),
+    };
     await TestBed.configureTestingModule({
       imports: [DebugLogOverlayComponent],
       providers: [
@@ -38,17 +38,19 @@ describe('DebugLogOverlayComponent diagnostics upload', () => {
   });
 
   it('shows the report id after a successful upload', async () => {
-    reports.upload.and.resolveTo(42);
+    reports.upload.mockResolvedValue(42);
     fixture.componentInstance.beginUpload();
     await fixture.componentInstance.uploadReport();
 
-    expect(reports.upload).toHaveBeenCalledOnceWith();
+    expect(reports.upload).toHaveBeenCalledTimes(1);
+
+    expect(reports.upload).toHaveBeenCalledWith();
     expect(fixture.componentInstance.uploadState()).toBe('idle');
     expect(fixture.componentInstance.actionNotice()).toContain('#42');
   });
 
   it('reports a retained retry bundle when upload fails', async () => {
-    reports.upload.and.rejectWith(new Error('offline'));
+    reports.upload.mockRejectedValue(new Error('offline'));
     fixture.componentInstance.beginUpload();
     await fixture.componentInstance.uploadReport();
 

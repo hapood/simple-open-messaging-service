@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { MatSnackBar } from '@angular/material/snack-bar';
@@ -13,7 +14,7 @@ const detail = (over: Partial<InviteDetail> = {}): InviteDetail =>
     id: '1',
     kind: 'GROUP',
     status: 'PENDING',
-    expiresAt: Date.now() + 60_000,
+    expiresAt: Date.now() + 60000,
     note: '',
     threadId: 12,
     groupName: 'Federated group',
@@ -28,18 +29,18 @@ const detail = (over: Partial<InviteDetail> = {}): InviteDetail =>
 
 describe('InviteDetailComponent federation confirmation', () => {
   let component: InviteDetailComponent;
-  let joinGroupRequest: jasmine.Spy;
-  let getInviteDetail: jasmine.Spy;
-  let openChat: jasmine.Spy;
-  let snack: jasmine.Spy;
+  let joinGroupRequest: Mock;
+  let getInviteDetail: Mock;
+  let openChat: Mock;
+  let snack: Mock;
 
   beforeEach(() => {
-    joinGroupRequest = jasmine.createSpy().and.returnValue(of({ code: 0 }));
-    getInviteDetail = jasmine
-      .createSpy()
-      .and.returnValue(of({ code: 0, data: detail({ joinRequested: true }) }));
-    openChat = jasmine.createSpy();
-    snack = jasmine.createSpy();
+    joinGroupRequest = vi.fn().mockReturnValue(of({ code: 0 }));
+    getInviteDetail = vi
+      .fn()
+      .mockReturnValue(of({ code: 0, data: detail({ joinRequested: true }) }));
+    openChat = vi.fn();
+    snack = vi.fn();
     TestBed.configureTestingModule({
       imports: [InviteDetailComponent],
       providers: [
@@ -105,8 +106,8 @@ describe('InviteDetailComponent federation confirmation', () => {
 
   it('shows the origin rejection reason and does not enter when the group is full', async () => {
     const reason = "Group has reached this server's 999-member limit.";
-    joinGroupRequest.and.returnValue(of({ code: 40008, message: reason }));
-    getInviteDetail.and.returnValue(
+    joinGroupRequest.mockReturnValue(of({ code: 40008, message: reason }));
+    getInviteDetail.mockReturnValue(
       of({
         code: 0,
         data: detail({ status: 'REVOKED', joinRequested: false }),
@@ -121,6 +122,6 @@ describe('InviteDetailComponent federation confirmation', () => {
     expect(openChat).not.toHaveBeenCalled();
     expect(component.errorMsg()).toBe(reason);
     expect(component.viewState()).toBe('invalid');
-    expect(component.busy()).toBeFalse();
+    expect(component.busy()).toBe(false);
   });
 });

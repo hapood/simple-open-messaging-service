@@ -14,7 +14,7 @@ describe('message entity codec', () => {
     expect(serializeUserMention('张三', 'zhangsan@example.com')).toBe(mention);
     expect(toDisplayText(`你好 ${mention}`)).toBe('你好 @张三');
     expect(parseMessageEntities(mention)[0]).toEqual(
-      jasmine.objectContaining({
+      expect.objectContaining({
         kind: 'entity',
         sigil: '@',
         label: '张三',

@@ -13,31 +13,38 @@ import { NewGroupComponent } from './new-group.component';
 describe('NewGroupComponent', () => {
   it('allows only one create request while submission is pending', () => {
     const response = new Subject<StandardResponse<GrpCreateInfo>>();
-    const groupService = { createGroup: jasmine.createSpy().and.returnValue(response) };
-    const routeService = { closeDlg: jasmine.createSpy() };
+    const groupService = { createGroup: vi.fn().mockReturnValue(response) };
+    const routeService = { closeDlg: vi.fn() };
     TestBed.configureTestingModule({
       imports: [NewGroupComponent],
       providers: [
         provideZonelessChangeDetection(),
         { provide: GroupService, useValue: groupService },
         { provide: RouteService, useValue: routeService },
-        { provide: ConversationListService, useValue: { items: signal([]), markTopOnNextUpdate: jasmine.createSpy() } },
+        {
+          provide: ConversationListService,
+          useValue: { items: signal([]), markTopOnNextUpdate: vi.fn() },
+        },
         { provide: HttpClient, useValue: {} },
-        { provide: MatSnackBar, useValue: { open: jasmine.createSpy() } },
-        { provide: TranslocoService, useValue: { translate: (key: string) => key } },
+        { provide: MatSnackBar, useValue: { open: vi.fn() } },
+        {
+          provide: TranslocoService,
+          useValue: { translate: (key: string) => key },
+        },
       ],
     });
-    const component = TestBed.createComponent(NewGroupComponent).componentInstance;
+    const component =
+      TestBed.createComponent(NewGroupComponent).componentInstance;
     component.name.set('Team');
 
     component.confirm();
     component.confirm();
 
     expect(groupService.createGroup).toHaveBeenCalledTimes(1);
-    expect(component.submitting()).toBeTrue();
+    expect(component.submitting()).toBe(true);
     response.next({ code: 10000, message: 'invalid' });
     response.complete();
-    expect(component.submitting()).toBeFalse();
+    expect(component.submitting()).toBe(false);
     expect(routeService.closeDlg).not.toHaveBeenCalled();
   });
 });

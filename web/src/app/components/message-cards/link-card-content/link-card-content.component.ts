@@ -1,4 +1,10 @@
-import { Component, computed, input, signal } from '@angular/core';
+import {
+  Component,
+  computed,
+  input,
+  signal,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import type { LinkCardContent } from '../../../services/link-card-generation.service';
 import { assetUrl } from '../../../services/runtime';
 
@@ -7,6 +13,7 @@ import { assetUrl } from '../../../services/runtime';
   selector: 'app-link-card-content',
   standalone: true,
   templateUrl: './link-card-content.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './link-card-content.component.scss',
 })
 export class LinkCardContentComponent {

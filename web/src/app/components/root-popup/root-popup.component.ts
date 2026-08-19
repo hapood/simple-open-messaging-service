@@ -6,6 +6,7 @@ import {
   effect,
   inject,
   signal,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import { NgComponentOutlet } from '@angular/common';
 import {
@@ -75,6 +76,7 @@ const dialogAnim = trigger('dialogAnim', [
   ],
   animations: [dialogAnim],
   templateUrl: './root-popup.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './root-popup.component.scss',
 })
 export class RootPopupComponent {
@@ -120,7 +122,7 @@ export class RootPopupComponent {
   }
 
   @HostListener('document:keydown.escape', ['$event'])
-  onEscape(event: KeyboardEvent): void {
+  onEscape(event: Event): void {
     const stack = this.nav.paneStack();
     if (stack.at(-1)?.kind !== 'dialog') return;
     event.preventDefault();

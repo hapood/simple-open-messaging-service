@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 /**
  * HttpItemSource unit tests — production data layer, signal-only live contract (no DOM, no kernel).
  *
@@ -84,7 +85,10 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     tid = 42,
     outbox = new ThreadSendOutbox(),
   ) {
-    const liveSignal$ = new Subject<{ threadId: number; seq: number }>();
+    const liveSignal$ = new Subject<{
+      threadId: number;
+      seq: number;
+    }>();
     const reconnectSignal$ = new Subject<void>();
     let truncateSeq: number | undefined;
     liveSignal$.subscribe((signal) => {
@@ -99,21 +103,25 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       seq: number;
       status: MediaStatus;
     }>();
-    const queryMessages = jasmine.createSpy('queryMessages').and.resolveTo({
-      data: dbResult.data ?? [],
-      hasMore: dbResult.hasMore ?? false,
-    });
+    const queryMessages = vi
+      .fn()
+      .mockName('queryMessages')
+      .mockResolvedValue({
+        data: dbResult.data ?? [],
+        hasMore: dbResult.hasMore ?? false,
+      });
     const repo = {
       queryMessages,
       liveSignal$,
       reconnectSignal$,
       mediaStatusLive$,
-      retainCoverage: jasmine.createSpy('retainCoverage'),
-      releaseCoverage: jasmine.createSpy('releaseCoverage'),
+      retainCoverage: vi.fn().mockName('retainCoverage'),
+      releaseCoverage: vi.fn().mockName('releaseCoverage'),
       getNewerTruncateSeq: () => truncateSeq,
-      retainNewestSeq: jasmine
-        .createSpy('retainNewestSeq')
-        .and.callFake((_threadId: number, seq: number) => {
+      retainNewestSeq: vi
+        .fn()
+        .mockName('retainNewestSeq')
+        .mockImplementation((_threadId: number, seq: number) => {
           truncateSeq = Math.max(truncateSeq ?? -1, seq);
         }),
     } as unknown as MessageRepository;
@@ -143,9 +151,10 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         isDeleted: false,
       } as unknown as User,
     ];
-    const queryUserInfo = jasmine
-      .createSpy('queryUserInfo')
-      .and.returnValue(
+    const queryUserInfo = vi
+      .fn()
+      .mockName('queryUserInfo')
+      .mockReturnValue(
         of<StandardResponse<User[]>>({ code: 0, message: 'ok', data: users }),
       );
     const userService = {
@@ -155,8 +164,8 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       sessionUserId: () => 1,
       sessionProfile: () => ({ id: 1, account: 'me@example.com' }),
     } as unknown as UserService;
-    const profiles = jasmine.createSpy('onProfile');
-    const newerAvailable = jasmine.createSpy('onNewerAvailable');
+    const profiles = vi.fn().mockName('onProfile');
+    const newerAvailable = vi.fn().mockName('onNewerAvailable');
     const src = new HttpItemSource(conv(tid), repo, userService, outbox, {
       onProfile: profiles,
       onNewerAvailable: newerAvailable,
@@ -201,7 +210,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     liveSignal$.next({ threadId: 99, seq: 100 }); // different thread → ignored
     liveSignal$.next({ threadId: 42, seq: 100 });
     await Promise.resolve();
-    expect((repo.queryMessages as jasmine.Spy).calls.count()).toBe(0);
+    expect(vi.mocked(repo.queryMessages as Mock).mock.calls.length).toBe(0);
   });
 
   it('keeps a newer demand pending at newest and resolves it after source data updates', async () => {
@@ -212,7 +221,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       hasMore: false,
     });
     src.finishLocalInit(undefined);
-    const queryMessages = repo.queryMessages as jasmine.Spy;
+    const queryMessages = repo.queryMessages as Mock;
     const demand = src.requestNewer(100, 50);
     let settled = false;
     const resultPromise = firstValueFrom(demand).finally(() => {
@@ -220,9 +229,9 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     });
     await Promise.resolve();
     await Promise.resolve();
-    expect(settled).toBeFalse();
+    expect(settled).toBe(false);
 
-    queryMessages.and.resolveTo({
+    queryMessages.mockResolvedValue({
       data: [row(101, 2)],
       hasMore: false,
     });
@@ -245,10 +254,10 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     src.finishLocalInit(undefined);
     const subscription = src.requestNewer(100, 50).subscribe();
     subscription.unsubscribe();
-    const calls = (repo.queryMessages as jasmine.Spy).calls.count();
+    const calls = vi.mocked(repo.queryMessages as Mock).mock.calls.length;
     liveSignal$.next({ threadId: 42, seq: 101 });
     await Promise.resolve();
-    expect((repo.queryMessages as jasmine.Spy).calls.count()).toBe(calls);
+    expect(vi.mocked(repo.queryMessages as Mock).mock.calls.length).toBe(calls);
   });
 
   it('emits an error result for a failed newer demand and SSE does not implicitly retry it', async () => {
@@ -258,18 +267,18 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       data: [],
     });
     src.finishLocalInit(undefined);
-    const queryMessages = repo.queryMessages as jasmine.Spy;
-    queryMessages.and.resolveTo({ data: [], hasMore: true, failed: true });
+    const queryMessages = repo.queryMessages as Mock;
+    queryMessages.mockResolvedValue({ data: [], hasMore: true, failed: true });
 
     expect((await firstValueFrom(src.requestNewer(100, 50))).kind).toBe(
       'error',
     );
-    const failedCalls = queryMessages.calls.count();
+    const failedCalls = vi.mocked(queryMessages).mock.calls.length;
     liveSignal$.next({ threadId: 42, seq: 101 });
     await Promise.resolve();
-    expect(queryMessages.calls.count()).toBe(failedCalls);
+    expect(vi.mocked(queryMessages).mock.calls.length).toBe(failedCalls);
 
-    queryMessages.and.resolveTo({ data: [row(101, 2)], hasMore: false });
+    queryMessages.mockResolvedValue({ data: [row(101, 2)], hasMore: false });
     const retried = await firstValueFrom(src.requestNewer(100, 50));
     expect(
       retried.kind === 'items' ? retried.items.map((item) => item.id) : [],
@@ -286,16 +295,14 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
 
     liveSignal$.next({ threadId: 42, seq: 12 });
     await src.init(-1, 50, 0);
-    (repo.queryMessages as jasmine.Spy).and.resolveTo({
+    (repo.queryMessages as Mock).mockResolvedValue({
       data: [],
       hasMore: false,
     });
     const subscription = src.requestNewer(10, 50).subscribe();
     src.finishLocalInit(12);
     await Promise.resolve();
-    expect(
-      (repo.queryMessages as jasmine.Spy).calls.mostRecent().args[1],
-    ).toEqual({
+    expect(vi.mocked(repo.queryMessages as Mock).mock.lastCall![1]).toEqual({
       skip: 1,
       take: 50,
       lastSeq: 10,
@@ -313,14 +320,15 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     });
 
     await src.init(-1, 50, 0);
-    const before = (repo.queryMessages as jasmine.Spy).calls.count();
+    const before = vi.mocked(repo.queryMessages as Mock).mock.calls.length;
     const subscription = src.requestNewer(-1, 50).subscribe();
     src.finishLocalInit(undefined, 258);
     await Promise.resolve();
-    expect(newerAvailable).toHaveBeenCalledOnceWith(258);
-    expect((repo.queryMessages as jasmine.Spy).calls.count()).toBeGreaterThan(
-      before,
-    );
+    expect(newerAvailable).toHaveBeenCalledTimes(1);
+    expect(newerAvailable).toHaveBeenCalledWith(258);
+    expect(
+      vi.mocked(repo.queryMessages as Mock).mock.calls.length,
+    ).toBeGreaterThan(before);
     subscription.unsubscribe();
   });
 
@@ -333,16 +341,14 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     });
 
     await src.init(-1, 50, 0);
-    (repo.queryMessages as jasmine.Spy).and.resolveTo({
+    (repo.queryMessages as Mock).mockResolvedValue({
       data: [],
       hasMore: false,
     });
     const subscription = src.requestNewer(10, 50).subscribe();
     src.finishLocalInit(12, 11);
     await Promise.resolve();
-    expect(
-      (repo.queryMessages as jasmine.Spy).calls.mostRecent().args[1],
-    ).toEqual({
+    expect(vi.mocked(repo.queryMessages as Mock).mock.lastCall![1]).toEqual({
       skip: 1,
       take: 50,
       lastSeq: 10,
@@ -358,13 +364,13 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       data: [row(11, 2)],
       hasMore: false,
     });
-    const queryMessages = repo.queryMessages as jasmine.Spy;
+    const queryMessages = repo.queryMessages as Mock;
 
     await src.init(-1, 50, 0);
     src.finishLocalInit(undefined, 20);
     await src.getNewer(11, 50);
 
-    expect(queryMessages.calls.mostRecent().args[1]).toEqual({
+    expect(vi.mocked(queryMessages).mock.lastCall![1]).toEqual({
       skip: 1,
       take: 50,
       lastSeq: 11,
@@ -379,21 +385,21 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       data: [row(50, 2)],
       hasMore: false,
     });
-    const queryMessages = repo.queryMessages as jasmine.Spy;
+    const queryMessages = repo.queryMessages as Mock;
 
     await src.init(-1, 50, 0);
     src.finishLocalInit(undefined, 50);
     liveSignal$.next({ threadId: 42, seq: 50 });
-    const callsAfterInit = queryMessages.calls.count();
+    const callsAfterInit = vi.mocked(queryMessages).mock.calls.length;
     const subscription = src.requestNewer(50, 50).subscribe();
     await Promise.resolve();
 
-    expect(queryMessages.calls.count()).toBe(callsAfterInit);
+    expect(vi.mocked(queryMessages).mock.calls.length).toBe(callsAfterInit);
 
-    queryMessages.and.resolveTo({ data: [row(51, 2)], hasMore: false });
+    queryMessages.mockResolvedValue({ data: [row(51, 2)], hasMore: false });
     liveSignal$.next({ threadId: 42, seq: 51 });
     await Promise.resolve();
-    expect(queryMessages.calls.count()).toBe(callsAfterInit + 1);
+    expect(vi.mocked(queryMessages).mock.calls.length).toBe(callsAfterInit + 1);
     subscription.unsubscribe();
   });
 
@@ -404,7 +410,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       data: [],
       hasMore: false,
     });
-    const queryMessages = repo.queryMessages as jasmine.Spy;
+    const queryMessages = repo.queryMessages as Mock;
 
     src.finishLocalInit(undefined, 20);
     await src.getNewer(10, 50);
@@ -412,9 +418,9 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     await src.getNewer(20, 50);
 
     expect(
-      queryMessages.calls
-        .allArgs()
-        .slice(-2)
+      vi
+        .mocked(queryMessages)
+        .mock.calls.slice(-2)
         .map((args) => args[1]),
     ).toEqual([
       { skip: 1, take: 50, lastSeq: 10, orderBy: 'asc' },
@@ -429,13 +435,13 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       data: [],
       hasMore: false,
     });
-    const queryMessages = repo.queryMessages as jasmine.Spy;
+    const queryMessages = repo.queryMessages as Mock;
 
     src.finishLocalInit(undefined, 20);
     reconnectSignal$.next();
     await src.getNewer(10, 50);
 
-    expect(queryMessages.calls.mostRecent().args[1]).toEqual({
+    expect(vi.mocked(queryMessages).mock.lastCall![1]).toEqual({
       skip: 1,
       take: 50,
       lastSeq: 10,
@@ -462,13 +468,13 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       data: [row(10, 2)],
       hasMore: true,
     });
-    const queryMessages = repo.queryMessages as jasmine.Spy;
+    const queryMessages = repo.queryMessages as Mock;
 
     await src.init(-1, 50, 0);
     src.finishLocalInit(undefined);
     await src.getOlder(10, 50);
 
-    expect(queryMessages.calls.mostRecent().args).toEqual([
+    expect(vi.mocked(queryMessages).mock.lastCall).toEqual([
       42,
       { skip: 1, take: 50, lastSeq: 10, orderBy: 'desc' },
       undefined,
@@ -483,7 +489,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       data: [row(12, 2), row(11, 2)],
       hasMore: false,
     });
-    const queryMessages = repo.queryMessages as jasmine.Spy;
+    const queryMessages = repo.queryMessages as Mock;
 
     const initial = await src.init(-1, 50, 0);
     expect(initial.map((item) => item.id)).toEqual([11, 12]);
@@ -491,7 +497,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     // Model the virtual-list lifecycle: the kernel trims these rows after the user scrolls upward,
     // then asks the source for them again while scrolling down. IDB legitimately returns ids already
     // shaped earlier in this source session; they must not be filtered by a lifetime seen-id set.
-    queryMessages.and.resolveTo({
+    queryMessages.mockResolvedValue({
       data: [row(11, 2), row(12, 2)],
       hasMore: false,
     });
@@ -573,9 +579,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
   });
 
   it('offline init mounts cached messages without waiting for profile hydration', async () => {
-    const offline = spyOnProperty(navigator, 'onLine', 'get').and.returnValue(
-      false,
-    );
+    const offline = vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
     const { src, queryUserInfo } = setup({
       code: 0,
       message: 'ok',
@@ -588,7 +592,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
 
     expect(items.map((item) => item.id)).toEqual([100]);
     expect(queryUserInfo).not.toHaveBeenCalled();
-    offline.and.callThrough();
+    offline;
   });
 
   it('online init does not wait for profile hydration and patches the shaped row later', async () => {
@@ -599,7 +603,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       data: [row(100, 2)],
       hasMore: false,
     });
-    queryUserInfo.and.returnValue(profile$);
+    queryUserInfo.mockReturnValue(profile$);
 
     const items = await src.init(-1, 50, 0);
     src.finishLocalInit(undefined);
@@ -621,7 +625,9 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     profile$.complete();
     await Promise.resolve();
 
-    expect(profiles).toHaveBeenCalledOnceWith(100, {
+    expect(profiles).toHaveBeenCalledTimes(1);
+
+    expect(profiles).toHaveBeenCalledWith(100, {
       name: 'Alice',
       avatar: '',
       avatarIdentityId: 2,
@@ -657,21 +663,21 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       data: [row(10, 2)],
       hasMore: true,
     });
-    const queryMessages = repo.queryMessages as jasmine.Spy;
+    const queryMessages = repo.queryMessages as Mock;
     await src.init(-1, 50, 0);
-    queryMessages.and.resolveTo({ data: [], hasMore: true, failed: true });
+    queryMessages.mockResolvedValue({ data: [], hasMore: true, failed: true });
 
-    await expectAsync(src.getOlder(10, 50)).toBeRejected();
-    await expectAsync(src.getOlder(10, 50)).toBeRejected();
-    expect(queryMessages.calls.count()).toBe(3); // init + both retries; noOlder was never poisoned
+    await expect(src.getOlder(10, 50)).rejects.toThrow();
+    await expect(src.getOlder(10, 50)).rejects.toThrow();
+    expect(vi.mocked(queryMessages).mock.calls.length).toBe(3); // init + both retries; noOlder was never poisoned
   });
 
   it('does not turn a failed cold init into an empty-thread boundary', async () => {
     const { src, repo } = setup({ code: 0, message: 'ok', data: [] });
-    const queryMessages = repo.queryMessages as jasmine.Spy;
-    queryMessages.and.resolveTo({ data: [], hasMore: true, failed: true });
+    const queryMessages = repo.queryMessages as Mock;
+    queryMessages.mockResolvedValue({ data: [], hasMore: true, failed: true });
 
-    await expectAsync(src.init(-1, 50, 0)).toBeRejected();
+    await expect(src.init(-1, 50, 0)).rejects.toThrow();
   });
 
   it('pushLive is a no-op (signal-only path caches nothing; satisfies the CbSource interface)', () => {
@@ -695,7 +701,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       outbox,
     ).src;
     expect(reopened.getPending()).toEqual([
-      jasmine.objectContaining({ clientMessageId: 'cid-restored' }),
+      expect.objectContaining({ clientMessageId: 'cid-restored' }),
     ]);
   });
 
@@ -737,8 +743,13 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
   it('keeps attachment pending entries reconcilable without exposing duplicate per-file bubbles', () => {
     const { src } = setup({ code: 0, message: 'ok', data: [], hasMore: false });
     const image = pendingItem('cid-image');
-    (image as unknown as { data: { contentType: string } }).data.contentType =
-      'IMAGE';
+    (
+      image as unknown as {
+        data: {
+          contentType: string;
+        };
+      }
+    ).data.contentType = 'IMAGE';
 
     src.addPending(image);
 
@@ -755,14 +766,14 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       data: [echo],
       hasMore: false,
     });
-    const dispose = jasmine.createSpy('dispose');
+    const dispose = vi.fn().mockName('dispose');
     src.addPending(pendingItem(cid)); // HTTP 200 has NOT fired yet → still 'sending'
     outbox.retainResource(cid, {
       type: 'native-attachment',
       partId: 'part-native',
       selection: {} as never,
       release: dispose,
-      discard: jasmine.createSpy('discard'),
+      discard: vi.fn().mockName('discard'),
     });
     liveSignal$.next({ threadId: 42, seq: 100 }); // SSE echo wins the race → signal
 
@@ -779,13 +790,13 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       data: [],
       hasMore: false,
     });
-    const dispose = jasmine.createSpy('dispose');
+    const dispose = vi.fn().mockName('dispose');
     src.addPending(pendingItem('cid-discard'));
     outbox.retainResource('cid-discard', {
       type: 'native-attachment',
       partId: 'part-discard',
       selection: {} as never,
-      release: jasmine.createSpy('release'),
+      release: vi.fn().mockName('release'),
       discard: dispose,
     });
 
@@ -868,7 +879,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       hasMore: false,
     });
 
-    await expectAsync(src.init(-1, 50, 0)).toBeRejectedWithError(
+    await expect(src.init(-1, 50, 0)).rejects.toThrowError(
       'invalid PURE_TEXT message envelope',
     );
   });
@@ -915,7 +926,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     expect(items.length).toBe(1);
     expect(items[0].data.contentType).toBe('AUDIO');
     expect(items[0].data.images?.[0]).toEqual(
-      jasmine.objectContaining({
+      expect.objectContaining({
         kind: 'audio',
         src: '/uploads/cas/aa/bb/voice.webm',
         duration: 7.5,

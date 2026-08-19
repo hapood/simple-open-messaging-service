@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import {
@@ -8,20 +9,26 @@ import {
 describe('MediaSaveService', () => {
   type MockWindow = {
     __TAURI_INTERNALS__?: unknown;
-    __TAURI__?: { core: { invoke: jasmine.Spy } };
-    SomsMedia?: { save: jasmine.Spy };
+    __TAURI__?: {
+      core: {
+        invoke: Mock;
+      };
+    };
+    SomsMedia?: {
+      save: Mock;
+    };
   };
 
   const originalUserAgent = navigator.userAgent;
   let service: MediaSaveService;
-  let invoke: jasmine.Spy;
+  let invoke: Mock;
 
   beforeEach(() => {
     TestBed.configureTestingModule({
       providers: [provideZonelessChangeDetection()],
     });
     service = TestBed.inject(MediaSaveService);
-    invoke = jasmine.createSpy('invoke');
+    invoke = vi.fn().mockName('invoke');
   });
 
   afterEach(() => {
@@ -36,7 +43,9 @@ describe('MediaSaveService', () => {
   });
 
   it('keeps browser saves on the standard HTTP download path', async () => {
-    const click = spyOn(HTMLAnchorElement.prototype, 'click');
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockReturnValue(undefined);
 
     await service.save({
       path: '/uploads/photo.jpg',
@@ -53,14 +62,12 @@ describe('MediaSaveService', () => {
       value: 'Mozilla/5.0 (Linux; Android 14)',
       configurable: true,
     });
-    const save = jasmine.createSpy('save').and.returnValue('content://saved/1');
+    const save = vi.fn().mockName('save').mockReturnValue('content://saved/1');
     const windowMock = window as unknown as MockWindow;
     windowMock.__TAURI_INTERNALS__ = {};
     windowMock.__TAURI__ = { core: { invoke } };
     windowMock.SomsMedia = { save };
-    invoke
-      .withArgs('cache_media', { path: '/uploads/photo.jpg' })
-      .and.resolveTo({ path: '/private/cache/media/hash.bin' });
+    invoke.mockResolvedValue({ path: '/private/cache/media/hash.bin' });
 
     await service.save({
       path: '/uploads/photo.jpg',
@@ -69,7 +76,7 @@ describe('MediaSaveService', () => {
     });
 
     expect(save).toHaveBeenCalledWith(
-      jasmine.any(String),
+      expect.any(String),
       '/private/cache/media/hash.bin',
       'photo.jpg',
       'image/jpeg',
@@ -80,7 +87,7 @@ describe('MediaSaveService', () => {
     const windowMock = window as unknown as MockWindow;
     windowMock.__TAURI_INTERNALS__ = {};
     windowMock.__TAURI__ = { core: { invoke } };
-    invoke.and.resolveTo('/Downloads/photo.jpg');
+    invoke.mockResolvedValue('/Downloads/photo.jpg');
 
     await service.save({
       path: '/uploads/photo.jpg',
@@ -99,12 +106,12 @@ describe('MediaSaveService', () => {
       value: 'Mozilla/5.0 (Linux; Android 9)',
       configurable: true,
     });
-    const save = jasmine.createSpy('save').and.returnValue('pending');
+    const save = vi.fn().mockName('save').mockReturnValue('pending');
     const windowMock = window as unknown as MockWindow;
     windowMock.__TAURI_INTERNALS__ = {};
     windowMock.__TAURI__ = { core: { invoke } };
     windowMock.SomsMedia = { save };
-    invoke.and.resolveTo({ path: '/private/cache/media/hash.bin' });
+    invoke.mockResolvedValue({ path: '/private/cache/media/hash.bin' });
 
     let completed = false;
     const saving = service
@@ -116,12 +123,12 @@ describe('MediaSaveService', () => {
       .then(() => (completed = true));
     await Promise.resolve();
     await Promise.resolve();
-    expect(completed).toBeFalse();
+    expect(completed).toBe(false);
 
-    const requestId = save.calls.mostRecent().args[0] as string;
+    const requestId = vi.mocked(save).mock.lastCall![0] as string;
     window.__SOMS_MEDIA_SAVE_RESULT__?.({ requestId, success: true });
     await saving;
-    expect(completed).toBeTrue();
+    expect(completed).toBe(true);
   });
 
   it('reports closing the legacy Android document picker as cancellation', async () => {
@@ -129,12 +136,12 @@ describe('MediaSaveService', () => {
       value: 'Mozilla/5.0 (Linux; Android 9)',
       configurable: true,
     });
-    const save = jasmine.createSpy('save').and.returnValue('pending');
+    const save = vi.fn().mockName('save').mockReturnValue('pending');
     const windowMock = window as unknown as MockWindow;
     windowMock.__TAURI_INTERNALS__ = {};
     windowMock.__TAURI__ = { core: { invoke } };
     windowMock.SomsMedia = { save };
-    invoke.and.resolveTo({ path: '/private/cache/media/hash.bin' });
+    invoke.mockResolvedValue({ path: '/private/cache/media/hash.bin' });
 
     const saving = service.save({
       path: '/uploads/photo.jpg',
@@ -144,13 +151,13 @@ describe('MediaSaveService', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    const requestId = save.calls.mostRecent().args[0] as string;
+    const requestId = vi.mocked(save).mock.lastCall![0] as string;
     window.__SOMS_MEDIA_SAVE_RESULT__?.({
       requestId,
       success: false,
       cancelled: true,
     });
 
-    await expectAsync(saving).toBeRejectedWithError(MediaSaveCancelledError);
+    await expect(saving).rejects.toThrowError(MediaSaveCancelledError);
   });
 });

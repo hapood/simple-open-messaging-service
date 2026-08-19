@@ -1,7 +1,8 @@
+import type { Mock } from 'vitest';
 import 'fake-indexeddb/auto';
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
-import { provideHttpClient, HttpRequest } from '@angular/common/http';
+import { provideHttpClient, HttpRequest, withXhr } from '@angular/common/http';
 import {
   HttpTestingController,
   provideHttpClientTesting,
@@ -24,7 +25,12 @@ function flush(ms = 0): Promise<void> {
 const isMyProfile = (req: HttpRequest<unknown>): boolean =>
   req.method === 'POST' && req.url.endsWith('/user/my-profile');
 /** A minimal my-profile response body; `over` overrides fields under test. */
-const profile = (over: Partial<User>): { code: number; data: User } => ({
+const profile = (
+  over: Partial<User>,
+): {
+  code: number;
+  data: User;
+} => ({
   code: 0,
   data: {
     id: 1,
@@ -44,7 +50,7 @@ describe('UserService profile refresh', () => {
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
-        provideHttpClient(),
+        provideHttpClient(withXhr()),
         provideHttpClientTesting(),
         UserService,
         // The constructor effect touches WebdbService (open/close on id change) + ensureProfile writes the
@@ -53,28 +59,33 @@ describe('UserService profile refresh', () => {
         {
           provide: WebdbService,
           useValue: {
-            openForUser: jasmine
-              .createSpy('openForUser')
-              .and.resolveTo(undefined),
-            openExistingForUser: jasmine
-              .createSpy('openExistingForUser')
-              .and.resolveTo(undefined),
-            recreateForUser: jasmine
-              .createSpy('recreateForUser')
-              .and.resolveTo(undefined),
-            closeAndDelete: jasmine
-              .createSpy('closeAndDelete')
-              .and.resolveTo(undefined),
-            getMeta: jasmine.createSpy('getMeta').and.resolveTo(undefined),
-            putMeta: jasmine.createSpy('putMeta').and.resolveTo(undefined),
+            openForUser: vi
+              .fn()
+              .mockName('openForUser')
+              .mockResolvedValue(undefined),
+            openExistingForUser: vi
+              .fn()
+              .mockName('openExistingForUser')
+              .mockResolvedValue(undefined),
+            recreateForUser: vi
+              .fn()
+              .mockName('recreateForUser')
+              .mockResolvedValue(undefined),
+            closeAndDelete: vi
+              .fn()
+              .mockName('closeAndDelete')
+              .mockResolvedValue(undefined),
+            getMeta: vi.fn().mockName('getMeta').mockResolvedValue(undefined),
+            putMeta: vi.fn().mockName('putMeta').mockResolvedValue(undefined),
           },
         },
         {
           provide: ProfileRepository,
           useValue: {
-            putProfile: jasmine
-              .createSpy('putProfile')
-              .and.resolveTo(undefined),
+            putProfile: vi
+              .fn()
+              .mockName('putProfile')
+              .mockResolvedValue(undefined),
           },
         },
       ],
@@ -167,41 +178,45 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   let svc: UserService;
   let httpMock: HttpTestingController;
   let webdb: {
-    openForUser: jasmine.Spy;
-    openExistingForUser: jasmine.Spy;
-    recreateForUser: jasmine.Spy;
-    closeAndDelete: jasmine.Spy;
-    getMeta: jasmine.Spy;
-    putMeta: jasmine.Spy;
+    openForUser: Mock;
+    openExistingForUser: Mock;
+    recreateForUser: Mock;
+    closeAndDelete: Mock;
+    getMeta: Mock;
+    putMeta: Mock;
   };
 
   beforeEach(async () => {
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
-        provideHttpClient(),
+        provideHttpClient(withXhr()),
         provideHttpClientTesting(),
         UserService,
         {
           provide: WebdbService,
           useValue: {
-            openForUser: jasmine
-              .createSpy('openForUser')
-              .and.resolveTo(undefined),
-            openExistingForUser: jasmine
-              .createSpy('openExistingForUser')
-              .and.resolveTo(undefined),
-            recreateForUser: jasmine
-              .createSpy('recreateForUser')
-              .and.resolveTo(undefined),
-            closeAndDelete: jasmine
-              .createSpy('closeAndDelete')
-              .and.resolveTo(undefined),
+            openForUser: vi
+              .fn()
+              .mockName('openForUser')
+              .mockResolvedValue(undefined),
+            openExistingForUser: vi
+              .fn()
+              .mockName('openExistingForUser')
+              .mockResolvedValue(undefined),
+            recreateForUser: vi
+              .fn()
+              .mockName('recreateForUser')
+              .mockResolvedValue(undefined),
+            closeAndDelete: vi
+              .fn()
+              .mockName('closeAndDelete')
+              .mockResolvedValue(undefined),
             // Cache-hit self profile for {id:1, profileRev:0} → gateSelfProfile short-circuits with NO
             // fetch in these tests (the profile gate is orthogonal — covered by the refresh suite above).
             // A user/rev that cache-misses (account switch to id:2) falls through to a real fetch, matched
             // explicitly in that test.
-            getMeta: jasmine.createSpy('getMeta').and.resolveTo({
+            getMeta: vi.fn().mockName('getMeta').mockResolvedValue({
               id: 1,
               profileRev: 0,
               name: 'A',
@@ -209,15 +224,16 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
               bio: '',
               domain: '',
             }),
-            putMeta: jasmine.createSpy('putMeta').and.resolveTo(undefined),
+            putMeta: vi.fn().mockName('putMeta').mockResolvedValue(undefined),
           },
         },
         {
           provide: ProfileRepository,
           useValue: {
-            putProfile: jasmine
-              .createSpy('putProfile')
-              .and.resolveTo(undefined),
+            putProfile: vi
+              .fn()
+              .mockName('putProfile')
+              .mockResolvedValue(undefined),
           },
         },
       ],
@@ -243,7 +259,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   });
 
   it('restores the friend-request latest and seen revisions from this device', async () => {
-    webdb.getMeta.and.callFake(async (key: string) => {
+    webdb.getMeta.mockImplementation(async (key: string) => {
       if (key === 'friendRequestStateRevision') return 12;
       if (key === 'friendRequestSeenRevision') return 9;
       return {
@@ -268,21 +284,26 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
 
     await svc.establishSession(1, 0);
 
-    expect(webdb.recreateForUser).toHaveBeenCalledOnceWith('1');
-    expect(webdb.openExistingForUser).toHaveBeenCalledOnceWith('1');
+    expect(webdb.recreateForUser).toHaveBeenCalledTimes(1);
+
+    expect(webdb.recreateForUser).toHaveBeenCalledWith('1');
+    expect(webdb.openExistingForUser).toHaveBeenCalledTimes(1);
+    expect(webdb.openExistingForUser).toHaveBeenCalledWith('1');
   });
 
   it('rebuilds an unreadable cache discovered when HELLO establishes the session', async () => {
-    webdb.openExistingForUser.and.rejectWith(new Error('unreadable cache'));
+    webdb.openExistingForUser.mockRejectedValue(new Error('unreadable cache'));
 
-    await expectAsync(svc.establishSession(1, 0)).toBeResolved();
+    await expect(svc.establishSession(1, 0)).resolves.not.toThrow();
 
-    expect(webdb.recreateForUser).toHaveBeenCalledOnceWith('1');
+    expect(webdb.recreateForUser).toHaveBeenCalledTimes(1);
+
+    expect(webdb.recreateForUser).toHaveBeenCalledWith('1');
   });
 
   it('establishSession is idempotent for the same user on reconnect', async () => {
     await svc.establishSession(1, 0);
-    webdb.openExistingForUser.calls.reset();
+    webdb.openExistingForUser.mockClear();
     await svc.establishSession(1, 0);
     expect(webdb.openExistingForUser).not.toHaveBeenCalled();
     expect(svc.sessionUserId()).toBe(1);
@@ -290,8 +311,8 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
 
   it('establishSession on an account switch closes the previous DB + opens the new one', async () => {
     await svc.establishSession(1, 0);
-    webdb.closeAndDelete.calls.reset();
-    webdb.openExistingForUser.calls.reset();
+    webdb.closeAndDelete.mockClear();
+    webdb.openExistingForUser.mockClear();
 
     // Switch to user 2: gateSelfProfile cache-misses (cached id:1 ≠ 2) → flush its my-profile fetch.
     const done = svc.establishSession(2, 0);
@@ -309,7 +330,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
 
   it('clearSession closes the DB + clears sessionUserId + clears lastUserId', async () => {
     await svc.establishSession(1, 0);
-    webdb.closeAndDelete.calls.reset();
+    webdb.closeAndDelete.mockClear();
 
     await svc.clearSession();
     expect(webdb.closeAndDelete).toHaveBeenCalledWith('1');
@@ -322,15 +343,15 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
 
   it('keeps the session retryable when durable cache deletion fails', async () => {
     await svc.establishSession(1, 0);
-    webdb.closeAndDelete.and.rejectWith(new Error('cache busy'));
+    webdb.closeAndDelete.mockRejectedValue(new Error('cache busy'));
 
-    await expectAsync(svc.clearSession()).toBeRejectedWithError('cache busy');
+    await expect(svc.clearSession()).rejects.toThrowError('cache busy');
     expect(svc.sessionUserId()).toBe(1);
     expect(
       await TestBed.inject(PreferenceStore).get('device', 'soms.lastUserId'),
     ).toBe(1);
 
-    webdb.closeAndDelete.and.resolveTo(undefined);
+    webdb.closeAndDelete.mockResolvedValue(undefined);
     await svc.clearSession();
     expect(webdb.closeAndDelete).toHaveBeenCalledTimes(2);
     expect(svc.sessionUserId()).toBeNull();
@@ -343,7 +364,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
       name: 'Cached Alice',
       avatar: '/cached.webp',
     }).data;
-    webdb.getMeta.and.resolveTo(cached);
+    webdb.getMeta.mockResolvedValue(cached);
     await svc.restoreWebdb();
     expect(webdb.openExistingForUser).toHaveBeenCalledWith('7');
     expect(webdb.getMeta).toHaveBeenCalledWith('selfProfile');
@@ -354,31 +375,35 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
 
   it('restoreWebdb rebuilds any invalid cache without ending the session', async () => {
     await TestBed.inject(PreferenceStore).set('device', 'soms.lastUserId', 7);
-    webdb.openExistingForUser.and.rejectWith(
+    webdb.openExistingForUser.mockRejectedValue(
       new LocalCacheVersionMismatchError('soms-webdb-u7'),
     );
-    webdb.getMeta.and.resolveTo(undefined);
+    webdb.getMeta.mockResolvedValue(undefined);
 
     await svc.restoreWebdb();
 
-    expect(webdb.recreateForUser).toHaveBeenCalledOnceWith('7');
+    expect(webdb.recreateForUser).toHaveBeenCalledTimes(1);
+
+    expect(webdb.recreateForUser).toHaveBeenCalledWith('7');
     expect(svc.sessionUserId()).toBeNull();
   });
 
   it('restoreWebdb also rebuilds a missing or unreadable cache', async () => {
     await TestBed.inject(PreferenceStore).set('device', 'soms.lastUserId', 7);
-    webdb.openExistingForUser.and.rejectWith(new Error('unreadable cache'));
-    webdb.getMeta.and.resolveTo(undefined);
+    webdb.openExistingForUser.mockRejectedValue(new Error('unreadable cache'));
+    webdb.getMeta.mockResolvedValue(undefined);
 
     await svc.restoreWebdb();
 
-    expect(webdb.recreateForUser).toHaveBeenCalledOnceWith('7');
+    expect(webdb.recreateForUser).toHaveBeenCalledTimes(1);
+
+    expect(webdb.recreateForUser).toHaveBeenCalledWith('7');
     expect(svc.sessionUserId()).toBeNull();
   });
 
   it('restoreWebdb ignores a self profile belonging to a different IDB partition owner', async () => {
     await TestBed.inject(PreferenceStore).set('device', 'soms.lastUserId', 7);
-    webdb.getMeta.and.resolveTo(profile({ id: 8 }).data);
+    webdb.getMeta.mockResolvedValue(profile({ id: 8 }).data);
     await svc.restoreWebdb();
     expect(svc.sessionProfile()).toBeUndefined();
   });

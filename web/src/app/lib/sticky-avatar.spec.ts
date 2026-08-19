@@ -38,7 +38,7 @@ describe('pickStickyAvatarPlacement', () => {
         [row('a', -50, true), row('a', -10), row('a', 8, false, 'other', 40)],
         12,
       ),
-    ).toEqual(jasmine.objectContaining({ creator: 'a', top: 8 }));
+    ).toEqual(expect.objectContaining({ creator: 'a', top: 8 }));
   });
 
   it('clamps the avatar inside a partially visible group tail', () => {
@@ -56,19 +56,19 @@ describe('pickStickyAvatarPlacement', () => {
   it('switches sender only after the next group crosses the line', () => {
     const rows = [row('a', -30, true), row('a', 0), row('b', 30, true, 'self')];
     expect(pickStickyAvatarPlacement(rows, 12)).toEqual(
-      jasmine.objectContaining({ creator: 'a' }),
+      expect.objectContaining({ creator: 'a' }),
     );
     expect(
       pickStickyAvatarPlacement(
         [row('a', -60, true), row('a', -30), row('b', 11, true, 'self')],
         12,
       ),
-    ).toEqual(jasmine.objectContaining({ creator: 'b', side: 'self' }));
+    ).toEqual(expect.objectContaining({ creator: 'b', side: 'self' }));
   });
 
   it('supports a group whose natural head was virtualized away', () => {
     expect(pickStickyAvatarPlacement([row('a', -5), row('a', 40)], 12)).toEqual(
-      jasmine.objectContaining({ creator: 'a', top: 12 }),
+      expect.objectContaining({ creator: 'a', top: 12 }),
     );
   });
 });

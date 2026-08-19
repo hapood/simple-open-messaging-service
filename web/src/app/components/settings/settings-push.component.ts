@@ -5,6 +5,7 @@ import {
   OnDestroy,
   OnInit,
   signal,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import { MatListModule } from '@angular/material/list';
 import {
@@ -227,6 +228,7 @@ import { PushService, type FcmProbeStatus } from '../../services/push.service';
       </div>
     </section>
   `,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './sub-page.scss',
 })
 export class SettingsPushComponent implements OnInit, OnDestroy {

@@ -1,4 +1,10 @@
-import { Component, computed, input, output } from '@angular/core';
+import {
+  Component,
+  computed,
+  input,
+  output,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import {
   UserAvatarComponent,
@@ -13,6 +19,7 @@ import { parseForwardCard } from './forward-card';
   standalone: true,
   imports: [DateRowComponent, UserAvatarComponent, TranslocoPipe],
   templateUrl: './forward-row.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './forward-row.component.scss',
 })
 export class ForwardRowComponent {

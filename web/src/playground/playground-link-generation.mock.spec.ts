@@ -2,7 +2,7 @@ import { PlaygroundLinkGeneration } from './playground-link-generation.mock';
 
 describe('PlaygroundLinkGeneration', () => {
   it('models a failed fetch with a sendable default card', async () => {
-    jasmine.clock().install();
+    vi.useFakeTimers();
     const service = new PlaygroundLinkGeneration();
 
     const generation = await service.begin(
@@ -14,10 +14,10 @@ describe('PlaygroundLinkGeneration', () => {
       service.snapshot('00000000-0000-4000-8000-000000000001')?.status,
     ).toBe('pending');
     expect(generation.status).toBe('pending');
-    jasmine.clock().tick(2_000);
+    vi.advanceTimersByTime(2000);
     await Promise.resolve();
     const completed = service.snapshot(generation.generationId);
-    jasmine.clock().uninstall();
+    vi.useRealTimers();
 
     expect(completed?.status).toBe('failed');
     expect(completed?.content).toEqual({

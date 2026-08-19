@@ -1,4 +1,4 @@
-import { Component, inject } from '@angular/core';
+import { Component, inject, ChangeDetectionStrategy } from '@angular/core';
 import { MatListModule } from '@angular/material/list';
 import { MatRadioModule } from '@angular/material/radio';
 import { LanguageService, AppLang } from '../../services/language.service';
@@ -22,7 +22,8 @@ import { LanguageService, AppLang } from '../../services/language.service';
                 matListItemMeta
                 name="lang"
                 [checked]="lang() === l"
-                [attr.aria-label]="native(l)">
+                [attr.aria-label]="native(l)"
+              >
               </mat-radio-button>
             </mat-list-item>
           }
@@ -30,6 +31,7 @@ import { LanguageService, AppLang } from '../../services/language.service';
       </div>
     </section>
   `,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './sub-page.scss',
 })
 export class SettingsLanguageComponent {

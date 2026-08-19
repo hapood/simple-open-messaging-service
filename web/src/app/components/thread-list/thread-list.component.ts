@@ -8,6 +8,7 @@ import {
   OnInit,
   ElementRef,
   effect,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { RouteService, PopupType } from '../../services/route.service';
@@ -50,6 +51,7 @@ import { ComposerDraftService } from '../../services/composer-draft.service';
     FederatedBadgeComponent,
   ],
   templateUrl: './thread-list.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './thread-list.component.scss',
 })
 export class ThreadListComponent implements OnInit {

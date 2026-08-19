@@ -9,14 +9,17 @@ describe('ConfigService connection cancellation', () => {
       requestCancelled = true;
     });
     const http = {
-      get: jasmine.createSpy('get').and.returnValues(
-        pending,
-        of({
-          code: 0,
-          message: 'ok',
-          data: { registrationOpen: true, loginMode: LoginMode.ALL },
-        }),
-      ),
+      get: vi
+        .fn()
+        .mockName('get')
+        .mockReturnValueOnce(pending)
+        .mockReturnValueOnce(
+          of({
+            code: 0,
+            message: 'ok',
+            data: { registrationOpen: true, loginMode: LoginMode.ALL },
+          }),
+        ),
     } as Pick<HttpClient, 'get'>;
     const service = new ConfigService(http as HttpClient);
 
@@ -25,9 +28,9 @@ describe('ConfigService connection cancellation', () => {
     service.cancelLoad();
     await abandoned;
 
-    expect(requestCancelled).toBeTrue();
-    expect(service.loaded()).toBeTrue();
-    expect(service.cancelled()).toBeTrue();
+    expect(requestCancelled).toBe(true);
+    expect(service.loaded()).toBe(true);
+    expect(service.cancelled()).toBe(true);
     expect(service.loginMode()).toBeNull();
 
     await service.ensureLoaded();
@@ -36,7 +39,7 @@ describe('ConfigService connection cancellation', () => {
     await service.reload();
 
     expect(http.get).toHaveBeenCalledTimes(2);
-    expect(service.cancelled()).toBeFalse();
+    expect(service.cancelled()).toBe(false);
     expect(service.loginMode()).toBe(LoginMode.ALL);
   });
 });

@@ -1,10 +1,11 @@
+import type { Mock } from 'vitest';
 import {
   computed,
   provideZonelessChangeDetection,
   signal,
 } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { provideHttpClient } from '@angular/common/http';
+import { provideHttpClient, withXhr } from '@angular/common/http';
 import { provideHttpClientTesting } from '@angular/common/http/testing';
 import {
   provideTransloco,
@@ -35,7 +36,7 @@ describe('HomeHeaderComponent — shared transfer progress', () => {
   let imageDownloads: {
     tasks: typeof downloadTasks;
     activeCount: ReturnType<typeof computed<number>>;
-    cancel: jasmine.Spy;
+    cancel: Mock;
   };
 
   beforeEach(() => {
@@ -47,17 +48,16 @@ describe('HomeHeaderComponent — shared transfer progress', () => {
       activeCount: computed(
         () =>
           downloadTasks().filter(
-            (task) =>
-              task.status === 'downloading' || task.status === 'saving',
+            (task) => task.status === 'downloading' || task.status === 'saving',
           ).length,
       ),
-      cancel: jasmine.createSpy('cancel'),
+      cancel: vi.fn().mockName('cancel'),
     };
 
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
-        provideHttpClient(),
+        provideHttpClient(withXhr()),
         provideHttpClientTesting(),
         provideTransloco({
           config: { availableLangs: ['en'], defaultLang: 'en' },
@@ -67,9 +67,9 @@ describe('HomeHeaderComponent — shared transfer progress', () => {
         {
           provide: RouteService,
           useValue: {
-            openProfile: jasmine.createSpy('openProfile'),
-            openSettings: jasmine.createSpy('openSettings'),
-            popupDlg: jasmine.createSpy('popupDlg'),
+            openProfile: vi.fn().mockName('openProfile'),
+            openSettings: vi.fn().mockName('openSettings'),
+            popupDlg: vi.fn().mockName('popupDlg'),
           },
         },
         {
@@ -83,7 +83,7 @@ describe('HomeHeaderComponent — shared transfer progress', () => {
           provide: ThemeService,
           useValue: {
             mode: signal('system'),
-            cycleMode: jasmine.createSpy('cycleMode'),
+            cycleMode: vi.fn().mockName('cycleMode'),
           },
         },
         {
@@ -92,16 +92,16 @@ describe('HomeHeaderComponent — shared transfer progress', () => {
         },
         {
           provide: NavStateMachineService,
-          useValue: { openChat: jasmine.createSpy('openChat') },
+          useValue: { openChat: vi.fn().mockName('openChat') },
         },
         {
           provide: MediaTransferService,
           useValue: {
             summaries,
             tasks: uploadTasks,
-            requestLatest: jasmine.createSpy('requestLatest'),
-            cancel: jasmine.createSpy('cancel'),
-            retry: jasmine.createSpy('retry'),
+            requestLatest: vi.fn().mockName('requestLatest'),
+            cancel: vi.fn().mockName('cancel'),
+            retry: vi.fn().mockName('retry'),
           },
         },
         { provide: ImageDownloadService, useValue: imageDownloads },
@@ -152,7 +152,7 @@ describe('HomeHeaderComponent — shared transfer progress', () => {
     downloadTasks.set([task]);
     const component = create();
     const event = new Event('click');
-    spyOn(event, 'stopPropagation');
+    vi.spyOn(event, 'stopPropagation').mockReturnValue(undefined);
 
     component.cancelDownload(task.key, event);
 

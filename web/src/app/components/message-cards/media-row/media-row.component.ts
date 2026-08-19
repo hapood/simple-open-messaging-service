@@ -7,15 +7,12 @@ import {
   input,
   output,
   signal,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatIconModule } from '@angular/material/icon';
-import {
-  MEDIA_STATUS,
-  type AlbumImage,
-  type ChatMsgData,
-} from '../chat-item';
+import { MEDIA_STATUS, type AlbumImage, type ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
 import {
   UserAvatarComponent,
@@ -61,6 +58,7 @@ const GALLERY_CARD_W = 280;
     AudioPlayerComponent,
   ],
   templateUrl: './media-row.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './media-row.component.scss',
 })
 export class MediaRowComponent {

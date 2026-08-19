@@ -9,6 +9,7 @@ import {
   signal,
   untracked,
   viewChild,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { MessageThreadComponent } from '../../message-thread/friend-message.component';
@@ -109,6 +110,7 @@ type SlotKey = 'A' | 'B';
       }
     </div>
   `,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styles: [
     `
       :host {

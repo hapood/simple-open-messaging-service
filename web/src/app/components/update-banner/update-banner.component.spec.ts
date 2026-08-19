@@ -14,28 +14,34 @@ describe('UpdateBannerComponent (global Material snackbar)', () => {
   const ref = {
     onAction: () => action$.asObservable(),
     afterDismissed: () => dismissed$.asObservable(),
-    dismiss: jasmine.createSpy('dismiss'),
+    dismiss: vi.fn().mockName('dismiss'),
   };
-  const snackBar = { open: jasmine.createSpy('open').and.returnValue(ref) };
+  const snackBar = { open: vi.fn().mockName('open').mockReturnValue(ref) };
   const available = signal(false);
   const update = {
     available,
-    applyUpdate: jasmine.createSpy('applyUpdate').and.resolveTo(),
-    dismiss: jasmine.createSpy('dismiss').and.callFake(() => available.set(false)),
+    applyUpdate: vi.fn().mockName('applyUpdate').mockResolvedValue(undefined),
+    dismiss: vi
+      .fn()
+      .mockName('dismiss')
+      .mockImplementation(() => available.set(false)),
   };
 
   beforeEach(() => {
     available.set(false);
-    snackBar.open.calls.reset();
-    ref.dismiss.calls.reset();
-    update.applyUpdate.calls.reset();
-    update.dismiss.calls.reset();
+    snackBar.open.mockClear();
+    ref.dismiss.mockClear();
+    update.applyUpdate.mockClear();
+    update.dismiss.mockClear();
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
         provideTransloco({
           config: {
-            availableLangs: [{ id: 'en', label: 'English' }, { id: 'zh-CN', label: '简体中文' }],
+            availableLangs: [
+              { id: 'en', label: 'English' },
+              { id: 'zh-CN', label: '简体中文' },
+            ],
             defaultLang: 'en',
             reRenderOnLangChange: true,
           },
@@ -61,11 +67,11 @@ describe('UpdateBannerComponent (global Material snackbar)', () => {
     available.set(true);
     await fixture.whenStable();
     expect(snackBar.open).toHaveBeenCalledWith(
-      jasmine.any(String),
-      jasmine.any(String),
-      jasmine.objectContaining({
+      expect.any(String),
+      expect.any(String),
+      expect.objectContaining({
         duration: 0,
-        panelClass: jasmine.arrayContaining(['soms-snack-bar--interactive']),
+        panelClass: expect.arrayContaining(['soms-snack-bar--interactive']),
       }),
     );
   });

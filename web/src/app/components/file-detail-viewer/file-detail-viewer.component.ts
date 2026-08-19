@@ -1,11 +1,28 @@
-import { Component, computed, inject, input, output, signal } from '@angular/core';
+import {
+  Component,
+  computed,
+  inject,
+  input,
+  output,
+  signal,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { MatButtonModule } from '@angular/material/button';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { firstValueFrom } from 'rxjs';
-import { MEDIA_STATUS, type ChatMsgData, type MediaStatus } from '../message-cards/chat-item';
+import {
+  MEDIA_STATUS,
+  type ChatMsgData,
+  type MediaStatus,
+} from '../message-cards/chat-item';
 import { assetUrl } from '../../services/runtime';
-import { categorize, fileExt, formatBytes, type FileCategory } from '../message-cards/file-meta.util';
+import {
+  categorize,
+  fileExt,
+  formatBytes,
+  type FileCategory,
+} from '../message-cards/file-meta.util';
 import { MsgService } from '../../services/message.service';
 import { MessageRepository } from '../../services/message-repository.service';
 
@@ -26,6 +43,7 @@ import { MessageRepository } from '../../services/message-repository.service';
   standalone: true,
   imports: [TranslocoPipe, MatButtonModule, MatProgressSpinnerModule],
   templateUrl: './file-detail-viewer.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './file-detail-viewer.component.scss',
 })
 export class FileDetailViewerComponent {
@@ -39,14 +57,17 @@ export class FileDetailViewerComponent {
   readonly statusOverride = signal<MediaStatus | null>(null);
   /** Effective status: local override (post-retry) else the payload status, else 'ready'. */
   readonly currentStatus = computed<MediaStatus>(
-    () => this.statusOverride() ?? this.data().mediaStatus ?? MEDIA_STATUS.READY,
+    () =>
+      this.statusOverride() ?? this.data().mediaStatus ?? MEDIA_STATUS.READY,
   );
 
   private readonly msg = inject(MsgService);
   private readonly repo = inject(MessageRepository);
 
   readonly file = computed(() => this.data().file);
-  readonly category = computed<FileCategory>(() => categorize(this.file()?.mimeType ?? ''));
+  readonly category = computed<FileCategory>(() =>
+    categorize(this.file()?.mimeType ?? ''),
+  );
   readonly ext = computed(() => fileExt(this.file()?.name ?? ''));
   readonly sizeText = computed(() => formatBytes(this.file()?.size ?? 0));
   /** A URL exists for confirmed files; an optimistic send before its upload resolves may have none yet. */
@@ -64,7 +85,8 @@ export class FileDetailViewerComponent {
     void this.repo.setMediaDownloading(tid, seq);
     try {
       const res = await firstValueFrom(this.msg.relocalizeMedia(tid, seq));
-      const status = res.code === 0 && res.data ? res.data.status : MEDIA_STATUS.FAILED;
+      const status =
+        res.code === 0 && res.data ? res.data.status : MEDIA_STATUS.FAILED;
       this.statusOverride.set(status);
     } catch {
       this.statusOverride.set(MEDIA_STATUS.FAILED);

@@ -10,6 +10,7 @@ import {
   OnDestroy,
   signal,
   viewChild,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import dayjs from 'dayjs';
@@ -64,6 +65,7 @@ const CONTENT_TYPES = new Set<ChatMsgData['contentType']>([
   standalone: true,
   imports: [TranslocoPipe, IconComponent],
   templateUrl: './forward-detail.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './forward-detail.component.scss',
 })
 export class ForwardDetailComponent implements OnInit, OnDestroy {

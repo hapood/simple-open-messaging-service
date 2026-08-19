@@ -1,4 +1,11 @@
-import { Component, computed, input, signal, OnDestroy } from '@angular/core';
+import {
+  Component,
+  computed,
+  input,
+  signal,
+  OnDestroy,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { Subject, Subscription } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
 import { MatSnackBar } from '@angular/material/snack-bar';
@@ -69,6 +76,7 @@ type RelationshipState =
     FriendInviteDialogComponent,
   ],
   templateUrl: './friend-requests.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './friend-requests.component.scss',
 })
 export class FriendRequestsComponent implements OnDestroy {
@@ -420,9 +428,9 @@ export class FriendRequestsComponent implements OnDestroy {
     });
   }
 
-  private inviteAction(req: PendingReq):
-    | { inviteId: string }
-    | { account: string; domain: string } {
+  private inviteAction(
+    req: PendingReq,
+  ): { inviteId: string } | { account: string; domain: string } {
     return req.isForeigner && req.account && req.domain
       ? { account: req.account, domain: req.domain }
       : { inviteId: req.id };

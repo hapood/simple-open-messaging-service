@@ -1,4 +1,4 @@
-import { Component, inject } from '@angular/core';
+import { Component, inject, ChangeDetectionStrategy } from '@angular/core';
 import { MatListModule } from '@angular/material/list';
 import { MatRadioModule } from '@angular/material/radio';
 import {
@@ -14,12 +14,7 @@ import {
 /** Settings → Chat behavior. Device-local preferences that control conversation presentation/navigation. */
 @Component({
   selector: 'app-settings-chat',
-  imports: [
-    MatListModule,
-    MatRadioModule,
-    MatSlideToggleModule,
-    TranslocoPipe,
-  ],
+  imports: [MatListModule, MatRadioModule, MatSlideToggleModule, TranslocoPipe],
   template: `
     <section class="settings-group">
       <div class="settings-card">
@@ -64,6 +59,7 @@ import {
       </div>
     </section>
   `,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './sub-page.scss',
 })
 export class SettingsChatComponent {
@@ -71,10 +67,7 @@ export class SettingsChatComponent {
 
   readonly showSelfAvatar = this.chatAppearance.showSelfAvatar;
   readonly openPosition = this.chatAppearance.openPosition;
-  readonly openPositions: readonly ChatOpenPosition[] = [
-    'latest',
-    'last-read',
-  ];
+  readonly openPositions: readonly ChatOpenPosition[] = ['latest', 'last-read'];
 
   selectOpenPosition(position: ChatOpenPosition): void {
     this.chatAppearance.setOpenPosition(position);

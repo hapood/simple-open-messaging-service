@@ -1,4 +1,10 @@
-import { Component, effect, input, signal } from '@angular/core';
+import {
+  Component,
+  effect,
+  input,
+  signal,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import type { StickyAvatarView } from '../../../lib/sticky-avatar';
 import {
   UserAvatarComponent,
@@ -36,6 +42,7 @@ import {
       />
     </div>
   `,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './sticky-avatar-overlay.component.scss',
 })
 export class StickyAvatarOverlayComponent {

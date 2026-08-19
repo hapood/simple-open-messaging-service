@@ -1,8 +1,11 @@
 import 'fake-indexeddb/auto';
 import { TestBed } from '@angular/core/testing';
 import { signal, provideZonelessChangeDetection } from '@angular/core';
-import { provideHttpClient } from '@angular/common/http';
-import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { provideHttpClient, withXhr } from '@angular/common/http';
+import {
+  HttpTestingController,
+  provideHttpClientTesting,
+} from '@angular/common/http/testing';
 import { UserService } from './user.service';
 import { WebdbService } from './webdb.service';
 import { AvatarRepository } from './avatar-cache.service';
@@ -23,7 +26,7 @@ describe('AvatarRepository', () => {
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
-        provideHttpClient(),
+        provideHttpClient(withXhr()),
         provideHttpClientTesting(),
         AvatarRepository,
         { provide: UserService, useValue: { sessionProfile } },
@@ -66,13 +69,17 @@ describe('AvatarRepository', () => {
   it('refresh re-fetches and overwrites the cached blob under the same identity', async () => {
     const p1 = repo.getBlob('g5', '/uploads/avatars/old-512.webp');
     await flush();
-    httpMock.expectOne('/uploads/avatars/old-512.webp').flush(new Blob(['old']));
+    httpMock
+      .expectOne('/uploads/avatars/old-512.webp')
+      .flush(new Blob(['old']));
     await p1;
 
     const tickBefore = repo.refreshTick('g5');
     const p2 = repo.refresh('g5', '/uploads/avatars/new-512.webp');
     await flush();
-    httpMock.expectOne('/uploads/avatars/new-512.webp').flush(new Blob(['new']));
+    httpMock
+      .expectOne('/uploads/avatars/new-512.webp')
+      .flush(new Blob(['new']));
     await p2;
 
     const b = await repo.getBlob('g5', '/uploads/avatars/new-512.webp');
@@ -88,6 +95,6 @@ describe('AvatarRepository', () => {
     httpMock
       .expectOne('/uploads/avatars/missing-512.webp')
       .flush(new Blob(['not found']), { status: 404, statusText: 'Not Found' });
-    await expectAsync(p).toBeResolvedTo(undefined);
+    await expect(p).resolves.toEqual(undefined);
   });
 });

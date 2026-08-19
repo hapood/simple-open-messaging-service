@@ -1,4 +1,9 @@
-import { Component, inject, signal } from '@angular/core';
+import {
+  Component,
+  inject,
+  signal,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { Location } from '@angular/common';
 import { Router } from '@angular/router';
 import { TranslocoPipe } from '@jsverse/transloco';
@@ -15,6 +20,7 @@ import { TranslocoPipe } from '@jsverse/transloco';
   selector: 'app-page-not-found',
   imports: [TranslocoPipe],
   templateUrl: './page-not-found.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './page-not-found.component.scss',
 })
 export class PageNotFoundComponent {
@@ -23,7 +29,9 @@ export class PageNotFoundComponent {
 
   /** Best-effort: there is a real prior entry to go back to. Imperfect by nature of the
    *  History API, but keeps us from rendering a "Go back" button that silently no-ops. */
-  readonly canGoBack = signal(typeof history !== 'undefined' && history.length > 1);
+  readonly canGoBack = signal(
+    typeof history !== 'undefined' && history.length > 1,
+  );
 
   goHome(): void {
     this.router.navigate(['/']);

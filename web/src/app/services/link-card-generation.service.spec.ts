@@ -4,7 +4,7 @@ import {
   HttpTestingController,
   provideHttpClientTesting,
 } from '@angular/common/http/testing';
-import { provideHttpClient } from '@angular/common/http';
+import { provideHttpClient, withXhr } from '@angular/common/http';
 import { LinkCardGenerationService } from './link-card-generation.service';
 
 describe('LinkCardGenerationService', () => {
@@ -15,7 +15,7 @@ describe('LinkCardGenerationService', () => {
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
-        provideHttpClient(),
+        provideHttpClient(withXhr()),
         provideHttpClientTesting(),
       ],
     });
@@ -63,7 +63,7 @@ describe('LinkCardGenerationService', () => {
     service.resume({
       generationId: 'generation-1',
       status: 'pending',
-      expiresAt: Date.now() + 60_000,
+      expiresAt: Date.now() + 60000,
     });
 
     await delay(0);
@@ -77,7 +77,7 @@ describe('LinkCardGenerationService', () => {
     await delay(0);
 
     expect(service.snapshot('generation-1')).toEqual(
-      jasmine.objectContaining({
+      expect.objectContaining({
         status: 'failed',
         polling: false,
         unavailable: true,

@@ -31,7 +31,7 @@ describe('MediaTransferService', () => {
     service.fail('b');
 
     expect(service.summaryFor(10)).toEqual(
-      jasmine.objectContaining({
+      expect.objectContaining({
         threadId: 10,
         uploading: 1,
         failed: 1,
@@ -63,7 +63,7 @@ describe('MediaTransferService', () => {
 
     service.complete('a');
     expect(service.summaryFor(10)).toEqual(
-      jasmine.objectContaining({ uploading: 0, completed: 1, progress: 100 }),
+      expect.objectContaining({ uploading: 0, completed: 1, progress: 100 }),
     );
   });
 
@@ -85,7 +85,7 @@ describe('MediaTransferService', () => {
     service.complete('small');
     service.progress('large', 400, 900);
     expect(service.summaryFor(10)).toEqual(
-      jasmine.objectContaining({
+      expect.objectContaining({
         completed: 1,
         total: 2,
         loadedBytes: 500,
@@ -127,7 +127,7 @@ describe('MediaTransferService', () => {
   });
 
   it('cancels the active stream and exposes its retry action', () => {
-    const retry = jasmine.createSpy('retry');
+    const retry = vi.fn().mockName('retry');
     let cancelled = 0;
     service.start({
       clientMessageId: 'a',
@@ -147,7 +147,7 @@ describe('MediaTransferService', () => {
   });
 
   it('does not retry a permanent validation failure', () => {
-    const retry = jasmine.createSpy('retry');
+    const retry = vi.fn().mockName('retry');
     service.start({
       clientMessageId: 'oversized',
       threadId: 10,
@@ -160,6 +160,6 @@ describe('MediaTransferService', () => {
     service.retry('oversized');
 
     expect(retry).not.toHaveBeenCalled();
-    expect(service.tasks()[0].retryable).toBeFalse();
+    expect(service.tasks()[0].retryable).toBe(false);
   });
 });

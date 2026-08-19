@@ -1,21 +1,29 @@
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
-import { HttpBackend, HttpContext, HttpErrorResponse, HttpRequest, HttpHeaders, provideHttpClient, withFetch } from '@angular/common/http';
+import {
+  HttpBackend,
+  HttpContext,
+  HttpErrorResponse,
+  HttpRequest,
+  HttpHeaders,
+  provideHttpClient,
+  withFetch,
+  withXhr,
+} from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { TauriHttpBackend } from './tauri-http.backend';
 import { REPLAY_SAFE } from './request-context';
 
 /**
  * TauriHttpBackend DI wiring — regression guard for the NG0201 that occurred because `TauriHttpBackend`
- * does `inject(FetchBackend)` in a field initializer, but `FetchBackend` is only registered on its own
- * token by the `withFetch()` feature of `provideHttpClient`. Without `withFetch()` the token is unbound
- * and the very first HTTP request (which constructs the backend) throws NG0201 at
- * `<instance_members_initializer>`. app.config.ts must therefore always pair
+ * does `inject(FetchBackend)` in a field initializer. The application uses `withFetch()` explicitly so
+ * browser requests use the intended transport while the custom backend remains the chain terminus.
+ * app.config.ts must therefore pair
  * `provideHttpClient(withFetch(), …)` with the `{ provide: HttpBackend, useClass: TauriHttpBackend }`
  * override (last provider wins, so TauriHttpBackend stays the chain terminus while FetchBackend remains
  * the resolvable delegate).
  */
-describe('TauriHttpBackend DI wiring (regression: NG0201 without withFetch)', () => {
+describe('TauriHttpBackend DI wiring', () => {
   it('constructs when HttpBackend is overridden on top of withFetch() (FetchBackend resolves)', () => {
     TestBed.configureTestingModule({
       providers: [
@@ -28,17 +36,15 @@ describe('TauriHttpBackend DI wiring (regression: NG0201 without withFetch)', ()
     expect(backend).toBeInstanceOf(TauriHttpBackend);
   });
 
-  it('throws NG0201 when withFetch() is omitted — the FetchBackend token is unbound otherwise', () => {
+  it('still constructs with the XHR feature under Angular 22', () => {
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
-        // Deliberately NO withFetch(): the base provideHttpClient() provides HttpXhrBackend only and
-        // leaves the FetchBackend token unbound, so TauriHttpBackend's inject(FetchBackend) fails.
-        provideHttpClient(),
+        provideHttpClient(withXhr()),
         { provide: HttpBackend, useClass: TauriHttpBackend },
       ],
     });
-    expect(() => TestBed.inject(HttpBackend)).toThrowError(/NG0201/i);
+    expect(TestBed.inject(HttpBackend)).toBeInstanceOf(TauriHttpBackend);
   });
 });
 
@@ -57,12 +63,28 @@ describe('TauriHttpBackend content-type synthesis under Tauri (regression: 415 o
   // index signature, hence dot access is forbidden — go through this typed cast instead).
   type TauriWindow = {
     __TAURI_INTERNALS__?: unknown;
-    __TAURI__?: { core: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> } };
+    __TAURI__?: {
+      core: {
+        invoke: (
+          cmd: string,
+          args?: Record<string, unknown>,
+        ) => Promise<unknown>;
+      };
+    };
   };
   const tauriWindow = (): TauriWindow => window as unknown as TauriWindow;
 
   // The webview→Rust `api_request` args captured by the fake invoke bridge.
-  let invokeArgs: { cmd: string; args: { headers?: Record<string, string>; body?: unknown; replaySafe?: boolean } } | undefined;
+  let invokeArgs:
+    | {
+        cmd: string;
+        args: {
+          headers?: Record<string, string>;
+          body?: unknown;
+          replaySafe?: boolean;
+        };
+      }
+    | undefined;
 
   beforeEach(() => {
     invokeArgs = undefined;
@@ -70,10 +92,24 @@ describe('TauriHttpBackend content-type synthesis under Tauri (regression: 415 o
     tauriWindow().__TAURI_INTERNALS__ = {};
     tauriWindow().__TAURI__ = {
       core: {
-        invoke: async (cmd: string, args?: Record<string, unknown>): Promise<unknown> => {
-          invokeArgs = { cmd, args: args as { headers?: Record<string, string>; body?: unknown; replaySafe?: boolean } };
+        invoke: async (
+          cmd: string,
+          args?: Record<string, unknown>,
+        ): Promise<unknown> => {
+          invokeArgs = {
+            cmd,
+            args: args as {
+              headers?: Record<string, string>;
+              body?: unknown;
+              replaySafe?: boolean;
+            },
+          };
           // A successful 200 JSON response — the body shape `api_request` returns to JS.
-          return { status: 200, headers: {}, body: '{"code":0,"message":"success","data":{}}' };
+          return {
+            status: 200,
+            headers: {},
+            body: '{"code":0,"message":"success","data":{}}',
+          };
         },
       },
     };
@@ -93,68 +129,111 @@ describe('TauriHttpBackend content-type synthesis under Tauri (regression: 415 o
 
   it('forwards Content-Type: application/json for a JSON object body (otherwise reqwest POSTs with no media type → 415)', async () => {
     const backend = TestBed.inject(HttpBackend);
-    await firstValueFrom(backend.handle(new HttpRequest('POST', '/api/v1/auth/qr/create', { client: 'app' })));
+    await firstValueFrom(
+      backend.handle(
+        new HttpRequest('POST', '/api/v1/auth/qr/create', { client: 'app' }),
+      ),
+    );
     expect(invokeArgs!.cmd).toBe('api_request');
     // The body crossed the IPC as raw JSON bytes...
-    expect(invokeArgs!.args.body).toBeInstanceOf(Uint8Array);
-    expect(JSON.parse(new TextDecoder().decode(invokeArgs!.args.body as Uint8Array))).toEqual({ client: 'app' });
+    expect(ArrayBuffer.isView(invokeArgs!.args.body)).toBe(true);
+    expect(
+      JSON.parse(new TextDecoder().decode(invokeArgs!.args.body as Uint8Array)),
+    ).toEqual({ client: 'app' });
     // ...AND carried a synthesized Content-Type the Fastify JSON parser accepts.
-    expect(invokeArgs!.args.headers).toEqual(jasmine.objectContaining({ 'content-type': 'application/json' }));
+    expect(invokeArgs!.args.headers).toEqual(
+      expect.objectContaining({ 'content-type': 'application/json' }),
+    );
   });
 
   it('does not override a Content-Type the caller set explicitly (mirrors Angular respecting an existing header)', async () => {
     const backend = TestBed.inject(HttpBackend);
-    const req = new HttpRequest('POST', '/api/v1/x', { a: 1 }, {
-      headers: new HttpHeaders({ 'Content-Type': 'application/json; charset=utf-8' }),
-    });
+    const req = new HttpRequest(
+      'POST',
+      '/api/v1/x',
+      { a: 1 },
+      {
+        headers: new HttpHeaders({
+          'Content-Type': 'application/json; charset=utf-8',
+        }),
+      },
+    );
     await firstValueFrom(backend.handle(req));
-    expect(invokeArgs!.args.headers?.['content-type']).toBe('application/json; charset=utf-8');
+    expect(invokeArgs!.args.headers?.['content-type']).toBe(
+      'application/json; charset=utf-8',
+    );
   });
 
   it('forwards the client message id required to promote staged media uploads', async () => {
     const backend = TestBed.inject(HttpBackend);
     const fd = new FormData();
-    fd.append('file', new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/webm' }), 'voice.webm');
+    fd.append(
+      'file',
+      new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/webm' }),
+      'voice.webm',
+    );
     const req = new HttpRequest('POST', '/api/v1/upload/audio', fd, {
       headers: new HttpHeaders({ 'x-client-message-id': 'voice-cid-1' }),
     });
     await firstValueFrom(backend.handle(req));
-    expect(invokeArgs!.args.headers?.['x-client-message-id']).toBe('voice-cid-1');
+    expect(invokeArgs!.args.headers?.['x-client-message-id']).toBe(
+      'voice-cid-1',
+    );
   });
 
   it('marks reads replay-safe automatically and requires an explicit context opt-in for writes', async () => {
     const backend = TestBed.inject(HttpBackend);
-    await firstValueFrom(backend.handle(new HttpRequest('GET', '/api/v1/config')));
-    expect(invokeArgs!.args.replaySafe).toBeTrue();
+    await firstValueFrom(
+      backend.handle(new HttpRequest('GET', '/api/v1/config')),
+    );
+    expect(invokeArgs!.args.replaySafe).toBe(true);
 
-    await firstValueFrom(backend.handle(new HttpRequest('POST', '/api/v1/x', {})));
-    expect(invokeArgs!.args.replaySafe).toBeFalse();
+    await firstValueFrom(
+      backend.handle(new HttpRequest('POST', '/api/v1/x', {})),
+    );
+    expect(invokeArgs!.args.replaySafe).toBe(false);
 
     const context = new HttpContext().set(REPLAY_SAFE, true);
-    await firstValueFrom(backend.handle(new HttpRequest('POST', '/api/v1/x', {}, { context })));
-    expect(invokeArgs!.args.replaySafe).toBeTrue();
+    await firstValueFrom(
+      backend.handle(new HttpRequest('POST', '/api/v1/x', {}, { context })),
+    );
+    expect(invokeArgs!.args.replaySafe).toBe(true);
   });
 
-  it('forwards a Blob body\'s own type as Content-Type (mirrors Angular detectContentTypeHeader → blob.type)', async () => {
+  it("forwards a Blob body's own type as Content-Type (mirrors Angular detectContentTypeHeader → blob.type)", async () => {
     const backend = TestBed.inject(HttpBackend);
     const blob = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' });
-    await firstValueFrom(backend.handle(new HttpRequest('POST', '/api/v1/x', blob)));
+    await firstValueFrom(
+      backend.handle(new HttpRequest('POST', '/api/v1/x', blob)),
+    );
     expect(invokeArgs!.args.headers?.['content-type']).toBe('image/png');
   });
 
   it('does not synthesize a Content-Type for an untyped Blob (Angular returns blob.type || null)', async () => {
     const backend = TestBed.inject(HttpBackend);
     const blob = new Blob([new Uint8Array([1, 2, 3])]); // no type
-    await firstValueFrom(backend.handle(new HttpRequest('POST', '/api/v1/x', blob)));
+    await firstValueFrom(
+      backend.handle(new HttpRequest('POST', '/api/v1/x', blob)),
+    );
     expect(invokeArgs!.args.headers?.['content-type']).toBeUndefined();
   });
 
   it('surfaces a non-2xx backend response as an HttpErrorResponse carrying the status', async () => {
     tauriWindow().__TAURI__ = {
-      core: { invoke: async () => ({ status: 415, headers: { 'content-type': 'application/json' }, body: '{"code":1,"message":"Unsupported Media Type"}' }) },
+      core: {
+        invoke: async () => ({
+          status: 415,
+          headers: { 'content-type': 'application/json' },
+          body: '{"code":1,"message":"Unsupported Media Type"}',
+        }),
+      },
     };
     const backend = TestBed.inject(HttpBackend);
-    const err = await firstValueFrom(backend.handle(new HttpRequest('POST', '/api/v1/auth/qr/create', { client: 'app' }))).catch((e: unknown) => e as HttpErrorResponse);
+    const err = await firstValueFrom(
+      backend.handle(
+        new HttpRequest('POST', '/api/v1/auth/qr/create', { client: 'app' }),
+      ),
+    ).catch((e: unknown) => e as HttpErrorResponse);
     expect(err instanceof HttpErrorResponse).toBe(true);
     expect((err as HttpErrorResponse).status).toBe(415);
   });
@@ -173,7 +252,10 @@ describe('TauriHttpBackend media proxy routing under Tauri', () => {
     };
   };
   const tauriWindow = (): TauriWindow => window as unknown as TauriWindow;
-  let calls: Array<{ cmd: string; args?: Record<string, unknown> }>;
+  let calls: Array<{
+    cmd: string;
+    args?: Record<string, unknown>;
+  }>;
 
   beforeEach(() => {
     calls = [];
@@ -225,7 +307,13 @@ describe('TauriHttpBackend media proxy routing under Tauri', () => {
           args: { path: '/uploads/avatars/a-512.webp?rev=1' },
         },
       ]);
-      expect((response as { body: Blob }).body.type).toBe('image/webp');
+      expect(
+        (
+          response as {
+            body: Blob;
+          }
+        ).body.type,
+      ).toBe('image/webp');
     });
   }
 });

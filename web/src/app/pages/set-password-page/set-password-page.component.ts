@@ -1,4 +1,11 @@
-import { Component, signal, computed, effect, inject } from '@angular/core';
+import {
+  Component,
+  signal,
+  computed,
+  effect,
+  inject,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { MatButtonModule } from '@angular/material/button';
@@ -7,7 +14,10 @@ import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { AuthBrandComponent } from '../../components/auth-brand/auth-brand.component';
 import { AuthToolbarComponent } from '../../components/auth-toolbar/auth-toolbar.component';
-import { IconComponent, AppIconType } from '../../components/icon/icon.component';
+import {
+  IconComponent,
+  AppIconType,
+} from '../../components/icon/icon.component';
 import { AuthService } from '../../services/auth.service';
 import { RouteService, RoutePage } from '../../services/route.service';
 import { translateBizResult } from '../../services/biz-code';
@@ -37,6 +47,7 @@ import { AuthViewportDirective } from '../../directives/auth-viewport.directive'
     AuthViewportDirective,
   ],
   templateUrl: './set-password-page.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './set-password-page.component.scss',
 })
 export class SetPasswordPageComponent {
@@ -56,7 +67,8 @@ export class SetPasswordPageComponent {
 
   // The same grammar the backend enforces on every password input (RegisterDto / SetPasswordDto /
   // change-password): 6-20 chars of [a-zA-Z0-9.@!#$%^&*()]. One regex, validated here for UX + server-side.
-  private readonly _passwordRegex = /^([a-zA-Z0-9\.\@\!\#\$\%\^\&\*\(\)]){6,20}$/;
+  private readonly _passwordRegex =
+    /^([a-zA-Z0-9\.\@\!\#\$\%\^\&\*\(\)]){6,20}$/;
 
   constructor() {
     // Re-validate the password on every keystroke → drive the submit button + the inline hint. The effect

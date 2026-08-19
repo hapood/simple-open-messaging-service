@@ -1,4 +1,4 @@
-import { Component } from '@angular/core';
+import { Component, ChangeDetectionStrategy } from '@angular/core';
 
 /**
  * The single positioned anchor for top-center status indicators. ONE fixed position is declared HERE (on
@@ -23,18 +23,21 @@ import { Component } from '@angular/core';
 @Component({
   selector: 'app-indicator-slot',
   template: '<ng-content />',
-  styles: [`
-    :host {
-      position: fixed;
-      top: calc(62px + var(--soms-safe-top, 0px));
-      left: 50%;
-      transform: translateX(-50%);
-      /* Above the shell's routed overlays (mobile aside-slot 40 / chat-slot 30 / tablet aside-slot 20) so
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  styles: [
+    `
+      :host {
+        position: fixed;
+        top: calc(62px + var(--soms-safe-top, 0px));
+        left: 50%;
+        transform: translateX(-50%);
+        /* Above the shell's routed overlays (mobile aside-slot 40 / chat-slot 30 / tablet aside-slot 20) so
          the chip stays visible over the mobile full-screen chat overlay; below the modal (1000) and
          lightbox (1100) tiers. NOT a blind 9999. */
-      z-index: 52;
-      display: block;
-    }
-  `],
+        z-index: 52;
+        display: block;
+      }
+    `,
+  ],
 })
 export class IndicatorSlotComponent {}

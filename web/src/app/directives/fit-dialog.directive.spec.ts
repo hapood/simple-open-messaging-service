@@ -1,4 +1,4 @@
-import { Component, signal } from '@angular/core';
+import { Component, signal, ChangeDetectionStrategy } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { LayoutService } from '../services/layout.service';
@@ -12,25 +12,38 @@ const EXPANDED_Q = '(min-width: 1100px)';
 /** Build a minimal usable MediaQueryList (CDK MediaMatcher only reads .matches), matching layout.service.spec. */
 function fakeMql(query: string, matches: boolean): MediaQueryList {
   return {
-    matches, media: query, onchange: null,
-    addEventListener() {}, removeEventListener() {},
-    addListener() {}, removeListener() {},
-    dispatchEvent() { return false },
+    matches,
+    media: query,
+    onchange: null,
+    addEventListener() {},
+    removeEventListener() {},
+    addListener() {},
+    removeListener() {},
+    dispatchEvent() {
+      return false;
+    },
   } as unknown as MediaQueryList;
 }
 
 /** Fake ResizeObserver: captures the callback for tests to fire manually (simulating content size changes). */
 let roCallback: (() => void) | undefined;
 class FakeRO {
-  constructor(cb: () => void) { roCallback = cb; }
-  observe() {} unobserve() {} disconnect() {}
+  constructor(cb: () => void) {
+    roCallback = cb;
+  }
+  observe() {}
+  unobserve() {}
+  disconnect() {}
 }
 const RealRO = (window as any).ResizeObserver;
 
-const wait = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 @Component({
-  template: `<div [appFitDialog]="optsVal()"><div [style.height.px]="contentH()"></div></div>`,
+  template: `<div [appFitDialog]="optsVal()">
+    <div [style.height.px]="contentH()"></div>
+  </div>`,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [FitDialogDirective],
 })
 class HostComp {
@@ -44,8 +57,8 @@ describe('FitDialogDirective', () => {
   beforeEach(() => {
     TestBed.resetTestingModule();
     matches = {};
-    spyOn(window as any, 'matchMedia').and.callFake(
-      (q: string) => fakeMql(q, matches[q] ?? false),
+    vi.spyOn(window, 'matchMedia').mockImplementation((q: string) =>
+      fakeMql(q, matches[q] ?? false),
     );
     (window as any).ResizeObserver = FakeRO;
     roCallback = undefined;
@@ -56,7 +69,9 @@ describe('FitDialogDirective', () => {
   });
 
   function create() {
-    TestBed.configureTestingModule({ providers: [provideZonelessChangeDetection(), LayoutService] });
+    TestBed.configureTestingModule({
+      providers: [provideZonelessChangeDetection(), LayoutService],
+    });
     const fixture = TestBed.createComponent(HostComp);
     fixture.detectChanges(); // triggers directive ngOnInit → new ResizeObserver + observe
     return fixture;
@@ -73,11 +88,11 @@ describe('FitDialogDirective', () => {
   it('desktop sets minHeight floor on open, locks after settle (>= 200)', async () => {
     matches[EXPANDED_Q] = true;
     const f = create();
-    expect(hostEl(f).style.height).toBe('200px');     // ngOnInit sets the minHeight floor immediately, no auto jump
+    expect(hostEl(f).style.height).toBe('200px'); // ngOnInit sets the minHeight floor immediately, no auto jump
     await fireAndSettle();
     const h = parseInt(hostEl(f).style.height, 10);
     expect(Number.isFinite(h)).toBe(true);
-    expect(h).toBeGreaterThanOrEqual(200);            // content only 50px → raised to min 200
+    expect(h).toBeGreaterThanOrEqual(200); // content only 50px → raised to min 200
   });
 
   it('caps to maxHeight (0.8·innerHeight) when content is very tall', async () => {
@@ -96,10 +111,10 @@ describe('FitDialogDirective', () => {
     await fireAndSettle();
     const locked = hostEl(f).style.height;
     expect(locked).not.toBe('');
-    f.componentInstance.contentH.set(99999);            // content changes drastically
+    f.componentInstance.contentH.set(99999); // content changes drastically
     f.detectChanges();
     await fireAndSettle();
-    expect(hostEl(f).style.height).toBe(locked);        // height unchanged
+    expect(hostEl(f).style.height).toBe(locked); // height unchanged
   });
 
   it('mobile/tablet (non-desktop) is entirely no-op, sets no height', async () => {

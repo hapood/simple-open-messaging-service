@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import {
   provideZonelessChangeDetection,
@@ -21,7 +22,12 @@ import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter
 /**
  * PeerProfileComponent unit tests — profile resolution and panel navigation.
  */
-function makeItem(over: { threadId?: number; userId?: number } = {}): {
+function makeItem(
+  over: {
+    threadId?: number;
+    userId?: number;
+  } = {},
+): {
   item: ConversationItem;
   peer: User;
 } {
@@ -44,7 +50,7 @@ describe('PeerProfileComponent', () => {
   let comp: PeerProfileComponent;
   let items: WritableSignal<ConversationItem[]>;
   let openThreadId: WritableSignal<number | undefined>;
-  let closeAside: jasmine.Spy;
+  let closeAside: Mock;
 
   beforeEach(() => {
     TestBed.resetTestingModule();
@@ -52,7 +58,7 @@ describe('PeerProfileComponent', () => {
     items = signal<ConversationItem[]>([item]);
     openThreadId = signal<number | undefined>(5);
 
-    closeAside = jasmine.createSpy('closeAside');
+    closeAside = vi.fn().mockName('closeAside');
 
     TestBed.configureTestingModule({
       providers: [

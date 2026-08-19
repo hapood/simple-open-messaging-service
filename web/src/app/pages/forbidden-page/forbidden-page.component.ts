@@ -1,4 +1,9 @@
-import { Component, inject, signal } from '@angular/core';
+import {
+  Component,
+  inject,
+  signal,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { Location } from '@angular/common';
 import { Router } from '@angular/router';
 import { TranslocoPipe } from '@jsverse/transloco';
@@ -14,6 +19,7 @@ import { TranslocoPipe } from '@jsverse/transloco';
   selector: 'app-forbidden',
   imports: [TranslocoPipe],
   templateUrl: './forbidden-page.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './forbidden-page.component.scss',
 })
 export class ForbiddenPageComponent {
@@ -21,7 +27,9 @@ export class ForbiddenPageComponent {
   private readonly location = inject(Location);
 
   /** See PageNotFoundComponent — best-effort guard against rendering a dead "Go back". */
-  readonly canGoBack = signal(typeof history !== 'undefined' && history.length > 1);
+  readonly canGoBack = signal(
+    typeof history !== 'undefined' && history.length > 1,
+  );
 
   goHome(): void {
     this.router.navigate(['/']);

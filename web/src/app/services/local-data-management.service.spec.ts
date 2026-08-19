@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { LocalDataManagementService } from './local-data-management.service';
@@ -7,35 +8,42 @@ import { WebdbService } from './webdb.service';
 
 describe('LocalDataManagementService', () => {
   let service: LocalDataManagementService;
-  let nav: jasmine.SpyObj<NavStateMachineService>;
-  let webdb: jasmine.SpyObj<WebdbService>;
-  let media: jasmine.SpyObj<NativeMediaCacheService> & {
+  let nav: { returnToThreadList: Mock };
+  let webdb: { countCachedMessages: Mock; recreateMessageCache: Mock };
+  let media: {
+    refresh: Mock;
+    clear: Mock;
     available: boolean;
-    info: () => { limitMb: number; usedBytes: number };
+    info: () => {
+      limitMb: number;
+      usedBytes: number;
+    };
   };
 
   beforeEach(() => {
-    nav = jasmine.createSpyObj<NavStateMachineService>('NavState', [
-      'returnToThreadList',
-    ]);
-    webdb = jasmine.createSpyObj<WebdbService>('WebdbService', [
-      'countCachedMessages',
-      'recreateMessageCache',
-    ]);
+    nav = {
+      returnToThreadList: vi.fn().mockName('NavState.returnToThreadList'),
+    };
+    webdb = {
+      countCachedMessages: vi.fn().mockName('WebdbService.countCachedMessages'),
+      recreateMessageCache: vi
+        .fn()
+        .mockName('WebdbService.recreateMessageCache'),
+    };
     media = Object.assign(
-      jasmine.createSpyObj<NativeMediaCacheService>('NativeMediaCache', [
-        'refresh',
-        'clear',
-      ]),
+      {
+        refresh: vi.fn().mockName('NativeMediaCache.refresh'),
+        clear: vi.fn().mockName('NativeMediaCache.clear'),
+      },
       {
         available: true,
         info: () => ({ limitMb: 512, usedBytes: 4096 }),
       },
     );
-    webdb.countCachedMessages.and.resolveTo(37);
-    webdb.recreateMessageCache.and.resolveTo();
-    media.refresh.and.resolveTo();
-    media.clear.and.resolveTo();
+    webdb.countCachedMessages.mockResolvedValue(37);
+    webdb.recreateMessageCache.mockResolvedValue(undefined);
+    media.refresh.mockResolvedValue(undefined);
+    media.clear.mockResolvedValue(undefined);
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -49,7 +57,7 @@ describe('LocalDataManagementService', () => {
   });
 
   it('reports message rows and native media bytes', async () => {
-    await expectAsync(service.stats()).toBeResolvedTo({
+    await expect(service.stats()).resolves.toEqual({
       messageCount: 37,
       mediaBytes: 4096,
     });
@@ -58,11 +66,11 @@ describe('LocalDataManagementService', () => {
 
   it('returns to the thread list before replacing messages, then clears media', async () => {
     const order: string[] = [];
-    nav.returnToThreadList.and.callFake(() => order.push('route'));
-    webdb.recreateMessageCache.and.callFake(async () => {
+    nav.returnToThreadList.mockImplementation(() => order.push('route'));
+    webdb.recreateMessageCache.mockImplementation(async () => {
       order.push('messages');
     });
-    media.clear.and.callFake(async () => {
+    media.clear.mockImplementation(async () => {
       order.push('media');
     });
 
@@ -72,9 +80,9 @@ describe('LocalDataManagementService', () => {
   });
 
   it('does not clear media when message database recreation fails', async () => {
-    webdb.recreateMessageCache.and.rejectWith(new Error('busy'));
+    webdb.recreateMessageCache.mockRejectedValue(new Error('busy'));
 
-    await expectAsync(service.clearChatCache()).toBeRejectedWithError('busy');
+    await expect(service.clearChatCache()).rejects.toThrowError('busy');
 
     expect(nav.returnToThreadList).toHaveBeenCalled();
     expect(media.clear).not.toHaveBeenCalled();

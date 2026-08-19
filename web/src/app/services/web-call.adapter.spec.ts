@@ -55,11 +55,11 @@ describe('WebCallAdapter multi-device ownership', () => {
 
   it('gives the caller one ICE restart before failing the call', () => {
     expect(webReconnectDecision(true, false)).toEqual({
-      delayMs: 15_000,
+      delayMs: 15000,
       action: 'restart',
     });
     expect(webReconnectDecision(true, true)).toEqual({
-      delayMs: 10_000,
+      delayMs: 10000,
       action: 'fail',
     });
   });
@@ -90,12 +90,12 @@ describe('WebCallAdapter multi-device ownership', () => {
       payload: '{"enabled":false}',
     });
 
-    expect(adapter.snapshot().remoteCameraEnabled).toBeTrue();
+    expect(adapter.snapshot().remoteCameraEnabled).toBe(true);
   });
 
   it('lets the callee wait for the caller-owned ICE restart', () => {
     expect(webReconnectDecision(false, false)).toEqual({
-      delayMs: 30_000,
+      delayMs: 30000,
       action: 'fail',
     });
   });
@@ -119,9 +119,10 @@ describe('WebCallAdapter multi-device ownership', () => {
   });
 
   it('ends an active renderer-owned call before the session credential is cleared', async () => {
-    const post = jasmine
-      .createSpy('post')
-      .and.returnValue(of({ code: 0, message: '' }));
+    const post = vi
+      .fn()
+      .mockName('post')
+      .mockReturnValue(of({ code: 0, message: '' }));
     const adapter = new WebCallAdapter(
       { post } as unknown as HttpClient,
       IDLE_CALL,
@@ -132,19 +133,20 @@ describe('WebCallAdapter multi-device ownership', () => {
       callSid: 'call-session-exit',
       peerUserId: 7,
     });
-    post.calls.reset();
+    post.mockClear();
 
     window.dispatchEvent(new Event('soms-call-session-ending'));
 
     expect(adapter.snapshot().phase).toBe('idle');
-    expect(post).toHaveBeenCalledOnceWith(
-      jasmine.stringMatching(/\/calls\/end$/),
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(post).toHaveBeenCalledWith(
+      expect.stringMatching(/\/calls\/end$/),
       {
         callSid: 'call-session-exit',
         endReason: 'completed',
       },
       {
-        context: jasmine.any(HttpContext),
+        context: expect.any(HttpContext),
       },
     );
   });

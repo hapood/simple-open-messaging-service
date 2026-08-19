@@ -27,23 +27,23 @@ describe('playground call mock', () => {
     adapter.setMuted(true);
 
     expect(state.callState().callSid).toBe('call-from-header');
-    expect(state.callState().muted).toBeTrue();
+    expect(state.callState().muted).toBe(true);
     expect(state.callState().phase).toBe('ringing');
     await waitForResponse();
     expect(state.callState().phase).toBe('connected');
 
-    jasmine.clock().install();
+    vi.useFakeTimers();
     adapter.end();
 
     expect(state.callState().phase).toBe('ended');
     expect(state.callState().terminalReason).toBe('completed');
-    jasmine.clock().tick(1400);
+    vi.advanceTimersByTime(1400);
     expect(state.callState()).toEqual({ ...IDLE_CALL });
-    jasmine.clock().uninstall();
+    vi.useRealTimers();
   });
 
   it('shows a declined or busy peer before dismissing the call', () => {
-    jasmine.clock().install();
+    vi.useFakeTimers();
     TestBed.configureTestingModule({
       providers: [provideZonelessChangeDetection()],
     });
@@ -54,19 +54,19 @@ describe('playground call mock', () => {
       state.opponentResponse.set(response);
       adapter.initiate(2, `call-${response}`, 'AUDIO', 'Alice', '');
       expect(state.callState().phase).toBe('ringing');
-      jasmine.clock().tick(800);
+      vi.advanceTimersByTime(800);
       expect(state.callState().phase).toBe('ended');
       expect(state.callState().terminalReason).toBe(
         response === 'decline' ? 'declined' : 'busy',
       );
-      jasmine.clock().tick(response === 'busy' ? 1800 : 1400);
+      vi.advanceTimersByTime(response === 'busy' ? 1800 : 1400);
       expect(state.callState()).toEqual({ ...IDLE_CALL });
     }
-    jasmine.clock().uninstall();
+    vi.useRealTimers();
   });
 
   it('simulates a peer who does not answer', () => {
-    jasmine.clock().install();
+    vi.useFakeTimers();
     TestBed.configureTestingModule({
       providers: [provideZonelessChangeDetection()],
     });
@@ -75,14 +75,14 @@ describe('playground call mock', () => {
     state.opponentResponse.set('no-answer');
 
     adapter.initiate(2, 'call-no-answer', 'AUDIO', 'Alice', '');
-    jasmine.clock().tick(4999);
+    vi.advanceTimersByTime(4999);
     expect(state.callState().phase).toBe('ringing');
-    jasmine.clock().tick(1);
+    vi.advanceTimersByTime(1);
     expect(state.callState().phase).toBe('ended');
     expect(state.callState().terminalReason).toBe('missed');
-    jasmine.clock().tick(1400);
+    vi.advanceTimersByTime(1400);
     expect(state.callState()).toEqual({ ...IDLE_CALL });
-    jasmine.clock().uninstall();
+    vi.useRealTimers();
   });
 
   it('shows mock video posters and swaps them without camera media', () => {
@@ -101,7 +101,7 @@ describe('playground call mock', () => {
 
     adapter.swapVideo();
 
-    expect(state.callState().swapped).toBeTrue();
+    expect(state.callState().swapped).toBe(true);
     expect(remote.poster).toBe(initialSelfPoster);
     expect(self.poster).toBe(initialRemotePoster);
   });

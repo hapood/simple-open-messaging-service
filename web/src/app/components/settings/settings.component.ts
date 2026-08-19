@@ -1,4 +1,9 @@
-import { Component, computed, inject } from '@angular/core';
+import {
+  Component,
+  computed,
+  inject,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { NgComponentOutlet } from '@angular/common';
 import { trigger, transition, style, animate } from '@angular/animations';
 import { MatListModule } from '@angular/material/list';
@@ -12,7 +17,11 @@ import { BackgroundSyncService } from '../../services/background-sync.service';
 import { WebPushService } from '../../services/web-push.service';
 import { WebsocketService } from '../../services/websocket.service';
 import { ChatAppearanceService } from '../../services/chat-appearance.service';
-import { buildSettingsCategories, type SettingsCategory, type SettingsCategoryId } from './settings-categories';
+import {
+  buildSettingsCategories,
+  type SettingsCategory,
+  type SettingsCategoryId,
+} from './settings-categories';
 
 /** Drill-in slide for the sub-page, matching `overlaySlide`'s motion language in HomeShell (the same
  *  enter/leave curves) so the Settings sub-page glides consistently with the rest of the app's overlays.
@@ -20,10 +29,16 @@ import { buildSettingsCategories, type SettingsCategory, type SettingsCategoryId
 const pageSlide = trigger('pageSlide', [
   transition(':enter', [
     style({ transform: 'translate3d(100%, 0, 0)' }),
-    animate('300ms cubic-bezier(0.32, 0.72, 0, 1)', style({ transform: 'translate3d(0, 0, 0)' })),
+    animate(
+      '300ms cubic-bezier(0.32, 0.72, 0, 1)',
+      style({ transform: 'translate3d(0, 0, 0)' }),
+    ),
   ]),
   transition(':leave', [
-    animate('200ms cubic-bezier(0.4, 0, 1, 1)', style({ transform: 'translate3d(100%, 0, 0)' })),
+    animate(
+      '200ms cubic-bezier(0.4, 0, 1, 1)',
+      style({ transform: 'translate3d(100%, 0, 0)' }),
+    ),
   ]),
 ]);
 
@@ -47,6 +62,7 @@ const pageSlide = trigger('pageSlide', [
   imports: [MatListModule, TranslocoPipe, IconComponent, NgComponentOutlet],
   templateUrl: './settings.component.html',
   styleUrl: './settings.component.scss',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   animations: [pageSlide],
 })
 export class SettingsComponent {

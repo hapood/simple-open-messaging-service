@@ -1,4 +1,10 @@
-import { Component, computed, inject, input } from '@angular/core';
+import {
+  Component,
+  computed,
+  inject,
+  input,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
 import { LanguageService } from '../../../services/language.service';
 import type { ChatMsgData } from '../chat-item';
@@ -26,6 +32,7 @@ const LABEL_KEYS: Record<string, string> = {
       {{ label() }} <time>{{ data().time }}</time>
     </div>
   `,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styles: `
     :host {
       display: block;

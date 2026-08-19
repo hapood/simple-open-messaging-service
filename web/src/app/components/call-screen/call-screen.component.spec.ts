@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideTransloco } from '@jsverse/transloco';
@@ -17,26 +18,26 @@ import { UserService } from '../../services/user.service';
 describe('CallScreenComponent', () => {
   const callState = signal<CallSnapshot>({ ...IDLE_CALL });
   const adapter = {
-    accept: jasmine.createSpy('accept'),
-    decline: jasmine.createSpy('decline'),
-    cancel: jasmine.createSpy('cancel'),
-    end: jasmine.createSpy('end'),
-    setMuted: jasmine.createSpy('setMuted'),
-    setSpeakerEnabled: jasmine.createSpy('setSpeakerEnabled'),
-    upgradeToVideo: jasmine.createSpy('upgradeToVideo'),
-    switchCamera: jasmine.createSpy('switchCamera'),
-    setCameraEnabled: jasmine.createSpy('setCameraEnabled'),
-    setVideoRect: jasmine.createSpy('setVideoRect'),
-    setVideoElements: jasmine.createSpy('setVideoElements'),
-    setSelfVideoPosition: jasmine.createSpy('setSelfVideoPosition'),
-    swapVideo: jasmine.createSpy('swapVideo'),
+    accept: vi.fn().mockName('accept'),
+    decline: vi.fn().mockName('decline'),
+    cancel: vi.fn().mockName('cancel'),
+    end: vi.fn().mockName('end'),
+    setMuted: vi.fn().mockName('setMuted'),
+    setSpeakerEnabled: vi.fn().mockName('setSpeakerEnabled'),
+    upgradeToVideo: vi.fn().mockName('upgradeToVideo'),
+    switchCamera: vi.fn().mockName('switchCamera'),
+    setCameraEnabled: vi.fn().mockName('setCameraEnabled'),
+    setVideoRect: vi.fn().mockName('setVideoRect'),
+    setVideoElements: vi.fn().mockName('setVideoElements'),
+    setSelfVideoPosition: vi.fn().mockName('setSelfVideoPosition'),
+    swapVideo: vi.fn().mockName('swapVideo'),
     rendererOwnsVideo: true,
   };
-  const ringtone = { setMode: jasmine.createSpy('setMode') };
+  const ringtone = { setMode: vi.fn().mockName('setMode') };
   const presentation = {
     minimized: signal(false),
-    minimize: jasmine.createSpy('minimize'),
-    restore: jasmine.createSpy('restore'),
+    minimize: vi.fn().mockName('minimize'),
+    restore: vi.fn().mockName('restore'),
   };
 
   beforeEach(() => {
@@ -49,14 +50,12 @@ describe('CallScreenComponent', () => {
       startedAt: Date.now(),
     });
     Object.values(adapter)
-      .filter(
-        (value): value is jasmine.Spy => typeof value === 'function',
-      )
-      .forEach((spy) => spy.calls.reset());
-    ringtone.setMode.calls.reset();
+      .filter((value): value is Mock => typeof value === 'function')
+      .forEach((spy) => spy.mockClear());
+    ringtone.setMode.mockClear();
     presentation.minimized.set(false);
-    presentation.minimize.calls.reset();
-    presentation.restore.calls.reset();
+    presentation.minimize.mockClear();
+    presentation.restore.mockClear();
 
     TestBed.configureTestingModule({
       imports: [CallScreenComponent],
@@ -74,13 +73,16 @@ describe('CallScreenComponent', () => {
           provide: CallEventService,
           useValue: {
             callState,
-            markLocalTermination: jasmine.createSpy('markLocalTermination'),
+            markLocalTermination: vi.fn().mockName('markLocalTermination'),
           },
         },
         { provide: CallAdapterService, useValue: adapter },
         { provide: CallRingtoneService, useValue: ringtone },
         { provide: CallPresentationService, useValue: presentation },
-        { provide: UserService, useValue: { sessionProfile: signal(undefined) } },
+        {
+          provide: UserService,
+          useValue: { sessionProfile: signal(undefined) },
+        },
         {
           provide: AvatarRepository,
           useValue: {
@@ -141,7 +143,8 @@ describe('CallScreenComponent', () => {
     expect(adapter.upgradeToVideo).toHaveBeenCalledTimes(1);
 
     (root.querySelector('.end') as HTMLButtonElement).click();
-    expect(adapter.end).toHaveBeenCalledOnceWith('call-1', 'completed');
+    expect(adapter.end).toHaveBeenCalledTimes(1);
+    expect(adapter.end).toHaveBeenCalledWith('call-1', 'completed');
     fixture.destroy();
   });
 
@@ -178,7 +181,7 @@ describe('CallScreenComponent', () => {
   });
 
   it('keeps video controls visible while the mouse is moving', () => {
-    jasmine.clock().install();
+    vi.useFakeTimers();
     callState.update((state) => ({
       ...state,
       callType: 'VIDEO',
@@ -189,17 +192,17 @@ describe('CallScreenComponent', () => {
     fixture.detectChanges();
     const component = fixture.componentInstance;
 
-    jasmine.clock().tick(2999);
-    expect(component.controlsVisible()).toBeTrue();
+    vi.advanceTimersByTime(2999);
+    expect(component.controlsVisible()).toBe(true);
 
     component.onScreenMouseMove();
-    jasmine.clock().tick(2999);
-    expect(component.controlsVisible()).toBeTrue();
+    vi.advanceTimersByTime(2999);
+    expect(component.controlsVisible()).toBe(true);
 
-    jasmine.clock().tick(1);
-    expect(component.controlsVisible()).toBeFalse();
+    vi.advanceTimersByTime(1);
+    expect(component.controlsVisible()).toBe(false);
     fixture.destroy();
-    jasmine.clock().uninstall();
+    vi.useRealTimers();
   });
 
   it('moves the self view through the lightweight position bridge while dragging', () => {
@@ -215,7 +218,7 @@ describe('CallScreenComponent', () => {
     const startLeft = component.selfLeft();
     const startTop = component.selfTop();
     let animationFrame: FrameRequestCallback | undefined;
-    spyOn(window, 'requestAnimationFrame').and.callFake((callback) => {
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
       animationFrame = callback;
       return 1;
     });
@@ -235,7 +238,8 @@ describe('CallScreenComponent', () => {
 
     const expectedLeft = Math.min(startLeft + 20, window.innerWidth - 120);
     const expectedTop = Math.min(startTop + 30, window.innerHeight - 160);
-    expect(adapter.setSelfVideoPosition).toHaveBeenCalledOnceWith(
+    expect(adapter.setSelfVideoPosition).toHaveBeenCalledTimes(1);
+    expect(adapter.setSelfVideoPosition).toHaveBeenCalledWith(
       expectedLeft,
       expectedTop,
     );
@@ -260,12 +264,13 @@ describe('CallScreenComponent', () => {
       `Alice's camera is off`,
     );
     expect(root.querySelector('.self-view.off')).not.toBeNull();
-    expect(
-      (root.querySelector('.switch') as HTMLButtonElement).disabled,
-    ).toBeTrue();
+    expect((root.querySelector('.switch') as HTMLButtonElement).disabled).toBe(
+      true,
+    );
 
     (root.querySelector('.cam') as HTMLButtonElement).click();
-    expect(adapter.setCameraEnabled).toHaveBeenCalledOnceWith(true);
+    expect(adapter.setCameraEnabled).toHaveBeenCalledTimes(1);
+    expect(adapter.setCameraEnabled).toHaveBeenCalledWith(true);
     expect(root.querySelector('.call-kind')?.textContent?.trim()).toBe(
       'Video call',
     );
@@ -300,7 +305,7 @@ describe('CallScreenComponent', () => {
 
     const root = fixture.nativeElement as HTMLElement;
     const upgrade = root.querySelector('.upgrade') as HTMLButtonElement;
-    expect(upgrade.disabled).toBeTrue();
+    expect(upgrade.disabled).toBe(true);
     expect(root.querySelector('.status')?.textContent?.trim()).toBe(
       'Starting video…',
     );
@@ -338,5 +343,4 @@ describe('CallScreenComponent', () => {
     expect(presentation.minimize).toHaveBeenCalledTimes(1);
     fixture.destroy();
   });
-
 });

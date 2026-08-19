@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { NativeImageDownloadAdapter } from './image-download.adapter';
@@ -6,28 +7,33 @@ describe('NativeImageDownloadAdapter', () => {
   type NativeWindow = {
     __TAURI_INTERNALS__?: unknown;
     __TAURI__?: {
-      core: { invoke: jasmine.Spy };
-      event: { listen: jasmine.Spy };
+      core: {
+        invoke: Mock;
+      };
+      event: {
+        listen: Mock;
+      };
     };
   };
 
-  let invoke: jasmine.Spy;
+  let invoke: Mock;
   let eventHandler: ((event: { payload: unknown }) => void) | undefined;
-  let unlisten: jasmine.Spy;
+  let unlisten: Mock;
   let adapter: NativeImageDownloadAdapter;
 
   beforeEach(() => {
-    invoke = jasmine.createSpy('invoke');
-    unlisten = jasmine.createSpy('unlisten');
+    invoke = vi.fn().mockName('invoke');
+    unlisten = vi.fn().mockName('unlisten');
     eventHandler = undefined;
     const nativeWindow = window as unknown as NativeWindow;
     nativeWindow.__TAURI_INTERNALS__ = {};
     nativeWindow.__TAURI__ = {
       core: { invoke },
       event: {
-        listen: jasmine
-          .createSpy('listen')
-          .and.callFake(
+        listen: vi
+          .fn()
+          .mockName('listen')
+          .mockImplementation(
             async (
               _event: string,
               handler: (event: { payload: unknown }) => void,
@@ -52,23 +58,22 @@ describe('NativeImageDownloadAdapter', () => {
 
   it('maps native progress and returns the media:// display URL', async () => {
     let resolveDownload: ((value: unknown) => void) | undefined;
-    invoke
-      .withArgs('download_media', {
-        path: '/uploads/photo.jpg',
-        taskId: jasmine.any(String),
-      })
-      .and.returnValue(
+    invoke.mockImplementation(
+      (command: string) =>
+        command === 'download_media' &&
         new Promise((resolve) => {
           resolveDownload = resolve;
         }),
-      );
+    );
     const events: unknown[] = [];
-    adapter.download('/uploads/photo.jpg').subscribe((event) => events.push(event));
+    adapter
+      .download('/uploads/photo.jpg')
+      .subscribe((event) => events.push(event));
     await tick();
-    const downloadCall = invoke.calls
-      .all()
-      .find((call) => call.args[0] === 'download_media');
-    const taskId = downloadCall?.args[1].taskId as string;
+    const downloadCall = vi
+      .mocked(invoke)
+      .mock.calls.find((call) => call[0] === 'download_media');
+    const taskId = downloadCall?.[1].taskId as string;
     eventHandler?.({
       payload: { taskId, loaded: 1024, total: 2048 },
     });
@@ -79,17 +84,17 @@ describe('NativeImageDownloadAdapter', () => {
     });
     await tick();
 
-    expect(events).toContain(
-      jasmine.objectContaining({
+    expect(events).toContainEqual(
+      expect.objectContaining({
         type: 'progress',
         loaded: 1024,
         total: 2048,
       }),
     );
-    expect(events).toContain(
-      jasmine.objectContaining({
+    expect(events).toContainEqual(
+      expect.objectContaining({
         type: 'completed',
-        artifact: jasmine.objectContaining({
+        artifact: expect.objectContaining({
           displayUrl: 'media://localhost/uploads/photo.jpg',
           savePath: '/uploads/photo.jpg',
           size: 2048,
@@ -100,22 +105,19 @@ describe('NativeImageDownloadAdapter', () => {
 
   it('cancels the Rust task when the observable is unsubscribed', async () => {
     let resolveDownload: ((value: unknown) => void) | undefined;
-    invoke
-      .withArgs('download_media', jasmine.any(Object))
-      .and.returnValue(
-        new Promise((resolve) => {
-          resolveDownload = resolve;
-        }),
-      );
-    invoke
-      .withArgs('cancel_media_download', jasmine.any(Object))
-      .and.resolveTo(true);
+    invoke.mockImplementation((command: string) => {
+      if (command === 'cancel_media_download') return Promise.resolve(true);
+      return new Promise((resolve) => {
+        resolveDownload = resolve;
+      });
+    });
 
     const subscription = adapter.download('/uploads/photo.jpg').subscribe();
     await tick();
-    const taskId = invoke.calls
-      .all()
-      .find((call) => call.args[0] === 'download_media')?.args[1].taskId as string;
+    const taskId = vi
+      .mocked(invoke)
+      .mock.calls.find((call) => call[0] === 'download_media')?.[1]
+      .taskId as string;
     subscription.unsubscribe();
     await tick();
 

@@ -1,4 +1,4 @@
-import { Component } from '@angular/core';
+import { Component, ChangeDetectionStrategy } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { MatButtonModule } from '@angular/material/button';
 import { RegisterComponent } from '../../components/register/register.component';
@@ -26,6 +26,7 @@ import { ServerConfigDialogService } from '../../services/server-config-dialog.s
     BrandLogoComponent,
   ],
   templateUrl: './register-page.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './register-page.component.scss',
 })
 export class RegisterPageComponent {

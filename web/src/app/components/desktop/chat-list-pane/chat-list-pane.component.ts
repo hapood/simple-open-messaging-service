@@ -1,4 +1,12 @@
-import { Component, EventEmitter, input, Output, signal, viewChild } from '@angular/core';
+import {
+  Component,
+  EventEmitter,
+  input,
+  Output,
+  signal,
+  viewChild,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { ThreadListComponent } from '../../thread-list/thread-list.component';
 import { ConversationItem } from '../../../services/model';
@@ -31,36 +39,43 @@ import { CallBannerComponent } from '../../call-banner/call-banner.component';
       <div class="list">
         <app-thread-list
           [searchText]="searchText()"
-          (onSelect)="selectThread.emit($event)">
+          (onSelect)="selectThread.emit($event)"
+        >
         </app-thread-list>
       </div>
     </div>
   `,
-  styles: [`
-    .chat-list-pane {
-      display: flex;
-      flex-direction: column;
-      height: 100%;
-      background: var(--app-thread-list-bg);
-      box-sizing: border-box;
-      overflow: hidden;
-      /* No border-right here: the inter-pane divider is owned by the shell, not the pane. On desktop the
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  styles: [
+    `
+      .chat-list-pane {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        background: var(--app-thread-list-bg);
+        box-sizing: border-box;
+        overflow: hidden;
+        /* No border-right here: the inter-pane divider is owned by the shell, not the pane. On desktop the
          .resizer strip is the divider; on tablet the shell paints .drawer-body's border-right. Painting
          it here doubled the desktop divider (this 1px + the 4px resizer) and offset the grip dots 0.5px
          from the composite strip's center — which is why the dots read as crooked. */
-    }
-    .list { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
-  `]
+      }
+      .list {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+      }
+    `,
+  ],
 })
 export class ChatListPaneComponent {
   readonly showCallBanner = input(false);
-  readonly searchText = signal('')
-  readonly threadListCmp = viewChild(ThreadListComponent)
+  readonly searchText = signal('');
+  readonly threadListCmp = viewChild(ThreadListComponent);
 
-  @Output() selectThread = new EventEmitter<ConversationItem>()
+  @Output() selectThread = new EventEmitter<ConversationItem>();
 
   refresh() {
-    this.threadListCmp()?.genThreadList()
+    this.threadListCmp()?.genThreadList();
   }
-
 }

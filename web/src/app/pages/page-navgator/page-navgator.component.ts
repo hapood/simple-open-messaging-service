@@ -1,11 +1,10 @@
-import { Component } from '@angular/core';
+import { Component, ChangeDetectionStrategy } from '@angular/core';
 
 @Component({
-    selector: 'app-page-navgator',
-    imports: [],
-    templateUrl: './page-navgator.component.html',
-    styleUrl: './page-navgator.component.scss'
+  selector: 'app-page-navgator',
+  imports: [],
+  templateUrl: './page-navgator.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  styleUrl: './page-navgator.component.scss',
 })
-export class PageNavgatorComponent {
-
-}
+export class PageNavgatorComponent {}

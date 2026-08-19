@@ -5,6 +5,7 @@ import {
   inject,
   OnDestroy,
   DestroyRef,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { TranslocoPipe } from '@jsverse/transloco';
@@ -61,6 +62,7 @@ type QrView = 'loading' | 'pending' | 'scanned' | 'error';
     BrandLogoComponent,
   ],
   templateUrl: './qr-login-page.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './qr-login-page.component.scss',
 })
 export class QrLoginPageComponent implements OnDestroy {

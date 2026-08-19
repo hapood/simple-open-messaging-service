@@ -1,4 +1,4 @@
-import { Component, input } from '@angular/core';
+import { Component, input, ChangeDetectionStrategy } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import type { ChatMsgData } from '../message-cards/chat-item';
 
@@ -21,6 +21,7 @@ export type ForwardRecordKind = 'chat' | 'group';
   standalone: true,
   imports: [TranslocoPipe],
   templateUrl: './forward-message-card.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './forward-message-card.component.scss',
 })
 export class ForwardMessageCardComponent {

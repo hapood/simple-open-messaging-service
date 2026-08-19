@@ -1,4 +1,10 @@
-import { Component, signal, computed, inject } from '@angular/core';
+import {
+  Component,
+  signal,
+  computed,
+  inject,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { MatButtonModule } from '@angular/material/button';
@@ -7,7 +13,10 @@ import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { AuthBrandComponent } from '../../components/auth-brand/auth-brand.component';
 import { AuthToolbarComponent } from '../../components/auth-toolbar/auth-toolbar.component';
-import { IconComponent, AppIconType } from '../../components/icon/icon.component';
+import {
+  IconComponent,
+  AppIconType,
+} from '../../components/icon/icon.component';
 import { AuthService } from '../../services/auth.service';
 import { ConfigService } from '../../services/config.service';
 import { RouteService, RoutePage } from '../../services/route.service';
@@ -42,6 +51,7 @@ import { ServerConfigDialogService } from '../../services/server-config-dialog.s
     BrandLogoComponent,
   ],
   templateUrl: './otp-login-page.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './otp-login-page.component.scss',
 })
 export class OtpLoginPageComponent {
@@ -57,12 +67,18 @@ export class OtpLoginPageComponent {
   code = signal('');
   resp = signal('');
   isSubmitting = signal(false);
-  isDisabled = computed(() => this.isSubmitting() || this.account() === '' || this.code() === '');
+  isDisabled = computed(
+    () => this.isSubmitting() || this.account() === '' || this.code() === '',
+  );
   /** Password login is offered as a switcher option when enabled for this platform (mode ALL). */
-  readonly canPassword = computed(() => this.config.methodsForPlatform().includes('password'));
+  readonly canPassword = computed(() =>
+    this.config.methodsForPlatform().includes('password'),
+  );
   /** QR login is offered as a switcher when enabled — always so under APP_OTP_AND_QR/ALL. Android is the one
    *  platform where OTP and QR coexist, so the OTP page links across to QR there. */
-  readonly canQr = computed(() => this.config.methodsForPlatform().includes('qr'));
+  readonly canQr = computed(() =>
+    this.config.methodsForPlatform().includes('qr'),
+  );
 
   constructor() {
     void this.config.ensureLoaded();
@@ -83,22 +99,26 @@ export class OtpLoginPageComponent {
   submit() {
     if (this.isSubmitting()) return;
     this.isSubmitting.set(true);
-    this.auth.otpLogin({ account: this.account(), code: this.code() }).subscribe({
-      next: (res) => {
-        if (res.code === 0) {
-          this.routeService.redirect(
-            res.data?.mustChangePassword ? RoutePage.AUTH_SET_PASSWORD : RoutePage.HOME,
-          );
-        } else {
-          this.resp.set(translateBizResult(res, this.transloco));
+    this.auth
+      .otpLogin({ account: this.account(), code: this.code() })
+      .subscribe({
+        next: (res) => {
+          if (res.code === 0) {
+            this.routeService.redirect(
+              res.data?.mustChangePassword
+                ? RoutePage.AUTH_SET_PASSWORD
+                : RoutePage.HOME,
+            );
+          } else {
+            this.resp.set(translateBizResult(res, this.transloco));
+            this.isSubmitting.set(false);
+          }
+        },
+        error: () => {
+          this.resp.set(this.transloco.translate('auth.unknownError'));
           this.isSubmitting.set(false);
-        }
-      },
-      error: () => {
-        this.resp.set(this.transloco.translate('auth.unknownError'));
-        this.isSubmitting.set(false);
-      },
-    });
+        },
+      });
   }
 
   jumpToPassword() {

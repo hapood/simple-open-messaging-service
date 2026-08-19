@@ -1,4 +1,12 @@
-import { Component, computed, effect, inject, input, signal } from '@angular/core';
+import {
+  Component,
+  computed,
+  effect,
+  inject,
+  input,
+  signal,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { NgComponentOutlet } from '@angular/common';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { IconComponent, AppIconType } from '../icon/icon.component';
@@ -11,7 +19,11 @@ import { BackgroundSyncService } from '../../services/background-sync.service';
 import { WebPushService } from '../../services/web-push.service';
 import { WebsocketService } from '../../services/websocket.service';
 import { ChatAppearanceService } from '../../services/chat-appearance.service';
-import { buildSettingsCategories, type SettingsCategory, type SettingsCategoryId } from './settings-categories';
+import {
+  buildSettingsCategories,
+  type SettingsCategory,
+  type SettingsCategoryId,
+} from './settings-categories';
 
 /**
  * The DESKTOP/TABLET Settings surface — a wide two-column Material dialog (category list on the left,
@@ -28,15 +40,27 @@ import { buildSettingsCategories, type SettingsCategory, type SettingsCategoryId
  */
 @Component({
   selector: 'app-settings-dialog',
-  imports: [TranslocoPipe, IconComponent, NgComponentOutlet, FitDialogDirective],
+  imports: [
+    TranslocoPipe,
+    IconComponent,
+    NgComponentOutlet,
+    FitDialogDirective,
+  ],
   template: `
     <div class="settings-dlg" [appFitDialog]="{ minHeight: 480 }">
       <div class="msg-header">
         <span class="spacer"></span>
         <span class="title">{{ 'settings.title' | transloco }}</span>
-        <button class="icon-btn" type="button" (click)="goBack()"
-          [attr.aria-label]="'common.close' | transloco">
-          <app-icon [type]="AppIconType.CLOSE" [style]="{ width: '24px', height: '24px' }"></app-icon>
+        <button
+          class="icon-btn"
+          type="button"
+          (click)="goBack()"
+          [attr.aria-label]="'common.close' | transloco"
+        >
+          <app-icon
+            [type]="AppIconType.CLOSE"
+            [style]="{ width: '24px', height: '24px' }"
+          ></app-icon>
         </button>
       </div>
 
@@ -44,9 +68,18 @@ import { buildSettingsCategories, type SettingsCategory, type SettingsCategoryId
         <!-- Left: category list (master) -->
         <nav class="cat-list">
           @for (c of visibleCategories(); track c.id) {
-            <button type="button" class="cat-row" [class.selected]="selectedId() === c.id"
-              (click)="select(c.id)" [attr.aria-current]="selectedId() === c.id ? 'true' : null">
-              <app-icon class="lead" [type]="c.icon" [style]="{ width: '20px', height: '20px' }"></app-icon>
+            <button
+              type="button"
+              class="cat-row"
+              [class.selected]="selectedId() === c.id"
+              (click)="select(c.id)"
+              [attr.aria-current]="selectedId() === c.id ? 'true' : null"
+            >
+              <app-icon
+                class="lead"
+                [type]="c.icon"
+                [style]="{ width: '20px', height: '20px' }"
+              ></app-icon>
               <span class="cat-title">{{ c.titleKey | transloco }}</span>
             </button>
           }
@@ -61,6 +94,7 @@ import { buildSettingsCategories, type SettingsCategory, type SettingsCategoryId
       </div>
     </div>
   `,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './settings-dialog.component.scss',
 })
 export class SettingsDialogComponent {
@@ -116,7 +150,10 @@ export class SettingsDialogComponent {
       if (this.selectedId() !== null) return;
       const init = this.initialCategoryId();
       const visible = this.visibleCategories();
-      const pick = init && visible.some((c) => c.id === init) ? init : (visible[0]?.id ?? null);
+      const pick =
+        init && visible.some((c) => c.id === init)
+          ? init
+          : (visible[0]?.id ?? null);
       this.selectedId.set(pick);
     });
   }

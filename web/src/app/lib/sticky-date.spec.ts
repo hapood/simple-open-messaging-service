@@ -13,35 +13,35 @@ describe('unreadDividerOverlapsStickyDate', () => {
   it('detects the first-render top anchor, where the unread divider starts at the visible top', () => {
     expect(
       unreadDividerOverlapsStickyDate({ top: 56, bottom: 94 }, visibleTop),
-    ).toBeTrue();
+    ).toBe(true);
   });
 
   it('does not hide the pill merely because the unread divider is visible lower in the viewport', () => {
     expect(
       unreadDividerOverlapsStickyDate({ top: 120, bottom: 158 }, visibleTop),
-    ).toBeFalse();
+    ).toBe(false);
   });
 
   it('uses strict interval bounds so touching either edge does not flicker the pill', () => {
     expect(
       unreadDividerOverlapsStickyDate({ top: 88, bottom: 126 }, visibleTop),
-    ).toBeFalse();
+    ).toBe(false);
     expect(
       unreadDividerOverlapsStickyDate({ top: 18, bottom: 62 }, visibleTop),
-    ).toBeFalse();
+    ).toBe(false);
   });
 
   it('detects partial overlap while the divider scrolls through the pill band', () => {
     expect(
       unreadDividerOverlapsStickyDate({ top: 80, bottom: 118 }, visibleTop),
-    ).toBeTrue();
+    ).toBe(true);
     expect(
       unreadDividerOverlapsStickyDate({ top: 30, bottom: 70 }, visibleTop),
-    ).toBeTrue();
+    ).toBe(true);
   });
 
   it('does not suppress the date when no unread divider is mounted', () => {
-    expect(unreadDividerOverlapsStickyDate(null, visibleTop)).toBeFalse();
+    expect(unreadDividerOverlapsStickyDate(null, visibleTop)).toBe(false);
   });
 });
 

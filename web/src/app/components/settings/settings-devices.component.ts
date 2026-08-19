@@ -5,6 +5,7 @@ import {
   computed,
   inject,
   signal,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { MatButtonModule } from '@angular/material/button';
@@ -48,6 +49,7 @@ import { AsyncStateComponent } from '../async-state/async-state.component';
     AsyncStateComponent,
   ],
   templateUrl: './settings-devices.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './settings-devices.component.scss',
 })
 export class SettingsDevicesComponent implements OnInit {

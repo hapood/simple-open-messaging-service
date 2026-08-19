@@ -39,6 +39,11 @@ $app-gray-900: #111827;
   --app-action-primary: #3568b8;
   --app-action-primary-hover: #2e5ca5;
   --app-on-action-primary: #ffffff;
+  // Interactive binary controls use the action color instead of the graphite content brand.
+  // These aliases follow the light/dark action palette without per-component overrides.
+  --app-toggle-active: var(--app-action-primary);
+  --app-toggle-active-hover: var(--app-action-primary-hover);
+  --app-on-toggle-active: var(--app-on-action-primary);
   --app-focus-ring: #5c6268;
   // Generated SELF avatars are identity chrome, not controls. Keep their
   // contrast stable when the interactive brand flips light in dark mode.

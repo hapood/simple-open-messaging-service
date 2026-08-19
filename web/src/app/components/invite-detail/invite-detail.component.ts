@@ -11,6 +11,7 @@ import {
   input,
   signal,
   viewChild,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
@@ -62,6 +63,7 @@ type ViewState =
     TranslocoPipe,
   ],
   templateUrl: './invite-detail.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './invite-detail.component.scss',
 })
 export class InviteDetailComponent implements OnInit, OnDestroy {

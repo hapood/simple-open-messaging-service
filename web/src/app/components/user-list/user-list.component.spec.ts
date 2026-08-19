@@ -21,7 +21,11 @@ describe('UserListComponent', () => {
     const fixture = TestBed.createComponent(UserListComponent);
     fixture.componentRef.setInput('excludedUserIds', new Set([102]));
 
-    expect(fixture.componentInstance.dispThreadList().map((thread) => thread.peerUser.id)).toEqual([101]);
+    expect(
+      fixture.componentInstance
+        .dispThreadList()
+        .map((thread) => thread.peerUser.id),
+    ).toEqual([101]);
   });
 });
 

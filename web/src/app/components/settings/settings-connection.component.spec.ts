@@ -1,12 +1,33 @@
+import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
-import { provideZonelessChangeDetection, signal, WritableSignal } from '@angular/core';
-import { HttpErrorResponse, provideHttpClient } from '@angular/common/http';
-import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import {
+  provideZonelessChangeDetection,
+  signal,
+  WritableSignal,
+} from '@angular/core';
+import {
+  HttpErrorResponse,
+  provideHttpClient,
+  withXhr,
+} from '@angular/common/http';
+import {
+  HttpTestingController,
+  provideHttpClientTesting,
+} from '@angular/common/http/testing';
 import { TimeoutError } from 'rxjs';
 import { provideTransloco, TranslocoService } from '@jsverse/transloco';
-import { InlineTranslocoLoader, translations } from '../../i18n/transloco.loader';
-import { classifyProbeError, SettingsConnectionComponent } from './settings-connection.component';
-import { WebsocketService, ConnectionState } from '../../services/websocket.service';
+import {
+  InlineTranslocoLoader,
+  translations,
+} from '../../i18n/transloco.loader';
+import {
+  classifyProbeError,
+  SettingsConnectionComponent,
+} from './settings-connection.component';
+import {
+  WebsocketService,
+  ConnectionState,
+} from '../../services/websocket.service';
 import { LanguageService } from '../../services/language.service';
 import { apiPrefix } from '../../services/constants';
 
@@ -33,34 +54,46 @@ describe('SettingsConnectionComponent', () => {
   let comp: SettingsConnectionComponent;
   // The realtime connection state — driven from the test to move the SSE-state signal.
   let state: WritableSignal<ConnectionState>;
-  let retryNow: jasmine.Spy;
+  let retryNow: Mock;
   let httpMock: HttpTestingController;
 
   beforeEach(() => {
     TestBed.resetTestingModule();
     state = signal<ConnectionState>('closed');
-    retryNow = jasmine.createSpy('retryNow');
+    retryNow = vi.fn().mockName('retryNow');
 
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
-        provideHttpClient(),
+        provideHttpClient(withXhr()),
         provideHttpClientTesting(),
         provideTransloco({
           config: {
-            availableLangs: [{ id: 'en', label: 'English' }, { id: 'zh-CN', label: '简体中文' }],
+            availableLangs: [
+              { id: 'en', label: 'English' },
+              { id: 'zh-CN', label: '简体中文' },
+            ],
             defaultLang: 'en',
             reRenderOnLangChange: true,
           },
           loader: InlineTranslocoLoader,
         }),
         SettingsConnectionComponent,
-        { provide: WebsocketService, useValue: { state, retryNow } as unknown as WebsocketService },
-        { provide: LanguageService, useValue: { lang: signal('en') } as unknown as LanguageService },
+        {
+          provide: WebsocketService,
+          useValue: { state, retryNow } as unknown as WebsocketService,
+        },
+        {
+          provide: LanguageService,
+          useValue: { lang: signal('en') } as unknown as LanguageService,
+        },
       ],
-    })
-      .overrideComponent(SettingsConnectionComponent, { set: { template: '' } });
-    comp = TestBed.createComponent(SettingsConnectionComponent).componentInstance;
+    }).overrideComponent(SettingsConnectionComponent, {
+      set: { template: '' },
+    });
+    comp = TestBed.createComponent(
+      SettingsConnectionComponent,
+    ).componentInstance;
     httpMock = TestBed.inject(HttpTestingController);
     // Prime the `en` dictionary synchronously. The inline loader emits via an Observable; Transloco
     // may not have cached it by the time these synchronous label assertions read it (the computeds
@@ -78,12 +111,13 @@ describe('SettingsConnectionComponent', () => {
   // ── Realtime connection mapping ────────────────────────────────────────────────────────────
 
   // [state, pillClass, canRetry, label] — verifies connKey routing + the retry gate at once.
-  const STATE_CASES: ReadonlyArray<[ConnectionState, string, boolean, string]> = [
-    ['open', 'active', false, 'Connected'],
-    ['connecting', 'warn', true, 'Connecting'],
-    ['reconnecting', 'warn', true, 'Reconnecting'],
-    ['closed', '', false, 'Disconnected'],
-  ];
+  const STATE_CASES: ReadonlyArray<[ConnectionState, string, boolean, string]> =
+    [
+      ['open', 'active', false, 'Connected'],
+      ['connecting', 'warn', true, 'Connecting'],
+      ['reconnecting', 'warn', true, 'Reconnecting'],
+      ['closed', '', false, 'Disconnected'],
+    ];
   for (const [s, pillClass, canRetry, label] of STATE_CASES) {
     it(`maps realtime state '${s}' → pill '${pillClass}', canRetry=${canRetry}, label='${label}'`, () => {
       state.set(s);
@@ -104,7 +138,9 @@ describe('SettingsConnectionComponent', () => {
   it('health pill + hint are idle before any probe (muted class, "Not checked", default desc)', () => {
     expect(comp.healthPillClass()).toBe('');
     expect(comp.healthPillLabel()).toBe('Not checked');
-    expect(comp.healthHint()).toBe("Probe the server's liveness endpoint (no sign-in needed).");
+    expect(comp.healthHint()).toBe(
+      "Probe the server's liveness endpoint (no sign-in needed).",
+    );
   });
 
   it('health pill shows OK (active) after a healthy result and Failed (error) after a failed one', () => {
@@ -163,7 +199,9 @@ describe('SettingsConnectionComponent', () => {
 
   it('check() records "network" for a connection-level failure (status 0) and clears checking', async () => {
     const p = comp.check();
-    httpMock.expectOne(`${apiPrefix()}/health`).error(new ErrorEvent('error', { message: 'boom' }));
+    httpMock
+      .expectOne(`${apiPrefix()}/health`)
+      .error(new ErrorEvent('error', { message: 'boom' }));
     await p;
     // An ErrorEvent flush yields an HttpErrorResponse with status 0 → mapped to "network".
     expect(comp.health()).toEqual({ ok: false, error: 'network' });
@@ -176,8 +214,16 @@ describe('SettingsConnectionComponent', () => {
   // testing backend can't synthesize one, and driving the real `timeout(ms)` timer is slow/flaky here.
   // [err, label, expected].
   const PROBE_ERROR_CASES: ReadonlyArray<[unknown, string, string]> = [
-    [new HttpErrorResponse({ status: 503 }), 'HttpErrorResponse 503', 'HTTP 503'],
-    [new HttpErrorResponse({ status: 0 }), 'HttpErrorResponse status 0', 'network'],
+    [
+      new HttpErrorResponse({ status: 503 }),
+      'HttpErrorResponse 503',
+      'HTTP 503',
+    ],
+    [
+      new HttpErrorResponse({ status: 0 }),
+      'HttpErrorResponse status 0',
+      'network',
+    ],
     [new TimeoutError(), 'TimeoutError', 'timeout'],
     [new Error('boom'), 'Error', 'boom'],
     ['a bare string', 'non-Error', 'network'],

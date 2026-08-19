@@ -55,7 +55,9 @@ describe('KeyboardInsetService', () => {
 
   beforeEach(() => {
     TestBed.resetTestingModule();
-    TestBed.configureTestingModule({ providers: [provideZonelessChangeDetection()] });
+    TestBed.configureTestingModule({
+      providers: [provideZonelessChangeDetection()],
+    });
     realVv = window.visualViewport;
   });
 
@@ -63,10 +65,16 @@ describe('KeyboardInsetService', () => {
     TestBed.resetTestingModule();
     // Restore the real visualViewport (tests that faked it replaced it on the window).
     Object.defineProperty(window, 'visualViewport', {
-      value: realVv, configurable: true, writable: true,
+      value: realVv,
+      configurable: true,
+      writable: true,
     });
     if (realClientHeight) {
-      Object.defineProperty(document.documentElement, 'clientHeight', realClientHeight);
+      Object.defineProperty(
+        document.documentElement,
+        'clientHeight',
+        realClientHeight,
+      );
       realClientHeight = undefined;
     }
   });
@@ -97,28 +105,52 @@ describe('KeyboardInsetService', () => {
     const svc = TestBed.inject(KeyboardInsetService);
 
     window.__SOMS_IME_EVENT__!({
-      phase: 'change', currentPx: 300, targetPx: 300, durationMs: 0, animationId: 0,
-      requestId: null, visible: true, isFinal: true,
+      phase: 'change',
+      currentPx: 300,
+      targetPx: 300,
+      durationMs: 0,
+      animationId: 0,
+      requestId: null,
+      visible: true,
+      isFinal: true,
     });
     expect(svc.inset()).toBe(300);
     expect(svc.open()).toBe(true);
 
     window.__SOMS_IME_EVENT__!({
-      phase: 'change', currentPx: 0, targetPx: 0, durationMs: 0, animationId: 0,
-      requestId: null, visible: false, isFinal: true,
+      phase: 'change',
+      currentPx: 0,
+      targetPx: 0,
+      durationMs: 0,
+      animationId: 0,
+      requestId: null,
+      visible: false,
+      isFinal: true,
     });
     expect(svc.inset()).toBe(0);
     expect(svc.open()).toBe(false);
 
     window.__SOMS_IME_EVENT__!({
-      phase: 'change', currentPx: -50, targetPx: 0, durationMs: 0, animationId: 0,
-      requestId: null, visible: false, isFinal: true,
+      phase: 'change',
+      currentPx: -50,
+      targetPx: 0,
+      durationMs: 0,
+      animationId: 0,
+      requestId: null,
+      visible: false,
+      isFinal: true,
     }); // negative → clamped to 0
     expect(svc.inset()).toBe(0);
 
     window.__SOMS_IME_EVENT__!({
-      phase: 'change', currentPx: 123.9, targetPx: 123.9, durationMs: 0, animationId: 0,
-      requestId: null, visible: true, isFinal: true,
+      phase: 'change',
+      currentPx: 123.9,
+      targetPx: 123.9,
+      durationMs: 0,
+      animationId: 0,
+      requestId: null,
+      visible: true,
+      isFinal: true,
     }); // fractional → truncated
     expect(svc.inset()).toBe(123);
   });
@@ -158,21 +190,39 @@ describe('KeyboardInsetService', () => {
     const settledVisibility = svc.visible();
 
     window.__SOMS_IME_EVENT__!({
-      phase: 'start', currentPx: 0, targetPx: 320, durationMs: 250,
-      animationId: 2, requestId: 8, visible: false, isFinal: false,
+      phase: 'start',
+      currentPx: 0,
+      targetPx: 320,
+      durationMs: 250,
+      animationId: 2,
+      requestId: 8,
+      visible: false,
+      isFinal: false,
     });
     expect(svc.inset()).toBe(320);
 
     window.__SOMS_IME_EVENT__!({
-      phase: 'progress', currentPx: 91, targetPx: 320, durationMs: 250,
-      animationId: 2, requestId: 8, visible: true, isFinal: false,
+      phase: 'progress',
+      currentPx: 91,
+      targetPx: 320,
+      durationMs: 250,
+      animationId: 2,
+      requestId: 8,
+      visible: true,
+      isFinal: false,
     });
     expect(svc.inset()).toBe(320);
     expect(svc.visible()).toBe(settledVisibility);
 
     window.__SOMS_IME_EVENT__!({
-      phase: 'end', currentPx: 318, targetPx: 318, durationMs: 0,
-      animationId: 2, requestId: 8, visible: true, isFinal: true,
+      phase: 'end',
+      currentPx: 318,
+      targetPx: 318,
+      durationMs: 0,
+      animationId: 2,
+      requestId: 8,
+      visible: true,
+      isFinal: true,
     });
     expect(svc.inset()).toBe(318);
     expect(svc.visible()).toBe(true);
@@ -183,8 +233,14 @@ describe('KeyboardInsetService', () => {
     const svc = TestBed.inject(KeyboardInsetService);
 
     window.__SOMS_IME_EVENT__!({
-      phase: 'change', currentPx: 0, targetPx: 0, durationMs: 0,
-      animationId: 3, requestId: 9, visible: true, isFinal: true,
+      phase: 'change',
+      currentPx: 0,
+      targetPx: 0,
+      durationMs: 0,
+      animationId: 3,
+      requestId: 9,
+      visible: true,
+      isFinal: true,
     });
 
     expect(svc.inset()).toBe(0);
@@ -196,34 +252,42 @@ describe('KeyboardInsetService', () => {
 
   it('visualViewport resize (browser) feeds inset and drives the open event', () => {
     // Pin the layout height so the occlusion is deterministic regardless of the test iframe size.
-    realClientHeight = Object.getOwnPropertyDescriptor(document.documentElement, 'clientHeight');
+    realClientHeight = Object.getOwnPropertyDescriptor(
+      document.documentElement,
+      'clientHeight',
+    );
     Object.defineProperty(document.documentElement, 'clientHeight', {
-      get: () => 1000, configurable: true,
+      get: () => 1000,
+      configurable: true,
     });
 
     // A minimal VisualViewport double with a dispatcher for the resize/scroll listeners.
     const listeners: Array<() => void> = [];
     const fakeVv = {
-      height: 1000, offsetTop: 0,
+      height: 1000,
+      offsetTop: 0,
       addEventListener: (_t: string, cb: () => void) => listeners.push(cb),
       removeEventListener: (_t: string, cb: () => void) => {
-        const i = listeners.indexOf(cb); if (i >= 0) listeners.splice(i, 1);
+        const i = listeners.indexOf(cb);
+        if (i >= 0) listeners.splice(i, 1);
       },
     };
     Object.defineProperty(window, 'visualViewport', {
-      value: fakeVv, configurable: true, writable: true,
+      value: fakeVv,
+      configurable: true,
+      writable: true,
     });
 
     const svc = TestBed.inject(KeyboardInsetService);
-    expect(svc.inset()).toBe(0);   // vv fills the layout viewport → no keyboard
+    expect(svc.inset()).toBe(0); // vv fills the layout viewport → no keyboard
     expect(svc.open()).toBe(false);
 
-    fakeVv.height = 700;           // keyboard opens → occludes 300px
+    fakeVv.height = 700; // keyboard opens → occludes 300px
     for (const cb of listeners) cb();
     expect(svc.inset()).toBe(300);
     expect(svc.open()).toBe(true);
 
-    fakeVv.height = 1000;          // keyboard closes
+    fakeVv.height = 1000; // keyboard closes
     for (const cb of listeners) cb();
     expect(svc.inset()).toBe(0);
     expect(svc.open()).toBe(false);

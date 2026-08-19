@@ -47,7 +47,7 @@ describe('MediaRowComponent — deferred image loading', () => {
   it('opens the viewer without rendering the old click-to-load copy', async () => {
     const images = [image(1, 4096)];
     const fixture = await render(images);
-    const opened = jasmine.createSpy('opened');
+    const opened = vi.fn().mockName('opened');
     fixture.componentInstance.openImage.subscribe(opened);
 
     const gate = fixture.nativeElement.querySelector(
@@ -150,7 +150,7 @@ describe('MediaRowComponent — deferred image loading', () => {
   it('opens a mixed file group at its first image', async () => {
     const images = [file(2, 'notes.pdf'), image(1, 1024), image(3, 1024)];
     const fixture = await render(images, 'GALLERY');
-    const opened = jasmine.createSpy('opened');
+    const opened = vi.fn().mockName('opened');
     fixture.componentInstance.openImage.subscribe(opened);
 
     (
@@ -174,7 +174,9 @@ describe('MediaRowComponent — deferred image loading', () => {
   it('shows an oversized local blob preview without applying the remote cache gate', async () => {
     const local = { ...image(1, 4096), src: 'blob:local-preview' };
     const fixture = await render([local, file(2, 'notes.pdf')], 'GALLERY');
-    const markLoaded = spyOn(fixture.componentInstance, 'onImageLoad');
+    const markLoaded = vi
+      .spyOn(fixture.componentInstance, 'onImageLoad')
+      .mockReturnValue(undefined);
     const thumbnail = fixture.nativeElement.querySelector(
       '.msg-gallery-thumbnail',
     ) as HTMLImageElement;
@@ -188,9 +190,7 @@ describe('MediaRowComponent — deferred image loading', () => {
   it('treats an absent federated media status as ready', async () => {
     const fixture = await render([image(1, 1024)]);
 
-    expect(
-      fixture.nativeElement.querySelector('.msg-media-status'),
-    ).toBeNull();
+    expect(fixture.nativeElement.querySelector('.msg-media-status')).toBeNull();
     expect(fixture.nativeElement.textContent).not.toContain('Download failed');
   });
 

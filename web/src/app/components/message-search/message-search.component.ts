@@ -5,6 +5,7 @@ import {
   input,
   output,
   signal,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { TranslocoModule } from '@jsverse/transloco';
@@ -79,6 +80,7 @@ import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter
       </button>
     </div>
   `,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styles: [
     `
       :host {

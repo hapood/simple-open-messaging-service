@@ -4,6 +4,7 @@ import {
   EnvironmentInjector,
   input,
   provideZonelessChangeDetection,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import {
@@ -19,7 +20,12 @@ import { UserAvatarComponent } from '../../user-avatar/user-avatar.component';
 import type { ChatMsgData } from '../chat-item';
 import { TextRowComponent } from './text-row.component';
 
-@Component({ selector: 'app-user-avatar', standalone: true, template: '' })
+@Component({
+  selector: 'app-user-avatar',
+  standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: '',
+})
 class StubUserAvatarComponent {
   readonly type = input<unknown>(undefined);
   readonly name = input<string | undefined | null>('');
@@ -86,9 +92,9 @@ describe('TextRowComponent — inline link', () => {
       contentType: 'PURE_TEXT',
       images: null,
       file: null,
-      createdAtMs: 1_700_000_000_000,
+      createdAtMs: 1700000000000,
     };
-    const open = spyOn(window, 'open');
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
 
     ref.setInput('data', data);
     ref.changeDetectorRef.detectChanges();
@@ -102,7 +108,8 @@ describe('TextRowComponent — inline link', () => {
     expect(host.querySelector('.msg-link-open')).toBeNull();
 
     anchor!.click();
-    expect(open).toHaveBeenCalledOnceWith(url, '_blank', 'noopener,noreferrer');
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(open).toHaveBeenCalledWith(url, '_blank', 'noopener,noreferrer');
     ref.destroy();
   });
 });

@@ -1,8 +1,22 @@
-import { Component, computed, effect, ElementRef, inject, input, OnDestroy, signal, viewChild } from '@angular/core';
+import {
+  Component,
+  computed,
+  effect,
+  ElementRef,
+  inject,
+  input,
+  OnDestroy,
+  signal,
+  viewChild,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
 import { LiveAnnouncer } from '@angular/cdk/a11y';
 import { type AnimationPlaybackControls } from 'motion';
-import { WebsocketService, ConnectionState } from '../../services/websocket.service';
+import {
+  WebsocketService,
+  ConnectionState,
+} from '../../services/websocket.service';
 import { LanguageService } from '../../services/language.service';
 import { IndicatorSlotService } from '../../services/indicator-slot.service';
 import { prefersReducedMotion, springGradient } from '../../lib/motion-utils';
@@ -16,10 +30,10 @@ type ConnVisual = 'connecting' | 'reconnecting' | 'recovered' | 'closed';
  *  theme-aware concrete colors. {@link ConnectionBannerComponent.morphTo} resolves them at runtime via
  *  getComputedStyle, so Motion receives interpolable rgb() targets without this component knowing the theme. */
 const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
-  connecting:   { from: '--c-amber-1', to: '--c-amber-2', ic: '--c-amber' },
+  connecting: { from: '--c-amber-1', to: '--c-amber-2', ic: '--c-amber' },
   reconnecting: { from: '--c-amber-2', to: '--c-amber-1', ic: '--c-amber' },
-  recovered:    { from: '--c-green-1', to: '--c-green-2', ic: '--c-green' },
-  closed:       { from: '--c-red-1',   to: '--c-red-2',   ic: '--c-red' },
+  recovered: { from: '--c-green-1', to: '--c-green-2', ic: '--c-green' },
+  closed: { from: '--c-red-1', to: '--c-red-2', ic: '--c-red' },
 };
 
 /**
@@ -63,16 +77,18 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
   standalone: true,
   template: `
     @if (show(); as s) {
-      <button class="chip tonal-chip"
-              #chip
-              type="button"
-              [class.expanded]="expanded()"
-              [class.recovering]="s === 'recovered'"
-              [attr.data-state]="s"
-              [style.--spin-dur]="spinDur() + 'ms'"
-              [attr.aria-label]="ariaLabel()"
-              [attr.aria-expanded]="expanded()"
-              (click)="onClick()">
+      <button
+        class="chip tonal-chip"
+        #chip
+        type="button"
+        [class.expanded]="expanded()"
+        [class.recovering]="s === 'recovered'"
+        [attr.data-state]="s"
+        [style.--spin-dur]="spinDur() + 'ms'"
+        [attr.aria-label]="ariaLabel()"
+        [attr.aria-expanded]="expanded()"
+        (click)="onClick()"
+      >
         <span class="icon" aria-hidden="true">
           <svg class="ic" viewBox="0 0 24 24" fill="none">
             <!-- The revolving spinner: track + arc. The group rotates via CSS; its visibility is owned by the
@@ -83,7 +99,14 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
             <!-- Offline glyph. Drawn on together when the chip is in the 'closed' state. -->
             <g class="off">
               <circle class="off-ring" cx="12" cy="12" r="8" pathLength="100" />
-              <line   class="slash"    x1="6.5" y1="6.5" x2="17.5" y2="17.5" pathLength="100" />
+              <line
+                class="slash"
+                x1="6.5"
+                y1="6.5"
+                x2="17.5"
+                y2="17.5"
+                pathLength="100"
+              />
             </g>
           </svg>
         </span>
@@ -95,212 +118,289 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
       </button>
     }
   `,
-  styles: [`
-    :host {
-      /* No positioning here — this component is projected into <app-indicator-slot>, the single
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  styles: [
+    `
+      :host {
+        /* No positioning here — this component is projected into <app-indicator-slot>, the single
          top-center anchor (its :host carries the position/top/centering/z-index). This :host only owns
          the palette; layout is the slot's job. */
-      display: block;
-      /* Palette source-of-truth: theme-aware concrete colors resolved from --app-* tokens. The --c-* vars
+        display: block;
+        /* Palette source-of-truth: theme-aware concrete colors resolved from --app-* tokens. The --c-* vars
          are registered <color> (see styles.scss), so these compute to concrete rgb() that Motion reads. */
-      --c-amber-1: color-mix(in srgb, var(--app-warning) 16%, var(--app-surface));
-      --c-amber-2: color-mix(in srgb, var(--app-warning) 30%, var(--app-surface));
-      --c-green-1: color-mix(in srgb, var(--app-success) 18%, var(--app-surface));
-      --c-green-2: color-mix(in srgb, var(--app-success) 34%, var(--app-surface));
-      --c-red-1:   color-mix(in srgb, var(--app-danger)  16%, var(--app-surface));
-      --c-red-2:   color-mix(in srgb, var(--app-danger)  32%, var(--app-surface));
-      --c-amber:   var(--app-warning);
-      --c-green:   var(--app-success);
-      --c-red:     var(--app-danger);
-      /* Initial gradient/icon color = the connecting palette; Motion retargets these on every state change. */
-      --g-from: color-mix(in srgb, var(--app-warning) 16%, var(--app-surface));
-      --g-to:   color-mix(in srgb, var(--app-warning) 30%, var(--app-surface));
-      --ic:     var(--app-warning);
-    }
-    .chip {
-      box-sizing: border-box;
-      height: 36px;
-      /* width is content-driven: collapsed content = 36px icon; expanded content adds the CSS-clipped text
+        --c-amber-1: color-mix(
+          in srgb,
+          var(--app-warning) 16%,
+          var(--app-surface)
+        );
+        --c-amber-2: color-mix(
+          in srgb,
+          var(--app-warning) 30%,
+          var(--app-surface)
+        );
+        --c-green-1: color-mix(
+          in srgb,
+          var(--app-success) 18%,
+          var(--app-surface)
+        );
+        --c-green-2: color-mix(
+          in srgb,
+          var(--app-success) 34%,
+          var(--app-surface)
+        );
+        --c-red-1: color-mix(
+          in srgb,
+          var(--app-danger) 16%,
+          var(--app-surface)
+        );
+        --c-red-2: color-mix(
+          in srgb,
+          var(--app-danger) 32%,
+          var(--app-surface)
+        );
+        --c-amber: var(--app-warning);
+        --c-green: var(--app-success);
+        --c-red: var(--app-danger);
+        /* Initial gradient/icon color = the connecting palette; Motion retargets these on every state change. */
+        --g-from: color-mix(
+          in srgb,
+          var(--app-warning) 16%,
+          var(--app-surface)
+        );
+        --g-to: color-mix(in srgb, var(--app-warning) 30%, var(--app-surface));
+        --ic: var(--app-warning);
+      }
+      .chip {
+        box-sizing: border-box;
+        height: 36px;
+        /* width is content-driven: collapsed content = 36px icon; expanded content adds the CSS-clipped text
          column. No DOM width measurement is used, so countdown updates cannot accumulate rounding pixels. */
-      width: auto;
-      max-width: min(340px, calc(100vw - 32px));
-      padding: 0;
-      gap: 0; /* collapsed: 0 gap ⇒ icon(36) + text(0) + padding(0) = exactly the 36px circle */
-      cursor: pointer;
-      overflow: hidden;
-      /* The gradient fill, elevation, pill shape, and currentColor all come from the shared .tonal-chip
+        width: auto;
+        max-width: min(340px, calc(100vw - 32px));
+        padding: 0;
+        gap: 0; /* collapsed: 0 gap ⇒ icon(36) + text(0) + padding(0) = exactly the 36px circle */
+        cursor: pointer;
+        overflow: hidden;
+        /* The gradient fill, elevation, pill shape, and currentColor all come from the shared .tonal-chip
          shell (the gradient fills the chip at its natural size). Deliberately NO background-position
          shimmer: animating a 2-stop gradient's position sweeps its tonal midpoint diagonally across the
          chip — a moving line that read as a drifting crosshair (the dropped conn-shimmer). The gradient
          stays static during the spin state; Motion morphs it on state changes, and the revolving .arc
          carries the loading motion. */
-      /* gap + padding transition alongside the text's max-width → the dot↔pill morph is continuous. Easing is
+        /* gap + padding transition alongside the text's max-width → the dot↔pill morph is continuous. Easing is
          the M3 standard curve. (gradient + color are OWNED by Motion's spring, excluded to avoid fighting it.) */
-      transition:
-        gap 0.30s cubic-bezier(0.2, 0, 0, 1),
-        padding 0.30s cubic-bezier(0.2, 0, 0, 1),
-        box-shadow 0.20s cubic-bezier(0.2, 0, 0, 1);
-    }
-    /* M3 state layer: a currentColor overlay atop the fill surfaces the interactive affordance on
+        transition:
+          gap 0.3s cubic-bezier(0.2, 0, 0, 1),
+          padding 0.3s cubic-bezier(0.2, 0, 0, 1),
+          box-shadow 0.2s cubic-bezier(0.2, 0, 0, 1);
+      }
+      /* M3 state layer: a currentColor overlay atop the fill surfaces the interactive affordance on
        hover/focus/press. pointer-events:none so the click still hits the button. */
-    .chip::before {
-      content: "";
-      position: absolute;
-      inset: 0;
-      border-radius: inherit;
-      background: currentColor;
-      opacity: 0;
-      transition: opacity 0.20s linear;
-      pointer-events: none;
-    }
-    .chip:hover::before         { opacity: 0.08; }
-    .chip:focus-visible::before { opacity: 0.10; }
-    .chip:active::before        { opacity: 0.12; }
-    .chip:focus-visible {
-      outline: 2px solid color-mix(in srgb, currentColor 60%, transparent);
-      outline-offset: 2px;
-    }
-    .chip.expanded {
-      gap: 8px;
-      padding: 0 14px 0 8px;
-    }
-    .icon {
-      flex: 0 0 36px;
-      width: 36px;
-      height: 36px;
-      display: grid;
-      place-items: center;
-    }
-    .ic {
-      width: 20px;
-      height: 20px;
-      display: block;
-      overflow: visible;
-    }
-    /* The spinner group revolves around its own center; --spin-dur is bound per state (faster on reconnect).
+      .chip::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        background: currentColor;
+        opacity: 0;
+        transition: opacity 0.2s linear;
+        pointer-events: none;
+      }
+      .chip:hover::before {
+        opacity: 0.08;
+      }
+      .chip:focus-visible::before {
+        opacity: 0.1;
+      }
+      .chip:active::before {
+        opacity: 0.12;
+      }
+      .chip:focus-visible {
+        outline: 2px solid color-mix(in srgb, currentColor 60%, transparent);
+        outline-offset: 2px;
+      }
+      .chip.expanded {
+        gap: 8px;
+        padding: 0 14px 0 8px;
+      }
+      .icon {
+        flex: 0 0 36px;
+        width: 36px;
+        height: 36px;
+        display: grid;
+        place-items: center;
+      }
+      .ic {
+        width: 20px;
+        height: 20px;
+        display: block;
+        overflow: visible;
+      }
+      /* The spinner group revolves around its own center; --spin-dur is bound per state (faster on reconnect).
        Visibility is driven by [data-state] (below) and crossed over via a CSS transition. This is NOT left to
        Motion: its imperative opacity tween on these SVG elements doesn't hold a resting value (WAAPI fill:none
        reverts to the opacity:0 base once the crossfade finishes), so the spinner would vanish after ~0.28s. */
-    .spin {
-      transform-box: fill-box;
-      transform-origin: center;
-      animation: conn-spin var(--spin-dur, 1.6s) linear infinite;
-      opacity: 0;
-      transition: opacity 0.28s cubic-bezier(0.2, 0, 0, 1);
-    }
-    .track {
-      fill: none;
-      stroke: color-mix(in srgb, currentColor 22%, transparent);
-      stroke-width: 3;
-    }
-    .arc {
-      fill: none;
-      stroke: currentColor;
-      stroke-width: 3;
-      stroke-linecap: round;
-      stroke-dasharray: 24 76; /* ~86° arc; gap (76) > dash ⇒ a single arc segment on the pathLength=100 ring */
-      animation: conn-arc 1.4s ease-in-out infinite; /* breathe the length for the indeterminate feel */
-    }
-    /* Check + offline shapes: drawn on by CSS via stroke-dashoffset. pathLength=100 ⇒ offset 100 = fully
+      .spin {
+        transform-box: fill-box;
+        transform-origin: center;
+        animation: conn-spin var(--spin-dur, 1.6s) linear infinite;
+        opacity: 0;
+        transition: opacity 0.28s cubic-bezier(0.2, 0, 0, 1);
+      }
+      .track {
+        fill: none;
+        stroke: color-mix(in srgb, currentColor 22%, transparent);
+        stroke-width: 3;
+      }
+      .arc {
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 3;
+        stroke-linecap: round;
+        stroke-dasharray: 24 76; /* ~86° arc; gap (76) > dash ⇒ a single arc segment on the pathLength=100 ring */
+        animation: conn-arc 1.4s ease-in-out infinite; /* breathe the length for the indeterminate feel */
+      }
+      /* Check + offline shapes: drawn on by CSS via stroke-dashoffset. pathLength=100 ⇒ offset 100 = fully
        hidden, 0 = fully drawn. The resting (drawn) state for the active shape is set by the [data-state]
        rules below; opacity + dashoffset cross over via CSS transition. As with .spin, Motion is deliberately
        NOT used here — its WAAPI tween reverts to this hidden base once the draw finishes. */
-    .check,
-    .off-ring,
-    .slash {
-      fill: none;
-      stroke: currentColor;
-      stroke-width: 3;
-      stroke-linecap: round;
-      stroke-linejoin: round;
-      stroke-dasharray: 100;
-      stroke-dashoffset: 100;
-      opacity: 0;
-      transition:
-        opacity 0.45s cubic-bezier(0.2, 0, 0, 1),
-        stroke-dashoffset 0.45s cubic-bezier(0.2, 0, 0, 1);
-    }
-    .slash { stroke-width: 3.2; }
-    /* Resting shape visibility, keyed off the chip's [data-state] binding — the single source of truth for
+      .check,
+      .off-ring,
+      .slash {
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 3;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-dasharray: 100;
+        stroke-dashoffset: 100;
+        opacity: 0;
+        transition:
+          opacity 0.45s cubic-bezier(0.2, 0, 0, 1),
+          stroke-dashoffset 0.45s cubic-bezier(0.2, 0, 0, 1);
+      }
+      .slash {
+        stroke-width: 3.2;
+      }
+      /* Resting shape visibility, keyed off the chip's [data-state] binding — the single source of truth for
        which icon is shown. CSS owns this (and the transition into it); Motion owns only the gradient morph. */
-    .chip[data-state="connecting"]   .spin,
-    .chip[data-state="reconnecting"] .spin { opacity: 1; }
-    .chip[data-state="recovered"]    .check {
-      opacity: 1;
-      stroke-dashoffset: 0;
-      /* Delay the draw-on until the spinner has faded out (.spin's 0.28s opacity transition) AND the
+      .chip[data-state='connecting'] .spin,
+      .chip[data-state='reconnecting'] .spin {
+        opacity: 1;
+      }
+      .chip[data-state='recovered'] .check {
+        opacity: 1;
+        stroke-dashoffset: 0;
+        /* Delay the draw-on until the spinner has faded out (.spin's 0.28s opacity transition) AND the
          pill↔circle collapse finishes (the 0.30s gap/padding transition) — otherwise the outgoing arc and
          the incoming check overlap into crossing lines mid-recover, and the check strokes across the
          still-resizing chip. Same gate the 'closed' glyph uses below (transition-delay: 0.30s). Leaving
          'recovered' is a chip unmount, so this delay only shapes the draw-on direction. */
-      transition-delay: 0.30s;
-    }
-    /* The offline glyph draws on AFTER the pill→circle collapse (transition-delay = the collapse duration).
+        transition-delay: 0.3s;
+      }
+      /* The offline glyph draws on AFTER the pill→circle collapse (transition-delay = the collapse duration).
        Without the delay, the slash strokes across the still-resizing chip — a bright diagonal "flash" from
        bottom-right to top-left mid-collapse. Delaying only the draw-on (set here, in the active-state rule)
        means leaving 'closed' still fades the glyph out immediately. */
-    .chip[data-state="closed"]       .off-ring,
-    .chip[data-state="closed"]       .slash { opacity: 1; stroke-dashoffset: 0; transition-delay: 0.30s; }
-    /* CSS-only text reveal. The old scrollWidth + 2px measurement fed the already-constrained width back
+      .chip[data-state='closed'] .off-ring,
+      .chip[data-state='closed'] .slash {
+        opacity: 1;
+        stroke-dashoffset: 0;
+        transition-delay: 0.3s;
+      }
+      /* CSS-only text reveal. The old scrollWidth + 2px measurement fed the already-constrained width back
        into itself on every countdown render, allowing rounding to grow the pill a pixel at a time. A bounded
        max-width transition keeps the same dot↔pill reveal without synchronous layout reads. */
-    .text {
-      display: block;
-      white-space: nowrap;
-      /* M3 label-large (14 / 500 / 20). line-height stays an integer-px length per the rule. */
-      font-size: 14px;
-      font-weight: 500;
-      line-height: 20px;
-      /* tabular-nums: the reconnecting countdown counts down one digit per second (5s→4s→…). Without it,
+      .text {
+        display: block;
+        white-space: nowrap;
+        /* M3 label-large (14 / 500 / 20). line-height stays an integer-px length per the rule. */
+        font-size: 14px;
+        font-weight: 500;
+        line-height: 20px;
+        /* tabular-nums: the reconnecting countdown counts down one digit per second (5s→4s→…). Without it,
          proportional digits would each have a different advance width, so the pill would re-flow its
          measured width every tick (the re-measure effect runs on every label() change). Fixed-width digits
          keep the countdown's width constant across ticks. Not a height-contributing property (exempt). */
-      font-variant-numeric: tabular-nums;
-      min-width: 0;
-      max-width: 0;
-      opacity: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      transition:
-        max-width 0.30s cubic-bezier(0.2, 0, 0, 1),
-        opacity 0.20s linear;
-    }
-    .chip.expanded .text {
-      max-width: 274px; /* 340px chip cap minus icon, gap, and horizontal padding */
-      opacity: 1;
-      transition-delay: 0.08s; /* let the pill begin opening before the text shows */
-    }
-    /* Recover exit: the chip scales in, holds while Motion draws the check, then fades out before the
+        font-variant-numeric: tabular-nums;
+        min-width: 0;
+        max-width: 0;
+        opacity: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        transition:
+          max-width 0.3s cubic-bezier(0.2, 0, 0, 1),
+          opacity 0.2s linear;
+      }
+      .chip.expanded .text {
+        max-width: 274px; /* 340px chip cap minus icon, gap, and horizontal padding */
+        opacity: 1;
+        transition-delay: 0.08s; /* let the pill begin opening before the text shows */
+      }
+      /* Recover exit: the chip scales in, holds while Motion draws the check, then fades out before the
        recovering signal flips to false and the element is removed. Background/color are NOT set here —
        Motion's green morph owns them; this only animates opacity/scale (non-box, exempt). */
-    .chip.recovering {
-      animation: conn-recover 1.4s cubic-bezier(0.2, 0, 0, 1) forwards;
-    }
-    @keyframes conn-spin    { to { transform: rotate(360deg); } }
-    @keyframes conn-arc {
-      0%, 100% { stroke-dasharray: 18 82; }
-      50%      { stroke-dasharray: 34 66; }
-    }
-    @keyframes conn-recover {
-      0%   { opacity: 0; transform: scale(0.82); }
-      18%  { opacity: 1; transform: scale(1); }
-      70%  { opacity: 1; transform: scale(1); }
-      100% { opacity: 0; transform: scale(0.9); }
-    }
-    @media (prefers-reduced-motion: reduce) {
-      .chip            { transition: none; }
-      .spin,
-      .arc             { animation: none; }
-      /* Static, fully-visible arc so the indicator is recognizable without motion. */
-      .arc             { stroke-dasharray: 30 70; }
-      /* Shapes snap (no crossfade) to their [data-state] resting visibility; the gradient morph also snaps. */
-      .spin,
-      .check,
-      .off-ring,
-      .slash           { transition: none; }
-      .text            { transition: none; transform: none; }
-    }
-  `],
+      .chip.recovering {
+        animation: conn-recover 1.4s cubic-bezier(0.2, 0, 0, 1) forwards;
+      }
+      @keyframes conn-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @keyframes conn-arc {
+        0%,
+        100% {
+          stroke-dasharray: 18 82;
+        }
+        50% {
+          stroke-dasharray: 34 66;
+        }
+      }
+      @keyframes conn-recover {
+        0% {
+          opacity: 0;
+          transform: scale(0.82);
+        }
+        18% {
+          opacity: 1;
+          transform: scale(1);
+        }
+        70% {
+          opacity: 1;
+          transform: scale(1);
+        }
+        100% {
+          opacity: 0;
+          transform: scale(0.9);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .chip {
+          transition: none;
+        }
+        .spin,
+        .arc {
+          animation: none;
+        }
+        /* Static, fully-visible arc so the indicator is recognizable without motion. */
+        .arc {
+          stroke-dasharray: 30 70;
+        }
+        /* Shapes snap (no crossfade) to their [data-state] resting visibility; the gradient morph also snaps. */
+        .spin,
+        .check,
+        .off-ring,
+        .slash {
+          transition: none;
+        }
+        .text {
+          transition: none;
+          transform: none;
+        }
+      }
+    `,
+  ],
 })
 export class ConnectionBannerComponent implements OnDestroy {
   private readonly ws = inject(WebsocketService);
@@ -322,7 +422,9 @@ export class ConnectionBannerComponent implements OnDestroy {
 
   /** Effective state: the demo override if set, else the live SSE state. The single source read by
    *  show()/label()/the transition + morph effects — so a demo toggle drives the full machine. */
-  protected readonly effState = computed<ConnectionState>(() => this.demoState() ?? this.ws.state());
+  protected readonly effState = computed<ConnectionState>(
+    () => this.demoState() ?? this.ws.state(),
+  );
 
   /** True for ~1.4s after a reconnect recovers — drives the spinner→check flourish. */
   readonly recovering = signal(false);
@@ -343,7 +445,9 @@ export class ConnectionBannerComponent implements OnDestroy {
   private controls: AnimationPlaybackControls[] = [];
 
   /** Per-state idle spin period (ms). Reconnecting spins faster (urgency); connecting is a calm scan. */
-  readonly spinDur = computed(() => this.effState() === 'reconnecting' ? 900 : 1600);
+  readonly spinDur = computed(() =>
+    this.effState() === 'reconnecting' ? 900 : 1600,
+  );
 
   /** Cached reduced-motion preference — snaps every morph to its end state instead of animating. */
   private readonly reduceMotion = prefersReducedMotion();
@@ -354,7 +458,8 @@ export class ConnectionBannerComponent implements OnDestroy {
   readonly show = computed<ConnVisual | undefined>(() => {
     if (this.recovering()) return 'recovered';
     const s = this.effState();
-    if (s === 'connecting' || s === 'reconnecting' || s === 'disconnected') return s === 'disconnected' ? 'reconnecting' : s;
+    if (s === 'connecting' || s === 'reconnecting' || s === 'disconnected')
+      return s === 'disconnected' ? 'reconnecting' : s;
     if (s === 'closed' && this.demoState() !== null) return 'closed'; // playground-only
     return undefined;
   });
@@ -366,11 +471,16 @@ export class ConnectionBannerComponent implements OnDestroy {
   readonly stateMessage = computed(() => {
     this.language.lang();
     switch (this.effState()) {
-      case 'connecting':   return this.transloco.translate('connection.connecting');
-      case 'reconnecting': return this.transloco.translate('connection.reconnecting');
-      case 'disconnected': return this.transloco.translate('connection.disconnected');
-      case 'closed':       return this.transloco.translate('connection.offline');
-      default:             return this.transloco.translate('connection.recovered');
+      case 'connecting':
+        return this.transloco.translate('connection.connecting');
+      case 'reconnecting':
+        return this.transloco.translate('connection.reconnecting');
+      case 'disconnected':
+        return this.transloco.translate('connection.disconnected');
+      case 'closed':
+        return this.transloco.translate('connection.offline');
+      default:
+        return this.transloco.translate('connection.recovered');
     }
   });
 
@@ -418,7 +528,11 @@ export class ConnectionBannerComponent implements OnDestroy {
         // toggling; while disconnected (OS offline) a retry is pointless, so it just toggles.
         this.wasReconnecting = true;
         this.expanded.set(true);
-        this.announce(s === 'disconnected' ? 'connection.disconnected' : 'connection.reconnecting');
+        this.announce(
+          s === 'disconnected'
+            ? 'connection.disconnected'
+            : 'connection.reconnecting',
+        );
       } else if (s === 'connecting') {
         // Boot connect: show the dot quietly (no auto-expand, no flourish on the open that follows). NOT
         // announced — boot is a routine state, voicing it on every launch would be noise.
@@ -430,7 +544,8 @@ export class ConnectionBannerComponent implements OnDestroy {
           this.announce('connection.recovered');
         }
         this.wasReconnecting = false;
-      } else { // 'closed' (logout / force-login) — the shell navigates away; just reset.
+      } else {
+        // 'closed' (logout / force-login) — the shell navigates away; just reset.
         this.wasReconnecting = false;
         this.collapse();
       }
@@ -450,7 +565,6 @@ export class ConnectionBannerComponent implements OnDestroy {
     effect(() => {
       this.slot.priorityOccupied.set(!!this.show());
     });
-
   }
 
   /** Spring the gradient stops + icon color to the new state's palette. The icon shapes' visibility and
@@ -476,7 +590,9 @@ export class ConnectionBannerComponent implements OnDestroy {
     }
 
     // Gradient stops + icon color: spring the registered <color> vars (shared with the update banner).
-    this.controls.push(springGradient(chipEl, { from: p.from, to: p.to, ic: p.ic }));
+    this.controls.push(
+      springGradient(chipEl, { from: p.from, to: p.to, ic: p.ic }),
+    );
   }
 
   /** Chip click. In `reconnecting` (the one state where the user has agency) it triggers an immediate
@@ -500,7 +616,12 @@ export class ConnectionBannerComponent implements OnDestroy {
 
   /** Voice a connection-state transition to assistive tech via the CDK LiveAnnouncer. Translates the key
    *  at call time (announce fires once per transition, on the language current at that moment). */
-  private announce(key: 'connection.reconnecting' | 'connection.recovered' | 'connection.disconnected'): void {
+  private announce(
+    key:
+      | 'connection.reconnecting'
+      | 'connection.recovered'
+      | 'connection.disconnected',
+  ): void {
     this.liveAnnouncer.announce(this.transloco.translate(key));
   }
 

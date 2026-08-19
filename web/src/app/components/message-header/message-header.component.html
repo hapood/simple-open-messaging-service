@@ -4,11 +4,18 @@
       class="back-btn"
       type="button"
       (click)="goBack()"
-      [attr.aria-label]="'chat.backUnreadAria' | transloco: { count: otherUnreadCount() }"
+      [attr.aria-label]="
+        'chat.backUnreadAria' | transloco: { count: otherUnreadCount() }
+      "
     >
-      <app-icon [type]="AppIconType.BACK" [style]="{ width: '24px', height: '24px' }"></app-icon>
+      <app-icon
+        [type]="AppIconType.BACK"
+        [style]="{ width: '24px', height: '24px' }"
+      ></app-icon>
       @if (otherUnreadCount() > 0) {
-        <span class="back-unread" aria-hidden="true">{{ otherUnreadLabel() }}</span>
+        <span class="back-unread" aria-hidden="true">{{
+          otherUnreadLabel()
+        }}</span>
       }
     </button>
   }
@@ -25,10 +32,28 @@
     <div class="msg-title">
       <span class="msg-title-line">
         <span class="msg-title-text" [title]="title()">{{ title() }}</span>
-        @if (federatedDomain(); as dom) {
-          <app-federated-badge [domain]="dom" [compact]="true"></app-federated-badge>
+        @if (groupMemberCount(); as count) {
+          <span
+            class="group-member-count"
+            [attr.aria-label]="'group.members' | transloco: { count }"
+            >({{ count }})</span
+          >
         }
-        @if (userMsgTrd()?.muted && !userMsgTrd()?.blocked) {
+        @if (federatedDomain(); as dom) {
+          <app-federated-badge
+            [domain]="dom"
+            [compact]="true"
+          ></app-federated-badge>
+        }
+        @if (userMsgTrd()?.blocked) {
+          <app-icon
+            class="thread-state-icon"
+            [type]="AppIconType.BLOCK"
+            [style]="{ width: '16px', height: '16px' }"
+            [attr.aria-label]="'threadList.blocked' | transloco"
+            [title]="'threadList.blocked' | transloco"
+          ></app-icon>
+        } @else if (userMsgTrd()?.muted) {
           <app-icon
             class="thread-state-icon"
             [type]="AppIconType.MUTE"
@@ -44,8 +69,17 @@
     </div>
     <div class="msg-actions">
       @if (canCall()) {
-        <button class="icon-btn" type="button" [disabled]="callActive()" (click)="placeCall()" [attr.aria-label]="'chat.callAria' | transloco">
-          <app-icon [type]="AppIconType.PHONE" [style]="{ width: '22px', height: '22px' }"></app-icon>
+        <button
+          class="icon-btn"
+          type="button"
+          [disabled]="callActive()"
+          (click)="placeCall()"
+          [attr.aria-label]="'chat.callAria' | transloco"
+        >
+          <app-icon
+            [type]="AppIconType.PHONE"
+            [style]="{ width: '22px', height: '22px' }"
+          ></app-icon>
         </button>
       }
       <button
@@ -58,7 +92,10 @@
         [attr.aria-expanded]="menuOpen()"
         [attr.aria-label]="'nav.moreAria' | transloco"
       >
-        <app-icon [type]="AppIconType.MORE" [style]="{ width: '24px', height: '24px' }"></app-icon>
+        <app-icon
+          [type]="AppIconType.MORE"
+          [style]="{ width: '24px', height: '24px' }"
+        ></app-icon>
       </button>
       <app-chat-action-menu
         [entries]="entries()"

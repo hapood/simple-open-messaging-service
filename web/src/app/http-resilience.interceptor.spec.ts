@@ -1,8 +1,18 @@
-import { HttpErrorResponse, HttpEvent, HttpHandlerFn, HttpRequest, HttpResponse } from '@angular/common/http';
+import type { Mock } from 'vitest';
+import {
+  HttpErrorResponse,
+  HttpEvent,
+  HttpHandlerFn,
+  HttpRequest,
+  HttpResponse,
+} from '@angular/common/http';
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { Observable, defer, of, throwError } from 'rxjs';
-import { httpResilienceInterceptor, HTTP_RETRY_CONFIG } from './http-resilience.interceptor';
+import {
+  httpResilienceInterceptor,
+  HTTP_RETRY_CONFIG,
+} from './http-resilience.interceptor';
 import { ToastService } from './services/toast.service';
 import { BusinessCode } from './services/biz-code';
 import { TranslocoService } from '@jsverse/transloco';
@@ -17,19 +27,25 @@ import { TranslocoService } from '@jsverse/transloco';
  * TestBed.runInInjectionContext (the interceptor injects ToastService + TranslocoService + the config).
  */
 describe('httpResilienceInterceptor (429 retry + 5xx/network surface)', () => {
-  let warnSpy: jasmine.Spy;
+  let warnSpy: Mock;
   let nextCalls: number;
 
   beforeEach(() => {
-    warnSpy = jasmine.createSpy('warn');
+    warnSpy = vi.fn().mockName('warn');
     nextCalls = 0;
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
         // Synchronous retryDelay → the retry loop completes within the subscribe() call.
-        { provide: HTTP_RETRY_CONFIG, useValue: { maxRetries: 4, retryDelay: () => of(0) } },
+        {
+          provide: HTTP_RETRY_CONFIG,
+          useValue: { maxRetries: 4, retryDelay: () => of(0) },
+        },
         { provide: ToastService, useValue: { warn: warnSpy } },
-        { provide: TranslocoService, useValue: { translate: (k: string) => k } },
+        {
+          provide: TranslocoService,
+          useValue: { translate: (k: string) => k },
+        },
       ],
     });
   });
@@ -46,15 +62,28 @@ describe('httpResilienceInterceptor (429 retry + 5xx/network surface)', () => {
       });
   }
 
-  const req = (): HttpRequest<unknown> => new HttpRequest('POST', '/api/v1/send-message', {});
+  const req = (): HttpRequest<unknown> =>
+    new HttpRequest('POST', '/api/v1/send-message', {});
 
   const err = (status: number, errorBody?: unknown): HttpErrorResponse =>
-    new HttpErrorResponse({ status, url: '/api/v1/send-message', error: errorBody });
+    new HttpErrorResponse({
+      status,
+      url: '/api/v1/send-message',
+      error: errorBody,
+    });
 
   /** Run the interceptor and capture the synchronous result/error (retryDelay is synchronous). */
-  function run(nextFn: HttpHandlerFn): { result?: HttpEvent<unknown>; err?: HttpErrorResponse } {
-    const state: { result?: HttpEvent<unknown>; err?: HttpErrorResponse } = {};
-    TestBed.runInInjectionContext(() => httpResilienceInterceptor(req(), nextFn)).subscribe({
+  function run(nextFn: HttpHandlerFn): {
+    result?: HttpEvent<unknown>;
+    err?: HttpErrorResponse;
+  } {
+    const state: {
+      result?: HttpEvent<unknown>;
+      err?: HttpErrorResponse;
+    } = {};
+    TestBed.runInInjectionContext(() =>
+      httpResilienceInterceptor(req(), nextFn),
+    ).subscribe({
       next: (v) => (state.result = v),
       error: (e) => (state.err = e),
     });
@@ -62,7 +91,9 @@ describe('httpResilienceInterceptor (429 retry + 5xx/network surface)', () => {
   }
 
   it('passes a success through with no toast (single attempt)', () => {
-    const s = run(nextQueue([of(new HttpResponse({ status: 200, body: { ok: true } }))]));
+    const s = run(
+      nextQueue([of(new HttpResponse({ status: 200, body: { ok: true } }))]),
+    );
     expect(s.result).toBeDefined();
     expect(s.err).toBeUndefined();
     expect(warnSpy).not.toHaveBeenCalled();
@@ -70,9 +101,16 @@ describe('httpResilienceInterceptor (429 retry + 5xx/network surface)', () => {
   });
 
   it('retries a burst rate-limit (429 / code 10005) with backoff and succeeds', () => {
-    const e429 = err(429, { code: BusinessCode.RATE_LIMITED, message: 'too many requests' });
+    const e429 = err(429, {
+      code: BusinessCode.RATE_LIMITED,
+      message: 'too many requests',
+    });
     const s = run(
-      nextQueue([throwError(() => e429), throwError(() => e429), of(new HttpResponse({ status: 200, body: { ok: true } }))]),
+      nextQueue([
+        throwError(() => e429),
+        throwError(() => e429),
+        of(new HttpResponse({ status: 200, body: { ok: true } })),
+      ]),
     );
     expect(s.result).toBeDefined();
     expect(warnSpy).not.toHaveBeenCalled(); // intermediate 429s during retry are NOT surfaced
@@ -80,7 +118,10 @@ describe('httpResilienceInterceptor (429 retry + 5xx/network surface)', () => {
   });
 
   it('gives up after max retries and surfaces the final 429 as a degraded toast', () => {
-    const e429 = err(429, { code: BusinessCode.RATE_LIMITED, message: 'too many requests' });
+    const e429 = err(429, {
+      code: BusinessCode.RATE_LIMITED,
+      message: 'too many requests',
+    });
     const s = run(nextQueue([throwError(() => e429)]));
     expect(s.err).toBe(e429);
     expect(nextCalls).toBe(5); // 1 initial + 4 retries

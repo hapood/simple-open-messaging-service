@@ -1,4 +1,11 @@
-import { Component, computed, inject, input, output } from '@angular/core';
+import {
+  Component,
+  computed,
+  inject,
+  input,
+  output,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import type { ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
@@ -26,6 +33,7 @@ import { openExternalUrl } from '../../../services/runtime';
   standalone: true,
   imports: [DateRowComponent, UserAvatarComponent, TranslocoPipe],
   templateUrl: './text-row.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './text-row.component.scss',
 })
 export class TextRowComponent {

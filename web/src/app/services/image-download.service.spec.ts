@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Observable, Subject } from 'rxjs';
@@ -18,18 +19,18 @@ describe('ImageDownloadService', () => {
     src: '/uploads/photo.jpg',
     w: 800,
     h: 600,
-    size: 2_000,
+    size: 2000,
     msgId: 42,
   };
   let events: Subject<ImageDownloadEvent>;
-  let teardown: jasmine.Spy;
-  let save: jasmine.Spy;
+  let teardown: Mock;
+  let save: Mock;
   let service: ImageDownloadService;
 
   beforeEach(() => {
     events = new Subject<ImageDownloadEvent>();
-    teardown = jasmine.createSpy('teardown');
-    save = jasmine.createSpy('save').and.resolveTo();
+    teardown = vi.fn().mockName('teardown');
+    save = vi.fn().mockName('save').mockResolvedValue(undefined);
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -54,11 +55,11 @@ describe('ImageDownloadService', () => {
 
   it('shares byte progress and exposes the completed local artifact', () => {
     service.start(media, 7);
-    events.next({ type: 'progress', loaded: 750, total: 2_000 });
+    events.next({ type: 'progress', loaded: 750, total: 2000 });
     expect(service.task(media)).toEqual(
-      jasmine.objectContaining({
+      expect.objectContaining({
         loaded: 750,
-        total: 2_000,
+        total: 2000,
         status: 'downloading',
       }),
     );
@@ -68,29 +69,29 @@ describe('ImageDownloadService', () => {
       artifact: {
         displayUrl: 'blob:test',
         savePath: 'blob:test',
-        size: 2_000,
-        release: jasmine.createSpy('release'),
+        size: 2000,
+        release: vi.fn().mockName('release'),
       },
     });
     expect(service.task(media)).toEqual(
-      jasmine.objectContaining({ status: 'loaded', blobUrl: 'blob:test' }),
+      expect.objectContaining({ status: 'loaded', blobUrl: 'blob:test' }),
     );
   });
 
   it('coalesces bursty progress events while preserving the newest byte count', () => {
-    jasmine.clock().install();
+    vi.useFakeTimers();
     try {
-      jasmine.clock().mockDate(new Date(1_000));
+      vi.setSystemTime(new Date(1000));
       service.start(media, 7);
-      events.next({ type: 'progress', loaded: 100, total: 2_000 });
-      events.next({ type: 'progress', loaded: 300, total: 2_000 });
-      events.next({ type: 'progress', loaded: 500, total: 2_000 });
+      events.next({ type: 'progress', loaded: 100, total: 2000 });
+      events.next({ type: 'progress', loaded: 300, total: 2000 });
+      events.next({ type: 'progress', loaded: 500, total: 2000 });
 
       expect(service.task(media)?.loaded).toBe(100);
-      jasmine.clock().tick(100);
+      vi.advanceTimersByTime(100);
       expect(service.task(media)?.loaded).toBe(500);
     } finally {
-      jasmine.clock().uninstall();
+      vi.useRealTimers();
     }
   });
 
@@ -120,26 +121,26 @@ describe('ImageDownloadService', () => {
       artifact: {
         displayUrl: 'blob:test',
         savePath: 'blob:test',
-        size: 2_000,
-        release: jasmine.createSpy('release'),
+        size: 2000,
+        release: vi.fn().mockName('release'),
       },
     });
     await Promise.resolve();
     expect(save).toHaveBeenCalledWith(
-      jasmine.objectContaining({ path: 'blob:test' }),
+      expect.objectContaining({ path: 'blob:test' }),
     );
   });
 
   it('keeps a downloaded image loaded when the platform save picker is cancelled', async () => {
-    save.and.rejectWith(new MediaSaveCancelledError());
+    save.mockRejectedValue(new MediaSaveCancelledError());
     service.start(media, 7, true);
     events.next({
       type: 'completed',
       artifact: {
         displayUrl: 'blob:test',
         savePath: 'blob:test',
-        size: 2_000,
-        release: jasmine.createSpy('release'),
+        size: 2000,
+        release: vi.fn().mockName('release'),
       },
     });
 
@@ -147,7 +148,7 @@ describe('ImageDownloadService', () => {
     await Promise.resolve();
 
     expect(service.task(media)).toEqual(
-      jasmine.objectContaining({
+      expect.objectContaining({
         status: 'loaded',
         saveAfterLoad: false,
         blobUrl: 'blob:test',

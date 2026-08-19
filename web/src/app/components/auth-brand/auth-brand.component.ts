@@ -1,4 +1,4 @@
-import { Component } from '@angular/core';
+import { Component, ChangeDetectionStrategy } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { BrandLogoComponent } from '../brand-logo/brand-logo.component';
 
@@ -10,9 +10,10 @@ import { BrandLogoComponent } from '../brand-logo/brand-logo.component';
  * page's gradient background and white-text overlay.
  */
 @Component({
-    selector: 'app-auth-brand',
-    imports: [BrandLogoComponent, TranslocoPipe],
-    templateUrl: './auth-brand.component.html',
-    styleUrl: './auth-brand.component.scss'
+  selector: 'app-auth-brand',
+  imports: [BrandLogoComponent, TranslocoPipe],
+  templateUrl: './auth-brand.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  styleUrl: './auth-brand.component.scss',
 })
 export class AuthBrandComponent {}

@@ -1,4 +1,10 @@
-import { Component, computed, input, output } from '@angular/core';
+import {
+  Component,
+  computed,
+  input,
+  output,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import type { ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
@@ -43,6 +49,7 @@ interface LinkCard {
     LinkCardContentComponent,
   ],
   templateUrl: './link-row.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './link-row.component.scss',
 })
 export class LinkRowComponent {

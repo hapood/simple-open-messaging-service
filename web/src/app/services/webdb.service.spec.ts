@@ -76,10 +76,8 @@ describe('WebdbService', () => {
 
     it('opens separate per-user core and message DBs and signals ready', async () => {
       const db = await webdb.openForUser('1');
-      expect(db).withContext('opened handle').toBeTruthy();
-      expect(db!.name)
-        .withContext('per-user partition key')
-        .toBe('soms-webdb-u1');
+      expect(db, 'opened handle').toBeTruthy();
+      expect(db!.name, 'per-user partition key').toBe('soms-webdb-u1');
       expect([...db!.objectStoreNames].sort()).toEqual([
         'avatars',
         'friendIntents',
@@ -100,7 +98,7 @@ describe('WebdbService', () => {
     });
 
     it('strict startup open does not create missing databases', async () => {
-      await expectAsync(webdb.openExistingForUser('1')).toBeRejected();
+      await expect(webdb.openExistingForUser('1')).rejects.toThrow();
 
       const names = (await indexedDB.databases()).map(
         (database) => database.name,
@@ -126,7 +124,7 @@ describe('WebdbService', () => {
       await webdb.putMeta('sentinel', 'still-present');
       await webdb.close();
 
-      await expectAsync(webdb.openExistingForUser('1')).toBeRejectedWithError(
+      await expect(webdb.openExistingForUser('1')).rejects.toThrowError(
         LocalCacheVersionMismatchError,
       );
       const raw = await openDB('soms-webdb-u1');
@@ -157,7 +155,7 @@ describe('WebdbService', () => {
         lastRender: 5,
       });
       const got = await webdb.getAvatar('u9');
-      expect(got).withContext('avatar hit').toBeTruthy();
+      expect(got, 'avatar hit').toBeTruthy();
       expect(await got!.blob.text()).toBe('hi');
       expect(got!.path).toBe('/a.webp');
     });
@@ -234,7 +232,7 @@ describe('WebdbService', () => {
       expect(webdb.ready()).toBe(true);
       await webdb.closeAndDelete('1');
       // db() has no handle and no currentUserId → it must reject (it must NOT lazily reopen '1').
-      await expectAsync(webdb.db()).toBeRejected();
+      await expect(webdb.db()).rejects.toThrow();
       expect(webdb.ready()).toBe(false);
     });
 
@@ -248,7 +246,7 @@ describe('WebdbService', () => {
 
       expect(lifetime.aborted).toBe(true);
       expect(webdb.ready()).toBe(false);
-      await expectAsync(webdb.db()).toBeRejected();
+      await expect(webdb.db()).rejects.toThrow();
       const names = (await indexedDB.databases()).map(
         (database) => database.name,
       );
@@ -262,7 +260,7 @@ describe('WebdbService', () => {
       const liveDb = await webdb.db();
       let release!: () => void;
       const held = new Promise<void>((resolve) => (release = resolve));
-      const dbSpy = spyOn(webdb, 'db').and.callFake(async () => {
+      const dbSpy = vi.spyOn(webdb, 'db').mockImplementation(async () => {
         await held;
         return liveDb;
       });
@@ -274,14 +272,14 @@ describe('WebdbService', () => {
         .recreateForUser('1')
         .then(() => (recreated = true));
 
-      await expectAsync(
+      await expect(
         webdb.putThread({ threadId: 8, type: 'P2P' } as never),
-      ).toBeRejectedWithError('account cache lifetime expired');
+      ).rejects.toThrowError('account cache lifetime expired');
       expect(recreated).toBe(false);
 
       release();
       await read;
-      dbSpy.and.callThrough();
+      dbSpy.mockRestore();
       await recreate;
 
       expect(recreated).toBe(true);
@@ -333,7 +331,7 @@ describe('WebdbService', () => {
         profileRevision: 6,
       });
       expect(await webdb.listMemberProfiles(9)).toEqual([
-        jasmine.objectContaining({ userId: 8, displayName: 'Alice' }),
+        expect.objectContaining({ userId: 8, displayName: 'Alice' }),
       ]);
       expect(await webdb.getMeta('stateRevision')).toBe(12);
     });
@@ -383,7 +381,7 @@ describe('WebdbService', () => {
         3,
       );
       expect(await webdb.getFriendIntents()).toEqual([
-        jasmine.objectContaining({
+        expect.objectContaining({
           businessRevision: 2,
           status: 'REQUESTED',
           note: 'hello',
@@ -462,7 +460,7 @@ describe('WebdbService', () => {
       const liveDb = await webdb.messageDb();
       let release!: () => void;
       const held = new Promise<void>((resolve) => (release = resolve));
-      spyOn(webdb, 'messageDb').and.callFake(async () => {
+      vi.spyOn(webdb, 'messageDb').mockImplementation(async () => {
         await held;
         return liveDb;
       });
@@ -476,7 +474,7 @@ describe('WebdbService', () => {
         .then(() => (recreated = true));
 
       expect(lifetime.aborted).toBe(true);
-      await expectAsync(webdb.getMessage(7, 1)).toBeRejected();
+      await expect(webdb.getMessage(7, 1)).rejects.toThrow();
       await Promise.resolve();
       expect(recreated).toBe(false);
 
@@ -494,14 +492,14 @@ describe('WebdbService', () => {
 
       await webdb.recreateMessageCache();
 
-      await expectAsync(
+      await expect(
         webdb.putMessages(
           [{ threadId: 7, seq: 1 } as never],
           undefined,
           undefined,
           lifetime,
         ),
-      ).toBeRejectedWithError('message cache lifetime expired');
+      ).rejects.toThrowError('message cache lifetime expired');
       expect(await webdb.getMessage(7, 1)).toBeUndefined();
     });
   });

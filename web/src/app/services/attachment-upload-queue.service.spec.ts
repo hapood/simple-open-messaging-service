@@ -10,7 +10,10 @@ describe('AttachmentUploadQueueService', () => {
     TestBed.configureTestingModule({
       providers: [provideZonelessChangeDetection()],
     });
-    await TestBed.inject(PreferenceStore).remove('device', 'soms.maxConcurrentUploads');
+    await TestBed.inject(PreferenceStore).remove(
+      'device',
+      'soms.maxConcurrentUploads',
+    );
     service = TestBed.inject(AttachmentUploadQueueService);
   });
 
@@ -55,7 +58,7 @@ describe('AttachmentUploadQueueService', () => {
     releases.get(10)!();
     await jobs[0];
     await Promise.resolve();
-    expect(active.has(30)).toBeTrue();
+    expect(active.has(30)).toBe(true);
     releases.get(20)!();
     releases.get(30)!();
     await Promise.all(jobs);
@@ -66,7 +69,9 @@ describe('AttachmentUploadQueueService', () => {
     const preferences = TestBed.inject(PreferenceStore);
     service.setMaxConcurrent(6);
     expect(service.maxConcurrent()).toBe(6);
-    expect(await preferences.get('device', 'soms.maxConcurrentUploads')).toBe(6);
+    expect(await preferences.get('device', 'soms.maxConcurrentUploads')).toBe(
+      6,
+    );
 
     service.setMaxConcurrent(99);
     expect(service.maxConcurrent()).toBe(8);

@@ -1,4 +1,9 @@
-import { Component, inject, signal } from '@angular/core';
+import {
+  Component,
+  inject,
+  signal,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { MatListModule } from '@angular/material/list';
 import { MatRadioModule } from '@angular/material/radio';
@@ -29,7 +34,10 @@ import {
     <section class="settings-group">
       <div class="settings-card">
         <mat-list>
-          @for (policy of options; track policy.mode + (policy.mode === 'limited' ? policy.bytes : 0)) {
+          @for (
+            policy of options;
+            track policy.mode + (policy.mode === 'limited' ? policy.bytes : 0)
+          ) {
             <mat-list-item (click)="select(policy)">
               <span matListItemTitle>{{ label(policy) }}</span>
               <mat-radio-button
@@ -141,6 +149,7 @@ import {
       </section>
     }
   `,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './sub-page.scss',
 })
 export class SettingsMediaComponent {

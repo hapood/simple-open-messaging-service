@@ -22,15 +22,34 @@ describe('mergeAlbumItems', () => {
   });
 
   /** A single image (its msgId is the owning message's id). */
-  const img = (msgId: number): AlbumImage => ({ kind: 'image', src: `data:,${msgId}`, w: 100, h: 100, msgId });
+  const img = (msgId: number): AlbumImage => ({
+    kind: 'image',
+    src: `data:,${msgId}`,
+    w: 100,
+    h: 100,
+    msgId,
+  });
 
   /** A single-image IMAGE msg item (creator defaults to 1 = self). */
-  const imageItem = (id: number, clientMessageId?: string, creator = 1): CbItem<ChatItemData> => ({
+  const imageItem = (
+    id: number,
+    clientMessageId?: string,
+    creator = 1,
+  ): CbItem<ChatItemData> => ({
     id,
     clientMessageId,
     data: {
-      type: 'msg', msgId: id, creator, isSelf: creator === 1, name: 'Me', text: '',
-      time: '00:00', contentType: 'IMAGE', images: [img(id)], file: null, createdAtMs: 0,
+      type: 'msg',
+      msgId: id,
+      creator,
+      isSelf: creator === 1,
+      name: 'Me',
+      text: '',
+      time: '00:00',
+      contentType: 'IMAGE',
+      images: [img(id)],
+      file: null,
+      createdAtMs: 0,
     },
   });
 
@@ -52,8 +71,21 @@ describe('mergeAlbumItems', () => {
 
   it('non-IMAGE (PURE_TEXT) passes through untouched (clientMessageId preserved) — text never duplicated', () => {
     const text: CbItem<ChatItemData> = {
-      id: 2000, clientMessageId: 'cid-t',
-      data: { type: 'msg', msgId: 2000, creator: 1, isSelf: true, name: 'Me', text: 'hi', time: '00:00', contentType: 'PURE_TEXT', images: null, file: null, createdAtMs: 0 },
+      id: 2000,
+      clientMessageId: 'cid-t',
+      data: {
+        type: 'msg',
+        msgId: 2000,
+        creator: 1,
+        isSelf: true,
+        name: 'Me',
+        text: 'hi',
+        time: '00:00',
+        contentType: 'PURE_TEXT',
+        images: null,
+        file: null,
+        createdAtMs: 0,
+      },
     };
     const out = mergeAlbumItems([text]);
     expect(out.length).toBe(1);
@@ -68,7 +100,7 @@ describe('mergeAlbumItems', () => {
     expect(out.length).toBe(1);
     expect(out[0].id).toBe(0); // head id
     expect(out[0].ids).toEqual([0, 1, 2]); // every member msgId (jump-to-image resolution)
-    expect(out[0].data.images?.map(i => i.msgId)).toEqual([0, 1, 2]); // concatenated
+    expect(out[0].data.images?.map((i) => i.msgId)).toEqual([0, 1, 2]); // concatenated
   });
 
   it('merges a same-batch self-sent burst (each IMAGE real carries a cid): unions ALL clientMessageIds', () => {
@@ -79,7 +111,7 @@ describe('mergeAlbumItems', () => {
     const b = imageItem(1020, 'cid-b');
     const out = mergeAlbumItems([a, b]);
     expect(out.length).toBe(1);
-    expect(out[0].clientMessageId).toBe('cid-a');               // head's cid preserved (spread)
+    expect(out[0].clientMessageId).toBe('cid-a'); // head's cid preserved (spread)
     expect(out[0].clientMessageIds).toEqual(['cid-a', 'cid-b']); // every member cid (reconcile key for all)
   });
 
@@ -91,7 +123,7 @@ describe('mergeAlbumItems', () => {
 
   it('a mixed run (some cids, some not) unions only the cids that are present', () => {
     const a = imageItem(1010, 'cid-a'); // self-sent (has cid)
-    const b = imageItem(50);            // incoming (no cid)
+    const b = imageItem(50); // incoming (no cid)
     const out = mergeAlbumItems([a, b]);
     expect(out.length).toBe(1);
     expect(out[0].clientMessageIds).toEqual(['cid-a']); // only the self-sent member's cid
@@ -107,7 +139,20 @@ describe('mergeAlbumItems', () => {
   it('does NOT merge across a non-IMAGE (album breaks on an interleaved text)', () => {
     const a = imageItem(0);
     const text: CbItem<ChatItemData> = {
-      id: 2000, data: { type: 'msg', msgId: 2000, creator: 1, isSelf: true, name: 'Me', text: 'x', time: '00:00', contentType: 'PURE_TEXT', images: null, file: null, createdAtMs: 0 },
+      id: 2000,
+      data: {
+        type: 'msg',
+        msgId: 2000,
+        creator: 1,
+        isSelf: true,
+        name: 'Me',
+        text: 'x',
+        time: '00:00',
+        contentType: 'PURE_TEXT',
+        images: null,
+        file: null,
+        createdAtMs: 0,
+      },
     };
     const b = imageItem(1);
     const out = mergeAlbumItems([a, text, b]);
@@ -131,7 +176,7 @@ describe('mergeAlbumItems', () => {
     const batch: CbItem<ChatItemData>[] = [];
     for (let i = 0; i < n; i++) batch.push(imageItem(i));
     const out = mergeAlbumItems(batch);
-    expect(out.length).toBe(2);                        // ALBUM_MAX + 3
+    expect(out.length).toBe(2); // ALBUM_MAX + 3
     expect(out[0].data.images!.length).toBe(ALBUM_MAX);
     expect(out[1].data.images!.length).toBe(3);
   });
@@ -150,37 +195,69 @@ describe('mergeAlbumItems', () => {
 });
 
 describe('absorbAlbumTail (cross-batch absorb hook)', () => {
-  const oneImg = (msgId: number): AlbumImage => ({ kind: 'image', src: `data:,${msgId}`, w: 100, h: 100, msgId });
+  const oneImg = (msgId: number): AlbumImage => ({
+    kind: 'image',
+    src: `data:,${msgId}`,
+    w: 100,
+    h: 100,
+    msgId,
+  });
   /** An IMAGE msg carrying `n` images (default 1, mirroring the source's one-image-per-msg). */
   const imageItem = (id: number, n = 1, creator = 1): CbItem<ChatItemData> => ({
     id,
     data: {
-      type: 'msg', msgId: id, creator, isSelf: creator === 1, name: 'Me', text: '',
-      time: '00:00', contentType: 'IMAGE',
-      images: Array.from({ length: n }, () => oneImg(id)), file: null, createdAtMs: 0,
+      type: 'msg',
+      msgId: id,
+      creator,
+      isSelf: creator === 1,
+      name: 'Me',
+      text: '',
+      time: '00:00',
+      contentType: 'IMAGE',
+      images: Array.from({ length: n }, () => oneImg(id)),
+      file: null,
+      createdAtMs: 0,
     },
   });
   const textItem = (id: number, creator = 1): CbItem<ChatItemData> => ({
     id,
-    data: { type: 'msg', msgId: id, creator, isSelf: creator === 1, name: 'Me', text: 'hi', time: '00:00', contentType: 'PURE_TEXT', images: null, file: null, createdAtMs: 0 },
+    data: {
+      type: 'msg',
+      msgId: id,
+      creator,
+      isSelf: creator === 1,
+      name: 'Me',
+      text: 'hi',
+      time: '00:00',
+      contentType: 'PURE_TEXT',
+      images: null,
+      file: null,
+      createdAtMs: 0,
+    },
   });
 
   it('merges same-creator images: concatenates images + unions member ids, keeps the head id', () => {
     const merged = absorbAlbumTail(imageItem(1), imageItem(2));
     expect(merged).not.toBeNull();
-    expect(merged!.id).toBe(1);                                            // head id preserved
-    expect(merged!.data.images!.map(i => i.msgId)).toEqual([1, 2]);        // concatenated
-    expect(merged!.ids).toEqual([1, 2]);                                   // unioned for jump resolution
+    expect(merged!.id).toBe(1); // head id preserved
+    expect(merged!.data.images!.map((i) => i.msgId)).toEqual([1, 2]); // concatenated
+    expect(merged!.ids).toEqual([1, 2]); // unioned for jump resolution
   });
 
   it('absorbs a self-sent real (confirm): unions clientMessageIds onto the album (head + incoming)', () => {
     // The cross-signal case: each self-sent image's real arrives in its own SSE frame and absorbs into the running
     // album. The absorbed real's cid must land on the merged album so reconcileOptimistic removes its optimistic bubble.
-    const target: CbItem<ChatItemData> = { ...imageItem(1010), clientMessageId: 'cid-a' };
-    const incoming: CbItem<ChatItemData> = { ...imageItem(1020), clientMessageId: 'cid-b' };
+    const target: CbItem<ChatItemData> = {
+      ...imageItem(1010),
+      clientMessageId: 'cid-a',
+    };
+    const incoming: CbItem<ChatItemData> = {
+      ...imageItem(1020),
+      clientMessageId: 'cid-b',
+    };
     const merged = absorbAlbumTail(target, incoming);
     expect(merged).not.toBeNull();
-    expect(merged!.clientMessageId).toBe('cid-a');               // head cid preserved (spread target)
+    expect(merged!.clientMessageId).toBe('cid-a'); // head cid preserved (spread target)
     expect(merged!.clientMessageIds).toEqual(['cid-a', 'cid-b']); // incoming cid carried onto the album
   });
 
@@ -188,9 +265,14 @@ describe('absorbAlbumTail (cross-batch absorb hook)', () => {
     // An album that has already absorbed one self-sent image (clientMessageIds=['cid-a','cid-b']) absorbs a third:
     // the result carries the union of every member's cid, not just the new one.
     const target: CbItem<ChatItemData> = {
-      ...imageItem(1010), clientMessageId: 'cid-a', clientMessageIds: ['cid-a', 'cid-b'],
+      ...imageItem(1010),
+      clientMessageId: 'cid-a',
+      clientMessageIds: ['cid-a', 'cid-b'],
     };
-    const incoming: CbItem<ChatItemData> = { ...imageItem(1030), clientMessageId: 'cid-c' };
+    const incoming: CbItem<ChatItemData> = {
+      ...imageItem(1030),
+      clientMessageId: 'cid-c',
+    };
     const merged = absorbAlbumTail(target, incoming);
     expect(merged).not.toBeNull();
     expect(merged!.clientMessageIds).toEqual(['cid-a', 'cid-b', 'cid-c']); // full union
@@ -212,8 +294,10 @@ describe('absorbAlbumTail (cross-batch absorb hook)', () => {
   });
 
   it('returns null over ALBUM_MAX (all-or-nothing; the incoming item starts a new album instead)', () => {
-    expect(absorbAlbumTail(imageItem(1, ALBUM_MAX), imageItem(2))).toBeNull();         // target already at cap
-    expect(absorbAlbumTail(imageItem(1, ALBUM_MAX - 1), imageItem(2, 2))).toBeNull();  // (cap-1) + 2 > cap
+    expect(absorbAlbumTail(imageItem(1, ALBUM_MAX), imageItem(2))).toBeNull(); // target already at cap
+    expect(
+      absorbAlbumTail(imageItem(1, ALBUM_MAX - 1), imageItem(2, 2)),
+    ).toBeNull(); // (cap-1) + 2 > cap
   });
 
   it('absorbs exactly up to the cap: (cap - 1) + 1 = cap', () => {

@@ -168,6 +168,38 @@ $dark-theme: mat.define-theme(
   --mat-sys-on-secondary: var(--app-text-inverse);
   --mat-sys-secondary-container: var(--app-hover);
   --mat-sys-on-secondary-container: var(--app-text);
+
+  /* One application-level color contract for every Material binary switch. */
+  --mat-slide-toggle-selected-track-color: var(--app-toggle-active);
+  --mat-slide-toggle-selected-focus-track-color: var(--app-toggle-active);
+  --mat-slide-toggle-selected-hover-track-color: var(--app-toggle-active-hover);
+  --mat-slide-toggle-selected-pressed-track-color: var(
+    --app-toggle-active-hover
+  );
+  --mat-slide-toggle-selected-handle-color: var(--app-on-toggle-active);
+  --mat-slide-toggle-selected-focus-handle-color: var(--app-on-toggle-active);
+  --mat-slide-toggle-selected-hover-handle-color: var(--app-on-toggle-active);
+  --mat-slide-toggle-selected-pressed-handle-color: var(--app-on-toggle-active);
+  --mat-slide-toggle-selected-focus-state-layer-color: var(--app-toggle-active);
+  --mat-slide-toggle-selected-hover-state-layer-color: var(--app-toggle-active);
+  --mat-slide-toggle-selected-pressed-state-layer-color: var(
+    --app-toggle-active
+  );
+  --mat-slide-toggle-unselected-track-color: var(--app-border-strong);
+  --mat-slide-toggle-unselected-focus-track-color: var(--app-border-strong);
+  --mat-slide-toggle-unselected-hover-track-color: var(--app-text-faint);
+  --mat-slide-toggle-unselected-pressed-track-color: var(--app-text-faint);
+  --mat-slide-toggle-unselected-handle-color: var(--app-surface);
+  --mat-slide-toggle-unselected-focus-handle-color: var(--app-surface);
+  --mat-slide-toggle-unselected-hover-handle-color: var(--app-surface);
+  --mat-slide-toggle-unselected-pressed-handle-color: var(--app-surface);
+  --mat-slide-toggle-disabled-selected-track-color: var(--app-border-strong);
+  --mat-slide-toggle-disabled-unselected-track-color: var(--app-border-strong);
+  --mat-slide-toggle-disabled-selected-handle-color: var(--app-surface);
+  --mat-slide-toggle-disabled-unselected-handle-color: var(--app-surface);
+  --mat-slide-toggle-disabled-track-opacity: 0.6;
+  --mat-slide-toggle-disabled-selected-handle-opacity: 1;
+  --mat-slide-toggle-disabled-unselected-handle-opacity: 1;
 }
 
 /* === Rebind Material button colors to the app's brand/danger tokens ===

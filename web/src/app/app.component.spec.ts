@@ -16,7 +16,7 @@ describe('AppComponent context menu', () => {
 
     AppComponent.prototype.preventNativeContextMenu(event);
 
-    expect(event.defaultPrevented).toBeTrue();
+    expect(event.defaultPrevented).toBe(true);
   });
 
   for (const selector of ['input', 'textarea', 'contenteditable'] as const) {
@@ -30,7 +30,7 @@ describe('AppComponent context menu', () => {
 
       AppComponent.prototype.preventNativeContextMenu(event);
 
-      expect(event.defaultPrevented).toBeFalse();
+      expect(event.defaultPrevented).toBe(false);
     });
   }
 });

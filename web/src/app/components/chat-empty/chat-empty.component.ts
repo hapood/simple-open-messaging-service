@@ -1,4 +1,4 @@
-import { Component } from '@angular/core';
+import { Component, ChangeDetectionStrategy } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { BrandLogoComponent } from '../brand-logo/brand-logo.component';
 
@@ -13,22 +13,37 @@ import { BrandLogoComponent } from '../brand-logo/brand-logo.component';
   template: `
     <div class="chat-empty">
       <div class="empty-main">
-        <app-brand-logo [size]="72" [tagline]="'chat.emptyTagline' | transloco" />
+        <app-brand-logo
+          [size]="72"
+          [tagline]="'chat.emptyTagline' | transloco"
+        />
       </div>
     </div>
   `,
-  styles: [`
-    :host { display: block; height: 100%; }
-    .chat-empty {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      height: 100%;
-      padding: 48px 24px;
-      box-sizing: border-box;
-      background: var(--app-chat-pane-bg);
-    }
-    .empty-main { flex: 1; display: flex; align-items: center; justify-content: center; width: 100%; }
-  `],
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  styles: [
+    `
+      :host {
+        display: block;
+        height: 100%;
+      }
+      .chat-empty {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        height: 100%;
+        padding: 48px 24px;
+        box-sizing: border-box;
+        background: var(--app-chat-pane-bg);
+      }
+      .empty-main {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+      }
+    `,
+  ],
 })
 export class ChatEmptyComponent {}

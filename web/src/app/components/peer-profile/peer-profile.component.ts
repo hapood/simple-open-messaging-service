@@ -1,4 +1,9 @@
-import { Component, computed, inject } from '@angular/core';
+import {
+  Component,
+  computed,
+  inject,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
 import {
@@ -16,6 +21,7 @@ import { PopupType, RouteService } from '../../services/route.service';
 import { ThreadDeletionLockService } from '../../services/thread-deletion-lock.service';
 import { ToastService } from '../../services/toast.service';
 import { translateBizResult } from '../../services/biz-code';
+import { MatCardModule } from '@angular/material/card';
 
 /**
  * P2P (friend) profile panel — rendered in the `aside` auxiliary outlet (`chat/:threadId/(aside:profile)`).
@@ -30,6 +36,7 @@ import { translateBizResult } from '../../services/biz-code';
     TranslocoPipe,
     ThreadAliasEditorComponent,
     FederatedBadgeComponent,
+    MatCardModule,
   ],
   template: `
     <div class="panel">
@@ -62,8 +69,8 @@ import { translateBizResult } from '../../services/biz-code';
           <app-user-avatar
             [type]="UserAvatarType.OTHER"
             [name]="peer()?.name ?? ''"
-            [identityId]="peer()?.id"
-            [src]="peer()?.avatar"
+            [identityId]="$safeNavigationMigration(peer()?.id)"
+            [src]="$safeNavigationMigration(peer()?.avatar)"
           />
           <app-federated-badge [domain]="peerDomain()"></app-federated-badge>
           <div class="name">{{ peerDisplayName() }}</div>
@@ -82,7 +89,8 @@ import { translateBizResult } from '../../services/biz-code';
 
         <app-thread-alias-editor [threadId]="threadId()!" />
 
-        <section
+        <mat-card
+          appearance="outlined"
           class="relationship-card"
           [attr.aria-label]="'profile.relationship' | transloco"
         >
@@ -98,7 +106,6 @@ import { translateBizResult } from '../../services/biz-code';
                 (userMsgTrd()?.blocked ? 'profile.unblock' : 'profile.block')
                   | transloco
               }}</strong>
-              <small>{{ 'profile.blockHint' | transloco }}</small>
             </span>
           </button>
           @if (userMsgTrd()?.friendshipActive !== false) {
@@ -110,14 +117,14 @@ import { translateBizResult } from '../../services/biz-code';
               <span class="action-icon" aria-hidden="true">−</span>
               <span class="action-copy">
                 <strong>{{ 'chat.menuUnfriend' | transloco }}</strong>
-                <small>{{ 'profile.unfriendHint' | transloco }}</small>
               </span>
             </button>
           }
-        </section>
+        </mat-card>
       </div>
     </div>
   `,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styles: [
     `
       :host {
@@ -200,9 +207,6 @@ import { translateBizResult } from '../../services/biz-code';
       }
       .relationship-card {
         overflow: hidden;
-        border: 1px solid var(--app-border);
-        border-radius: var(--app-radius-lg, 14px);
-        background: var(--app-surface);
       }
       .relationship-action {
         width: 100%;
@@ -216,9 +220,6 @@ import { translateBizResult } from '../../services/biz-code';
         color: var(--app-text);
         background: transparent;
         cursor: pointer;
-      }
-      .relationship-action + .relationship-action {
-        border-top: 1px solid var(--app-border);
       }
       .relationship-action:hover {
         background: var(--app-hover);
@@ -243,11 +244,6 @@ import { translateBizResult } from '../../services/biz-code';
       .action-copy strong {
         font-size: 14px;
         font-weight: 600;
-      }
-      .action-copy small {
-        color: var(--app-text-muted);
-        font-size: 12px;
-        line-height: 17px;
       }
       .relationship-action.danger strong {
         color: var(--app-danger, #c73535);

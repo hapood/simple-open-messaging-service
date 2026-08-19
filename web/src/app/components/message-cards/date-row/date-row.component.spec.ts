@@ -1,6 +1,13 @@
-import { createComponent, EnvironmentInjector, provideZonelessChangeDetection } from '@angular/core';
+import {
+  createComponent,
+  EnvironmentInjector,
+  provideZonelessChangeDetection,
+} from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { provideTransloco, provideTranslocoTranspiler } from '@jsverse/transloco';
+import {
+  provideTransloco,
+  provideTranslocoTranspiler,
+} from '@jsverse/transloco';
 import { CspSafeIcuTranspiler } from '../../../i18n/csp-safe-icu.transpiler';
 import { InlineTranslocoLoader } from '../../../i18n/transloco.loader';
 import { LanguageService } from '../../../services/language.service';
@@ -51,20 +58,26 @@ describe('DateRowComponent — kernel-style detached mount', () => {
 
   it('relabels from English to Chinese on a language switch (detached view still refreshes)', async () => {
     const envInjector = TestBed.inject(EnvironmentInjector);
-    const ref = createComponent(DateRowComponent, { environmentInjector: envInjector });
+    const ref = createComponent(DateRowComponent, {
+      environmentInjector: envInjector,
+    });
     try {
       ref.setInput('ms', Date.now());
       ref.changeDetectorRef.detectChanges();
 
       expect(ref.instance.label()).toBe('Today');
-      expect((ref.location.nativeElement as HTMLElement).textContent).toContain('Today');
+      expect((ref.location.nativeElement as HTMLElement).textContent).toContain(
+        'Today',
+      );
 
       language.setLang('zh-CN');
       TestBed.flushEffects();
       ref.changeDetectorRef.detectChanges();
 
       expect(ref.instance.label()).toBe('今天');
-      expect((ref.location.nativeElement as HTMLElement).textContent).toContain('今天');
+      expect((ref.location.nativeElement as HTMLElement).textContent).toContain(
+        '今天',
+      );
     } finally {
       ref.destroy();
     }
@@ -72,7 +85,9 @@ describe('DateRowComponent — kernel-style detached mount', () => {
 
   it('relabels back to English on a subsequent switch', async () => {
     const envInjector = TestBed.inject(EnvironmentInjector);
-    const ref = createComponent(DateRowComponent, { environmentInjector: envInjector });
+    const ref = createComponent(DateRowComponent, {
+      environmentInjector: envInjector,
+    });
     try {
       ref.setInput('ms', Date.now());
       ref.changeDetectorRef.detectChanges();
@@ -82,7 +97,9 @@ describe('DateRowComponent — kernel-style detached mount', () => {
       language.setLang('en');
       TestBed.flushEffects();
       ref.changeDetectorRef.detectChanges();
-      expect((ref.location.nativeElement as HTMLElement).textContent).toContain('Today');
+      expect((ref.location.nativeElement as HTMLElement).textContent).toContain(
+        'Today',
+      );
     } finally {
       ref.destroy();
     }

@@ -14,13 +14,13 @@ describe('ThreadDeletionLockService', () => {
     const released: number[] = [];
     service.released$.subscribe((threadId) => released.push(threadId));
 
-    expect(service.begin(7)).toBeTrue();
-    expect(service.begin(7)).toBeFalse();
-    expect(service.has(7)).toBeTrue();
+    expect(service.begin(7)).toBe(true);
+    expect(service.begin(7)).toBe(false);
+    expect(service.has(7)).toBe(true);
     service.end(8);
     expect(released).toEqual([]);
     service.end(7);
-    expect(service.has(7)).toBeFalse();
+    expect(service.has(7)).toBe(false);
     expect(released).toEqual([7]);
   });
 });

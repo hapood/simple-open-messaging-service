@@ -18,15 +18,21 @@ describe('ChatAppearanceService', () => {
     const service = TestBed.inject(ChatAppearanceService);
     const preferences = TestBed.inject(PreferenceStore);
 
-    expect(service.showSelfAvatar()).toBeTrue();
-    expect(document.documentElement.getAttribute('data-show-self-avatar')).toBe('true');
+    expect(service.showSelfAvatar()).toBe(true);
+    expect(document.documentElement.getAttribute('data-show-self-avatar')).toBe(
+      'true',
+    );
 
     service.setShowSelfAvatar(false);
     TestBed.flushEffects();
 
-    expect(service.showSelfAvatar()).toBeFalse();
-    expect(await preferences.get('device', 'soms.chat.showSelfAvatar')).toBe(false);
-    expect(document.documentElement.getAttribute('data-show-self-avatar')).toBe('false');
+    expect(service.showSelfAvatar()).toBe(false);
+    expect(await preferences.get('device', 'soms.chat.showSelfAvatar')).toBe(
+      false,
+    );
+    expect(document.documentElement.getAttribute('data-show-self-avatar')).toBe(
+      'false',
+    );
   });
 
   it('defaults to latest and persists the conversation open position', async () => {
@@ -37,6 +43,8 @@ describe('ChatAppearanceService', () => {
     service.setOpenPosition('last-read');
 
     expect(service.openPosition()).toBe('last-read');
-    expect(await preferences.get('device', 'soms.chat.openPosition')).toBe('last-read');
+    expect(await preferences.get('device', 'soms.chat.openPosition')).toBe(
+      'last-read',
+    );
   });
 });

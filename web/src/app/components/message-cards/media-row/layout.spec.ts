@@ -17,7 +17,12 @@ describe('layoutAlbum', () => {
   const MAX_H = ALBUM_W * ALBUM_MAX_ROW_H_RATIO; // 224 (album row cap; single-media uses ALBUM_SINGLE_MAX_H=240)
 
   /** Invariant guards: rect count=min(n,6), in-bounds, pairwise non-overlapping, last row bottom===totalH, cells non-zero. */
-  const assertInvariants = (imgs: { w: number; h: number }[]) => {
+  const assertInvariants = (
+    imgs: {
+      w: number;
+      h: number;
+    }[],
+  ) => {
     const { rects, totalH } = layoutAlbum(imgs);
     expect(rects.length).toBe(Math.min(imgs.length, 6));
     for (const r of rects) {
@@ -157,7 +162,10 @@ describe('layoutAlbum', () => {
   });
 
   it('w/h=0/negative/NaN: fallback 4:3 does not crash, totalH finite positive', () => {
-    const cases: { w: number; h: number }[][] = [
+    const cases: {
+      w: number;
+      h: number;
+    }[][] = [
       mkMixed([[0, 0]]),
       mkMixed([[-1, 200]]),
       mkMixed([[NaN, 300]]),

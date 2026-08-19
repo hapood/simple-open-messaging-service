@@ -30,7 +30,11 @@ type DescriptorContract = {
   attention?: 'mention';
   silent?: boolean;
   actions: NotifAction[];
-  data: { threadId?: number; seq?: number; [k: string]: unknown };
+  data: {
+    threadId?: number;
+    seq?: number;
+    [k: string]: unknown;
+  };
 };
 
 // Compile-time assertion (purely type-level — no runtime value reference): the web model must be

@@ -1,5 +1,18 @@
-import { Component, computed, effect, inject, input, OnDestroy, output } from '@angular/core';
-import { MatSnackBar, MatSnackBarRef, TextOnlySnackBar } from '@angular/material/snack-bar';
+import {
+  Component,
+  computed,
+  effect,
+  inject,
+  input,
+  OnDestroy,
+  output,
+  ChangeDetectionStrategy,
+} from '@angular/core';
+import {
+  MatSnackBar,
+  MatSnackBarRef,
+  TextOnlySnackBar,
+} from '@angular/material/snack-bar';
 import { TranslocoService } from '@jsverse/transloco';
 import { UpdateService } from '../../services/update.service';
 import { LanguageService } from '../../services/language.service';
@@ -12,6 +25,7 @@ import { LanguageService } from '../../services/language.service';
 @Component({
   selector: 'app-update-banner',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   template: '',
 })
 export class UpdateBannerComponent implements OnDestroy {

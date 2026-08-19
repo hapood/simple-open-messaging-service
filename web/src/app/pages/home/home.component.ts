@@ -1,4 +1,9 @@
-import { Component, inject, OnInit } from '@angular/core';
+import {
+  Component,
+  inject,
+  OnInit,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { UserService } from '../../services/user.service';
 import { AuthService } from '../../services/auth.service';
 import { WebsocketService } from '../../services/websocket.service';
@@ -24,6 +29,7 @@ import { RootPopupComponent } from '../../components/root-popup/root-popup.compo
     ConnectionBannerComponent,
     RootPopupComponent,
   ],
+  changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <app-home-shell />
     <app-indicator-slot>

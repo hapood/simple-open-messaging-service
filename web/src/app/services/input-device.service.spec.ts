@@ -13,7 +13,9 @@ function fakeMql(query: string, matches: boolean): MediaQueryList {
     removeEventListener() {},
     addListener() {},
     removeListener() {},
-    dispatchEvent() { return false; },
+    dispatchEvent() {
+      return false;
+    },
   } as unknown as MediaQueryList;
 }
 
@@ -23,8 +25,9 @@ describe('InputDeviceService — input classes and Enter convention', () => {
   beforeEach(() => {
     TestBed.resetTestingModule();
     matches = {};
-    spyOn(window as any, 'matchMedia').and.callFake((q: string) =>
-      fakeMql(q, matches[q] ?? false));
+    vi.spyOn(window, 'matchMedia').mockImplementation((q: string) =>
+      fakeMql(q, matches[q] ?? false),
+    );
   });
 
   afterEach(() => TestBed.resetTestingModule());

@@ -1,4 +1,4 @@
-import { Component, input } from '@angular/core';
+import { Component, input, ChangeDetectionStrategy } from '@angular/core';
 
 /**
  * Brand logo: "SOMS" wordmark + optional tagline, with the mark rendered from
@@ -15,13 +15,14 @@ import { Component, input } from '@angular/core';
   selector: 'app-brand-logo',
   imports: [],
   templateUrl: './brand-logo.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './brand-logo.component.scss',
 })
 export class BrandLogoComponent {
   /** Size of the logo mark in px */
-  readonly size = input(80)
+  readonly size = input(80);
   /** Whether to show the "SOMS" wordmark */
-  readonly wordmark = input(true)
+  readonly wordmark = input(true);
   /** Subtitle below the wordmark (plain text) */
-  readonly tagline = input('')
+  readonly tagline = input('');
 }

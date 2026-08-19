@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideTransloco, TranslocoService } from '@jsverse/transloco';
@@ -23,13 +24,16 @@ describe('GalleryViewerComponent — deferred image actions', () => {
     msgId: 42,
   };
   let downloads: FakeGalleryDownloads;
-  let toast: { info: jasmine.Spy; warn: jasmine.Spy };
+  let toast: {
+    info: Mock;
+    warn: Mock;
+  };
 
   beforeEach(async () => {
     downloads = new FakeGalleryDownloads();
     toast = {
-      info: jasmine.createSpy('info'),
-      warn: jasmine.createSpy('warn'),
+      info: vi.fn().mockName('info'),
+      warn: vi.fn().mockName('warn'),
     };
     TestBed.configureTestingModule({
       imports: [GalleryViewerComponent],
@@ -144,7 +148,7 @@ describe('GalleryViewerComponent — deferred image actions', () => {
     const parent = document.createElement('div');
     const container = document.createElement('div');
     parent.append(container);
-    const pointerDown = jasmine.createSpy('pointerDown');
+    const pointerDown = vi.fn().mockName('pointerDown');
     parent.addEventListener('pointerdown', pointerDown);
     const setIsolation = (
       component as unknown as {
@@ -168,16 +172,23 @@ describe('GalleryViewerComponent — deferred image actions', () => {
 
   it('fully destroys an inactive video player so its media resources are released', () => {
     const component = create();
-    const destroy = jasmine.createSpy('destroy');
+    const destroy = vi.fn().mockName('destroy');
     const internals = component as unknown as {
-      videoPlayers: Map<number, { destroy(clearHtml: boolean): void }>;
+      videoPlayers: Map<
+        number,
+        {
+          destroy(clearHtml: boolean): void;
+        }
+      >;
       destroyVideoPlayer(index: number): void;
     };
     internals.videoPlayers.set(1, { destroy });
 
     internals.destroyVideoPlayer(1);
 
-    expect(destroy).toHaveBeenCalledOnceWith(true);
+    expect(destroy).toHaveBeenCalledTimes(1);
+
+    expect(destroy).toHaveBeenCalledWith(true);
     expect(internals.videoPlayers.has(1)).toBe(false);
   });
 
@@ -190,15 +201,22 @@ describe('GalleryViewerComponent — deferred image actions', () => {
       msgId: 43,
     };
     const component = create([video, media]);
-    const destroy = jasmine.createSpy('destroy');
+    const destroy = vi.fn().mockName('destroy');
     const contentElement = document.createElement('div');
     const internals = component as unknown as {
       videoPlayers: Map<
         number,
-        { destroy(clearHtml: boolean): void; play(): Promise<void> }
+        {
+          destroy(clearHtml: boolean): void;
+          play(): Promise<void>;
+        }
       >;
       pswp: {
-        currSlide: { content: { element: HTMLElement } };
+        currSlide: {
+          content: {
+            element: HTMLElement;
+          };
+        };
         destroy(): void;
       };
       activateVideo(index: number): void;
@@ -211,25 +229,34 @@ describe('GalleryViewerComponent — deferred image actions', () => {
 
     component.index.set(1);
     internals.activateVideo(1);
-    expect(destroy).toHaveBeenCalledOnceWith(true);
+    expect(destroy).toHaveBeenCalledTimes(1);
+    expect(destroy).toHaveBeenCalledWith(true);
     expect(internals.videoPlayers.size).toBe(0);
 
     internals.pswp = {
       currSlide: { content: { element: contentElement } },
       destroy: () => undefined,
     };
-    const mount = spyOn(internals, 'mountVideoPlayer').and.resolveTo();
+    const mount = vi
+      .spyOn(internals, 'mountVideoPlayer')
+      .mockResolvedValue(undefined);
     component.index.set(0);
     internals.activateVideo(0);
-    expect(mount).toHaveBeenCalledOnceWith(contentElement, 0);
+    expect(mount).toHaveBeenCalledTimes(1);
+    expect(mount).toHaveBeenCalledWith(contentElement, 0);
   });
 
   it('destroys every mounted player when the viewer closes', () => {
     const component = create();
-    const destroyA = jasmine.createSpy('destroyA');
-    const destroyB = jasmine.createSpy('destroyB');
+    const destroyA = vi.fn().mockName('destroyA');
+    const destroyB = vi.fn().mockName('destroyB');
     const internals = component as unknown as {
-      videoPlayers: Map<number, { destroy(clearHtml: boolean): void }>;
+      videoPlayers: Map<
+        number,
+        {
+          destroy(clearHtml: boolean): void;
+        }
+      >;
       destroyVideoPlayers(): void;
     };
     internals.videoPlayers.set(0, { destroy: destroyA });
@@ -237,8 +264,11 @@ describe('GalleryViewerComponent — deferred image actions', () => {
 
     internals.destroyVideoPlayers();
 
-    expect(destroyA).toHaveBeenCalledOnceWith(true);
-    expect(destroyB).toHaveBeenCalledOnceWith(true);
+    expect(destroyA).toHaveBeenCalledTimes(1);
+
+    expect(destroyA).toHaveBeenCalledWith(true);
+    expect(destroyB).toHaveBeenCalledTimes(1);
+    expect(destroyB).toHaveBeenCalledWith(true);
     expect(internals.videoPlayers.size).toBe(0);
   });
 
@@ -253,8 +283,12 @@ describe('GalleryViewerComponent — deferred image actions', () => {
     };
     const layer = internals.createVideoErrorLayer(0);
     internals.videoErrorLayers.set(0, layer);
-    const retry = spyOn(internals, 'retryVideoAt');
-    const save = spyOn(internals, 'saveVideo').and.resolveTo();
+    const retry = vi
+      .spyOn(internals, 'retryVideoAt')
+      .mockReturnValue(undefined);
+    const save = vi
+      .spyOn(internals, 'saveVideo')
+      .mockResolvedValue(undefined);
     const action = layer.querySelector<HTMLButtonElement>(
       '.gv-video-error__action',
     )!;
@@ -309,9 +343,9 @@ describe('GalleryViewerComponent — deferred image actions', () => {
 
 class FakeGalleryDownloads {
   readonly tasks = signal<ImageDownloadTask[]>([]);
-  readonly start = jasmine.createSpy('start');
-  readonly cancel = jasmine.createSpy('cancel');
-  readonly retry = jasmine.createSpy('retry');
+  readonly start = vi.fn().mockName('start');
+  readonly cancel = vi.fn().mockName('cancel');
+  readonly retry = vi.fn().mockName('retry');
   private current: ImageDownloadTask | undefined;
 
   key(media: Pick<AlbumImage, 'msgId' | 'src'>): string {

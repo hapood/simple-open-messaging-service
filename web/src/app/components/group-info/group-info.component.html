@@ -17,206 +17,171 @@
   <div class="body">
     <!-- Identity -->
     <div class="identity">
-      @if (editing()) {
-        <label class="avatar-edit">
-          <app-user-avatar
-            [type]="UserAvatarType.GROUP"
-            name="?"
-            [identityId]="group()?.id"
-            [src]="avatarUrl()"
-          ></app-user-avatar>
-          <span class="avatar-hint">{{
-            'group.changeAvatarHint' | transloco
-          }}</span>
-          <input
-            type="file"
-            accept="image/*"
-            hidden
-            (change)="pickAvatar($any($event.target))"
-          />
-        </label>
-        <input
-          class="name-input"
-          [ngModel]="nameEdit()"
-          (ngModelChange)="nameEdit.set($event)"
-          maxlength="31"
-          [placeholder]="'group.groupNamePlaceholder' | transloco"
-          (keydown.enter)="saveEdit()"
-        />
-        <textarea
-          class="desc-input"
-          rows="2"
-          [maxlength]="DESC_MAX"
-          [ngModel]="descEdit()"
-          (ngModelChange)="descEdit.set($event)"
-          [placeholder]="'group.groupDescPlaceholder' | transloco"
-        ></textarea>
-      } @else {
-        <app-user-avatar
-          [type]="UserAvatarType.GROUP"
-          [name]="group()?.name ?? ''"
-          [identityId]="group()?.id"
-          [src]="avatarUrl()"
-        ></app-user-avatar>
-        <div class="name-row">
-          <div class="name">{{ group()?.name }}</div>
-          @if (isAdmin() && !readOnly()) {
-            <button
-              class="name-edit-btn"
-              type="button"
-              (click)="beginEdit()"
-              [attr.aria-label]="'group.editInfo' | transloco"
-            >
-              ✎
-            </button>
-          }
-        </div>
-        @if (group()?.description) {
-          <div class="group-desc">{{ group()?.description }}</div>
-        }
-      }
+      <app-user-avatar
+        [type]="UserAvatarType.GROUP"
+        [name]="group()?.name ?? ''"
+        [identityId]="$safeNavigationMigration(group()?.id)"
+        [src]="avatarUrl()"
+      ></app-user-avatar>
     </div>
-    @if (editing()) {
-      <div class="edit-actions">
-        <button mat-button class="app-secondary-action" (click)="cancelEdit()">
-          {{ 'common.cancel' | transloco }}
-        </button>
-        <button
-          mat-flat-button
-          color="primary"
-          [disabled]="busy() || !nameEdit().trim()"
-          (click)="saveEdit()"
-        >
-          {{ 'common.save' | transloco }}
-        </button>
-      </div>
-    }
+    <mat-card appearance="outlined" class="group-profile-card">
+      <button
+        class="group-profile-row"
+        type="button"
+        [disabled]="!isAdmin() || readOnly()"
+        (click)="beginEdit()"
+      >
+        <span class="profile-copy">
+          <strong>{{ group()?.name }}</strong>
+          <span>{{
+            group()?.description || ('group.noDescription' | transloco)
+          }}</span>
+        </span>
+        @if (isAdmin() && !readOnly()) {
+          <app-icon
+            class="profile-chevron"
+            [type]="AppIconType.CHEVRON_RIGHT"
+            [style]="{ width: '20px', height: '20px' }"
+          />
+        }
+      </button>
+    </mat-card>
 
     <!-- Per-user alias: the caller's private label for this group, separate from the real group
          name above (which only admins can change). -->
-    @if (!editing() && threadId() !== undefined) {
+    @if (threadId() !== undefined) {
       <app-thread-alias-editor [threadId]="threadId()!" />
     }
 
-    <!-- Five-person overview; the complete searchable roster lives in member management. -->
+    <!-- Compact roster preview; the complete searchable roster lives in member management. -->
     <div class="section-label">
       {{ 'group.members' | transloco: { count: roster().length } }}
     </div>
     @if (loading()) {
       <div class="muted center">{{ 'common.loading' | transloco }}</div>
     } @else {
-      @for (m of overviewMembers(); track m.userId) {
-        <div class="member">
-          <div class="member-main">
+      <div class="member-overview">
+        <button
+          class="avatar-stack"
+          type="button"
+          [disabled]="readOnly()"
+          (click)="showMemberManager.set(true)"
+          [attr.aria-label]="
+            'group.allMembers' | transloco: { count: roster().length }
+          "
+        >
+          @for (m of overviewMembers(); track m.userId) {
             <app-user-avatar
               [type]="UserAvatarType.OTHER"
               [name]="m.name"
               [identityId]="m.userId"
               [src]="m.avatar"
+              [title]="m.name"
             ></app-user-avatar>
-            <div class="member-info">
-              <span class="member-name"
-                >{{ m.name }}
-                @if (m.userId === myUserId()) {
-                  {{ 'common.you' | transloco }}
-                }
-              </span>
-              @if (m.domain) {
-                <app-federated-badge [domain]="m.domain"></app-federated-badge>
-              }
-              <span
-                class="role-badge"
-                [class.owner]="m.role === 'OWNER'"
-                [class.admin]="m.role === 'ADMIN'"
-                >{{ roleName(m.role) }}</span
-              >
-            </div>
-          </div>
-        </div>
-      }
-      @if (remainingMemberCount() > 0) {
-        <div class="member-overflow">
-          {{
-            'group.moreMembers' | transloco: { count: remainingMemberCount() }
-          }}
-        </div>
-      }
-    }
-
-    @if (!readOnly()) {
-      <button class="add-members" (click)="showInvite.set(true)">
-        <span class="plus">☷</span> {{ 'group.manageMembers' | transloco }}
-      </button>
-    }
-
-    @if (!readOnly() && isAdmin()) {
-      <div class="permission-card">
-        <span class="permission-copy">
-          <strong>{{ 'group.memberInvitePermission' | transloco }}</strong>
-          <small>{{ 'group.memberInvitePermissionHint' | transloco }}</small>
-        </span>
+          }
+          @if (remainingMemberCount() > 0) {
+            <span class="more-avatar">+{{ remainingMemberCount() }}</span>
+          }
+        </button>
         <button
-          class="switch"
+          class="manage-members-btn"
           type="button"
-          role="switch"
-          [class.on]="group()?.membersCanInvite !== false"
-          [attr.aria-checked]="group()?.membersCanInvite !== false"
-          [disabled]="busy()"
-          (click)="setMembersCanInvite(group()?.membersCanInvite === false)"
+          [disabled]="readOnly()"
+          (click)="showMemberManager.set(true)"
         >
-          <span></span>
+          {{ 'group.manageMembers' | transloco }}
         </button>
       </div>
     }
 
-    <!-- Quiet action card: destructive choices are separated and confirmed. -->
     @if (!readOnly()) {
+      <mat-card appearance="outlined" class="invite-settings-card">
+        <button
+          class="invite-friends-row"
+          type="button"
+          [disabled]="!canInvite()"
+          (click)="showInvite.set(true)"
+        >
+          <span class="invite-icon" aria-hidden="true">
+            <app-icon
+              [type]="AppIconType.FRIEND_REQUESTS"
+              [style]="{ width: '20px', height: '20px' }"
+            />
+          </span>
+          <strong>{{ 'group.inviteFriends' | transloco }}</strong>
+          <app-icon
+            class="invite-chevron"
+            [type]="AppIconType.CHEVRON_RIGHT"
+            [style]="{ width: '20px', height: '20px' }"
+          />
+        </button>
+        @if (isAdmin()) {
+          <div class="permission-row">
+            <span class="permission-copy">
+              <strong>{{ 'group.memberInvitePermission' | transloco }}</strong>
+            </span>
+            <mat-slide-toggle
+              [checked]="membersCanInviteControl()"
+              [class.saving]="membersInviteSaving()"
+              [attr.aria-busy]="membersInviteSaving()"
+              (change)="setMembersCanInvite($event.checked)"
+              [attr.aria-label]="'group.memberInvitePermission' | transloco"
+            />
+          </div>
+        }
+      </mat-card>
+    }
+
+    <!-- Conversation preference: separate from membership/destructive operations. -->
+    @if (!readOnly()) {
+      <mat-card appearance="outlined" class="permission-card block-card">
+        <span
+          class="block-icon"
+          [class.on]="blockedControl()"
+          aria-hidden="true"
+        >
+          <app-icon
+            [type]="AppIconType.BLOCK"
+            [style]="{ width: '20px', height: '20px' }"
+          ></app-icon>
+        </span>
+        <span class="permission-copy">
+          <strong>{{ 'group.blockGroup' | transloco }}</strong>
+        </span>
+        <mat-slide-toggle
+          class="danger-switch"
+          [checked]="blockedControl()"
+          [class.saving]="blockedSaving()"
+          [attr.aria-busy]="blockedSaving()"
+          [attr.aria-label]="'group.blockGroup' | transloco"
+          (change)="setBlocked($event.checked)"
+        />
+      </mat-card>
+
+      <!-- Material destructive actions are standalone text buttons, not card rows. -->
       <div class="group-actions">
         <button
-          type="button"
-          [class.danger]="!userMsgTrd()?.blocked"
-          (click)="toggleBlocked()"
-        >
-          <span>⊘</span>
-          <span
-            ><strong>{{
-              (userMsgTrd()?.blocked ? 'profile.unblock' : 'profile.block')
-                | transloco
-            }}</strong>
-            <small>{{ 'group.blockHint' | transloco }}</small></span
-          >
-        </button>
-        <button
+          mat-button
+          color="warn"
           class="danger"
           type="button"
-          [disabled]="busy() || !canLeave()"
+          [disabled]="busy()"
           (click)="confirmLeave()"
         >
-          <span>↗</span
-          ><span
-            ><strong>{{ 'group.leave' | transloco }}</strong
-            ><small>{{ 'group.leaveHint' | transloco }}</small></span
-          >
+          {{ 'group.leave' | transloco }}
         </button>
         @if (isOwner()) {
           <button
+            mat-button
+            color="warn"
             class="danger"
             type="button"
             [disabled]="busy()"
             (click)="confirmDissolveAction()"
           >
-            <span>×</span
-            ><span
-              ><strong>{{ 'group.dissolve' | transloco }}</strong
-              ><small>{{ 'group.dissolveHint' | transloco }}</small></span
-            >
+            {{ 'group.dissolve' | transloco }}
           </button>
         }
-      </div>
-    }
-    @if (!readOnly() && isOwner() && !canLeave()) {
-      <div class="muted center hint">
-        {{ 'group.leaveOwnerNote' | transloco }}
       </div>
     }
     @if (dissolved()) {
@@ -230,12 +195,83 @@
     }
   </div>
 
-  @if (showInvite()) {
+  @if (editing()) {
+    <div class="profile-editor">
+      <div class="manager-header">
+        <button
+          class="icon-btn"
+          type="button"
+          (click)="cancelEdit()"
+          [attr.aria-label]="'common.back' | transloco"
+        >
+          <app-icon
+            [type]="AppIconType.BACK"
+            [style]="{ width: '28px', height: '28px' }"
+          />
+        </button>
+        <strong>{{ 'group.editInfo' | transloco }}</strong>
+        <button
+          mat-button
+          color="primary"
+          class="save-profile-btn"
+          type="button"
+          [disabled]="busy() || !nameEdit().trim()"
+          (click)="saveEdit()"
+        >
+          {{ 'common.save' | transloco }}
+        </button>
+      </div>
+      <div class="profile-editor-body">
+        <label class="avatar-edit">
+          <app-user-avatar
+            [type]="UserAvatarType.GROUP"
+            [name]="nameEdit()"
+            [identityId]="$safeNavigationMigration(group()?.id)"
+            [src]="avatarUrl()"
+          />
+          <span class="avatar-hint">{{
+            'group.changeAvatarHint' | transloco
+          }}</span>
+          <input
+            type="file"
+            accept="image/*"
+            hidden
+            (change)="pickAvatar($any($event.target))"
+          />
+        </label>
+        <mat-form-field appearance="outline">
+          <mat-label>{{ 'group.groupName' | transloco }}</mat-label>
+          <input
+            matInput
+            [ngModel]="nameEdit()"
+            (ngModelChange)="nameEdit.set($event)"
+            maxlength="31"
+            autocomplete="off"
+          />
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>{{ 'group.groupDescription' | transloco }}</mat-label>
+          <textarea
+            matInput
+            rows="4"
+            [maxlength]="DESC_MAX"
+            [ngModel]="descEdit()"
+            (ngModelChange)="descEdit.set($event)"
+          ></textarea>
+          <mat-hint align="end"
+            >{{ descEdit().length }}/{{ DESC_MAX }}</mat-hint
+          >
+        </mat-form-field>
+      </div>
+    </div>
+  }
+
+  @if (showMemberManager()) {
     <div class="member-manager">
       <div class="manager-header">
         <button
           class="icon-btn"
-          (click)="showInvite.set(false)"
+          (click)="showMemberManager.set(false)"
           [attr.aria-label]="'common.back' | transloco"
         >
           <app-icon
@@ -281,61 +317,78 @@
               </div>
             </div>
             @if (canActOn(m)) {
-              <button class="more-btn" (click)="toggleMenu(m.userId)">⋯</button>
+              <button
+                class="more-btn"
+                type="button"
+                [matMenuTriggerFor]="memberActions"
+                [attr.aria-label]="'group.actionsAria' | transloco"
+              >
+                <app-icon
+                  [type]="AppIconType.MORE"
+                  [style]="{ width: '20px', height: '20px' }"
+                />
+              </button>
+              <mat-menu #memberActions="matMenu">
+                @if (isOwner()) {
+                  <button mat-menu-item (click)="doSetRole(m)">
+                    {{
+                      (m.role === 'ADMIN'
+                        ? 'group.unsetAdmin'
+                        : 'group.setAdmin'
+                      ) | transloco
+                    }}
+                  </button>
+                }
+                <button mat-menu-item (click)="askKick(m)">
+                  {{ 'group.kick' | transloco }}
+                </button>
+                @if (isOwner()) {
+                  <button
+                    mat-menu-item
+                    style="color: var(--app-danger)"
+                    (click)="askTransfer(m)"
+                  >
+                    {{ 'group.transferOwner' | transloco }}
+                  </button>
+                }
+              </mat-menu>
             }
           </div>
-          @if (openMenuFor() === m.userId) {
-            <div class="action-sheet">
-              @if (
-                confirmAction()?.userId === m.userId &&
-                confirmAction()?.action === 'kick'
-              ) {
-                <div class="confirm-row">
-                  <span>{{
-                    'group.confirmPrompt'
-                      | transloco: { action: actionLabel('kick'), name: m.name }
-                  }}</span>
-                  <button
-                    mat-button
-                    class="app-secondary-action"
-                    (click)="cancelConfirm()"
-                  >
-                    {{ 'common.cancel' | transloco }}
-                  </button>
-                  <button mat-flat-button color="warn" (click)="doConfirm()">
-                    {{ 'common.confirm' | transloco }}
-                  </button>
-                </div>
-              } @else if (isOwner()) {
-                <button mat-stroked-button (click)="doSetRole(m)">
-                  {{
-                    'group.makeRole'
-                      | transloco: { role: roleName(toggleRoleLabel(m)) }
-                  }}
-                </button>
-                <button mat-stroked-button (click)="askTransfer(m)">
-                  {{ 'group.transferOwner' | transloco }}
-                </button>
-                <button mat-stroked-button color="warn" (click)="askKick(m)">
-                  {{ 'group.kick' | transloco }}
-                </button>
-              } @else if (isAdmin() && m.role === 'MEMBER') {
-                <button mat-stroked-button color="warn" (click)="askKick(m)">
-                  {{ 'group.kick' | transloco }}
-                </button>
-              }
-            </div>
-          }
         }
+      </div>
+    </div>
+  }
 
+  @if (showInvite()) {
+    <div class="member-manager invite-manager">
+      <div class="manager-header">
+        <button
+          class="icon-btn"
+          type="button"
+          (click)="showInvite.set(false)"
+          [attr.aria-label]="'common.back' | transloco"
+        >
+          <app-icon
+            [type]="AppIconType.BACK"
+            [style]="{ width: '28px', height: '28px' }"
+          />
+        </button>
+        <strong>{{ 'group.inviteFriends' | transloco }}</strong>
+        <span></span>
+      </div>
+      <div class="manager-body">
+        <input
+          class="member-search"
+          [ngModel]="inviteQuery()"
+          (ngModelChange)="inviteQuery.set($event)"
+          [placeholder]="'group.searchFriends' | transloco"
+        />
         @if (canInvite()) {
-          <div class="section-label">
-            {{ 'group.inviteMembers' | transloco }}
-          </div>
           <app-user-list
             (onSelect)="onTrdSelect($event)"
             [selectedDict]="selectedDict()"
             [excludedUserIds]="existingMemberIds()"
+            [filterText]="inviteQuery()"
           />
           <div class="invite-actions">
             <button
@@ -353,51 +406,6 @@
           </div>
         }
       </div>
-
-      @if (confirmAction()?.action === 'transfer') {
-        @for (candidate of roster(); track candidate.userId) {
-          @if (candidate.userId === confirmAction()?.userId) {
-            <div class="transfer-backdrop">
-              <div
-                class="transfer-dialog"
-                role="alertdialog"
-                [attr.aria-label]="'group.transferOwner' | transloco"
-              >
-                <app-user-avatar
-                  [type]="UserAvatarType.OTHER"
-                  [name]="candidate.name"
-                  [identityId]="candidate.userId"
-                  [src]="candidate.avatar"
-                ></app-user-avatar>
-                <h3>
-                  {{
-                    'group.transferOwnerTitle'
-                      | transloco: { name: candidate.name }
-                  }}
-                </h3>
-                <p>{{ 'group.transferOwnerBody' | transloco }}</p>
-                <div>
-                  <button
-                    mat-button
-                    class="app-secondary-action"
-                    (click)="cancelConfirm()"
-                  >
-                    {{ 'common.cancel' | transloco }}
-                  </button>
-                  <button
-                    mat-flat-button
-                    color="warn"
-                    [disabled]="busy()"
-                    (click)="doConfirm()"
-                  >
-                    {{ 'group.confirmTransfer' | transloco }}
-                  </button>
-                </div>
-              </div>
-            </div>
-          }
-        }
-      }
     </div>
   }
 </div>

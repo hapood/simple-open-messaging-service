@@ -1,4 +1,4 @@
-@use "../../assets/utils.scss" as *;
+@use '../../assets/utils.scss' as *;
 
 // Paint above the scroll viewport (which carries the keyboard-lift transform and would otherwise slide
 // content over the header). A flex item honors z-index without `position`, but `position: relative` makes
@@ -98,6 +98,15 @@
 
 .msg-title-line app-federated-badge {
   flex: 0 0 auto;
+}
+
+.group-member-count {
+  flex: 0 0 auto;
+  color: var(--app-text-faint);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 20px;
+  font-variant-numeric: tabular-nums;
 }
 
 .thread-state-icon {

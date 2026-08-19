@@ -1,7 +1,18 @@
-import { Component, computed, inject } from '@angular/core';
+import {
+  Component,
+  computed,
+  inject,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { MatListModule } from '@angular/material/list';
-import { MatSlideToggleModule, MatSlideToggleChange } from '@angular/material/slide-toggle';
-import { MatButtonToggleModule, MatButtonToggleChange } from '@angular/material/button-toggle';
+import {
+  MatSlideToggleModule,
+  MatSlideToggleChange,
+} from '@angular/material/slide-toggle';
+import {
+  MatButtonToggleModule,
+  MatButtonToggleChange,
+} from '@angular/material/button-toggle';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { WebPushService } from '../../services/web-push.service';
 import { NotificationPrefsService } from '../../services/notification-prefs.service';
@@ -32,21 +43,31 @@ import { NotificationPrefsService } from '../../services/notification-prefs.serv
  */
 @Component({
   selector: 'app-settings-notifications',
-  imports: [MatListModule, MatSlideToggleModule, MatButtonToggleModule, TranslocoPipe],
+  imports: [
+    MatListModule,
+    MatSlideToggleModule,
+    MatButtonToggleModule,
+    TranslocoPipe,
+  ],
   template: `
     <section class="settings-group">
       <div class="settings-card">
         <mat-list>
           <mat-list-item>
-            <span matListItemTitle>{{ 'settings.notifications' | transloco }}</span>
-            <span matListItemLine class="hint">{{ hintKey() | transloco }}</span>
+            <span matListItemTitle>{{
+              'settings.notifications' | transloco
+            }}</span>
+            <span matListItemLine class="hint">{{
+              hintKey() | transloco
+            }}</span>
             @if (supported()) {
               <mat-slide-toggle
                 matListItemMeta
                 [checked]="granted()"
                 [disabled]="locked()"
                 [attr.aria-label]="'settings.notifications' | transloco"
-                (change)="onChange($event)">
+                (change)="onChange($event)"
+              >
               </mat-slide-toggle>
             }
           </mat-list-item>
@@ -55,40 +76,59 @@ import { NotificationPrefsService } from '../../services/notification-prefs.serv
             <!-- App-level master: post the system notification at all (the browser permission above is
                  terminal; this is the in-app mute). -->
             <mat-list-item>
-              <span matListItemTitle>{{ 'settings.notifDesktop' | transloco }}</span>
-              <span matListItemLine class="hint">{{ 'settings.notifDesktopDesc' | transloco }}</span>
+              <span matListItemTitle>{{
+                'settings.notifDesktop' | transloco
+              }}</span>
+              <span matListItemLine class="hint">{{
+                'settings.notifDesktopDesc' | transloco
+              }}</span>
               <mat-slide-toggle
                 matListItemMeta
                 [checked]="prefs.enabled()"
                 [attr.aria-label]="'settings.notifDesktop' | transloco"
-                (change)="onDesktopChange($event)">
+                (change)="onDesktopChange($event)"
+              >
               </mat-slide-toggle>
             </mat-list-item>
 
             <!-- Sound on/off (moot when desktop alerts are off, so it locks then). -->
             <mat-list-item>
-              <span matListItemTitle>{{ 'settings.notifSound' | transloco }}</span>
-              <span matListItemLine class="hint">{{ 'settings.notifSoundDesc' | transloco }}</span>
+              <span matListItemTitle>{{
+                'settings.notifSound' | transloco
+              }}</span>
+              <span matListItemLine class="hint">{{
+                'settings.notifSoundDesc' | transloco
+              }}</span>
               <mat-slide-toggle
                 matListItemMeta
                 [checked]="prefs.sound()"
                 [disabled]="!prefs.enabled()"
                 [attr.aria-label]="'settings.notifSound' | transloco"
-                (change)="onSoundChange($event)">
+                (change)="onSoundChange($event)"
+              >
               </mat-slide-toggle>
             </mat-list-item>
 
             <!-- Away-notification grouping: per-conversation cards (default) vs one folded card -->
             <mat-list-item>
-              <span matListItemTitle>{{ 'settings.notifGrouping' | transloco }}</span>
-              <span matListItemLine class="hint">{{ 'settings.notifGroupingDesc' | transloco }}</span>
+              <span matListItemTitle>{{
+                'settings.notifGrouping' | transloco
+              }}</span>
+              <span matListItemLine class="hint">{{
+                'settings.notifGroupingDesc' | transloco
+              }}</span>
               <div matListItemMeta>
                 <mat-button-toggle-group
                   [value]="prefs.previewMode()"
                   (change)="onPreviewModeChange($event)"
-                  [attr.aria-label]="'settings.notifGrouping' | transloco">
-                  <mat-button-toggle value="message">{{ 'settings.notifGroupingThread' | transloco }}</mat-button-toggle>
-                  <mat-button-toggle value="private">{{ 'settings.notifGroupingAll' | transloco }}</mat-button-toggle>
+                  [attr.aria-label]="'settings.notifGrouping' | transloco"
+                >
+                  <mat-button-toggle value="message">{{
+                    'settings.notifGroupingThread' | transloco
+                  }}</mat-button-toggle>
+                  <mat-button-toggle value="private">{{
+                    'settings.notifGroupingAll' | transloco
+                  }}</mat-button-toggle>
                 </mat-button-toggle-group>
               </div>
             </mat-list-item>
@@ -97,6 +137,7 @@ import { NotificationPrefsService } from '../../services/notification-prefs.serv
       </div>
     </section>
   `,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './sub-page.scss',
 })
 export class SettingsNotificationsComponent {

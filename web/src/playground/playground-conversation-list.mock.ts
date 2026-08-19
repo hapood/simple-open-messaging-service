@@ -16,7 +16,9 @@ export class PlaygroundConversationList {
     const item = this.current();
     return [
       ...(item ? [item] : []),
-      ...this.related().filter((candidate) => candidate.threadId !== item?.threadId),
+      ...this.related().filter(
+        (candidate) => candidate.threadId !== item?.threadId,
+      ),
     ];
   });
   readonly openThreadId = computed(() => this.current()?.threadId);
@@ -29,17 +31,28 @@ export class PlaygroundConversationList {
     this.related.set(items.map((item) => ({ ...item })));
   }
 
-  applyThreadMeta(
-    threadId: number,
-    patch: Partial<ConversationItem>,
-  ): void {
+  applyThreadMeta(threadId: number, patch: Partial<ConversationItem>): void {
     this.current.update((item) =>
-      item?.threadId === threadId ? ({ ...item, ...patch } as ConversationItem) : item,
+      item?.threadId === threadId
+        ? ({ ...item, ...patch } as ConversationItem)
+        : item,
     );
   }
 
-  updatePeerUser(threadId: number, peerUser: ConversationItem['peerUser']): void {
+  updatePeerUser(
+    threadId: number,
+    peerUser: ConversationItem['peerUser'],
+  ): void {
     this.applyThreadMeta(threadId, { peerUser });
+  }
+
+  applyGroupUpdate(
+    threadId: number,
+    patch: Partial<NonNullable<ConversationItem['group']>>,
+  ): void {
+    const item = this.current();
+    if (!item || item.threadId !== threadId || item.type !== 'GROUP') return;
+    this.applyThreadMeta(threadId, { group: { ...item.group, ...patch } });
   }
 
   latestSeq(): number | undefined {

@@ -1,4 +1,12 @@
-import { Component, HostListener, OnDestroy, OnInit, output, signal } from '@angular/core';
+import {
+  Component,
+  HostListener,
+  OnDestroy,
+  OnInit,
+  output,
+  signal,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { IconComponent, AppIconType } from '../icon/icon.component';
@@ -49,6 +57,7 @@ function rejectionMessage(err: unknown): string {
   selector: 'app-qr-scanner',
   imports: [MatButtonModule, TranslocoPipe, IconComponent],
   templateUrl: './qr-scanner.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './qr-scanner.component.scss',
 })
 export class QrScannerComponent implements OnInit, OnDestroy {
@@ -82,7 +91,9 @@ export class QrScannerComponent implements OnInit, OnDestroy {
     // Take over the hardware-back hook while the scanner is up: back cancels the scan instead of navigating
     // or exiting (MainActivity evals window.__SOMS_BACK__ on back-press; TauriActivity sets
     // handleBackNavigation=false). Restored in ngOnDestroy.
-    window.__SOMS_BACK__ = () => { void this.cancelScan(); };
+    window.__SOMS_BACK__ = () => {
+      void this.cancelScan();
+    };
     void this.start();
   }
 
@@ -121,7 +132,8 @@ export class QrScannerComponent implements OnInit, OnDestroy {
    *  never disturbs an active scan. */
   @HostListener('document:visibilitychange')
   onVisibility(): void {
-    if (document.visibilityState === 'visible' && this.state() === 'denied') void this.start();
+    if (document.visibilityState === 'visible' && this.state() === 'denied')
+      void this.start();
   }
 
   /** "Open settings" on the denied panel — bounce to the system permission screen so the user can grant. */
@@ -147,7 +159,11 @@ export class QrScannerComponent implements OnInit, OnDestroy {
       // kicks off (no-op on first enter, where state is already 'scanning'; flips denied→scanning on resume).
       this.state.set('scanning');
       this.scanning = true;
-      const res = await p.scan({ formats: [p.Format.QRCode], cameraDirection: 'back', windowed: true });
+      const res = await p.scan({
+        formats: [p.Format.QRCode],
+        cameraDirection: 'back',
+        windowed: true,
+      });
       this.scanning = false;
       if (this.settled || !res.content) return;
       this.captured.set(true);
@@ -155,7 +171,10 @@ export class QrScannerComponent implements OnInit, OnDestroy {
       // API supported by the Android WebView (Chromium); best-effort, silently no-ops where unsupported.
       navigator.vibrate?.(50);
       // Hold the confirmation badge briefly so the user sees the decode register before the overlay closes.
-      this.badgeTimer = setTimeout(() => this.emitScanned(res.content), CAPTURED_BADGE_MS);
+      this.badgeTimer = setTimeout(
+        () => this.emitScanned(res.content),
+        CAPTURED_BADGE_MS,
+      );
     } catch (err) {
       this.scanning = false;
       if (this.settled) return;
@@ -179,7 +198,10 @@ export class QrScannerComponent implements OnInit, OnDestroy {
   }
 
   private plugin(): Promise<Plugin> {
-    return this.pluginPromise ?? (this.pluginPromise = import('@tauri-apps/plugin-barcode-scanner'));
+    return (
+      this.pluginPromise ??
+      (this.pluginPromise = import('@tauri-apps/plugin-barcode-scanner'))
+    );
   }
 
   private async cancelNative(): Promise<void> {

@@ -1,4 +1,9 @@
-import { HttpRequest, HttpHandler, HttpErrorResponse, HttpEvent } from '@angular/common/http';
+import {
+  HttpRequest,
+  HttpHandler,
+  HttpErrorResponse,
+  HttpEvent,
+} from '@angular/common/http';
 import { Observable, of, throwError } from 'rxjs';
 import { AuthInterceptor } from './auth.interceptor';
 import { AuthService } from './services/auth.service';
@@ -22,13 +27,16 @@ describe('AuthInterceptor (401 → re-login)', () => {
   /** Build an interceptor around a stub AuthService (only redoLoginAuth is exercised). */
   function makeInterceptor() {
     const auth = {
-      redoLoginAuth: jasmine.createSpy('redoLoginAuth'),
+      redoLoginAuth: vi.fn().mockName('redoLoginAuth'),
     } as unknown as AuthService;
     return { ic: new AuthInterceptor(auth), auth };
   }
 
   /** Run the interceptor against `req` and capture the request handed to the handler. */
-  function captureHandled(ic: AuthInterceptor, req: HttpRequest<unknown>): HttpRequest<unknown> {
+  function captureHandled(
+    ic: AuthInterceptor,
+    req: HttpRequest<unknown>,
+  ): HttpRequest<unknown> {
     let captured: HttpRequest<unknown> | null = null;
     const next: HttpHandler = {
       handle: (r: HttpRequest<unknown>): Observable<HttpEvent<unknown>> => {
@@ -40,7 +48,7 @@ describe('AuthInterceptor (401 → re-login)', () => {
     return captured!;
   }
 
-  it('passes a request through UNCHANGED (auth is the transport layer\'s job, not this interceptor\'s)', () => {
+  it("passes a request through UNCHANGED (auth is the transport layer's job, not this interceptor's)", () => {
     const { ic } = makeInterceptor();
     const req = new HttpRequest('GET', '/api/v1/messages', {});
     const handled = captureHandled(ic, req);
@@ -56,7 +64,9 @@ describe('AuthInterceptor (401 → re-login)', () => {
     const next: HttpHandler = {
       handle: () => throwError(() => new HttpErrorResponse({ status: 401 })),
     };
-    let nexted = false, errored = false, completed = false;
+    let nexted = false,
+      errored = false,
+      completed = false;
     ic.intercept(req, next).subscribe({
       next: () => (nexted = true),
       error: () => (errored = true),

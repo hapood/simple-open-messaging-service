@@ -1,4 +1,10 @@
-import { Component, computed, inject, input } from '@angular/core';
+import {
+  Component,
+  computed,
+  inject,
+  input,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import {
   MediaTransferService,
@@ -26,6 +32,7 @@ interface UploadGroup {
   standalone: true,
   imports: [IconComponent, TranslocoPipe],
   templateUrl: './upload-detail-dialog.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './upload-detail-dialog.component.scss',
 })
 export class UploadDetailDialogComponent {

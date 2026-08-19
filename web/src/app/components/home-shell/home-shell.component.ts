@@ -5,6 +5,7 @@ import {
   inject,
   signal,
   viewChild,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import {
   trigger,
@@ -130,6 +131,7 @@ const overlaySlide = trigger('overlaySlide', [
   ],
   templateUrl: './home-shell.component.html',
   styleUrl: './home-shell.component.scss',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   animations: [overlaySlide],
 })
 export class HomeShellComponent {

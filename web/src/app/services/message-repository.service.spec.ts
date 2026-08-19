@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import 'fake-indexeddb/auto';
 import { TestBed } from '@angular/core/testing';
 import { Subject, of, throwError } from 'rxjs';
@@ -17,7 +18,7 @@ function flush(ms = 0): Promise<void> {
 async function waitFor(condition: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 100 && !condition(); attempt++)
     await flush(1);
-  expect(condition()).toBeTrue();
+  expect(condition()).toBe(true);
 }
 
 /** A minimal Message row (seq is the IDB key second component + the cursor the kernel uses). */
@@ -37,16 +38,32 @@ function msg(threadId: number, seq: number, content = `m${seq}`): Message {
 describe('MessageRepository', () => {
   let repo: MessageRepository;
   let webdb: WebdbService;
-  let eventSubject: Subject<{ event: string; status: number; data?: unknown }>;
+  let eventSubject: Subject<{
+    event: string;
+    status: number;
+    data?: unknown;
+  }>;
   let reconnect$: Subject<void>;
-  let queryMessageLogSpy: jasmine.Spy;
+  let queryMessageLogSpy: Mock;
   /** The sessionProfile signal the repo's session-end effect watches (logout = set undefined). */
-  let sessionProfile: ReturnType<typeof signal<{ id: number } | undefined>>;
+  let sessionProfile: ReturnType<
+    typeof signal<
+      | {
+          id: number;
+        }
+      | undefined
+    >
+  >;
 
   beforeEach(async () => {
     eventSubject = new Subject();
     reconnect$ = new Subject();
-    sessionProfile = signal<{ id: number } | undefined>({ id: 1 });
+    sessionProfile = signal<
+      | {
+          id: number;
+        }
+      | undefined
+    >({ id: 1 });
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -56,11 +73,13 @@ describe('MessageRepository', () => {
         {
           provide: MsgService,
           useValue: {
-            queryMessageLog: (queryMessageLogSpy =
-              jasmine.createSpy('queryMessageLog')),
-            queryDeletedMessages: jasmine
-              .createSpy('queryDeletedMessages')
-              .and.returnValue(
+            queryMessageLog: (queryMessageLogSpy = vi
+              .fn()
+              .mockName('queryMessageLog')),
+            queryDeletedMessages: vi
+              .fn()
+              .mockName('queryDeletedMessages')
+              .mockReturnValue(
                 of({ code: 0, message: '', data: [], hasMore: false }),
               ),
           },
@@ -252,7 +271,7 @@ describe('MessageRepository', () => {
     expect(await webdb.getDeletedHwm(42)).toBe('9');
     const db = await webdb.messageDb();
     const raw = await db.get('messages', [42, 10]);
-    expect(raw?.isDeleted).toBeTrue();
+    expect(raw?.isDeleted).toBe(true);
     expect(raw?.content).toBe('');
   });
 
@@ -282,7 +301,7 @@ describe('MessageRepository', () => {
     expect(await webdb.getDeletedHwm(42)).toBe('12');
     const db = await webdb.messageDb();
     const raw = await db.get('messages', [42, 10]);
-    expect(raw?.isDeleted).toBeTrue();
+    expect(raw?.isDeleted).toBe(true);
     expect(raw?.content).toBe('already-cached');
   });
 
@@ -475,13 +494,13 @@ describe('MessageRepository', () => {
   });
 
   it('rolls back the coverage summary when the section transaction fails', async () => {
-    await expectAsync(
+    await expect(
       webdb.putMessages(
         [],
         { threadId: 42, left: 5, right: 10 },
         { threadId: 42, seq: 10 },
       ),
-    ).toBeRejected();
+    ).rejects.toThrow();
     expect(await webdb.getMessageCoverage(42)).toBeUndefined();
   });
 
@@ -491,19 +510,19 @@ describe('MessageRepository', () => {
       { threadId: 42, left: 5, right: 10 },
       { threadId: 42, seq: 10 },
     );
-    const sectionSpy = spyOn(webdb, 'getMessageSection').and.callThrough();
+    const sectionSpy = vi.spyOn(webdb, 'getMessageSection');
     repo.retainCoverage(42, 10);
     await flush();
-    expect(await (repo as any).isCompleteRange(42, 6, 9)).toBeTrue();
+    expect(await (repo as any).isCompleteRange(42, 6, 9)).toBe(true);
     expect(sectionSpy).not.toHaveBeenCalled();
 
     repo.releaseCoverage(42);
-    expect(await (repo as any).isCompleteRange(42, 6, 9)).toBeTrue();
+    expect(await (repo as any).isCompleteRange(42, 6, 9)).toBe(true);
     expect(sectionSpy).toHaveBeenCalledTimes(1);
   });
 
   it('propagates message/section transaction failures instead of reporting a network edge', async () => {
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -511,17 +530,17 @@ describe('MessageRepository', () => {
         hasMore: false,
       }),
     );
-    spyOn(webdb, 'putMessages').and.rejectWith(
+    vi.spyOn(webdb, 'putMessages').mockRejectedValue(
       new Error('section write failed'),
     );
 
-    await expectAsync(
+    await expect(
       repo.queryMessages(42, { skip: 0, take: 10, orderBy: 'desc' }),
-    ).toBeRejectedWithError('section write failed');
+    ).rejects.toThrowError('section write failed');
   });
 
   it('rejects an empty success without a truncate or directional endpoint', async () => {
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -529,23 +548,26 @@ describe('MessageRepository', () => {
         hasMore: true,
       }),
     );
-    const putSpy = spyOn(webdb, 'putMessages').and.callThrough();
+    const putSpy = vi.spyOn(webdb, 'putMessages');
 
-    await expectAsync(
+    await expect(
       repo.queryMessages(42, {
         skip: 1,
         take: 10,
         lastSeq: 7,
         orderBy: 'desc',
       }),
-    ).toBeRejectedWithError('empty message response has no confirmed endpoint');
+    ).rejects.toThrowError('empty message response has no confirmed endpoint');
     expect(putSpy).not.toHaveBeenCalled();
   });
 
   it('cold init treats an empty IDB result as ready and revalidates in the background', async () => {
     const refresh$ = new Subject<StandardResponse<Message[]>>();
-    queryMessageLogSpy.and.returnValue(refresh$);
-    const signals: { threadId: number; seq: number }[] = [];
+    queryMessageLogSpy.mockReturnValue(refresh$);
+    const signals: {
+      threadId: number;
+      seq: number;
+    }[] = [];
     repo.liveSignal$.subscribe((s) => signals.push(s));
 
     const res = await repo.queryMessages(
@@ -568,7 +590,7 @@ describe('MessageRepository', () => {
       { skip: 0, take: 3, orderBy: 'desc' },
       undefined,
     );
-    await waitFor(() => queryMessageLogSpy.calls.count() === 1);
+    await waitFor(() => vi.mocked(queryMessageLogSpy).mock.calls.length === 1);
     expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
     refresh$.next({
       code: 0,
@@ -584,7 +606,7 @@ describe('MessageRepository', () => {
   });
 
   it('warm init returns the latest IDB page immediately and revalidates in the background', async () => {
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -593,10 +615,10 @@ describe('MessageRepository', () => {
       }),
     );
     await repo.queryMessages(42, { skip: 0, take: 3, orderBy: 'desc' });
-    queryMessageLogSpy.calls.reset();
+    queryMessageLogSpy.mockClear();
 
     const refresh$ = new Subject<StandardResponse<Message[]>>();
-    queryMessageLogSpy.and.returnValue(refresh$);
+    queryMessageLogSpy.mockReturnValue(refresh$);
 
     const warm = await repo.queryMessages(42, {
       skip: 0,
@@ -605,7 +627,7 @@ describe('MessageRepository', () => {
     });
     expect(warm.data.map((m) => m.seq)).toEqual([4, 3, 2]);
     expect(warm.hasMore).toBe(true);
-    await waitFor(() => queryMessageLogSpy.calls.count() === 1);
+    await waitFor(() => vi.mocked(queryMessageLogSpy).mock.calls.length === 1);
     expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
 
     refresh$.next({
@@ -621,7 +643,7 @@ describe('MessageRepository', () => {
 
   it('latest-page revalidation stops before the locally cached oldest row', async () => {
     await webdb.putMessages([msg(42, 15), msg(42, 14)]);
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -639,7 +661,7 @@ describe('MessageRepository', () => {
     await flush(10);
 
     expect(warm.data.map((m) => m.seq)).toEqual([15, 14]);
-    expect(queryMessageLogSpy.calls.first().args[0]).toEqual({
+    expect(vi.mocked(queryMessageLogSpy).mock.calls[0][0]).toEqual({
       threadId: 42,
       skip: 0,
       take: 2,
@@ -651,7 +673,7 @@ describe('MessageRepository', () => {
   });
 
   it('warm init emits a live signal when background revalidation finds a newer tail', async () => {
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -662,9 +684,12 @@ describe('MessageRepository', () => {
     await repo.queryMessages(42, { skip: 0, take: 2, orderBy: 'desc' });
     await flush(10);
 
-    const signals: { threadId: number; seq: number }[] = [];
+    const signals: {
+      threadId: number;
+      seq: number;
+    }[] = [];
     repo.liveSignal$.subscribe((s) => signals.push(s));
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -679,7 +704,7 @@ describe('MessageRepository', () => {
   });
 
   it('warm init never exposes cached messages at or before the clear-history watermark', async () => {
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -688,9 +713,9 @@ describe('MessageRepository', () => {
       }),
     );
     await repo.queryMessages(42, { skip: 0, take: 3, orderBy: 'desc' });
-    queryMessageLogSpy.calls.reset();
+    queryMessageLogSpy.mockClear();
 
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -711,7 +736,7 @@ describe('MessageRepository', () => {
 
   it('getOlder (skip:1) is a cache HIT for a contiguous held range → no backend call', async () => {
     // Seed the cache with seqs 1..5 (a prior session's scroll).
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -722,7 +747,7 @@ describe('MessageRepository', () => {
     await repo.queryMessages(42, { skip: 0, take: 5, orderBy: 'desc' });
     await webdb.close();
     await webdb.openForUser('1');
-    queryMessageLogSpy.calls.reset();
+    queryMessageLogSpy.mockClear();
 
     // getOlder(cursor=6, take=3): the cache holds [3,4,5] contiguously below 6 → served from IDB.
     const res = await repo.queryMessages(42, {
@@ -739,7 +764,7 @@ describe('MessageRepository', () => {
   it('getOlder GAP-FILLS when the cache lacks the range → backend called + cached', async () => {
     // The mounted cursor is cached; the requested older range is absent and must be backfilled.
     await webdb.putMessages([msg(42, 6)]);
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -761,7 +786,7 @@ describe('MessageRepository', () => {
   it('coalesces same-start same-direction fills and reloads their committed DB rows', async () => {
     await webdb.putMessages([msg(42, 6)]);
     const response = new Subject<StandardResponse<Message[]>>();
-    queryMessageLogSpy.and.returnValue(response);
+    queryMessageLogSpy.mockReturnValue(response);
     const query = {
       skip: 1 as const,
       take: 3,
@@ -771,7 +796,7 @@ describe('MessageRepository', () => {
 
     const first = repo.queryMessages(42, query);
     const second = repo.queryMessages(42, query);
-    await waitFor(() => queryMessageLogSpy.calls.count() === 1);
+    await waitFor(() => vi.mocked(queryMessageLogSpy).mock.calls.length === 1);
     expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
 
     response.next({
@@ -792,7 +817,9 @@ describe('MessageRepository', () => {
     await webdb.putMessages([msg(42, 6)]);
     const firstResponse = new Subject<StandardResponse<Message[]>>();
     const secondResponse = new Subject<StandardResponse<Message[]>>();
-    queryMessageLogSpy.and.returnValues(firstResponse, secondResponse);
+    queryMessageLogSpy
+      .mockReturnValueOnce(firstResponse)
+      .mockReturnValueOnce(secondResponse);
 
     const smaller = repo.queryMessages(42, {
       skip: 1,
@@ -806,7 +833,7 @@ describe('MessageRepository', () => {
       lastSeq: 6,
       orderBy: 'desc',
     });
-    await waitFor(() => queryMessageLogSpy.calls.count() === 1);
+    await waitFor(() => vi.mocked(queryMessageLogSpy).mock.calls.length === 1);
 
     firstResponse.next({
       code: 0,
@@ -816,12 +843,12 @@ describe('MessageRepository', () => {
     });
     firstResponse.complete();
     expect((await smaller).data.map((message) => message.seq)).toEqual([5]);
-    await waitFor(() => queryMessageLogSpy.calls.count() === 2);
+    await waitFor(() => vi.mocked(queryMessageLogSpy).mock.calls.length === 2);
     expect(
-      queryMessageLogSpy.calls.allArgs().map((args) => args[0].lastSeq),
+      vi.mocked(queryMessageLogSpy).mock.calls.map((args) => args[0].lastSeq),
     ).toEqual([6, 5]);
     expect(
-      queryMessageLogSpy.calls.allArgs().map((args) => args[0].take),
+      vi.mocked(queryMessageLogSpy).mock.calls.map((args) => args[0].take),
     ).toEqual([1, 2]);
 
     secondResponse.next({
@@ -839,7 +866,7 @@ describe('MessageRepository', () => {
   it('propagates an HTTP failure to concurrent callers', async () => {
     await webdb.putMessages([msg(42, 6)]);
     const response = new Subject<StandardResponse<Message[]>>();
-    queryMessageLogSpy.and.returnValue(response);
+    queryMessageLogSpy.mockReturnValue(response);
     const query = {
       skip: 1 as const,
       take: 2,
@@ -849,18 +876,18 @@ describe('MessageRepository', () => {
 
     const first = repo.queryMessages(42, query);
     const second = repo.queryMessages(42, query);
-    await waitFor(() => queryMessageLogSpy.calls.count() >= 1);
+    await waitFor(() => vi.mocked(queryMessageLogSpy).mock.calls.length >= 1);
     response.error(new Error('offline'));
 
     const [a, b] = await Promise.all([first, second]);
-    expect(a.failed).toBeTrue();
-    expect(b.failed).toBeTrue();
+    expect(a.failed).toBe(true);
+    expect(b.failed).toBe(true);
   });
 
   it('coalesces different truncateSeq values and applies each waiter boundary after commit', async () => {
     await webdb.putMessages([msg(42, 10), msg(42, 20)]);
     const response = new Subject<StandardResponse<Message[]>>();
-    queryMessageLogSpy.and.returnValue(response);
+    queryMessageLogSpy.mockReturnValue(response);
 
     const farther = repo.queryMessages(42, {
       skip: 1,
@@ -878,7 +905,7 @@ describe('MessageRepository', () => {
       truncate: true,
       truncateSeq: 15,
     });
-    await waitFor(() => queryMessageLogSpy.calls.count() === 1);
+    await waitFor(() => vi.mocked(queryMessageLogSpy).mock.calls.length === 1);
 
     response.next({
       code: 0,
@@ -894,15 +921,15 @@ describe('MessageRepository', () => {
       19, 18, 17, 16, 15, 14, 13, 12, 11,
     ]);
     expect(b.data.map((message) => message.seq)).toEqual([19, 18, 17, 16]);
-    expect(a.truncated).toBeTrue();
-    expect(b.truncated).toBeTrue();
+    expect(a.truncated).toBe(true);
+    expect(b.truncated).toBe(true);
     expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
   });
 
   it('does not coalesce opposite directions at the same start', async () => {
     await webdb.putMessages([msg(42, 20)]);
     const responses: Subject<StandardResponse<Message[]>>[] = [];
-    queryMessageLogSpy.and.callFake(() => {
+    queryMessageLogSpy.mockImplementation(() => {
       const response = new Subject<StandardResponse<Message[]>>();
       responses.push(response);
       return response;
@@ -920,7 +947,7 @@ describe('MessageRepository', () => {
       lastSeq: 20,
       orderBy: 'asc',
     });
-    await waitFor(() => queryMessageLogSpy.calls.count() === 2);
+    await waitFor(() => vi.mocked(queryMessageLogSpy).mock.calls.length === 2);
 
     responses[0].next({
       code: 0,
@@ -944,8 +971,10 @@ describe('MessageRepository', () => {
   it('rejects all coalesced waiters when the shared DB transaction fails', async () => {
     await webdb.putMessages([msg(42, 6)]);
     const response = new Subject<StandardResponse<Message[]>>();
-    queryMessageLogSpy.and.returnValue(response);
-    spyOn(webdb, 'putMessages').and.rejectWith(new Error('commit failed'));
+    queryMessageLogSpy.mockReturnValue(response);
+    vi.spyOn(webdb, 'putMessages').mockRejectedValue(
+      new Error('commit failed'),
+    );
     const query = {
       skip: 1 as const,
       take: 1,
@@ -955,7 +984,7 @@ describe('MessageRepository', () => {
 
     const first = repo.queryMessages(42, query);
     const second = repo.queryMessages(42, query);
-    await waitFor(() => queryMessageLogSpy.calls.count() === 1);
+    await waitFor(() => vi.mocked(queryMessageLogSpy).mock.calls.length === 1);
     response.next({
       code: 0,
       message: 'ok',
@@ -964,19 +993,21 @@ describe('MessageRepository', () => {
     });
     response.complete();
 
-    await expectAsync(first).toBeRejectedWithError('commit failed');
-    await expectAsync(second).toBeRejectedWithError('commit failed');
+    await expect(first).rejects.toThrowError('commit failed');
+    await expect(second).rejects.toThrowError('commit failed');
     expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
   });
 
   it('allows different starts in the same thread to fetch concurrently', async () => {
     await webdb.putMessages([msg(42, 10), msg(42, 20)]);
     const responses = new Map<number, Subject<StandardResponse<Message[]>>>();
-    queryMessageLogSpy.and.callFake(({ lastSeq }: { lastSeq: number }) => {
-      const response = new Subject<StandardResponse<Message[]>>();
-      responses.set(lastSeq, response);
-      return response;
-    });
+    queryMessageLogSpy.mockImplementation(
+      ({ lastSeq }: { lastSeq: number }) => {
+        const response = new Subject<StandardResponse<Message[]>>();
+        responses.set(lastSeq, response);
+        return response;
+      },
+    );
 
     const first = repo.queryMessages(42, {
       skip: 1,
@@ -990,7 +1021,7 @@ describe('MessageRepository', () => {
       lastSeq: 20,
       orderBy: 'desc',
     });
-    await waitFor(() => queryMessageLogSpy.calls.count() === 2);
+    await waitFor(() => vi.mocked(queryMessageLogSpy).mock.calls.length === 2);
 
     for (const [start, seq] of [
       [10, 9],
@@ -1012,11 +1043,13 @@ describe('MessageRepository', () => {
   it('does not serialize fills belonging to different threads', async () => {
     await webdb.putMessages([msg(42, 6), msg(43, 6)]);
     const responses = new Map<number, Subject<StandardResponse<Message[]>>>();
-    queryMessageLogSpy.and.callFake(({ threadId }: { threadId: number }) => {
-      const response = new Subject<StandardResponse<Message[]>>();
-      responses.set(threadId, response);
-      return response;
-    });
+    queryMessageLogSpy.mockImplementation(
+      ({ threadId }: { threadId: number }) => {
+        const response = new Subject<StandardResponse<Message[]>>();
+        responses.set(threadId, response);
+        return response;
+      },
+    );
     const query = {
       skip: 1 as const,
       take: 1,
@@ -1026,7 +1059,7 @@ describe('MessageRepository', () => {
 
     const first = repo.queryMessages(42, query);
     const second = repo.queryMessages(43, query);
-    await waitFor(() => queryMessageLogSpy.calls.count() === 2);
+    await waitFor(() => vi.mocked(queryMessageLogSpy).mock.calls.length === 2);
     expect(queryMessageLogSpy).toHaveBeenCalledTimes(2);
 
     for (const threadId of [42, 43]) {
@@ -1045,7 +1078,7 @@ describe('MessageRepository', () => {
 
   it('getOlder floor: a confirmed cache reaching seq 1 reports hasMore=false (no backend)', async () => {
     // Seed [1,2,3] (the whole small thread) + establish hasMore via the seeding call.
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -1054,7 +1087,7 @@ describe('MessageRepository', () => {
       }),
     );
     await repo.queryMessages(42, { skip: 0, take: 3, orderBy: 'desc' });
-    queryMessageLogSpy.calls.reset();
+    queryMessageLogSpy.mockClear();
 
     // getOlder(cursor=3, take=3): cache holds [1,2] below 3, complete to the protocol floor → cache hit.
     const res = await repo.queryMessages(42, {
@@ -1073,7 +1106,7 @@ describe('MessageRepository', () => {
     // serve the gapped [5, 3] — it backfills the contiguous truth from the API.
     await webdb.putMessages([msg(42, 6), msg(42, 5), msg(42, 3)]);
 
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -1093,7 +1126,7 @@ describe('MessageRepository', () => {
   });
 
   it('reuses a server-confirmed local interval even when visibility creates a seq gap', async () => {
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -1105,7 +1138,7 @@ describe('MessageRepository', () => {
     await repo.queryMessages(42, { skip: 0, take: 5, orderBy: 'desc' });
     await webdb.close();
     await webdb.openForUser('1');
-    queryMessageLogSpy.calls.reset();
+    queryMessageLogSpy.mockClear();
 
     const res = await repo.queryMessages(42, {
       skip: 1,
@@ -1120,7 +1153,7 @@ describe('MessageRepository', () => {
 
   it('assembles asc remote-gap + local-tail without requesting or rewriting the cached cutoff row', async () => {
     await webdb.putMessages([msg(42, 10), msg(42, 15), msg(42, 16)]);
-    queryMessageLogSpy.and.callFake((q: { truncateSeq?: number }) => {
+    queryMessageLogSpy.mockImplementation((q: { truncateSeq?: number }) => {
       expect(q.truncateSeq).toBe(15);
       return of<StandardResponse<Message[]>>({
         code: 0,
@@ -1140,7 +1173,7 @@ describe('MessageRepository', () => {
 
     expect(res.data.map((m) => m.seq)).toEqual([11, 12, 13, 14, 15, 16]);
     expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
-    expect(queryMessageLogSpy.calls.first().args[0]).toEqual({
+    expect(vi.mocked(queryMessageLogSpy).mock.calls[0][0]).toEqual({
       threadId: 42,
       skip: 1,
       take: 6,
@@ -1159,7 +1192,7 @@ describe('MessageRepository', () => {
       msg(42, 16),
       msg(42, 20),
     ]);
-    queryMessageLogSpy.and.callFake(
+    queryMessageLogSpy.mockImplementation(
       (q: { truncateSeq?: number; take: number }) =>
         of<StandardResponse<Message[]>>({
           code: 0,
@@ -1184,17 +1217,19 @@ describe('MessageRepository', () => {
       11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
     ]);
     expect(
-      queryMessageLogSpy.calls.allArgs().map((args) => args[0].take),
+      vi.mocked(queryMessageLogSpy).mock.calls.map((args) => args[0].take),
     ).toEqual([10, 4]);
     expect(
-      queryMessageLogSpy.calls.allArgs().map((args) => args[0].truncateSeq),
+      vi
+        .mocked(queryMessageLogSpy)
+        .mock.calls.map((args) => args[0].truncateSeq),
     ).toEqual([15, 20]);
     expect(await dbCount(42)).toBe(11);
   });
 
   it('assembles desc remote-gap + local-tail with the closest lower cached seq as cutoff', async () => {
     await webdb.putMessages([msg(42, 21), msg(42, 15), msg(42, 14)]);
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -1212,13 +1247,15 @@ describe('MessageRepository', () => {
     });
 
     expect(res.data.map((m) => m.seq)).toEqual([20, 19, 18, 17, 16, 15, 14]);
-    expect(queryMessageLogSpy.calls.first().args[0].truncateSeq).toBe(15);
+    expect(
+      vi.mocked(queryMessageLogSpy).mock.calls[0][0].truncateSeq,
+    ).toBe(15);
     expect(await dbCount(42)).toBe(8);
   });
 
   it('omits the local cutoff when no cached neighbor exists in the requested direction', async () => {
     await webdb.putMessages([msg(42, 10)]);
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -1234,7 +1271,7 @@ describe('MessageRepository', () => {
       orderBy: 'asc',
     });
 
-    expect(queryMessageLogSpy.calls.first().args[0]).toEqual({
+    expect(vi.mocked(queryMessageLogSpy).mock.calls[0][0]).toEqual({
       threadId: 42,
       skip: 1,
       take: 5,
@@ -1251,7 +1288,7 @@ describe('MessageRepository', () => {
       left: 50,
       right: 50,
     });
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -1286,7 +1323,7 @@ describe('MessageRepository', () => {
 
   it('keeps the caller frozen ceiling after crossing a nearer local segment', async () => {
     await webdb.putMessages([msg(42, 10), msg(42, 15), msg(42, 20)]);
-    queryMessageLogSpy.and.callFake((q: { truncateSeq?: number }) =>
+    queryMessageLogSpy.mockImplementation((q: { truncateSeq?: number }) =>
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -1313,13 +1350,15 @@ describe('MessageRepository', () => {
     expect(res.hasMore).toBe(false);
     expect(res.truncated).toBe(true);
     expect(
-      queryMessageLogSpy.calls.allArgs().map((args) => args[0].truncateSeq),
+      vi
+        .mocked(queryMessageLogSpy)
+        .mock.calls.map((args) => args[0].truncateSeq),
     ).toEqual([15, 20]);
   });
 
   it('middle-anchor init reuses a cached anchor and bounds the older gap at its nearest local neighbor', async () => {
     await webdb.putMessages([msg(42, 10), msg(42, 5), msg(42, 4)]);
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -1337,8 +1376,8 @@ describe('MessageRepository', () => {
     });
 
     expect(res.data.map((m) => m.seq)).toEqual([10, 9, 8, 7, 6, 5, 4]);
-    expect(queryMessageLogSpy.calls.first().args[0]).toEqual(
-      jasmine.objectContaining({
+    expect(vi.mocked(queryMessageLogSpy).mock.calls[0][0]).toEqual(
+      expect.objectContaining({
         skip: 1,
         take: 6,
         lastSeq: 10,
@@ -1350,7 +1389,7 @@ describe('MessageRepository', () => {
 
   it('middle-anchor init fetches a missing anchor once, then switches to the nearest local neighbor', async () => {
     await webdb.putMessages([msg(42, 5), msg(42, 4)]);
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -1369,8 +1408,8 @@ describe('MessageRepository', () => {
 
     expect(res.data.map((m) => m.seq)).toEqual([10, 9, 8, 7, 6, 5, 4]);
     expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
-    expect(queryMessageLogSpy.calls.first().args[0]).toEqual(
-      jasmine.objectContaining({
+    expect(vi.mocked(queryMessageLogSpy).mock.calls[0][0]).toEqual(
+      expect.objectContaining({
         skip: 0,
         truncate: true,
         truncateSeq: 5,
@@ -1379,7 +1418,12 @@ describe('MessageRepository', () => {
   });
 
   it('NEW_MESSAGE emits the live signal WITHOUT caching the body (identity-only — body is pulled)', async () => {
-    let emitted: { threadId: number; seq: number } | undefined;
+    let emitted:
+      | {
+          threadId: number;
+          seq: number;
+        }
+      | undefined;
     repo.liveSignal$.subscribe((s) => (emitted = s));
 
     // Identity-only frame {threadId, seq, ts} — no body (single data source = pull).
@@ -1396,7 +1440,7 @@ describe('MessageRepository', () => {
 
   it('getNewer after a NEW_MESSAGE gap-fills from the backend (identity-only → body not pre-cached)', async () => {
     // Establish seq 5 as the prior latest via a backend init (sets maxSeenSeq).
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -1413,10 +1457,10 @@ describe('MessageRepository', () => {
       data: { threadId: 42, seq: 6, ts: 6000 },
     });
     await flush(10);
-    queryMessageLogSpy.calls.reset();
+    queryMessageLogSpy.mockClear();
 
     // The kernel pulls newer-than-5 → cache MISS (no body cached by NEW_MESSAGE) → backend gap-fill.
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -1435,7 +1479,7 @@ describe('MessageRepository', () => {
   });
 
   it('writes dedup by [threadId, seq] (idempotent put — no duplicate rows)', async () => {
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -1449,7 +1493,7 @@ describe('MessageRepository', () => {
   });
 
   it('marks a backend failure retryable instead of reporting a false edge', async () => {
-    queryMessageLogSpy.and.returnValue(throwError(() => new Error('net')));
+    queryMessageLogSpy.mockReturnValue(throwError(() => new Error('net')));
     const res = await repo.queryMessages(42, {
       skip: 0,
       take: 3,
@@ -1462,7 +1506,7 @@ describe('MessageRepository', () => {
 
   it('deleteByThread purges the thread cache but leaves other threads untouched (cache GC)', async () => {
     // Seed two threads: 42 ([1,2,3]) and 99 ([1,2]).
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -1471,7 +1515,7 @@ describe('MessageRepository', () => {
       }),
     );
     await repo.queryMessages(42, { skip: 0, take: 3, orderBy: 'desc' });
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -1491,7 +1535,7 @@ describe('MessageRepository', () => {
 
   it('after deleteByThread, a getNewer gap-fills from the backend (the stale cache + ceiling are gone)', async () => {
     // Seed thread 42 + establish seq 5 as the prior ceiling.
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -1503,9 +1547,9 @@ describe('MessageRepository', () => {
     await repo.deleteByThread(42); // purge the cached body + clear maxSeenSeq
     // A real source only paginates from a mounted/cached cursor. Re-seed that cursor after the GC.
     await webdb.putMessages([msg(42, 5)]);
-    queryMessageLogSpy.calls.reset();
+    queryMessageLogSpy.mockClear();
 
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -1529,7 +1573,7 @@ describe('MessageRepository', () => {
   // report the cache reached its ceiling. The per-user IDB is wiped separately by WebdbService.
   it('session-end reset clears maxSeenSeq (a getNewer cache HIT becomes a gap-fill)', async () => {
     // Seed [5,6,7] + establish seq 7 as the ceiling (init sets maxSeenSeq).
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -1538,7 +1582,7 @@ describe('MessageRepository', () => {
       }),
     );
     await repo.queryMessages(42, { skip: 0, take: 3, orderBy: 'desc' });
-    queryMessageLogSpy.calls.reset();
+    queryMessageLogSpy.mockClear();
 
     // getNewer (above 4): cache holds [5,6,7] contiguously up to the ceiling (7) → HIT, no backend.
     let res = await repo.queryMessages(42, {
@@ -1557,7 +1601,7 @@ describe('MessageRepository', () => {
 
     // Same query now gap-fills: with no ceiling, the short cached range is not authoritative → backend.
     // (orderBy:'asc' → the backend returns the page ascending.)
-    queryMessageLogSpy.and.returnValue(
+    queryMessageLogSpy.mockReturnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
@@ -1573,18 +1617,18 @@ describe('MessageRepository', () => {
     });
     expect(res.data.map((m) => m.seq)).toEqual([5, 6, 7]);
     expect(queryMessageLogSpy).toHaveBeenCalledTimes(1); // gap-fill after the ceiling was cleared
-    expect(queryMessageLogSpy.calls.first().args[0].lastSeq).toBe(7);
+    expect(vi.mocked(queryMessageLogSpy).mock.calls[0][0].lastSeq).toBe(7);
   });
 
   it('does not return or cache an HTTP response from the lifetime before recreation', async () => {
     const response = new Subject<StandardResponse<Message[]>>();
-    queryMessageLogSpy.and.returnValue(response);
+    queryMessageLogSpy.mockReturnValue(response);
     const query = repo.queryMessages(42, {
       skip: 0,
       take: 10,
       orderBy: 'desc',
     });
-    while (queryMessageLogSpy.calls.count() === 0) await flush();
+    while (vi.mocked(queryMessageLogSpy).mock.calls.length === 0) await flush();
 
     await webdb.recreateMessageCache();
     response.next({

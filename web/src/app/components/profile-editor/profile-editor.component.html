@@ -46,8 +46,8 @@
             [type]="UserAvatarType.SELF"
             [loading]="!sessionProfile()"
             [name]="name() || sessionProfile()?.account"
-            [identityId]="sessionProfile()?.id"
-            [src]="sessionProfile()?.avatar"
+            [identityId]="$safeNavigationMigration(sessionProfile()?.id)"
+            [src]="$safeNavigationMigration(sessionProfile()?.avatar)"
           />
           <button
             class="avatar-edit"

@@ -1,6 +1,7 @@
+import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
-import { provideHttpClient } from '@angular/common/http';
+import { provideHttpClient, withXhr } from '@angular/common/http';
 import {
   HttpTestingController,
   provideHttpClientTesting,
@@ -38,7 +39,7 @@ describe('AuthService (session-token contract, browser path)', () => {
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
-        provideHttpClient(),
+        provideHttpClient(withXhr()),
         provideHttpClientTesting(),
         AuthService,
         // AuthService resolves i18n keys for its rare keyring-failure toasts; stub the translator (returns
@@ -51,39 +52,40 @@ describe('AuthService (session-token contract, browser path)', () => {
         {
           provide: ToastService,
           useValue: {
-            warn: jasmine.createSpy('warn'),
-            info: jasmine.createSpy('info'),
+            warn: vi.fn().mockName('warn'),
+            info: vi.fn().mockName('info'),
           },
         },
         {
           provide: RouteService,
           useValue: {
-            redirect: jasmine.createSpy('redirect'),
+            redirect: vi.fn().mockName('redirect'),
             openSettings: () => {},
           },
         },
         {
           provide: PushService,
           useValue: {
-            onLogin: jasmine.createSpy('onLogin'),
-            unregister: jasmine.createSpy('unregister'),
+            onLogin: vi.fn().mockName('onLogin'),
+            unregister: vi.fn().mockName('unregister'),
           },
         },
         {
           provide: WebPushService,
           useValue: {
-            onLogin: jasmine.createSpy('onLogin'),
-            unregister: jasmine.createSpy('unregister'),
+            onLogin: vi.fn().mockName('onLogin'),
+            unregister: vi.fn().mockName('unregister'),
           },
         },
         {
           provide: UserService,
           useValue: {
-            clearSession: jasmine.createSpy('clearSession'),
-            prepareFreshCache: jasmine.createSpy('prepareFreshCache'),
-            restoreWebdb: jasmine
-              .createSpy('restoreWebdb')
-              .and.resolveTo(undefined),
+            clearSession: vi.fn().mockName('clearSession'),
+            prepareFreshCache: vi.fn().mockName('prepareFreshCache'),
+            restoreWebdb: vi
+              .fn()
+              .mockName('restoreWebdb')
+              .mockResolvedValue(undefined),
           },
         },
       ],
@@ -153,10 +155,10 @@ describe('AuthService (session-token contract, browser path)', () => {
       finishCacheClear = resolve;
     });
     const user = TestBed.inject(UserService) as unknown as {
-      clearSession: jasmine.Spy;
+      clearSession: Mock;
     };
-    user.clearSession.and.returnValue(cacheClear);
-    const exited = jasmine.createSpy('exited');
+    user.clearSession.mockReturnValue(cacheClear);
+    const exited = vi.fn().mockName('exited');
 
     svc.logout().subscribe(exited);
 
@@ -177,9 +179,9 @@ describe('AuthService (session-token contract, browser path)', () => {
   it('keeps login state and skips remote logout when local cache deletion fails', async () => {
     document.cookie = 'logged_in=1; Path=/';
     const user = TestBed.inject(UserService) as unknown as {
-      clearSession: jasmine.Spy;
+      clearSession: Mock;
     };
-    user.clearSession.and.rejectWith(new Error('cache busy'));
+    user.clearSession.mockRejectedValue(new Error('cache busy'));
 
     svc.logout().subscribe({ error: () => {} });
     await Promise.resolve();
@@ -192,10 +194,10 @@ describe('AuthService (session-token contract, browser path)', () => {
   it('keeps the authenticated session when local-cache initialization fails', async () => {
     document.cookie = 'logged_in=1; Path=/';
     const user = TestBed.inject(UserService) as unknown as {
-      restoreWebdb: jasmine.Spy;
-      clearSession: jasmine.Spy;
+      restoreWebdb: Mock;
+      clearSession: Mock;
     };
-    user.restoreWebdb.and.rejectWith(new Error('missing cache'));
+    user.restoreWebdb.mockRejectedValue(new Error('missing cache'));
 
     await svc.restoreSession();
 

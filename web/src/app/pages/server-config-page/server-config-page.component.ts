@@ -403,7 +403,7 @@ export class ServerConfigPageComponent implements OnInit {
   /** Match the shared modal dismissal contract on browser/desktop; Android hardware-back is handled
    * through the route-owned __SOMS_BACK__ callback below. */
   @HostListener('document:keydown.escape', ['$event'])
-  onEscape(event: KeyboardEvent): void {
+  onEscape(event: Event): void {
     if (!this.autoFill() && !this.dialog()) return;
     event.preventDefault();
     event.stopPropagation();

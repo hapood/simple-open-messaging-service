@@ -8,10 +8,16 @@ const EXPANDED_Q = '(min-width: 1100px)';
 /** Build a minimal MediaQueryList — CDK MediaMatcher only reads .matches. */
 function fakeMql(query: string, matches: boolean): MediaQueryList {
   return {
-    matches, media: query, onchange: null,
-    addEventListener() {}, removeEventListener() {},
-    addListener() {}, removeListener() {},
-    dispatchEvent() { return false },
+    matches,
+    media: query,
+    onchange: null,
+    addEventListener() {},
+    removeEventListener() {},
+    addListener() {},
+    removeListener() {},
+    dispatchEvent() {
+      return false;
+    },
   } as unknown as MediaQueryList;
 }
 
@@ -23,8 +29,9 @@ describe('LayoutService mode (3-way, width-only)', () => {
     matches = {};
     // CDK BreakpointObserver's initialValue flows MediaMatcher → window.matchMedia; stub it here to return
     // the desired matches per query, driving mode's initial computed value.
-    spyOn(window as any, 'matchMedia').and.callFake((q: string) =>
-      fakeMql(q, matches[q] ?? false));
+    vi.spyOn(window, 'matchMedia').mockImplementation((q: string) =>
+      fakeMql(q, matches[q] ?? false),
+    );
   });
   afterEach(() => TestBed.resetTestingModule());
 

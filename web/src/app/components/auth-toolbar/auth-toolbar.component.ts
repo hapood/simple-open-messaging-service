@@ -1,4 +1,9 @@
-import { Component, computed, inject } from '@angular/core';
+import {
+  Component,
+  computed,
+  inject,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { MatSelectModule, MatSelectChange } from '@angular/material/select';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { IconComponent, AppIconType } from '../icon/icon.component';
@@ -22,6 +27,7 @@ import { LanguageService, AppLang } from '../../services/language.service';
   selector: 'app-auth-toolbar',
   imports: [IconComponent, TranslocoPipe, MatSelectModule],
   templateUrl: './auth-toolbar.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './auth-toolbar.component.scss',
 })
 export class AuthToolbarComponent {
@@ -32,7 +38,11 @@ export class AuthToolbarComponent {
   /** Icon reflecting the current theme mode (predictable cycling affordance). */
   readonly themeIcon = computed<AppIconType>(() => {
     const m = this.themeService.mode();
-    return m === 'system' ? AppIconType.CONTRAST : m === 'light' ? AppIconType.SUN : AppIconType.MOON;
+    return m === 'system'
+      ? AppIconType.CONTRAST
+      : m === 'light'
+        ? AppIconType.SUN
+        : AppIconType.MOON;
   });
 
   /** Human label for the current theme mode. Reads the language signal so it
@@ -49,9 +59,15 @@ export class AuthToolbarComponent {
   /** Native-script label for the current language (trigger + aria-label). */
   readonly langLabel = this.languageService.langLabel;
   /** Native-script label for an arbitrary language id (dropdown options). */
-  langLabelOf(l: AppLang): string { return this.languageService.langLabelOf(l); }
+  langLabelOf(l: AppLang): string {
+    return this.languageService.langLabelOf(l);
+  }
 
-  cycleTheme(): void { this.themeService.cycleMode(); }
+  cycleTheme(): void {
+    this.themeService.cycleMode();
+  }
   /** Apply a language chosen from the dropdown. */
-  onLangChange(e: MatSelectChange): void { this.languageService.setLang(e.value as AppLang); }
+  onLangChange(e: MatSelectChange): void {
+    this.languageService.setLang(e.value as AppLang);
+  }
 }

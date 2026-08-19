@@ -1,4 +1,9 @@
-import { Component, input, output } from '@angular/core';
+import {
+  Component,
+  input,
+  output,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 
 export type EmptyStateTone = 'default' | 'error';
@@ -12,14 +17,15 @@ export type EmptyStateTone = 'default' | 'error';
   selector: 'app-empty-state',
   imports: [MatButtonModule],
   templateUrl: './empty-state.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './empty-state.component.scss',
 })
 export class EmptyStateComponent {
-  readonly title = input.required<string>()
-  readonly subtitle = input('')
+  readonly title = input.required<string>();
+  readonly subtitle = input('');
   /** error variant: title is tinted with --app-danger */
-  readonly tone = input<EmptyStateTone>('default')
+  readonly tone = input<EmptyStateTone>('default');
   /** CTA label; the button renders only when non-empty */
-  readonly ctaLabel = input('')
-  readonly ctaClick = output<void>()
+  readonly ctaLabel = input('');
+  readonly ctaClick = output<void>();
 }

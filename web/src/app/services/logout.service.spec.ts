@@ -10,10 +10,10 @@ describe('LogoutService', () => {
   it('waits for local cache deletion before disconnecting and redirecting', () => {
     const pending = new Subject<unknown>();
     const auth = {
-      logout: jasmine.createSpy('logout').and.returnValue(pending),
+      logout: vi.fn().mockName('logout').mockReturnValue(pending),
     };
-    const ws = { disconnect: jasmine.createSpy('disconnect') };
-    const route = { redirect: jasmine.createSpy('redirect') };
+    const ws = { disconnect: vi.fn().mockName('disconnect') };
+    const route = { redirect: vi.fn().mockName('redirect') };
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -32,7 +32,8 @@ describe('LogoutService', () => {
 
     pending.next(undefined);
     expect(ws.disconnect).toHaveBeenCalledTimes(1);
-    expect(route.redirect).toHaveBeenCalledOnceWith(RoutePage.AUTH_LOGIN);
+    expect(route.redirect).toHaveBeenCalledTimes(1);
+    expect(route.redirect).toHaveBeenCalledWith(RoutePage.AUTH_LOGIN);
 
     // A late old-server failure must not navigate again and overwrite /config or a newer session.
     pending.error(new Error('old server unreachable'));
@@ -41,16 +42,22 @@ describe('LogoutService', () => {
 
   it('keeps the authenticated UI when local cleanup throws synchronously', () => {
     const auth = {
-      logout: jasmine
-        .createSpy('logout')
-        .and.throwError('native bridge unavailable'),
+      logout: vi
+        .fn()
+        .mockName('logout')
+        .mockImplementation(() => {
+          throw new Error('native bridge unavailable');
+        }),
     };
     const ws = {
-      disconnect: jasmine
-        .createSpy('disconnect')
-        .and.throwError('transport unavailable'),
+      disconnect: vi
+        .fn()
+        .mockName('disconnect')
+        .mockImplementation(() => {
+          throw new Error('transport unavailable');
+        }),
     };
-    const route = { redirect: jasmine.createSpy('redirect') };
+    const route = { redirect: vi.fn().mockName('redirect') };
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -70,10 +77,10 @@ describe('LogoutService', () => {
   it('keeps the authenticated UI when local cache deletion fails asynchronously', () => {
     const failed = new Subject<unknown>();
     const auth = {
-      logout: jasmine.createSpy('logout').and.returnValue(failed),
+      logout: vi.fn().mockName('logout').mockReturnValue(failed),
     };
-    const ws = { disconnect: jasmine.createSpy('disconnect') };
-    const route = { redirect: jasmine.createSpy('redirect') };
+    const ws = { disconnect: vi.fn().mockName('disconnect') };
+    const route = { redirect: vi.fn().mockName('redirect') };
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),

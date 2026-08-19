@@ -1,6 +1,7 @@
+import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
-import { provideHttpClient } from '@angular/common/http';
+import { provideHttpClient, withXhr } from '@angular/common/http';
 import {
   HttpTestingController,
   provideHttpClientTesting,
@@ -32,24 +33,28 @@ import { ToastService } from './toast.service';
  * EncryptedSharedPreferences) and real cross-restart persistence — those need a desktop build / APK smoke.
  */
 describe('AuthService (native trusted-device storage, bridge-mock)', () => {
-  // The navigator UA is saved for afterEach (the karma browser env has no Tauri/SomsFcm globals natively,
+  // The navigator UA is saved for afterEach (the test environment has no Tauri/SomsFcm globals natively,
   // so those are simply removed to keep other suites seeing isTauri()=false).
   let originalUserAgent: string;
 
   let svc: AuthService;
   let httpMock: HttpTestingController;
-  let invokeSpy: jasmine.Spy;
+  let invokeSpy: Mock;
   // Spy on the toast so the keep-only keyring-write-failure test can assert the warn was surfaced.
-  let toastWarn: jasmine.Spy;
+  let toastWarn: Mock;
 
   /** Permissive cast target for installing the Tauri/SomsFcm surfaces the runtime layer reads live. */
   type MockWindow = {
     __TAURI_INTERNALS__?: unknown;
-    __TAURI__?: { core: { invoke: jasmine.Spy } };
+    __TAURI__?: {
+      core: {
+        invoke: Mock;
+      };
+    };
     SomsFcm?: {
-      setSessionToken: jasmine.Spy;
-      getSessionToken: jasmine.Spy;
-      pickActiveOrigin: jasmine.Spy;
+      setSessionToken: Mock;
+      getSessionToken: Mock;
+      pickActiveOrigin: Mock;
     };
   };
 
@@ -61,28 +66,31 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       secureClearOk?: boolean;
       secureGetOk?: boolean;
     } = {},
-  ): jasmine.Spy {
+  ): Mock {
     const {
       keyringToken = null,
       secureSetOk = true,
       secureClearOk = true,
       secureGetOk = true,
     } = opts;
-    return jasmine.createSpy('invoke').and.callFake((cmd: string) => {
-      if (cmd === 'secure_get_token')
-        return secureGetOk
-          ? Promise.resolve(keyringToken)
-          : Promise.reject(new Error('no secret service'));
-      if (cmd === 'secure_set_token')
-        return secureSetOk
-          ? Promise.resolve(undefined)
-          : Promise.reject(new Error('no secret service'));
-      if (cmd === 'secure_clear_token')
-        return secureClearOk
-          ? Promise.resolve(undefined)
-          : Promise.reject(new Error('keyring locked'));
-      return Promise.resolve(undefined); // set_session_token / clear_session_token
-    });
+    return vi
+      .fn()
+      .mockName('invoke')
+      .mockImplementation((cmd: string) => {
+        if (cmd === 'secure_get_token')
+          return secureGetOk
+            ? Promise.resolve(keyringToken)
+            : Promise.reject(new Error('no secret service'));
+        if (cmd === 'secure_set_token')
+          return secureSetOk
+            ? Promise.resolve(undefined)
+            : Promise.reject(new Error('no secret service'));
+        if (cmd === 'secure_clear_token')
+          return secureClearOk
+            ? Promise.resolve(undefined)
+            : Promise.reject(new Error('keyring locked'));
+        return Promise.resolve(undefined); // set_session_token / clear_session_token
+      });
   }
 
   /** Install the desktop-Tauri globals so isTauri()=true and tauriInvoke routes to invokeSpy. */
@@ -103,18 +111,20 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
   /** Install the Android globals + UA so isAndroidNative()=true and the SomsFcm bridge is reachable. Also
    *  installs `__TAURI__.core.invoke` (Android now reaches `set_session_token` / `clear_session_token`). */
   function androidGlobals(storedToken: string | null): {
-    set: jasmine.Spy;
-    get: jasmine.Spy;
-    pick: jasmine.Spy;
+    set: Mock;
+    get: Mock;
+    pick: Mock;
   } {
     invokeSpy = makeInvokeSpy();
-    const set = jasmine.createSpy('setSessionToken');
-    const get = jasmine
-      .createSpy('getSessionToken')
-      .and.returnValue(storedToken);
-    const pick = jasmine
-      .createSpy('pickActiveOrigin')
-      .and.returnValue('http://lan.test');
+    const set = vi.fn().mockName('setSessionToken');
+    const get = vi
+      .fn()
+      .mockName('getSessionToken')
+      .mockReturnValue(storedToken);
+    const pick = vi
+      .fn()
+      .mockName('pickActiveOrigin')
+      .mockReturnValue('http://lan.test');
     Object.defineProperty(navigator, 'userAgent', {
       value: 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36',
       configurable: true,
@@ -130,7 +140,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
     return { set, get, pick };
   }
 
-  /** Restore the process-wide globals/UA so the browser-path spec keeps seeing isTauri()=false. The karma
+  /** Restore the process-wide globals/UA so the browser-path spec keeps seeing isTauri()=false. The test
    *  browser env has none of these surfaces natively, so each is removed unconditionally. */
   function restoreGlobals(): void {
     const w = window as unknown as MockWindow;
@@ -152,12 +162,12 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
     originalUserAgent = navigator.userAgent;
     sessionStorage.clear();
     localStorage.clear();
-    toastWarn = jasmine.createSpy('warn');
+    toastWarn = vi.fn().mockName('warn');
 
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
-        provideHttpClient(),
+        provideHttpClient(withXhr()),
         provideHttpClientTesting(),
         AuthService,
         // AuthService resolves i18n keys for its keyring-failure toasts; stub the translator (returns the key).
@@ -167,27 +177,27 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
         },
         {
           provide: ToastService,
-          useValue: { warn: toastWarn, info: jasmine.createSpy('info') },
+          useValue: { warn: toastWarn, info: vi.fn().mockName('info') },
         },
         {
           provide: RouteService,
           useValue: {
-            redirect: jasmine.createSpy('redirect'),
+            redirect: vi.fn().mockName('redirect'),
             openSettings: () => {},
           },
         },
         {
           provide: PushService,
           useValue: {
-            onLogin: jasmine.createSpy('onLogin'),
-            unregister: jasmine.createSpy('unregister'),
+            onLogin: vi.fn().mockName('onLogin'),
+            unregister: vi.fn().mockName('unregister'),
           },
         },
         {
           provide: WebPushService,
           useValue: {
-            onLogin: jasmine.createSpy('onLogin'),
-            unregister: jasmine.createSpy('unregister'),
+            onLogin: vi.fn().mockName('onLogin'),
+            unregister: vi.fn().mockName('unregister'),
           },
         },
         // restoreSession() now awaits userService.restoreWebdb() (opens the per-user IDB before the router
@@ -195,13 +205,15 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
         {
           provide: UserService,
           useValue: {
-            clearSession: jasmine
-              .createSpy('clearSession')
-              .and.resolveTo(undefined),
-            prepareFreshCache: jasmine.createSpy('prepareFreshCache'),
-            restoreWebdb: jasmine
-              .createSpy('restoreWebdb')
-              .and.resolveTo(undefined),
+            clearSession: vi
+              .fn()
+              .mockName('clearSession')
+              .mockResolvedValue(undefined),
+            prepareFreshCache: vi.fn().mockName('prepareFreshCache'),
+            restoreWebdb: vi
+              .fn()
+              .mockName('restoreWebdb')
+              .mockResolvedValue(undefined),
           },
         },
       ],
@@ -410,7 +422,11 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       // The Android branch must not reject if the @JavascriptInterface wasn't injected (a shell wiring bug
       // or a renderer reclaim) — a rejection aborts bootstrap → a blank webview with no recovery.
       androidGlobals('st'); // sets UA Android + __TAURI_INTERNALS__
-      delete (window as unknown as { SomsFcm?: unknown }).SomsFcm; // bridge missing
+      delete (
+        window as unknown as {
+          SomsFcm?: unknown;
+        }
+      ).SomsFcm; // bridge missing
       // Awaiting must not throw — a rejection aborts the APP_INITIALIZER → a blank webview.
       await svc.restoreSession();
       expect(svc.loggedIn()).toBe(false);

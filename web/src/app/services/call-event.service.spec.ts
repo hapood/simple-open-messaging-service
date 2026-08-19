@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Subject } from 'rxjs';
@@ -9,10 +10,10 @@ describe('CallEventService web call routing', () => {
   const events = new Subject<StandardMessage>();
   const adapter = {
     snapshot: () => ({ ...IDLE_CALL }),
-    setSnapshotListener: jasmine.createSpy('setSnapshotListener'),
-    handleSignal: jasmine.createSpy('handleSignal'),
-    onIncoming: jasmine.createSpy('onIncoming'),
-    applyLifecycle: jasmine.createSpy('applyLifecycle'),
+    setSnapshotListener: vi.fn().mockName('setSnapshotListener'),
+    handleSignal: vi.fn().mockName('handleSignal'),
+    onIncoming: vi.fn().mockName('onIncoming'),
+    applyLifecycle: vi.fn().mockName('applyLifecycle'),
     rejected$: new Subject<'busy'>(),
   };
 
@@ -20,10 +21,10 @@ describe('CallEventService web call routing', () => {
     events.observers.slice().forEach((observer) => observer.complete());
     Object.values(adapter)
       .filter(
-        (value): value is jasmine.Spy =>
-          typeof value === 'function' && jasmine.isSpy(value),
+        (value): value is Mock =>
+          typeof value === 'function' && vi.isMockFunction(value),
       )
-      .forEach((spy) => spy.calls.reset());
+      .forEach((spy) => spy.mockClear());
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -53,7 +54,9 @@ describe('CallEventService web call routing', () => {
       data: signal,
     });
 
-    expect(adapter.handleSignal).toHaveBeenCalledOnceWith(signal);
+    expect(adapter.handleSignal).toHaveBeenCalledTimes(1);
+
+    expect(adapter.handleSignal).toHaveBeenCalledWith(signal);
   });
 
   it('seeds the incoming state and lets the web adapter acknowledge ringing', () => {
@@ -75,14 +78,15 @@ describe('CallEventService web call routing', () => {
 
     expect(service.callState().phase).toBe('incoming');
     expect(service.callState().peerName).toBe('Alice');
-    expect(adapter.onIncoming).toHaveBeenCalledOnceWith(
-      jasmine.objectContaining({ callSid: 'call-2', peerUserId: 7 }),
+    expect(adapter.onIncoming).toHaveBeenCalledTimes(1);
+    expect(adapter.onIncoming).toHaveBeenCalledWith(
+      expect.objectContaining({ callSid: 'call-2', peerUserId: 7 }),
     );
   });
 
   it('accepts renderer-owned snapshots without feeding them back into the adapter', () => {
     const service = TestBed.inject(CallEventService);
-    const listener = adapter.setSnapshotListener.calls.mostRecent().args[0];
+    const listener = vi.mocked(adapter.setSnapshotListener).mock.lastCall![0];
 
     listener({
       ...IDLE_CALL,
@@ -110,9 +114,9 @@ describe('CallEventService web call routing', () => {
   });
 
   it('holds a terminal result when an adapter reaches idle before SSE', () => {
-    jasmine.clock().install();
+    vi.useFakeTimers();
     const service = TestBed.inject(CallEventService);
-    const listener = adapter.setSnapshotListener.calls.mostRecent().args[0];
+    const listener = vi.mocked(adapter.setSnapshotListener).mock.lastCall![0];
     listener({ ...IDLE_CALL, phase: 'ringing', callSid: 'call-4' });
     listener({ ...IDLE_CALL });
 
@@ -125,17 +129,17 @@ describe('CallEventService web call routing', () => {
 
     expect(service.callState().phase).toBe('ended');
     expect(service.callState().terminalReason).toBe('declined');
-    jasmine.clock().tick(1399);
+    vi.advanceTimersByTime(1399);
     expect(service.callState().phase).toBe('ended');
-    jasmine.clock().tick(1);
+    vi.advanceTimersByTime(1);
     expect(service.callState()).toEqual({ ...IDLE_CALL });
-    jasmine.clock().uninstall();
+    vi.useRealTimers();
   });
 
   it('briefly presents a locally initiated hang-up before returning to idle', () => {
-    jasmine.clock().install();
+    vi.useFakeTimers();
     const service = TestBed.inject(CallEventService);
-    const listener = adapter.setSnapshotListener.calls.mostRecent().args[0];
+    const listener = vi.mocked(adapter.setSnapshotListener).mock.lastCall![0];
     listener({ ...IDLE_CALL, phase: 'connected', callSid: 'call-local' });
     service.markLocalTermination('call-local');
 
@@ -148,25 +152,25 @@ describe('CallEventService web call routing', () => {
 
     expect(service.callState().phase).toBe('ended');
     expect(service.callState().terminalReason).toBe('completed');
-    jasmine.clock().tick(1400);
+    vi.advanceTimersByTime(1400);
     expect(service.callState()).toEqual({ ...IDLE_CALL });
-    jasmine.clock().uninstall();
+    vi.useRealTimers();
   });
 
   it('shows native busy rejection as a terminal call state', () => {
-    jasmine.clock().install();
+    vi.useFakeTimers();
     const service = TestBed.inject(CallEventService);
-    const listener = adapter.setSnapshotListener.calls.mostRecent().args[0];
+    const listener = vi.mocked(adapter.setSnapshotListener).mock.lastCall![0];
     listener({ ...IDLE_CALL, phase: 'ringing', callSid: 'call-5' });
     listener({ ...IDLE_CALL });
     adapter.rejected$.next('busy');
 
     expect(service.callState().phase).toBe('ended');
     expect(service.callState().terminalReason).toBe('busy');
-    jasmine.clock().tick(1799);
+    vi.advanceTimersByTime(1799);
     expect(service.callState().phase).toBe('ended');
-    jasmine.clock().tick(1);
+    vi.advanceTimersByTime(1);
     expect(service.callState()).toEqual({ ...IDLE_CALL });
-    jasmine.clock().uninstall();
+    vi.useRealTimers();
   });
 });

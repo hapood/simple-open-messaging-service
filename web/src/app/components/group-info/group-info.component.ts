@@ -6,6 +6,8 @@ import {
   OnInit,
   OnDestroy,
   signal,
+  untracked,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { NavStateMachineService } from '../../services/nav-state.service';
@@ -14,6 +16,11 @@ import { UserListComponent } from '../user-list/user-list.component';
 import { RouteService, PopupType } from '../../services/route.service';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { MatButtonModule } from '@angular/material/button';
+import { MatSlideToggleModule } from '@angular/material/slide-toggle';
+import { MatCardModule } from '@angular/material/card';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatInputModule } from '@angular/material/input';
+import { MatMenuModule } from '@angular/material/menu';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { FormsModule } from '@angular/forms';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
@@ -26,7 +33,6 @@ import {
   UserAvatarType,
 } from '../user-avatar/user-avatar.component';
 import { ThreadAliasEditorComponent } from '../thread-alias-editor/thread-alias-editor.component';
-import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
 import { apiPrefix } from '../../services/constants';
 import { finalize } from 'rxjs';
 import { translateBizResult } from '../../services/biz-code';
@@ -56,13 +62,18 @@ type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
     UserListComponent,
     IconComponent,
     MatButtonModule,
+    MatSlideToggleModule,
+    MatCardModule,
+    MatFormFieldModule,
+    MatInputModule,
+    MatMenuModule,
     FormsModule,
     UserAvatarComponent,
     TranslocoPipe,
     ThreadAliasEditorComponent,
-    FederatedBadgeComponent,
   ],
   templateUrl: './group-info.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './group-info.component.scss',
 })
 export class GroupInfoComponent implements OnInit, OnDestroy {
@@ -98,14 +109,20 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly roster = signal<ResolvedMemberProfile[]>([]);
   readonly loading = signal(true);
   readonly busy = signal(false); // a mutation is in flight (disables action buttons)
+  readonly blockedSaving = signal(false);
+  readonly membersInviteSaving = signal(false);
+  readonly blockedControl = signal(false);
+  readonly membersCanInviteControl = signal(true);
 
   /** Invite picker state. */
   readonly selectedDict = signal<Record<number, boolean | undefined>>({});
   readonly selectedList = signal<ConversationItem[]>([]);
   readonly showInvite = signal(false);
+  readonly showMemberManager = signal(false);
   readonly memberQuery = signal('');
+  readonly inviteQuery = signal('');
 
-  /** Inline identity-edit mode (admin+). */
+  /** Whether the admin-only group-profile editor is open as a second-level panel. */
   readonly editing = signal(false);
   readonly nameEdit = signal('');
   /** Max length of the group description. */
@@ -114,14 +131,6 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly descEdit = signal('');
   /** staged new avatar URL (uploaded already); undefined = unchanged. */
   readonly pendingAvatar = signal<string | undefined>(undefined);
-
-  /** Per-member action menu — the userId whose action sheet is open. */
-  readonly openMenuFor = signal<number | undefined>(undefined);
-  /** Two-step destructive confirm: { userId, action } awaiting [Confirm]. */
-  readonly confirmAction = signal<{
-    userId: number;
-    action: 'kick' | 'transfer';
-  } | null>(null);
 
   readonly myUserId = computed(() => this.userService.sessionProfile()?.id);
   /** Caller's role, derived from the roster (fresh after each reload); falls back to the item's role. */
@@ -154,6 +163,9 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly confirmDissolve = signal(false);
 
   readonly group = computed(() => this.userMsgTrd()?.group);
+  /** Keep roster loading dependent on the membership array itself. Metadata-only group updates (for
+   * example toggling invite permission) preserve this reference and must not rebuild/scroll the panel. */
+  readonly groupMembers = computed(() => this.group()?.members);
   readonly dissolved = computed(() => this.group()?.dissolvedAt != null);
   readonly readOnly = computed(
     () =>
@@ -168,8 +180,19 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   constructor() {
     effect(() => {
       const threadId = this.threadId();
-      const members = this.group()?.members;
-      if (threadId !== undefined && members) void this.loadMembers();
+      const members = this.groupMembers();
+      if (threadId !== undefined && members)
+        untracked(() => void this.loadMembers());
+    });
+    effect(() => {
+      const blocked = this.userMsgTrd()?.blocked === true;
+      if (!this.blockedSaving())
+        untracked(() => this.blockedControl.set(blocked));
+    });
+    effect(() => {
+      const enabled = this.group()?.membersCanInvite !== false;
+      if (!this.membersInviteSaving())
+        untracked(() => this.membersCanInviteControl.set(enabled));
     });
   }
 
@@ -224,20 +247,30 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   roleName(role: string): string {
     return this.transloco.translate('group.role.' + role.toLowerCase());
   }
-  /** Localized destructive-action verb for the confirm prompt (kick / transfer). */
-  actionLabel(action: 'kick' | 'transfer'): string {
-    return this.transloco.translate('group.action.' + action);
-  }
-
-  toggleMenu(userId: number) {
-    this.openMenuFor.update((cur) => (cur === userId ? undefined : userId));
-    this.confirmAction.set(null);
-  }
-
   // ── mutations: each reloads the roster so role badges / membership reflect the server ──
 
   doSetRole(m: ResolvedMemberProfile) {
     const role = this.toggleRoleLabel(m);
+    const settingAdmin = role === 'ADMIN';
+    this.routeService.popupDlg(
+      PopupType.CONFIRM,
+      {
+        titleKey: settingAdmin ? 'group.setAdmin' : 'group.unsetAdmin',
+        messageKey: settingAdmin
+          ? 'group.setAdminConfirm'
+          : 'group.unsetAdminConfirm',
+        messageParams: { name: m.name },
+        confirmKey: settingAdmin ? 'group.setAdmin' : 'group.unsetAdmin',
+        cancelKey: 'common.cancel',
+        icon: AppIconType.PERSON_ADMIN,
+      },
+      (result) => {
+        if (result) this.setRole(m, role);
+      },
+    );
+  }
+
+  private setRole(m: ResolvedMemberProfile, role: 'ADMIN' | 'MEMBER') {
     const id = this.groupId();
     if (id === undefined) return;
     this.busy.set(true);
@@ -247,7 +280,6 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       .subscribe({
         next: (res) => {
           if (res.code !== 0) return this.showBusinessError(res);
-          this.openMenuFor.set(undefined);
           this.loadMembers();
         },
         error: () => this.showNetworkError(),
@@ -255,21 +287,36 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   }
 
   askKick(m: ResolvedMemberProfile) {
-    this.confirmAction.set({ userId: m.userId, action: 'kick' });
+    this.routeService.popupDlg(
+      PopupType.CONFIRM,
+      {
+        titleKey: 'group.kick',
+        messageKey: 'group.kickConfirm',
+        messageParams: { name: m.name },
+        confirmKey: 'group.kick',
+        cancelKey: 'common.cancel',
+        icon: AppIconType.PERSON_REMOVE,
+      },
+      (result) => {
+        if (result) this.kick(m);
+      },
+    );
   }
   askTransfer(m: ResolvedMemberProfile) {
-    this.confirmAction.set({ userId: m.userId, action: 'transfer' });
-  }
-  cancelConfirm() {
-    this.confirmAction.set(null);
-  }
-  doConfirm() {
-    const c = this.confirmAction();
-    if (!c) return;
-    const m = this.roster().find((r) => r.userId === c.userId);
-    if (!m) return;
-    if (c.action === 'kick') this.kick(m);
-    else this.transfer(m);
+    this.routeService.popupDlg(
+      PopupType.CONFIRM,
+      {
+        titleKey: 'group.transferOwner',
+        messageKey: 'group.transferOwnerConfirm',
+        messageParams: { name: m.name },
+        confirmKey: 'group.confirmTransfer',
+        cancelKey: 'common.cancel',
+        danger: true,
+      },
+      (result) => {
+        if (result) this.transfer(m);
+      },
+    );
   }
 
   private kick(m: ResolvedMemberProfile) {
@@ -282,8 +329,6 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       .subscribe({
         next: (res) => {
           if (res.code !== 0) return this.showBusinessError(res);
-          this.openMenuFor.set(undefined);
-          this.confirmAction.set(null);
           this.loadMembers();
         },
         error: () => this.showNetworkError(),
@@ -300,8 +345,6 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       .subscribe({
         next: (res) => {
           if (res.code !== 0) return this.showBusinessError(res);
-          this.openMenuFor.set(undefined);
-          this.confirmAction.set(null);
           this.loadMembers();
         },
         error: () => this.showNetworkError(),
@@ -309,6 +352,22 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   }
 
   confirmLeave() {
+    if (this.isOwner()) {
+      this.routeService.popupDlg(
+        PopupType.CONFIRM,
+        {
+          titleKey: 'group.leaveOwnerTitle',
+          messageKey: 'group.leaveOwnerConfirm',
+          confirmKey: 'group.transferIdentity',
+          cancelKey: 'common.cancel',
+        },
+        (result) => {
+          if (!result) return;
+          this.showMemberManager.set(true);
+        },
+      );
+      return;
+    }
     this.routeService.popupDlg(
       PopupType.CONFIRM,
       {
@@ -397,34 +456,50 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     }
   }
 
-  toggleBlocked(): void {
+  setBlocked(blocked: boolean): void {
     const trd = this.userMsgTrd();
-    if (!trd) return;
-    const blocked = !trd.blocked;
+    if (!trd || this.blockedSaving()) return;
+    this.blockedControl.set(blocked);
+    this.blockedSaving.set(true);
     this.threadAdapter
       .setBlocked({ threadId: trd.threadId, blocked })
+      .pipe(finalize(() => this.blockedSaving.set(false)))
       .subscribe({
         next: (res) => {
-          if (res.code !== 0) return this.showBusinessError(res);
+          if (res.code !== 0) {
+            this.blockedControl.set(!blocked);
+            return this.showBusinessError(res);
+          }
           this.convList.applyThreadMeta(trd.threadId, { blocked });
         },
-        error: () => this.showNetworkError(),
+        error: () => {
+          this.blockedControl.set(!blocked);
+          this.showNetworkError();
+        },
       });
   }
 
   setMembersCanInvite(enabled: boolean): void {
     const id = this.groupId();
-    if (id === undefined || !this.isAdmin()) return;
-    this.busy.set(true);
+    if (id === undefined || !this.isAdmin() || this.membersInviteSaving())
+      return;
+    this.membersCanInviteControl.set(enabled);
+    this.membersInviteSaving.set(true);
     this.groupService
       .updateGroup({ groupId: id, membersCanInvite: enabled })
-      .pipe(finalize(() => this.busy.set(false)))
+      .pipe(finalize(() => this.membersInviteSaving.set(false)))
       .subscribe({
         next: (res) => {
-          if (res.code !== 0) return this.showBusinessError(res);
+          if (res.code !== 0) {
+            this.membersCanInviteControl.set(!enabled);
+            return this.showBusinessError(res);
+          }
           this.convList.applyGroupUpdate(id, { membersCanInvite: enabled });
         },
-        error: () => this.showNetworkError(),
+        error: () => {
+          this.membersCanInviteControl.set(!enabled);
+          this.showNetworkError();
+        },
       });
   }
 

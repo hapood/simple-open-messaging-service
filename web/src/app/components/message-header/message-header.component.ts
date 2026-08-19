@@ -5,6 +5,7 @@ import {
   input,
   output,
   signal,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import { OverlayModule } from '@angular/cdk/overlay';
 import { TranslocoModule } from '@jsverse/transloco';
@@ -58,6 +59,7 @@ import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter
     MessageSearchComponent,
   ],
   templateUrl: './message-header.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './message-header.component.scss',
 })
 export class MessageHeaderComponent {
@@ -77,7 +79,9 @@ export class MessageHeaderComponent {
   private readonly routeService = inject(RouteService);
   private readonly callAdapter = inject(CallAdapterService);
   private readonly callEvents = inject(CallEventService);
-  readonly callActive = computed(() => this.callEvents.callState().phase !== 'idle');
+  readonly callActive = computed(
+    () => this.callEvents.callState().phase !== 'idle',
+  );
   private readonly avatarRepo = inject(AvatarRepository);
   private readonly transloco = inject(TranslocoService);
   private readonly toast = inject(ToastService);
@@ -157,6 +161,12 @@ export class MessageHeaderComponent {
     // A per-user alias (remark) overrides the real name in the caller's header.
     if (trd.alias) return trd.alias;
     return trd.type === 'P2P' ? displayUserName(trd.peerUser) : trd.group.name;
+  });
+
+  /** Group size shown as quiet context beside the title. P2P threads omit it. */
+  readonly groupMemberCount = computed(() => {
+    const trd = this.userMsgTrd();
+    return trd?.type === 'GROUP' ? trd.group.members.length : undefined;
   });
 
   /** The home domain of the open conversation when it is federated, else null (self-hides the badge).

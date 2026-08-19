@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 /**
  * ChatBoxScroller (manual anchor · array index) unit tests.
  *
@@ -131,9 +132,15 @@ function recordingHooks(itemHeight = 100): {
       prev: CbItem<number> | null,
     ) => CbElement<number>;
   };
-  calls: { id: number; prev: number | null }[];
+  calls: {
+    id: number;
+    prev: number | null;
+  }[];
 } {
-  const calls: { id: number; prev: number | null }[] = [];
+  const calls: {
+    id: number;
+    prev: number | null;
+  }[] = [];
   return {
     hooks: {
       createItem: (item, prev): CbElement<number> => {
@@ -211,7 +218,9 @@ function pendingSource(
  *  never returns the items. pushLive appends to `live`; getNewer returns all live items newer than a full cursor
  *  (ascending, the last tagged 'newest' — the global newest moves with each push). init/getOlder operate on a static
  *  `full` (0 oldest .. N-1 newest). For signal-path / async-height-settle tests. */
-function liveSource(N: number): CbSource<number> & { live: CbItem<number>[] } {
+function liveSource(N: number): CbSource<number> & {
+  live: CbItem<number>[];
+} {
   const itemAt = (i: number): CbItem<number> | undefined => {
     if (i < 0 || i >= N) return undefined;
     const boundary =
@@ -353,9 +362,10 @@ function pushedSource(base: CbSource<number>): CbSource<number> {
 }
 
 /** Fake source: N msgs (0 oldest .. N-1 newest). Cursor getOlder/getNewer, ascending return. */
-function fakeSource(
-  N: number,
-): CbSource<number> & { gets: () => number; newers: () => number } {
+function fakeSource(N: number): CbSource<number> & {
+  gets: () => number;
+  newers: () => number;
+} {
   const itemAt = (i: number): CbItem<number> | undefined => {
     if (i < 0 || i >= N) return undefined;
     const boundary =
@@ -554,7 +564,9 @@ async function waitFor(
 function mutableVh(
   viewport: HTMLDivElement,
   initial: number,
-): { set: (v: number) => void } {
+): {
+  set: (v: number) => void;
+} {
   let v = initial;
   Object.defineProperty(viewport, 'clientHeight', {
     configurable: true,
@@ -570,7 +582,11 @@ function mutableVh(
 /** Test seam: invoke the private viewport-resize handler directly (ResizeObserver cannot be driven from a getter-based
  *  clientHeight in the jsdom/Karma layout, so drive the handler the RO callback would call). */
 function reflow(s: ChatBoxScroller<number>): void {
-  (s as unknown as { onViewportResize: () => void }).onViewportResize();
+  (
+    s as unknown as {
+      onViewportResize: () => void;
+    }
+  ).onViewportResize();
 }
 
 type EdgeStateView = {
@@ -587,15 +603,18 @@ function edgeState(
 }
 
 function newestHighlightPending(s: ChatBoxScroller<number>): boolean {
-  return (s as unknown as { highlightNewestWhenReached: boolean })
-    .highlightNewestWhenReached;
+  return (
+    s as unknown as {
+      highlightNewestWhenReached: boolean;
+    }
+  ).highlightNewestWhenReached;
 }
 
 describe('ChatBoxScroller (manual anchor · array index)', () => {
   let viewport: HTMLDivElement;
   let content: HTMLDivElement;
   let scroller: ChatBoxScroller<number> | undefined;
-  let rafSpy: jasmine.Spy;
+  let rafSpy: Mock;
 
   beforeEach(() => {
     viewport = document.createElement('div');
@@ -618,19 +637,19 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       configurable: true,
       get: () => sumChildrenHeight(content),
     });
-    rafSpy = spyOn(window, 'requestAnimationFrame').and.callFake(
-      (cb: FrameRequestCallback) => {
+    rafSpy = vi
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((cb: FrameRequestCallback) => {
         cb(0);
         return 0;
-      },
-    );
+      });
   });
 
   afterEach(() => {
     scroller?.destroy();
     scroller = undefined;
     viewport.remove();
-    rafSpy.and.callThrough?.();
+    rafSpy;
   });
 
   it('init loads the newest batch, pins to bottom, window boundary msgIds correct', async () => {
@@ -678,7 +697,11 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     });
     await scroller.init();
 
-    const rows: Array<{ id: number; top: number; bottom: number }> = [];
+    const rows: Array<{
+      id: number;
+      top: number;
+      bottom: number;
+    }> = [];
     const viewportGeometry = scroller.visitMountedGeometry((row) => {
       rows.push({ id: row.item.id, top: row.top, bottom: row.bottom });
     });
@@ -691,7 +714,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
     controlled.setHeight(0, 120);
     expect(scroller.getMountedGeometry(1)).toEqual(
-      jasmine.objectContaining({ top: 400, bottom: 500, height: 100 }),
+      expect.objectContaining({ top: 400, bottom: 500, height: 100 }),
     );
   });
 
@@ -1663,7 +1686,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     await scroller.init();
     viewport.scrollTop = 37;
     const before = scroller.getInfo();
-    await expectAsync(scroller.scrollToIndex(9999, 'center')).toBeResolvedTo(
+    await expect(scroller.scrollToIndex(9999, 'center')).resolves.toEqual(
       false,
     );
     expect(scroller.getInfo().oldestId).toBe(before.oldestId);
@@ -1674,7 +1697,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('init missing unread anchor with fallbackToLatest → mounts newest and reports the fallback', async () => {
     const { hooks } = controllableHooks();
-    const fallback = jasmine.createSpy('fallback');
+    const fallback = vi.fn().mockName('fallback');
     const src = fakeSource(20);
     await src.init(9999, 1, 1); // document the missing target in this source
     scroller = new ChatBoxScroller<number>({
@@ -2127,7 +2150,13 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       for (const el of Array.from(content.querySelectorAll<HTMLElement>(sel)))
         el.dispatchEvent(new Event('animationend'));
     }
-    expect((scroller as unknown as { animating: number }).animating).toBe(0);
+    expect(
+      (
+        scroller as unknown as {
+          animating: number;
+        }
+      ).animating,
+    ).toBe(0);
   });
 
   // Symmetric optimistic lifecycle: a push that extends the newest (a non-newest page lands while pinned at the newest)
@@ -2362,7 +2391,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   // By construction this state is unreachable via markSent (the SSE-echo path drops source.pending first → markPendingSent
   // returns false → confirmPending is never called), so these tests manufacture the orphan directly to cover the backstop.
   it('confirmPending: defensively removes a stale optimistic whose fulfilling real is already mounted (+warn, no morph)', async () => {
-    const warnSpy = spyOn(console, 'warn');
+    const warnSpy = vi.spyOn(console, 'warn').mockReturnValue(undefined);
     const t = trackingHooks();
     const cid = 'cid-stale';
     // A source whose newest real (id 499) carries the SAME cid as the in-flight optimistic — the orphan. getPending
@@ -2407,13 +2436,13 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(content.querySelectorAll('[data-cb-id="499"]').length).toBe(1); // fulfilling real untouched — owns the slot
     expect(t.updateCount()).toBe(updatesBefore); // NO in-place morph (returned before the update path)
     expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(String(warnSpy.calls.mostRecent().args[0])).toContain(
+    expect(String(vi.mocked(warnSpy).mock.lastCall![0])).toContain(
       'stale optimistic',
     ); // invariant violation is observable
   });
 
   it('confirmPending: defensive removal is album-aware (a real whose clientMessageIds album includes the cid)', async () => {
-    const warnSpy = spyOn(console, 'warn');
+    const warnSpy = vi.spyOn(console, 'warn').mockReturnValue(undefined);
     const t = trackingHooks();
     const cid = 'cid-album-member';
     // The fulfilling real is an album head whose clientMessageIds includes the optimistic's cid (e.g. a self-sent image
@@ -2921,7 +2950,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
     const cap = content.querySelector<HTMLElement>('.cb-tail-cap')!;
     expect(requests).toBe(1);
-    expect(cap.classList.contains('cb-tail-cap--failed')).toBeTrue();
+    expect(cap.classList.contains('cb-tail-cap--failed')).toBe(true);
     expect(cap.querySelector('.cb-load-icon__retry')).not.toBeNull();
     expect(cap.getAttribute('role')).toBe('button');
     expect(cap.getAttribute('aria-label')).toContain('Retry');
@@ -2932,7 +2961,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     cap.click();
     await flush();
     expect(requests).toBeGreaterThanOrEqual(2);
-    expect(cap.classList.contains('cb-tail-cap--failed')).toBeFalse();
+    expect(cap.classList.contains('cb-tail-cap--failed')).toBe(false);
   });
 
   it('cancels the persistent newer demand after leaving the lower load-more region', async () => {
@@ -3060,18 +3089,18 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     source.requestNewer = () => testDemand(() => new Promise(() => {}));
 
     scroller.scrollToBottom(true);
-    expect(newestHighlightPending(scroller)).toBeTrue();
+    expect(newestHighlightPending(scroller)).toBe(true);
     viewport.scrollTop = 0;
     viewport.dispatchEvent(new Event('scroll'));
-    expect(newestHighlightPending(scroller)).toBeFalse();
+    expect(newestHighlightPending(scroller)).toBe(false);
 
     scroller.scrollToBottom(true);
     void scroller.scrollToIndex(100, 'center');
-    expect(newestHighlightPending(scroller)).toBeFalse();
+    expect(newestHighlightPending(scroller)).toBe(false);
 
     scroller.scrollToBottom(true);
     scroller.destroy();
-    expect(newestHighlightPending(scroller)).toBeFalse();
+    expect(newestHighlightPending(scroller)).toBe(false);
     scroller = undefined;
   });
 
@@ -3091,11 +3120,11 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
         resolveNewer = (result) => subscriber.next(result);
       });
     scroller.scrollToBottom(true);
-    expect(newestHighlightPending(scroller)).toBeTrue();
+    expect(newestHighlightPending(scroller)).toBe(true);
 
     resolveNewer({ kind: 'error', error: new Error('offline') });
     await flush();
-    expect(newestHighlightPending(scroller)).toBeFalse();
+    expect(newestHighlightPending(scroller)).toBe(false);
   });
 
   it('tail cap: gap mode at the global newest (noNewer) — cb-tail-cap--gap, height measured + folded into totalH', async () => {
@@ -3133,7 +3162,11 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     const before = viewport.scrollTop;
 
     capH += 120;
-    (scroller as unknown as { onTailCapResize: () => void }).onTailCapResize();
+    (
+      scroller as unknown as {
+        onTailCapResize: () => void;
+      }
+    ).onTailCapResize();
 
     expect(viewport.scrollTop).toBe(before + 120);
     expect(scroller.getInfo().atBottom).toBe(true);
@@ -3742,7 +3775,9 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   });
 
   it('updateItemData morphs a mounted item in place (vs.update, no recreate) — object data, like ChatItemData', async () => {
-    type D = { v: number };
+    type D = {
+      v: number;
+    };
     let creates = 0,
       updates = 0;
     const dataMap = new Map<number, D>();
@@ -3807,7 +3842,9 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   });
 
   it('updateItemData is album-aware: any member id (item.ids) resolves to the album item', async () => {
-    type D = { v: number };
+    type D = {
+      v: number;
+    };
     let updates = 0;
     const dataMap = new Map<number, D>();
     const hooks = {

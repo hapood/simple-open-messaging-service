@@ -25,7 +25,7 @@ describe('FriendRequestsComponent federated search progress', () => {
         provideZonelessChangeDetection(),
         { provide: UserService, useValue: {} },
         { provide: RouteService, useValue: {} },
-        { provide: MatSnackBar, useValue: { open: jasmine.createSpy() } },
+        { provide: MatSnackBar, useValue: { open: vi.fn() } },
         {
           provide: TranslocoService,
           useValue: { translate: (key: string) => key },
@@ -49,13 +49,11 @@ describe('FriendRequestsComponent federated search progress', () => {
     } as User;
     const userService = {
       sessionProfile: () => ({ id: 1 }),
-      resolveUser: jasmine
-        .createSpy()
-        .and.returnValue(of({ code: 0, data: local })),
-      searchUsers: jasmine.createSpy(),
-      friendRelationshipStatuses: jasmine
-        .createSpy()
-        .and.returnValue(
+      resolveUser: vi.fn().mockReturnValue(of({ code: 0, data: local })),
+      searchUsers: vi.fn(),
+      friendRelationshipStatuses: vi
+        .fn()
+        .mockReturnValue(
           of({ code: 0, data: [{ userId: local.id, status: 'NONE' }] }),
         ),
     };
@@ -65,7 +63,7 @@ describe('FriendRequestsComponent federated search progress', () => {
         provideZonelessChangeDetection(),
         { provide: UserService, useValue: userService },
         { provide: RouteService, useValue: {} },
-        { provide: MatSnackBar, useValue: { open: jasmine.createSpy() } },
+        { provide: MatSnackBar, useValue: { open: vi.fn() } },
         {
           provide: TranslocoService,
           useValue: { translate: (key: string) => key },
@@ -79,7 +77,9 @@ describe('FriendRequestsComponent federated search progress', () => {
 
     component.searchUser();
 
-    expect(userService.resolveUser).toHaveBeenCalledOnceWith({
+    expect(userService.resolveUser).toHaveBeenCalledTimes(1);
+
+    expect(userService.resolveUser).toHaveBeenCalledWith({
       account: 'alice',
     });
     expect(userService.searchUsers).not.toHaveBeenCalled();
@@ -100,10 +100,10 @@ describe('FriendRequestsComponent federated search progress', () => {
     } as User;
     const userService = {
       sessionProfile: () => ({ id: 1 }),
-      peerTrustStatus: jasmine
-        .createSpy()
-        .and.returnValue(of({ code: 0, data: { trusted: false } })),
-      resolveFederatedUser: jasmine.createSpy().and.returnValue(resolve),
+      peerTrustStatus: vi
+        .fn()
+        .mockReturnValue(of({ code: 0, data: { trusted: false } })),
+      resolveFederatedUser: vi.fn().mockReturnValue(resolve),
     };
     TestBed.configureTestingModule({
       imports: [FriendRequestsComponent],
@@ -111,7 +111,7 @@ describe('FriendRequestsComponent federated search progress', () => {
         provideZonelessChangeDetection(),
         { provide: UserService, useValue: userService },
         { provide: RouteService, useValue: {} },
-        { provide: MatSnackBar, useValue: { open: jasmine.createSpy() } },
+        { provide: MatSnackBar, useValue: { open: vi.fn() } },
         {
           provide: TranslocoService,
           useValue: { translate: (key: string) => key },
@@ -126,8 +126,8 @@ describe('FriendRequestsComponent federated search progress', () => {
     component.searchUser();
 
     expect(component.connectingDomain()).toBe('peer.test');
-    const progress = userService.resolveFederatedUser.calls.mostRecent()
-      .args[1] as (stage: 'WAITING_FOR_PEER') => void;
+    const progress = vi.mocked(userService.resolveFederatedUser).mock
+      .lastCall![1] as (stage: 'WAITING_FOR_PEER') => void;
     progress('WAITING_FOR_PEER');
     expect(component.federationStage()).toBe('WAITING_FOR_PEER');
     expect(component.addTabStatus()).toBe(AddTabStatus.SEARCHING);
@@ -155,7 +155,7 @@ describe('FriendRequestsComponent federated search progress', () => {
         provideZonelessChangeDetection(),
         { provide: UserService, useValue: userService },
         { provide: RouteService, useValue: {} },
-        { provide: MatSnackBar, useValue: { open: jasmine.createSpy() } },
+        { provide: MatSnackBar, useValue: { open: vi.fn() } },
         {
           provide: TranslocoService,
           useValue: { translate: (key: string) => key },
@@ -172,6 +172,6 @@ describe('FriendRequestsComponent federated search progress', () => {
 
     expect(component.connectingDomain()).toBeNull();
     expect(component.addTabStatus()).toBe(AddTabStatus.INIT);
-    expect(resolve.observed).toBeFalse();
+    expect(resolve.observed).toBe(false);
   });
 });

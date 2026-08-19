@@ -49,6 +49,20 @@ const DEMO_CONVERSATION = {
   group: {},
 } as ConversationItem;
 
+const DEMO_INVITABLE_FRIEND = {
+  ...DEMO_CONVERSATION,
+  id: 6,
+  threadId: 6,
+  peerUser: {
+    id: 6,
+    account: 'liam',
+    bio: 'Android engineer · Hangzhou',
+    name: 'Liam',
+    avatar: '',
+    domain: '',
+  },
+} as ConversationItem;
+
 const DEMO_GROUP_CONVERSATION = {
   id: 2,
   threadId: 2,
@@ -56,7 +70,7 @@ const DEMO_GROUP_CONVERSATION = {
   alias: null,
   unreadCount: 0,
   lastMessageSeq: 100,
-  role: 'MEMBER',
+  role: 'OWNER',
   conversationState: 'ACTIVE',
   peerUser: {},
   group: {
@@ -545,8 +559,11 @@ export class PlaygroundShellComponent {
 
   constructor() {
     this.conversations.setConversation(DEMO_GROUP_CONVERSATION);
-    // Alice is an existing friend; the other group members exercise the add-friend path.
-    this.conversations.setRelatedConversations([DEMO_CONVERSATION]);
+    // Alice is already in the group; Liam remains available in the invite-friends picker.
+    this.conversations.setRelatedConversations([
+      DEMO_CONVERSATION,
+      DEMO_INVITABLE_FRIEND,
+    ]);
     effect(() => {
       if (this.nav.chatThreadId() === DEMO_CONVERSATION.threadId)
         this.conversations.setConversation(DEMO_CONVERSATION);

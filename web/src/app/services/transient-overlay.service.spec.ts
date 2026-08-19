@@ -1,4 +1,10 @@
-import { ApplicationRef, Component, provideZonelessChangeDetection, signal } from '@angular/core';
+import {
+  ApplicationRef,
+  Component,
+  provideZonelessChangeDetection,
+  signal,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { FocusTrapFactory } from '@angular/cdk/a11y';
 import { Overlay } from '@angular/cdk/overlay';
 import { TestBed } from '@angular/core/testing';
@@ -6,10 +12,15 @@ import { Subject } from 'rxjs';
 import { NavStateMachineService, type PaneEntry } from './nav-state.service';
 import { TransientOverlayService } from './transient-overlay.service';
 
-@Component({ template: '<button type="button">Close</button>' })
+@Component({
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: '<button type="button">Close</button>',
+})
 class TestOverlayComponent {}
 
-class TestOverlayService extends TransientOverlayService<Record<string, never>> {
+class TestOverlayService extends TransientOverlayService<
+  Record<string, never>
+> {
   protected readonly kind = 'gallery' as const;
   protected readonly component = TestOverlayComponent;
   protected readonly presentation = 'viewer' as const;
@@ -29,9 +40,9 @@ describe('TransientOverlayService accessibility lifecycle', () => {
   const detachments = new Subject<void>();
   const backdropClicks = new Subject<MouseEvent>();
   const overlayElement = document.createElement('div');
-  const focusInitialElementWhenReady = jasmine.createSpy().and.resolveTo(true);
-  const destroyFocusTrap = jasmine.createSpy();
-  const disposeOverlay = jasmine.createSpy();
+  const focusInitialElementWhenReady = vi.fn().mockResolvedValue(true);
+  const destroyFocusTrap = vi.fn();
+  const disposeOverlay = vi.fn();
   let nextId = 1;
 
   const nav = {
@@ -41,7 +52,8 @@ describe('TransientOverlayService accessibility lifecycle', () => {
       paneStack.update((stack) => [...stack, { ...entry, id }]);
       return id;
     },
-    closePane: (id: number) => paneStack.update((stack) => stack.filter((entry) => entry.id !== id)),
+    closePane: (id: number) =>
+      paneStack.update((stack) => stack.filter((entry) => entry.id !== id)),
   };
 
   const position = {
@@ -66,9 +78,9 @@ describe('TransientOverlayService accessibility lifecycle', () => {
   beforeEach(() => {
     paneStack.set([]);
     nextId = 1;
-    focusInitialElementWhenReady.calls.reset();
-    destroyFocusTrap.calls.reset();
-    disposeOverlay.calls.reset();
+    focusInitialElementWhenReady.mockClear();
+    destroyFocusTrap.mockClear();
+    disposeOverlay.mockClear();
 
     TestBed.configureTestingModule({
       providers: [
@@ -99,13 +111,17 @@ describe('TransientOverlayService accessibility lifecycle', () => {
     const trigger = document.createElement('button');
     document.body.appendChild(trigger);
     trigger.focus();
-    const service = TestBed.runInInjectionContext(() => new TestOverlayService());
+    const service = TestBed.runInInjectionContext(
+      () => new TestOverlayService(),
+    );
 
     service.open();
     TestBed.inject(ApplicationRef).tick();
     expect(focusInitialElementWhenReady).toHaveBeenCalled();
 
-    keydowns.next(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true }));
+    keydowns.next(
+      new KeyboardEvent('keydown', { key: 'Escape', cancelable: true }),
+    );
     TestBed.inject(ApplicationRef).tick();
 
     expect(paneStack()).toEqual([]);
@@ -115,13 +131,17 @@ describe('TransientOverlayService accessibility lifecycle', () => {
   });
 
   it('records the shared presentation policy on the pane entry', () => {
-    const service = TestBed.runInInjectionContext(() => new TestOverlayService());
+    const service = TestBed.runInInjectionContext(
+      () => new TestOverlayService(),
+    );
 
     service.open();
 
-    expect(paneStack()[0]).toEqual(jasmine.objectContaining({
-      kind: 'gallery',
-      presentation: 'viewer',
-    }));
+    expect(paneStack()[0]).toEqual(
+      expect.objectContaining({
+        kind: 'gallery',
+        presentation: 'viewer',
+      }),
+    );
   });
 });

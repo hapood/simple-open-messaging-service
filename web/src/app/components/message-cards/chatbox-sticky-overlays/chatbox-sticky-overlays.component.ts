@@ -4,6 +4,7 @@ import {
   inject,
   OnDestroy,
   signal,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import {
   pickStickyDateLabel,
@@ -41,6 +42,7 @@ export interface ChatboxStickyOverlayElements {
   selector: 'app-chatbox-sticky-overlays',
   standalone: true,
   imports: [StickyDateOverlayComponent, StickyAvatarOverlayComponent],
+  changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <app-sticky-date-overlay [label]="date()" />
     <app-sticky-avatar-overlay [avatar]="avatar()" />

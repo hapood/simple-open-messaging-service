@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { of, Subject } from 'rxjs';
@@ -11,18 +12,19 @@ import { GroupService } from './group.service';
  */
 describe('ConversationListService stable markRead flush', () => {
   let convList: ConversationListService;
-  let commitLocalRead: jasmine.Spy;
-  let markRead: jasmine.Spy;
-  let applyReadState: jasmine.Spy;
-  let finishReadCommit: jasmine.Spy;
+  let commitLocalRead: Mock;
+  let markRead: Mock;
+  let applyReadState: Mock;
+  let finishReadCommit: Mock;
 
   beforeEach(() => {
-    commitLocalRead = jasmine
-      .createSpy('commitLocalRead')
-      .and.returnValue(true);
-    markRead = jasmine.createSpy('markRead').and.returnValue(of({ code: 0 }));
-    applyReadState = jasmine.createSpy('applyReadState');
-    finishReadCommit = jasmine.createSpy('finishReadCommit');
+    commitLocalRead = vi.fn().mockName('commitLocalRead').mockReturnValue(true);
+    markRead = vi
+      .fn()
+      .mockName('markRead')
+      .mockReturnValue(of({ code: 0 }));
+    applyReadState = vi.fn().mockName('applyReadState');
+    finishReadCommit = vi.fn().mockName('finishReadCommit');
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -32,19 +34,19 @@ describe('ConversationListService stable markRead flush', () => {
           useValue: {
             commitLocalRead,
             applyReadState,
-            beginReadCommit: jasmine.createSpy('beginReadCommit'),
+            beginReadCommit: vi.fn().mockName('beginReadCommit'),
             finishReadCommit,
             readCommitPending: signal<ReadonlySet<number>>(
               new Set(),
             ).asReadonly(),
-            setOpenThread: jasmine.createSpy('setOpenThread'),
+            setOpenThread: vi.fn().mockName('setOpenThread'),
             openThreadId: signal<number | undefined>(7).asReadonly(),
             items: signal([]).asReadonly(),
-            refreshPeerOnOpen: jasmine.createSpy('refreshPeerOnOpen'),
+            refreshPeerOnOpen: vi.fn().mockName('refreshPeerOnOpen'),
             missedCursor: signal(null).asReadonly(),
-            advanceMissedCursor: jasmine.createSpy('advanceMissedCursor'),
-            markTopOnNextUpdate: jasmine.createSpy('markTopOnNextUpdate'),
-            load: jasmine.createSpy('load'),
+            advanceMissedCursor: vi.fn().mockName('advanceMissedCursor'),
+            markTopOnNextUpdate: vi.fn().mockName('markTopOnNextUpdate'),
+            load: vi.fn().mockName('load'),
           },
         },
         {
@@ -58,8 +60,12 @@ describe('ConversationListService stable markRead flush', () => {
   });
 
   it('waits for close, then sends and coalesces later positions while the request is in flight', () => {
-    const first = new Subject<{ code: number }>();
-    markRead.and.returnValues(first.asObservable(), of({ code: 0 }));
+    const first = new Subject<{
+      code: number;
+    }>();
+    markRead
+      .mockReturnValueOnce(first.asObservable())
+      .mockReturnValueOnce(of({ code: 0 }));
     convList.markReadStable(7, 1);
     expect(markRead).not.toHaveBeenCalled();
     convList.close();
@@ -78,7 +84,7 @@ describe('ConversationListService stable markRead flush', () => {
   });
 
   it('ignores a repeated/stale stable position', () => {
-    commitLocalRead.and.returnValue(false);
+    commitLocalRead.mockReturnValue(false);
     convList.markReadStable(7, 5);
     convList.close();
     expect(markRead).not.toHaveBeenCalled();
@@ -90,7 +96,9 @@ describe('ConversationListService stable markRead flush', () => {
 
     convList.flushRead(7);
 
-    expect(markRead).toHaveBeenCalledOnceWith({
+    expect(markRead).toHaveBeenCalledTimes(1);
+
+    expect(markRead).toHaveBeenCalledWith({
       threadId: 7,
       localReadHwm: 5,
     });
@@ -112,16 +120,16 @@ describe('ConversationListService stable markRead flush', () => {
  */
 describe('ConversationListService (cursor + threadHwms delegation)', () => {
   let convList: ConversationListService;
-  let missedCursor: jasmine.Spy;
-  let threadHwms: jasmine.Spy;
-  let recordThreadDismiss: jasmine.Spy;
-  let clearThreadDismiss: jasmine.Spy;
+  let missedCursor: Mock;
+  let threadHwms: Mock;
+  let recordThreadDismiss: Mock;
+  let clearThreadDismiss: Mock;
 
   beforeEach(() => {
-    missedCursor = jasmine.createSpy('missedCursor').and.returnValue(null);
-    threadHwms = jasmine.createSpy('threadHwms').and.returnValue({ 7: 3 });
-    recordThreadDismiss = jasmine.createSpy('recordThreadDismiss');
-    clearThreadDismiss = jasmine.createSpy('clearThreadDismiss');
+    missedCursor = vi.fn().mockName('missedCursor').mockReturnValue(null);
+    threadHwms = vi.fn().mockName('threadHwms').mockReturnValue({ 7: 3 });
+    recordThreadDismiss = vi.fn().mockName('recordThreadDismiss');
+    clearThreadDismiss = vi.fn().mockName('clearThreadDismiss');
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -137,10 +145,10 @@ describe('ConversationListService (cursor + threadHwms delegation)', () => {
               new Set(),
             ).asReadonly(),
             topInserted: signal(null).asReadonly(),
-            setOpenThread: jasmine.createSpy('setOpenThread'),
+            setOpenThread: vi.fn().mockName('setOpenThread'),
             missedCursor,
             threadHwms,
-            advanceMissedCursor: jasmine.createSpy('advanceMissedCursor'),
+            advanceMissedCursor: vi.fn().mockName('advanceMissedCursor'),
             recordThreadDismiss,
             clearThreadDismiss,
           },

@@ -4,6 +4,7 @@ import {
   EnvironmentInjector,
   input,
   provideZonelessChangeDetection,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import {
@@ -20,7 +21,12 @@ import { RouteService } from '../../../services/route.service';
 import type { ChatMsgData } from '../chat-item';
 import { TextRowComponent } from './text-row.component';
 
-@Component({ selector: 'app-user-avatar', standalone: true, template: '' })
+@Component({
+  selector: 'app-user-avatar',
+  standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: '',
+})
 class StubUserAvatarComponent {
   readonly type = input<unknown>(undefined);
   readonly name = input<string | undefined | null>('');
@@ -41,7 +47,7 @@ function message(quote: ChatMsgData['quote']): ChatMsgData {
     contentType: 'PURE_TEXT',
     images: null,
     file: null,
-    createdAtMs: 1_700_000_000_000,
+    createdAtMs: 1700000000000,
     quote,
   };
 }
@@ -169,7 +175,7 @@ describe('TextRowComponent — forwarded quote navigation', () => {
       ref.location.nativeElement as HTMLElement
     ).querySelector<HTMLElement>('.msg-quote')!;
 
-    expect(quote.classList.contains('msg-quote--visual')).toBeTrue();
+    expect(quote.classList.contains('msg-quote--visual')).toBe(true);
     expect(quote.querySelector('img.msg-quote-visual')).not.toBeNull();
 
     ref.destroy();
