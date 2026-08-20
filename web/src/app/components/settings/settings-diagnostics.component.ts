@@ -1,5 +1,6 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { MatListModule } from '@angular/material/list';
+import { MatCardModule } from '@angular/material/card';
 import { MatButtonModule } from '@angular/material/button';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { LanguageService } from '../../services/language.service';
@@ -21,10 +22,10 @@ type ReportState = 'idle' | 'confirming' | 'sending' | 'done' | 'failed';
  */
 @Component({
   selector: 'app-settings-diagnostics',
-  imports: [MatListModule, MatButtonModule, TranslocoPipe],
+  imports: [MatListModule, MatCardModule, MatButtonModule, TranslocoPipe],
   template: `
     <section class="settings-group">
-      <div class="settings-card">
+      <mat-card appearance="outlined" class="settings-card">
         <mat-list>
           <mat-list-item>
             <span matListItemTitle>{{
@@ -85,7 +86,7 @@ type ReportState = 'idle' | 'confirming' | 'sending' | 'done' | 'failed';
             </div>
           </mat-list-item>
         </mat-list>
-      </div>
+      </mat-card>
     </section>
   `,
   styleUrl: './sub-page.scss',

@@ -1,17 +1,96 @@
-import { provideZonelessChangeDetection } from '@angular/core';
+import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { TranslocoService } from '@jsverse/transloco';
 import { of, Subject } from 'rxjs';
 import { RouteService } from '../../services/route.service';
 import type { User } from '../../services/model';
-import { UserService } from '../../services/user.service';
+import {
+  FederatedResolveError,
+  FriendIntentPage,
+  UserService,
+} from '../../services/user.service';
 import {
   AddTabStatus,
   FriendRequestsComponent,
 } from './friend-requests.component';
 
 describe('FriendRequestsComponent federated search progress', () => {
+  it('keeps only the newest incoming reset when state-feed refreshes overlap', async () => {
+    const pending: Array<{
+      resolve: (value: FriendIntentPage) => void;
+    }> = [];
+    const userService = {
+      friendRequestStateRevision: signal(0),
+      friendReqBadge: signal(false),
+      listLocalFriendInvites: vi.fn().mockImplementation(
+        () =>
+          new Promise<FriendIntentPage>((resolve) => {
+            pending.push({ resolve });
+          }),
+      ),
+    };
+    TestBed.configureTestingModule({
+      imports: [FriendRequestsComponent],
+      providers: [
+        provideZonelessChangeDetection(),
+        { provide: UserService, useValue: userService },
+        { provide: RouteService, useValue: {} },
+        { provide: MatSnackBar, useValue: { open: vi.fn() } },
+        {
+          provide: TranslocoService,
+          useValue: { translate: (key: string) => key },
+        },
+      ],
+    }).overrideComponent(FriendRequestsComponent, { set: { template: '' } });
+    const component = TestBed.createComponent(
+      FriendRequestsComponent,
+    ).componentInstance;
+
+    const older = component.loadIncomingInvites(true);
+    const newer = component.loadIncomingInvites(true);
+    const page = (id: string, name: string) => ({
+      items: [
+        {
+          id,
+          kind: 'FRIEND' as const,
+          note: '',
+          status: 'PENDING' as const,
+          createdAt: 1,
+          expiresAt: Date.now() + 60_000,
+          fromUser: {
+            id: Number(id),
+            account: name,
+            name,
+            avatar: '',
+            domain: '',
+            isForeigner: false,
+          },
+          toUser: {
+            id: 99,
+            account: 'me',
+            name: 'Me',
+            avatar: '',
+            domain: '',
+            isForeigner: false,
+          },
+        },
+      ],
+      nextCursor: null,
+      hasMore: false,
+      total: 1,
+    });
+
+    pending[1].resolve(page('2', 'newer'));
+    await newer;
+    pending[0].resolve(page('1', 'older'));
+    await older;
+
+    expect(component.pendingReqList().map((request) => request.id)).toEqual([
+      '2',
+    ]);
+  });
+
   it('opens the shared invite step directly for a local profile shortcut', () => {
     const local = {
       id: 7,
@@ -23,7 +102,13 @@ describe('FriendRequestsComponent federated search progress', () => {
       imports: [FriendRequestsComponent],
       providers: [
         provideZonelessChangeDetection(),
-        { provide: UserService, useValue: {} },
+        {
+          provide: UserService,
+          useValue: {
+            friendRequestStateRevision: signal(0),
+            friendReqBadge: signal(false),
+          },
+        },
         { provide: RouteService, useValue: {} },
         { provide: MatSnackBar, useValue: { open: vi.fn() } },
         {
@@ -38,6 +123,53 @@ describe('FriendRequestsComponent federated search progress', () => {
     fixture.detectChanges();
 
     expect(fixture.componentInstance.inviteUser()).toBe(local);
+  });
+
+  it('refreshes both request tabs on a live revision without marking it read', async () => {
+    const revision = signal(4);
+    const emptyPage = {
+      items: [],
+      nextCursor: null,
+      hasMore: false,
+      total: 0,
+    };
+    const userService = {
+      friendRequestStateRevision: revision,
+      friendReqBadge: signal(false),
+      listLocalFriendInvites: vi.fn().mockResolvedValue(emptyPage),
+      markFriendReqRead: vi.fn(),
+    };
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      imports: [FriendRequestsComponent],
+      providers: [
+        provideZonelessChangeDetection(),
+        { provide: UserService, useValue: userService },
+        { provide: RouteService, useValue: {} },
+        { provide: MatSnackBar, useValue: { open: vi.fn() } },
+        {
+          provide: TranslocoService,
+          useValue: { translate: (key: string) => key },
+        },
+      ],
+    }).overrideComponent(FriendRequestsComponent, { set: { template: '' } });
+    const fixture = TestBed.createComponent(FriendRequestsComponent);
+    fixture.componentRef.setInput('initialTab', 'pending');
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    expect(userService.listLocalFriendInvites).toHaveBeenCalledTimes(2);
+    expect(userService.markFriendReqRead).toHaveBeenCalledTimes(1);
+
+    revision.set(5);
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    expect(userService.listLocalFriendInvites).toHaveBeenCalledTimes(4);
+    expect(userService.markFriendReqRead).toHaveBeenCalledTimes(1);
+
+    fixture.componentInstance.setTab(1);
+    expect(userService.markFriendReqRead).toHaveBeenCalledTimes(2);
   });
 
   it('uses exact resolution for a local account and exposes at most one result', () => {
@@ -173,5 +305,38 @@ describe('FriendRequestsComponent federated search progress', () => {
     expect(component.connectingDomain()).toBeNull();
     expect(component.addTabStatus()).toBe(AddTabStatus.INIT);
     expect(resolve.observed).toBe(false);
+  });
+
+  it('reports a missing federated account as user not found', () => {
+    const resolve = new Subject<never>();
+    const userService = {
+      sessionProfile: () => ({ id: 1 }),
+      peerTrustStatus: () => of({ code: 0, data: { trusted: true } }),
+      resolveFederatedUser: () => resolve,
+    };
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      imports: [FriendRequestsComponent],
+      providers: [
+        provideZonelessChangeDetection(),
+        { provide: UserService, useValue: userService },
+        { provide: RouteService, useValue: {} },
+        { provide: MatSnackBar, useValue: { open: vi.fn() } },
+        {
+          provide: TranslocoService,
+          useValue: { translate: (key: string) => key },
+        },
+      ],
+    }).overrideComponent(FriendRequestsComponent, { set: { template: '' } });
+    const component = TestBed.createComponent(
+      FriendRequestsComponent,
+    ).componentInstance;
+    component.searchText.set('missing@peer.test');
+
+    component.searchUser();
+    resolve.error(new FederatedResolveError('NOT_FOUND'));
+
+    expect(component.addTabStatus()).toBe(AddTabStatus.ERROR);
+    expect(component.errMsg()).toBe('friend.msg.friendNotFound');
   });
 });

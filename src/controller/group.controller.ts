@@ -63,8 +63,7 @@ export class GroupController {
   @HttpCode(HttpStatus.OK)
   @Post('group/create')
   @ApiOperation({
-    summary:
-      'Create a group and invite the given friends (Invite row + card per friend)',
+    summary: 'Create a group',
   })
   @ApiResultResponse(CreateGroupResponseDto)
   async createNewGroup(
@@ -78,22 +77,8 @@ export class GroupController {
       avatar: dto.avatar,
       owner,
     });
-    // Invite every selected friend into their P2P thread with the creator — they become members
-    // only on group/join. Non-friends / write failures come back in `skipped`; the create itself
-    // still succeeds for the owner and the rest.
-    const { invited, skipped } = await this.writeInvites(
-      owner,
-      {
-        threadId: grp.threadId,
-        groupUserId: grp.id,
-        name: grp.name,
-        avatar: grp.avatar,
-        profileRev: 0,
-      },
-      dto.inviteUserIds ?? [],
-    );
     // groupId === threadId now (Group.id is gone; the wire keeps the `groupId` name for frontend compat).
-    return { threadId: grp.threadId, groupId: grp.threadId, invited, skipped };
+    return { threadId: grp.threadId, groupId: grp.threadId };
   }
 
   /**

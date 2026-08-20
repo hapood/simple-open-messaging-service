@@ -1134,7 +1134,7 @@ export class ThreadRepository {
             // projection on demand, so no additional in-memory mirror is required here.
             if (
               op.body.status === 'REQUESTED' &&
-              op.body.subject.id === this.userService.sessionUserId()
+              op.body.direction === 'INCOMING'
             )
               this.userService.applyFriendRequestStateRevision(op.revision);
           } else if (op.direction === 'PROFILE') {

@@ -1,6 +1,12 @@
 import 'dotenv/config';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, symlinkSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readlinkSync,
+  symlinkSync,
+} from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from 'pg';
@@ -70,7 +76,19 @@ async function ensureDatabase(database) {
 }
 
 function ensureLink(target, path) {
-  if (!existsSync(path)) symlinkSync(target, path, 'dir');
+  try {
+    const stat = lstatSync(path);
+    if (
+      stat.isSymbolicLink() &&
+      resolve(dirname(path), readlinkSync(path)) === resolve(target)
+    ) {
+      return;
+    }
+    throw new Error(`${path} exists but is not a link to ${target}`);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  symlinkSync(target, path, 'dir');
 }
 
 async function waitHealthy(node) {

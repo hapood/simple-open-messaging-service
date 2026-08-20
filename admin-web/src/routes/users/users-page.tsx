@@ -100,7 +100,9 @@ export function UsersPage() {
     setSelected(new Set());
   }, [search, page]);
 
-  const listIds = (data?.list ?? []).map((u) => u.id);
+  const listIds = (data?.list ?? [])
+    .filter((u) => !u.isForeigner)
+    .map((u) => u.id);
   const allSelected =
     listIds.length > 0 && listIds.every((id) => selected.has(id));
   const toggle = (id: number) =>
@@ -232,6 +234,7 @@ export function UsersPage() {
                       aria-label={t('users.selectRow', { name: u.account })}
                       checked={selected.has(u.id)}
                       onChange={() => toggle(u.id)}
+                      disabled={u.isForeigner}
                       className="size-4"
                     />
                   </TableCell>
@@ -294,7 +297,7 @@ export function UsersPage() {
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center justify-end gap-1">
-                      {canManage ? (
+                      {canManage && !u.isForeigner ? (
                         <Button
                           variant="outline"
                           size="sm"
@@ -316,7 +319,7 @@ export function UsersPage() {
                           <MoreHorizontal className="size-4" />
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          {u.isDeleted ? (
+                          {!u.isForeigner && u.isDeleted ? (
                             <DropdownMenuItem
                               onClick={() =>
                                 onAction(
@@ -328,7 +331,7 @@ export function UsersPage() {
                             >
                               {t('users.action.unban')}
                             </DropdownMenuItem>
-                          ) : (
+                          ) : !u.isForeigner ? (
                             <DropdownMenuItem
                               variant="destructive"
                               onClick={() =>
@@ -337,22 +340,24 @@ export function UsersPage() {
                             >
                               {t('users.action.ban')}
                             </DropdownMenuItem>
-                          )}
-                          <DropdownMenuItem
-                            onClick={() =>
-                              onAction(
-                                forceLogout,
-                                u.id,
-                                t('users.toast.forceLoggedOut'),
-                              )
-                            }
-                          >
-                            {t('users.action.forceLogout')}
-                          </DropdownMenuItem>
+                          ) : null}
+                          {!u.isForeigner ? (
+                            <DropdownMenuItem
+                              onClick={() =>
+                                onAction(
+                                  forceLogout,
+                                  u.id,
+                                  t('users.toast.forceLoggedOut'),
+                                )
+                              }
+                            >
+                              {t('users.action.forceLogout')}
+                            </DropdownMenuItem>
+                          ) : null}
                           <DropdownMenuItem onClick={() => setSessionsUser(u)}>
                             {t('users.action.viewSessions')}
                           </DropdownMenuItem>
-                          {canManage ? (
+                          {canManage && !u.isForeigner ? (
                             <>
                               <DropdownMenuItem
                                 onClick={() => setGenPwdUser(u)}

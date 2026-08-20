@@ -11,6 +11,8 @@ import {
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatInputModule } from '@angular/material/input';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { UserService } from '../../services/user.service';
 import {
@@ -19,22 +21,15 @@ import {
 } from '../user-avatar/user-avatar.component';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { AvatarEditorComponent } from '../avatar-editor/avatar-editor.component';
-import type {
-  PersonalQuotaCategory,
-  PersonalQuotaState,
-} from '../../services/model';
-import { personalQuotaStatus } from './personal-quota-status';
 
 /**
- * Host-agnostic profile-editing body: avatar + display name + read-only handle + bio + account actions
- * (manage sessions / logout). Self-contained — owns its own header (back / title / save) and all EDITING
+ * Host-agnostic profile-editing body: avatar + identity + editable display name/bio + logout. Self-contained —
+ * owns its own header (back / title / save) and all editing
  * logic (avatar/name/bio). Rendered BOTH as the inline Profile section (mobile account menu) AND inside the
  * EDIT_PROFILE dialog (desktop). Purely presentational for navigation/destructive actions — it emits:
  *  - `back`           — header back button (dialog closes itself; the section returns to Chats).
  *  - `saved`          — a profile save succeeded (dialog closes with `true`; the section stays put and the
  *                       Save button briefly shows a "Saved" confirmation — see {@link justSaved}).
- *  - `manageSessions` — user tapped "Manage sessions" (host deep-links to Settings → Devices; a dialog host
- *                       closes itself first so the Settings surface isn't stacked beneath it).
  *  - `logout`         — user tapped "Log out" (host runs the app-wide logout choreography; a dialog host
  *                       closes itself first so the pane doesn't leak past re-login).
  * The hosts own the side effects (and the shared {@link LogoutService}); this component does no navigation.
@@ -44,6 +39,8 @@ import { personalQuotaStatus } from './personal-quota-status';
   imports: [
     FormsModule,
     MatButtonModule,
+    MatFormFieldModule,
+    MatInputModule,
     UserAvatarComponent,
     IconComponent,
     AvatarEditorComponent,
@@ -65,7 +62,6 @@ export class ProfileEditorComponent {
 
   readonly back = output<void>();
   readonly saved = output<void>();
-  readonly manageSessions = output<void>();
   readonly logout = output<void>();
 
   readonly sessionProfile = this.userService.sessionProfile;
@@ -79,18 +75,6 @@ export class ProfileEditorComponent {
   readonly saving = signal(false);
   /** Brief "Saved" confirmation on the Save button after a successful save (~1.5s). */
   readonly justSaved = signal(false);
-  readonly quota = signal<PersonalQuotaState | null>(null);
-  readonly quotaLoading = signal(true);
-  readonly quotaExpanded = signal(false);
-  readonly quotaCategories: PersonalQuotaCategory[] = [
-    'messages',
-    'files',
-    'requests',
-  ];
-  readonly quotaStatus = computed(() => {
-    const state = this.quota();
-    return state ? personalQuotaStatus(state) : 'healthy';
-  });
   private savedTimer?: ReturnType<typeof setTimeout>;
 
   constructor() {
@@ -99,14 +83,6 @@ export class ProfileEditorComponent {
     this.bio.set(p?.bio ?? '');
     let renderedName = p?.name ?? '';
     let renderedBio = p?.bio ?? '';
-
-    this.userService.getMyQuota().subscribe({
-      next: (res) => {
-        this.quota.set(res.data ?? null);
-        this.quotaLoading.set(false);
-      },
-      error: () => this.quotaLoading.set(false),
-    });
 
     // Apply the refreshed profile to fields that are still pristine. If the user starts typing before the
     // request returns, preserve that draft instead of replacing it with the server response.
@@ -219,31 +195,8 @@ export class ProfileEditorComponent {
     this.back.emit();
   }
 
-  /** "Manage sessions" → host deep-links to Settings → Devices (closing itself first if it's a dialog). */
-  onManageSessions() {
-    this.manageSessions.emit();
-  }
-
   /** "Log out" → host runs the app-wide logout choreography (closing itself first if it's a dialog). */
   onLogout() {
     this.logout.emit();
-  }
-
-  quotaPercent(category: PersonalQuotaCategory): number {
-    const item = this.quota()?.usage[category];
-    if (!item || item.limit === 0) return 0;
-    return Math.min(100, Math.round((item.count / item.limit) * 100));
-  }
-
-  formatBytes(bytes: number): string {
-    const mb = bytes / 1024 / 1024;
-    return `${Number.isInteger(mb) ? mb : mb.toFixed(1)} MB`;
-  }
-
-  formatResetAt(value: string): string {
-    return new Intl.DateTimeFormat(this.transloco.getActiveLang(), {
-      dateStyle: 'short',
-      timeStyle: 'short',
-    }).format(new Date(value));
   }
 }

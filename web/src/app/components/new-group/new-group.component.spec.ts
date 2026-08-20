@@ -1,7 +1,6 @@
 import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { HttpClient } from '@angular/common/http';
-import { MatSnackBar } from '@angular/material/snack-bar';
 import { TranslocoService } from '@jsverse/transloco';
 import { Subject } from 'rxjs';
 import { GroupService, GrpCreateInfo } from '../../services/group.service';
@@ -26,7 +25,6 @@ describe('NewGroupComponent', () => {
           useValue: { items: signal([]), markTopOnNextUpdate: vi.fn() },
         },
         { provide: HttpClient, useValue: {} },
-        { provide: MatSnackBar, useValue: { open: vi.fn() } },
         {
           provide: TranslocoService,
           useValue: { translate: (key: string) => key },
@@ -41,6 +39,11 @@ describe('NewGroupComponent', () => {
     component.confirm();
 
     expect(groupService.createGroup).toHaveBeenCalledTimes(1);
+    expect(groupService.createGroup).toHaveBeenCalledWith({
+      name: 'Team',
+      avatar: undefined,
+      description: undefined,
+    });
     expect(component.submitting()).toBe(true);
     response.next({ code: 10000, message: 'invalid' });
     response.complete();

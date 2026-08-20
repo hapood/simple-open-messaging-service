@@ -6,6 +6,7 @@ import {
 } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { MatListModule } from '@angular/material/list';
+import { MatCardModule } from '@angular/material/card';
 import { MatRadioModule } from '@angular/material/radio';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import {
@@ -29,10 +30,16 @@ import {
  */
 @Component({
   selector: 'app-settings-media',
-  imports: [MatButtonModule, MatListModule, MatRadioModule, TranslocoPipe],
+  imports: [
+    MatButtonModule,
+    MatListModule,
+    MatCardModule,
+    MatRadioModule,
+    TranslocoPipe,
+  ],
   template: `
     <section class="settings-group">
-      <div class="settings-card">
+      <mat-card appearance="outlined" class="settings-card">
         <mat-list>
           @for (
             policy of options;
@@ -50,12 +57,12 @@ import {
             </mat-list-item>
           }
         </mat-list>
-      </div>
+      </mat-card>
       <span class="hint">{{ 'settings.mediaThresholdHint' | transloco }}</span>
     </section>
     <section class="settings-group">
       <h3>{{ 'settings.uploadConcurrency' | transloco }}</h3>
-      <div class="settings-card">
+      <mat-card appearance="outlined" class="settings-card">
         <mat-list>
           @for (count of uploadOptions; track count) {
             <mat-list-item (click)="selectUploadConcurrency(count)">
@@ -74,7 +81,7 @@ import {
             </mat-list-item>
           }
         </mat-list>
-      </div>
+      </mat-card>
       <span class="hint">{{
         'settings.uploadConcurrencyHint' | transloco
       }}</span>
@@ -82,7 +89,7 @@ import {
     @if (showClearCache) {
       <section class="settings-group">
         <h3>{{ 'settings.mediaCache' | transloco }}</h3>
-        <div class="settings-card">
+        <mat-card appearance="outlined" class="settings-card">
           <mat-list>
             @for (mb of cacheLimitOptions; track mb) {
               <mat-list-item (click)="selectCacheLimit(mb)">
@@ -100,7 +107,7 @@ import {
               </mat-list-item>
             }
           </mat-list>
-        </div>
+        </mat-card>
         <span class="hint">{{
           'settings.mediaCacheUsage'
             | transloco
@@ -111,7 +118,7 @@ import {
         }}</span>
       </section>
       <section class="settings-group">
-        <div class="settings-card">
+        <mat-card appearance="outlined" class="settings-card">
           <mat-list>
             <mat-list-item>
               <span matListItemTitle>{{
@@ -136,7 +143,7 @@ import {
               </button>
             </mat-list-item>
           </mat-list>
-        </div>
+        </mat-card>
         @if (cacheCleared()) {
           <span class="hint">{{
             'settings.mediaCacheCleared' | transloco

@@ -75,7 +75,12 @@ export class DeletedMessageService {
     return rows.map((row) => ({ ...row, id: row.id.toString() }));
   }
 
-  async withdraw(userId: number, threadId: number, seq: number) {
+  async withdraw(
+    userId: number,
+    threadId: number,
+    seq: number,
+    onFirstWithdraw?: (tx: DatabaseTransaction) => Promise<void>,
+  ) {
     return this.database.db.transaction(async (tx) => {
       const locked = await tx.execute(sql`
         SELECT id, creator, "contentType", "isDeleted"
@@ -121,6 +126,10 @@ export class DeletedMessageService {
           target: [deletedMessage.threadId, deletedMessage.seq],
         })
         .returning({ id: deletedMessage.id });
+      // A withdrawal is a message-quota event, but retries are idempotent: only the transaction that
+      // creates the durable deletion fact may charge it. Keeping the callback in this transaction also
+      // rolls the deletion back if its quota gate rejects the operation.
+      if (inserted && onFirstWithdraw) await onFirstWithdraw(tx);
       const deletionId =
         inserted?.id ??
         (

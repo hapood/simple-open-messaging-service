@@ -55,7 +55,6 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
   beforeEach(() => {
     items = signal<ConversationItem[]>([]);
     openThreadId = signal<number | undefined>(undefined);
-    localStorage.removeItem('soms.lang');
 
     TestBed.configureTestingModule({
       imports: [MessageHeaderComponent],

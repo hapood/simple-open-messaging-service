@@ -96,8 +96,9 @@
   align-self: center;
 }
 
-.msg-title-line app-federated-badge {
+.msg-federated-domain {
   flex: 0 0 auto;
+  max-width: 100%;
 }
 
 .group-member-count {
@@ -156,7 +157,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   display: block;
-  margin-top: 2px;
+  margin-top: 1px;
 }
 
 @media (min-width: 600px) {

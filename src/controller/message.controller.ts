@@ -142,6 +142,10 @@ export class MessageController {
       req.user.userId,
       dto.threadId,
       dto.seq,
+      async (tx) => {
+        await this.userQuota.assertCanSend(req.user.userId);
+        await this.userQuota.tickLax(req.user.userId, 'messages', tx);
+      },
     );
     const participants =
       await this.participantService.getActiveParticipantUserIds(dto.threadId);

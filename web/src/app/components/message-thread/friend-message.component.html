@@ -23,6 +23,7 @@
       #msgHeader
       [userMsgTrd]="userMsgTrd()"
       (searchJump)="onSearchJump($event)"
+      (historyCleared)="reload()"
       [style.--soms-safe-top]="showCallBanner() ? '0px' : null"
       [style.--msg-header-h]="showCallBanner() ? '56px' : null"
     ></app-message-header>

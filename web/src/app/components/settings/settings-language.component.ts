@@ -1,5 +1,6 @@
 import { Component, inject, ChangeDetectionStrategy } from '@angular/core';
 import { MatListModule } from '@angular/material/list';
+import { MatCardModule } from '@angular/material/card';
 import { MatRadioModule } from '@angular/material/radio';
 import { LanguageService, AppLang } from '../../services/language.service';
 
@@ -10,10 +11,10 @@ import { LanguageService, AppLang } from '../../services/language.service';
  */
 @Component({
   selector: 'app-settings-language',
-  imports: [MatListModule, MatRadioModule],
+  imports: [MatListModule, MatCardModule, MatRadioModule],
   template: `
     <section class="settings-group">
-      <div class="settings-card">
+      <mat-card appearance="outlined" class="settings-card">
         <mat-list>
           @for (l of langs; track l) {
             <mat-list-item (click)="select(l)">
@@ -28,7 +29,7 @@ import { LanguageService, AppLang } from '../../services/language.service';
             </mat-list-item>
           }
         </mat-list>
-      </div>
+      </mat-card>
     </section>
   `,
   changeDetection: ChangeDetectionStrategy.OnPush,

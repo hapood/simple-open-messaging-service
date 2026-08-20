@@ -38,6 +38,7 @@ export type PaneKind = 'dialog' | 'gallery' | 'file-detail' | 'invite-detail';
  * behavior for each policy, so individual dialog components only render their content. */
 export type DialogPresentation = 'page' | 'modal' | 'viewer' | 'chatbox';
 export type DialogDesktopSize = 'standard' | 'wide';
+export type DialogDesktopHeight = 'content' | 'workspace';
 
 /**
  * One entry on the transient pane stack. `component`/`inputs`/`onResult` are dialog-specific (RootPopup
@@ -56,6 +57,8 @@ export interface PaneEntry {
   readonly presentation?: DialogPresentation;
   /** Dialog-only desktop card width. Compact layout is controlled solely by `presentation`. */
   readonly desktopSize?: DialogDesktopSize;
+  /** Dialog-only desktop height policy. Workspaces provide a definite viewport for internal scrolling. */
+  readonly desktopHeight?: DialogDesktopHeight;
   /** Conversation-local dialogs are rendered inside the matching message thread instead of RootPopup. */
   readonly scopeThreadId?: number;
   /** This dialog owns the mobile Settings drill-down stack. While it is topmost, back peels a category

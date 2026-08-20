@@ -29,7 +29,7 @@ import {
   conversationAvatarSrc,
 } from '../user-avatar/conversation-avatar.util';
 import { IconComponent, AppIconType } from '../icon/icon.component';
-import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
+import { UserIdentityLabelComponent } from '../user-identity-label/user-identity-label.component';
 import { EmptyStateComponent } from '../empty-state/empty-state.component';
 import { LanguageService } from '../../services/language.service';
 import { formatListTime } from '../message-cards/date-format';
@@ -48,7 +48,7 @@ import { ComposerDraftService } from '../../services/composer-draft.service';
     IconComponent,
     EmptyStateComponent,
     TranslocoPipe,
-    FederatedBadgeComponent,
+    UserIdentityLabelComponent,
   ],
   templateUrl: './thread-list.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,

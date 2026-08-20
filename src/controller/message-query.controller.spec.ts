@@ -113,6 +113,52 @@ describe('MessageController.queryMessages truncation', () => {
   });
 });
 
+describe('MessageController.withdrawMessage quota', () => {
+  it('charges one message quota inside the first-withdraw transaction', async () => {
+    const tx = { transaction: true };
+    const assertCanSend = vi.fn().mockResolvedValue(undefined);
+    const tickLax = vi.fn().mockResolvedValue(undefined);
+    const withdraw = vi.fn(
+      async (
+        _userId: number,
+        _threadId: number,
+        _seq: number,
+        onFirstWithdraw: (transaction: never) => Promise<void>,
+      ) => {
+        await onFirstWithdraw(tx as never);
+        return { id: '9', threadId: 42, seq: 3 };
+      },
+    );
+    const controller = new MessageController(
+      {} as never,
+      { onDeletedMessageUpdated: vi.fn() } as never,
+      { getActiveParticipantUserIds: vi.fn().mockResolvedValue([]) } as never,
+      {} as never,
+      {} as never,
+      {
+        notifyOnSend: vi.fn(),
+        signalDeletionOutbound: vi.fn(),
+      } as never,
+      {} as never,
+      {} as never,
+      { assertCanSend, tickLax } as never,
+      { withdraw } as never,
+      {} as never,
+      {} as never,
+    );
+    const req = { user: { userId: 7 } } as unknown as FastifyRequest;
+
+    await controller.withdrawMessage(req, { threadId: 42, seq: 3 });
+
+    expect(withdraw).toHaveBeenCalledWith(7, 42, 3, expect.any(Function));
+    expect(assertCanSend).toHaveBeenCalledWith(7);
+    expect(tickLax).toHaveBeenCalledWith(7, 'messages', tx);
+    expect(assertCanSend.mock.invocationCallOrder[0]).toBeLessThan(
+      tickLax.mock.invocationCallOrder[0],
+    );
+  });
+});
+
 describe('MessageController.sendMedia staging (Phase 7)', () => {
   it.each([
     ContentType.IMAGE,

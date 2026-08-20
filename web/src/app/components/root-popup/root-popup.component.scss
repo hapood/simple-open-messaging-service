@@ -26,13 +26,24 @@
   max-height: 80vh;
   border-radius: var(--app-radius-lg);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
-  overflow: auto;
+  // The modal surface is only a viewport. Dialogs split themselves into a fixed header and a
+  // min-height:0, scrollable body; letting this outer wrapper scroll would move the header away
+  // whenever the fitted content reaches the 80vh cap.
+  overflow: hidden;
 }
 
 // A two-column surface such as Settings needs more room than the standard desktop card.
 .popup-com-wrapper.desktop.wide {
   width: 720px;
   max-width: 94vw;
+  overflow: hidden;
+}
+
+// List/workspace dialogs need a definite viewport so their flex children and virtual scrollers can
+// resolve height:100%. Content dialogs retain intrinsic sizing through the generic desktop rule above.
+.popup-com-wrapper.desktop.workspace-height {
+  height: min(640px, 80dvh);
+  overflow: hidden;
 }
 
 // Viewers fill a bounded desktop surface. Their content is positioned inside

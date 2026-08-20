@@ -18,8 +18,8 @@ import { UserService } from '../../services/user.service';
  *
  * The placeholder SVG has been removed — instead up to two characters derived from the name are centered,
  * with a background color:
- *  · SELF: fixed graphite avatar color, recognizable as "you" and independent
- *    from the light/dark interactive brand color.
+ *  · SELF: the theme's action blue, recognizable as "you" and responsive to
+ *    the light/dark palette.
  *  · OTHER / GROUP: an identity-hashed deterministic palette. The stable key includes the avatar type,
  *    so a user and group with the same numeric id do not share an identity namespace. If an identity is not
  *    available yet, every unresolved identity uses the same empty seed; display names never affect identity color.
@@ -227,7 +227,7 @@ export class UserAvatarComponent {
     return h >>> 0;
   }
 
-  /** Background fill: SELF = stable graphite; everyone else = an identity-hashed palette slot. */
+  /** Background fill: SELF = themed action blue; everyone else = an identity-hashed palette slot. */
   readonly bg = computed(() => {
     if (this.type() === UserAvatarType.SELF) return 'var(--app-avatar-self-bg)';
     return PALETTE[this.hashColorKey() % PALETTE.length];

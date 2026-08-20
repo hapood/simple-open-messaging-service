@@ -11,7 +11,6 @@ import { NgComponentOutlet } from '@angular/common';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { RouteService } from '../../services/route.service';
-import { FitDialogDirective } from '../../directives/fit-dialog.directive';
 import { ThemeService } from '../../services/theme.service';
 import { LanguageService } from '../../services/language.service';
 import { MediaSizeThresholdService } from '../../services/media-size-threshold.service';
@@ -35,8 +34,8 @@ import {
  * exact same category registry ({@link buildSettingsCategories}) and body-only sub-page components as the
  * mobile surface; only the interaction model and the dialog shell differ.
  *
- * The dialog wrapper (RootPopup) is full-screen on tablet and a centered card on desktop; `[appFitDialog]`
- * pins the desktop card's height so the two columns scroll internally instead of stretching the card.
+ * RootPopup gives the dialog a bounded workspace height so the fixed header stays visible while the two
+ * columns scroll independently when their content exceeds the available vertical space.
  */
 @Component({
   selector: 'app-settings-dialog',
@@ -44,24 +43,23 @@ import {
     TranslocoPipe,
     IconComponent,
     NgComponentOutlet,
-    FitDialogDirective,
   ],
   template: `
-    <div class="settings-dlg" [appFitDialog]="{ minHeight: 480 }">
+    <div class="settings-dlg">
       <div class="msg-header">
-        <span class="spacer"></span>
-        <span class="title">{{ 'settings.title' | transloco }}</span>
         <button
           class="icon-btn"
           type="button"
           (click)="goBack()"
-          [attr.aria-label]="'common.close' | transloco"
+          [attr.aria-label]="'common.back' | transloco"
         >
           <app-icon
-            [type]="AppIconType.CLOSE"
+            [type]="AppIconType.BACK"
             [style]="{ width: '24px', height: '24px' }"
           ></app-icon>
         </button>
+        <span class="title">{{ 'settings.title' | transloco }}</span>
+        <span></span>
       </div>
 
       <div class="dlg-body">

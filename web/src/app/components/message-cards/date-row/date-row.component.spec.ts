@@ -42,10 +42,8 @@ describe('DateRowComponent — kernel-style detached mount', () => {
       ],
     });
     language = TestBed.inject(LanguageService);
-    // Karma's localStorage persists across runs/tests; reset to a known state so resolveInitial() is
-    // deterministic (a prior test's setLang('zh-CN') would otherwise leak in). Flush so the service's
-    // apply() effect (which calls setActiveLang + dayjs.locale) runs before the assertions.
-    localStorage.removeItem('soms.lang');
+    // Flush so the service's apply() effect (which calls setActiveLang + dayjs.locale) runs before the
+    // assertions.
     language.setLang('en');
     TestBed.flushEffects();
   });

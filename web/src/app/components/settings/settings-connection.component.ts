@@ -6,6 +6,7 @@ import {
   ChangeDetectionStrategy,
 } from '@angular/core';
 import { MatListModule } from '@angular/material/list';
+import { MatCardModule } from '@angular/material/card';
 import { MatButtonModule } from '@angular/material/button';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import {
@@ -69,10 +70,10 @@ export function classifyProbeError(e: unknown): string {
  */
 @Component({
   selector: 'app-settings-connection',
-  imports: [MatListModule, MatButtonModule, TranslocoPipe],
+  imports: [MatListModule, MatCardModule, MatButtonModule, TranslocoPipe],
   template: `
     <section class="settings-group">
-      <div class="settings-card">
+      <mat-card appearance="outlined" class="settings-card">
         <mat-list>
           <!-- Active server (primary vs LAN fallback) -->
           <mat-list-item>
@@ -146,7 +147,7 @@ export function classifyProbeError(e: unknown): string {
             </div>
           </mat-list-item>
         </mat-list>
-      </div>
+      </mat-card>
     </section>
   `,
   changeDetection: ChangeDetectionStrategy.OnPush,

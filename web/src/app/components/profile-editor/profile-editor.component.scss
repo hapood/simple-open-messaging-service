@@ -92,8 +92,32 @@
 }
 
 .avatar-wrap {
-  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   margin-bottom: 24px;
+}
+
+.account-identity {
+  margin-top: 12px;
+  text-align: center;
+
+  span {
+    display: block;
+    font-size: 12px;
+    line-height: 16px;
+    color: var(--app-text-faint);
+  }
+
+  strong {
+    display: block;
+    margin-top: 2px;
+    font-size: 14px;
+    line-height: 20px;
+    font-weight: 500;
+    color: var(--app-text-muted);
+    overflow-wrap: anywhere;
+  }
 }
 
 .avatar {
@@ -101,30 +125,30 @@
   width: 96px;
   height: 96px;
   border-radius: var(--app-radius-lg);
-  overflow: visible; // allow the edit button to overflow the rounded corners
+  overflow: hidden;
 }
 
 .avatar-edit {
+  @include avatar-edit-hint(26px, 3px);
   position: absolute;
-  right: -4px;
-  bottom: -4px;
-  width: 34px;
-  height: 34px;
-  border-radius: var(--app-radius-pill);
-  border: 2px solid var(--app-surface);
-  background: var(--app-brand);
-  color: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-
-  &:hover {
-    filter: brightness(0.95);
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: var(--app-radius-lg);
+  background: transparent;
+  &:focus-visible {
+    outline: 2px solid var(--app-focus-ring);
+    outline-offset: -2px;
   }
+
   &:disabled {
     cursor: progress;
-    opacity: 0.8;
+  }
+
+  &:disabled .avatar-hint {
+    background: rgba(0, 0, 0, 0.58);
   }
 }
 
@@ -144,208 +168,14 @@
 }
 
 .field {
-  display: block;
   width: 100%;
-  margin-bottom: 18px;
+  margin-bottom: 4px;
 }
 
-.label {
-  display: block;
-  font-size: 13px;
-  line-height: 18px;
-  color: var(--app-text-muted);
-  margin-bottom: 6px;
-}
-
-.text,
-.textarea {
-  width: 100%;
-  box-sizing: border-box;
-  border: 1px solid var(--app-border-strong);
-  border-radius: var(--app-radius-md);
-  font-size: 14px;
-  font-family: inherit;
-  outline: none;
-
-  &:focus {
-    border-color: var(--app-brand);
-  }
-}
-
-.text {
-  height: 36px;
-  padding: 0 10px;
-}
-
-.textarea {
-  padding: 8px 10px;
+.bio-field textarea {
   resize: vertical;
-  min-height: 64px;
 }
 
-.hint {
-  display: block;
-  margin-top: 6px;
-  font-size: 12px;
-  line-height: 16px;
-  color: var(--app-danger);
-}
-
-.counter {
-  display: block;
-  margin-top: 6px;
-  font-size: 12px;
-  line-height: 16px;
-  color: var(--app-text-faint);
-  text-align: right;
-}
-
-// Read-only (disabled) identity field — mirrors the editable .text input's geometry but wears the
-// Material disabled treatment so it reads as a locked sibling of Name/Bio.
-.field-readonly .label-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 6px;
-}
-.field-readonly .label-row .label {
-  margin-bottom: 0; // the row owns the bottom spacing, not the label
-  color: var(--app-text-faint);
-}
-
-.readonly-text {
-  height: 36px;
-  padding: 0 10px;
-  display: flex;
-  align-items: center;
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius-md);
-  font-size: 14px;
-  line-height: 20px;
-  color: var(--app-text-muted);
-}
-
-.readonly-hint {
-  font-size: 12px;
-  line-height: 16px;
-  color: var(--app-text-faint);
-}
-
-.quota-card {
-  width: 100%;
-  box-sizing: border-box;
-  margin: 2px 0 18px;
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius-md);
-  background: var(--app-surface);
-  overflow: hidden;
-}
-
-.quota-loading {
-  padding: 14px;
-  color: var(--app-text-muted);
-  font-size: 13px;
-}
-
-.quota-warning {
-  border-color: #d99b22;
-}
-.quota-exhausted {
-  border-color: var(--app-danger);
-}
-
-.quota-summary {
-  @include styless-button;
-  width: 100%;
-  padding: 13px 14px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  text-align: left;
-  color: var(--app-text);
-
-  &:hover {
-    background: var(--app-hover);
-  }
-  strong,
-  small {
-    display: block;
-  }
-  strong {
-    font-size: 14px;
-  }
-  small {
-    margin-top: 3px;
-    color: var(--app-text-muted);
-    font-size: 12px;
-  }
-}
-
-.quota-warning .quota-summary small {
-  color: #a66d00;
-}
-.quota-exhausted .quota-summary small {
-  color: var(--app-danger);
-}
-.quota-toggle {
-  color: var(--app-text-muted);
-  font-size: 20px;
-}
-
-.quota-details {
-  padding: 2px 14px 14px;
-  border-top: 1px solid var(--app-border);
-
-  p {
-    margin: 12px 0 0;
-    color: var(--app-text-faint);
-    font-size: 12px;
-  }
-}
-
-.quota-row {
-  margin-top: 12px;
-}
-.quota-row-label {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 5px;
-  color: var(--app-text-muted);
-  font-size: 12px;
-}
-.quota-track {
-  height: 5px;
-  border-radius: var(--app-radius-pill);
-  background: var(--app-hover);
-  overflow: hidden;
-
-  span {
-    display: block;
-    height: 100%;
-    background: var(--app-brand);
-    border-radius: inherit;
-  }
-}
-.quota-warning .quota-track span {
-  background: #d99b22;
-}
-.quota-exhausted .quota-track span {
-  background: var(--app-danger);
-}
-.quota-caps {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 14px;
-  margin-top: 14px;
-  color: var(--app-text-muted);
-  font-size: 12px;
-}
-
-// Account footer: "Manage sessions" + "Logout" share one row as a balanced pair of Material outlined
-// buttons. Both are real mat-stroked-buttons (proper state layer / ripple / theming); logout wears
-// color="warn" so the destructive action reads distinctly.
 .account-actions {
   width: 100%;
   margin-top: 8px;
@@ -353,7 +183,7 @@
   gap: 8px;
 
   button {
-    flex: 1 1 0;
+    width: 100%;
   }
 }
 

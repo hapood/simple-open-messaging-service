@@ -6,10 +6,6 @@ import { StandardResponse } from './model';
 export interface GrpCreateInfo {
   threadId: number;
   groupId: number;
-  /** Friend user ids who were successfully sent a GROUP_INVITE at creation. */
-  invited: number[];
-  /** Friends who could not be invited (not a friend / no P2P thread / write failure). */
-  skipped: { userId: number; reason: string }[];
 }
 
 @Injectable({
@@ -18,14 +14,8 @@ export interface GrpCreateInfo {
 export class GroupService {
   constructor(private http: HttpClient) {}
 
-  /** Create a group; inviteUserIds sends each friend a GROUP_INVITE they must accept via group/join
-   *  (no direct add). The response carries { invited, skipped } so the caller can toast the result. */
-  createGroup(params: {
-    name: string;
-    avatar?: string;
-    description?: string;
-    inviteUserIds?: number[];
-  }) {
+  /** Create a group. Members are invited separately through inviteUsers. */
+  createGroup(params: { name: string; avatar?: string; description?: string }) {
     return this.http.post<StandardResponse<GrpCreateInfo>>(
       `${apiPrefix()}/group/create`,
       params,

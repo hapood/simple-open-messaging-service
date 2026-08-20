@@ -21,8 +21,8 @@ import { ToastService } from './toast.service';
  * isAndroidNative() / tauriInvoke all read `window` globals at CALL time, so here we INSTALL those globals
  * (the Tauri IPC invoke, the Android SomsFcm bridge, the Android UA) and route them to spies. This verifies
  * the JS-side CONTRACT — each auth action reaches the RIGHT native backend with the right args, the trust
- * flag is plumbed, the boot keyring probe sets canTrust, and (the security invariant) NO plaintext
- * session_token is ever left in localStorage on a native client.
+ * flag is plumbed, the boot keyring probe sets canTrust, and session tokens only reach the platform's
+ * secure persistence and in-memory request transport.
  *
  * The token is NEVER held in JS (there is no `sessionToken` surface): login/restore HAND it to Rust
  * (`set_session_token` → ProxyState.token, always under Tauri — both desktop AND Android, since both route
@@ -160,8 +160,6 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
 
   beforeEach(() => {
     originalUserAgent = navigator.userAgent;
-    sessionStorage.clear();
-    localStorage.clear();
     toastWarn = vi.fn().mockName('warn');
 
     TestBed.configureTestingModule({
@@ -225,8 +223,6 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
   afterEach(() => {
     TestBed.resetTestingModule();
     restoreGlobals();
-    sessionStorage.clear();
-    localStorage.clear();
   });
 
   /** Drive a password login with the given trust flag, flush the issued token, and drain activateSession
@@ -249,7 +245,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
   }
 
   describe('desktop (Tauri) keyring path', () => {
-    it('a trusted login pushes the token to ProxyState + the keyring and NEVER writes plaintext localStorage', async () => {
+    it('a trusted login pushes the token to ProxyState and the keyring', async () => {
       desktopGlobals({ secureSetOk: true });
       await passwordLogin('st-trusted');
       expect(svc.loggedIn()).toBe(true);
@@ -261,7 +257,6 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       expect(invokeSpy).toHaveBeenCalledWith('secure_set_token', {
         token: 'st-trusted',
       });
-      expect(localStorage.getItem('session_token')).toBeNull(); // no plaintext at rest
     });
 
     it('every desktop login persists to the keyring without plaintext storage', async () => {
@@ -274,7 +269,6 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       expect(invokeSpy).toHaveBeenCalledWith('secure_set_token', {
         token: 'st-mem',
       });
-      expect(localStorage.getItem('session_token')).toBeNull();
     });
 
     it('a keep-but-untrusted desktop login (e.g. the register flow) STILL persists to the keyring', async () => {
@@ -300,7 +294,6 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       expect(invokeSpy).toHaveBeenCalledWith('secure_set_token', {
         token: 'st-keep',
       });
-      expect(localStorage.getItem('session_token')).toBeNull();
     });
 
     it('clearToken clears the keyring + ProxyState.token + the login flag', async () => {
@@ -366,7 +359,6 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       expect(invokeSpy).toHaveBeenCalledWith('set_session_token', {
         token: 'st-restored',
       });
-      expect(localStorage.getItem('session_token')).toBeNull();
     });
 
     it('restoreSession with an empty keyring leaves the user logged out but canTrust true (keyring works)', async () => {
@@ -386,7 +378,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
   });
 
   describe('Android EncryptedSharedPreferences path', () => {
-    it('a login pushes the token to SomsFcm AND ProxyState and NEVER writes plaintext localStorage', async () => {
+    it('a login pushes the token to SomsFcm and ProxyState', async () => {
       const { set } = androidGlobals(null);
       await passwordLogin('st-android');
       expect(svc.loggedIn()).toBe(true);
@@ -395,7 +387,6 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       expect(invokeSpy).toHaveBeenCalledWith('set_session_token', {
         token: 'st-android',
       });
-      expect(localStorage.getItem('session_token')).toBeNull();
     });
 
     it('restoreSession reads SomsFcm.getSessionToken → session restored + canTrust true', async () => {

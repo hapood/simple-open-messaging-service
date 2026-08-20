@@ -56,26 +56,13 @@
             [disabled]="uploading()"
             [attr.aria-label]="'profile.changeAvatarAria' | transloco"
           >
-            @if (uploading()) {
-              <span class="spin"></span>
-            } @else {
-              <svg
-                width="22"
-                height="22"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <path
-                  d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"
-                />
-                <circle cx="12" cy="13" r="4" />
-              </svg>
-            }
+            <span class="avatar-hint">
+              @if (uploading()) {
+                <span class="spin"></span>
+              } @else {
+                {{ 'group.changeAvatarHint' | transloco }}
+              }
+            </span>
           </button>
         </div>
         <input
@@ -85,117 +72,43 @@
           hidden
           (change)="onAvatarPicked($event)"
         />
+        @if (sessionProfile()?.account; as account) {
+          <div class="account-identity">
+            <span>{{ 'profile.account' | transloco }}</span>
+            <strong>{{ account }}</strong>
+          </div>
+        }
       </div>
 
-      <label class="field">
-        <span class="label">{{ 'profile.name' | transloco }}</span>
+      <mat-form-field appearance="outline" class="field">
+        <mat-label>{{ 'profile.name' | transloco }}</mat-label>
         <input
-          class="text"
+          matInput
+          autocomplete="nickname"
           [ngModel]="name()"
           (ngModelChange)="name.set($event)"
           maxlength="30"
           [placeholder]="'profile.namePlaceholder' | transloco"
         />
         @if (nameHint()) {
-          <span class="hint">{{ nameHint() }}</span>
+          <mat-error>{{ nameHint() }}</mat-error>
         }
-      </label>
+      </mat-form-field>
 
-      <!-- Read-only identity field: the login handle (account) is immutable. Rendered as a disabled
-         Material-style text field so it reads as a locked sibling of the editable Name/Bio inputs. -->
-      <div class="field field-readonly">
-        <div class="label-row">
-          <span class="label">{{ 'profile.account' | transloco }}</span>
-          <span class="readonly-hint">{{
-            'profile.accountReadonly' | transloco
-          }}</span>
-        </div>
-        <div class="readonly-text">{{ sessionProfile()?.account }}</div>
-      </div>
-
-      <label class="field">
-        <span class="label">{{ 'profile.bio' | transloco }}</span>
+      <mat-form-field appearance="outline" class="field bio-field">
+        <mat-label>{{ 'profile.bio' | transloco }}</mat-label>
         <textarea
-          class="textarea"
+          matInput
           rows="3"
           [ngModel]="bio()"
           (ngModelChange)="bio.set($event)"
           maxlength="120"
           [placeholder]="'profile.bioPlaceholder' | transloco"
         ></textarea>
-        <span class="counter">{{ bio().length }}/120</span>
-      </label>
-
-      @if (quotaLoading()) {
-        <div class="quota-card quota-loading">
-          {{ 'profile.quota.loading' | transloco }}
-        </div>
-      } @else if (quota(); as state) {
-        <section
-          class="quota-card"
-          [class.quota-warning]="quotaStatus() === 'warning'"
-          [class.quota-exhausted]="quotaStatus() === 'exhausted'"
-        >
-          <button
-            type="button"
-            class="quota-summary"
-            (click)="quotaExpanded.set(!quotaExpanded())"
-            [attr.aria-expanded]="quotaExpanded()"
-          >
-            <span>
-              <strong>{{ 'profile.quota.title' | transloco }}</strong>
-              <small>{{
-                'profile.quota.status.' + quotaStatus() | transloco
-              }}</small>
-            </span>
-            <span class="quota-toggle">{{ quotaExpanded() ? '−' : '+' }}</span>
-          </button>
-          @if (quotaExpanded()) {
-            <div class="quota-details">
-              @for (category of quotaCategories; track category) {
-                <div class="quota-row">
-                  <div class="quota-row-label">
-                    <span>{{
-                      'profile.quota.category.' + category | transloco
-                    }}</span>
-                    @if (state.usage[category].limit === 0) {
-                      <span>{{ 'profile.quota.disabled' | transloco }}</span>
-                    } @else {
-                      <span
-                        >{{ state.usage[category].count }} /
-                        {{ state.usage[category].limit }}</span
-                      >
-                    }
-                  </div>
-                  <div class="quota-track">
-                    <span [style.width.%]="quotaPercent(category)"></span>
-                  </div>
-                </div>
-              }
-              @if (state.breaker.tripped) {
-                <div class="quota-caps quota-caps--tripped">
-                  {{ 'profile.quota.paused' | transloco }}
-                </div>
-              }
-              <p>
-                {{
-                  'profile.quota.reset'
-                    | transloco: { time: formatResetAt(state.resetAt) }
-                }}
-              </p>
-            </div>
-          }
-        </section>
-      }
+        <mat-hint align="end">{{ bio().length }}/120</mat-hint>
+      </mat-form-field>
 
       <div class="account-actions">
-        <button
-          mat-stroked-button
-          (click)="onManageSessions()"
-          [attr.aria-label]="'profile.manageSessions' | transloco"
-        >
-          {{ 'profile.manageSessions' | transloco }}
-        </button>
         <button
           mat-stroked-button
           color="warn"

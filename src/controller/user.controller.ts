@@ -20,6 +20,7 @@ import {
 } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import type { FastifyReply } from 'fastify';
+import { FederationDomainResolutionError } from '../federation/discovery.service.js';
 import { UserService } from '../user/user.service.js';
 import { UploadService } from '../upload/upload.service.js';
 import { MessageService } from '../message/message.service.js';
@@ -56,6 +57,7 @@ import {
 import { UserBlockService } from '../user-block/user-block.service.js';
 import {
   FederationService,
+  S2sResponseError,
   type S2SProfile,
 } from '../federation/federation.service.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
@@ -734,7 +736,12 @@ export class UserController {
         reason:
           (error as Error).message === 'resolve deadline exceeded'
             ? 'TIMEOUT'
-            : error instanceof BusinessException &&
+            : error instanceof FederationDomainResolutionError
+              ? 'DOMAIN_RESOLUTION_FAILED'
+              : error instanceof S2sResponseError &&
+                  error.code === BusinessCode.NOT_FOUND
+                ? 'NOT_FOUND'
+              : error instanceof BusinessException &&
                 error.bizCode === BusinessCode.FEDERATION_PEER_BLOCKED
               ? 'BLOCKED'
               : 'UNREACHABLE',

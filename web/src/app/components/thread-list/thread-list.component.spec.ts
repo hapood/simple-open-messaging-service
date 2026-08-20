@@ -43,8 +43,6 @@ describe('ThreadListComponent', () => {
     loadSpy = vi.fn().mockName('load');
     items = signal<ConversationItem[]>([]);
     status = signal<ConversationLoadStatus>(ConversationLoadStatus.LOADING);
-    localStorage.removeItem('soms.lang');
-
     TestBed.configureTestingModule({
       imports: [ThreadListComponent],
       providers: [

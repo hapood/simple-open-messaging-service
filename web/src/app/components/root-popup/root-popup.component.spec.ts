@@ -48,6 +48,7 @@ describe('RootPopupComponent presentation policy', () => {
       component: RootPopupComponent,
       presentation,
       desktopSize: 'standard',
+      desktopHeight: 'content',
     };
   }
 

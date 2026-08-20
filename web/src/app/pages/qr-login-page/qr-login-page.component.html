@@ -13,11 +13,13 @@
           class="qr-frame"
           [class.has-progress]="view() === 'pending' || view() === 'scanned'"
         >
-          @if (view() === 'pending' || view() === 'scanned') {
-            <p class="progress-time">
+          <!-- Keep the countdown row mounted in every state. Removing it while loading or showing an
+            error would shorten the frame by 22px and move the QR card vertically. -->
+          <p class="progress-time">
+            @if (view() === 'pending' || view() === 'scanned') {
               {{ 'auth.qrExpiresIn' | transloco: { time: qrRemainingText() } }}
-            </p>
-          }
+            }
+          </p>
 
           <!-- Keep expiry feedback attached to the QR without covering any modules. -->
           <div class="progress-slot">

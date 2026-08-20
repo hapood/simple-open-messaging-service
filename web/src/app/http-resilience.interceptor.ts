@@ -4,6 +4,7 @@ import { Observable, catchError, retry, throwError, timer } from 'rxjs';
 import { TranslocoService } from '@jsverse/transloco';
 import { ToastService } from './services/toast.service';
 import { BusinessCode } from './services/biz-code';
+import { SUPPRESS_HTTP_ERROR_TOAST } from './request-context';
 
 /**
  * Retry + surface policy for transient/server HTTP failures. `retryDelay` is a function (not a number) so
@@ -25,10 +26,15 @@ const RATE_LIMIT_CAP_MS = 8000;
 export const DEFAULT_HTTP_RETRY_CONFIG: HttpRetryConfig = {
   maxRetries: 4,
   retryDelay: (retryCount) =>
-    timer(Math.random() * Math.min(RATE_LIMIT_BASE_MS * 2 ** (retryCount - 1), RATE_LIMIT_CAP_MS)),
+    timer(
+      Math.random() *
+        Math.min(RATE_LIMIT_BASE_MS * 2 ** (retryCount - 1), RATE_LIMIT_CAP_MS),
+    ),
 };
 
-export const HTTP_RETRY_CONFIG = new InjectionToken<HttpRetryConfig>('HTTP_RETRY_CONFIG');
+export const HTTP_RETRY_CONFIG = new InjectionToken<HttpRetryConfig>(
+  'HTTP_RETRY_CONFIG',
+);
 
 /** The ThrottleGuard burst rate-limit: a Nest GUARD, runs BEFORE the handler, so a 429 here means the
  *  request never reached the route → zero side effects → safe to retry even for a non-idempotent POST.
@@ -49,7 +55,10 @@ function isSurfaceable(err: unknown): boolean {
   return err.status === 0 || err.status >= 500 || err.status === 429;
 }
 
-function localizeHttpError(err: HttpErrorResponse, t: TranslocoService): string {
+function localizeHttpError(
+  err: HttpErrorResponse,
+  t: TranslocoService,
+): string {
   if (err.status === 0) return t.translate('errors.networkError');
   if (
     err.status === 429 &&
@@ -81,10 +90,13 @@ export const httpResilienceInterceptor: HttpInterceptorFn = (req, next) => {
     // Non-retryable errors throw from `delay`, which stops retry and falls through to catchError.
     retry({
       count: config.maxRetries,
-      delay: (err, retryCount) => (isBurstRateLimit(err) ? config.retryDelay(retryCount) : throwError(() => err)),
+      delay: (err, retryCount) =>
+        isBurstRateLimit(err)
+          ? config.retryDelay(retryCount)
+          : throwError(() => err),
     }),
     catchError((err) => {
-      if (isSurfaceable(err)) {
+      if (isSurfaceable(err) && !req.context.get(SUPPRESS_HTTP_ERROR_TOAST)) {
         toast.warn(localizeHttpError(err as HttpErrorResponse, transloco));
       }
       return throwError(() => err);

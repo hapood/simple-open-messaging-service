@@ -95,6 +95,7 @@ describe('RouteService adaptive account surfaces', () => {
         component: expect.any(Function),
         presentation: 'page',
         desktopSize: 'wide',
+        desktopHeight: 'workspace',
         inputs: { initialCategoryId: 'devices' },
       });
     });
@@ -106,6 +107,7 @@ describe('RouteService adaptive account surfaces', () => {
       expect.objectContaining({
         presentation: 'page',
         desktopSize: 'standard',
+        desktopHeight: 'workspace',
       }),
     );
 
@@ -114,6 +116,7 @@ describe('RouteService adaptive account surfaces', () => {
       expect.objectContaining({
         presentation: 'modal',
         desktopSize: 'standard',
+        desktopHeight: 'content',
       }),
     );
 

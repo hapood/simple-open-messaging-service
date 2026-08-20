@@ -11,9 +11,8 @@ import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { translateBizResult } from '../../services/biz-code';
-import { displayUserAccount, displayUserName } from '../../services/model';
+import { displayUserName } from '../../services/model';
 import { User, UserService } from '../../services/user.service';
-import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
 import {
   UserAvatarComponent,
   UserAvatarType,
@@ -21,13 +20,7 @@ import {
 
 @Component({
   selector: 'app-friend-invite-dialog',
-  imports: [
-    FormsModule,
-    MatButtonModule,
-    TranslocoPipe,
-    UserAvatarComponent,
-    FederatedBadgeComponent,
-  ],
+  imports: [FormsModule, MatButtonModule, TranslocoPipe, UserAvatarComponent],
   templateUrl: './friend-invite-dialog.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './friend-invite-dialog.component.scss',
@@ -46,7 +39,6 @@ export class FriendInviteDialogComponent {
   readonly errorText = signal('');
   readonly UserAvatarType = UserAvatarType;
   readonly displayUserName = displayUserName;
-  readonly displayUserAccount = displayUserAccount;
   readonly avatarIdentity = computed(() => {
     const user = this.user();
     return user.id > 0

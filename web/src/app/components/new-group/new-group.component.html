@@ -12,86 +12,12 @@
       ></app-icon>
     </button>
     <span class="title">{{ 'newGroup.title' | transloco }}</span>
-    @if (step() === 1) {
-      <button
-        mat-button
-        color="primary"
-        [disabled]="submitting()"
-        (click)="goStep2()"
-      >
-        {{ 'common.next' | transloco }}
-      </button>
-    } @else {
-      <button
-        mat-button
-        color="primary"
-        [disabled]="submitting() || avatarUploading() || !name().trim()"
-        (click)="confirm()"
-      >
-        {{
-          (submitting() ? 'newGroup.creating' : 'newGroup.create') | transloco
-        }}
-      </button>
-    }
+    <span class="header-spacer" aria-hidden="true"></span>
   </div>
 
-  <!-- STEP 1 — add members -->
-  <div class="step step-1" [hidden]="step() !== 1">
-    <div class="search">
-      <app-icon
-        class="search-icon"
-        [type]="AppIconType.SEARCH"
-        [style]="{ width: '18px', height: '18px' }"
-      ></app-icon>
-      <input
-        type="text"
-        [placeholder]="'newGroup.searchPlaceholder' | transloco"
-        autocomplete="off"
-        [ngModel]="searchText()"
-        (ngModelChange)="onSearchInput($event)"
-      />
-    </div>
-
-    @if (selectedList().length) {
-      <div class="chips">
-        @for (item of selectedList(); track item.id) {
-          <div class="chip">
-            <span class="chip-avatar">
-              <app-user-avatar
-                [type]="UserAvatarType.OTHER"
-                [name]="item.peerUser.name"
-                [identityId]="item.peerUser.id"
-                [src]="item.peerUser.avatar"
-              ></app-user-avatar>
-            </span>
-            <span class="chip-name">{{ item.peerUser.name }}</span>
-            <button
-              class="chip-x"
-              type="button"
-              (click)="removeMember(item)"
-              [attr.aria-label]="'common.remove' | transloco"
-            >
-              <app-icon
-                [type]="AppIconType.CLOSE"
-                [style]="{ width: '14px', height: '14px' }"
-              ></app-icon>
-            </button>
-          </div>
-        }
-      </div>
-    }
-
-    <app-user-list
-      [filterText]="searchText()"
-      [selectedDict]="selectedDict()"
-      (onSelect)="onTrdSelect($event)"
-    />
-  </div>
-
-  <!-- STEP 2 — name + avatar -->
-  <div class="step step-2" [hidden]="step() !== 2">
-    <div class="identity">
-      <div class="avatar">
+  <div class="panel">
+    <div class="avatar-section">
+      <div class="avatar-wrap">
         <app-user-avatar
           [type]="UserAvatarType.GROUP"
           [name]="name() || '?'"
@@ -126,33 +52,52 @@
           }
         </button>
       </div>
-      <div class="name-field">
+    </div>
+
+    <div class="fields">
+      <mat-form-field appearance="outline" subscriptSizing="dynamic">
+        <mat-label>{{ 'newGroup.groupNamePlaceholder' | transloco }}</mat-label>
         <input
-          class="name-input"
+          matInput
           type="text"
-          [placeholder]="'newGroup.groupNamePlaceholder' | transloco"
+          autocomplete="off"
           [maxlength]="NAME_MAX"
           [disabled]="submitting()"
           [ngModel]="name()"
           (ngModelChange)="onNameInput($event)"
           (keydown.enter)="confirm()"
         />
-        <div class="counter">{{ name().length }} / {{ NAME_MAX }}</div>
-      </div>
+        <mat-hint align="end">{{ name().length }} / {{ NAME_MAX }}</mat-hint>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" subscriptSizing="dynamic">
+        <mat-label>{{ 'newGroup.groupDescPlaceholder' | transloco }}</mat-label>
+        <textarea
+          matInput
+          rows="3"
+          [maxlength]="DESC_MAX"
+          [disabled]="submitting()"
+          [ngModel]="description()"
+          (ngModelChange)="onDescInput($event)"
+        ></textarea>
+        <mat-hint align="end">
+          {{ description().length }} / {{ DESC_MAX }}
+        </mat-hint>
+      </mat-form-field>
     </div>
 
-    <label class="desc-field">
-      <textarea
-        class="desc-input"
-        rows="2"
-        [maxlength]="DESC_MAX"
-        [placeholder]="'newGroup.groupDescPlaceholder' | transloco"
-        [disabled]="submitting()"
-        [ngModel]="description()"
-        (ngModelChange)="onDescInput($event)"
-      ></textarea>
-      <span class="counter">{{ description().length }} / {{ DESC_MAX }}</span>
-    </label>
+    <div class="panel-actions">
+      <button
+        mat-flat-button
+        color="primary"
+        [disabled]="submitting() || avatarUploading() || !name().trim()"
+        (click)="confirm()"
+      >
+        {{
+          (submitting() ? 'newGroup.creating' : 'newGroup.create') | transloco
+        }}
+      </button>
+    </div>
   </div>
 
   <input

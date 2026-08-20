@@ -11,6 +11,9 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { MatButtonModule } from '@angular/material/button';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { MatCardModule } from '@angular/material/card';
+import { MatDialog } from '@angular/material/dialog';
+import { MatSelectModule } from '@angular/material/select';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { forkJoin, firstValueFrom } from 'rxjs';
 import dayjs from 'dayjs';
@@ -26,6 +29,7 @@ import { QrScannerService } from '../../services/qr-scanner.service';
 import { isAndroidNative } from '../../services/runtime';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { AsyncStateComponent } from '../async-state/async-state.component';
+import { SessionDetailsDialogComponent } from './session-details-dialog.component';
 
 /**
  * Settings → Devices sub-page: the "where am I logged in" list (industry-standard session management —
@@ -44,6 +48,8 @@ import { AsyncStateComponent } from '../async-state/async-state.component';
   imports: [
     MatButtonModule,
     MatProgressSpinnerModule,
+    MatCardModule,
+    MatSelectModule,
     IconComponent,
     TranslocoPipe,
     AsyncStateComponent,
@@ -59,6 +65,7 @@ export class SettingsDevicesComponent implements OnInit {
   private readonly transloco = inject(TranslocoService);
   private readonly language = inject(LanguageService);
   private readonly snackbar = inject(MatSnackBar);
+  private readonly dialog = inject(MatDialog);
   private readonly destroyRef = inject(DestroyRef);
 
   readonly AppIconType = AppIconType;
@@ -76,6 +83,12 @@ export class SettingsDevicesComponent implements OnInit {
   /** Count of sessions other than the current one — drives the "sign out everywhere else" affordance. */
   readonly othersCount = computed(
     () => this.list().filter((s) => !s.isCurrent).length,
+  );
+  readonly currentSessions = computed(() =>
+    this.list().filter((s) => s.isCurrent),
+  );
+  readonly otherSessions = computed(() =>
+    this.list().filter((s) => !s.isCurrent),
   );
 
   ngOnInit(): void {
@@ -170,6 +183,25 @@ export class SettingsDevicesComponent implements OnInit {
   /** Best-effort location IP: prefer the most recent (lastSeenIp), fall back to the sign-in IP. */
   location(s: SessionInfo): string {
     return s.lastSeenIp || s.ip || '-';
+  }
+
+  showDetails(s: SessionInfo): void {
+    this.dialog.open(SessionDetailsDialogComponent, {
+      data: {
+        device: this.deviceLabel(s),
+        client: this.clientLabel(s.client),
+        userAgent: s.userAgent,
+        ip: this.location(s),
+        signedIn: this.fmt(s.createdAt),
+        lastActive: this.fmt(s.lastSeenAt),
+        expires: this.expiresLabel(s),
+        isCurrent: s.isCurrent,
+      },
+      panelClass: 'session-details-dialog',
+      width: '420px',
+      maxWidth: 'calc(100vw - 32px)',
+      autoFocus: false,
+    });
   }
 
   /** Revoke one session (confirm first). Ownership is verified server-side; on success the list reloads. */

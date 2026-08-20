@@ -400,30 +400,10 @@ export class ConversationItemDto {
   group?: GroupResponseDto;
 }
 
-/**
- * One entry of the create/invite `skipped` list — a friend who could not be invited (not a friend,
- * no P2P thread, or the invite write failed). Mirrors the group/invite response shape.
- */
-export class SkippedInviteDto {
-  @ApiProperty({ example: 7 })
-  userId!: number;
-
-  @ApiProperty({ example: 'not a friend or no conversation' })
-  reason!: string;
-}
-
 export class CreateGroupResponseDto {
   @ApiProperty({ example: 12, description: 'Group message thread id' })
   threadId!: number;
 
   @ApiProperty({ example: 12, description: 'Group id' })
   groupId!: number;
-
-  /** Friend user ids who were successfully sent a GROUP_INVITE at creation. */
-  @ApiProperty({ type: [Number], example: [3, 7] })
-  invited!: number[];
-
-  /** Friends who could not be invited (not a friend / no P2P thread / write failure). */
-  @ApiProperty({ type: SkippedInviteDto, isArray: true })
-  skipped!: SkippedInviteDto[];
 }

@@ -14,6 +14,12 @@ import { isTauri, listenEvent } from '../../services/runtime';
 import { ShellUpdateService } from '../../services/shell-update.service';
 import { DebugToolsService } from '../../services/debug-tools.service';
 import { appVersion } from '../../version';
+import { UserService } from '../../services/user.service';
+import type {
+  PersonalQuotaCategory,
+  PersonalQuotaState,
+} from '../../services/model';
+import { personalQuotaStatus } from '../profile-editor/personal-quota-status';
 
 /** Byte-progress payload Rust emits as `web-download-progress` while streaming the web bundle. */
 interface DownloadProgress {
@@ -180,6 +186,58 @@ interface DownloadProgress {
           }
         </dl>
       </section>
+
+      <section
+        class="quota-card"
+        [class.quota-warning]="quotaStatus() === 'warning'"
+        [class.quota-exhausted]="quotaStatus() === 'exhausted'"
+      >
+        <div class="quota-heading">
+          <h3>{{ 'profile.quota.title' | transloco }}</h3>
+          @if (quotaLoading()) {
+            <span>{{ 'profile.quota.loading' | transloco }}</span>
+          } @else if (quota()) {
+            <span>{{
+              'profile.quota.status.' + quotaStatus() | transloco
+            }}</span>
+          }
+        </div>
+        @if (quota(); as state) {
+          <div class="quota-details">
+            @for (category of quotaCategories; track category) {
+              <div class="quota-row">
+                <div class="quota-row-label">
+                  <span>{{
+                    'profile.quota.category.' + category | transloco
+                  }}</span>
+                  @if (state.usage[category].limit === 0) {
+                    <span>{{ 'profile.quota.disabled' | transloco }}</span>
+                  } @else {
+                    <span
+                      >{{ state.usage[category].count }} /
+                      {{ state.usage[category].limit }}</span
+                    >
+                  }
+                </div>
+                <div class="quota-track">
+                  <span [style.width.%]="quotaPercent(category)"></span>
+                </div>
+              </div>
+            }
+            @if (state.breaker.tripped) {
+              <p class="quota-paused">
+                {{ 'profile.quota.paused' | transloco }}
+              </p>
+            }
+            <p>
+              {{
+                'profile.quota.reset'
+                  | transloco: { time: formatResetAt(state.resetAt) }
+              }}
+            </p>
+          </div>
+        }
+      </section>
     </section>
   `,
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -190,6 +248,7 @@ export class SettingsAboutComponent {
   private readonly snackBar = inject(MatSnackBar);
   private readonly transloco = inject(TranslocoService);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly userService = inject(UserService);
   /** Hidden debug-tools gesture target (10-tap toggle of the log panel gate). Public for the template. */
   readonly debug = inject(DebugToolsService);
 
@@ -203,6 +262,17 @@ export class SettingsAboutComponent {
   readonly downloadTotal = signal<number | null>(null);
   readonly downloading = signal(false);
   readonly updateError = signal('');
+  readonly quota = signal<PersonalQuotaState | null>(null);
+  readonly quotaLoading = signal(true);
+  readonly quotaCategories: PersonalQuotaCategory[] = [
+    'messages',
+    'files',
+    'requests',
+  ];
+  readonly quotaStatus = computed(() => {
+    const state = this.quota();
+    return state ? personalQuotaStatus(state) : 'healthy';
+  });
 
   readonly shellVersion = computed(() => this.status()?.shellVersion ?? '');
   readonly serverVersion = computed(() => this.status()?.serverVersion ?? '');
@@ -236,6 +306,26 @@ export class SettingsAboutComponent {
     // handler early-returns outside a download, so registering once — not per update() — never leaks
     // a listener across retries.
     this.registerProgressListener();
+    this.userService.getMyQuota().subscribe({
+      next: (res) => {
+        this.quota.set(res.data ?? null);
+        this.quotaLoading.set(false);
+      },
+      error: () => this.quotaLoading.set(false),
+    });
+  }
+
+  quotaPercent(category: PersonalQuotaCategory): number {
+    const item = this.quota()?.usage[category];
+    if (!item || item.limit === 0) return 0;
+    return Math.min(100, Math.round((item.count / item.limit) * 100));
+  }
+
+  formatResetAt(value: string): string {
+    return new Intl.DateTimeFormat(this.transloco.getActiveLang(), {
+      dateStyle: 'short',
+      timeStyle: 'short',
+    }).format(new Date(value));
   }
 
   /** Subscribe to `web-download-progress` once; the handler ignores events outside a download. */

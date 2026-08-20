@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import { ed25519 } from '@noble/curves/ed25519.js';
-import { sql } from 'drizzle-orm';
 import {
   bootFederationPair,
   truncateFederationDbs,
@@ -318,6 +317,14 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     });
     expect(peerB?.trustLevel).toBe('available');
     expect(peerB?.trustedAt).toBeInstanceOf(Date);
+
+    const missing = await resolveFederatedCard(
+      appA,
+      tokenA,
+      'missing-user',
+      DOM_B,
+    );
+    expect(missing).toEqual({ event: 'failed', data: { reason: 'NOT_FOUND' } });
   });
 
   it('Address request carries PROFILE but creates stubs only after accept', async () => {
@@ -596,6 +603,65 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     } finally {
       await reader.cancel();
     }
+  });
+
+  it('Step 2: a federated member can reply to a peer-authored message', async () => {
+    await ensureAliceAndBobAreFriends();
+    const marker = `quote target ${randomUUID()}`;
+    const original = await request(appA.baseUrl)
+      .post('/api/v1/send-message')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({
+        threadId: await alicesThreadIdOnA(),
+        content: marker,
+        contentType: 'PURE_TEXT',
+      });
+    expect(original.body.code).toBe(BusinessCode.OK);
+    const quotedOnB = await vi.waitFor(
+      async () => {
+        const found = await appB.database.query.message.findFirst({
+          where: and(
+            eq(message.content, JSON.stringify({ text: marker })),
+            eq(message.creator, aliceStubIdOnB),
+          ),
+        });
+        expect(found).toBeDefined();
+        return found!;
+      },
+      { timeout: 5000 },
+    );
+
+    const sent = await request(appB.baseUrl)
+      .post('/api/v1/send-message')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send({
+        threadId: quotedOnB.threadId,
+        content: JSON.stringify({
+          text: 'reply from bob',
+          quote: { seq: quotedOnB.seq },
+        }),
+        contentType: 'PURE_TEXT',
+      });
+    expect(sent.status).toBe(200);
+    expect(sent.body.code).toBe(BusinessCode.OK);
+
+    await vi.waitFor(
+      async () => {
+        const reply = await appA.database.query.message.findFirst({
+          where: and(
+            eq(message.creator, bobStubIdOnA),
+            eq(message.contentType, ContentType.PURE_TEXT),
+          ),
+          orderBy: (row, { desc }) => [desc(row.seq)],
+        });
+        expect(reply).toBeDefined();
+        expect(JSON.parse(reply!.content)).toEqual({
+          text: 'reply from bob',
+          quote: { seq: original.body.data.seq },
+        });
+      },
+      { timeout: 5000 },
+    );
   });
 
   it('forwards a complete bundle closure, preserves retry idempotency, and relays a nested bundle from the receiving server', async () => {
@@ -950,16 +1016,21 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
   // ─── Step 3 Phase B: cross-server group messaging (origin-hub) ────────────────
   it('Step 3: federated group — invite → accept → origin-hub message delivery', async () => {
-    // alice@appA creates a group and invites bob@appB (a federated friend). writeInvites sends the
+    // alice@appA creates a group, then invites bob@appB (a federated friend). writeInvites sends the
     // cross-server invite (peer mints the mirror + Invite) AND writes the GROUP_INVITE card into alice's
     // P2P mirror (it flows to bob via the Step-2 pull). The card + the accept key on the group `!account`.
     const create = await request(appA.baseUrl)
       .post('/api/v1/group/create')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ name: 'fed-group', inviteUserIds: [bobStubIdOnA] });
+      .send({ name: 'fed-group' });
     expect(create.status).toBe(200);
     expect(create.body.code, JSON.stringify(create.body)).toBe(BusinessCode.OK);
     const groupThreadA = create.body.data.threadId as number;
+    const invite = await request(appA.baseUrl)
+      .post('/api/v1/group/invite')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ groupId: groupThreadA, userIds: [bobStubIdOnA] });
+    expect(invite.body.code, JSON.stringify(invite.body)).toBe(BusinessCode.OK);
 
     // The group account (groupUser.account == the group !account) — the on-wire group address.
     const trdA = await findGroupThreadById(appA, groupThreadA);
@@ -1849,9 +1920,14 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const created = await request(appA.baseUrl)
       .post('/api/v1/group/create')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ name: 'full-fed-group', inviteUserIds: [bobStubIdOnA] });
+      .send({ name: 'full-fed-group' });
     expect(created.body.code).toBe(BusinessCode.OK);
     const originThreadId = created.body.data.threadId as number;
+    const invited = await request(appA.baseUrl)
+      .post('/api/v1/group/invite')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ groupId: originThreadId, userIds: [bobStubIdOnA] });
+    expect(invited.body.code).toBe(BusinessCode.OK);
     const originThread = await findGroupThreadById(appA, originThreadId);
     const groupAccount = originThread!.groupUser.account;
     const mirror = await vi.waitFor(

@@ -107,6 +107,21 @@ export class OtpLoginService {
    *  validity window is the admin-configured OTP TTL (SettingsService, default 10 min). Returns the plaintext
    *  ONCE (reveal-once) + the audit view. */
   async issueCode(adminId: number, userId: number): Promise<IssuedLoginCode> {
+    const target = await this.database.db.query.user.findFirst({
+      where: and(
+        eq(userTable.id, userId),
+        eq(userTable.domain, 'local'),
+        eq(userTable.isForeigner, false),
+        eq(userTable.isGroup, false),
+      ),
+      columns: { id: true },
+    });
+    if (!target) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'local user not found',
+      );
+    }
     const code = generateCode();
     const now = new Date();
     const expiresAt = new Date(

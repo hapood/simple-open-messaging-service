@@ -4541,12 +4541,6 @@ export interface components {
        */
       password: string;
     };
-    SkippedInviteDto: {
-      /** @example 7 */
-      userId: number;
-      /** @example not a friend or no conversation */
-      reason: string;
-    };
     CreateGroupResponseDto: {
       /**
        * @description Group message thread id
@@ -4558,14 +4552,6 @@ export interface components {
        * @example 12
        */
       groupId: number;
-      /**
-       * @example [
-       *       3,
-       *       7
-       *     ]
-       */
-      invited: number[];
-      skipped: components['schemas']['SkippedInviteDto'][];
     };
     CreateGroupDto: {
       /**
@@ -4583,14 +4569,6 @@ export interface components {
        * @example Frontend team sync
        */
       description?: string;
-      /**
-       * @description Friend user ids to invite at creation (each must be a friend with a P2P thread)
-       * @example [
-       *       3,
-       *       7
-       *     ]
-       */
-      inviteUserIds?: number[];
     };
     InviteGroupDto: {
       /**

@@ -1,8 +1,6 @@
-@use "../../assets/utils.scss" as *;
+@use '../../assets/utils.scss' as *;
 
-// fit height locks on the taller step 1; root is a flex column with a fixed header and a
-// flexing step body. Both steps stay in the DOM (toggled via [hidden]) so the friend list is
-// not refetched when navigating back.
+// Root is a flex column with a fixed header and a flexing creation panel.
 :host > div {
   display: flex;
   flex-direction: column;
@@ -23,8 +21,12 @@
 
   // Equal 1fr side tracks keep the title centered even when the back and action buttons differ
   // in width (flex `space-between` skews it off-center).
-  > :first-child { justify-self: start; }
-  > :last-child { justify-self: end; }
+  > :first-child {
+    justify-self: start;
+  }
+  > :last-child {
+    justify-self: end;
+  }
 
   .title {
     font-size: 16px;
@@ -41,111 +43,31 @@
   color: var(--app-text-muted);
 }
 
-// ── shared step shell ──
-.step {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  // `.step { display:flex }` would override the UA `[hidden]` rule, so re-assert hiding here.
-  &[hidden] { display: none; }
-}
-
-// ── step 1: search + selected chips + friend list ──
-.search {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 10px;
-  padding: 0 10px;
-  height: 36px;
-  box-sizing: border-box;
-  border: 1px solid var(--app-border-strong);
-  border-radius: var(--app-radius-md);
-  background: var(--app-bg-muted);
-
-  .search-icon { color: var(--app-text-faint); flex: 0 0 auto; }
-  input {
-    flex: 1 1 auto;
-    min-width: 0;
-    border: none;
-    background: transparent;
-    color: var(--app-text);
-    font-size: 14px;
-    outline: none;
-    &::placeholder { color: var(--app-text-faint); }
-  }
-  &:focus-within { border-color: var(--app-brand); }
-}
-
-.chips {
-  flex: 0 0 auto;
-  display: flex;
-  gap: 8px;
-  padding: 0 10px 10px;
-  overflow-x: auto;
-  scrollbar-width: thin;
-}
-
-.chip {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 160px;
-  height: 32px;
-  padding: 0 6px;
-  border-radius: var(--app-radius-pill);
-  background: var(--app-brand-soft);
-
-  .chip-avatar { width: 24px; height: 24px; flex: 0 0 auto; }
-  .chip-name {
-    flex: 1 1 auto;
-    min-width: 0;
-    font-size: 13px;
-    color: var(--app-text);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .chip-x {
-    flex: 0 0 auto;
-    width: 20px;
-    height: 20px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: none;
-    background: transparent;
-    cursor: pointer;
-    color: var(--app-text-muted);
-    border-radius: var(--app-radius-pill);
-    &:hover { color: var(--app-text); background: rgba(0, 0, 0, 0.06); }
-  }
-}
-
-app-user-list {
+// ── creation panel ──
+.panel {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-}
-
-// ── step 2: group avatar + name ──
-.step-2 {
+  display: flex;
+  flex-direction: column;
   padding: 20px 16px;
 }
 
-.identity {
-  display: flex;
-  align-items: flex-start;
-  gap: 14px;
+.header-spacer {
+  width: 32px;
+  height: 32px;
 }
 
-.avatar {
+.avatar-section {
+  display: flex;
+  justify-content: center;
+  padding: 4px 0 28px;
+}
+
+.avatar-wrap {
   position: relative;
-  width: 72px;
-  height: 72px;
+  width: 88px;
+  height: 88px;
   flex: 0 0 auto;
   border-radius: var(--app-radius-lg);
   overflow: visible; // allow the edit button to overhang the rounded corners
@@ -165,60 +87,44 @@ app-user-list {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  &:hover { filter: brightness(0.95); }
-  &:disabled { cursor: progress; opacity: 0.8; }
+  &:hover {
+    filter: brightness(0.95);
+  }
+  &:disabled {
+    cursor: progress;
+    opacity: 0.8;
+  }
 }
 
-.name-field {
-  flex: 1 1 auto;
-  min-width: 0;
-  padding-top: 4px;
+.fields {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+
+  mat-form-field {
+    width: 100%;
+  }
+
+  textarea {
+    line-height: 20px;
+    resize: vertical;
+  }
 }
 
-.name-input {
+textarea {
   width: 100%;
   box-sizing: border-box;
-  height: 36px;
-  padding: 0 12px;
-  border: 1px solid var(--app-border-strong);
-  border-radius: var(--app-radius-md);
-  font-size: 15px;
-  color: var(--app-text);
-  background: var(--app-surface);
-  outline: none;
-  &:focus { border-color: var(--app-brand); }
-}
-
-.counter {
-  margin-top: 6px;
-  font-size: 12px;
-  color: var(--app-text-faint);
-  text-align: right;
-}
-
-// ── step 2: group description (optional) ──
-.desc-field {
-  display: block;
-  margin-top: 16px;
-}
-
-.desc-input {
-  display: block;
-  width: 100%;
-  box-sizing: border-box;
-  min-height: 64px;
-  padding: 8px 12px;
-  border: 1px solid var(--app-border-strong);
-  border-radius: var(--app-radius-md);
   font-family: inherit;
-  font-size: 14px;
   line-height: 20px;
-  color: var(--app-text);
-  background: var(--app-surface);
-  outline: none;
-  resize: vertical;
-  &::placeholder { color: var(--app-text-faint); }
-  &:focus { border-color: var(--app-brand); }
+}
+
+.panel-actions {
+  margin-top: auto;
+  padding-top: 28px;
+
+  button {
+    width: 100%;
+  }
 }
 
 // avatar-upload spinner
@@ -230,4 +136,8 @@ app-user-list {
   border-radius: 50%;
   animation: ng-spin 0.7s linear infinite;
 }
-@keyframes ng-spin { to { transform: rotate(360deg); } }
+@keyframes ng-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

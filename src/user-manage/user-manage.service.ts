@@ -72,10 +72,13 @@ export class UserManageService {
   // revokes all sessions, etc. Services take primitives/local option types (never admin DTOs) to keep
   // the user-manage layer free of an admin dependency; the controller translates the DTO.
 
-  /** Paginated, searchable user list (non-group users only). Omits hashPwd. */
+  /** Paginated, searchable local-person user list. Federated user stubs and groups belong to their
+   *  respective administration surfaces and must never receive local-account actions. Omits hashPwd. */
   async listUsers(opts: { skip?: number; take?: number; search?: string }) {
     const where = and(
       eq(user.isGroup, false),
+      eq(user.isForeigner, false),
+      eq(user.domain, 'local'),
       opts.search ? ilike(user.account, `%${opts.search}%`) : undefined,
     );
     const [list, total] = await Promise.all([
@@ -123,16 +126,19 @@ export class UserManageService {
 
   /** Soft-delete + revoke every session token (invalidateAllSessions revokes all SessionToken rows + emits FORCE_LOGOUT). */
   async disableUser(id: number): Promise<void> {
+    await this.assertLocalPerson(id);
     await this.updateUserOrThrow(id, { isDeleted: true });
     await this.auth.invalidateAllSessions(id, 'admin_disabled');
   }
 
   async enableUser(id: number): Promise<void> {
+    await this.assertLocalPerson(id);
     await this.updateUserOrThrow(id, { isDeleted: false });
   }
 
   /** Force logout every device without changing the account (disable = soft-delete; this does not). */
   async forceLogout(id: number): Promise<void> {
+    await this.assertLocalPerson(id);
     await this.auth.invalidateAllSessions(id, 'admin_force_logout');
   }
 
@@ -142,6 +148,7 @@ export class UserManageService {
    *  the admin can never choose or change a user's password, only re-initialize it. Returns the plaintext
    *  exactly once. */
   async generateInitialPassword(id: number): Promise<{ password: string }> {
+    await this.assertLocalPerson(id);
     const password = randomInitialPassword();
     const hash = await this.auth.hashPassword(password);
     await this.updateUserOrThrow(id, {
@@ -216,6 +223,24 @@ export class UserManageService {
       .returning({ id: user.id });
     if (rows.length === 0) {
       throw new BusinessException(BusinessCode.NOT_FOUND, 'user not found');
+    }
+  }
+
+  private async assertLocalPerson(id: number): Promise<void> {
+    const target = await this.database.db.query.user.findFirst({
+      where: and(
+        eq(user.id, id),
+        eq(user.isForeigner, false),
+        eq(user.isGroup, false),
+        eq(user.domain, 'local'),
+      ),
+      columns: { id: true },
+    });
+    if (!target) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'local user not found',
+      );
     }
   }
 }

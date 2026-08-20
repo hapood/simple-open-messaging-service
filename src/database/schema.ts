@@ -722,6 +722,44 @@ export const message = pgTable(
   ],
 );
 
+/** A peer's processing-receipt coordinate for one existing local message. Receipt copies are not
+ * inserted into the timeline, but later quotes may address their peer-assigned sequence. */
+export const federationMessageReceipt = pgTable(
+  'FederationMessageReceipt',
+  {
+    peerDomain: varchar({ length: 63 }).notNull(),
+    threadId: integer().notNull(),
+    peerSeq: integer().notNull(),
+    messageId: bigint({ mode: 'bigint' }).notNull(),
+    createdAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.peerDomain, table.threadId, table.peerSeq],
+      name: 'FederationMessageReceipt_pkey',
+    }),
+    check('FederationMessageReceipt_peerSeq_check', sql`${table.peerSeq} > 0`),
+    index('FederationMessageReceipt_messageId_idx').on(table.messageId),
+    foreignKey({
+      columns: [table.peerDomain],
+      foreignColumns: [federatedPeer.domain],
+      name: 'FederationMessageReceipt_peerDomain_fkey',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.threadId],
+      foreignColumns: [messageThread.id],
+      name: 'FederationMessageReceipt_threadId_fkey',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.messageId],
+      foreignColumns: [message.id],
+      name: 'FederationMessageReceipt_messageId_fkey',
+    }).onDelete('cascade'),
+  ],
+);
+
 /** Locally ordered deletion log consumed by apps. A row is created only after the target has a local
  * thread seq; federation tombstones which arrive before their message live in the separate table below. */
 export const deletedMessage = pgTable(

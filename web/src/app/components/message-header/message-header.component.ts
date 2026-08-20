@@ -70,6 +70,8 @@ export class MessageHeaderComponent {
 
   /** Emits a message seq to center the kernel on (the parent owns the kernel + calls scrollToIndex). */
   readonly searchJump = output<number>();
+  /** Rebuilds the current source after history is cleared without closing the chatbox. */
+  readonly historyCleared = output<void>();
   private readonly nav = inject(NavStateMachineService);
   private readonly layout = inject(LayoutService);
   private readonly threadAdapter = inject(MESSAGE_THREAD_ADAPTER);
@@ -372,15 +374,28 @@ export class MessageHeaderComponent {
       },
       (ok) => {
         if (ok)
-          void this.runLockedDelete(
-            threadId,
-            () => firstValueFrom(this.threadAdapter.clearHistory({ threadId })),
-            true,
-            () => undefined,
-            false,
-          );
+          void this.clearHistory(threadId);
       },
     );
+  }
+
+  private async clearHistory(threadId: number): Promise<void> {
+    if (!this.deletionLock.begin(threadId)) return;
+    try {
+      const res = await firstValueFrom(
+        this.threadAdapter.clearHistory({ threadId }),
+      );
+      if (res.code !== 0) {
+        this.toast.warn(translateBizResult(res, this.transloco));
+        return;
+      }
+      await this.threadAdapter.clearLocalHistory(threadId);
+      this.historyCleared.emit();
+    } catch {
+      this.toast.warn(this.transloco.translate('errors.networkError'));
+    } finally {
+      this.deletionLock.end(threadId);
+    }
   }
 
   /** Block / unblock (P2P). The backend drops delivery + query-messages hides the blocked creator. The

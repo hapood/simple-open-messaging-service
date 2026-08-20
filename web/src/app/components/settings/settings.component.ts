@@ -7,6 +7,7 @@ import {
 import { NgComponentOutlet } from '@angular/common';
 import { trigger, transition, style, animate } from '@angular/animations';
 import { MatListModule } from '@angular/material/list';
+import { MatCardModule } from '@angular/material/card';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { NavStateMachineService } from '../../services/nav-state.service';
@@ -59,7 +60,13 @@ const pageSlide = trigger('pageSlide', [
  */
 @Component({
   selector: 'app-settings',
-  imports: [MatListModule, TranslocoPipe, IconComponent, NgComponentOutlet],
+  imports: [
+    MatListModule,
+    MatCardModule,
+    TranslocoPipe,
+    IconComponent,
+    NgComponentOutlet,
+  ],
   templateUrl: './settings.component.html',
   styleUrl: './settings.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

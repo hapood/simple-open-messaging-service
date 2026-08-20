@@ -32,6 +32,7 @@ describe('federation message context isolation', () => {
       FederationService.prototype,
     ) as FederationService & Record<string, unknown>;
     const update = vi.fn();
+    const receiptValues = vi.fn().mockResolvedValue(undefined);
     Object.assign(service, {
       config: { domain: 'local.test' },
       logger: { error: vi.fn() },
@@ -53,7 +54,11 @@ describe('federation message context isolation', () => {
             createdAt: new Date(1_700_000_000_000),
           }),
         },
+        federationMessageReceipt: {
+          findFirst: vi.fn().mockResolvedValue(undefined),
+        },
       },
+      insert: vi.fn().mockReturnValue({ values: receiptValues }),
       update,
     };
 
@@ -73,6 +78,12 @@ describe('federation message context isolation', () => {
     ).resolves.toEqual([]);
 
     expect(update).not.toHaveBeenCalled();
+    expect(receiptValues).toHaveBeenCalledWith({
+      peerDomain: 'group-origin.test',
+      threadId: 9,
+      peerSeq: 1,
+      messageId: 1n,
+    });
   });
 
   it('rolls back a page that references an unknown thread', async () => {

@@ -52,8 +52,8 @@
     outline-offset: -2px;
   }
 
-  &.unread .thread-name {
-    font-weight: var(--app-font-weight-bold);
+  &.unread app-user-identity-label {
+    --identity-name-weight: var(--app-font-weight-bold);
   }
 
   &.unread .thread-time {
@@ -91,20 +91,8 @@
       }
     }
 
-    .thread-name {
-      flex: 1 1 auto;
-      min-width: 0;
-      font-size: 16px;
-      font-weight: var(--app-font-weight-semibold);
-      color: var(--app-text);
-      line-height: 16px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    app-federated-badge {
-      flex: 0 0 auto;
+    app-user-identity-label {
+      --identity-name-size: 16px;
     }
 
     .thread-time {

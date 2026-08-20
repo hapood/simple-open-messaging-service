@@ -5,6 +5,7 @@ import {
   ChangeDetectionStrategy,
 } from '@angular/core';
 import { MatListModule } from '@angular/material/list';
+import { MatCardModule } from '@angular/material/card';
 import {
   MatSlideToggleModule,
   MatSlideToggleChange,
@@ -45,13 +46,14 @@ import { NotificationPrefsService } from '../../services/notification-prefs.serv
   selector: 'app-settings-notifications',
   imports: [
     MatListModule,
+    MatCardModule,
     MatSlideToggleModule,
     MatButtonToggleModule,
     TranslocoPipe,
   ],
   template: `
     <section class="settings-group">
-      <div class="settings-card">
+      <mat-card appearance="outlined" class="settings-card">
         <mat-list>
           <mat-list-item>
             <span matListItemTitle>{{
@@ -134,7 +136,7 @@ import { NotificationPrefsService } from '../../services/notification-prefs.serv
             </mat-list-item>
           }
         </mat-list>
-      </div>
+      </mat-card>
     </section>
   `,
   changeDetection: ChangeDetectionStrategy.OnPush,

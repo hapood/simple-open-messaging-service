@@ -1,5 +1,5 @@
 import { Injectable, signal } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpContext } from '@angular/common/http';
 import {
   EMPTY,
   Observable,
@@ -20,6 +20,7 @@ import {
   sessionClient,
   pickLoginOrigin,
 } from './runtime';
+import { SUPPRESS_HTTP_ERROR_TOAST } from '../request-context';
 import { PushService } from './push.service';
 import { WebPushService } from './web-push.service';
 import { UserService } from './user.service';
@@ -200,7 +201,13 @@ export class AuthService {
       this.http.post<{
         code: number;
         data?: { qrToken: string; expiresAt: number };
-      }>(`${apiPrefix()}/auth/qr/create`, { client }),
+      }>(
+        `${apiPrefix()}/auth/qr/create`,
+        { client },
+        {
+          context: new HttpContext().set(SUPPRESS_HTTP_ERROR_TOAST, true),
+        },
+      ),
     );
   }
 
@@ -216,10 +223,16 @@ export class AuthService {
             session_token?: string;
             mustChangePassword?: boolean;
           };
-        }>(`${apiPrefix()}/auth/qr/poll`, {
-          qrToken,
-          device: device ?? this.getDeviceLabel(),
-        })
+        }>(
+          `${apiPrefix()}/auth/qr/poll`,
+          {
+            qrToken,
+            device: device ?? this.getDeviceLabel(),
+          },
+          {
+            context: new HttpContext().set(SUPPRESS_HTTP_ERROR_TOAST, true),
+          },
+        )
         .pipe(
           mergeMap(async (res) => {
             if (res.code === 0 && res.data?.session_token) {

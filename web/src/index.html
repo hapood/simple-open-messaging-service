@@ -1,43 +1,46 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <!-- Static theme-color fallback. The FOUC script just below (and ThemeService at runtime)
+  <head>
+    <meta charset="utf-8" />
+    <!-- Static theme-color fallback. The FOUC script just below (and ThemeService at runtime)
        updates this to match the resolved theme, so the browser chrome blends from the very first
        frame — placed before the script so the script can find it via querySelector. -->
-  <meta name="theme-color" content="#f3f3f1">
-  <!-- Pre-paint FOUC bootstrap (persisted theme + language). Loaded as an EXTERNAL 'self' script so the
+    <meta name="theme-color" content="#f3f3f1" />
+    <!-- Pre-paint FOUC bootstrap (persisted theme + language). Loaded as an EXTERNAL 'self' script so the
        somsapp:// CSP `script-src 'self'` admits it without a nonce — an inline <script> would be blocked.
        Synchronous (classic, no defer) so it runs during head parsing, before <body> paints. ThemeService /
        LanguageService re-assert and own these attributes at runtime after boot. -->
-  <script src="/boot.js"></script>
-  <title>SOMS</title>
-  <base href="/">
-  <!-- Scale locked (`minimum-scale=maximum-scale=1`, `user-scalable=no`): disables the browser's
+    <script src="/boot.js"></script>
+    <title>SOMS</title>
+    <base href="/" />
+    <!-- Scale locked (`minimum-scale=maximum-scale=1`, `user-scalable=no`): disables the browser's
        pinch-to-zoom and double-tap-to-zoom so the SPA behaves as a native shell, not a zoomable page.
        On Android this is reinforced authoritatively at the engine layer in MainActivity.onWebViewCreate
        (WebSettings.setSupportZoom(false)), because some OEM WebView cores ignore this meta; the meta
        remains the lock for the PWA/browser build and the first line of defense natively. It blocks only
        the UA's page-zoom — JS-level gesture handling (e.g. an image lightbox zooming one image via pointer
        events) is unaffected, which is exactly the desired split. -->
-  <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-  <link rel="manifest" href="manifest.webmanifest">
-  <link rel="icon" type="image/x-icon" href="favicon.ico">
-  <!-- iOS home-screen icon (180×180 transparent Web mark). -->
-  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
-  <meta name="apple-mobile-web-app-title" content="SOMS">
-</head>
-<body>
-  <!-- App-shell spinner: shows the instant the page parses (before Angular boots), so a freshly-created
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="logo.svg" />
+    <!-- iOS home-screen icon (180×180 transparent Web mark). -->
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-title" content="SOMS" />
+  </head>
+  <body>
+    <!-- App-shell spinner: shows the instant the page parses (before Angular boots), so a freshly-created
        / reloading main window (the two-window handoff in src-tauri) never flashes a blank frame. Angular
        replaces <app-root>'s content on boot, then AppComponent emits `spa-ready` (Rust gates the window
        show on it). Styles live in styles.scss (global). Harmless in the browser/PWA build (replaced fast). -->
-  <app-root>
-    <div class="app-splash">
-      <img class="app-splash__mark" src="/logo.svg" alt="" />
-      <div class="app-splash__word">SOMS</div>
-      <div class="app-splash__spinner"></div>
-    </div>
-  </app-root>
-</body>
+    <app-root>
+      <div class="app-splash">
+        <img class="app-splash__mark" src="/logo.svg" alt="" />
+        <div class="app-splash__word">SOMS</div>
+        <div class="app-splash__spinner"></div>
+      </div>
+    </app-root>
+  </body>
 </html>

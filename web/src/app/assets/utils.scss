@@ -5,6 +5,32 @@
   padding: unset
 }
 
+// Shared treatment for editable avatars: a compact translucent caption anchored
+// to the bottom of the image. The host controls its own dimensions and positioning.
+@mixin avatar-edit-hint($height: 24px, $vertical-padding: 2px) {
+  cursor: pointer;
+
+  .avatar-hint {
+    position: absolute;
+    inset: auto 0 0;
+    height: $height;
+    box-sizing: border-box;
+    padding: $vertical-padding 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    font-size: 12px;
+    line-height: 20px;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.48);
+  }
+
+  &:hover .avatar-hint {
+    background: rgba(0, 0, 0, 0.62);
+  }
+}
+
 // Effective keyboard lift, shared by the production message container (.msg-container in
 // friend-message.component.scss). The standalone playground mounts that production thread directly.
 // Both derive the SAME value, so the formula + rationale live once here and the two include sites can't drift.

@@ -1187,8 +1187,8 @@ export class FederationService {
           note: '',
           requestedAt: null,
           expiresAt: null,
-          actor: local,
-          subject: {
+          direction: 'OUTGOING',
+          peer: {
             id: 0,
             account: request.remoteAccount,
             name: request.displayName ?? request.remoteAccount,
@@ -1968,7 +1968,9 @@ export class FederationService {
           method: 'POST',
           headers: { 'content-type': 'application/json', ...headers },
           body,
-          signal: AbortSignal.timeout(this.transportConfig.get().callTimeoutSec * 1000),
+          signal: AbortSignal.timeout(
+            this.transportConfig.get().callTimeoutSec * 1000,
+          ),
         });
       } catch (e) {
         await this.recognition.markTransportDegraded(
@@ -2043,7 +2045,9 @@ export class FederationService {
         res = await this.discovery.request(url, {
           method: 'GET',
           headers: { ...headers },
-          signal: AbortSignal.timeout(this.transportConfig.get().callTimeoutSec * 1000),
+          signal: AbortSignal.timeout(
+            this.transportConfig.get().callTimeoutSec * 1000,
+          ),
         });
       } catch (e) {
         await this.recognition.markTransportDegraded(
@@ -3803,14 +3807,15 @@ export class FederationService {
               domain: peerDomain,
               eventType: 'P2P_INTENT',
               subjectAccount: localUser.account,
-              subjectDomain: this.config.domain,
+              subjectDomain: localUser.domain,
               businessRevision: revision,
               body: {
                 status: 'REQUESTED',
                 note: body.note,
                 requestedAt: requestedAt?.getTime() ?? null,
                 expiresAt: expiresAt?.getTime() ?? null,
-                actor: {
+                direction: 'INCOMING',
+                peer: {
                   id: 0,
                   account: normalizeAccount(item.account),
                   name: profile.displayName,
@@ -3818,7 +3823,6 @@ export class FederationService {
                   domain: peerDomain,
                   isForeigner: true,
                 },
-                subject: localUser,
               },
             });
             if (clientRevision !== null)
@@ -3847,14 +3851,15 @@ export class FederationService {
               domain: peerDomain,
               eventType: 'P2P_INTENT',
               subjectAccount: localUser.account,
-              subjectDomain: this.config.domain,
+              subjectDomain: localUser.domain,
               businessRevision: revision,
               body: {
                 status: 'REVOKED',
                 note: body.note,
                 requestedAt: null,
                 expiresAt: null,
-                actor: {
+                direction: 'INCOMING',
+                peer: {
                   id: 0,
                   account: normalizeAccount(item.account),
                   name:
@@ -3864,7 +3869,6 @@ export class FederationService {
                   domain: peerDomain,
                   isForeigner: true,
                 },
-                subject: localUser,
               },
             });
             if (clientRevision !== null)
@@ -5312,6 +5316,33 @@ export class FederationService {
                 )}`,
               );
             }
+            const existingReceipt =
+              await tx.query.federationMessageReceipt.findFirst({
+                where: and(
+                  eq(tables.federationMessageReceipt.peerDomain, domain),
+                  eq(tables.federationMessageReceipt.threadId, route.threadId),
+                  eq(tables.federationMessageReceipt.peerSeq, item.seq),
+                ),
+                columns: { messageId: true },
+              });
+            if (
+              existingReceipt &&
+              existingReceipt.messageId !== localSourceMessage.id
+            ) {
+              throw new BusinessException(
+                BusinessCode.FEDERATION_MALFORMED,
+                'conflicting processing receipt coordinate',
+                HttpStatus.BAD_REQUEST,
+              );
+            }
+            if (!existingReceipt) {
+              await tx.insert(tables.federationMessageReceipt).values({
+                peerDomain: domain,
+                threadId: route.threadId,
+                peerSeq: item.seq,
+                messageId: localSourceMessage.id,
+              });
+            }
             continue;
           }
           this.logger.error(
@@ -5885,10 +5916,14 @@ export class FederationService {
       const local = participants.find(
         (participant) => participant.domain === this.config.domain,
       );
+      const remote = participants.find(
+        (participant) => participant.domain !== this.config.domain,
+      );
       const selfAuthored = item.author.domain === this.config.domain;
       if (
         participants.length !== 2 ||
         !local ||
+        !remote ||
         (!selfAuthored && sourceDomain !== item.author.domain)
       ) {
         throw new BusinessException(
@@ -5912,16 +5947,21 @@ export class FederationService {
         JOIN "ThreadParticipant" local_participant
           ON local_participant."threadId" = thread.id
         JOIN "User" local_user ON local_user.id = local_participant."userId"
+        JOIN "ThreadParticipant" remote_participant
+          ON remote_participant."threadId" = thread.id
+        JOIN "User" remote_user ON remote_user.id = remote_participant."userId"
         WHERE thread.type = 'P2P'
           AND thread."federationTruncated" = false
           AND local_user.domain = 'local'
           AND local_user.account = ${normalizeAccount(local.account)}
+          AND remote_user.domain = ${remote.domain}
+          AND remote_user.account = ${normalizeAccount(remote.account)}
           AND EXISTS (
             SELECT 1 FROM "FriendPair" pair
             WHERE pair."threadId" = thread.id
           )
         LIMIT 1
-        FOR SHARE OF thread, author_participant, local_participant
+        FOR SHARE OF thread, author_participant, local_participant, remote_participant
       `);
       threadRows = result.rows;
     }
@@ -6522,14 +6562,12 @@ export class FederationService {
     let waitsForQuoteTarget = false;
     const quoteTargetSeq = incoming.quoteTarget?.targetSeq;
     if (!tombstone && incomingText && quoteTargetSeq !== undefined) {
-      const quotedMessage = await tx.query.message.findFirst({
-        where: and(
-          eq(tables.message.threadId, threadId),
-          eq(tables.message.federationSourceDomain, fetchedFromDomain),
-          eq(tables.message.originSeq, quoteTargetSeq),
-        ),
-        columns: { id: true },
-      });
+      const quotedMessage = await this.findQuoteTargetMessage(
+        tx,
+        threadId,
+        fetchedFromDomain,
+        quoteTargetSeq,
+      );
       if (!quotedMessage) {
         const quotedPending = await tx.query.pendingMedia.findFirst({
           where: and(
@@ -6700,14 +6738,12 @@ export class FederationService {
     sourceDomain: string,
     target: S2SQuoteTarget,
   ): Promise<number> {
-    const message = await tx.query.message.findFirst({
-      where: and(
-        eq(tables.message.threadId, threadId),
-        eq(tables.message.federationSourceDomain, sourceDomain),
-        eq(tables.message.originSeq, target.targetSeq),
-      ),
-      columns: { seq: true },
-    });
+    const message = await this.findQuoteTargetMessage(
+      tx,
+      threadId,
+      sourceDomain,
+      target.targetSeq,
+    );
     if (!message) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
@@ -6716,6 +6752,39 @@ export class FederationService {
       );
     }
     return message.seq;
+  }
+
+  private async findQuoteTargetMessage(
+    tx: DatabaseTransaction,
+    threadId: number,
+    sourceDomain: string,
+    sourceSeq: number,
+  ): Promise<{ id: bigint; seq: number } | undefined> {
+    const direct = await tx.query.message.findFirst({
+      where: and(
+        eq(tables.message.threadId, threadId),
+        eq(tables.message.federationSourceDomain, sourceDomain),
+        eq(tables.message.originSeq, sourceSeq),
+      ),
+      columns: { id: true, seq: true },
+    });
+    if (direct) return direct;
+    const receipt = await tx.query.federationMessageReceipt.findFirst({
+      where: and(
+        eq(tables.federationMessageReceipt.peerDomain, sourceDomain),
+        eq(tables.federationMessageReceipt.threadId, threadId),
+        eq(tables.federationMessageReceipt.peerSeq, sourceSeq),
+      ),
+      columns: { messageId: true },
+    });
+    if (!receipt) return undefined;
+    return tx.query.message.findFirst({
+      where: and(
+        eq(tables.message.id, receipt.messageId),
+        eq(tables.message.threadId, threadId),
+      ),
+      columns: { id: true, seq: true },
+    });
   }
 
   private async localizeForwardAssets(
@@ -7454,14 +7523,12 @@ export class FederationService {
       let localQuoteSeq: number | undefined;
       const quoteTarget = batch.federationAuthoredSnapshot?.quoteTarget;
       if (!tombstone && quoteTarget) {
-        const quoted = await tx.query.message.findFirst({
-          where: and(
-            eq(tables.message.threadId, threadId),
-            eq(tables.message.federationSourceDomain, batch.originDomain!),
-            eq(tables.message.originSeq, quoteTarget.targetSeq),
-          ),
-          columns: { seq: true },
-        });
+        const quoted = await this.findQuoteTargetMessage(
+          tx,
+          threadId,
+          batch.originDomain!,
+          quoteTarget.targetSeq,
+        );
         // A zero-file dependent batch is intentionally retried by its target's successful promotion.
         if (!quoted) return null;
         localQuoteSeq = quoted.seq;

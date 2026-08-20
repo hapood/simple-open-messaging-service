@@ -32,6 +32,14 @@ export interface WellKnownDoc {
   [key: string]: unknown;
 }
 
+/** Stable classification for DNS/SRV discovery failures exposed to first-contact UI. */
+export class FederationDomainResolutionError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'FederationDomainResolutionError';
+  }
+}
+
 interface CachedRoute {
   baseUrl: string;
   connectHost: string;
@@ -100,16 +108,23 @@ export class DiscoveryService {
     try {
       records = await resolveSrv(`_socfp._tcp.${normalized}`);
     } catch (error) {
-      throw new Error(
-        `SRV discovery for ${normalized} failed: ${(error as Error).message}`,
+      throw new FederationDomainResolutionError(
+        `SRV discovery for ${normalized} failed`,
+        { cause: error },
       );
     }
     if (records.length === 0)
-      throw new Error(`${normalized} does not publish SOCFP SRV`);
+      throw new FederationDomainResolutionError(
+        `${normalized} does not publish SOCFP SRV`,
+      );
     if (records.some((record) => record.name === '.')) {
       if (records.length === 1)
-        throw new Error(`${normalized} explicitly disables SOCFP`);
-      throw new Error(`${normalized} publishes an invalid mixed SRV RRset`);
+        throw new FederationDomainResolutionError(
+          `${normalized} explicitly disables SOCFP`,
+        );
+      throw new FederationDomainResolutionError(
+        `${normalized} publishes an invalid mixed SRV RRset`,
+      );
     }
     const valid = records.filter(
       (record) =>
@@ -122,7 +137,9 @@ export class DiscoveryService {
         record.weight <= 65_535,
     );
     if (valid.length !== records.length)
-      throw new Error(`${normalized} publishes an invalid SOCFP SRV RRset`);
+      throw new FederationDomainResolutionError(
+        `${normalized} publishes an invalid SOCFP SRV RRset`,
+      );
     const priority = Math.min(...valid.map((record) => record.priority));
     const candidates = valid.filter((record) => record.priority === priority);
     const selected = this.weightedRecord(candidates);

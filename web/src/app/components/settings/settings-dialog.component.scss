@@ -1,6 +1,6 @@
 // Settings dialog (desktop/tablet) — two-column flat: category list (master) + detail. Fills the dialog
-// wrapper (full-screen sheet on tablet; centered card on desktop whose height is pinned by [appFitDialog]
-// so the two columns scroll internally). All vertical metrics are integer px (project rule).
+// wrapper (full-screen sheet on tablet; bounded workspace card on desktop). The header stays outside the
+// two independently scrollable columns. All vertical metrics are integer px (project rule).
 
 :host {
   display: block;

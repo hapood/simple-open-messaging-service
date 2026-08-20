@@ -7,6 +7,7 @@ import {
 } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { MatListModule } from '@angular/material/list';
+import { MatCardModule } from '@angular/material/card';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { LocalDataManagementService } from '../../services/local-data-management.service';
 import { PopupType, RouteService } from '../../services/route.service';
@@ -14,10 +15,10 @@ import { ToastService } from '../../services/toast.service';
 
 @Component({
   selector: 'app-settings-data',
-  imports: [MatButtonModule, MatListModule, TranslocoPipe],
+  imports: [MatButtonModule, MatListModule, MatCardModule, TranslocoPipe],
   template: `
     <section class="settings-group">
-      <div class="settings-card">
+      <mat-card appearance="outlined" class="settings-card">
         <mat-list>
           <mat-list-item>
             <span matListItemTitle>{{
@@ -41,6 +42,7 @@ import { ToastService } from '../../services/toast.service';
             <button
               mat-button
               matListItemMeta
+              class="check-btn"
               type="button"
               [disabled]="clearing()"
               (click)="confirmClear()"
@@ -54,7 +56,7 @@ import { ToastService } from '../../services/toast.service';
             </button>
           </mat-list-item>
         </mat-list>
-      </div>
+      </mat-card>
       <span class="hint">{{ 'settings.cacheStorageHint' | transloco }}</span>
     </section>
   `,

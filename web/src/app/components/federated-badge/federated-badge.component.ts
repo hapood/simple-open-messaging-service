@@ -33,10 +33,13 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
     `
       :host {
         display: inline-flex;
+        min-width: 0;
       }
       .fed-badge {
         display: inline-flex;
         align-items: center;
+        min-width: 0;
+        max-width: 100%;
         gap: 3px;
         font-size: 12px;
         line-height: 16px;
@@ -45,6 +48,10 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
         padding: 0 6px;
         border-radius: var(--app-radius-pill);
         white-space: nowrap;
+      }
+      .fed-domain {
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       .fed-badge.compact {
         padding: 2px;

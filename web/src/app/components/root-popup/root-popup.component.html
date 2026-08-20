@@ -7,6 +7,7 @@
       class="popup-com-wrapper"
       [class.desktop]="isCard()"
       [class.wide]="info.desktopSize === 'wide'"
+      [class.workspace-height]="info.desktopHeight === 'workspace'"
       [class.presentation-page]="info.presentation === 'page'"
       [class.presentation-modal]="info.presentation === 'modal'"
       [class.presentation-viewer]="info.presentation === 'viewer'"

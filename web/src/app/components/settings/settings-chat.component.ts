@@ -1,5 +1,6 @@
 import { Component, inject, ChangeDetectionStrategy } from '@angular/core';
 import { MatListModule } from '@angular/material/list';
+import { MatCardModule } from '@angular/material/card';
 import { MatRadioModule } from '@angular/material/radio';
 import {
   MatSlideToggleChange,
@@ -14,10 +15,16 @@ import {
 /** Settings → Chat behavior. Device-local preferences that control conversation presentation/navigation. */
 @Component({
   selector: 'app-settings-chat',
-  imports: [MatListModule, MatRadioModule, MatSlideToggleModule, TranslocoPipe],
+  imports: [
+    MatListModule,
+    MatCardModule,
+    MatRadioModule,
+    MatSlideToggleModule,
+    TranslocoPipe,
+  ],
   template: `
     <section class="settings-group">
-      <div class="settings-card">
+      <mat-card appearance="outlined" class="settings-card">
         <mat-list>
           @for (position of openPositions; track position) {
             <mat-list-item (click)="selectOpenPosition(position)">
@@ -36,10 +43,10 @@ import {
             </mat-list-item>
           }
         </mat-list>
-      </div>
+      </mat-card>
     </section>
     <section class="settings-group">
-      <div class="settings-card">
+      <mat-card appearance="outlined" class="settings-card">
         <mat-list>
           <mat-list-item>
             <span matListItemTitle>{{
@@ -56,7 +63,7 @@ import {
             />
           </mat-list-item>
         </mat-list>
-      </div>
+      </mat-card>
     </section>
   `,
   changeDetection: ChangeDetectionStrategy.OnPush,

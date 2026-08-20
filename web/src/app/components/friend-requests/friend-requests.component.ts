@@ -1,13 +1,16 @@
 import {
   Component,
   computed,
+  effect,
   input,
   signal,
+  untracked,
   OnDestroy,
   ChangeDetectionStrategy,
 } from '@angular/core';
 import { Subject, Subscription } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
+import { MatTabsModule } from '@angular/material/tabs';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { RouteService } from '../../services/route.service';
@@ -15,23 +18,24 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
 import { FormsModule } from '@angular/forms';
 import {
   FederatedResolveStage,
+  FederatedResolveError,
   UserService,
   User,
 } from '../../services/user.service';
-import {
-  displayUserAccount,
-  displayUserName,
-  Invite,
-} from '../../services/model';
+import { displayUserName, Invite } from '../../services/model';
 import {
   UserAvatarComponent,
   UserAvatarType,
 } from '../user-avatar/user-avatar.component';
-import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
 import { translateBizResult } from '../../services/biz-code';
-import { FitDialogDirective } from '../../directives/fit-dialog.directive';
 import dayjs from 'dayjs';
 import { FriendInviteDialogComponent } from '../friend-invite-dialog/friend-invite-dialog.component';
+import { VirtualInfiniteListComponent } from '../virtual-infinite-list/virtual-infinite-list.component';
+import {
+  FriendRequestCardComponent,
+  FriendRequestCardModel,
+} from '../friend-request-card/friend-request-card.component';
+import { UserIdentityLabelComponent } from '../user-identity-label/user-identity-label.component';
 
 export enum AddTabStatus {
   INIT,
@@ -53,7 +57,7 @@ type PendingReq = {
   isForeigner?: boolean;
   domain?: string;
   reqMessage?: string;
-  status: number; // 0 pending, 1 accepted (optimistic "added"), -1 invalid
+  status: number; // 0 pending, 1 accepted, -1 invalid, -2 expired, -3 revoked
   date: number;
   errText: string;
 };
@@ -69,20 +73,19 @@ type RelationshipState =
     UserAvatarComponent,
     FormsModule,
     MatButtonModule,
+    MatTabsModule,
     IconComponent,
-    FitDialogDirective,
     TranslocoPipe,
-    FederatedBadgeComponent,
     FriendInviteDialogComponent,
+    VirtualInfiniteListComponent,
+    FriendRequestCardComponent,
+    UserIdentityLabelComponent,
   ],
   templateUrl: './friend-requests.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './friend-requests.component.scss',
 })
 export class FriendRequestsComponent implements OnDestroy {
-  readonly fitOpts = {
-    minHeight: 560,
-  } as const;
   readonly searchText = signal('');
   /** When set, the in-flight federated resolve is a FIRST-CONTACT handshake with this peer domain. The
    *  server's peer-trust-status pre-check reported the domain untrusted (no FederatedPeer 'trusted'
@@ -112,6 +115,23 @@ export class FriendRequestsComponent implements OnDestroy {
   readonly sentReqList = signal([] as PendingReq[]);
   readonly sentErrTxt = signal('');
   readonly sentLoading = signal(true);
+  readonly selectedRequest = signal<FriendRequestCardModel | null>(null);
+  readonly selectedDirection = signal<'INCOMING' | 'OUTGOING'>('INCOMING');
+  readonly pendingCount = signal(0);
+  readonly sentCount = signal(0);
+  readonly pendingHasMore = signal(false);
+  readonly sentHasMore = signal(false);
+  readonly hasUnreadIncoming = computed(() =>
+    this.userService.friendReqBadge(),
+  );
+  private pendingCursor: string | null = null;
+  private sentCursor: string | null = null;
+  /** Invalidates an older list request when a newer reset starts. State-feed revisions can arrive in
+   *  quick succession, so more than one reset may be in flight at once. */
+  private pendingLoadGeneration = 0;
+  private sentLoadGeneration = 0;
+  private observedRequestRevision: number | undefined;
+  private inviteListsInitialized = false;
 
   subject = input<Subject<any> | undefined>(undefined);
   initialTab = input<'add' | 'pending'>('add');
@@ -126,21 +146,67 @@ export class FriendRequestsComponent implements OnDestroy {
   AddTabStatus = AddTabStatus;
   AppIconType = AppIconType;
   displayUserName = displayUserName;
-  displayUserAccount = displayUserAccount;
+
+  openRequest(req: PendingReq, direction: 'INCOMING' | 'OUTGOING'): void {
+    this.selectedRequest.set(req);
+    this.selectedDirection.set(direction);
+  }
+
+  closeRequest(): void {
+    this.selectedRequest.set(null);
+  }
+
+  deleteSelected(req: FriendRequestCardModel): void {
+    if (this.selectedDirection() === 'INCOMING') this.decline(req);
+    else this.cancelSent(req);
+    this.closeRequest();
+  }
 
   constructor(
     private routeService: RouteService,
     private userService: UserService,
     private transloco: TranslocoService,
     private snackBar: MatSnackBar,
-  ) {}
+  ) {
+    effect(() => {
+      const revision = this.userService.friendRequestStateRevision();
+      if (
+        !this.inviteListsInitialized ||
+        this.observedRequestRevision === undefined ||
+        revision <= this.observedRequestRevision
+      ) {
+        return;
+      }
+      this.observedRequestRevision = revision;
+      // A live revision refreshes both counters and lists, regardless of the visible tab. It deliberately
+      // does not advance the seen revision: a request arriving while this dialog is open stays unread until
+      // the user explicitly visits Incoming again (or opens the dialog there next time).
+      untracked(() => {
+        void Promise.all([
+          this.loadIncomingInvites(true),
+          this.loadOutgoingInvites(true),
+        ]);
+      });
+    });
+  }
   setTab(tab: number) {
     this.activeTab.set(tab);
-    this.loadTab(tab);
+    if (
+      tab === 1 &&
+      !this.pendingLoading() &&
+      this.pendingReqList().length === 0
+    )
+      void this.loadIncomingInvites(true);
+    if (tab === 2 && !this.sentLoading() && this.sentReqList().length === 0)
+      void this.loadOutgoingInvites(true);
     if (tab === 1) this.userService.markFriendReqRead();
   }
 
   goBack() {
+    if (this.selectedRequest()) {
+      this.closeRequest();
+      return;
+    }
     if (this.initialUser()) {
       this.routeService.closeDlg();
       return;
@@ -196,10 +262,24 @@ export class FriendRequestsComponent implements OnDestroy {
                 this.localResults.set([user]);
                 this.addTabStatus.set(AddTabStatus.SUCCESS);
               },
-              error: () => {
+              error: (error: unknown) => {
                 this.connectingDomain.set(null);
+                const reason =
+                  error instanceof FederatedResolveError
+                    ? error.reason
+                    : 'UNKNOWN';
+                const keys: Record<string, string> = {
+                  DOMAIN_RESOLUTION_FAILED: 'friend.error.domainResolution',
+                  TIMEOUT: 'friend.error.timeout',
+                  BLOCKED: 'friend.error.blocked',
+                  NOT_FOUND: 'friend.msg.friendNotFound',
+                  UNREACHABLE: 'friend.error.unreachable',
+                  INVALID_ADDRESS: 'friend.error.invalidAddress',
+                };
                 this.errMsg.set(
-                  this.transloco.translate('friend.error.unknownError'),
+                  this.transloco.translate(
+                    keys[reason] ?? 'friend.error.unknownError',
+                  ),
                 );
                 this.addTabStatus.set(AddTabStatus.ERROR);
               },
@@ -348,8 +428,9 @@ export class FriendRequestsComponent implements OnDestroy {
     this.cancelInFlight();
   }
 
-  approve(index: number) {
-    const req = this.pendingReqList()[index];
+  approve(req: PendingReq) {
+    const index = this.pendingReqList().findIndex((item) => item.id === req.id);
+    if (index < 0) return;
     this.userService.acceptInvite(this.inviteAction(req)).subscribe((res) => {
       const reqList = this.pendingReqList();
       if (res.code === 0) {
@@ -361,6 +442,8 @@ export class FriendRequestsComponent implements OnDestroy {
             .concat([{ ...req, status: 1, errText: '' }])
             .concat(reqList.slice(index + 1)),
         );
+        this.pendingCount.update((count) => Math.max(0, count - 1));
+        if (this.selectedRequest()?.id === req.id) this.closeRequest();
       } else {
         this.pendingReqList.set(
           reqList
@@ -374,12 +457,13 @@ export class FriendRequestsComponent implements OnDestroy {
             ])
             .concat(reqList.slice(index + 1)),
         );
+        this.pendingCount.update((count) => Math.max(0, count - 1));
+        if (this.selectedRequest()?.id === req.id) this.closeRequest();
       }
     });
   }
 
-  decline(index: number) {
-    const req = this.pendingReqList()[index];
+  decline(req: PendingReq) {
     this.userService.rejectInvite(this.inviteAction(req)).subscribe((res) => {
       if (res.code === 0) {
         // Rejected: remove from the pending list (filter by id to avoid index drift).
@@ -404,12 +488,19 @@ export class FriendRequestsComponent implements OnDestroy {
     });
   }
 
-  cancelSent(index: number) {
-    const req = this.sentReqList()[index];
+  cancelSent(req: PendingReq) {
     this.userService.revokeInvite(this.inviteAction(req)).subscribe((res) => {
       if (res.code === 0) {
-        // Revoked: remove from the sent list (filter by id to avoid index drift).
-        this.sentReqList.set(this.sentReqList().filter((r) => r.id !== req.id));
+        // Keep the tombstone visible so the sent-request history reflects the final state.
+        this.sentReqList.update((items) =>
+          items.map((item) =>
+            item.id === req.id ? { ...item, status: -3, errText: '' } : item,
+          ),
+        );
+        if (this.selectedRequest()?.id === req.id)
+          this.selectedRequest.update((item) =>
+            item ? { ...item, status: -3, errText: '' } : item,
+          );
         this.snackBar.open(
           this.transloco.translate('friend.revokedToast'),
           undefined,
@@ -456,7 +547,12 @@ export class FriendRequestsComponent implements OnDestroy {
       isForeigner: peer.isForeigner,
       domain: peer.domain,
       reqMessage: inv.note,
-      status: 0,
+      status:
+        inv.status === 'REVOKED'
+          ? -3
+          : inv.status === 'EXPIRED' || inv.expiresAt <= Date.now()
+            ? -2
+            : 0,
       date: inv.createdAt,
       errText: '',
     };
@@ -489,46 +585,78 @@ export class FriendRequestsComponent implements OnDestroy {
     return dayjs(timestamp).format('YYYY-MM-DD HH:mm:ss');
   }
 
-  private loadTab(tab: number) {
-    if (tab === 1) this.loadIncomingInvites();
-    if (tab === 2) this.loadOutgoingInvites();
-  }
-
-  private async loadIncomingInvites() {
-    // Clear the previous snapshot before refreshing so stale requests never remain visible while the
-    // newly displayed tab is loading.
-    this.pendingReqList.set([]);
+  async loadIncomingInvites(reset = false) {
+    if (this.pendingLoading() && !reset) return;
+    const generation = reset
+      ? ++this.pendingLoadGeneration
+      : this.pendingLoadGeneration;
+    if (reset) {
+      this.pendingCursor = null;
+      this.pendingReqList.set([]);
+    }
     this.toPendingErrTxt.set('');
     this.pendingLoading.set(true);
 
     // Parameterless: backend hardcodes last-7-days / ≤200 / FRIEND / PENDING, and filters out peers
     // who are already friends. The inviter profile is embedded (fromUser), so no queryUserInfo round-trip.
     try {
-      const invites = await this.userService.listLocalFriendInvites('INCOMING');
-      this.pendingReqList.set(invites.map((inv) => this.inviteToPending(inv)));
+      const page = await this.userService.listLocalFriendInvites(
+        'INCOMING',
+        this.pendingCursor,
+        20,
+      );
+      if (generation !== this.pendingLoadGeneration) return;
+      const nextItems = page.items.map((inv) => this.inviteToPending(inv));
+      this.pendingReqList.update((items) =>
+        reset ? nextItems : [...items, ...nextItems],
+      );
+      this.pendingCursor = page.nextCursor;
+      this.pendingHasMore.set(page.hasMore);
+      this.pendingCount.set(page.total);
     } catch {
+      if (generation !== this.pendingLoadGeneration) return;
       this.toPendingErrTxt.set(
         this.transloco.translate('friend.error.unknownError'),
       );
     } finally {
-      this.pendingLoading.set(false);
+      if (generation === this.pendingLoadGeneration)
+        this.pendingLoading.set(false);
     }
   }
 
-  private async loadOutgoingInvites() {
-    this.sentReqList.set([]);
+  async loadOutgoingInvites(reset = false) {
+    if (this.sentLoading() && !reset) return;
+    const generation = reset
+      ? ++this.sentLoadGeneration
+      : this.sentLoadGeneration;
+    if (reset) {
+      this.sentCursor = null;
+      this.sentReqList.set([]);
+    }
     this.sentErrTxt.set('');
     this.sentLoading.set(true);
 
     try {
-      const invites = await this.userService.listLocalFriendInvites('OUTGOING');
-      this.sentReqList.set(invites.map((inv) => this.inviteToSent(inv)));
+      const page = await this.userService.listLocalFriendInvites(
+        'OUTGOING',
+        this.sentCursor,
+        20,
+      );
+      if (generation !== this.sentLoadGeneration) return;
+      const nextItems = page.items.map((inv) => this.inviteToSent(inv));
+      this.sentReqList.update((items) =>
+        reset ? nextItems : [...items, ...nextItems],
+      );
+      this.sentCursor = page.nextCursor;
+      this.sentHasMore.set(page.hasMore);
+      this.sentCount.set(page.total);
     } catch {
+      if (generation !== this.sentLoadGeneration) return;
       this.sentErrTxt.set(
         this.transloco.translate('friend.error.unknownError'),
       );
     } finally {
-      this.sentLoading.set(false);
+      if (generation === this.sentLoadGeneration) this.sentLoading.set(false);
     }
   }
 
@@ -546,7 +674,13 @@ export class FriendRequestsComponent implements OnDestroy {
     }
     const initialTab = this.initialTab() === 'pending' ? 1 : 0;
     this.activeTab.set(initialTab);
-    this.loadTab(initialTab);
+    this.observedRequestRevision =
+      this.userService.friendRequestStateRevision();
+    this.inviteListsInitialized = true;
+    void Promise.all([
+      this.loadIncomingInvites(true),
+      this.loadOutgoingInvites(true),
+    ]);
     if (initialTab === 1) this.userService.markFriendReqRead();
   }
 }

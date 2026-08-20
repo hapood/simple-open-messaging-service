@@ -810,3 +810,18 @@ app-chat-input.msg-composer--selection-hidden {
   background: transparent;
   border-top: 0;
 }
+
+/* Session details are a centered Material dialog on larger layouts and an M3-style
+   modal bottom sheet on compact layouts. This must be global because the CDK overlay
+   is mounted outside the settings component's encapsulation boundary. */
+@media (max-width: 719px) {
+  .cdk-overlay-pane.session-details-dialog {
+    align-self: flex-end;
+    width: 100% !important;
+    max-width: 100vw !important;
+  }
+
+  .session-details-dialog .mat-mdc-dialog-surface {
+    border-radius: 24px 24px 0 0;
+  }
+}

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { and, eq } from 'drizzle-orm';
 import {
+  clientStateFeed,
   federatedFriendRequest,
   friendPair,
   user,
@@ -109,6 +110,25 @@ describe('federated Address friend request without pre-accept stubs', () => {
       }),
     ).toBeUndefined();
 
+    const pendingClientIntent =
+      await appB.database.query.clientStateFeed.findFirst({
+        where: and(
+          eq(clientStateFeed.userId, bobId),
+          eq(clientStateFeed.account, 'address-alice'),
+          eq(clientStateFeed.domain, FED_DOMAIN_A),
+          eq(clientStateFeed.eventType, 'P2P_INTENT'),
+          eq(clientStateFeed.subjectAccount, 'address-bob'),
+        ),
+      });
+    expect(pendingClientIntent).toMatchObject({
+      subjectDomain: 'local',
+      businessRevision: 0,
+      body: expect.objectContaining({
+        status: 'REQUESTED',
+        direction: 'INCOMING',
+      }),
+    });
+
     const accepted = await request(appB.baseUrl)
       .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${bobToken}`)
@@ -153,6 +173,26 @@ describe('federated Address friend request without pre-accept stubs', () => {
         ]);
         expect(pairA).toBeDefined();
         expect(pairB).toBeDefined();
+
+        const bobClientIntents =
+          await appB.database.query.clientStateFeed.findMany({
+            where: and(
+              eq(clientStateFeed.userId, bobId),
+              eq(clientStateFeed.account, 'address-alice'),
+              eq(clientStateFeed.domain, FED_DOMAIN_A),
+              eq(clientStateFeed.eventType, 'P2P_INTENT'),
+              eq(clientStateFeed.subjectAccount, 'address-bob'),
+            ),
+          });
+        expect(bobClientIntents).toHaveLength(1);
+        expect(bobClientIntents[0]).toMatchObject({
+          subjectDomain: 'local',
+          businessRevision: 1,
+          body: expect.objectContaining({
+            status: 'ACCEPTED',
+            direction: 'INCOMING',
+          }),
+        });
       },
       { timeout: 10_000, interval: 100 },
     );

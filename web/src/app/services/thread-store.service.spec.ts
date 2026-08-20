@@ -838,21 +838,14 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
               note: '',
               requestedAt: 10,
               expiresAt: 20,
-              actor: {
+              direction: 'INCOMING' as const,
+              peer: {
                 id: 2,
                 account: 'remote',
                 name: 'Remote',
                 avatar: '',
                 domain: 'peer.test',
                 isForeigner: true,
-              },
-              subject: {
-                id: 1,
-                account: 'local',
-                name: 'Local',
-                avatar: '',
-                domain: 'local',
-                isForeigner: false,
               },
             },
           },

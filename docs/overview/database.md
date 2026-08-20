@@ -193,15 +193,15 @@ The normative identities and derivation rules are defined by
 [Federation v1 Resources](../../spec/v1/resources.md). SOMS maps them as follows; these database
 columns are implementation details and never replace the wire coordinates:
 
-| Wire identity or coordinate                     | SOMS local representation                                                                                                                   |
-| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `(thread, author, originSeq)`                   | `Message(threadId, creator, originSeq)` unique key; local `Message.seq` remains a separate display/order coordinate                         |
-| `quoteTarget.creator + originSeq`               | Stored in `Message.federationAuthoredSnapshot.quoteTarget`; resolved through the same authored-message unique key, not through remote `seq` |
-| Direct-media `digest` bound to an outer message | `MessageAsset(messageId, digest)` plus `MediaAsset(digest)` CAS state                                                                       |
-| Remote media not yet localized                  | `PendingMedia(threadId, creatorId, originSeq, digest)` until digest and authorization checks succeed                                        |
-| Outer FORWARD card root `bundleId`              | `ForwardMessage(messageId, bundleId)` → `ForwardBundle(id)`                                                                                 |
-| Child bundle relation                           | `ForwardBundleDependency(parentBundleId, childBundleId)`; child IDs are never substituted for the outer root ID in media requests           |
-| Asset within a verified root closure            | `ForwardBundleAsset(bundleId, digest, ...)`; authorization still starts from the outer message and root bundle mapping                      |
+| Wire identity or coordinate                      | SOMS local representation                                                                                                         |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| `(thread, author, originSeq)`                    | `Message(threadId, creator, originSeq)` unique key; local `Message.seq` remains a separate display/order coordinate               |
+| `(source domain, thread, quoteTarget.targetSeq)` | Resolved through the source publisher's message/receipt coordinate mapping, then projected to receiver-local `Message.seq`        |
+| Direct-media `digest` bound to an outer message  | `MessageAsset(messageId, digest)` plus `MediaAsset(digest)` CAS state                                                             |
+| Remote media not yet localized                   | `PendingMedia(threadId, creatorId, originSeq, digest)` until digest and authorization checks succeed                              |
+| Outer FORWARD card root `bundleId`               | `ForwardMessage(messageId, bundleId)` → `ForwardBundle(id)`                                                                       |
+| Child bundle relation                            | `ForwardBundleDependency(parentBundleId, childBundleId)`; child IDs are never substituted for the outer root ID in media requests |
+| Asset within a verified root closure             | `ForwardBundleAsset(bundleId, digest, ...)`; authorization still starts from the outer message and root bundle mapping            |
 
 For inbound data, `sourceDomain/sourceBundleId` records the remote opaque bundle identity while the
 local `ForwardBundle.id` may use a local key. Retries must retain that mapping; shape or timestamp

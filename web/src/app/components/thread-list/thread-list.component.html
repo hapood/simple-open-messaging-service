@@ -68,13 +68,10 @@
             </span>
             <span class="thread-info">
               <span class="thread-row">
-                <span class="thread-name">{{ displayName(thread) }}</span>
-                @if (federatedDomain(thread); as domain) {
-                  <app-federated-badge
-                    [domain]="domain"
-                    [compact]="true"
-                  ></app-federated-badge>
-                }
+                <app-user-identity-label
+                  [name]="displayName(thread)"
+                  [domain]="federatedDomain(thread)"
+                />
                 @if (thread.pinned) {
                   <span
                     class="thread-status-icon"

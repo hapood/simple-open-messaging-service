@@ -8,7 +8,7 @@ import { LogoutService } from '../../services/logout.service';
  * EDIT_PROFILE dialog host: a thin wrapper that pins the dialog height ([appFitDialog]) around the shared
  * {@link ProfileEditorComponent} body, wiring its outputs to the dialog + navigation lifecycle. The editor is
  * purely presentational for navigation; this host owns the side effects: back / navigate-away → `closeDlg()`,
- * save → `closeDlg(true)`, manage-sessions → close + deep-link Settings→Devices, logout → close + the shared
+ * save → `closeDlg(true)`, logout → close + the shared
  * {@link LogoutService} choreography. Used on every layout; compact renders it as a full-screen page.
  */
 @Component({
@@ -32,11 +32,6 @@ export class EditProfileComponent {
   /** Save succeeded → close with `true` (PopupResult[EDIT_PROFILE]). */
   onSaved() {
     this.routeService.closeDlg(true);
-  }
-  /** Close first so the Settings surface isn't stacked beneath this dialog, then deep-link to Devices. */
-  onManageSessions() {
-    this.routeService.closeDlg();
-    this.routeService.openSettings('devices');
   }
   /** Close first so this pane doesn't leak past re-login, then run the shared logout choreography. */
   onLogout() {

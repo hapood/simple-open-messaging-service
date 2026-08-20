@@ -2,8 +2,16 @@
   <!-- ROOT: category list -->
   <div class="view" [class.dimmed]="!!activeCategory()">
     <div class="msg-header">
-      <button class="icon-btn" type="button" (click)="goBack()" [attr.aria-label]="'common.back' | transloco">
-        <app-icon [type]="AppIconType.BACK" [style]="{ width: '32px', height: '32px' }"></app-icon>
+      <button
+        class="icon-btn"
+        type="button"
+        (click)="goBack()"
+        [attr.aria-label]="'common.back' | transloco"
+      >
+        <app-icon
+          [type]="AppIconType.BACK"
+          [style]="{ width: '32px', height: '32px' }"
+        ></app-icon>
       </button>
       <span class="title">{{ 'settings.title' | transloco }}</span>
       <span></span>
@@ -11,26 +19,31 @@
 
     <div class="body">
       <section class="settings-group">
-        <div class="settings-card">
+        <mat-card appearance="outlined" class="settings-card">
           <mat-action-list>
             @for (c of visibleCategories(); track c.id) {
-              <mat-list-item (click)="openCategory(c)" [attr.aria-label]="c.titleKey | transloco">
+              <mat-list-item
+                (click)="openCategory(c)"
+                [attr.aria-label]="c.titleKey | transloco"
+              >
                 <app-icon
                   matListItemAvatar
                   class="lead"
                   [type]="c.icon"
-                  [style]="{ width: '24px', height: '24px' }"></app-icon>
+                  [style]="{ width: '24px', height: '24px' }"
+                ></app-icon>
                 <span matListItemTitle>{{ c.titleKey | transloco }}</span>
                 <span matListItemLine class="hint">{{ c.summary() }}</span>
                 <app-icon
                   matListItemMeta
                   class="chev"
                   [type]="AppIconType.CHEVRON_RIGHT"
-                  [style]="{ width: '20px', height: '20px' }"></app-icon>
+                  [style]="{ width: '20px', height: '20px' }"
+                ></app-icon>
               </mat-list-item>
             }
           </mat-action-list>
-        </div>
+        </mat-card>
       </section>
     </div>
   </div>
@@ -39,8 +52,16 @@
   @if (activeCategory(); as cat) {
     <div class="view view-sub" [@pageSlide]>
       <div class="msg-header">
-        <button class="icon-btn" type="button" (click)="goBack()" [attr.aria-label]="'common.back' | transloco">
-          <app-icon [type]="AppIconType.BACK" [style]="{ width: '32px', height: '32px' }"></app-icon>
+        <button
+          class="icon-btn"
+          type="button"
+          (click)="goBack()"
+          [attr.aria-label]="'common.back' | transloco"
+        >
+          <app-icon
+            [type]="AppIconType.BACK"
+            [style]="{ width: '32px', height: '32px' }"
+          ></app-icon>
         </button>
         <span class="title">{{ cat.titleKey | transloco }}</span>
         <span></span>

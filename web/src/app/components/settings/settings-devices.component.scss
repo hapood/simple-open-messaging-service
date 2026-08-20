@@ -1,168 +1,138 @@
-// Settings → Devices sub-page styles. Pulls in the shared M3 group/card shell (kept scoped by Angular's
-// view encapsulation), then layers the rich per-device rows the category list doesn't need. All vertical
-// metrics are integer px (height, vertical padding/border/gap, line-height) per the project rule.
 @use './_settings-shared.scss' as s;
-
 @include s.settings-groups;
-
 :host {
   display: block;
 }
-
 .state {
-  display: flex;
-  justify-content: center;
   padding: 40px 0;
-  line-height: 20px;
-  font-size: 13px;
   color: var(--app-text-muted);
+  font-size: 13px;
+  line-height: 20px;
   text-align: center;
 }
-
-.terminate-card {
+.link-device-card {
+  display: flex;
+  padding-bottom: 8px;
+}
+.session-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+h3 {
+  margin: 0 4px;
+  color: var(--app-text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+}
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 36px;
+}
+.terminate-others {
+  --mat-button-text-label-text-color: var(--app-danger);
+  --mat-button-text-state-layer-color: var(--app-danger);
+}
+.device-card {
+  cursor: pointer;
+}
+.device-card.current {
+  border-color: var(--app-success);
+}
+.device-card mat-card-content {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+}
+.lead {
+  flex: 0 0 auto;
+  color: var(--app-brand);
+}
+.chevron {
+  flex: 0 0 auto;
+  color: var(--app-text-faint);
+}
+.device-summary {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+}
+.device-summary strong {
+  overflow: hidden;
+  color: var(--app-text);
+  font-size: 14px;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.device-summary span {
+  overflow: hidden;
+  color: var(--app-text-muted);
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.terminate-card mat-card-content {
+  display: flex;
+  align-items: center;
+  gap: 16px;
   padding: 16px;
 }
-
+.terminate-heading {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
 .terminate-title {
   color: var(--app-text);
   font-size: 15px;
   font-weight: 600;
   line-height: 22px;
 }
-
-.terminate-heading,
-.saving-state {
-  display: flex;
-  align-items: center;
-}
-
-.terminate-heading {
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.saving-state {
-  flex: 0 0 auto;
-  color: var(--app-text-muted);
-}
-
 .terminate-hint {
   margin-top: 4px;
   color: var(--app-text-muted);
   font-size: 12px;
   line-height: 18px;
 }
-
-.terminate-options {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.terminate-option {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 44px;
+.terminate-select {
+  flex: 0 0 150px;
+  box-sizing: border-box;
+  height: 40px;
   padding: 0 12px;
   border: 1px solid var(--app-border);
-  border-radius: var(--app-radius-md, 12px);
+  border-radius: var(--app-radius-md);
   color: var(--app-text);
   background: var(--app-surface);
-  cursor: pointer;
 
-  &.selected {
-    border-color: var(--app-brand);
-    color: var(--app-brand);
-    background: var(--app-brand-soft);
+  ::ng-deep .mat-mdc-select-trigger {
+    height: 38px;
   }
 
-  &:disabled {
-    cursor: default;
-    opacity: 0.7;
-  }
-}
-
-// The "sign out everywhere else" affordance sits in its own surface above the list, separated by the
-// group gap. Right-aligned so it reads as an action, not a row.
-.danger-card {
-  display: flex;
-  justify-content: flex-end;
-  padding: 0 4px;
-}
-
-// The Android-only "Link a device" scanner entry sits above the list (a prominent action, not a row).
-.link-device-card {
-  display: flex;
-  justify-content: flex-start;
-  padding: 0 4px 4px;
-}
-
-// Rich per-device rows are multi-line mini-cards, so they sit in an inset padded column rather than
-// running edge-to-edge like the M3 list rows elsewhere. The .settings-card frame itself stays
-// single-sourced in the shared mixin; this local class only adds the inner layout.
-.dev-card {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 8px;
-}
-
-.dev-row {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 12px;
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius-md, 12px);
-  background: var(--app-surface);
-
-  &.current {
-    border-color: var(--app-success);
-    background: var(--app-success-soft);
-  }
-}
-
-.dev-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  line-height: 24px;
-
-  .lead {
-    flex: 0 0 auto;
-    color: var(--app-text-muted);
+  ::ng-deep .mat-mdc-select-value-text {
+    font-size: 14px;
+    line-height: 20px;
   }
 
-  .dev-name {
-    flex: 1 1 auto;
-    min-width: 0;
-    font-size: 15px;
-    line-height: 24px;
-    font-weight: 600;
-    color: var(--app-text);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  &:focus-visible {
+    outline: 2px solid var(--app-brand);
+    outline-offset: 2px;
   }
 }
-
-.dev-ua {
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--app-text-muted);
-  word-break: break-all;
-}
-
-.dev-meta {
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--app-text-muted);
-}
-
-.dev-foot {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 4px;
+@media (max-width: 719px) {
+  .terminate-card mat-card-content {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .terminate-select {
+    align-self: flex-end;
+  }
 }

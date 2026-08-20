@@ -45,9 +45,9 @@ $app-gray-900: #111827;
   --app-toggle-active-hover: var(--app-action-primary-hover);
   --app-on-toggle-active: var(--app-on-action-primary);
   --app-focus-ring: #5c6268;
-  // Generated SELF avatars are identity chrome, not controls. Keep their
-  // contrast stable when the interactive brand flips light in dark mode.
-  --app-avatar-self-bg: #454a4f;
+  // Generated SELF avatars use the action blue so "you" remain immediately
+  // recognizable while still following the light/dark theme palette.
+  --app-avatar-self-bg: var(--app-action-primary);
   // Inline links need stronger text contrast than filled brand controls. Composer links deliberately keep
   // visited URLs on the same color: browser history is not a useful editing state and default purple is
   // low-contrast on the dark input surface.
@@ -408,7 +408,7 @@ $app-gray-900: #111827;
   --app-focus-ring: #aeb3b7;
   --app-link: #d4d7d9;
   --app-link-visited: var(--app-link);
-  --app-avatar-self-bg: #454a4f;
+  --app-avatar-self-bg: var(--app-action-primary);
   --app-danger: #ef4444; // brighter red for legibility on dark
   --app-danger-soft: rgba(
     239,

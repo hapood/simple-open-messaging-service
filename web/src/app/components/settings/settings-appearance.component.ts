@@ -1,5 +1,6 @@
 import { Component, inject, ChangeDetectionStrategy } from '@angular/core';
 import { MatListModule } from '@angular/material/list';
+import { MatCardModule } from '@angular/material/card';
 import { MatRadioModule } from '@angular/material/radio';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { ThemeService, ThemeMode } from '../../services/theme.service';
@@ -11,10 +12,10 @@ import { ThemeService, ThemeMode } from '../../services/theme.service';
  */
 @Component({
   selector: 'app-settings-appearance',
-  imports: [MatListModule, MatRadioModule, TranslocoPipe],
+  imports: [MatListModule, MatCardModule, MatRadioModule, TranslocoPipe],
   template: `
     <section class="settings-group">
-      <div class="settings-card">
+      <mat-card appearance="outlined" class="settings-card">
         <mat-list>
           @for (m of modes; track m) {
             <mat-list-item (click)="select(m)">
@@ -29,7 +30,7 @@ import { ThemeService, ThemeMode } from '../../services/theme.service';
             </mat-list-item>
           }
         </mat-list>
-      </div>
+      </mat-card>
     </section>
   `,
   changeDetection: ChangeDetectionStrategy.OnPush,

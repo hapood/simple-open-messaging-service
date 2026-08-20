@@ -34,8 +34,6 @@ describe('AuthService (session-token contract, browser path)', () => {
   let httpMock: HttpTestingController;
 
   beforeEach(() => {
-    sessionStorage.clear();
-    localStorage.clear();
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -95,8 +93,6 @@ describe('AuthService (session-token contract, browser path)', () => {
   });
   afterEach(() => {
     TestBed.resetTestingModule();
-    sessionStorage.clear();
-    localStorage.clear();
     // Clear any presence cookie a test set (document.cookie survives resetTestingModule).
     document.cookie = 'logged_in=; Max-Age=0; Path=/; SameSite=Strict';
   });

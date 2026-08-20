@@ -205,8 +205,8 @@ export class InviteService {
           note: trimmed,
           requestedAt: requestedAt.getTime(),
           expiresAt: expiresAt.getTime(),
-          actor: this.clientInviteUser(local),
-          subject: {
+          direction: 'OUTGOING',
+          peer: {
             id: 0,
             account,
             name: snapshot.displayName?.slice(0, 30) || account,
@@ -373,7 +373,7 @@ export class InviteService {
     for (const direction of directions) {
       const actor = users.get(direction.requesterUserId)!;
       const subject = users.get(direction.targetUserId)!;
-      const body = {
+      const commonBody = {
         inviteId: direction.id.toString(),
         status:
           direction.status === 'FRIEND'
@@ -384,11 +384,16 @@ export class InviteService {
         note: direction.note,
         requestedAt: direction.requestedAt?.getTime() ?? null,
         expiresAt: direction.expiresAt?.getTime() ?? null,
-        actor: this.clientInviteUser(actor),
-        subject: this.clientInviteUser(subject),
       };
       for (const owner of [actor, subject]) {
         if (owner.isForeigner || owner.isDeleted) continue;
+        const body = {
+          ...commonBody,
+          direction: owner.id === actor.id ? 'OUTGOING' : 'INCOMING',
+          peer: this.clientInviteUser(
+            owner.id === actor.id ? subject : actor,
+          ),
+        };
         const revision = await this.clientStateFeed.writeInTx(tx, {
           userId: owner.id,
           account: actor.account,

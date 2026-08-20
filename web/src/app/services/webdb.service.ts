@@ -52,6 +52,8 @@ export interface ProfileRecord {
   bio: string;
   domain: string;
   profileRev: number;
+  source?: 'OUTGOING_FRIEND_REQUEST';
+  expiresAt?: number;
 }
 
 /** Source-scoped group-member display snapshot, materialized from MEMBER_PROFILE state. */
@@ -175,7 +177,11 @@ export interface WebdbSchema extends DBSchema {
   memberProfiles: { key: [number, number]; value: MemberProfileRecord };
   /** One record per conversation, keyed by `threadId` (the field is the keyPath). */
   threads: { key: number; value: ConversationItem };
-  friendIntents: { key: string; value: ClientFriendIntent };
+  friendIntents: {
+    key: string;
+    value: ClientFriendIntent;
+    indexes: { directionRequested: [string, string, number, string] };
+  };
   settings: { key: string; value: MetaRecord };
 }
 
@@ -195,8 +201,8 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-const CACHE_SCHEMA_VERSION = 3;
-const MESSAGE_CACHE_SCHEMA_VERSION = 1;
+export const CACHE_SCHEMA_VERSION = 0;
+export const MESSAGE_CACHE_SCHEMA_VERSION = 1;
 const IDB_FORMAT_VERSION = 1;
 
 export class LocalCacheUnavailableError extends Error {
@@ -504,7 +510,15 @@ export class WebdbService implements OnDestroy {
           keyPath: ['threadId', 'userId'],
         });
         db.createObjectStore('threads', { keyPath: 'threadId' });
-        db.createObjectStore('friendIntents', { keyPath: 'key' });
+        const friendIntents = db.createObjectStore('friendIntents', {
+          keyPath: 'key',
+        });
+        friendIntents.createIndex('directionRequested', [
+          'direction',
+          'status',
+          'requestedSort',
+          'key',
+        ]);
         db.createObjectStore('settings', { keyPath: 'key' });
         transaction.objectStore('settings').put({
           key: 'schemaVersion',
@@ -947,6 +961,103 @@ export class WebdbService implements OnDestroy {
     });
   }
 
+  async getFriendIntentPage(
+    direction: 'INCOMING' | 'OUTGOING',
+    cursor: string | null,
+    take: number,
+    includeRevoked = false,
+  ): Promise<{ items: ClientFriendIntent[]; total: number }> {
+    return this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId != null)
+        return tauriInvoke<{ items: ClientFriendIntent[]; total: number }>(
+          'native_db_page_friend_intents',
+          {
+            userId: Number(this.currentUserId),
+            direction,
+            cursor,
+            take,
+            includeRevoked,
+          },
+        );
+      const db = await this.db();
+      const index = db
+        .transaction('friendIntents')
+        .store.index('directionRequested');
+      const lower: [string, string, number, string] = [
+        direction,
+        'REQUESTED',
+        0,
+        '',
+      ];
+      const upper: [string, string, number, string] = cursor
+        ? (JSON.parse(cursor) as [string, string, number, string])
+        : [direction, 'REQUESTED', Number.MAX_SAFE_INTEGER, '\uffff'];
+      const range = IDBKeyRange.bound(lower, upper, false, cursor !== null);
+      const requestedTotal = await index.count(
+        IDBKeyRange.bound(lower, [
+          direction,
+          'REQUESTED',
+          Number.MAX_SAFE_INTEGER,
+          '\uffff',
+        ]),
+      );
+      if (!includeRevoked) {
+        const items: ClientFriendIntent[] = [];
+        let row = await index.openCursor(range, 'prev');
+        while (row && items.length < take) {
+          items.push(row.value);
+          row = await row.continue();
+        }
+        return { items, total: requestedTotal };
+      }
+
+      const requested = await index.getAll(range);
+      const revoked = await index.getAll(
+        IDBKeyRange.bound(
+          [direction, 'REVOKED', 0, ''],
+          [direction, 'REVOKED', Number.MAX_SAFE_INTEGER, '\uffff'],
+        ),
+      );
+      const items = [...requested, ...revoked]
+        .sort(
+          (a, b) =>
+            b.requestedSort - a.requestedSort || b.key.localeCompare(a.key),
+        )
+        .filter(
+          (item) =>
+            !cursor ||
+            item.requestedSort < upper[2] ||
+            (item.requestedSort === upper[2] && item.key < upper[3]),
+        )
+        .slice(0, take);
+      return { items, total: requestedTotal + revoked.length };
+    });
+  }
+
+  async cleanupExpiredPendingFriendProfiles(now = Date.now()): Promise<void> {
+    return this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId != null) {
+        await tauriInvoke('native_db_cleanup_pending_friend_profiles', {
+          userId: Number(this.currentUserId),
+          now,
+        });
+        return;
+      }
+      const tx = (await this.db()).transaction('profiles', 'readwrite');
+      let cursor = await tx.store.openCursor();
+      while (cursor) {
+        const profile = cursor.value;
+        if (
+          profile.source === 'OUTGOING_FRIEND_REQUEST' &&
+          (profile.expiresAt ?? 0) <= now
+        )
+          await cursor.delete();
+        cursor = await cursor.continue();
+      }
+      await tx.done;
+    });
+  }
+
   private async getThreadsInternal(): Promise<ConversationItem[]> {
     if (isTauri() && this.currentUserId != null) {
       return tauriInvoke<ConversationItem[]>('native_db_threads', {
@@ -1056,11 +1167,29 @@ export class WebdbService implements OnDestroy {
             subjectDomain: op.subjectDomain,
             businessRevision: op.businessRevision,
             ...op.body,
+            requestedSort: op.body.requestedAt ?? 0,
           });
         if (
           op.body.status === 'REQUESTED' &&
-          String(op.body.subject.id) === this.currentUserId
-        )
+          op.body.expiresAt !== null &&
+          op.body.direction === 'OUTGOING'
+        ) {
+          const peer = op.body.peer;
+          await tx.objectStore('profiles').put({
+            identity: `pending:${peer.domain}\u0000${peer.account}`,
+            id: 0,
+            kind: 'user',
+            name: peer.name || peer.account,
+            account: peer.account,
+            avatar: peer.avatar,
+            bio: '',
+            domain: peer.domain,
+            profileRev: 0,
+            source: 'OUTGOING_FRIEND_REQUEST',
+            expiresAt: op.body.expiresAt,
+          });
+        }
+        if (op.body.status === 'REQUESTED' && op.body.direction === 'INCOMING')
           await tx.objectStore('settings').put({
             key: 'friendRequestStateRevision',
             value: op.revision,

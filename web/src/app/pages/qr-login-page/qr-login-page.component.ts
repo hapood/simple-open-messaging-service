@@ -8,6 +8,7 @@ import {
   ChangeDetectionStrategy,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { timeout } from 'rxjs';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { MatButtonModule } from '@angular/material/button';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
@@ -104,7 +105,8 @@ export class QrLoginPageComponent implements OnDestroy {
     this.config.methodsForPlatform().includes('otp'),
   );
 
-  private pollTimer: ReturnType<typeof setInterval> | undefined;
+  private pollTimer: ReturnType<typeof setTimeout> | undefined;
+  private polling = false;
   private countdownTimer: ReturnType<typeof setInterval> | undefined;
   /** Pending scheduled (re)mint — drives both the silent expiry-refresh and the backoff retry on a transient
    *  qrCreate failure. One timer at a time; every code path that mints clears it first. */
@@ -119,6 +121,9 @@ export class QrLoginPageComponent implements OnDestroy {
   private static readonly MAX_CREATE_RETRIES = 3;
   private static readonly EXPIRY_REFRESH_DELAY_MS = 700;
   private static readonly CREATE_RETRY_BASE_MS = 1500;
+  private static readonly REQUEST_TIMEOUT_MS = 8000;
+  private static readonly POLL_INTERVAL_MS = 1500;
+  private static readonly POLL_ERROR_DELAY_MS = 3000;
   /** Absolute deadline (epoch ms) and full TTL of the current QR token, captured at mint. `expiresAt` is
    *  absolute, so dividing the remaining time by the TTL yields the linear 0–100 bar bound above. */
   private qrDeadline = 0;
@@ -143,7 +148,10 @@ export class QrLoginPageComponent implements OnDestroy {
     // both are constant for this app session, so the QR is minted once at the right level (no toggle).
     this.auth
       .qrCreate(sessionClient())
-      .pipe(takeUntilDestroyed(this.destroyRef))
+      .pipe(
+        timeout(QrLoginPageComponent.REQUEST_TIMEOUT_MS),
+        takeUntilDestroyed(this.destroyRef),
+      )
       .subscribe({
         next: (res) => {
           if (res.code === 0 && res.data) {
@@ -209,10 +217,23 @@ export class QrLoginPageComponent implements OnDestroy {
     const token = this.qrToken();
     if (!token) return;
     this.stopPoll();
-    this.pollTimer = setInterval(() => {
+    this.polling = true;
+    this.schedulePoll(token, QrLoginPageComponent.POLL_INTERVAL_MS);
+  }
+
+  /** Schedule only after the previous request settles. This single-flight loop prevents an unreachable
+   * backend from accumulating pending Fetch requests every 1.5 seconds and eventually starving the UI. */
+  private schedulePoll(token: string, delay: number): void {
+    if (!this.polling) return;
+    this.pollTimer = setTimeout(() => {
+      if (!this.polling) return;
+      this.pollTimer = undefined;
       this.auth
         .qrPoll(token)
-        .pipe(takeUntilDestroyed(this.destroyRef))
+        .pipe(
+          timeout(QrLoginPageComponent.REQUEST_TIMEOUT_MS),
+          takeUntilDestroyed(this.destroyRef),
+        )
         .subscribe({
           next: (res) => {
             if (res.code === 0 && res.data?.session_token) {
@@ -232,14 +253,17 @@ export class QrLoginPageComponent implements OnDestroy {
               this.refreshAfterExpiry();
             }
           },
-          // A transient poll error doesn't abort the flow — the next tick retries.
-          error: () => {},
+          error: () =>
+            this.schedulePoll(token, QrLoginPageComponent.POLL_ERROR_DELAY_MS),
+          complete: () =>
+            this.schedulePoll(token, QrLoginPageComponent.POLL_INTERVAL_MS),
         });
-    }, 1500);
+    }, delay);
   }
 
   private stopPoll(): void {
-    if (this.pollTimer) clearInterval(this.pollTimer);
+    this.polling = false;
+    if (this.pollTimer) clearTimeout(this.pollTimer);
     this.pollTimer = undefined;
   }
 

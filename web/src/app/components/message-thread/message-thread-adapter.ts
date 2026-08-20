@@ -139,6 +139,9 @@ export abstract class MessageThreadAdapter {
     threadId: number;
   }): Observable<StandardResponse>;
 
+  /** Drop host-local message state after the server accepts clear-history. */
+  clearLocalHistory(_threadId: number): void | Promise<void> {}
+
   abstract stageMedia(
     request: StageMediaRequest,
   ): Observable<StandardResponse<{ clientMessageId: string }>>;
@@ -246,6 +249,10 @@ export class ProductionMessageThreadAdapter extends MessageThreadAdapter {
 
   override clearHistory(request: { threadId: number }) {
     return this.messages.clearHistory(request);
+  }
+
+  override clearLocalHistory(threadId: number): Promise<void> {
+    return this.repository.deleteByThread(threadId);
   }
 
   override stageMedia(request: StageMediaRequest) {

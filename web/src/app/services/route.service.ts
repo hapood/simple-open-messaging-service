@@ -1,4 +1,4 @@
-import { computed, inject, Injectable, Type } from '@angular/core';
+import { computed, effect, inject, Injectable, Type } from '@angular/core';
 import { Router } from '@angular/router';
 import { Subject } from 'rxjs';
 import { AvatarEditorComponent } from '../components/avatar-editor/avatar-editor.component';
@@ -22,6 +22,7 @@ import type { SettingsCategoryId } from '../components/settings/settings-categor
 import { AppIconType } from '../components/icon/model';
 import {
   DialogDesktopSize,
+  DialogDesktopHeight,
   DialogPresentation,
   NavStateMachineService,
 } from './nav-state.service';
@@ -166,6 +167,7 @@ export interface DlgInfo {
   inputs?: Record<string, unknown>;
   presentation: DialogPresentation;
   desktopSize: DialogDesktopSize;
+  desktopHeight: DialogDesktopHeight;
   scopeThreadId?: number;
 }
 
@@ -190,7 +192,40 @@ export class RouteService {
   private readonly nav = inject(NavStateMachineService);
   private readonly layout = inject(LayoutService);
 
-  constructor(private router: Router) {}
+  constructor(private router: Router) {
+    // Settings is the one routed surface whose information architecture changes at the adaptive
+    // breakpoint. Keep an already-open surface responsive to rotation/window resizing instead of only
+    // sampling the layout when it was opened.
+    effect(() => {
+      const compact = this.layout.mode() === 'compact';
+      const stack = this.nav.paneStack();
+      const index = stack.findIndex(
+        (entry) =>
+          entry.kind === 'dialog' &&
+          (entry.component === SettingsComponent ||
+            entry.component === SettingsDialogComponent),
+      );
+      if (index < 0) return;
+      const current = stack[index];
+      const desired = compact ? SettingsComponent : SettingsDialogComponent;
+      if (current.component === desired) return;
+      if (compact) this.nav.clearSettingsCategories();
+      const next = [...stack];
+      next[index] = {
+        ...current,
+        component: desired,
+        desktopSize: compact ? 'standard' : 'wide',
+        desktopHeight: compact ? 'content' : 'workspace',
+        settingsDrilldown: compact,
+        inputs: compact
+          ? undefined
+          : this.nav.settingsCategoryTop()
+            ? { initialCategoryId: this.nav.settingsCategoryTop() }
+            : undefined,
+      };
+      this.nav.paneStack.set(next);
+    });
+  }
 
   /** The dialog stack as {@link DlgInfo}s — RootPopup renders this via @for + *ngComponentOutlet. Derived
    *  from the nav state machine's dialog pane entries. */
@@ -201,6 +236,7 @@ export class RouteService {
       inputs: p.inputs,
       presentation: p.presentation ?? 'page',
       desktopSize: p.desktopSize ?? 'standard',
+      desktopHeight: p.desktopHeight ?? 'content',
       scopeThreadId: p.scopeThreadId,
     })),
   );
@@ -284,6 +320,8 @@ export class RouteService {
       onResult: onResult as ((result: unknown) => void) | undefined,
       presentation: presentationDict[popupType],
       desktopSize: popupType === PopupType.FORWARD ? 'wide' : 'standard',
+      desktopHeight:
+        popupType === PopupType.FRIEND_REQUESTS ? 'workspace' : 'content',
       scopeThreadId: options?.scopeThreadId,
     });
     return { id };
@@ -319,7 +357,8 @@ export class RouteService {
   /**
    * Open Settings as a wide two-column dialog — medium/expanded only. Pushed with the `page` policy and
    * a wide desktop size, so RootPopup renders a
-   * wider centered card on desktop (the default 480px is too narrow for two columns).
+   * wider centered card on desktop (the default 480px is too narrow for two columns). Its bounded
+   * workspace height keeps the header fixed and gives both columns a definite scroll viewport.
    * `initialCategoryId` selects the right-hand category on open (deep-link); omit it for the default
    * (first visible) selection. Back / hardware-back peels it in one step (flat mode).
    */
@@ -329,6 +368,7 @@ export class RouteService {
       component: SettingsDialogComponent,
       presentation: 'page',
       desktopSize: 'wide',
+      desktopHeight: 'workspace',
       inputs: initialCategoryId ? { initialCategoryId } : undefined,
     });
     return { id };

@@ -1,16 +1,20 @@
-import { useState } from 'react'
-import type { ReactNode } from 'react'
-import { Link, useParams } from 'react-router-dom'
-import { useTranslation } from 'react-i18next'
-import { toast } from 'sonner'
-import { ArrowLeft } from 'lucide-react'
-import { useUserDetail } from '@/hooks/use-user-detail'
-import { useIsAdminPlus } from '@/hooks/use-me'
-import { useDisableUser, useEnableUser, useForceLogoutUser } from '@/hooks/use-user-mutations'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Skeleton } from '@/components/ui/skeleton'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { useState } from 'react';
+import type { ReactNode } from 'react';
+import { Link, useParams } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+import { toast } from 'sonner';
+import { ArrowLeft } from 'lucide-react';
+import { useUserDetail } from '@/hooks/use-user-detail';
+import { useIsAdminPlus } from '@/hooks/use-me';
+import {
+  useDisableUser,
+  useEnableUser,
+  useForceLogoutUser,
+} from '@/hooks/use-user-mutations';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Table,
   TableBody,
@@ -18,13 +22,13 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@/components/ui/table'
-import { Timestamp } from '@/components/common/timestamp'
-import { formatApiError } from '@/lib/format-error'
-import { IssueLoginCodeDialog } from './issue-login-code-dialog'
-import { GenerateInitialPasswordDialog } from './generate-initial-password-dialog'
-import { LoginCodesSection } from './login-codes-section'
-import { UserQuotaPanel } from './user-quota-panel'
+} from '@/components/ui/table';
+import { Timestamp } from '@/components/common/timestamp';
+import { formatApiError } from '@/lib/format-error';
+import { IssueLoginCodeDialog } from './issue-login-code-dialog';
+import { GenerateInitialPasswordDialog } from './generate-initial-password-dialog';
+import { LoginCodesSection } from './login-codes-section';
+import { UserQuotaPanel } from './user-quota-panel';
 
 function Field({ label, value }: { label: string; value: ReactNode }) {
   return (
@@ -32,36 +36,43 @@ function Field({ label, value }: { label: string; value: ReactNode }) {
       <div className="text-muted-foreground">{label}</div>
       <div className="mt-0.5">{value}</div>
     </div>
-  )
+  );
 }
 
 /** User 360° view. The list row's account links here; the row's quick-action dropdown stays on the
  *  list, but the full action set lives in this header (issue login code / generate initial password,
  *  admin-plus gated) and the login-code audit trail is a section below. */
 export function UserDetailPage() {
-  const { t } = useTranslation()
-  const { id } = useParams<{ id: string }>()
-  const userId = id ? Number(id) : null
-  const { data, isLoading, error } = useUserDetail(userId)
-  const canManage = useIsAdminPlus()
-  const disable = useDisableUser()
-  const enable = useEnableUser()
-  const forceLogout = useForceLogoutUser()
-  const [dlg, setDlg] = useState<null | { kind: 'issue' | 'genpwd' }>(null)
+  const { t } = useTranslation();
+  const { id } = useParams<{ id: string }>();
+  const userId = id ? Number(id) : null;
+  const { data, isLoading, error } = useUserDetail(userId);
+  const canManage = useIsAdminPlus();
+  const disable = useDisableUser();
+  const enable = useEnableUser();
+  const forceLogout = useForceLogoutUser();
+  const [dlg, setDlg] = useState<null | { kind: 'issue' | 'genpwd' }>(null);
 
-  const onAction = async (m: { mutateAsync: (id: number) => Promise<void> }, msg: string) => {
-    if (userId === null) return
+  const onAction = async (
+    m: { mutateAsync: (id: number) => Promise<void> },
+    msg: string,
+  ) => {
+    if (userId === null) return;
     try {
-      await m.mutateAsync(userId)
-      toast.success(msg)
+      await m.mutateAsync(userId);
+      toast.success(msg);
     } catch {
       /* Global mutation onError already shows a toast. */
     }
-  }
+  };
 
-  const u = data?.user
-  const handle = u ? `${u.account}${u.domain && u.domain !== 'local' ? `@${u.domain}` : ''}` : ''
-  const appSessionCount = data ? data.sessions.filter((s) => s.client === 'app').length : 0
+  const u = data?.user;
+  const handle = u
+    ? `${u.account}${u.domain && u.domain !== 'local' ? `@${u.domain}` : ''}`
+    : '';
+  const appSessionCount = data
+    ? data.sessions.filter((s) => s.client === 'app').length
+    : 0;
 
   return (
     <div className="flex flex-col gap-4">
@@ -87,23 +98,29 @@ export function UserDetailPage() {
         <>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-3">
-              <h1 className="text-2xl font-semibold tracking-tight">{u.name || u.account}</h1>
+              <h1 className="text-2xl font-semibold tracking-tight">
+                {u.name || u.account}
+              </h1>
               {u.isDeleted ? (
                 <Badge variant="destructive">{t('users.status.banned')}</Badge>
               ) : (
                 <Badge variant="secondary">{t('users.status.active')}</Badge>
               )}
-              <span className="font-mono text-xs text-muted-foreground">@{handle}</span>
+              <span className="font-mono text-xs text-muted-foreground">
+                @{handle}
+              </span>
             </div>
             <div className="flex items-center gap-2">
-              {canManage ? (
+              {canManage && !u.isForeigner && !u.isGroup ? (
                 <>
                   {u.isDeleted ? (
                     <Button
                       variant="outline"
                       size="sm"
                       disabled={enable.isPending}
-                      onClick={() => onAction(enable, t('users.toast.unbanned'))}
+                      onClick={() =>
+                        onAction(enable, t('users.toast.unbanned'))
+                      }
                     >
                       {t('users.action.unban')}
                     </Button>
@@ -122,14 +139,24 @@ export function UserDetailPage() {
                     variant="outline"
                     size="sm"
                     disabled={forceLogout.isPending}
-                    onClick={() => onAction(forceLogout, t('users.toast.forceLoggedOut'))}
+                    onClick={() =>
+                      onAction(forceLogout, t('users.toast.forceLoggedOut'))
+                    }
                   >
                     {t('users.action.forceLogout')}
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => setDlg({ kind: 'issue' })}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setDlg({ kind: 'issue' })}
+                  >
                     {t('users.action.issueLoginCode')}
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => setDlg({ kind: 'genpwd' })}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setDlg({ kind: 'genpwd' })}
+                  >
                     {t('users.action.generateInitialPassword')}
                   </Button>
                 </>
@@ -142,16 +169,30 @@ export function UserDetailPage() {
               <CardTitle>{t('userDetail.section.profile')}</CardTitle>
             </CardHeader>
             <CardContent className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm md:grid-cols-3">
-              <Field label={t('userDetail.field.domain')} value={u.domain ?? '—'} />
+              <Field
+                label={t('userDetail.field.domain')}
+                value={u.domain ?? '—'}
+              />
               <Field
                 label={t('userDetail.field.foreigner')}
                 value={u.isForeigner ? t('common.yes') : t('common.no')}
               />
-              <Field label={t('userDetail.field.tokenVer')} value={String(u.tokenVersion)} />
-              <Field label={t('userDetail.field.createdAt')} value={<Timestamp value={u.createdAt} />} />
-              <Field label={t('userDetail.field.updatedAt')} value={<Timestamp value={u.updatedAt} />} />
+              <Field
+                label={t('userDetail.field.tokenVer')}
+                value={String(u.tokenVersion)}
+              />
+              <Field
+                label={t('userDetail.field.createdAt')}
+                value={<Timestamp value={u.createdAt} />}
+              />
+              <Field
+                label={t('userDetail.field.updatedAt')}
+                value={<Timestamp value={u.updatedAt} />}
+              />
               <div className="col-span-2 md:col-span-3">
-                <div className="text-muted-foreground">{t('userDetail.field.bio')}</div>
+                <div className="text-muted-foreground">
+                  {t('userDetail.field.bio')}
+                </div>
                 <div className="mt-0.5">{u.bio || '—'}</div>
               </div>
             </CardContent>
@@ -175,8 +216,12 @@ export function UserDetailPage() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>{t('userDetail.group.name')}</TableHead>
-                      <TableHead className="w-28">{t('userDetail.group.role')}</TableHead>
-                      <TableHead className="w-44">{t('userDetail.group.joined')}</TableHead>
+                      <TableHead className="w-28">
+                        {t('userDetail.group.role')}
+                      </TableHead>
+                      <TableHead className="w-44">
+                        {t('userDetail.group.joined')}
+                      </TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -188,7 +233,11 @@ export function UserDetailPage() {
                             `#${g.threadId}`}
                         </TableCell>
                         <TableCell>
-                          {g.role ? <Badge variant="outline">{g.role}</Badge> : '—'}
+                          {g.role ? (
+                            <Badge variant="outline">{g.role}</Badge>
+                          ) : (
+                            '—'
+                          )}
                         </TableCell>
                         <TableCell>
                           <Timestamp value={g.joinedAt} />
@@ -226,7 +275,9 @@ export function UserDetailPage() {
                         <TableHead>{t('userSessions.col.ip')}</TableHead>
                         <TableHead>{t('userSessions.col.lastIp')}</TableHead>
                         <TableHead>{t('userSessions.col.created')}</TableHead>
-                        <TableHead>{t('userSessions.col.lastActive')}</TableHead>
+                        <TableHead>
+                          {t('userSessions.col.lastActive')}
+                        </TableHead>
                         <TableHead>{t('userSessions.col.expires')}</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -236,7 +287,9 @@ export function UserDetailPage() {
                           <TableCell>{s.device ?? '—'}</TableCell>
                           <TableCell>
                             <Badge variant="secondary">
-                              {t(`common.client.${s.client}`, { defaultValue: s.client })}
+                              {t(`common.client.${s.client}`, {
+                                defaultValue: s.client,
+                              })}
                             </Badge>
                           </TableCell>
                           <TableCell
@@ -245,8 +298,12 @@ export function UserDetailPage() {
                           >
                             {s.userAgent ?? '—'}
                           </TableCell>
-                          <TableCell className="font-mono text-xs">{s.ip ?? '—'}</TableCell>
-                          <TableCell className="font-mono text-xs">{s.lastSeenIp ?? '—'}</TableCell>
+                          <TableCell className="font-mono text-xs">
+                            {s.ip ?? '—'}
+                          </TableCell>
+                          <TableCell className="font-mono text-xs">
+                            {s.lastSeenIp ?? '—'}
+                          </TableCell>
                           <TableCell>
                             <Timestamp value={s.createdAt} />
                           </TableCell>
@@ -271,7 +328,9 @@ export function UserDetailPage() {
             </CardContent>
           </Card>
 
-          {userId !== null ? <LoginCodesSection userId={userId} /> : null}
+          {!u.isForeigner && !u.isGroup && userId !== null ? (
+            <LoginCodesSection userId={userId} />
+          ) : null}
 
           <Card>
             <CardHeader>
@@ -286,16 +345,22 @@ export function UserDetailPage() {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="w-32">{t('push.col.platform')}</TableHead>
+                      <TableHead className="w-32">
+                        {t('push.col.platform')}
+                      </TableHead>
                       <TableHead>{t('userDetail.push.deviceId')}</TableHead>
-                      <TableHead className="w-44">{t('push.col.lastSeen')}</TableHead>
+                      <TableHead className="w-44">
+                        {t('push.col.lastSeen')}
+                      </TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {data.pushTokens.map((p) => (
                       <TableRow key={p.id}>
                         <TableCell>
-                          <Badge variant="secondary">{t(`push.platform.${p.platform}`)}</Badge>
+                          <Badge variant="secondary">
+                            {t(`push.platform.${p.platform}`)}
+                          </Badge>
                         </TableCell>
                         <TableCell className="font-mono text-xs text-muted-foreground">
                           {p.deviceId ?? '—'}
@@ -314,13 +379,17 @@ export function UserDetailPage() {
       )}
 
       <IssueLoginCodeDialog
-        user={dlg?.kind === 'issue' && u ? { id: u.id, account: u.account } : null}
+        user={
+          dlg?.kind === 'issue' && u ? { id: u.id, account: u.account } : null
+        }
         onClose={() => setDlg(null)}
       />
       <GenerateInitialPasswordDialog
-        user={dlg?.kind === 'genpwd' && u ? { id: u.id, account: u.account } : null}
+        user={
+          dlg?.kind === 'genpwd' && u ? { id: u.id, account: u.account } : null
+        }
         onClose={() => setDlg(null)}
       />
     </div>
-  )
+  );
 }

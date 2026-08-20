@@ -44,7 +44,6 @@ describe('SystemRowComponent', () => {
         provideTranslocoTranspiler(CspSafeIcuTranspiler),
       ],
     });
-    localStorage.removeItem('soms.lang');
     language = TestBed.inject(LanguageService);
     language.setLang('en');
     TestBed.flushEffects();

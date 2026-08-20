@@ -1,0 +1,56 @@
+<div
+  class="card"
+  role="button"
+  tabindex="0"
+  (click)="opened.emit()"
+  (keydown.enter)="opened.emit()"
+>
+  <span class="avatar">
+    <app-user-avatar
+      [type]="UserAvatarType.OTHER"
+      [name]="request().name ?? ''"
+      [identityId]="request().peerId"
+      [src]="request().avatar"
+    />
+  </span>
+  <span class="content">
+    <span class="heading">
+      <app-user-identity-label
+        [name]="request().name ?? ('friend.invalidUser' | transloco)"
+        [domain]="request().isForeigner ? request().domain : null"
+      />
+    </span>
+    <span class="message" [class.error]="request().errText">
+      {{
+        request().errText ||
+          request().reqMessage ||
+          ('friend.noMessage' | transloco)
+      }}
+    </span>
+  </span>
+  <span class="date">{{ relativeDate() }}</span>
+  <span class="action">
+    @if (request().status === -3) {
+      <button mat-button type="button" disabled>
+        {{ 'friend.revoked' | transloco }}
+      </button>
+    } @else if (request().status === -2) {
+      <button mat-button type="button" disabled>
+        {{ 'friend.expired' | transloco }}
+      </button>
+    } @else if (direction() === 'INCOMING') {
+      <button
+        mat-flat-button
+        color="primary"
+        type="button"
+        (click)="act($event, 'approve')"
+      >
+        {{ 'friend.approve' | transloco }}
+      </button>
+    } @else {
+      <button mat-button type="button" (click)="act($event, 'revoke')">
+        {{ 'friend.revoke' | transloco }}
+      </button>
+    }
+  </span>
+</div>

@@ -5,7 +5,7 @@ import { LayoutService } from '../services/layout.service';
  * Dialog "best-fit height on first paint, then lock" mechanism (desktop only).
  *
  * Background: every dialog shares `.popup-com-wrapper.desktop` (height:auto;
- * max-height:80vh; overflow:auto). While the wrapper is height:auto, an inner
+ * max-height:80vh; overflow:hidden). While the wrapper is height:auto, an inner
  * `flex:1 + overflow-y:auto` list inside a dialog loses its height constraint →
  * content keeps stretching until it hits 80vh, the scrollbar lands on the outer
  * wrapper, and the height jumps around with item count — looking cheap. This
@@ -22,8 +22,8 @@ import { LayoutService } from '../services/layout.service';
  *    (lists/images) — no readiness signal needed from each dialog.
  *  - Each size change reschedules a settleMs debounce; once quiet for settleMs the
  *    content is considered stable.
- *  - When stable it reads host.scrollHeight once more (the wrapper is overflow:auto,
- *    so scrollHeight is the unclipped content height; we never mutate style inside
+ *  - When stable it reads host.scrollHeight once more (scrollHeight still reports the
+ *    unclipped content height while the wrapper clips overflow; we never mutate style inside
  *    the RO callback, avoiding feedback loops/flicker), clamps it, and writes
  *    host.style.height exactly once, then locks and disconnects the RO. For static
  *    dialogs already sized on the first frame this is an idempotent no-op.

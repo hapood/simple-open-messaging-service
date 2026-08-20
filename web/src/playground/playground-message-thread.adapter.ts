@@ -52,6 +52,7 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
 
   private source?: MockItemSource;
   private readonly groupSources = new WeakSet<MessageThreadSource>();
+  private readonly clearedThreads = new Set<number>();
 
   override createSource(
     conversation: ConversationItem,
@@ -59,7 +60,7 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
   ): MessageThreadSource {
     const isGroupConversation = conversation.type === 'GROUP';
     const source = new MockItemSource(
-      this.itemCount(),
+      this.clearedThreads.has(conversation.threadId) ? 0 : this.itemCount(),
       this.sourceLatency(),
       new MockUserService(),
       1,
@@ -179,6 +180,10 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
 
   override clearHistory(_request: { threadId: number }) {
     return of(this.mockResponse());
+  }
+
+  override clearLocalHistory(threadId: number): void {
+    this.clearedThreads.add(threadId);
   }
 
   override stageMedia(request: StageMediaRequest) {

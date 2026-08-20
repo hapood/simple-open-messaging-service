@@ -30,6 +30,12 @@
     />
   } @else {
     <div class="msg-title">
+      @if (federatedDomain(); as dom) {
+        <app-federated-badge
+          class="msg-federated-domain"
+          [domain]="dom"
+        ></app-federated-badge>
+      }
       <span class="msg-title-line">
         <span class="msg-title-text" [title]="title()">{{ title() }}</span>
         @if (groupMemberCount(); as count) {
@@ -38,12 +44,6 @@
             [attr.aria-label]="'group.members' | transloco: { count }"
             >({{ count }})</span
           >
-        }
-        @if (federatedDomain(); as dom) {
-          <app-federated-badge
-            [domain]="dom"
-            [compact]="true"
-          ></app-federated-badge>
         }
         @if (userMsgTrd()?.blocked) {
           <app-icon

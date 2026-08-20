@@ -113,6 +113,8 @@ describe('OtpLoginService', () => {
     sessionTokens.idOfToken.mockReset();
     settings.getOtpTtlMinutes.mockReset();
     settings.getOtpTtlMinutes.mockResolvedValue(10); // 10-minute validity window
+    store.user.findUnique.mockResolvedValue({ id: 42 });
+    vi.mocked(argon2.hash).mockClear();
     // Default Promise returns — the service chains .catch() on the fire-and-forget producedSessionId
     // update, so the mocks must yield Promises (vi.fn() defaults to undefined → .catch on undefined throws).
     store.loginCode.update.mockResolvedValue({});
@@ -153,6 +155,16 @@ describe('OtpLoginService', () => {
       expect(data.expiresAt.getTime() - Date.now()).toBeLessThan(11 * 60_000);
       // Multi-issue: issuing must NOT touch (revoke) the account's other codes.
       expect(store.loginCode.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('rejects a federated user stub before hashing or inserting a code', async () => {
+      store.user.findUnique.mockResolvedValue(null);
+
+      await expect(svc.issueCode(7, 42)).rejects.toMatchObject({
+        bizCode: BusinessCode.NOT_FOUND,
+      });
+      expect(argon2.hash).not.toHaveBeenCalled();
+      expect(store.loginCode.create).not.toHaveBeenCalled();
     });
   });
 

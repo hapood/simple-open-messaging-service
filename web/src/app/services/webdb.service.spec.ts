@@ -4,7 +4,9 @@ import { provideZonelessChangeDetection } from '@angular/core';
 import { openDB } from 'idb';
 import type { Message } from './model';
 import {
+  CACHE_SCHEMA_VERSION,
   LocalCacheVersionMismatchError,
+  MESSAGE_CACHE_SCHEMA_VERSION,
   mergeCoveredTail,
   WebdbService,
 } from './webdb.service';
@@ -92,8 +94,10 @@ describe('WebdbService', () => {
         'messages',
         'settings',
       ]);
-      expect((await messageDb.get('settings', 'schemaVersion'))?.value).toBe(1);
-      expect(await webdb.getMeta('schemaVersion')).toBe(3);
+      expect((await messageDb.get('settings', 'schemaVersion'))?.value).toBe(
+        MESSAGE_CACHE_SCHEMA_VERSION,
+      );
+      expect(await webdb.getMeta('schemaVersion')).toBe(CACHE_SCHEMA_VERSION);
       expect(webdb.ready()).toBe(true);
     });
 
@@ -142,7 +146,7 @@ describe('WebdbService', () => {
 
       await webdb.openForUser('1');
 
-      expect(await webdb.getMeta('schemaVersion')).toBe(3);
+      expect(await webdb.getMeta('schemaVersion')).toBe(CACHE_SCHEMA_VERSION);
       expect(await webdb.getMeta('sentinel')).toBeUndefined();
     });
 
@@ -351,15 +355,8 @@ describe('WebdbService', () => {
           note: 'hello',
           requestedAt: 10,
           expiresAt: 20,
-          actor: {
-            id: 1,
-            account: 'alice',
-            name: 'Alice',
-            avatar: '',
-            domain: 'local',
-            isForeigner: false,
-          },
-          subject: {
+          direction: 'OUTGOING' as const,
+          peer: {
             id: 0,
             account: 'bob',
             name: 'Bob',
@@ -389,6 +386,43 @@ describe('WebdbService', () => {
       ]);
     });
 
+    it('includes revoked tombstones only when sent-request history asks for them', async () => {
+      await webdb.openForUser('1');
+      const base = {
+        direction: 'CLIENT_STATE' as const,
+        revision: 17,
+        account: 'local',
+        domain: 'local',
+        eventType: 'P2P_INTENT' as const,
+        subjectAccount: 'remote',
+        subjectDomain: 'peer.test',
+        businessRevision: 3,
+        body: {
+          status: 'REVOKED' as const,
+          note: '',
+          requestedAt: 10,
+          expiresAt: null,
+          direction: 'OUTGOING' as const,
+          peer: {
+            id: 0,
+            account: 'remote',
+            name: 'Remote',
+            avatar: '',
+            domain: 'peer.test',
+            isForeigner: true,
+          },
+        },
+      };
+      await webdb.applyThreadDelta([base], 17);
+
+      expect(
+        (await webdb.getFriendIntentPage('OUTGOING', null, 20)).items,
+      ).toEqual([]);
+      expect(
+        (await webdb.getFriendIntentPage('OUTGOING', null, 20, true)).items,
+      ).toEqual([expect.objectContaining({ status: 'REVOKED' })]);
+    });
+
     it('derives an incoming friend-request badge from client state atomically', async () => {
       await webdb.openForUser('1');
       const op = {
@@ -405,21 +439,14 @@ describe('WebdbService', () => {
           note: '',
           requestedAt: 10,
           expiresAt: 20,
-          actor: {
+          direction: 'INCOMING' as const,
+          peer: {
             id: 2,
             account: 'remote',
             name: 'Remote',
             avatar: '',
             domain: 'peer.test',
             isForeigner: true,
-          },
-          subject: {
-            id: 1,
-            account: 'local',
-            name: 'Local',
-            avatar: '',
-            domain: 'local',
-            isForeigner: false,
           },
         },
       };

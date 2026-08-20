@@ -1,18 +1,12 @@
 <section class="settings-group">
   @if (isAndroidNative()) {
     <div class="link-device-card">
-      <button
-        mat-flat-button
-        color="primary"
-        type="button"
-        (click)="linkDevice()"
-      >
+      <button mat-flat-button type="button" (click)="linkDevice()">
         <app-icon
           matButtonIcon
           [type]="AppIconType.DEVICES"
           [style]="{ width: '18px', height: '18px' }"
-        />
-        {{ 'session.linkDevice' | transloco }}
+        />{{ 'session.linkDevice' | transloco }}
       </button>
     </div>
   }
@@ -27,100 +21,112 @@
   } @else if (list().length === 0) {
     <div class="state">{{ 'session.noSessions' | transloco }}</div>
   } @else {
-    <div class="settings-card terminate-card">
-      <div class="terminate-heading">
-        <div class="terminate-title">
-          {{ 'session.autoTerminateTitle' | transloco }}
-        </div>
-        @if (savingDays() !== null) {
-          <div
-            class="saving-state"
-            role="status"
-            [attr.aria-label]="'session.saving' | transloco"
-          >
-            <mat-progress-spinner mode="indeterminate" [diameter]="18" />
-          </div>
-        }
-      </div>
-      <div class="terminate-hint">
-        {{ 'session.autoTerminateHint' | transloco }}
-      </div>
-      <div class="terminate-options">
-        @for (days of autoTerminateOptions; track days) {
-          <button
-            type="button"
-            class="terminate-option"
-            [class.selected]="autoTerminateDays() === days"
-            [disabled]="savingDays() !== null"
-            (click)="setAutoTerminateDays(days)"
-          >
-            <span>{{ autoTerminateLabel(days) }}</span>
-          </button>
-        }
-      </div>
-    </div>
-    @if (othersCount() > 0) {
-      <div class="danger-card">
-        <button
-          mat-stroked-button
-          color="warn"
-          type="button"
-          (click)="terminateOthers()"
+    <div class="session-section">
+      <h3>{{ 'session.thisDeviceSection' | transloco }}</h3>
+      @for (s of currentSessions(); track s.id) {
+        <mat-card
+          appearance="outlined"
+          class="device-card current"
+          (click)="showDetails(s)"
+          tabindex="0"
+          (keydown.enter)="showDetails(s)"
         >
-          {{ 'session.terminateOthers' | transloco: { count: othersCount() } }}
-        </button>
-      </div>
-    }
-
-    <div class="settings-card dev-card">
-      @for (s of list(); track s.id) {
-        <div class="dev-row" [class.current]="s.isCurrent">
-          <div class="dev-head">
-            <app-icon
+          <mat-card-content
+            ><app-icon
               class="lead"
               [type]="AppIconType.DEVICES"
-              [style]="{ width: '22px', height: '22px' }"
-            ></app-icon>
-            <span class="dev-name">{{ deviceLabel(s) }}</span>
-            @if (s.isCurrent) {
-              <span class="status-pill active">{{
-                'common.thisDevice' | transloco
-              }}</span>
-            } @else {
-              <span class="status-pill">{{ clientLabel(s.client) }}</span>
-            }
-          </div>
-
-          @if (s.userAgent) {
-            <div class="dev-ua">{{ s.userAgent }}</div>
-          }
-          <div class="dev-meta">
-            {{ 'session.ip' | transloco: { ip: location(s) } }}
-          </div>
-          <div class="dev-meta">
-            {{ 'session.signedIn' | transloco: { date: fmt(s.createdAt) } }}
-          </div>
-          <div class="dev-meta">
-            {{ 'session.lastActive' | transloco: { date: fmt(s.lastSeenAt) } }}
-          </div>
-          <div class="dev-meta">
-            {{ 'session.expires' | transloco: { date: expiresLabel(s) } }}
-          </div>
-
-          @if (!s.isCurrent) {
-            <div class="dev-foot">
-              <button
-                mat-stroked-button
-                color="warn"
-                type="button"
-                (click)="revoke(s)"
+              [style]="{ width: '22px', height: '22px' }" />
+            <div class="device-summary">
+              <strong>{{ deviceLabel(s) }}</strong
+              ><span
+                >{{ clientLabel(s.client) }} ·
+                {{
+                  'session.lastActive' | transloco: { date: fmt(s.lastSeenAt) }
+                }}</span
               >
-                {{ 'session.revoke' | transloco }}
-              </button>
             </div>
-          }
-        </div>
+            <app-icon
+              class="chevron"
+              [type]="AppIconType.CHEVRON_RIGHT"
+              [style]="{ width: '20px', height: '20px' }"
+          /></mat-card-content>
+        </mat-card>
       }
     </div>
+    @if (otherSessions().length > 0) {
+      <div class="session-section">
+        <div class="section-heading">
+          <h3>{{ 'session.otherDevicesSection' | transloco }}</h3>
+          <button
+            mat-button
+            class="terminate-others"
+            type="button"
+            (click)="terminateOthers()"
+          >
+            {{ 'session.terminateOthersShort' | transloco }}
+          </button>
+        </div>
+        @for (s of otherSessions(); track s.id) {
+          <mat-card
+            appearance="outlined"
+            class="device-card"
+            (click)="showDetails(s)"
+            tabindex="0"
+            (keydown.enter)="showDetails(s)"
+          >
+            <mat-card-content
+              ><app-icon
+                class="lead"
+                [type]="AppIconType.DEVICES"
+                [style]="{ width: '22px', height: '22px' }" />
+              <div class="device-summary">
+                <strong>{{ deviceLabel(s) }}</strong
+                ><span
+                  >{{ clientLabel(s.client) }} ·
+                  {{
+                    'session.lastActive'
+                      | transloco: { date: fmt(s.lastSeenAt) }
+                  }}</span
+                >
+              </div>
+              <app-icon
+                class="chevron"
+                [type]="AppIconType.CHEVRON_RIGHT"
+                [style]="{ width: '20px', height: '20px' }"
+            /></mat-card-content>
+          </mat-card>
+        }
+      </div>
+    }
+    <mat-card appearance="outlined" class="terminate-card">
+      <mat-card-content>
+        <div class="terminate-heading">
+          <div>
+            <div class="terminate-title">
+              {{ 'session.autoTerminateTitle' | transloco }}
+            </div>
+            <div class="terminate-hint">
+              {{ 'session.autoTerminateHint' | transloco }}
+            </div>
+          </div>
+          @if (savingDays() !== null) {
+            <mat-progress-spinner mode="indeterminate" [diameter]="18" />
+          }
+        </div>
+        <mat-select
+          class="terminate-select"
+          [value]="autoTerminateDays()"
+          [disabled]="savingDays() !== null"
+          [attr.aria-label]="'session.autoTerminateTitle' | transloco"
+          (selectionChange)="setAutoTerminateDays($event.value)"
+        >
+          @for (days of autoTerminateOptions; track days) {
+            <mat-option [value]="days">{{
+              autoTerminateLabel(days)
+            }}</mat-option>
+          }
+        </mat-select>
+      </mat-card-content>
+    </mat-card>
   }
 </section>

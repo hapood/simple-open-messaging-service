@@ -1,6 +1,7 @@
 import type { Mock } from 'vitest';
 import {
   HttpErrorResponse,
+  HttpContext,
   HttpEvent,
   HttpHandlerFn,
   HttpRequest,
@@ -16,6 +17,7 @@ import {
 import { ToastService } from './services/toast.service';
 import { BusinessCode } from './services/biz-code';
 import { TranslocoService } from '@jsverse/transloco';
+import { SUPPRESS_HTTP_ERROR_TOAST } from './request-context';
 
 /**
  * httpResilienceInterceptor — 429 burst rate-limit backoff-retry + 5xx/network degraded-notice.
@@ -62,8 +64,8 @@ describe('httpResilienceInterceptor (429 retry + 5xx/network surface)', () => {
       });
   }
 
-  const req = (): HttpRequest<unknown> =>
-    new HttpRequest('POST', '/api/v1/send-message', {});
+  const req = (context?: HttpContext): HttpRequest<unknown> =>
+    new HttpRequest('POST', '/api/v1/send-message', {}, { context });
 
   const err = (status: number, errorBody?: unknown): HttpErrorResponse =>
     new HttpErrorResponse({
@@ -73,7 +75,10 @@ describe('httpResilienceInterceptor (429 retry + 5xx/network surface)', () => {
     });
 
   /** Run the interceptor and capture the synchronous result/error (retryDelay is synchronous). */
-  function run(nextFn: HttpHandlerFn): {
+  function run(
+    nextFn: HttpHandlerFn,
+    request = req(),
+  ): {
     result?: HttpEvent<unknown>;
     err?: HttpErrorResponse;
   } {
@@ -82,7 +87,7 @@ describe('httpResilienceInterceptor (429 retry + 5xx/network surface)', () => {
       err?: HttpErrorResponse;
     } = {};
     TestBed.runInInjectionContext(() =>
-      httpResilienceInterceptor(req(), nextFn),
+      httpResilienceInterceptor(request, nextFn),
     ).subscribe({
       next: (v) => (state.result = v),
       error: (e) => (state.err = e),
@@ -150,6 +155,14 @@ describe('httpResilienceInterceptor (429 retry + 5xx/network surface)', () => {
     const s = run(nextQueue([throwError(() => e0)]));
     expect(s.err).toBe(e0);
     expect(warnSpy).toHaveBeenCalledWith('errors.networkError');
+  });
+
+  it('does not toast when a persistent caller owns the network error UI', () => {
+    const e0 = err(0);
+    const request = req(new HttpContext().set(SUPPRESS_HTTP_ERROR_TOAST, true));
+    const s = run(nextQueue([throwError(() => e0)]), request);
+    expect(s.err).toBe(e0);
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 
   it('does NOT retry a 429 that is NOT the burst rate-limit (e.g. federation quota 50011)', () => {

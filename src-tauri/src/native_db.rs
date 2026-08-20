@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use tauri::Manager;
 
 const DB_FILENAME: &str = "soms-local.sqlite3";
-const CACHE_SCHEMA_VERSION: i64 = 3;
+const CACHE_SCHEMA_VERSION: i64 = 0;
 
 fn db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app
@@ -97,6 +97,7 @@ fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
         }
     }
     for index in [
+        "friend_intents_direction_requested",
         "messages_user_thread_seq",
         "messages_section_left",
         "messages_section_right",
@@ -146,6 +147,14 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
           payload_json TEXT NOT NULL,
           PRIMARY KEY (user_id, stable_key)
         );
+        CREATE INDEX IF NOT EXISTS friend_intents_direction_requested
+          ON friend_intents(
+            user_id,
+            json_extract(payload_json, '$.direction'),
+            json_extract(payload_json, '$.status'),
+            CAST(json_extract(payload_json, '$.requestedSort') AS INTEGER) DESC,
+            stable_key DESC
+          );
         CREATE TABLE IF NOT EXISTS sync_state (
           user_id INTEGER NOT NULL,
           key TEXT NOT NULL,
@@ -530,6 +539,106 @@ pub(crate) async fn native_db_list_friend_intents(
 }
 
 #[tauri::command]
+pub(crate) async fn native_db_page_friend_intents(
+    app: tauri::AppHandle,
+    user_id: i64,
+    direction: String,
+    cursor: Option<String>,
+    take: i64,
+    include_revoked: bool,
+) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = open(&app)?;
+        let parsed_cursor = cursor
+            .as_deref()
+            .map(serde_json::from_str::<Value>)
+            .transpose()
+            .map_err(|e| format!("parse friend-intent cursor: {e}"))?;
+        let cursor_time = parsed_cursor
+            .as_ref()
+            .and_then(|value| value.get(2))
+            .and_then(Value::as_i64)
+            .unwrap_or(i64::MAX);
+        let cursor_key = parsed_cursor
+            .as_ref()
+            .and_then(|value| value.get(3))
+            .and_then(Value::as_str)
+            .unwrap_or("\u{10ffff}");
+        let mut stmt = conn
+            .prepare(
+                "SELECT payload_json FROM friend_intents
+                 WHERE user_id = ?1
+                   AND json_extract(payload_json, '$.direction') = ?2
+                   AND (json_extract(payload_json, '$.status') = 'REQUESTED'
+                     OR (?7 = 1 AND json_extract(payload_json, '$.status') = 'REVOKED'))
+                   AND (?3 = 0 OR CAST(json_extract(payload_json, '$.requestedSort') AS INTEGER) < ?4
+                     OR (CAST(json_extract(payload_json, '$.requestedSort') AS INTEGER) = ?4
+                       AND stable_key < ?5))
+                 ORDER BY CAST(json_extract(payload_json, '$.requestedSort') AS INTEGER) DESC,
+                          stable_key DESC
+                 LIMIT ?6",
+            )
+            .map_err(|e| format!("prepare paged friend-intent read: {e}"))?;
+        let rows = stmt
+            .query_map(
+                params![
+                    user_id,
+                    direction,
+                    if parsed_cursor.is_some() { 1 } else { 0 },
+                    cursor_time,
+                    cursor_key,
+                    take.clamp(1, 100),
+                    if include_revoked { 1 } else { 0 }
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|e| format!("query paged friend intents: {e}"))?;
+        let items = rows
+            .map(|row| {
+                row.map_err(|e| format!("read paged friend intent: {e}"))
+                    .and_then(parse_json)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let total = conn
+            .query_row(
+                "SELECT COUNT(*) FROM friend_intents
+                 WHERE user_id = ?1
+                   AND json_extract(payload_json, '$.direction') = ?2
+                   AND (json_extract(payload_json, '$.status') = 'REQUESTED'
+                     OR (?3 = 1 AND json_extract(payload_json, '$.status') = 'REVOKED'))",
+                params![user_id, direction, if include_revoked { 1 } else { 0 }],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|e| format!("count friend intents: {e}"))?;
+        Ok(serde_json::json!({ "items": items, "total": total }))
+    })
+    .await
+    .map_err(|e| format!("join paged friend-intent read: {e}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn native_db_cleanup_pending_friend_profiles(
+    app: tauri::AppHandle,
+    user_id: i64,
+    now: i64,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = open(&app)?;
+        conn.execute(
+            "DELETE FROM profiles
+             WHERE user_id = ?1
+               AND json_extract(payload_json, '$.source') = 'OUTGOING_FRIEND_REQUEST'
+               AND CAST(json_extract(payload_json, '$.expiresAt') AS INTEGER) <= ?2",
+            params![user_id, now],
+        )
+        .map_err(|e| format!("cleanup pending friend profiles: {e}"))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("join pending friend-profile cleanup: {e}"))?
+}
+
+#[tauri::command]
 pub(crate) async fn native_db_put_thread(
     app: tauri::AppHandle,
     user_id: i64,
@@ -633,6 +742,22 @@ pub(crate) async fn native_db_apply_thread_delta(
                     object.insert("subjectAccount".into(), Value::String(subject_account));
                     object.insert("subjectDomain".into(), Value::String(subject_domain));
                     object.insert("businessRevision".into(), Value::from(business_revision));
+                    let direction = object
+                        .get("direction")
+                        .and_then(Value::as_str)
+                        .filter(|value| matches!(*value, "INCOMING" | "OUTGOING"))
+                        .map(str::to_owned)
+                        .ok_or_else(|| "P2P_INTENT has invalid direction".to_string())?;
+                    let peer = object
+                        .get("peer")
+                        .and_then(Value::as_object)
+                        .cloned()
+                        .ok_or_else(|| "P2P_INTENT has no peer".to_string())?;
+                    let requested_sort = object
+                        .get("requestedAt")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(0);
+                    object.insert("requestedSort".into(), Value::from(requested_sort));
                     tx.execute(
                         "INSERT INTO friend_intents(user_id, stable_key, business_revision, payload_json)
                          VALUES(?1, ?2, ?3, ?4)
@@ -642,6 +767,44 @@ pub(crate) async fn native_db_apply_thread_delta(
                          WHERE excluded.business_revision > friend_intents.business_revision",
                         params![user_id, stable_key, business_revision, json_text(&payload)?],
                     ).map_err(|e| format!("apply client friend intent: {e}"))?;
+                    if direction == "OUTGOING"
+                        && object.get("status").and_then(Value::as_str) == Some("REQUESTED")
+                    {
+                        if let Some(expires_at) = object.get("expiresAt").and_then(Value::as_i64) {
+                            let peer_account = peer
+                                .get("account")
+                                .and_then(Value::as_str)
+                                .unwrap_or("");
+                            let peer_domain = peer
+                                .get("domain")
+                                .and_then(Value::as_str)
+                                .unwrap_or("");
+                            if !peer_account.is_empty() && !peer_domain.is_empty() {
+                                let identity = format!("pending:{peer_domain}\0{peer_account}");
+                                let profile = serde_json::json!({
+                                    "identity": identity,
+                                    "id": 0,
+                                    "kind": "user",
+                                    "name": peer.get("name").and_then(Value::as_str).filter(|v| !v.is_empty()).unwrap_or(peer_account),
+                                    "account": peer_account,
+                                    "avatar": peer.get("avatar").and_then(Value::as_str).unwrap_or(""),
+                                    "bio": "",
+                                    "domain": peer_domain,
+                                    "profileRev": 0,
+                                    "source": "OUTGOING_FRIEND_REQUEST",
+                                    "expiresAt": expires_at,
+                                });
+                                tx.execute(
+                                    "INSERT INTO profiles(user_id, identity, payload_json, profile_rev)
+                                     VALUES(?1, ?2, ?3, 0)
+                                     ON CONFLICT(user_id, identity) DO UPDATE SET
+                                       payload_json=excluded.payload_json",
+                                    params![user_id, identity, json_text(&profile)?],
+                                )
+                                .map_err(|e| format!("cache pending friend profile: {e}"))?;
+                            }
+                        }
+                    }
                 }
                 "DELETE" => {
                     let thread_id = op.thread_id.ok_or_else(|| "DELETE delta has no threadId".to_string())?;

@@ -692,7 +692,7 @@ describe('FederationService peer-bound response write gate', () => {
 });
 
 describe('FederationService quote coordinates', () => {
-  it('maps a wire creator + originSeq back to the receiver local seq', async () => {
+  it('maps a direct publisher targetSeq back to the receiver local seq', async () => {
     const { svc } = makeStubs();
     const legacy = {
       user: {
@@ -731,6 +731,37 @@ describe('FederationService quote coordinates', () => {
       }),
     ).resolves.toBe(41);
     expect(legacy.message.findUnique).toHaveBeenCalled();
+  });
+
+  it('maps a peer receipt targetSeq back to the original local message', async () => {
+    const { svc } = makeStubs();
+    const messageFindFirst = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ id: 91n, seq: 12 });
+    const tx = {
+      query: {
+        message: { findFirst: messageFindFirst },
+        federationMessageReceipt: {
+          findFirst: vi.fn().mockResolvedValue({ messageId: 91n }),
+        },
+      },
+    };
+    const resolveLocalQuoteSeq = (
+      svc as unknown as {
+        resolveLocalQuoteSeq: (
+          tx: unknown,
+          threadId: number,
+          sourceDomain: string,
+          target: { targetSeq: number },
+        ) => Promise<number>;
+      }
+    ).resolveLocalQuoteSeq.bind(svc);
+
+    await expect(
+      resolveLocalQuoteSeq(tx, 10, 'peer.example', { targetSeq: 44 }),
+    ).resolves.toBe(12);
+    expect(tx.query.federationMessageReceipt.findFirst).toHaveBeenCalled();
   });
 });
 

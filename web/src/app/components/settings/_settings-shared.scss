@@ -8,14 +8,14 @@
   .settings-group {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 16px;
   }
 
   .settings-card {
     background: var(--app-surface);
-    border: 1px solid var(--app-border);
     border-radius: var(--app-radius-lg);
     overflow: hidden;
+    --mdc-outlined-card-outline-color: var(--app-border);
   }
 
   // Let the Material list fill the card; collapse the list's own outer padding so rows run edge-to-edge

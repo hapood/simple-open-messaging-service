@@ -8,6 +8,7 @@ import {
   ChangeDetectionStrategy,
 } from '@angular/core';
 import { MatListModule } from '@angular/material/list';
+import { MatCardModule } from '@angular/material/card';
 import {
   MatSlideToggleModule,
   MatSlideToggleChange,
@@ -33,6 +34,7 @@ import { PushService, type FcmProbeStatus } from '../../services/push.service';
   selector: 'app-settings-push',
   imports: [
     MatListModule,
+    MatCardModule,
     MatSlideToggleModule,
     MatButtonModule,
     MatButtonToggleModule,
@@ -40,7 +42,7 @@ import { PushService, type FcmProbeStatus } from '../../services/push.service';
   ],
   template: `
     <section class="settings-group">
-      <div class="settings-card">
+      <mat-card appearance="outlined" class="settings-card">
         <mat-list>
           <!-- System notification permission (the gate every delivery path below depends on) -->
           <mat-list-item>
@@ -225,7 +227,7 @@ import { PushService, type FcmProbeStatus } from '../../services/push.service';
             </div>
           </mat-list-item>
         </mat-list>
-      </div>
+      </mat-card>
     </section>
   `,
   changeDetection: ChangeDetectionStrategy.OnPush,

@@ -29,6 +29,22 @@ export type FederatedResolveStage =
   | 'WAITING_FOR_PEER'
   | 'FETCHING_USER';
 
+export type FederatedResolveFailure =
+  | 'INVALID_ADDRESS'
+  | 'DOMAIN_RESOLUTION_FAILED'
+  | 'TIMEOUT'
+  | 'BLOCKED'
+  | 'NOT_FOUND'
+  | 'UNREACHABLE'
+  | 'UNKNOWN';
+
+export class FederatedResolveError extends Error {
+  constructor(readonly reason: FederatedResolveFailure) {
+    super(reason);
+    this.name = 'FederatedResolveError';
+  }
+}
+
 export interface ClientIntentUser {
   id: number;
   account: string;
@@ -50,8 +66,18 @@ export interface ClientFriendIntent {
   note: string;
   requestedAt: number | null;
   expiresAt: number | null;
-  actor: ClientIntentUser;
-  subject: ClientIntentUser;
+  direction: FriendIntentDirection;
+  peer: ClientIntentUser;
+  requestedSort: number;
+}
+
+export type FriendIntentDirection = 'INCOMING' | 'OUTGOING';
+
+export interface FriendIntentPage {
+  items: Invite[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  total: number;
 }
 
 /** One entry of the hydrated client-state delta (POST /user/query-state/delta). The server plans
@@ -98,6 +124,7 @@ export type HydratedThreadDeltaOp =
         | 'subjectAccount'
         | 'subjectDomain'
         | 'businessRevision'
+        | 'requestedSort'
       >;
     };
 
@@ -142,6 +169,7 @@ export class UserService {
   private webdbUserKey: string | null = null;
   /** Set only by a real credential/OTP/QR login. Cold-start restore and reconnect never set it. */
   private freshCachePending = false;
+  private readonly pendingProfileFetches = new Set<string>();
 
   constructor(private http: HttpClient) {}
 
@@ -210,6 +238,19 @@ export class UserService {
     this.friendRequestSeenRevision.set(
       typeof seen === 'number' && seen >= 0 ? seen : 0,
     );
+    const lastCleanup = await this.webdb.getMeta(
+      'pendingFriendProfileCleanupAt',
+    );
+    if (
+      typeof lastCleanup !== 'number' ||
+      Date.now() - lastCleanup >= 86_400_000
+    ) {
+      void this.webdb
+        .cleanupExpiredPendingFriendProfiles()
+        .then(() =>
+          this.webdb.putMeta('pendingFriendProfileCleanupAt', Date.now()),
+        );
+    }
     void this.gateSelfProfile(userId, profileRev);
   }
 
@@ -503,9 +544,9 @@ export class UserService {
               if (event === 'resolved')
                 return JSON.parse(data) as FederatedResolveResult;
               if (event === 'failed')
-                throw new Error(
-                  (JSON.parse(data) as { reason?: string }).reason ??
-                    'federated resolve failed',
+                throw new FederatedResolveError(
+                  (JSON.parse(data) as { reason?: FederatedResolveFailure })
+                    .reason ?? 'UNKNOWN',
                 );
             }
             throw new Error('resolve stream ended without a terminal event');
@@ -550,9 +591,9 @@ export class UserService {
               subscriber.complete();
               return;
             } else if (event === 'failed') {
-              throw new Error(
-                (JSON.parse(data) as { reason?: string }).reason ??
-                  'federated resolve failed',
+              throw new FederatedResolveError(
+                (JSON.parse(data) as { reason?: FederatedResolveFailure })
+                  .reason ?? 'UNKNOWN',
               );
             }
           }
@@ -622,46 +663,119 @@ export class UserService {
 
   /** Reads the compacted friend-intent projection already synchronized into the local database. */
   async listLocalFriendInvites(
-    direction: 'INCOMING' | 'OUTGOING',
-  ): Promise<Invite[]> {
+    direction: FriendIntentDirection,
+    cursor: string | null = null,
+    take = 20,
+  ): Promise<FriendIntentPage> {
     const me = this.sessionUserId();
-    if (me === null) return [];
+    if (me === null)
+      return { items: [], nextCursor: null, hasMore: false, total: 0 };
     const now = Date.now();
-    const intents = await this.webdb.getFriendIntents();
-    const accepted = new Set(
-      intents
-        .filter((intent) => intent.status !== 'REQUESTED')
-        .map(
-          (intent) =>
-            `${intent.account}\u0000${intent.domain}\u0000${intent.subjectAccount}\u0000${intent.subjectDomain}`,
-        ),
+    const localPage = await this.webdb.getFriendIntentPage(
+      direction,
+      cursor,
+      take + 1,
+      direction === 'OUTGOING',
     );
-    return intents
+    const matching = localPage.items
       .filter(
         (intent) =>
-          intent.status === 'REQUESTED' &&
-          intent.expiresAt !== null &&
-          intent.expiresAt > now &&
-          !accepted.has(
-            `${intent.subjectAccount}\u0000${intent.subjectDomain}\u0000${intent.account}\u0000${intent.domain}`,
-          ) &&
-          (direction === 'INCOMING'
-            ? intent.subject.id === me
-            : intent.actor.id === me),
+          (intent.status === 'REQUESTED' ||
+            (direction === 'OUTGOING' && intent.status === 'REVOKED')) &&
+          (intent.status === 'REVOKED' || intent.expiresAt !== null) &&
+          intent.direction === direction,
       )
-      .sort((a, b) => (b.requestedAt ?? 0) - (a.requestedAt ?? 0))
-      .map((intent) => ({
-        // Address-backed requests have no server-side invite id. The compacted key is only a stable
-        // client list identity; actions below send the peer Address instead.
-        id: intent.inviteId ?? intent.key,
-        kind: 'FRIEND',
-        fromUser: intent.actor,
-        toUser: intent.subject,
-        note: intent.note,
-        status: 'PENDING',
-        expiresAt: intent.expiresAt!,
-        createdAt: intent.requestedAt ?? 0,
-      }));
+      .sort((a, b) => {
+        const byDate = (b.requestedAt ?? 0) - (a.requestedAt ?? 0);
+        return byDate || b.key.localeCompare(a.key);
+      });
+    const page = matching.slice(0, take);
+    const items = page.map((intent) => ({
+      // Address-backed requests have no server-side invite id. The compacted key is only a stable
+      // client list identity; actions below send the peer Address instead.
+      id: intent.inviteId ?? intent.key,
+      kind: 'FRIEND' as const,
+      fromUser:
+        direction === 'INCOMING' ? intent.peer : this.clientIntentSelf(me),
+      toUser:
+        direction === 'INCOMING' ? this.clientIntentSelf(me) : intent.peer,
+      note: intent.note,
+      status: (intent.status === 'REVOKED'
+        ? 'REVOKED'
+        : intent.expiresAt! > now
+          ? 'PENDING'
+          : 'EXPIRED') as 'PENDING' | 'EXPIRED' | 'REVOKED',
+      expiresAt: intent.expiresAt ?? 0,
+      createdAt: intent.requestedAt ?? 0,
+    }));
+    if (direction === 'OUTGOING') {
+      for (const intent of page)
+        void this.ensurePendingFriendProfile(intent.peer, intent.expiresAt!);
+    }
+    const hasMore = localPage.items.length > take;
+    const tail = page.at(-1);
+    return {
+      items,
+      nextCursor:
+        hasMore && tail
+          ? JSON.stringify([
+              direction,
+              'REQUESTED',
+              tail.requestedSort ?? tail.requestedAt ?? 0,
+              tail.key,
+            ])
+          : null,
+      hasMore,
+      total: localPage.total,
+    };
+  }
+
+  private clientIntentSelf(id: number): ClientIntentUser {
+    const profile = this.sessionProfile();
+    return {
+      id,
+      account: profile?.account ?? '',
+      name: profile?.name ?? '',
+      avatar: profile?.avatar ?? '',
+      domain: profile?.domain ?? 'local',
+      isForeigner: false,
+    };
+  }
+
+  private async ensurePendingFriendProfile(
+    peer: ClientIntentUser,
+    expiresAt: number,
+  ): Promise<void> {
+    if (!peer.isForeigner || !peer.domain || !peer.account) return;
+    const identity = `pending:${peer.domain}\u0000${peer.account}`;
+    if (await this.webdb.getProfile(identity)) return;
+    if (this.pendingProfileFetches.has(identity)) return;
+    this.pendingProfileFetches.add(identity);
+    try {
+      const resolved = await firstValueFrom(
+        this.resolveFederatedUser({
+          account: peer.account,
+          domain: peer.domain,
+        }),
+      );
+      await this.webdb.putProfile({
+        identity,
+        id: 0,
+        kind: 'user',
+        name: resolved.user.name || peer.account,
+        account: peer.account,
+        avatar: resolved.user.avatar,
+        bio: resolved.user.bio ?? '',
+        domain: peer.domain,
+        profileRev: resolved.user.profileRev,
+        source: 'OUTGOING_FRIEND_REQUEST',
+        expiresAt,
+      });
+    } catch {
+      // The default card remains usable; a later panel open may retry.
+    } finally {
+      this.pendingProfileFetches.delete(identity);
+    }
   }
 
   /** Accept an invite by id (friend → P2P thread; group → join). data carries the threadId. */
