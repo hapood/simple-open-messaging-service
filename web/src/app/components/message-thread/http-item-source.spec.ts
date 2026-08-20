@@ -332,6 +332,30 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     subscription.unsubscribe();
   });
 
+  it('marks the sole server message as both after a cold empty-cache init', async () => {
+    const only = row(1, 2);
+    const { src, repo } = setup({
+      code: 0,
+      message: 'ok',
+      data: [],
+      hasMore: false,
+    });
+    const queryMessages = repo.queryMessages as Mock;
+    queryMessages
+      .mockResolvedValueOnce({ data: [], hasMore: false })
+      .mockResolvedValueOnce({ data: [only], hasMore: false });
+
+    expect(await src.init(-1, 50, 0)).toEqual([]);
+
+    const next = firstValueFrom(src.requestNewer(-1, 50));
+    src.finishLocalInit(undefined, 1);
+
+    await expect(next).resolves.toMatchObject({
+      kind: 'items',
+      items: [{ id: 1, boundary: 'both' }],
+    });
+  });
+
   it('reconciles against the greater of the durable thread seq and live-session HWM', async () => {
     const { src, repo } = setup({
       code: 0,

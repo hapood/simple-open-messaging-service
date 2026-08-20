@@ -124,6 +124,18 @@ fi
 # terminal, so the guard precedes reverse_proxy/file_server with no Caddy directive-reorder risk; remote_ip
 # sees the real client because Caddy is the edge here (no front proxy in the single-image stack). The public
 # branch is byte-identical to the pre-guard output (no var set → no change for existing deploys).
+emit_static_files() {
+  local root="$1" fallback="$2" matcher="$3"
+  printf '\t\troute {\n'
+  printf '\t\t\troot * %s\n' "$root"
+  printf '\t\t\ttry_files {path} %s\n' "$fallback"
+  printf '\t\t\theader Cache-Control "no-cache"\n'
+  printf '\t\t\t@%s path_regexp %s -[A-Za-z0-9_-]{8}\\.[^/]+$\n' "$matcher" "$matcher"
+  printf '\t\t\theader @%s Cache-Control "public, max-age=31536000, immutable"\n' "$matcher"
+  printf '\t\t\tfile_server\n'
+  printf '\t\t}\n'
+}
+
 emit_handlers() {
   printf '\tencode zstd gzip\n'
   printf '\t# Federation discovery is served by Fastify, not the SPA fallback.\n'
@@ -134,7 +146,9 @@ emit_handlers() {
     printf '\thandle /api/v1/admin* {\n\t\trespond @not_lan 403\n\t\treverse_proxy 127.0.0.1:3000\n\t}\n'
     printf '\t# React Router uses /admin/ as its basename; canonicalize the bare mount before serving the SPA.\n'
     printf '\thandle /admin {\n\t\troute {\n\t\t\trespond @not_lan 403\n\t\t\tredir * /admin/ 308\n\t\t}\n\t}\n'
-    printf '\thandle /admin* {\n\t\trespond @not_lan 403\n\t\troot * /app/public\n\t\ttry_files {path} /admin/index.html\n\t\tfile_server\n\t}\n'
+    printf '\thandle /admin* {\n\t\trespond @not_lan 403\n'
+    emit_static_files /app/public /admin/index.html admin_immutable
+    printf '\t}\n'
     printf '\t# Fastify origin on loopback: consumer API (incl. SSE) + auth-gated /uploads.\n'
     printf '\thandle /api* {\n\t\treverse_proxy 127.0.0.1:3000\n\t}\n'
     printf '\thandle /uploads* {\n\t\treverse_proxy 127.0.0.1:3000\n\t}\n'
@@ -144,9 +158,13 @@ emit_handlers() {
     printf '\thandle /uploads* {\n\t\treverse_proxy 127.0.0.1:3000\n\t}\n'
     printf '\t# Frontend dist (baked into the image) — Caddy serves it; Fastify is API-only.\n'
     printf '\tredir /admin /admin/ 308\n'
-    printf '\thandle /admin* {\n\t\troot * /app/public\n\t\ttry_files {path} /admin/index.html\n\t\tfile_server\n\t}\n'
+    printf '\thandle /admin* {\n'
+    emit_static_files /app/public /admin/index.html admin_immutable
+    printf '\t}\n'
   fi
-  printf '\thandle {\n\t\troot * /app/public/web\n\t\ttry_files {path} /index.html\n\t\tfile_server\n\t}\n'
+  printf '\thandle {\n'
+  emit_static_files /app/public/web /index.html web_immutable
+  printf '\t}\n'
 }
 {
   if [ "$SOMS_TLS_MODE" = "standard" ]; then

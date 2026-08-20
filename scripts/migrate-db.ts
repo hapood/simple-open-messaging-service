@@ -253,6 +253,7 @@ async function main(): Promise<void> {
   const pool = new Pool({
     ...(connectionString ? { connectionString } : {}),
     max: 1,
+    options: '-c timezone=UTC',
   });
   const client = await pool.connect();
   try {

@@ -219,6 +219,12 @@ export class ThreadRepository {
               (m.data as { stateRevision: number }).stateRevision,
             );
           break;
+        case 'ATTENTION_REV_UPDATED':
+          if (m.data !== undefined)
+            void this.syncReadDelta(
+              (m.data as { attentionRevision: number }).attentionRevision,
+            );
+          break;
       }
     });
     // Reconnect refresh is HELLO-driven now: the SSE reconnect re-pushes HELLO → onHello re-runs
@@ -574,24 +580,33 @@ export class ThreadRepository {
 
   /** Insert or refresh a single ConversationItem (from a delta ADD's getThreadInfo fetch). Mirrors
    *  applyItems' FLIP: if `_pendingTopId` matches, force-top it + emit `topInserted`. Idempotent. */
-  private upsertThread(item: ConversationItem): void {
-    this.serverLastReadSeq.set(item.threadId, item.lastReadSeq ?? null);
-    let reconciled = item;
-    if (typeof reconciled.lastMessageSeq === 'number')
-      this.advanceThreadSeq(reconciled.threadId, reconciled.lastMessageSeq);
+  private upsertThread(
+    item: Omit<
+      ConversationItem,
+      'lastReadSeq' | 'unreadCount' | 'mentionUnread'
+    >,
+  ): void {
+    let reconciled: ConversationItem = {
+      ...item,
+      lastReadSeq: null,
+      unreadCount: 0,
+      mentionUnread: [],
+    };
     this._items.update((list) => {
       const idx = list.findIndex((t) => t.threadId === reconciled.threadId);
       const base = list.slice();
       if (idx === -1) base.unshift(reconciled);
       else {
         const current = base[idx];
-        // The hydrated thread delta deliberately carries no message body/preview. During a warm boot the
-        // cached row already has the locally-derived preview, so replacing it with the body-less delta row
-        // would flash "no messages" until hydratePreviews reads the same body back from IDB. Preserve the
-        // local preview only when both rows describe the same newest message; a genuinely newer seq must be
-        // hydrated from its new body instead of temporarily presenting the previous message as current.
+        reconciled = {
+          ...reconciled,
+          lastReadSeq: current.lastReadSeq,
+          unreadCount: current.unreadCount,
+          mentionUnread: current.mentionUnread,
+        };
+        // Server thread hydration never owns message preview content. Preserve the local projection across
+        // every structural upsert; the message catch-up path replaces it after the corresponding body lands.
         if (
-          reconciled.lastMessageSeq === current.lastMessageSeq &&
           reconciled.lastMessagePreview == null &&
           current.lastMessagePreview != null
         ) {
@@ -1132,6 +1147,7 @@ export class ThreadRepository {
           if (op.direction === 'CLIENT_STATE') {
             // Persisted atomically by WebdbService. The friend-request dialog reads the compacted
             // projection on demand, so no additional in-memory mirror is required here.
+            this.userService.applyFriendIntentStateRevision(op.revision);
             if (
               op.body.status === 'REQUESTED' &&
               op.body.direction === 'INCOMING'

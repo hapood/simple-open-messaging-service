@@ -16,10 +16,11 @@ Each backend has its own database, `data/` directory, S2S root/signing keys, JWT
 uploads, and media CAS. All three use the PostgreSQL server and credentials from the repository
 `.env` `DATABASE_URL`; only the database name is replaced.
 
-The Angular and admin applications are compiled once and served by three lightweight local edges.
-Each edge serves the web SPA at `/`, the admin SPA at `/admin/`, and proxies API/uploads to its node.
-Both backend ports `3201`–`3203` and browser-facing ports `3101`–`3103` bind to `0.0.0.0`, so another
-device on the LAN can use `http://<development-machine-ip>:3101` (and the corresponding other ports).
+The lab reads the existing backend, Angular, and admin build outputs. The two frontend applications
+are served by three lightweight local edges without being rebuilt when the lab starts. Each edge
+serves the web SPA at `/`, the admin SPA at `/admin/`, and proxies API/uploads to its node. Both
+backend ports `3201`–`3203` and browser-facing ports `3101`–`3103` bind to `0.0.0.0`, so another device
+on the LAN can use `http://<development-machine-ip>:3101` (and the corresponding other ports).
 
 ## Run
 
@@ -28,17 +29,26 @@ Install the repository, web, and admin dependencies first, and configure a reach
 three lab databases.
 
 ```bash
+npm run build
+npm run build --prefix web
+npm run build --prefix admin-web
 npm run federation:lab
 ```
 
 Use `Ctrl+C` to stop all six child processes. Data persists under
 `dev/federation-lab/runtime/<node>/`; starting again reuses identities and databases.
 
-To avoid rebuilding unchanged code and frontends during a quick restart:
+For frontend debugging, build either frontend independently with source maps and without
+optimization/minification, then restart the lab:
 
 ```bash
-npm run federation:lab -- --skip-build
+npm run build:debug --prefix web
+npm run build:debug --prefix admin-web
+npm run federation:lab
 ```
+
+Only rebuild the application whose source changed. The lab runs `dist/src/main.js`, serves
+`web/dist/web/browser`, and serves `admin-web/dist`; it does not run any build command itself.
 
 To start over, stop the lab and run:
 

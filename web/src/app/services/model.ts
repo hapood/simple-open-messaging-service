@@ -53,13 +53,15 @@ export type Group = S['GroupResponseDto'] & {
 // `type` first so the accessed one is always present — override to required to keep template accessors simple.
 export type ConversationItem = Omit<
   S['ConversationItemDto'],
-  'peerUser' | 'group'
+  'peerUser' | 'group' | 'lastReadSeq' | 'unreadCount' | 'mentionUnread'
 > & {
   peerUser: S['UserResponseDto'];
   group: Group;
   /** P2P only: false after unfriend; history remains readable but sending/calling is disabled. */
   friendshipActive?: boolean;
   conversationState?: 'ACTIVE' | 'READ_ONLY';
+  lastReadSeq?: number | null;
+  unreadCount: number;
   // Latest-message preview state — sourced from the missed-summary pull (the snapshot carries unread +
   // lastMessageAt only; the body/preview is pulled). Populated by ThreadRepository.pullMissed (on boot +
   // reconnect); a live identity-only NEW_MESSAGE reorders (advances lastMessageAt) but does NOT bump unread
@@ -69,7 +71,7 @@ export type ConversationItem = Omit<
   lastMessagePreview?: string | null;
   lastMessageSenderId?: number | null;
   /** Distinct mention kinds among the server's bounded unread sample. */
-  mentionUnread?: Array<'all' | 'me'>;
+  mentionUnread: Array<'all' | 'me'>;
   // The newest message's per-thread seq (the denormalized thread.lastMessageSeq). Carried so opening a
   // conversation can pass it as the mark-read `lastReadSeq` (mark all current). Mirrors the backend
   // ConversationItemDto.lastMessageSeq — also present in the generated type after the next `gen:api` run.

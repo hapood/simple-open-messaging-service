@@ -29,7 +29,6 @@ import {
   type Subscription,
 } from 'rxjs';
 import dayjs from 'dayjs';
-import { isDevMode } from '@angular/core';
 import { MessageRepository } from '../../services/message-repository.service';
 import { UserService } from '../../services/user.service';
 import { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
@@ -172,14 +171,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     this.sseSub = repo.liveSignal$
       .pipe(filter((s) => s.threadId === this.conv.threadId))
       .subscribe((s) => {
-        if (isDevMode())
-          console.info('[chat-tailcap] sse-new-message', {
-            threadId: this.conv.threadId,
-            seq: s.seq,
-            loadedSeq: this.loadedSeq,
-            initializingDb: this.initializingDb,
-            newerWaiters: this.newerWaiters.size,
-          });
         if (!this.initializingDb && s.seq > this.loadedSeq)
           this.onNewerAvailable(s.seq);
         this.requestNewerPump();
@@ -417,35 +408,16 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       // shares the same source contract without changing the completion semantics.
       for (const waiter of [...this.newerWaiters]) {
         if (!this.newerWaiters.has(waiter)) continue;
-        const startedAt = performance.now();
         try {
           const items =
             waiter.cursorId === -1
               ? await this.init(-1, waiter.count, 0)
               : await this.getNewer(waiter.cursorId, waiter.count);
-          if (isDevMode())
-            console.info('[chat-tailcap] source-newer-query', {
-              threadId: this.conv.threadId,
-              cursor: waiter.cursorId,
-              returned: items.length,
-              remainsWaiting: items.length === 0,
-              elapsedMs: Math.round(performance.now() - startedAt),
-            });
           if (!this.newerWaiters.has(waiter) || items.length === 0) continue;
           this.newerWaiters.delete(waiter);
           waiter.subscriber.next({ kind: 'items', items });
           waiter.subscriber.complete();
         } catch (error) {
-          if (isDevMode())
-            console.info('[chat-tailcap] source-newer-query-error', {
-              threadId: this.conv.threadId,
-              cursor: waiter.cursorId,
-              errorName: error instanceof Error ? error.name : typeof error,
-              errorMessage:
-                error instanceof Error ? error.message : String(error),
-              errorStack: error instanceof Error ? error.stack : undefined,
-              elapsedMs: Math.round(performance.now() - startedAt),
-            });
           if (!this.newerWaiters.delete(waiter)) continue;
           waiter.subscriber.next({ kind: 'error', error });
           waiter.subscriber.complete();

@@ -18,9 +18,6 @@
   display: block;
   margin: 0 auto 10px;
   border-radius: var(--bl-mark-radius, 0);
-  box-shadow: var(--bl-mark-shadow, none);
-  // Host-overridable: the auth brand panel adds depth; compact marks stay unframed.
-  filter: var(--bl-mark-filter, none);
 }
 
 .bl-word {

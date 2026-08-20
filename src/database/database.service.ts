@@ -37,6 +37,10 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     this.pool = new Pool({
       ...(connectionString ? { connectionString } : {}),
       max: optionalIntEnv('DATABASE_POOL_MAX', 10),
+      // Absolute instants are stored as timestamptz, but pin the session timezone too so SQL date
+      // arithmetic, CURRENT_DATE, logs, and any future timestamp casts have one deterministic UTC
+      // interpretation regardless of the PostgreSQL server/role default.
+      options: '-c timezone=UTC',
     });
     this.db = drizzle({
       client: this.pool,
@@ -65,7 +69,18 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     for (let attempt = 1; attempt <= opts.maxAttempts; attempt++) {
       try {
         const client = await this.pool.connect();
-        client.release();
+        try {
+          const result = await client.query<{ timezone: string }>(
+            "SELECT current_setting('TimeZone') AS timezone",
+          );
+          if (result.rows[0]?.timezone !== 'UTC') {
+            throw new Error(
+              `database session timezone must be UTC (got ${result.rows[0]?.timezone ?? 'unknown'})`,
+            );
+          }
+        } finally {
+          client.release();
+        }
         this.logger.log('connected to database');
         return;
       } catch (error) {

@@ -43,6 +43,10 @@
             (click)="copyContextMessage()"
             [attr.title]="'chat.selection.copy' | transloco"
           >
+            <span
+              class="msg-context-menu__icon-placeholder"
+              aria-hidden="true"
+            ></span>
             <span>{{ 'chat.selection.copy' | transloco }}</span>
           </button>
         }
@@ -50,9 +54,15 @@
           <button
             type="button"
             role="menuitem"
+            class="msg-context-menu__item--icon"
             (click)="quoteContextMessage()"
             [attr.title]="'chat.selection.quote' | transloco"
           >
+            <svg viewBox="0 -960 960 960" aria-hidden="true">
+              <path
+                d="M760-160v-240q0-50-35-85t-85-35H273l144 144-57 56-240-240 240-240 57 56-144 144h367q83 0 141.5 58.5T840-400v240h-80Z"
+              />
+            </svg>
             <span>{{ 'chat.selection.quote' | transloco }}</span>
           </button>
         }
@@ -63,15 +73,25 @@
             (click)="openContextForwardDialog()"
             [attr.title]="'chat.selection.forward' | transloco"
           >
+            <span
+              class="msg-context-menu__icon-placeholder"
+              aria-hidden="true"
+            ></span>
             <span>{{ 'chat.selection.forward' | transloco }}</span>
           </button>
         }
         <button
           type="button"
           role="menuitem"
+          class="msg-context-menu__item--icon"
           (click)="selectContextMessage()"
           [attr.title]="'chat.selection.multiSelect' | transloco"
         >
+          <svg viewBox="0 -960 960 960" aria-hidden="true">
+            <path
+              d="M222-120 80-262l57-57 85 85 170-170 57 58-227 226Zm0-320L80-582l57-57 85 85 170-170 57 58-227 226Zm298 200v-80h360v80H520Zm0-320v-80h360v80H520Z"
+            />
+          </svg>
           <span>{{ 'chat.selection.multiSelect' | transloco }}</span>
         </button>
         @if (canWithdrawOrReport(menu.targetItem.data)) {
@@ -84,6 +104,10 @@
                 | transloco
             "
           >
+            <span
+              class="msg-context-menu__icon-placeholder"
+              aria-hidden="true"
+            ></span>
             <span>{{
               (menu.targetItem.data.isSelf ? 'chat.withdraw' : 'chat.report')
                 | transloco

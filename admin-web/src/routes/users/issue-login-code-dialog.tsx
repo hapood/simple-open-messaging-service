@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { Clock3, Loader2 } from 'lucide-react'
@@ -31,6 +31,7 @@ export function IssueLoginCodeDialog({
 }) {
   const { t } = useTranslation()
   const issue = useIssueLoginCode()
+  const submittingRef = useRef(false)
   const [submitting, setSubmitting] = useState(false)
   const [issued, setIssued] = useState<IssuedLoginCode | null>(null)
 
@@ -43,7 +44,8 @@ export function IssueLoginCodeDialog({
     ? Math.max(1, Math.ceil((issued.expiresAt - issued.issuedAt) / 60_000))
     : null
   const onIssue = async () => {
-    if (!user) return
+    if (!user || submittingRef.current) return
+    submittingRef.current = true
     setSubmitting(true)
     try {
       const r = await issue.mutateAsync(user.id)
@@ -52,6 +54,7 @@ export function IssueLoginCodeDialog({
     } catch (e) {
       toast.error(formatApiError(e))
     } finally {
+      submittingRef.current = false
       setSubmitting(false)
     }
   }

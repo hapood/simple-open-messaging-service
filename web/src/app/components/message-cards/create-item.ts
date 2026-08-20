@@ -104,7 +104,7 @@ export function computeRowFlags(
     showDate = shouldShowDateSeparator(
       prevMsg?.createdAtMs ?? null,
       msg.createdAtMs,
-      item.boundary === 'oldest',
+      item.boundary === 'oldest' || item.boundary === 'both',
     );
   }
   return { isShowHead, isGroupStart, showDate, groupPosition };

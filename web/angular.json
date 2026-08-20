@@ -59,7 +59,8 @@
             "development": {
               "optimization": false,
               "extractLicenses": false,
-              "sourceMap": true
+              "sourceMap": true,
+              "outputHashing": "all"
             },
             "playground": {
               "browser": "src/playground/main.ts",

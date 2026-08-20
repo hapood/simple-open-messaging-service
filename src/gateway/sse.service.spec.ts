@@ -67,6 +67,22 @@ describe('SseService', () => {
     svc.onModuleDestroy();
   });
 
+  it('pushes only the attention revision as the durable-feed wake-up', () => {
+    const svc = makeService();
+    const client = mockRes();
+    svc.register(7, 11, client.res);
+
+    svc.onThreadAttentionRevisionUpdated(7, { attentionRevision: 9 });
+
+    const frame = client.writes.find((write) =>
+      write.includes('event: ATTENTION_REV_UPDATED'),
+    );
+    expect(frame).toContain('"attentionRevision":9');
+    expect(frame).not.toContain('threadId');
+    expect(frame).not.toContain('unreadCount');
+    svc.onModuleDestroy();
+  });
+
   it('onSessionRevoked disconnects ONLY the matching session (other devices survive)', () => {
     const svc = makeService();
     const a = mockRes(); // session 11

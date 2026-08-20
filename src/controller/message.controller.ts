@@ -61,7 +61,6 @@ import { UserQuotaService } from '../quota/user-quota.service.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
 import { MessageReportService } from '../message/message-report.service.js';
 import { CreateMessageReportsDto } from '../message/message-report.dto.js';
-import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
 import {
   parseTextMessageContent,
   stringifyTextMessageContent,
@@ -85,7 +84,6 @@ export class MessageController {
     private readonly userQuota: UserQuotaService,
     private readonly deletedMessages: DeletedMessageService,
     private readonly messageReports: MessageReportService,
-    private readonly threadRevision: ThreadRevisionService,
   ) {}
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -702,9 +700,8 @@ export class MessageController {
       msg.seq,
     );
     if (state)
-      this.threadRevision.notifyThreadRevision({
-        userId: req.user.userId,
-        revision: state.stateRevision,
+      this.sseService.onThreadAttentionRevisionUpdated(req.user.userId, {
+        attentionRevision: state.readRevision,
       });
   }
 

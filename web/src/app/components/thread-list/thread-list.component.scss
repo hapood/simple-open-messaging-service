@@ -62,11 +62,28 @@
   }
 
   .thread-avatar {
+    position: relative;
     display: block;
     width: 54px;
     height: 54px;
     flex-grow: 0;
     flex-shrink: 0;
+  }
+
+  .thread-federated-icon {
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    width: 18px;
+    height: 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    border-radius: 50%;
+    background: var(--app-surface);
+    color: var(--app-brand);
+    pointer-events: none;
   }
 
   .thread-info {
@@ -145,8 +162,8 @@
       height: 20px;
       padding: 0 6px;
       border-radius: 10px;
-      background: var(--app-brand);
-      color: var(--app-on-brand);
+      background: var(--app-unread);
+      color: var(--app-on-unread);
       font-size: 12px;
       font-weight: 600;
       line-height: 20px;

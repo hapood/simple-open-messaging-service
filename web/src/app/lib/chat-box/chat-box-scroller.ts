@@ -456,7 +456,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   /** Dev diagnostic state: log only actual tail-cap mode transitions, not every layout refresh. */
   private tailCapMode: 'hidden' | 'gap' | 'loading' | 'failed' | null = null;
   private tailCapModeChangedAt = Number.NEGATIVE_INFINITY;
-  private newerDemandSerial = 0;
   private readonly tailCapObs: ResizeObserver = new ResizeObserver(() =>
     this.onTailCapResize(),
   );
@@ -1759,18 +1758,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
             : 'gap';
     const modeChanged = mode !== this.tailCapMode;
     if (modeChanged) this.tailCapModeChangedAt = performance.now();
-    if (isDevMode() && modeChanged) {
-      console.info('[chat-tailcap] mode', {
-        threadId: this.initOpts.chatId ?? null,
-        from: this.tailCapMode,
-        to: mode,
-        mounted: this.mounted.length,
-        noNewer: this.noNewer,
-        demandActive: this.newerDemand.active !== null,
-        retrying: this.newerDemand.retrying,
-        hasError: this.newerDemand.error !== null,
-      });
-    }
     this.tailCapMode = mode;
     el.classList.toggle('cb-tail-cap--gap', mode === 'gap');
     el.classList.toggle('cb-tail-cap--loading', mode === 'loading');
@@ -1958,7 +1945,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
         this.onViewportStateChanged();
       })
       .catch((error) => {
-        this.handleDemandFailure(error);
         if (error instanceof CbDemandCancelled) this.onViewportStateChanged();
       });
   }
@@ -1993,15 +1979,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
         this.onViewportStateChanged();
       })
       .catch((error) => {
-        this.handleDemandFailure(error);
         if (error instanceof CbDemandCancelled) this.onViewportStateChanged();
       });
-  }
-
-  private handleDemandFailure(error: unknown): void {
-    if (error instanceof CbDemandCancelled) return;
-    if (isDevMode())
-      console.warn('[chat-cache] retryable page load failed', error);
   }
 
   /**
@@ -2091,8 +2070,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     const g = this.gen;
     let batch: CbItem<T>[];
     let demand: ActiveCbDemand<T> | null = null;
-    const demandId = ++this.newerDemandSerial;
-    const startedAt = performance.now();
     try {
       // No real cursor exists when the window is empty (the FIRST incoming message on a brand-new thread — receiver
       // side) OR entirely optimistic/transient (the first send in an empty thread — sender side): newerCursorId()
@@ -2105,26 +2082,9 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
         (e) => !e.transient && !e.optimistic && !e.leaving && !e.resortTarget,
       );
       const cursor = hasReal ? this.newerCursorId() : -1;
-      if (isDevMode())
-        console.info('[chat-tailcap] newer-demand:start', {
-          threadId: this.initOpts.chatId ?? null,
-          demandId,
-          cursor,
-          mounted: this.mounted.length,
-          noNewer: this.noNewer,
-          retrying: edge.retrying,
-        });
       demand = edge.begin(this.source.requestNewer(cursor, this.cfg.mountItem));
       this.updateTailCap();
       const result = await demand.promise;
-      if (isDevMode())
-        console.info('[chat-tailcap] newer-demand:result', {
-          threadId: this.initOpts.chatId ?? null,
-          demandId,
-          kind: result.kind,
-          itemCount: result.kind === 'items' ? result.items.length : 0,
-          elapsedMs: Math.round(performance.now() - startedAt),
-        });
       if (!edge.isCurrent(demand)) return 0;
       if (result.kind === 'error') {
         edge.error = result.error;
@@ -2137,13 +2097,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       edge.error = null;
       if (this.destroyed || g !== this.gen) return 0; // jump re-seed overtook → drop the in-flight batch
     } catch (error) {
-      if (isDevMode())
-        console.info('[chat-tailcap] newer-demand:throw', {
-          threadId: this.initOpts.chatId ?? null,
-          demandId,
-          cancelled: error instanceof CbDemandCancelled,
-          elapsedMs: Math.round(performance.now() - startedAt),
-        });
       if (demand && !edge.isCurrent(demand)) return 0;
       if (!(error instanceof CbDemandCancelled)) {
         edge.error = error;
@@ -2233,12 +2186,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
   retryNewer(): void {
     if (this.newerDemand.error === null || this.destroyed) return;
-    if (isDevMode())
-      console.info('[chat-tailcap] retry-newer', {
-        threadId: this.initOpts.chatId ?? null,
-        mounted: this.mounted.length,
-        noNewer: this.noNewer,
-      });
     this.newerDemand.error = null;
     this.newerDemand.retrying = true;
     this.updateTailCap();

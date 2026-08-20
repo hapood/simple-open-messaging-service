@@ -84,6 +84,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   let queryUserInfoSpy: Mock;
   let advanceCursorSpy: Mock;
   let applyFriendRequestStateRevisionSpy: Mock;
+  let applyFriendIntentStateRevisionSpy: Mock;
   let cursorSignal: ReturnType<typeof signal<number | undefined>>;
   let putProfileSpy: Mock;
 
@@ -184,6 +185,8 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
               (applyFriendRequestStateRevisionSpy = vi
                 .fn()
                 .mockName('applyFriendRequestStateRevision')),
+            applyFriendIntentStateRevision: (applyFriendIntentStateRevisionSpy =
+              vi.fn().mockName('applyFriendIntentStateRevision')),
             markRead: () => of({ code: 0 }),
           },
         },
@@ -862,8 +865,54 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(applyFriendRequestStateRevisionSpy).toHaveBeenCalledTimes(1);
 
     expect(applyFriendRequestStateRevisionSpy).toHaveBeenCalledWith(6);
+    expect(applyFriendIntentStateRevisionSpy).toHaveBeenCalledWith(6);
     expect(await webdb.getMeta('friendRequestStateRevision')).toBe(6);
     expect(cursorSignal()).toBe(6);
+  });
+
+  it('refreshes friend-intent consumers for an incoming terminal state without raising the badge', async () => {
+    await populateViaDelta([p2p(1, 11)], 5);
+    queryThreadDeltaSpy.mockReturnValue(
+      of({
+        code: 0,
+        data: [
+          {
+            direction: 'CLIENT_STATE',
+            revision: 6,
+            account: 'remote',
+            domain: 'peer.test',
+            eventType: 'P2P_INTENT',
+            subjectAccount: 'local',
+            subjectDomain: 'local',
+            businessRevision: 2,
+            body: {
+              status: 'ACCEPTED',
+              note: '',
+              requestedAt: 10,
+              expiresAt: null,
+              direction: 'INCOMING' as const,
+              peer: {
+                id: 2,
+                account: 'remote',
+                name: 'Remote',
+                avatar: '',
+                domain: 'peer.test',
+                isForeigner: true,
+              },
+            },
+          },
+        ],
+      }),
+    );
+
+    eventSubject.next({
+      event: 'STATE_REV_UPDATED',
+      data: { stateRevision: 6 },
+    });
+    await flush(20);
+
+    expect(applyFriendIntentStateRevisionSpy).toHaveBeenCalledWith(6);
+    expect(applyFriendRequestStateRevisionSpy).not.toHaveBeenCalled();
   });
 
   it('single-flights a revision burst and coalesces its tail to the highest target', async () => {
@@ -1111,6 +1160,45 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       expect.objectContaining({ lastReadSeq: 6, unreadCount: 0 }),
     );
     expect(await webdb.getMeta('readRevision')).toBe(5);
+  });
+
+  it('treats attention SSE as a cursor-only wake-up and pulls its projection', async () => {
+    await populate([p2p(1, 11, { lastReadSeq: 2, unreadCount: 4 })]);
+    await webdb.putMeta('readRevision', 2);
+    emitHello({ userId: 1, stateRevision: 0, readRevision: 2 });
+    await flush(20);
+    queryReadDeltaSpy.mockClear();
+    queryReadDeltaSpy.mockReturnValue(
+      of({
+        code: 0,
+        data: {
+          readRevision: 3,
+          items: [
+            {
+              threadId: 1,
+              lastReadSeq: 7,
+              readRevision: 3,
+              unreadCount: 0,
+              mentionUnread: [],
+            },
+          ],
+        },
+      }),
+    );
+
+    eventSubject.next({
+      event: 'ATTENTION_REV_UPDATED',
+      data: { attentionRevision: 3 },
+    });
+    await flush(20);
+
+    expect(queryReadDeltaSpy).toHaveBeenCalledWith({
+      fromRevision: 2,
+      toRevision: 3,
+    });
+    expect(repo.items()[0]).toEqual(
+      expect.objectContaining({ lastReadSeq: 7, unreadCount: 0 }),
+    );
   });
 
   it('the missed-summary pull applies the authoritative per-thread unreadCount', async () => {

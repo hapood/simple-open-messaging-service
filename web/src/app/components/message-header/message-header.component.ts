@@ -16,7 +16,6 @@ import {
 } from '../chat-action-menu/chat-action-menu.component';
 import { MessageSearchComponent } from '../message-search/message-search.component';
 import { ConversationItem, displayUserName } from '../../services/model';
-import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
 import { LayoutService } from '../../services/layout.service';
 import { UserService } from '../../services/user.service';
 import { GroupService } from '../../services/group.service';
@@ -55,7 +54,6 @@ import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter
     ChatActionMenuComponent,
     OverlayModule,
     TranslocoModule,
-    FederatedBadgeComponent,
     MessageSearchComponent,
   ],
   templateUrl: './message-header.component.html',

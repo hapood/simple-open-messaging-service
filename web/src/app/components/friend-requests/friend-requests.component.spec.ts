@@ -22,6 +22,7 @@ describe('FriendRequestsComponent federated search progress', () => {
     }> = [];
     const userService = {
       friendRequestStateRevision: signal(0),
+      friendIntentStateRevision: signal(0),
       friendReqBadge: signal(false),
       listLocalFriendInvites: vi.fn().mockImplementation(
         () =>
@@ -106,6 +107,7 @@ describe('FriendRequestsComponent federated search progress', () => {
           provide: UserService,
           useValue: {
             friendRequestStateRevision: signal(0),
+            friendIntentStateRevision: signal(0),
             friendReqBadge: signal(false),
           },
         },
@@ -135,6 +137,7 @@ describe('FriendRequestsComponent federated search progress', () => {
     };
     const userService = {
       friendRequestStateRevision: revision,
+      friendIntentStateRevision: revision,
       friendReqBadge: signal(false),
       listLocalFriendInvites: vi.fn().mockResolvedValue(emptyPage),
       markFriendReqRead: vi.fn(),
@@ -262,6 +265,11 @@ describe('FriendRequestsComponent federated search progress', () => {
       .lastCall![1] as (stage: 'WAITING_FOR_PEER') => void;
     progress('WAITING_FOR_PEER');
     expect(component.federationStage()).toBe('WAITING_FOR_PEER');
+    expect(component.federationProgress()).toEqual({
+      current: 4,
+      total: 5,
+      percent: 80,
+    });
     expect(component.addTabStatus()).toBe(AddTabStatus.SEARCHING);
     resolve.next({ user: remote, relationship: 'NONE' });
     resolve.complete();
@@ -338,5 +346,59 @@ describe('FriendRequestsComponent federated search progress', () => {
 
     expect(component.addTabStatus()).toBe(AddTabStatus.ERROR);
     expect(component.errMsg()).toBe('friend.msg.friendNotFound');
+  });
+
+  it('serializes actions per invite and cancels them when the list resets', async () => {
+    const acceptResult = new Subject<{ code: number }>();
+    const userService = {
+      friendRequestStateRevision: signal(0),
+      friendIntentStateRevision: signal(0),
+      friendReqBadge: signal(false),
+      acceptInvite: vi.fn().mockReturnValue(acceptResult),
+      rejectInvite: vi.fn().mockReturnValue(new Subject<{ code: number }>()),
+      listLocalFriendInvites: vi.fn().mockResolvedValue({
+        items: [],
+        nextCursor: null,
+        hasMore: false,
+        total: 0,
+      }),
+    };
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      imports: [FriendRequestsComponent],
+      providers: [
+        provideZonelessChangeDetection(),
+        { provide: UserService, useValue: userService },
+        { provide: RouteService, useValue: {} },
+        { provide: MatSnackBar, useValue: { open: vi.fn() } },
+        {
+          provide: TranslocoService,
+          useValue: { translate: (key: string) => key },
+        },
+      ],
+    }).overrideComponent(FriendRequestsComponent, { set: { template: '' } });
+    const component = TestBed.createComponent(
+      FriendRequestsComponent,
+    ).componentInstance;
+    const request = {
+      id: '41',
+      status: 0,
+      date: 1,
+      errText: '',
+    };
+    component.pendingReqList.set([request]);
+
+    component.approve(request);
+    component.approve(request);
+    component.decline(request);
+
+    expect(userService.acceptInvite).toHaveBeenCalledTimes(1);
+    expect(userService.rejectInvite).not.toHaveBeenCalled();
+    expect(component.isInviteActionPending(request.id)).toBe(true);
+
+    await component.loadIncomingInvites(true);
+
+    expect(acceptResult.observed).toBe(false);
+    expect(component.isInviteActionPending(request.id)).toBe(false);
   });
 });

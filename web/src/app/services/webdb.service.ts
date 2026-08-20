@@ -1242,7 +1242,18 @@ export class WebdbService implements OnDestroy {
       }
       if (op.direction === 'DELETE')
         await tx.objectStore('threads').delete(op.threadId);
-      else await tx.objectStore('threads').put(op.item);
+      else {
+        const store = tx.objectStore('threads');
+        const previous = await store.get(op.threadId);
+        await store.put({
+          ...op.item,
+          lastReadSeq: previous?.lastReadSeq ?? null,
+          unreadCount: previous?.unreadCount ?? 0,
+          mentionUnread: previous?.mentionUnread ?? [],
+          lastMessagePreview: previous?.lastMessagePreview ?? null,
+          lastMessageSenderId: previous?.lastMessageSenderId ?? null,
+        });
+      }
     }
     await tx
       .objectStore('settings')

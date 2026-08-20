@@ -42,6 +42,7 @@ export class FriendRequestCardComponent {
   readonly request = input.required<FriendRequestCardModel>();
   readonly direction = input.required<'INCOMING' | 'OUTGOING'>();
   readonly relativeDate = input.required<string>();
+  readonly actionPending = input(false);
   readonly opened = output<void>();
   readonly approved = output<void>();
   readonly revoked = output<void>();
@@ -49,6 +50,7 @@ export class FriendRequestCardComponent {
 
   act(event: Event, action: 'approve' | 'revoke'): void {
     event.stopPropagation();
+    if (this.actionPending()) return;
     if (action === 'approve') this.approved.emit();
     else this.revoked.emit();
   }

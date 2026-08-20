@@ -15,7 +15,15 @@ describe('DatabaseService.connectWithRetry', () => {
 
   const newService = () =>
     new DatabaseService() as unknown as {
-      pool: { connect: () => Promise<{ release(): void }> };
+      pool: {
+        options: { options?: string };
+        connect: () => Promise<{
+          query: (
+            sql: string,
+          ) => Promise<{ rows: Array<{ timezone: string }> }>;
+          release(): void;
+        }>;
+      };
       connectWithRetry(opts: {
         maxAttempts: number;
         baseDelayMs: number;
@@ -23,7 +31,14 @@ describe('DatabaseService.connectWithRetry', () => {
       }): Promise<void>;
     };
 
-  const client = { release: vi.fn() };
+  const client = {
+    query: vi.fn().mockResolvedValue({ rows: [{ timezone: 'UTC' }] }),
+    release: vi.fn(),
+  };
+
+  it('pins every pool connection to UTC', () => {
+    expect(newService().pool.options.options).toBe('-c timezone=UTC');
+  });
 
   it('resolves after transient connection failures', async () => {
     const service = newService();
@@ -41,7 +56,32 @@ describe('DatabaseService.connectWithRetry', () => {
       }),
     ).resolves.toBeUndefined();
     expect(connect).toHaveBeenCalledTimes(3);
+    expect(client.query).toHaveBeenCalledWith(
+      "SELECT current_setting('TimeZone') AS timezone",
+    );
     expect(client.release).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a connection whose effective timezone is not UTC', async () => {
+    const service = newService();
+    const nonUtcClient = {
+      query: vi.fn().mockResolvedValue({
+        rows: [{ timezone: 'Asia/Shanghai' }],
+      }),
+      release: vi.fn(),
+    };
+    vi.spyOn(service.pool, 'connect').mockResolvedValue(nonUtcClient);
+
+    await expect(
+      service.connectWithRetry({
+        maxAttempts: 1,
+        baseDelayMs: 1,
+        maxDelayMs: 2,
+      }),
+    ).rejects.toThrow(
+      'database session timezone must be UTC (got Asia/Shanghai)',
+    );
+    expect(nonUtcClient.release).toHaveBeenCalledOnce();
   });
 
   it('resolves on the first successful connection', async () => {

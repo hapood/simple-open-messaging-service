@@ -118,6 +118,9 @@ $app-gray-900: #111827;
   // Semantic colors
   --app-danger: #dc2626; // error / danger (replaces #d93025 / #ba1a1a)
   --app-danger-soft: #fef2f2; // error soft fill
+  // Attention badge: shared by unread conversations and unseen incoming requests.
+  --app-unread: var(--app-danger);
+  --app-on-unread: #ffffff;
   --app-success: #16a34a; // success / recovered (green-600) — the connection chip's "back online" check
   --app-success-soft: #afefc8; // success soft fill (invite cards)
   --app-warning: #b45309; // warning / in-progress (connecting, waiting) — amber-700; the connection chip derives its tint from this

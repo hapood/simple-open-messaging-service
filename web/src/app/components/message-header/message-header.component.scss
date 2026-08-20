@@ -96,11 +96,6 @@
   align-self: center;
 }
 
-.msg-federated-domain {
-  flex: 0 0 auto;
-  max-width: 100%;
-}
-
 .group-member-count {
   flex: 0 0 auto;
   color: var(--app-text-faint);
@@ -110,12 +105,19 @@
   font-variant-numeric: tabular-nums;
 }
 
-.thread-state-icon {
+.federated-icon {
+  flex: 0 0 auto;
+  color: var(--app-brand);
+}
+
+.thread-indicators {
   position: absolute;
   left: calc(100% + 5px);
   top: 2px;
-  width: 16px;
   height: 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   color: var(--app-text-faint);
 }
 

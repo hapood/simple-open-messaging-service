@@ -155,7 +155,6 @@ import {
   albumMemberItem,
   applyMessageSelectionState,
   messageMemberIds,
-  messageSelectionState,
 } from './message-selection';
 import { jumpToMessage } from './message-jump';
 import type { ForwardMessageItem } from '../forward-message-card/forward-message-card.component';
@@ -1331,13 +1330,16 @@ export class MessageThreadComponent implements OnDestroy {
   selectContextMessage(): void {
     const context = this.messageContextMenu();
     if (!context) return;
-    this.closeContextMenu();
+
+    // Opening the context menu already establishes this item as the interaction target. Carry that
+    // target directly into multi-select so closing the menu cannot briefly clear or toggle it.
+    const next = new Set(this.selectedMessageIds());
+    next.add(context.targetSeq);
+    this.selectedMessageItems.set(context.targetSeq, context.targetItem);
+    this.selectedMessageIds.set(next);
     this.selectionMode.set(true);
-    if (
-      messageSelectionState(context.targetItem, this.selectedMessageIds()) !==
-      'all'
-    )
-      this.toggleMessageSelection(context.targetItem);
+    this.messageContextMenu.set(null);
+    this.syncMountedSelectionState();
   }
 
   dismissContextMenu(): void {

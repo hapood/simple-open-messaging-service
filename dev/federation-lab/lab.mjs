@@ -14,8 +14,7 @@ import { Client } from 'pg';
 const labDir = dirname(fileURLToPath(import.meta.url));
 const root = resolve(labDir, '..', '..');
 const runtimeDir = join(labDir, 'runtime');
-const skipBuild = process.argv.includes('--skip-build');
-const unknown = process.argv.slice(2).filter((arg) => arg !== '--skip-build');
+const unknown = process.argv.slice(2);
 if (unknown.length) throw new Error(`unknown option: ${unknown.join(' ')}`);
 
 const baseDatabaseUrl = process.env.DATABASE_URL?.trim();
@@ -106,18 +105,13 @@ async function waitHealthy(node) {
   throw new Error(`${node.domain} did not become healthy within 30 seconds`);
 }
 
-if (!skipBuild) {
-  await run('npm', ['run', 'build']);
-  await run('npm', ['run', 'build', '--prefix', 'web']);
-  await run('npm', ['run', 'build', '--prefix', 'admin-web']);
-  await run('npm', ['run', 'bundle:package']);
-} else if (
+if (
   !existsSync(join(root, 'dist', 'src', 'main.js')) ||
   !existsSync(join(root, 'web', 'dist', 'web', 'browser', 'index.html')) ||
   !existsSync(join(root, 'admin-web', 'dist', 'index.html'))
 ) {
   throw new Error(
-    '--skip-build requested but one or more build outputs are missing',
+    'one or more build outputs are missing; build the backend, web, and admin applications before starting the federation lab',
   );
 }
 

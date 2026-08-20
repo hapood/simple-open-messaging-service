@@ -330,6 +330,7 @@
     },
     "reasonPh": "添加备注（可选）",
     "connecting": "正在连接 {{domain}}…",
+    "federationProgress": "第 {{current}} / {{total}} 步",
     "federationStage": {
       "DISCOVERING": "正在查找服务器…",
       "VERIFYING_IDENTITY": "正在验证服务器身份…",
@@ -935,6 +936,7 @@
     "aboutTagline": "简单、安全的开放聊天",
     "version": "版本",
     "versionDetails": "版本详情",
+    "disableDebugLogs": "关闭调试日志",
     "webVersion": "网页资源",
     "backend": "服务器",
     "notConnected": "未配置",

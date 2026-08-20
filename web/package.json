@@ -6,6 +6,7 @@
     "start": "ng serve",
     "start:playground": "ng serve --configuration playground",
     "build": "ng build",
+    "build:debug": "ng build --configuration development",
     "build:playground": "ng build --configuration playground",
     "prebuild": "node scripts/gen-sw-config.mjs",
     "postbuild": "node scripts/inline-sourcemaps.mjs",

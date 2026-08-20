@@ -330,6 +330,7 @@
     },
     "reasonPh": "Add a note (optional)",
     "connecting": "Connecting to {{domain}}…",
+    "federationProgress": "Step {{current}} of {{total}}",
     "federationStage": {
       "DISCOVERING": "Finding the server…",
       "VERIFYING_IDENTITY": "Verifying the server…",
@@ -935,6 +936,7 @@
     "aboutTagline": "Simple, secure, open chat",
     "version": "Version",
     "versionDetails": "Version details",
+    "disableDebugLogs": "Close debug logs",
     "webVersion": "Web bundle",
     "backend": "Backend",
     "notConnected": "Not configured",

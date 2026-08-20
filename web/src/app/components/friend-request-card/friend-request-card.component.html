@@ -30,7 +30,11 @@
   </span>
   <span class="date">{{ relativeDate() }}</span>
   <span class="action">
-    @if (request().status === -3) {
+    @if (request().status === 1) {
+      <button mat-button type="button" disabled>
+        {{ 'friend.approved' | transloco }}
+      </button>
+    } @else if (request().status === -3) {
       <button mat-button type="button" disabled>
         {{ 'friend.revoked' | transloco }}
       </button>
@@ -43,12 +47,18 @@
         mat-flat-button
         color="primary"
         type="button"
+        [disabled]="actionPending()"
         (click)="act($event, 'approve')"
       >
         {{ 'friend.approve' | transloco }}
       </button>
     } @else {
-      <button mat-button type="button" (click)="act($event, 'revoke')">
+      <button
+        mat-button
+        type="button"
+        [disabled]="actionPending()"
+        (click)="act($event, 'revoke')"
+      >
         {{ 'friend.revoke' | transloco }}
       </button>
     }

@@ -654,6 +654,24 @@ app-chat-input.msg-composer--dialog-hidden {
     cursor: pointer;
     overflow: hidden;
     white-space: nowrap;
+    gap: 12px;
+    .msg-context-menu__icon-placeholder,
+    > svg {
+      flex: 0 0 20px;
+      width: 20px;
+      height: 20px;
+    }
+    > svg {
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    &.msg-context-menu__item--icon > svg {
+      fill: currentColor;
+      stroke: none;
+    }
     span {
       min-width: 0;
       overflow: hidden;

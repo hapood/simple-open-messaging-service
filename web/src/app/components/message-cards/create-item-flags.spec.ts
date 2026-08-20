@@ -55,6 +55,12 @@ describe('computeRowFlags', () => {
     );
   });
 
+  it('shows the date for a sole message spanning both timeline boundaries', () => {
+    const sole = { ...message(1, 2), boundary: 'both' as const };
+
+    expect(computeRowFlags(sole, null, null).showDate).toBe(true);
+  });
+
   it('breaks the four-state group across a sender change', () => {
     expect(
       computeRowFlags(message(2, 3), message(1, 2), message(3, 2))

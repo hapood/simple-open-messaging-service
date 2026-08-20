@@ -126,14 +126,22 @@ export const adminSession = pgTable(
     tokenHash: text().notNull(),
     userAgent: varchar({ length: 255 }),
     ip: varchar({ length: 64 }),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    lastAccessedAt: timestamp({ precision: 3, mode: 'date' })
+    lastAccessedAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    expiresAt: timestamp({ precision: 3, mode: 'date' }).notNull(),
-    revokedAt: timestamp({ precision: 3, mode: 'date' }),
+    expiresAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }).notNull(),
+    revokedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     revokeReason: varchar({ length: 32 }),
   },
   (table) => [
@@ -143,7 +151,7 @@ export const adminSession = pgTable(
     ),
     index('AdminSession_expiresAt_idx').using(
       'btree',
-      table.expiresAt.asc().nullsLast().op('timestamp_ops'),
+      table.expiresAt.asc().nullsLast().op('timestamptz_ops'),
     ),
     uniqueIndex('AdminSession_tokenHash_key').using(
       'btree',
@@ -200,7 +208,7 @@ export const forwardBundle = pgTable(
     sourceDomain: varchar({ length: 63 }),
     sourceBundleId: varchar({ length: 26 }),
     createdBy: integer(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -239,10 +247,14 @@ export const user = pgTable(
     isForeigner: boolean().notNull(),
     isGroup: boolean().default(false).notNull(),
     domain: varchar({ length: 63 }).default('local').notNull(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' }).notNull(),
+    updatedAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }).notNull(),
     isDeleted: boolean().default(false).notNull(),
     profileRev: integer().default(0).notNull(),
     remoteProfileRev: integer(),
@@ -270,7 +282,7 @@ export const userPreference = pgTable(
     key: varchar({ length: 100 }).notNull(),
     value: jsonb().$type<unknown>().notNull(),
     revision: integer().default(0).notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -300,23 +312,27 @@ export const threadParticipant = pgTable(
     lastReadSeq: integer(),
     readRevision: integer().default(0).notNull(),
     role: groupRole(),
-    joinedAt: timestamp({ precision: 3, mode: 'date' })
+    joinedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
     muted: boolean().default(false).notNull(),
     /** Suppress this conversation's live delivery/catch-up for this participant. History stays stored. */
     blocked: boolean().default(false).notNull(),
     pinned: boolean().default(false).notNull(),
-    pinnedAt: timestamp({ precision: 3, mode: 'date' }),
+    pinnedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     clearedSeq: integer(),
     alias: varchar({ length: 64 }),
     recognizesFriend: boolean().default(true).notNull(),
     relationshipRev: integer().default(0).notNull(),
-    leftAt: timestamp({ precision: 3, mode: 'date' }),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    leftAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' }).notNull(),
+    updatedAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }).notNull(),
   },
   (table) => [
     index('ThreadParticipant_threadId_idx').using(
@@ -378,14 +394,22 @@ export const messageThread = pgTable(
   {
     id: serial().primaryKey().notNull(),
     type: messageThreadType().notNull(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' }).notNull(),
+    updatedAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }).notNull(),
     curSeq: integer().default(0).notNull(),
     lastMessageSeq: integer(),
     lastMessagePreview: varchar({ length: 255 }),
-    lastMessageAt: timestamp({ precision: 3, mode: 'date' }),
+    lastMessageAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }),
     groupUserId: integer(),
     pullUntil: integer().default(0).notNull(),
     /** Federation reset completion marker. The retained thread shell is invisible after truncation. */
@@ -428,7 +452,7 @@ export const threadAudience = pgTable(
     /** Implementation-only message discovery progress for the current authorization. Rejoining
      * resets it to the thread's then-current seq; it is not a historical access generation. */
     messageScannedThroughSeq: integer(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -493,10 +517,10 @@ export const messageAsset = pgTable(
     messageId: bigint({ mode: 'bigint' }).notNull(),
     threadId: integer().notNull(),
     digest: varchar({ length: 64 }).notNull(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -541,7 +565,7 @@ export const mediaAsset = pgTable(
     digest: varchar({ length: 64 }).primaryKey().notNull(),
     bytes: bigint({ mode: 'bigint' }).notNull(),
     isDeleted: boolean().default(false).notNull(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -568,10 +592,10 @@ export const linkCardRule = pgTable(
       .$type<'first' | 'last'>()
       .default('first')
       .notNull(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -597,7 +621,7 @@ export const userBlock = pgTable(
     id: serial().primaryKey().notNull(),
     blockerId: integer().notNull(),
     blockedId: integer().notNull(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -637,14 +661,22 @@ export const message = pgTable(
     content: jsonbText().notNull(),
     threadId: integer().notNull(),
     creator: integer().notNull(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' }).notNull(),
+    updatedAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }).notNull(),
     isDeleted: boolean().default(false).notNull(),
     clientMessageId: varchar({ length: 36 }),
     originSeq: integer(),
-    originServerTime: timestamp({ precision: 3, mode: 'date' }),
+    originServerTime: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }),
     /** Direct publisher whose thread-local seq is stored in originSeq. Null for local originals. */
     federationSourceDomain: varchar({ length: 255 }),
     federationAuthoredSnapshot: jsonb().$type<{
@@ -672,7 +704,7 @@ export const message = pgTable(
     ),
     index('Message_createdAt_idx').using(
       'btree',
-      table.createdAt.asc().nullsLast().op('timestamp_ops'),
+      table.createdAt.asc().nullsLast().op('timestamptz_ops'),
     ),
     index('Message_creator_idx').using(
       'btree',
@@ -731,7 +763,7 @@ export const federationMessageReceipt = pgTable(
     threadId: integer().notNull(),
     peerSeq: integer().notNull(),
     messageId: bigint({ mode: 'bigint' }).notNull(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -772,10 +804,10 @@ export const deletedMessage = pgTable(
     /** Non-null only when this local projection consumed a remote authority fact. Such a row must
      * never be published again; group-origin acceptance of a member submission remains null. */
     federationSourceDomain: varchar({ length: 63 }),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -813,13 +845,17 @@ export const federatedMessageTombstone = pgTable(
     sourceDomain: varchar({ length: 255 }).notNull(),
     remoteDeletedId: bigint({ mode: 'bigint' }).notNull(),
     type: messageDeleteType().notNull(),
-    authorityDeletedAt: timestamp({ precision: 3, mode: 'date' })
+    authorityDeletedAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -860,10 +896,10 @@ export const federationDeletedCursor = pgTable(
     streamAccount: varchar({ length: 255 }).default('').notNull(),
     streamKind: varchar({ length: 32 }).notNull(),
     deletedHwm: bigint({ mode: 'bigint' }).default(0n).notNull(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -892,15 +928,23 @@ export const admin = pgTable(
     userId: integer().notNull(),
     enabled: boolean().default(true).notNull(),
     lastLoginIp: varchar({ length: 64 }),
-    lastLoginAt: timestamp({ precision: 3, mode: 'date' }),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    lastLoginAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' }).notNull(),
+    updatedAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }).notNull(),
     role: adminRole().default('SUPER_ADMIN').notNull(),
     twoFactorEnabled: boolean().default(false).notNull(),
     twoFactorSecretCipher: varchar({ length: 255 }),
-    twoFactorEnabledAt: timestamp({ precision: 3, mode: 'date' }),
+    twoFactorEnabledAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }),
     twoFactorLastUsedCounter: integer(),
     webauthnEnabled: boolean().default(false).notNull(),
   },
@@ -931,11 +975,11 @@ export const messageReport = pgTable(
     reporterId: integer().notNull(),
     status: messageReportStatus().default('PENDING').notNull(),
     reviewedByAdminId: integer(),
-    reviewedAt: timestamp({ precision: 3, mode: 'date' }),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    reviewedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -948,7 +992,7 @@ export const messageReport = pgTable(
     index('MessageReport_status_createdAt_idx').using(
       'btree',
       table.status.asc().nullsLast().op('enum_ops'),
-      table.createdAt.desc().nullsLast().op('timestamp_ops'),
+      table.createdAt.desc().nullsLast().op('timestamptz_ops'),
     ),
     index('MessageReport_messageId_idx').using(
       'btree',
@@ -992,14 +1036,14 @@ export const federatedPeerEvent = pgTable(
     domain: varchar({ length: 63 }).notNull(),
     type: varchar({ length: 15 }).notNull(),
     reason: varchar({ length: 255 }),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
   (table) => [
     index('FederatedPeerEvent_createdAt_idx').using(
       'btree',
-      table.createdAt.asc().nullsLast().op('timestamp_ops'),
+      table.createdAt.asc().nullsLast().op('timestamptz_ops'),
     ),
     index('FederatedPeerEvent_domain_createdAt_idx').using(
       'btree',
@@ -1019,11 +1063,15 @@ export const pushToken = pgTable(
     platform: pushPlatform().notNull(),
     webP256dh: varchar('webP256dh', { length: 255 }),
     webAuth: varchar({ length: 255 }),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' }).notNull(),
-    lastSeenAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }).notNull(),
+    lastSeenAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -1061,7 +1109,7 @@ export const adminActionLog = pgTable(
     success: boolean().default(true).notNull(),
     errorMessage: varchar({ length: 255 }),
     meta: jsonb(),
-    at: timestamp({ precision: 3, mode: 'date' })
+    at: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -1076,7 +1124,7 @@ export const adminActionLog = pgTable(
     ),
     index('AdminActionLog_at_idx').using(
       'btree',
-      table.at.asc().nullsLast().op('timestamp_ops'),
+      table.at.asc().nullsLast().op('timestamptz_ops'),
     ),
     foreignKey({
       columns: [table.adminId],
@@ -1100,7 +1148,11 @@ export const pendingMedia = pgTable(
     clientMessageId: varchar({ length: 36 }),
     originSeq: integer(),
     // Immutable author-home creation time carried by federation. Nullable for local/outbound staging.
-    originServerTime: timestamp({ precision: 3, mode: 'date' }),
+    originServerTime: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }),
     /** Direct publisher whose thread-local seq is stored in originSeq. */
     federationSourceDomain: varchar({ length: 255 }),
     federationAuthoredSnapshot: jsonb().$type<{
@@ -1116,10 +1168,14 @@ export const pendingMedia = pgTable(
       }>;
     }>(),
     status: varchar({ length: 12 }).default('pending').notNull(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' }).notNull(),
+    updatedAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }).notNull(),
     failReason: varchar({ length: 255 }),
     // Download-inbox extension (federation design doc §12.2): groups a message's files by batchId and
     // tracks per-file state in FileSyncProgress. direction distinguishes outbound staging from inbound
@@ -1151,7 +1207,7 @@ export const pendingMedia = pgTable(
     index('PendingMedia_status_createdAt_idx').using(
       'btree',
       table.status.asc().nullsLast().op('text_ops'),
-      table.createdAt.asc().nullsLast().op('timestamp_ops'),
+      table.createdAt.asc().nullsLast().op('timestamptz_ops'),
     ),
     uniqueIndex('PendingMedia_threadId_creatorId_originSeq_key').using(
       'btree',
@@ -1200,14 +1256,14 @@ export const uploadSession = pgTable(
     digest: varchar({ length: 64 }),
     result: jsonb(),
     errorReason: varchar({ length: 255 }),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    completedAt: timestamp({ precision: 3, mode: 'date' }),
-    abortedAt: timestamp({ precision: 3, mode: 'date' }),
+    completedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
+    abortedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
   },
   (table) => [
     uniqueIndex('UploadSession_uploadId_key').on(table.uploadId),
@@ -1271,10 +1327,10 @@ export const fileSyncProgress = pgTable(
     // Tick-once guard: once this file's file-cnt/file-bytes quota has been charged, admin retry or crash-resume
     // must not re-charge it. Set true after the first successful claim.
     quotaCounted: boolean().default(false).notNull(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
     // Outbound: per-file display payload used by barrier promotion. Inbound: the authorized S2S fetch
@@ -1316,11 +1372,15 @@ export const group = pgTable(
     ownerId: integer().notNull(),
     rosterRev: integer().default(0).notNull(),
     remoteRosterRev: integer(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' }).notNull(),
-    dissolvedAt: timestamp({ precision: 3, mode: 'date' }),
+    updatedAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }).notNull(),
+    dissolvedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     /** Members may invite by default. When false, only OWNER/ADMIN participants may invite. */
     membersCanInvite: boolean().default(true).notNull(),
   },
@@ -1352,7 +1412,7 @@ export const threadRevision = pgTable(
     direction: threadRevisionDirection().notNull(),
     revision: integer().notNull(),
     isDelete: boolean().default(false).notNull(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -1392,7 +1452,7 @@ export const profileStateRevision = pgTable(
     userId: integer().notNull(),
     subjectUserId: integer().notNull(),
     revision: integer().notNull(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -1435,10 +1495,10 @@ export const clientStateFeed = pgTable(
     businessRevision: integer().notNull(),
     revision: integer().notNull(),
     body: jsonb().notNull(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -1509,7 +1569,11 @@ export const memberProfileStateRevision = pgTable(
 export const systemSetting = pgTable('SystemSetting', {
   key: varchar({ length: 63 }).primaryKey().notNull(),
   value: text().notNull(),
-  updatedAt: timestamp({ precision: 3, mode: 'date' }).notNull(),
+  updatedAt: timestamp({
+    precision: 3,
+    withTimezone: true,
+    mode: 'date',
+  }).notNull(),
 });
 
 /** Non-secret anchor for this installation's immutable federation identity. The private root key stays
@@ -1517,7 +1581,7 @@ export const systemSetting = pgTable('SystemSetting', {
 export const localFederationIdentity = pgTable('LocalFederationIdentity', {
   domain: varchar({ length: 63 }).primaryKey().notNull(),
   rootKeyFingerprint: varchar({ length: 80 }).notNull(),
-  createdAt: timestamp({ precision: 3, mode: 'date' })
+  createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
     .default(sql`CURRENT_TIMESTAMP`)
     .notNull(),
 });
@@ -1527,15 +1591,19 @@ export const federatedPeer = pgTable(
   {
     domain: varchar({ length: 63 }).primaryKey().notNull(),
     trustLevel: varchar({ length: 31 }).default('unrecognized').notNull(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    trustedAt: timestamp({ precision: 3, mode: 'date' }),
-    lastSuccessAt: timestamp({ precision: 3, mode: 'date' }),
-    degradedAt: timestamp({ precision: 3, mode: 'date' }),
+    trustedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
+    lastSuccessAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }),
+    degradedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     degradationReason: varchar({ length: 255 }),
     degradationCount: integer().default(0).notNull(),
-    haltedAt: timestamp({ precision: 3, mode: 'date' }),
+    haltedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     haltCode: integer(),
     haltReason: varchar({ length: 255 }),
     dailyMsgLimit: integer(),
@@ -1546,7 +1614,11 @@ export const federatedPeer = pgTable(
     dailyFileBytesLimit: bigint({ mode: 'bigint' }),
     rootKeyFingerprint: varchar({ length: 80 }),
     rootPublicKey: varchar({ length: 44 }),
-    identityPinnedAt: timestamp({ precision: 3, mode: 'date' }),
+    identityPinnedAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }),
     recognizesPeer: boolean().default(false).notNull(),
     outboundRecognitionConfirmed: boolean().default(false).notNull(),
     inboundRecognitionConfirmed: boolean().default(false).notNull(),
@@ -1554,11 +1626,19 @@ export const federatedPeer = pgTable(
     localServiceAvailable: boolean().default(false).notNull(),
     remoteServiceReachable: boolean().default(false).notNull(),
     reverseRecognitionPending: boolean().default(false).notNull(),
-    outboundRecognizedAt: timestamp({ precision: 3, mode: 'date' }),
-    inboundRecognizedAt: timestamp({ precision: 3, mode: 'date' }),
+    outboundRecognizedAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }),
+    inboundRecognizedAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }),
     resetInProgress: boolean().default(false).notNull(),
     resetGeneration: integer().default(0).notNull(),
-    resetAt: timestamp({ precision: 3, mode: 'date' }),
+    resetAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
   },
   (table) => [
     check(
@@ -1567,7 +1647,7 @@ export const federatedPeer = pgTable(
     ),
     index('FederatedPeer_lastSuccessAt_idx').using(
       'btree',
-      table.lastSuccessAt.asc().nullsLast().op('timestamp_ops'),
+      table.lastSuccessAt.asc().nullsLast().op('timestamptz_ops'),
     ),
     index('FederatedPeer_trustLevel_idx').using(
       'btree',
@@ -1593,10 +1673,10 @@ export const peerStateFeed = pgTable(
     revision: integer().notNull(),
     rev: bigint({ mode: 'bigint' }).notNull(),
     body: jsonb().notNull(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -1635,7 +1715,7 @@ export const peerStateFeedTarget = pgTable(
   {
     peerDomain: varchar({ length: 63 }).primaryKey().notNull(),
     allocatedThrough: bigint({ mode: 'bigint' }).default(0n).notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -1661,7 +1741,7 @@ export const federationMemberProfileSource = pgTable(
     memberAccount: varchar({ length: 31 }).notNull(),
     memberDomain: varchar({ length: 63 }).notNull(),
     threadId: integer().notNull(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -1704,7 +1784,7 @@ export const federationMemberProfilePublication = pgTable(
     revision: integer().default(0).notNull(),
     availability: varchar({ length: 16 }).notNull(),
     bodyHash: varchar({ length: 64 }).notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -1745,7 +1825,7 @@ export const federatedMemberProfile = pgTable(
     availability: varchar({ length: 16 }).notNull(),
     displayName: varchar({ length: 30 }),
     avatar: varchar({ length: 255 }),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -1789,7 +1869,7 @@ export const federatedProfile = pgTable(
     bio: varchar({ length: 255 }).default('').notNull(),
     avatar: varchar({ length: 255 }),
     deleted: boolean().default(false).notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -1821,15 +1901,15 @@ export const federatedFriendRequest = pgTable(
     status: varchar({ length: 16 }).notNull(),
     note: varchar({ length: 255 }).default('').notNull(),
     revision: integer().default(0).notNull(),
-    requestedAt: timestamp({ precision: 3, mode: 'date' }),
-    expiresAt: timestamp({ precision: 3, mode: 'date' }),
+    requestedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
+    expiresAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     displayName: varchar({ length: 30 }),
     avatar: text(),
     profileRevision: integer(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -1884,7 +1964,7 @@ export const peerStateFeedPullCursor = pgTable(
     peerDomain: varchar({ length: 63 }).primaryKey().notNull(),
     initialized: boolean().default(false).notNull(),
     committedThrough: bigint({ mode: 'bigint' }).default(0n).notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -1909,7 +1989,7 @@ export const federationMessageFeedIndex = pgTable(
     threadId: integer().notNull(),
     feedId: bigint({ mode: 'bigint' }).notNull(),
     messageEndSeq: integer().notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -1950,9 +2030,9 @@ export const friendRequest = pgTable(
     status: friendRequestStatus().notNull(),
     note: varchar({ length: 255 }).default('').notNull(),
     revision: integer().default(0).notNull(),
-    requestedAt: timestamp({ precision: 3, mode: 'date' }),
-    expiresAt: timestamp({ precision: 3, mode: 'date' }),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    requestedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
+    expiresAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -1993,7 +2073,7 @@ export const friendPair = pgTable(
     threadId: integer(),
     active: boolean().default(false).notNull(),
     revision: integer().default(0).notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -2035,9 +2115,9 @@ export const groupMembershipRequest = pgTable(
     status: groupMembershipRequestStatus().notNull(),
     note: varchar({ length: 255 }).default('').notNull(),
     revision: integer().default(0).notNull(),
-    requestedAt: timestamp({ precision: 3, mode: 'date' }),
-    expiresAt: timestamp({ precision: 3, mode: 'date' }),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    requestedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
+    expiresAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -2076,7 +2156,7 @@ export const groupMembershipPair = pgTable(
     active: boolean().default(false).notNull(),
     role: groupRole().default('MEMBER').notNull(),
     revision: integer().default(0).notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -2109,7 +2189,7 @@ export const federationPullCursor = pgTable(
     /** Retained-history floor, initialized by handshake and raised only by a valid remote reset. */
     retainedAfter: bigint({ mode: 'bigint' }).default(0n).notNull(),
     committedThrough: bigint({ mode: 'bigint' }).default(0n).notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -2136,7 +2216,7 @@ export const federationTombstonePullCursor = pgTable(
     peerDomain: varchar({ length: 63 }).primaryKey().notNull(),
     initialized: boolean().default(false).notNull(),
     committedThrough: bigint({ mode: 'bigint' }).default(0n).notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -2159,7 +2239,7 @@ export const federationMessageQueryCursor = pgTable(
     peerDomain: varchar({ length: 63 }).notNull(),
     threadKey: varchar({ length: 255 }).notNull(),
     committedThrough: integer().notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -2186,7 +2266,7 @@ export const federationTombstoneQueryCursor = pgTable(
     peerDomain: varchar({ length: 63 }).notNull(),
     threadKey: varchar({ length: 255 }).notNull(),
     committedThrough: bigint({ mode: 'bigint' }).notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -2213,7 +2293,7 @@ export const federationServeCursor = pgTable(
   {
     peerDomain: varchar({ length: 63 }).primaryKey().notNull(),
     allocatedThrough: bigint({ mode: 'bigint' }).default(0n).notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -2237,7 +2317,7 @@ export const federationTombstoneServeCursor = pgTable(
     peerDomain: varchar({ length: 63 }).primaryKey().notNull(),
     allocatedThrough: bigint({ mode: 'bigint' }).default(0n).notNull(),
     sourceScannedThrough: bigint({ mode: 'bigint' }).default(0n).notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -2262,7 +2342,7 @@ export const federationTombstoneFeedIndex = pgTable(
     threadId: integer().notNull(),
     feedId: bigint({ mode: 'bigint' }).notNull(),
     tombstoneEndSeq: bigint({ mode: 'bigint' }).notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -2304,7 +2384,7 @@ export const federatedPeerReset = pgTable(
     domain: varchar({ length: 63 }).primaryKey().notNull(),
     resetGeneration: integer().notNull(),
     reinitPending: boolean().default(false).notNull(),
-    resetAt: timestamp({ precision: 3, mode: 'date' })
+    resetAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -2323,13 +2403,21 @@ export const loginCode = pgTable(
     userId: integer().notNull(),
     codeHash: varchar({ length: 127 }).notNull(),
     issuedBy: integer().notNull(),
-    issuedAt: timestamp({ precision: 3, mode: 'date' }).notNull(),
-    expiresAt: timestamp({ precision: 3, mode: 'date' }).notNull(),
-    consumedAt: timestamp({ precision: 3, mode: 'date' }),
+    issuedAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }).notNull(),
+    expiresAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }).notNull(),
+    consumedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     consumedIp: varchar({ length: 64 }),
     consumedDevice: varchar({ length: 127 }),
     producedSessionId: integer(),
-    revokedAt: timestamp({ precision: 3, mode: 'date' }),
+    revokedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
   },
   (table) => [
     index('LoginCode_userId_idx').using(
@@ -2355,14 +2443,18 @@ export const sessionToken = pgTable(
     device: varchar({ length: 127 }),
     userAgent: varchar({ length: 255 }),
     ip: varchar({ length: 64 }),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    expiresAt: timestamp({ precision: 3, mode: 'date' }).notNull(),
-    lastSeenAt: timestamp({ precision: 3, mode: 'date' })
+    expiresAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }).notNull(),
+    lastSeenAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    revokedAt: timestamp({ precision: 3, mode: 'date' }),
+    revokedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     revokeReason: varchar({ length: 32 }),
     client: varchar({ length: 16 }).notNull(),
     lastSeenIp: varchar({ length: 64 }),
@@ -2370,7 +2462,10 @@ export const sessionToken = pgTable(
   },
   (table) => [
     index('SessionToken_lastSeenAt_active_idx')
-      .using('btree', table.lastSeenAt.desc().nullsFirst().op('timestamp_ops'))
+      .using(
+        'btree',
+        table.lastSeenAt.desc().nullsFirst().op('timestamptz_ops'),
+      )
       .where(sql`("revokedAt" IS NULL)`),
     uniqueIndex('SessionToken_tokenHash_key').using(
       'btree',
@@ -2384,7 +2479,7 @@ export const sessionToken = pgTable(
       .using(
         'btree',
         table.userId.asc().nullsLast().op('int4_ops'),
-        table.lastSeenAt.desc().nullsFirst().op('timestamp_ops'),
+        table.lastSeenAt.desc().nullsFirst().op('timestamptz_ops'),
       )
       .where(sql`("revokedAt" IS NULL)`),
     foreignKey({
@@ -2407,8 +2502,8 @@ export const twoFactorBackupCode = pgTable(
     id: serial().primaryKey().notNull(),
     adminId: integer().notNull(),
     codeHash: varchar({ length: 64 }).notNull(),
-    consumedAt: timestamp({ precision: 3, mode: 'date' }),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    consumedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -2440,8 +2535,8 @@ export const webAuthnCredential = pgTable(
     deviceType: varchar({ length: 32 }),
     backed: boolean().default(false).notNull(),
     nickname: varchar({ length: 64 }),
-    lastUsedAt: timestamp({ precision: 3, mode: 'date' }),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    lastUsedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -2469,15 +2564,15 @@ export const adminLoginChallenge = pgTable(
   {
     jti: varchar({ length: 36 }).primaryKey().notNull(),
     adminId: integer().notNull(),
-    consumedAt: timestamp({ precision: 3, mode: 'date' }),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    consumedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
   (table) => [
     index('AdminLoginChallenge_createdAt_idx').using(
       'btree',
-      table.createdAt.asc().nullsLast().op('timestamp_ops'),
+      table.createdAt.asc().nullsLast().op('timestamptz_ops'),
     ),
     foreignKey({
       columns: [table.adminId],
@@ -2498,16 +2593,20 @@ export const diagnosticsReport = pgTable(
     bundleBytes: integer().notNull(),
     manifest: jsonb().notNull(),
     status: varchar({ length: 16 }).default('new').notNull(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' }).notNull(),
+    updatedAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }).notNull(),
     isDeleted: boolean().default(false).notNull(),
   },
   (table) => [
     index('DiagnosticsReport_createdAt_idx').using(
       'btree',
-      table.createdAt.asc().nullsLast().op('timestamp_ops'),
+      table.createdAt.asc().nullsLast().op('timestamptz_ops'),
     ),
     index('DiagnosticsReport_reporterUserId_idx').using(
       'btree',
@@ -2571,10 +2670,18 @@ export const s2SKeyCache = pgTable(
     domain: varchar({ length: 63 }).notNull(),
     keyId: varchar({ length: 127 }).notNull(),
     publicKey: varchar({ length: 127 }).notNull(),
-    notBefore: timestamp({ precision: 3, mode: 'date' }).notNull(),
-    notAfter: timestamp({ precision: 3, mode: 'date' }).notNull(),
+    notBefore: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }).notNull(),
+    notAfter: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }).notNull(),
     authorizationSignature: varchar({ length: 127 }).notNull(),
-    fetchedAt: timestamp({ precision: 3, mode: 'date' })
+    fetchedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -2616,7 +2723,7 @@ export const userQuotaPolicy = pgTable(
     // total size; bundles count +1 file cnt and 0 bytes. null = use the global default.
     dailyFileLimit: integer(),
     dailyFileBytesLimit: bigint({ mode: 'bigint' }),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -2742,8 +2849,12 @@ export const callTombstone = pgTable(
     initialCallType: varchar({ length: 8 }).notNull(),
     finalCallType: varchar({ length: 8 }).notNull(),
     signalIds: jsonb().$type<string[]>().default([]).notNull(),
-    expiresAt: timestamp({ withTimezone: true, mode: 'date' }).notNull(),
-    createdAt: timestamp({ withTimezone: true, mode: 'date' })
+    expiresAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }).notNull(),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .defaultNow()
       .notNull(),
   },

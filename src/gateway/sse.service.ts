@@ -247,6 +247,14 @@ export class SseService implements OnModuleDestroy {
     });
   }
 
+  /** Attention projection cursor only. The durable, compacted feed owns the item body. */
+  onThreadAttentionRevisionUpdated(
+    userId: number,
+    data: { attentionRevision: number },
+  ) {
+    this.pushToUser(userId, 'ATTENTION_REV_UPDATED', data);
+  }
+
   /** Send a FORCE_LOGOUT frame and end each connection, clearing its heartbeat. The caller removes the
    *  entries from the registry (the broadcast deletes the whole user slot; the per-session path splices
    *  just the matching entries). Idempotent per-connection — a half-closed socket is already gone.

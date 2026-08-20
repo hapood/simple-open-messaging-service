@@ -1,4 +1,4 @@
-import { Injectable, inject, effect, isDevMode } from '@angular/core';
+import { Injectable, inject, effect } from '@angular/core';
 import { Subject, filter, firstValueFrom } from 'rxjs';
 import { MessageCoverageState, WebdbService } from './webdb.service';
 import { WebsocketService } from './websocket.service';
@@ -510,10 +510,6 @@ export class MessageRepository {
     let hasMore = true;
     let reachedRequestedTruncate = false;
     const step = q.orderBy === 'desc' ? -1 : 1;
-    let localTotal = 0;
-    let remoteTotal = 0;
-    let remoteRequests = 0;
-    let gapCount = 0;
 
     while (remaining > 0 && hasMore) {
       const cached =
@@ -538,7 +534,6 @@ export class MessageRepository {
       }
       if (localCount > 0) {
         const local = cached.slice(0, localCount);
-        localTotal += local.length;
         out.push(...local);
         remaining -= local.length;
         cursor = local[local.length - 1].seq;
@@ -561,8 +556,6 @@ export class MessageRepository {
       // boundary (post-init frozen newest seq), use whichever endpoint comes first in this direction.
       const cachedBoundary = cached[0]?.seq;
       const remoteBoundary = this.nearestBoundary(cursor, cachedBoundary, q);
-      remoteRequests++;
-      gapCount++;
       const remote = await this.backend(threadId, {
         ...q,
         skip: 1,
@@ -579,7 +572,6 @@ export class MessageRepository {
         };
       }
       const remoteData = remote.data.slice(0, remaining);
-      remoteTotal += remoteData.length;
       if (remoteData.length === 0) {
         if (remote.truncated && remoteBoundary !== q.truncateSeq) {
           // The empty remote gap ended immediately before an existing cached row. Rebase the synthetic
@@ -614,20 +606,6 @@ export class MessageRepository {
       hasMore: remaining === 0 ? hasMore : false,
       truncated: reachedRequestedTruncate,
     };
-    if (isDevMode()) {
-      console.debug('[chat-cache] hybrid-page', {
-        threadId,
-        direction: q.orderBy,
-        anchor,
-        requested: q.take,
-        returned: out.length,
-        localCount: localTotal,
-        remoteCount: remoteTotal,
-        remoteRequests,
-        gapCount,
-        truncated: reachedRequestedTruncate,
-      });
-    }
     return result;
   }
 
@@ -719,13 +697,6 @@ export class MessageRepository {
         : this.inflightFills.run(key, () => this.fetchAndCommit(threadId, q));
     const committed = await fill;
     if (waiterLifetime.aborted) {
-      if (isDevMode())
-        console.info('[chat-tailcap] repository-failure', {
-          threadId,
-          phase: 'waiter-lifetime-aborted',
-          lastSeq: q.lastSeq ?? null,
-          orderBy: q.orderBy,
-        });
       return { data: [], hasMore: true, failed: true };
     }
     if (committed.failed) return committed;
@@ -762,40 +733,16 @@ export class MessageRepository {
     let res: StandardResponse<Message[]>;
     try {
       res = await firstValueFrom(this.msg.queryMessageLog({ threadId, ...q }));
-    } catch (error) {
-      if (isDevMode())
-        console.info('[chat-tailcap] repository-failure', {
-          threadId,
-          phase: 'request-threw',
-          lastSeq: q.lastSeq ?? null,
-          orderBy: q.orderBy,
-          errorName: error instanceof Error ? error.name : typeof error,
-          errorMessage: error instanceof Error ? error.message : undefined,
-        });
+    } catch {
       return { data: [], hasMore: true, failed: true };
     }
     // A clear-cache operation may have completed while this request was in flight. Its response belongs
     // to the old cache lifetime: do not mutate repository ceilings, return rows to a closing chatbox, or
     // write them into the freshly-created database.
     if (cacheLifetime.aborted) {
-      if (isDevMode())
-        console.info('[chat-tailcap] repository-failure', {
-          threadId,
-          phase: 'cache-lifetime-aborted-after-response',
-          lastSeq: q.lastSeq ?? null,
-          orderBy: q.orderBy,
-        });
       return { data: [], hasMore: true, failed: true };
     }
     if (res.code !== 0) {
-      if (isDevMode())
-        console.info('[chat-tailcap] repository-failure', {
-          threadId,
-          phase: 'business-code',
-          lastSeq: q.lastSeq ?? null,
-          orderBy: q.orderBy,
-          code: res.code,
-        });
       return { data: [], hasMore: true, failed: true };
     }
     const data = res.data ?? [];
@@ -864,13 +811,6 @@ export class MessageRepository {
         );
       } catch (error) {
         if (cacheLifetime.aborted) {
-          if (isDevMode())
-            console.info('[chat-tailcap] repository-failure', {
-              threadId,
-              phase: 'cache-lifetime-aborted-during-commit',
-              lastSeq: q.lastSeq ?? null,
-              orderBy: q.orderBy,
-            });
           return { data: [], hasMore: true, failed: true };
         }
         throw error;
@@ -878,13 +818,6 @@ export class MessageRepository {
       // Recreation waits for the admitted write, but may begin immediately after it commits. Do not publish
       // old-lifetime memory state or rows to the caller once that lifetime has been aborted.
       if (cacheLifetime.aborted) {
-        if (isDevMode())
-          console.info('[chat-tailcap] repository-failure', {
-            threadId,
-            phase: 'cache-lifetime-aborted-after-commit',
-            lastSeq: q.lastSeq ?? null,
-            orderBy: q.orderBy,
-          });
         return { data: [], hasMore: true, failed: true };
       }
       if (newest !== undefined) this.advanceCeiling(threadId, newest, false);

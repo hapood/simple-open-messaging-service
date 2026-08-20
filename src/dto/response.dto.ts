@@ -287,28 +287,11 @@ export class ConversationItemDto {
   type!: MessageThreadType;
 
   @ApiProperty({
-    example: 42,
-    nullable: true,
-    description: 'Last-read message seq (nullable)',
-  })
-  lastReadSeq?: number;
-
-  @ApiProperty({
     enum: GroupRole,
     nullable: true,
     description: 'Member role for GROUP conversations; null for P2P',
   })
   role?: GroupRole | null;
-
-  @ApiProperty({
-    example: 3,
-    description:
-      'Unread message count for the caller (messages newer than their lastReadSeq). 0 when caught up.',
-  })
-  unreadCount!: number;
-
-  @ApiProperty({ type: [String], enum: ['all', 'me'] })
-  mentionUnread!: Array<'all' | 'me'>;
 
   @ApiProperty({
     type: Number,

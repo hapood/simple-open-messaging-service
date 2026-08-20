@@ -187,6 +187,17 @@ interface DownloadProgress {
         </dl>
       </section>
 
+      @if (debug.enabled()) {
+        <button
+          class="disable-debug"
+          mat-stroked-button
+          type="button"
+          (click)="debug.disable()"
+        >
+          {{ 'settings.disableDebugLogs' | transloco }}
+        </button>
+      }
+
       <section
         class="quota-card"
         [class.quota-warning]="quotaStatus() === 'warning'"

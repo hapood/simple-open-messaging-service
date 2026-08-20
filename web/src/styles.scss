@@ -684,6 +684,13 @@ body {
   transform: scale(0.92);
 }
 
+/* Keep the message owning an open context menu inset until the menu closes. This matches the
+ * cell-level context treatment above and makes the target unambiguous without changing row height. */
+[data-message-id].cb-message--context-active:not(.cb-message--album)
+  .msg-bubble {
+  transform: scale(0.92);
+}
+
 [data-message-id].cb-message--selected.cb-message--pressing {
   background: transparent;
 }

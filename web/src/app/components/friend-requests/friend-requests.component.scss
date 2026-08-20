@@ -51,14 +51,18 @@ $danger: var(--app-danger);
 
 /* tabs */
 .tabs {
-  flex: 0 0 auto;
+  flex: 1;
+  min-height: 0;
 
   &[hidden] {
     display: none;
   }
 
-  [mat-tab-link] {
-    flex: 1;
+  ::ng-deep .mat-mdc-tab-header {
+    flex: 0 0 auto;
+  }
+
+  ::ng-deep .mat-mdc-tab {
     height: 44px;
 
     .tab-label {
@@ -90,8 +94,8 @@ $danger: var(--app-danger);
       color: var(--app-info);
 
       &.unread {
-        background: var(--app-danger-soft);
-        color: var(--app-danger);
+        background: var(--app-unread);
+        color: var(--app-on-unread);
       }
     }
 
@@ -100,16 +104,15 @@ $danger: var(--app-danger);
       color: var(--app-info);
     }
   }
-}
 
-.tab-content {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
+  ::ng-deep .mat-mdc-tab-body-wrapper {
+    flex: 1;
+    min-height: 0;
+  }
 
-  &[hidden] {
-    display: none;
+  ::ng-deep .mat-mdc-tab-body-content {
+    display: flex;
+    flex-direction: column;
   }
 }
 
@@ -118,12 +121,6 @@ $danger: var(--app-danger);
   min-height: 0;
   display: flex;
   flex-direction: column;
-
-  // The [hidden] binding must override this rule's display:flex (class selector specificity exceeds the UA [hidden]{display:none}).
-  // Use the attribute selector .tab-pane[hidden] to raise specificity, avoiding !important.
-  &[hidden] {
-    display: none;
-  }
 }
 
 /* search bar (top) */
@@ -250,61 +247,55 @@ $danger: var(--app-danger);
   }
 }
 
-.connecting-banner {
+.connecting-progress {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  border-radius: var(--app-radius-md);
-  background: var(--app-surface-elevated);
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px 4px 0;
   color: var(--app-text);
 
-  .connecting-pulse {
-    width: 8px;
-    height: 8px;
-    flex: none;
-    border-radius: 50%;
-    background: $primary;
-    animation: connecting-pulse 1.6s ease-in-out infinite;
+  .connecting-heading {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
   }
 
   .connecting-copy {
     flex: 1;
     min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
   }
 
-  .connecting-text {
-    font-size: 13px;
+  .connecting-title {
+    overflow: hidden;
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 20px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .connecting-stage,
+  .connecting-step {
+    color: $muted;
+    font-size: 12px;
     line-height: 18px;
   }
 
-  .connecting-domain {
-    color: $muted;
-    font-size: 11px;
-    line-height: 15px;
+  .connecting-stage {
+    margin-top: 2px;
+  }
+
+  .connecting-step {
+    flex: none;
+  }
+
+  .connecting-bar {
+    width: 100%;
+    height: 4px;
   }
 
   .connecting-cancel {
-    flex: none;
-  }
-}
-
-@keyframes connecting-pulse {
-  0%,
-  100% {
-    opacity: 0.35;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .connecting-banner .connecting-pulse {
-    animation: none;
+    align-self: flex-end;
   }
 }
 

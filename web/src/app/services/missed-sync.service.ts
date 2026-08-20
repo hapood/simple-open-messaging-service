@@ -3,7 +3,10 @@ import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { apiPrefix } from './constants';
 import type { StandardResponse } from './model';
-import type { MissedCursor, NotificationDescriptor } from './notification-descriptor.model';
+import type {
+  MissedCursor,
+  NotificationDescriptor,
+} from './notification-descriptor.model';
 
 /** Page size for the threadlist body walk (the backend caps `take` at 200). */
 const SUMMARY_TAKE = 200;
@@ -45,7 +48,11 @@ export interface MissedSummaryResult {
 }
 
 /** An empty result (errors / concurrent no-op) — the cursor is not advanced, so the next pull re-covers. */
-const EMPTY: MissedSummaryResult = { items: [], hasMore: false, nextCursor: null };
+const EMPTY: MissedSummaryResult = {
+  items: [],
+  hasMore: false,
+  nextCursor: null,
+};
 
 /**
  * Compatibility facade over the two separated domain endpoints, each with its OWN single-flight guard:
@@ -78,7 +85,10 @@ export class MissedSyncService {
    * inclusive upper). The caller loops pages (advancing `from = nextCursor`) until `!hasMore`, then sets
    * HWM = `to`. Concurrent calls on THIS path collapse (single-flight); the away path has its own guard.
    */
-  async fetchMissedSummary(from: MissedCursor | null, to: MissedCursor): Promise<MissedSummaryResult> {
+  async fetchMissedSummary(
+    from: MissedCursor | null,
+    to: MissedCursor,
+  ): Promise<MissedSummaryResult> {
     if (this.summaryInFlight) return EMPTY;
     this.summaryInFlight = true;
     try {
@@ -86,7 +96,12 @@ export class MissedSyncService {
         this.http.post<StandardResponse<MissedSummaryResult>>(
           `${apiPrefix()}/thread-sync/catch-up`,
           { ...(from ? { from } : {}), to, take: SUMMARY_TAKE },
-          { headers: { Accept: 'application/json', 'Accept-Language': navigator.language || 'en' } },
+          {
+            headers: {
+              Accept: 'application/json',
+              'Accept-Language': navigator.language || 'en',
+            },
+          },
         ),
       ).catch(() => null);
       if (!res || res.code !== 0 || !res.data) return EMPTY;
@@ -111,13 +126,24 @@ export class MissedSyncService {
     this.awayInFlight = true;
     try {
       const res = await firstValueFrom(
-        this.http.post<StandardResponse<{ notifications: NotificationDescriptor[] }>>(
+        this.http.post<
+          StandardResponse<{ notifications: NotificationDescriptor[] }>
+        >(
           `${apiPrefix()}/notification-feed/query`,
           // threadHwms: the client's per-thread dismiss cursors (Android, in-memory). Web omits it (in-page
           // Notifications have no per-card dismiss — only clear-all-on-focus), so the server counts every
           // thread since `since` (cumulative since foreground). Declared on MissedDto.
-          { ...(since ? { since } : {}), previewMode, ...(threadHwms ? { threadHwms } : {}) },
-          { headers: { Accept: 'application/json', 'Accept-Language': navigator.language || 'en' } },
+          {
+            ...(since ? { since } : {}),
+            previewMode,
+            ...(threadHwms ? { threadHwms } : {}),
+          },
+          {
+            headers: {
+              Accept: 'application/json',
+              'Accept-Language': navigator.language || 'en',
+            },
+          },
         ),
       ).catch(() => null);
       if (!res || res.code !== 0 || !res.data) return [];

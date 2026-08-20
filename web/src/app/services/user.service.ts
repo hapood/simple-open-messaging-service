@@ -81,11 +81,18 @@ export interface FriendIntentPage {
 }
 
 /** One entry of the hydrated client-state delta (POST /user/query-state/delta). The server plans
- *  (last-op-wins) + hydrates the ADDs inline (peer/group/unread); DELETE entries carry the threadId only
+ *  (last-op-wins) + hydrates structural ADD data inline; DELETE entries carry the threadId only
  *  (the thread is leaving the roster — nothing to render). The client applies a single response — no
  *  client-side planning, no second batch-hydrate round-trip. */
 export type HydratedThreadDeltaOp =
-  | { threadId: number; direction: 'ADD'; item: ConversationItem }
+  | {
+      threadId: number;
+      direction: 'ADD';
+      item: Omit<
+        ConversationItem,
+        'lastReadSeq' | 'unreadCount' | 'mentionUnread'
+      >;
+    }
   | { threadId: number; direction: 'DELETE' }
   | { direction: 'PROFILE'; user: User }
   | {
@@ -156,6 +163,10 @@ export class UserService {
 
   /** Latest incoming friend-request state revision discovered through the unified state delta. */
   readonly friendRequestStateRevision = signal(0);
+  /** Latest friend-intent revision applied in this renderer. Unlike the incoming-request revision, this
+   *  also advances for terminal and outgoing changes so an open request dialog can refresh without
+   *  turning those changes into an unread badge. */
+  readonly friendIntentStateRevision = signal(0);
   /** Per-device read cursor. It intentionally never leaves this account's local database. */
   readonly friendRequestSeenRevision = signal(0);
   readonly friendReqBadge = computed(
@@ -194,6 +205,7 @@ export class UserService {
     this.sessionProfile.set(undefined);
     this._stateRevCursor.set(undefined);
     this.friendRequestStateRevision.set(0);
+    this.friendIntentStateRevision.set(0);
     this.friendRequestSeenRevision.set(0);
     this.profileFetch = undefined;
   }
@@ -293,6 +305,12 @@ export class UserService {
   applyFriendRequestStateRevision(revision: number): void {
     if (revision > this.friendRequestStateRevision())
       this.friendRequestStateRevision.set(revision);
+  }
+
+  /** Publish any friend-intent change after its state delta has committed to the local database. */
+  applyFriendIntentStateRevision(revision: number): void {
+    if (revision > this.friendIntentStateRevision())
+      this.friendIntentStateRevision.set(revision);
   }
 
   /** Mark requests seen on this device only. */
@@ -484,7 +502,7 @@ export class UserService {
   }
 
   /** One entry of the hydrated client-state delta from POST /user/query-state/delta. The server plans
-   *  (last-op-wins) + hydrates the ADDs inline (peer/group/unread); DELETE entries carry the threadId
+   *  (last-op-wins) + hydrates structural ADD data inline; DELETE entries carry the threadId
    *  only (the thread is leaving the roster — nothing to render). The client applies a single response —
    *  no client-side planning, no second batch-hydrate round-trip. */
   queryThreadDelta(params: { fromRevision: number; toRevision: number }) {
@@ -836,13 +854,14 @@ export class UserService {
   }
 
   getThreadInfo(params: { threadId: number }) {
-    return this.http.post<StandardResponse<ConversationItem>>(
-      `${apiPrefix()}/user/thread-info`,
-      params,
-    );
+    return this.http.post<
+      StandardResponse<
+        Omit<ConversationItem, 'lastReadSeq' | 'unreadCount' | 'mentionUnread'>
+      >
+    >(`${apiPrefix()}/user/thread-info`, params);
   }
 
-  /** Commit the viewport's local read HWM. Authoritative state arrives in the unified state delta. */
+  /** Commit the viewport's local read HWM. SSE wakes the client to pull the compacted attention feed. */
   markRead(params: { threadId: number; localReadHwm: number }) {
     return this.http.post<StandardResponse>(
       `${apiPrefix()}/thread/mark-read`,

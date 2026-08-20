@@ -24,6 +24,19 @@ const mime = {
   '.woff': 'font/woff',
   '.woff2': 'font/woff2',
 };
+const hashedAssetName = /-[a-z0-9_-]{8}\.[^/]+$/i;
+
+function fileEtag(file) {
+  const stat = statSync(file, { bigint: true });
+  return `"${stat.mtimeNs.toString(36)}-${stat.size.toString(36)}"`;
+}
+
+function matchesEtag(header, etag) {
+  return header
+    ?.split(',')
+    .map((value) => value.trim().replace(/^W\//, ''))
+    .some((value) => value === '*' || value === etag);
+}
 
 function proxy(req, res) {
   const upstream = httpRequest(
@@ -70,13 +83,29 @@ createServer((req, res) => {
     ? pathname.replace(/^\/admin\/?/, '')
     : pathname.slice(1);
   const file = safeFile(base, relative || 'index.html', 'index.html');
-  const type = mime[extname(file)] ?? 'application/octet-stream';
+  const extension = extname(file);
+  const type = mime[extension] ?? 'application/octet-stream';
+  const immutable = hashedAssetName.test(file);
+  if (!immutable) {
+    const etag = fileEtag(file);
+    if (matchesEtag(req.headers['if-none-match'], etag)) {
+      res.writeHead(304, { etag, 'cache-control': 'no-cache' });
+      return res.end();
+    }
+    res.writeHead(200, {
+      'content-type': type,
+      'cache-control': 'no-cache',
+      etag,
+    });
+    if (req.method === 'HEAD') return res.end();
+    return createReadStream(file).pipe(res);
+  }
+
   res.writeHead(200, {
     'content-type': type,
-    'cache-control': file.endsWith('index.html')
-      ? 'no-cache'
-      : 'public, max-age=31536000, immutable',
+    'cache-control': 'public, max-age=31536000, immutable',
   });
+  if (req.method === 'HEAD') return res.end();
   createReadStream(file).pipe(res);
 }).listen(listenPort, '0.0.0.0', () => {
   console.log(

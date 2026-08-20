@@ -205,6 +205,11 @@
   white-space: nowrap;
 }
 
+.disable-debug {
+  align-self: flex-end;
+  min-height: 40px;
+}
+
 .quota-card {
   padding: 18px 20px;
 }

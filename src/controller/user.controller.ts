@@ -68,7 +68,7 @@ import { FederationRecognitionService } from '../federation/federation-recogniti
 
 /**
  * One entry of the unified client-state delta (`POST /user/query-state/delta`). ADD entries carry the fully
- * hydrated {@link ConversationItemDto} inline (peer/group/unread) so the client applies a single response —
+ * hydrated structural {@link ConversationItemDto} inline so the client applies a single response —
  * no second batch-hydrate round-trip. DELETE entries carry the threadId only: the thread is leaving the
  * caller's roster, so there is nothing to render. The `direction` field discriminates the two.
  */
@@ -232,7 +232,7 @@ export class UserController {
 
   /**
    * The single conversation-row hydration pipeline — turns ThreadParticipant rows (with `thread`
-   * included) into rendered ConversationItemDtos: batched unread counts, P2P peer users + blocked flags,
+   * included) into rendered ConversationItemDtos: P2P peer users + blocked flags,
    * GROUP info, and the pinned/recent sort. Shared by /user/query-state/delta (hydrates the net-ADD ops)
    * and /user/thread-info (single) so the two can never drift on what a list row looks like. Carries NO
    * preview body — the client derives previews local-first from its message store.
@@ -241,16 +241,6 @@ export class UserController {
     me: number,
     list: ParticipantWithThread[],
   ) {
-    // Count + semantic mention come from the same unread range query; they must never disagree about the
-    // caller's read watermark or own-message exclusion.
-    const self = await this.userService.findUniqueUser({ id: me });
-    const attention = self
-      ? await this.messageService.unreadAttentionByThread(
-          me,
-          self.account,
-          list.map((p) => p.threadId),
-        )
-      : new Map();
     // Pinned tier first (pinned = true), within it most-recently-pinned first (pinnedAt desc); then the
     // unpinned tier recent-first by lastMessageAt; empty threads sink. In-memory sort of ≤take rows is
     // trivial; threadId breaks ties deterministically. (Pinned/pinnedAt are on the participant row.)
@@ -312,10 +302,7 @@ export class UserController {
         id: p.id,
         threadId: p.threadId,
         type: p.thread.type,
-        lastReadSeq: p.lastReadSeq ?? undefined,
         role: p.role ?? undefined,
-        unreadCount: attention.get(p.threadId)?.count ?? 0,
-        mentionUnread: attention.get(p.threadId)?.mention ?? [],
         // The list preview is NOT embedded — the client derives it from its local message store
         // (local-first). lastMessageAt stays (cheap, needed for sort). lastMessageSeq is the mark-read target
         // the client passes when opening the thread (mark all current up to this seq).
@@ -334,9 +321,7 @@ export class UserController {
         id: number;
         threadId: number;
         type: MessageThreadType;
-        lastReadSeq: number | undefined;
         role: GroupRole | undefined;
-        unreadCount: number;
         lastMessageAt: Date | null;
         muted: boolean;
         pinned: boolean;
@@ -406,7 +391,7 @@ export class UserController {
   @Post('user/query-state/delta')
   @ApiOperation({
     summary:
-      'Fetch the thread-list delta (from excl, to incl): ADD ops returned hydrated (peer/group/unread), DELETE ops id-only',
+      'Fetch the thread-list delta (from excl, to incl): structural ADD ops hydrated, DELETE ops id-only',
   })
   async queryThreadDelta(
     @Request() req: FastifyRequest,
@@ -447,7 +432,7 @@ export class UserController {
         },
         include: { thread: true },
       });
-      // hydrateConversationItems is the ConversationItem pipeline (peer/group/unread) shared with
+      // hydrateConversationItems is the structural ConversationItem pipeline shared with
       // /user/thread-info; its inferred return carries `unknown` peer/group, so assert the contract here.
       adds = (await this.hydrateConversationItems(
         me,
@@ -741,10 +726,10 @@ export class UserController {
               : error instanceof S2sResponseError &&
                   error.code === BusinessCode.NOT_FOUND
                 ? 'NOT_FOUND'
-              : error instanceof BusinessException &&
-                error.bizCode === BusinessCode.FEDERATION_PEER_BLOCKED
-              ? 'BLOCKED'
-              : 'UNREACHABLE',
+                : error instanceof BusinessException &&
+                    error.bizCode === BusinessCode.FEDERATION_PEER_BLOCKED
+                  ? 'BLOCKED'
+                  : 'UNREACHABLE',
       });
     } finally {
       unsubscribeProgress();

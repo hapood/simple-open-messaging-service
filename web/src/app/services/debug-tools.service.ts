@@ -1,10 +1,10 @@
-import { inject, Injectable, isDevMode, signal } from '@angular/core';
+import { inject, Injectable, signal } from '@angular/core';
 import { setFullConsoleLogging } from './log-buffer';
 import { isTauri, tauriInvoke } from './runtime';
 import { PreferenceStore } from './preference-store.service';
 
 const STORAGE_KEY = 'soms-debug';
-/** Number of quick taps on the app-version label that toggles the debug tools in production. */
+/** Number of quick taps on the app-version label that enables the debug tools. */
 const GESTURE_TAPS = 10;
 /** Taps must land within this window to count as one gesture (resets otherwise). */
 const GESTURE_WINDOW_MS = 2000;
@@ -14,21 +14,19 @@ const GESTURE_WINDOW_MS = 2000;
  * the panel is always compiled in, and this signal decides whether it renders — so production can turn it
  * on later without a rebuild.
  *
- * Enabled when EITHER holds:
- *  - the running bundle is a dev build (`isDevMode()` — auto-on for `ng serve` / dev), OR
- *  - the hidden entry flipped the persisted flag: tapping the app-version label `GESTURE_TAPS` times, or
- *    loading with `?debug=1` in the URL. Persisted in `localStorage` so it survives reloads.
+ * Enabled when the hidden entry flips the persisted flag: tapping the app-version label
+ * `GESTURE_TAPS` times, or loading with `?debug=1` in the URL. This is identical in development and
+ * production, and persists in the device preference store so it survives reloads.
  *
- * Dev builds read the flag as a no-op (always on); the
- * persisted flag is the only production path. Kept as a plain signal (no persistence effect) so reads are
- * synchronous — the FAB/overlay query `enabled()` directly in their templates.
+ * Kept as a plain signal (no persistence effect) so reads are synchronous — the FAB/overlay query
+ * `enabled()` directly in their templates.
  */
 @Injectable({ providedIn: 'root' })
 export class DebugToolsService {
   private readonly preferences = inject(PreferenceStore);
   private persisted = false;
   private writeRevision = 0;
-  readonly enabled = signal<boolean>(this.isDevBuild());
+  readonly enabled = signal(false);
 
   private gestureCount = 0;
   private gestureResetAt = 0;
@@ -38,7 +36,9 @@ export class DebugToolsService {
     // the panel by sharing a link, without a rebuild or a gesture.
     try {
       if (typeof URLSearchParams !== 'undefined') {
-        const debug = new URLSearchParams(globalThis.location?.search ?? '').get('debug');
+        const debug = new URLSearchParams(
+          globalThis.location?.search ?? '',
+        ).get('debug');
         if (debug === '1') this.setPersisted(true);
       }
     } catch {
@@ -48,12 +48,16 @@ export class DebugToolsService {
     void this.restore();
   }
 
-  /** Flip the persisted flag. Dev builds stay enabled regardless (the flag only governs production). */
-  toggle(): void {
-    this.setPersisted(!this.persisted);
+  /** Close the logger and its floating entry. */
+  disable(): void {
+    this.writeRevision++;
+    this.persisted = false;
+    void this.preferences.remove('device', STORAGE_KEY).catch(() => {});
+    this.enabled.set(false);
+    this.applyLogging(false);
   }
 
-  /** Wire to the app-version label: `GESTURE_TAPS` taps within the window → toggle. */
+  /** Wire to the app-version label: `GESTURE_TAPS` taps within the window enable the tools. */
   bumpGesture(): void {
     const now = Date.now();
     if (now - this.gestureResetAt > GESTURE_WINDOW_MS) {
@@ -63,7 +67,7 @@ export class DebugToolsService {
     this.gestureCount++;
     if (this.gestureCount >= GESTURE_TAPS) {
       this.gestureCount = 0;
-      this.toggle();
+      this.setPersisted(true);
     }
   }
 
@@ -74,7 +78,7 @@ export class DebugToolsService {
       ? this.preferences.set('device', STORAGE_KEY, true)
       : this.preferences.remove('device', STORAGE_KEY);
     void write.catch(() => {});
-    this.enabled.set(this.isDevBuild() || on);
+    this.enabled.set(on);
     this.applyLogging(this.enabled());
   }
 
@@ -94,9 +98,5 @@ export class DebugToolsService {
     this.persisted = true;
     this.enabled.set(true);
     this.applyLogging(true);
-  }
-
-  private isDevBuild(): boolean {
-    return isDevMode();
   }
 }

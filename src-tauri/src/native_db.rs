@@ -816,7 +816,32 @@ pub(crate) async fn native_db_apply_thread_delta(
                 }
                 "ADD" => {
                     let thread_id = op.thread_id.ok_or_else(|| "ADD delta has no threadId".to_string())?;
-                    let item = op.item.ok_or_else(|| "ADD delta has no item".to_string())?;
+                    let mut item = op.item.ok_or_else(|| "ADD delta has no item".to_string())?;
+                    let previous: Option<String> = tx
+                        .query_row(
+                            "SELECT payload_json FROM threads WHERE user_id = ?1 AND thread_id = ?2",
+                            params![user_id, thread_id],
+                            |row| row.get(0),
+                        )
+                        .optional()
+                        .map_err(|e| format!("read prior thread projection: {e}"))?;
+                    if let (Some(current), Some(next)) = (
+                        previous.map(parse_json).transpose()?.and_then(|v| v.as_object().cloned()),
+                        item.as_object_mut(),
+                    ) {
+                        for key in ["lastReadSeq", "unreadCount", "mentionUnread", "lastMessagePreview", "lastMessageSenderId"] {
+                            if let Some(value) = current.get(key) {
+                                next.insert(key.to_string(), value.clone());
+                            }
+                        }
+                    }
+                    if let Some(next) = item.as_object_mut() {
+                        next.entry("lastReadSeq").or_insert(Value::Null);
+                        next.entry("unreadCount").or_insert(Value::from(0));
+                        next.entry("mentionUnread").or_insert(Value::Array(Vec::new()));
+                        next.entry("lastMessagePreview").or_insert(Value::Null);
+                        next.entry("lastMessageSenderId").or_insert(Value::Null);
+                    }
                     tx.execute(
                         "INSERT INTO threads(user_id, thread_id, payload_json) VALUES(?1, ?2, ?3)
                          ON CONFLICT(user_id, thread_id) DO UPDATE SET payload_json = excluded.payload_json",

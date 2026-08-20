@@ -65,13 +65,22 @@
                 [colorIdentityId]="avatarColorIdentityId(thread)"
                 [src]="avatarSrc(thread)"
               ></app-user-avatar>
+              @if (federatedDomain(thread); as domain) {
+                <span
+                  class="thread-federated-icon"
+                  [title]="domain"
+                  aria-hidden="true"
+                >
+                  <app-icon
+                    [type]="AppIconType.GLOBE"
+                    [style]="{ width: '16px', height: '16px' }"
+                  ></app-icon>
+                </span>
+              }
             </span>
             <span class="thread-info">
               <span class="thread-row">
-                <app-user-identity-label
-                  [name]="displayName(thread)"
-                  [domain]="federatedDomain(thread)"
-                />
+                <app-user-identity-label [name]="displayName(thread)" />
                 @if (thread.pinned) {
                   <span
                     class="thread-status-icon"

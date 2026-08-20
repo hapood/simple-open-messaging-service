@@ -8,8 +8,9 @@ import {
   OnDestroy,
   ChangeDetectionStrategy,
 } from '@angular/core';
-import { Subject, Subscription } from 'rxjs';
+import { Observable, Subject, Subscription, finalize } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatTabsModule } from '@angular/material/tabs';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
@@ -44,6 +45,13 @@ export enum AddTabStatus {
   SUCCESS,
   ERROR,
 }
+const FEDERATED_RESOLVE_STAGES: readonly FederatedResolveStage[] = [
+  'DISCOVERING',
+  'VERIFYING_IDENTITY',
+  'CONNECTING',
+  'WAITING_FOR_PEER',
+  'FETCHING_USER',
+];
 // A pending invite row in the Pending / Sent tabs. `id` is the invite's BigInt id (string) — the
 // accept/reject/revoke payload. The peer profile (name/avatar/domain/…) is embedded on the invite
 // (fromUser for incoming, toUser for outgoing), so no separate profile lookup is needed.
@@ -73,6 +81,7 @@ type RelationshipState =
     UserAvatarComponent,
     FormsModule,
     MatButtonModule,
+    MatProgressBarModule,
     MatTabsModule,
     IconComponent,
     TranslocoPipe,
@@ -98,6 +107,15 @@ export class FriendRequestsComponent implements OnDestroy {
   readonly federationStageKey = computed(
     () => `friend.federationStage.${this.federationStage()}`,
   );
+  readonly federationProgress = computed(() => {
+    const index = FEDERATED_RESOLVE_STAGES.indexOf(this.federationStage());
+    const current = index < 0 ? 1 : index + 1;
+    return {
+      current,
+      total: FEDERATED_RESOLVE_STAGES.length,
+      percent: (current / FEDERATED_RESOLVE_STAGES.length) * 100,
+    };
+  });
   private trustSub: Subscription | undefined;
   private searchSub: Subscription | undefined;
   /** Exact account resolution always yields zero or one row. */
@@ -132,6 +150,11 @@ export class FriendRequestsComponent implements OnDestroy {
   private sentLoadGeneration = 0;
   private observedRequestRevision: number | undefined;
   private inviteListsInitialized = false;
+  readonly pendingInviteActionIds = signal<ReadonlySet<string>>(new Set());
+  private readonly inviteActionSubscriptions = new Map<
+    string,
+    { subscription?: Subscription }
+  >();
 
   subject = input<Subject<any> | undefined>(undefined);
   initialTab = input<'add' | 'pending'>('add');
@@ -169,7 +192,7 @@ export class FriendRequestsComponent implements OnDestroy {
     private snackBar: MatSnackBar,
   ) {
     effect(() => {
-      const revision = this.userService.friendRequestStateRevision();
+      const revision = this.userService.friendIntentStateRevision();
       if (
         !this.inviteListsInitialized ||
         this.observedRequestRevision === undefined ||
@@ -191,14 +214,6 @@ export class FriendRequestsComponent implements OnDestroy {
   }
   setTab(tab: number) {
     this.activeTab.set(tab);
-    if (
-      tab === 1 &&
-      !this.pendingLoading() &&
-      this.pendingReqList().length === 0
-    )
-      void this.loadIncomingInvites(true);
-    if (tab === 2 && !this.sentLoading() && this.sentReqList().length === 0)
-      void this.loadOutgoingInvites(true);
     if (tab === 1) this.userService.markFriendReqRead();
   }
 
@@ -426,97 +441,148 @@ export class FriendRequestsComponent implements OnDestroy {
 
   ngOnDestroy() {
     this.cancelInFlight();
+    this.cancelInviteActions();
   }
 
   approve(req: PendingReq) {
     const index = this.pendingReqList().findIndex((item) => item.id === req.id);
     if (index < 0) return;
-    this.userService.acceptInvite(this.inviteAction(req)).subscribe((res) => {
-      const reqList = this.pendingReqList();
-      if (res.code === 0) {
-        // Optimistic "added": keep the row showing "Added" (status 1). Not persisted — next panel open
-        // re-queries and the backend filters out the now-friend, so it disappears on its own.
-        this.pendingReqList.set(
-          reqList
-            .slice(0, index)
-            .concat([{ ...req, status: 1, errText: '' }])
-            .concat(reqList.slice(index + 1)),
-        );
-        this.pendingCount.update((count) => Math.max(0, count - 1));
-        if (this.selectedRequest()?.id === req.id) this.closeRequest();
-      } else {
-        this.pendingReqList.set(
-          reqList
-            .slice(0, index)
-            .concat([
-              {
-                ...req,
-                status: 0,
-                errText: translateBizResult(res, this.transloco),
-              },
-            ])
-            .concat(reqList.slice(index + 1)),
-        );
-        this.pendingCount.update((count) => Math.max(0, count - 1));
-        if (this.selectedRequest()?.id === req.id) this.closeRequest();
-      }
-    });
+    this.runInviteAction(
+      req,
+      () => this.userService.acceptInvite(this.inviteAction(req)),
+      (res) => {
+        const reqList = this.pendingReqList();
+        if (res.code === 0) {
+          // Optimistic "added": keep the row showing "Added" (status 1). Not persisted — next panel open
+          // re-queries and the backend filters out the now-friend, so it disappears on its own.
+          this.pendingReqList.set(
+            reqList
+              .slice(0, index)
+              .concat([{ ...req, status: 1, errText: '' }])
+              .concat(reqList.slice(index + 1)),
+          );
+          this.pendingCount.update((count) => Math.max(0, count - 1));
+          if (this.selectedRequest()?.id === req.id) this.closeRequest();
+        } else {
+          this.pendingReqList.set(
+            reqList
+              .slice(0, index)
+              .concat([
+                {
+                  ...req,
+                  status: 0,
+                  errText: translateBizResult(res, this.transloco),
+                },
+              ])
+              .concat(reqList.slice(index + 1)),
+          );
+          this.pendingCount.update((count) => Math.max(0, count - 1));
+          if (this.selectedRequest()?.id === req.id) this.closeRequest();
+        }
+      },
+    );
   }
 
   decline(req: PendingReq) {
-    this.userService.rejectInvite(this.inviteAction(req)).subscribe((res) => {
-      if (res.code === 0) {
-        // Rejected: remove from the pending list (filter by id to avoid index drift).
-        this.pendingReqList.set(
-          this.pendingReqList().filter((r) => r.id !== req.id),
-        );
-        this.snackBar.open(
-          this.transloco.translate('friend.declinedToast'),
-          undefined,
-          { duration: 3000 },
-        );
-      } else {
-        // Failed: keep it and tag the error copy (errText always renders in the template).
-        this.pendingReqList.set(
-          this.pendingReqList().map((r) =>
-            r.id === req.id
-              ? { ...r, errText: translateBizResult(res, this.transloco) }
-              : r,
-          ),
-        );
-      }
-    });
+    this.runInviteAction(
+      req,
+      () => this.userService.rejectInvite(this.inviteAction(req)),
+      (res) => {
+        if (res.code === 0) {
+          // Rejected: remove from the pending list (filter by id to avoid index drift).
+          this.pendingReqList.set(
+            this.pendingReqList().filter((r) => r.id !== req.id),
+          );
+          this.snackBar.open(
+            this.transloco.translate('friend.declinedToast'),
+            undefined,
+            { duration: 3000 },
+          );
+        } else {
+          // Failed: keep it and tag the error copy (errText always renders in the template).
+          this.pendingReqList.set(
+            this.pendingReqList().map((r) =>
+              r.id === req.id
+                ? { ...r, errText: translateBizResult(res, this.transloco) }
+                : r,
+            ),
+          );
+        }
+      },
+    );
   }
 
   cancelSent(req: PendingReq) {
-    this.userService.revokeInvite(this.inviteAction(req)).subscribe((res) => {
-      if (res.code === 0) {
-        // Keep the tombstone visible so the sent-request history reflects the final state.
-        this.sentReqList.update((items) =>
-          items.map((item) =>
-            item.id === req.id ? { ...item, status: -3, errText: '' } : item,
-          ),
-        );
-        if (this.selectedRequest()?.id === req.id)
-          this.selectedRequest.update((item) =>
-            item ? { ...item, status: -3, errText: '' } : item,
+    this.runInviteAction(
+      req,
+      () => this.userService.revokeInvite(this.inviteAction(req)),
+      (res) => {
+        if (res.code === 0) {
+          // Keep the tombstone visible so the sent-request history reflects the final state.
+          this.sentReqList.update((items) =>
+            items.map((item) =>
+              item.id === req.id ? { ...item, status: -3, errText: '' } : item,
+            ),
           );
-        this.snackBar.open(
-          this.transloco.translate('friend.revokedToast'),
-          undefined,
-          { duration: 3000 },
-        );
-      } else {
-        // Failed: keep it and tag the error copy.
-        this.sentReqList.set(
-          this.sentReqList().map((r) =>
-            r.id === req.id
-              ? { ...r, errText: translateBizResult(res, this.transloco) }
-              : r,
-          ),
-        );
-      }
-    });
+          if (this.selectedRequest()?.id === req.id)
+            this.selectedRequest.update((item) =>
+              item ? { ...item, status: -3, errText: '' } : item,
+            );
+          this.snackBar.open(
+            this.transloco.translate('friend.revokedToast'),
+            undefined,
+            { duration: 3000 },
+          );
+        } else {
+          // Failed: keep it and tag the error copy.
+          this.sentReqList.set(
+            this.sentReqList().map((r) =>
+              r.id === req.id
+                ? { ...r, errText: translateBizResult(res, this.transloco) }
+                : r,
+            ),
+          );
+        }
+      },
+    );
+  }
+
+  isInviteActionPending(id: string): boolean {
+    return this.pendingInviteActionIds().has(id);
+  }
+
+  /** Serialize mutations for one invite. A list reset or dialog teardown cancels the subscription,
+   * so a response for UI state that is no longer current cannot write back into the new list. */
+  private runInviteAction<T>(
+    req: PendingReq,
+    createRequest: () => Observable<T>,
+    applyResult: (result: T) => void,
+  ): void {
+    if (this.inviteActionSubscriptions.has(req.id)) return;
+
+    const entry: { subscription?: Subscription } = {};
+    this.inviteActionSubscriptions.set(req.id, entry);
+    this.pendingInviteActionIds.update((ids) => new Set(ids).add(req.id));
+    entry.subscription = createRequest()
+      .pipe(
+        finalize(() => {
+          if (this.inviteActionSubscriptions.get(req.id) !== entry) return;
+          this.inviteActionSubscriptions.delete(req.id);
+          this.pendingInviteActionIds.update((ids) => {
+            const next = new Set(ids);
+            next.delete(req.id);
+            return next;
+          });
+        }),
+      )
+      .subscribe({ next: applyResult, error: () => undefined });
+  }
+
+  private cancelInviteActions(): void {
+    const subscriptions = [...this.inviteActionSubscriptions.values()];
+    this.inviteActionSubscriptions.clear();
+    this.pendingInviteActionIds.set(new Set());
+    for (const entry of subscriptions) entry.subscription?.unsubscribe();
   }
 
   private inviteAction(
@@ -591,6 +657,7 @@ export class FriendRequestsComponent implements OnDestroy {
       ? ++this.pendingLoadGeneration
       : this.pendingLoadGeneration;
     if (reset) {
+      this.cancelInviteActions();
       this.pendingCursor = null;
       this.pendingReqList.set([]);
     }
@@ -630,6 +697,7 @@ export class FriendRequestsComponent implements OnDestroy {
       ? ++this.sentLoadGeneration
       : this.sentLoadGeneration;
     if (reset) {
+      this.cancelInviteActions();
       this.sentCursor = null;
       this.sentReqList.set([]);
     }
@@ -674,8 +742,7 @@ export class FriendRequestsComponent implements OnDestroy {
     }
     const initialTab = this.initialTab() === 'pending' ? 1 : 0;
     this.activeTab.set(initialTab);
-    this.observedRequestRevision =
-      this.userService.friendRequestStateRevision();
+    this.observedRequestRevision = this.userService.friendIntentStateRevision();
     this.inviteListsInitialized = true;
     void Promise.all([
       this.loadIncomingInvites(true),
