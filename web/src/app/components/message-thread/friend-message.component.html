@@ -40,13 +40,15 @@
           <button
             type="button"
             role="menuitem"
+            class="msg-context-menu__item--icon"
             (click)="copyContextMessage()"
             [attr.title]="'chat.selection.copy' | transloco"
           >
-            <span
-              class="msg-context-menu__icon-placeholder"
-              aria-hidden="true"
-            ></span>
+            <svg viewBox="0 -960 960 960" aria-hidden="true">
+              <path
+                d="M360-240q-33 0-56.5-23.5T280-320v-560q0-33 23.5-56.5T360-960h440q33 0 56.5 23.5T880-880v560q0 33-23.5 56.5T800-240H360Zm0-80h440v-560H360v560ZM160-80q-33 0-56.5-23.5T80-160v-560h80v560h440v80H160Z"
+              />
+            </svg>
             <span>{{ 'chat.selection.copy' | transloco }}</span>
           </button>
         }
@@ -70,13 +72,15 @@
           <button
             type="button"
             role="menuitem"
+            class="msg-context-menu__item--icon"
             (click)="openContextForwardDialog()"
             [attr.title]="'chat.selection.forward' | transloco"
           >
-            <span
-              class="msg-context-menu__icon-placeholder"
-              aria-hidden="true"
-            ></span>
+            <svg viewBox="0 -960 960 960" aria-hidden="true">
+              <path
+                d="M640-160v-200H320q-83 0-141.5-58.5T120-560q0-83 58.5-141.5T320-760h240v-200l320 400-240 400Zm0-280 137-120-137-120v80H320q-50 0-85 35t-35 85q0 50 35 85t85 35h320v80Z"
+              />
+            </svg>
             <span>{{ 'chat.selection.forward' | transloco }}</span>
           </button>
         }
@@ -98,16 +102,26 @@
           <button
             type="button"
             role="menuitem"
+            class="msg-context-menu__item--icon"
             (click)="confirmContextModeration()"
             [attr.title]="
               (menu.targetItem.data.isSelf ? 'chat.withdraw' : 'chat.report')
                 | transloco
             "
           >
-            <span
-              class="msg-context-menu__icon-placeholder"
-              aria-hidden="true"
-            ></span>
+            @if (menu.targetItem.data.isSelf) {
+              <svg viewBox="0 -960 960 960" aria-hidden="true">
+                <path
+                  d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360Z"
+                />
+              </svg>
+            } @else {
+              <svg viewBox="0 -960 960 960" aria-hidden="true">
+                <path
+                  d="M40-120v-720h400l16 80h424v440H520l-16-80H120v280H40Zm414-360h346v-200H390l-16-80H120v280h334Z"
+                />
+              </svg>
+            }
             <span>{{
               (menu.targetItem.data.isSelf ? 'chat.withdraw' : 'chat.report')
                 | transloco
