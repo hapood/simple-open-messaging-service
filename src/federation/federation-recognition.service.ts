@@ -16,8 +16,6 @@ import { SignatureService } from './signature.service.js';
 import { FederationTransportConfigService } from './federation-transport-config.service.js';
 
 export type FederationHealthStatus = 'available' | 'degraded' | 'unavailable';
-const FEDERATION_EXTENSION_ID =
-  /^(?:socfp|[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+)\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*\.v[1-9][0-9]*$/;
 export type FederationRecognitionStage =
   | 'DISCOVERING'
   | 'VERIFYING_IDENTITY'
@@ -163,8 +161,6 @@ export class FederationRecognitionService {
       }
       const result = value as {
         status?: unknown;
-        selectedProtocolVersion?: unknown;
-        acceptedExtensions?: unknown;
       } | null;
       const candidate = String(result?.status);
       const status = ['available', 'degraded', 'unavailable'].includes(
@@ -176,22 +172,7 @@ export class FederationRecognitionService {
         !!result &&
         typeof result === 'object' &&
         !Array.isArray(result) &&
-        Object.keys(result).length === 3 &&
-        (status === 'unavailable'
-          ? result.selectedProtocolVersion === null &&
-            result.acceptedExtensions === null
-          : !!status &&
-            Number.isSafeInteger(result.selectedProtocolVersion) &&
-            Number(result.selectedProtocolVersion) > 0 &&
-            Array.isArray(result.acceptedExtensions) &&
-            result.acceptedExtensions.length <= 64 &&
-            result.acceptedExtensions.every(
-              (extension, index, extensions) =>
-                typeof extension === 'string' &&
-                Buffer.byteLength(extension, 'ascii') <= 128 &&
-                FEDERATION_EXTENSION_ID.test(extension) &&
-                (index === 0 || extension > extensions[index - 1]),
-            ));
+        Object.keys(result).length === 1;
       if (!status || !healthShapeValid) {
         await this.markTransportDegraded(domain, 'Healthy malformed response');
         throw new Error(`Healthy ${domain} returned malformed response`);

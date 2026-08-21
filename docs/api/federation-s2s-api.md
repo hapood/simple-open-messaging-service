@@ -47,11 +47,10 @@ rewrite the value in place under its old ID.
 ## State feed
 
 The state feed carries complete snapshots for `PROFILE`, `MEMBER_PROFILE`, the
-three directional intents, and origin-authoritative `GROUP_META`. Consumers merge
-idempotently by stable key and business `revision`; `feedId` is only the scan
-coordinate.
+three directional intents, and origin-authoritative `GROUP_META`. Consumers apply
+snapshots idempotently by stable key in `feedId` order.
 
-Before a group revision references a new member, the publisher places that
+Before a group snapshot references a new member, the publisher places that
 member's `MEMBER_PROFILE` in the current projection for the target peer with a
 lower feed ID. A later profile update may disturb this order, so the source
 reindexes group snapshots that still depend on it. Applying an unchanged business
@@ -67,7 +66,10 @@ by historical messages.
 Exact `/users/:account` lookup is a bounded proxy query and does not create a
 human `User` stub. A verified home-authored `PROFILE` may be stored by address,
 but `REQUESTED` and `REVOKED` do not materialize a stub. Materialization requires
-both that profile and a valid `ACCEPTED` intent. Friend requests, group invites,
+both that profile and a peer `ACCEPTED` matching a still-effective request flow.
+An unsolicited `ACCEPTED` is ignored for admission regardless of
+stub existence. Accepting a new peer request always republishes the local
+`ACCEPTED` with a new feed ID, even when its body is unchanged. Friend requests, group invites,
 and group join requests use absolute expiration no more than seven days away.
 Expired `REQUESTED` entries may disappear silently. `REVOKED` has no expiry and
 should be retained as capacity permits, but may later be omitted; live message
@@ -144,6 +146,6 @@ tombstones must still prevent resurrection.
 
 `/call` carries ephemeral WebRTC/JSEP frames. Terminal call history remains an
 ordinary `CALL` message. Media and forward bundles use exact message identity as
-their authorization coordinate. After committing a message query, a consumer may
-persist pending media work and download with resumable Range requests; a resource
-failure does not roll back the committed message cursor.
+their authorization coordinate. After accepting a message query result, a
+consumer may continue media localization with resumable Range requests; a later
+resource failure does not invalidate that accepted result.

@@ -37,15 +37,13 @@
     },
     "profileBody": {
       "type": "object",
-      "required": ["displayName", "bio", "avatar", "deleted"],
+      "required": ["displayName", "bio", "avatar"],
       "properties": {
         "displayName": { "type": "string", "minLength": 1 },
         "bio": { "type": "string" },
         "avatar": {
           "oneOf": [{ "$ref": "#/$defs/profileAvatar" }, { "type": "null" }]
-        },
-        "deleted": { "type": "boolean" },
-        "extensions": { "$ref": "urn:socfp:v1:common#/$defs/extensions" }
+        }
       },
       "additionalProperties": false
     },
@@ -56,8 +54,7 @@
         "displayName": { "type": "string", "minLength": 1 },
         "avatar": {
           "oneOf": [{ "$ref": "#/$defs/profileAvatar" }, { "type": "null" }]
-        },
-        "extensions": { "$ref": "urn:socfp:v1:common#/$defs/extensions" }
+        }
       },
       "additionalProperties": false
     },
@@ -239,7 +236,6 @@
         "eventType",
         "subjectAccount",
         "subjectDomain",
-        "revision",
         "feedId",
         "body"
       ],
@@ -249,9 +245,6 @@
         "eventType": { "type": "string" },
         "subjectAccount": { "type": "string" },
         "subjectDomain": { "type": "string" },
-        "revision": {
-          "$ref": "urn:socfp:v1:common#/$defs/decimalString"
-        },
         "feedId": {
           "$ref": "urn:socfp:v1:common#/$defs/positiveDecimalString"
         },

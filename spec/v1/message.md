@@ -8,7 +8,7 @@ See [Message Feed and Query](./message-feed.md) for feed and query pagination se
 
 ## 1. Type and processing overview
 
-In the outer message shape, `content` is always a string containing an encoded JSON object. A consumer MUST validate `FederatedMessage` first. For core types and extension types supported by the consumer, it MUST parse `content` once as JSON and strictly validate the corresponding closed schema. Unknown extension types follow the bounded skip rules in this section.
+In the outer message shape, `content` is always a string containing an encoded JSON object. A consumer MUST validate `FederatedMessage` first, parse `content` once as JSON, and strictly validate the corresponding closed core schema.
 
 | `contentType` | Detailed specification                  | Semantics                                       | Direct resources                 |
 | ------------- | --------------------------------------- | ----------------------------------------------- | -------------------------------- |
@@ -19,7 +19,6 @@ In the outer message shape, `content` is always a string containing an encoded J
 | `FILE`        | [Media](./message/media.md)             | General file                                    | One asset                        |
 | `GALLERY`     | [Media](./message/media.md#4-gallery)   | Ordered mixed-media collection                  | Deduplicated set of item digests |
 | `LINK`        | [Link](./message/link.md)               | Page metadata                                   | None                             |
-| `INVITE`      | [Invite](./message/invite.md)           | Group-invitation snapshot in P2P                | None                             |
 | `CALL`        | [Call Record](./message/call-record.md) | Terminal P2P call record                        | None                             |
 | `FORWARD`     | [Forward](./message/forward.md)         | Bundle root card                                | No direct card asset             |
 
@@ -55,7 +54,6 @@ See [Message Envelope, Section 4](./message/envelope.md#4-identity-and-immutabil
 ```ts
 type CoreContentType =
   | 'PURE_TEXT'
-  | 'INVITE'
   | 'IMAGE'
   | 'VIDEO'
   | 'FILE'
@@ -65,19 +63,10 @@ type CoreContentType =
   | 'FORWARD'
   | 'GALLERY';
 
-type ContentType = CoreContentType | ExtensionId;
+type ContentType = CoreContentType;
 ```
 
-These ten values form the v1 core set. An extension message's `contentType` MUST equal the extension capability ID that defines it. The sender MAY send it only when that ID appears both in the receiving peer's latest valid v1 discover response and in Health `acceptedExtensions`. Undeclared capability, software version, a historical successful response, or a reverse-direction message MUST NOT be treated as evidence of support.
-
-When a consumer receives a valid `ExtensionId` that it does not support, it MUST:
-
-1. Validate the outer message within local bounds for bodies, strings, arrays, and objects, and confirm that `content` encodes a JSON object.
-2. Do not interpret, display, or persist the message; do not download its `assets` or generate a processing receipt.
-3. Treat the sequence as an unsupported hole, allowing `scannedThrough` and the thread cursor to advance normally while continuing with other items on the page.
-4. Record, at most, bounded aggregate diagnostics for the extension ID; do not retain the complete unknown content.
-
-An unknown `contentType` that does not match the `ExtensionId` grammar remains a malformed item and MUST be rejected. After an upgrade, only subsequently received supported messages are processed; v1 does not guarantee recovery of extension messages skipped before the upgrade. An extension message MUST NOT degrade to core text or another core type, and MUST NOT grant identity, authorization, membership, or other core state.
+These nine values are the complete v1 set. Any other `contentType` is malformed.
 
 ## 5. `PURE_TEXT`
 
@@ -99,18 +88,14 @@ See [Media, Section 4](./message/media.md#4-gallery) for the strict item union a
 
 See [Link](./message/link.md) for the sole specification, genuinely optional fields, and thumbnail combinations.
 
-## 9. `INVITE`
-
-See [Invite](./message/invite.md) for the sole specification, P2P union constraints, and examples.
-
-## 10. `CALL`
+## 9. `CALL`
 
 See [Call Record](./message/call-record.md) for the sole specification, outcome matrix, and connected and unconnected examples. `durationMs` is locally derived and is not part of the federation wire.
 
-## 11. `FORWARD`
+## 10. `FORWARD`
 
 See [Forward](./message/forward.md) for the sole specification, bundle graph, local references, and examples. The wire card carries only `bundleId`; the recipient generates summaries and counts locally after validating the bundle.
 
-## 12. Processing receipts, group submission, and authoritative distribution
+## 11. Processing receipts, group submission, and authoritative distribution
 
 See [Message Envelope, Section 8](./message/envelope.md#8-processing-receipts) for processing receipts. A group member's home server MAY submit only messages authored by a member in its own domain. After accepting the message and assigning its authoritative timeline coordinate, the group origin distributes it to mirrors. A mirror accepts only a known origin and MUST NOT republish the message to a third peer.

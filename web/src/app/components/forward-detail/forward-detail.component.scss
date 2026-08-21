@@ -25,47 +25,11 @@
   color: var(--app-text);
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
 }
-.msg-header {
-  height: 56px;
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 8px;
-  border-bottom: 1px solid var(--app-border);
-  box-sizing: border-box;
-  z-index: 2;
-}
-.msg-header .title {
-  flex: 1 1 auto;
-  color: var(--app-text);
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 24px;
-}
-.msg-header .level {
+.level {
   margin-left: 6px;
   color: var(--app-text-faint);
   font-size: 12px;
   font-weight: 500;
-}
-.icon-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border: 0;
-  border-radius: var(--app-radius-sm);
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-}
-.icon-btn:hover {
-  background: var(--app-hover);
-}
-.header-spacer {
-  flex: 0 0 40px;
 }
 .forward-state {
   flex: 1 1 auto;
@@ -73,6 +37,20 @@
   place-content: center;
   justify-items: center;
   color: var(--app-text-muted);
+}
+.forward-state--error {
+  gap: 16px;
+  padding: 24px;
+  box-sizing: border-box;
+  text-align: center;
+}
+.forward-state--error p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 20px;
+}
+.forward-state__icon {
+  color: var(--app-text-faint);
 }
 .msg-viewport {
   flex: 1 1 auto;

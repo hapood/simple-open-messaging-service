@@ -8,21 +8,21 @@
 
 ## Public surface
 
-| Method | Path | Authentication and purpose |
-| --- | --- | --- |
-| `GET` | `/.well-known/socfp` | Public server identity, keys, and protocol discovery. |
-| `POST` | `/s2s/v1/recognize` | Establish one recognition direction and persistently schedule the reverse direction. |
-| `POST` | `/s2s/v1/healthy` | Check an existing recognized relationship without fetching keys for an unknown caller. |
-| `POST` | `/s2s/v1/feed-heads` | Lightweight state/message/tombstone end-ID wake-up. |
-| `GET` | `/s2s/v1/state-feed` | Profiles, directional friendship/group facts, and origin group snapshots. |
-| `GET` | `/s2s/v1/message-feed` | Durable message-discovery index. |
-| `GET` | `/s2s/v1/message-tombstone-feed` | Durable deletion-discovery index. |
-| `GET` | `/s2s/v1/messages` | Query concrete messages by thread. |
-| `GET` | `/s2s/v1/message-tombstones` | Query permanent authoritative deletion facts by thread. |
-| `POST` | `/s2s/v1/call` | Relay ephemeral WebRTC lifecycle, SDP, and ICE data. |
-| `GET` | `/s2s/v1/users/:account` | Return the public profile required for first contact. |
-| `GET` | `/s2s/v1/media/:digest` | CAS Range download bound to exact message/thread ownership. |
-| `GET` | `/s2s/v1/forward-bundles/:bundleId` | Return an authorized immutable forwarding closure. |
+| Method | Path                                | Authentication and purpose                                                             |
+| ------ | ----------------------------------- | -------------------------------------------------------------------------------------- |
+| `GET`  | `/.well-known/socfp`                | Public server identity, keys, and protocol discovery.                                  |
+| `POST` | `/s2s/v1/recognize`                 | Establish one recognition direction and persistently schedule the reverse direction.   |
+| `POST` | `/s2s/v1/healthy`                   | Check an existing recognized relationship without fetching keys for an unknown caller. |
+| `POST` | `/s2s/v1/feed-heads`                | Lightweight state/message/tombstone end-ID wake-up.                                    |
+| `GET`  | `/s2s/v1/state-feed`                | Profiles, directional friendship/group facts, and origin group snapshots.              |
+| `GET`  | `/s2s/v1/message-feed`              | Durable message-discovery index.                                                       |
+| `GET`  | `/s2s/v1/message-tombstone-feed`    | Durable deletion-discovery index.                                                      |
+| `GET`  | `/s2s/v1/messages`                  | Query concrete messages by thread.                                                     |
+| `GET`  | `/s2s/v1/message-tombstones`        | Query permanent authoritative deletion facts by thread.                                |
+| `POST` | `/s2s/v1/call`                      | Relay ephemeral WebRTC lifecycle, SDP, and ICE data.                                   |
+| `GET`  | `/s2s/v1/users/:account`            | Return the public profile required for first contact.                                  |
+| `GET`  | `/s2s/v1/media/:digest`             | CAS Range download bound to exact message/thread ownership.                            |
+| `GET`  | `/s2s/v1/forward-bundles/:bundleId` | Return an authorized immutable forwarding closure.                                     |
 
 ## Identity and trust
 
@@ -54,6 +54,15 @@ Federation v1 wire requirements.
 - Friendship is derived from two directional facts. A time-limited `REQUESTED`
   intent may expire and be recreated at a higher revision. A P2P thread becomes
   active only when both directions converge to non-expiring `ACCEPTED`.
+- A peer `ACCEPTED` is valid only in a still-effective request flow: it either
+  confirms the local `REQUESTED`, or completes a peer request already answered
+  by the local `ACCEPTED`. Without either state it has no admission effect. It
+  does not create an incoming request, and a foreign user stub never bypasses
+  this gate.
+- Accepting every new peer request republishes the local `ACCEPTED` at a new
+  feed ID even when its body is unchanged. This lets a requester that ignored
+  an earlier unsolicited confirmation observe the confirmation for its current
+  request.
 - A newer local negative fact cannot be overwritten by a stale remote acceptance
   or group snapshot. The local node advances and republishes its negative intent.
   A valid local request may instead advance to acceptance when the peer confirms.
@@ -68,15 +77,12 @@ Federation v1 wire requirements.
   referenced `MEMBER_PROFILE` dependencies to the target peer.
 - `PROFILE` has its own revision and group metadata does not embed avatars. A
   member server may apply a profile relayed by the group origin.
-- An equal or older business revision does not rewrite a body. Dependency repair
+- An unchanged body does not allocate another feed ID. Dependency repair
   may reindex semantically unchanged `GROUP_META` to restore member-before-group
   ordering in the current projection.
 - Per-peer state feeds compact by stable key. Transport `feedId` and cursors are
-  bigint values; stable-key business `revision` is an integer. They are distinct
-  coordinate systems.
-- A receiver applies a state page and advances its cursor in one transaction. Any
-  invalid item rolls back the complete page.
-- Member snapshots precede the group revision that references them. When the last
+  bigint values and provide the ordering coordinate for snapshots.
+- Member snapshots precede the group snapshot that references them. When the last
   visibility source disappears, the source omits that member from its projection
   and the consumer cleans the reference closure only after a complete state drain.
 

@@ -53,7 +53,7 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
 
   it('keeps an identified user color stable when the display name changes', () => {
     fixture.componentRef.setInput('type', UserAvatarType.OTHER);
-    fixture.componentRef.setInput('identityId', 42);
+    fixture.componentRef.setInput('account', 'alice');
     fixture.componentRef.setInput('name', 'Alice');
     const color = fixture.componentInstance.bg();
 
@@ -88,7 +88,7 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
   });
 
   it('uses separate user and group identity namespaces for fallback colors', () => {
-    fixture.componentRef.setInput('identityId', 42);
+    fixture.componentRef.setInput('account', 'same-account');
     fixture.componentRef.setInput('name', 'Same label');
     fixture.componentRef.setInput('type', UserAvatarType.OTHER);
     const userColor = fixture.componentInstance.bg();
@@ -98,25 +98,53 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
     expect(fixture.componentInstance.groupFill().from).not.toBe(userColor);
   });
 
-  it('uses the empty color seed while an identity is not available', () => {
+  it('uses functional blue while a group identity is not available', () => {
     fixture.componentRef.setInput('type', UserAvatarType.GROUP);
     fixture.componentRef.setInput('name', 'Draft group');
     const color = fixture.componentInstance.groupFill().from;
 
     fixture.componentRef.setInput('name', 'Renamed draft');
 
+    expect(color).toBe('var(--app-action-primary)');
     expect(fixture.componentInstance.groupFill().from).toBe(color);
   });
 
-  it('uses a separate stable color identity without changing the avatar cache identity', () => {
+  it('uses account and domain without changing the avatar cache identity', () => {
     fixture.componentRef.setInput('type', UserAvatarType.GROUP);
     fixture.componentRef.setInput('identityId', 12);
-    fixture.componentRef.setInput('colorIdentityId', '!group-account');
+    fixture.componentRef.setInput('account', '!group-account');
+    fixture.componentRef.setInput('federatedDomain', 'remote.example');
     const color = fixture.componentInstance.groupFill().from;
 
-    fixture.componentRef.setInput('identityId', '!group-account');
+    fixture.componentRef.setInput('identityId', 99);
 
     expect(fixture.componentInstance.groupFill().from).toBe(color);
+  });
+
+  it('uses different colors for the same account on local and federated domains', () => {
+    fixture.componentRef.setInput('type', UserAvatarType.OTHER);
+    fixture.componentRef.setInput('account', 'alice');
+    const localColor = fixture.componentInstance.bg();
+
+    fixture.componentRef.setInput('federatedDomain', 'remote.example');
+
+    expect(fixture.componentInstance.bg()).not.toBe(localColor);
+  });
+
+  it('renders the federated marker in the same scalable coordinate system as the avatar', () => {
+    fixture.componentRef.setInput('name', 'Remote user');
+    fixture.componentRef.setInput('federatedDomain', 'remote.example');
+    fixture.detectChanges();
+
+    const marker = fixture.nativeElement.querySelector(
+      '.avatar-federated-icon',
+    ) as SVGElement;
+    expect(marker.getAttribute('viewBox')).toBe('0 0 100 100');
+    expect(marker.querySelector('.avatar-federated-ground')).not.toBeNull();
+    const globe = marker.querySelector('.avatar-federated-globe');
+    expect(globe?.querySelector('circle')?.getAttribute('cx')).toBe('81');
+    expect(globe?.querySelector('circle')?.getAttribute('cy')).toBe('19');
+    expect(marker.querySelector('app-icon')).toBeNull();
   });
 
   it('passes a local-preview src (blob:/data:) straight through without the DB', () => {

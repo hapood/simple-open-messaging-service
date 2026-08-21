@@ -29,6 +29,7 @@ import {
   FEDERATION_API_PREFIX,
   FEDERATION_WELL_KNOWN_PATH,
 } from './federation/federation-protocol.js';
+import { dataDirectory } from './common/data-directory.js';
 
 // Multipart upload size cap — the hard ceiling for any single uploaded part. Raised to 100MB so
 // POST /upload/video can admit video; images stay bounded at UploadService.MAX_IMAGE_BYTES, files at
@@ -296,8 +297,8 @@ async function registerStaticServing(
   app: NestFastifyApplication,
   adapter: FastifyAdapter,
 ) {
-  const uploadsDir = join(process.cwd(), 'data', 'uploads');
-  const casDir = join(process.cwd(), 'data', 'cas');
+  const uploadsDir = dataDirectory('uploads');
+  const casDir = dataDirectory('cas');
   // Breaking CAS reset: the legacy namespace is intentionally unsupported. Removing it on startup
   // guarantees old URLs stay invalid and prevents abandoned duplicate-by-extension files from
   // consuming disk indefinitely. Avatars live outside this directory and are unaffected.

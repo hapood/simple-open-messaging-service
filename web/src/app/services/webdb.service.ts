@@ -7,7 +7,11 @@ import {
   type IDBPTransaction,
 } from 'idb';
 import type { ConversationItem, DeletedMessageItem, Message } from './model';
-import type { ClientFriendIntent, HydratedThreadDeltaOp } from './user.service';
+import type {
+  ClientFriendIntent,
+  ClientGroupInviteIntent,
+  HydratedThreadDeltaOp,
+} from './user.service';
 import type { MissedCursor } from './notification-descriptor.model';
 import { isTauri, tauriInvoke } from './runtime';
 
@@ -52,7 +56,7 @@ export interface ProfileRecord {
   bio: string;
   domain: string;
   profileRev: number;
-  source?: 'OUTGOING_FRIEND_REQUEST';
+  source?: 'OUTGOING_FRIEND_REQUEST' | 'GROUP_INVITE';
   expiresAt?: number;
 }
 
@@ -179,7 +183,7 @@ export interface WebdbSchema extends DBSchema {
   threads: { key: number; value: ConversationItem };
   friendIntents: {
     key: string;
-    value: ClientFriendIntent;
+    value: ClientFriendIntent | ClientGroupInviteIntent;
     indexes: { directionRequested: [string, string, number, string] };
   };
   settings: { key: string; value: MetaRecord };
@@ -202,7 +206,9 @@ export interface MessageDbSchema extends DBSchema {
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
 export const CACHE_SCHEMA_VERSION = 0;
-export const MESSAGE_CACHE_SCHEMA_VERSION = 1;
+// Version 2 invalidates rows written before PURE_TEXT became a strict JSON envelope. Message history is
+// rebuildable from the server, so recreating this cache is safer than letting a stale row abort chat mount.
+export const MESSAGE_CACHE_SCHEMA_VERSION = 2;
 const IDB_FORMAT_VERSION = 1;
 
 export class LocalCacheUnavailableError extends Error {
@@ -950,14 +956,35 @@ export class WebdbService implements OnDestroy {
 
   async getFriendIntents(): Promise<ClientFriendIntent[]> {
     return this.runAccountOperation(async () => {
-      if (isTauri() && this.currentUserId != null)
-        return tauriInvoke<ClientFriendIntent[]>(
-          'native_db_list_friend_intents',
-          {
-            userId: Number(this.currentUserId),
-          },
-        );
-      return (await this.db()).getAll('friendIntents');
+      const rows =
+        isTauri() && this.currentUserId != null
+          ? await tauriInvoke<
+              Array<ClientFriendIntent | ClientGroupInviteIntent>
+            >('native_db_list_friend_intents', {
+              userId: Number(this.currentUserId),
+            })
+          : await (await this.db()).getAll('friendIntents');
+      return rows.filter(
+        (row): row is ClientFriendIntent =>
+          (row as ClientGroupInviteIntent).kind !== 'GROUP_INVITE',
+      );
+    });
+  }
+
+  async getGroupInviteIntents(): Promise<ClientGroupInviteIntent[]> {
+    return this.runAccountOperation(async () => {
+      const rows =
+        isTauri() && this.currentUserId != null
+          ? await tauriInvoke<
+              Array<ClientFriendIntent | ClientGroupInviteIntent>
+            >('native_db_list_friend_intents', {
+              userId: Number(this.currentUserId),
+            })
+          : await (await this.db()).getAll('friendIntents');
+      return rows.filter(
+        (row): row is ClientGroupInviteIntent =>
+          (row as ClientGroupInviteIntent).kind === 'GROUP_INVITE',
+      );
     });
   }
 
@@ -1005,19 +1032,19 @@ export class WebdbService implements OnDestroy {
         const items: ClientFriendIntent[] = [];
         let row = await index.openCursor(range, 'prev');
         while (row && items.length < take) {
-          items.push(row.value);
+          items.push(row.value as ClientFriendIntent);
           row = await row.continue();
         }
         return { items, total: requestedTotal };
       }
 
-      const requested = await index.getAll(range);
-      const revoked = await index.getAll(
+      const requested = (await index.getAll(range)) as ClientFriendIntent[];
+      const revoked = (await index.getAll(
         IDBKeyRange.bound(
           [direction, 'REVOKED', 0, ''],
           [direction, 'REVOKED', Number.MAX_SAFE_INTEGER, '\uffff'],
         ),
-      );
+      )) as ClientFriendIntent[];
       const items = [...requested, ...revoked]
         .sort(
           (a, b) =>
@@ -1154,27 +1181,74 @@ export class WebdbService implements OnDestroy {
     );
     for (const op of delta) {
       if (op.direction === 'CLIENT_STATE') {
-        if (op.eventType !== 'P2P_INTENT') continue;
         const key = clientStateKey(op);
         const store = tx.objectStore('friendIntents');
-        const previous = await store.get(key);
-        if (!previous || op.businessRevision > previous.businessRevision)
-          await store.put({
+        if (op.eventType === 'GROUP_INVITE_INTENT') {
+          const body = op.body as Omit<
+            ClientGroupInviteIntent,
+            | 'key'
+            | 'account'
+            | 'domain'
+            | 'subjectAccount'
+            | 'subjectDomain'
+            | 'kind'
+          >;
+          const intent: ClientGroupInviteIntent = {
+            key,
+            kind: 'GROUP_INVITE',
+            account: op.account,
+            domain: op.domain,
+            subjectAccount: op.subjectAccount,
+            subjectDomain: op.subjectDomain,
+            ...body,
+          };
+          await store.put(intent);
+          const identity = `pending-group:${op.domain}\u0000${op.account}`;
+          if (
+            intent.status === 'REQUESTED' &&
+            intent.expiresAt !== null &&
+            intent.expiresAt > Date.now()
+          )
+            await tx.objectStore('profiles').put({
+              identity,
+              id: 0,
+              kind: 'group',
+              name: intent.group.name,
+              account: intent.group.account,
+              avatar: intent.group.avatar,
+              bio: intent.group.description,
+              domain: intent.group.domain,
+              profileRev: intent.group.profileRev,
+              source: 'GROUP_INVITE',
+              expiresAt: intent.expiresAt,
+            });
+          else await tx.objectStore('profiles').delete(identity);
+          continue;
+        }
+        const body = op.body as Omit<
+          ClientFriendIntent,
+          | 'key'
+          | 'account'
+          | 'domain'
+          | 'subjectAccount'
+          | 'subjectDomain'
+          | 'requestedSort'
+        >;
+        await store.put({
             key,
             account: op.account,
             domain: op.domain,
             subjectAccount: op.subjectAccount,
             subjectDomain: op.subjectDomain,
-            businessRevision: op.businessRevision,
-            ...op.body,
-            requestedSort: op.body.requestedAt ?? 0,
+            ...body,
+            requestedSort: body.requestedAt ?? 0,
           });
         if (
-          op.body.status === 'REQUESTED' &&
-          op.body.expiresAt !== null &&
-          op.body.direction === 'OUTGOING'
+          body.status === 'REQUESTED' &&
+          body.expiresAt !== null &&
+          body.direction === 'OUTGOING'
         ) {
-          const peer = op.body.peer;
+          const peer = body.peer;
           await tx.objectStore('profiles').put({
             identity: `pending:${peer.domain}\u0000${peer.account}`,
             id: 0,
@@ -1186,10 +1260,10 @@ export class WebdbService implements OnDestroy {
             domain: peer.domain,
             profileRev: 0,
             source: 'OUTGOING_FRIEND_REQUEST',
-            expiresAt: op.body.expiresAt,
+            expiresAt: body.expiresAt,
           });
         }
-        if (op.body.status === 'REQUESTED' && op.body.direction === 'INCOMING')
+        if (body.status === 'REQUESTED' && body.direction === 'INCOMING')
           await tx.objectStore('settings').put({
             key: 'friendRequestStateRevision',
             value: op.revision,

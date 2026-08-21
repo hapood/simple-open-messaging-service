@@ -1,5 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { and, asc, eq, gt, inArray, isNull, lte, ne, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, lte, ne, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { ContentType } from '../database/enums.js';
@@ -21,7 +21,7 @@ import {
   parseCallContent,
 } from '../calls/call-content.js';
 import {
-  authoredMessageSnapshot,
+  federatedContentDigests,
   toFederatedMessageContent,
 } from './federated-message-content.js';
 import { loadFederationConfig } from './federation.config.js';
@@ -224,7 +224,6 @@ export class FederationMessageFeedService {
                 content: message.content,
                 createdAt: message.createdAt,
                 clientMessageId: message.clientMessageId,
-                federationAuthoredSnapshot: message.federationAuthoredSnapshot,
                 threadType: messageThread.type,
                 groupUserId: messageThread.groupUserId,
                 authorAccount: user.account,
@@ -273,7 +272,6 @@ export class FederationMessageFeedService {
       content: string;
       createdAt: Date;
       clientMessageId: string | null;
-      federationAuthoredSnapshot: typeof message.$inferSelect.federationAuthoredSnapshot;
       threadType: 'P2P' | 'GROUP';
       groupUserId: number | null;
       authorAccount: string;
@@ -306,11 +304,7 @@ export class FederationMessageFeedService {
     }
 
     const quoteRefs = rows.flatMap((row) => {
-      if (
-        row.federationAuthoredSnapshot ||
-        row.contentType !== ContentType.PURE_TEXT
-      )
-        return [];
+      if (row.contentType !== ContentType.PURE_TEXT) return [];
       const seq = parseTextMessageContent(row.content)?.quote?.seq;
       return seq === undefined ? [] : [{ threadId: row.threadId, seq }];
     });
@@ -350,38 +344,35 @@ export class FederationMessageFeedService {
         domain: this.wireDomain(row.authorDomain),
       };
       const quoteSeq =
-        (!row.federationAuthoredSnapshot ||
-          (thread.type === 'GROUP' && thread.domain === this.localDomain)) &&
         row.contentType === ContentType.PURE_TEXT
           ? parseTextMessageContent(row.content)?.quote?.seq
           : undefined;
-      const authoritativeGroupProjection =
-        thread.type === 'GROUP' && thread.domain === this.localDomain;
       const quoteTarget =
-        (!authoritativeGroupProjection
-          ? row.federationAuthoredSnapshot?.quoteTarget
-          : undefined) ??
-        (quoteSeq === undefined
+        quoteSeq === undefined
           ? undefined
-          : quoteTargets.get(JSON.stringify([row.threadId, quoteSeq])));
-      let content =
-        (!authoritativeGroupProjection
-          ? row.federationAuthoredSnapshot?.content
-          : undefined) ??
-        toFederatedMessageContent(
-          row.contentType,
-          row.content,
-          this.localDomain,
-        );
-      if (
-        !row.federationAuthoredSnapshot &&
-        row.contentType === ContentType.CALL
-      ) {
+          : quoteTargets.get(JSON.stringify([row.threadId, quoteSeq]));
+      let content = toFederatedMessageContent(
+        row.contentType,
+        row.content,
+        this.localDomain,
+      );
+      if (row.contentType === ContentType.CALL) {
         const local = parseCallContent(row.content);
         if (!local || thread.type !== 'P2P')
           throw new Error('invalid federated CALL projection');
         content = buildFederatedCallContent(local);
       }
+      const contentDigests = new Set(
+        federatedContentDigests(row.contentType, content),
+      );
+      const candidateAssets = assets.get(row.messageId) ?? [];
+      // A FORWARD card references its closure by bundleId; the closure manifest, rather than the
+      // card itself, owns the referenced digests. Other message types must not leak receiver-local
+      // presentation assets (notably LINK artwork) into the wire projection.
+      const projectedAssets =
+        row.contentType === ContentType.FORWARD
+          ? candidateAssets
+          : candidateAssets.filter((asset) => contentDigests.has(asset.digest));
       const isProcessingReceipt =
         row.originSeq !== null &&
         (thread.type === 'P2P'
@@ -398,28 +389,13 @@ export class FederationMessageFeedService {
         contentType: row.contentType,
         content,
         createdAt: row.createdAt.getTime(),
-        clientMessageId: row.federationAuthoredSnapshot
-          ? row.federationAuthoredSnapshot.clientMessageId
-          : row.clientMessageId,
+        clientMessageId: row.clientMessageId,
         ...(quoteTarget ? { quoteTarget } : {}),
-        assets: authoritativeGroupProjection
-          ? (assets.get(row.messageId) ?? [])
-          : (row.federationAuthoredSnapshot?.assets ??
-            assets.get(row.messageId) ??
-            []),
+        // MessageAsset also authorizes receiver-local presentation assets, notably LINK artwork.
+        // Only descriptors referenced by the URL-free wire content belong in the federation payload.
+        assets: projectedAssets,
       };
       result.push(item);
-      if (!row.federationAuthoredSnapshot) {
-        await tx
-          .update(message)
-          .set({ federationAuthoredSnapshot: authoredMessageSnapshot(item) })
-          .where(
-            and(
-              eq(message.id, row.messageId),
-              isNull(message.federationAuthoredSnapshot),
-            ),
-          );
-      }
     }
     return result;
   }

@@ -23,7 +23,6 @@
       #msgHeader
       [userMsgTrd]="userMsgTrd()"
       (searchJump)="onSearchJump($event)"
-      (historyCleared)="reload()"
       [style.--soms-safe-top]="showCallBanner() ? '0px' : null"
       [style.--msg-header-h]="showCallBanner() ? '56px' : null"
     ></app-message-header>
@@ -78,7 +77,7 @@
           >
             <svg viewBox="0 -960 960 960" aria-hidden="true">
               <path
-                d="M640-160v-200H320q-83 0-141.5-58.5T120-560q0-83 58.5-141.5T320-760h240v-200l320 400-240 400Zm0-280 137-120-137-120v80H320q-50 0-85 35t-35 85q0 50 35 85t85 35h320v80Z"
+                d="m640-280-57-56 184-184-184-184 57-56 240 240-240 240ZM80-200v-160q0-83 58.5-141.5T280-560h247L383-704l57-56 240 240-240 240-57-56 144-144H280q-50 0-85 35t-35 85v160H80Z"
               />
             </svg>
             <span>{{ 'chat.selection.forward' | transloco }}</span>
@@ -118,7 +117,7 @@
             } @else {
               <svg viewBox="0 -960 960 960" aria-hidden="true">
                 <path
-                  d="M40-120v-720h400l16 80h424v440H520l-16-80H120v280H40Zm414-360h346v-200H390l-16-80H120v280h334Z"
+                  d="M480-280q17 0 28.5-11.5T520-320q0-17-11.5-28.5T480-360q-17 0-28.5 11.5T440-320q0 17 11.5 28.5T480-280Zm-40-160h80v-240h-80v240ZM330-120 120-330v-300l210-210h300l210 210v300L630-120H330Zm34-80h232l164-164v-232L596-760H364L200-596v232l164 164Z"
                 />
               </svg>
             }
@@ -144,6 +143,8 @@
             [type]="UserAvatarType.OTHER"
             [name]="card.profile.name"
             [identityId]="card.profile.userId"
+            [account]="card.profile.account"
+            [federatedDomain]="card.profile.domain || null"
             [src]="card.profile.avatar"
           />
           <div class="member-profile-copy">
@@ -220,6 +221,8 @@
                 [type]="emptyAvatarType()"
                 [name]="emptyTitle()"
                 [identityId]="emptyAvatarIdentityId()"
+                [account]="emptyAvatarAccount()"
+                [federatedDomain]="emptyAvatarDomain()"
                 [src]="emptyAvatarSrc()"
               >
               </app-user-avatar>
@@ -561,10 +564,7 @@
       </div>
     }
 
-    @if (nativeComposerOccluded()) {
-      <!-- A routed pane owns the interaction surface. Keep no web composer DOM behind it; the matching
-           component effect also hides the native sibling composer. -->
-    } @else if (dissolvedGroup()) {
+    @if (dissolvedGroup()) {
       <div class="msg-blocked-banner">
         {{ 'chat.groupDissolvedBanner' | transloco }}
       </div>
@@ -575,19 +575,22 @@
         {{ 'chat.leftGroupBanner' | transloco }}
       </div>
     } @else if (blockedPeer()) {
-      <button type="button" class="msg-blocked-banner" (click)="unblockPeer()">
-        <span>{{
+      <div class="msg-blocked-banner">
+        {{
           (userMsgTrd()?.type === 'GROUP'
             ? 'chat.blockedGroupBanner'
             : 'chat.blockedContactBanner'
           ) | transloco
-        }}</span>
-        <strong>{{ 'chat.unblockAction' | transloco }}</strong>
-      </button>
+        }}
+      </div>
     } @else if (sendPaused()) {
       <div class="msg-blocked-banner">
         {{ 'chat.quotaPausedBanner' | transloco }}
       </div>
+    } @else if (nativeComposerOccluded()) {
+      <!-- A routed pane owns the interaction surface. Keep no web composer DOM behind it; the matching
+           component effect also hides the native sibling composer. Persistent conversation-state banners
+           are handled above and remain independent from composer visibility. -->
     } @else {
       @if (!nativeComposer.supported) {
         <app-chat-input
@@ -606,7 +609,7 @@
                   [type]="UserAvatarType.GROUP"
                   [name]="quote.imageLabel"
                   [identityId]="quote.imageIdentity"
-                  [colorIdentityId]="quote.imageIdentity"
+                  [account]="quote.imageIdentity"
                   [src]="quote.image"
                 />
               } @else if (quote.image) {
@@ -624,10 +627,15 @@
               </span>
               <button
                 type="button"
+                class="msg-compose-quote-close"
                 (click)="cancelQuote()"
                 [attr.aria-label]="'common.cancel' | transloco"
               >
-                ×
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4-6.3-6.3-6.3 6.3-1.4-1.4L9.2 12 2.9 5.7l1.4-1.4 6.3 6.3 6.3-6.3z"
+                  />
+                </svg>
               </button>
             </div>
           }

@@ -655,6 +655,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       name: 'Alice',
       avatar: '',
       avatarIdentityId: 2,
+      avatarDomain: '',
       isSelf: false,
     });
   });

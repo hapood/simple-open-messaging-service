@@ -45,7 +45,9 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     this.db = drizzle({
       client: this.pool,
       schema: databaseSchema,
-      logger: process.env.NODE_ENV !== 'production',
+      logger:
+        process.env.NODE_ENV !== 'production' &&
+        process.env.DATABASE_QUERY_LOG !== '0',
     });
   }
 

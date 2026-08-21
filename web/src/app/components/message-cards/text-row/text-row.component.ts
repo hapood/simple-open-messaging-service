@@ -119,6 +119,7 @@ export class TextRowComponent {
     return {
       author: quote?.author ?? '',
       body: quote?.body ?? '',
+      isFileSet: quote?.contentType === 'GALLERY',
     };
   });
 }

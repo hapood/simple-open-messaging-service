@@ -24,6 +24,8 @@ export interface FriendRequestCardModel {
   status: number;
   date: number;
   errText: string;
+  kind?: 'FRIEND' | 'GROUP';
+  sourceLabel?: string;
 }
 
 @Component({

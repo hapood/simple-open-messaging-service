@@ -45,16 +45,6 @@ The peer becomes `available` only after both directions of recognition, service 
 | Idempotency coordinate | `(signerDomain, recipientDomain)` | Side-effect-free query |
 | State effect | Commits one recognition direction | Handler has no side effect; caller may update remote availability from the response |
 
-v1 combines capability querying and a refresh hint in one additional control-plane operation:
-
-| Item | Discover |
-| --- | --- |
-| Method / path | `POST /s2s/v1/discover` |
-| Request | Bare `{ origin: Domain }` |
-| Request auth | lightweight signed |
-| Success | HTTP `200`, bare `V1DiscoveryResult` |
-| State effect | Returns local capabilities and coalesces an asynchronous reverse capability-refresh hint |
-
 ```ts
 interface DomainRequest {
   domain: Domain;
@@ -66,12 +56,10 @@ interface RecognizeOk {
 
 interface HealthResult {
   status: 'available' | 'degraded' | 'unavailable';
-  selectedProtocolVersion: PositiveSafeInteger | null;
-  acceptedExtensions: ExtensionId[] | null;
 }
 ```
 
-The core objects listed here and the Discover request and result are closed objects. Every listed field is required except explicitly optional `V1DiscoveryResult.software`; duplicate and unknown fields are forbidden. Only the `unavailable` Health branch uses `null`, as defined in Section 9.
+The objects listed here are closed. Every listed field is required; duplicate and unknown fields are forbidden.
 
 ## 3. Bidirectional state model
 
@@ -98,7 +86,7 @@ The peer lifecycle is this closed enum. It states only whether communication wit
 
 A node MUST retain outside the lifecycle the original evidence and reason causing `halted`, such as a stable HTTP error from the target peer, a local policy block, pinned-root contradiction, or absence of a common version. Each cause retains its distinct wire error and security meaning but is not a lifecycle state. An implementation MAY use additional pending or diagnostic fields but MUST NOT persist Healthy's `unavailable` result as a same-named lifecycle state.
 
-Healthy's `available | degraded | unavailable` is a privacy projection of local state and query permission, not the lifecycle enum. Healthy MAY provide reachability evidence for transitions between local `available` and `degraded`; it MUST NOT commit or invent a recognition-direction fact or cause the local peer to enter `halted`. An ordinary operation MUST NOT authorize solely from the `available` or `degraded` label. If complete bidirectional recognition facts, pinned identity, common version, policy, and operation-specific business authorization remain valid, a transport-only `degraded` peer MAY still send and receive the ordinary data plane. An `establishing` peer MAY use only `recognize`, `healthy`, and directionally opened `feed-heads` and `discover`.
+Healthy's `available | degraded | unavailable` is a privacy projection of local state and query permission, not the lifecycle enum. Healthy MAY provide reachability evidence for transitions between local `available` and `degraded`; it MUST NOT commit or invent a recognition-direction fact or cause the local peer to enter `halted`. An ordinary operation MUST NOT authorize solely from the `available` or `degraded` label. If complete bidirectional recognition facts, pinned identity, common version, policy, and operation-specific business authorization remain valid, a transport-only `degraded` peer MAY still send and receive the ordinary data plane. An `establishing` peer MAY use only `recognize`, `healthy`, and directionally opened `feed-heads`.
 
 Local `available` is calculated as:
 
@@ -154,7 +142,7 @@ Operation gates are calculated separately from lifecycle:
 | --- | --- |
 | `recognize` | bootstrap signed and its admission rule; no existing lifecycle required |
 | `healthy` | status signed; failures uniformly project as `unavailable` |
-| `feed-heads` / `discover` | `lightweightInboundReady` in that signer direction |
+| `feed-heads` | `lightweightInboundReady` in that signer direction |
 | Ordinary recognized data | Pinned identity, both direction confirmations, common version, policy, and operation-specific business authorization; transport-only `degraded` does not close the gate |
 | Termination convergence for an existing active call | Existing binding and tombstone rules in calls.md; health-cache degradation alone cannot block it |
 
@@ -162,7 +150,7 @@ Sending Recognize, enqueuing a retry, reading well-known, or merely validating a
 
 After Recognize is sent, a timeout, DNS/TLS/connect failure, interrupted response, or retryable server failure retains the already established `recognizesPeer` fact and remains `establishing`; it MUST NOT invent outbound confirmation. `degraded` applies only to a peer with completed bidirectional recognition and impaired current reachability. An unconverged handshake uses `establishing`.
 
-Ordinary feed, call, user, media, and forward-bundle operations use the `recognized signed` context from protocol.md and do not use the cached `available` label as a protocol gate. Lightweight requests here mean only `feed-heads` and `discover`. Before sending Recognize `OK`, the receiver MUST be ready to accept both from that signer. The sender MAY send them in that direction only after receiving `OK`. Their lossy, non-durable payload does not open another data-plane operation before the handshake converges.
+Ordinary feed, call, user, media, and forward-bundle operations use the `recognized signed` context from protocol.md and do not use the cached `available` label as a protocol gate. The only lightweight request is `feed-heads`. Before sending Recognize `OK`, the receiver MUST be ready to accept it from that signer. The sender MAY send it in that direction only after receiving `OK`. Its lossy, non-durable payload does not open another data-plane operation before the handshake converges.
 
 `localServiceAvailable` is distinct from local peer lifecycle `available`: the former means “this server is ready” and MAY become true before sending the reverse request, while the latter also requires successful confirmation of the remote peer. Healthy returns a privacy-safe view of the local lifecycle. Both Healthy `available` and `degraded` mean that a recognition relationship exists and the signed peer may query it.
 
@@ -221,7 +209,7 @@ After all validation and policy checks succeed, B MUST atomically complete the f
 
 1. Pin or verify A's root identity.
 2. Commit `inboundRecognitionConfirmed` while preserving the time of first confirmation.
-3. Commit `lightweightInboundReady`, so a `feed-heads` or `discover` sent by A immediately after receiving `OK` is not rejected by an unready admission gate.
+3. Commit `lightweightInboundReady`, so a `feed-heads` sent by A immediately after receiving `OK` is not rejected by an unready admission gate.
 4. Ensure that reverse `B → A Recognize` work will execute and can resume after crash recovery.
 5. If `recognizesPeer(A)` existed before B began processing the request, B MUST set `localServiceAvailable` before returning `OK`. B MUST NOT set `outboundRecognitionConfirmed` merely because of this inbound request: it may be the reverse direction or an independently initiated concurrent request, and does not prove that A committed a Recognize previously sent by B.
 
@@ -409,21 +397,19 @@ The request uses the same HTTP Message Signature profile as Recognize. `domain` 
 
 B MAY attempt to validate Healthy only with an existing pinned or recognized identity. For a completely unknown domain, B SHOULD NOT fetch well-known merely to answer the query, because that would turn the endpoint into an arbitrary DNS/HTTP fetch oracle. For A with an existing pinned identity, B MAY refresh well-known under the signing-key rotation rules, but MUST NOT replace the root pin because of the query.
 
-B MUST return exactly one of the following three closed objects. `acceptedExtensions` lists the one-way receive capabilities B has actually enabled for A:
+B MUST return exactly one of the following three closed objects:
 
 ```json
-{ "status": "available", "selectedProtocolVersion": 1, "acceptedExtensions": ["socfp.message.sticker.v1"] }
+{ "status": "available" }
 ```
 
 ```json
-{ "status": "degraded", "selectedProtocolVersion": 1, "acceptedExtensions": [] }
+{ "status": "degraded" }
 ```
 
 ```json
-{ "status": "unavailable", "selectedProtocolVersion": null, "acceptedExtensions": null }
+{ "status": "unavailable" }
 ```
-
-For `available` and `degraded`, `selectedProtocolVersion` MUST be the single common wire major B currently selects for A. `acceptedExtensions` MUST be sorted in ASCII lexicographic order without duplicates and MUST be a subset of B's current `POST /s2s/v1/discover` result. It means B is ready to receive these extensions from A; it does not mean B will send them to A. B may enable capabilities declared through discover asynchronously and incrementally. Capabilities not yet enabled do not appear in Health.
 
 Only when the request validates against A's identity pinned by B, and both body binding and query authorization are valid, MAY B return `available` or `degraded`:
 
@@ -431,7 +417,7 @@ Only when the request validates against A's identity pinned by B, and both body 
 - Return `degraded` when B has committed `inboundRecognitionConfirmed(A)` and `localServiceAvailable=true`, but B's own outbound confirmation, remote round trip, or recoverable transport state has not converged. A reverse-Recognize sender MUST prepare its service before sending the HTTP request. If the original `A → B` was committed, A's subsequent Healthy receives at least `degraded`. If the parties only initiated concurrently and B has not committed `A → B`, B MUST return `unavailable`.
 - Both `available` and `degraded` prove that B committed the inbound direction fact “A recognizes B,” recognizes A's pinned identity, and successfully completed this signed request round trip. They differ only in B's own view of connection state.
 
-The following cases MUST uniformly return HTTP `200` with `{"status":"unavailable","selectedProtocolVersion":null,"acceptedExtensions":null}`:
+The following cases MUST uniformly return HTTP `200` with `{"status":"unavailable"}`:
 
 - The peer or domain does not exist, or B has never pinned and recognized that identity.
 - The signature cannot be validated by the existing identity, the current signing certificate needed for validation is unavailable, or the body domain differs from the signer.
@@ -456,34 +442,11 @@ A receiving valid `available` or `degraded` atomically becomes `available` if it
 
 A MUST NOT infer B's actual reason from `unavailable`, nor enter `halted` solely because of that result. `halted` requires either an authenticated, non-automatically-recoverable HTTP error from the target peer as defined in Section 8 or hard security evidence independently verified by A.
 
-Before A sends extension `E` to B, `E` MUST appear both in B's most recently validated v1 discover response and in the most recent valid Health `acceptedExtensions`. Health MAY narrow the active set, but MUST NOT authorize an extension absent from discover. After receiving a discover request from the peer, A MAY continue sending extensions in the intersection of the two old cached sets until asynchronous refresh completes. A MUST stop sending an extension when refresh observes its removal. A newly observed extension still requires explicit acceptance in a subsequent Health result.
-
 ### 9.3 Other reachability evidence and convergence optimization
 
 In addition to Healthy, a normal S2S request initiated by a recognized peer that is successfully authenticated and processed, or a validated success or definitive application response to a locally initiated request, MAY serve as fresh evidence of `remoteServiceReachable` and clear transport-only degradation. An application rejection MAY also restore reachability when it proves that the peer processed the request normally. A malformed proxy response, network error, unverifiable response, or `5xx` provides no such evidence. This rule MUST NOT invent an unestablished recognition direction fact.
 
 When B sends reverse Recognize and receives A's `OK`, B MAY omit an additional Healthy call to A: before returning that reverse `OK`, A completed `localServiceAvailable` under Section 5.2, so the `OK` also provides equivalent evidence of `remoteServiceReachable`. Because the first `OK` may have been lost, A MUST continue idempotently retrying the original-direction Recognize. No status returned by B's Healthy can supply A's missing outbound confirmation.
-
-### 9.4 v1 capability discovery
-
-When known peer A queries B or signals that its own capabilities changed, it sends this closed request to `POST /s2s/v1/discover`:
-
-```json
-{ "origin": "a.example" }
-```
-
-The request uses the lightweight-signed validation boundary, and `origin` MUST equal the signer domain. A successful response is a bare closed object:
-
-```ts
-interface V1DiscoveryResult {
-  extensions: ExtensionId[];
-  software?: string;
-}
-```
-
-`extensions` is required and may be empty. It contains at most 64 entries, sorted in ASCII lexicographic order without duplicates. `software` is diagnostic only and MUST NOT affect identity, authorization, protocol selection, or implementation-specific behavior. The response does not repeat the major version, root key, or signing key: the request path binds v1, while cross-version and identity information is validated only through well-known. Reject unknown, unauthorized, or unsafe-to-validate requests under the common signature, recognition, and error rules. A server MUST NOT establish a first identity pin merely to answer this request.
-
-The recipient MUST immediately return its current capability view and coalesce duplicate pending reverse refreshes for the same peer; it MUST NOT block the response while waiting for an external fetch. Requests may be lost, duplicated, or reordered and carry neither the caller's capability content nor a revision. Automatic refresh and administrator-triggered refresh may use the same operation. Management APIs, scheduling, and UI are outside SOCFP. The recipient MUST use bounded, jittered refresh behavior to prevent fetch amplification.
 
 ## 10. Complete HTTP construction examples
 

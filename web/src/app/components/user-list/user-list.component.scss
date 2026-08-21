@@ -33,18 +33,18 @@
     flex-shrink: 0;
   }
 
-  // Brand circular check, bottom-right of the avatar (WhatsApp/Telegram selected state).
+  // Selection lives top-left; the federated globe owns the opposite corner.
   .check {
     position: absolute;
-    right: -2px;
-    bottom: -2px;
+    left: -2px;
+    top: -2px;
     width: 22px;
     height: 22px;
     box-sizing: border-box;
     border-radius: var(--app-radius-pill);
-    background: var(--app-brand);
-    color: #fff;
-    border: 2px solid var(--app-surface);
+    background: var(--app-action-primary);
+    color: var(--app-on-action-primary);
+    border: 2px solid var(--app-text);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -69,14 +69,6 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-    }
-
-    // Federated-domain chip (globe + domain) — the secondary line under the nickname, shown only for
-    // federated peers (local users render nothing here). align-self keeps it from stretching across
-    // the flex-column so it hugs its content like a chip.
-    .thread-fed {
-      align-self: flex-start;
-      margin-top: 3px;
     }
   }
 }

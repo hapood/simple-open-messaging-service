@@ -160,8 +160,8 @@ export class GroupService {
 
   /**
    * Create a group: mint the `!`-User identity (name/avatar/bio) + the GROUP thread linked via
-   * groupUserId + the owner as an OWNER participant. No other members here — the controller writes
-   * GROUP_INVITE messages into each invited friend's P2P thread; they join via group/join. Wrapped in a
+   * groupUserId + the owner as an OWNER participant. No other members are created here; invitations
+   * are represented by membership state. Wrapped in a
    * regenerate-on-P2002 loop: a same-ms ULID collision at the
    * account-domain unique index is probabilistically impossible, but the loop is a real safety net.
    */
@@ -450,7 +450,6 @@ export class GroupService {
           .update(groupMembershipRequest)
           .set({
             status: 'NOT_MEMBER',
-            revision: sql`${groupMembershipRequest.revision} + 1`,
             updatedAt: now,
           })
           .where(
@@ -625,12 +624,14 @@ export class GroupService {
         .from(user)
         .where(eq(user.id, params.targetUserId))
         .limit(1);
+      const clientRevisions: Array<{ userId: number; revision: number }> = [];
       const requestState = await this.federation.writeGroupInviteIntentInTx(
         tx,
         params.threadId,
         params.targetUserId,
         params.reason ?? '',
         false,
+        clientRevisions,
       );
       const groupState = await this.federation.writeGroupStateInTx(
         tx,
@@ -645,6 +646,7 @@ export class GroupService {
       return {
         transitioned: true,
         revisions: [
+          ...clientRevisions,
           ...refreshes,
           ...(revision === null
             ? []

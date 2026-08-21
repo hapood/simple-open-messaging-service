@@ -11,14 +11,14 @@ import type { JsonValue } from '../database/json.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { AdminListDiagnosticsDto } from './diagnostics.dto.js';
+import { dataDirectory } from '../common/data-directory.js';
 
 const writeFileAsync = promisify(writeFile);
 const renameAsync = promisify(rename);
 const mkdirAsync = promisify(mkdir);
 
-/** Storage dir for diagnostic bundles, aligned with the data/uploads + data/logs convention
- *  (process.cwd()/data/<bucket>). Created on first write. */
-export const DIAGNOSTICS_DIR = join(process.cwd(), 'data', 'diagnostics');
+/** Storage dir for diagnostic bundles, aligned with the uploads + logs data buckets. */
+export const DIAGNOSTICS_DIR = dataDirectory('diagnostics');
 
 /** Per-user report cool-down: one bundle per window. Generous (a user debugging with support reports a
  *  few times), tight enough that a runaway client loop can't flood the table. */

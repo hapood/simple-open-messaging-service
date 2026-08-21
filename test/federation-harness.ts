@@ -1,5 +1,6 @@
 import { execSync } from 'node:child_process';
 import { fork, type ChildProcess } from 'node:child_process';
+import { copyFileSync, mkdirSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
@@ -20,8 +21,8 @@ import { ensureDatabase, resetAndMigrateDatabase } from './database.js';
 export type { S2sProxy };
 
 /**
- * Federation e2e harness — boots TWO full SOMS apps in SEPARATE Node processes (appA=aaa.local on DB
- * _a, appB=bbb.local on DB _b), making real signed HTTP requests to each other over loopback. Each app
+ * Federation e2e harness — boots TWO full SOMS apps in SEPARATE Node processes (appA=aaa.test on DB
+ * _a, appB=bbb.test on DB _b), making real signed HTTP requests to each other over loopback. Each app
  * is a child process running the COMPILED entry (`ensureCompiledEntry` → tsc → `.e2e-build/`).
  *
  * Why separate processes (not two AppModule instances in one process, as before): a single Node process
@@ -48,8 +49,8 @@ export type { S2sProxy };
  */
 
 /** The canonical federation-test domains (single source — the spec imports these). */
-export const FED_DOMAIN_A = 'aaa.local';
-export const FED_DOMAIN_B = 'bbb.local';
+export const FED_DOMAIN_A = 'aaa.test';
+export const FED_DOMAIN_B = 'bbb.test';
 
 /** Path to the COMPILED subprocess entry (see ensureCompiledEntry — why it's compiled, not run via tsx). */
 const APP_MAIN = join(
@@ -232,6 +233,7 @@ function pickFreePort(): Promise<number> {
 export interface FedApp {
   baseUrl: string;
   port: number;
+  dataDir: string;
   database: Database;
   start: () => Promise<void>;
   stop: () => Promise<void>;
@@ -245,6 +247,7 @@ interface FedAppConfig {
   appPort: number;
   portA: number;
   portB: number;
+  dataDir: string;
 }
 
 /** Boot one app in a subprocess. `start()` forks test/federation-app.main.ts (via tsx) with the app's
@@ -258,6 +261,16 @@ function makeFedApp(cfg: FedAppConfig): FedApp {
   let stopping = false;
 
   const start = async (): Promise<void> => {
+    // Fixture users are inserted by the Vitest process and their password hashes therefore use its
+    // pepper. Copy only that test secret into each otherwise-isolated node so the child can verify
+    // those hashes. Real deployments generate a distinct pepper per independently writable data root.
+    const parentDataDir =
+      process.env.SOMS_DATA_DIR ?? join(process.cwd(), 'data');
+    mkdirSync(cfg.dataDir, { recursive: true });
+    copyFileSync(
+      join(parentDataDir, 'password-pepper.key'),
+      join(cfg.dataDir, 'password-pepper.key'),
+    );
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       SOMS_DOMAIN: cfg.domain,
@@ -265,9 +278,14 @@ function makeFedApp(cfg: FedAppConfig): FedApp {
       APP_PORT: String(cfg.appPort),
       FED_PORT_A: String(cfg.portA),
       FED_PORT_B: String(cfg.portB),
+      SOMS_DATA_DIR: cfg.dataDir,
+      LOG_DIR: join(cfg.dataDir, 'logs'),
+      DATABASE_QUERY_LOG: '0',
       // Keep routine subprocess SQL/access logs out of the test reporter. Set FED_E2E_DEBUG=1 when
       // diagnosing a swallowed best-effort federation path to restore trace-level forwarding.
-      LOG_LEVEL: process.env.FED_E2E_DEBUG === '1' ? 'verbose' : 'warn',
+      LOG_LEVEL:
+        process.env.FED_E2E_LOG_LEVEL ??
+        (process.env.FED_E2E_DEBUG === '1' ? 'verbose' : 'warn'),
     };
     const startedChild = fork(APP_MAIN, {
       env,
@@ -323,6 +341,7 @@ function makeFedApp(cfg: FedAppConfig): FedApp {
   return {
     baseUrl: `http://127.0.0.1:${cfg.appPort}`,
     port: cfg.appPort,
+    dataDir: cfg.dataDir,
     database,
     start,
     stop,
@@ -390,21 +409,36 @@ export async function bootFederationPair(): Promise<{
   const { urlA, urlB } = await ensureFederationDbs();
   const [portA, portB] = await Promise.all([pickFreePort(), pickFreePort()]);
   const proxy = await startS2sProxy(portA); // relays appB → appA (portA)
+  const poolId = process.env.VITEST_POOL_ID ?? '0';
+  const federationDataRoot = join(
+    process.env.SOMS_DATA_DIR ?? join(process.cwd(), 'data'),
+    'federation',
+  );
+  const dataDirA = join(federationDataRoot, `${poolId}-a`);
+  const dataDirB = join(federationDataRoot, `${poolId}-b`);
+  // setup-env resets this worker's databases for every spec file. Reset the matching node data roots
+  // at the same boundary so deterministic media fixtures cannot be mistaken for already-local CAS
+  // objects left by an earlier file or test run. restart() deliberately does not clean these paths:
+  // restart coverage must exercise durable on-disk state within the current test pair.
+  rmSync(dataDirA, { recursive: true, force: true });
+  rmSync(dataDirB, { recursive: true, force: true });
   const appA = makeFedApp({
     domain: FED_DOMAIN_A,
     dbUrl: urlA,
     appPort: portA,
     portA,
     portB,
+    dataDir: dataDirA,
   });
-  // appB routes aaa.local through the proxy (portA field = proxy.port), so its signed media calls can
-  // be fault-injected; bbb.local stays appB's own port.
+  // appB routes aaa.test through the proxy (portA field = proxy.port), so its signed media calls can
+  // be fault-injected; bbb.test stays appB's own port.
   const appB = makeFedApp({
     domain: FED_DOMAIN_B,
     dbUrl: urlB,
     appPort: portB,
     portA: proxy.port,
     portB,
+    dataDir: dataDirB,
   });
   await Promise.all([appA.start(), appB.start()]);
   await assertSeparateDatabases(appA, appB);

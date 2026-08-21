@@ -99,7 +99,6 @@ export class DeletedMessageService {
       if (
         !target ||
         target.creator !== userId ||
-        target.contentType === 'INVITE' ||
         target.contentType === 'SYSTEM' ||
         target.contentType === 'CALL'
       ) {

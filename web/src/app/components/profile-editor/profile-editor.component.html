@@ -7,20 +7,14 @@
     (completed)="finishAvatarEdit($event)"
   />
 } @else {
-  <div class="profile-editor" [class.safe-area-header]="respectTopSafeArea()">
-    <div class="msg-header">
+  <div class="profile-editor">
+    <app-page-header
+      [title]="'profile.editTitle' | transloco"
+      [safeArea]="respectTopSafeArea()"
+      (back)="goBack()"
+    >
       <button
-        class="icon-btn"
-        (click)="goBack()"
-        [attr.aria-label]="'common.back' | transloco"
-      >
-        <app-icon
-          [type]="AppIconType.BACK"
-          [style]="{ width: '24px', height: '24px' }"
-        ></app-icon>
-      </button>
-      <span class="title">{{ 'profile.editTitle' | transloco }}</span>
-      <button
+        pageHeaderAction
         mat-button
         color="primary"
         class="save-btn"
@@ -37,7 +31,7 @@
           {{ 'common.save' | transloco }}
         }
       </button>
-    </div>
+    </app-page-header>
 
     <div class="body">
       <div class="avatar-wrap">

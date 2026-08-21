@@ -11,11 +11,11 @@ This document defines the compacted message-index feed `GET /s2s/v1/message-feed
 
 The query is a closed parameter set:
 
-| Field | Type | Rule |
-| --------- | ---------------------------------- | ------------------------------------------------------------------------- |
-| `after` | `DecimalString` | Optional exclusive scan position. When omitted, query only the starting position and return no page. |
-| `take` | `PositiveSafeInteger` query string | Optional suggested maximum number of items on this page. The source MAY return fewer but MUST NOT return more. |
-| `through` | `DecimalString` | Optional inclusive upper bound. MUST be greater than or equal to `after` and remain unchanged across continuous bounded pagination. |
+| Field     | Type                               | Rule                                                                                                                                |
+| --------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `after`   | `DecimalString`                    | Optional exclusive scan position. When omitted, query only the starting position and return no page.                                |
+| `take`    | `PositiveSafeInteger` query string | Optional suggested maximum number of items on this page. The source MAY return fewer but MUST NOT return more.                      |
+| `through` | `DecimalString`                    | Optional inclusive upper bound. MUST be greater than or equal to `after` and remain unchanged across continuous bounded pagination. |
 
 `take` and `through` may appear only when `after` is present. An unknown, duplicate, or malformed parameter returns `400 FEDERATION_MALFORMED`. `after`, `through`, and every feed coordinate are canonical non-negative decimal strings; feed item IDs are positive integers. `0` is the exclusive cursor before the first item, not an item ID.
 
@@ -69,10 +69,10 @@ The consumer MUST validate the page, atomically merge the maximum `messageEndSeq
 
 `GET /s2s/v1/messages` uses a closed query. Common fields are `after`, `through`, `take`, and `includeSelf`. `after` is optional; `through` is the fixed inclusive `messageEndSeq` upper bound for this bounded drain; and `take` is the suggested maximum number of returned messages. `after` and `through` use non-negative `DecimalString` values no greater than `SafeInteger`. `take` and `through` may appear only with `after`; when present, `through` MUST satisfy `through >= after`, otherwise return `400 FEDERATION_MALFORMED`. The thread MUST have exactly one of these mutually exclusive shapes:
 
-| Mode | Required fields | Binding |
-| ----- | ------------------------------------------- | ---------------------------------------------------------------------------- |
-| P2P | `type=P2P`, `account`, `peerAccount` | `account` is hosted by the source domain; `peerAccount` is hosted by the verified signer domain. |
-| GROUP | `type=GROUP`, `groupAccount`, `groupDomain` | Complete group address; the source MUST hold the origin thread or an authorized mirror. |
+| Mode  | Required fields                             | Binding                                                                                          |
+| ----- | ------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| P2P   | `type=P2P`, `account`, `peerAccount`        | `account` is hosted by the source domain; `peerAccount` is hosted by the verified signer domain. |
+| GROUP | `type=GROUP`, `groupAccount`, `groupDomain` | Complete group address; the source MUST hold the origin thread or an authorized mirror.          |
 
 Fields from the two shapes MUST NOT be mixed. After normalization, the requested thread MUST exactly equal the feed item's `ThreadAddress`. The source does not accept a peer domain declared by the requester; that domain comes only from the validated HTTP Message Signature.
 
@@ -107,7 +107,7 @@ candidates = messages authorized for the current peer whose content is retained 
 
 The source returns a candidate prefix no larger than its local item/page-byte limits and valid `take`, without skipping a queryable message in that prefix. The source MAY return fewer but MUST NOT exceed the requested `take`. The source MUST be able to return an individually allocated message in full and MUST NOT skip it with a permanently empty page.
 
-`take` is only an item-count suggestion. The source MUST accept any `PositiveSafeInteger` value and MAY return fewer items under finite local item/page-byte limits. It MUST NOT return `FEDERATION_MALFORMED` merely because `take` exceeds the local page size. One item MUST NOT be split across pages. Publishers and consumers MAY set separate finite local byte limits for JSON objects, pages, and durable JSON/JSONB; v1 defines no common numeric value. When one valid peer object exceeds consumer capability, the consumer MAY stop reading or handle the inbound item under the quarantine rules in message.md. A publisher or consumer MUST NOT commit truncated JSON or a partial object that could be treated as a valid application fact.
+`take` is only an item-count suggestion. The source MUST accept any `PositiveSafeInteger` value and MAY return fewer items under finite local item/page-byte limits. It MUST NOT return `FEDERATION_MALFORMED` merely because `take` exceeds the local page size. One item MUST NOT be split across pages. Publishers and consumers MAY set separate finite local byte limits for JSON objects, pages, and durable JSON/JSONB; v1 defines no common numeric value. A publisher or consumer MUST NOT accept truncated JSON or a partial object as a valid application fact.
 
 If candidates remain after the response, `scannedThrough` equals the last returned message `seq` and `hasMore: true`; otherwise, `scannedThrough=queryEnd` and `hasMore: false`. An empty page with no candidate advances directly to `queryEnd`. Returned messages are strictly increasing by source-thread `seq` and all lie in `(after, scannedThrough]`. Unallocated sequences, sequences not allocated to this peer, and positions with an authoritative tombstone are scannable holes and do not block `scannedThrough`. Continuous bounded pagination MUST retain the original `through`. Repeated GETs against the same snapshot and parameters MUST be semantically idempotent.
 

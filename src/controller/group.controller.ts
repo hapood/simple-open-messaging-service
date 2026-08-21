@@ -9,9 +9,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
-import { MessageService } from '../message/message.service.js';
-import { MessageFanoutService } from '../message/message-fanout.service.js';
-import { ContentType, GroupRole } from '../database/enums.js';
+import { GroupRole } from '../database/enums.js';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { ApiResultResponse } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -28,6 +26,10 @@ import { ResourceId } from '../common/resource-id.decorator.js';
 import { RolesGuard } from '../group/roles.guard.js';
 import { Roles } from '../group/roles.decorator.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
+import {
+  ThreadRevisionService,
+  type PendingThreadRevision,
+} from '../thread-revision/thread-revision.service.js';
 import {
   CreateGroupDto,
   InviteGroupDto,
@@ -47,14 +49,13 @@ import {
 @Controller()
 export class GroupController {
   constructor(
-    private readonly messageService: MessageService,
-    private readonly messageFanoutService: MessageFanoutService,
     private readonly groupService: GroupService,
     private readonly participantService: ThreadParticipantService,
     private readonly inviteService: InviteService,
     private readonly federationService: FederationService,
     private readonly userService: UserService,
     private readonly database: DatabaseService,
+    private readonly threadRevision: ThreadRevisionService,
   ) {}
 
   @UseGuards(ThrottleGuard)
@@ -82,14 +83,8 @@ export class GroupController {
   }
 
   /**
-   * Invite friends into a group — LOCAL and FEDERATED now share ONE card shape, addressed by the group's
-   * `!account` (no internal ids). The card is ALWAYS written into the inviter's P2P thread with the
-   * target: for a LOCAL friend that thread is shared (the target sees it directly); for a FEDERATED friend
-   * it is the inviter's P2P MIRROR, and the card flows to the invitee via the Step-2 P2P message pull
-   * (Phase B). The invitee resolves their pending invite by the `group` account (/invite/detail). The
-   * federated branch ALSO sends the cross-server invite (sendInvite GROUP) so the peer creates the mirror
-   * + the incoming Invite BEFORE the card arrives (the card's /invite/detail must find a row). Re-invites
-   * overwrite the Invite in place (stable id). A target is SKIPPED (not fatal) on a write/send failure.
+   * Invite friends into a group by updating membership state. Local invitees receive a client-state
+   * projection; federated invitees receive the existing group invite intent through the state feed.
    */
   private async writeInvites(
     inviter: number,
@@ -111,19 +106,12 @@ export class GroupController {
     // The group's `!account` — the federated-stable identity on the card (== fedGroupAccount once the
     // first federated invite mints it; for a purely-local group it is just the groupUser account). Both
     // resolve the invite cross-server via the @@unique-backed (toUser, thread) lookup.
-    const [inviterRow, groupUserRow] = await Promise.all([
-      this.database.db.query.user.findFirst({
-        where: eq(user.id, inviter),
-        columns: { account: true },
-      }),
-      this.database.db.query.user.findFirst({
-        where: eq(user.id, group.groupUserId),
-        columns: { account: true, domain: true },
-      }),
-    ]);
-    const inviterAccount = inviterRow?.account;
+    const groupUserRow = await this.database.db.query.user.findFirst({
+      where: eq(user.id, group.groupUserId),
+      columns: { account: true },
+    });
     const groupAccount = groupUserRow?.account;
-    if (!inviterAccount || !groupAccount) {
+    if (!groupAccount) {
       // Should not happen (inviter + group exist) — fail every target loudly rather than silent skip.
       return {
         invited,
@@ -133,16 +121,6 @@ export class GroupController {
         })),
       };
     }
-    // groupUser.domain: 'local' = we are the origin; <peer> = a federated mirror. The card carries the
-    // group's home domain so it renders on BOTH the inviter's + invitee's side without a fetch
-    // (/invite/detail is invitee-only — it 404s for the inviter's own copy of the card). The avatar path is
-    // same-origin for a local group; a federated viewer's row falls back to a letter avatar and the dialog
-    // resolves the authoritative localized avatar via /invite/detail(group).
-    const groupIsLocal =
-      !groupUserRow?.domain || groupUserRow.domain === 'local';
-    const groupDomain = groupIsLocal
-      ? this.federationService.ourDomain
-      : (groupUserRow!.domain as string);
     const targets = deduped.length
       ? await this.userService.queryUsers({ where: { id: { in: deduped } } })
       : [];
@@ -164,6 +142,7 @@ export class GroupController {
       }
       try {
         let statePeers = new Map<string, bigint>();
+        const clientRevisions: PendingThreadRevision[] = [];
         await this.inviteService.createGroupInvite(
           inviter,
           group.threadId,
@@ -176,36 +155,16 @@ export class GroupController {
                 tx,
                 group.threadId,
                 userId,
+                '',
+                true,
+                clientRevisions,
               );
           },
         );
         await this.federationService.pushStateFeedDomains(statePeers.keys());
-        // Card identity = accounts only (`from` = inviter account, `group` = the `!account`); the invitee
-        // resolves + accepts by `group` (/invite/detail + /invite/accept take a group account). The display
-        // fields are carried inline so the row renders instantly on both sides with no per-row fetch and no
-        // internal ids on the card.
-        const inviteMsg = await this.messageService.writeMsgToThread(
-          inviter,
-          p2pThreadId,
-          JSON.stringify({
-            type: 'GROUP_INVITE',
-            from: inviterAccount,
-            group: groupAccount,
-            groupName: group.name,
-            groupAvatar: group.avatar || undefined,
-            groupDomain,
-            groupIsLocal,
-          }),
-          ContentType.INVITE,
+        clientRevisions.forEach((pending) =>
+          this.threadRevision.notifyThreadRevision(pending),
         );
-        // Deliver the card LIVE, exactly like a normal send: dispatch fans NEW_MESSAGE to every active
-        // participant of the P2P thread (LOCAL → the invitee sees the card the instant it is written; no
-        // more "only on next list refresh"), and its federation leg
-        // marks the inviter's mirror dirty so the invitee's server promptly pulls the card via the Step-2
-        // P2P path → storePulledMessage → NEW_MESSAGE (FEDERATED). Without this the invitee had no live
-        // discovery path. Fire-and-forget: the card is already committed; a fan-out failure degrades to
-        // the existing chat-open pull backstop, never a lost invite.
-        void this.messageFanoutService.dispatch(inviteMsg);
         invited.push(userId);
       } catch (e) {
         skipped.push({
@@ -223,8 +182,7 @@ export class GroupController {
   @ResourceId<InviteGroupDto>('groupId')
   @Post('group/invite')
   @ApiOperation({
-    summary:
-      'Invite friends to an existing group (Invite row + card per friend)',
+    summary: 'Invite friends to an existing group',
   })
   async inviteUsers(
     @Request() req: FastifyRequest,
@@ -286,8 +244,8 @@ export class GroupController {
       profileRev: gu.profileRev,
       description: gu.bio,
       membersCanInvite: gu.group?.membersCanInvite ?? true,
-      // groupUser.domain uses 'local' as the origin sentinel; expose '' for a local-origin group so the
-      // client federated-badge self-hides (parity with UserResponseDto.domain for a local peer).
+      // groupUser.domain uses 'local' as the origin sentinel; expose '' for a local-origin group,
+      // matching UserResponseDto.domain for a local peer.
       domain: !gu.domain || gu.domain === 'local' ? '' : gu.domain,
       threadId,
       createdAt: trd.createdAt,

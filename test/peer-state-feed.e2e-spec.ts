@@ -46,7 +46,7 @@ describe('per-peer state feed', () => {
     await mod.close();
   });
 
-  it('compacts a key, ignores stale revisions, and does not allocate a rev for no-op writes', async () => {
+  it('compacts a key and does not allocate a feed ID for identical writes', async () => {
     await database.db.transaction(async (tx) => {
       await feed.writeManyInTx(tx, [
         {
@@ -54,7 +54,6 @@ describe('per-peer state feed', () => {
           account: 'alice',
           domain: 'local.test',
           eventType: 'PROFILE',
-          revision: 1,
           body: { name: 'A' },
         },
       ]);
@@ -64,7 +63,6 @@ describe('per-peer state feed', () => {
           account: 'alice',
           domain: 'local.test',
           eventType: 'PROFILE',
-          revision: 2,
           body: { name: 'B', updatedAt: wireTime, opaqueRevision: 9n },
         },
       ]);
@@ -74,8 +72,7 @@ describe('per-peer state feed', () => {
           account: 'alice',
           domain: 'local.test',
           eventType: 'PROFILE',
-          revision: 1,
-          body: { name: 'stale' },
+          body: { name: 'B', updatedAt: wireTime, opaqueRevision: 9n },
         },
       ]);
     });
@@ -84,7 +81,6 @@ describe('per-peer state feed', () => {
     expect(page.scannedThrough).toBe('2');
     expect(page.items).toMatchObject([
       {
-        revision: '2',
         feedId: '2',
         body: {
           name: 'B',
@@ -93,6 +89,54 @@ describe('per-peer state feed', () => {
         },
       },
     ]);
+  });
+
+  it('reindexes an unchanged confirmation when explicitly required', async () => {
+    const domain = 'state-feed-confirmation.test';
+    await database.db.insert(federatedPeer).values({ domain });
+    try {
+      const body = {
+        status: 'ACCEPTED',
+        note: '',
+        requestedAt: wireTime,
+        expiresAt: null,
+      };
+      await database.db.transaction(async (tx) => {
+        await feed.writeManyInTx(tx, [
+          {
+            peerDomain: domain,
+            account: 'alice',
+            domain: 'local.test',
+            subjectAccount: 'bob',
+            subjectDomain: domain,
+            eventType: 'P2P_INTENT',
+            body,
+          },
+        ]);
+        await feed.writeManyInTx(tx, [
+          {
+            peerDomain: domain,
+            account: 'alice',
+            domain: 'local.test',
+            subjectAccount: 'bob',
+            subjectDomain: domain,
+            eventType: 'P2P_INTENT',
+            body,
+            forceReindex: true,
+          },
+        ]);
+      });
+
+      const page = await feed.serve(domain, 0n);
+      expect(page.stateFeedEndId).toBe('2');
+      expect(page.items).toMatchObject([
+        { feedId: '2', body: { status: 'ACCEPTED' } },
+      ]);
+    } finally {
+      await database.db
+        .delete(federatedPeer)
+        .where(eq(federatedPeer.domain, domain));
+    }
   });
 
   it('keeps multiple P2P subjects and peers independent', async () => {
@@ -105,7 +149,6 @@ describe('per-peer state feed', () => {
           subjectAccount: 'bob',
           subjectDomain: DOMAINS[0],
           eventType: 'P2P_INTENT',
-          revision: 1,
           body: { recognizesFriend: true },
         },
         {
@@ -115,7 +158,6 @@ describe('per-peer state feed', () => {
           subjectAccount: 'carol',
           subjectDomain: DOMAINS[0],
           eventType: 'P2P_INTENT',
-          revision: 1,
           body: { recognizesFriend: false },
         },
         {
@@ -123,7 +165,6 @@ describe('per-peer state feed', () => {
           account: 'alice',
           domain: 'local.test',
           eventType: 'PROFILE',
-          revision: 1,
           body: { name: 'private-to-b' },
         },
       ]);
@@ -153,7 +194,6 @@ describe('per-peer state feed', () => {
             account: 'rollback',
             domain: 'local.test',
             eventType: 'PROFILE',
-            revision: 1,
             body: {},
           },
         ]);
@@ -182,7 +222,6 @@ describe('per-peer state feed', () => {
           account: 'alice',
           domain: 'local.test',
           eventType: 'PROFILE',
-          revision: 1,
           body: {},
         },
       ]),
@@ -193,7 +232,7 @@ describe('per-peer state feed', () => {
     expect(await feed.readRev(domain)).toBe(0n);
   });
 
-  it('does not touch a received group direction when its revision is unchanged', async () => {
+  it('applies a later received group direction snapshot', async () => {
     const suffix = Date.now().toString(36);
     const [groupUser, memberUser] = await database.db
       .insert(user)
@@ -223,7 +262,6 @@ describe('per-peer state feed', () => {
           direction: 'INVITE',
           status: 'REQUESTED',
           note: 'first',
-          revision: 7,
           requestedAt: new Date('2026-01-01T00:00:00Z'),
           expiresAt: new Date('2026-01-08T00:00:00Z'),
         }),
@@ -243,7 +281,6 @@ describe('per-peer state feed', () => {
           direction: 'INVITE',
           status: 'NOT_MEMBER',
           note: 'must not overwrite',
-          revision: 7,
           requestedAt: null,
           expiresAt: null,
         }),
@@ -256,8 +293,9 @@ describe('per-peer state feed', () => {
         ),
       });
 
-      expect(replay.changed).toBe(false);
-      expect(after).toEqual(before);
+      expect(replay.changed).toBe(true);
+      expect(after).not.toEqual(before);
+      expect(after?.status).toBe('NOT_MEMBER');
     } finally {
       await database.db
         .delete(user)

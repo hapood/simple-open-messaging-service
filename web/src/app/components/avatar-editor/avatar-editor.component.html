@@ -1,20 +1,18 @@
 <div class="avatar-editor" [appFitDialog]="fitOpts">
-  <div class="msg-header">
+  <app-page-header
+    [title]="'profile.avatarTitle' | transloco"
+    (back)="cancel()"
+  >
     <button
-      class="icon-btn"
-      (click)="cancel()"
-      [attr.aria-label]="'common.back' | transloco"
+      pageHeaderAction
+      mat-button
+      color="primary"
+      (click)="save()"
+      [disabled]="!canSave()"
     >
-      <app-icon
-        [type]="AppIconType.BACK"
-        [style]="{ width: '32px', height: '32px' }"
-      ></app-icon>
-    </button>
-    <span class="title">{{ 'profile.avatarTitle' | transloco }}</span>
-    <button mat-button color="primary" (click)="save()" [disabled]="!canSave()">
       {{ 'common.done' | transloco }}
     </button>
-  </div>
+  </app-page-header>
 
   <div class="body">
     <div class="stage">

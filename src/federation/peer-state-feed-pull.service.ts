@@ -159,7 +159,6 @@ export class PeerStateFeedPullService {
       let previous = cursor.committedThrough;
       for (const item of page.items) {
         const feedId = this.parseRev(item.feedId, 'item.feedId');
-        this.parseRev(item.revision, 'item.revision');
         if (feedId <= previous || feedId > scannedThrough)
           throw new Error('peer returned unordered state feed items');
         previous = feedId;

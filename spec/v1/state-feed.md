@@ -14,11 +14,11 @@ rules are defined in the [core protocol](./protocol.md).
 
 The query is a closed parameter set:
 
-| Field | Type | Requirement |
-| --- | --- | --- |
-| `after` | `DecimalString` query string | Optional exclusive consumer scan position. When omitted, only `resumeAfter` is returned, not a page. |
-| `take` | `PositiveSafeInteger` query string | Optional requested maximum number of items. The publisher MAY return fewer but MUST NOT return more. |
-| `through` | `DecimalString` query string | Optional inclusive upper bound for this scan. It MUST be greater than or equal to `after` and remain unchanged across bounded pagination. |
+| Field     | Type                               | Requirement                                                                                                                               |
+| --------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `after`   | `DecimalString` query string       | Optional exclusive consumer scan position. When omitted, only `resumeAfter` is returned, not a page.                                      |
+| `take`    | `PositiveSafeInteger` query string | Optional requested maximum number of items. The publisher MAY return fewer but MUST NOT return more.                                      |
+| `through` | `DecimalString` query string       | Optional inclusive upper bound for this scan. It MUST be greater than or equal to `after` and remain unchanged across bounded pagination. |
 
 `take` neither guarantees a page of that size nor promises a safe response byte
 size. A publisher MUST accept every valid `PositiveSafeInteger` and MAY return
@@ -73,9 +73,7 @@ Every successful page MUST satisfy all of the following:
    `scannedThrough` from advancing.
 7. A stable key appears at most once in a page.
 
-The consumer MUST fully validate a page and atomically commit all its effects
-with `scannedThrough`. A malformed item, identity or binding mismatch, or
-authorization failure MUST roll back the entire page and cursor. After
+The consumer validates the page envelope and every item. After
 `hasMore: true`, the next page MUST use this page's `scannedThrough`; a bounded
 drain MUST also reuse the original `through`.
 
@@ -87,7 +85,7 @@ including repeated or older positions. The publisher MUST NOT treat `after` as
 an acknowledgement or remove the current projection because it was read.
 
 The publisher MUST durably retain the latest snapshot for every current stable
-key. When a greater business revision supersedes it, the publisher MUST
+key. When its business content changes, the publisher MUST
 allocate a `feedId` greater than every earlier ID in that feed. It MUST NOT
 reuse an old ID or rewrite an ID a consumer may have passed. The older version
 may be compacted immediately. An omitted `after` or an `after` greater than
@@ -111,7 +109,6 @@ interface StateFeedItem {
   eventType: StateEventType;
   subjectAccount: Account | '';
   subjectDomain: Domain | '';
-  revision: DecimalString;
   feedId: PositiveDecimalString;
   body: StateBody;
 }
@@ -123,26 +120,25 @@ Every item and body is a closed object. The stable key is:
 (domain, account, eventType, subjectDomain, subjectAccount)
 ```
 
-`revision` is the business version of that stable key. Business content may
-change only with a strictly greater revision; an equal or lower revision MUST
-NOT replace the body. Consumers merge idempotently by stable key and revision,
-not by `feedId`. If an already stored revision arrives with a semantically
-different body, the consumer MUST reject the page and record a protocol
-conflict. Except for the member-before-group dependency repair in Section 6,
-an identical revision and body does not receive a new `feedId`.
+`feedId` is both the scan position and the ordering coordinate for the snapshot.
+Consumers apply items in increasing `feedId` order and atomically commit the
+page effects with its cursor. Repeated reads are idempotent because items at or
+below the committed cursor are not applied again. Except for the
+member-before-group dependency repair in Section 6, an unchanged body does not
+receive a new `feedId`.
 
 For `PROFILE`, `MEMBER_PROFILE`, and `GROUP_META`, both subject fields MUST be
 `""`. For each intent, the subject fields MUST form a complete non-empty
 `Address`.
 
-| Event | `account/domain` | `subjectAccount/subjectDomain` | Signer requirement |
-| --- | --- | --- | --- |
-| `PROFILE` | Profile subject | Empty | `domain` MUST equal the signer domain. |
-| `MEMBER_PROFILE` | Member profile subject | Empty | The signer publishes this source-scoped snapshot; the subject may belong to another domain. |
-| `P2P_INTENT` | Actor for this direction | Other party | Actor domain MUST equal the signer and subject domain MUST equal the consumer. Both accounts MUST be `UserAccount`. |
-| `GROUP_INVITE_INTENT` | Origin-owned group | Invited member | Group domain MUST equal the signer and member domain MUST equal the consumer. |
-| `GROUP_JOIN_INTENT` | Origin-owned group | Applying member | Group domain MUST equal the consumer and member domain MUST equal the signer. |
-| `GROUP_META` | Origin-owned group | Empty | Group domain MUST equal the pinned signer/origin. |
+| Event                 | `account/domain`         | `subjectAccount/subjectDomain` | Signer requirement                                                                                                  |
+| --------------------- | ------------------------ | ------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `PROFILE`             | Profile subject          | Empty                          | `domain` MUST equal the signer domain.                                                                              |
+| `MEMBER_PROFILE`      | Member profile subject   | Empty                          | The signer publishes this source-scoped snapshot; the subject may belong to another domain.                         |
+| `P2P_INTENT`          | Actor for this direction | Other party                    | Actor domain MUST equal the signer and subject domain MUST equal the consumer. Both accounts MUST be `UserAccount`. |
+| `GROUP_INVITE_INTENT` | Origin-owned group       | Invited member                 | Group domain MUST equal the signer and member domain MUST equal the consumer.                                       |
+| `GROUP_JOIN_INTENT`   | Origin-owned group       | Applying member                | Group domain MUST equal the consumer and member domain MUST equal the signer.                                       |
+| `GROUP_META`          | Origin-owned group       | Empty                          | Group domain MUST equal the pinned signer/origin.                                                                   |
 
 ## 4. Display profiles and minimum disclosure
 
@@ -178,33 +174,19 @@ interface ProfileBody {
   displayName: string;
   bio: string;
   avatar: ProfileAvatar | null;
-  deleted: boolean;
-  extensions?: Record<ExtensionId, JsonObject>;
 }
 ```
 
-`extensions` follows [Core Protocol Section 2.1](./protocol.md#21-extension-capability).
-The publisher MAY include only entries accepted by the target peer in the most
-recent valid Health response and still advertised by that peer's v1 discovery
-response. Omission is equivalent to an empty object. Extension data is part of
-the complete profile snapshot; adding, changing, or removing a sent entry MUST
-allocate a greater profile `revision`. A consumer strictly validates supported
-entries and ignores unsupported entries within their bounded values. It MUST
-NOT reject an otherwise valid `PROFILE` because an entry is unsupported.
-
-`revision` is the subject's profile revision. `deleted: true` is an account
-profile tombstone; it neither resets server identity nor implicitly revokes an
-independently published relationship direction. A publisher MUST allocate the
-profile only to a peer that currently has direct P2P or group profile
+A publisher MUST allocate the profile only to a peer that currently has direct P2P or group profile
 visibility, or needs it for an exact P2P request or group-invitation mirror.
 
 Exact user lookup is a separate disclosure context. `GET /users/:account`
 returns only the minimum public identity card defined by the resource
 specification and MUST NOT be expanded merely because `PROFILE` contains `bio`
-or tombstone state. A consumer MUST NOT treat a proxied lookup result as a
+state. A consumer MUST NOT treat a proxied lookup result as a
 relationship or state projection. A human user's home-authored profile is not
 sufficient to establish a persistent relationship identity: a valid
-`ACCEPTED` intent and a non-deleted profile from that identity home are both
+`ACCEPTED` intent and a profile from that identity home are both
 required. This rule does not constrain lazy materialization of group mirrors.
 
 ### 4.2 `MEMBER_PROFILE`
@@ -217,13 +199,8 @@ group; only `GROUP_META.members` defines the roster.
 interface MemberProfileBody {
   displayName: string;
   avatar: ProfileAvatar | null;
-  extensions?: Record<ExtensionId, JsonObject>;
 }
 ```
-
-Its `extensions` follow the same unidirectional capability, complete-snapshot,
-and revision rules as `PROFILE.extensions`. They remain source-scoped display
-metadata and grant no membership or other permission.
 
 For each `(target peer, member Address)`, the publisher MUST maintain the
 complete current set of visibility sources:
@@ -231,7 +208,7 @@ complete current set of visibility sources:
 - When the first source appears, it publishes a complete `MEMBER_PROFILE`.
 - While at least one source remains, adding or removing another source does not
   remove the snapshot.
-- A profile revision is published only to peers that still have a source.
+- A profile update is published only to peers that still have a source.
 - When the last source disappears, the publisher removes the stable key from
   the current projection without allocating a removal item or retaining a
   visibility tombstone.
@@ -239,7 +216,7 @@ complete current set of visibility sources:
 The source set is authoritative; a source count is only derived data. A
 consumer MUST scope snapshots by `(signer domain, member Address)`. Snapshots
 of the same member from different signers may diverge and MUST NOT be merged by
-member address or profile revision across signers.
+member address across signers.
 
 Projection omission is not a deletion event. A consumer may remove an
 unreferenced source-scoped snapshot only after atomically completing a bounded
@@ -285,8 +262,8 @@ type P2PIntentBody = IntentBody;
   relationship. `expiresAt` MUST be `null`.
 - `note` describes only this direction, grants no permission, and contains at
   most 255 Unicode code points.
-- Expiry invalidates only `REQUESTED` and does not implicitly increase its
-  revision. An expired request may be omitted from the current projection
+- Expiry invalidates only `REQUESTED` and does not itself allocate a new
+  `feedId`. An expired request may be omitted from the current projection
   without a `REVOKED` event. A consumer MUST stop treating it as effective at
   its absolute expiry time whether or not the key appears again.
 
@@ -306,10 +283,28 @@ cleanup.
 A P2P relationship exists only when the latest direction from each party is
 `ACCEPTED`. On receiving a valid peer `REQUESTED`, an implementation with an
 effective local direction may advance its direction to `ACCEPTED` and return
-it. Crossing requests converge idempotently through stable-key revisions. As
+it. Crossing requests converge idempotently through ordered feed snapshots. As
 soon as either party publishes `REVOKED`, the relationship becomes invalid and
 future P2P message allocation to that closed audience stops. The other
 direction is not rewritten as if authored by the revoking party.
+
+A received peer `ACCEPTED` is valid only within a matching, still-effective
+request flow. It may confirm the consumer's own `REQUESTED`, or complete a peer
+`REQUESTED` that the consumer already accepted and answered with `ACCEPTED`.
+Without either state, the consumer MUST ignore the peer `ACCEPTED` for
+relationship admission. It MUST NOT create an incoming friend request,
+materialize a persistent relationship identity, change the local direction,
+activate a P2P relationship, or grant message or resource access. An existing
+foreign user stub MUST NOT bypass this check. After validating the item, the
+consumer may still commit the page and advance its feed cursor.
+
+Whenever a party accepts a peer `REQUESTED`, it MUST publish its current
+direction as `ACCEPTED` with a new, greater `feedId`. This applies even when its
+local direction is already the friendship fact represented by `ACCEPTED` and
+the body is unchanged. The confirming re-index is an exception to the general
+rule that an unchanged body receives no new `feedId`: the requester may have
+ignored and passed an earlier unsolicited `ACCEPTED`, so only a newly indexed
+confirmation can complete the current request flow.
 
 `P2P_INTENT` is a closed body. It MUST NOT contain `messageFeedEndId`,
 `tombstoneFeedEndId`, a data-feed cursor, or a historical authorization
@@ -349,10 +344,10 @@ interface GroupInviteIntentBody extends IntentBody {
 owner, historical message boundary, or feed cursor.
 
 After an effective invite `REQUESTED` and join `REQUESTED` converge, the origin
-MAY apply local admission policy. On admission, the origin publishes a greater
-revision of the invite as `ACCEPTED` and an authoritative `GROUP_META`. After
+MAY apply local admission policy. On admission, the origin publishes a new
+invite snapshot as `ACCEPTED` and an authoritative `GROUP_META`. After
 the member server observes that member in the authoritative roster, it
-publishes a greater revision of the join as `ACCEPTED`. Either direction's
+publishes a new join snapshot as `ACCEPTED`. Either direction's
 `REVOKED` prevents new admission or requests removal of an existing member,
 but `GROUP_META` remains the final membership authority. An intent alone grants
 no message, media, or group-resource permission.
@@ -371,8 +366,7 @@ interface GroupMetaBody {
 }
 ```
 
-`revision` is the roster revision allocated by the origin. `members` is a
-complete replacement, not a patch. It MUST be sorted by domain in ascending
+`members` is a complete replacement, not a patch. It MUST be sorted by domain in ascending
 ASCII order and then account in ascending ASCII order, with unique addresses.
 Ordering provides deterministic encoding and duplicate detection only; array
 position has no business meaning.
@@ -402,7 +396,7 @@ ensure that the target peer's current state projection contains the matching
 `GROUP_META` that still references it, the publisher MUST re-index the related
 `GROUP_META` so the compact current projection preserves member-before-group
 order. This dependency repair MAY allocate a new `feedId` while retaining an
-identical body and business revision; consumers treat it as an idempotent
+identical body; consumers treat it as an idempotent
 no-op while still advancing the feed cursor. A consistent page snapshot MUST
 NOT contain a group snapshot whose referenced member projection cannot be
 resolved.
@@ -418,23 +412,22 @@ across restart, replay, audience closure, and restoration.
 ## 7. Application, recovery, and safety
 
 The consumer MUST validate page structure, identity, bindings, and each stable
-key revision in wire `feedId` order. After the entire page validates, it first
+key in wire `feedId` order. After the entire page validates, it first
 applies `PROFILE` and `MEMBER_PROFILE`, then the `GROUP_META` and intent items
-that reference them. An equal or lower business revision does not replace a
-newer snapshot. A dependency-repair item with an identical revision and body
-is a no-op, but its feed cursor still advances.
+that reference them. A dependency-repair item with an identical body is a
+no-op, but its feed cursor still advances.
 
 `MEMBER_PROFILE` visibility is determined by the publisher's current source
 set. Consumers perform reference-closure cleanup only after a complete bounded
 drain and do not interpret projection omission as a deletion event. A malformed
-item, signer-binding error, or cross-signer merge MUST fail the entire page.
+item, signer-binding error, or cross-signer merge is invalid.
 Source-scoped member metadata MUST remain keyed by
 `(source signer domain, member Address)` wherever it is exposed locally; it
 MUST NOT be merged solely by a local identifier or member address. Stable
 author addresses in historical messages MUST be retained.
 
-A feed-head hint contains no core business body, and optional `extensions`
-cannot replace the state feed or alter the three drain targets. Restart, lost
+A feed-head hint contains no business body and cannot replace the state feed
+or alter the three drain targets. Restart, lost
 hints, repeated pages, reordered hints, compacted intermediate revisions, and
 page boundaries MUST all converge to the same final projection through the
 latest snapshot for each stable key.

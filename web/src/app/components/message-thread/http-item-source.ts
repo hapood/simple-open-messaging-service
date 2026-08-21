@@ -48,7 +48,13 @@ import type {
   FileInfo,
   MediaStatus,
 } from '../message-cards/chat-item';
-import { VOICE_BAR_W, VOICE_BAR_H } from '../message-cards/media-row/layout';
+import {
+  parseAudioContent,
+  parseFileContent,
+  parseGalleryContent,
+  parseImageContent,
+  parseVideoContent,
+} from '../message-cards/media-content';
 import {
   toDisplayText,
   toRenderMessageEntities,
@@ -84,6 +90,8 @@ export interface HttpItemSourceLiveOpts {
       name: string;
       avatar: string;
       avatarIdentityId: number;
+      avatarAccount: string;
+      avatarDomain: string;
       isSelf: boolean;
     },
   ) => void;
@@ -99,7 +107,13 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 
   private readonly profiles = new Map<
     number,
-    { name: string; avatar: string; isSelf: boolean }
+    {
+      name: string;
+      account: string;
+      avatar: string;
+      domain: string;
+      isSelf: boolean;
+    }
   >();
   /** In-flight optimistic sends, held separately from the reloadable sequence (mirrors MockItemSource.pending).
    *  Each entry's id === its clientMessageId. On confirm (a real whose clientMessageId matches) the entry is
@@ -117,6 +131,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       name: string;
       avatar: string;
       avatarIdentityId: number;
+      avatarAccount: string;
+      avatarDomain: string;
       isSelf: boolean;
     },
   ) => void;
@@ -151,13 +167,17 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     if (self)
       this.profiles.set(self.id, {
         name: self.name,
+        account: self.account,
         avatar: self.avatar,
+        domain: '',
         isSelf: true,
       });
     if (conv.type === 'P2P' && conv.peerUser)
       this.profiles.set(conv.peerUser.id, {
         name: conv.peerUser.name,
+        account: conv.peerUser.account,
         avatar: conv.peerUser.avatar,
+        domain: conv.peerUser.isForeigner ? conv.peerUser.domain : '',
         isSelf: conv.peerUser.id === this.selfUserId,
       });
     this.pending = outbox.forThread(conv.threadId);
@@ -676,6 +696,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       name: p?.name ?? '',
       avatar: p?.avatar ?? '',
       avatarIdentityId: m.creator,
+      avatarAccount: p?.account ?? '',
+      avatarDomain: p?.domain ?? '',
       // Non-text cards keep their wire content in `text` as well. In particular, FORWARD content is
       // the JSON card descriptor consumed by parseForwardCard; dropping it here makes every valid
       // forwarded bundle render as "unavailable".
@@ -743,14 +765,26 @@ export class HttpItemSource implements CbSource<ChatItemData> {
             if (!cached) continue;
             const profile = {
               name: cached.name,
+              account: cached.account,
               avatar: cached.avatar,
               avatarIdentityId: id,
+              avatarDomain:
+                cached.domain && cached.domain !== 'local' ? cached.domain : '',
+              domain:
+                cached.domain && cached.domain !== 'local' ? cached.domain : '',
               isSelf: id === this.selfUserId,
             };
             this.profiles.set(id, profile);
             missing.delete(id);
             for (const seq of this.seqsByCreator.get(id) ?? [])
-              this.onProfile(seq, profile);
+              this.onProfile(seq, {
+                name: profile.name,
+                avatar: profile.avatar,
+                avatarIdentityId: profile.avatarIdentityId,
+                avatarAccount: profile.account,
+                avatarDomain: profile.avatarDomain,
+                isSelf: profile.isSelf,
+              });
           }
         }
         if (
@@ -765,8 +799,11 @@ export class HttpItemSource implements CbSource<ChatItemData> {
           for (const u of res.data) {
             const profile = {
               name: u.name,
+              account: u.account,
               avatar: u.avatar ?? '',
               avatarIdentityId: u.id,
+              avatarDomain: u.isForeigner ? u.domain : '',
+              domain: u.domain ?? '',
               isSelf: u.id === this.selfUserId,
             };
             this.profiles.set(u.id, profile);
@@ -779,7 +816,14 @@ export class HttpItemSource implements CbSource<ChatItemData> {
               profileRev: u.profileRev ?? 0,
             });
             for (const seq of this.seqsByCreator.get(u.id) ?? [])
-              this.onProfile(seq, profile);
+              this.onProfile(seq, {
+                name: profile.name,
+                avatar: profile.avatar,
+                avatarIdentityId: profile.avatarIdentityId,
+                avatarAccount: profile.account,
+                avatarDomain: profile.avatarDomain,
+                isSelf: profile.isSelf,
+              });
           }
         }
       } catch {
@@ -807,124 +851,6 @@ function sourceDemand<T>(work: () => Promise<CbDemandResult<T>>): CbDemand<T> {
 }
 
 // ---------- helpers ----------
-
-function parseImageContent(content: string): AlbumImage {
-  // IMAGE content = JSON {url,w,h,size}. w/h come from the composer's createImageBitmap; size from the
-  // upload response (drives the meta bar). layoutAlbum's ratio() tolerates NaN/0 with a 4:3 fallback.
-  try {
-    const o = JSON.parse(content);
-    return {
-      kind: 'image',
-      src: String(o.url ?? ''),
-      w: Number(o.w),
-      h: Number(o.h),
-      size: Number(o.size) || 0,
-    };
-  } catch {
-    // Isolate malformed JSON (a single bad message must not crash all of rawToItems).
-    return { kind: 'image', src: '', w: 0, h: 0 };
-  }
-}
-
-/** Parse a VIDEO message's content ({url,name,size,mimeType,w,h,duration}) into a media cell. w/h come
- *  from the composer's <video> loadedmetadata probe (server-untrusted); duration likewise. Lenient on
- *  malformed JSON (returns null → no cell) so one bad row can't crash rawToItems. */
-function parseVideoContent(content: string): AlbumImage | null {
-  try {
-    const o = JSON.parse(content);
-    if (typeof o !== 'object' || o === null) return null;
-    const src = String(o.url ?? '');
-    if (!src) return null;
-    return {
-      kind: 'video',
-      src,
-      w: Number(o.w) || 0,
-      h: Number(o.h) || 0,
-      size: Number(o.size) || 0,
-      duration: Number(o.duration) || 0,
-      name: typeof o.name === 'string' ? o.name : '',
-    };
-  } catch {
-    return null;
-  }
-}
-
-/** Parse an AUDIO message's content ({url,name,size,mimeType,duration}). Audio has no intrinsic w/h; the
- *  220×52 dims match layoutAlbum's audio branch (a fixed slim voice bar) and the optimistic sendVoice cell,
- *  so optimistic ↔ real swap without a height jump. layoutAlbum special-cases audio and ignores these w/h
- *  for the rect, but they stay semantically consistent for any non-audio-aware reader. */
-function parseAudioContent(content: string): AlbumImage | null {
-  try {
-    const o = JSON.parse(content);
-    if (typeof o !== 'object' || o === null) return null;
-    const src = String(o.url ?? '');
-    if (!src) return null;
-    return {
-      kind: 'audio',
-      src,
-      w: VOICE_BAR_W,
-      h: VOICE_BAR_H, // slim voice bar (single source of truth with layoutAlbum's audio branch + sendVoice)
-      size: Number(o.size) || 0,
-      duration: Number(o.duration) || 0,
-      name: typeof o.name === 'string' ? o.name : '',
-    };
-  } catch {
-    return null;
-  }
-}
-
-/** GALLERY is one atomic message containing ordered, server-derived per-part metadata. Files share
- * the stable album grid with media so mixed selections remain one selectable/retryable message. */
-function parseGalleryContent(content: string): AlbumImage[] {
-  try {
-    const parsed = JSON.parse(content) as { items?: unknown };
-    if (!Array.isArray(parsed.items)) return [];
-    return parsed.items.flatMap((value): AlbumImage[] => {
-      if (typeof value !== 'object' || value === null) return [];
-      const item = value as Record<string, unknown>;
-      const family = String(item['kind'] ?? '').toLowerCase();
-      if (!['image', 'video', 'audio', 'file'].includes(family)) return [];
-      const src = String(item['url'] ?? '');
-      if (!src) return [];
-      return [
-        {
-          kind: family as AlbumImage['kind'],
-          src,
-          w: family === 'audio' ? VOICE_BAR_W : Number(item['w']) || 0,
-          h: family === 'audio' ? VOICE_BAR_H : Number(item['h']) || 0,
-          size: Number(item['size']) || 0,
-          duration: Number(item['duration']) || 0,
-          name: typeof item['name'] === 'string' ? item['name'] : '',
-          mimeType:
-            typeof item['mimeType'] === 'string' ? item['mimeType'] : undefined,
-        },
-      ];
-    });
-  } catch {
-    return [];
-  }
-}
-
-/** Parse a FILE message's content JSON ({url,name,size,mimeType}) into render metadata. The backend already
- *  validated this shape on send (parseFileContent in upload/file-content.ts); this is a lenient display-side
- *  parse — malformed JSON is isolated (returns null → the row renders a fallback name) so one bad row can't
- *  crash rawToItems. */
-function parseFileContent(content: string): FileInfo | null {
-  try {
-    const o = JSON.parse(content);
-    if (typeof o !== 'object' || o === null) return null;
-    const url = String(o.url ?? '');
-    if (!url) return null;
-    return {
-      url,
-      name: String(o.name ?? 'file'),
-      size: Number(o.size) || 0,
-      mimeType: String(o.mimeType ?? ''),
-    };
-  } catch {
-    return null;
-  }
-}
 
 /** id of the first message in the range (the source returns only messages, so the head is the first
  *  message; the guard is defensive and for TS narrowing). */

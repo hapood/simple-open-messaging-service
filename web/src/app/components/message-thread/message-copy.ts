@@ -7,7 +7,6 @@ export interface MessageCopyLabels {
   video: string;
   voice: string;
   file: string;
-  invite: string;
   call: string;
   forward: string;
 }
@@ -48,8 +47,6 @@ export function messageCopyBody(
     }
     case 'GALLERY':
       return `${labels.photo} × ${message.images?.length ?? 0}`;
-    case 'INVITE':
-      return joinLabel(labels.invite, inviteGroupName(message.text));
     case 'CALL':
       return labels.call;
     case 'SYSTEM':
@@ -139,13 +136,4 @@ function nodeText(node: Node): string {
 function joinLabel(label: string, detail?: string): string {
   const value = detail?.trim();
   return value ? `${label} ${value}` : label;
-}
-
-function inviteGroupName(content: string): string | undefined {
-  try {
-    const value = JSON.parse(content) as { groupName?: unknown };
-    return typeof value.groupName === 'string' ? value.groupName : undefined;
-  } catch {
-    return undefined;
-  }
 }

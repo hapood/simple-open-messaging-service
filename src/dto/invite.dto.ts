@@ -176,38 +176,3 @@ export class InviteDto {
   expiresAt!: number;
   @ApiProperty() createdAt!: number;
 }
-
-/** Live invite state for the group-invite dialog (/invite/detail). The dialog renders:
- *  alreadyJoined → "joined"; status != PENDING → "invalid"; expiresAt < Date.now() → "expired"; else → Join. */
-export class InviteDetailDto {
-  @ApiProperty() id!: string;
-  @ApiProperty({ enum: ['FRIEND', 'GROUP'] }) kind!: string;
-  @ApiProperty({
-    enum: ['PENDING', 'ACCEPTED', 'REJECTED', 'REVOKED', 'EXPIRED'],
-  })
-  status!: string;
-  @ApiProperty({ description: 'Expiry (ms epoch).' }) expiresAt!: number;
-  @ApiProperty() note!: string;
-  @ApiProperty({ required: false }) threadId?: number;
-  @ApiProperty() groupName!: string;
-  @ApiProperty() groupAvatar!: string;
-  @ApiProperty({
-    description: "The group's home domain (our domain for a local group).",
-  })
-  groupDomain!: string;
-  @ApiProperty({
-    description:
-      'True iff the group is homed on THIS server (rendered as a "Local server" label; otherwise a globe + domain badge).',
-  })
-  groupIsLocal!: boolean;
-  @ApiProperty({
-    description: 'Is the caller already an active member of the target group?',
-  })
-  alreadyJoined!: boolean;
-  @ApiProperty({
-    description:
-      'The caller accepted a federated invite and is waiting for the origin server to confirm membership.',
-  })
-  joinRequested!: boolean;
-  @ApiProperty({ type: InviteUserDto }) fromUser!: InviteUserDto;
-}

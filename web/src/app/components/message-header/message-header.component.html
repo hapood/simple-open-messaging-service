@@ -10,7 +10,7 @@
     >
       <app-icon
         [type]="AppIconType.BACK"
-        [style]="{ width: '24px', height: '24px' }"
+        [style]="{ width: '28px', height: '28px' }"
       ></app-icon>
       @if (otherUnreadCount() > 0) {
         <span class="back-unread" aria-hidden="true">{{
@@ -31,15 +31,6 @@
   } @else {
     <div class="msg-title">
       <span class="msg-title-line">
-        @if (federatedDomain(); as dom) {
-          <app-icon
-            class="federated-icon"
-            [type]="AppIconType.GLOBE"
-            [style]="{ width: '16px', height: '16px' }"
-            [attr.aria-label]="dom"
-            [title]="dom"
-          ></app-icon>
-        }
         <span class="msg-title-text" [title]="title()">{{ title() }}</span>
         @if (groupMemberCount(); as count) {
           <span

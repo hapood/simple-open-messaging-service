@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ContentType } from '../database/enums.js';
 import {
-  authoredMessageSnapshot,
-  authoredMessageSnapshotsEqual,
   federatedContentDigests,
   fromFederatedMessageContent,
   toFederatedMessageContent,
@@ -164,39 +162,22 @@ describe('federated message content projection', () => {
     ).toThrow('invalid fields');
   });
 
-  it('removes local-only INVITE fields and derives them on import', () => {
-    const wire = toFederatedMessageContent(
-      ContentType.INVITE,
-      JSON.stringify({
-        type: 'GROUP_INVITE',
-        from: 'alice',
-        group: '!group1',
-        groupName: 'Group',
-        groupDomain: 'local.test',
-        groupAvatar: '/avatar',
-        groupIsLocal: false,
-      }),
-      'local.test',
-    );
+  it('publishes an imported minimal FORWARD card idempotently', () => {
+    const imported = JSON.stringify({ bundleId: '01ARZ3NDEKTSV4RRFFQ69G5FAV' });
 
-    expect(JSON.parse(wire)).not.toHaveProperty('groupAvatar');
-    expect(JSON.parse(wire)).not.toHaveProperty('type');
-    expect(JSON.parse(wire)).not.toHaveProperty('from');
     expect(
-      JSON.parse(
-        fromFederatedMessageContent(
-          ContentType.INVITE,
-          wire,
-          'local.test',
-          'alice',
-        ),
+      toFederatedMessageContent(ContentType.FORWARD, imported, 'local.test'),
+    ).toBe(imported);
+    expect(() =>
+      toFederatedMessageContent(
+        ContentType.FORWARD,
+        JSON.stringify({
+          bundleId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+          unexpected: true,
+        }),
+        'local.test',
       ),
-    ).toMatchObject({
-      type: 'GROUP_INVITE',
-      from: 'alice',
-      groupAvatar: '',
-      groupIsLocal: true,
-    });
+    ).toThrow('invalid fields');
   });
 
   it('drops local quote media previews on publish and rejects them on wire input', () => {
@@ -252,25 +233,4 @@ describe('federated message content projection', () => {
     ).toThrow('valid full address');
   });
 
-  it('compares immutable authored snapshots semantically', () => {
-    const first = authoredMessageSnapshot({
-      contentType: ContentType.PURE_TEXT,
-      content: '{"text":"hello"}',
-      clientMessageId: null,
-      assets: [
-        { digest: digestB, bytes: 2 },
-        { digest: digestA, bytes: 1 },
-      ],
-    });
-    const equivalent = authoredMessageSnapshot({
-      contentType: ContentType.PURE_TEXT,
-      content: '{"text":"hello"}',
-      clientMessageId: null,
-      assets: [...first.assets].reverse(),
-    });
-    const conflict = { ...equivalent, contentType: ContentType.LINK };
-
-    expect(authoredMessageSnapshotsEqual(first, equivalent)).toBe(true);
-    expect(authoredMessageSnapshotsEqual(first, conflict)).toBe(false);
-  });
 });

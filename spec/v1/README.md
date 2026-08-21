@@ -26,7 +26,7 @@ See [CHANGELOG](./CHANGELOG.md) for release history, [CONFORMANCE](./CONFORMANCE
 10. [Stable Error Registry](./errors.md): stable error codes, HTTP status, retry behavior, and identity actions.
 11. [Machine-readable Release Package](./schema/README.md): JSON Schema, HTTP manifest, positive and negative vectors, and the Conformance CLI.
 
-The Core Protocol defines shared rules. Transport and Security defines the discovery, TLS, and signature profile shared by all operations. Each remaining operation document defines only its body, authorization, state, and idempotency semantics. Together these documents form one versioned release package, whose status applies to the whole package rather than ordinary chapters. Only an extension specification that is independently implementable and testable and that explicitly declares its dependencies may have an independent release status.
+The Core Protocol defines shared rules. Transport and Security defines the discovery, TLS, and signature profile shared by all operations. Each remaining operation document defines only its body, authorization, state, and idempotency semantics. Together these documents form one versioned release package, whose status applies to the whole package rather than ordinary chapters.
 
 An operation document may tighten a shared rule but cannot weaken transport or identity security. A conflict between normative documents is a specification defect and must be handled according to the precedence rules in the Core Protocol; JSON Schema, examples, and existing implementations must not be used to infer an alternative meaning.
 

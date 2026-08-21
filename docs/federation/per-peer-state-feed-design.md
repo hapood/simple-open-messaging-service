@@ -16,8 +16,8 @@ those probes with a durable, compacted projection containing complete snapshots.
 The core implementation decisions that survived into v1 are:
 
 - each recognized peer has an independent state projection;
-- a stable key retains only its newest business revision and complete body;
-- business mutation, business revision, feed allocation, and projection update
+- a stable key retains only its newest complete body;
+- business mutation, feed allocation, and projection update
   commit in one PostgreSQL transaction;
 - feed IDs/cursors use bigint transport coordinates, while object revisions use
   integer business coordinates;
@@ -49,6 +49,14 @@ An exact user query does not create a human stub. A node may retain a verified
 home-authored profile by address, but materializes the human user only when that
 profile and a valid `ACCEPTED` fact are both present.
 
+For P2P admission, `ACCEPTED` is valid only within a still-effective request
+flow: it confirms a local request or completes a peer request already accepted
+locally. An unsolicited `ACCEPTED` has no relationship effect and
+cannot be promoted merely because the foreign user was already materialized.
+Conversely, accepting a new peer request always reindexes the local `ACCEPTED`
+at a new feed position, even when the body is unchanged, so a peer that passed
+an earlier unsolicited snapshot receives a confirmation for the current flow.
+
 `P2P_INTENT/REVOKED` does not carry message or tombstone feed ends. The data feeds
 are separate compacted thread end-sequence indexes, and concrete content comes
 from per-thread queries.
@@ -61,13 +69,13 @@ These constraints remain useful when changing the SOMS implementation:
    order so multi-peer group transactions do not deadlock.
 2. Route a removal to the union of peers visible before and after the mutation so
    the last remote member still receives the final authoritative snapshot.
-3. Allocate no feed ID for an equal or older business revision. Reindex only when
+3. Allocate no feed ID for an unchanged body. Reindex only when
    dependency repair requires a new scan position.
 4. Publish a wake-up only after commit. Lost, duplicate, reordered, or stale
    wake-ups must not affect correctness.
-5. Roll back the page and cursor together on schema, ordering, digest, roster, or
-   consistency failure. Do not perform secondary remote lookups inside the page
-   transaction.
+5. The current receiver isolates self-contained invalid items. Page-envelope,
+   ordering, local-storage, and consistency failures abort the current page.
+   Do not perform secondary remote lookups while applying the page.
 6. Cascade peer deletion through the projection, allocator, pull cursor, and
    remote mirror state. A reset identity cannot inherit old authorization or
    cursors.
@@ -77,7 +85,7 @@ These constraints remain useful when changing the SOMS implementation:
 ## Regression evidence to preserve
 
 Tests should continue to cover stable-key compaction, independent peers, revision
-idempotency, transaction rollback, restart recovery, wake-up loss/reordering,
+idempotency, item isolation, page-failure recovery, wake-up loss/reordering,
 member-before-group ordering, final group snapshots, multi-peer lock ordering,
 oversized or invalid profile/roster data, page-level atomicity, deletion/reset,
 and two-node convergence without chat-open probes or follow-up synchronization

@@ -1,30 +1,20 @@
 <div class="friend-requests">
-  <div class="popup-header">
-    @if (isShowBackBtn()) {
-      <button
-        class="icon-btn"
-        (click)="goBack()"
-        [attr.aria-label]="'common.back' | transloco"
-      >
-        <app-icon
-          [type]="AppIconType.BACK"
-          [style]="{ width: '32px', height: '32px' }"
-        ></app-icon>
-      </button>
-    }
-    <div class="popup-title">
-      {{
-        (selectedRequest()
-          ? selectedDirection() === 'INCOMING'
+  <app-page-header
+    [title]="
+      (selectedRequest()
+        ? selectedRequest()?.kind === 'GROUP'
+          ? 'friend.groupInviteDetailTitle'
+          : selectedDirection() === 'INCOMING'
             ? 'friend.incomingDetailTitle'
             : 'friend.outgoingDetailTitle'
-          : inviteUser()
-            ? 'friend.inviteDialogTitle'
-            : 'friend.title'
-        ) | transloco
-      }}
-    </div>
-  </div>
+        : inviteUser()
+          ? 'friend.inviteDialogTitle'
+          : 'friend.title'
+      ) | transloco
+    "
+    [showBack]="isShowBackBtn()"
+    (back)="goBack()"
+  />
 
   @if (inviteUser(); as selectedUser) {
     <app-friend-invite-dialog
@@ -162,8 +152,8 @@
                 @for (u of localResults(); track u.id) {
                   <div
                     class="result-row"
-                    role="button"
-                    tabindex="0"
+                    [attr.role]="isSelf(u) ? null : 'button'"
+                    [attr.tabindex]="isSelf(u) ? null : 0"
                     (click)="activateResult(u)"
                     (keydown.enter)="activateResult(u)"
                   >
@@ -172,7 +162,9 @@
                         [type]="UserAvatarType.OTHER"
                         [name]="u.name"
                         [identityId]="userIdentity(u)"
+                        [account]="u.account"
                         [src]="u.avatar"
+                        [federatedDomain]="u.isForeigner ? u.domain : null"
                       ></app-user-avatar>
                     </div>
                     <div class="result-meta">
@@ -184,7 +176,11 @@
                         {{ u.bio || ('friend.noBio' | transloco) }}
                       </div>
                     </div>
-                    @if (
+                    @if (isSelf(u)) {
+                      <span class="result-status">
+                        {{ 'friend.selfStatus' | transloco }}
+                      </span>
+                    } @else if (
                       relationshipStates().get(u.id) === 'NONE' ||
                       relationshipStates().get(u.id) === 'INCOMING_PENDING'
                     ) {
@@ -327,16 +323,27 @@
     <section class="request-detail">
       <div class="detail-profile">
         <app-user-avatar
-          [type]="UserAvatarType.OTHER"
+          [type]="
+            req.kind === 'GROUP' ? UserAvatarType.GROUP : UserAvatarType.OTHER
+          "
           [name]="req.name ?? ''"
           [identityId]="req.peerId"
+          [account]="req.account"
           [src]="req.avatar"
+          [federatedDomain]="
+            req.kind === 'GROUP' || req.isForeigner ? req.domain : null
+          "
         />
         <div class="detail-profile-copy">
           <app-user-identity-label
             [name]="req.name ?? ('friend.invalidUser' | transloco)"
-            [domain]="req.isForeigner ? req.domain : null"
+            [domain]="
+              req.kind === 'FRIEND' && req.isForeigner ? req.domain : null
+            "
           />
+          @if (req.kind === 'GROUP') {
+            <div class="user-account">{{ req.sourceLabel }}</div>
+          }
           <div class="detail-date">
             {{ relativeDate(req.date) }} · {{ absoluteDate(req.date) }}
           </div>
@@ -344,7 +351,12 @@
       </div>
       <div class="detail-message">
         <div class="detail-label">
-          {{ 'friend.requestMessage' | transloco }}
+          {{
+            (req.kind === 'GROUP'
+              ? 'group.groupDescription'
+              : 'friend.requestMessage'
+            ) | transloco
+          }}
         </div>
         <div>{{ req.reqMessage || ('friend.noMessage' | transloco) }}</div>
       </div>

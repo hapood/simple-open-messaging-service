@@ -744,7 +744,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Create a group and invite the given friends (Invite row + card per friend) */
+    /** Create a group and invite the given friends */
     post: operations['GroupController_createNewGroup'];
     delete?: never;
     options?: never;
@@ -761,7 +761,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Invite friends to an existing group (Invite row + card per friend) */
+    /** Invite friends to an existing group */
     post: operations['GroupController_inviteUsers'];
     delete?: never;
     options?: never;
@@ -1035,23 +1035,6 @@ export interface paths {
     put?: never;
     /** Get authoritative friend/invite status for up to 50 users */
     post: operations['InviteController_friendStatus'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/invite/detail': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Live invite state for the group-invite dialog (validity / already-joined) */
-    post: operations['InviteController_getInviteDetail'];
     delete?: never;
     options?: never;
     head?: never;
@@ -3862,7 +3845,6 @@ export interface components {
        */
       contentType:
         | 'PURE_TEXT'
-        | 'INVITE'
         | 'IMAGE'
         | 'VIDEO'
         | 'FILE'
@@ -4418,7 +4400,7 @@ export interface components {
        */
       membersCanInvite: boolean;
       /**
-       * @description The group's home (origin) domain. Empty for a locally-originated group (this server is the origin); a peer domain for a federated mirror. Drives the federated-badge the way UserResponseDto.domain does for a P2P peer — empty self-hides the badge.
+       * @description The group's home (origin) domain. Empty for a locally-originated group (this server is the origin); a peer domain for a federated mirror.
        * @example soms.io
        */
       domain: string;
@@ -4752,28 +4734,6 @@ export interface components {
        *     ]
        */
       userIds: number[];
-    };
-    InviteDetailDto: {
-      id: string;
-      /** @enum {string} */
-      kind: 'FRIEND' | 'GROUP';
-      /** @enum {string} */
-      status: 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'REVOKED' | 'EXPIRED';
-      /** @description Expiry (ms epoch). */
-      expiresAt: number;
-      note: string;
-      threadId?: number;
-      groupName: string;
-      groupAvatar: string;
-      /** @description The group's home domain (our domain for a local group). */
-      groupDomain: string;
-      /** @description True iff the group is homed on THIS server (rendered as a "Local server" label; otherwise a globe + domain badge). */
-      groupIsLocal: boolean;
-      /** @description Is the caller already an active member of the target group? */
-      alreadyJoined: boolean;
-      /** @description The caller accepted a federated invite and is waiting for the origin server to confirm membership. */
-      joinRequested: boolean;
-      fromUser: components['schemas']['InviteUserDto'];
     };
     InviteIdDto: {
       /**
@@ -6799,31 +6759,6 @@ export interface operations {
         content: {
           'application/json': components['schemas']['ApiResult'] & {
             data?: components['schemas']['FriendRelationshipStateDto'][];
-          };
-        };
-      };
-    };
-  };
-  InviteController_getInviteDetail: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['InviteIdDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['InviteDetailDto'];
           };
         };
       };

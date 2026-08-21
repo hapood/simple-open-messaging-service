@@ -450,6 +450,39 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(repo.topInserted()).toBeNull(); // the component clears the pulse after animating
   });
 
+  it('an incremental ADD for existing thread metadata updates in place without arming a FLIP', async () => {
+    await populateViaDelta([p2p(1, 11, { lastMessageAt: 200 })], 5);
+    queryThreadDeltaSpy.mockReturnValue(
+      of({
+        code: 0,
+        data: [addOp(p2p(2, 22, { lastMessageAt: 100 }))],
+      }),
+    );
+    eventSubject.next({
+      event: 'STATE_REV_UPDATED',
+      data: { stateRevision: 6 },
+    });
+    await flush(20);
+    expect(repo.items().map((t) => t.threadId)).toEqual([2, 1]);
+    repo.clearTopInserted();
+
+    queryThreadDeltaSpy.mockReturnValue(
+      of({
+        code: 0,
+        data: [addOp(p2p(2, 22, { lastMessageAt: 100, muted: true }))],
+      }),
+    );
+    eventSubject.next({
+      event: 'STATE_REV_UPDATED',
+      data: { stateRevision: 7 },
+    });
+    await flush(20);
+
+    expect(repo.topInserted()).toBeNull();
+    expect(repo.items().map((t) => t.threadId)).toEqual([2, 1]);
+    expect(repo.items()[0].muted).toBe(true);
+  });
+
   it('HELLO without a latestMessage does not trigger a missed-summary walk', async () => {
     const missed = TestBed.inject(MissedSyncService) as unknown as {
       fetchMissedSummary: Mock;
@@ -756,6 +789,34 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(rec?.pinned).toBe(true);
   });
 
+  it('applyThreadMeta keeps display-only metadata changes at the current list position', async () => {
+    await populateViaDelta([p2p(1, 11, { lastMessageAt: 200 })], 5);
+    queryThreadDeltaSpy.mockReturnValue(
+      of({
+        code: 0,
+        data: [addOp(p2p(2, 22, { lastMessageAt: 100 }))],
+      }),
+    );
+    eventSubject.next({
+      event: 'STATE_REV_UPDATED',
+      data: { stateRevision: 6 },
+    });
+    await flush(20);
+    expect(repo.items().map((t) => t.threadId)).toEqual([2, 1]);
+
+    repo.applyThreadMeta(2, {
+      muted: true,
+      blocked: true,
+      alias: 'Quiet',
+    });
+    await flush();
+
+    expect(repo.items().map((t) => t.threadId)).toEqual([2, 1]);
+    expect(repo.items()[0]).toEqual(
+      expect.objectContaining({ muted: true, blocked: true, alias: 'Quiet' }),
+    );
+  });
+
   it('removeThread drops the item from the list AND IDB', async () => {
     await populate([p2p(1, 11), p2p(2, 22)]);
     repo.removeThread(1);
@@ -835,7 +896,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
             eventType: 'P2P_INTENT',
             subjectAccount: 'local',
             subjectDomain: 'local',
-            businessRevision: 1,
             body: {
               status: 'REQUESTED',
               note: '',
@@ -884,7 +944,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
             eventType: 'P2P_INTENT',
             subjectAccount: 'local',
             subjectDomain: 'local',
-            businessRevision: 2,
             body: {
               status: 'ACCEPTED',
               note: '',
@@ -1414,5 +1473,24 @@ describe('rawPreview', () => {
 
   it('falls back to the forward marker for malformed bundle content', () => {
     expect(rawPreview('FORWARD', '{')).toBe('[Chat history]');
+  });
+
+  it('renders an all-file gallery as a file-set summary instead of raw JSON', () => {
+    expect(
+      rawPreview(
+        'GALLERY',
+        JSON.stringify({ items: [{ kind: 'FILE' }, { kind: 'FILE' }] }),
+      ),
+    ).toBe('[File set · 2]');
+  });
+
+  it('renders a mixed file set with its item count and safely handles malformed content', () => {
+    expect(
+      rawPreview(
+        'GALLERY',
+        JSON.stringify({ items: [{ kind: 'IMAGE' }, { kind: 'VIDEO' }] }),
+      ),
+    ).toBe('[File set · 2]');
+    expect(rawPreview('GALLERY', '{')).toBe('[File set]');
   });
 });

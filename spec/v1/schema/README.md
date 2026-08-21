@@ -10,12 +10,12 @@ This directory ships with the v1 normative text as a non-normative validation re
 
 - `common.schema.json`: shared Federation types for identity, time, cursors, digests, and addresses.
 - `discovery.schema.json`: cross-version bootstrap and key discovery at `/.well-known/socfp`.
-- `identity.schema.json`: closed JSON shapes for Recognize, Healthy, v1 capability discovery, and feed-head hints.
+- `identity.schema.json`: closed JSON shapes for Recognize, Healthy, and feed-head hints.
 - `state-feed.schema.json`: complete pages and all six event bodies.
 - `message-feed.schema.json`: message index feed pages and `thread + messageEndSeq` items.
 - `message-tombstone-feed.schema.json`: tombstone index feed pages and `thread + tombstoneEndSeq` items.
 - `message-query.schema.json` and `message-tombstone-query.schema.json`: messages and authoritative deletion facts returned by thread queries.
-- `message-content.schema.json`: all parsed core message-content variants selected by `contentType`, plus the extension branch.
+- `message-content.schema.json`: all parsed core message-content variants selected by `contentType`.
 - `call.schema.json`: every call lifecycle and signal operation with its closed conditional field set.
 - `profile.schema.json`, `forward-bundle.schema.json`, and `error.schema.json`: the remaining JSON operations.
 - `http-parameters.schema.json`: normalized query and path parameter objects.

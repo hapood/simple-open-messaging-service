@@ -74,7 +74,11 @@ export interface ChatMsgData {
   /** Cached sender profile data used by message-card avatars, including offline opens. */
   avatar?: string;
   avatarIdentityId?: number;
-  /** PURE_TEXT body / INVITE JSON source / fallback text for unsupported types. */
+  /** Stable sender account used with avatarDomain for deterministic fallback colors. */
+  avatarAccount?: string;
+  /** Sender home domain; non-empty for federated identities and drives the avatar globe marker. */
+  avatarDomain?: string;
+  /** PURE_TEXT body / fallback text for unsupported types. */
   text: string;
   /** Canonical inline-entity storage string for an optimistic PURE_TEXT send. The bubble renders `text`;
    *  HTTP/retry sends this value. Real queried messages need no copy because their wire body is durable. */
@@ -104,7 +108,6 @@ export interface ChatMsgData {
   time: string;
   contentType:
     | 'PURE_TEXT'
-    | 'INVITE'
     | 'IMAGE'
     | 'VIDEO'
     | 'FILE'

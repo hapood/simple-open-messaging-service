@@ -7,15 +7,14 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname } from 'node:path';
+import { dataDirectory } from '../common/data-directory.js';
 
 /**
  * Persistence root for auto-generated secrets. Same directory the S2S keypair lives in
  * (`./data/soms-s2s-key.json`), so a deployment persistent enough to
  * keep its federation identity is automatically persistent enough to keep these keys.
  */
-const SECRET_DIR = resolve('data');
-
 /** Paths minted during this boot (env unset AND no existing file). Read once by reportGeneratedSecrets(). */
 const generatedPaths: string[] = [];
 
@@ -25,7 +24,7 @@ const generatedPaths: string[] = [];
  * restore boundary, and an accidental deployment-variable change can never rotate server identity.
  */
 export function resolveFileSecret(filename: string): string {
-  const path = resolve(SECRET_DIR, filename);
+  const path = dataDirectory(filename);
 
   if (existsSync(path)) {
     const existing = readFileSync(path, 'utf8').trim();
@@ -50,7 +49,7 @@ export interface ManagedSecretStatus {
 
 /** Read-only metadata for Admin. Secret material never leaves this module. */
 export function getManagedSecretStatus(filename: string): ManagedSecretStatus {
-  const path = resolve(SECRET_DIR, filename);
+  const path = dataDirectory(filename);
   if (!existsSync(path)) return { configured: false, valid: false };
   try {
     const material = readFileSync(path, 'utf8').trim();

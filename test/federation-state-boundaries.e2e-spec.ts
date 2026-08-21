@@ -57,14 +57,13 @@ describe('federation directed-state boundaries', () => {
     return { local, peer };
   }
 
-  it('keeps local NOT_FRIEND authoritative and refreshes its revision against a stale peer FRIEND', async () => {
+  it('ignores a peer FRIEND snapshot outside an effective request flow', async () => {
     const { local, peer } = await createPair(Date.now().toString(36));
     await database.db.insert(friendRequest).values([
       {
         requesterUserId: local.id,
         targetUserId: peer.id,
         status: 'NOT_FRIEND',
-        revision: 7,
         note: '',
         requestedAt: null,
         expiresAt: null,
@@ -74,7 +73,6 @@ describe('federation directed-state boundaries', () => {
         requesterUserId: peer.id,
         targetUserId: local.id,
         status: 'FRIEND',
-        revision: 3,
         note: '',
         requestedAt: new Date(),
         expiresAt: null,
@@ -88,20 +86,22 @@ describe('federation directed-state boundaries', () => {
         peerUserId: peer.id,
         status: 'FRIEND',
         note: '',
-        revision: 4,
         requestedAt: new Date(),
         expiresAt: null,
         origin: 'peer.test',
       }),
     );
 
-    expect(effect.localStateRevision).toBe(8);
+    expect(effect).toMatchObject({
+      changed: false,
+      requestCreated: false,
+      clientRevisions: [],
+    });
     expect(effect.requestCreated).toBe(false);
     const directions = await database.db
       .select({
         requesterUserId: friendRequest.requesterUserId,
         status: friendRequest.status,
-        revision: friendRequest.revision,
         expiresAt: friendRequest.expiresAt,
       })
       .from(friendRequest)
@@ -114,7 +114,6 @@ describe('federation directed-state boundaries', () => {
     expect(directions[0]).toMatchObject({
       requesterUserId: local.id,
       status: 'NOT_FRIEND',
-      revision: 8,
       expiresAt: null,
     });
   });
@@ -127,7 +126,6 @@ describe('federation directed-state boundaries', () => {
       requesterUserId: local.id,
       targetUserId: peer.id,
       status: 'REQUESTED',
-      revision: 2,
       note: 'hello',
       requestedAt: new Date(),
       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
@@ -140,14 +138,13 @@ describe('federation directed-state boundaries', () => {
         peerUserId: peer.id,
         status: 'FRIEND',
         note: '',
-        revision: 1,
         requestedAt: new Date(),
         expiresAt: null,
         origin: 'peer.test',
       }),
     );
 
-    expect(effect.localStateRevision).toBe(3);
+    expect(effect.localStateRevision).toBeDefined();
     const localDirection = await database.db.query.friendRequest.findFirst({
       where: and(
         eq(friendRequest.requesterUserId, local.id),
@@ -156,7 +153,57 @@ describe('federation directed-state boundaries', () => {
     });
     expect(localDirection).toMatchObject({
       status: 'FRIEND',
-      revision: 3,
+      expiresAt: null,
+    });
+  });
+
+  it('completes a peer request that the local direction already accepted', async () => {
+    const { local, peer } = await createPair(
+      `${Date.now().toString(36)}-final`,
+    );
+    const requestedAt = new Date();
+    await database.db.insert(friendRequest).values([
+      {
+        requesterUserId: local.id,
+        targetUserId: peer.id,
+        status: 'FRIEND',
+        note: '',
+        requestedAt,
+        expiresAt: null,
+        updatedAt: new Date(),
+      },
+      {
+        requesterUserId: peer.id,
+        targetUserId: local.id,
+        status: 'REQUESTED',
+        note: 'peer request',
+        requestedAt,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        updatedAt: new Date(),
+      },
+    ]);
+
+    const effect = await database.db.transaction((tx) =>
+      invites.applyRemoteFriendIntentInTx(tx, {
+        localUserId: local.id,
+        peerUserId: peer.id,
+        status: 'FRIEND',
+        note: '',
+        requestedAt: new Date(),
+        expiresAt: null,
+        origin: 'peer.test',
+      }),
+    );
+
+    expect(effect.changed).toBe(true);
+    const peerDirection = await database.db.query.friendRequest.findFirst({
+      where: and(
+        eq(friendRequest.requesterUserId, peer.id),
+        eq(friendRequest.targetUserId, local.id),
+      ),
+    });
+    expect(peerDirection).toMatchObject({
+      status: 'FRIEND',
       expiresAt: null,
     });
   });
@@ -171,7 +218,6 @@ describe('federation directed-state boundaries', () => {
         requesterUserId: local.id,
         targetUserId: peer.id,
         status: 'REQUESTED',
-        revision: 2,
         note: 'old local',
         requestedAt: new Date(Date.now() - 120_000),
         expiresAt: expiredAt,
@@ -181,7 +227,6 @@ describe('federation directed-state boundaries', () => {
         requesterUserId: peer.id,
         targetUserId: local.id,
         status: 'REQUESTED',
-        revision: 4,
         note: 'old peer',
         requestedAt: new Date(Date.now() - 120_000),
         expiresAt: expiredAt,
@@ -207,7 +252,6 @@ describe('federation directed-state boundaries', () => {
     });
     expect(refreshed).toMatchObject({
       status: 'REQUESTED',
-      revision: 3,
       note: 'new request',
     });
     expect(refreshed!.expiresAt!.getTime()).toBeGreaterThan(Date.now());
@@ -267,7 +311,7 @@ describe('federation directed-state boundaries', () => {
     const refreshed = await database.db.query.groupMembershipRequest.findFirst({
       where: eq(groupMembershipRequest.id, BigInt(firstId)),
     });
-    expect(refreshed).toMatchObject({ status: 'REQUESTED', revision: 2 });
+    expect(refreshed).toMatchObject({ status: 'REQUESTED' });
     expect(refreshed!.expiresAt!.getTime()).toBeGreaterThan(Date.now());
   });
 });

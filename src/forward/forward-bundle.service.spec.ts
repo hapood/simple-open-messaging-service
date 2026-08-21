@@ -183,6 +183,119 @@ function forwardService(database: unknown) {
 }
 
 describe('ForwardBundleService', () => {
+  it.each([
+    [
+      ContentType.PURE_TEXT,
+      JSON.stringify({ text: 'hello\nworld' }),
+      'hello world',
+    ],
+    [ContentType.IMAGE, '', '[Photo]'],
+    [
+      ContentType.LINK,
+      JSON.stringify({ title: 'Example', url: 'https://example.test' }),
+      'Example',
+    ],
+    [
+      ContentType.GALLERY,
+      JSON.stringify({ items: [{ kind: 'IMAGE' }, { kind: 'VIDEO' }] }),
+      '[File set · 2]',
+    ],
+    [ContentType.CALL, JSON.stringify({ status: 'missed' }), '[Missed call]'],
+  ])(
+    'uses the shared %s message preview in forward-card summaries',
+    (contentType, content, expected) => {
+      const service = forwardService(databaseFake(0));
+
+      expect(
+        service['summaryLine']({
+          author: {
+            displayName: 'Alice',
+            account: 'alice',
+            domain: 'local',
+          },
+          contentType,
+          content,
+        } as never),
+      ).toBe(`Alice：${expected}`);
+    },
+  );
+
+  it('collects both LINK artwork digests for forward-bundle authorization', async () => {
+    const database = databaseFake(0);
+    const service = forwardService(database);
+    const first = 'a'.repeat(64);
+    const second = 'b'.repeat(64);
+    database.db.query.mediaAsset.findFirst
+      .mockResolvedValueOnce({ digest: first, bytes: 10n })
+      .mockResolvedValueOnce({ digest: second, bytes: 20n });
+
+    await expect(
+      service['assetsFromContent'](
+        ContentType.LINK,
+        JSON.stringify({
+          url: 'https://example.test',
+          title: 'Example',
+          description: '',
+          image: `/uploads/msg-assets/aa/aa/${first}`,
+          favicon: `/uploads/msg-assets/bb/bb/${second}`,
+        }),
+      ),
+    ).resolves.toEqual([
+      { digest: first, bytes: 10 },
+      { digest: second, bytes: 20 },
+    ]);
+  });
+
+  it('builds a closure containing an imported minimal forward card', async () => {
+    const database = databaseFake(0) as ReturnType<typeof databaseFake>;
+    database.db.query.forwardBundle.findFirst.mockResolvedValueOnce({
+      id: '01BX5ZZKBKACTAV9WEVGEMMVRZ',
+      messages: [
+        {
+          id: 1,
+          author: { displayName: 'A', account: 'a', domain: 'remote.test' },
+          contentType: ContentType.FORWARD,
+          content: JSON.stringify({
+            bundleId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+          }),
+          childBundleId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+          sentAt: 1,
+        },
+      ],
+      forwardBundleDependencies_parentBundleId: [
+        { childBundleId: '01ARZ3NDEKTSV4RRFFQ69G5FAV' },
+      ],
+      forwardBundleAssets: [],
+    });
+    database.db.query.forwardBundle.findMany.mockResolvedValueOnce([
+      {
+        id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+        messages: [
+          {
+            id: 1,
+            author: { displayName: 'B', account: 'b', domain: 'remote.test' },
+            contentType: ContentType.PURE_TEXT,
+            content: JSON.stringify({ text: 'nested' }),
+            sentAt: 1,
+          },
+        ],
+      },
+    ]);
+    const service = forwardService(database);
+
+    await expect(
+      service.buildClosure('01BX5ZZKBKACTAV9WEVGEMMVRZ'),
+    ).resolves.toMatchObject({
+      messages: [
+        {
+          content: JSON.stringify({
+            bundleId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+          }),
+        },
+      ],
+    });
+  });
+
   it('directly forwards text as the caller without retaining its quote', async () => {
     const database = databaseFake(0);
     const service = new ForwardBundleService(
@@ -206,7 +319,7 @@ describe('ForwardBundleService', () => {
     });
   });
 
-  it.each([ContentType.INVITE, ContentType.CALL])(
+  it.each([ContentType.CALL])(
     'rejects direct forwarding of system message type %s',
     async (contentType) => {
       const service = new ForwardBundleService(

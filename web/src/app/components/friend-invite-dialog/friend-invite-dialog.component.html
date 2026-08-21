@@ -6,7 +6,9 @@
           [type]="UserAvatarType.OTHER"
           [name]="user().name"
           [identityId]="avatarIdentity()"
+          [account]="user().account"
           [src]="user().avatar"
+          [federatedDomain]="user().isForeigner ? user().domain : null"
         ></app-user-avatar>
       </div>
       <div class="user-meta">

@@ -8,7 +8,7 @@ import i18n, {
 describe('admin i18n', () => {
   afterEach(async () => {
     await changeAppLanguage('en')
-    localStorage.removeItem(LANG_STORAGE_KEY)
+    window.localStorage.removeItem(LANG_STORAGE_KEY)
   })
 
   it('switches translations and persists the selected language', async () => {
@@ -26,7 +26,7 @@ describe('admin i18n', () => {
       languages: ['zh-CN', 'en'],
       translation: '语言',
     })
-    expect(localStorage.getItem(LANG_STORAGE_KEY)).toBe('zh-CN')
+    expect(window.localStorage.getItem(LANG_STORAGE_KEY)).toBe('zh-CN')
     expect(document.documentElement.lang).toBe('zh-CN')
   })
 })

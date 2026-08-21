@@ -30,4 +30,5 @@ process.env.DATABASE_URL = forkUrl;
 // fork would create a `logs/` dir in the repo root and emit verbose boot output. Override by setting
 // LOG_DIR / LOG_LEVEL in the shell before `npm run test:e2e`.
 process.env.LOG_DIR ??= join(tmpdir(), `soms-test-logs-fork${poolId}`);
+process.env.SOMS_DATA_DIR ??= join(tmpdir(), `soms-test-data-fork${poolId}`);
 process.env.LOG_LEVEL ??= 'warn';

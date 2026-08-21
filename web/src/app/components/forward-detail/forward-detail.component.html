@@ -4,35 +4,30 @@
   aria-modal="true"
   [attr.aria-label]="'forward.chatHistory' | transloco"
 >
-  <header class="msg-header">
-    <button
-      class="icon-btn"
-      type="button"
-      (click)="back()"
-      [attr.aria-label]="'common.back' | transloco"
-    >
-      <app-icon
-        [type]="AppIconType.BACK"
-        [style]="{ width: '32px', height: '32px' }"
-      ></app-icon>
-    </button>
-    <span class="title">
-      {{ 'forward.chatHistory' | transloco }}
-      @if (currentLevel() > 1) {
-        <span class="level">
-          {{ 'forward.nestedLevel' | transloco: { level: currentLevel() } }}
-        </span>
-      }
-    </span>
-    <span class="header-spacer" aria-hidden="true"></span>
-  </header>
+  <app-page-header [title]="'forward.chatHistory' | transloco" (back)="back()">
+    @if (currentLevel() > 1) {
+      <span pageHeaderTitleSuffix class="level">
+        {{ 'forward.nestedLevel' | transloco: { level: currentLevel() } }}
+      </span>
+    }
+  </app-page-header>
 
   @if (loading()) {
     <div class="forward-state">{{ 'common.loading' | transloco }}</div>
   } @else if (failed()) {
-    <div class="forward-state">
+    <div class="forward-state forward-state--error" role="alert">
+      <app-icon
+        class="forward-state__icon"
+        [type]="AppIconType.ERROR_OUTLINE"
+        [style]="{ width: '48px', height: '48px' }"
+      />
       <p>{{ 'forward.loadFailed' | transloco }}</p>
-      <button type="button" (click)="load()">
+      <button mat-flat-button color="primary" type="button" (click)="load()">
+        <app-icon
+          matButtonIcon
+          [type]="AppIconType.REFRESH"
+          [style]="{ width: '18px', height: '18px' }"
+        />
         {{ 'common.retry' | transloco }}
       </button>
     </div>

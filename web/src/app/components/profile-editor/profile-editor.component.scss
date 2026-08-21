@@ -19,58 +19,6 @@
   min-height: 100%;
 }
 
-.msg-header {
-  height: 56px;
-  flex: 0 0 auto;
-  width: 100%;
-  background: var(--app-surface);
-  box-sizing: border-box;
-  border-bottom: 1px solid var(--app-border);
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: center;
-  padding: 0 10px;
-
-  // Equal 1fr side tracks keep the title centered even when the back and action
-  // buttons differ in width (flex `space-between` skews it off-center).
-  > :first-child {
-    justify-self: start;
-  }
-  > :last-child {
-    justify-self: end;
-  }
-
-  .title {
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--app-text);
-  }
-}
-
-.profile-editor.safe-area-header .msg-header {
-  height: calc(56px + var(--soms-safe-top, 0px));
-  padding-top: var(--soms-safe-top, 0px);
-}
-
-.icon-btn {
-  @include styless-button;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: var(--app-radius-sm);
-}
-
-.icon-btn:hover {
-  background: var(--app-hover);
-}
-
-.icon-btn:focus-visible {
-  outline: 2px solid var(--app-focus-ring);
-  outline-offset: 2px;
-}
-
 // "Saved" confirmation: the check glyph + label share the Save button — seat the icon on the label's
 // mid-line with a small gap (Material only auto-spaces <mat-icon>, not raw <app-icon>).
 .save-btn app-icon {

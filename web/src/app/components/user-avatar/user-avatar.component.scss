@@ -1,7 +1,31 @@
 :host {
+  position: relative;
   display: block;
   width: 100%;
   height: 100%;
+}
+
+.avatar-federated-icon {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.avatar-federated-ground {
+  fill: var(--app-action-primary);
+  stroke: var(--app-on-action-primary);
+  stroke-width: 3px;
+}
+
+.avatar-federated-globe {
+  fill: none;
+  stroke: var(--app-on-action-primary);
+  stroke-width: 2px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .ua {
@@ -32,7 +56,11 @@
   width: 100%;
   height: 100%;
   border-radius: 20%; // matches the rx=20% of the initial-letter SVG / .ua.img
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.04));
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.16),
+    rgba(255, 255, 255, 0.04)
+  );
   border: 1px solid rgba(255, 255, 255, 0.22);
   position: relative;
   overflow: hidden;
@@ -43,7 +71,12 @@
     content: '';
     position: absolute;
     inset: 0;
-    background-image: linear-gradient(100deg, transparent 35%, rgba(255, 255, 255, 0.45) 50%, transparent 65%);
+    background-image: linear-gradient(
+      100deg,
+      transparent 35%,
+      rgba(255, 255, 255, 0.45) 50%,
+      transparent 65%
+    );
     background-size: 200% 100%;
     background-repeat: no-repeat;
     animation: avatar-ph-shimmer 1.6s linear infinite;
@@ -51,20 +84,35 @@
 }
 
 @keyframes avatar-ph-shimmer {
-  from { background-position: 200% 0; }
-  to   { background-position: -200% 0; }
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .avatar-placeholder::after { animation: none; }
+  .avatar-placeholder::after {
+    animation: none;
+  }
 }
 
 // Dark theme: glass on a dark surface — dim the additive whites so the tile stays subtle.
 :host-context([data-theme='dark']) .avatar-placeholder {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0.02));
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.1),
+    rgba(255, 255, 255, 0.02)
+  );
   border-color: rgba(255, 255, 255, 0.14);
 
   &::after {
-    background-image: linear-gradient(100deg, transparent 35%, rgba(255, 255, 255, 0.30) 50%, transparent 65%);
+    background-image: linear-gradient(
+      100deg,
+      transparent 35%,
+      rgba(255, 255, 255, 0.3) 50%,
+      transparent 65%
+    );
   }
 }

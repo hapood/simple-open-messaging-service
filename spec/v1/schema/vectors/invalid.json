@@ -46,21 +46,11 @@
       }
     },
     {
-      "name": "available health requires one selected protocol version",
+      "name": "healthy rejects legacy selected protocol version",
       "schema": "urn:socfp:v1:identity#/$defs/healthResult",
       "value": {
         "status": "available",
-        "selectedProtocolVersion": null,
-        "acceptedExtensions": []
-      }
-    },
-    {
-      "name": "unavailable health does not disclose a selected protocol version",
-      "schema": "urn:socfp:v1:identity#/$defs/healthResult",
-      "value": {
-        "status": "unavailable",
-        "selectedProtocolVersion": 1,
-        "acceptedExtensions": null
+        "selectedProtocolVersion": 1
       }
     },
     {
@@ -81,13 +71,11 @@
             "eventType": "PROFILE",
             "subjectAccount": "bob",
             "subjectDomain": "b.example",
-            "revision": "1",
             "feedId": "1",
             "body": {
               "displayName": "Alice",
               "bio": "",
-              "avatar": null,
-              "deleted": false
+              "avatar": null
             }
           }
         ],
@@ -100,18 +88,6 @@
       "name": "unknown message content type",
       "schema": "urn:socfp:v1:message-content",
       "value": { "contentType": "STICKER", "content": {} }
-    },
-    {
-      "name": "extension identifier requires a namespace and version",
-      "schema": "urn:socfp:v1:common#/$defs/extensionId",
-      "value": "sticker"
-    },
-    {
-      "name": "extension payload value must be an object",
-      "schema": "urn:socfp:v1:common#/$defs/extensions",
-      "value": {
-        "socfp.profile.pronouns.v1": "she/her"
-      }
     },
     {
       "name": "media content rejects publisher display URL",

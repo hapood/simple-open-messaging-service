@@ -89,7 +89,6 @@ describe('PeerStateFeedPullService atomic page application', () => {
               eventType: 'PROFILE',
               subjectAccount: '',
               subjectDomain: '',
-              revision: '1',
               feedId: '2',
               body: {},
             },

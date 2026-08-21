@@ -2,6 +2,7 @@ import { mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { createStream, type RotatingFileStream } from 'rotating-file-stream';
 import { optionalIntEnv } from '../common/env.js';
+import { dataDirectory } from '../common/data-directory.js';
 
 /**
  * Rotating file destination for pino, built on `rotating-file-stream` (rfs — a self-described "logrotate
@@ -36,7 +37,7 @@ import { optionalIntEnv } from '../common/env.js';
 // S2S/JWT keys and Caddy state), so logs survive container restart/recreate. In dev (cwd=repo) it is
 // ./data/logs. The LOG_DIR env override is kept ONLY as an internal/test escape hatch (test/setup-env
 // redirects forks to a tmpdir) — operators never need to set it.
-const LOG_DIR = process.env.LOG_DIR ?? join(process.cwd(), 'data', 'logs');
+const LOG_DIR = process.env.LOG_DIR ?? dataDirectory('logs');
 const MAX_SIZE = optionalIntEnv('LOG_FILE_MAX_SIZE', 50 * 1024 * 1024); // 50 MB (bytes; rfs wants a unit string)
 const RETENTION_DAYS = optionalIntEnv('LOG_FILE_RETENTION', 7);
 const ARCHIVE_PREFIX = 'soms-';

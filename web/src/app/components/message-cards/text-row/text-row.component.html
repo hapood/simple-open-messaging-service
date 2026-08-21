@@ -14,6 +14,8 @@
         [type]="UserAvatarType.OTHER"
         [name]="data().name"
         [identityId]="data().avatarIdentityId"
+        [account]="data().avatarAccount"
+        [federatedDomain]="data().avatarDomain"
         [src]="data().avatar"
       />
     </div>
@@ -71,7 +73,7 @@
                 [type]="UserAvatarType.GROUP"
                 [name]="quote.imageLabel"
                 [identityId]="quote.imageIdentity"
-                [colorIdentityId]="quote.imageIdentity"
+                [account]="quote.imageIdentity"
                 [src]="quote.image"
               />
             } @else if (quote.image && isReplyImageGated(quote)) {
@@ -90,9 +92,13 @@
               @if (quotePreview().author; as author) {
                 <strong>{{ author }}</strong>
               }
-              <span>{{
-                quotePreview().body || ('chat.messageNotFound' | transloco)
-              }}</span>
+              @if (quotePreview().isFileSet) {
+                <span>{{ 'chat.fileGroup' | transloco }}</span>
+              } @else {
+                <span>{{
+                  quotePreview().body || ('chat.messageNotFound' | transloco)
+                }}</span>
+              }
             </span>
           </button>
         } @else {
@@ -108,7 +114,7 @@
                 [type]="UserAvatarType.GROUP"
                 [name]="quote.imageLabel"
                 [identityId]="quote.imageIdentity"
-                [colorIdentityId]="quote.imageIdentity"
+                [account]="quote.imageIdentity"
                 [src]="quote.image"
               />
             } @else if (quote.image && isReplyImageGated(quote)) {
@@ -127,9 +133,13 @@
               @if (quotePreview().author; as author) {
                 <strong>{{ author }}</strong>
               }
-              <span>{{
-                quotePreview().body || ('chat.messageNotFound' | transloco)
-              }}</span>
+              @if (quotePreview().isFileSet) {
+                <span>{{ 'chat.fileGroup' | transloco }}</span>
+              } @else {
+                <span>{{
+                  quotePreview().body || ('chat.messageNotFound' | transloco)
+                }}</span>
+              }
             </span>
           </div>
         }
@@ -184,6 +194,8 @@
         [type]="UserAvatarType.SELF"
         [name]="data().name"
         [identityId]="data().avatarIdentityId"
+        [account]="data().avatarAccount"
+        [federatedDomain]="data().avatarDomain"
         [src]="data().avatar"
       />
     </div>

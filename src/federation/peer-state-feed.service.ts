@@ -25,9 +25,8 @@ export interface PeerStateFeedWrite {
   eventType: PeerStateEventType;
   subjectAccount?: string;
   subjectDomain?: string;
-  revision: number;
   body: PeerStateBody;
-  /** Reallocate the same revision/body after one of its referenced compacted keys moved later. */
+  /** Reallocate the same body after one of its referenced compacted keys moved later. */
   forceReindex?: boolean;
 }
 
@@ -38,7 +37,6 @@ export interface PeerStateFeedPage {
     eventType: PeerStateEventType;
     subjectAccount: string;
     subjectDomain: string;
-    revision: string;
     feedId: string;
     body: unknown;
   }>;
@@ -67,7 +65,7 @@ export class PeerStateFeedService {
 
   async deleteProjectionInTx(
     tx: DatabaseTransaction,
-    key: Omit<PeerStateFeedWrite, 'revision' | 'body'>,
+    key: Omit<PeerStateFeedWrite, 'body'>,
   ): Promise<void> {
     await tx
       .delete(peerStateFeed)
@@ -103,8 +101,6 @@ export class PeerStateFeedService {
       // boundary so Date/BigInt use the same wire representation as every HTTP and SSE response.
       const body = serializeBody(write.body);
       if (
-        !Number.isInteger(write.revision) ||
-        write.revision < 0 ||
         !body ||
         typeof body !== 'object'
       ) {
@@ -135,7 +131,6 @@ export class PeerStateFeedService {
         .limit(1);
       const [current] = await tx
         .select({
-          revision: peerStateFeed.revision,
           body: peerStateFeed.body,
         })
         .from(peerStateFeed)
@@ -150,14 +145,8 @@ export class PeerStateFeedService {
           ),
         )
         .limit(1);
-      if (current && current.revision > write.revision) continue;
-      if (current?.revision === write.revision) {
-        if (!write.forceReindex) continue;
-        if (!isDeepStrictEqual(current.body, body))
-          throw new Error(
-            'state dependency repair cannot change a body at the same revision',
-          );
-      }
+      if (current && isDeepStrictEqual(current.body, body) && !write.forceReindex)
+        continue;
       const [allocated] = await tx
         .update(peerStateFeedTarget)
         .set({
@@ -177,7 +166,6 @@ export class PeerStateFeedService {
           eventType: write.eventType,
           subjectAccount,
           subjectDomain,
-          revision: write.revision,
           rev: allocated.rev,
           body,
         })
@@ -191,7 +179,6 @@ export class PeerStateFeedService {
             peerStateFeed.subjectDomain,
           ],
           set: {
-            revision: write.revision,
             rev: allocated.rev,
             body,
             updatedAt: new Date(),
@@ -294,7 +281,6 @@ export class PeerStateFeedService {
           eventType: row.eventType,
           subjectAccount: row.subjectAccount,
           subjectDomain: row.subjectDomain,
-          revision: row.revision.toString(),
           feedId: row.rev.toString(),
           body: row.body,
         };

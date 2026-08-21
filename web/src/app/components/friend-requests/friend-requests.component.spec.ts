@@ -30,6 +30,7 @@ describe('FriendRequestsComponent federated search progress', () => {
             pending.push({ resolve });
           }),
       ),
+      listLocalGroupInvites: vi.fn().mockResolvedValue([]),
     };
     TestBed.configureTestingModule({
       imports: [FriendRequestsComponent],
@@ -140,6 +141,7 @@ describe('FriendRequestsComponent federated search progress', () => {
       friendIntentStateRevision: revision,
       friendReqBadge: signal(false),
       listLocalFriendInvites: vi.fn().mockResolvedValue(emptyPage),
+      listLocalGroupInvites: vi.fn().mockResolvedValue([]),
       markFriendReqRead: vi.fn(),
     };
     TestBed.resetTestingModule();
@@ -221,6 +223,46 @@ describe('FriendRequestsComponent federated search progress', () => {
     expect(component.localResults()).toEqual([local]);
   });
 
+  it('shows but does not activate the current user resolved by a bare account', () => {
+    const self = {
+      id: 1,
+      account: 'me',
+      name: 'Me',
+      isForeigner: false,
+    } as User;
+    const userService = {
+      sessionProfile: () => ({ id: self.id }),
+      resolveUser: vi.fn().mockReturnValue(of({ code: 0, data: self })),
+      friendRelationshipStatuses: vi.fn(),
+    };
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      imports: [FriendRequestsComponent],
+      providers: [
+        provideZonelessChangeDetection(),
+        { provide: UserService, useValue: userService },
+        { provide: RouteService, useValue: {} },
+        { provide: MatSnackBar, useValue: { open: vi.fn() } },
+        {
+          provide: TranslocoService,
+          useValue: { translate: (key: string) => key },
+        },
+      ],
+    }).overrideComponent(FriendRequestsComponent, { set: { template: '' } });
+    const component = TestBed.createComponent(
+      FriendRequestsComponent,
+    ).componentInstance;
+    component.searchText.set('me');
+
+    component.searchUser();
+    component.activateResult(self);
+
+    expect(component.localResults()).toEqual([self]);
+    expect(component.addTabStatus()).toBe(AddTabStatus.SUCCESS);
+    expect(component.inviteUser()).toBeNull();
+    expect(userService.friendRelationshipStatuses).not.toHaveBeenCalled();
+  });
+
   it('shows first-contact handshake progress until resolve and localization finish', () => {
     const resolve = new Subject<{
       user: User;
@@ -276,6 +318,96 @@ describe('FriendRequestsComponent federated search progress', () => {
     expect(component.connectingDomain()).toBeNull();
     expect(component.addTabStatus()).toBe(AddTabStatus.SUCCESS);
     expect(component.localResults()).toEqual([remote]);
+  });
+
+  it('keeps the relationship state keyed to a locally resolved own-domain user', () => {
+    const local = {
+      id: 7,
+      account: 'alice',
+      name: 'Alice',
+      domain: '',
+      isForeigner: false,
+    } as User;
+    const userService = {
+      sessionProfile: () => ({ id: 1 }),
+      peerTrustStatus: vi
+        .fn()
+        .mockReturnValue(of({ code: 0, data: { trusted: true } })),
+      resolveFederatedUser: vi
+        .fn()
+        .mockReturnValue(of({ user: local, relationship: 'FRIEND' })),
+    };
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      imports: [FriendRequestsComponent],
+      providers: [
+        provideZonelessChangeDetection(),
+        { provide: UserService, useValue: userService },
+        { provide: RouteService, useValue: {} },
+        { provide: MatSnackBar, useValue: { open: vi.fn() } },
+        {
+          provide: TranslocoService,
+          useValue: { translate: (key: string) => key },
+        },
+      ],
+    }).overrideComponent(FriendRequestsComponent, { set: { template: '' } });
+    const component = TestBed.createComponent(
+      FriendRequestsComponent,
+    ).componentInstance;
+    component.searchText.set('alice@local.test');
+
+    component.searchUser();
+
+    expect(component.localResults()).toEqual([local]);
+    expect(component.relationshipStates().get(local.id)).toBe('FRIEND');
+    expect(component.connectingDomain()).toBeNull();
+    expect(component.addTabStatus()).toBe(AddTabStatus.SUCCESS);
+  });
+
+  it('shows but does not activate the current user resolved through an explicit own-domain address', () => {
+    const self = {
+      id: 1,
+      account: 'me',
+      name: 'Me',
+      domain: '',
+      isForeigner: false,
+    } as User;
+    const userService = {
+      sessionProfile: () => ({ id: self.id }),
+      peerTrustStatus: vi
+        .fn()
+        .mockReturnValue(of({ code: 0, data: { trusted: true } })),
+      resolveFederatedUser: vi
+        .fn()
+        .mockReturnValue(of({ user: self, relationship: 'NONE' })),
+    };
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      imports: [FriendRequestsComponent],
+      providers: [
+        provideZonelessChangeDetection(),
+        { provide: UserService, useValue: userService },
+        { provide: RouteService, useValue: {} },
+        { provide: MatSnackBar, useValue: { open: vi.fn() } },
+        {
+          provide: TranslocoService,
+          useValue: { translate: (key: string) => key },
+        },
+      ],
+    }).overrideComponent(FriendRequestsComponent, { set: { template: '' } });
+    const component = TestBed.createComponent(
+      FriendRequestsComponent,
+    ).componentInstance;
+    component.searchText.set('me@local.test');
+
+    component.searchUser();
+
+    expect(component.localResults()).toEqual([self]);
+    expect(component.addTabStatus()).toBe(AddTabStatus.SUCCESS);
+
+    component.activateResult(self);
+
+    expect(component.inviteUser()).toBeNull();
   });
 
   it('cancels an in-flight resolve and clears the handshake affordance', () => {
@@ -348,20 +480,22 @@ describe('FriendRequestsComponent federated search progress', () => {
     expect(component.errMsg()).toBe('friend.msg.friendNotFound');
   });
 
-  it('serializes actions per invite and cancels them when the list resets', async () => {
+  it('retains an in-flight action across a list reset and applies its optimistic result by id', async () => {
     const acceptResult = new Subject<{ code: number }>();
+    let resolveRefresh!: (value: FriendIntentPage) => void;
     const userService = {
       friendRequestStateRevision: signal(0),
       friendIntentStateRevision: signal(0),
       friendReqBadge: signal(false),
       acceptInvite: vi.fn().mockReturnValue(acceptResult),
       rejectInvite: vi.fn().mockReturnValue(new Subject<{ code: number }>()),
-      listLocalFriendInvites: vi.fn().mockResolvedValue({
-        items: [],
-        nextCursor: null,
-        hasMore: false,
-        total: 0,
-      }),
+      listLocalFriendInvites: vi.fn().mockImplementation(
+        () =>
+          new Promise<FriendIntentPage>((resolve) => {
+            resolveRefresh = resolve;
+          }),
+      ),
+      listLocalGroupInvites: vi.fn().mockResolvedValue([]),
     };
     TestBed.resetTestingModule();
     TestBed.configureTestingModule({
@@ -396,9 +530,55 @@ describe('FriendRequestsComponent federated search progress', () => {
     expect(userService.rejectInvite).not.toHaveBeenCalled();
     expect(component.isInviteActionPending(request.id)).toBe(true);
 
-    await component.loadIncomingInvites(true);
+    const refresh = component.loadIncomingInvites(true);
+
+    // Reset refreshes keep the currently rendered row and its disabled action state until the new
+    // snapshot is ready; they do not unsubscribe the mutation request.
+    expect(component.pendingReqList()).toEqual([request]);
+    expect(acceptResult.observed).toBe(true);
+    expect(component.isInviteActionPending(request.id)).toBe(true);
+
+    resolveRefresh({
+      items: [
+        {
+          id: request.id,
+          kind: 'FRIEND',
+          note: '',
+          status: 'PENDING',
+          createdAt: 2,
+          expiresAt: Date.now() + 60_000,
+          fromUser: {
+            id: 41,
+            account: 'alice',
+            name: 'Alice refreshed',
+            avatar: '',
+            domain: '',
+            isForeigner: false,
+          },
+          toUser: {
+            id: 99,
+            account: 'me',
+            name: 'Me',
+            avatar: '',
+            domain: '',
+            isForeigner: false,
+          },
+        },
+      ],
+      nextCursor: null,
+      hasMore: false,
+      total: 1,
+    });
+    await refresh;
+
+    expect(component.pendingReqList()[0].name).toBe('Alice refreshed');
+    expect(component.isInviteActionPending(request.id)).toBe(true);
+
+    acceptResult.next({ code: 0 });
+    acceptResult.complete();
 
     expect(acceptResult.observed).toBe(false);
     expect(component.isInviteActionPending(request.id)).toBe(false);
+    expect(component.pendingReqList()[0].status).toBe(1);
   });
 });

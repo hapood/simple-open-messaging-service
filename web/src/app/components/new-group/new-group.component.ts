@@ -8,7 +8,6 @@ import { HttpClient } from '@angular/common/http';
 import { FormsModule } from '@angular/forms';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { RouteService, PopupType } from '../../services/route.service';
-import { IconComponent, AppIconType } from '../icon/icon.component';
 import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
@@ -23,6 +22,7 @@ import { apiPrefix } from '../../services/constants';
 import { finalize } from 'rxjs';
 import { translateBizResult } from '../../services/biz-code';
 import { ToastService } from '../../services/toast.service';
+import { PageHeaderComponent } from '../page-header/page-header.component';
 
 /**
  * New-group dialog for entering the group's name, avatar, and optional description.
@@ -31,7 +31,7 @@ import { ToastService } from '../../services/toast.service';
 @Component({
   selector: 'app-new-group',
   imports: [
-    IconComponent,
+    PageHeaderComponent,
     UserAvatarComponent,
     MatButtonModule,
     MatFormFieldModule,
@@ -46,7 +46,6 @@ import { ToastService } from '../../services/toast.service';
 })
 export class NewGroupComponent {
   readonly fitOpts = { settleMs: 600, minHeight: 360 } as const;
-  readonly AppIconType = AppIconType;
   readonly UserAvatarType = UserAvatarType;
   readonly NAME_MAX = 31;
   /** Max length of the optional group description. */

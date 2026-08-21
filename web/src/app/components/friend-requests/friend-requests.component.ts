@@ -16,6 +16,7 @@ import { MatSnackBar } from '@angular/material/snack-bar';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { RouteService } from '../../services/route.service';
 import { IconComponent, AppIconType } from '../icon/icon.component';
+import { PageHeaderComponent } from '../page-header/page-header.component';
 import { FormsModule } from '@angular/forms';
 import {
   FederatedResolveStage,
@@ -68,6 +69,8 @@ type PendingReq = {
   status: number; // 0 pending, 1 accepted, -1 invalid, -2 expired, -3 revoked
   date: number;
   errText: string;
+  kind?: 'FRIEND' | 'GROUP';
+  sourceLabel?: string;
 };
 type RelationshipState =
   | 'NONE'
@@ -84,6 +87,7 @@ type RelationshipState =
     MatProgressBarModule,
     MatTabsModule,
     IconComponent,
+    PageHeaderComponent,
     TranslocoPipe,
     FriendInviteDialogComponent,
     VirtualInfiniteListComponent,
@@ -273,7 +277,7 @@ export class FriendRequestsComponent implements OnDestroy {
             .subscribe({
               next: ({ user, relationship }) => {
                 this.connectingDomain.set(null);
-                this.relationshipStates.set(new Map([[0, relationship]]));
+                this.relationshipStates.set(new Map([[user.id, relationship]]));
                 this.localResults.set([user]);
                 this.addTabStatus.set(AddTabStatus.SUCCESS);
               },
@@ -347,9 +351,10 @@ export class FriendRequestsComponent implements OnDestroy {
    *  state to decide can-add / already-friends / request-already-sent / they-sent-you-one, then show
    *  the single-user card. Shared by both search paths so the post-select UX is identical. */
   private applySelectedUser(user: User) {
-    if (user.id === this.userService.sessionProfile()!.id) {
-      this.curSearchText.set(this.searchText().trim());
-      this.addTabStatus.set(AddTabStatus.EMPTY);
+    if (this.isSelf(user)) {
+      this.relationshipStates.set(new Map());
+      this.localResults.set([user]);
+      this.addTabStatus.set(AddTabStatus.SUCCESS);
       return;
     }
     this.showResults([user]);
@@ -381,6 +386,7 @@ export class FriendRequestsComponent implements OnDestroy {
   }
 
   activateResult(user: User) {
+    if (this.isSelf(user)) return;
     const status = this.relationshipStates().get(user.id) ?? 'NONE';
     if (status === 'INCOMING_PENDING') {
       this.setTab(1);
@@ -390,7 +396,12 @@ export class FriendRequestsComponent implements OnDestroy {
   }
 
   openInviteDialog(user: User) {
+    if (this.isSelf(user)) return;
     this.inviteUser.set(user);
+  }
+
+  isSelf(user: Pick<User, 'id'>): boolean {
+    return user.id === this.userService.sessionProfile()?.id;
   }
 
   completeInvite(result: {
@@ -445,38 +456,34 @@ export class FriendRequestsComponent implements OnDestroy {
   }
 
   approve(req: PendingReq) {
-    const index = this.pendingReqList().findIndex((item) => item.id === req.id);
-    if (index < 0) return;
+    if (!this.pendingReqList().some((item) => item.id === req.id)) return;
     this.runInviteAction(
       req,
       () => this.userService.acceptInvite(this.inviteAction(req)),
       (res) => {
-        const reqList = this.pendingReqList();
         if (res.code === 0) {
-          // Optimistic "added": keep the row showing "Added" (status 1). Not persisted — next panel open
-          // re-queries and the backend filters out the now-friend, so it disappears on its own.
-          this.pendingReqList.set(
-            reqList
-              .slice(0, index)
-              .concat([{ ...req, status: 1, errText: '' }])
-              .concat(reqList.slice(index + 1)),
+          // Optimistic "added": patch the current row by identity. A state-feed refresh may have
+          // replaced or reordered the list while the request was in flight, so a captured index is
+          // not safe. If the authoritative refresh already removed the row, do not resurrect it.
+          this.pendingReqList.update((items) =>
+            items.map((item) =>
+              item.id === req.id ? { ...item, status: 1, errText: '' } : item,
+            ),
           );
           this.pendingCount.update((count) => Math.max(0, count - 1));
           if (this.selectedRequest()?.id === req.id) this.closeRequest();
         } else {
-          this.pendingReqList.set(
-            reqList
-              .slice(0, index)
-              .concat([
-                {
-                  ...req,
-                  status: 0,
-                  errText: translateBizResult(res, this.transloco),
-                },
-              ])
-              .concat(reqList.slice(index + 1)),
+          this.pendingReqList.update((items) =>
+            items.map((item) =>
+              item.id === req.id
+                ? {
+                    ...item,
+                    status: 0,
+                    errText: translateBizResult(res, this.transloco),
+                  }
+                : item,
+            ),
           );
-          this.pendingCount.update((count) => Math.max(0, count - 1));
           if (this.selectedRequest()?.id === req.id) this.closeRequest();
         }
       },
@@ -551,8 +558,8 @@ export class FriendRequestsComponent implements OnDestroy {
     return this.pendingInviteActionIds().has(id);
   }
 
-  /** Serialize mutations for one invite. A list reset or dialog teardown cancels the subscription,
-   * so a response for UI state that is no longer current cannot write back into the new list. */
+  /** Serialize mutations for one invite. Live list refreshes retain these subscriptions and merge
+   * their pending state by invite id; only dialog teardown cancels the underlying requests. */
   private runInviteAction<T>(
     req: PendingReq,
     createRequest: () => Observable<T>,
@@ -588,6 +595,7 @@ export class FriendRequestsComponent implements OnDestroy {
   private inviteAction(
     req: PendingReq,
   ): { inviteId: string } | { account: string; domain: string } {
+    if (req.kind === 'GROUP' && req.account) return { inviteId: req.account };
     return req.isForeigner && req.account && req.domain
       ? { account: req.account, domain: req.domain }
       : { inviteId: req.id };
@@ -601,6 +609,32 @@ export class FriendRequestsComponent implements OnDestroy {
   /** Outgoing invite → sent-row (the peer is the recipient, toUser). */
   private inviteToSent(inv: Invite): PendingReq {
     return this.toPendingReq(inv, inv.toUser);
+  }
+
+  private groupInviteToPending(
+    inv: import('../../services/user.service').ClientGroupInviteIntent,
+  ): PendingReq {
+    const local = inv.group.isLocal;
+    const expired = inv.expiresAt === null || inv.expiresAt <= Date.now();
+    return {
+      id: `group:${inv.domain}:${inv.account}`,
+      peerId: `pending-group:${inv.domain}\u0000${inv.account}`,
+      name:
+        inv.group.name || this.transloco.translate('friend.groupInviteExpired'),
+      avatar: inv.group.avatar,
+      account: inv.group.account,
+      domain: inv.group.domain,
+      reqMessage: expired
+        ? this.transloco.translate('friend.groupInviteExpired')
+        : inv.group.description,
+      status: expired ? -2 : 0,
+      date: inv.requestedAt ?? 0,
+      errText: '',
+      kind: 'GROUP',
+      sourceLabel: local
+        ? this.transloco.translate('friend.localGroup')
+        : inv.group.domain,
+    };
   }
 
   private toPendingReq(inv: Invite, peer: Invite['fromUser']): PendingReq {
@@ -657,9 +691,7 @@ export class FriendRequestsComponent implements OnDestroy {
       ? ++this.pendingLoadGeneration
       : this.pendingLoadGeneration;
     if (reset) {
-      this.cancelInviteActions();
       this.pendingCursor = null;
-      this.pendingReqList.set([]);
     }
     this.toPendingErrTxt.set('');
     this.pendingLoading.set(true);
@@ -673,13 +705,19 @@ export class FriendRequestsComponent implements OnDestroy {
         20,
       );
       if (generation !== this.pendingLoadGeneration) return;
-      const nextItems = page.items.map((inv) => this.inviteToPending(inv));
+      const groupInvites = reset
+        ? await this.userService.listLocalGroupInvites()
+        : [];
+      const nextItems = [
+        ...page.items.map((inv) => this.inviteToPending(inv)),
+        ...groupInvites.map((inv) => this.groupInviteToPending(inv)),
+      ].sort((a, b) => b.date - a.date);
       this.pendingReqList.update((items) =>
         reset ? nextItems : [...items, ...nextItems],
       );
       this.pendingCursor = page.nextCursor;
       this.pendingHasMore.set(page.hasMore);
-      this.pendingCount.set(page.total);
+      this.pendingCount.set(page.total + groupInvites.length);
     } catch {
       if (generation !== this.pendingLoadGeneration) return;
       this.toPendingErrTxt.set(
@@ -697,9 +735,7 @@ export class FriendRequestsComponent implements OnDestroy {
       ? ++this.sentLoadGeneration
       : this.sentLoadGeneration;
     if (reset) {
-      this.cancelInviteActions();
       this.sentCursor = null;
-      this.sentReqList.set([]);
     }
     this.sentErrTxt.set('');
     this.sentLoading.set(true);

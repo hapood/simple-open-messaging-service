@@ -60,7 +60,6 @@ describe('Federation v1 surface', () => {
         'GET /s2s/v1/state-feed',
         'GET /s2s/v1/users/:account',
         'POST /s2s/v1/call',
-        'POST /s2s/v1/discover',
         'POST /s2s/v1/feed-heads',
         'POST /s2s/v1/healthy',
         'POST /s2s/v1/recognize',
@@ -68,7 +67,7 @@ describe('Federation v1 surface', () => {
     );
   });
 
-  it('keeps cross-version bootstrap separate from v1 capabilities', () => {
+  it('keeps cross-version bootstrap on the fixed well-known surface', () => {
     vi.stubEnv('SOMS_DOMAIN', 'node-a.example');
     const controller = new WellKnownController({
       getRootPublicKeyB64: () => 'root-key',
@@ -84,25 +83,6 @@ describe('Federation v1 surface', () => {
     expect(Object.keys(document).sort()).toEqual(
       ['keys', 'protocolVersions', 'rootKey', 'software'].sort(),
     );
-  });
-
-  it('publishes an empty implemented v1 capability view', () => {
-    const controller = new S2sController(
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-    );
-    expect(
-      controller.discover({
-        peer: { domain: 'peer.example' },
-        body: { origin: 'peer.example' },
-      } as never),
-    ).toEqual({ extensions: [], software: expect.stringMatching(/^soms\//) });
   });
 
   it('selects the highest mutual version from a strict ascending version list', () => {

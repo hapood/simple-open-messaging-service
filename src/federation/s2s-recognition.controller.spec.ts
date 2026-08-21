@@ -32,11 +32,7 @@ describe('S2sRecognitionController Healthy privacy projection', () => {
 
     await expect(
       controller.healthy({} as never, { domain: 'peer.example' }),
-    ).resolves.toEqual({
-      status: 'unavailable',
-      selectedProtocolVersion: null,
-      acceptedExtensions: null,
-    });
+    ).resolves.toEqual({ status: 'unavailable' });
     expect(discovery.getPublicKey).toHaveBeenCalledWith(
       'peer.example',
       'peer.example/key-2',

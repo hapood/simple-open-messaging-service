@@ -110,9 +110,9 @@ Every object is a closed schema. Inner `content` uses the corresponding message-
 - A child has no independent assets array.
 - The consumer computes local counts from the actual lengths of the parent messages, all child messages, and assets, and may persist them for quota, garbage collection, and administrative statistics. The publisher does not declare these counts on the wire.
 
-Inner INVITE and CALL entries are immutable historical displays and grant no current membership, group permission, or real-time call state. The enclosing `ForwardBundleMessage.author` identifies an inner inviter or caller; the bundle does not represent the CALL callee.
+Inner CALL entries are immutable historical displays and grant no real-time call state. The enclosing `ForwardBundleMessage.author` identifies the inner caller; the bundle does not represent the CALL callee.
 
-An inner extension message MAY be sent only when both the target peer's valid v1 discover response and Health allow the corresponding capability. If a consumer nevertheless encounters a valid extension type it does not support, it MUST discard the entire bundle, persist no partial closure, and download none of its assets. The outer FORWARD card carrying the bundle may remain in an unexpandable state. Unknown inner content MUST NOT block the message-query cursor.
+An unknown inner content type makes the bundle malformed. The consumer MUST discard the entire bundle, persist no partial closure, and download none of its assets.
 
 ## 6. Minimal complete bundle example
 

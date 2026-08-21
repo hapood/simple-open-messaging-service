@@ -30,6 +30,7 @@ class StubUserAvatarComponent {
   readonly type = input<unknown>(undefined);
   readonly name = input<string | undefined | null>('');
   readonly identityId = input<number | string | undefined>(undefined);
+  readonly account = input<string | undefined | null>(undefined);
   readonly src = input<string | undefined | null>(undefined);
 }
 

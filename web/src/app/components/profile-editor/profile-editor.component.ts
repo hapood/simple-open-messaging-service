@@ -21,6 +21,7 @@ import {
 } from '../user-avatar/user-avatar.component';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { AvatarEditorComponent } from '../avatar-editor/avatar-editor.component';
+import { PageHeaderComponent } from '../page-header/page-header.component';
 
 /**
  * Host-agnostic profile-editing body: avatar + identity + editable display name/bio + logout. Self-contained —
@@ -44,6 +45,7 @@ import { AvatarEditorComponent } from '../avatar-editor/avatar-editor.component'
     UserAvatarComponent,
     IconComponent,
     AvatarEditorComponent,
+    PageHeaderComponent,
     TranslocoPipe,
   ],
   templateUrl: './profile-editor.component.html',

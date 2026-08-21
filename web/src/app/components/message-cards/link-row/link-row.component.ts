@@ -85,7 +85,7 @@ export class LinkRowComponent {
    *  the optimistic bare `{ url }` card is swapped for the server-built rich card (title/image/...) via
    *  the NEW_MESSAGE echo, which routes through CbElement.update (setInput('data') + detectChanges) —
    *  NOT a remount — so a ngOnInit-once parse would freeze the bare card. A computed re-derives on data
-   *  change. (invite-row can use ngOnInit only because an invite is never optimistic-sent.) */
+   *  change. */
   readonly link = computed<LinkCard>(() => {
     try {
       return JSON.parse(this.data().text) as LinkCard;

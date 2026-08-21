@@ -58,6 +58,8 @@ import {
   UserAvatarType,
 } from '../user-avatar/user-avatar.component';
 import {
+  conversationAvatarAccount,
+  conversationAvatarDomain,
   conversationAvatarType,
   conversationAvatarIdentityId,
   conversationAvatarSrc,
@@ -544,6 +546,14 @@ export class MessageThreadComponent implements OnDestroy {
   readonly emptyAvatarIdentityId = computed<number | undefined>(() => {
     const t = this.userMsgTrd();
     return t ? conversationAvatarIdentityId(t) : undefined;
+  });
+  readonly emptyAvatarAccount = computed<string | undefined>(() => {
+    const t = this.userMsgTrd();
+    return t ? conversationAvatarAccount(t) : undefined;
+  });
+  readonly emptyAvatarDomain = computed<string | undefined>(() => {
+    const t = this.userMsgTrd();
+    return t ? conversationAvatarDomain(t) : undefined;
   });
   readonly emptyAvatarSrc = computed<string | null | undefined>(() => {
     const t = this.userMsgTrd();
@@ -1102,6 +1112,8 @@ export class MessageThreadComponent implements OnDestroy {
           name: string;
           avatar: string;
           avatarIdentityId: number;
+          avatarAccount: string;
+          avatarDomain: string;
           isSelf: boolean;
         },
       ) => {
@@ -1421,7 +1433,6 @@ export class MessageThreadComponent implements OnDestroy {
       video: this.transloco.translate('chat.preview.video'),
       voice: this.transloco.translate('chat.preview.voice'),
       file: this.transloco.translate('chat.preview.file'),
-      invite: this.transloco.translate('chat.preview.invite'),
       call: this.transloco.translate('forward.call'),
       forward: this.transloco.translate('forward.chatHistory'),
     };
@@ -1568,7 +1579,6 @@ export class MessageThreadComponent implements OnDestroy {
       message.msgId >= 0 &&
       message.status !== 'sending' &&
       message.status !== 'failed' &&
-      message.contentType !== 'INVITE' &&
       message.contentType !== 'CALL' &&
       message.contentType !== 'SYSTEM'
     );
@@ -1777,7 +1787,7 @@ export class MessageThreadComponent implements OnDestroy {
       IMAGE: 'chat.preview.photo',
       VIDEO: 'chat.preview.video',
       AUDIO: 'chat.preview.voice',
-      INVITE: 'chat.preview.invite',
+      GALLERY: 'chat.fileGroup',
       CALL: 'forward.call',
     };
     return this.transloco.translate(
@@ -1797,24 +1807,9 @@ export class MessageThreadComponent implements OnDestroy {
         imageSize: message.images[0].size,
         imageShape: 'thumbnail',
       };
-    if (message.contentType !== 'INVITE' && message.contentType !== 'LINK')
-      return {};
+    if (message.contentType !== 'LINK') return {};
     try {
       const card = JSON.parse(message.text) as Record<string, unknown>;
-      if (message.contentType === 'INVITE')
-        return {
-          image:
-            typeof card['groupAvatar'] === 'string'
-              ? card['groupAvatar']
-              : undefined,
-          imageLabel:
-            typeof card['groupName'] === 'string'
-              ? card['groupName']
-              : undefined,
-          imageIdentity:
-            typeof card['group'] === 'string' ? card['group'] : undefined,
-          imageShape: 'avatar',
-        };
       return typeof card['image'] === 'string'
         ? { image: card['image'], imageShape: 'thumbnail' }
         : {};
@@ -3588,18 +3583,6 @@ export class MessageThreadComponent implements OnDestroy {
   /** Recreate the injected source while keeping the production chatbox shell mounted. */
   reload(): void {
     this.reinit();
-  }
-
-  /** Resume delivery for this conversation. */
-  unblockPeer(): void {
-    const trd = this.userMsgTrd();
-    if (!trd) return;
-    this.threadAdapter
-      .setBlocked({ threadId: trd.threadId, blocked: false })
-      .subscribe((res) => {
-        if (res.code === 0)
-          this.convList.applyThreadMeta(trd.threadId, { blocked: false });
-      });
   }
 
   ngOnDestroy(): void {

@@ -38,7 +38,7 @@ export abstract class TransientOverlayService<TInputs> implements OnDestroy {
    *  change (a different kind pushed/removed) doesn't re-create our CDK overlay while our entry is unchanged. */
   private currentId: number | null = null;
 
-  /** This overlay's kind on the nav pane stack (`'gallery'` / `'file-detail'` / `'invite-detail'`). */
+  /** This overlay's kind on the nav pane stack (`'gallery'` / `'file-detail'`). */
   protected abstract readonly kind: PaneKind;
   /** The standalone component to mount inside the overlay. */
   protected abstract readonly component: Type<unknown>;

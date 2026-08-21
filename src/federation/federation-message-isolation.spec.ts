@@ -144,6 +144,44 @@ describe('federation message context isolation', () => {
     expect(logger.error).not.toHaveBeenCalled();
   });
 
+  it('skips an unresolved thread after state recovery so later messages can progress', async () => {
+    const service = Object.create(
+      FederationService.prototype,
+    ) as FederationService & Record<string, unknown>;
+    const logger = { error: vi.fn() };
+    Object.assign(service, {
+      config: { domain: 'local.test' },
+      logger,
+      assertPeerResponseWritable: vi.fn(),
+      resolveMissedThreadInTransaction: vi
+        .fn()
+        .mockRejectedValue(
+          new FederationMessageContextError('friend/thread is absent'),
+        ),
+    });
+    const tx = { execute: vi.fn().mockResolvedValue({ rows: [] }) };
+
+    await expect(
+      service.applyMissedPageInTransaction(
+        tx as never,
+        'peer.test',
+        {
+          items: [],
+          scannedThrough: '1',
+          messageFeedEndId: '1',
+          hasMore: false,
+          messages: [item('1')],
+        },
+        {} as never,
+        new Map(),
+        true,
+      ),
+    ).resolves.toEqual([]);
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.stringContaining('unresolved context after state recovery'),
+    );
+  });
+
   it('logs and skips malformed wire data instead of aborting the page', async () => {
     const service = Object.create(
       FederationService.prototype,

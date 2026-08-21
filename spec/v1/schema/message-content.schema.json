@@ -113,13 +113,7 @@
         },
         {
           "type": "object",
-          "required": [
-            "kind",
-            "digest",
-            "name",
-            "mimeType",
-            "duration"
-          ],
+          "required": ["kind", "digest", "name", "mimeType", "duration"],
           "properties": {
             "kind": { "const": "AUDIO" },
             "digest": {
@@ -169,20 +163,6 @@
       },
       "additionalProperties": false
     },
-    "invite": {
-      "type": "object",
-      "required": ["group", "groupName", "groupDomain"],
-      "properties": {
-        "group": {
-          "$ref": "urn:socfp:v1:common#/$defs/groupAccount"
-        },
-        "groupName": { "type": "string" },
-        "groupDomain": {
-          "$ref": "urn:socfp:v1:common#/$defs/domain"
-        }
-      },
-      "additionalProperties": false
-    },
     "call": {
       "type": "object",
       "required": ["callSid", "callType", "status", "endedAt"],
@@ -219,7 +199,7 @@
             "required": ["status"]
           },
           "then": {
-              "not": { "required": ["startedAt"] }
+            "not": { "required": ["startedAt"] }
           }
         }
       ],
@@ -251,10 +231,6 @@
     {
       "if": { "properties": { "contentType": { "const": "PURE_TEXT" } } },
       "then": { "properties": { "content": { "$ref": "#/$defs/text" } } }
-    },
-    {
-      "if": { "properties": { "contentType": { "const": "INVITE" } } },
-      "then": { "properties": { "content": { "$ref": "#/$defs/invite" } } }
     },
     {
       "if": { "properties": { "contentType": { "const": "IMAGE" } } },

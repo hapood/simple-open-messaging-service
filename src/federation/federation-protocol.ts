@@ -1,4 +1,4 @@
-/** Federation v1 uses one mandatory core surface plus explicitly negotiated extensions. */
+/** Federation v1 is a fixed, mandatory wire surface. */
 export const FEDERATION_PROTOCOL_VERSION = 1 as const;
 export const FEDERATION_PROTOCOL_VERSIONS = [
   FEDERATION_PROTOCOL_VERSION,

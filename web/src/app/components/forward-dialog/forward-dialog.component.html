@@ -1,19 +1,13 @@
 <div class="forward-dialog">
-  <header class="forward-dialog__header">
+  <app-page-header
+    [title]="
+      (purpose() === 'NATIVE_SHARE' ? 'nativeShare.title' : 'forward.title')
+        | transloco
+    "
+    (back)="close()"
+  >
     <button
-      type="button"
-      class="forward-dialog__header-action"
-      (click)="close()"
-    >
-      {{ 'common.cancel' | transloco }}
-    </button>
-    <h2>
-      {{
-        (purpose() === 'NATIVE_SHARE' ? 'nativeShare.title' : 'forward.title')
-          | transloco
-      }}
-    </h2>
-    <button
+      pageHeaderAction
       type="button"
       class="forward-dialog__header-action forward-dialog__header-action--primary"
       [disabled]="!canConfirm()"
@@ -24,7 +18,7 @@
           | transloco: { count: selectedCount() }
       }}
     </button>
-  </header>
+  </app-page-header>
 
   <div class="forward-dialog__workspace">
     <section class="forward-dialog__preview-pane">
@@ -86,9 +80,6 @@
               }
               @case ('FILE') {
                 <app-msg-file-row [data]="message" />
-              }
-              @case ('INVITE') {
-                <app-msg-invite-row [data]="message" />
               }
               @case ('LINK') {
                 <app-msg-link-row [data]="message" />
@@ -173,13 +164,16 @@
                       [type]="avatarType(item)"
                       [name]="displayName(item)"
                       [identityId]="avatarIdentityId(item)"
+                      [account]="avatarAccount(item)"
+                      [federatedDomain]="avatarDomain(item)"
                       [src]="avatarSrc(item)"
                     ></app-user-avatar>
                     <span
                       class="forward-dialog__recent-check"
                       aria-hidden="true"
-                      >✓</span
                     >
+                      <app-icon [type]="AppIconType.CHECK"></app-icon>
+                    </span>
                   </span>
                   <span>{{ displayName(item) }}</span>
                 </button>
@@ -213,6 +207,8 @@
                   [type]="avatarType(item)"
                   [name]="displayName(item)"
                   [identityId]="avatarIdentityId(item)"
+                  [account]="avatarAccount(item)"
+                  [federatedDomain]="avatarDomain(item)"
                   [src]="avatarSrc(item)"
                 ></app-user-avatar>
               </span>
@@ -220,9 +216,7 @@
                 displayName(item)
               }}</span>
               <span class="forward-dialog__check" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="m6.5 12.5 3.5 3.5 7.5-8" />
-                </svg>
+                <app-icon [type]="AppIconType.CHECK"></app-icon>
               </span>
             </button>
           } @empty {

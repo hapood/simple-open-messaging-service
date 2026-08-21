@@ -1,19 +1,9 @@
 <div [appFitDialog]="fitOpts">
-  <div class="msg-header">
-    <button
-      class="icon-btn"
-      [disabled]="submitting()"
-      (click)="onBack()"
-      [attr.aria-label]="'common.back' | transloco"
-    >
-      <app-icon
-        [type]="AppIconType.BACK"
-        [style]="{ width: '32px', height: '32px' }"
-      ></app-icon>
-    </button>
-    <span class="title">{{ 'newGroup.title' | transloco }}</span>
-    <span class="header-spacer" aria-hidden="true"></span>
-  </div>
+  <app-page-header
+    [title]="'newGroup.title' | transloco"
+    [backDisabled]="submitting()"
+    (back)="onBack()"
+  />
 
   <div class="panel">
     <div class="avatar-section">
@@ -30,26 +20,13 @@
           [disabled]="avatarUploading() || submitting()"
           [attr.aria-label]="'newGroup.setPhotoAria' | transloco"
         >
-          @if (avatarUploading()) {
-            <span class="spin"></span>
-          } @else {
-            <svg
-              width="20"
-              height="20"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <path
-                d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"
-              />
-              <circle cx="12" cy="13" r="4" />
-            </svg>
-          }
+          <span class="avatar-hint">
+            @if (avatarUploading()) {
+              <span class="spin"></span>
+            } @else {
+              {{ 'group.changeAvatarHint' | transloco }}
+            }
+          </span>
         </button>
       </div>
     </div>

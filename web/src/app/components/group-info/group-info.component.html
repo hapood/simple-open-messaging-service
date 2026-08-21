@@ -1,30 +1,28 @@
 <div class="panel">
-  <div class="msg-header">
-    <button
-      class="icon-btn"
-      (click)="goBack()"
-      [attr.aria-label]="'common.back' | transloco"
-    >
-      <app-icon
-        [type]="AppIconType.BACK"
-        [style]="{ width: '32px', height: '32px' }"
-      ></app-icon>
-    </button>
-    <span class="title">{{ 'group.title' | transloco }}</span>
-    <span></span>
-  </div>
+  <app-page-header [title]="'group.title' | transloco" (back)="goBack()" />
 
   <div class="body">
     <!-- Identity -->
     <div class="identity">
-      <app-user-avatar
-        [type]="UserAvatarType.GROUP"
-        [name]="group()?.name ?? ''"
-        [identityId]="$safeNavigationMigration(group()?.id)"
-        [src]="avatarUrl()"
-      ></app-user-avatar>
+      <span class="profile-avatar">
+        <app-user-avatar
+          [type]="UserAvatarType.GROUP"
+          [name]="group()?.name ?? ''"
+          [identityId]="$safeNavigationMigration(group()?.id)"
+          [account]="$safeNavigationMigration(group()?.account)"
+          [src]="avatarUrl()"
+          [federatedDomain]="group()?.domain"
+        ></app-user-avatar>
+      </span>
     </div>
     <mat-card appearance="outlined" class="group-profile-card">
+      <div class="profile-meta">
+        @if (group()?.domain; as domain) {
+          &#64;{{ domain }}
+        } @else {
+          {{ 'group.localGroup' | transloco }}
+        }
+      </div>
       <button
         class="group-profile-row"
         type="button"
@@ -33,7 +31,7 @@
       >
         <span class="profile-copy">
           <strong>{{ group()?.name }}</strong>
-          <span>{{
+          <span class="profile-description">{{
             group()?.description || ('group.noDescription' | transloco)
           }}</span>
         </span>
@@ -75,6 +73,8 @@
               [type]="UserAvatarType.OTHER"
               [name]="m.name"
               [identityId]="m.userId"
+              [account]="m.account"
+              [federatedDomain]="m.domain || null"
               [src]="m.avatar"
               [title]="m.name"
             ></app-user-avatar>
@@ -197,20 +197,12 @@
 
   @if (editing()) {
     <div class="profile-editor">
-      <div class="manager-header">
+      <app-page-header
+        [title]="'group.editInfo' | transloco"
+        (back)="cancelEdit()"
+      >
         <button
-          class="icon-btn"
-          type="button"
-          (click)="cancelEdit()"
-          [attr.aria-label]="'common.back' | transloco"
-        >
-          <app-icon
-            [type]="AppIconType.BACK"
-            [style]="{ width: '28px', height: '28px' }"
-          />
-        </button>
-        <strong>{{ 'group.editInfo' | transloco }}</strong>
-        <button
+          pageHeaderAction
           mat-button
           color="primary"
           class="save-profile-btn"
@@ -220,14 +212,16 @@
         >
           {{ 'common.save' | transloco }}
         </button>
-      </div>
+      </app-page-header>
       <div class="profile-editor-body">
         <label class="avatar-edit">
           <app-user-avatar
             [type]="UserAvatarType.GROUP"
             [name]="nameEdit()"
             [identityId]="$safeNavigationMigration(group()?.id)"
+            [account]="$safeNavigationMigration(group()?.account)"
             [src]="avatarUrl()"
+            [federatedDomain]="group()?.domain"
           />
           <span class="avatar-hint">{{
             'group.changeAvatarHint' | transloco
@@ -268,20 +262,10 @@
 
   @if (showMemberManager()) {
     <div class="member-manager">
-      <div class="manager-header">
-        <button
-          class="icon-btn"
-          (click)="showMemberManager.set(false)"
-          [attr.aria-label]="'common.back' | transloco"
-        >
-          <app-icon
-            [type]="AppIconType.BACK"
-            [style]="{ width: '28px', height: '28px' }"
-          ></app-icon>
-        </button>
-        <strong>{{ 'group.manageMembers' | transloco }}</strong
-        ><span></span>
-      </div>
+      <app-page-header
+        [title]="'group.manageMembers' | transloco"
+        (back)="showMemberManager.set(false)"
+      />
       <div class="manager-body">
         <input
           class="member-search"
@@ -299,6 +283,8 @@
                 [type]="UserAvatarType.OTHER"
                 [name]="m.name"
                 [identityId]="m.userId"
+                [account]="m.account"
+                [federatedDomain]="m.domain || null"
                 [src]="m.avatar"
               ></app-user-avatar>
               <div class="member-info">
@@ -361,21 +347,24 @@
 
   @if (showInvite()) {
     <div class="member-manager invite-manager">
-      <div class="manager-header">
-        <button
-          class="icon-btn"
-          type="button"
-          (click)="showInvite.set(false)"
-          [attr.aria-label]="'common.back' | transloco"
-        >
-          <app-icon
-            [type]="AppIconType.BACK"
-            [style]="{ width: '28px', height: '28px' }"
-          />
-        </button>
-        <strong>{{ 'group.inviteFriends' | transloco }}</strong>
-        <span></span>
-      </div>
+      <app-page-header
+        [title]="'group.inviteFriends' | transloco"
+        (back)="showInvite.set(false)"
+      >
+        @if (canInvite()) {
+          <button
+            pageHeaderAction
+            class="invite-submit"
+            mat-flat-button
+            color="primary"
+            type="button"
+            [disabled]="busy() || selectedList().length === 0"
+            (click)="invite()"
+          >
+            {{ 'group.invite' | transloco: { count: selectedList().length } }}
+          </button>
+        }
+      </app-page-header>
       <div class="manager-body">
         <input
           class="member-search"
@@ -384,22 +373,41 @@
           [placeholder]="'group.searchFriends' | transloco"
         />
         @if (canInvite()) {
+          @if (selectedList().length > 0) {
+            <div class="selected-friends" role="list">
+              @for (friend of selectedList(); track friend.id) {
+                <button
+                  class="selected-friend"
+                  type="button"
+                  role="listitem"
+                  (click)="onTrdSelect(friend)"
+                  [attr.aria-label]="friend.peerUser.name"
+                  [title]="friend.peerUser.name"
+                >
+                  <app-user-avatar
+                    [type]="UserAvatarType.OTHER"
+                    [name]="friend.peerUser.name"
+                    [identityId]="friend.peerUser.id"
+                    [account]="friend.peerUser.account"
+                    [src]="friend.peerUser.avatar"
+                    [federatedDomain]="
+                      friend.peerUser.isForeigner
+                        ? friend.peerUser.domain
+                        : null
+                    "
+                  ></app-user-avatar>
+                  <span class="selected-remove" aria-hidden="true">−</span>
+                  <span class="selected-name">{{ friend.peerUser.name }}</span>
+                </button>
+              }
+            </div>
+          }
           <app-user-list
             (onSelect)="onTrdSelect($event)"
             [selectedDict]="selectedDict()"
             [excludedUserIds]="existingMemberIds()"
             [filterText]="inviteQuery()"
           />
-          <div class="invite-actions">
-            <button
-              mat-flat-button
-              color="primary"
-              [disabled]="busy() || selectedList().length === 0"
-              (click)="invite()"
-            >
-              {{ 'group.invite' | transloco: { count: selectedList().length } }}
-            </button>
-          </div>
         } @else {
           <div class="invite-disabled">
             {{ 'group.inviteAdminsOnly' | transloco }}

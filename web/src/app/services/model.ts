@@ -105,8 +105,7 @@ export function displayThreadName(t: ConversationItem): string {
 /**
  * A user's display name — the nickname (e.g. "Bob"), NOT the login handle. Registration guarantees a
  * non-empty nickname, so there is no account fallback (the handle is never shown as a label). For
- * federated peers the DOMAIN is shown separately via <app-federated-badge> (globe + domain) under the
- * avatar, so the name stays clean and the server identity is a distinct, scannable chip. Single source
+ * federated peers are identified by the avatar's globe marker, so the name stays clean. Single source
  * for the name text.
  */
 export function displayUserName(u: { name?: string | null }): string {
@@ -127,8 +126,6 @@ export function displayUserAccount(u: {
 /** An invite row (friend-add / group-invite). Friend request lists are projected from the compacted
  *  client state feed; inviter and recipient profiles are embedded (fromUser / toUser). */
 export type Invite = S['InviteDto'];
-/** Live invite state returned by /invite/detail (group-invite dialog). */
-export type InviteDetail = S['InviteDetailDto'];
 
 export type PersonalQuotaCategory = 'messages' | 'files' | 'requests';
 

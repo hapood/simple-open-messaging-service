@@ -14,6 +14,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
 import { RouteService } from '../../services/route.service';
 import { displayThreadName } from '../../services/model';
 import { AppIconType, IconComponent } from '../icon/icon.component';
+import { PageHeaderComponent } from '../page-header/page-header.component';
 import {
   categorizeFilename,
   fileExt,
@@ -30,7 +31,7 @@ interface UploadGroup {
 @Component({
   selector: 'app-upload-detail-dialog',
   standalone: true,
-  imports: [IconComponent, TranslocoPipe],
+  imports: [IconComponent, TranslocoPipe, PageHeaderComponent],
   templateUrl: './upload-detail-dialog.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './upload-detail-dialog.component.scss',

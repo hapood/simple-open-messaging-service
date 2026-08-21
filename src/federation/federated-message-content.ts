@@ -17,57 +17,6 @@ const SHA256_RE = /^[a-f0-9]{64}$/;
 
 type JsonObject = Record<string, unknown>;
 
-export interface FederationAuthoredMessageSnapshot {
-  contentType: string;
-  content: string;
-  clientMessageId: string | null;
-  quoteTarget?: {
-    targetSeq: number;
-  };
-  assets: Array<{
-    digest: string;
-    bytes: number;
-  }>;
-}
-
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  const record = value as JsonObject;
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-    .join(',')}}`;
-}
-
-export function canonicalizeMessageContent(content: string): string {
-  return canonicalJson(parseObject(content));
-}
-
-export function authoredMessageSnapshot(
-  value: Pick<
-    FederationAuthoredMessageSnapshot,
-    'contentType' | 'content' | 'clientMessageId' | 'quoteTarget' | 'assets'
-  >,
-): FederationAuthoredMessageSnapshot {
-  return {
-    contentType: value.contentType,
-    content: canonicalizeMessageContent(value.content),
-    clientMessageId: value.clientMessageId,
-    ...(value.quoteTarget === undefined
-      ? {}
-      : { quoteTarget: value.quoteTarget }),
-    assets: [...value.assets].sort((a, b) => a.digest.localeCompare(b.digest)),
-  };
-}
-
-export function authoredMessageSnapshotsEqual(
-  left: FederationAuthoredMessageSnapshot,
-  right: FederationAuthoredMessageSnapshot,
-): boolean {
-  return canonicalJson(left) === canonicalJson(right);
-}
-
 function parseObject(content: string): JsonObject {
   const value: unknown = JSON.parse(content);
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -317,37 +266,20 @@ export function toFederatedMessageContent(
           : { siteName: value['siteName'] }),
       });
     }
-    case ContentType.INVITE:
-      assertKeys(
-        value,
-        ['type', 'from', 'group', 'groupName', 'groupDomain'],
-        ['groupAvatar', 'groupIsLocal'],
-      );
-      if (
-        value['type'] !== 'GROUP_INVITE' ||
-        typeof value['from'] !== 'string' ||
-        !isValidUserAccount(value['from']) ||
-        typeof value['group'] !== 'string' ||
-        !isValidGroupAccount(value['group']) ||
-        typeof value['groupName'] !== 'string' ||
-        typeof value['groupDomain'] !== 'string' ||
-        value['groupDomain'].length === 0
-      ) {
-        throw new Error('invalid invite content');
-      }
-      return JSON.stringify({
-        group: value['group'],
-        groupName: value['groupName'],
-        groupDomain: value['groupDomain'],
-      });
     case ContentType.FORWARD:
-      assertKeys(value, [
-        'version',
-        'bundleId',
-        'summaryLines',
-        'messageCount',
-        'assetCount',
-      ]);
+      if (Object.keys(value).length === 1) {
+        // Imported forward cards are deliberately stored in their URL-free wire shape. They can
+        // later appear inside another bundle, so publishing must be idempotent for that shape.
+        assertKeys(value, ['bundleId']);
+      } else {
+        assertKeys(value, [
+          'version',
+          'bundleId',
+          'summaryLines',
+          'messageCount',
+          'assetCount',
+        ]);
+      }
       if (typeof value['bundleId'] !== 'string')
         throw new Error('invalid forward card');
       validateForwardCard({ bundleId: value['bundleId'] });
@@ -364,7 +296,6 @@ export function fromFederatedMessageContent(
   contentType: ContentType,
   content: string,
   localDomain: string,
-  inviterAccount?: string,
 ): string {
   const value = parseObject(content);
   const single = (extra: string[]): string => {
@@ -449,25 +380,6 @@ export function fromFederatedMessageContent(
         ...(value['siteName'] === undefined
           ? {}
           : { siteName: value['siteName'] }),
-      });
-    case ContentType.INVITE:
-      assertKeys(value, ['group', 'groupName', 'groupDomain']);
-      if (
-        typeof value['group'] !== 'string' ||
-        !isValidGroupAccount(value['group']) ||
-        typeof value['groupName'] !== 'string' ||
-        typeof value['groupDomain'] !== 'string' ||
-        value['groupDomain'].length === 0
-      ) {
-        throw new Error('invalid invite content');
-      }
-      return JSON.stringify({
-        ...value,
-        ...(inviterAccount === undefined
-          ? {}
-          : { type: 'GROUP_INVITE', from: inviterAccount }),
-        groupAvatar: '',
-        groupIsLocal: value['groupDomain'] === localDomain,
       });
     case ContentType.CALL:
       if (!parseFederatedCallContent(content)) {

@@ -26,6 +26,8 @@ import {
         [type]="UserAvatarType.OTHER"
         [name]="other().name"
         [identityId]="other().identityId"
+        [account]="other().account"
+        [federatedDomain]="other().domain"
         [src]="other().src"
       />
     </div>
@@ -38,6 +40,7 @@ import {
         [type]="UserAvatarType.SELF"
         [name]="self().name"
         [identityId]="self().identityId"
+        [federatedDomain]="self().domain"
         [src]="self().src"
       />
     </div>

@@ -56,53 +56,40 @@ Each `/s2s/v<major>` handler MUST accept only a major currently published by the
 
 The node MUST reject a request for a syntactically recognized `/s2s/v<major>` that it does not enable and SHOULD return HTTP `409` with `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED`. It MUST NOT route the request to another major's handler.
 
-The v1 core surface has no optional endpoint branches; Section 2.1 capability negotiation applies only to non-core extensions. Adding a core response field MUST first satisfy the corresponding object's compatibility rules. Removing or renaming a field, changing its meaning, or changing an endpoint, authentication, status code, idempotency, or cursor semantics is incompatible and requires a new `/s2s/v2` major. Errata, non-normative explanation, and implementation optimization that does not change externally observable protocol behavior MAY be released within v1.
-
-### 2.1 Extension capability
-
-`POST /s2s/v1/discover` returns the server's current v1 receive-capability array `extensions` and optional diagnostic `software`. The path binds this endpoint to v1, so it does not repeat `protocolVersions`, root identity, or signing keys; those cross-version bootstrap values remain exclusive to `/.well-known/socfp`. Each extension value is a complete, immutable capability ID. `socfp.*` is reserved for protocol maintainers. A third-party ID uses the reverse-domain prefix of a domain it controls. An ID MUST be lower-case ASCII, no longer than 128 bytes, and end in a positive integer `.vN`. The array has at most 64 unique values and MUST be sent in ASCII lexicographic order. An incompatible extension change MUST use a new ID and MUST NOT change the meaning of a published ID.
-
-A capability is a unilateral receive declaration. If node B lists extension `E` in a valid v1 discovery response, that statement means only that B can receive and process `E`; it does not mean B has enabled `E` for A or that B will send `E`. A MAY send data defined by `E` to B in a message, state/profile, or feed-head hint only when `E` appears both in B's most recently validated v1 discovery response and in `acceptedExtensions` from B's most recent valid Health response. Whether B may send `E` to A is determined only by A's discovery and Health responses to B. A sender MUST NOT infer receive support from its own capabilities, the peer's software name, guesses outside the validated cache, or traffic in the other direction.
-
-Payload extensions use an optional closed `extensions` container whose keys are capability IDs and whose values are JSON objects. A container has at most 64 entries. A sender MUST NOT include an ID the receiver did not declare. A known extension value MUST validate against that extension's closed schema. A receiver MUST ignore an unknown entry within bounded processing and MUST NOT allow it to change v1 identity, authorization, membership, cursors, core state machines, or known-field semantics. An implementation MUST enforce a local body-byte limit before JSON parsing and finite limits on parsing depth, object members, and array length. These local limits are not remotely negotiable.
-
-An extension MUST NOT introduce behavior required for v1 conformance or weaken v1 signature, recognition, authorization, or validation requirements. A capability required for correct interoperability by every node belongs in a new integer wire major.
-
-`POST /s2s/v1/discover` is both a capability query and a lossy, repeatable lightweight invalidation hint. Its request body carries only signer `origin`; the response immediately returns the receiver's current capability view. A sender MUST update its own discovery response before calling the peer. A successful response means only that the peer accepted the refresh hint and returned its capabilities; it does not mean the peer fetched the sender's new capabilities, enabled extensions, or completed renegotiation. The receiver chooses when to refresh asynchronously and continues using the last validated result until refresh succeeds. A newly discovered extension MUST NOT be sent until a later Health response accepts it. New sends MUST stop immediately after a refresh observes an extension's removal. A node SHOULD also use bounded, jittered periodic discovery so that state eventually converges after a lost hint.
+The v1 wire surface and every v1 object are closed. Unknown fields and unknown enum values are malformed unless an operation explicitly says otherwise. Adding, removing, or renaming a field or enum value, changing its meaning, or changing an endpoint, authentication, status code, idempotency, or cursor semantics is incompatible and requires a new `/s2s/v2` major. Errata, non-normative explanation, and implementation optimization that does not change externally observable protocol behavior MAY be released within v1.
 
 ## 3. Federation v1 HTTP surface
 
-The following table is the complete v1 surface. Its synchronization surface contains three GET feeds, two GET thread queries, one POST feed-head hint, and one POST capability discovery exchange. The authentication context determines how signature validation obtains a key and which peer states MAY invoke an operation; it does not change the Section 6 signature wire format.
+The following table is the complete v1 surface. Its synchronization surface contains three GET feeds, two GET thread queries, and one POST feed-head hint. The authentication context determines how signature validation obtains a key and which peer states MAY invoke an operation; it does not change the Section 6 signature wire format.
 
-| Method | Absolute path                       | Authentication context | Request                   | Success     | Response                  |
-| ------ | ----------------------------------- | ---------------------- | ------------------------- | ----------- | ------------------------- |
-| `GET`  | `/.well-known/socfp`                | public TLS             | no query or body          | `200`       | bare discovery object     |
-| `POST` | `/s2s/v1/recognize`                 | bootstrap signed       | JSON signer domain        | `200`       | bare Recognize OK         |
-| `POST` | `/s2s/v1/healthy`                   | status signed          | JSON signer domain        | `200`       | bare privacy-safe status  |
-| `POST` | `/s2s/v1/discover`                  | lightweight signed     | JSON signer origin        | `200`       | bare v1 capability view   |
-| `POST` | `/s2s/v1/feed-heads`                | lightweight signed     | JSON feed-head hint       | `200`       | success ACK envelope      |
-| `GET`  | `/s2s/v1/state-feed`                | recognized signed      | feed query                | `200`       | success data envelope     |
-| `GET`  | `/s2s/v1/message-feed`              | recognized signed      | feed query                | `200`       | success data envelope     |
-| `GET`  | `/s2s/v1/message-tombstone-feed`    | recognized signed      | feed query                | `200`       | success data envelope     |
-| `GET`  | `/s2s/v1/messages`                  | recognized signed      | thread data query         | `200`       | success data envelope     |
-| `GET`  | `/s2s/v1/message-tombstones`        | recognized signed      | thread data query         | `200`       | success data envelope     |
-| `POST` | `/s2s/v1/call`                      | recognized signed      | JSON call frame           | `200`       | success data envelope     |
-| `GET`  | `/s2s/v1/users/:account`            | recognized signed      | path account              | `200`       | success data envelope     |
-| `GET`  | `/s2s/v1/media/:digest`             | recognized signed      | path/query/optional Range | `200`/`206` | raw bytes                 |
-| `GET`  | `/s2s/v1/forward-bundles/:bundleId` | recognized signed      | path bundle ID            | `200`       | success data envelope     |
+| Method | Absolute path                       | Authentication context | Request                   | Success     | Response                 |
+| ------ | ----------------------------------- | ---------------------- | ------------------------- | ----------- | ------------------------ |
+| `GET`  | `/.well-known/socfp`                | public TLS             | no query or body          | `200`       | bare discovery object    |
+| `POST` | `/s2s/v1/recognize`                 | bootstrap signed       | JSON signer domain        | `200`       | bare Recognize OK        |
+| `POST` | `/s2s/v1/healthy`                   | status signed          | JSON signer domain        | `200`       | bare privacy-safe status |
+| `POST` | `/s2s/v1/feed-heads`                | lightweight signed     | JSON feed-head hint       | `200`       | success ACK envelope     |
+| `GET`  | `/s2s/v1/state-feed`                | recognized signed      | feed query                | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/message-feed`              | recognized signed      | feed query                | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/message-tombstone-feed`    | recognized signed      | feed query                | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/messages`                  | recognized signed      | thread data query         | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/message-tombstones`        | recognized signed      | thread data query         | `200`       | success data envelope    |
+| `POST` | `/s2s/v1/call`                      | recognized signed      | JSON call frame           | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/users/:account`            | recognized signed      | path account              | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/media/:digest`             | recognized signed      | path/query/optional Range | `200`/`206` | raw bytes                |
+| `GET`  | `/s2s/v1/forward-bundles/:bundleId` | recognized signed      | path bundle ID            | `200`       | success data envelope    |
 
 All four signed contexts use the same HTTP Message Signature profile but have different authorization boundaries:
 
 - **bootstrap signed** applies only to `recognize`. The receiver obtains the root key and a valid signing-key certificate from the signer domain's current well-known document, validates the HTTP signature and domain binding, and only then commits the directional recognition fact in one transaction. One request MUST NOT be interpreted as bidirectional recognition.
 - **status signed** applies only to `healthy`. The receiver attempts validation using only an existing pinned/recognition identity. A recognized but not-yet-converged peer MAY receive `degraded`. Unknown, unrecognized, or unauthorized requesters uniformly receive privacy-safe `unavailable`; the query MUST NOT trigger first recognition.
-- **lightweight signed** applies to `feed-heads` and `discover`. Before returning Recognize `OK` to a signer, the receiver MUST atomically open this directional gate. The signer MAY send these operations only after receiving `OK`. This context does not require full `available` state and cannot authorize another data-plane operation.
+- **lightweight signed** applies only to `feed-heads`. Before returning Recognize `OK` to a signer, the receiver MUST atomically open this directional gate. The signer MAY send this operation only after receiving `OK`. This context does not require full `available` state and cannot authorize another data-plane operation.
 - **recognized signed** requires a pinned root, complete bidirectional recognition facts, a currently valid signing-key certificate, and the operation's own business authorization. A receiver MUST NOT reject a request merely because its cached availability view is `degraded`. A successfully validated and processed request/response round trip MAY clear transport-only degradation as defined by recognition.md. `halted` remains a hard protocol or policy gate whose specific cause is retained outside the lifecycle. calls.md further defines safe termination of an existing active call binding.
 
 A hard gate MUST preserve the specific wire result that caused `halted` and MUST NOT collapse it into a generic “untrusted” error. A policy block uses `FEDERATION_PEER_BLOCKED`, an identity contradiction uses the appropriate identity error, and version incompatibility uses `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED`. These causes share a lifecycle that stops automatic communication but retain distinct reasons and security meaning.
 
 [Resources](./resources.md) completely defines the path/query, response, authorization, Range, closure, and error contracts of the three resource operations. Neither this summary nor the surface table overrides its field-level requirements.
 
-A path absent from this complete surface is not part of Federation v1. [Peer Recognition](./recognition.md) defines the fields, bidirectional state, pinning, retry, and privacy rules for `recognize`, `healthy`, and `discover`.
+A path absent from this complete surface is not part of Federation v1. [Peer Recognition](./recognition.md) defines the fields, bidirectional state, pinning, retry, and privacy rules for `recognize` and `healthy`.
 
 The local peer lifecycle is the closed enum `unrecognized`, `establishing`, `available`, `degraded`, or `halted`. It is distinct from the privacy projection `available | degraded | unavailable` returned by Healthy:
 
@@ -114,7 +101,7 @@ The local peer lifecycle is the closed enum `unrecognized`, `establishing`, `ava
 
 `available` and `degraded` are local availability and scheduling information and do not independently authorize an ordinary operation. An operation gate MUST be calculated from pinned identity, directional confirmation facts, version, policy, and business authorization. recognition.md defines the complete states and transitions.
 
-Before returning Recognize `OK`, a receiver MUST atomically open its directional receive gate for `feed-heads` and `discover`. A server sending reverse Recognize MUST complete local service preparation before sending the HTTP request so that the peer's later Healthy query returns at least `degraded`, rather than `unavailable`. recognition.md defines the exact commit boundaries and race timing.
+Before returning Recognize `OK`, a receiver MUST atomically open its directional receive gate for `feed-heads`. A server sending reverse Recognize MUST complete local service preparation before sending the HTTP request so that the peer's later Healthy query returns at least `degraded`, rather than `unavailable`. recognition.md defines the exact commit boundaries and race timing.
 
 ## 4. Well-known discovery and keys
 
@@ -136,24 +123,24 @@ Each operation specification defines its body's top-level type, required fields,
 
 When an operation references a type in this table, it MUST follow the listed format, range, and normalization requirements and MUST NOT redefine or weaken them.
 
-| Name | v1 wire grammar and semantics |
-| --- | --- |
-| `Domain` | A lower-case ASCII DNS name, 1–253 characters overall, with labels of 1–63 characters containing only `a-z`, `0-9`, and `-`. A label MUST NOT begin or end with `-`. The wire value has no trailing root dot. |
-| `UserAccount` | A normalized lower-case ASCII user account matching `^[a-z0-9][a-z0-9._-]{0,29}$`, 1–30 characters overall. |
-| `GroupAccount` | `!` followed by a normalized lower-case ASCII group account matching `^![a-z0-9]{2,30}$`, 3–31 characters overall. |
-| `Account` | A `UserAccount` or `GroupAccount`. It is case-sensitive and accepts only the lower-case forms above. An operation MUST reject an account of the wrong resource type. |
-| `Address` | The closed JSON object `{ "account": Account, "domain": Domain }`. |
-| `DecimalString` | The literal `"0"`, or a non-empty string of ASCII decimal digits without a leading `0`. It MUST NOT be replaced by a JSON number. |
-| `SignedDecimalString` | The literal `"0"`, or an optional `-` followed by a non-empty string of ASCII decimal digits without a leading `0`. `-0` is forbidden. It MUST NOT be replaced by a JSON number. |
-| `PositiveDecimalString` | A non-empty string whose first character is `1..9` and remaining characters are `0..9`. |
-| `SafeInteger` | A JSON integer in `0..9007199254740991`. |
-| `PositiveSafeInteger` | A JSON integer in `1..9007199254740991`. |
-| `EpochMilliseconds` | Unix epoch milliseconds encoded as a `SafeInteger`. |
-| `Sha256Hex` | `^[a-f0-9]{64}$`. |
-| `Base64Ed25519Key` | RFC 4648 padded base64 decoding to exactly 32 bytes. |
-| `Base64Ed25519Signature` | RFC 4648 padded base64 decoding to exactly 64 bytes. |
-| `KeyId` | `Domain "/" KeyName`, where `KeyName` matches `^[A-Za-z0-9._-]{1,64}$`; the complete string before the first `/` is the signer domain. |
-| `CanonicalUuid` | Lower-case RFC 4122 text form with version nibble `1..8` and variant nibble `8`, `9`, `a`, or `b`. |
+| Name                     | v1 wire grammar and semantics                                                                                                                                                                                 |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Domain`                 | A lower-case ASCII DNS name, 1–253 characters overall, with labels of 1–63 characters containing only `a-z`, `0-9`, and `-`. A label MUST NOT begin or end with `-`. The wire value has no trailing root dot. |
+| `UserAccount`            | A normalized lower-case ASCII user account matching `^[a-z0-9][a-z0-9._-]{0,29}$`, 1–30 characters overall.                                                                                                   |
+| `GroupAccount`           | `!` followed by a normalized lower-case ASCII group account matching `^![a-z0-9]{2,30}$`, 3–31 characters overall.                                                                                            |
+| `Account`                | A `UserAccount` or `GroupAccount`. It is case-sensitive and accepts only the lower-case forms above. An operation MUST reject an account of the wrong resource type.                                          |
+| `Address`                | The closed JSON object `{ "account": Account, "domain": Domain }`.                                                                                                                                            |
+| `DecimalString`          | The literal `"0"`, or a non-empty string of ASCII decimal digits without a leading `0`. It MUST NOT be replaced by a JSON number.                                                                             |
+| `SignedDecimalString`    | The literal `"0"`, or an optional `-` followed by a non-empty string of ASCII decimal digits without a leading `0`. `-0` is forbidden. It MUST NOT be replaced by a JSON number.                              |
+| `PositiveDecimalString`  | A non-empty string whose first character is `1..9` and remaining characters are `0..9`.                                                                                                                       |
+| `SafeInteger`            | A JSON integer in `0..9007199254740991`.                                                                                                                                                                      |
+| `PositiveSafeInteger`    | A JSON integer in `1..9007199254740991`.                                                                                                                                                                      |
+| `EpochMilliseconds`      | Unix epoch milliseconds encoded as a `SafeInteger`.                                                                                                                                                           |
+| `Sha256Hex`              | `^[a-f0-9]{64}$`.                                                                                                                                                                                             |
+| `Base64Ed25519Key`       | RFC 4648 padded base64 decoding to exactly 32 bytes.                                                                                                                                                          |
+| `Base64Ed25519Signature` | RFC 4648 padded base64 decoding to exactly 64 bytes.                                                                                                                                                          |
+| `KeyId`                  | `Domain "/" KeyName`, where `KeyName` matches `^[A-Za-z0-9._-]{1,64}$`; the complete string before the first `/` is the signer domain.                                                                        |
+| `CanonicalUuid`          | Lower-case RFC 4122 text form with version nibble `1..8` and variant nibble `8`, `9`, `a`, or `b`.                                                                                                            |
 
 v1 accepts only normalized `Domain` and `Account` values on the wire. A sender MUST send both as lower-case ASCII. The RFC 6762 special-use `.local` namespace is not a globally stable server identity, so `local` and any `Domain` ending in `.local` MUST NOT appear on the SOCFP wire. An implementation may use `local` as an internal storage marker, but it MUST convert that marker to the server's real `Domain` at the federation boundary and MUST NOT expose it to a peer.
 
@@ -217,11 +204,11 @@ Healthy's fixed `unavailable` value is a successfully parsed status result, not 
 
 A successful `feed-heads` request returns HTTP `200`. This means the feed-head hint was accepted, not that the peer completely drained its durable feeds. `call` returns `200` after synchronous validation and transient-state processing of the frame; it does not mean an endpoint received the event or media connected. A network error, unparseable proxy response, or retryable `5xx` MAY be retried with the identical business request, but `Date`, `created`, `expires`, and the HTTP signature MUST be regenerated. A malformed, binding, authorization, or identity conflict MUST NOT be retried unchanged without bound. If present, `Retry-After` MUST be non-negative decimal delta-seconds. A consumer SHOULD honor it and otherwise use bounded exponential backoff with jitter.
 
-A cursor may advance only after the response passes the operation's validation and the local effects and cursor commit in the same transaction. An operation MAY explicitly define an individual item as an isolatable failure. Once isolated under the operation rules without creating a valid business fact, that item does not prevent other valid items and the cursor from committing. An HTTP timeout, connection interruption, nonzero code, malformed success body, or unknown code MUST NOT advance a cursor. An operation document MUST define the idempotency key and observable result for a repeated request. The same business command MUST NOT become a new command merely because the HTTP request has a new signature.
+An accepted cursor position represents every accepted item through that position. Malformed or otherwise invalid data has no protocol effect. An operation document MUST define the idempotency key and observable result for a repeated request. The same business command MUST NOT become a new command merely because the HTTP request has a new signature.
 
 ## 8. Durable state and lifecycle
 
-`state-feed` carries home-owned `PROFILE`, source-scoped `MEMBER_PROFILE`, three directional intents with uniform semantics, and origin-authoritative `GROUP_META`. Directional facts merge by stable key and business revision; an equal or older revision is a complete no-op. A P2P relationship exists only when both directions are `ACCEPTED`. The origin's `GROUP_META` is the final authority for a group roster.
+`state-feed` carries home-owned `PROFILE`, source-scoped `MEMBER_PROFILE`, three directional intents with uniform semantics, and origin-authoritative `GROUP_META`. Snapshots are applied by stable key in `feedId` order. A P2P relationship exists only when both directions are `ACCEPTED`. The origin's `GROUP_META` is the final authority for a group roster.
 
 [Federation v1 State Feed](./state-feed.md) defines complete pages, all six event bodies, field constraints, and merge semantics. [Federation v1 Message Feed](./message-feed.md) defines the compacted `thread + messageEndSeq` index and `/messages` query. [Message](./message.md) defines the ten core message contents and their media and forward bodies. [Federation v1 Message Tombstone Feed](./message-tombstone-feed.md) defines the compacted tombstone index and authoritative deletion query. Those documents and this one jointly form the v1 normative text; this summary cannot override their field-level requirements.
 
@@ -236,7 +223,7 @@ Authorization revocation stops subsequent allocation but does not delete histori
 The following publication, recovery, and loop-prevention rules form part of the v1 contract:
 
 - A feed consists of durable changes allocated for a target peer. A change references or carries its visible durable fact; it is not an author-filtered view that excludes content originating with the requester.
-- `state-feed` MAY return a directional fact first proposed by the requester and later persisted, confirmed, rejected, or revised by the publisher. A consumer MUST merge by compacted key and business revision idempotently and MUST NOT discard a fact merely because the consumer originally authored it.
+- `state-feed` MAY return a directional fact first proposed by the requester and later persisted, confirmed, rejected, or revised by the publisher. A consumer MUST apply it by compacted key in `feedId` order and MUST NOT discard a fact merely because the consumer originally authored it.
 - A message item's `seq/createdAt` is the current publisher's local-copy coordinate and persistence time. A message published by the current publisher as timeline authority MUST have `originSeq/originCreatedAt` equal to `null/null`. A non-authoritative copy formed by pulling MUST store the direct publisher's `seq/createdAt` as its own `originSeq/originCreatedAt`.
 - After consumer B pulls and durably stores a message from publisher A, B SHOULD make its stored copy readable by A through message query as a processing receipt. B allocates the copy back to A, advances that thread's `messageEndSeq` toward A, and notifies A with a new message-feed index item. A then reads the copy through B's `/messages` query. `(thread, author, originSeq)` identifies which message previously published by A was durably processed by B. B's publisher-local `seq/createdAt` gives B's copy coordinate and time, while `originSeq/originCreatedAt` equals the original A item’s `seq/createdAt`. The processing acknowledgement therefore comes from the queried message, not the message-feed item.
 - A MUST correlate the receipt's `(thread, author, originSeq)` with its previously published `(thread, author, seq)`. It MUST NOT create a duplicate message, rewrite the original, or allocate a new message-feed item for it. A processing receipt is visible only to the direct publisher of that copy; the fixed v1 topology has no further receipt-distribution step. A receipt is a recommended diagnostic facility, not a reliable ACK. Its absence means only that A has not observed a durably stored copy; it cannot prove that B did not receive it, discarded it, or isolated it for a particular reason.
@@ -265,11 +252,11 @@ Each feed permits optional `take` and the inclusive feed-ID upper bound `through
 
 Every feed-ID window is open on the left and closed on the right. `after=A&through=T` means `(A, T]`: `A` has already been committed by the consumer and is excluded, while `T` is included as the drain bound. A page actually completes `(after, scannedThrough]`, so `feedId === scannedThrough` is included and `feedId === after` MUST NOT be applied again. Omitting `through` means only that the request uses the source's frozen current `*FeedEndId`; it does not change the interval rule. HTTP byte ranges, time intervals, and other non-feed coordinates are outside this convention.
 
-A page and the consumer-local cursor MUST commit in one transaction. A repeated page MUST be idempotent. An empty page may still advance through `scannedThrough`. The source does not validate whether `after` equals the preceding page; the consumer ensures its local cursor never moves backward. Feed IDs need only strictly increase, not remain contiguous. `scannedThrough` and the next item ID MAY cross arbitrarily large deleted or unallocated gaps.
+Applying a page and adopting its cursor position MUST be atomic from the protocol's perspective. A repeated page MUST be idempotent. An empty page may still advance through `scannedThrough`. The source does not validate whether `after` equals the preceding page; the consumer ensures its local cursor never moves backward. Feed IDs need only strictly increase, not remain contiguous. `scannedThrough` and the next item ID MAY cross arbitrarily large deleted or unallocated gaps.
 
 All three feeds are durable compacted projections and MUST NOT establish a retained floor based on time, capacity, or historical cleanup. A new item may replace an old stable-key item but MUST receive a greater feed ID. Under its operation rules, state feed may omit a member projection with no remaining visibility source. After a P2P relationship ends, message and tombstone feeds may independently remove the current peer/thread projection without moving their feed ends backward. The two data feeds have independent thread sets and need not align; a thread with no withdrawal may have only a message projection. Recreating a removed projection MUST allocate a new, greater feed ID. Body cleanup affects only message query. Tombstone facts remain permanent even when loss of authorization removes their current discovery-index projection.
 
-The core `feed-heads` fields are `origin`, `stateFeedEndId`, `messageFeedEndId`, and `tombstoneFeedEndId`, with the optional `extensions` container from Section 2.1. The three ends are independent inclusive scan bounds for compacted feeds, used only for wake-up and bounded draining. They are not ACKs, business revisions, or query sequences. An extension MUST NOT change processing of the core fields. A publisher MUST commit state and its feed index before making a dependent data-feed item visible. A hint may be lost, duplicated, or reordered and MUST NOT be the sole recovery mechanism.
+The closed `feed-heads` fields are `origin`, `stateFeedEndId`, `messageFeedEndId`, and `tombstoneFeedEndId`. The three ends are independent inclusive scan bounds for compacted feeds, used only for wake-up and bounded draining. They are not ACKs, business revisions, or query sequences. A publisher MUST commit state and its feed index before making a dependent data-feed item visible. A hint may be lost, duplicated, or reordered and MUST NOT be the sole recovery mechanism.
 
 After receiving hint `(S, M, D)`, a consumer MUST use each feed's committed local cursor and drain in this bounded order:
 
@@ -285,7 +272,7 @@ Absence of a thread projection from an index feed is not a deletion notice. A co
 
 At startup and during periodic reconciliation, even without a hint, a consumer MUST first read and drain state feed from its local state cursor, followed by tombstone and message feeds. For each feed, the end returned by the first successful page without `through` may be fixed as that drain's target. That first page participates in the drain, and later pages use the target as `through`. The three ends need not come from an atomic cross-feed snapshot.
 
-If an index page references a thread unknown locally, the consumer MUST roll back that index page, drain state feed again, and retry the unchanged request rather than discard the item or advance the index cursor. This recovery occurs only once for the same unchanged index page. If the thread remains unknown after a complete state drain, the consumer MUST classify the response as a protocol or binding conflict, retain the index cursor, stop automatic data-feed draining for that peer, and audit the conflict. It MUST NOT retry forever or skip the item. The publisher's state-before-data allocation order and this recovery rule together prevent committing a message index before its thread is known. After process recovery, the consumer confirms the cached peer root identity and a usable signing certificate before draining.
+If an index page references a thread unknown locally, the consumer SHOULD drain the state feed before retrying the unchanged request. The publisher's state-before-data allocation order supports convergence when the required state is merely delayed. After process recovery, the consumer confirms the cached peer root identity and a usable signing certificate before draining.
 
 Media content carries only explicit digests, not publisher display or download URLs. A media message may first commit as durable pending work, after which the consumer constructs `media/:digest` Range requests from the outer message's authorization coordinates. Download authorization MUST join the signer's current thread audience and validate the digest binding to the exact message or its forward closure. It MUST NOT depend on a message-feed change that may have been collected. A download failure or quota pause MUST NOT roll back a committed feed cursor; durable state MUST make the work recoverable. A forward bundle is a bounded, immutable, digest-validated closure.
 

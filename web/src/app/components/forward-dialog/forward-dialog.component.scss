@@ -16,33 +16,6 @@
   color: var(--app-text);
 }
 
-.forward-dialog__header {
-  display: grid;
-  flex: 0 0 56px;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: center;
-  height: 56px;
-  padding: 0 10px;
-  box-sizing: border-box;
-  border-bottom: 1px solid var(--app-border);
-
-  h2 {
-    margin: 0;
-    font-size: 16px;
-    font-weight: 600;
-    line-height: 24px;
-    white-space: nowrap;
-  }
-
-  > :first-child {
-    justify-self: start;
-  }
-
-  > :last-child {
-    justify-self: end;
-  }
-}
-
 .forward-dialog__header-action {
   min-width: 52px;
   min-height: 40px;
@@ -131,7 +104,6 @@
       app-msg-text-row,
       app-msg-media-row,
       app-msg-file-row,
-      app-msg-invite-row,
       app-msg-link-row,
       app-msg-call-row,
       app-msg-forward-row
@@ -434,16 +406,18 @@
   box-sizing: border-box;
   border: 2px solid var(--app-surface);
   border-radius: 50%;
-  background: var(--app-brand);
-  color: var(--app-on-brand);
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 14px;
-  text-align: center;
+  background: var(--app-action-primary);
+  color: var(--app-on-action-primary);
+  place-items: center;
+
+  app-icon {
+    width: 11px;
+    height: 11px;
+  }
 }
 
 .forward-dialog__recent-item--selected .forward-dialog__recent-check {
-  display: block;
+  display: grid;
 }
 
 .forward-dialog__section-title {
@@ -509,19 +483,14 @@
   place-items: center;
 
   .forward-dialog__recipient--selected & {
-    border-color: var(--app-brand);
-    background: var(--app-brand);
-    color: var(--app-on-brand);
+    border-color: var(--app-action-primary);
+    background: var(--app-action-primary);
+    color: var(--app-on-action-primary);
   }
 
-  svg {
-    width: 15px;
-    height: 15px;
-    fill: none;
-    stroke: currentColor;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    stroke-width: 2.2;
+  app-icon {
+    width: 13px;
+    height: 13px;
   }
 }
 
@@ -535,15 +504,6 @@
 @media (min-width: 720px) {
   :host {
     height: min(680px, 80dvh);
-  }
-
-  .forward-dialog__workspace {
-    grid-template-columns: minmax(0, 42fr) minmax(0, 58fr);
-    grid-template-rows: minmax(0, 1fr);
-  }
-
-  .forward-dialog__preview-pane {
-    border-right: 1px solid var(--app-border);
   }
 
   .forward-dialog__pane-title {

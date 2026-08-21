@@ -25,6 +25,8 @@ export interface StickyAvatarView {
   readonly name: string;
   readonly src: string;
   readonly identityId?: number;
+  readonly account?: string;
+  readonly domain?: string;
   readonly side: 'self' | 'other';
   readonly top: number;
 }
@@ -33,12 +35,16 @@ export interface StickyAvatarIdentity {
   readonly name: string;
   readonly src?: string;
   readonly identityId?: number;
+  readonly account?: string;
+  readonly domain?: string;
 }
 
 export interface StickyAvatarMeasuredRow extends StickyAvatarRow {
   readonly name: string;
   readonly src: string;
   readonly identityId?: number;
+  readonly account?: string;
+  readonly domain?: string;
   readonly naturalAvatar?: HTMLElement;
   readonly tailAvatar?: HTMLElement;
 }
@@ -56,6 +62,8 @@ export function writeStickyAvatarIdentity(
 ): void {
   host.dataset['messageAvatarName'] = avatar.name;
   host.dataset['messageAvatarSrc'] = avatar.src ?? '';
+  host.dataset['messageAvatarAccount'] = avatar.account ?? '';
+  host.dataset['messageAvatarDomain'] = avatar.domain ?? '';
   if (avatar.identityId == null) {
     delete host.dataset['messageAvatarIdentity'];
   } else {
@@ -158,6 +166,7 @@ export function resolveStickyAvatar(
       name: row.name,
       src: row.src,
       identityId: row.identityId,
+      domain: row.domain,
       side: placement.side,
       // DOM rectangles may carry sub-pixel viewport coordinates (device scale, compositor transforms). The
       // natural avatar is laid out on the integer-pixel timeline grid; quantize only the final overlay-local

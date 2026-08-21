@@ -25,7 +25,7 @@ import {
 import {
   conversationAvatarType,
   conversationAvatarIdentityId,
-  conversationAvatarColorIdentityId,
+  conversationAvatarAccount,
   conversationAvatarSrc,
 } from '../user-avatar/conversation-avatar.util';
 import { IconComponent, AppIconType } from '../icon/icon.component';
@@ -142,6 +142,14 @@ export class ThreadListComponent implements OnInit {
     '[Video]': 'chat.preview.video',
     '[File]': 'chat.preview.file',
     '[Voice message]': 'chat.preview.voice',
+    '[File set]': 'chat.preview.fileGroup',
+    '[System message]': 'chat.preview.system',
+    '[Call]': 'call.record.unknown',
+    '[Missed call]': 'call.record.missed',
+    '[Call failed]': 'call.record.failed',
+    '[Call unreachable]': 'call.record.unreachable',
+    '[Call declined]': 'call.record.declined',
+    '[Call cancelled]': 'call.record.cancelled',
     '[Chat history]': 'forward.previewLabel',
     '[聊天记录]': 'forward.previewLabel',
   };
@@ -195,8 +203,8 @@ export class ThreadListComponent implements OnInit {
     return conversationAvatarIdentityId(t);
   }
 
-  avatarColorIdentityId(t: ConversationItem): number | string {
-    return conversationAvatarColorIdentityId(t);
+  avatarAccount(t: ConversationItem): string {
+    return conversationAvatarAccount(t);
   }
 
   avatarSrc(t: ConversationItem): string | null | undefined {

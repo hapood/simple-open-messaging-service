@@ -1,9 +1,26 @@
 // Unit tests for MessageService.attachMediaStatus — the bulk ready/failed判定 that backs the
 // query-messages mediaStatus field + the scroll-probe media-status endpoint. Drizzle is mocked.
 import { describe, it, expect, vi } from 'vitest';
-import { MessageService } from './message.service.js';
+import { derivePreview, MessageService } from './message.service.js';
 import type { Message } from './message.service.js';
 import type { ContentType } from '../database/enums.js';
+
+describe('derivePreview', () => {
+  it('uses one file-set label for every multi-file message', () => {
+    expect(
+      derivePreview(
+        'GALLERY',
+        JSON.stringify({ items: [{ kind: 'FILE' }, { kind: 'FILE' }] }),
+      ),
+    ).toBe('[File set · 2]');
+    expect(
+      derivePreview(
+        'GALLERY',
+        JSON.stringify({ items: [{ kind: 'IMAGE' }, { kind: 'VIDEO' }] }),
+      ),
+    ).toBe('[File set · 2]');
+  });
+});
 
 function databaseMock(queries: {
   message?: ReturnType<typeof vi.fn>;
@@ -389,45 +406,6 @@ describe('MessageService.queryMessages quote previews', () => {
       image: 'data:image/webp;base64,preview',
       imageShape: 'thumbnail',
     });
-  });
-
-  it('uses the group identity and avatar for an invite reply visual', async () => {
-    const reply = mk({
-      id: 9n,
-      seq: 12,
-      contentType: 'PURE_TEXT',
-      content: replyContent,
-    });
-    const target = {
-      ...mk({
-        id: 4n,
-        seq: 4,
-        contentType: 'INVITE',
-        content: JSON.stringify({
-          type: 'GROUP_INVITE',
-          group: '!group-account',
-          groupName: 'Design Team',
-          groupAvatar: '/uploads/avatars/group.webp',
-        }),
-      }),
-      user: { name: 'Alice' },
-    };
-    const svc = new MessageService(
-      databaseMock({ message: vi.fn().mockResolvedValue([target]) }) as never,
-      {} as never,
-    );
-
-    const [out] = await svc.attachQuotePreviews([reply]);
-
-    expect(JSON.parse(out.content).quote).toEqual(
-      expect.objectContaining({
-        contentType: 'INVITE',
-        image: '/uploads/avatars/group.webp',
-        imageLabel: 'Design Team',
-        imageIdentity: '!group-account',
-        imageShape: 'avatar',
-      }),
-    );
   });
 });
 

@@ -88,6 +88,12 @@ $app-gray-900: #111827;
     var(--app-brand) 24%,
     transparent
   );
+  --im-composer-quote-bg: var(--app-bg-muted);
+  --im-composer-quote-accent: var(--app-action-primary);
+  --im-composer-quote-title: var(--app-text);
+  --im-composer-quote-text: var(--app-text-muted);
+  --im-composer-quote-close: var(--app-text-muted);
+  --im-composer-quote-close-hover-bg: var(--app-hover);
   // Composer send is a functional action color, intentionally independent from the identity/logo palette.
   --im-composer-send-bg: var(--app-action-primary);
   --im-composer-send-hover: var(--app-action-primary-hover);
@@ -242,7 +248,6 @@ $app-gray-900: #111827;
   // bubble colors do not apply to an invite card). Lifting the incoming-bubble surface toward the brand makes
   // the card read as an invite, and stays opaque in both themes so the chat wallpaper never bleeds through.
   // Defined once: it references --im-bubble-other and --app-brand, both of which flip per theme, so it resolves
-  // correctly under [data-theme="dark"]. The watermark opacity in invite-row.component.scss is tuned for this
   // brand-tinted surface.
   --invite-bg: color-mix(
     in srgb,
@@ -380,6 +385,12 @@ $app-gray-900: #111827;
     var(--app-brand) 14%,
     transparent
   );
+  --im-composer-quote-bg: var(--app-bg-muted);
+  --im-composer-quote-accent: var(--app-action-primary);
+  --im-composer-quote-title: var(--app-text);
+  --im-composer-quote-text: var(--app-text-muted);
+  --im-composer-quote-close: var(--app-text-muted);
+  --im-composer-quote-close-hover-bg: var(--app-active);
   --im-composer-send-bg: var(--app-action-primary);
   --im-composer-send-hover: var(--app-action-primary-hover);
   --im-composer-send-text: var(--app-on-action-primary);

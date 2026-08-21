@@ -31,7 +31,7 @@ class StubUserAvatarComponent {
   readonly type = input<unknown>(undefined);
   readonly name = input<string | undefined | null>('');
   readonly identityId = input<number | string | undefined>(undefined);
-  readonly colorIdentityId = input<number | string | undefined>(undefined);
+  readonly account = input<string | undefined | null>(undefined);
   readonly src = input<string | undefined | null>(undefined);
 }
 
@@ -157,6 +157,23 @@ describe('TextRowComponent — forwarded quote navigation', () => {
     expect(getComputedStyle(author).whiteSpace).toBe('nowrap');
     expect(getComputedStyle(preview).whiteSpace).toBe('nowrap');
 
+    ref.destroy();
+  });
+
+  it('uses the localized file-set label for a gallery reply target', () => {
+    const ref = mount(
+      message({
+        author: 'Alice',
+        body: '[File set · 2]',
+        contentType: 'GALLERY',
+        seq: 1,
+      }),
+    );
+    const preview = (
+      ref.location.nativeElement as HTMLElement
+    ).querySelector<HTMLElement>('.msg-quote-copy > span')!;
+
+    expect(preview.textContent?.trim()).toBe('File set');
     ref.destroy();
   });
 

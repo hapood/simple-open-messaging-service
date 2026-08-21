@@ -20,7 +20,7 @@ restart or transient failure
   -> per-thread message and tombstone queries
 
 local business transaction
-  -> mutate a fact or snapshot and increment its business revision
+  -> mutate a fact or snapshot and allocate a new feed ID
   -> compact the per-peer state projection or thread end-sequence indexes
   -> commit
   -> send a lightweight feed-heads wake-up

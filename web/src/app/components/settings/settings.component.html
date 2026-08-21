@@ -1,21 +1,11 @@
 <div class="panel">
   <!-- ROOT: category list -->
   <div class="view" [class.dimmed]="!!activeCategory()">
-    <div class="msg-header">
-      <button
-        class="icon-btn"
-        type="button"
-        (click)="goBack()"
-        [attr.aria-label]="'common.back' | transloco"
-      >
-        <app-icon
-          [type]="AppIconType.BACK"
-          [style]="{ width: '32px', height: '32px' }"
-        ></app-icon>
-      </button>
-      <span class="title">{{ 'settings.title' | transloco }}</span>
-      <span></span>
-    </div>
+    <app-page-header
+      [title]="'settings.title' | transloco"
+      titleAlign="start"
+      (back)="goBack()"
+    />
 
     <div class="body">
       <section class="settings-group">
@@ -51,21 +41,11 @@
   <!-- SUB-PAGE: slides over the root. The category's body-only component is rendered here. -->
   @if (activeCategory(); as cat) {
     <div class="view view-sub" [@pageSlide]>
-      <div class="msg-header">
-        <button
-          class="icon-btn"
-          type="button"
-          (click)="goBack()"
-          [attr.aria-label]="'common.back' | transloco"
-        >
-          <app-icon
-            [type]="AppIconType.BACK"
-            [style]="{ width: '32px', height: '32px' }"
-          ></app-icon>
-        </button>
-        <span class="title">{{ cat.titleKey | transloco }}</span>
-        <span></span>
-      </div>
+      <app-page-header
+        [title]="cat.titleKey | transloco"
+        titleAlign="start"
+        (back)="goBack()"
+      />
       <div class="body">
         <ng-container *ngComponentOutlet="cat.component"></ng-container>
       </div>

@@ -340,7 +340,7 @@ describe('WebdbService', () => {
       expect(await webdb.getMeta('stateRevision')).toBe(12);
     });
 
-    it('upserts compacted friend intents by stable key and business revision', async () => {
+    it('upserts compacted friend intents by stable key in feed order', async () => {
       await webdb.openForUser('1');
       const base = {
         direction: 'CLIENT_STATE' as const,
@@ -366,12 +366,12 @@ describe('WebdbService', () => {
           },
         },
       };
-      await webdb.applyThreadDelta([{ ...base, businessRevision: 2 }], 2);
+      await webdb.applyThreadDelta([base], 2);
       await webdb.applyThreadDelta(
         [
           {
             ...base,
-            businessRevision: 1,
+            revision: 3,
             body: { ...base.body, status: 'REVOKED' },
           },
         ],
@@ -379,8 +379,7 @@ describe('WebdbService', () => {
       );
       expect(await webdb.getFriendIntents()).toEqual([
         expect.objectContaining({
-          businessRevision: 2,
-          status: 'REQUESTED',
+          status: 'REVOKED',
           note: 'hello',
         }),
       ]);
@@ -396,7 +395,6 @@ describe('WebdbService', () => {
         eventType: 'P2P_INTENT' as const,
         subjectAccount: 'remote',
         subjectDomain: 'peer.test',
-        businessRevision: 3,
         body: {
           status: 'REVOKED' as const,
           note: '',
@@ -433,7 +431,6 @@ describe('WebdbService', () => {
         eventType: 'P2P_INTENT' as const,
         subjectAccount: 'local',
         subjectDomain: 'local',
-        businessRevision: 1,
         body: {
           status: 'REQUESTED' as const,
           note: '',

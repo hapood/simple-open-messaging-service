@@ -98,19 +98,11 @@ export class S2sRecognitionController {
     }
     const status = await this.recognition.queryHealth(signer.domain);
     if (status === 'unavailable') return this.unavailableHealth();
-    return {
-      status,
-      selectedProtocolVersion: 1,
-      acceptedExtensions: [],
-    } as const;
+    return { status } as const;
   }
 
   private unavailableHealth() {
-    return {
-      status: 'unavailable',
-      selectedProtocolVersion: null,
-      acceptedExtensions: null,
-    } as const;
+    return { status: 'unavailable' } as const;
   }
 
   private assertDomainBody(value: unknown, signerDomain: string): void {

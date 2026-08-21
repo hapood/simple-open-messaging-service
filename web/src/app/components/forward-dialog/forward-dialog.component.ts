@@ -15,6 +15,8 @@ import { RouteService } from '../../services/route.service';
 import { UserService } from '../../services/user.service';
 import {
   conversationAvatarIdentityId,
+  conversationAvatarAccount,
+  conversationAvatarDomain,
   conversationAvatarSrc,
   conversationAvatarType,
 } from '../user-avatar/conversation-avatar.util';
@@ -28,7 +30,6 @@ import { ThreadSearchInputComponent } from '../thread-search-input/thread-search
 import { TextRowComponent } from '../message-cards/text-row/text-row.component';
 import { MediaRowComponent } from '../message-cards/media-row/media-row.component';
 import { FileRowComponent } from '../message-cards/file-row/file-row.component';
-import { InviteRowComponent } from '../message-cards/invite-row/invite-row.component';
 import { LinkRowComponent } from '../message-cards/link-row/link-row.component';
 import { CallRowComponent } from '../message-cards/call-row/call-row.component';
 import { ForwardRowComponent } from '../message-cards/forward-row/forward-row.component';
@@ -39,6 +40,8 @@ import {
 } from '../../services/link-card-generation.service';
 import type { ChatMsgData } from '../message-cards/chat-item';
 import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter';
+import { AppIconType, IconComponent } from '../icon/icon.component';
+import { PageHeaderComponent } from '../page-header/page-header.component';
 
 export type ForwardMode = 'DIRECT' | 'HISTORY';
 export type ForwardDialogPurpose = 'FORWARD' | 'NATIVE_SHARE';
@@ -65,16 +68,18 @@ export interface ForwardDialogResult {
     forwardRef(() => TextRowComponent),
     MediaRowComponent,
     FileRowComponent,
-    InviteRowComponent,
     LinkRowComponent,
     CallRowComponent,
     ForwardRowComponent,
+    IconComponent,
+    PageHeaderComponent,
   ],
   templateUrl: './forward-dialog.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './forward-dialog.component.scss',
 })
 export class ForwardDialogComponent {
+  readonly AppIconType = AppIconType;
   readonly messages = input<readonly ForwardMessageItem[]>([]);
   readonly recordKind = input<ForwardRecordKind>('chat');
   readonly mode = input<ForwardMode>('HISTORY');
@@ -151,6 +156,8 @@ export class ForwardDialogComponent {
   readonly displayName = displayThreadName;
   readonly avatarType = conversationAvatarType;
   readonly avatarIdentityId = conversationAvatarIdentityId;
+  readonly avatarAccount = conversationAvatarAccount;
+  readonly avatarDomain = conversationAvatarDomain;
   readonly avatarSrc = conversationAvatarSrc;
   readonly directMessage = computed(() => {
     const original = this.messages()[0]?.original;

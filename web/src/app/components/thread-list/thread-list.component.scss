@@ -70,22 +70,6 @@
     flex-shrink: 0;
   }
 
-  .thread-federated-icon {
-    position: absolute;
-    top: -2px;
-    right: -2px;
-    width: 18px;
-    height: 18px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    box-sizing: border-box;
-    border-radius: 50%;
-    background: var(--app-surface);
-    color: var(--app-brand);
-    pointer-events: none;
-  }
-
   .thread-info {
     display: flex;
     flex: 1;
@@ -101,6 +85,8 @@
     .thread-row {
       display: flex;
       align-items: center;
+      height: 20px;
+      flex: 0 0 20px;
       gap: 8px;
 
       &:last-child {

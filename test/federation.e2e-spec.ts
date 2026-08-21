@@ -33,6 +33,7 @@ import {
   federatedPeerEvent,
   federatedPeerReset,
   federationMessageFeedIndex,
+  federationMessageReceipt,
   federationTombstoneFeedIndex,
   federationTombstoneServeCursor,
   federationServeCursor,
@@ -280,7 +281,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
   it('temporary resolve establishes trust without creating a stub', async () => {
     const resolved = await resolveFederatedCard(appA, tokenA, 'bob', DOM_B);
-    expect(resolved.event).toBe('resolved');
+    expect(resolved.event, JSON.stringify(resolved)).toBe('resolved');
     expect(resolved.data).toMatchObject({
       relationship: 'NONE',
       user: { id: 0, isForeigner: true, domain: DOM_B },
@@ -583,9 +584,20 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
               ),
             }),
           ]);
-          expect(source?.originSeq).toBe(source?.seq);
-          expect(source?.originServerTime?.getTime()).toBe(
-            remoteCopy?.createdAt.getTime(),
+          expect(source?.originSeq).toBeNull();
+          expect(source?.originServerTime).toBeNull();
+          const receipt =
+            await appA.database.query.federationMessageReceipt.findFirst({
+              where: and(
+                eq(federationMessageReceipt.peerDomain, DOM_B),
+                eq(federationMessageReceipt.threadId, source!.threadId),
+                eq(federationMessageReceipt.peerSeq, remoteCopy!.seq),
+                eq(federationMessageReceipt.messageId, source!.id),
+              ),
+            });
+          expect(receipt).toBeDefined();
+          expect(source?.createdAt.getTime()).toBe(
+            remoteCopy?.originServerTime?.getTime(),
           );
         },
         { timeout: 5000 },
@@ -770,8 +782,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const { stat } = await import('node:fs/promises');
     const nodePath = await import('node:path');
     const abs = nodePath.join(
-      process.cwd(),
-      'data',
+      appB.dataDir,
       'cas',
       digest.slice(0, 2),
       digest.slice(2, 4),
@@ -812,8 +823,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const { createHash } = await import('node:crypto');
     const nodePath = await import('node:path');
     const abs = nodePath.join(
-      process.cwd(),
-      'data',
+      appB.dataDir,
       'cas',
       digest.slice(0, 2),
       digest.slice(2, 4),
@@ -901,8 +911,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const { createHash } = await import('node:crypto');
     const nodePath = await import('node:path');
     const abs = nodePath.join(
-      process.cwd(),
-      'data',
+      appB.dataDir,
       'cas',
       digest.slice(0, 2),
       digest.slice(2, 4),
@@ -1052,21 +1061,21 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       { timeout: 5000 },
     );
 
-    // The invite card is delivered to bob LIVE (gap-1 fix). writeInvites now routes the INVITE card
-    // through MessageFanoutService.dispatch; its federation leg (notifyOnSend) marks alice's P2P mirror
-    // dirty → appB pulls the card → storePulledMessage. Before the fix the card sat undelivered on
-    // alice's mirror until a manual chat-open pulled it, so a federated invitee had NO discovery path.
-    // Assert the card lands on appB with no nudge from bob (the contentType + the group account on the
-    // card body pinpoint it; the `!account` is globally unique).
+    // Group invites are structural client state, not chat messages. The inbound
+    // GROUP_INVITE_INTENT must materialize the mirror's durable membership request without requiring
+    // bob to open a P2P conversation or pull a legacy INVITE message card.
     await vi.waitFor(
       async () => {
-        const card = await appB.database.query.message.findFirst({
-          where: and(
-            eq(message.contentType, ContentType.INVITE),
-            sql`${message.content}::text like ${`%${groupAccount}%`}`,
-          ),
-        });
-        expect(card).toBeDefined();
+        const pendingInvite =
+          await appB.database.query.groupMembershipRequest.findFirst({
+            where: and(
+              eq(groupMembershipRequest.groupUserId, mirrorB.groupUserId!),
+              eq(groupMembershipRequest.memberUserId, bobLocalIdB),
+              eq(groupMembershipRequest.direction, 'INVITE'),
+              eq(groupMembershipRequest.status, 'REQUESTED'),
+            ),
+          });
+        expect(pendingInvite).toBeDefined();
       },
       { timeout: 5000 },
     );
@@ -1086,14 +1095,15 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         () => expect(proxy.blockedStateFeedCount()).toBeGreaterThan(0),
         { timeout: 5000, interval: 100 },
       );
-      const pendingDetail = await request(appB.baseUrl)
-        .post('/api/v1/invite/detail')
-        .set('Authorization', `Bearer ${tokenB}`)
-        .send({ inviteId: groupAccount });
-      expect(pendingDetail.body.data).toMatchObject({
-        joinRequested: true,
-        alreadyJoined: false,
-      });
+      const pendingJoin =
+        await appB.database.query.groupMembershipRequest.findFirst({
+          where: and(
+            eq(groupMembershipRequest.groupUserId, mirrorB.groupUserId!),
+            eq(groupMembershipRequest.memberUserId, bobLocalIdB),
+            eq(groupMembershipRequest.direction, 'JOIN'),
+          ),
+        });
+      expect(pendingJoin?.status).toBe('REQUESTED');
       const premature = await appB.database.query.threadParticipant.findFirst({
         where: and(
           eq(threadParticipant.threadId, mirrorB.id),
@@ -1871,14 +1881,15 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         .set('Authorization', `Bearer ${tokenB}`)
         .send({ groupId: firstMirrorBId });
       expect(rejoin.body.code).toBe(BusinessCode.OK);
-      const pending = await request(appB.baseUrl)
-        .post('/api/v1/invite/detail')
-        .set('Authorization', `Bearer ${tokenB}`)
-        .send({ inviteId: firstGroupAccount });
-      expect(pending.body.data).toMatchObject({
-        joinRequested: true,
-        alreadyJoined: false,
-      });
+      const pending =
+        await appB.database.query.groupMembershipRequest.findFirst({
+          where: and(
+            eq(groupMembershipRequest.groupUserId, firstMirrorGroupUserBId),
+            eq(groupMembershipRequest.memberUserId, bobLocalIdB),
+            eq(groupMembershipRequest.direction, 'JOIN'),
+          ),
+        });
+      expect(pending?.status).toBe('REQUESTED');
     } finally {
       await appA.restart();
     }
@@ -1903,18 +1914,22 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         ]);
         expect(originMember).toBeDefined();
         expect(mirrorMember).toBeDefined();
-        const detail = await request(appB.baseUrl)
-          .post('/api/v1/invite/detail')
-          .set('Authorization', `Bearer ${tokenB}`)
-          .send({ inviteId: firstGroupAccount });
-        expect(detail.body.data).toMatchObject({
-          joinRequested: false,
-          alreadyJoined: true,
-        });
+        const join = await appB.database.query.groupMembershipRequest.findFirst(
+          {
+            where: and(
+              eq(groupMembershipRequest.groupUserId, firstMirrorGroupUserBId),
+              eq(groupMembershipRequest.memberUserId, bobLocalIdB),
+              eq(groupMembershipRequest.direction, 'JOIN'),
+            ),
+          },
+        );
+        expect(join?.status).toBe('MEMBER');
       },
-      { timeout: 5000, interval: 150 },
+      // Feed-head notifications are ephemeral. If the wake-up races appA's restart, the durable
+      // missed-feed sweep is the correctness backstop and may take one scheduler interval.
+      { timeout: 40_000, interval: 150 },
     );
-  }, 60_000);
+  }, 90_000);
 
   it('rejects a federated join at the origin capacity and clears the mirror pending state', async () => {
     const created = await request(appA.baseUrl)
@@ -1974,30 +1989,42 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         () => expect(proxy.blockedStateFeedCount()).toBeGreaterThan(0),
         { timeout: 5000, interval: 100 },
       );
-      const pending = await request(appB.baseUrl)
-        .post('/api/v1/invite/detail')
-        .set('Authorization', `Bearer ${tokenB}`)
-        .send({ inviteId: groupAccount });
-      expect(pending.body.data).toMatchObject({
-        joinRequested: true,
-        alreadyJoined: false,
-      });
+      const pending =
+        await appB.database.query.groupMembershipRequest.findFirst({
+          where: and(
+            eq(groupMembershipRequest.groupUserId, mirror.groupUserId!),
+            eq(groupMembershipRequest.memberUserId, bobLocalIdB),
+            eq(groupMembershipRequest.direction, 'JOIN'),
+          ),
+        });
+      expect(pending?.status).toBe('REQUESTED');
     } finally {
       proxy.blockStateFeed(false);
     }
 
     await vi.waitFor(
       async () => {
-        const detail = await request(appB.baseUrl)
-          .post('/api/v1/invite/detail')
-          .set('Authorization', `Bearer ${tokenB}`)
-          .send({ inviteId: groupAccount });
-        expect(detail.body.data).toMatchObject({
-          status: 'REVOKED',
-          joinRequested: false,
-          alreadyJoined: false,
+        const [invite, join] = await Promise.all([
+          appB.database.query.groupMembershipRequest.findFirst({
+            where: and(
+              eq(groupMembershipRequest.groupUserId, mirror.groupUserId!),
+              eq(groupMembershipRequest.memberUserId, bobLocalIdB),
+              eq(groupMembershipRequest.direction, 'INVITE'),
+            ),
+          }),
+          appB.database.query.groupMembershipRequest.findFirst({
+            where: and(
+              eq(groupMembershipRequest.groupUserId, mirror.groupUserId!),
+              eq(groupMembershipRequest.memberUserId, bobLocalIdB),
+              eq(groupMembershipRequest.direction, 'JOIN'),
+            ),
+          }),
+        ]);
+        expect(invite).toMatchObject({
+          status: 'NOT_MEMBER',
           note: SERVER_GROUP_FULL_REASON,
         });
+        expect(join?.status).toBe('NOT_MEMBER');
         const mirrorParticipant =
           await appB.database.query.threadParticipant.findFirst({
             where: and(

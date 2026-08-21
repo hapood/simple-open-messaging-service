@@ -12,11 +12,12 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname } from 'node:path';
 import webpush from 'web-push';
 import { createHash } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
+import { dataDirectory } from '../common/data-directory.js';
 import { systemSetting } from '../database/schema.js';
 import { loadFederationConfig } from '../federation/federation.config.js';
 import { federationDownloadSettingKeys } from '../federation/federation-download-scheduler.js';
@@ -35,8 +36,8 @@ import {
   parseGoogleServicesJson,
 } from './firebase.js';
 
-const VAPID_PATH = resolve('data/vapid-key.json');
-const FIREBASE_CLIENT_PATH = resolve('data/google-services.json');
+const VAPID_PATH = dataDirectory('vapid-key.json');
+const FIREBASE_CLIENT_PATH = dataDirectory('google-services.json');
 
 /** SystemSetting key + bounds for the admin-configurable one-time-code validity window (minutes). Default
  *  10 min; clamped to [1, 1440] so an admin typo can't make codes instantly expire or outlive a day. */

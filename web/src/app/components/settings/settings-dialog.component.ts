@@ -23,6 +23,7 @@ import {
   type SettingsCategory,
   type SettingsCategoryId,
 } from './settings-categories';
+import { PageHeaderComponent } from '../page-header/page-header.component';
 
 /**
  * The DESKTOP/TABLET Settings surface — a wide two-column Material dialog (category list on the left,
@@ -42,25 +43,15 @@ import {
   imports: [
     TranslocoPipe,
     IconComponent,
+    PageHeaderComponent,
     NgComponentOutlet,
   ],
   template: `
     <div class="settings-dlg">
-      <div class="msg-header">
-        <button
-          class="icon-btn"
-          type="button"
-          (click)="goBack()"
-          [attr.aria-label]="'common.back' | transloco"
-        >
-          <app-icon
-            [type]="AppIconType.BACK"
-            [style]="{ width: '24px', height: '24px' }"
-          ></app-icon>
-        </button>
-        <span class="title">{{ 'settings.title' | transloco }}</span>
-        <span></span>
-      </div>
+      <app-page-header
+        [title]="'settings.title' | transloco"
+        (back)="goBack()"
+      />
 
       <div class="dlg-body">
         <!-- Left: category list (master) -->

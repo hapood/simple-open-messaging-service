@@ -130,7 +130,7 @@ Unique: `@@unique([userId, threadId])`. Indexes: `[threadId]` (roster), `[userId
 ### Directed relationship facts
 
 - **FriendRequest** — one row per `(requesterUserId, targetUserId)`, with its own `note`, integer
-  business `revision`, `requestedAt`, and absolute `expiresAt`. `REQUESTED` is displayable/acceptable
+  `requestedAt`, and absolute `expiresAt`. `REQUESTED` is displayable/acceptable
   only before expiry but never activates a thread; only two `FRIEND` directions do. `FRIEND` and
   `NOT_FRIEND` have no expiry. `FriendPair(userLowId,userHighId)` is the canonical unordered
   lock/projection and points to the retained P2P thread.

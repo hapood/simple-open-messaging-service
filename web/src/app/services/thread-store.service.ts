@@ -1,7 +1,7 @@
 import { Injectable, inject, signal, effect } from '@angular/core';
 import { filter, firstValueFrom, map, Subject, Subscription } from 'rxjs';
 import { WebdbService } from './webdb.service';
-import { UserService } from './user.service';
+import { UserService, type ClientFriendIntent } from './user.service';
 import { WebsocketService } from './websocket.service';
 import { ProfileRepository } from './profile-store.service';
 import { MessageRepository } from './message-repository.service';
@@ -10,7 +10,7 @@ import {
   type MissedThreadItem,
 } from './missed-sync.service';
 import { toDisplayText } from '../lib/message-entity';
-import { requireTextMessageContent } from '../../../../shared/text-message-content';
+import { deriveMessagePreview } from '../../../../shared/message-preview';
 import type { MissedCursor } from './notification-descriptor.model';
 import { ConversationItem, ThreadReadState, User } from './model';
 import { ThreadDeletionLockService } from './thread-deletion-lock.service';
@@ -366,8 +366,9 @@ export class ThreadRepository {
 
   // ── list mutations (each writes through to IDB + emits a fine-grained signal update) ───────
 
-  /** Patch per-user thread metadata (mute/pin/clear/block/alias) on a row, then re-sort so pin/unpin
-   *  reorders it live. Only defined fields are applied. Used for optimistic UI patches
+  /** Patch per-user thread metadata (mute/pin/clear/block/alias) on a row. Only pin changes re-sort the
+   *  list; display-state changes stay at the row's current position and must not re-apply recency ordering.
+   *  Only defined fields are applied. Used for optimistic UI patches
    *  (multi-device) and (via the facade) from local optimistic actions (mute/pin toggle, block/unblock). */
   applyThreadMeta(
     threadId: number,
@@ -389,7 +390,7 @@ export class ThreadRepository {
       const next = list.slice();
       changed = { ...next[idx], ...patch };
       next[idx] = changed;
-      next.sort(byPinRank);
+      if ('pinned' in patch || 'pinnedAt' in patch) next.sort(byPinRank);
       return next;
     });
     if (changed) void this.persistThread(changed);
@@ -586,6 +587,7 @@ export class ThreadRepository {
       'lastReadSeq' | 'unreadCount' | 'mentionUnread'
     >,
   ): void {
+    let shouldSort = false;
     let reconciled: ConversationItem = {
       ...item,
       lastReadSeq: null,
@@ -595,9 +597,14 @@ export class ThreadRepository {
     this._items.update((list) => {
       const idx = list.findIndex((t) => t.threadId === reconciled.threadId);
       const base = list.slice();
-      if (idx === -1) base.unshift(reconciled);
-      else {
+      if (idx === -1) {
+        shouldSort = true;
+        base.unshift(reconciled);
+      } else {
         const current = base[idx];
+        shouldSort =
+          current.pinned !== reconciled.pinned ||
+          current.pinnedAt !== reconciled.pinnedAt;
         reconciled = {
           ...reconciled,
           lastReadSeq: current.lastReadSeq,
@@ -618,7 +625,7 @@ export class ThreadRepository {
         }
         base[idx] = reconciled;
       }
-      const sorted = base.sort(byPinRank);
+      const sorted = shouldSort ? base.sort(byPinRank) : base;
       return this._pendingTopId === reconciled.threadId
         ? moveToTop(sorted, reconciled.threadId)
         : sorted;
@@ -1148,9 +1155,14 @@ export class ThreadRepository {
             // Persisted atomically by WebdbService. The friend-request dialog reads the compacted
             // projection on demand, so no additional in-memory mirror is required here.
             this.userService.applyFriendIntentStateRevision(op.revision);
+            if (op.eventType === 'GROUP_INVITE_INTENT') {
+              this.userService.applyFriendRequestStateRevision(op.revision);
+              continue;
+            }
+            const friendBody = op.body as ClientFriendIntent;
             if (
-              op.body.status === 'REQUESTED' &&
-              op.body.direction === 'INCOMING'
+              friendBody.status === 'REQUESTED' &&
+              friendBody.direction === 'INCOMING'
             )
               this.userService.applyFriendRequestStateRevision(op.revision);
           } else if (op.direction === 'PROFILE') {
@@ -1162,7 +1174,14 @@ export class ThreadRepository {
             this.memberProfiles.notifyChanged(op.threadIds);
           } else if (op.direction === 'DELETE') this.removeThread(op.threadId);
           else {
-            if (!bulkHydrate) this.markTopOnNextUpdate(op.threadId); // FLIP only on an incremental ADD
+            // The revision log represents both a genuinely new conversation and metadata changes to an
+            // existing participant row as ADD. Only the former is a list insertion: mute/alias/block/etc.
+            // must update in place rather than briefly force the row to the top.
+            const isNewThread = !this._items().some(
+              (item) => item.threadId === op.threadId,
+            );
+            if (!bulkHydrate && isNewThread)
+              this.markTopOnNextUpdate(op.threadId); // FLIP only on a genuine incremental insertion
             this.upsertThread(op.item);
           }
         }
@@ -1327,91 +1346,7 @@ interface ThreadMetaPayload {
  *  …) that exactly match the backend's `derivePreview` AND the view's `PREVIEW_MARKERS` map, so the view
  *  ({@link ThreadListComponent.previewText}) localizes them at render time. Pure: no i18n dependency. */
 export function rawPreview(contentType: string, content: string): string {
-  switch (contentType) {
-    case 'PURE_TEXT':
-      return toDisplayText(requireTextMessageContent(content).text)
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 200);
-    case 'LINK': {
-      // Keep the local-first/cache-hydrated preview identical to the server's derivePreview: a link
-      // card is represented by its title, falling back to its URL, never by its stored JSON envelope.
-      try {
-        const value = JSON.parse(content) as {
-          title?: unknown;
-          description?: unknown;
-          url?: unknown;
-        };
-        const title =
-          typeof value.title === 'string' && value.title.trim()
-            ? value.title
-            : undefined;
-        const description =
-          typeof value.description === 'string' && value.description.trim()
-            ? value.description
-            : undefined;
-        const preview =
-          title ??
-          description ??
-          (typeof value.url === 'string' ? value.url : content);
-        return preview.replace(/\s+/g, ' ').trim().slice(0, 200);
-      } catch {
-        return content.slice(0, 200);
-      }
-    }
-    case 'IMAGE':
-      return '[Photo]';
-    case 'INVITE':
-      return '[Group invite]';
-    case 'SYSTEM':
-      return '[System message]';
-    case 'VIDEO':
-      return '[Video]';
-    case 'FILE':
-      return '[File]';
-    case 'AUDIO':
-      return '[Voice message]';
-    case 'FORWARD': {
-      try {
-        const value = JSON.parse(content) as { summaryLines?: unknown };
-        const first = Array.isArray(value.summaryLines)
-          ? value.summaryLines.find(
-              (line): line is string => typeof line === 'string',
-            )
-          : undefined;
-        const summary = first?.replace(/\s+/g, ' ').trim();
-        return summary
-          ? `[Chat history] ${summary}`.slice(0, 200)
-          : '[Chat history]';
-      } catch {
-        return '[Chat history]';
-      }
-    }
-    case 'CALL': {
-      // Status-aware label mirroring the backend's callPreviewLabel (call-content.ts) so the conversation
-      // list shows "[Missed call]" / "[Call failed]" / … exactly as the server-derived preview.
-      try {
-        switch ((JSON.parse(content) as { status?: string }).status) {
-          case 'missed':
-            return '[Missed call]';
-          case 'failed':
-            return '[Call failed]';
-          case 'unreachable':
-            return '[Call unreachable]';
-          case 'declined':
-            return '[Call declined]';
-          case 'cancelled':
-            return '[Call cancelled]';
-          default:
-            return '[Call]';
-        }
-      } catch {
-        return '[Call]';
-      }
-    }
-    default:
-      return content.slice(0, 200);
-  }
+  return deriveMessagePreview(contentType, content, toDisplayText);
 }
 
 /** Return a new array with the first item matching `threadId` moved to index 0 (no-op if absent/first). */

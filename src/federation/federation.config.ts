@@ -1,5 +1,6 @@
 import { requireEnv } from '../common/env.js';
 import { isValidSocfpDomain } from '../common/account.js';
+import { dataDirectory } from '../common/data-directory.js';
 
 /**
  * Federation (S2S) configuration. Loaded from env at module-init time (fail-fast via requireEnv).
@@ -89,7 +90,7 @@ export function loadFederationConfig(): FederationConfig {
   }
   return {
     domain,
-    keyPath: './data/soms-s2s-key.json',
+    keyPath: dataDirectory('soms-s2s-key.json'),
     allowInsecureHttp,
     devRoutes: loadDevRoutes(allowInsecureHttp),
   };

@@ -43,6 +43,7 @@ import {
   MemberProfileRepository,
   type ResolvedMemberProfile,
 } from '../../services/member-profile-store.service';
+import { PageHeaderComponent } from '../page-header/page-header.component';
 
 type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
 
@@ -71,6 +72,7 @@ type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
     UserAvatarComponent,
     TranslocoPipe,
     ThreadAliasEditorComponent,
+    PageHeaderComponent,
   ],
   templateUrl: './group-info.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,

@@ -8,7 +8,7 @@
     "code": {
       "enum": [
         10000, 10001, 10004, 10005, 10999, 50001, 50002, 50003, 50007, 50009,
-        50010, 50011, 50013, 50014, 50015, 50019, 50020, 50021, 50023,
+        50010, 50011, 50014, 50015, 50019, 50020, 50021, 50023,
         50024, 50025, 70001, 70004, 70007, 70008
       ]
     },
@@ -21,13 +21,6 @@
       "properties": {
         "code": { "const": 50011 },
         "data": { "$ref": "#/$defs/quotaExceededData" }
-      },
-      "required": ["data"]
-    },
-    {
-      "properties": {
-        "code": { "const": 50013 },
-        "data": { "$ref": "#/$defs/capabilityDisabledData" }
       },
       "required": ["data"]
     },
@@ -48,16 +41,13 @@
     {
       "properties": {
         "code": {
-          "not": { "enum": [50011, 50013, 50019, 50024, 50025] }
+          "not": { "enum": [50011, 50019, 50024, 50025] }
         },
         "data": { "type": "null" }
       }
     }
   ],
   "$defs": {
-    "quotaCategory": {
-      "enum": ["messages", "files", "requests", "signals"]
-    },
     "quotaExceededData": {
       "type": "object",
       "required": ["retryAfter"],
@@ -67,14 +57,6 @@
           "minimum": 0,
           "maximum": 9007199254740991
         }
-      },
-      "additionalProperties": false
-    },
-    "capabilityDisabledData": {
-      "type": "object",
-      "required": ["category"],
-      "properties": {
-        "category": { "$ref": "#/$defs/quotaCategory" }
       },
       "additionalProperties": false
     },

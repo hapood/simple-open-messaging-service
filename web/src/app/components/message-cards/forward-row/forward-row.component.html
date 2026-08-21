@@ -14,6 +14,8 @@
         [type]="UserAvatarType.OTHER"
         [name]="data().name"
         [identityId]="data().avatarIdentityId"
+        [account]="data().avatarAccount"
+        [federatedDomain]="data().avatarDomain"
         [src]="data().avatar"
       />
     </div>
@@ -37,8 +39,14 @@
             {{ 'forward.chatHistory' | transloco }}
           </div>
           <div class="forward-lines">
-            @for (line of forward.summaryLines; track $index) {
-              <div class="forward-line">{{ line }}</div>
+            @for (line of forward.summaryLines.slice(0, 2); track $index) {
+              <div class="forward-line">
+                {{ line }}{{
+                  $last && forward.messageCount > forward.summaryLines.length
+                    ? '…'
+                    : ''
+                }}
+              </div>
             }
           </div>
         </div>
@@ -76,6 +84,8 @@
         [type]="UserAvatarType.SELF"
         [name]="data().name"
         [identityId]="data().avatarIdentityId"
+        [account]="data().avatarAccount"
+        [federatedDomain]="data().avatarDomain"
         [src]="data().avatar"
       />
     </div>

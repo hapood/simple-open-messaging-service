@@ -18,6 +18,7 @@ import { createHash, randomBytes } from 'crypto';
 import { promisify } from 'util';
 import sharp from 'sharp';
 import type { FastifyRequest } from 'fastify';
+import { dataDirectory } from '../common/data-directory.js';
 import {
   MAX_AUDIO_BYTES,
   MAX_FILE_BYTES,
@@ -160,18 +161,19 @@ export type ConsumedParts =
  * - Two authenticity checks: consumeImage checks the mimetype (coarse filter, rejects before the
  *   buffer is materialized) + isImage reads the real file-header magic bytes (anti-forgery).
  *
- * Storage dir is process.cwd()/data/uploads, aligned with bootstrap.ts's @fastify/static prefix '/uploads/'.
+ * Storage lives below the configured application data directory, aligned with bootstrap.ts's
+ * @fastify/static prefix '/uploads/'.
  * Switching to object storage (S3/OSS/MinIO) in production means changing only save()/saveAvatars()'s
  * write target + url generation — the interface contract stays the same.
  */
 @Injectable()
 export class UploadService {
-  readonly uploadDir = join(process.cwd(), 'data', 'uploads');
-  readonly casDir = join(process.cwd(), 'data', 'cas');
+  readonly uploadDir = dataDirectory('uploads');
+  readonly casDir = dataDirectory('cas');
   /** Transient CAS ingest artifacts: the resumable writer's `.part`/`.resume.json`/`.complete` and the
    *  `*.tmp` crash-leftovers from the buffer publish paths. Kept out of the shard tree so the formal CAS
    *  dirs hold only published blobs and the GC temp pass is a single flat scan (design doc §12.4/§12.6). */
-  readonly casTmpDir = join(process.cwd(), 'data', 'cas', 'tmp');
+  readonly casTmpDir = dataDirectory('cas', 'tmp');
   private readonly casIngestLocks = new KeyedMutex();
 
   constructor(

@@ -21,7 +21,6 @@ import {
   InviteIdDto,
   FriendInviteActionDto,
   InviteDto,
-  InviteDetailDto,
   FriendRelationshipStateDto,
   FriendRelationshipStatusDto,
 } from '../dto/invite.dto.js';
@@ -243,6 +242,7 @@ export class InviteController {
             true,
             '',
             clientRevisions,
+            true,
           );
         } else
           clientRevisions.push(
@@ -259,6 +259,12 @@ export class InviteController {
           tx,
           threadId,
           req.user.userId,
+        );
+        await this.inviteService.writeGroupInviteClientStateInTx(
+          tx,
+          threadId,
+          req.user.userId,
+          clientRevisions,
         );
       },
     );
@@ -457,21 +463,5 @@ export class InviteController {
       req.user.userId,
       dto.userIds,
     );
-  }
-
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @Post('invite/detail')
-  @ApiOperation({
-    summary:
-      'Live invite state for the group-invite dialog (validity / already-joined)',
-  })
-  @ApiResultResponse(InviteDetailDto)
-  async getInviteDetail(
-    @Request() req: FastifyRequest,
-    @Body() dto: InviteIdDto,
-  ) {
-    // getInviteDetail throws BusinessException → the global filter renders it.
-    return this.inviteService.getInviteDetail(dto.inviteId, req.user.userId);
   }
 }

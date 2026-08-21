@@ -1,24 +1,75 @@
 @if (loading()) {
   <span class="avatar-placeholder" aria-hidden="true"></span>
 } @else if (showImage()) {
-  <img class="ua img" [src]="imgSrc()" (error)="imgFailed.set(true)" role="img"
-    [attr.aria-label]="name() + ' avatar'" />
+  <img
+    class="ua img"
+    [src]="imgSrc()"
+    (error)="imgFailed.set(true)"
+    role="img"
+    [attr.aria-label]="name() + ' avatar'"
+  />
 } @else if (isGroup()) {
-  <svg class="ua" viewBox="0 0 100 100" width="100%" height="100%" role="img" [attr.aria-label]="name() + ' avatar'">
+  <svg
+    class="ua"
+    viewBox="0 0 100 100"
+    width="100%"
+    height="100%"
+    role="img"
+    [attr.aria-label]="name() + ' avatar'"
+  >
     <defs>
       <linearGradient [attr.id]="groupFill().id" x1="0" y1="0" x2="1" y2="1">
         <stop offset="0%" [attr.stop-color]="groupFill().from" />
         <stop offset="100%" [attr.stop-color]="groupFill().to" />
       </linearGradient>
     </defs>
-    <rect x="0" y="0" width="100" height="100" rx="20" [attr.fill]="'url(#' + groupFill().id + ')'" fill-opacity="0.15" />
-    <g [attr.fill]="groupFill().from" transform="translate(20,20) scale(2.5)" aria-hidden="true">
-      <path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z" />
+    <rect
+      x="0"
+      y="0"
+      width="100"
+      height="100"
+      rx="20"
+      [attr.fill]="'url(#' + groupFill().id + ')'"
+      fill-opacity="0.15"
+    />
+    <g
+      [attr.fill]="groupFill().from"
+      transform="translate(20,20) scale(2.5)"
+      aria-hidden="true"
+    >
+      <path
+        d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"
+      />
     </g>
   </svg>
 } @else {
-  <svg class="ua" viewBox="0 0 100 100" width="100%" height="100%" role="img" [attr.aria-label]="name() + ' avatar'">
+  <svg
+    class="ua"
+    viewBox="0 0 100 100"
+    width="100%"
+    height="100%"
+    role="img"
+    [attr.aria-label]="name() + ' avatar'"
+  >
     <rect x="0" y="0" width="100" height="100" rx="20" [style.fill]="bg()" />
-    <text x="50" y="50" text-anchor="middle" dominant-baseline="central">{{ initial() }}</text>
+    <text x="50" y="50" text-anchor="middle" dominant-baseline="central">
+      {{ initial() }}
+    </text>
+  </svg>
+}
+@if (federatedDomain(); as domain) {
+  <svg
+    class="avatar-federated-icon"
+    viewBox="0 0 100 100"
+    [attr.data-domain]="domain"
+    aria-hidden="true"
+  >
+    <title>{{ domain }}</title>
+    <circle class="avatar-federated-ground" cx="81" cy="19" r="18" />
+    <g class="avatar-federated-globe">
+      <circle cx="81" cy="19" r="10" />
+      <ellipse cx="81" cy="19" rx="4.5" ry="10" />
+      <path d="M71 19h20M73 14h16M73 24h16" />
+    </g>
   </svg>
 }

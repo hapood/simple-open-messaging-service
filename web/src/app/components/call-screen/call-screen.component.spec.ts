@@ -14,6 +14,7 @@ import { CallRingtoneService } from '../../services/call-ringtone.service';
 import { CallPresentationService } from '../../services/call-presentation.service';
 import { CallScreenComponent } from './call-screen.component';
 import { UserService } from '../../services/user.service';
+import { ConversationListService } from '../../services/conversation-list.service';
 
 describe('CallScreenComponent', () => {
   const callState = signal<CallSnapshot>({ ...IDLE_CALL });
@@ -79,6 +80,7 @@ describe('CallScreenComponent', () => {
         { provide: CallAdapterService, useValue: adapter },
         { provide: CallRingtoneService, useValue: ringtone },
         { provide: CallPresentationService, useValue: presentation },
+        { provide: ConversationListService, useValue: { items: signal([]) } },
         {
           provide: UserService,
           useValue: { sessionProfile: signal(undefined) },

@@ -36,15 +36,14 @@ import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter
 /**
  * Chat surface header: back (mobile), the thread title (tap → peer-profile / group-info aside), and
  * the top-right MORE button, which opens a {@link ChatActionMenuComponent} anchored CDK overlay with
- * the full per-thread action set (view info, search, mute, pin, clear; P2P: block,
+ * the full per-thread action set (view info, search, mute, pin; P2P: block,
  * delete; GROUP: leave). System settings is NOT here — it lives in the global nav
  * (icon-rail / nav-drawer), not a per-thread context menu.
  *
  * Destructive actions use a two-tap inline confirm driven by swapping the menu's entry list (no separate
- * confirm dialog) — EXCEPT clear history, whose irreversibility warrants an unmissable app-level modal
- * ({@link PopupType.CONFIRM}) with a danger-styled warning. Mute / pin apply optimistically to the
+ * confirm dialog). Mute / pin apply optimistically to the
  * conversation list (via applyThreadMeta) and the durable state delta re-confirms idempotently.
- * Actions that affect the shell (clear history / delete / leave → navigate away) or conversation state
+ * Actions that affect the shell (delete / leave → navigate away) or conversation state
  * (block → banner) are applied through their owning services.
  */
 @Component({
@@ -68,8 +67,6 @@ export class MessageHeaderComponent {
 
   /** Emits a message seq to center the kernel on (the parent owns the kernel + calls scrollToIndex). */
   readonly searchJump = output<number>();
-  /** Rebuilds the current source after history is cleared without closing the chatbox. */
-  readonly historyCleared = output<void>();
   private readonly nav = inject(NavStateMachineService);
   private readonly layout = inject(LayoutService);
   private readonly threadAdapter = inject(MESSAGE_THREAD_ADAPTER);
@@ -169,17 +166,6 @@ export class MessageHeaderComponent {
     return trd?.type === 'GROUP' ? trd.group.members.length : undefined;
   });
 
-  /** The home domain of the open conversation when it is federated, else null (self-hides the badge).
-   *  P2P = the peer's domain; GROUP = the group's origin domain (the backend exposes '' for a
-   *  local-origin group, so the badge self-hides there). */
-  readonly federatedDomain = computed(() => {
-    const trd = this.userMsgTrd();
-    if (!trd) return null;
-    if (trd.type === 'P2P')
-      return trd.peerUser.isForeigner ? trd.peerUser.domain : null;
-    return trd.group.domain || null;
-  });
-
   /** Optional subtitle line under the title: the peer's bio (P2P) or the group description (GROUP).
    *  Empty when neither is set, so the header collapses to a single centered line (template @if). */
   readonly subtitle = computed(() => {
@@ -235,14 +221,6 @@ export class MessageHeaderComponent {
         labelKey: trd.pinned ? 'chat.menuUnpin' : 'chat.menuPin',
         icon: AppIconType.PIN,
       },
-      { kind: 'divider' },
-      {
-        kind: 'action',
-        key: 'clearHistory',
-        labelKey: 'chat.menuClearHistory',
-        icon: AppIconType.TRASH,
-        danger: true,
-      },
     ];
     return list;
   }
@@ -289,8 +267,7 @@ export class MessageHeaderComponent {
       if (action) void this.runAction(action);
       return;
     }
-    // Destructive actions stage the inline two-tap confirm first. (clearHistory is excluded — it pops
-    // the app-level modal instead, via runAction.)
+    // Destructive actions stage the inline two-tap confirm first.
     if (key === 'block') {
       this.confirmKey.set(key);
       return;
@@ -316,9 +293,6 @@ export class MessageHeaderComponent {
         return;
       case 'pin':
         this.togglePin(threadId, trd.pinned);
-        return;
-      case 'clearHistory':
-        this.confirmClearHistory(threadId);
         return;
       case 'block':
         this.toggleBlock(trd, !trd.blocked);
@@ -356,44 +330,6 @@ export class MessageHeaderComponent {
           pinnedAt: pinned ? Date.now() : null,
         }),
     });
-  }
-
-  /** Clear the caller's server-visible history and remove the local thread plus its cached messages. */
-  private confirmClearHistory(threadId: number): void {
-    this.routeService.popupDlg(
-      PopupType.CONFIRM,
-      {
-        titleKey: 'chat.clearConfirmTitle',
-        messageKey: 'chat.clearConfirmBody',
-        confirmKey: 'chat.clearConfirmAction',
-        cancelKey: 'common.cancel',
-        danger: true,
-        icon: AppIconType.REPORT,
-      },
-      (ok) => {
-        if (ok)
-          void this.clearHistory(threadId);
-      },
-    );
-  }
-
-  private async clearHistory(threadId: number): Promise<void> {
-    if (!this.deletionLock.begin(threadId)) return;
-    try {
-      const res = await firstValueFrom(
-        this.threadAdapter.clearHistory({ threadId }),
-      );
-      if (res.code !== 0) {
-        this.toast.warn(translateBizResult(res, this.transloco));
-        return;
-      }
-      await this.threadAdapter.clearLocalHistory(threadId);
-      this.historyCleared.emit();
-    } catch {
-      this.toast.warn(this.transloco.translate('errors.networkError'));
-    } finally {
-      this.deletionLock.end(threadId);
-    }
   }
 
   /** Block / unblock (P2P). The backend drops delivery + query-messages hides the blocked creator. The

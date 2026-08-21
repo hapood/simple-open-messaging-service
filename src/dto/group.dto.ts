@@ -50,11 +50,7 @@ export class CreateGroupDto {
 }
 
 export class InviteGroupDto {
-  /**
-   * Friends to invite — each receives an INVITE message in the inviter↔invitee P2P thread. The
-   * controller batches them and returns `{ invited, skipped }`; an entry is skipped if the target is
-   * not a friend (or has no P2P thread) or the invite write fails. Each must accept via group/join.
-   */
+  /** Friends to invite. Each target must already have an existing P2P friendship. */
   @ApiProperty({
     type: [Number],
     example: [3, 7],

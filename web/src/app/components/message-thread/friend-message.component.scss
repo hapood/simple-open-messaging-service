@@ -504,7 +504,7 @@ app-chat-input.msg-composer--dialog-hidden {
 // The sticky-date overlay is rendered by <app-sticky-date-overlay> (shared with the playground). Its top
 // offset reads --sd-top (set on .msg-container above = the header height).
 
-// Blocked banner: replaces the composer while preserving readable history. Tapping resumes delivery.
+// Conversation-state banner: replaces the composer while preserving readable history.
 // Integer height (48px) keeps the flex-column measurement whole; sits in the input's normal-flow slot.
 .msg-blocked-banner {
   flex: 0 0 auto;
@@ -523,20 +523,7 @@ app-chat-input.msg-composer--dialog-hidden {
   font-size: 13px;
   line-height: 20px;
   text-align: center;
-  cursor: pointer;
   border-top: 1px solid var(--app-border);
-  gap: 8px;
-  strong {
-    color: var(--app-primary);
-    font-weight: var(--app-font-weight-semibold);
-  }
-  &:hover {
-    background: var(--app-active, var(--app-hover));
-  }
-  &:focus-visible {
-    outline: 2px solid var(--app-focus-ring);
-    outline-offset: -2px;
-  }
 }
 
 .msg-context-backdrop {
@@ -860,6 +847,7 @@ app-chat-input.msg-composer--dialog-hidden {
 }
 
 .msg-compose-quote {
+  position: relative;
   grid-column: 1 / -1;
   display: flex;
   align-items: center;
@@ -868,10 +856,18 @@ app-chat-input.msg-composer--dialog-hidden {
   min-height: 42px;
   box-sizing: border-box;
   margin: 2px 2px 2px 0;
-  padding: 5px 6px 5px 8px;
-  border-left: 3px solid var(--app-primary);
+  padding: 5px 6px 5px 11px;
   border-radius: 4px;
-  background: var(--app-hover);
+  background: var(--im-composer-quote-bg);
+  overflow: hidden;
+
+  &::before {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 3px;
+    background: var(--im-composer-quote-accent);
+    content: '';
+  }
 }
 
 .msg-compose-quote-copy {
@@ -882,7 +878,7 @@ app-chat-input.msg-composer--dialog-hidden {
   line-height: 15px;
 }
 .msg-compose-quote-copy strong {
-  color: var(--app-text);
+  color: var(--im-composer-quote-title);
   font-weight: 500;
 }
 .msg-compose-quote-copy > span,
@@ -892,7 +888,7 @@ app-chat-input.msg-composer--dialog-hidden {
   white-space: nowrap;
 }
 .msg-compose-quote-copy > span {
-  color: var(--app-text-muted);
+  color: var(--im-composer-quote-text);
 }
 .msg-compose-quote-avatar,
 .msg-compose-quote-image {
@@ -906,9 +902,31 @@ app-chat-input.msg-composer--dialog-hidden {
 .msg-compose-quote-avatar {
   border-radius: 50%;
 }
-.msg-compose-quote button {
+.msg-compose-quote-close {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  place-items: center;
+  padding: 0;
   border: 0;
+  border-radius: 50%;
   background: transparent;
-  font-size: 22px;
+  color: var(--im-composer-quote-close);
   cursor: pointer;
+
+  &:hover {
+    background: var(--im-composer-quote-close-hover-bg);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--im-composer-quote-accent);
+    outline-offset: 1px;
+  }
+
+  svg {
+    width: 20px;
+    height: 20px;
+    fill: currentColor;
+  }
 }

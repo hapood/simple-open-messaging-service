@@ -13,6 +13,7 @@ import { TwoFactorService } from '../src/admin/two-factor.service';
 import { ADMIN_SESSION_COOKIE } from '../src/admin/admin-session';
 import { BusinessCode } from '../src/common/business-code';
 import { KvStoreService } from '../src/kv-store/kv-store.service';
+import { FixedWindowPolicyService } from '../src/rate-limit/fixed-window-policy.service';
 import { seedUser } from './seed';
 
 const PASSWORD = 'Admin-http-e2e-password-1!';
@@ -39,6 +40,7 @@ describe('Admin authentication HTTP security', () => {
   let database: DatabaseService;
   let twoFactor: TwoFactorService;
   let kv: KvStoreService;
+  let fixedWindowPolicies: FixedWindowPolicyService;
 
   beforeAll(async () => {
     delete process.env.ADMIN_BOOTSTRAP_PASSWORD;
@@ -52,6 +54,7 @@ describe('Admin authentication HTTP security', () => {
     database = app.get(DatabaseService);
     twoFactor = app.get(TwoFactorService);
     kv = app.get(KvStoreService);
+    fixedWindowPolicies = app.get(FixedWindowPolicyService);
   });
 
   beforeEach(async () => {
@@ -61,7 +64,13 @@ describe('Admin authentication HTTP security', () => {
     await kv.del(
       ...['127.0.0.1', '::1', '::ffff:127.0.0.1', 'unknown'].flatMap((ip) =>
         ['admin/login', 'admin/login/verify'].map(
-          (path) => `rl:/api/v1/${path}:${ip}`,
+          (path) =>
+            fixedWindowPolicies.bucketKey(
+              path === 'admin/login'
+                ? 'admin.login'
+                : 'admin.login.verify',
+              ip,
+            ),
         ),
       ),
     );

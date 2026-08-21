@@ -222,10 +222,13 @@ All conversations are `MessageThread` rows (`type` `P2P` or `GROUP`). Membership
 
 Friend and group requests are stored as independent directed facts:
 
-- **FRIEND**: `FriendRequest(A,B)` and `FriendRequest(B,A)` retain separate notes and revisions. Both
+- **FRIEND**: `FriendRequest(A,B)` and `FriendRequest(B,A)` retain separate notes. Both
   must explicitly be `FRIEND` to activate the canonical `FriendPair` and P2P thread; an unexpired
   `REQUESTED` row alone never grants messaging. Requests expire after seven days; accepting advances
   the local direction and confirmation returns through the state feed, not a special S2S command.
+  Wire `ACCEPTED` has no admission effect outside a still-effective request flow; stub existence never
+  bypasses that gate. Accepting a new request always republishes `ACCEPTED` at a new feed ID,
+  including when the local direction is already `FRIEND` and its wire body is unchanged.
 - **GROUP**: `GroupMembershipRequest` stores GROUP→USER invitation and USER→GROUP join directions. The
   group origin remains authoritative and activates mirrors through `GROUP_META`.
 

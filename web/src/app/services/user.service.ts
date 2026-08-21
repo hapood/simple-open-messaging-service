@@ -6,7 +6,6 @@ import {
   User,
   ConversationItem,
   Invite,
-  InviteDetail,
   StandardResponse,
   ThreadReadDelta,
   PersonalQuotaState,
@@ -60,7 +59,6 @@ export interface ClientFriendIntent {
   domain: string;
   subjectAccount: string;
   subjectDomain: string;
-  businessRevision: number;
   inviteId?: string;
   status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
   note: string;
@@ -69,6 +67,29 @@ export interface ClientFriendIntent {
   direction: FriendIntentDirection;
   peer: ClientIntentUser;
   requestedSort: number;
+}
+
+export interface ClientGroupInviteIntent {
+  key: string;
+  kind: 'GROUP_INVITE';
+  account: string;
+  domain: string;
+  subjectAccount: string;
+  subjectDomain: string;
+  status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
+  note: string;
+  requestedAt: number | null;
+  expiresAt: number | null;
+  threadId: number;
+  group: {
+    account: string;
+    domain: string;
+    isLocal: boolean;
+    name: string;
+    avatar: string;
+    description: string;
+    profileRev: number;
+  };
 }
 
 export type FriendIntentDirection = 'INCOMING' | 'OUTGOING';
@@ -119,18 +140,16 @@ export type HydratedThreadDeltaOp =
       revision: number;
       account: string;
       domain: string;
-      eventType: 'P2P_INTENT';
+      eventType: 'P2P_INTENT' | 'GROUP_INVITE_INTENT';
       subjectAccount: string;
       subjectDomain: string;
-      businessRevision: number;
       body: Omit<
-        ClientFriendIntent,
+        ClientFriendIntent | ClientGroupInviteIntent,
         | 'key'
         | 'account'
         | 'domain'
         | 'subjectAccount'
         | 'subjectDomain'
-        | 'businessRevision'
         | 'requestedSort'
       >;
     };
@@ -748,6 +767,13 @@ export class UserService {
     };
   }
 
+  /** Pending group invitations are synchronized by the same device-facing state feed as friend requests. */
+  async listLocalGroupInvites(): Promise<ClientGroupInviteIntent[]> {
+    return (await this.webdb.getGroupInviteIntents()).filter(
+      (invite) => invite.status === 'REQUESTED',
+    );
+  }
+
   private clientIntentSelf(id: number): ClientIntentUser {
     const profile = this.sessionProfile();
     return {
@@ -829,14 +855,6 @@ export class UserService {
   ) {
     return this.http.post<StandardResponse>(
       `${apiPrefix()}/invite/revoke`,
-      params,
-    );
-  }
-
-  /** Live invite state for the group-invite dialog (validity / already-joined / group identity). */
-  getInviteDetail(params: { inviteId: string }) {
-    return this.http.post<StandardResponse<InviteDetail>>(
-      `${apiPrefix()}/invite/detail`,
       params,
     );
   }

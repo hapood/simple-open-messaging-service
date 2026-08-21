@@ -31,38 +31,10 @@
       "name": "healthy result",
       "schema": "urn:socfp:v1:identity#/$defs/healthResult",
       "values": [
-        {
-          "status": "available",
-          "selectedProtocolVersion": 1,
-          "acceptedExtensions": ["socfp.message.sticker.v1"]
-        },
-        {
-          "status": "degraded",
-          "selectedProtocolVersion": 1,
-          "acceptedExtensions": []
-        },
-        {
-          "status": "unavailable",
-          "selectedProtocolVersion": null,
-          "acceptedExtensions": null
-        }
+        { "status": "available" },
+        { "status": "degraded" },
+        { "status": "unavailable" }
       ]
-    },
-    {
-      "name": "v1 extension discovery result",
-      "schema": "urn:socfp:v1:identity#/$defs/v1DiscoveryResult",
-      "value": {
-        "extensions": [
-          "com.example.custom-emoji.v1",
-          "socfp.message.sticker.v1"
-        ],
-        "software": "example/1.0"
-      }
-    },
-    {
-      "name": "v1 extension discovery request",
-      "schema": "urn:socfp:v1:identity#/$defs/v1DiscoveryRequest",
-      "value": { "origin": "a.example" }
     },
     {
       "name": "feed head wake-up",
@@ -71,10 +43,7 @@
         "origin": "a.example",
         "stateFeedEndId": "12",
         "messageFeedEndId": "34",
-        "tombstoneFeedEndId": "9",
-        "extensions": {
-          "socfp.push.priority.v1": { "priority": "high" }
-        }
+        "tombstoneFeedEndId": "9"
       }
     },
     {
@@ -88,16 +57,11 @@
             "eventType": "PROFILE",
             "subjectAccount": "",
             "subjectDomain": "",
-            "revision": "2",
             "feedId": "1",
             "body": {
               "displayName": "Alice",
               "bio": "",
-              "avatar": null,
-              "deleted": false,
-              "extensions": {
-                "socfp.profile.pronouns.v1": { "value": "she/her" }
-              }
+              "avatar": null
             }
           },
           {
@@ -106,7 +70,6 @@
             "eventType": "MEMBER_PROFILE",
             "subjectAccount": "",
             "subjectDomain": "",
-            "revision": "4",
             "feedId": "2",
             "body": {
               "displayName": "Bob",
@@ -119,7 +82,6 @@
             "eventType": "P2P_INTENT",
             "subjectAccount": "bob",
             "subjectDomain": "b.example",
-            "revision": "3",
             "feedId": "3",
             "body": {
               "status": "REQUESTED",
@@ -134,7 +96,6 @@
             "eventType": "GROUP_INVITE_INTENT",
             "subjectAccount": "bob",
             "subjectDomain": "b.example",
-            "revision": "1",
             "feedId": "4",
             "body": {
               "status": "ACCEPTED",
@@ -150,7 +111,6 @@
             "eventType": "GROUP_JOIN_INTENT",
             "subjectAccount": "bob",
             "subjectDomain": "b.example",
-            "revision": "1",
             "feedId": "5",
             "body": {
               "status": "REQUESTED",
@@ -165,7 +125,6 @@
             "eventType": "GROUP_META",
             "subjectAccount": "",
             "subjectDomain": "",
-            "revision": "4",
             "feedId": "6",
             "body": {
               "active": true,
@@ -227,26 +186,9 @@
             "createdAt": 1700000000000,
             "originCreatedAt": null,
             "assets": []
-          },
-          {
-            "thread": {
-              "type": "P2P",
-              "participants": [
-                { "account": "alice", "domain": "a.example" },
-                { "account": "bob", "domain": "b.example" }
-              ]
-            },
-            "author": { "account": "alice", "domain": "a.example" },
-            "seq": 2,
-            "originSeq": null,
-            "contentType": "socfp.message.sticker.v1",
-            "content": "{\"stickerId\":\"wave\"}",
-            "createdAt": 1700000000001,
-            "originCreatedAt": null,
-            "assets": []
           }
         ],
-        "scannedThrough": "2",
+        "scannedThrough": "1",
         "hasMore": false
       }
     },
@@ -258,14 +200,6 @@
           "contentType": "PURE_TEXT",
           "content": {
             "text": "hello [@Bob](socfp://user/bob%40b.example)"
-          }
-        },
-        {
-          "contentType": "INVITE",
-          "content": {
-            "group": "!group",
-            "groupName": "Group",
-            "groupDomain": "a.example"
           }
         },
         {
@@ -340,12 +274,6 @@
                 "h": 1
               }
             ]
-          }
-        },
-        {
-          "contentType": "socfp.message.sticker.v1",
-          "content": {
-            "stickerId": "wave"
           }
         }
       ]
@@ -541,15 +469,6 @@
         "code": 50011,
         "message": "peer quota exceeded",
         "data": { "retryAfter": 60 }
-      }
-    },
-    {
-      "name": "capability-disabled error envelope",
-      "schema": "urn:socfp:v1:error",
-      "value": {
-        "code": 50013,
-        "message": "federation capability disabled",
-        "data": { "category": "files" }
       }
     },
     {

@@ -31,8 +31,9 @@ interface AppliedPage {
 
 /**
  * Receiver-side global missed loop. The database cursor is the durable truth; running/pending only
- * coalesce wake-ups in this process. One cursor row lock covers the HTTP page and its local commit,
- * so another process fails NOWAIT instead of issuing a concurrent request to the same peer.
+ * coalesce wake-ups in this process. Remote I/O happens before the cursor transaction so two peers
+ * can never hold local database transactions while calling each other. The transaction then takes
+ * an advisory lock and rejects a page if another process advanced the cursor while it was fetched.
  */
 @Injectable()
 export class FederationMessageFeedPullService {
@@ -130,21 +131,56 @@ export class FederationMessageFeedPullService {
     peerDomain: string,
     callbacks: FederationMessageFeedPullCallbacks,
   ): Promise<AppliedPage | null> {
+    const cursor = await this.readCursor(peerDomain);
+    if (!cursor) return null;
+
+    const advertised = this.advertised.get(peerDomain);
+    const requiredState = this.requiredState.get(peerDomain) ?? 0n;
+    if (advertised !== undefined && requiredState > 0n) {
+      const stateCursor =
+        await this.database.db.query.peerStateFeedPullCursor.findFirst({
+          where: eq(peerStateFeedPullCursor.peerDomain, peerDomain),
+          columns: { committedThrough: true },
+        });
+      if (!stateCursor || stateCursor.committedThrough < requiredState)
+        return null;
+    }
+    const trunc =
+      cursor.initialized &&
+      advertised !== undefined &&
+      advertised >= cursor.committedThrough
+        ? advertised
+        : undefined;
+    let page: FederationMessageFeedPage | undefined;
+    let cursorReset: RemoteFeedCursorUnavailableError | undefined;
+    try {
+      page = await callbacks.fetch(
+        cursor.initialized ? cursor.committedThrough : undefined,
+        trunc,
+      );
+    } catch (error) {
+      if (!(error instanceof RemoteFeedCursorUnavailableError)) throw error;
+      cursorReset = error;
+    }
+
     return this.database.db.transaction(async (tx) => {
       const lockResult = await tx.execute<{ locked: boolean }>(
         sql`SELECT pg_try_advisory_xact_lock(hashtextextended(${peerDomain}, 837421)) AS locked`,
       );
       if (!lockResult.rows[0]?.locked) return null;
 
-      const [cursor] = await tx
+      const [currentCursor] = await tx
         .select()
         .from(federationPullCursor)
         .where(eq(federationPullCursor.peerDomain, peerDomain))
         .limit(1);
-      if (!cursor) return null;
+      if (
+        !currentCursor ||
+        currentCursor.initialized !== cursor.initialized ||
+        currentCursor.committedThrough !== cursor.committedThrough
+      )
+        return null;
 
-      const advertised = this.advertised.get(peerDomain);
-      const requiredState = this.requiredState.get(peerDomain) ?? 0n;
       if (advertised !== undefined && requiredState > 0n) {
         const [stateCursor] = await tx
           .select({
@@ -156,28 +192,16 @@ export class FederationMessageFeedPullService {
         if (!stateCursor || stateCursor.committedThrough < requiredState)
           return null;
       }
-      const trunc =
-        cursor.initialized &&
-        advertised !== undefined &&
-        advertised >= cursor.committedThrough
-          ? advertised
-          : undefined;
-      let page: FederationMessageFeedPage;
-      try {
-        page = await callbacks.fetch(
-          cursor.initialized ? cursor.committedThrough : undefined,
-          trunc,
-        );
-      } catch (error) {
-        if (!(error instanceof RemoteFeedCursorUnavailableError)) throw error;
-        if (error.resumeAfter < 0n) {
+
+      if (cursorReset) {
+        if (cursorReset.resumeAfter < 0n) {
           throw new Error(
             'peer returned a negative message-feed resume cursor',
           );
         }
         if (
           cursor.initialized &&
-          error.resumeAfter === cursor.committedThrough
+          cursorReset.resumeAfter === cursor.committedThrough
         ) {
           throw new Error('peer returned an invalid message-feed cursor reset');
         }
@@ -185,23 +209,24 @@ export class FederationMessageFeedPullService {
           .update(federationPullCursor)
           .set({
             initialized: true,
-            retainedAfter: error.resumeAfter,
-            committedThrough: error.resumeAfter,
+            retainedAfter: cursorReset.resumeAfter,
+            committedThrough: cursorReset.resumeAfter,
             updatedAt: new Date(),
           })
           .where(eq(federationPullCursor.peerDomain, peerDomain));
         this.logger.warn(
           cursor.initialized
-            ? `message-feed history for ${peerDomain} is unavailable before ${error.resumeAfter.toString()}; resumed from that cursor`
-            : `initialized message-feed cursor for ${peerDomain} at ${error.resumeAfter.toString()}`,
+            ? `message-feed history for ${peerDomain} is unavailable before ${cursorReset.resumeAfter.toString()}; resumed from that cursor`
+            : `initialized message-feed cursor for ${peerDomain} at ${cursorReset.resumeAfter.toString()}`,
         );
         return {
           requestedAfter: cursor.committedThrough,
-          scannedThrough: error.resumeAfter,
+          scannedThrough: cursorReset.resumeAfter,
           hasMore: true,
           page: null,
         };
       }
+      if (!page) throw new Error('message-feed fetch returned no page');
       if (!cursor.initialized) {
         throw new Error(
           'peer returned a message page without bootstrap cursor',
@@ -256,7 +281,7 @@ export class FederationMessageFeedPullService {
   private async readCursor(peerDomain: string) {
     return this.database.db.query.federationPullCursor.findFirst({
       where: eq(federationPullCursor.peerDomain, peerDomain),
-      columns: { committedThrough: true },
+      columns: { initialized: true, committedThrough: true },
     });
   }
 

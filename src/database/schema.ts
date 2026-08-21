@@ -43,7 +43,6 @@ export const adminRole = pgEnum('AdminRole', [
 ]);
 export const contentType = pgEnum('ContentType', [
   'PURE_TEXT',
-  'INVITE',
   'IMAGE',
   'VIDEO',
   'FILE',
@@ -679,18 +678,6 @@ export const message = pgTable(
     }),
     /** Direct publisher whose thread-local seq is stored in originSeq. Null for local originals. */
     federationSourceDomain: varchar({ length: 255 }),
-    federationAuthoredSnapshot: jsonb().$type<{
-      contentType: string;
-      content: string;
-      clientMessageId: string | null;
-      quoteTarget?: {
-        targetSeq: number;
-      };
-      assets: Array<{
-        digest: string;
-        bytes: number;
-      }>;
-    }>(),
   },
   (table) => [
     check('Message_seq_check', sql`${table.seq} > 0`),
@@ -1155,18 +1142,6 @@ export const pendingMedia = pgTable(
     }),
     /** Direct publisher whose thread-local seq is stored in originSeq. */
     federationSourceDomain: varchar({ length: 255 }),
-    federationAuthoredSnapshot: jsonb().$type<{
-      contentType: string;
-      content: string;
-      clientMessageId: string | null;
-      quoteTarget?: {
-        targetSeq: number;
-      };
-      assets: Array<{
-        digest: string;
-        bytes: number;
-      }>;
-    }>(),
     status: varchar({ length: 12 }).default('pending').notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
@@ -1480,8 +1455,8 @@ export const profileStateRevision = pgTable(
 );
 
 /** Per-client compacted state projection. This is the device-facing analogue of PeerStateFeed:
- * stable keys are overwritten only by a higher businessRevision, while revision is the owning
- * user's unified client-state scan coordinate (User.threadRevision). Intent tombstones remain as
+ * revision is the owning user's unified client-state scan coordinate (User.threadRevision).
+ * Intent tombstones remain as
  * REVOKED snapshots, so a client resuming from an older cursor can converge without a delete log. */
 export const clientStateFeed = pgTable(
   'ClientStateFeed',
@@ -1492,7 +1467,6 @@ export const clientStateFeed = pgTable(
     eventType: varchar({ length: 31 }).notNull(),
     subjectAccount: varchar({ length: 31 }).default('').notNull(),
     subjectDomain: varchar({ length: 63 }).default('').notNull(),
-    businessRevision: integer().notNull(),
     revision: integer().notNull(),
     body: jsonb().notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -1520,10 +1494,6 @@ export const clientStateFeed = pgTable(
       foreignColumns: [user.id],
       name: 'ClientStateFeed_userId_fkey',
     }).onDelete('cascade'),
-    check(
-      'ClientStateFeed_business_revision_check',
-      sql`${table.businessRevision} >= 0`,
-    ),
     check('ClientStateFeed_revision_check', sql`${table.revision} > 0`),
   ],
 );
@@ -1659,8 +1629,8 @@ export const federatedPeer = pgTable(
   ],
 );
 
-/** Per-peer compacted state feed. A key is overwritten only by a newer business revision; rev
- * gaps are therefore expected and consumers advance using scannedThrough, never the last item. */
+/** Per-peer compacted state feed. A changed key receives a new feed ID; gaps are expected and
+ * consumers advance using scannedThrough, never the last item. */
 export const peerStateFeed = pgTable(
   'PeerStateFeed',
   {
@@ -1670,7 +1640,6 @@ export const peerStateFeed = pgTable(
     eventType: peerStateEventType().notNull(),
     subjectAccount: varchar({ length: 31 }).default('').notNull(),
     subjectDomain: varchar({ length: 63 }).default('').notNull(),
-    revision: integer().notNull(),
     rev: bigint({ mode: 'bigint' }).notNull(),
     body: jsonb().notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -1701,7 +1670,6 @@ export const peerStateFeed = pgTable(
       foreignColumns: [federatedPeer.domain],
       name: 'PeerStateFeed_peerDomain_fkey',
     }).onDelete('cascade'),
-    check('PeerStateFeed_revision_check', sql`${table.revision} >= 0`),
     check('PeerStateFeed_rev_check', sql`${table.rev} > 0`),
     check(
       'PeerStateFeed_subject_check',
@@ -1868,7 +1836,6 @@ export const federatedProfile = pgTable(
     displayName: varchar({ length: 30 }).notNull(),
     bio: varchar({ length: 255 }).default('').notNull(),
     avatar: varchar({ length: 255 }),
-    deleted: boolean().default(false).notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -1900,7 +1867,6 @@ export const federatedFriendRequest = pgTable(
     direction: varchar({ length: 16 }).notNull(),
     status: varchar({ length: 16 }).notNull(),
     note: varchar({ length: 255 }).default('').notNull(),
-    revision: integer().default(0).notNull(),
     requestedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     expiresAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     displayName: varchar({ length: 30 }),
@@ -1948,8 +1914,8 @@ export const federatedFriendRequest = pgTable(
       sql`${table.status} IN ('REQUESTED', 'REVOKED')`,
     ),
     check(
-      'FederatedFriendRequest_revision_check',
-      sql`${table.revision} >= 0 AND (${table.profileRevision} IS NULL OR ${table.profileRevision} >= 0)`,
+      'FederatedFriendRequest_profileRevision_check',
+      sql`${table.profileRevision} IS NULL OR ${table.profileRevision} >= 0`,
     ),
     check(
       'FederatedFriendRequest_expiry_check',
@@ -2029,7 +1995,6 @@ export const friendRequest = pgTable(
     targetUserId: integer().notNull(),
     status: friendRequestStatus().notNull(),
     note: varchar({ length: 255 }).default('').notNull(),
-    revision: integer().default(0).notNull(),
     requestedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     expiresAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -2053,8 +2018,8 @@ export const friendRequest = pgTable(
       name: 'FriendRequest_targetUserId_fkey',
     }).onDelete('cascade'),
     check(
-      'FriendRequest_revision_check',
-      sql`${table.revision} >= 0 AND ${table.requesterUserId} <> ${table.targetUserId}`,
+      'FriendRequest_distinct_users_check',
+      sql`${table.requesterUserId} <> ${table.targetUserId}`,
     ),
     check(
       'FriendRequest_expiry_check',
@@ -2114,7 +2079,6 @@ export const groupMembershipRequest = pgTable(
     direction: groupMembershipDirection().notNull(),
     status: groupMembershipRequestStatus().notNull(),
     note: varchar({ length: 255 }).default('').notNull(),
-    revision: integer().default(0).notNull(),
     requestedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     expiresAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -2138,13 +2102,44 @@ export const groupMembershipRequest = pgTable(
       name: 'GroupMembershipRequest_memberUserId_fkey',
     }).onDelete('cascade'),
     check(
-      'GroupMembershipRequest_revision_check',
-      sql`${table.revision} >= 0 AND ${table.groupUserId} <> ${table.memberUserId}`,
+      'GroupMembershipRequest_distinct_users_check',
+      sql`${table.groupUserId} <> ${table.memberUserId}`,
     ),
     check(
       'GroupMembershipRequest_expiry_check',
       sql`(${table.status} = 'REQUESTED' AND ${table.requestedAt} IS NOT NULL AND ${table.expiresAt} IS NOT NULL AND ${table.expiresAt} > ${table.requestedAt} AND ${table.expiresAt} <= ${table.requestedAt} + INTERVAL '7 days') OR (${table.status} <> 'REQUESTED' AND ${table.expiresAt} IS NULL)`,
     ),
+  ],
+);
+
+/** Append-only group-domain audit trail. Identity fields are snapshots rather than foreign keys so
+ * account deletion, federation-stub cleanup, or later profile edits cannot erase who performed an action. */
+export const groupAuditLog = pgTable(
+  'GroupAuditLog',
+  {
+    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
+    eventKey: varchar({ length: 191 }).notNull(),
+    groupUserId: integer(),
+    groupAccount: varchar({ length: 31 }).notNull(),
+    groupDomain: varchar({ length: 63 }).notNull(),
+    actorType: varchar({ length: 24 }).notNull(),
+    actorUserId: integer(),
+    actorAccount: varchar({ length: 31 }).notNull(),
+    actorDomain: varchar({ length: 63 }).notNull(),
+    action: varchar({ length: 64 }).notNull(),
+    targetType: varchar({ length: 32 }),
+    targetId: varchar({ length: 191 }),
+    success: boolean().default(true).notNull(),
+    errorMessage: varchar({ length: 255 }),
+    meta: jsonb(),
+    at: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('GroupAuditLog_eventKey_key').on(table.eventKey),
+    index('GroupAuditLog_groupUserId_at_idx').on(table.groupUserId, table.at),
+    index('GroupAuditLog_action_at_idx').on(table.action, table.at),
   ],
 );
 

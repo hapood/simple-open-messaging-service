@@ -14,11 +14,10 @@ import {
   UserAvatarType,
 } from '../user-avatar/user-avatar.component';
 import { IconComponent, AppIconType } from '../icon/icon.component';
-import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
 
 @Component({
   selector: 'app-user-list',
-  imports: [UserAvatarComponent, IconComponent, FederatedBadgeComponent],
+  imports: [UserAvatarComponent, IconComponent],
   templateUrl: './user-list.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './user-list.component.scss',

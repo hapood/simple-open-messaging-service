@@ -42,7 +42,6 @@ import { FederationTransportConfigService } from './federation-transport-config.
  *
  * Two S2S controllers share the `s2s/v1` prefix: S2sController (unified invite + roster + signed GETs,
  * allow-list-gated via S2sSignatureGuard) and S2sRecognitionController (bidirectional Recognize + Healthy).
- * The lightweight v1 capability exchange lives on S2sController with the same directional gate as feed-heads.
  */
 @Global()
 @Module({

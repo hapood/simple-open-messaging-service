@@ -11,7 +11,7 @@ import { Message, QueryMessageLogParams, StandardResponse } from './model';
 import { apiPrefix } from './constants';
 import { isTauri, listenEvent, tauriInvoke } from './runtime';
 import { REPLAY_SAFE } from '../request-context';
-import type { ForwardWireClosure } from '../components/forward-detail/forward-bundle.model';
+import type { ForwardWireBundle } from '../components/forward-detail/forward-bundle.model';
 
 export type UploadProgressHandler = (loaded: number, total: number) => void;
 export type UploadPartIntent = 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE';
@@ -89,7 +89,7 @@ export class MsgService {
   }
 
   getForwardBundle(bundleId: string) {
-    return this.http.get<StandardResponse<ForwardWireClosure>>(
+    return this.http.get<StandardResponse<ForwardWireBundle>>(
       `${apiPrefix()}/forward-bundles/${encodeURIComponent(bundleId)}`,
     );
   }

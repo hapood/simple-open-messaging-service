@@ -139,7 +139,7 @@ describe('MediaRowComponent — deferred image loading', () => {
       fixture.nativeElement
         .querySelector('.msg-gallery-title')
         ?.textContent?.trim(),
-    ).toBe('File group');
+    ).toBe('File set');
     expect(fixture.nativeElement.querySelector('.msg-media-cell')).toBeNull();
     expect(fixture.nativeElement.querySelector('.msg-media-image')).toBeNull();
     expect(

@@ -48,6 +48,20 @@ describe('federated Address friend request without pre-accept stubs', () => {
     await proxy?.close();
   });
 
+  it('resolves an explicit own-domain address as a local user', async () => {
+    const lookup = await request(appA.baseUrl)
+      .get('/api/v1/user/resolve-federated-stream')
+      .query({ account: 'address-alice', domain: FED_DOMAIN_A })
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .set('Accept', 'text/event-stream');
+
+    expect(lookup.status).toBe(200);
+    expect(lookup.text).toContain('event: resolved');
+    expect(lookup.text).toContain(`\"id\":${aliceId}`);
+    expect(lookup.text).toContain('"isForeigner":false');
+    expect(lookup.text).not.toContain('event: progress');
+  });
+
   it('keeps lookup/request Address-based and materializes both stubs only after accept', async () => {
     const lookup = await request(appA.baseUrl)
       .get('/api/v1/user/resolve-federated-stream')
@@ -122,7 +136,6 @@ describe('federated Address friend request without pre-accept stubs', () => {
       });
     expect(pendingClientIntent).toMatchObject({
       subjectDomain: 'local',
-      businessRevision: 0,
       body: expect.objectContaining({
         status: 'REQUESTED',
         direction: 'INCOMING',
@@ -187,7 +200,6 @@ describe('federated Address friend request without pre-accept stubs', () => {
         expect(bobClientIntents).toHaveLength(1);
         expect(bobClientIntents[0]).toMatchObject({
           subjectDomain: 'local',
-          businessRevision: 1,
           body: expect.objectContaining({
             status: 'ACCEPTED',
             direction: 'INCOMING',

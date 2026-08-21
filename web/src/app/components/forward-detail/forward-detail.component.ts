@@ -13,6 +13,7 @@ import {
   ChangeDetectionStrategy,
 } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
+import { MatButtonModule } from '@angular/material/button';
 import dayjs from 'dayjs';
 import { firstValueFrom } from 'rxjs';
 import { MsgService } from '../../services/message.service';
@@ -41,20 +42,29 @@ import { toDisplayText } from '../../lib/message-entity';
 import { requireTextMessageContent } from '../../../../../shared/text-message-content';
 import type {
   ForwardManifestMessage,
+  ForwardWireChild,
   ForwardWireBundle,
-  ForwardWireClosure,
 } from './forward-bundle.model';
 import { ForwardSnapshotSource } from './forward-snapshot-source';
 import { AppIconType, IconComponent } from '../icon/icon.component';
 import { jumpToMessage } from '../message-thread/message-jump';
+import { PageHeaderComponent } from '../page-header/page-header.component';
+import {
+  parseAudioContent,
+  parseFileContent,
+  parseGalleryContent,
+  parseImageContent,
+  parseVideoContent,
+  type MediaUrlResolver,
+} from '../message-cards/media-content';
 
 const CONTENT_TYPES = new Set<ChatMsgData['contentType']>([
   'PURE_TEXT',
-  'INVITE',
   'IMAGE',
   'VIDEO',
   'FILE',
   'AUDIO',
+  'GALLERY',
   'LINK',
   'CALL',
   'FORWARD',
@@ -63,7 +73,7 @@ const CONTENT_TYPES = new Set<ChatMsgData['contentType']>([
 @Component({
   selector: 'app-forward-detail',
   standalone: true,
-  imports: [TranslocoPipe, IconComponent],
+  imports: [TranslocoPipe, MatButtonModule, IconComponent, PageHeaderComponent],
   templateUrl: './forward-detail.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './forward-detail.component.scss',
@@ -73,7 +83,7 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
   readonly bundleId = input.required<string>();
   readonly loading = signal(true);
   readonly failed = signal(false);
-  readonly closure = signal<ForwardWireClosure | null>(null);
+  readonly closure = signal<ForwardWireBundle | null>(null);
   readonly stack = signal<string[]>([]);
   private readonly viewport = viewChild<ElementRef<HTMLElement>>('viewport');
   private readonly content = viewChild<ElementRef<HTMLElement>>('content');
@@ -84,13 +94,15 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
   private readonly fileDetail = inject(FileDetailService);
   private scroller?: ChatBoxScroller<ChatItemData>;
 
-  readonly bundleMap = computed(
-    () =>
-      new Map(
-        (this.closure()?.bundles ?? []).map((bundle) => [bundle.id, bundle]),
-      ),
-  );
-  readonly currentBundle = computed<ForwardWireBundle | null>(() => {
+  readonly bundleMap = computed(() => {
+    const closure = this.closure();
+    if (!closure) return new Map<string, ForwardWireChild>();
+    return new Map<string, ForwardWireChild>([
+      [closure.id, closure],
+      ...closure.children.map((bundle) => [bundle.id, bundle] as const),
+    ]);
+  });
+  readonly currentBundle = computed<ForwardWireChild | null>(() => {
     const ids = this.stack();
     return this.bundleMap().get(ids[ids.length - 1] ?? '') ?? null;
   });
@@ -121,9 +133,22 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
       );
       if (response.code !== 0 || !response.data)
         throw new Error(response.message);
+      if (
+        typeof response.data.id !== 'string' ||
+        !Array.isArray(response.data.messages) ||
+        !Array.isArray(response.data.children) ||
+        !Array.isArray(response.data.assets) ||
+        !response.data.accessContext
+      ) {
+        throw new Error('invalid forward bundle response');
+      }
       this.closure.set(response.data);
-      this.stack.set([response.data.rootBundleId]);
-    } catch {
+      this.stack.set([response.data.id]);
+    } catch (error) {
+      console.error('Failed to load forwarded chat history', {
+        bundleId: this.bundleId(),
+        error,
+      });
       this.failed.set(true);
     } finally {
       this.loading.set(false);
@@ -149,7 +174,7 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
   private mount(
     viewport: HTMLElement,
     content: HTMLElement,
-    bundle: ForwardWireBundle,
+    bundle: ForwardWireChild,
   ): void {
     // Nested forwarded records swap content inside the same routed dialog, so RootPopup sees no dialog
     // change. Release document-owned text selection here as well before replacing the selected nodes.
@@ -198,8 +223,8 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
     this.stack.update((items) => [...items, bundleId]);
   }
 
-  private toItems(bundle: ForwardWireBundle): CbItem<ChatItemData>[] {
-    const items: CbItem<ChatItemData>[] = bundle.manifest.messages.map(
+  private toItems(bundle: ForwardWireChild): CbItem<ChatItemData>[] {
+    const items: CbItem<ChatItemData>[] = bundle.messages.map(
       (message, index) => ({
         id: index + 1,
         data: this.toMsgData(message, index + 1, bundle),
@@ -216,7 +241,7 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
   private toMsgData(
     message: ForwardManifestMessage,
     id: number,
-    bundle: ForwardWireBundle,
+    bundle: ForwardWireChild,
   ): ChatMsgData {
     const context = this.closure()?.accessContext;
     const snapshotMessage = context
@@ -229,26 +254,33 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
           ),
         }
       : message;
-    const contentType = CONTENT_TYPES.has(
+    const hasKnownContentType = CONTENT_TYPES.has(
       snapshotMessage.contentType as ChatMsgData['contentType'],
-    )
+    );
+    const contentType = hasKnownContentType
       ? (message.contentType as ChatMsgData['contentType'])
       : 'PURE_TEXT';
-    const media = parseMedia(snapshotMessage, id);
+    const media = parseMedia(snapshotMessage, id, this.snapshotMediaUrl);
     const creator = stableIdentityId(
-      `${message.sender.account}@${message.sender.domain}`,
+      `${message.author.account}@${message.author.domain}`,
     );
-    const replySeparator = message.quote?.preview.search(/[：:]/) ?? -1;
+    const quoteTarget = message.quoteTargetId
+      ? bundle.messages.find(
+          (candidate) => candidate.id === message.quoteTargetId,
+        )
+      : undefined;
     return {
       type: 'msg',
       msgId: id,
       creator,
       isSelf: false,
-      name: message.sender.displayName || message.sender.account,
+      name: message.author.displayName || message.author.account,
       avatar: this.avatarUrl(message, bundle),
       avatarIdentityId: creator,
+      avatarAccount: message.author.account,
+      avatarDomain: message.author.domain,
       text:
-        contentType === 'PURE_TEXT'
+        hasKnownContentType && contentType === 'PURE_TEXT'
           ? toDisplayText(
               requireTextMessageContent(snapshotMessage.content).text,
             )
@@ -258,36 +290,39 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
       images:
         contentType === 'IMAGE' ||
         contentType === 'VIDEO' ||
-        contentType === 'AUDIO'
+        contentType === 'AUDIO' ||
+        contentType === 'GALLERY'
           ? media.images
           : null,
       file: contentType === 'FILE' ? media.file : null,
       createdAtMs: message.sentAt,
-      quote: message.quote
+      quote: quoteTarget
         ? {
             author:
-              replySeparator > 0
-                ? message.quote.preview.slice(0, replySeparator).trim()
-                : '',
-            body:
-              replySeparator > 0
-                ? message.quote.preview.slice(replySeparator + 1).trim()
-                : message.quote.preview,
-            ...(message.quote.targetId !== undefined
-              ? { seq: message.quote.targetId }
-              : {}),
+              quoteTarget.author.displayName || quoteTarget.author.account,
+            body: snapshotPreview(quoteTarget),
+            seq: message.quoteTargetId,
           }
         : undefined,
     };
   }
 
+  private readonly snapshotMediaUrl: MediaUrlResolver = (item) => {
+    const existing = typeof item['url'] === 'string' ? item['url'] : '';
+    if (existing) return existing;
+    const digest = typeof item['digest'] === 'string' ? item['digest'] : '';
+    const context = this.closure()?.accessContext;
+    if (!/^[a-f0-9]{64}$/.test(digest) || !context) return '';
+    return `/uploads/msg-assets/${digest.slice(0, 2)}/${digest.slice(2, 4)}/${digest}?threadId=${context.threadId}&seq=${context.seq}`;
+  };
+
   private avatarUrl(
     message: ForwardManifestMessage,
-    bundle: ForwardWireBundle,
+    _bundle: ForwardWireChild,
   ): string {
-    const digest = message.sender.avatarDigest;
+    const digest = message.author.avatarDigest;
     if (!digest) return '';
-    const asset = bundle.assets.find(
+    const asset = this.closure()?.assets.find(
       (candidate) => candidate.kind === 'avatar' && candidate.digest === digest,
     );
     if (!asset) return '';
@@ -300,56 +335,35 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
 function parseMedia(
   message: ForwardManifestMessage,
   id: number,
+  resolveUrl: MediaUrlResolver,
 ): {
   images: ChatMsgData['images'];
   file: FileInfo | null;
 } {
-  try {
-    const value = JSON.parse(message.content) as Record<string, unknown>;
-    const url = typeof value['url'] === 'string' ? value['url'] : '';
-    if (message.contentType === 'FILE') {
-      return {
-        images: null,
-        file: url
-          ? {
-              url,
-              name: String(value['name'] ?? 'file'),
-              size: Number(value['size']) || 0,
-              mimeType: String(value['mimeType'] ?? ''),
-            }
-          : null,
-      };
-    }
-    if (
-      url &&
-      (message.contentType === 'IMAGE' ||
-        message.contentType === 'VIDEO' ||
-        message.contentType === 'AUDIO')
-    ) {
-      return {
-        images: [
-          {
-            kind:
-              message.contentType === 'IMAGE'
-                ? 'image'
-                : message.contentType === 'VIDEO'
-                  ? 'video'
-                  : 'audio',
-            src: url,
-            w: Number(value['w']) || 220,
-            h: Number(value['h']) || 52,
-            size: Number(value['size']) || 0,
-            duration: Number(value['duration']) || 0,
-            name: String(value['name'] ?? ''),
-            msgId: id,
-          },
-        ],
-        file: null,
-      };
-    }
-  } catch {
-    // A malformed snapshot remains isolated to its own fallback card.
-  }
+  if (message.contentType === 'FILE')
+    return {
+      images: null,
+      file: parseFileContent(message.content, resolveUrl),
+    };
+  const parsed =
+    message.contentType === 'IMAGE'
+      ? [parseImageContent(message.content, resolveUrl)]
+      : message.contentType === 'VIDEO'
+        ? [parseVideoContent(message.content, resolveUrl)].filter(
+            (item): item is NonNullable<typeof item> => item !== null,
+          )
+        : message.contentType === 'AUDIO'
+          ? [parseAudioContent(message.content, resolveUrl)].filter(
+              (item): item is NonNullable<typeof item> => item !== null,
+            )
+          : message.contentType === 'GALLERY'
+            ? parseGalleryContent(message.content, resolveUrl)
+            : [];
+  if (parsed.length > 0)
+    return {
+      images: parsed.map((item) => ({ ...item, msgId: id })),
+      file: null,
+    };
   return { images: null, file: null };
 }
 
@@ -362,6 +376,13 @@ function snapshotContent(message: ForwardManifestMessage): string {
   } catch {
     return message.content;
   }
+}
+
+function snapshotPreview(message: ForwardManifestMessage): string {
+  if (message.contentType === 'PURE_TEXT') {
+    return toDisplayText(requireTextMessageContent(message.content).text);
+  }
+  return message.contentType;
 }
 
 function bindSnapshotCasUrls(

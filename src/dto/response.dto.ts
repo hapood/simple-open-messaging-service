@@ -214,8 +214,7 @@ export class GroupResponseDto {
     example: 'soms.io',
     description:
       "The group's home (origin) domain. Empty for a locally-originated group (this server is the " +
-      'origin); a peer domain for a federated mirror. Drives the federated-badge the way ' +
-      'UserResponseDto.domain does for a P2P peer — empty self-hides the badge.',
+      'origin); a peer domain for a federated mirror.',
   })
   domain!: string;
 

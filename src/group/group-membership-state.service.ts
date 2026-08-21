@@ -10,7 +10,6 @@ export type GroupMembershipStatus = 'REQUESTED' | 'MEMBER' | 'NOT_MEMBER';
 export interface GroupMembershipRequestState extends Record<string, unknown> {
   status: GroupMembershipStatus;
   note: string;
-  revision: number;
   requestedAt: Date | null;
   expiresAt: Date | null;
 }
@@ -18,7 +17,6 @@ export interface GroupMembershipRequestState extends Record<string, unknown> {
 type RawGroupMembershipRequestState = {
   status: GroupMembershipStatus;
   note: string;
-  revision: number;
   requestedAt: Date | string | null;
   expiresAt: Date | string | null;
 };
@@ -82,23 +80,22 @@ export class GroupMembershipStateService {
       : null;
     const written = await tx.execute<RawGroupMembershipRequestState>(sql`
       INSERT INTO "GroupMembershipRequest" (
-        "groupUserId", "memberUserId", direction, status, note, revision,
+        "groupUserId", "memberUserId", direction, status, note,
         "requestedAt", "expiresAt", "updatedAt"
       ) VALUES (${params.groupUserId}, ${params.memberUserId},
         ${params.direction}::"GroupMembershipDirection",
         ${desired}::"GroupMembershipRequestStatus",
-        ${(params.note ?? '').slice(0, 255)}, 1,
+        ${(params.note ?? '').slice(0, 255)},
         ${requestedAt}, ${expiresAt}, CURRENT_TIMESTAMP)
       ON CONFLICT ("groupUserId", "memberUserId", direction) DO UPDATE SET
         status = EXCLUDED.status, note = EXCLUDED.note,
-        revision = "GroupMembershipRequest".revision + 1,
         "requestedAt" = CASE WHEN EXCLUDED.status = 'REQUESTED' THEN EXCLUDED."requestedAt"
                              ELSE "GroupMembershipRequest"."requestedAt" END,
         "expiresAt" = EXCLUDED."expiresAt", "updatedAt" = CURRENT_TIMESTAMP
       WHERE "GroupMembershipRequest".status IS DISTINCT FROM EXCLUDED.status
          OR "GroupMembershipRequest".note IS DISTINCT FROM EXCLUDED.note
          OR "GroupMembershipRequest"."expiresAt" IS DISTINCT FROM EXCLUDED."expiresAt"
-      RETURNING status, note, revision, "requestedAt", "expiresAt"
+      RETURNING status, note, "requestedAt", "expiresAt"
     `);
     const rawRequest =
       written.rows[0] ??
@@ -129,7 +126,6 @@ export class GroupMembershipStateService {
       direction: GroupMembershipDirection;
       status: GroupMembershipStatus;
       note: string;
-      revision: number;
       requestedAt: Date | null;
       expiresAt: Date | null;
     },
@@ -137,18 +133,21 @@ export class GroupMembershipStateService {
     await this.lockPairInTx(tx, params.groupUserId, params.memberUserId);
     const applied = await tx.execute(sql`
       INSERT INTO "GroupMembershipRequest" (
-        "groupUserId", "memberUserId", direction, status, note, revision,
+        "groupUserId", "memberUserId", direction, status, note,
         "requestedAt", "expiresAt", "updatedAt"
       ) VALUES (${params.groupUserId}, ${params.memberUserId},
         ${params.direction}::"GroupMembershipDirection",
         ${params.status}::"GroupMembershipRequestStatus", ${params.note.slice(0, 255)},
-        ${params.revision}, ${params.requestedAt}, ${params.expiresAt}, CURRENT_TIMESTAMP)
+        ${params.requestedAt}, ${params.expiresAt}, CURRENT_TIMESTAMP)
       ON CONFLICT ("groupUserId", "memberUserId", direction) DO UPDATE SET
-        status = EXCLUDED.status, note = EXCLUDED.note, revision = EXCLUDED.revision,
+        status = EXCLUDED.status, note = EXCLUDED.note,
         "requestedAt" = EXCLUDED."requestedAt", "expiresAt" = EXCLUDED."expiresAt",
         "updatedAt" = CURRENT_TIMESTAMP
-      WHERE "GroupMembershipRequest".revision < EXCLUDED.revision
-      RETURNING revision
+      WHERE "GroupMembershipRequest".status IS DISTINCT FROM EXCLUDED.status
+         OR "GroupMembershipRequest".note IS DISTINCT FROM EXCLUDED.note
+         OR "GroupMembershipRequest"."requestedAt" IS DISTINCT FROM EXCLUDED."requestedAt"
+         OR "GroupMembershipRequest"."expiresAt" IS DISTINCT FROM EXCLUDED."expiresAt"
+      RETURNING 1
     `);
     return {
       changed: (applied.rowCount ?? 0) > 0,
@@ -176,7 +175,8 @@ export class GroupMembershipStateService {
     `);
     if (active)
       await tx.execute(sql`
-        UPDATE "GroupMembershipRequest" SET status = 'MEMBER', "expiresAt" = NULL,
+        UPDATE "GroupMembershipRequest" SET status = 'MEMBER',
+          "expiresAt" = NULL,
           "updatedAt" = CURRENT_TIMESTAMP
         WHERE "groupUserId" = ${groupUserId} AND "memberUserId" = ${memberUserId}
           AND status <> 'NOT_MEMBER'
@@ -207,7 +207,7 @@ export class GroupMembershipStateService {
     direction: GroupMembershipDirection,
   ): Promise<RawGroupMembershipRequestState | undefined> {
     const row = await tx.execute<RawGroupMembershipRequestState>(sql`
-      SELECT status, note, revision, "requestedAt", "expiresAt"
+      SELECT status, note, "requestedAt", "expiresAt"
       FROM "GroupMembershipRequest"
       WHERE "groupUserId" = ${groupUserId} AND "memberUserId" = ${memberUserId}
         AND direction = ${direction}

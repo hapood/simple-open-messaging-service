@@ -41,7 +41,6 @@ import {
   requireSha256Hex,
   requireUserAccount,
 } from './federation-resource-request.js';
-import { SERVER_VERSION } from '../common/version.js';
 
 /**
  * S2S endpoints (signature-guarded, allow-list gated). The guard verifies the RFC 9421 signature +
@@ -131,31 +130,6 @@ export class S2sController {
     if (required === undefined || stateFeedEndId > required)
       this.feedDrainRequiredState.set(signer, stateFeedEndId);
     this.startFeedDrain(signer);
-  }
-
-  /** Exchange the local v1 capability view and accept an asynchronous refresh hint. */
-  @Raw()
-  @Post('discover')
-  @HttpCode(HttpStatus.OK)
-  discover(@Req() req: FastifyRequest) {
-    const signer = this.signerDomain(req);
-    const body = req.body as { origin?: unknown };
-    if (
-      !body ||
-      typeof body !== 'object' ||
-      Object.keys(body).length !== 1 ||
-      body.origin !== signer
-    ) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_BINDING_VIOLATION,
-        `origin (${String(body?.origin)}) != signer (${signer})`,
-        HttpStatus.UNAUTHORIZED,
-      );
-    }
-    return {
-      extensions: [],
-      software: `soms/${SERVER_VERSION}`,
-    } as const;
   }
 
   private startFeedDrain(domain: string): void {

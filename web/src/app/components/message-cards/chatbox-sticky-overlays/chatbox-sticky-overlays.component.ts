@@ -109,10 +109,12 @@ export class ChatboxStickyOverlaysComponent implements OnDestroy {
           tailAvatar: tailAvatar ?? undefined,
           name: host.dataset['messageAvatarName'] ?? '',
           src: host.dataset['messageAvatarSrc'] ?? '',
+          account: host.dataset['messageAvatarAccount'] || undefined,
           identityId:
             identity !== undefined && Number.isFinite(identity)
               ? identity
               : undefined,
+          domain: host.dataset['messageAvatarDomain'] || undefined,
         });
       }
       const date = host.querySelector<HTMLElement>('.msg-date');

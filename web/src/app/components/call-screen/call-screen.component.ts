@@ -21,6 +21,7 @@ import {
   UserAvatarType,
 } from '../user-avatar/user-avatar.component';
 import { AppIconType, IconComponent } from '../icon/icon.component';
+import { ConversationListService } from '../../services/conversation-list.service';
 
 /**
  * The 1:1 call UI — a fullscreen overlay mounted at the app root (AppComponent), shown whenever a call is
@@ -87,6 +88,10 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
                   [type]="UserAvatarType.OTHER"
                   [name]="snap().peerName || '?'"
                   [identityId]="snap().peerUserId"
+                  [account]="peer()?.account"
+                  [federatedDomain]="
+                    peer()?.isForeigner ? peer()?.domain : null
+                  "
                   [src]="snap().peerAvatar"
                 ></app-user-avatar>
               </div>
@@ -123,6 +128,10 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
                   [type]="UserAvatarType.OTHER"
                   [name]="snap().peerName || '?'"
                   [identityId]="snap().peerUserId"
+                  [account]="peer()?.account"
+                  [federatedDomain]="
+                    peer()?.isForeigner ? peer()?.domain : null
+                  "
                   [src]="snap().peerAvatar"
                 ></app-user-avatar>
               </div>
@@ -175,6 +184,8 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
                 [type]="UserAvatarType.OTHER"
                 [name]="snap().peerName || '?'"
                 [identityId]="snap().peerUserId"
+                [account]="peer()?.account"
+                [federatedDomain]="peer()?.isForeigner ? peer()?.domain : null"
                 [src]="snap().peerAvatar"
               ></app-user-avatar>
             </div>
@@ -750,9 +761,17 @@ export class CallScreenComponent implements OnDestroy {
   private readonly transloco = inject(TranslocoService);
   private readonly ringtone = inject(CallRingtoneService);
   readonly presentation = inject(CallPresentationService);
+  private readonly conversations = inject(ConversationListService);
   readonly miniIconSize = { width: '22px', height: '22px' };
 
   readonly snap = computed(() => this.events.callState());
+  readonly peer = computed(() => {
+    const id = this.snap().peerUserId;
+    const thread = this.conversations
+      .items()
+      .find((item) => item.type === 'P2P' && item.peerUser.id === id);
+    return thread?.type === 'P2P' ? thread.peerUser : undefined;
+  });
 
   /** A 1s ticking clock so the connected timer updates; read by `timer()`. Cleared in ngOnDestroy. */
   private readonly now = signal(Date.now());

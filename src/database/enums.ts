@@ -14,7 +14,6 @@ export type AdminRole = (typeof AdminRole)[keyof typeof AdminRole];
 
 export const ContentType = {
   PURE_TEXT: 'PURE_TEXT',
-  INVITE: 'INVITE',
   IMAGE: 'IMAGE',
   VIDEO: 'VIDEO',
   FILE: 'FILE',

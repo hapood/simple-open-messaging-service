@@ -51,7 +51,7 @@ export const CALL_OUTCOMES: readonly CallOutcome[] = [
 
 /** The JSON stored in a CALL Message's `content` (stringified via {@link buildCallContent}). */
 export interface CallContent {
-  /** Literal discriminator 'CALL' (mirrors the INVITE/GROUP_INVITE card convention). */
+  /** Literal discriminator for a call message. */
   type: 'CALL';
   callType: CallMediaType;
   status: CallOutcome;

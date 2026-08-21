@@ -71,8 +71,8 @@ installKeyboardInsetBridge();
 installActiveOriginBridge();
 
 // The native launch overlay is already visible at this point. Session restoration followed by link-card
-// rule preloading is one ordered APP_INITIALIZER, so label that otherwise quiet wait before Angular
-// constructs AppComponent. No-op outside Android.
+// rule preloading for an authenticated session is one ordered APP_INITIALIZER, so label that otherwise
+// quiet wait before Angular constructs AppComponent. No-op outside Android.
 window.SomsShell?.setSplashStage?.('session');
 
 bootstrapApplication(AppComponent, appConfig).catch((err) =>

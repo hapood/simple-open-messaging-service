@@ -10,6 +10,7 @@ import { DatabaseService } from '../src/database/database.service';
 import { sessionToken, user } from '../src/database/schema';
 import { SessionTokenService } from '../src/auth/session-token.service';
 import { BusinessCode } from '../src/common/business-code';
+import { RateLimitModeService } from '../src/rate-limit/rate-limit-mode.service';
 
 /**
  * QR-login e2e — the desktop/web → 2-week sliding session flow confirmed by an already-logged-in phone,
@@ -29,9 +30,17 @@ describe('QR login e2e', () => {
     // Rate-limit behavior has dedicated coverage. This suite intentionally
     // polls and recreates QR sessions from one loopback address, so isolate the
     // state-machine assertions from production-sized in-memory buckets.
+    const defaults = new RateLimitModeService();
+    const disabledConfiguration = defaults.monitoringConfig().map((policy) => ({
+      ...policy,
+      mode: 'disabled' as const,
+    }));
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideProvider(RateLimitModeService)
+      .useValue(new RateLimitModeService(undefined, disabledConfiguration))
+      .compile();
     const adapter = new FastifyAdapter();
     app = moduleFixture.createNestApplication(adapter);
     await configureApp(app, adapter);

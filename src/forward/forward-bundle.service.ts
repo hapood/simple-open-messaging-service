@@ -1,10 +1,11 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
 import { mintUlid } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
+import { dataDirectory } from '../common/data-directory.js';
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import {
   DatabaseService,
@@ -29,12 +30,14 @@ import {
 import {
   extractDigestEntries,
   extractDigests,
+  type LinkContent,
 } from '../upload/file-content.js';
 import { toDisplayText } from '../common/message-entity.js';
 import {
   parseTextMessageContent,
   stringifyTextMessageContent,
 } from '../../shared/text-message-content.js';
+import { deriveMessagePreview } from '../../shared/message-preview.js';
 import { MessageService } from '../message/message.service.js';
 import { UserBlockService } from '../user-block/user-block.service.js';
 import { MessageVisibilityService } from '../message/message-visibility.service.js';
@@ -46,7 +49,7 @@ import type {
 
 export const FORWARD_MAX_MESSAGES = 500;
 export const FORWARD_MAX_ASSETS = 500;
-export const FORWARD_SUMMARY_LINES = 3;
+export const FORWARD_SUMMARY_LINES = 2;
 export const FORWARD_SUMMARY_CHARS = 100;
 export const FORWARD_QUOTE_PREVIEW_CHARS = 100;
 export const FORWARD_MAX_WIRE_JSON_BYTES = 2 * 1024 * 1024;
@@ -81,6 +84,11 @@ export interface ForwardWireBundle {
   messages: ForwardBundleMessage[];
   children: ForwardWireChild[];
   assets: FederationByteDescriptor[];
+}
+
+/** Browser-facing bundle response. The carrier authorizes every snapshot asset URL in the closure. */
+export interface ForwardBundleView extends ForwardWireBundle {
+  accessContext: { threadId: number; seq: number };
 }
 
 export interface PreparedForwardBundle {
@@ -476,7 +484,7 @@ export class ForwardBundleService {
   async getClosureForUser(
     userId: number,
     rootBundleId: string,
-  ): Promise<ForwardWireBundle> {
+  ): Promise<ForwardBundleView> {
     const carriers = await this.database.db
       .select({ threadId: message.threadId, seq: message.seq })
       .from(forwardMessage)
@@ -515,7 +523,10 @@ export class ForwardBundleService {
         'forward bundle not found',
       );
     }
-    return this.buildClosure(rootBundleId);
+    return {
+      ...(await this.buildClosure(rootBundleId)),
+      accessContext: carrier,
+    };
   }
 
   async buildClosure(rootBundleId: string): Promise<ForwardWireBundle> {
@@ -565,6 +576,93 @@ export class ForwardBundleService {
         this.assetDocument(asset),
       ),
     };
+  }
+
+  /** Rebuild receiver-local artwork for LINK snapshots after a federated bundle has committed. */
+  async rebuildLinkCards(
+    rootBundleId: string,
+    build: (url: string) => Promise<LinkContent>,
+  ): Promise<void> {
+    const root = await this.database.db.query.forwardBundle.findFirst({
+      where: eq(forwardBundle.id, rootBundleId),
+      with: { forwardBundleDependencies_parentBundleId: true },
+    });
+    if (!root) return;
+    const ids = [
+      rootBundleId,
+      ...root.forwardBundleDependencies_parentBundleId.map(
+        (dependency) => dependency.childBundleId,
+      ),
+    ];
+    const rows = await this.database.db.query.forwardBundle.findMany({
+      where: inArray(forwardBundle.id, ids),
+    });
+    const rebuilt: Array<{
+      id: string;
+      messages: ForwardBundleMessage[];
+    }> = [];
+    const digests = new Set<string>();
+    for (const row of rows) {
+      let changed = false;
+      const messages = await Promise.all(
+        (row.messages as ForwardBundleMessage[]).map(async (message) => {
+          if (message.contentType !== ContentType.LINK) return message;
+          const value = JSON.parse(message.content) as { url?: unknown };
+          if (typeof value.url !== 'string') return message;
+          const card = await build(value.url);
+          changed = true;
+          const content = JSON.stringify(card);
+          extractDigests(content).forEach((digest) => digests.add(digest));
+          return { ...message, content };
+        }),
+      );
+      if (changed) rebuilt.push({ id: row.id, messages });
+    }
+    if (rebuilt.length === 0) return;
+    const assets = await Promise.all(
+      [...digests].map(async (digest) => {
+        const row = await this.database.db.query.mediaAsset.findFirst({
+          where: eq(mediaAsset.digest, digest),
+        });
+        return { digest, bytes: BigInt(row?.bytes ?? 1n) };
+      }),
+    );
+    await this.database.db.transaction(async (tx) => {
+      for (const item of rebuilt) {
+        await tx
+          .update(forwardBundle)
+          .set({ messages: item.messages })
+          .where(eq(forwardBundle.id, item.id));
+      }
+      if (assets.length > 0) {
+        const existing = await tx.query.forwardBundleAsset.findMany({
+          where: eq(forwardBundleAsset.bundleId, rootBundleId),
+          columns: { digest: true, ordinal: true },
+        });
+        const known = new Set(existing.map((asset) => asset.digest));
+        const additions = assets.filter((asset) => !known.has(asset.digest));
+        if (additions.length > 0) {
+          const start = existing.reduce(
+            (max, asset) => Math.max(max, asset.ordinal + 1),
+            0,
+          );
+          await tx.insert(forwardBundleAsset).values(
+            additions.map((asset, index) => ({
+              bundleId: rootBundleId,
+              ordinal: start + index,
+              ...asset,
+            })),
+          );
+          await tx
+            .update(forwardBundle)
+            .set({
+              assetCount: existing.length + additions.length,
+              totalBytes: sql`${forwardBundle.totalBytes} + ${additions.reduce((sum, asset) => sum + asset.bytes, 0n)}`,
+            })
+            .where(eq(forwardBundle.id, rootBundleId));
+        }
+      }
+    });
   }
 
   /**
@@ -779,6 +877,19 @@ export class ForwardBundleService {
     if (contentType === ContentType.GALLERY) {
       return this.galleryAssetsFromContent(content);
     }
+    if (contentType === ContentType.LINK) {
+      const result: FederationByteDescriptor[] = [];
+      for (const digest of extractDigests(content)) {
+        const row = await this.database.db.query.mediaAsset.findFirst({
+          where: eq(mediaAsset.digest, digest),
+        });
+        result.push({
+          digest,
+          bytes: Math.max(1, Number(row?.bytes ?? 1n)),
+        });
+      }
+      return result;
+    }
     if (!isForwardDirectMedia(contentType)) return [];
     let meta: { size?: number } = {};
     try {
@@ -835,17 +946,10 @@ export class ForwardBundleService {
   ): Promise<FederationByteDescriptor | null> {
     if (!url.startsWith('/uploads/')) return null;
     try {
-      const source = join(
-        process.cwd(),
-        'data',
-        'uploads',
-        url.slice('/uploads/'.length),
-      );
+      const source = dataDirectory('uploads', url.slice('/uploads/'.length));
       const buffer = await readFile(source);
       const digest = createHash('sha256').update(buffer).digest('hex');
-      const target = join(
-        process.cwd(),
-        'data',
+      const target = dataDirectory(
         'cas',
         digest.slice(0, 2),
         digest.slice(2, 4),
@@ -878,26 +982,13 @@ export class ForwardBundleService {
   }
 
   private summaryLine(message: ForwardBundleMessage): string {
-    const label =
-      message.contentType === ContentType.IMAGE
-        ? '[图片]'
-        : message.contentType === ContentType.FILE
-          ? '[文件]'
-          : message.contentType === ContentType.VIDEO
-            ? '[视频]'
-            : message.contentType === ContentType.AUDIO
-              ? '[语音]'
-              : message.contentType === ContentType.GALLERY
-                ? '[图集]'
-                : message.contentType === ContentType.FORWARD
-                  ? '[转发消息]'
-                  : toDisplayText(
-                      parseTextMessageContent(message.content)?.text ?? '',
-                    )
-                      .replace(/\s+/g, ' ')
-                      .trim();
+    const preview = deriveMessagePreview(
+      message.contentType,
+      message.content,
+      toDisplayText,
+    );
     return truncateGraphemes(
-      `${message.author.displayName}：${label}`,
+      `${message.author.displayName}：${preview}`,
       FORWARD_SUMMARY_CHARS,
     );
   }

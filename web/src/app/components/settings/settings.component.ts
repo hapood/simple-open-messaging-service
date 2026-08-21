@@ -23,6 +23,7 @@ import {
   type SettingsCategory,
   type SettingsCategoryId,
 } from './settings-categories';
+import { PageHeaderComponent } from '../page-header/page-header.component';
 
 /** Drill-in slide for the sub-page, matching `overlaySlide`'s motion language in HomeShell (the same
  *  enter/leave curves) so the Settings sub-page glides consistently with the rest of the app's overlays.
@@ -65,6 +66,7 @@ const pageSlide = trigger('pageSlide', [
     MatCardModule,
     TranslocoPipe,
     IconComponent,
+    PageHeaderComponent,
     NgComponentOutlet,
   ],
   templateUrl: './settings.component.html',

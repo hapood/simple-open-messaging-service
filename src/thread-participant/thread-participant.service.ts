@@ -398,22 +398,23 @@ export class ThreadParticipantService {
         if (mine && peer) {
           const low = Math.min(callerUserId, peer.userId);
           const high = Math.max(callerUserId, peer.userId);
-          const request = await tx.execute<{ revision: number }>(sql`
+          const request = await tx.execute(sql`
             INSERT INTO "FriendRequest" (
-              "requesterUserId", "targetUserId", status, note, revision, "updatedAt"
-            ) VALUES (${callerUserId}, ${peer.userId}, 'NOT_FRIEND', '', 1, CURRENT_TIMESTAMP)
+              "requesterUserId", "targetUserId", status, note, "updatedAt"
+            ) VALUES (${callerUserId}, ${peer.userId}, 'NOT_FRIEND', '', CURRENT_TIMESTAMP)
             ON CONFLICT ("requesterUserId", "targetUserId") DO UPDATE SET
-              status = 'NOT_FRIEND', note = '', revision = "FriendRequest".revision + 1,
+              status = 'NOT_FRIEND', note = '',
               "expiresAt" = NULL, "updatedAt" = CURRENT_TIMESTAMP
             WHERE "FriendRequest".status <> 'NOT_FRIEND'
-            RETURNING revision
+            RETURNING 1
           `);
-          const relationshipRev = request.rows[0]?.revision;
-          await tx.execute(sql`
+          const pair = await tx.execute<{ revision: number }>(sql`
             UPDATE "FriendPair" SET active = false, revision = revision + 1,
               "updatedAt" = CURRENT_TIMESTAMP
             WHERE "userLowId" = ${low} AND "userHighId" = ${high} AND active = true
+            RETURNING revision
           `);
+          const relationshipRev = pair.rows[0]?.revision;
           await tx
             .update(threadParticipant)
             .set({
@@ -422,7 +423,7 @@ export class ThreadParticipantService {
               updatedAt: now,
             })
             .where(eq(threadParticipant.id, mine.id));
-          if (relationshipRev !== undefined && peer.domain !== 'local') {
+          if ((request.rowCount ?? 0) > 0 && peer.domain !== 'local') {
             const localDomain = process.env.SOMS_DOMAIN;
             if (!localDomain)
               throw new Error('SOMS_DOMAIN is required for federation state');
@@ -434,7 +435,6 @@ export class ThreadParticipantService {
                 subjectAccount: peer.account,
                 subjectDomain: peer.domain,
                 eventType: 'P2P_INTENT',
-                revision: relationshipRev,
                 body: {
                   status: 'REVOKED',
                   note: '',

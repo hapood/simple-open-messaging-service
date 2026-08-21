@@ -143,7 +143,6 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
         CREATE TABLE IF NOT EXISTS friend_intents (
           user_id INTEGER NOT NULL,
           stable_key TEXT NOT NULL,
-          business_revision INTEGER NOT NULL,
           payload_json TEXT NOT NULL,
           PRIMARY KEY (user_id, stable_key)
         );
@@ -396,7 +395,6 @@ pub(crate) struct ThreadDelta {
     event_type: Option<String>,
     subject_account: Option<String>,
     subject_domain: Option<String>,
-    business_revision: Option<i64>,
     body: Option<Value>,
     source_peer_domain: Option<String>,
     member_account: Option<String>,
@@ -727,21 +725,35 @@ pub(crate) async fn native_db_apply_thread_delta(
                     let event_type = op.event_type.ok_or_else(|| "CLIENT_STATE has no eventType".to_string())?;
                     let subject_account = op.subject_account.ok_or_else(|| "CLIENT_STATE has no subjectAccount".to_string())?;
                     let subject_domain = op.subject_domain.ok_or_else(|| "CLIENT_STATE has no subjectDomain".to_string())?;
-                    let business_revision = op.business_revision.ok_or_else(|| "CLIENT_STATE has no businessRevision".to_string())?;
                     let body = op.body.ok_or_else(|| "CLIENT_STATE has no body".to_string())?;
-                    if event_type != "P2P_INTENT" { continue; }
                     let stable_key = json_text(&serde_json::json!([
                         domain.clone(), account.clone(), event_type,
                         subject_domain.clone(), subject_account.clone()
                     ]))?;
                     let mut payload = body;
                     let object = payload.as_object_mut().ok_or_else(|| "CLIENT_STATE body is not an object".to_string())?;
+                    if event_type == "GROUP_INVITE_INTENT" {
+                        object.insert("key".into(), Value::String(stable_key.clone()));
+                        object.insert("kind".into(), Value::String("GROUP_INVITE".into()));
+                        object.insert("account".into(), Value::String(account.clone()));
+                        object.insert("domain".into(), Value::String(domain.clone()));
+                        object.insert("subjectAccount".into(), Value::String(subject_account));
+                        object.insert("subjectDomain".into(), Value::String(subject_domain));
+                        tx.execute(
+                            "INSERT INTO friend_intents(user_id, stable_key, payload_json)
+                             VALUES(?1, ?2, ?3)
+                             ON CONFLICT(user_id, stable_key) DO UPDATE SET
+                               payload_json=excluded.payload_json",
+                            params![user_id, stable_key, json_text(&payload)?],
+                        ).map_err(|e| format!("apply client group invite: {e}"))?;
+                        continue;
+                    }
+                    if event_type != "P2P_INTENT" { continue; }
                     object.insert("key".into(), Value::String(stable_key.clone()));
                     object.insert("account".into(), Value::String(account));
                     object.insert("domain".into(), Value::String(domain));
                     object.insert("subjectAccount".into(), Value::String(subject_account));
                     object.insert("subjectDomain".into(), Value::String(subject_domain));
-                    object.insert("businessRevision".into(), Value::from(business_revision));
                     let direction = object
                         .get("direction")
                         .and_then(Value::as_str)
@@ -758,19 +770,18 @@ pub(crate) async fn native_db_apply_thread_delta(
                         .and_then(Value::as_i64)
                         .unwrap_or(0);
                     object.insert("requestedSort".into(), Value::from(requested_sort));
+                    let outgoing_requested = direction == "OUTGOING"
+                        && object.get("status").and_then(Value::as_str) == Some("REQUESTED");
+                    let expires_at = object.get("expiresAt").and_then(Value::as_i64);
                     tx.execute(
-                        "INSERT INTO friend_intents(user_id, stable_key, business_revision, payload_json)
-                         VALUES(?1, ?2, ?3, ?4)
+                        "INSERT INTO friend_intents(user_id, stable_key, payload_json)
+                         VALUES(?1, ?2, ?3)
                          ON CONFLICT(user_id, stable_key) DO UPDATE SET
-                           business_revision=excluded.business_revision,
-                           payload_json=excluded.payload_json
-                         WHERE excluded.business_revision > friend_intents.business_revision",
-                        params![user_id, stable_key, business_revision, json_text(&payload)?],
+                           payload_json=excluded.payload_json",
+                        params![user_id, stable_key, json_text(&payload)?],
                     ).map_err(|e| format!("apply client friend intent: {e}"))?;
-                    if direction == "OUTGOING"
-                        && object.get("status").and_then(Value::as_str) == Some("REQUESTED")
-                    {
-                        if let Some(expires_at) = object.get("expiresAt").and_then(Value::as_i64) {
+                    if outgoing_requested {
+                        if let Some(expires_at) = expires_at {
                             let peer_account = peer
                                 .get("account")
                                 .and_then(Value::as_str)

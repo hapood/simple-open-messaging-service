@@ -1,11 +1,14 @@
 import {
   Component,
   computed,
+  effect,
   inject,
+  signal,
+  untracked,
   ChangeDetectionStrategy,
 } from '@angular/core';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, finalize } from 'rxjs';
 import {
   UserAvatarComponent,
   UserAvatarType,
@@ -13,8 +16,11 @@ import {
 import { ThreadAliasEditorComponent } from '../thread-alias-editor/thread-alias-editor.component';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
-import { ConversationItem, displayUserName } from '../../services/model';
-import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
+import {
+  ConversationItem,
+  displayUserAccount,
+  displayUserName,
+} from '../../services/model';
 import { UserService } from '../../services/user.service';
 import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter';
 import { PopupType, RouteService } from '../../services/route.service';
@@ -22,6 +28,10 @@ import { ThreadDeletionLockService } from '../../services/thread-deletion-lock.s
 import { ToastService } from '../../services/toast.service';
 import { translateBizResult } from '../../services/biz-code';
 import { MatCardModule } from '@angular/material/card';
+import { MatButtonModule } from '@angular/material/button';
+import { MatSlideToggleModule } from '@angular/material/slide-toggle';
+import { IconComponent, AppIconType } from '../icon/icon.component';
+import { PageHeaderComponent } from '../page-header/page-header.component';
 
 /**
  * P2P (friend) profile panel — rendered in the `aside` auxiliary outlet (`chat/:threadId/(aside:profile)`).
@@ -35,92 +45,86 @@ import { MatCardModule } from '@angular/material/card';
     UserAvatarComponent,
     TranslocoPipe,
     ThreadAliasEditorComponent,
-    FederatedBadgeComponent,
     MatCardModule,
+    MatButtonModule,
+    MatSlideToggleModule,
+    IconComponent,
+    PageHeaderComponent,
   ],
   template: `
     <div class="panel">
-      <div class="msg-header">
-        <button
-          class="icon-btn"
-          (click)="goBack()"
-          [attr.aria-label]="'common.back' | transloco"
-        >
-          <svg
-            width="28"
-            height="28"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M15 18l-6-6 6-6" />
-          </svg>
-        </button>
-        <span class="title">{{ 'profile.title' | transloco }}</span>
-        <span></span>
-      </div>
+      <app-page-header
+        [title]="'profile.title' | transloco"
+        (back)="goBack()"
+      />
 
       <div class="body">
         <div class="identity">
-          <app-user-avatar
-            [type]="UserAvatarType.OTHER"
-            [name]="peer()?.name ?? ''"
-            [identityId]="$safeNavigationMigration(peer()?.id)"
-            [src]="$safeNavigationMigration(peer()?.avatar)"
-          />
-          <app-federated-badge [domain]="peerDomain()"></app-federated-badge>
-          <div class="name">{{ peerDisplayName() }}</div>
-          @if (peer()?.account) {
-            <div class="account">
-              {{ 'profile.account' | transloco }} · {{ peer()!.account }}
-              @if (peerDomain()) {
-                &#64;{{ peerDomain() }}
-              }
-            </div>
-          }
-          @if (peer()?.bio) {
-            <div class="bio">{{ peer()?.bio }}</div>
-          }
+          <span class="profile-avatar">
+            <app-user-avatar
+              [type]="UserAvatarType.OTHER"
+              [name]="peer()?.name ?? ''"
+              [identityId]="$safeNavigationMigration(peer()?.id)"
+              [account]="$safeNavigationMigration(peer()?.account)"
+              [src]="$safeNavigationMigration(peer()?.avatar)"
+              [federatedDomain]="peerDomain()"
+            />
+          </span>
         </div>
+
+        <mat-card appearance="outlined" class="peer-profile-card">
+          <div class="profile-meta">{{ peerAccount() }}</div>
+          <div class="peer-profile-row">
+            <span class="profile-copy">
+              <strong>{{ peerDisplayName() }}</strong>
+              <span class="description">{{
+                peer()?.bio || ('friend.noBio' | transloco)
+              }}</span>
+            </span>
+          </div>
+        </mat-card>
 
         <app-thread-alias-editor [threadId]="threadId()!" />
 
-        <mat-card
-          appearance="outlined"
-          class="relationship-card"
-          [attr.aria-label]="'profile.relationship' | transloco"
-        >
-          <button
-            class="relationship-action"
-            [class.danger]="!userMsgTrd()?.blocked"
-            type="button"
-            (click)="toggleBlocked()"
+        <mat-card appearance="outlined" class="permission-card block-card">
+          <span
+            class="block-icon"
+            [class.on]="blockedControl()"
+            aria-hidden="true"
           >
-            <span class="action-icon" aria-hidden="true">⊘</span>
-            <span class="action-copy">
-              <strong>{{
-                (userMsgTrd()?.blocked ? 'profile.unblock' : 'profile.block')
-                  | transloco
-              }}</strong>
-            </span>
-          </button>
-          @if (userMsgTrd()?.friendshipActive !== false) {
+            <app-icon
+              [type]="AppIconType.BLOCK"
+              [style]="{ width: '20px', height: '20px' }"
+            />
+          </span>
+          <span class="permission-copy">
+            <strong>{{ 'profile.block' | transloco }}</strong>
+          </span>
+          <mat-slide-toggle
+            class="danger-switch"
+            [checked]="blockedControl()"
+            [class.saving]="blockedSaving()"
+            [disabled]="unfriendPending()"
+            [attr.aria-busy]="blockedSaving()"
+            [attr.aria-label]="'profile.block' | transloco"
+            (change)="setBlocked($event.checked)"
+          />
+        </mat-card>
+
+        @if (userMsgTrd()?.friendshipActive !== false) {
+          <div class="relationship-actions">
             <button
-              class="relationship-action danger"
+              mat-button
+              color="warn"
+              class="danger"
               type="button"
               (click)="removeFriend()"
+              [disabled]="relationshipActionPending()"
             >
-              <span class="action-icon" aria-hidden="true">−</span>
-              <span class="action-copy">
-                <strong>{{ 'chat.menuUnfriend' | transloco }}</strong>
-              </span>
+              <span>{{ 'chat.menuUnfriend' | transloco }}</span>
             </button>
-          }
-        </mat-card>
+          </div>
+        }
       </div>
     </div>
   `,
@@ -138,129 +142,152 @@ import { MatCardModule } from '@angular/material/card';
         height: 100%;
         min-height: 0;
       }
-      .msg-header {
-        height: 56px;
-        flex: 0 0 auto;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 0 8px;
-        border-bottom: 1px solid var(--app-border);
-        box-sizing: border-box;
-      }
-      .msg-header .title {
-        font-size: 16px;
-        font-weight: 600;
-        flex: 1 1 auto;
-      }
-      .icon-btn {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 40px;
-        height: 40px;
-        border: none;
-        background: transparent;
-        color: var(--app-text);
-        cursor: pointer;
-        border-radius: var(--app-radius-sm);
-      }
-      .icon-btn:hover {
-        background: var(--app-hover);
-      }
       .body {
         flex: 1 1 auto;
         min-height: 0;
         overflow-y: auto;
-        display: flex;
-        flex-direction: column;
-        gap: 20px;
-        padding: 28px 16px;
+        padding: 12px 0 24px;
       }
       .identity {
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 10px;
+        gap: 8px;
+        padding: 8px 16px 12px;
       }
       .identity app-user-avatar {
         width: 72px;
         height: 72px;
       }
-      .name {
-        font-size: 18px;
-        font-weight: 600;
+      .profile-avatar {
+        position: relative;
+        display: block;
+        width: 72px;
+        height: 72px;
       }
-      .bio {
-        max-width: 320px;
-        color: var(--app-text-muted);
-        font-size: 13px;
-        line-height: 19px;
-        text-align: center;
-      }
-      .account {
-        color: var(--app-text-muted);
-        font-size: 13px;
-        line-height: 19px;
-        overflow-wrap: anywhere;
-        text-align: center;
-      }
-      .relationship-card {
+      .peer-profile-card {
+        margin: 0 16px 12px;
         overflow: hidden;
       }
-      .relationship-action {
-        width: 100%;
-        min-height: 64px;
-        padding: 10px 14px;
-        border: 0;
+      .profile-meta {
+        height: 24px;
+        padding: 0 12px;
         display: flex;
         align-items: center;
-        gap: 12px;
-        text-align: left;
-        color: var(--app-text);
-        background: transparent;
-        cursor: pointer;
-      }
-      .relationship-action:hover {
-        background: var(--app-hover);
-      }
-      .action-icon {
-        width: 34px;
-        height: 34px;
-        display: grid;
-        place-items: center;
-        flex: 0 0 auto;
-        border-radius: 10px;
-        background: var(--app-bg-muted);
+        box-sizing: border-box;
+        border-bottom: 1px solid var(--app-border);
+        background: var(--app-surface-subtle);
         color: var(--app-text-muted);
-        font-size: 20px;
+        font-size: 11px;
+        font-weight: var(--app-font-weight-medium, 500);
+        line-height: 16px;
+        letter-spacing: 0.02em;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
-      .action-copy {
+      .peer-profile-row {
+        min-height: 72px;
+        padding: 12px 14px;
+        display: flex;
+        align-items: center;
+        box-sizing: border-box;
+      }
+      .profile-copy {
+        min-width: 0;
+        flex: 1 1 auto;
         display: flex;
         flex-direction: column;
-        gap: 3px;
-        min-width: 0;
+        gap: 4px;
       }
-      .action-copy strong {
+      .profile-copy strong {
+        color: var(--app-text);
+        font-size: 16px;
+        font-weight: var(--app-font-weight-medium, 500);
+        line-height: 24px;
+        overflow-wrap: anywhere;
+      }
+      .profile-copy .description {
+        color: var(--app-text-muted);
         font-size: 14px;
-        font-weight: 600;
+        font-weight: var(--app-font-weight-regular, 400);
+        line-height: 20px;
+        overflow-wrap: anywhere;
+        white-space: pre-wrap;
       }
-      .relationship-action.danger strong {
-        color: var(--app-danger, #c73535);
+      .permission-card {
+        margin: 18px 16px 0;
+        padding: 12px 14px;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 12px;
       }
-      .relationship-action.danger .action-icon {
-        color: var(--app-danger, #c73535);
-        background: color-mix(
+      .permission-copy {
+        display: flex;
+        flex: 1 1 auto;
+        flex-direction: column;
+      }
+      .permission-copy strong {
+        color: var(--app-text);
+        font-size: 14px;
+        font-weight: var(--app-font-weight-regular, 400);
+        line-height: 20px;
+      }
+      .block-icon {
+        width: 32px;
+        height: 32px;
+        flex: 0 0 32px;
+        display: grid;
+        place-items: center;
+        color: var(--app-text-muted);
+      }
+      .block-icon.on {
+        color: var(--app-danger);
+      }
+      mat-slide-toggle.saving {
+        pointer-events: none;
+      }
+      .danger-switch {
+        --mat-slide-toggle-selected-track-color: var(--app-danger);
+        --mat-slide-toggle-selected-focus-track-color: var(--app-danger);
+        --mat-slide-toggle-selected-hover-track-color: color-mix(
           in srgb,
-          var(--app-danger, #c73535) 10%,
-          transparent
+          var(--app-danger) 86%,
+          black
         );
+        --mat-slide-toggle-selected-pressed-track-color: var(--app-danger);
+        --mat-slide-toggle-selected-focus-state-layer-color: var(--app-danger);
+        --mat-slide-toggle-selected-hover-state-layer-color: var(--app-danger);
+        --mat-slide-toggle-selected-pressed-state-layer-color: var(
+          --app-danger
+        );
+      }
+      .relationship-actions {
+        margin: 12px 16px 0;
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .relationship-actions > button {
+        width: 100%;
+        height: 48px;
+        justify-content: center;
+        padding: 0 12px;
+        text-align: center;
       }
     `,
   ],
 })
 export class PeerProfileComponent {
   readonly UserAvatarType = UserAvatarType;
+  readonly AppIconType = AppIconType;
+  readonly blockedControl = signal(false);
+  readonly blockedSaving = signal(false);
+  readonly unfriendPending = signal(false);
+  readonly relationshipActionPending = computed(
+    () => this.blockedSaving() || this.unfriendPending(),
+  );
 
   private readonly nav = inject(NavStateMachineService);
   private readonly convList = inject(ConversationListService);
@@ -280,41 +307,60 @@ export class PeerProfileComponent {
       : undefined;
   });
   readonly peer = computed(() => this.userMsgTrd()?.peerUser);
-  /** Display label for the peer — the nickname. The federated domain (if any) is shown via the badge
-   *  directly under the avatar, not folded into the name. */
+  /** Display label for the peer — the nickname, with federation indicated on the avatar. */
   readonly peerDisplayName = computed(() => {
     const p = this.peer();
     return p ? displayUserName(p) : '';
   });
-  /** The peer's domain when federated, else null (the badge self-hides). */
+  readonly peerAccount = computed(() => {
+    const p = this.peer();
+    return p ? displayUserAccount(p) : '';
+  });
+  /** The peer's domain when federated, else null. */
   readonly peerDomain = computed(() => {
     const p = this.peer();
     return p && p.isForeigner ? p.domain : null;
   });
+
+  constructor() {
+    effect(() => {
+      const blocked = this.userMsgTrd()?.blocked === true;
+      if (!this.blockedSaving())
+        untracked(() => this.blockedControl.set(blocked));
+    });
+  }
 
   /** Close the aside (back to the chat). Clears the aside signal — back won't re-open it. */
   goBack() {
     this.nav.closeAside();
   }
 
-  toggleBlocked(): void {
+  setBlocked(blocked: boolean): void {
     const trd = this.userMsgTrd();
-    if (!trd) return;
-    const next = !trd.blocked;
+    if (!trd || this.relationshipActionPending()) return;
+    const previous = trd.blocked === true;
     const apply = () => {
+      this.blockedControl.set(blocked);
+      this.blockedSaving.set(true);
       this.threadAdapter
-        .setBlocked({ threadId: trd.threadId, blocked: next })
+        .setBlocked({ threadId: trd.threadId, blocked })
+        .pipe(finalize(() => this.blockedSaving.set(false)))
         .subscribe({
           next: (res) => {
-            if (res.code !== 0)
+            if (res.code !== 0) {
+              this.blockedControl.set(previous);
               return this.toast.warn(translateBizResult(res, this.transloco));
-            this.convList.applyThreadMeta(trd.threadId, { blocked: next });
+            }
+            this.convList.applyThreadMeta(trd.threadId, { blocked });
           },
-          error: () =>
-            this.toast.warn(this.transloco.translate('errors.networkError')),
+          error: () => {
+            this.blockedControl.set(previous);
+            this.toast.warn(this.transloco.translate('errors.networkError'));
+          },
         });
     };
-    if (!next) return apply();
+    if (!blocked) return apply();
+    this.blockedControl.set(previous);
     this.route.popupDlg(
       PopupType.CONFIRM,
       {
@@ -327,6 +373,7 @@ export class PeerProfileComponent {
       },
       (result) => {
         if (result) apply();
+        else this.blockedControl.set(previous);
       },
     );
   }
@@ -334,7 +381,8 @@ export class PeerProfileComponent {
   removeFriend(): void {
     const trd = this.userMsgTrd();
     const peerId = trd?.peerUser?.id;
-    if (!trd || peerId === undefined) return;
+    if (!trd || peerId === undefined || this.relationshipActionPending())
+      return;
     this.route.popupDlg(
       PopupType.CONFIRM,
       {
@@ -359,6 +407,7 @@ export class PeerProfileComponent {
     deleteData: boolean,
   ) {
     if (!this.deletionLock.begin(trd.threadId)) return;
+    this.unfriendPending.set(true);
     try {
       const res = await firstValueFrom(
         this.userService.deleteFriend({ userId: peerId, deleteData }),
@@ -378,6 +427,7 @@ export class PeerProfileComponent {
     } catch {
       this.toast.warn(this.transloco.translate('errors.networkError'));
     } finally {
+      this.unfriendPending.set(false);
       this.deletionLock.end(trd.threadId);
       this.convList.load();
     }

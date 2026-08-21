@@ -10,7 +10,7 @@ export interface ForwardAssetDocument {
 export interface ForwardManifestMessage {
   /** Canonical 1-based Bundle-local id; absent only on legacy v1 snapshots. */
   id?: number;
-  sender: {
+  author: {
     displayName: string;
     account: string;
     domain: string;
@@ -20,30 +20,16 @@ export interface ForwardManifestMessage {
   content: string;
   sentAt: number;
   childBundleId?: string;
-  quote?: {
-    preview: string;
-    targetId?: number;
-  };
+  quoteTargetId?: number;
 }
 
-export interface ForwardWireBundle {
+export interface ForwardWireChild {
   id: string;
-  depth: number;
-  manifestDigest: string;
-  manifest: {
-    schemaVersion: 1;
-    bundleId: string;
-    depth: number;
-    children: string[];
-    messages: ForwardManifestMessage[];
-  };
-  assets: ForwardAssetDocument[];
+  messages: ForwardManifestMessage[];
 }
 
-export interface ForwardWireClosure {
-  schemaVersion: 1;
-  rootBundleId: string;
-  bundles: ForwardWireBundle[];
+export interface ForwardWireBundle extends ForwardWireChild {
+  children: ForwardWireChild[];
   assets: ForwardAssetDocument[];
-  accessContext?: { threadId: number; seq: number };
+  accessContext: { threadId: number; seq: number };
 }

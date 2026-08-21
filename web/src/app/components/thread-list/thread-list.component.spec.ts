@@ -173,6 +173,20 @@ describe('ThreadListComponent', () => {
     expect(comp.isSearchEmpty()).toBe(false);
   });
 
+  it.each([
+    ['[File set] · 4', '[文件集] · 4'],
+    ['[System message]', '[系统消息]'],
+    ['[Missed call]', '未接来电'],
+  ])('localizes the shared preview marker %s', (preview, expected) => {
+    TestBed.inject(TranslocoService).setActiveLang('zh-CN');
+    expect(
+      comp.previewText({
+        ...p2p(1, 11),
+        lastMessagePreview: preview,
+      }),
+    ).toBe(expected);
+  });
+
   it('openFriendRequests opens the friend-requests popup', () => {
     comp.openFriendRequests();
     expect(popupSpy).toHaveBeenCalledWith(PopupType.FRIEND_REQUESTS, {

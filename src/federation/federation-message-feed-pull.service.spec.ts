@@ -60,8 +60,12 @@ function harness(committedThrough = 0n, initialized = true) {
       query: {
         federationPullCursor: {
           findFirst: vi.fn(async () => ({
+            initialized: state.initialized,
             committedThrough: state.committedThrough,
           })),
+        },
+        peerStateFeedPullCursor: {
+          findFirst: vi.fn(async () => undefined),
         },
       },
     },
@@ -69,12 +73,27 @@ function harness(committedThrough = 0n, initialized = true) {
   return {
     service: new FederationMessageFeedPullService(database as never),
     order,
+    transaction,
     whereUpdate,
     state,
   };
 }
 
 describe('FederationMessageFeedPullService commit boundary', () => {
+  it('finishes remote page fetch before opening the apply transaction', async () => {
+    const { service, transaction } = harness();
+
+    await service.run('peer.test', {
+      fetch: async () => {
+        expect(transaction).not.toHaveBeenCalled();
+        return page('0');
+      },
+      apply: async () => undefined,
+    });
+
+    expect(transaction).toHaveBeenCalledOnce();
+  });
+
   it('positions an uninitialized cursor before requesting its first page', async () => {
     const { service, state } = harness(0n, false);
     const fetch = vi

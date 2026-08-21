@@ -10,6 +10,7 @@ import { DatabaseService } from '../src/database/database.service';
 import { sessionToken, user } from '../src/database/schema';
 import { OtpLoginService } from '../src/auth/otp-login.service';
 import { BusinessCode } from '../src/common/business-code';
+import { RateLimitModeService } from '../src/rate-limit/rate-limit-mode.service';
 
 /**
  * OTP-login e2e — the admin-issued one-time-code login path, exercised through the real HTTP surface
@@ -30,9 +31,17 @@ describe('OTP login e2e', () => {
     // This suite exercises the OTP state machine, not throttling. Its many
     // intentional attempts share supertest's loopback IP and would otherwise
     // consume one production-sized bucket across independent test cases.
+    const defaults = new RateLimitModeService();
+    const disabledConfiguration = defaults.monitoringConfig().map((policy) => ({
+      ...policy,
+      mode: 'disabled' as const,
+    }));
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideProvider(RateLimitModeService)
+      .useValue(new RateLimitModeService(undefined, disabledConfiguration))
+      .compile();
     const adapter = new FastifyAdapter();
     app = moduleFixture.createNestApplication(adapter);
     await configureApp(app, adapter);

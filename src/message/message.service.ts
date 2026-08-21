@@ -41,7 +41,6 @@ import {
 import { contextualizeCasUrls } from '../upload/cas-url.js';
 import { LinkPreviewService } from '../link-preview/link-preview.service.js';
 import { MEDIA_STATUS } from '../common/media-status.js';
-import { parseCallContent, callPreviewLabel } from '../calls/call-content.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import {
@@ -56,6 +55,7 @@ import {
   parseTextMessageContent,
   stringifyTextMessageContent,
 } from '../../shared/text-message-content.js';
+import { deriveMessagePreview } from '../../shared/message-preview.js';
 import {
   parseSystemMessageContent,
   stringifySystemMessageContent,
@@ -108,9 +108,6 @@ export interface AwayNotificationMessage {
   createdAt: Date;
 }
 
-/** Max characters of a PURE_TEXT message kept in the denormalized last-message preview. */
-const PREVIEW_TEXT_MAX = 200;
-
 /**
  * Drop the internal BigInt `id` from a Message row. `id` is a global autoincrement — a cross-conversation
  * throughput side-channel whose deltas leak server-wide volume — so it must never reach a client or
@@ -131,72 +128,7 @@ export function stripMessageId<T extends { id: bigint }>(
  * content types change. Text is whitespace-collapsed + trimmed so a multiline message renders on one line.
  */
 export function derivePreview(type: ContentType, content: string): string {
-  switch (type) {
-    case ContentType.PURE_TEXT:
-      return toDisplayText(parseTextMessageContent(content)?.text ?? '')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, PREVIEW_TEXT_MAX);
-    case ContentType.LINK: {
-      // Prefer the card's readable metadata before its URL. Some providers (notably Douyin) put the
-      // useful caption in description while leaving title empty.
-      try {
-        const c = JSON.parse(content) as {
-          title?: string;
-          description?: string;
-          url?: string;
-        };
-        const t =
-          (c.title && c.title.trim() ? c.title : undefined) ??
-          (c.description && c.description.trim() ? c.description : undefined) ??
-          c.url ??
-          content;
-        return t.replace(/\s+/g, ' ').trim().slice(0, PREVIEW_TEXT_MAX);
-      } catch {
-        return content.slice(0, PREVIEW_TEXT_MAX);
-      }
-    }
-    case ContentType.IMAGE:
-      return '[Photo]';
-    case ContentType.INVITE:
-      return '[Group invite]';
-    case ContentType.SYSTEM:
-      return '[System message]';
-    case ContentType.VIDEO:
-      return '[Video]';
-    case ContentType.FILE:
-      return '[File]';
-    case ContentType.AUDIO:
-      return '[Voice message]';
-    case ContentType.GALLERY: {
-      // A multi-asset bundle: surface the item count when the content parses.
-      try {
-        const c = JSON.parse(content) as { items?: unknown[] };
-        return c.items?.length ? `[Gallery · ${c.items.length}]` : '[Gallery]';
-      } catch {
-        return '[Gallery]';
-      }
-    }
-    case ContentType.FORWARD: {
-      try {
-        const c = JSON.parse(content) as { summaryLines?: string[] };
-        const first = c.summaryLines?.[0]?.replace(/\s+/g, ' ').trim();
-        return first
-          ? `[Chat history] ${first}`.slice(0, PREVIEW_TEXT_MAX)
-          : '[Chat history]';
-      } catch {
-        return '[Chat history]';
-      }
-    }
-    case ContentType.CALL: {
-      // A call-record bubble: the status-aware label (never the raw JSON). Degrades to a generic
-      // label on a malformed payload (parseCallContent returns null).
-      const c = parseCallContent(content);
-      return c ? callPreviewLabel(c.status) : '[Call]';
-    }
-    default:
-      return content.slice(0, PREVIEW_TEXT_MAX);
-  }
+  return deriveMessagePreview(type, content, toDisplayText);
 }
 
 /**
@@ -1128,20 +1060,6 @@ export class MessageService {
           imageSize:
             typeof content['size'] === 'number' ? content['size'] : undefined,
           imageShape: 'thumbnail',
-        };
-      if (contentType === ContentType.INVITE)
-        return {
-          image:
-            typeof content['groupAvatar'] === 'string'
-              ? content['groupAvatar']
-              : undefined,
-          imageLabel:
-            typeof content['groupName'] === 'string'
-              ? content['groupName']
-              : undefined,
-          imageIdentity:
-            typeof content['group'] === 'string' ? content['group'] : undefined,
-          imageShape: 'avatar',
         };
       if (contentType === ContentType.LINK) {
         const link = JSON.parse(rawContent) as Record<string, unknown>;

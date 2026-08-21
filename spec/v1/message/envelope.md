@@ -44,7 +44,7 @@ interface FederatedMessage extends EncodedMessageContent {
 }
 ```
 
-`JsonObjectString` is a string encoding of a UTF-8 JSON object, not arbitrary text. A consumer MUST validate the outer `FederatedMessage` before processing `content` according to `contentType`. For a known type, it MUST parse the string once as JSON and strictly validate the corresponding closed schema. It MUST reject a result that is not an object, contains fields unknown to that type, or otherwise violates the type. A valid but unknown extension type follows the bounded skip rules in [Message, Section 4](../message.md#4-contenttype).
+`JsonObjectString` is a string encoding of a UTF-8 JSON object, not arbitrary text. A consumer MUST validate the outer `FederatedMessage` before processing `content` according to `contentType`. It MUST parse the string once as JSON and strictly validate the corresponding closed schema. It MUST reject a result that is not an object, contains fields unknown to that type, uses an unknown content type, or otherwise violates the type.
 
 ## 2. Thread and author
 
@@ -103,11 +103,11 @@ The corresponding content document defines type-specific conditional fields.
 
 `assets` is the authoritative manifest of CAS bytes directly referenced by content:
 
-| `contentType`                                    | Digests and `assets`                                |
-| ------------------------------------------------ | --------------------------------------------------- |
-| `PURE_TEXT`, `LINK`, `INVITE`, `CALL`, `FORWARD` | Reference no digest directly; MUST be empty         |
-| `IMAGE`, `VIDEO`, `AUDIO`, `FILE`                | Exactly one digest and a descriptor for that digest |
-| `GALLERY`                                        | The complete deduplicated set of item digests       |
+| `contentType`                          | Digests and `assets`                                |
+| -------------------------------------- | --------------------------------------------------- |
+| `PURE_TEXT`, `LINK`, `CALL`, `FORWARD` | Reference no digest directly; MUST be empty         |
+| `IMAGE`, `VIDEO`, `AUDIO`, `FILE`      | Exactly one digest and a descriptor for that digest |
+| `GALLERY`                              | The complete deduplicated set of item digests       |
 
 - Each digest appears at most once.
 - The deduplicated set of digests referenced by content MUST exactly equal `assets`.
@@ -131,7 +131,7 @@ When reading a receipt, the publisher:
 - MUST NOT create a timeline message, modify the original message, produce another receipt, or distribute it further.
 - MUST NOT write the receipt's origin pair back to the original message.
 
-The absence of an observed receipt does not prove processing failure and cannot distinguish pending processing, transport delay, local quarantine, or discard.
+The absence of an observed receipt does not prove processing failure and cannot distinguish pending processing, transport delay, local policy delay, or discard.
 
 ## 9. Common receive order
 
@@ -140,6 +140,6 @@ The absence of an observed receipt does not prove processing failure and cannot 
 3. Validate that `assets` exactly matches the set of content digests.
 4. Receive idempotently using the direct-origin identity and record the coordinate mapping.
 5. Store unfetched resources as durable pending work.
-6. Under local policy, commit valid items, quarantine invalid items, and advance the query cursor where allowed.
+6. Apply accepted items under local policy.
 
 One invalid message or a later resource failure MUST NOT permanently block other messages on the same page or the cursor, and MUST NOT leave a partial write that could be treated as a valid message, resource-authorization proof, or other application fact.

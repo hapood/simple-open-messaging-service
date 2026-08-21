@@ -7,6 +7,8 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  height: 76px;
+  box-sizing: border-box;
   overflow: hidden;
   padding: 8px 10px;
   background: var(--chat-card-bg);

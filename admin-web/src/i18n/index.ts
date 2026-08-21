@@ -68,7 +68,7 @@ void i18nReady.then(() => {
 export async function changeAppLanguage(lng: AppLang): Promise<void> {
   await i18nReady
   await i18next.changeLanguage(lng)
-  localStorage.setItem(LANG_STORAGE_KEY, lng)
+  window.localStorage.setItem(LANG_STORAGE_KEY, lng)
 }
 
 export default i18next

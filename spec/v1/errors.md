@@ -30,7 +30,7 @@ Federation v1 JSON endpoints define only these non-success HTTP statuses:
 | `409` | The authenticated federation relationship has a registered non-automatically-recoverable conflict | Enter `halted` only with a valid fatal code |
 | `503` | The target peer is temporarily unable to provide federation service | An established peer enters `degraded`; a peer in handshake remains `establishing` |
 
-Normal success and all ordinary application results use HTTP `200`. Application results include resource absence, permission or capability denial, quota exhaustion, operation payload limits, cursor conflicts, and concurrency conflicts. These results MUST NOT change peer lifecycle. Network failure, timeout, and Healthy `200 unavailable` have the same availability-degradation effect as HTTP `503`.
+Normal success and all ordinary application results use HTTP `200`. Application results include resource absence, permission denial, quota exhaustion, operation payload limits, cursor conflicts, and concurrency conflicts. These results MUST NOT change peer lifecycle. Network failure, timeout, and Healthy `200 unavailable` have the same availability-degradation effect as HTTP `503`.
 
 Raw media response statuses `206` and `416`, with their associated headers, belong to HTTP Range semantics and are explicit exceptions to the JSON status set above.
 
@@ -77,7 +77,6 @@ HTTP `409` alone is insufficient to trigger `halted`. Only HTTP `409` combined w
 | 50009 | `FEDERATION_PEER_BLOCKED` | 409 | Fatal: record the remote-blocked reason, enter `halted`, and stop automatic communication. |
 | 50010 | `FEDERATION_GROUP_AUTHOR_LEFT` | 200 | This author path has terminated; stop this stream without affecting other streams. |
 | 50011 | `FEDERATION_QUOTA_EXCEEDED` | 200 | Back off for `data.retryAfter` seconds; MUST NOT degrade the peer or advance the failed page cursor. |
-| 50013 | `FEDERATION_CAPABILITY_DISABLED` | 200 | Peer policy disabled this application category; stop automatic retries until configuration changes. |
 | 50014 | `FEDERATION_LOCAL_IDENTITY_LOST` | 503 | The peer temporarily cannot provide federation service safely; retain the old pin and retry with backoff. |
 | 50015 | `FEDERATION_IDENTITY_MISMATCH` | 409 | Fatal: retain the old pin, record the identity contradiction, and enter `halted`; MUST NOT automatically adopt the new identity. |
 | 50019 | `FEDERATION_FEED_CURSOR_UNAVAILABLE` | 200 | Do not apply the page; validate and atomically store `data.resumeAfter`. Used for bootstrap, a clearly out-of-range cursor, and message-query content that has been purged. |
@@ -91,8 +90,6 @@ HTTP `409` alone is insufficient to trigger `halted`. Only HTTP `409` combined w
 | 70007 | `CALL_CANCELLED` | 200 | The caller cancelled the call. Converge locally to cancelled and stop media, timers, and dependent frames; MUST NOT degrade the peer. |
 | 70008 | `CALL_TERMINATED` | 200 | Another terminal outcome ended the call. Converge locally to terminal and stop media, timers, and dependent frames; MUST NOT degrade the peer. |
 
-`FEDERATION_CAPABILITY_DISABLED` means that peer policy has disabled a category of core application operations. Here, `capability` does not mean an extension capability under core protocol Section 2.1 and provides no evidence that an optional endpoint exists.
-
 ## Structured error data
 
 Except for codes explicitly listed in this section, `data` MUST be omitted or JSON `null`. Every object below is closed. An unknown field, missing field, `null`, wrong type, or non-safe integer makes the error response malformed; the consumer MUST NOT use its data.
@@ -101,10 +98,6 @@ Except for codes explicitly listed in this section, `data` MUST be omitted or JS
 interface FederationQuotaExceededData {
   // Non-negative integer delta-seconds, measured from complete receipt.
   retryAfter: SafeInteger;
-}
-
-interface FederationCapabilityDisabledData {
-  category: 'messages' | 'files' | 'requests' | 'signals';
 }
 
 interface FederationFeedCursorUnavailableData {
@@ -119,8 +112,6 @@ interface FederationQueryRetryData {
 ```
 
 `FEDERATION_QUOTA_EXCEEDED` MUST carry `FederationQuotaExceededData` with `retryAfter >= 0`. The operation itself identifies the limited application category; the response MUST NOT carry a category, limit, unit, window, or server-policy parameter. An implementation may place a specific quota reason in diagnostic-only `message`; a consumer MUST NOT parse that text to determine behavior.
-
-`FEDERATION_CAPABILITY_DISABLED` MUST carry `FederationCapabilityDisabledData`.
 
 `FEDERATION_FEED_CURSOR_UNAVAILABLE` MUST carry `FederationFeedCursorUnavailableData`. When `after` is omitted, `resumeAfter` MUST be the operation's current valid exclusive starting point; every operation's starting point MUST be non-negative. When `after` is present, exactly two corrections are usable: `resumeAfter > after` when old message content was purged, or `resumeAfter < after` when the requested position is clearly beyond the operation's current end. An equal value makes no progress and MUST be rejected. The three compacted feeds MUST NOT use this result because of historical deletion or compaction, and a tombstone query MUST NOT skip permanent deletion facts because of cleanup.
 

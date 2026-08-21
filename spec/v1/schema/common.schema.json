@@ -4,34 +4,17 @@
   "title": "Simple Open Chat Federation Protocol v1 common wire scalars",
   "$defs": {
     "contentType": {
-      "oneOf": [
-        {
-          "enum": [
-            "PURE_TEXT",
-            "INVITE",
-            "IMAGE",
-            "VIDEO",
-            "FILE",
-            "AUDIO",
-            "LINK",
-            "CALL",
-            "FORWARD",
-            "GALLERY"
-          ]
-        },
-        { "$ref": "#/$defs/extensionId" }
+      "enum": [
+        "PURE_TEXT",
+        "IMAGE",
+        "VIDEO",
+        "FILE",
+        "AUDIO",
+        "LINK",
+        "CALL",
+        "FORWARD",
+        "GALLERY"
       ]
-    },
-    "extensionId": {
-      "type": "string",
-      "maxLength": 128,
-      "pattern": "^(?:socfp|[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+)\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*\\.v[1-9][0-9]*$"
-    },
-    "extensions": {
-      "type": "object",
-      "maxProperties": 64,
-      "propertyNames": { "$ref": "#/$defs/extensionId" },
-      "additionalProperties": { "type": "object" }
     },
     "userAccount": {
       "type": "string",

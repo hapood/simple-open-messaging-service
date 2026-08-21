@@ -76,13 +76,12 @@ describe('Media asset garbage collection', () => {
   }
 
   it('lists pending federated deletions without mutating them', async () => {
-    const { threadId, userId } = await seedThreadAndUser();
+    const { threadId } = await seedThreadAndUser();
     const [pending] = await database.db
       .insert(federatedMessageTombstone)
       .values({
         threadId,
-        creatorId: userId,
-        originSeq: 7,
+        messageSeq: 7,
         authorityDomain: 'origin.test',
         sourceDomain: 'origin.test',
         remoteDeletedId: 42n,

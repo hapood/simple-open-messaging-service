@@ -16,39 +16,6 @@ $danger: var(--app-danger);
   background: var(--app-surface);
 }
 
-.popup-header {
-  height: 56px;
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  padding: 0 8px;
-  border-bottom: 1px solid $border;
-  position: relative;
-
-  .popup-title {
-    position: absolute;
-    left: 50%;
-    transform: translateX(-50%);
-    font-size: 16px;
-    font-weight: 600;
-  }
-}
-
-.icon-btn {
-  @include styless-button;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: var(--app-radius-pill);
-  cursor: pointer;
-
-  &:hover {
-    background: $bg-subtle;
-  }
-}
-
 /* tabs */
 .tabs {
   flex: 1;

@@ -10,6 +10,7 @@ import {
   friendRequest,
   federatedFriendRequest,
   groupMembershipRequest,
+  groupAuditLog,
   messageThread,
   threadAudience,
   threadParticipant,
@@ -102,6 +103,74 @@ export class InviteService {
     private readonly messageFanout?: Pick<MessageFanoutService, 'dispatch'>,
   ) {}
 
+  async writeGroupInviteClientStateInTx(
+    tx: DatabaseTransaction,
+    threadId: number,
+    memberUserId: number,
+    pendingRevisions: Array<{ userId: number; revision: number }>,
+  ): Promise<void> {
+    const [state] = await tx
+      .select({
+        groupUserId: messageThread.groupUserId,
+        account: user.account,
+        domain: user.domain,
+        name: user.name,
+        avatar: user.avatar,
+        description: user.bio,
+        profileRev: user.profileRev,
+      })
+      .from(messageThread)
+      .innerJoin(user, eq(user.id, messageThread.groupUserId))
+      .where(eq(messageThread.id, threadId))
+      .limit(1);
+    if (!state?.groupUserId || state.domain !== 'local') return;
+    const [request, member] = await Promise.all([
+      tx.query.groupMembershipRequest.findFirst({
+        where: and(
+          eq(groupMembershipRequest.groupUserId, state.groupUserId),
+          eq(groupMembershipRequest.memberUserId, memberUserId),
+          eq(groupMembershipRequest.direction, 'INVITE'),
+        ),
+      }),
+      tx.query.user.findFirst({
+        where: eq(user.id, memberUserId),
+        columns: { account: true },
+      }),
+    ]);
+    if (!request || !member) return;
+    const revision = await this.clientStateFeed.writeInTx(tx, {
+      userId: memberUserId,
+      account: state.account,
+      domain: this.config.domain,
+      eventType: 'GROUP_INVITE_INTENT',
+      subjectAccount: member.account,
+      subjectDomain: this.config.domain,
+      body: {
+        status:
+          request.status === 'MEMBER'
+            ? 'ACCEPTED'
+            : request.status === 'REQUESTED'
+              ? 'REQUESTED'
+              : 'REVOKED',
+        note: request.note,
+        requestedAt: request.requestedAt?.getTime() ?? null,
+        expiresAt: request.expiresAt?.getTime() ?? null,
+        threadId,
+        group: {
+          account: state.account,
+          domain: this.config.domain,
+          isLocal: true,
+          name: state.name,
+          avatar: state.avatar,
+          description: state.description,
+          profileRev: state.profileRev,
+        },
+      },
+    });
+    if (revision !== null)
+      pendingRevisions.push({ userId: memberUserId, revision });
+  }
+
   /** Create an outbound federated request by immutable Address without materializing a User stub.
    * The optional display snapshot came from the caller's temporary resolve stream and is deliberately
    * presentation-only. FederationService owns the authoritative state-feed write in the callback. */
@@ -114,7 +183,6 @@ export class InviteService {
     afterWrite: (
       tx: DatabaseTransaction,
       state: {
-        revision: number;
         requestedAt: Date;
         expiresAt: Date;
         note: string;
@@ -129,7 +197,6 @@ export class InviteService {
       const [current] = await tx
         .select({
           status: federatedFriendRequest.status,
-          revision: federatedFriendRequest.revision,
           expiresAt: federatedFriendRequest.expiresAt,
         })
         .from(federatedFriendRequest)
@@ -152,7 +219,6 @@ export class InviteService {
       }
       const requestedAt = now;
       const expiresAt = new Date(now.getTime() + INVITE_TTL_MS);
-      const revision = (current?.revision ?? -1) + 1;
       await tx
         .insert(federatedFriendRequest)
         .values({
@@ -162,7 +228,6 @@ export class InviteService {
           direction: 'OUTGOING',
           status: 'REQUESTED',
           note: trimmed,
-          revision,
           requestedAt,
           expiresAt,
           displayName: snapshot.displayName?.slice(0, 30) || null,
@@ -179,7 +244,6 @@ export class InviteService {
           set: {
             status: 'REQUESTED',
             note: trimmed,
-            revision,
             requestedAt,
             expiresAt,
             displayName: snapshot.displayName?.slice(0, 30) || null,
@@ -187,7 +251,7 @@ export class InviteService {
             updatedAt: now,
           },
         });
-      await afterWrite(tx, { revision, requestedAt, expiresAt, note: trimmed });
+      await afterWrite(tx, { requestedAt, expiresAt, note: trimmed });
       const local = await tx.query.user.findFirst({
         where: eq(user.id, localUserId),
       });
@@ -199,7 +263,6 @@ export class InviteService {
         eventType: 'P2P_INTENT',
         subjectAccount: account,
         subjectDomain: remoteDomain,
-        businessRevision: revision,
         body: {
           status: 'REQUESTED',
           note: trimmed,
@@ -310,14 +373,13 @@ export class InviteService {
         : null;
     await tx.execute(sql`
       INSERT INTO "FriendRequest" (
-        "requesterUserId", "targetUserId", status, note, revision,
+        "requesterUserId", "targetUserId", status, note,
         "requestedAt", "expiresAt", "updatedAt"
       ) VALUES (${actorUserId}, ${peerUserId}, ${desired}::"FriendRequestStatus",
-        ${note.slice(0, 255)}, 1,
+        ${note.slice(0, 255)},
         ${requestedAt}, ${expiresAt}, CURRENT_TIMESTAMP)
       ON CONFLICT ("requesterUserId", "targetUserId") DO UPDATE SET
         status = EXCLUDED.status, note = EXCLUDED.note,
-        revision = "FriendRequest".revision + 1,
         "requestedAt" = CASE WHEN EXCLUDED.status IN ('REQUESTED', 'FRIEND') THEN EXCLUDED."requestedAt"
                              ELSE "FriendRequest"."requestedAt" END,
         "expiresAt" = EXCLUDED."expiresAt",
@@ -333,7 +395,7 @@ export class InviteService {
     if (desired === 'FRIEND' && peer && !peer.isForeigner) {
       await tx.execute(sql`
         UPDATE "FriendRequest" SET status = 'FRIEND', "expiresAt" = NULL,
-          revision = revision + 1, "updatedAt" = CURRENT_TIMESTAMP
+          "updatedAt" = CURRENT_TIMESTAMP
         WHERE "requesterUserId" = ${peerUserId}
           AND "targetUserId" = ${actorUserId}
           AND status = 'REQUESTED' AND "expiresAt" > CURRENT_TIMESTAMP
@@ -390,9 +452,7 @@ export class InviteService {
         const body = {
           ...commonBody,
           direction: owner.id === actor.id ? 'OUTGOING' : 'INCOMING',
-          peer: this.clientInviteUser(
-            owner.id === actor.id ? subject : actor,
-          ),
+          peer: this.clientInviteUser(owner.id === actor.id ? subject : actor),
         };
         const revision = await this.clientStateFeed.writeInTx(tx, {
           userId: owner.id,
@@ -401,7 +461,6 @@ export class InviteService {
           eventType: 'P2P_INTENT',
           subjectAccount: subject.account,
           subjectDomain: subject.domain,
-          businessRevision: direction.revision,
           body,
         });
         if (revision !== null) pending.push({ userId: owner.id, revision });
@@ -609,13 +668,7 @@ export class InviteService {
     return result;
   }
 
-  /**
-   * Create (or refresh) a single GROUP invite. Returns the invite id — STABLE across overwrites (the
-   * BigInt PK is unchanged; only originId refreshes), so an already-delivered card message still
-   * resolves to the freshest invite. Does NOT arm the unread badge (a group invite surfaces as a card
-   * message in the P2P thread, not the friend-pending badge). The caller friend-gates + writes that
-   * card message.
-   */
+  /** Create or refresh one group membership invitation and its append-only origin audit entry. */
   async createGroupInvite(
     fromUserId: number,
     threadId: number,
@@ -626,7 +679,6 @@ export class InviteService {
   ): Promise<string> {
     const trimmed = (note ?? '').slice(0, 255);
     const expiresAt = new Date(Date.now() + INVITE_TTL_MS);
-    void fromUserId;
     void originOverride;
     return this.database.db.transaction(async (tx) => {
       const target = await tx.query.messageThread.findFirst({
@@ -639,13 +691,12 @@ export class InviteService {
       else {
         await tx.execute(sql`
           INSERT INTO "GroupMembershipRequest" (
-            "groupUserId", "memberUserId", direction, status, note, revision,
+            "groupUserId", "memberUserId", direction, status, note,
             "requestedAt", "expiresAt", "updatedAt"
           ) VALUES (${target.groupUserId}, ${toUserId}, 'INVITE', 'REQUESTED',
-            ${trimmed}, 1, CURRENT_TIMESTAMP, ${expiresAt}, CURRENT_TIMESTAMP)
+            ${trimmed}, CURRENT_TIMESTAMP, ${expiresAt}, CURRENT_TIMESTAMP)
           ON CONFLICT ("groupUserId", "memberUserId", direction) DO UPDATE SET
             status = 'REQUESTED', note = EXCLUDED.note,
-            revision = "GroupMembershipRequest".revision + 1,
             "requestedAt" = CURRENT_TIMESTAMP, "expiresAt" = EXCLUDED."expiresAt",
             "updatedAt" = CURRENT_TIMESTAMP
           WHERE "GroupMembershipRequest".status IS DISTINCT FROM 'REQUESTED'
@@ -659,128 +710,66 @@ export class InviteService {
           eq(groupMembershipRequest.memberUserId, toUserId),
           eq(groupMembershipRequest.direction, 'INVITE'),
         ),
-        columns: { id: true },
-      });
-      if (!request) throw new Error('group request write disappeared');
-      return request.id.toString();
-    });
-  }
-
-  /**
-   * The live state of an invite for the group-invite dialog: status / expiry / target group identity /
-   * whether the caller already joined. Non-leaking — an invite not addressed to the caller (or a missing
-   * one) resolves to INVITE_NOT_FOUND. The dialog renders "valid → Join", "joined", "expired", or "invalid".
-   */
-  async getInviteDetail(
-    inviteIdOrGroup: string,
-    callerId: number,
-  ): Promise<{
-    id: string;
-    kind: string;
-    status: string;
-    expiresAt: Date;
-    note: string;
-    threadId: number | null;
-    groupName: string;
-    groupAvatar: string;
-    groupDomain: string;
-    groupIsLocal: boolean;
-    alreadyJoined: boolean;
-    joinRequested: boolean;
-    fromUser: {
-      id: number;
-      account: string;
-      name: string;
-      avatar: string;
-      domain: string;
-      isForeigner: boolean;
-    };
-  }> {
-    const id = await this.resolveInviteId(inviteIdOrGroup, callerId, false);
-    const request =
-      await this.database.db.query.groupMembershipRequest.findFirst({
-        where: eq(groupMembershipRequest.id, id),
-        with: {
-          groupUser: {
-            columns: { id: true, name: true, avatar: true, domain: true },
-          },
+        columns: {
+          id: true,
+          requestedAt: true,
+          expiresAt: true,
         },
       });
-    if (
-      !request ||
-      request.memberUserId !== callerId ||
-      request.direction !== 'INVITE'
-    ) {
-      throw new BusinessException(
-        BusinessCode.INVITE_NOT_FOUND,
-        'invite not found',
-      );
-    }
-    const thread = await this.database.db.query.messageThread.findFirst({
-      where: eq(messageThread.groupUserId, request.groupUserId),
-      columns: { id: true },
-    });
-    if (!thread)
-      throw new BusinessException(
-        BusinessCode.INVITE_NOT_FOUND,
-        'group mirror missing',
-      );
-    const [p, groupRow, joinDirection] = await Promise.all([
-      this.database.db.query.threadParticipant.findFirst({
-        where: and(
-          eq(threadParticipant.userId, callerId),
-          eq(threadParticipant.threadId, thread.id),
-        ),
-        columns: { leftAt: true },
-      }),
-      this.database.db.query.group.findFirst({
-        where: eq(group.groupUserId, request.groupUserId),
-        columns: { ownerId: true },
-      }),
-      this.database.db.query.groupMembershipRequest.findFirst({
-        where: and(
-          eq(groupMembershipRequest.groupUserId, request.groupUserId),
-          eq(groupMembershipRequest.memberUserId, callerId),
-          eq(groupMembershipRequest.direction, 'JOIN'),
-        ),
-        columns: { status: true },
-      }),
-    ]);
-    const owner = groupRow
-      ? await this.database.db.query.user.findFirst({
-          where: eq(user.id, groupRow.ownerId),
-          columns: USER_SELECT,
+      if (!request) throw new Error('group request write disappeared');
+      const [groupIdentity, memberIdentity, actorIdentity] = await Promise.all([
+        tx.query.user.findFirst({
+          where: eq(user.id, target.groupUserId),
+          columns: { account: true, domain: true },
+        }),
+        tx.query.user.findFirst({
+          where: eq(user.id, toUserId),
+          columns: { account: true, domain: true },
+        }),
+        tx.query.user.findFirst({
+          where: eq(user.id, fromUserId),
+          columns: { account: true, domain: true },
+        }),
+      ]);
+      if (!groupIdentity || !memberIdentity || !actorIdentity)
+        throw new Error('group invite audit identity missing');
+      const groupDomain =
+        groupIdentity.domain === 'local'
+          ? this.config.domain
+          : groupIdentity.domain;
+      const memberDomain =
+        memberIdentity.domain === 'local'
+          ? this.config.domain
+          : memberIdentity.domain;
+      const actorDomain =
+        actorIdentity.domain === 'local'
+          ? this.config.domain
+          : actorIdentity.domain;
+      await tx
+        .insert(groupAuditLog)
+        .values({
+          eventKey: `invite:${groupDomain}:${groupIdentity.account}:${memberDomain}:${memberIdentity.account}:${request.requestedAt?.getTime() ?? 0}:requested`,
+          groupUserId: target.groupUserId,
+          groupAccount: groupIdentity.account,
+          groupDomain,
+          actorType: 'USER',
+          actorUserId: fromUserId,
+          actorAccount: actorIdentity.account,
+          actorDomain,
+          action: 'group.invite.requested',
+          targetType: 'group_member',
+          targetId: `${memberIdentity.account}@${memberDomain}`,
+          meta: {
+            memberAccount: memberIdentity.account,
+            memberDomain,
+            requestedAt: request.requestedAt?.getTime() ?? null,
+            expiresAt: request.expiresAt?.getTime() ?? null,
+            note: trimmed,
+          },
         })
-      : null;
-    if (!owner)
-      throw new BusinessException(
-        BusinessCode.INVITE_NOT_FOUND,
-        'group owner missing',
-      );
-    const alreadyJoined = !!p && p.leftAt === null;
-    const gu = request.groupUser;
-    const groupIsLocal = !gu?.domain || gu.domain === 'local';
-    const groupDomain = groupIsLocal ? this.config.domain : (gu?.domain ?? '');
-    return {
-      id: request.id.toString(),
-      kind: 'GROUP',
-      status:
-        request.status === 'REQUESTED'
-          ? 'PENDING'
-          : request.status === 'MEMBER'
-            ? 'ACCEPTED'
-            : 'REVOKED',
-      expiresAt: request.expiresAt ?? new Date(0),
-      note: request.note,
-      threadId: thread.id,
-      groupName: gu?.name ?? '',
-      groupAvatar: gu?.avatar ?? '',
-      groupDomain,
-      groupIsLocal,
-      alreadyJoined,
-      joinRequested: !alreadyJoined && joinDirection?.status === 'REQUESTED',
-      fromUser: owner,
-    };
+        .onConflictDoNothing({ target: groupAuditLog.eventKey });
+      return request.id.toString();
+    });
   }
 
   /**
@@ -1035,43 +1024,125 @@ export class InviteService {
 
   /** Reject a pending invite addressed to `byUserId`. */
   async rejectInvite(
-    inviteId: string,
+    inviteIdOrGroup: string,
     byUserId: number,
     afterReject?: (
       tx: DatabaseTransaction,
       fromUserId: number,
     ) => Promise<void>,
   ): Promise<void> {
-    const id = this.parseInviteId(inviteId);
+    const id = await this.resolveInviteId(inviteIdOrGroup, byUserId, true);
     const pendingRevisions: Array<{ userId: number; revision: number }> = [];
     await this.database.db.transaction(async (tx) => {
       const request = await tx.query.friendRequest.findFirst({
         where: eq(friendRequest.id, id),
       });
-      if (!request || request.status !== 'REQUESTED') {
-        throw new BusinessException(
-          !request
-            ? BusinessCode.INVITE_NOT_FOUND
-            : BusinessCode.INVITE_ALREADY_HANDLED,
-          !request ? 'request not found' : 'request already handled',
-        );
+      if (request) {
+        if (request.status !== 'REQUESTED')
+          throw new BusinessException(
+            BusinessCode.INVITE_ALREADY_HANDLED,
+            'request already handled',
+          );
+        if (request.targetUserId !== byUserId)
+          throw new BusinessException(
+            BusinessCode.INVITE_NOT_YOURS,
+            'this request is not yours to reject',
+          );
+        if (afterReject) await afterReject(tx, request.requesterUserId);
+        else
+          pendingRevisions.push(
+            ...(await this.writeLocalFriendIntentInTx(
+              tx,
+              byUserId,
+              request.requesterUserId,
+              false,
+            )),
+          );
+        return;
       }
-      if (request.targetUserId !== byUserId) {
+
+      const membership = await tx.query.groupMembershipRequest.findFirst({
+        where: eq(groupMembershipRequest.id, id),
+      });
+      if (!membership)
+        throw new BusinessException(
+          BusinessCode.INVITE_NOT_FOUND,
+          'request not found',
+        );
+      if (
+        membership.direction !== 'INVITE' ||
+        membership.status !== 'REQUESTED'
+      )
+        throw new BusinessException(
+          BusinessCode.INVITE_ALREADY_HANDLED,
+          'group request already handled',
+        );
+      if (membership.memberUserId !== byUserId)
         throw new BusinessException(
           BusinessCode.INVITE_NOT_YOURS,
           'this request is not yours to reject',
         );
-      }
-      if (afterReject) await afterReject(tx, request.requesterUserId);
-      else
-        pendingRevisions.push(
-          ...(await this.writeLocalFriendIntentInTx(
-            tx,
-            byUserId,
-            request.requesterUserId,
-            false,
-          )),
-        );
+      const [updated] = await tx
+        .update(groupMembershipRequest)
+        .set({
+          status: 'NOT_MEMBER',
+          expiresAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(groupMembershipRequest.id, id))
+        .returning({ id: groupMembershipRequest.id });
+      const [groupIdentity] = await tx
+        .select({
+          account: user.account,
+          domain: user.domain,
+          name: user.name,
+          avatar: user.avatar,
+          description: user.bio,
+          profileRev: user.profileRev,
+          threadId: messageThread.id,
+        })
+        .from(user)
+        .innerJoin(messageThread, eq(messageThread.groupUserId, user.id))
+        .where(eq(user.id, membership.groupUserId))
+        .limit(1);
+      if (!updated || !groupIdentity)
+        throw new Error('group invite state disappeared while rejecting');
+      const memberIdentity = await tx.query.user.findFirst({
+        where: eq(user.id, byUserId),
+        columns: { account: true },
+      });
+      if (!memberIdentity)
+        throw new Error('group invite member disappeared while rejecting');
+      const domain =
+        groupIdentity.domain === 'local'
+          ? this.config.domain
+          : groupIdentity.domain;
+      const revision = await this.clientStateFeed.writeInTx(tx, {
+        userId: byUserId,
+        account: groupIdentity.account,
+        domain,
+        eventType: 'GROUP_INVITE_INTENT',
+        subjectAccount: memberIdentity.account,
+        subjectDomain: this.config.domain,
+        body: {
+          status: 'REVOKED',
+          note: membership.note,
+          requestedAt: membership.requestedAt?.getTime() ?? null,
+          expiresAt: null,
+          threadId: groupIdentity.threadId,
+          group: {
+            account: groupIdentity.account,
+            domain,
+            isLocal: groupIdentity.domain === 'local',
+            name: groupIdentity.name,
+            avatar: groupIdentity.avatar,
+            description: groupIdentity.description,
+            profileRev: groupIdentity.profileRev,
+          },
+        },
+      });
+      if (revision !== null)
+        pendingRevisions.push({ userId: byUserId, revision });
     });
     pendingRevisions.forEach((pending) =>
       this.threadRevisionService.notifyThreadRevision(pending),
@@ -1245,7 +1316,6 @@ export class InviteService {
       peerUserId: number;
       status: 'REQUESTED' | 'FRIEND' | 'NOT_FRIEND';
       note: string;
-      revision: number;
       requestedAt: Date | null;
       expiresAt: Date | null;
       origin: string;
@@ -1261,6 +1331,37 @@ export class InviteService {
   }> {
     await this.lockFriendPairInTx(tx, params.localUserId, params.peerUserId);
     const desired = params.status;
+    if (desired === 'FRIEND') {
+      const [localDirection, peerDirection] = await Promise.all([
+        tx.query.friendRequest.findFirst({
+          where: and(
+            eq(friendRequest.requesterUserId, params.localUserId),
+            eq(friendRequest.targetUserId, params.peerUserId),
+          ),
+          columns: { status: true, expiresAt: true },
+        }),
+        tx.query.friendRequest.findFirst({
+          where: and(
+            eq(friendRequest.requesterUserId, params.peerUserId),
+            eq(friendRequest.targetUserId, params.localUserId),
+          ),
+          columns: { status: true, expiresAt: true },
+        }),
+      ]);
+      const now = new Date();
+      const confirmsLocalRequest =
+        localDirection?.status === 'REQUESTED' &&
+        localDirection.expiresAt !== null &&
+        localDirection.expiresAt > now;
+      const completesAcceptedPeerRequest =
+        localDirection?.status === 'FRIEND' &&
+        peerDirection?.status === 'REQUESTED' &&
+        peerDirection.expiresAt !== null &&
+        peerDirection.expiresAt > now;
+      if (!confirmsLocalRequest && !completesAcceptedPeerRequest) {
+        return { changed: false, requestCreated: false, clientRevisions: [] };
+      }
+    }
     const previous = await tx.query.friendRequest.findFirst({
       where: and(
         eq(friendRequest.requesterUserId, params.peerUserId),
@@ -1268,62 +1369,48 @@ export class InviteService {
       ),
       columns: { status: true, expiresAt: true },
     });
-    const applied = await tx.execute<{ revision: number }>(sql`
+    const applied = await tx.execute(sql`
       INSERT INTO "FriendRequest" (
-        "requesterUserId", "targetUserId", status, note, revision,
+        "requesterUserId", "targetUserId", status, note,
         "requestedAt", "expiresAt", "updatedAt"
       ) VALUES (${params.peerUserId}, ${params.localUserId},
         ${desired}::"FriendRequestStatus", ${params.note.slice(0, 255)},
-        ${params.revision}, ${desired === 'NOT_FRIEND' ? null : params.requestedAt},
+        ${desired === 'NOT_FRIEND' ? null : params.requestedAt},
         ${desired === 'REQUESTED' ? params.expiresAt : null}, CURRENT_TIMESTAMP)
       ON CONFLICT ("requesterUserId", "targetUserId") DO UPDATE SET
-        status = EXCLUDED.status, note = EXCLUDED.note, revision = EXCLUDED.revision,
+        status = EXCLUDED.status, note = EXCLUDED.note,
         "requestedAt" = EXCLUDED."requestedAt", "expiresAt" = EXCLUDED."expiresAt",
         "updatedAt" = CURRENT_TIMESTAMP
-      WHERE "FriendRequest".revision < EXCLUDED.revision
-      RETURNING revision
+      WHERE "FriendRequest".status IS DISTINCT FROM EXCLUDED.status
+         OR "FriendRequest".note IS DISTINCT FROM EXCLUDED.note
+         OR "FriendRequest"."requestedAt" IS DISTINCT FROM EXCLUDED."requestedAt"
+         OR "FriendRequest"."expiresAt" IS DISTINCT FROM EXCLUDED."expiresAt"
+      RETURNING 1
     `);
     if (!applied.rows[0])
       return { changed: false, requestCreated: false, clientRevisions: [] };
     let localStateRevision: number | undefined;
     if (desired === 'NOT_FRIEND') {
-      const closed = await tx.execute<{ revision: number }>(sql`
+      const closed = await tx.execute(sql`
         UPDATE "FriendRequest" SET status = 'NOT_FRIEND', note = '',
-          "expiresAt" = NULL, revision = revision + 1,
+          "expiresAt" = NULL,
           "updatedAt" = CURRENT_TIMESTAMP
         WHERE "requesterUserId" = ${params.localUserId}
           AND "targetUserId" = ${params.peerUserId}
           AND status <> 'NOT_FRIEND'
-        RETURNING revision
+        RETURNING 1
       `);
-      localStateRevision = closed.rows[0]?.revision;
+      localStateRevision = closed.rows[0] ? 1 : undefined;
     } else {
-      const confirmed = await tx.execute<{ revision: number }>(sql`
+      const confirmed = await tx.execute(sql`
         UPDATE "FriendRequest" SET status = 'FRIEND', "expiresAt" = NULL,
-          revision = revision + 1, "updatedAt" = CURRENT_TIMESTAMP
+          "updatedAt" = CURRENT_TIMESTAMP
         WHERE "requesterUserId" = ${params.localUserId}
           AND "targetUserId" = ${params.peerUserId}
           AND status = 'REQUESTED' AND "expiresAt" > CURRENT_TIMESTAMP
-        RETURNING revision
+        RETURNING 1
       `);
-      localStateRevision = confirmed.rows[0]?.revision;
-      if (localStateRevision === undefined && desired === 'FRIEND') {
-        // A peer may still advertise its established, non-expiring FRIEND
-        // direction after this user deleted the relationship. Preserve that
-        // standing peer consent, but refresh our newer NOT_FRIEND direction so
-        // the state-feed caller sends the deletion back and both sides
-        // converge. A valid local REQUESTED direction took the confirmation
-        // branch above and becomes FRIEND instead.
-        const rejected = await tx.execute<{ revision: number }>(sql`
-          UPDATE "FriendRequest" SET revision = revision + 1,
-            "updatedAt" = CURRENT_TIMESTAMP
-          WHERE "requesterUserId" = ${params.localUserId}
-            AND "targetUserId" = ${params.peerUserId}
-            AND status = 'NOT_FRIEND'
-          RETURNING revision
-        `);
-        localStateRevision = rejected.rows[0]?.revision;
-      }
+      localStateRevision = confirmed.rows[0] ? 1 : undefined;
     }
     const pairEffect = await this.reconcileFriendPairInTx(
       tx,
@@ -1649,13 +1736,7 @@ export class InviteService {
     }
   }
 
-  /**
-   * Find the caller's local GROUP Invite row for a group `!account` (the federated-stable card identity):
-   * matched on (toUserId=caller, kind=GROUP) for the group whose account equals groupAccount — the row
-   * handleGroupInvite created. `pendingOnly` — detail shows any-status (so an already-joined invite
-   * renders its final state); accept requires PENDING. Returns null if no such invite (caller throws
-   * the domain error).
-   */
+  /** Find the caller's group membership invitation by the group's stable `!account`. */
   private async findInviteIdByGroup(
     groupAccount: string,
     callerId: number,

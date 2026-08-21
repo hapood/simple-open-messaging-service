@@ -32,6 +32,8 @@ export interface MessageThreadLiveCallbacks {
       name: string;
       avatar: string;
       avatarIdentityId: number;
+      avatarAccount: string;
+      avatarDomain: string;
       isSelf: boolean;
     },
   ) => void;

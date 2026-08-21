@@ -41,9 +41,6 @@ export class SendMessageDto {
 
   // Direct-send content types ONLY. Media is committed exclusively by the staged
   // /send-media + /upload* promotion flow; the other schema values are server-side.
-  //  - INVITE: a system message carrying a server-SIGNED invite token, created exclusively by
-  //    group/invite. Letting a client set it would let them forge invite cards / malformed payloads
-  //    in any thread they belong to.
   // LINK is client-authorable too: `content` carries an owned, completed generationId. The server
   // consumes the in-memory result, so clients cannot forge card metadata or CAS asset references.
   @ApiProperty({

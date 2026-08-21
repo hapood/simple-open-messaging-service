@@ -16,6 +16,7 @@ import {
   type OutboundFilePayload,
 } from './file-content.js';
 import { ContentType } from '../database/enums.js';
+import { dataDirectory } from '../common/data-directory.js';
 import { UploadService } from './upload.service.js';
 
 export const RESUMABLE_CHUNK_SIZE = 4 * 1024 * 1024;
@@ -36,7 +37,7 @@ interface UploadSessionView {
 
 @Injectable()
 export class ResumableUploadService {
-  private readonly tmpDir = join(process.cwd(), 'data', 'resumable');
+  private readonly tmpDir = dataDirectory('resumable');
   private readonly locks = new Map<string, Promise<void>>();
 
   constructor(

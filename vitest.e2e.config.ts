@@ -11,7 +11,7 @@ export default defineConfig({
     setupFiles: ['./test/setup-env.ts'],
     // Each worker resets/migrates its own PostgreSQL database. Bounding the
     // pool keeps full-suite runs from starving double-node process bootstraps.
-    maxWorkers: 2,
+    maxWorkers: 4,
     hookTimeout: 30_000,
     testTimeout: 30_000,
   },

@@ -181,13 +181,15 @@ The consumer MUST validate the authority binding: a P2P source MUST be the
 target message author's domain, and a group tombstone source MUST be the known
 group origin. If a tombstone arrives before its target message, the consumer
 retains a pending fact keyed by `(source domain, thread, messageSeq)` and
-completes author-binding validation when the message arrives. A mismatch MUST
-leave the message invisible, prevent the page from being committed, and be
-recorded as an audit conflict. A member's withdrawal submission to the origin
-is not an authoritative query item that a mirror can apply.
+completes author-binding validation when the message arrives. A mismatch leaves
+the message invisible and has no other protocol effect. A member's withdrawal
+submission to the origin is not an authoritative query item that a mirror can
+apply.
 
-A query page and the local thread deletion cursor MUST commit atomically. Each
-tombstone is applied idempotently to its stable target:
+A query page and the local thread deletion cursor MUST commit atomically. A
+consumer MUST fail closed for the affected target whenever it can identify an
+invalid tombstone safely. Each accepted tombstone is applied idempotently to its
+stable target:
 
 - If the message exists, it enters the irreversible invisible state. Any
   derived local views MUST reflect that state.
@@ -196,8 +198,7 @@ tombstone is applied idempotently to its stable target:
 - The consumer stops unfinished localization of the target message's media or
   bundle and grants no new resource access for it.
 - An existing semantically identical fact is a no-op. Conflicting authority,
-  `type`, or `deletedAt` for the same stable target MUST roll back the page and
-  produce an audit conflict.
+  `type`, or `deletedAt` is invalid and cannot replace the accepted fact.
 
 Message acceptance, resource promotion, and tombstone application MUST share a
 serialization boundary for the stable target. Whether the tombstone or message
@@ -208,8 +209,8 @@ the query cursor.
 ## 5. Relationship to lightweight push
 
 The three core drain targets in `feed-heads` remain `stateFeedEndId`,
-`messageFeedEndId`, and `tombstoneFeedEndId`; optional extensions do not alter
-their meanings. The consumer first drains the state feed, then the tombstone
+`messageFeedEndId`, and `tombstoneFeedEndId`. The consumer first drains the
+state feed, then the tombstone
 and message index feeds, merges their per-thread end sequences, and finally
 invokes both per-thread queries. Hints may be lost, duplicated, or reordered,
 so startup and periodic reconciliation MUST read all three feeds directly.

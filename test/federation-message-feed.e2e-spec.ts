@@ -6,7 +6,9 @@ import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
   federatedPeer,
+  mediaAsset,
   message,
+  messageAsset,
   messageThread,
   threadAudience,
   threadParticipant,
@@ -160,6 +162,58 @@ describe('FederationMessageFeedService compacted feed', () => {
       bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
       data: { resumeAfter: '0' },
     });
+  });
+
+  it('does not describe sender-local LINK artwork removed from wire content', async () => {
+    const { alice, thread } = await seed();
+    const digest = 'a'.repeat(64);
+    const [link] = await database.db
+      .insert(message)
+      .values({
+        seq: 1,
+        contentType: 'LINK',
+        content: JSON.stringify({
+          url: 'https://example.test/article',
+          title: 'Example',
+          description: 'Description',
+          image: `/uploads/msg-assets/aa/aa/${digest}`,
+        }),
+        threadId: thread.id,
+        creator: alice.id,
+        updatedAt: new Date(),
+      })
+      .returning();
+    await database.db.insert(mediaAsset).values({
+      digest,
+      bytes: 123n,
+      isDeleted: false,
+    });
+    await database.db.insert(messageAsset).values({
+      messageId: link.id,
+      threadId: thread.id,
+      digest,
+    });
+    await database.db
+      .update(messageThread)
+      .set({ curSeq: 1 })
+      .where(eq(messageThread.id, thread.id));
+    await indexer.fill(peerDomain);
+
+    const page = await service.query(
+      peerDomain,
+      { type: 'P2P', account: 'alice', peerAccount: 'bob' },
+      0,
+      undefined,
+      1,
+    );
+
+    expect(page.messages).toHaveLength(1);
+    expect(JSON.parse(page.messages[0].content)).toEqual({
+      url: 'https://example.test/article',
+      title: 'Example',
+      description: 'Description',
+    });
+    expect(page.messages[0].assets).toEqual([]);
   });
 
   it('revokes history access when the current audience closes', async () => {

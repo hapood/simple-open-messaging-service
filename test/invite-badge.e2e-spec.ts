@@ -99,7 +99,6 @@ describe('Friend-request client state e2e', () => {
         account: 'inviter',
         eventType: 'P2P_INTENT',
         subjectAccount: 'invitee',
-        businessRevision: 1,
         body: expect.objectContaining({
           status: 'REQUESTED',
           inviteId: invite.body.data.inviteId,
@@ -131,7 +130,7 @@ describe('Friend-request client state e2e', () => {
     );
   });
 
-  it('does not activate two expired directions; newer revisions must renew both sides first', async () => {
+  it('does not activate two expired directions until both sides renew', async () => {
     const a = await seedUserWithSession(app, 'expired-a', { name: 'A' });
     const b = await seedUserWithSession(app, 'expired-b', { name: 'B' });
     const pastRequestedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
@@ -153,7 +152,6 @@ describe('Friend-request client state e2e', () => {
         peerUserId: b.id,
         status: 'REQUESTED',
         note: 'arrived too late',
-        revision: 1,
         requestedAt: pastRequestedAt,
         expiresAt: pastExpiresAt,
         origin: 'peer.test',
@@ -171,7 +169,7 @@ describe('Friend-request client state e2e', () => {
 
     await database.db.transaction(async (tx) => {
       // The same explicit request must renew an expired direction even when status and note are
-      // unchanged. It gets a new revision, but cannot activate while the peer direction is expired.
+      // unchanged. It refreshes its expiry, but cannot activate while the peer direction is expired.
       await invites.writeLocalFriendIntentInTx(tx, a.id, b.id, true);
     });
     const renewedLocal = await database.db.query.friendRequest.findFirst({
@@ -180,7 +178,6 @@ describe('Friend-request client state e2e', () => {
         eq(friendRequest.targetUserId, b.id),
       ),
     });
-    expect(renewedLocal?.revision).toBe(2);
     expect(renewedLocal?.expiresAt?.getTime()).toBeGreaterThan(Date.now());
 
     pair = await database.db.query.friendPair.findFirst({
@@ -198,7 +195,6 @@ describe('Friend-request client state e2e', () => {
         peerUserId: b.id,
         status: 'REQUESTED',
         note: 'renewed',
-        revision: 2,
         requestedAt: now,
         expiresAt: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
         origin: 'peer.test',
@@ -222,7 +218,6 @@ describe('Friend-request client state e2e', () => {
         peerUserId: b.id,
         status: 'FRIEND',
         note: 'renewed',
-        revision: 3,
         requestedAt: new Date(),
         expiresAt: null,
         origin: 'peer.test',
@@ -305,7 +300,6 @@ describe('Friend-request client state e2e', () => {
         eq(friendRequest.targetUserId, b.id),
       ),
     });
-    expect(directions[0]?.revision).toBe(2);
     expect(directions[0]?.status).toBe('FRIEND');
     pair = await database.db.query.friendPair.findFirst({
       where: and(

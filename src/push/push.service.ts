@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { dataDirectory } from '../common/data-directory.js';
 import {
   HttpStatus,
   Inject,
@@ -89,7 +89,7 @@ export class PushService {
   ) {
     this.fcmCredentialPath =
       testFirebaseServiceAccountPath ??
-      join(process.cwd(), 'data', 'firebase-service-account.json');
+      dataDirectory('firebase-service-account.json');
     if (existsSync(this.fcmCredentialPath)) {
       process.env.GOOGLE_APPLICATION_CREDENTIALS = this.fcmCredentialPath;
       const app = getApps().length

@@ -21,6 +21,7 @@ import { ADMIN_SESSION_COOKIE } from '../src/admin/admin-session.js';
 interface AppLike {
   baseUrl: string;
   database: Database;
+  dataDir: string;
 }
 
 /**
@@ -31,7 +32,7 @@ interface AppLike {
  * (what a chat IMAGE message embeds) + the size + the digest.
  */
 export async function stageCasAsset(
-  database: Database,
+  app: AppLike,
   mimeType: string,
   buf: Buffer,
 ): Promise<{ url: string; size: number; digest: string }> {
@@ -42,13 +43,13 @@ export async function stageCasAsset(
   // src/upload/upload.service.ts) — /media/:digest + /uploads/* read shards from here. Writing to
   // process.cwd()/uploads (no data/) leaves the staged file invisible to the server, so federated
   // media localization fetches zero bytes and fails the digest check.
-  const casRoot = join(process.cwd(), 'data', 'cas');
+  const casRoot = join(app.dataDir, 'cas');
   const abs = join(casRoot, ...rel.split('/'));
   await mkdir(join(casRoot, digest.slice(0, 2), digest.slice(2, 4)), {
     recursive: true,
   });
   await writeFile(abs, buf);
-  await database
+  await app.database
     .insert(mediaAsset)
     .values({ digest, bytes: BigInt(buf.length), isDeleted: false })
     .onConflictDoUpdate({

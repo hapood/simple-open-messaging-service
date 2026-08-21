@@ -32,11 +32,18 @@ query end sequence; concrete messages and deletion facts are fetched through per
 ## Relationship model
 
 Friendship consists of two directed `FriendRequest` facts and one canonical unordered `FriendPair` lock.
-Each direction owns its note, business revision, request timestamp, and expiry. A `REQUESTED` direction
+Each direction owns its note, request timestamp, and expiry. A `REQUESTED` direction
 is a live request only before its absolute `expiresAt`; it is never sufficient to activate a thread.
 The default source lifetime is seven days and a receiver never renews it. Only two explicit `FRIEND`
 directions activate or restore the local P2P thread. Closing one direction leaves the opposite fact
 intact, so a later one-sided request can start a new confirmation exchange.
+
+On the federation wire, peer `ACCEPTED` is valid only in a still-effective
+request flow: it confirms a local request or completes a peer request already
+accepted locally. Otherwise it is ignored for admission and does not become an
+incoming request, and cannot materialize or activate a relationship merely
+because a foreign `User` stub exists. Accepting each new peer request republishes
+the local `ACCEPTED` with a new feed ID, even if the body is unchanged.
 
 Group membership is also directional: the group origin authors `GROUP_INVITE_INTENT`, and the member
 server authors `GROUP_JOIN_INTENT`. The origin's `GROUP_META` snapshot is the final roster authority. A

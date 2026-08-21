@@ -15,8 +15,8 @@ import {
 import { MatButtonModule } from '@angular/material/button';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { RouteService } from '../../services/route.service';
-import { IconComponent, AppIconType } from '../icon/icon.component';
 import { FitDialogDirective } from '../../directives/fit-dialog.directive';
+import { PageHeaderComponent } from '../page-header/page-header.component';
 import {
   computeCropRect,
   clampOffset,
@@ -42,7 +42,12 @@ import {
  */
 @Component({
   selector: 'app-avatar-editor',
-  imports: [MatButtonModule, IconComponent, FitDialogDirective, TranslocoPipe],
+  imports: [
+    MatButtonModule,
+    PageHeaderComponent,
+    FitDialogDirective,
+    TranslocoPipe,
+  ],
   templateUrl: './avatar-editor.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './avatar-editor.component.scss',
@@ -57,7 +62,6 @@ export class AvatarEditorComponent implements OnInit, OnDestroy {
   readonly embedded = input(false);
   readonly canceled = output<void>();
   readonly completed = output<File>();
-  readonly AppIconType = AppIconType;
   readonly fitOpts = { minHeight: 360 } as const;
 
   /** Backing-store side of the square frame. Output quality comes from the source

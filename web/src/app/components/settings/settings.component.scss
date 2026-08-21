@@ -26,7 +26,9 @@
   height: 100%;
   min-height: 0;
   // The root recedes under the sliding sub-page (subtle parallax + dim); one curve for both directions.
-  transition: transform 200ms cubic-bezier(0.4, 0, 1, 1), opacity 200ms cubic-bezier(0.4, 0, 1, 1);
+  transition:
+    transform 200ms cubic-bezier(0.4, 0, 1, 1),
+    opacity 200ms cubic-bezier(0.4, 0, 1, 1);
 }
 
 .view.dimmed {
@@ -41,43 +43,6 @@
   inset: 0;
   z-index: 1;
   background: var(--app-surface);
-}
-
-.msg-header {
-  // The shared RootPopup page wrapper owns the native safe-area padding.
-  height: 56px;
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 8px;
-  border-bottom: 1px solid var(--app-border);
-  box-sizing: border-box;
-}
-
-.msg-header .title {
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 24px;
-  flex: 1 1 auto;
-  color: var(--app-text);
-}
-
-.icon-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border: none;
-  background: transparent;
-  color: var(--app-text);
-  cursor: pointer;
-  border-radius: var(--app-radius-sm);
-}
-
-.icon-btn:hover {
-  background: var(--app-hover);
 }
 
 .body {

@@ -11,6 +11,7 @@ import {
   forwardRef,
   Inject,
   Optional,
+  Logger,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
@@ -102,7 +103,6 @@ type HydratedThreadDeltaOp =
       eventType: string;
       subjectAccount: string;
       subjectDomain: string;
-      businessRevision: number;
       body: unknown;
     };
 
@@ -120,6 +120,8 @@ function nextUtcMidnight(): Date {
 @ApiTags('user')
 @Controller()
 export class UserController {
+  private readonly logger = new Logger(UserController.name);
+
   constructor(
     private readonly userService: UserService,
     private readonly participantService: ThreadParticipantService,
@@ -483,7 +485,6 @@ export class UserController {
         eventType: item.eventType,
         subjectAccount: item.subjectAccount,
         subjectDomain: item.subjectDomain,
-        businessRevision: item.businessRevision,
         revision: item.revision,
         body: item.body,
       })),
@@ -605,6 +606,9 @@ export class UserController {
       'Pre-flight: is mutual trust with a peer domain already established? Drives the first-contact "connecting…" affordance on a federated address search.',
   })
   async peerTrustStatus(@Body() dto: PeerTrustStatusDto) {
+    if (dto.domain.trim().toLowerCase() === this.federationService.ourDomain) {
+      return { trusted: true };
+    }
     // Pure local allow-list lookup (no network) — tells the client whether the upcoming federated
     // resolve will run bidirectional recognition (first contact → banner) or resolve fast
     // (trusted → no banner). A known server-side fact, not a latency guess: the rare
@@ -676,8 +680,27 @@ export class UserController {
     });
     const account = normalizeAccount(dto.account);
     const domain = dto.domain?.trim().toLowerCase() ?? '';
-    if (!domain || domain === this.federationService.ourDomain) {
+    if (!domain) {
       finish('failed', { reason: 'INVALID_ADDRESS' });
+      return;
+    }
+    if (domain === this.federationService.ourDomain) {
+      const localUser = await this.userService.findUniqueUser({
+        account_domain: { account, domain: 'local' },
+        isDeleted: false,
+      });
+      if (!localUser || localUser.isGroup) {
+        finish('failed', { reason: 'NOT_FOUND' });
+        return;
+      }
+      const [relationship] =
+        await this.inviteService.friendRelationshipStatuses(req.user.userId, [
+          localUser.id,
+        ]);
+      finish('resolved', {
+        user: localUser,
+        relationship: relationship?.status ?? 'NONE',
+      });
       return;
     }
     const unsubscribeProgress = this.federationRecognition.subscribeProgress(
@@ -717,19 +740,26 @@ export class UserController {
         relationship,
       });
     } catch (error) {
+      const reason =
+        (error as Error).message === 'resolve deadline exceeded'
+          ? 'TIMEOUT'
+          : error instanceof FederationDomainResolutionError
+            ? 'DOMAIN_RESOLUTION_FAILED'
+            : error instanceof S2sResponseError &&
+                error.code === BusinessCode.NOT_FOUND
+              ? 'NOT_FOUND'
+              : error instanceof BusinessException &&
+                  error.bizCode === BusinessCode.FEDERATION_PEER_BLOCKED
+                ? 'BLOCKED'
+                : 'UNREACHABLE';
+      if (reason !== 'NOT_FOUND' && reason !== 'BLOCKED') {
+        const detail = error instanceof Error ? error.stack : String(error);
+        this.logger.warn(
+          `Federated resolve ${account}@${domain} failed (${reason}): ${detail}`,
+        );
+      }
       finish('failed', {
-        reason:
-          (error as Error).message === 'resolve deadline exceeded'
-            ? 'TIMEOUT'
-            : error instanceof FederationDomainResolutionError
-              ? 'DOMAIN_RESOLUTION_FAILED'
-              : error instanceof S2sResponseError &&
-                  error.code === BusinessCode.NOT_FOUND
-                ? 'NOT_FOUND'
-                : error instanceof BusinessException &&
-                    error.bizCode === BusinessCode.FEDERATION_PEER_BLOCKED
-                  ? 'BLOCKED'
-                  : 'UNREACHABLE',
+        reason,
       });
     } finally {
       unsubscribeProgress();

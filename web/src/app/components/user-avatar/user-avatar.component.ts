@@ -20,9 +20,10 @@ import { UserService } from '../../services/user.service';
  * with a background color:
  *  · SELF: the theme's action blue, recognizable as "you" and responsive to
  *    the light/dark palette.
- *  · OTHER / GROUP: an identity-hashed deterministic palette. The stable key includes the avatar type,
- *    so a user and group with the same numeric id do not share an identity namespace. If an identity is not
- *    available yet, every unresolved identity uses the same empty seed; display names never affect identity color.
+ *  · OTHER / identified GROUP: an account+domain-hashed deterministic palette. The stable key includes the
+ *    avatar type, so a user and group with the same address do not share an identity namespace. Local identities
+ *    use `local` as their domain. If an account is not available yet, a draft group uses the theme's action blue;
+ *    display names and database ids never affect identity color.
  *    The palette uses Material dark shades, reaching WCAG AA contrast against white text.
  *
  * Rounded square (WeChat-style, rx=20% → 8px under a 40px container, matching .msg-avatar in chats) + SVG
@@ -77,20 +78,19 @@ export class UserAvatarComponent {
 
   readonly type = input<UserAvatarType>(UserAvatarType.OTHER);
   readonly name = input<string | undefined | null>('');
+  /** Stable account identifier used with the home domain for the generated fallback color. Display
+   * names and database ids are deliberately excluded because both can change across time/localization. */
+  readonly account = input<string | undefined | null>(undefined);
   /** Optional real avatar image URL. A server path (`/uploads/...`) is read from the DB by {@link identityId};
    *  a local preview (`blob:`/`data:`/absolute) passes through directly. Empty → initial-letter fallback. */
   readonly src = input<string | undefined | null>(undefined);
+  /** Home domain for a federated identity; renders the shared top-right globe marker. */
+  readonly federatedDomain = input<string | undefined | null>(undefined);
   /** Stable identity of the user/group this avatar depicts — the IDB cache key (combined with {@link
    *  type}: GROUP → `g<id>`, else `u<id>`). Usually the numeric id; for a group known only by its
    *  `!account` (an invite card) the account string is accepted too. Required for a server-path avatar;
    *  unused for local previews. */
   readonly identityId = input<number | string | undefined | null>(undefined);
-  /** Optional stable seed used only for the generated fallback color. This is separate from `identityId`
-   *  because a group avatar is cached under its local numeric id, while its globally stable `!account`
-   *  is what lets invite cards and conversation rows choose the same color across servers. */
-  readonly colorIdentityId = input<number | string | undefined | null>(
-    undefined,
-  );
   /** Unresolved identity → render the glass shimmer placeholder so no avatar content (and no
    *  misleading initial) paints until the backing profile/session is ready. Callers pass
    *  `!sessionProfile()` while the source signal is still loading. */
@@ -213,14 +213,13 @@ export class UserAvatarComponent {
     return value.toLocaleUpperCase();
   });
 
-  /** Deterministic 31× hash for fallback colors. Only a stable, namespaced identity (`u…` / `g…`)
-   *  participates; a missing identity hashes as empty so mutable display names cannot change the color. */
+  /** Deterministic 31× hash for fallback colors. Every non-SELF identity is keyed exclusively by its
+   * namespaced account + home domain. Local identities use the explicit `local` domain. */
   private hashColorKey(): number {
-    const id = this.colorIdentityId() ?? this.effectiveIdentityId();
-    const n =
-      id == null
-        ? ''
-        : `${this.type() === UserAvatarType.GROUP ? 'g' : 'u'}${id}`;
+    const account = this.account() ?? '';
+    const domain = this.federatedDomain()?.trim().toLowerCase() || 'local';
+    const namespace = this.type() === UserAvatarType.GROUP ? 'g' : 'u';
+    const n = account ? `${namespace}\u0000${domain}\u0000${account}` : '';
     let h = 0;
     for (let i = 0; i < n.length; i++)
       h = (Math.imul(h, 31) + n.charCodeAt(i)) | 0;
@@ -239,6 +238,13 @@ export class UserAvatarComponent {
    *  a glance. The same group identity → the same color pair (deterministic). */
   readonly isGroup = computed(() => this.type() === UserAvatarType.GROUP);
   readonly groupFill = computed(() => {
+    if (!this.account()) {
+      return {
+        id: 'grp-draft',
+        from: 'var(--app-action-primary)',
+        to: 'var(--app-action-primary)',
+      };
+    }
     const a = this.hashColorKey();
     return {
       id: `grp-${a}`,

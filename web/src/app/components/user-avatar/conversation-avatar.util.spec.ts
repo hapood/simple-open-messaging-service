@@ -1,6 +1,8 @@
 import {
   conversationAvatarType,
   conversationAvatarIdentityId,
+  conversationAvatarAccount,
+  conversationAvatarDomain,
   conversationAvatarSrc,
 } from './conversation-avatar.util';
 import { UserAvatarType } from './model';
@@ -8,14 +10,20 @@ import type { ConversationItem } from '../../services/model';
 
 /**
  * Covers the shared conversation→avatar derivation. The util reads only `type` + the active party's
- * (`peerUser` | `group`) `id` / `avatar`, so minimal partial shapes (cast through `unknown`) suffice — no
+ * (`peerUser` | `group`) identity/avatar fields, so minimal partial shapes (cast through `unknown`) suffice — no
  * need to construct a full ConversationItem. This is the high-value, low-pain test for the DRY'd logic; the
  * consumers (thread-list, the empty-thread hero) are thin pass-throughs over it.
  */
 describe('conversation-avatar util', () => {
   const p2p = {
     type: 'P2P',
-    peerUser: { id: 7, avatar: '/uploads/u7.png' },
+    peerUser: {
+      id: 7,
+      account: 'alice',
+      domain: '',
+      isForeigner: false,
+      avatar: '/uploads/u7.png',
+    },
     group: { id: 0, account: '!zero', avatar: '' },
   } as unknown as ConversationItem;
   const group = {
@@ -37,5 +45,12 @@ describe('conversation-avatar util', () => {
   it('derives the avatar src from the active party', () => {
     expect(conversationAvatarSrc(p2p)).toBe('/uploads/u7.png');
     expect(conversationAvatarSrc(group)).toBe('/uploads/g12.png');
+  });
+
+  it('derives the stable account and home domain used by the avatar', () => {
+    expect(conversationAvatarAccount(p2p)).toBe('alice');
+    expect(conversationAvatarDomain(p2p)).toBeUndefined();
+    expect(conversationAvatarAccount(group)).toBe('!group-12');
+    expect(conversationAvatarDomain(group)).toBeUndefined();
   });
 });

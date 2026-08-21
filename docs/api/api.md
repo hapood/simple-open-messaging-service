@@ -159,14 +159,14 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 > Controller: [src/controller/invite.controller.ts](../../src/controller/invite.controller.ts) · Service: [src/invite/invite.service.ts](../../src/invite/invite.service.ts)
 
 Friend and group requests use directed facts. `FriendRequest(A,B)` and `FriendRequest(B,A)` are independent
-rows with independent notes and revisions; group invitation and join intent are likewise separate
+rows with independent notes; group invitation and join intent are likewise separate
 `GroupMembershipRequest` directions. The former polymorphic `Invite` table has been removed. REST
 `inviteId` values are stringified ids of the corresponding directed fact.
 
 ### POST `/invite/friend` — Send friend invite
 
 - **Body**: `{ toUserId: number, note?: string(≤255) }`. Upserts the caller's directed request. A new
-  request expires after seven days; an explicit resend after expiry grows its revision and renews the
+  request expires after seven days; an explicit resend after expiry renews the
   absolute expiry. `20001` friending self · `20004` invalid target.
 
 ### POST `/invite/federated-friend` — Send a pre-stub federated request

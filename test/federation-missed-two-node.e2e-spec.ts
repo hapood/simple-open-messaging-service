@@ -208,13 +208,11 @@ describe('federation durable missed transport (two nodes)', () => {
     const url = (uploaded.body.data as { url: string }).url;
     const digest = url.split('/').pop()!;
 
-    // The two subprocesses share the test workspace. Remove the shared shard and let the proxy model
-    // appA's physically separate CAS; production nodes naturally have separate storage roots.
+    // Remove appA's shard and let the proxy fixture model its remote CAS response.
     proxy.setGetFileFixture(digest, bytes);
     await unlink(
       join(
-        process.cwd(),
-        'data',
+        appA.dataDir,
         'cas',
         digest.slice(0, 2),
         digest.slice(2, 4),
@@ -414,8 +412,7 @@ describe('federation durable missed transport (two nodes)', () => {
     proxy.setGetFileFixture(digest, bytes);
     await unlink(
       join(
-        process.cwd(),
-        'data',
+        appA.dataDir,
         'cas',
         digest.slice(0, 2),
         digest.slice(2, 4),

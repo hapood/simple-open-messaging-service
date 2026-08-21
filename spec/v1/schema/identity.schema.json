@@ -17,88 +17,12 @@
       "properties": { "ok": { "const": true } },
       "additionalProperties": false
     },
-    "v1DiscoveryResult": {
-      "type": "object",
-      "required": ["extensions"],
-      "properties": {
-        "extensions": {
-          "type": "array",
-          "maxItems": 64,
-          "uniqueItems": true,
-          "items": {
-            "$ref": "urn:socfp:v1:common#/$defs/extensionId"
-          }
-        },
-        "software": { "type": "string", "minLength": 1, "maxLength": 128 }
-      },
-      "additionalProperties": false
-    },
-    "v1DiscoveryRequest": {
-      "type": "object",
-      "required": ["origin"],
-      "properties": {
-        "origin": { "$ref": "urn:socfp:v1:common#/$defs/domain" }
-      },
-      "additionalProperties": false
-    },
     "healthResult": {
       "type": "object",
-      "required": [
-        "status",
-        "selectedProtocolVersion",
-        "acceptedExtensions"
-      ],
+      "required": ["status"],
       "properties": {
-        "status": { "enum": ["available", "degraded", "unavailable"] },
-        "selectedProtocolVersion": {
-          "oneOf": [
-            { "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger" },
-            { "type": "null" }
-          ]
-        },
-        "acceptedExtensions": {
-          "oneOf": [
-            {
-              "type": "array",
-              "maxItems": 64,
-              "uniqueItems": true,
-              "items": {
-                "$ref": "urn:socfp:v1:common#/$defs/extensionId"
-              }
-            },
-            { "type": "null" }
-          ]
-        }
+        "status": { "enum": ["available", "degraded", "unavailable"] }
       },
-      "allOf": [
-        {
-          "if": {
-            "properties": { "status": { "const": "unavailable" } },
-            "required": ["status"]
-          },
-          "then": {
-            "properties": {
-              "selectedProtocolVersion": { "type": "null" },
-              "acceptedExtensions": { "type": "null" }
-            }
-          },
-          "else": {
-            "properties": {
-              "selectedProtocolVersion": {
-                "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
-              },
-              "acceptedExtensions": {
-                "type": "array",
-                "maxItems": 64,
-                "uniqueItems": true,
-                "items": {
-                  "$ref": "urn:socfp:v1:common#/$defs/extensionId"
-                }
-              }
-            }
-          }
-        }
-      ],
       "additionalProperties": false
     },
     "feedHeadHint": {
@@ -119,8 +43,7 @@
         },
         "tombstoneFeedEndId": {
           "$ref": "urn:socfp:v1:common#/$defs/decimalString"
-        },
-        "extensions": { "$ref": "urn:socfp:v1:common#/$defs/extensions" }
+        }
       },
       "additionalProperties": false
     }

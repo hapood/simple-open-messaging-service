@@ -55,8 +55,8 @@ console remain fully self-hostable.
   message deletion, and call signaling cross server boundaries.
 - **Content-addressed media** — authorized CAS transfer identifies blobs by digest and verifies their
   declared size before acceptance.
-- **Versioned and extensible protocol** — explicit capability discovery allows one-way enablement of
-  compatible extensions while v1 implementations safely ignore unsupported extension messages.
+- **Strictly versioned protocol** — each wire major has a fixed, closed surface; incompatible fields,
+  types, or behavior ship under a new integer major.
 - **Open specification** — the protocol contract, JSON schemas, security model, and conformance suite
   live in [`spec/`](spec/README.md), independently of the SOMS implementation.
 

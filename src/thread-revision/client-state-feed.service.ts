@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { isDeepStrictEqual } from 'node:util';
 import { and, asc, eq, gt, lte, sql } from 'drizzle-orm';
 import { clientStateFeed, user } from '../database/schema.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
@@ -8,15 +9,13 @@ export interface ClientStateFeedWrite {
   userId: number;
   account: string;
   domain: string;
-  eventType: 'P2P_INTENT';
+  eventType: 'P2P_INTENT' | 'GROUP_INVITE_INTENT';
   subjectAccount: string;
   subjectDomain: string;
-  businessRevision: number;
   body: Record<string, unknown>;
 }
 
-/** Device-facing compacted state feed. User.threadRevision is its allocator and shared scan head;
- * businessRevision protects each stable key from stale replacement. */
+/** Device-facing compacted state feed. User.threadRevision is its allocator and shared scan head. */
 @Injectable()
 export class ClientStateFeedService {
   async writeInTx(
@@ -25,7 +24,6 @@ export class ClientStateFeedService {
   ): Promise<number | null> {
     const [current] = await tx
       .select({
-        businessRevision: clientStateFeed.businessRevision,
         body: clientStateFeed.body,
       })
       .from(clientStateFeed)
@@ -40,11 +38,7 @@ export class ClientStateFeedService {
         ),
       )
       .limit(1);
-    if (current && current.businessRevision > write.businessRevision)
-      return null;
-    if (current?.businessRevision === write.businessRevision) {
-      return null;
-    }
+    if (current && isDeepStrictEqual(current.body, write.body)) return null;
     const [owner] = await tx
       .update(user)
       .set({
@@ -67,7 +61,6 @@ export class ClientStateFeedService {
           clientStateFeed.subjectDomain,
         ],
         set: {
-          businessRevision: write.businessRevision,
           revision: owner.revision,
           body: write.body,
           updatedAt: new Date(),

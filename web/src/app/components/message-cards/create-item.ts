@@ -13,7 +13,6 @@ import {
 import { shouldShowDateSeparator } from './date-format';
 import type { ChatItemData, ChatMsgData, AlbumImage } from './chat-item';
 import { FileRowComponent } from './file-row/file-row.component';
-import { InviteRowComponent } from './invite-row/invite-row.component';
 import { LinkRowComponent } from './link-row/link-row.component';
 import { CallRowComponent } from './call-row/call-row.component';
 import { ForwardRowComponent } from './forward-row/forward-row.component';
@@ -189,17 +188,15 @@ export function createMsgCbElement(
           data.contentType === 'AUDIO' ||
           data.contentType === 'GALLERY'
         ? MediaRowComponent
-        : data.contentType === 'INVITE'
-          ? InviteRowComponent
-          : data.contentType === 'LINK'
-            ? LinkRowComponent
-            : data.contentType === 'FILE'
-              ? FileRowComponent
-              : data.contentType === 'CALL'
-                ? CallRowComponent
-                : data.contentType === 'FORWARD'
-                  ? ForwardRowComponent
-                  : TextRowComponent;
+        : data.contentType === 'LINK'
+          ? LinkRowComponent
+          : data.contentType === 'FILE'
+            ? FileRowComponent
+            : data.contentType === 'CALL'
+              ? CallRowComponent
+              : data.contentType === 'FORWARD'
+                ? ForwardRowComponent
+                : TextRowComponent;
 
   const ref = createComponent(comp, { environmentInjector: envInjector });
   // createComponent() only constructs the view; it does not enroll it in Angular's application view
@@ -241,6 +238,8 @@ export function createMsgCbElement(
     );
     tailAvatarRef.setInput('name', message.name);
     tailAvatarRef.setInput('identityId', message.avatarIdentityId);
+    tailAvatarRef.setInput('account', message.avatarAccount);
+    tailAvatarRef.setInput('federatedDomain', message.avatarDomain);
     tailAvatarRef.setInput('src', message.avatar);
     tailAvatarRef.changeDetectorRef.detectChanges();
   };
@@ -271,6 +270,8 @@ export function createMsgCbElement(
         name: message.name,
         src: message.avatar,
         identityId: message.avatarIdentityId,
+        account: message.avatarAccount,
+        domain: message.avatarDomain,
       });
       const naturalAvatar = host.querySelector<HTMLElement>(
         '.msg-has-avatar > .msg-avatar:not(.msg-avatar-tail)',

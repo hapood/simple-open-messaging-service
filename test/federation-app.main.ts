@@ -1,5 +1,5 @@
 // Federation e2e — ONE app instance, booted in its own Node process (run via `tsx`). The test harness
-// forks this twice (appA=aaa.local on DB _a, appB=bbb.local on DB _b). Running each app in a separate
+// forks this twice (appA=aaa.test on DB _a, appB=bbb.test on DB _b). Running each app in a separate
 // process gives each its own V8 isolate — so process-global singletons (Passport's `local` strategy,
 // etc.) are per-app, not cross-app leaks the way the old in-process two-AppModule model was. Each
 // process also has its own DATABASE_URL env → its own database. This is how real federation runs.
@@ -94,8 +94,8 @@ async function main(): Promise<void> {
   // to bbb.local route to appB's listener and vice versa — the signing @authority (127.0.0.1:<port>)
   // matches what the receiving Fastify sees, so signatures verify end-to-end.
   TestDiscoveryService.portMap = {
-    'aaa.local': `http://127.0.0.1:${portA}`,
-    'bbb.local': `http://127.0.0.1:${portB}`,
+    'aaa.test': `http://127.0.0.1:${portA}`,
+    'bbb.test': `http://127.0.0.1:${portB}`,
   };
 
   const moduleRef = await Test.createTestingModule({

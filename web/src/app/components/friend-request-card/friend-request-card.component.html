@@ -7,18 +7,33 @@
 >
   <span class="avatar">
     <app-user-avatar
-      [type]="UserAvatarType.OTHER"
+      [type]="
+        request().kind === 'GROUP' ? UserAvatarType.GROUP : UserAvatarType.OTHER
+      "
       [name]="request().name ?? ''"
       [identityId]="request().peerId"
+      [account]="request().account"
       [src]="request().avatar"
+      [federatedDomain]="
+        request().kind === 'GROUP' || request().isForeigner
+          ? request().domain
+          : null
+      "
     />
   </span>
   <span class="content">
     <span class="heading">
       <app-user-identity-label
         [name]="request().name ?? ('friend.invalidUser' | transloco)"
-        [domain]="request().isForeigner ? request().domain : null"
+        [domain]="
+          request().kind === 'FRIEND' && request().isForeigner
+            ? request().domain
+            : null
+        "
       />
+      @if (request().kind === 'GROUP') {
+        <span class="group-source">{{ request().sourceLabel }}</span>
+      }
     </span>
     <span class="message" [class.error]="request().errText">
       {{
