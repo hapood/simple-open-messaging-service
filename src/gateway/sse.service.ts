@@ -5,7 +5,6 @@ import { initSseResponse, formatSseFrame } from '../common/sse-stream.js';
 import { eq } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import { user as userTable } from '../database/schema.js';
-import { MessageService } from '../message/message.service.js';
 import { CallStateRegistry } from './call-state.registry.js';
 
 /** One held SSE connection: the raw response, its heartbeat timer, the establishment time, and the
@@ -38,7 +37,6 @@ export class SseService implements OnModuleDestroy {
 
   constructor(
     private readonly database: DatabaseService,
-    private readonly messages: MessageService,
     private readonly callState: CallStateRegistry,
   ) {}
 
@@ -70,10 +68,8 @@ export class SseService implements OnModuleDestroy {
       if (list.length === 0) delete this.clients[userId];
     });
 
-    // The connect handshake: push HELLO (the newest message cursor + unified state revision) to THIS
-    // connection only. The cursor is the client's `to` (the missed-summary walk's pinned upper bound); the
-    // revision lets it pull a thread-list delta if stale. Fire-and-forget — a transient failure just means no
-    // HELLO this connect (the next live NEW_MESSAGE signal re-establishes `to`).
+    // The connect handshake carries account revision snapshots. Durable message gaps are recovered from the
+    // per-user feed, so HELLO does not carry a message cursor.
     void this.sendHello(userId, entry);
   }
 
@@ -81,17 +77,14 @@ export class SseService implements OnModuleDestroy {
    *  DB failure is swallowed (never throws on the connect path). */
   private async sendHello(userId: number, entry: SseClient): Promise<void> {
     try {
-      const [latestMessage, user] = await Promise.all([
-        this.messages.findNewestForUser(userId),
-        this.database.db.query.user.findFirst({
-          where: eq(userTable.id, userId),
-          columns: {
-            threadRevision: true,
-            readRevision: true,
-            profileRev: true,
-          },
-        }),
-      ]);
+      const user = await this.database.db.query.user.findFirst({
+        where: eq(userTable.id, userId),
+        columns: {
+          threadRevision: true,
+          readRevision: true,
+          profileRev: true,
+        },
+      });
       const frame = formatSseFrame('HELLO', {
         // The caller's userId. The session token is OPAQUE (server-side lookup only), so the client cannot
         // learn its userId without an authenticated response — HELLO is it. The client opens its per-user
@@ -99,9 +92,6 @@ export class SseService implements OnModuleDestroy {
         // made the fetch un-skippable). Carrying it here lets the webdb open at connect time, independent
         // of the profile fetch.
         userId,
-        // { threadId, seq, ts } | null — the missed-summary walk's pinned upper bound `to` (null when the
-        // user has no messages yet → the client does not walk until the first live NEW_MESSAGE).
-        latestMessage,
         // The state delta cursor. The client delta-replays (0, this] on first HELLO, then
         // (cursor, this] on each subsequent STATE_REV_UPDATED — the sole state revision source.
         stateRevision: user?.threadRevision ?? 0,
@@ -191,7 +181,7 @@ export class SseService implements OnModuleDestroy {
 
   /** New message: identity-only signal `{ threadId, seq, ts }` — the body is PULLED by the client (single
    *  data source; the realtime stream is a trigger, never a body carrier). No Last-Event-ID cursor: a
-   *  transient drop or an offline gap is reconciled by the missed-summary pull on reconnect, not by SSE
+   *  transient drop or an offline gap is reconciled by the per-user catch-up feed on reconnect, not by SSE
    *  replay, so no message-cursor `id` is emitted. */
   onNewMessage(userId: number, threadId: number, seq: number, ts: number) {
     this.pushToUser(userId, 'NEW_MESSAGE', { threadId, seq, ts });

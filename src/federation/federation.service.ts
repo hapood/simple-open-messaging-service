@@ -34,6 +34,7 @@ import {
   inArray,
   isNull,
   lt,
+  lte,
   ne,
   or,
   sql,
@@ -127,14 +128,17 @@ import {
 } from './federation-message-tombstone-pull.service.js';
 import {
   PeerStateFeedService,
-  type PeerStateBody,
-  type PeerStateFeedWrite,
   type PeerStateFeedPage,
 } from './peer-state-feed.service.js';
 import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
 import { ClientStateFeedService } from '../thread-revision/client-state-feed.service.js';
+import {
+  GroupMetaFeedService,
+  type GroupMetaFeedPage,
+} from './group-meta-feed.service.js';
 import { RelationshipIntentService } from '../invite/relationship-intent.service.js';
 import { SystemMessageType } from '../message/system-message.js';
+import { ClientMessageFeedWriter } from '../message/client-message-feed.service.js';
 import {
   assertServerGroupCapacityInTx,
   SERVER_GROUP_FULL_REASON,
@@ -454,6 +458,8 @@ export class FederationService {
     private readonly tombstonePull?: FederationMessageTombstonePullService,
     @Optional()
     private readonly messageFeedIndexer?: FederationMessageFeedIndexerService,
+    @Optional()
+    private readonly groupMetaFeed?: GroupMetaFeedService,
   ) {}
 
   /** The wire address of a LOCAL user: { account, domain } (domain = our real config.domain). */
@@ -782,11 +788,11 @@ export class FederationService {
       );
     const result = new Map(directProfiles);
     for (const group of originGroups) {
-      const profiles = await this.writeGroupMemberProfilesInTx(
+      const state = await this.refreshGroupMemberProjectionInTx(
         tx,
         group.threadId,
       );
-      for (const entry of profiles) result.set(...entry);
+      for (const entry of state) result.set(...entry);
     }
     return result;
   }
@@ -877,10 +883,6 @@ export class FederationService {
     groupAccount: string,
     peerDomain: string,
   ): Promise<Map<string, bigint>> {
-    const memberProfiles = await this.writeGroupMemberProfilesInTx(
-      tx,
-      threadId,
-    );
     const visible = await tx.execute<{ visible: boolean }>(sql`
       SELECT EXISTS (
         SELECT 1
@@ -895,15 +897,22 @@ export class FederationService {
           AND member.domain = ${peerDomain}
       ) AS visible
     `);
-    if (visible.rows[0]?.visible) return memberProfiles;
-    for (const eventType of ['PROFILE', 'GROUP_META'] as const)
-      await this.stateFeed.deleteProjectionInTx(tx, {
-        peerDomain,
-        account: groupAccount,
-        domain: this.config.domain,
-        eventType,
-      });
-    return memberProfiles;
+    if (visible.rows[0]?.visible) return this.writeGroupStateInTx(tx, threadId);
+    if (!this.groupMetaFeed) throw new Error('group meta feed is unavailable');
+    await this.groupMetaFeed.deactivateTargetInTx(tx, peerDomain, groupUserId);
+    await this.stateFeed.deleteProjectionInTx(tx, {
+      peerDomain,
+      account: groupAccount,
+      domain: this.config.domain,
+      eventType: 'PROFILE',
+    });
+    await this.stateFeed.deleteProjectionInTx(tx, {
+      peerDomain,
+      account: groupAccount,
+      domain: this.config.domain,
+      eventType: 'GROUP_META_FEED_HEAD',
+    });
+    return new Map();
   }
 
   /** A federated friend request, approval, rejection and deletion are all the same local intent
@@ -1455,14 +1464,8 @@ export class FederationService {
       state.groupUserId,
       member.domain,
     );
-    const groupState = await this.writeGroupStateInTx(tx, threadId, [
-      member.domain,
-    ]);
-    const memberProfiles = await this.writeGroupMemberProfilesInTx(
-      tx,
-      threadId,
-    );
-    return new Map([...intent, ...profile, ...groupState, ...memberProfiles]);
+    const groupState = await this.writeGroupStateInTx(tx, threadId);
+    return new Map([...intent, ...profile, ...groupState]);
   }
 
   async writeMemberRelationshipIntentInTx(
@@ -1531,8 +1534,7 @@ export class FederationService {
         .set({ rosterRev: sql`${tables.group.rosterRev} + 1` })
         .where(eq(tables.group.groupUserId, thread.groupUserId));
       const state = await this.writeGroupStateInTx(tx, threadId);
-      const profiles = await this.writeGroupMemberProfilesInTx(tx, threadId);
-      return new Map([...state, ...profiles]);
+      return state;
     }
     if (membership.shouldBeActive) {
       await this.relationshipIntents.setPairActiveInTx(
@@ -1706,7 +1708,6 @@ export class FederationService {
   async writeGroupStateInTx(
     tx: DatabaseTransaction,
     threadId: number,
-    finalPeerDomains: readonly string[] = [],
   ): Promise<Map<string, bigint>> {
     const [state] = await tx
       .select({
@@ -1741,104 +1742,6 @@ export class FederationService {
         domain: tables.user.domain,
         role: tables.threadParticipant.role,
         userId: tables.user.id,
-      })
-      .from(tables.threadParticipant)
-      .innerJoin(
-        tables.user,
-        eq(tables.user.id, tables.threadParticipant.userId),
-      )
-      .where(
-        and(
-          eq(tables.threadParticipant.threadId, threadId),
-          eq(
-            tables.threadParticipant.state,
-            ThreadParticipantState.ESTABLISHED,
-          ),
-        ),
-      );
-    const normalizeDomain = (domain: string) =>
-      domain === 'local' ? this.config.domain : domain;
-    const peerDomains = new Set([
-      ...roster.map((m) => m.domain).filter((d) => d !== 'local'),
-      ...finalPeerDomains,
-    ]);
-    if (!peerDomains.size) return new Map();
-    const owner = roster.find((m) => m.userId === state.ownerId);
-    if (!owner) throw new Error('group owner is absent from active roster');
-    const wire = state.avatar
-      ? await this.upload.readAvatarAsWire(state.avatar)
-      : null;
-    const avatar = wire
-      ? {
-          digest: createHash('sha256')
-            .update(Buffer.from(wire.b64, 'base64'))
-            .digest('hex'),
-          mimeType: 'image/webp',
-          base64: wire.b64,
-          width: wire.w,
-          height: wire.h,
-        }
-      : null;
-    // MEMBER_PROFILE allocations must precede the GROUP_META revision that references them.
-    const memberProfiles = await this.writeGroupMemberProfilesInTx(
-      tx,
-      threadId,
-    );
-    const groupState = await this.stateFeed.writeManyInTx(
-      tx,
-      [...peerDomains].flatMap((peerDomain) => [
-        {
-          peerDomain,
-          account: state.account,
-          domain: this.config.domain,
-          eventType: 'PROFILE' as const,
-          revision: state.profileRev,
-          body: {
-            profileRev: state.profileRev,
-            displayName: state.name,
-            bio: state.bio,
-            avatar,
-          },
-        },
-        {
-          peerDomain,
-          account: state.account,
-          domain: this.config.domain,
-          eventType: 'GROUP_META' as const,
-          revision: state.rosterRev,
-          forceReindex: memberProfiles.has(peerDomain),
-          body: {
-            rosterRev: state.rosterRev,
-            active:
-              state.dissolvedAt === null &&
-              roster.some((m) => m.domain === peerDomain),
-            dissolved: state.dissolvedAt !== null,
-            membersCanInvite: state.membersCanInvite,
-            owner: {
-              account: owner.account,
-              domain: normalizeDomain(owner.domain),
-            },
-            members: roster.map((m) => ({
-              account: m.account,
-              domain: normalizeDomain(m.domain),
-              role: m.role ?? GroupRole.MEMBER,
-            })),
-          },
-        },
-      ]),
-    );
-    return new Map([...memberProfiles, ...groupState]);
-  }
-
-  /** Reconcile authoritative group visibility sources and keep only currently visible profiles. */
-  private async writeGroupMemberProfilesInTx(
-    tx: DatabaseTransaction,
-    threadId: number,
-  ): Promise<Map<string, bigint>> {
-    const members = await tx
-      .select({
-        account: tables.user.account,
-        domain: tables.user.domain,
         name: tables.user.name,
         avatar: tables.user.avatar,
         isForeigner: tables.user.isForeigner,
@@ -1859,185 +1762,97 @@ export class FederationService {
           ),
         ),
       );
-    const peerDomains = [
-      ...new Set(
-        members
-          .filter((member) => member.isForeigner)
-          .map((member) => member.domain),
-      ),
-    ];
-    const existing = await tx
-      .select({
-        targetPeerDomain: tables.federationMemberProfileSource.targetPeerDomain,
-        memberAccount: tables.federationMemberProfileSource.memberAccount,
-        memberDomain: tables.federationMemberProfileSource.memberDomain,
-      })
-      .from(tables.federationMemberProfileSource)
-      .where(eq(tables.federationMemberProfileSource.threadId, threadId));
-    const desired = peerDomains.flatMap((targetPeerDomain) =>
-      members.map((member) => ({
-        targetPeerDomain,
-        memberAccount: member.account,
-        memberDomain: member.isForeigner ? member.domain : this.config.domain,
-        threadId,
-      })),
+    const normalizeDomain = (domain: string) =>
+      domain === 'local' ? this.config.domain : domain;
+    const peerDomains = new Set(
+      roster
+        .map((member) => member.domain)
+        .filter((domain) => domain !== 'local'),
     );
-    await tx
-      .delete(tables.federationMemberProfileSource)
-      .where(eq(tables.federationMemberProfileSource.threadId, threadId));
-    if (desired.length)
-      await tx
-        .insert(tables.federationMemberProfileSource)
-        .values(desired)
-        .onConflictDoNothing();
-
-    const affected = new Map<
-      string,
-      { targetPeerDomain: string; memberAccount: string; memberDomain: string }
-    >();
-    for (const source of [...existing, ...desired]) {
-      const key = JSON.stringify([
-        source.targetPeerDomain,
-        source.memberDomain,
-        source.memberAccount,
-      ]);
-      affected.set(key, source);
-    }
-    const writes: PeerStateFeedWrite[] = [];
-    for (const key of [...affected.keys()].sort()) {
-      const address = affected.get(key)!;
-      const [source] = await tx
-        .select({ threadId: tables.federationMemberProfileSource.threadId })
-        .from(tables.federationMemberProfileSource)
-        .where(
-          and(
-            eq(
-              tables.federationMemberProfileSource.targetPeerDomain,
-              address.targetPeerDomain,
-            ),
-            eq(
-              tables.federationMemberProfileSource.memberAccount,
-              address.memberAccount,
-            ),
-            eq(
-              tables.federationMemberProfileSource.memberDomain,
-              address.memberDomain,
-            ),
-          ),
-        )
-        .limit(1);
-      const [publication] = await tx
-        .select()
-        .from(tables.federationMemberProfilePublication)
-        .where(
-          and(
-            eq(
-              tables.federationMemberProfilePublication.targetPeerDomain,
-              address.targetPeerDomain,
-            ),
-            eq(
-              tables.federationMemberProfilePublication.memberAccount,
-              address.memberAccount,
-            ),
-            eq(
-              tables.federationMemberProfilePublication.memberDomain,
-              address.memberDomain,
-            ),
-          ),
-        )
-        .for('update')
-        .limit(1);
-
-      let body: PeerStateBody;
-      let availability: 'AVAILABLE' | 'REMOVED';
-      if (source) {
-        const localMemberDomain =
-          address.memberDomain === this.config.domain
-            ? 'local'
-            : address.memberDomain;
-        const [member] = await tx
-          .select({
-            name: tables.user.name,
-            avatar: tables.user.avatar,
-            isForeigner: tables.user.isForeigner,
-            profileRev: tables.user.profileRev,
-            remoteProfileRev: tables.user.remoteProfileRev,
-          })
-          .from(tables.user)
-          .where(
-            and(
-              eq(tables.user.account, address.memberAccount),
-              eq(tables.user.domain, localMemberDomain),
-            ),
-          )
-          .limit(1);
-        if (!member)
-          throw new Error(
-            `member profile source has no user ${address.memberAccount}@${address.memberDomain}`,
-          );
-        const wire = member.avatar
+    if (!peerDomains.size) return new Map();
+    const wire = state.avatar
+      ? await this.upload.readAvatarAsWire(state.avatar)
+      : null;
+    const avatar = wire
+      ? {
+          digest: createHash('sha256')
+            .update(Buffer.from(wire.b64, 'base64'))
+            .digest('hex'),
+          mimeType: 'image/webp',
+          base64: wire.b64,
+          width: wire.w,
+          height: wire.h,
+        }
+      : null;
+    if (!this.groupMetaFeed) throw new Error('group meta feed is unavailable');
+    const memberProjection = await Promise.all(
+      roster.map(async (member) => {
+        const memberWire = member.avatar
           ? await this.upload.readAvatarAsWire(member.avatar)
           : null;
-        availability = 'AVAILABLE';
-        body = {
-          profileRev: member.isForeigner
-            ? (member.remoteProfileRev ?? 0)
-            : member.profileRev,
-          displayName: member.name,
-          avatar: wire
-            ? {
-                digest: createHash('sha256')
-                  .update(Buffer.from(wire.b64, 'base64'))
-                  .digest('hex'),
-                mimeType: 'image/webp',
-                base64: wire.b64,
-                width: wire.w,
-                height: wire.h,
-              }
-            : null,
+        return {
+          account: member.account,
+          domain: normalizeDomain(member.domain),
+          body: {
+            role: member.role ?? GroupRole.MEMBER,
+            profileRev: member.isForeigner
+              ? (member.remoteProfileRev ?? 0)
+              : member.profileRev,
+            displayName: member.name,
+            avatar: memberWire
+              ? {
+                  digest: createHash('sha256')
+                    .update(Buffer.from(memberWire.b64, 'base64'))
+                    .digest('hex'),
+                  mimeType: 'image/webp',
+                  base64: memberWire.b64,
+                  width: memberWire.w,
+                  height: memberWire.h,
+                }
+              : null,
+          },
         };
-      } else {
-        if (!publication || publication.availability === 'REMOVED') continue;
-        availability = 'REMOVED';
-        body = {};
-        await this.stateFeed.deleteProjectionInTx(tx, {
-          peerDomain: address.targetPeerDomain,
-          account: address.memberAccount,
-          domain: address.memberDomain,
-          eventType: 'MEMBER_PROFILE',
-        });
-      }
-      const bodyHash = createHash('sha256')
-        .update(JSON.stringify(body))
-        .digest('hex');
-      if (publication?.bodyHash === bodyHash) continue;
-      const revision = publication ? publication.revision + 1 : 0;
-      await tx
-        .insert(tables.federationMemberProfilePublication)
-        .values({
-          ...address,
-          availability,
-          bodyHash,
-          updatedAt: new Date(),
-        })
-        .onConflictDoUpdate({
-          target: [
-            tables.federationMemberProfilePublication.targetPeerDomain,
-            tables.federationMemberProfilePublication.memberAccount,
-            tables.federationMemberProfilePublication.memberDomain,
-          ],
-          set: { revision, availability, bodyHash, updatedAt: new Date() },
-        });
-      if (availability === 'AVAILABLE')
-        writes.push({
-          peerDomain: address.targetPeerDomain,
-          account: address.memberAccount,
-          domain: address.memberDomain,
-          eventType: 'MEMBER_PROFILE',
-          body,
-        });
-    }
-    return this.stateFeed.writeManyInTx(tx, writes);
+      }),
+    );
+    const groupMetaHeads = new Map<string, bigint>();
+    for (const peerDomain of peerDomains)
+      groupMetaHeads.set(
+        peerDomain,
+        await this.groupMetaFeed.reconcileInTx(
+          tx,
+          peerDomain,
+          state.groupUserId,
+          memberProjection,
+        ),
+      );
+    const groupState = await this.stateFeed.writeManyInTx(
+      tx,
+      [...peerDomains].flatMap((peerDomain) => [
+        {
+          peerDomain,
+          account: state.account,
+          domain: this.config.domain,
+          eventType: 'PROFILE' as const,
+          revision: state.profileRev,
+          body: {
+            profileRev: state.profileRev,
+            displayName: state.name,
+            bio: state.bio,
+            avatar,
+          },
+        },
+        {
+          peerDomain,
+          account: state.account,
+          domain: this.config.domain,
+          eventType: 'GROUP_META_FEED_HEAD' as const,
+          body: {
+            groupMetaFeedEndId: groupMetaHeads.get(peerDomain)!.toString(),
+          },
+        },
+      ]),
+    );
+    return groupState;
   }
 
   /** Public profile of a local user (GET /s2s/v1/users/:account). Null if not local / not found. */
@@ -3447,6 +3262,140 @@ export class FederationService {
     }
   }
 
+  private async pullGroupMetaFeed(
+    domain: string,
+    account: string,
+    mode: 'full' | 'delta',
+    after: bigint,
+    fixedThrough?: bigint,
+  ): Promise<GroupMetaFeedPage> {
+    let cursor = after;
+    let through = fixedThrough;
+    const items: GroupMetaFeedPage['items'] = [];
+    for (;;) {
+      const requestedAfter = cursor;
+      const query = new URLSearchParams({
+        account,
+        mode,
+        after: cursor.toString(),
+        take: '100',
+      });
+      if (through !== undefined) query.set('through', through.toString());
+      let page: GroupMetaFeedPage;
+      try {
+        page = await this.withTrustedPeer(domain, () =>
+          this.getSigned<GroupMetaFeedPage>(
+            `/s2s/v1/group-meta?${query.toString()}`,
+            domain,
+            16 * 1024 * 1024,
+          ),
+        );
+      } catch (error) {
+        if (
+          mode === 'delta' &&
+          error instanceof S2sResponseError &&
+          error.code === BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE
+        ) {
+          const recovery = error.data as {
+            resumeAfter?: unknown;
+            resumeBefore?: unknown;
+          };
+          if (
+            typeof recovery?.resumeAfter !== 'string' ||
+            !/^(0|[1-9]\d*)$/.test(recovery.resumeAfter) ||
+            typeof recovery.resumeBefore !== 'string' ||
+            !/^[1-9]\d*$/.test(recovery.resumeBefore) ||
+            BigInt(recovery.resumeBefore) <= BigInt(recovery.resumeAfter)
+          )
+            throw new Error('invalid group-meta recovery window');
+          return this.pullGroupMetaFeed(
+            domain,
+            account,
+            'full',
+            BigInt(recovery.resumeAfter),
+            BigInt(recovery.resumeBefore) - 1n,
+          );
+        }
+        throw error;
+      }
+      if (
+        page.account !== account ||
+        page.mode !== mode ||
+        !/^(0|[1-9]\d*)$/.test(page.scannedThrough) ||
+        !/^(0|[1-9]\d*)$/.test(page.groupMetaFeedEndId)
+      )
+        throw new Error('invalid group-meta page');
+      const scannedThrough = BigInt(page.scannedThrough);
+      const pageEnd = BigInt(page.groupMetaFeedEndId);
+      if (through === undefined) through = pageEnd;
+      if (scannedThrough < cursor || scannedThrough > through)
+        throw new Error('invalid group-meta scan boundary');
+      items.push(...page.items);
+      cursor = scannedThrough;
+      if (!page.hasMore) {
+        if (cursor !== through)
+          throw new Error('incomplete group-meta bounded drain');
+        return {
+          account,
+          mode,
+          items,
+          scannedThrough: cursor.toString(),
+          groupMetaFeedEndId: page.groupMetaFeedEndId,
+          hasMore: false,
+        };
+      }
+      if (cursor === requestedAfter)
+        throw new Error('group-meta pagination made no progress');
+    }
+  }
+
+  private async prefetchGroupMetaFeeds(
+    domain: string,
+    page: PeerStateFeedPage,
+  ): Promise<Map<string, GroupMetaFeedPage>> {
+    const result = new Map<string, GroupMetaFeedPage>();
+    for (const item of page.items) {
+      if (item.eventType !== 'GROUP_META_FEED_HEAD') continue;
+      const groupMetaFeedEndId = (item.body as { groupMetaFeedEndId?: unknown })
+        ?.groupMetaFeedEndId;
+      if (
+        typeof groupMetaFeedEndId !== 'string' ||
+        !/^(0|[1-9]\d*)$/.test(groupMetaFeedEndId)
+      )
+        throw new Error('invalid GROUP_META_FEED_HEAD body');
+      const mirror = await this.database.db
+        .select({
+          remoteGroupMetaFeedId: tables.group.remoteGroupMetaFeedId,
+        })
+        .from(tables.group)
+        .innerJoin(tables.user, eq(tables.user.id, tables.group.groupUserId))
+        .where(
+          and(
+            eq(tables.user.account, item.account),
+            eq(tables.user.domain, domain),
+          ),
+        )
+        .limit(1);
+      const current = mirror[0]?.remoteGroupMetaFeedId;
+      if (
+        current !== null &&
+        current !== undefined &&
+        current >= BigInt(groupMetaFeedEndId)
+      )
+        continue;
+      result.set(
+        item.account,
+        await this.pullGroupMetaFeed(
+          domain,
+          item.account,
+          current === null || current === undefined ? 'full' : 'delta',
+          current ?? 0n,
+        ),
+      );
+    }
+    return result;
+  }
+
   /** State is always drained before callers start data feeds. When a lightweight hint supplies a
    * required revision, returning successfully is a durable barrier: the state cursor reached it. */
   async pullStateFromPeer(
@@ -3457,19 +3406,50 @@ export class FederationService {
       this.stateFeedPull.advertise(domain, requiredRevision);
     }
     const changed = new WeakMap<PeerStateFeedPage, StatePageEffect>();
+    const groupMetaPages = new WeakMap<
+      PeerStateFeedPage,
+      Map<string, GroupMetaFeedPage>
+    >();
     await this.stateFeedPull.run(domain, {
       // The first page captures a source end; the pull worker freezes that as
       // `through` for the rest of this drain. A newer hint starts another fixed
       // drain after this one, so mark-and-sweep never races a moving source head.
-      fetch: (after, through) =>
-        this.pullStateFeedPage(
+      fetch: async (after, through) => {
+        const page = await this.pullStateFeedPage(
           domain,
           after,
           after === undefined ? undefined : 100,
           through,
-        ),
+        );
+        groupMetaPages.set(
+          page,
+          await this.prefetchGroupMetaFeeds(domain, page),
+        );
+        return page;
+      },
+      // A corrected state cursor is a replacement rebuild, not an incremental
+      // continuation. Forget every per-group cursor atomically with accepting
+      // the publisher's resume point so each subsequently advertised group is
+      // fetched in full and can sweep stale member references.
+      beginRebuild: async (tx) => {
+        await tx.execute(sql`
+          UPDATE "Group" mirror_group
+          SET "remoteGroupMetaFeedId" = NULL, "updatedAt" = NOW()
+          FROM "User" group_user
+          WHERE group_user.id = mirror_group."groupUserId"
+            AND group_user.domain = ${domain}
+        `);
+      },
       apply: async (tx, page) => {
-        changed.set(page, await this.applyStateFeedPageInTx(tx, domain, page));
+        changed.set(
+          page,
+          await this.applyStateFeedPageInTx(
+            tx,
+            domain,
+            page,
+            groupMetaPages.get(page),
+          ),
+        );
       },
       afterCommit: async (page) => {
         const effect = changed.get(page) ?? {
@@ -3483,7 +3463,9 @@ export class FederationService {
         for (const status of effect.localSystemMessages)
           await this.publishLocalSystemMessage(status);
       },
-      afterDrain: async () => this.sweepFederatedMemberProfiles(domain),
+      afterDrain: async () => {
+        await this.sweepUnreferencedFederatedMemberProfiles(domain);
+      },
     });
     const cursor = await this.readStatePullCursor(domain);
     if (requiredRevision !== undefined && cursor < requiredRevision) {
@@ -3494,41 +3476,25 @@ export class FederationService {
     return cursor;
   }
 
-  private async sweepFederatedMemberProfiles(
+  private async sweepUnreferencedFederatedMemberProfiles(
     sourcePeerDomain: string,
   ): Promise<void> {
     await this.database.db.execute(sql`
-      DELETE FROM "FederatedMemberProfile" profile
-      WHERE profile."sourcePeerDomain" = ${sourcePeerDomain}
+      DELETE FROM "FederatedMemberProfile" candidate
+      WHERE candidate."sourcePeerDomain" = ${sourcePeerDomain}
         AND NOT EXISTS (
           SELECT 1
-          FROM "User" member
-          JOIN "ThreadParticipant" member_participant
-            ON member_participant."userId" = member.id
-           AND member_participant.state = 'ESTABLISHED'
-          JOIN "MessageThread" thread ON thread.id = member_participant."threadId"
-          WHERE member.account = profile."memberAccount"
-            AND (CASE WHEN member.domain = 'local' THEN ${this.config.domain} ELSE member.domain END) = profile."memberDomain"
-            AND (
-              (
-                thread.type = 'P2P'
-                AND EXISTS (
-                  SELECT 1 FROM "RelationshipPair" pair
-                  WHERE pair."threadId" = thread.id AND pair.active = true
-                )
-              )
-              OR (
-                thread.type = 'GROUP'
-                AND EXISTS (
-                  SELECT 1
-                  FROM "ThreadParticipant" local_participant
-                  JOIN "User" local_user ON local_user.id = local_participant."userId"
-                  WHERE local_participant."threadId" = thread.id
-                    AND local_participant.state = 'ESTABLISHED'
-                    AND local_user."isForeigner" = false
-                )
-              )
-            )
+          FROM "ThreadParticipant" participant
+          JOIN "User" member_user ON member_user.id = participant."userId"
+          JOIN "MessageThread" thread ON thread.id = participant."threadId"
+            AND thread.type = 'GROUP'
+          JOIN "User" group_user ON group_user.id = thread."groupUserId"
+            AND group_user.domain = ${sourcePeerDomain}
+          WHERE participant.state = 'ESTABLISHED'
+            AND member_user.account = candidate."memberAccount"
+            AND (CASE WHEN member_user.domain = 'local'
+                      THEN ${this.config.domain}
+                      ELSE member_user.domain END) = candidate."memberDomain"
         )
     `);
   }
@@ -3672,17 +3638,17 @@ export class FederationService {
     tx: DatabaseTransaction,
     peerDomain: string,
     page: PeerStateFeedPage,
+    groupMetaPages: ReadonlyMap<string, GroupMetaFeedPage> = new Map(),
   ): Promise<StatePageEffect> {
     const changed: PendingThreadRevision[] = [];
     const statePushDomains: string[] = [];
     const localSystemMessages: StatePageEffect['localSystemMessages'] = [];
-    // Preserve the protocol dependency: member snapshots are materialized before a GROUP_META revision
-    // can expose those members. MEMBER_PROFILE storage is address-based and does not require a User stub.
+    // Relationship state creates the authorized group shell before a group-meta revision is applied.
+    // PROFILE then hydrates identity, and the group-meta pull materializes the complete member closure.
     const applyPriority = {
-      MEMBER_PROFILE: 0,
+      RELATIONSHIP_INTENT: 0,
       PROFILE: 1,
-      GROUP_META: 2,
-      RELATIONSHIP_INTENT: 3,
+      GROUP_META_FEED_HEAD: 2,
     } as const;
     for (const [itemIndex, item] of [...page.items]
       .sort((a, b) => applyPriority[a.eventType] - applyPriority[b.eventType])
@@ -3700,9 +3666,7 @@ export class FederationService {
           'eventType',
           'feedId',
           'body',
-          ...(item.eventType === 'RELATIONSHIP_INTENT'
-            ? ['localAccount']
-            : []),
+          ...(item.eventType === 'RELATIONSHIP_INTENT' ? ['localAccount'] : []),
         ]);
         if (
           Object.keys(wireItem).length !== allowedKeys.size ||
@@ -3879,125 +3843,6 @@ export class FederationService {
             stub.id,
           );
           statePushDomains.push(...published.keys());
-        } else if (item.eventType === 'MEMBER_PROFILE') {
-          const body = item.body as {
-            displayName?: unknown;
-            avatar?: unknown;
-          };
-          const [current] = await tx
-            .select({ revision: tables.federatedMemberProfile.revision })
-            .from(tables.federatedMemberProfile)
-            .where(
-              and(
-                eq(tables.federatedMemberProfile.sourcePeerDomain, peerDomain),
-                eq(tables.federatedMemberProfile.memberAccount, item.account),
-                eq(tables.federatedMemberProfile.memberDomain, item.domain),
-              ),
-            )
-            .limit(1);
-          if (current && current.revision >= revision) continue;
-          let displayName: string | null = null;
-          let avatar: string | null = null;
-          if (
-            typeof body.displayName !== 'string' ||
-            body.displayName.length < 1
-          )
-            throw new PermanentFederationItemError(
-              'invalid MEMBER_PROFILE displayName',
-            );
-          displayName = body.displayName;
-          if (body.avatar !== null) {
-            const wire = body.avatar as {
-              digest?: unknown;
-              mimeType?: unknown;
-              base64?: unknown;
-              width?: unknown;
-              height?: unknown;
-            };
-            if (
-              !wire ||
-              typeof wire.digest !== 'string' ||
-              !/^[a-f0-9]{64}$/.test(wire.digest) ||
-              typeof wire.mimeType !== 'string' ||
-              typeof wire.base64 !== 'string' ||
-              !Number.isSafeInteger(wire.width) ||
-              Number(wire.width) < 1 ||
-              !Number.isSafeInteger(wire.height) ||
-              Number(wire.height) < 1
-            )
-              throw new PermanentFederationItemError(
-                'invalid MEMBER_PROFILE avatar',
-              );
-            const bytes = Buffer.from(wire.base64, 'base64');
-            if (
-              bytes.toString('base64') !== wire.base64 ||
-              createHash('sha256').update(bytes).digest('hex') !== wire.digest
-            )
-              throw new PermanentFederationItemError(
-                'MEMBER_PROFILE avatar digest mismatch',
-              );
-            avatar = await this.upload.saveAvatarFromWire({
-              b64: wire.base64,
-              w: Number(wire.width),
-              h: Number(wire.height),
-            });
-          }
-          await tx
-            .insert(tables.federatedMemberProfile)
-            .values({
-              sourcePeerDomain: peerDomain,
-              memberAccount: normalizeAccount(item.account),
-              memberDomain: item.domain,
-              revision,
-              availability: 'AVAILABLE',
-              displayName,
-              avatar,
-              updatedAt: new Date(),
-            })
-            .onConflictDoUpdate({
-              target: [
-                tables.federatedMemberProfile.sourcePeerDomain,
-                tables.federatedMemberProfile.memberAccount,
-                tables.federatedMemberProfile.memberDomain,
-              ],
-              set: {
-                revision,
-                availability: 'AVAILABLE',
-                displayName,
-                avatar,
-                updatedAt: new Date(),
-              },
-            });
-          const consumers = await tx.execute<{
-            userId: number;
-            threadId: number;
-          }>(sql`
-          SELECT DISTINCT local_p."userId", thread.id AS "threadId"
-          FROM "MessageThread" thread
-          JOIN "User" group_u ON group_u.id = thread."groupUserId"
-            AND group_u.domain = ${peerDomain}
-          JOIN "ThreadParticipant" member_p ON member_p."threadId" = thread.id
-            AND member_p.state = 'ESTABLISHED'
-          JOIN "User" member_u ON member_u.id = member_p."userId"
-          JOIN "ThreadParticipant" local_p ON local_p."threadId" = thread.id
-            AND local_p.state = 'ESTABLISHED'
-          JOIN "User" local_u ON local_u.id = local_p."userId"
-            AND local_u."isForeigner" = false
-          WHERE member_u.account = ${normalizeAccount(item.account)}
-            AND (CASE WHEN member_u.domain = 'local' THEN ${this.config.domain}
-                      ELSE member_u.domain END) = ${item.domain}
-        `);
-          changed.push(
-            ...(await this.threadRevisionService.recordMemberProfileStateInTx(
-              tx,
-              {
-                sourcePeerDomain: peerDomain,
-                memberAccount: normalizeAccount(item.account),
-                memberDomain: item.domain,
-              },
-              consumers.rows.map((consumer) => consumer.userId),
-            )),
-          );
         } else if (
           item.eventType === 'RELATIONSHIP_INTENT' &&
           !item.account.startsWith('!') &&
@@ -4566,10 +4411,7 @@ export class FederationService {
               .from(tables.user)
               .where(
                 and(
-                  eq(
-                    tables.user.account,
-                    normalizeAccount(item.localAccount),
-                  ),
+                  eq(tables.user.account, normalizeAccount(item.localAccount)),
                   eq(tables.user.isForeigner, false),
                   eq(tables.user.isGroup, false),
                 ),
@@ -4744,6 +4586,38 @@ export class FederationService {
               statePushDomains.push(...confirmation.keys());
             }
           }
+          if (
+            inviteDirection &&
+            membership.changed &&
+            storageStatus === 'REVOKED'
+          ) {
+            await this.relationshipIntents.setPairActiveInTx(
+              tx,
+              groupUser.id,
+              member.id,
+              false,
+            );
+            const thread = await tx.query.messageThread.findFirst({
+              where: eq(tables.messageThread.groupUserId, groupUser.id),
+              columns: { id: true },
+            });
+            if (!thread)
+              throw new PermanentFederationItemError(
+                'group relationship placeholder thread is missing',
+              );
+            await tx
+              .update(tables.threadParticipant)
+              .set({
+                state: ThreadParticipantState.REVOKED,
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(tables.threadParticipant.threadId, thread.id),
+                  eq(tables.threadParticipant.userId, member.id),
+                ),
+              );
+          }
           if (inviteDirection && membership.changed) {
             const thread = await tx.query.messageThread.findFirst({
               where: eq(tables.messageThread.groupUserId, groupUser.id),
@@ -4837,7 +4711,6 @@ export class FederationService {
               const groupState = await this.writeGroupStateInTx(
                 tx,
                 originThread.id,
-                [peerDomain],
               );
               statePushDomains.push(...rejection.keys(), ...groupState.keys());
               this.logger.warn(
@@ -4953,17 +4826,32 @@ export class FederationService {
                 );
             statePushDomains.push(...groupState.keys());
           }
-        } else if (item.eventType === 'GROUP_META') {
-          // Group application is handled only by the authoritative origin; malformed/non-origin keys fail
-          // closed. Full roster replacement is connected below through the existing roster applier.
+        } else if (item.eventType === 'GROUP_META_FEED_HEAD') {
           if (!item.account.startsWith('!') || item.domain !== peerDomain)
-            throw new PermanentFederationItemError('invalid GROUP_META key');
-          const groupEffect = await this.applyGroupStateSnapshotInTx(
+            throw new PermanentFederationItemError(
+              'invalid GROUP_META_FEED_HEAD key',
+            );
+          const groupMetaFeedEndId = (
+            item.body as { groupMetaFeedEndId?: unknown }
+          ).groupMetaFeedEndId;
+          if (
+            typeof groupMetaFeedEndId !== 'string' ||
+            !/^(0|[1-9]\d*)$/.test(groupMetaFeedEndId)
+          )
+            throw new PermanentFederationItemError(
+              'invalid GROUP_META_FEED_HEAD body',
+            );
+          const groupPage = groupMetaPages.get(item.account);
+          if (!groupPage) continue;
+          if (BigInt(groupPage.scannedThrough) < BigInt(groupMetaFeedEndId))
+            throw new Error(
+              'group-meta page did not reach advertised revision',
+            );
+          const groupEffect = await this.applyGroupMetaFeedPageInTx(
             tx,
             peerDomain,
             item.account,
-            revision,
-            item.body as Record<string, unknown>,
+            groupPage,
           );
           statePushDomains.push(...groupEffect.statePushDomains);
           localSystemMessages.push(...groupEffect.systemMessages);
@@ -5063,20 +4951,278 @@ export class FederationService {
     `);
     const result = new Map<string, bigint>();
     for (const group of groups.rows) {
-      const profiles = await this.writeGroupMemberProfilesInTx(
+      const state = await this.refreshGroupMemberProjectionInTx(
         tx,
         group.threadId,
       );
-      for (const entry of profiles) result.set(...entry);
+      for (const entry of state) result.set(...entry);
     }
     return result;
   }
 
+  /** A member profile change is a group-meta semantic change and therefore advances the same group
+   * revision used by roster mutations before publishing the compacted member projection. */
+  private async refreshGroupMemberProjectionInTx(
+    tx: DatabaseTransaction,
+    threadId: number,
+  ): Promise<Map<string, bigint>> {
+    const [thread] = await tx
+      .select({ groupUserId: tables.messageThread.groupUserId })
+      .from(tables.messageThread)
+      .where(eq(tables.messageThread.id, threadId))
+      .limit(1);
+    if (!thread?.groupUserId) return new Map();
+    await tx
+      .update(tables.group)
+      .set({ rosterRev: sql`${tables.group.rosterRev} + 1` })
+      .where(eq(tables.group.groupUserId, thread.groupUserId));
+    return this.writeGroupStateInTx(tx, threadId);
+  }
+
+  private async applyGroupMetaFeedPageInTx(
+    tx: DatabaseTransaction,
+    peerDomain: string,
+    account: string,
+    page: GroupMetaFeedPage,
+  ) {
+    if (
+      page.account !== account ||
+      (page.mode !== 'full' && page.mode !== 'delta') ||
+      !/^(0|[1-9]\d*)$/.test(page.scannedThrough) ||
+      !/^(0|[1-9]\d*)$/.test(page.groupMetaFeedEndId) ||
+      page.hasMore !== false ||
+      !Array.isArray(page.items)
+    )
+      throw new Error('invalid group-meta page');
+    // Full mode is a replacement snapshot. Keep the pre-rebuild local member
+    // projection keys in memory; every received UPSERT removes one, and after
+    // the new participant references are committed the remainder is eligible
+    // for reference-based garbage collection.
+    const staleProfiles = new Map<
+      string,
+      { memberAccount: string; memberDomain: string }
+    >();
+    if (page.mode === 'full') {
+      const currentProfiles = await tx
+        .select({
+          memberAccount: tables.federatedMemberProfile.memberAccount,
+          memberDomain: tables.federatedMemberProfile.memberDomain,
+        })
+        .from(tables.federatedMemberProfile)
+        .where(eq(tables.federatedMemberProfile.sourcePeerDomain, peerDomain));
+      for (const profile of currentProfiles)
+        staleProfiles.set(
+          `${profile.memberDomain}\u0000${profile.memberAccount}`,
+          profile,
+        );
+    }
+    const roster = new Map<
+      string,
+      { account: string; domain: string; role: GroupRole }
+    >();
+    if (page.mode === 'delta') {
+      const [mirror] = await tx
+        .select({ threadId: tables.messageThread.id })
+        .from(tables.messageThread)
+        .innerJoin(
+          tables.user,
+          eq(tables.user.id, tables.messageThread.groupUserId),
+        )
+        .where(
+          and(
+            eq(tables.user.account, account),
+            eq(tables.user.domain, peerDomain),
+          ),
+        )
+        .limit(1);
+      if (mirror) {
+        const current = await tx
+          .select({
+            account: tables.user.account,
+            domain: tables.user.domain,
+            role: tables.threadParticipant.role,
+          })
+          .from(tables.threadParticipant)
+          .innerJoin(
+            tables.user,
+            eq(tables.user.id, tables.threadParticipant.userId),
+          )
+          .where(
+            and(
+              eq(tables.threadParticipant.threadId, mirror.threadId),
+              eq(
+                tables.threadParticipant.state,
+                ThreadParticipantState.ESTABLISHED,
+              ),
+            ),
+          );
+        for (const member of current) {
+          const domain =
+            member.domain === 'local' ? this.config.domain : member.domain;
+          roster.set(`${domain}\u0000${member.account}`, {
+            account: member.account,
+            domain,
+            role: member.role ?? GroupRole.MEMBER,
+          });
+        }
+      }
+    }
+    let previousFeedId = 0n;
+    for (const member of page.items) {
+      if (!/^[1-9]\d*$/.test(member.feedId))
+        throw new Error('invalid group-meta feed id');
+      const feedId = BigInt(member.feedId);
+      if (
+        feedId <= previousFeedId ||
+        feedId > BigInt(page.scannedThrough) ||
+        typeof member.account !== 'string' ||
+        typeof member.domain !== 'string' ||
+        !Number.isSafeInteger(member.rev) ||
+        member.rev < 0 ||
+        (member.operation !== 'UPSERT' && member.operation !== 'DELETE')
+      )
+        throw new Error('invalid group-meta member');
+      previousFeedId = feedId;
+      const key = `${member.domain}\u0000${member.account}`;
+      if (member.operation === 'DELETE') {
+        if (page.mode === 'full' || Object.keys(member.body as object).length)
+          throw new Error('invalid group-meta deletion');
+        roster.delete(key);
+        continue;
+      }
+      const body = member.body as {
+        role?: unknown;
+        profileRev?: unknown;
+        displayName?: unknown;
+        avatar?: unknown;
+      };
+      if (
+        !Object.values(GroupRole).includes(body.role as GroupRole) ||
+        !Number.isSafeInteger(body.profileRev) ||
+        Number(body.profileRev) < 0 ||
+        typeof body.displayName !== 'string' ||
+        body.displayName.length < 1
+      )
+        throw new Error('invalid group-meta member body');
+      let avatar: string | null = null;
+      if (body.avatar !== null) {
+        const wire = body.avatar as {
+          digest?: unknown;
+          base64?: unknown;
+          width?: unknown;
+          height?: unknown;
+        };
+        if (
+          !wire ||
+          typeof wire.digest !== 'string' ||
+          !/^[a-f0-9]{64}$/.test(wire.digest) ||
+          typeof wire.base64 !== 'string' ||
+          !Number.isSafeInteger(wire.width) ||
+          Number(wire.width) < 1 ||
+          !Number.isSafeInteger(wire.height) ||
+          Number(wire.height) < 1
+        )
+          throw new Error('invalid group-meta member avatar');
+        const bytes = Buffer.from(wire.base64, 'base64');
+        if (
+          bytes.toString('base64') !== wire.base64 ||
+          createHash('sha256').update(bytes).digest('hex') !== wire.digest
+        )
+          throw new Error('group-meta member avatar digest mismatch');
+        avatar = await this.upload.saveAvatarFromWire({
+          b64: wire.base64,
+          w: Number(wire.width),
+          h: Number(wire.height),
+        });
+      }
+      await tx
+        .insert(tables.federatedMemberProfile)
+        .values({
+          sourcePeerDomain: peerDomain,
+          memberAccount: normalizeAccount(member.account),
+          memberDomain: member.domain,
+          revision: Number(body.profileRev),
+          availability: 'AVAILABLE',
+          displayName: body.displayName,
+          avatar,
+          updatedAt: new Date(),
+        })
+        .onConflictDoUpdate({
+          target: [
+            tables.federatedMemberProfile.sourcePeerDomain,
+            tables.federatedMemberProfile.memberAccount,
+            tables.federatedMemberProfile.memberDomain,
+          ],
+          set: {
+            revision: Number(body.profileRev),
+            availability: 'AVAILABLE',
+            displayName: body.displayName,
+            avatar,
+            updatedAt: new Date(),
+          },
+          setWhere: lte(
+            tables.federatedMemberProfile.revision,
+            Number(body.profileRev),
+          ),
+        });
+      staleProfiles.delete(key);
+      roster.set(key, {
+        account: normalizeAccount(member.account),
+        domain: member.domain,
+        role: body.role as GroupRole,
+      });
+    }
+    const members = [...roster.values()];
+    const owners = members.filter((member) => member.role === GroupRole.OWNER);
+    if (members.length > 0 && owners.length !== 1)
+      throw new Error('group-meta roster must have exactly one owner');
+    const owner = owners[0];
+    const active = members.some(
+      (member) => member.domain === this.config.domain,
+    );
+    const effect = await this.applyGroupStateSnapshotInTx(
+      tx,
+      peerDomain,
+      account,
+      BigInt(page.scannedThrough),
+      {
+        active,
+        dissolved: members.length === 0,
+        owner: owner ?? null,
+        members,
+      },
+    );
+    if (page.mode === 'full' && staleProfiles.size > 0) {
+      for (const profile of staleProfiles.values()) {
+        await tx.execute(sql`
+          DELETE FROM "FederatedMemberProfile" candidate
+          WHERE candidate."sourcePeerDomain" = ${peerDomain}
+            AND candidate."memberAccount" = ${profile.memberAccount}
+            AND candidate."memberDomain" = ${profile.memberDomain}
+            AND NOT EXISTS (
+              SELECT 1
+              FROM "ThreadParticipant" participant
+              JOIN "User" member_user ON member_user.id = participant."userId"
+              JOIN "MessageThread" thread ON thread.id = participant."threadId"
+                AND thread.type = 'GROUP'
+              JOIN "User" group_user ON group_user.id = thread."groupUserId"
+                AND group_user.domain = ${peerDomain}
+              WHERE participant.state = 'ESTABLISHED'
+                AND member_user.account = candidate."memberAccount"
+                AND (CASE WHEN member_user.domain = 'local'
+                          THEN ${this.config.domain}
+                          ELSE member_user.domain END) = candidate."memberDomain"
+            )
+        `);
+      }
+    }
+    return effect;
+  }
   private async applyGroupStateSnapshotInTx(
     tx: DatabaseTransaction,
     peerDomain: string,
     account: string,
-    revision: number,
+    revision: bigint,
     body: Record<string, unknown>,
   ): Promise<{
     threadId: number;
@@ -5089,6 +5235,7 @@ export class FederationService {
     const membersCanInvite = body.membersCanInvite;
     const owner = body.owner as
       | { account?: unknown; domain?: unknown }
+      | null
       | undefined;
     const members = body.members;
     if (
@@ -5096,17 +5243,19 @@ export class FederationService {
       typeof dissolved !== 'boolean' ||
       (membersCanInvite !== undefined &&
         typeof membersCanInvite !== 'boolean') ||
-      !owner ||
-      typeof owner.account !== 'string' ||
-      typeof owner.domain !== 'string' ||
-      !Array.isArray(members)
+      !Array.isArray(members) ||
+      (owner === null
+        ? !dissolved || members.length !== 0
+        : !owner ||
+          typeof owner.account !== 'string' ||
+          typeof owner.domain !== 'string')
     )
       throw new Error('invalid GROUP_META body');
     const [mirror] = await tx
       .select({
         groupUserId: tables.group.groupUserId,
         threadId: tables.messageThread.id,
-        remoteRosterRev: tables.group.remoteRosterRev,
+        remoteGroupMetaFeedId: tables.group.remoteGroupMetaFeedId,
         ownerId: tables.group.ownerId,
       })
       .from(tables.group)
@@ -5122,7 +5271,11 @@ export class FederationService {
         ),
       )
       .limit(1);
-    if (!mirror || (mirror.remoteRosterRev ?? -1) >= revision)
+    if (
+      !mirror ||
+      (mirror.remoteGroupMetaFeedId !== null &&
+        mirror.remoteGroupMetaFeedId >= revision)
+    )
       return {
         threadId: mirror?.threadId ?? 0,
         users: [],
@@ -5298,25 +5451,32 @@ export class FederationService {
             inArray(tables.threadParticipant.userId, removed),
           ),
         );
-    const ownerDomain =
-      owner.domain === this.config.domain ? 'local' : owner.domain;
-    const [ownerUser] = await tx
-      .select({ id: tables.user.id })
-      .from(tables.user)
-      .where(
-        and(
-          eq(tables.user.account, owner.account),
-          eq(tables.user.domain, ownerDomain),
-        ),
-      )
-      .limit(1);
+    const ownerUser = owner
+      ? (
+          await tx
+            .select({ id: tables.user.id })
+            .from(tables.user)
+            .where(
+              and(
+                eq(tables.user.account, owner.account as string),
+                eq(
+                  tables.user.domain,
+                  owner.domain === this.config.domain
+                    ? 'local'
+                    : (owner.domain as string),
+                ),
+              ),
+            )
+            .limit(1)
+        )[0]
+      : { id: mirror.ownerId };
     if (!ownerUser) throw new Error('GROUP_META owner is missing');
     await tx
       .update(tables.group)
       .set({
         ownerId: ownerUser.id,
         membersCanInvite: membersCanInvite ?? true,
-        remoteRosterRev: revision,
+        remoteGroupMetaFeedId: revision,
         dissolvedAt: dissolved ? new Date() : null,
         updatedAt: new Date(),
       })
@@ -5649,9 +5809,7 @@ export class FederationService {
     );
   }
 
-  private threadQuery(
-    thread: FederationThreadAddress,
-  ): URLSearchParams {
+  private threadQuery(thread: FederationThreadAddress): URLSearchParams {
     const query = new URLSearchParams();
     query.set('account', thread.account);
     if (!('localAccount' in thread)) {
@@ -7293,8 +7451,9 @@ export class FederationService {
         updatedAt: new Date(),
       })
       .returning();
+    let localDeletionId: bigint | null = null;
     if (tombstone) {
-      await tx
+      const [createdDeletion] = await tx
         .insert(tables.deletedMessage)
         .values({
           threadId,
@@ -7305,7 +7464,9 @@ export class FederationService {
         })
         .onConflictDoNothing({
           target: [tables.deletedMessage.threadId, tables.deletedMessage.seq],
-        });
+        })
+        .returning({ id: tables.deletedMessage.id });
+      localDeletionId = createdDeletion?.id ?? null;
       await tx
         .delete(tables.federatedMessageTombstone)
         .where(
@@ -7319,6 +7480,18 @@ export class FederationService {
           ),
         );
     }
+    await ClientMessageFeedWriter.publishMessage(
+      tx,
+      threadId,
+      seq,
+      creatorId,
+    );
+    if (localDeletionId !== null)
+      await ClientMessageFeedWriter.publishTombstone(
+        tx,
+        threadId,
+        localDeletionId,
+      );
     if (localForwardBundleId) {
       await tx.insert(tables.forwardMessage).values({
         messageId: message.id,
@@ -8192,8 +8365,9 @@ export class FederationService {
           updatedAt: new Date(),
         })
         .returning();
+      let localDeletionId: bigint | null = null;
       if (tombstone) {
-        await tx
+        const [createdDeletion] = await tx
           .insert(tables.deletedMessage)
           .values({
             threadId,
@@ -8204,7 +8378,9 @@ export class FederationService {
           })
           .onConflictDoNothing({
             target: [tables.deletedMessage.threadId, tables.deletedMessage.seq],
-          });
+          })
+          .returning({ id: tables.deletedMessage.id });
+        localDeletionId = createdDeletion?.id ?? null;
         await tx
           .delete(tables.federatedMessageTombstone)
           .where(
@@ -8225,6 +8401,18 @@ export class FederationService {
             .onConflictDoNothing();
         }
       }
+      await ClientMessageFeedWriter.publishMessage(
+        tx,
+        threadId,
+        seq,
+        creatorId,
+      );
+      if (localDeletionId !== null)
+        await ClientMessageFeedWriter.publishTombstone(
+          tx,
+          threadId,
+          localDeletionId,
+        );
       const arrival = message.createdAt;
       await tx
         .update(tables.messageThread)

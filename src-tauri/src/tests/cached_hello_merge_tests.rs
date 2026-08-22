@@ -15,7 +15,7 @@ fn hello_seeds_then_incremental_frames_patch_their_fields() {
     merge_cached_hello(
         &c,
         "HELLO",
-        &serde_json::json!({"userId":1,"stateRevision":5,"profileRev":2,"latestMessage":null}),
+        &serde_json::json!({"userId":1,"stateRevision":5,"profileRev":2}),
     );
     assert_eq!(get(&c)["userId"], 1);
     assert_eq!(get(&c)["stateRevision"], 5);
@@ -32,8 +32,7 @@ fn hello_seeds_then_incremental_frames_patch_their_fields() {
         "NEW_MESSAGE",
         &serde_json::json!({"threadId":7,"seq":9,"ts":123}),
     );
-    assert_eq!(get(&c)["latestMessage"]["threadId"], 7);
-    assert_eq!(get(&c)["latestMessage"]["seq"], 9);
+    assert!(get(&c).get("latestMessage").is_none());
 }
 
 #[test]

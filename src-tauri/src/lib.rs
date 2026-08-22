@@ -630,14 +630,15 @@ pub fn run() {
                     media_cache::set_media_cache_limit,
                     native_video::create_native_video_stream,
                     native_db::native_db_threads,
-                    native_db::native_db_list_friend_intents,
-                    native_db::native_db_page_friend_intents,
-                    native_db::native_db_cleanup_pending_friend_profiles,
+                    native_db::native_db_list_friend_requests,
+                    native_db::native_db_page_friend_requests,
+                    native_db::native_db_mark_friend_request_accepted,
+                    native_db::native_db_cleanup_friend_requests,
                     native_db::native_db_put_thread,
                     native_db::native_db_replace_threads,
                     native_db::native_db_delete_thread,
                     native_db::native_db_apply_thread_delta,
-                    native_db::native_db_apply_missed_summary,
+                    native_db::native_db_apply_catch_up,
                     native_db::native_db_get_profile,
                     native_db::native_db_get_member_profile,
                     native_db::native_db_list_member_profiles,
@@ -703,14 +704,15 @@ pub fn run() {
                     media_cache::set_media_cache_limit,
                     native_video::create_native_video_stream,
                     native_db::native_db_threads,
-                    native_db::native_db_list_friend_intents,
-                    native_db::native_db_page_friend_intents,
-                    native_db::native_db_cleanup_pending_friend_profiles,
+                    native_db::native_db_list_friend_requests,
+                    native_db::native_db_page_friend_requests,
+                    native_db::native_db_mark_friend_request_accepted,
+                    native_db::native_db_cleanup_friend_requests,
                     native_db::native_db_put_thread,
                     native_db::native_db_replace_threads,
                     native_db::native_db_delete_thread,
                     native_db::native_db_apply_thread_delta,
-                    native_db::native_db_apply_missed_summary,
+                    native_db::native_db_apply_catch_up,
                     native_db::native_db_get_profile,
                     native_db::native_db_get_member_profile,
                     native_db::native_db_list_member_profiles,
@@ -2802,7 +2804,7 @@ fn sse_net(online: bool, sse: tauri::State<'_, SseSupervisor>) -> Result<(), Str
 /// Hand a freshly-attached webview the cached HELLO. A retained open stream does NOT re-push HELLO (it is
 /// sent once per `register`), yet a re-attached webview (renderer reclaim, or an Android cold start where the
 /// FGS opened `/events` before the webview mounted) needs one to bootstrap (userId / threadRevision /
-/// profileRev / latestMessage). The supervisor caches the last HELLO and merges every
+/// profileRev). The supervisor caches the last HELLO and merges every
 /// incremental revision frame into it (see `open_one_stream`), so this replays the CURRENT merged HELLO down
 /// the same `soms-sse-event` channel the original used — no reconnect, no connection churn, no event gap.
 /// `app.emit` broadcasts to all webviews (a live webview receiving a second HELLO just re-runs its idempotent
@@ -2961,20 +2963,6 @@ fn merge_cached_hello(
                 if cur.is_none_or(|c| inc >= c) {
                     obj.insert("stateRevision".to_string(), serde_json::Value::from(inc));
                 }
-            }
-        }
-        // latestMessage = {threadId, seq, ts} — last-signal-wins (a valid upper bound for the missed walk,
-        // mirroring the client's onNewMessage `_to` advancement).
-        "NEW_MESSAGE" => {
-            if let (Some(tid), Some(seq), Some(ts)) = (
-                data.get("threadId").cloned(),
-                data.get("seq").cloned(),
-                data.get("ts").cloned(),
-            ) {
-                obj.insert(
-                    "latestMessage".to_string(),
-                    serde_json::json!({ "threadId": tid, "seq": seq, "ts": ts }),
-                );
             }
         }
         _ => {}

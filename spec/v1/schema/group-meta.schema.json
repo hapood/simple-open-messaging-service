@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:socfp:v1:group-meta",
+  "title": "GET /s2s/v1/group-meta response data",
+  "$defs": {
+    "avatar": {
+      "type": "object",
+      "required": ["digest", "mimeType", "base64", "width", "height"],
+      "properties": {
+        "digest": { "$ref": "urn:socfp:v1:common#/$defs/sha256Hex" },
+        "mimeType": { "type": "string", "minLength": 1 },
+        "base64": { "type": "string", "minLength": 4, "maxLength": 1048576 },
+        "width": { "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger" },
+        "height": { "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger" }
+      },
+      "additionalProperties": false
+    },
+    "upsertBody": {
+      "type": "object",
+      "required": ["role", "profileRev", "displayName", "avatar"],
+      "properties": {
+        "role": { "enum": ["OWNER", "ADMIN", "MEMBER"] },
+        "profileRev": {
+          "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
+        },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 30 },
+        "avatar": {
+          "oneOf": [{ "$ref": "#/$defs/avatar" }, { "type": "null" }]
+        }
+      },
+      "additionalProperties": false
+    },
+    "itemBase": {
+      "type": "object",
+      "required": ["feedId", "account", "domain", "rev", "operation", "body"],
+      "properties": {
+        "feedId": {
+          "$ref": "urn:socfp:v1:common#/$defs/positiveDecimalString"
+        },
+        "account": { "$ref": "urn:socfp:v1:common#/$defs/userAccount" },
+        "domain": { "$ref": "urn:socfp:v1:common#/$defs/domain" },
+        "rev": { "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger" },
+        "operation": { "type": "string" },
+        "body": { "type": "object" }
+      }
+    },
+    "item": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/itemBase",
+          "properties": {
+            "operation": { "const": "UPSERT" },
+            "body": { "$ref": "#/$defs/upsertBody" }
+          },
+          "unevaluatedProperties": false
+        },
+        {
+          "$ref": "#/$defs/itemBase",
+          "properties": {
+            "operation": { "const": "DELETE" },
+            "body": { "type": "object", "maxProperties": 0 }
+          },
+          "unevaluatedProperties": false
+        }
+      ]
+    }
+  },
+  "type": "object",
+  "required": [
+    "account",
+    "mode",
+    "items",
+    "scannedThrough",
+    "groupMetaFeedEndId",
+    "hasMore"
+  ],
+  "properties": {
+    "account": { "$ref": "urn:socfp:v1:common#/$defs/groupAccount" },
+    "mode": { "enum": ["full", "delta"] },
+    "items": { "type": "array", "items": { "$ref": "#/$defs/item" } },
+    "scannedThrough": { "$ref": "urn:socfp:v1:common#/$defs/decimalString" },
+    "groupMetaFeedEndId": {
+      "$ref": "urn:socfp:v1:common#/$defs/decimalString"
+    },
+    "hasMore": { "type": "boolean" }
+  },
+  "additionalProperties": false
+}

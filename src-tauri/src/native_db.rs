@@ -1,11 +1,13 @@
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
+use rusqlite::{
+    params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
 use tauri::Manager;
 
 const DB_FILENAME: &str = "soms-local.sqlite3";
-const CACHE_SCHEMA_VERSION: i64 = 0;
+const CACHE_SCHEMA_VERSION: i64 = 2;
 
 fn db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app
@@ -78,7 +80,8 @@ fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
         "threads",
         "profiles",
         "member_profiles",
-        "friend_intents",
+        "thread_participants",
+        "friend_requests",
         "sync_state",
         "notification_global_state",
         "notification_thread_state",
@@ -97,7 +100,7 @@ fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
         }
     }
     for index in [
-        "friend_intents_direction_requested",
+        "friend_requests_direction_status",
         "messages_user_thread_seq",
         "messages_section_left",
         "messages_section_right",
@@ -134,20 +137,30 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
         );
         CREATE TABLE IF NOT EXISTS member_profiles (
           user_id INTEGER NOT NULL,
-          thread_id INTEGER NOT NULL,
-          member_user_id INTEGER NOT NULL,
+          source_peer_domain TEXT NOT NULL,
+          member_account TEXT NOT NULL,
+          member_domain TEXT NOT NULL,
           payload_json TEXT NOT NULL,
           profile_rev INTEGER NOT NULL,
+          PRIMARY KEY (user_id, source_peer_domain, member_account, member_domain)
+        );
+        CREATE TABLE IF NOT EXISTS thread_participants (
+          user_id INTEGER NOT NULL,
+          thread_id INTEGER NOT NULL,
+          member_user_id INTEGER NOT NULL,
+          source_peer_domain TEXT NOT NULL,
+          member_account TEXT NOT NULL,
+          member_domain TEXT NOT NULL,
           PRIMARY KEY (user_id, thread_id, member_user_id)
         );
-        CREATE TABLE IF NOT EXISTS friend_intents (
+        CREATE TABLE IF NOT EXISTS friend_requests (
           user_id INTEGER NOT NULL,
           stable_key TEXT NOT NULL,
           payload_json TEXT NOT NULL,
           PRIMARY KEY (user_id, stable_key)
         );
-        CREATE INDEX IF NOT EXISTS friend_intents_direction_requested
-          ON friend_intents(
+        CREATE INDEX IF NOT EXISTS friend_requests_direction_status
+          ON friend_requests(
             user_id,
             json_extract(payload_json, '$.direction'),
             json_extract(payload_json, '$.status'),
@@ -219,7 +232,10 @@ fn drop_cache_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "DROP TABLE IF EXISTS threads;
          DROP TABLE IF EXISTS profiles;
+         DROP TABLE IF EXISTS member_profiles;
+         DROP TABLE IF EXISTS thread_participants;
          DROP TABLE IF EXISTS friend_intents;
+         DROP TABLE IF EXISTS friend_requests;
          DROP TABLE IF EXISTS sync_state;
          DROP TABLE IF EXISTS notification_global_state;
          DROP TABLE IF EXISTS notification_thread_state;
@@ -381,6 +397,208 @@ fn parse_json(value: String) -> Result<Value, String> {
     serde_json::from_str(&value).map_err(|e| format!("decode native db value: {e}"))
 }
 
+fn friend_pair_key(
+    account: &str,
+    domain: &str,
+    subject_account: &str,
+    subject_domain: &str,
+) -> Result<String, String> {
+    let mut endpoints = vec![
+        format!("{domain}\0{account}"),
+        format!("{subject_domain}\0{subject_account}"),
+    ];
+    endpoints.sort();
+    Ok(format!(
+        "friend:{}",
+        json_text(&serde_json::json!(endpoints))?
+    ))
+}
+
+fn save_request_projection(
+    tx: &Transaction<'_>,
+    user_id: i64,
+    key: &str,
+    payload: &Value,
+) -> Result<(), String> {
+    tx.execute(
+        "INSERT INTO friend_requests(user_id, stable_key, payload_json) VALUES(?1, ?2, ?3)
+         ON CONFLICT(user_id, stable_key) DO UPDATE SET payload_json=excluded.payload_json",
+        params![user_id, key, json_text(payload)?],
+    )
+    .map_err(|e| format!("save friend-request projection: {e}"))?;
+    Ok(())
+}
+
+fn apply_friend_request_intent(
+    tx: &Transaction<'_>,
+    user_id: i64,
+    revision: i64,
+    account: &str,
+    domain: &str,
+    subject_account: &str,
+    subject_domain: &str,
+    body: &Value,
+) -> Result<(), String> {
+    let now = chrono_millis();
+    let key = friend_pair_key(account, domain, subject_account, subject_domain)?;
+    let current: Option<String> = tx
+        .query_row(
+            "SELECT payload_json FROM friend_requests WHERE user_id=?1 AND stable_key=?2",
+            params![user_id, key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("read friend-request projection: {e}"))?;
+    let prior = current.map(parse_json).transpose()?;
+    let prior_actionable = prior.as_ref().is_some_and(|value| {
+        value.get("direction").and_then(Value::as_str) == Some("INCOMING")
+            && value.get("status").and_then(Value::as_str) == Some("REQUESTED")
+    });
+    let direction = body
+        .get("direction")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "friend intent has no direction".to_string())?;
+    let intent_status = body
+        .get("status")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "friend intent has no status".to_string())?;
+    let mut payload = prior.unwrap_or_else(|| {
+        serde_json::json!({
+            "key": key,
+            "kind": "FRIEND",
+            "direction": direction,
+            "status": intent_status,
+            "localStatus": null,
+            "remoteStatus": null,
+            "locallyAccepted": false,
+            "note": body.get("note").cloned().unwrap_or(Value::String(String::new())),
+            "requestedAt": body.get("requestedAt").cloned().unwrap_or(Value::from(0)),
+            "expiresAt": body.get("expiresAt").cloned().unwrap_or(Value::Null),
+            "peer": body.get("peer").cloned().unwrap_or(Value::Null),
+            "requestedSort": body.get("requestedAt").cloned().unwrap_or(Value::from(0)),
+            "updatedAt": now,
+        })
+    });
+    let object = payload
+        .as_object_mut()
+        .ok_or_else(|| "friend-request projection is not an object".to_string())?;
+    let status_field = if direction == "OUTGOING" {
+        "localStatus"
+    } else {
+        "remoteStatus"
+    };
+    object.insert(status_field.into(), Value::String(intent_status.into()));
+    object.insert("updatedAt".into(), Value::from(now));
+    if intent_status == "REQUESTED" {
+        object.insert("direction".into(), Value::String(direction.into()));
+        for field in ["inviteId", "note", "requestedAt", "expiresAt", "peer"] {
+            if let Some(value) = body.get(field) {
+                object.insert(field.into(), value.clone());
+            }
+        }
+        object.insert(
+            "requestedSort".into(),
+            body.get("requestedAt").cloned().unwrap_or(Value::from(0)),
+        );
+    }
+    let local = object
+        .get("localStatus")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let remote = object
+        .get("remoteStatus")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    if local.as_deref() == Some("ACCEPTED") && remote.as_deref() == Some("ACCEPTED") {
+        tx.execute(
+            "DELETE FROM friend_requests WHERE user_id=?1 AND stable_key=?2",
+            params![user_id, key],
+        )
+        .map_err(|e| format!("finish friend-request projection: {e}"))?;
+        return Ok(());
+    }
+    if remote.as_deref() == Some("REVOKED") {
+        if let Some(peer) = object.get("peer") {
+            let peer_account = peer.get("account").and_then(Value::as_str).unwrap_or("");
+            let peer_domain = peer.get("domain").and_then(Value::as_str).unwrap_or("");
+            let identity = format!("pending:{peer_domain}\0{peer_account}");
+            tx.execute(
+                "DELETE FROM profiles WHERE user_id=?1 AND identity=?2",
+                params![user_id, identity],
+            )
+            .map_err(|e| format!("delete revoked friend-request profile: {e}"))?;
+        }
+        tx.execute(
+            "DELETE FROM friend_requests WHERE user_id=?1 AND stable_key=?2",
+            params![user_id, key],
+        )
+        .map_err(|e| format!("delete revoked incoming friend request: {e}"))?;
+        return Ok(());
+    }
+    let expires = object.get("expiresAt").and_then(Value::as_i64);
+    let valid = expires.is_some_and(|value| value > now);
+    let locally_accepted = object
+        .get("locallyAccepted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if remote.as_deref() == Some("REQUESTED") && valid {
+        object.insert("direction".into(), Value::String("INCOMING".into()));
+        object.insert(
+            "status".into(),
+            Value::String(
+                if locally_accepted || local.as_deref() == Some("ACCEPTED") {
+                    "ACCEPTED"
+                } else {
+                    "REQUESTED"
+                }
+                .into(),
+            ),
+        );
+    } else if local.as_deref() == Some("REQUESTED") && valid {
+        object.insert("direction".into(), Value::String("OUTGOING".into()));
+        object.insert(
+            "status".into(),
+            Value::String(
+                if remote.as_deref() == Some("ACCEPTED") {
+                    ""
+                } else {
+                    "REQUESTED"
+                }
+                .into(),
+            ),
+        );
+        if remote.as_deref() == Some("ACCEPTED") {
+            object.insert("status".into(), Value::Null);
+        }
+    } else if object.get("direction").and_then(Value::as_str) == Some("OUTGOING")
+        && local.as_deref() == Some("REVOKED")
+    {
+        object.insert("status".into(), Value::String("REVOKED".into()));
+        object.insert("expiresAt".into(), Value::Null);
+    } else if local.as_deref() == Some("ACCEPTED") || remote.as_deref() == Some("ACCEPTED") {
+        object.insert("direction".into(), Value::String("OUTGOING".into()));
+        object.insert("status".into(), Value::Null);
+    } else {
+        tx.execute(
+            "DELETE FROM friend_requests WHERE user_id=?1 AND stable_key=?2",
+            params![user_id, key],
+        )
+        .map_err(|e| format!("delete terminal friend-request projection: {e}"))?;
+        return Ok(());
+    }
+    let actionable = object.get("direction").and_then(Value::as_str) == Some("INCOMING")
+        && object.get("status").and_then(Value::as_str) == Some("REQUESTED");
+    save_request_projection(tx, user_id, &key, &payload)?;
+    if actionable && !prior_actionable {
+        tx.execute(
+            "INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,'friendRequestStateRevision',?2)
+             ON CONFLICT(user_id,key) DO UPDATE SET value_json=excluded.value_json",
+            params![user_id, revision.to_string()],
+        ).map_err(|e| format!("save friend-request unread revision: {e}"))?;
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ThreadDelta {
@@ -514,15 +732,15 @@ pub(crate) async fn native_db_threads(
 }
 
 #[tauri::command]
-pub(crate) async fn native_db_list_friend_intents(
+pub(crate) async fn native_db_list_friend_requests(
     app: tauri::AppHandle,
     user_id: i64,
 ) -> Result<Vec<Value>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open(&app)?;
         let mut stmt = conn
-            .prepare("SELECT payload_json FROM friend_intents WHERE user_id = ?1")
-            .map_err(|e| format!("prepare friend-intent read: {e}"))?;
+            .prepare("SELECT payload_json FROM friend_requests WHERE user_id = ?1")
+            .map_err(|e| format!("prepare friend-request read: {e}"))?;
         let rows = stmt
             .query_map([user_id], |row| row.get::<_, String>(0))
             .map_err(|e| format!("query friend intents: {e}"))?;
@@ -537,7 +755,7 @@ pub(crate) async fn native_db_list_friend_intents(
 }
 
 #[tauri::command]
-pub(crate) async fn native_db_page_friend_intents(
+pub(crate) async fn native_db_page_friend_requests(
     app: tauri::AppHandle,
     user_id: i64,
     direction: String,
@@ -554,20 +772,21 @@ pub(crate) async fn native_db_page_friend_intents(
             .map_err(|e| format!("parse friend-intent cursor: {e}"))?;
         let cursor_time = parsed_cursor
             .as_ref()
-            .and_then(|value| value.get(2))
+            .and_then(|value| value.get(0))
             .and_then(Value::as_i64)
             .unwrap_or(i64::MAX);
         let cursor_key = parsed_cursor
             .as_ref()
-            .and_then(|value| value.get(3))
+            .and_then(|value| value.get(1))
             .and_then(Value::as_str)
             .unwrap_or("\u{10ffff}");
         let mut stmt = conn
             .prepare(
-                "SELECT payload_json FROM friend_intents
+                "SELECT payload_json FROM friend_requests
                  WHERE user_id = ?1
                    AND json_extract(payload_json, '$.direction') = ?2
                    AND (json_extract(payload_json, '$.status') = 'REQUESTED'
+                     OR (?2 = 'INCOMING' AND json_extract(payload_json, '$.status') = 'ACCEPTED')
                      OR (?7 = 1 AND json_extract(payload_json, '$.status') = 'REVOKED'))
                    AND (?3 = 0 OR CAST(json_extract(payload_json, '$.requestedSort') AS INTEGER) < ?4
                      OR (CAST(json_extract(payload_json, '$.requestedSort') AS INTEGER) = ?4
@@ -599,23 +818,72 @@ pub(crate) async fn native_db_page_friend_intents(
             .collect::<Result<Vec<_>, _>>()?;
         let total = conn
             .query_row(
-                "SELECT COUNT(*) FROM friend_intents
+                "SELECT COUNT(*) FROM friend_requests
                  WHERE user_id = ?1
                    AND json_extract(payload_json, '$.direction') = ?2
                    AND (json_extract(payload_json, '$.status') = 'REQUESTED'
+                     OR (?2 = 'INCOMING' AND json_extract(payload_json, '$.status') = 'ACCEPTED')
                      OR (?3 = 1 AND json_extract(payload_json, '$.status') = 'REVOKED'))",
                 params![user_id, direction, if include_revoked { 1 } else { 0 }],
                 |row| row.get::<_, i64>(0),
             )
             .map_err(|e| format!("count friend intents: {e}"))?;
-        Ok(serde_json::json!({ "items": items, "total": total }))
+        let actionable_total = conn
+            .query_row(
+                "SELECT COUNT(*) FROM friend_requests
+                 WHERE user_id = ?1
+                   AND json_extract(payload_json, '$.direction') = ?2
+                   AND json_extract(payload_json, '$.status') = 'REQUESTED'",
+                params![user_id, direction],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|e| format!("count actionable friend requests: {e}"))?;
+        Ok(serde_json::json!({ "items": items, "total": total, "actionableTotal": actionable_total }))
     })
     .await
     .map_err(|e| format!("join paged friend-intent read: {e}"))?
 }
 
 #[tauri::command]
-pub(crate) async fn native_db_cleanup_pending_friend_profiles(
+pub(crate) async fn native_db_mark_friend_request_accepted(
+    app: tauri::AppHandle,
+    user_id: i64,
+    key: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = open(&app)?;
+        let current: Option<String> = conn
+            .query_row(
+                "SELECT payload_json FROM friend_requests WHERE user_id=?1 AND stable_key=?2",
+                params![user_id, key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("read friend request for accept: {e}"))?;
+        let Some(current) = current else {
+            return Ok(());
+        };
+        let mut payload = parse_json(current)?;
+        let object = payload
+            .as_object_mut()
+            .ok_or_else(|| "friend request is not an object".to_string())?;
+        object.insert("direction".into(), Value::String("INCOMING".into()));
+        object.insert("status".into(), Value::String("ACCEPTED".into()));
+        object.insert("locallyAccepted".into(), Value::Bool(true));
+        object.insert("updatedAt".into(), Value::from(chrono_millis()));
+        conn.execute(
+            "UPDATE friend_requests SET payload_json=?3 WHERE user_id=?1 AND stable_key=?2",
+            params![user_id, key, json_text(&payload)?],
+        )
+        .map_err(|e| format!("mark friend request accepted: {e}"))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("join mark friend request accepted: {e}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn native_db_cleanup_friend_requests(
     app: tauri::AppHandle,
     user_id: i64,
     now: i64,
@@ -623,17 +891,27 @@ pub(crate) async fn native_db_cleanup_pending_friend_profiles(
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open(&app)?;
         conn.execute(
+            "DELETE FROM friend_requests
+             WHERE user_id=?1
+               AND ((json_extract(payload_json, '$.expiresAt') IS NOT NULL
+                 AND CAST(json_extract(payload_json, '$.expiresAt') AS INTEGER) <= ?2)
+                 OR (json_extract(payload_json, '$.status') IS NULL
+                   AND CAST(json_extract(payload_json, '$.updatedAt') AS INTEGER) <= ?2 - 604800000))",
+            params![user_id, now],
+        )
+        .map_err(|e| format!("cleanup expired friend requests: {e}"))?;
+        conn.execute(
             "DELETE FROM profiles
-             WHERE user_id = ?1
-               AND json_extract(payload_json, '$.source') = 'OUTGOING_FRIEND_REQUEST'
+             WHERE user_id=?1
+               AND json_extract(payload_json, '$.source') IN ('OUTGOING_FRIEND_REQUEST', 'GROUP_INVITE')
                AND CAST(json_extract(payload_json, '$.expiresAt') AS INTEGER) <= ?2",
             params![user_id, now],
         )
-        .map_err(|e| format!("cleanup pending friend profiles: {e}"))?;
+        .map_err(|e| format!("cleanup expired request profiles: {e}"))?;
         Ok(())
     })
     .await
-    .map_err(|e| format!("join pending friend-profile cleanup: {e}"))?
+    .map_err(|e| format!("join friend-request cleanup: {e}"))?
 }
 
 #[tauri::command]
@@ -722,66 +1000,84 @@ pub(crate) async fn native_db_apply_thread_delta(
                 "CLIENT_STATE" => {
                     let account = op.account.ok_or_else(|| "CLIENT_STATE has no account".to_string())?;
                     let domain = op.domain.ok_or_else(|| "CLIENT_STATE has no domain".to_string())?;
-                    let event_type = op.event_type.ok_or_else(|| "CLIENT_STATE has no eventType".to_string())?;
+                    let _event_type = op.event_type.ok_or_else(|| "CLIENT_STATE has no eventType".to_string())?;
                     let subject_account = op.subject_account.ok_or_else(|| "CLIENT_STATE has no subjectAccount".to_string())?;
                     let subject_domain = op.subject_domain.ok_or_else(|| "CLIENT_STATE has no subjectDomain".to_string())?;
                     let body = op.body.ok_or_else(|| "CLIENT_STATE has no body".to_string())?;
-                    let stable_key = json_text(&serde_json::json!([
-                        domain.clone(), account.clone(), event_type,
-                        subject_domain.clone(), subject_account.clone()
-                    ]))?;
-                    let mut payload = body;
-                    let object = payload.as_object_mut().ok_or_else(|| "CLIENT_STATE body is not an object".to_string())?;
-                    if event_type == "GROUP_INVITE_INTENT" {
-                        object.insert("key".into(), Value::String(stable_key.clone()));
-                        object.insert("kind".into(), Value::String("GROUP_INVITE".into()));
-                        object.insert("account".into(), Value::String(account.clone()));
-                        object.insert("domain".into(), Value::String(domain.clone()));
-                        object.insert("subjectAccount".into(), Value::String(subject_account));
-                        object.insert("subjectDomain".into(), Value::String(subject_domain));
-                        tx.execute(
-                            "INSERT INTO friend_intents(user_id, stable_key, payload_json)
-                             VALUES(?1, ?2, ?3)
-                             ON CONFLICT(user_id, stable_key) DO UPDATE SET
-                               payload_json=excluded.payload_json",
-                            params![user_id, stable_key, json_text(&payload)?],
-                        ).map_err(|e| format!("apply client group invite: {e}"))?;
+                    if account.starts_with('!') {
+                        let key = format!("group:{domain}\0{account}");
+                        let status = body.get("status").and_then(Value::as_str).unwrap_or("");
+                        let expires_at = body.get("expiresAt").and_then(Value::as_i64);
+                        let current_payload: Option<String> = tx.query_row(
+                            "SELECT payload_json FROM friend_requests WHERE user_id=?1 AND stable_key=?2",
+                            params![user_id, key], |row| row.get(0)
+                        ).optional().map_err(|e| format!("read group-request projection: {e}"))?;
+                        let current = current_payload.map(parse_json).transpose()?;
+                        let current_status = current.as_ref().and_then(|value| value.get("status")).and_then(Value::as_str);
+                        if status == "REQUESTED" && expires_at.is_some_and(|value| value > chrono_millis()) {
+                            let group = body.get("group").cloned().unwrap_or(Value::Null);
+                            let requested_at = body.get("requestedAt").and_then(Value::as_i64).unwrap_or(0);
+                            let projection = serde_json::json!({
+                                "key": key, "kind": "GROUP", "direction": "INCOMING",
+                                "status": if current_status == Some("ACCEPTED") { "ACCEPTED" } else { "REQUESTED" },
+                                "localStatus": null, "remoteStatus": "REQUESTED",
+                                "locallyAccepted": current_status == Some("ACCEPTED"),
+                                "inviteId": account, "note": body.get("note").cloned().unwrap_or(Value::String(String::new())),
+                                "requestedAt": requested_at, "expiresAt": expires_at,
+                                "group": group, "requestedSort": requested_at, "updatedAt": chrono_millis()
+                            });
+                            save_request_projection(&tx, user_id, &key, &projection)?;
+                            if let Some(group_object) = group.as_object() {
+                                let group_account = group_object.get("account").and_then(Value::as_str).unwrap_or("");
+                                let group_domain = group_object.get("domain").and_then(Value::as_str).unwrap_or("");
+                                let identity = format!("pending-group:{group_domain}\0{group_account}");
+                                let profile = serde_json::json!({
+                                    "identity": identity, "id": 0, "kind": "group",
+                                    "name": group_object.get("name").cloned().unwrap_or(Value::String(String::new())),
+                                    "account": group_account,
+                                    "avatar": group_object.get("avatar").cloned().unwrap_or(Value::String(String::new())),
+                                    "bio": group_object.get("description").cloned().unwrap_or(Value::String(String::new())),
+                                    "domain": group_domain,
+                                    "profileRev": group_object.get("profileRev").cloned().unwrap_or(Value::from(0)),
+                                    "source": "GROUP_INVITE", "expiresAt": expires_at,
+                                });
+                                tx.execute(
+                                    "INSERT INTO profiles(user_id,identity,payload_json,profile_rev) VALUES(?1,?2,?3,0)
+                                     ON CONFLICT(user_id,identity) DO UPDATE SET payload_json=excluded.payload_json",
+                                    params![user_id, identity, json_text(&profile)?],
+                                ).map_err(|e| format!("cache group-request profile: {e}"))?;
+                            }
+                            if current_status.is_none() {
+                                tx.execute(
+                                    "INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,'friendRequestStateRevision',?2)
+                                     ON CONFLICT(user_id,key) DO UPDATE SET value_json=excluded.value_json",
+                                    params![user_id, op.revision.unwrap_or(revision).to_string()],
+                                ).map_err(|e| format!("save group-request unread revision: {e}"))?;
+                            }
+                        } else {
+                            if let Some(group) = current.as_ref().and_then(|value| value.get("group")) {
+                                let group_account = group.get("account").and_then(Value::as_str).unwrap_or("");
+                                let group_domain = group.get("domain").and_then(Value::as_str).unwrap_or("");
+                                let identity = format!("pending-group:{group_domain}\0{group_account}");
+                                tx.execute("DELETE FROM profiles WHERE user_id=?1 AND identity=?2", params![user_id, identity])
+                                    .map_err(|e| format!("delete terminal group-request profile: {e}"))?;
+                            }
+                            tx.execute("DELETE FROM friend_requests WHERE user_id=?1 AND stable_key=?2", params![user_id, key])
+                                .map_err(|e| format!("delete terminal group request: {e}"))?;
+                        }
                         continue;
                     }
-                    if event_type != "P2P_INTENT" { continue; }
-                    object.insert("key".into(), Value::String(stable_key.clone()));
-                    object.insert("account".into(), Value::String(account));
-                    object.insert("domain".into(), Value::String(domain));
-                    object.insert("subjectAccount".into(), Value::String(subject_account));
-                    object.insert("subjectDomain".into(), Value::String(subject_domain));
-                    let direction = object
-                        .get("direction")
-                        .and_then(Value::as_str)
-                        .filter(|value| matches!(*value, "INCOMING" | "OUTGOING"))
-                        .map(str::to_owned)
-                        .ok_or_else(|| "P2P_INTENT has invalid direction".to_string())?;
-                    let peer = object
-                        .get("peer")
-                        .and_then(Value::as_object)
-                        .cloned()
-                        .ok_or_else(|| "P2P_INTENT has no peer".to_string())?;
-                    let requested_sort = object
-                        .get("requestedAt")
-                        .and_then(Value::as_i64)
-                        .unwrap_or(0);
-                    object.insert("requestedSort".into(), Value::from(requested_sort));
+                    apply_friend_request_intent(
+                        &tx, user_id, op.revision.unwrap_or(revision), &account, &domain,
+                        &subject_account, &subject_domain, &body,
+                    )?;
+                    let direction = body.get("direction").and_then(Value::as_str).unwrap_or("");
                     let outgoing_requested = direction == "OUTGOING"
-                        && object.get("status").and_then(Value::as_str) == Some("REQUESTED");
-                    let expires_at = object.get("expiresAt").and_then(Value::as_i64);
-                    tx.execute(
-                        "INSERT INTO friend_intents(user_id, stable_key, payload_json)
-                         VALUES(?1, ?2, ?3)
-                         ON CONFLICT(user_id, stable_key) DO UPDATE SET
-                           payload_json=excluded.payload_json",
-                        params![user_id, stable_key, json_text(&payload)?],
-                    ).map_err(|e| format!("apply client friend intent: {e}"))?;
+                        && body.get("status").and_then(Value::as_str) == Some("REQUESTED");
+                    let expires_at = body.get("expiresAt").and_then(Value::as_i64);
                     if outgoing_requested {
                         if let Some(expires_at) = expires_at {
+                            let peer = body.get("peer").and_then(Value::as_object).cloned().unwrap_or_default();
                             let peer_account = peer
                                 .get("account")
                                 .and_then(Value::as_str)
@@ -824,6 +1120,11 @@ pub(crate) async fn native_db_apply_thread_delta(
                         params![user_id, thread_id],
                     )
                     .map_err(|e| format!("apply thread delete: {e}"))?;
+                    tx.execute(
+                        "DELETE FROM thread_participants WHERE user_id = ?1 AND thread_id = ?2",
+                        params![user_id, thread_id],
+                    )
+                    .map_err(|e| format!("delete thread participants: {e}"))?;
                 }
                 "ADD" => {
                     let thread_id = op.thread_id.ok_or_else(|| "ADD delta has no threadId".to_string())?;
@@ -859,6 +1160,35 @@ pub(crate) async fn native_db_apply_thread_delta(
                         params![user_id, thread_id, json_text(&item)?],
                     )
                     .map_err(|e| format!("apply thread add: {e}"))?;
+                    if item.get("type").and_then(Value::as_str) == Some("GROUP") {
+                        tx.execute(
+                            "DELETE FROM thread_participants WHERE user_id = ?1 AND thread_id = ?2",
+                            params![user_id, thread_id],
+                        )
+                        .map_err(|e| format!("clear rebuilt thread participants: {e}"))?;
+                        let members = item
+                            .get("group")
+                            .and_then(|group| group.get("members"))
+                            .and_then(Value::as_array)
+                            .ok_or_else(|| "group ADD has no member roster".to_string())?;
+                        for member in members {
+                            let member_user_id = member.get("userId").and_then(Value::as_i64)
+                                .ok_or_else(|| "group member has no userId".to_string())?;
+                            let source = member.get("profileSourceDomain").and_then(Value::as_str)
+                                .ok_or_else(|| "group member has no profileSourceDomain".to_string())?;
+                            let account = member.get("account").and_then(Value::as_str)
+                                .ok_or_else(|| "group member has no account".to_string())?;
+                            let domain = member.get("domain").and_then(Value::as_str)
+                                .ok_or_else(|| "group member has no domain".to_string())?;
+                            tx.execute(
+                                "INSERT INTO thread_participants(
+                                   user_id, thread_id, member_user_id, source_peer_domain, member_account, member_domain
+                                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+                                params![user_id, thread_id, member_user_id, source, account, domain],
+                            )
+                            .map_err(|e| format!("write rebuilt thread participant: {e}"))?;
+                        }
+                    }
                 }
                 "PROFILE" => {
                     let profile = op.user.ok_or_else(|| "PROFILE delta has no user".to_string())?;
@@ -897,32 +1227,55 @@ pub(crate) async fn native_db_apply_thread_delta(
                     let member_user_id = op.user_id.ok_or_else(|| "MEMBER_PROFILE has no userId".to_string())?;
                     let thread_ids = op.thread_ids.ok_or_else(|| "MEMBER_PROFILE has no threadIds".to_string())?;
                     let profile_rev = op.profile_revision.ok_or_else(|| "MEMBER_PROFILE has no profileRevision".to_string())?;
+                    let source = op.source_peer_domain.ok_or_else(|| "MEMBER_PROFILE has no sourcePeerDomain".to_string())?;
+                    let account = op.member_account.ok_or_else(|| "MEMBER_PROFILE has no memberAccount".to_string())?;
+                    let domain = op.member_domain.ok_or_else(|| "MEMBER_PROFILE has no memberDomain".to_string())?;
                     let payload = serde_json::json!({
-                        "userId": member_user_id,
-                        "sourcePeerDomain": op.source_peer_domain.ok_or_else(|| "MEMBER_PROFILE has no sourcePeerDomain".to_string())?,
-                        "memberAccount": op.member_account.ok_or_else(|| "MEMBER_PROFILE has no memberAccount".to_string())?,
-                        "memberDomain": op.member_domain.ok_or_else(|| "MEMBER_PROFILE has no memberDomain".to_string())?,
+                        "sourcePeerDomain": source,
+                        "memberAccount": account,
+                        "memberDomain": domain,
                         "displayName": op.display_name.ok_or_else(|| "MEMBER_PROFILE has no displayName".to_string())?,
                         "avatar": op.avatar.unwrap_or_default(),
                         "profileRevision": profile_rev,
                     });
+                    tx.execute(
+                        "INSERT INTO member_profiles(
+                           user_id, source_peer_domain, member_account, member_domain, payload_json, profile_rev
+                         ) VALUES(?1, ?2, ?3, ?4, ?5, ?6)
+                         ON CONFLICT(user_id, source_peer_domain, member_account, member_domain) DO UPDATE SET
+                           payload_json=excluded.payload_json, profile_rev=excluded.profile_rev
+                         WHERE excluded.profile_rev >= member_profiles.profile_rev",
+                        params![user_id, source, account, domain, json_text(&payload)?, profile_rev],
+                    ).map_err(|e| format!("apply member profile state: {e}"))?;
                     for thread_id in thread_ids {
-                        let mut record = payload.clone();
-                        record.as_object_mut().expect("member profile payload is an object")
-                            .insert("threadId".into(), Value::from(thread_id));
                         tx.execute(
-                            "INSERT INTO member_profiles(user_id, thread_id, member_user_id, payload_json, profile_rev)
-                             VALUES(?1, ?2, ?3, ?4, ?5)
+                            "INSERT INTO thread_participants(
+                               user_id, thread_id, member_user_id, source_peer_domain, member_account, member_domain
+                             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6)
                              ON CONFLICT(user_id, thread_id, member_user_id) DO UPDATE SET
-                               payload_json=excluded.payload_json, profile_rev=excluded.profile_rev
-                             WHERE excluded.profile_rev >= member_profiles.profile_rev",
-                            params![user_id, thread_id, member_user_id, json_text(&record)?, profile_rev],
+                               source_peer_domain=excluded.source_peer_domain,
+                               member_account=excluded.member_account,
+                               member_domain=excluded.member_domain",
+                            params![user_id, thread_id, member_user_id, source, account, domain],
                         ).map_err(|e| format!("apply member profile state: {e}"))?;
                     }
                 }
                 other => return Err(format!("unknown thread delta direction: {other}")),
             }
         }
+        tx.execute(
+            "DELETE FROM member_profiles AS profile
+             WHERE profile.user_id = ?1
+               AND NOT EXISTS (
+                 SELECT 1 FROM thread_participants AS participant
+                 WHERE participant.user_id = profile.user_id
+                   AND participant.source_peer_domain = profile.source_peer_domain
+                   AND participant.member_account = profile.member_account
+                   AND participant.member_domain = profile.member_domain
+               )",
+            params![user_id],
+        )
+        .map_err(|e| format!("sweep unreferenced member profiles: {e}"))?;
         tx.execute(
             "INSERT INTO sync_state(user_id, key, value_json) VALUES(?1, 'stateRevision', ?2)
              ON CONFLICT(user_id, key) DO UPDATE SET value_json = excluded.value_json",
@@ -936,41 +1289,40 @@ pub(crate) async fn native_db_apply_thread_delta(
 }
 
 #[tauri::command]
-pub(crate) async fn native_db_apply_missed_summary(
+pub(crate) async fn native_db_apply_catch_up(
     app: tauri::AppHandle,
     user_id: i64,
     items: Vec<Value>,
-    cursor: Value,
+    cursor: i64,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut conn = open(&app)?;
         let tx = conn
             .transaction()
-            .map_err(|e| format!("begin missed summary: {e}"))?;
+            .map_err(|e| format!("begin catch-up: {e}"))?;
         tx.execute("DELETE FROM threads WHERE user_id = ?1", params![user_id])
-            .map_err(|e| format!("clear missed-summary threads: {e}"))?;
+            .map_err(|e| format!("clear catch-up threads: {e}"))?;
         for item in items {
             let thread_id = item
                 .get("threadId")
                 .and_then(Value::as_i64)
-                .ok_or_else(|| "missed-summary item has no threadId".to_string())?;
+                .ok_or_else(|| "catch-up item has no threadId".to_string())?;
             tx.execute(
                 "INSERT INTO threads(user_id, thread_id, payload_json) VALUES(?1, ?2, ?3)",
                 params![user_id, thread_id, json_text(&item)?],
             )
-            .map_err(|e| format!("save missed-summary thread: {e}"))?;
+            .map_err(|e| format!("save catch-up thread: {e}"))?;
         }
         tx.execute(
-            "INSERT INTO sync_state(user_id, key, value_json) VALUES(?1, 'missedCursor', ?2)
+            "INSERT INTO sync_state(user_id, key, value_json) VALUES(?1, 'messageFeedCursor', ?2)
              ON CONFLICT(user_id, key) DO UPDATE SET value_json = excluded.value_json",
-            params![user_id, json_text(&cursor)?],
+            params![user_id, cursor.to_string()],
         )
-        .map_err(|e| format!("save missed-summary cursor: {e}"))?;
-        tx.commit()
-            .map_err(|e| format!("commit missed summary: {e}"))
+        .map_err(|e| format!("save catch-up cursor: {e}"))?;
+        tx.commit().map_err(|e| format!("commit catch-up: {e}"))
     })
     .await
-    .map_err(|e| format!("join missed summary: {e}"))?
+    .map_err(|e| format!("join catch-up: {e}"))?
 }
 
 #[tauri::command]
@@ -1004,8 +1356,16 @@ pub(crate) async fn native_db_get_member_profile(
     tauri::async_runtime::spawn_blocking(move || {
         let value = open(&app)?
             .query_row(
-                "SELECT payload_json FROM member_profiles
-                 WHERE user_id = ?1 AND thread_id = ?2 AND member_user_id = ?3",
+                "SELECT profile.payload_json
+                 FROM thread_participants AS participant
+                 JOIN member_profiles AS profile
+                   ON profile.user_id = participant.user_id
+                  AND profile.source_peer_domain = participant.source_peer_domain
+                  AND profile.member_account = participant.member_account
+                  AND profile.member_domain = participant.member_domain
+                 WHERE participant.user_id = ?1
+                   AND participant.thread_id = ?2
+                   AND participant.member_user_id = ?3",
                 params![user_id, thread_id, member_user_id],
                 |row| row.get::<_, String>(0),
             )
@@ -1027,8 +1387,15 @@ pub(crate) async fn native_db_list_member_profiles(
         let conn = open(&app)?;
         let mut statement = conn
             .prepare(
-                "SELECT payload_json FROM member_profiles
-                 WHERE user_id = ?1 AND thread_id = ?2 ORDER BY member_user_id",
+                "SELECT profile.payload_json
+                 FROM thread_participants AS participant
+                 JOIN member_profiles AS profile
+                   ON profile.user_id = participant.user_id
+                  AND profile.source_peer_domain = participant.source_peer_domain
+                  AND profile.member_account = participant.member_account
+                  AND profile.member_domain = participant.member_domain
+                 WHERE participant.user_id = ?1 AND participant.thread_id = ?2
+                 ORDER BY participant.member_user_id",
             )
             .map_err(|e| format!("prepare member profile list: {e}"))?;
         let rows = statement

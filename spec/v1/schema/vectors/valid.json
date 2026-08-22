@@ -104,34 +104,41 @@
           {
             "account": "!01arz3ndektsv4rrffq69g5fav",
             "domain": "a.example",
-            "eventType": "GROUP_META",
+            "eventType": "GROUP_META_FEED_HEAD",
             "feedId": "5",
             "body": {
-              "rosterRev": 1,
-              "active": true,
-              "dissolved": false,
-              "owner": { "account": "alice", "domain": "a.example" },
-              "membersCanInvite": true,
-              "members": [
-                { "account": "alice", "domain": "a.example", "role": "OWNER" },
-                { "account": "bob", "domain": "b.example", "role": "MEMBER" }
-              ]
+              "groupMetaFeedEndId": "1"
             }
-          },
+          }
+        ],
+        "scannedThrough": "5",
+        "stateFeedEndId": "5",
+        "hasMore": false
+      }
+    },
+    {
+      "name": "group meta full page",
+      "schema": "urn:socfp:v1:group-meta",
+      "value": {
+        "account": "!01arz3ndektsv4rrffq69g5fav",
+        "mode": "full",
+        "items": [
           {
-            "account": "bob",
-            "domain": "b.example",
-            "eventType": "MEMBER_PROFILE",
-            "feedId": "6",
+            "feedId": "7",
+            "account": "alice",
+            "domain": "a.example",
+            "rev": 2,
+            "operation": "UPSERT",
             "body": {
-              "profileRev": 1,
-              "displayName": "Bob",
+              "role": "OWNER",
+              "profileRev": 2,
+              "displayName": "Alice",
               "avatar": null
             }
           }
         ],
-        "scannedThrough": "6",
-        "stateFeedEndId": "6",
+        "scannedThrough": "7",
+        "groupMetaFeedEndId": "7",
         "hasMore": false
       }
     },
@@ -477,6 +484,18 @@
         "code": 50019,
         "message": "requested message history is no longer retained",
         "data": { "resumeAfter": "120", "resumeBefore": "501" }
+      }
+    },
+    {
+      "name": "group-meta cursor recovery envelope",
+      "schema": "urn:socfp:v1:error",
+      "value": {
+        "code": 50019,
+        "message": "group-meta delta history is unavailable",
+        "data": {
+          "resumeAfter": "0",
+          "resumeBefore": "8"
+        }
       }
     },
     {

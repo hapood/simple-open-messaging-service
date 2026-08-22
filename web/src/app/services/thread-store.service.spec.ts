@@ -6,12 +6,14 @@ import { signal, provideZonelessChangeDetection } from '@angular/core';
 import { WebdbService } from './webdb.service';
 import { rawPreview, ThreadRepository } from './thread-store.service';
 import { MessageRepository } from './message-repository.service';
-import { MissedSyncService } from './missed-sync.service';
+import { ThreadCatchUpService } from './thread-catch-up.service';
 import { ProfileRepository } from './profile-store.service';
 import { UserService, type HydratedThreadDeltaOp } from './user.service';
 import { MsgService } from './message.service';
 import { WebsocketService } from './websocket.service';
 import { ConversationItem, Message, User } from './model';
+import { ToastService } from './toast.service';
+import { TranslocoService } from '@jsverse/transloco';
 
 /** Flush the microtask + macrotask queue so the async boot (IDB reads + Observable awaits + the 200ms
  *  debounce) settles. A 0ms flush advances the task queue enough for IDB + Observable microtasks; the
@@ -87,6 +89,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   let applyFriendIntentStateRevisionSpy: Mock;
   let cursorSignal: ReturnType<typeof signal<number | undefined>>;
   let putProfileSpy: Mock;
+  let toastWarn: Mock;
 
   beforeEach(async () => {
     eventSubject = new Subject();
@@ -100,6 +103,14 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         ThreadRepository,
         MessageRepository,
         WebdbService,
+        {
+          provide: ToastService,
+          useValue: { warn: (toastWarn = vi.fn().mockName('toastWarn')) },
+        },
+        {
+          provide: TranslocoService,
+          useValue: { translate: (key: string) => key },
+        },
         {
           provide: MsgService,
           useValue: {
@@ -124,16 +135,20 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
           },
         },
         {
-          provide: MissedSyncService,
+          provide: ThreadCatchUpService,
           useValue: {
-            fetchMissedSummary: vi
-              .fn()
-              .mockName('fetchMissedSummary')
-              .mockResolvedValue({
-                items: [],
-                hasMore: false,
-                nextCursor: null,
-              }),
+            catchUp: vi.fn().mockName('catchUp').mockResolvedValue({
+              items: [],
+              hasMore: false,
+              scannedThrough: 0,
+              messageFeedEndId: 0,
+            }),
+            catchUpTombstones: vi.fn().mockResolvedValue({
+              items: [],
+              hasMore: false,
+              scannedThrough: 0,
+              tombstoneFeedEndId: 0,
+            }),
           },
         },
         {
@@ -235,14 +250,9 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     await tx.done;
   }
 
-  /** Emit the HELLO connect handshake — the network-refresh half of boot (delta-replay + missed walk). */
+  /** Emit the HELLO connect handshake — revision replay plus durable feed catch-up. */
   function emitHello(data: {
     userId?: number;
-    latestMessage?: {
-      threadId: number;
-      seq: number;
-      ts: number;
-    } | null;
     stateRevision: number;
     profileRev?: number;
     readRevision?: number;
@@ -483,25 +493,23 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(repo.items()[0].muted).toBe(true);
   });
 
-  it('HELLO without a latestMessage does not trigger a missed-summary walk', async () => {
-    const missed = TestBed.inject(MissedSyncService) as unknown as {
-      fetchMissedSummary: Mock;
+  it('HELLO always reconciles the durable message feed', async () => {
+    const missed = TestBed.inject(ThreadCatchUpService) as unknown as {
+      catchUp: Mock;
     };
     queryThreadDeltaSpy.mockReturnValue(of({ code: 0, data: [] }));
-    emitHello({ userId: 1, stateRevision: 5 }); // no latestMessage → no `to` to walk toward
+    emitHello({ userId: 1, stateRevision: 5 });
     await flush(700);
-    expect(missed.fetchMissedSummary).not.toHaveBeenCalled();
+    expect(missed.catchUp).toHaveBeenCalledWith(0, undefined);
   });
 
-  // HELLO's latestMessage sets the walk's `to` → after the 200ms debounce, pullMissed walks `(from, to]`
-  // (from = the persisted HWM, null on first boot), caches bodies, advances the HWM to `to`.
-  it('HELLO latestMessage → debounced (from,to] walk → HWM persists to `to`', async () => {
-    const missed = TestBed.inject(MissedSyncService) as unknown as {
-      fetchMissedSummary: Mock;
+  it('HELLO drains catch-up and durably commits its integer feed cursor', async () => {
+    const missed = TestBed.inject(ThreadCatchUpService) as unknown as {
+      catchUp: Mock;
     };
     await seedCachedThread(p2p(1, 77));
     await seedMessage(1, 5, 'hello world', 77);
-    missed.fetchMissedSummary.mockResolvedValue({
+    missed.catchUp.mockResolvedValue({
       items: [
         {
           threadId: 1,
@@ -524,23 +532,17 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         },
       ],
       hasMore: false,
-      nextCursor: null,
+      scannedThrough: 1,
+      messageFeedEndId: 1,
     });
     queryThreadDeltaSpy.mockReturnValue(of({ code: 0, data: [] }));
     emitHello({
       userId: 1,
       stateRevision: 5,
-      latestMessage: { threadId: 1, seq: 5, ts: 1000 },
     });
     await flush(700);
-    expect(missed.fetchMissedSummary).toHaveBeenCalledWith(null, {
-      threadId: 1,
-      seq: 5,
-    });
-    expect(await webdb.getMeta('missedCursor')).toEqual({
-      threadId: 1,
-      seq: 5,
-    }); // HWM persisted to `to`
+    expect(missed.catchUp).toHaveBeenCalledWith(0, undefined);
+    expect(await webdb.getMeta('messageFeedCursor')).toBe(1);
   });
 
   // ── reconnect (the SSE stream re-pushes HELLO → onHello re-runs; no separate reconnect wiring) ──
@@ -656,26 +658,31 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   });
 
   it('drains a trailing missed-summary pull when messages arrive during an in-flight pull', async () => {
-    const missed = TestBed.inject(MissedSyncService) as unknown as {
-      fetchMissedSummary: Mock;
+    const missed = TestBed.inject(ThreadCatchUpService) as unknown as {
+      catchUp: Mock;
     };
     let resolveFirst!: (value: {
       items: never[];
       hasMore: boolean;
-      nextCursor: null;
+      scannedThrough: number;
+      messageFeedEndId: number;
     }) => void;
     const first = new Promise<{
       items: never[];
       hasMore: boolean;
-      nextCursor: null;
+      scannedThrough: number;
+      messageFeedEndId: number;
     }>((resolve) => {
       resolveFirst = resolve;
     });
-    missed.fetchMissedSummary
-      .mockReturnValueOnce(first)
-      .mockReturnValueOnce(
-        Promise.resolve({ items: [], hasMore: false, nextCursor: null }),
-      );
+    missed.catchUp.mockReturnValueOnce(first).mockReturnValueOnce(
+      Promise.resolve({
+        items: [],
+        hasMore: false,
+        scannedThrough: 2,
+        messageFeedEndId: 2,
+      }),
+    );
     await populate([p2p(1, 11)]);
 
     eventSubject.next({
@@ -683,25 +690,24 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       data: { threadId: 1, seq: 1, ts: 100 },
     });
     await flush(250); // first debounced pull is now in flight
-    expect(missed.fetchMissedSummary).toHaveBeenCalledTimes(1);
-    expect(missed.fetchMissedSummary).toHaveBeenCalledWith(null, {
-      threadId: 1,
-      seq: 1,
-    });
+    expect(missed.catchUp).toHaveBeenCalledTimes(1);
+    expect(missed.catchUp).toHaveBeenCalledWith(0, undefined);
 
     eventSubject.next({
       event: 'NEW_MESSAGE',
       data: { threadId: 1, seq: 3, ts: 300 },
     });
     await flush(350); // trailing debounce fires while the first request is unresolved
-    resolveFirst({ items: [], hasMore: false, nextCursor: null });
+    resolveFirst({
+      items: [],
+      hasMore: false,
+      scannedThrough: 1,
+      messageFeedEndId: 1,
+    });
     await flush(50);
 
-    expect(vi.mocked(missed.fetchMissedSummary).mock.calls.length).toBe(2);
-    expect(vi.mocked(missed.fetchMissedSummary).mock.lastCall).toEqual([
-      null,
-      { threadId: 1, seq: 3 },
-    ]);
+    expect(vi.mocked(missed.catchUp).mock.calls.length).toBe(2);
+    expect(vi.mocked(missed.catchUp).mock.lastCall).toEqual([1, undefined]);
   });
 
   it('onNewMessage does not badge the open thread', async () => {
@@ -900,7 +906,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
               status: 'REQUESTED',
               note: '',
               requestedAt: 10,
-              expiresAt: 20,
+              expiresAt: Date.now() + 60_000,
               direction: 'INCOMING' as const,
               peer: {
                 id: 2,
@@ -1055,17 +1061,19 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       new Error('IDB transaction aborted'),
     );
 
-    await expect(
-      (
-        repo as unknown as {
-          pullDelta(toRev: number): Promise<void>;
-        }
-      ).pullDelta(6),
-    ).rejects.toThrowError('IDB transaction aborted');
+    await (
+      repo as unknown as {
+        pullDelta(toRev: number): Promise<void>;
+      }
+    ).pullDelta(6);
 
     expect(repo.items().map((item) => item.threadId)).toEqual([1]);
     expect(advanceCursorSpy).not.toHaveBeenCalled();
     expect(cursorSignal()).toBe(5);
+    expect(toastWarn).toHaveBeenCalledWith('errors.stateSyncFatal', {
+      duration: 'forever',
+      interactive: true,
+    });
   });
 
   // A signal that lands before HELLO seeds the cursor is dropped — pullDelta's "cursor undefined → return"
@@ -1260,12 +1268,12 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     );
   });
 
-  it('the missed-summary pull applies the authoritative per-thread unreadCount', async () => {
+  it('catch-up applies the authoritative per-thread unreadCount', async () => {
     const fetchSpy = (
-      TestBed.inject(MissedSyncService) as unknown as {
-        fetchMissedSummary: Mock;
+      TestBed.inject(ThreadCatchUpService) as unknown as {
+        catchUp: Mock;
       }
-    ).fetchMissedSummary;
+    ).catchUp;
     fetchSpy.mockResolvedValue({
       items: [
         {
@@ -1281,7 +1289,8 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         },
       ],
       hasMore: false,
-      nextCursor: null,
+      scannedThrough: 0,
+      messageFeedEndId: 0,
     });
     await populate([p2p(1, 11, { lastReadSeq: 3, unreadCount: 0 })]);
     eventSubject.next({
@@ -1294,12 +1303,12 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(item.unreadCount).toBe(7); // authoritative server value applied
   });
 
-  it('the missed-summary pull refreshes preview and read state for the open thread', async () => {
+  it('catch-up refreshes preview/read state but preserves unread for the open thread', async () => {
     const fetchSpy = (
-      TestBed.inject(MissedSyncService) as unknown as {
-        fetchMissedSummary: Mock;
+      TestBed.inject(ThreadCatchUpService) as unknown as {
+        catchUp: Mock;
       }
-    ).fetchMissedSummary;
+    ).catchUp;
     fetchSpy.mockResolvedValue({
       items: [
         {
@@ -1325,7 +1334,8 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         },
       ],
       hasMore: false,
-      nextCursor: null,
+      scannedThrough: 0,
+      messageFeedEndId: 0,
     });
     await populate([
       p2p(1, 11, {
@@ -1336,7 +1346,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     ]);
     repo.setOpenThread(1);
 
-    const applied = firstValueFrom(repo.missedSummaryApplied$);
+    const applied = firstValueFrom(repo.catchUpApplied$);
     eventSubject.next({
       event: 'NEW_MESSAGE',
       data: { threadId: 1, seq: 12, ts: 1000 },
@@ -1349,8 +1359,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         lastMessagePreview: 'sent from the open thread',
         lastMessageSenderId: 1,
         lastReadSeq: 12,
-        unreadCount: 0,
-        mentionUnread: [],
+        unreadCount: 2,
       }),
     );
   });

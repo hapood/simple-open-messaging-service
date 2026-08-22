@@ -9,45 +9,23 @@ import {
   Max,
   MaxLength,
   Min,
-  ValidateNested,
 } from 'class-validator';
 
 /**
- * A message identified by its per-thread `(threadId, seq)` (the backend resolves it to the internal BigInt
- * `id` it never exposes). Used as: the threadlist's high-water mark (`from`/`to`/`since`) — the newest
- * message it has accounted for, ordered by the backend's strict-total-order `id` (NOT by SSE arrival order,
- * which can deliver out of sequence).
+ * Input for POST /notification-feed/query. The per-user message feed identifies changed threads; the
+ * notification read model then builds a current, replace-by-tag snapshot from their unread messages.
  */
-export class MissedCursorDto {
-  @ApiProperty({ description: 'The cursor message thread id.' })
-  @IsInt()
-  threadId!: number;
-
-  @ApiProperty({ description: 'The cursor message per-thread seq.' })
-  @IsInt()
-  @Min(0)
-  seq!: number;
-}
-
-/**
- * Input for POST /notification-feed/query — away/system-notification renderers only: Web SW /
- * Android FCM-FGS / desktop). The server aggregates, per sender, the messages newer than `since` (the
- * client's high-water mark = the newest message in its IDB before it went to background; ordering confirmed
- * by /thread-sync/catch-up, never SSE order) and authors ONE descriptor: "X, Y sent you N messages"
- * (or "999+" past the 1000-message sample) + a composited stacked-avatar icon. Returns `notifications[]` only
- * (no items, no pagination) — the away surface is a one-shot current snapshot, replace-by-tag.
- */
-export class MissedDto {
+export class NotificationFeedQueryDto {
   @ApiProperty({
-    type: MissedCursorDto,
     required: false,
-    description:
-      'High-water mark (threadId, seq): the newest message accounted before backgrounding. Absent on first-ever → clear (no notification).',
+    default: 0,
+    description: 'Exclusive per-user message-feed cursor.',
   })
   @IsOptional()
-  @ValidateNested()
-  @Type(() => MissedCursorDto)
-  since?: MissedCursorDto | null;
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  after?: number;
 
   @ApiProperty({
     required: false,
@@ -63,40 +41,37 @@ export class MissedDto {
   @ApiProperty({
     required: false,
     description:
-      "The client's per-thread dismiss HWM map { threadId: seq }. For a thread present here, its notification starts after that seq; other threads start after the global cursor.",
+      "The client's per-thread dismiss HWM map { threadId: seq }. A thread's notification starts after the greater of this value and its server read watermark.",
   })
   @IsOptional()
   threadHwms?: Record<number, number>;
 }
 
 /**
- * Input for POST /thread-sync/catch-up — the threadlist's body pre-warm (preview + chat-open). A
- * DOUBLE-BOUNDARY `(from, to]` walk: `to` = the newest SSE signal (the pinned upper bound — pinning it makes
- * the walk converge; new messages arriving mid-walk are > `to` and wait for the next walk); `from` = the
- * client's high-water mark (exclusive lower bound, advancing). Returns one item per thread whose latest
- * message id ∈ `(from, to]` (its newest body), paginated; the client walks pages until `!hasMore`, then sets
- * HWM = `to`. `to ≤ from` (SSE delivered a stale/out-of-order message) → empty no-op (HWM unchanged).
+ * Input for POST /thread-sync/catch-up. `after` is the exclusive per-user feed cursor and `through` pins an
+ * optional inclusive upper bound so a paginated walk converges while concurrent writes continue.
  */
-export class MissedSummaryDto {
+export class ThreadCatchUpDto {
   @ApiProperty({
-    type: MissedCursorDto,
     required: false,
-    description:
-      'High-water mark (threadId, seq), exclusive lower bound. Absent on first boot.',
+    default: 0,
+    description: 'Exclusive message-feed cursor.',
   })
   @IsOptional()
-  @ValidateNested()
-  @Type(() => MissedCursorDto)
-  from?: MissedCursorDto | null;
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  after?: number;
 
   @ApiProperty({
-    type: MissedCursorDto,
-    description:
-      'The newest SSE signal (threadId, seq), inclusive upper bound — pinned for this walk.',
+    required: false,
+    description: 'Optional pinned inclusive message-feed upper bound.',
   })
-  @ValidateNested()
-  @Type(() => MissedCursorDto)
-  to!: MissedCursorDto;
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  through?: number;
 
   @ApiProperty({
     required: false,

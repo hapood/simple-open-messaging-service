@@ -170,6 +170,20 @@ and fixed-`through` calculations are identical to Message Query Section 2.2. An
 empty page may advance to the selected bound but MUST NOT skip an authoritative
 fact in the interval that this peer may learn.
 
+When starting or restarting a forward tombstone-query drain, a consumer MAY
+advance its local `after` cursor to a greater position because of finite local
+storage or processing capacity. The selected position MUST be within the
+source-advertised serviceable window and MUST NOT move a committed cursor
+backward.
+
+Because a skipped tombstone may target any earlier message in the thread, the
+consumer MUST atomically discard every locally retained message replica and
+pending message-derived resource for that thread before committing the advanced
+tombstone cursor. It MUST also mark the skipped deletion interval as
+intentionally unreplicated and MUST NOT claim complete tombstone processing for
+it. Fast-forward does not weaken or delete an authoritative tombstone, alter
+source data, or acknowledge processing to the source.
+
 For every query, the source MUST revalidate its current authored relationship
 direction, thread authority, whether the target peer was granted visibility of
 the target message, current blocking, and local policy. For both user/user and

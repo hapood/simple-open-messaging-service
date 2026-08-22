@@ -12,8 +12,16 @@ import type {
   ClientGroupInviteIntent,
   HydratedThreadDeltaOp,
 } from './user.service';
-import type { MissedCursor } from './notification-descriptor.model';
-import { isTauri, tauriInvoke } from './runtime';
+import { isAndroidNative, isTauri, tauriInvoke } from './runtime';
+import {
+  applyFriendIntentToProjection,
+  applyGroupIntentToProjection,
+  friendPairKey,
+  groupRequestKey,
+  markProjectionAccepted,
+  projectionIsExpired,
+  type FriendRequestProjection,
+} from './friend-request-state';
 
 /**
  * The IndexedDB primitive for the frontend persistence layer ("webdb") — the storage half of the
@@ -62,8 +70,6 @@ export interface ProfileRecord {
 
 /** Source-scoped group-member display snapshot, materialized from MEMBER_PROFILE state. */
 export interface MemberProfileRecord {
-  threadId: number;
-  userId: number;
   sourcePeerDomain: string;
   memberAccount: string;
   memberDomain: string;
@@ -72,9 +78,17 @@ export interface MemberProfileRecord {
   profileRevision: number;
 }
 
-/** A value persisted in the stable `settings` store (keyPath `'key'`). One key is `'missedCursor'` — the
- *  `{threadId, seq}` forward cursor for the missed-summary pull, written by {@link ThreadRepository} on
- *  each pull. `value` is opaque to the store (structured-cloneable); the caller owns its shape + narrowing.
+/** A thread-local roster edge referencing one source-scoped member profile. */
+export interface ThreadParticipantRecord {
+  threadId: number;
+  userId: number;
+  sourcePeerDomain: string;
+  memberAccount: string;
+  memberDomain: string;
+}
+
+/** A value persisted in the stable `settings` store (keyPath `'key'`), including integer feed cursors.
+ *  `value` is opaque to the store (structured-cloneable); the caller owns its shape + narrowing.
  *  The thread-list revision cursor stays in-memory in UserService (seeded from /user/my-profile each boot) —
  *  it does NOT live here. */
 export interface MetaRecord {
@@ -158,33 +172,25 @@ function messageCoverageKey(threadId: number): string {
   return `messageCoverage:${threadId}`;
 }
 
-function clientStateKey(op: {
-  domain: string;
-  account: string;
-  eventType: string;
-  subjectDomain: string;
-  subjectAccount: string;
-}): string {
-  return JSON.stringify([
-    op.domain,
-    op.account,
-    op.eventType,
-    op.subjectDomain,
-    op.subjectAccount,
-  ]);
-}
-
 /** Core cache schema. High-volume message data intentionally lives in MessageDbSchema. */
 export interface WebdbSchema extends DBSchema {
   avatars: { key: string; value: AvatarRecord };
   profiles: { key: string; value: ProfileRecord };
-  memberProfiles: { key: [number, number]; value: MemberProfileRecord };
+  memberProfiles: {
+    key: [string, string, string];
+    value: MemberProfileRecord;
+  };
+  threadParticipants: {
+    key: [number, number];
+    value: ThreadParticipantRecord;
+    indexes: { memberProfile: [string, string, string] };
+  };
   /** One record per conversation, keyed by `threadId` (the field is the keyPath). */
   threads: { key: number; value: ConversationItem };
-  friendIntents: {
+  friendRequests: {
     key: string;
-    value: ClientFriendIntent | ClientGroupInviteIntent;
-    indexes: { directionRequested: [string, string, number, string] };
+    value: FriendRequestProjection;
+    indexes: { directionStatus: [string, string, number, string] };
   };
   settings: { key: string; value: MetaRecord };
 }
@@ -205,7 +211,7 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-export const CACHE_SCHEMA_VERSION = 0;
+export const CACHE_SCHEMA_VERSION = 2;
 // Version 2 invalidates rows written before PURE_TEXT became a strict JSON envelope. Message history is
 // rebuildable from the server, so recreating this cache is safer than letting a stale row abort chat mount.
 export const MESSAGE_CACHE_SCHEMA_VERSION = 2;
@@ -488,8 +494,9 @@ export class WebdbService implements OnDestroy {
       'avatars',
       'profiles',
       'memberProfiles',
+      'threadParticipants',
       'threads',
-      'friendIntents',
+      'friendRequests',
       'settings',
     ] as const;
     if (required.some((store) => !db.objectStoreNames.contains(store)))
@@ -513,13 +520,21 @@ export class WebdbService implements OnDestroy {
         db.createObjectStore('avatars', { keyPath: 'identity' });
         db.createObjectStore('profiles', { keyPath: 'identity' });
         db.createObjectStore('memberProfiles', {
+          keyPath: ['sourcePeerDomain', 'memberAccount', 'memberDomain'],
+        });
+        const threadParticipants = db.createObjectStore('threadParticipants', {
           keyPath: ['threadId', 'userId'],
         });
+        threadParticipants.createIndex('memberProfile', [
+          'sourcePeerDomain',
+          'memberAccount',
+          'memberDomain',
+        ]);
         db.createObjectStore('threads', { keyPath: 'threadId' });
-        const friendIntents = db.createObjectStore('friendIntents', {
+        const friendRequests = db.createObjectStore('friendRequests', {
           keyPath: 'key',
         });
-        friendIntents.createIndex('directionRequested', [
+        friendRequests.createIndex('directionStatus', [
           'direction',
           'status',
           'requestedSort',
@@ -834,8 +849,7 @@ export class WebdbService implements OnDestroy {
 
   // ---- core settings store: keyed synchronization scalars ---------------------------------
 
-  /** Read a value from the `settings` store, or `undefined` when absent / IDB unavailable. One key
-   *  is `'missedCursor'` (the `{threadId, seq}` forward cursor for the missed-summary pull). The value is
+  /** Read a value from the `settings` store, or `undefined` when absent / IDB unavailable. The value is
    *  opaque to the store — the caller owns its shape + narrowing. */
   async getMeta(key: string): Promise<unknown> {
     return this.runAccountOperation(() => this.getMetaInternal(key));
@@ -954,98 +968,54 @@ export class WebdbService implements OnDestroy {
     return this.runAccountOperation(() => this.getThreadsInternal());
   }
 
-  async getFriendIntents(): Promise<ClientFriendIntent[]> {
-    return this.runAccountOperation(async () => {
-      const rows =
-        isTauri() && this.currentUserId != null
-          ? await tauriInvoke<
-              Array<ClientFriendIntent | ClientGroupInviteIntent>
-            >('native_db_list_friend_intents', {
-              userId: Number(this.currentUserId),
-            })
-          : await (await this.db()).getAll('friendIntents');
-      return rows.filter(
-        (row): row is ClientFriendIntent =>
-          (row as ClientGroupInviteIntent).kind !== 'GROUP_INVITE',
-      );
-    });
-  }
-
-  async getGroupInviteIntents(): Promise<ClientGroupInviteIntent[]> {
-    return this.runAccountOperation(async () => {
-      const rows =
-        isTauri() && this.currentUserId != null
-          ? await tauriInvoke<
-              Array<ClientFriendIntent | ClientGroupInviteIntent>
-            >('native_db_list_friend_intents', {
-              userId: Number(this.currentUserId),
-            })
-          : await (await this.db()).getAll('friendIntents');
-      return rows.filter(
-        (row): row is ClientGroupInviteIntent =>
-          (row as ClientGroupInviteIntent).kind === 'GROUP_INVITE',
-      );
-    });
-  }
-
-  async getFriendIntentPage(
+  async getFriendRequestPage(
     direction: 'INCOMING' | 'OUTGOING',
     cursor: string | null,
     take: number,
     includeRevoked = false,
-  ): Promise<{ items: ClientFriendIntent[]; total: number }> {
+  ): Promise<{
+    items: FriendRequestProjection[];
+    total: number;
+    actionableTotal: number;
+  }> {
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId != null)
-        return tauriInvoke<{ items: ClientFriendIntent[]; total: number }>(
-          'native_db_page_friend_intents',
-          {
-            userId: Number(this.currentUserId),
-            direction,
-            cursor,
-            take,
-            includeRevoked,
-          },
-        );
+        return tauriInvoke<{
+          items: FriendRequestProjection[];
+          total: number;
+          actionableTotal: number;
+        }>('native_db_page_friend_requests', {
+          userId: Number(this.currentUserId),
+          direction,
+          cursor,
+          take,
+          includeRevoked,
+        });
       const db = await this.db();
       const index = db
-        .transaction('friendIntents')
-        .store.index('directionRequested');
-      const lower: [string, string, number, string] = [
-        direction,
-        'REQUESTED',
-        0,
-        '',
-      ];
-      const upper: [string, string, number, string] = cursor
-        ? (JSON.parse(cursor) as [string, string, number, string])
-        : [direction, 'REQUESTED', Number.MAX_SAFE_INTEGER, '\uffff'];
-      const range = IDBKeyRange.bound(lower, upper, false, cursor !== null);
-      const requestedTotal = await index.count(
-        IDBKeyRange.bound(lower, [
-          direction,
-          'REQUESTED',
-          Number.MAX_SAFE_INTEGER,
-          '\uffff',
-        ]),
-      );
-      if (!includeRevoked) {
-        const items: ClientFriendIntent[] = [];
-        let row = await index.openCursor(range, 'prev');
-        while (row && items.length < take) {
-          items.push(row.value as ClientFriendIntent);
-          row = await row.continue();
-        }
-        return { items, total: requestedTotal };
-      }
-
-      const requested = (await index.getAll(range)) as ClientFriendIntent[];
-      const revoked = (await index.getAll(
-        IDBKeyRange.bound(
-          [direction, 'REVOKED', 0, ''],
-          [direction, 'REVOKED', Number.MAX_SAFE_INTEGER, '\uffff'],
+        .transaction('friendRequests')
+        .store.index('directionStatus');
+      const statuses =
+        direction === 'INCOMING'
+          ? (['REQUESTED', 'ACCEPTED'] as const)
+          : includeRevoked
+            ? (['REQUESTED', 'REVOKED'] as const)
+            : (['REQUESTED'] as const);
+      const buckets = await Promise.all(
+        statuses.map((status) =>
+          index.getAll(
+            IDBKeyRange.bound(
+              [direction, status, 0, ''],
+              [direction, status, Number.MAX_SAFE_INTEGER, '\uffff'],
+            ),
+          ),
         ),
-      )) as ClientFriendIntent[];
-      const items = [...requested, ...revoked]
+      );
+      const upper = cursor
+        ? (JSON.parse(cursor) as [number, string])
+        : ([Number.MAX_SAFE_INTEGER, '\uffff'] as const);
+      const all = buckets.flat();
+      const items = all
         .sort(
           (a, b) =>
             b.requestedSort - a.requestedSort || b.key.localeCompare(a.key),
@@ -1053,33 +1023,59 @@ export class WebdbService implements OnDestroy {
         .filter(
           (item) =>
             !cursor ||
-            item.requestedSort < upper[2] ||
-            (item.requestedSort === upper[2] && item.key < upper[3]),
+            item.requestedSort < upper[0] ||
+            (item.requestedSort === upper[0] && item.key < upper[1]),
         )
         .slice(0, take);
-      return { items, total: requestedTotal + revoked.length };
+      return {
+        items,
+        total: all.length,
+        actionableTotal:
+          direction === 'INCOMING' ? buckets[0].length : all.length,
+      };
     });
   }
 
-  async cleanupExpiredPendingFriendProfiles(now = Date.now()): Promise<void> {
+  async markFriendRequestAccepted(key: string): Promise<void> {
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId != null) {
-        await tauriInvoke('native_db_cleanup_pending_friend_profiles', {
+        await tauriInvoke('native_db_mark_friend_request_accepted', {
+          userId: Number(this.currentUserId),
+          key,
+        });
+        return;
+      }
+      const db = await this.db();
+      const current = await db.get('friendRequests', key);
+      if (current)
+        await db.put('friendRequests', markProjectionAccepted(current));
+    });
+  }
+
+  async cleanupFriendRequests(now = Date.now()): Promise<void> {
+    return this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId != null) {
+        await tauriInvoke('native_db_cleanup_friend_requests', {
           userId: Number(this.currentUserId),
           now,
         });
         return;
       }
-      const tx = (await this.db()).transaction('profiles', 'readwrite');
-      let cursor = await tx.store.openCursor();
-      while (cursor) {
-        const profile = cursor.value;
-        if (
-          profile.source === 'OUTGOING_FRIEND_REQUEST' &&
-          (profile.expiresAt ?? 0) <= now
-        )
-          await cursor.delete();
-        cursor = await cursor.continue();
+      const db = await this.db();
+      const tx = db.transaction(['friendRequests', 'profiles'], 'readwrite');
+      for (const item of await tx.objectStore('friendRequests').getAll()) {
+        if (!projectionIsExpired(item, now)) continue;
+        await tx.objectStore('friendRequests').delete(item.key);
+        if (item.kind === 'GROUP')
+          await tx
+            .objectStore('profiles')
+            .delete(
+              `pending-group:${item.group?.domain ?? ''}\u0000${item.group?.account ?? ''}`,
+            );
+        else if (item.direction === 'OUTGOING' && item.peer)
+          await tx
+            .objectStore('profiles')
+            .delete(`pending:${item.peer.domain}\u0000${item.peer.account}`);
       }
       await tx.done;
     });
@@ -1173,16 +1169,16 @@ export class WebdbService implements OnDestroy {
         'threads',
         'profiles',
         'memberProfiles',
+        'threadParticipants',
         'avatars',
-        'friendIntents',
+        'friendRequests',
         'settings',
       ],
       'readwrite',
     );
     for (const op of delta) {
       if (op.direction === 'CLIENT_STATE') {
-        const key = clientStateKey(op);
-        const store = tx.objectStore('friendIntents');
+        const store = tx.objectStore('friendRequests');
         if (op.account.startsWith('!')) {
           const body = op.body as Omit<
             ClientGroupInviteIntent,
@@ -1193,36 +1189,42 @@ export class WebdbService implements OnDestroy {
             | 'subjectDomain'
             | 'kind'
           >;
-          const intent: ClientGroupInviteIntent = {
-            key,
-            kind: 'GROUP_INVITE',
-            account: op.account,
-            domain: op.domain,
-            subjectAccount: op.subjectAccount,
-            subjectDomain: op.subjectDomain,
-            ...body,
-          };
-          await store.put(intent);
+          const key = groupRequestKey(op.domain, op.account);
+          const transition = applyGroupIntentToProjection(
+            await store.get(key),
+            {
+              account: op.account,
+              domain: op.domain,
+              ...body,
+            },
+            Date.now(),
+          );
+          if (transition.record) await store.put(transition.record);
+          else await store.delete(key);
           const identity = `pending-group:${op.domain}\u0000${op.account}`;
           if (
-            intent.status === 'REQUESTED' &&
-            intent.expiresAt !== null &&
-            intent.expiresAt > Date.now()
+            transition.record?.status === 'REQUESTED' &&
+            transition.record.expiresAt !== null
           )
             await tx.objectStore('profiles').put({
               identity,
               id: 0,
               kind: 'group',
-              name: intent.group.name,
-              account: intent.group.account,
-              avatar: intent.group.avatar,
-              bio: intent.group.description,
-              domain: intent.group.domain,
-              profileRev: intent.group.profileRev,
+              name: body.group.name,
+              account: body.group.account,
+              avatar: body.group.avatar,
+              bio: body.group.description,
+              domain: body.group.domain,
+              profileRev: body.group.profileRev,
               source: 'GROUP_INVITE',
-              expiresAt: intent.expiresAt,
+              expiresAt: transition.record.expiresAt,
             });
           else await tx.objectStore('profiles').delete(identity);
+          if (transition.becameActionable)
+            await tx.objectStore('settings').put({
+              key: 'friendRequestStateRevision',
+              value: op.revision,
+            });
           continue;
         }
         const body = op.body as Omit<
@@ -1234,15 +1236,25 @@ export class WebdbService implements OnDestroy {
           | 'subjectDomain'
           | 'requestedSort'
         >;
-        await store.put({
-            key,
+        const projectionKey = friendPairKey(op);
+        const transition = applyFriendIntentToProjection(
+          await store.get(projectionKey),
+          {
             account: op.account,
             domain: op.domain,
             subjectAccount: op.subjectAccount,
             subjectDomain: op.subjectDomain,
             ...body,
-            requestedSort: body.requestedAt ?? 0,
-          });
+          },
+          Date.now(),
+        );
+        if (transition.record) await store.put(transition.record);
+        else {
+          await store.delete(projectionKey);
+          await tx
+            .objectStore('profiles')
+            .delete(`pending:${body.peer.domain}\u0000${body.peer.account}`);
+        }
         if (
           body.status === 'REQUESTED' &&
           body.expiresAt !== null &&
@@ -1263,7 +1275,7 @@ export class WebdbService implements OnDestroy {
             expiresAt: body.expiresAt,
           });
         }
-        if (body.status === 'REQUESTED' && body.direction === 'INCOMING')
+        if (transition.becameActionable)
           await tx.objectStore('settings').put({
             key: 'friendRequestStateRevision',
             value: op.revision,
@@ -1297,26 +1309,42 @@ export class WebdbService implements OnDestroy {
       }
       if (op.direction === 'MEMBER_PROFILE') {
         const store = tx.objectStore('memberProfiles');
+        const profileKey: [string, string, string] = [
+          op.sourcePeerDomain,
+          op.memberAccount,
+          op.memberDomain,
+        ];
+        const previous = await store.get(profileKey);
+        if (!previous || op.profileRevision >= previous.profileRevision)
+          await store.put({
+            sourcePeerDomain: op.sourcePeerDomain,
+            memberAccount: op.memberAccount,
+            memberDomain: op.memberDomain,
+            displayName: op.displayName,
+            avatar: op.avatar,
+            profileRevision: op.profileRevision,
+          });
+        const participants = tx.objectStore('threadParticipants');
         for (const threadId of op.threadIds) {
-          const key: [number, number] = [threadId, op.userId];
-          const previous = await store.get(key);
-          if (!previous || op.profileRevision >= previous.profileRevision)
-            await store.put({
-              threadId,
-              userId: op.userId,
-              sourcePeerDomain: op.sourcePeerDomain,
-              memberAccount: op.memberAccount,
-              memberDomain: op.memberDomain,
-              displayName: op.displayName,
-              avatar: op.avatar,
-              profileRevision: op.profileRevision,
-            });
+          await participants.put({
+            threadId,
+            userId: op.userId,
+            sourcePeerDomain: op.sourcePeerDomain,
+            memberAccount: op.memberAccount,
+            memberDomain: op.memberDomain,
+          });
         }
         continue;
       }
-      if (op.direction === 'DELETE')
+      if (op.direction === 'DELETE') {
         await tx.objectStore('threads').delete(op.threadId);
-      else {
+        const participants = tx.objectStore('threadParticipants');
+        const removed = (await participants.getAll()).filter(
+          (participant) => participant.threadId === op.threadId,
+        );
+        for (const participant of removed)
+          await participants.delete([participant.threadId, participant.userId]);
+      } else {
         const store = tx.objectStore('threads');
         const previous = await store.get(op.threadId);
         await store.put({
@@ -1327,7 +1355,47 @@ export class WebdbService implements OnDestroy {
           lastMessagePreview: previous?.lastMessagePreview ?? null,
           lastMessageSenderId: previous?.lastMessageSenderId ?? null,
         });
+        if (op.item.type === 'GROUP') {
+          const participants = tx.objectStore('threadParticipants');
+          const stale = new Map(
+            (await participants.getAll())
+              .filter((participant) => participant.threadId === op.threadId)
+              .map((participant) => [participant.userId, participant]),
+          );
+          for (const member of op.item.group.members ?? []) {
+            await participants.put({
+              threadId: op.threadId,
+              userId: member.userId,
+              sourcePeerDomain: member.profileSourceDomain,
+              memberAccount: member.account,
+              memberDomain: member.domain,
+            });
+            stale.delete(member.userId);
+          }
+          for (const participant of stale.values())
+            await participants.delete([
+              participant.threadId,
+              participant.userId,
+            ]);
+        }
       }
+    }
+    const participants = tx.objectStore('threadParticipants');
+    const profiles = tx.objectStore('memberProfiles');
+    for (const profile of await profiles.getAll()) {
+      const references = await participants
+        .index('memberProfile')
+        .count([
+          profile.sourcePeerDomain,
+          profile.memberAccount,
+          profile.memberDomain,
+        ]);
+      if (references === 0)
+        await profiles.delete([
+          profile.sourcePeerDomain,
+          profile.memberAccount,
+          profile.memberDomain,
+        ]);
     }
     await tx
       .objectStore('settings')
@@ -1336,17 +1404,15 @@ export class WebdbService implements OnDestroy {
   }
 
   /** Commit the refreshed thread-list snapshot and its missed-message cursor as one durable unit. */
-  async applyMissedSummary(
-    items: ConversationItem[],
-    cursor: MissedCursor,
-  ): Promise<void> {
+  async applyCatchUp(items: ConversationItem[], cursor: number): Promise<void> {
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId != null) {
-        await tauriInvoke('native_db_apply_missed_summary', {
+        await tauriInvoke('native_db_apply_catch_up', {
           userId: Number(this.currentUserId),
           items,
           cursor,
         });
+        if (isAndroidNative()) window.SomsFcm?.setMessageFeedCursor(cursor);
         return;
       }
       const db = await this.db();
@@ -1355,7 +1421,7 @@ export class WebdbService implements OnDestroy {
       for (const item of items) await tx.objectStore('threads').put(item);
       await tx
         .objectStore('settings')
-        .put({ key: 'missedCursor', value: cursor });
+        .put({ key: 'messageFeedCursor', value: cursor });
       await tx.done;
     });
   }
@@ -1380,7 +1446,17 @@ export class WebdbService implements OnDestroy {
             },
           )) ?? undefined
         );
-      return (await this.db()).get('memberProfiles', [threadId, userId]);
+      const db = await this.db();
+      const participant = await db.get('threadParticipants', [
+        threadId,
+        userId,
+      ]);
+      if (!participant) return undefined;
+      return db.get('memberProfiles', [
+        participant.sourcePeerDomain,
+        participant.memberAccount,
+        participant.memberDomain,
+      ]);
     });
   }
 
@@ -1391,9 +1467,21 @@ export class WebdbService implements OnDestroy {
           'native_db_list_member_profiles',
           { userId: Number(this.currentUserId), threadId },
         );
-      return (await (await this.db()).getAll('memberProfiles')).filter(
-        (profile) => profile.threadId === threadId,
+      const db = await this.db();
+      const participants = (await db.getAll('threadParticipants')).filter(
+        (participant) => participant.threadId === threadId,
       );
+      return (
+        await Promise.all(
+          participants.map((participant) =>
+            db.get('memberProfiles', [
+              participant.sourcePeerDomain,
+              participant.memberAccount,
+              participant.memberDomain,
+            ]),
+          ),
+        )
+      ).filter((profile): profile is MemberProfileRecord => !!profile);
     });
   }
 
@@ -1860,16 +1948,13 @@ export class WebdbService implements OnDestroy {
           userId: Number(this.currentUserId),
           threadId,
         });
-        if (hwm !== '0') return hwm;
-        const baseline = await this.getMeta('deletedBootstrapHwm');
-        return typeof baseline === 'string' ? baseline : hwm;
+        return hwm;
       }
       const row = await (
         await this.messageDb()
       ).get('settings', `deletedHwm:${threadId}`);
       if (typeof row?.value === 'string') return row.value;
-      const baseline = await this.getMeta('deletedBootstrapHwm');
-      return typeof baseline === 'string' ? baseline : '0';
+      return '0';
     });
   }
 

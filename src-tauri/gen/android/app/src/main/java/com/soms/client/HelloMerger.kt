@@ -30,16 +30,6 @@ object HelloMerger {
             c.put("stateRevision", inc)
           }
         }
-        "NEW_MESSAGE" -> {
-          val d = JSONObject(data)
-          c.put(
-            "latestMessage",
-            JSONObject()
-              .put("threadId", d.opt("threadId"))
-              .put("seq", d.opt("seq"))
-              .put("ts", d.opt("ts")),
-          )
-        }
       }
       c
     }

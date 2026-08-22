@@ -23,12 +23,12 @@ import {
 } from './notification-descriptor.js';
 
 /**
- * One thread's missed-summary row — the data view consumed by the threadlist pre-warm (body hydration). The
+ * One thread's catch-up row — the data view consumed by the threadlist pre-warm (body hydration). The
  * BigInt `id` is NEVER present — only per-thread `seq` + time. `senderAvatarUrl` / `senderUserId` are carried
  * for completeness (the threadlist preview does not render them — its avatars come from the conversation
  * snapshot).
  */
-export interface MissedThreadItem {
+export interface ThreadCatchUpItem {
   threadId: number;
   type: 'P2P' | 'GROUP';
   displayName: string;
@@ -55,31 +55,10 @@ export interface MissedThreadItem {
   } | null;
 }
 
-/** A message identified by its per-thread `(threadId, seq)` (the backend resolves it to the internal BigInt
- *  `id` it never exposes). The threadlist's high-water mark. */
-export interface MissedCursor {
-  threadId: number;
-  seq: number;
-}
-
 /**
- * The two POST /notifications/* endpoints, separated by purpose:
- *  - {@link buildSummary} backs `POST /notifications/missed-summary` (the threadlist body pre-warm) — a
- *    DOUBLE-BOUNDARY `(from, to]` walk of per-thread latest bodies. `to` (the newest SSE signal) is PINNED so
- *    the walk converges; `from` is the high-water mark (advancing). Stable pagination + `to ≤ from` → no-op.
- *  - {@link buildNotifyResponse} backs `POST /notifications/missed` (away-notification renderers only) — a
- *    per-sender aggregation of the messages newer than `since` (the HWM), authored into ONE descriptor
- *    ("X, Y sent you N messages" / "999+" past the 1000-sample) + a composited stacked-avatar icon. One-shot,
- *    no pagination: the away surface is a current snapshot, replace-by-tag.
- *
- * The HWM is the SAME boundary for both (the newest message the threadlist has accounted for, ordered by the
- * backend's strict-total-order `id` — NEVER SSE arrival order, which can deliver out of sequence). The
- * threadlist owns + advances it; the renderer reads it (the IDB newest at background time).
- *
- * The BigInt `id` is NEVER exposed — `(threadId, seq)` is the only handle the client holds.
- *
- * `providedIn`-less on purpose: declared as a provider in MessageFanoutModule so NotificationController can
- * inject it.
+ * Shared hydration/read model behind the message-feed catch-up and notification-feed presentation layers.
+ * Durable discovery and pagination live in their feed services; this class resolves current visibility,
+ * unread attention, latest-message bodies and localized notification descriptors.
  */
 @Injectable()
 export class NotificationQueryService {
@@ -91,121 +70,75 @@ export class NotificationQueryService {
     private readonly userBlockService: UserBlockService,
   ) {}
 
-  /**
-   * Threadlist body pre-warm: per-thread latest body for threads whose latest-message id ∈ `(from, to]`.
-   * @param from the high-water mark (exclusive lower bound); absent on first boot.
-   * @param to   the newest SSE signal (inclusive upper bound) — pinned for the walk (stability).
-   * @param take page size (threads).
-   */
-  async buildSummary(
+  /** Hydrate feed-discovered threads with the current list preview and authoritative read state. The feed
+   * owns discovery/order; this read model owns visibility, unread and presentation data. */
+  async hydrateCatchUpThreads(
     userId: number,
-    opts: { from?: MissedCursor | null; to: MissedCursor; take: number },
-  ): Promise<{
-    items: MissedThreadItem[];
-    hasMore: boolean;
-    nextCursor: MissedCursor | null;
-  }> {
-    const toId = await this.resolveId(opts.to);
-    if (toId === null) return { items: [], hasMore: false, nextCursor: null }; // `to` unresolvable → no-op
-    const fromId = opts.from ? await this.resolveId(opts.from) : null;
-    // `to ≤ from`: SSE delivered a stale/out-of-order message → empty no-op (HWM unchanged).
-    if (fromId !== null && toId <= fromId)
-      return { items: [], hasMore: false, nextCursor: null };
-
-    const ctx = await this.loadThreadContext(userId);
-    // Threads whose latest-message id sits in the half-open range (fromId, toId].
-    const inRange = ctx.active
-      .filter((p) => {
-        const id = ctx.latestIdByThread.get(p.threadId);
-        if (id === undefined) return false;
-        if (fromId !== null && id <= fromId) return false;
-        return id <= toId;
-      })
-      .sort(ctx.cmpByIdAsc);
-    const take = Math.max(1, opts.take);
-    const hasMore = inRange.length > take;
-    const page = inRange.slice(0, take);
+    changes: Array<{ threadId: number; messageEndSeq: number }>,
+  ): Promise<ThreadCatchUpItem[]> {
+    if (changes.length === 0) return [];
+    const threadIds = changes.map((change) => change.threadId);
+    const ctx = await this.loadThreadContext(
+      userId,
+      threadIds,
+      new Map(changes.map((change) => [change.threadId, change.messageEndSeq])),
+    );
+    const byId = new Map(ctx.active.map((row) => [row.threadId, row]));
+    const rows = threadIds
+      .map((threadId) => byId.get(threadId))
+      .filter((row): row is NonNullable<typeof row> => row !== undefined);
     const self = await this.userService.findUniqueUser({ id: userId });
     const attention = self
       ? await this.messageService.unreadAttentionByThread(
           userId,
           self.account,
-          page.map((p) => p.threadId),
+          rows.map((row) => row.threadId),
         )
       : new Map();
-    const unread = new Map(
-      [...attention].map(([threadId, state]) => [threadId, state.count]),
-    );
-    const mentions = new Map(
-      [...attention].map(([threadId, state]) => [threadId, state.mention]),
-    );
-    const items = await this.hydrateItems(
+    return this.hydrateItems(
       userId,
-      page,
-      unread,
+      rows,
+      new Map(
+        [...attention].map(([threadId, state]) => [threadId, state.count]),
+      ),
       ctx.attachedByThread,
-      mentions,
+      new Map(
+        [...attention].map(([threadId, state]) => [threadId, state.mention]),
+      ),
     );
-    // nextCursor = the page's MAX-id item (advance `from` toward `to`); null once this page is the last.
-    let nextCursor: MissedCursor | null = null;
-    if (hasMore && page.length > 0) {
-      const maxRow = page.reduce((mx, p) =>
-        ctx.latestIdByThread.get(p.threadId)! >
-        ctx.latestIdByThread.get(mx.threadId)!
-          ? p
-          : mx,
-      );
-      nextCursor = {
-        threadId: maxRow.threadId,
-        seq: maxRow.thread.lastMessageSeq ?? 0,
-      };
-    }
-    return { items, hasMore, nextCursor };
   }
 
-  /**
-   * Away-notification summary: aggregate, per sender, the messages newer than `since` (the HWM), authored
-   * into ONE descriptor. Samples the first 1000 by id (lean — creator + threadId only, no content); past
-   * that the body shows the capped "999+". Returns `notifications[]` only (the renderer reads nothing else).
-   * @param since the high-water mark (newest IDB message before backgrounding); absent → clear (first-ever).
-   * @param acceptLanguage the `Accept-Language` header → locale for the copy.
-   */
-  async buildNotifyResponse(
+  /** Build current-unread descriptors for threads discovered from the per-user compacted message feed. */
+  async buildFeedNotifyResponse(
     userId: number,
+    threadIds: number[],
     opts: {
-      since?: MissedCursor | null;
       previewMode?: 'message' | 'private';
       threadHwms?: Record<number, number>;
       acceptLanguage?: string | null;
     },
   ): Promise<{ notifications: NotificationDescriptor[] }> {
     const locale = pickLocale(opts.acceptLanguage);
-    // First-ever (no HWM yet) or unresolvable since → no baseline → clear (don't disturb).
-    if (!opts.since) return { notifications: [this.clearDescriptor(locale)] };
-    const sinceId = await this.resolveId(opts.since);
-    if (sinceId === null)
+    if (threadIds.length === 0)
       return { notifications: [this.clearDescriptor(locale)] };
-
     return {
       notifications: await this.threadDescriptors(
         userId,
-        sinceId,
         locale,
         opts.previewMode ?? 'message',
         opts.threadHwms,
+        threadIds,
       ),
     };
   }
 
   /**
-   * "thread" grouping — ONE descriptor PER conversation with new LIVE messages since `sinceId` (each becomes
-   * its own notification card, grouped client-side via the per-thread `tag`). Newest conversation first,
-   * capped at {@link THREAD_NOTIF_CAP} (the cap is applied in Query A). Body reuses the all-mode template
-   * (single sender): "X sent you N messages".
+   * "thread" grouping — ONE descriptor per feed-discovered conversation. The client feed determines which
+   * threads changed; the optional per-thread sequence HWM determines which messages remain notification-
+   * worthy. Each result becomes its own card, grouped client-side by the per-thread `tag`.
    *
-   * Count: Query A (`threadAwayBuckets`) gives the cumulative-since-`since` count per thread; for a thread in
-   * `threadHwms` (the client dismissed it), Query B (`threadCountSinceBound`) overrides with the cumulative-
-   * since-dismiss count (dismiss resets it). A thread whose final count is 0 (dismissed, no new) is dropped.
+   * Count is derived from unread messages, or from the supplied sequence HWM when the client previously
+   * dismissed that thread. A thread whose final count is 0 is dropped.
    * `data.seq` = the thread's latest new seq — the client's per-thread dismiss target (records it in memory on
    * dismiss; advances only on dismiss; cleared on foreground). `kind:'thread-message'` discriminates the
    * render path (#5). `icon: null` (no per-thread avatar composition — resource-friendly). Returns `[]` when
@@ -213,10 +146,10 @@ export class NotificationQueryService {
    */
   private async threadDescriptors(
     userId: number,
-    sinceId: bigint,
     locale: SupportedLocale,
     previewMode: 'message' | 'private',
     threadHwms?: Record<number, number>,
+    threadIds?: number[],
   ): Promise<NotificationDescriptor[]> {
     const blocked = await this.userBlockService.blockedByMe(userId);
     const hiddenCreators = [...blocked, userId];
@@ -226,10 +159,11 @@ export class NotificationQueryService {
       ? await this.messageService.awayAttentionByThread(
           userId,
           self.account,
-          sinceId,
           THREAD_NOTIF_CAP,
           threadHwms ?? {},
           hiddenCreators,
+          1000,
+          threadIds,
         )
       : new Map();
     if (buckets.size === 0) return []; // nothing new → client clears all soms-thread-* notifications
@@ -258,7 +192,6 @@ export class NotificationQueryService {
       previewMode === 'message'
         ? await this.messageService.awayNotificationMessages(
             userId,
-            sinceId,
             visibleIds,
             threadHwms ?? {},
             hiddenCreators,
@@ -310,14 +243,6 @@ export class NotificationQueryService {
     });
   }
 
-  /** Resolve a `(threadId, seq)` cursor to its internal BigInt id (one lookup); null when unresolved. */
-  private async resolveId(cursor: MissedCursor): Promise<bigint | null> {
-    const [m] = await this.messageService.findMessageIdentitiesBySeqPairs([
-      cursor,
-    ]);
-    return m?.id ?? null;
-  }
-
   /** A `clear` descriptor — cancel the tagged away notification (nothing new / first-ever / unresolvable). */
   private clearDescriptor(locale: SupportedLocale): NotificationDescriptor {
     return {
@@ -344,6 +269,7 @@ export class NotificationQueryService {
   private async loadThreadContext(
     userId: number,
     threadIds?: number[],
+    previewSeqByThread?: Map<number, number>,
   ): Promise<{
     active: Array<{
       threadId: number;
@@ -371,7 +297,10 @@ export class NotificationQueryService {
     });
     // Latest message per thread (BigInt id intact — the strict-total-order key).
     const pairs = list
-      .map((p) => ({ threadId: p.threadId, seq: p.thread.lastMessageSeq }))
+      .map((p) => ({
+        threadId: p.threadId,
+        seq: previewSeqByThread?.get(p.threadId) ?? p.thread.lastMessageSeq,
+      }))
       .filter(
         (p): p is { threadId: number; seq: number } =>
           p.seq != null && p.seq >= 0,
@@ -429,7 +358,7 @@ export class NotificationQueryService {
     unread: Map<number, number>,
     attachedByThread: Map<number, AttachedMessage>,
     mentions: Map<number, UnreadMentionState> = new Map(),
-  ): Promise<MissedThreadItem[]> {
+  ): Promise<ThreadCatchUpItem[]> {
     // P2P display name + sender = the peer user (id carries for the icon color hash + cache key).
     const p2pThreadIds = rows
       .filter((p) => p.thread.type === 'P2P')

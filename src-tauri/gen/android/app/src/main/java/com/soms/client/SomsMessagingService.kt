@@ -213,21 +213,10 @@ class SomsMessagingService : FirebaseMessagingService() {
                 return null
             }
             val body = JSONObject().apply {
-                // The away-summary high-water mark (`since`) — the newest message the client accounted for
-                // before the WebView was suspended, persisted by SomsFcm.setMissedCursor. Absent on first-ever
-                // boot → the server returns a `clear` descriptor (nothing new to show). NOTE: no `take` —
-                // /notifications/missed is one-shot (pagination + `take` live on /missed-summary), and MissedDto
-                // runs under forbidNonWhitelisted, so an extra field here is a hard HTTP 400 (it previously
-                // silently broke EVERY Android away-notification path).
-                val cursor = ClientStateDb.getNotificationCursor(ctx)
-                if (cursor != null) {
-                    put("since", JSONObject().put("threadId", cursor.first).put("seq", cursor.second))
-                }
+                put("after", ClientStateDb.getMessageFeedCursor(ctx))
                 // Privacy is server-enforced: private mode prevents message bodies from entering the response.
                 put("previewMode", ClientStateDb.getNotificationPreviewMode(ctx))
-                // Per-thread dismiss HWMs (in-memory) — for each dismissed thread, the server counts FROM its
-                // HWM (cumulative since dismiss → dismiss resets the count to 0 until newer messages). Only
-                // Declared on MissedDto and persisted locally only.
+                // Per-thread dismiss HWMs suppress an already-dismissed unread range until a newer message.
                 val hwms = threadHwmsSnapshot(ctx)
                 if (hwms.isNotEmpty()) {
                     val obj = JSONObject()
@@ -250,7 +239,12 @@ class SomsMessagingService : FirebaseMessagingService() {
                         SomsLog.w("Notif") { "fetchDescriptors non-2xx code=${resp.code} → null" }
                         return null
                     }
-                    val list = NotifDescriptor.parseList(raw ?: return null)
+                    val payload = raw ?: return null
+                    val envelope = JSONObject(payload)
+                    val data = envelope.optJSONObject("data")
+                    val end = data?.optInt("messageFeedEndId", -1) ?: -1
+                    if (end >= 0) ClientStateDb.setMessageFeedCursor(ctx, end)
+                    val list = NotifDescriptor.parseList(payload)
                     SomsLog.d("Notif") { "fetchDescriptors parsed=${list.size} kinds=${list.map { it.kind }}" }
                     list
                 }

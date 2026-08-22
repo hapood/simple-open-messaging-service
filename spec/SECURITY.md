@@ -12,4 +12,4 @@ Use GitHub Issues and Pull Requests for non-sensitive protocol issues and change
 
 ## Response principles
 
-Maintainers should acknowledge a report, distinguish protocol defects from implementation defects, and coordinate affected implementations when necessary. A protocol fix must update the normative text, changelog, Schema, vectors, and conformance checks together. An implementation fix cannot silently alter the wire contract.
+Maintainers should acknowledge a report, distinguish protocol defects from implementation defects, and coordinate affected implementations when necessary. A protocol fix must update the normative text, Schema, vectors, conformance checks, and release metadata together. An implementation fix cannot silently alter the wire contract.

@@ -341,12 +341,6 @@ export class MsgService {
     );
   }
 
-  getDeletedMessageHwm() {
-    return this.http.get<StandardResponse<{ hwm: string }>>(
-      `${apiPrefix()}/deleted-messages/hwm`,
-    );
-  }
-
   queryDeletedMessages(params: {
     threadId: number;
     afterId: string;

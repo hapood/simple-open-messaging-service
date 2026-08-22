@@ -15,14 +15,13 @@ import { AwayNotificationService } from '../notification/away-notification.servi
 import { ThreadListSyncService } from '../thread-sync/thread-list-sync.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 import {
-  MissedDto,
-  MissedSummaryDto,
+  NotificationFeedQueryDto,
+  ThreadCatchUpDto,
   ReportActionDto,
 } from '../dto/notification.dto.js';
 
-/** Page-size bounds for the paginated missed catch-up (the DTO validates 1–200; this is the default). */
 /** Per-page cap for /thread-sync/catch-up (the threadlist body walk). */
-const MISSED_MAX_TAKE = 200;
+const CATCH_UP_MAX_TAKE = 200;
 
 /**
  * The notification + incremental-sync surface.
@@ -30,7 +29,6 @@ const MISSED_MAX_TAKE = 200;
  * New code uses two explicit domain resources:
  *  - POST /thread-sync/catch-up — ThreadList preview/read-state catch-up.
  *  - POST /notification-feed/query — system-notification descriptors while the app is away.
- * Legacy `/notifications/missed*` paths remain aliases during rolling client upgrades.
  *
  * Handlers return raw data (the global SerializeInterceptor wraps the ApiResult envelope).
  */
@@ -59,64 +57,59 @@ export class NotificationController {
     return { publicKey: this.settings.getVapid()?.publicKey ?? '' };
   }
 
-  /** The threadlist body pre-warm — per-thread latest body for threads whose latest-message id ∈ `(from, to]`.
-   *  `to` = the newest SSE signal (pinned upper bound); `from` = the high-water mark (advancing lower bound).
-   *  Authenticated by the global guard (session token / access JWT). The client walks pages until `!hasMore`,
-   *  then sets HWM = `to`. `to ≤ from` (stale SSE) → empty no-op. */
+  /** Read one page of the compacted per-user message feed and hydrate its changed threads. */
   @HttpCode(HttpStatus.OK)
-  @Post(['thread-sync/catch-up', 'notifications/missed-summary'])
+  @Post('thread-sync/catch-up')
   @ApiOperation({
-    summary:
-      'Threadlist body pre-warm: per-thread latest body in the (from, to] range (double-boundary walk)',
+    summary: 'Read changed thread previews from the per-user message feed',
   })
-  async missedSummary(
-    @Request() req: FastifyRequest,
-    @Body() dto: MissedSummaryDto,
-  ) {
+  async catchUp(@Request() req: FastifyRequest, @Body() dto: ThreadCatchUpDto) {
     const userId = req.user.userId as number;
     const take = Math.min(
-      MISSED_MAX_TAKE,
-      Math.max(1, dto.take ?? MISSED_MAX_TAKE),
+      CATCH_UP_MAX_TAKE,
+      Math.max(1, dto.take ?? CATCH_UP_MAX_TAKE),
     );
-    const from =
-      dto.from &&
-      typeof dto.from.threadId === 'number' &&
-      typeof dto.from.seq === 'number'
-        ? { threadId: dto.from.threadId, seq: dto.from.seq }
-        : null;
-    const to =
-      dto.to &&
-      typeof dto.to.threadId === 'number' &&
-      typeof dto.to.seq === 'number'
-        ? { threadId: dto.to.threadId, seq: dto.to.seq }
-        : null;
-    if (!to) {
-      // `to` is @IsRequired on the DTO (ValidationPipe rejects absent); defensive guard for shape.
-      return { items: [], hasMore: false, nextCursor: null };
-    }
-    return this.threadListSync.catchUp(userId, { from, to, take });
+    return this.threadListSync.catchUp(userId, {
+      after: dto.after ?? 0,
+      ...(dto.through !== undefined ? { through: dto.through } : {}),
+      take,
+    });
   }
 
-  /** The away-notification summary — per-sender aggregation of the messages newer than `since` (the HWM),
-   *  authored into ONE descriptor ("X, Y sent you N messages" / "999+" past the 1000-sample) + a composited
-   *  stacked-avatar icon. NOTIFICATION renderers only (Web SW / Android FCM-FGS / desktop). One-shot current
-   *  snapshot, replace-by-tag. Locale negotiated from `Accept-Language`. */
   @HttpCode(HttpStatus.OK)
-  @Post(['notification-feed/query', 'notifications/missed'])
+  @Post('thread-sync/tombstones')
+  @ApiOperation({
+    summary: 'Read the compacted per-user message tombstone feed',
+  })
+  async catchUpTombstones(
+    @Request() req: FastifyRequest,
+    @Body() dto: ThreadCatchUpDto,
+  ) {
+    const take = Math.min(
+      CATCH_UP_MAX_TAKE,
+      Math.max(1, dto.take ?? CATCH_UP_MAX_TAKE),
+    );
+    return this.threadListSync.catchUpTombstones(req.user.userId as number, {
+      after: dto.after ?? 0,
+      ...(dto.through !== undefined ? { through: dto.through } : {}),
+      take,
+    });
+  }
+
+  /** Build a current notification snapshot for threads changed after a per-user message-feed cursor. */
+  @HttpCode(HttpStatus.OK)
+  @Post('notification-feed/query')
   @ApiOperation({
     summary:
-      'Away-notification summary: per-sender aggregation of messages since the high-water mark',
+      'Build notifications from changed threads in the per-user message feed',
   })
-  async missed(@Request() req: FastifyRequest, @Body() dto: MissedDto) {
+  async queryNotifications(
+    @Request() req: FastifyRequest,
+    @Body() dto: NotificationFeedQueryDto,
+  ) {
     const userId = req.user.userId as number;
-    const since =
-      dto.since &&
-      typeof dto.since.threadId === 'number' &&
-      typeof dto.since.seq === 'number'
-        ? { threadId: dto.since.threadId, seq: dto.since.seq }
-        : null;
     return this.awayNotifications.query(userId, {
-      since,
+      after: dto.after,
       previewMode: dto.previewMode,
       threadHwms: dto.threadHwms,
       acceptLanguage:

@@ -7,7 +7,6 @@ import { MessageThreadType } from '../src/database/enums.js';
 import {
   relationshipIntent,
   group,
-  groupMembershipRequest,
   messageThread,
   user,
 } from '../src/database/schema.js';
@@ -61,8 +60,8 @@ describe('federation directed-state boundaries', () => {
     const { local, peer } = await createPair(Date.now().toString(36));
     await database.db.insert(relationshipIntent).values([
       {
-        requesterUserId: local.id,
-        targetUserId: peer.id,
+        authorUserId: local.id,
+        subjectUserId: peer.id,
         status: 'REVOKED',
         note: '',
         requestedAt: null,
@@ -70,8 +69,8 @@ describe('federation directed-state boundaries', () => {
         updatedAt: new Date(),
       },
       {
-        requesterUserId: peer.id,
-        targetUserId: local.id,
+        authorUserId: peer.id,
+        subjectUserId: local.id,
         status: 'ACCEPTED',
         note: '',
         requestedAt: new Date(),
@@ -123,8 +122,8 @@ describe('federation directed-state boundaries', () => {
       `${Date.now().toString(36)}-valid`,
     );
     await database.db.insert(relationshipIntent).values({
-      requesterUserId: local.id,
-      targetUserId: peer.id,
+      authorUserId: local.id,
+      subjectUserId: peer.id,
       status: 'REQUESTED',
       note: 'hello',
       requestedAt: new Date(),
@@ -166,8 +165,8 @@ describe('federation directed-state boundaries', () => {
     const requestedAt = new Date();
     await database.db.insert(relationshipIntent).values([
       {
-        requesterUserId: local.id,
-        targetUserId: peer.id,
+        authorUserId: local.id,
+        subjectUserId: peer.id,
         status: 'ACCEPTED',
         note: '',
         requestedAt,
@@ -175,8 +174,8 @@ describe('federation directed-state boundaries', () => {
         updatedAt: new Date(),
       },
       {
-        requesterUserId: peer.id,
-        targetUserId: local.id,
+        authorUserId: peer.id,
+        subjectUserId: local.id,
         status: 'REQUESTED',
         note: 'peer request',
         requestedAt,
@@ -217,8 +216,8 @@ describe('federation directed-state boundaries', () => {
     const expiredAt = new Date(Date.now() - 60_000);
     await database.db.insert(relationshipIntent).values([
       {
-        requesterUserId: local.id,
-        targetUserId: peer.id,
+        authorUserId: local.id,
+        subjectUserId: peer.id,
         status: 'REQUESTED',
         note: 'old local',
         requestedAt: new Date(Date.now() - 120_000),
@@ -226,8 +225,8 @@ describe('federation directed-state boundaries', () => {
         updatedAt: new Date(),
       },
       {
-        requesterUserId: peer.id,
-        targetUserId: local.id,
+        authorUserId: peer.id,
+        subjectUserId: local.id,
         status: 'REQUESTED',
         note: 'old peer',
         requestedAt: new Date(Date.now() - 120_000),
@@ -296,12 +295,12 @@ describe('federation directed-state boundaries', () => {
     );
     const requestedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
     await database.db
-      .update(groupMembershipRequest)
+      .update(relationshipIntent)
       .set({
         requestedAt,
         expiresAt: new Date(requestedAt.getTime() + 7 * 24 * 60 * 60 * 1000),
       })
-      .where(eq(groupMembershipRequest.id, BigInt(firstId)));
+      .where(eq(relationshipIntent.id, BigInt(firstId)));
     const secondId = await invites.createGroupInvite(
       owner.id,
       thread.id,
@@ -310,8 +309,8 @@ describe('federation directed-state boundaries', () => {
     );
 
     expect(secondId).toBe(firstId);
-    const refreshed = await database.db.query.groupMembershipRequest.findFirst({
-      where: eq(groupMembershipRequest.id, BigInt(firstId)),
+    const refreshed = await database.db.query.relationshipIntent.findFirst({
+      where: eq(relationshipIntent.id, BigInt(firstId)),
     });
     expect(refreshed).toMatchObject({ status: 'REQUESTED' });
     expect(refreshed!.expiresAt!.getTime()).toBeGreaterThan(Date.now());

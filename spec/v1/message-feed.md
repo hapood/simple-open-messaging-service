@@ -23,7 +23,7 @@ The query is a closed parameter set:
 
 When `after` is omitted, the source MUST return HTTP `200 FEDERATION_FEED_CURSOR_UNAVAILABLE` with both exclusive boundaries: `resumeAfter` is the available starting position and `resumeBefore` is `messageFeedEndId + 1`. The consumer stores the window atomically and begins forward draining with `after=resumeAfter`. Re-establishing a friendship, rejoining a group, or changing the relationship epoch for the same account MUST NOT move a saved feed cursor backward, substitute another cursor, or reset it.
 
-The source stores no ACK for the consumer and does not enforce cursor monotonicity. Any `after` in `[0, messageFeedEndId]` is a valid read position, including a duplicate or older position. The source may return `FEDERATION_FEED_CURSOR_UNAVAILABLE` with valid `resumeAfter` and `resumeBefore` boundaries only when `after` is omitted or clearly exceeds the current feed end. Compaction, holes, or cleanup of historical application data MUST NOT cause the message feed to return this result.
+The source stores no ACK for the consumer and does not enforce cursor monotonicity. It MAY establish a retained lower boundary when service capacity is insufficient and MAY remove message-index projections below that boundary. Any `after` within the advertised available window remains valid. An omitted cursor, a cursor below `resumeAfter`, or a cursor beyond the current end returns `FEDERATION_FEED_CURSOR_UNAVAILABLE` with the current `resumeAfter` and `resumeBefore`. The source MUST NOT return a successful empty page that conceals a pruned interval.
 
 ### 1.2 Page
 
@@ -65,7 +65,7 @@ Message-query `after`, `before`, `through`, and `scannedThrough` MUST be at most
 `SafeInteger`. The query coordinates and `messageEndSeq` use decimal strings on
 the wire; message `seq` uses a JSON integer.
 
-The message feed is a durable compacted index: the source may delete an old item superseded by an update. For a thread that still has a current audience, may still produce messages, or remains queryable, the source MUST NOT delete the current stable-key projection because of capacity, time, restart, or consumer read position. The current item MUST remain discoverable from any valid older `after`.
+The message feed is a durable compacted discovery index: the source may delete an old item superseded by an update. When service capacity is insufficient it MAY also prune older current stable-key projections and advance `resumeAfter`. Such pruning affects discovery only; it does not itself delete message entities or change thread-query retention. A consumer whose cursor falls behind the new boundary receives an explicit cursor-unavailable result and adopts the advertised window. Within that window, retained projections MUST remain discoverable from every valid `after`.
 
 After a P2P friendship ends, the source MAY delete the current message-feed projection for that peer and thread. Deletion allocates no new `feedId` and does not move `messageFeedEndId` backward. The stable-key sets of message feed and tombstone feed are independent: a thread that has never produced a tombstone may exist only in message feed, and a consumer MUST NOT require both feeds to contain the same thread set or aligned end sequences. If the same relationship is re-established, the source MUST rebuild the projection with a new, larger `feedId`, even when the current `messageEndSeq` equals its value before deletion, so a consumer that passed the old item can discover it again.
 
@@ -210,7 +210,22 @@ return the same result to correct the query to the current window. Both resume
 fields MUST come from one consistent snapshot. These rules MUST NOT be used to
 skip message feed.
 
-### 2.3 Authorization and state reconciliation
+### 2.3 Consumer fast-forward
+
+When starting or restarting a forward message-query drain, a consumer MAY
+advance its local `after` cursor to a greater position because of finite local
+storage or processing capacity. The selected position MUST be within the
+source-advertised serviceable window and MUST NOT move a committed cursor
+backward. The consumer MUST atomically persist the new cursor and treat every
+skipped coordinate through that position as intentionally discarded.
+
+A consumer that fast-forwards MUST NOT represent the skipped interval as
+completely replicated or processed, generate a processing receipt for a skipped
+message, or infer any source-side deletion or acknowledgement. This is a local
+replication decision and does not alter source data, authorization, allocation
+proofs, or query coordinates.
+
+### 2.4 Authorization and state reconciliation
 
 On every query, the source MUST recompute access from its durable authored relationship direction, group audience, block, thread authority, historical allocation proof, and local policy. The presence of a feed item is not authorization proof. For both user/user and user/group relationships, an unexpired source-authored `REQUESTED` or valid `ACCEPTED` grants the target peer query access without requiring the reverse direction. Before publishing either state, the source MUST have established every thread, audience, and authorization fact needed to serve that query. A newly requested thread with no allocated messages returns a successful empty page.
 

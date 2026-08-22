@@ -14,7 +14,8 @@
 | `POST` | `/s2s/v1/recognize`                 | Establish one recognition direction and persistently schedule the reverse direction.   |
 | `POST` | `/s2s/v1/healthy`                   | Check an existing recognized relationship without fetching keys for an unknown caller. |
 | `POST` | `/s2s/v1/feed-heads`                | Lightweight state/message/tombstone end-ID wake-up.                                    |
-| `GET`  | `/s2s/v1/state-feed`                | Profiles, directional friendship/group facts, and origin group snapshots.              |
+| `GET`  | `/s2s/v1/state-feed`                | Profiles, directional relationship facts, and Group Meta feed-head hints.              |
+| `GET`  | `/s2s/v1/group-meta`                | Per-peer full/delta group members, roles, and source-scoped profiles.                  |
 | `GET`  | `/s2s/v1/message-feed`              | Durable message-discovery index.                                                       |
 | `GET`  | `/s2s/v1/message-tombstone-feed`    | Durable deletion-discovery index.                                                      |
 | `GET`  | `/s2s/v1/messages`                  | Query concrete messages by thread.                                                     |
@@ -67,28 +68,28 @@ Federation v1 wire requirements.
   or group snapshot. Each authored direction remains independently controlled.
 - Re-friending or rejoining need not wait for the peer to consume the removal.
   Stable-key compaction retains the newest revision. A group origin republishes
-  `GROUP_META` for a new join revision even if its previous roster was still active.
+  `GROUP_META_FEED_HEAD` with the latest Group Meta `feedId` after new member
+  records become visible.
 - Group membership uses `RELATIONSHIP_INTENT`: group-to-user is the
   origin-authored direction and user-to-group is the member-authored direction.
-  Group/group relationships are invalid. `GROUP_META` aggregates the effective
-  roster and roles.
+  Group/group relationships are invalid. The group-meta feed aggregates the
+  effective roster, roles, and source-scoped member profiles.
 - A received pending request remains address-only until the local side accepts or
   independently initiates. Profile disclosure requires a locally published
-  `ACCEPTED`; the publisher orders that item before `PROFILE`, `GROUP_META`, and
-  the complete referenced `MEMBER_PROFILE` set.
-- `PROFILE` has its own revision and group metadata does not embed avatars. A
-  member server may apply a profile relayed by the group origin.
+  `ACCEPTED`; the publisher orders that item before `PROFILE` and
+  `GROUP_META_FEED_HEAD`. The latter is applied only after pulling Group Meta.
+- `PROFILE` has its own revision. Group-member display profiles are carried by
+  the group-meta feed and are scoped by their publishing group origin.
 - An unchanged body normally does not allocate another feed ID. Relationship
-  confirmation may reindex `ACCEPTED`. After confirmation, an effective
-  `PROFILE`, `GROUP_META`, or `MEMBER_PROFILE` snapshot whose `profileRev` or
-  `rosterRev` already equals the publisher's current revision is reused rather
-  than reindexed. A missing or older dependency is published at a new feed ID;
-  snapshot content must not change without advancing its business revision.
+  confirmation may reindex `ACCEPTED`. An unchanged `PROFILE` business revision
+  is reused. `GROUP_META_FEED_HEAD.groupMetaFeedEndId` is the latest Group Meta
+  feed ID.
 - Per-peer state feeds compact by stable key. Transport `feedId` and cursors are
   bigint values and provide the ordering coordinate for snapshots.
-- Member snapshots follow the group snapshot that references them. When the last
-  visibility source disappears, the source omits that member from its projection
-  and the consumer cleans the reference closure only after a complete state drain.
+- Group Meta member `UPSERT` records contain complete roles and display
+  profiles. Every record has a unique transport `feedId` and an independent
+  stable-member `rev`; departures append `DELETE` records with both values
+  advanced in their respective coordinate spaces.
 
 ## Messages and media
 

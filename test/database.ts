@@ -31,6 +31,32 @@ export async function ensureDatabase(
   return databaseUrl(baseUrl, database);
 }
 
+export async function recreateDatabaseFromTemplate(
+  baseUrl: string,
+  database: string,
+  template: string,
+): Promise<string> {
+  for (const name of [database, template]) {
+    if (!/^[a-zA-Z0-9_]+$/.test(name)) {
+      throw new Error(`unsafe test database name: ${name}`);
+    }
+  }
+  const adminUrl = databaseUrl(baseUrl, 'postgres');
+  const client = new Client({ connectionString: adminUrl });
+  await client.connect();
+  try {
+    await client.query(
+      'SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()',
+      [database],
+    );
+    await client.query(`DROP DATABASE IF EXISTS "${database}"`);
+    await client.query(`CREATE DATABASE "${database}" TEMPLATE "${template}"`);
+  } finally {
+    await client.end();
+  }
+  return databaseUrl(baseUrl, database);
+}
+
 export async function resetAndMigrateDatabase(url: string): Promise<void> {
   const client = new Client({ connectionString: url });
   await client.connect();

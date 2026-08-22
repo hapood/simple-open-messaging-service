@@ -250,7 +250,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
     expect(audiences).toHaveLength(2);
   });
 
-  it('does not create a federated thread until the peer confirms FRIEND', async () => {
+  it('keeps the federated thread shell inactive until the peer confirms FRIEND', async () => {
     const appLike = { baseUrl, database: database.db };
     const alice = await registerAndLogin(appLike, 'strict-alice', 'Alice');
     const [foreignBob] = await database.db
@@ -294,7 +294,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
         where: pairWhere,
       });
     expect(beforeConfirmation?.active).toBe(false);
-    expect(beforeConfirmation?.threadId).toBeNull();
+    expect(beforeConfirmation?.threadId).not.toBeNull();
 
     await database.db.transaction((tx) =>
       inviteService.applyRemoteFriendIntentInTx(tx, {

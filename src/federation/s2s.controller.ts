@@ -7,6 +7,7 @@ import {
   HttpCode,
   HttpStatus,
   Logger,
+  OnModuleDestroy,
   Query,
   Req,
   Res,
@@ -30,6 +31,7 @@ import { FederationMessageTombstonePullService } from './federation-message-tomb
 import { SettingsService } from '../settings/settings.service.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
 import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
+import { GroupMetaFeedService } from './group-meta-feed.service.js';
 import { FEDERATION_API_PREFIX } from './federation-protocol.js';
 import {
   parseFederationResourceRequest,
@@ -62,7 +64,7 @@ import {
 @Public()
 @Controller(FEDERATION_API_PREFIX)
 @UseGuards(S2sSignatureGuard)
-export class S2sController {
+export class S2sController implements OnModuleDestroy {
   private readonly logger = new Logger(S2sController.name);
   private readonly feedDrainRunning = new Set<string>();
   private readonly feedDrainPending = new Set<string>();
@@ -72,6 +74,8 @@ export class S2sController {
     ReturnType<typeof setTimeout>
   >();
   private readonly feedDrainRequiredState = new Map<string, bigint>();
+  private readonly feedDrainTasks = new Set<Promise<void>>();
+  private shuttingDown = false;
 
   constructor(
     private readonly federation: FederationService,
@@ -82,7 +86,56 @@ export class S2sController {
     private readonly settings: SettingsService,
     private readonly peerStateFeed: PeerStateFeedService,
     private readonly peerStateFeedPull: PeerStateFeedPullService,
+    private readonly groupMetaFeed: GroupMetaFeedService,
   ) {}
+
+  @Get('group-meta')
+  async getGroupMeta(
+    @Req() req: FastifyRequest,
+    @Query('account') account?: string,
+    @Query('mode') mode?: string,
+    @Query('after') afterParam?: string,
+    @Query('take') takeParam?: string,
+    @Query('through') throughParam?: string,
+  ) {
+    this.assertQueryShape(req, ['account', 'mode', 'after', 'take', 'through']);
+    if (typeof account !== 'string' || (mode !== 'full' && mode !== 'delta'))
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'group-meta requires a group account and mode full or delta',
+        HttpStatus.BAD_REQUEST,
+      );
+    const normalizedAccount = requireAccount(account, 'account');
+    if (!normalizedAccount.startsWith('!'))
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'group-meta account must be a group account',
+        HttpStatus.BAD_REQUEST,
+      );
+    if (afterParam === undefined)
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'group-meta requires after',
+        HttpStatus.BAD_REQUEST,
+      );
+    const after = this.parseCursorBigInt(afterParam, 'after');
+    const take =
+      takeParam === undefined
+        ? undefined
+        : this.parsePositiveSafeIntegerQuery(takeParam, 'take');
+    const through =
+      throughParam === undefined
+        ? undefined
+        : this.parseCursorBigInt(throughParam, 'through');
+    return this.groupMetaFeed.serve(
+      this.signerDomain(req),
+      normalizedAccount,
+      mode,
+      after,
+      take,
+      through,
+    );
+  }
 
   /** Receive ephemeral state/message/tombstone feed heads; actual data remains pull-only. */
   @Post('feed-heads')
@@ -133,14 +186,17 @@ export class S2sController {
   }
 
   private startFeedDrain(domain: string): void {
+    if (this.shuttingDown) return;
     this.feedDrainPending.add(domain);
-    const timer = this.feedDrainRetryTimers.get(domain);
-    if (timer) {
-      clearTimeout(timer);
-      this.feedDrainRetryTimers.delete(domain);
-    }
+    // A degraded peer stays quiet for the complete cooldown. New lightweight
+    // heads only raise the merged required HWM; they must not shorten the
+    // cooldown or start another concurrent drain.
+    if (this.feedDrainRetryTimers.has(domain)) return;
     if (this.feedDrainRunning.has(domain)) return;
-    void this.drainFeedHeads(domain);
+    const task = this.drainFeedHeads(domain).finally(() => {
+      this.feedDrainTasks.delete(task);
+    });
+    this.feedDrainTasks.add(task);
   }
 
   private async drainFeedHeads(domain: string): Promise<void> {
@@ -163,6 +219,7 @@ export class S2sController {
       this.logger.warn(
         `feed-head drain failed for ${domain}: ${(error as Error).message}`,
       );
+      this.feedDrainPending.add(domain);
       this.scheduleFeedDrainRetry(domain);
     } finally {
       this.feedDrainRunning.delete(domain);
@@ -175,16 +232,28 @@ export class S2sController {
   }
 
   private scheduleFeedDrainRetry(domain: string): void {
+    if (this.shuttingDown) return;
     if (this.feedDrainRetryTimers.has(domain)) return;
     const attempt = (this.feedDrainRetryAttempts.get(domain) ?? 0) + 1;
     this.feedDrainRetryAttempts.set(domain, attempt);
-    const delayMs = Math.min(250 * 2 ** Math.min(attempt - 1, 5), 5000);
+    // Most failures here are short recognition/restart races. Recover those
+    // promptly, while exponentially backing off a persistently unavailable
+    // peer so its lightweight wake-ups cannot create a retry storm.
+    const delayMs = Math.min(60_000, 1000 * 2 ** (attempt - 1));
     const timer = setTimeout(() => {
       this.feedDrainRetryTimers.delete(domain);
       this.startFeedDrain(domain);
     }, delayMs);
     timer.unref();
     this.feedDrainRetryTimers.set(domain, timer);
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    this.shuttingDown = true;
+    this.feedDrainPending.clear();
+    for (const timer of this.feedDrainRetryTimers.values()) clearTimeout(timer);
+    this.feedDrainRetryTimers.clear();
+    await Promise.allSettled([...this.feedDrainTasks]);
   }
 
   @Get('message-tombstone-feed')

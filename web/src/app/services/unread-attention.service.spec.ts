@@ -5,7 +5,7 @@ import { Subject } from 'rxjs';
 import { UnreadAttentionService } from './unread-attention.service';
 import { ConversationListService } from './conversation-list.service';
 import { WebsocketService } from './websocket.service';
-import { MissedSyncService } from './missed-sync.service';
+import { NotificationFeedService } from './notification-feed.service';
 import { NotificationPrefsService } from './notification-prefs.service';
 import { NavStateMachineService } from './nav-state.service';
 import { SOMS_NOTIF_MSG } from './sw-notif-protocol';
@@ -41,7 +41,7 @@ describe('UnreadAttentionService (SW message routing + threadHwms wiring)', () =
     fetchAway = vi
       .fn()
       .mockName('fetchAwayNotifications')
-      .mockResolvedValue([]);
+      .mockResolvedValue({ notifications: [], messageFeedEndId: 11 });
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -50,7 +50,7 @@ describe('UnreadAttentionService (SW message routing + threadHwms wiring)', () =
           provide: ConversationListService,
           useValue: {
             items: signal([]).asReadonly(),
-            missedCursor: () => ({ threadId: 1, seq: 10 }),
+            messageFeedCursor: () => 10,
             threadHwms: () => ({ 7: 3 }),
             recordThreadDismiss,
             clearThreadDismiss: vi.fn().mockName('clearThreadDismiss'),
@@ -58,8 +58,8 @@ describe('UnreadAttentionService (SW message routing + threadHwms wiring)', () =
         },
         { provide: WebsocketService, useValue: { eventSubject } },
         {
-          provide: MissedSyncService,
-          useValue: { fetchAwayNotifications: fetchAway },
+          provide: NotificationFeedService,
+          useValue: { query: fetchAway },
         },
         {
           provide: NotificationPrefsService,
@@ -109,7 +109,7 @@ describe('UnreadAttentionService (SW message routing + threadHwms wiring)', () =
     await new Promise((r) => setTimeout(r, 350)); // past the 300ms debounce
     expect(fetchAway).toHaveBeenCalledTimes(1);
     expect(fetchAway).toHaveBeenCalledWith(
-      { threadId: 1, seq: 10 },
+      10,
       'message',
       { 7: 3 },
     );

@@ -9,7 +9,7 @@ import type { SupportedLocale } from '../common/locale.js';
  * worker, the Kotlin foreground service) and the wording drifted across platforms.
  *
  * Design (see the approved plan): the wake-up push signal stays identity-only; the client pulls
- * `/notifications/missed` and renders the descriptor(s) verbatim. The backend decides both WHAT the
+ * `/notification-feed/query` and renders the descriptor(s) verbatim. The backend decides both WHAT the
  * notification shows (title/body/icon, server-localized) AND how it behaves relative to an existing one
  * (`tag` = replace-in-place vs new; `kind` = template + action set; `actions` = buttons).
  */

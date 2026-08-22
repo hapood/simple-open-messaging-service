@@ -51,13 +51,13 @@ const PAGE_BYTES = 4 * 1024 * 1024;
 const snapshotRevision = (
   eventType: PeerStateEventType,
   body: PeerStateBody,
-): number | undefined => {
-  const value =
-    eventType === 'GROUP_META'
-      ? body.rosterRev
-      : eventType === 'PROFILE' || eventType === 'MEMBER_PROFILE'
-        ? body.profileRev
-        : undefined;
+): number | string | undefined => {
+  if (eventType === 'GROUP_META_FEED_HEAD')
+    return typeof body.groupMetaFeedEndId === 'string' &&
+      /^(0|[1-9]\d*)$/.test(body.groupMetaFeedEndId)
+      ? body.groupMetaFeedEndId
+      : undefined;
+  const value = eventType === 'PROFILE' ? body.profileRev : undefined;
   return Number.isSafeInteger(value) && Number(value) >= 0
     ? Number(value)
     : undefined;

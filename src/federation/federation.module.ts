@@ -31,6 +31,7 @@ import { FederationMessageTombstoneFeedService } from './federation-message-tomb
 import { FederationMessageTombstonePullService } from './federation-message-tombstone-pull.service.js';
 import { FederationHttpScheduler } from './federation-http-scheduler.js';
 import { FederationTransportConfigService } from './federation-transport-config.service.js';
+import { GroupMetaFeedService } from './group-meta-feed.service.js';
 
 /**
  * Federation (S2S). @Global so its services inject across modules (UserController, AdminController).
@@ -79,6 +80,7 @@ import { FederationTransportConfigService } from './federation-transport-config.
     FederationDownloadRecoveryService,
     PeerStateFeedService,
     PeerStateFeedPullService,
+    GroupMetaFeedService,
   ],
   exports: [
     KeypairService,
@@ -99,6 +101,7 @@ import { FederationTransportConfigService } from './federation-transport-config.
     FederationDownloadRecoveryService,
     PeerStateFeedService,
     PeerStateFeedPullService,
+    GroupMetaFeedService,
   ],
 })
 export class FederationModule {}

@@ -5,7 +5,6 @@ import { apiPrefix } from './constants';
 import {
   User,
   ConversationItem,
-  Invite,
   StandardResponse,
   ThreadReadDelta,
   PersonalQuotaState,
@@ -14,6 +13,7 @@ import { WebdbService } from './webdb.service';
 import { ProfileRepository } from './profile-store.service';
 import { PreferenceStore } from './preference-store.service';
 import { isTauri } from './runtime';
+import type { FriendRequestProjection } from './friend-request-state';
 
 export type { User } from './model';
 
@@ -94,11 +94,27 @@ export interface ClientGroupInviteIntent {
 
 export type FriendIntentDirection = 'INCOMING' | 'OUTGOING';
 
+type ClientStateBody =
+  | Omit<
+      ClientFriendIntent,
+      | 'key'
+      | 'account'
+      | 'domain'
+      | 'subjectAccount'
+      | 'subjectDomain'
+      | 'requestedSort'
+    >
+  | Omit<
+      ClientGroupInviteIntent,
+      'key' | 'account' | 'domain' | 'subjectAccount' | 'subjectDomain' | 'kind'
+    >;
+
 export interface FriendIntentPage {
-  items: Invite[];
+  items: FriendRequestProjection[];
   nextCursor: string | null;
   hasMore: boolean;
   total: number;
+  actionableTotal: number;
 }
 
 /** One entry of the hydrated client-state delta (POST /user/query-state/delta). The server plans
@@ -143,15 +159,7 @@ export type HydratedThreadDeltaOp =
       eventType: 'RELATIONSHIP_INTENT';
       subjectAccount: string;
       subjectDomain: string;
-      body: Omit<
-        ClientFriendIntent | ClientGroupInviteIntent,
-        | 'key'
-        | 'account'
-        | 'domain'
-        | 'subjectAccount'
-        | 'subjectDomain'
-        | 'requestedSort'
-      >;
+      body: ClientStateBody;
     };
 
 /** The persisted last-logged-in userId (localStorage) — the client's sole pre-HELLO source of its own
@@ -269,18 +277,14 @@ export class UserService {
     this.friendRequestSeenRevision.set(
       typeof seen === 'number' && seen >= 0 ? seen : 0,
     );
-    const lastCleanup = await this.webdb.getMeta(
-      'pendingFriendProfileCleanupAt',
-    );
+    const lastCleanup = await this.webdb.getMeta('friendRequestCleanupAt');
     if (
       typeof lastCleanup !== 'number' ||
       Date.now() - lastCleanup >= 86_400_000
     ) {
       void this.webdb
-        .cleanupExpiredPendingFriendProfiles()
-        .then(() =>
-          this.webdb.putMeta('pendingFriendProfileCleanupAt', Date.now()),
-        );
+        .cleanupFriendRequests()
+        .then(() => this.webdb.putMeta('friendRequestCleanupAt', Date.now()));
     }
     void this.gateSelfProfile(userId, profileRev);
   }
@@ -698,91 +702,46 @@ export class UserService {
     >(`${apiPrefix()}/invite/friend-status`, params);
   }
 
-  /** Reads the compacted friend-intent projection already synchronized into the local database. */
-  async listLocalFriendInvites(
+  /** Reads the durable request projection produced by the local intent-pair state machine. */
+  async listLocalFriendRequests(
     direction: FriendIntentDirection,
     cursor: string | null = null,
     take = 20,
   ): Promise<FriendIntentPage> {
     const me = this.sessionUserId();
     if (me === null)
-      return { items: [], nextCursor: null, hasMore: false, total: 0 };
-    const now = Date.now();
-    const localPage = await this.webdb.getFriendIntentPage(
+      return {
+        items: [],
+        nextCursor: null,
+        hasMore: false,
+        total: 0,
+        actionableTotal: 0,
+      };
+    await this.webdb.cleanupFriendRequests();
+    const localPage = await this.webdb.getFriendRequestPage(
       direction,
       cursor,
       take + 1,
       direction === 'OUTGOING',
     );
-    const matching = localPage.items
-      .filter(
-        (intent) =>
-          (intent.status === 'REQUESTED' ||
-            (direction === 'OUTGOING' && intent.status === 'REVOKED')) &&
-          (intent.status === 'REVOKED' || intent.expiresAt !== null) &&
-          intent.direction === direction,
+    const items = localPage.items.slice(0, take);
+    for (const item of items)
+      if (
+        item.kind === 'FRIEND' &&
+        item.direction === 'OUTGOING' &&
+        item.peer &&
+        item.expiresAt !== null
       )
-      .sort((a, b) => {
-        const byDate = (b.requestedAt ?? 0) - (a.requestedAt ?? 0);
-        return byDate || b.key.localeCompare(a.key);
-      });
-    const page = matching.slice(0, take);
-    const items = page.map((intent) => ({
-      // Address-backed requests have no server-side invite id. The compacted key is only a stable
-      // client list identity; actions below send the peer Address instead.
-      id: intent.inviteId ?? intent.key,
-      kind: 'FRIEND' as const,
-      fromUser:
-        direction === 'INCOMING' ? intent.peer : this.clientIntentSelf(me),
-      toUser:
-        direction === 'INCOMING' ? this.clientIntentSelf(me) : intent.peer,
-      note: intent.note,
-      status: (intent.status === 'REVOKED'
-        ? 'REVOKED'
-        : intent.expiresAt! > now
-          ? 'PENDING'
-          : 'EXPIRED') as 'PENDING' | 'EXPIRED' | 'REVOKED',
-      expiresAt: intent.expiresAt ?? 0,
-      createdAt: intent.requestedAt ?? 0,
-    }));
-    if (direction === 'OUTGOING') {
-      for (const intent of page)
-        void this.ensurePendingFriendProfile(intent.peer, intent.expiresAt!);
-    }
+        void this.ensurePendingFriendProfile(item.peer, item.expiresAt);
     const hasMore = localPage.items.length > take;
-    const tail = page.at(-1);
+    const tail = items.at(-1);
     return {
       items,
       nextCursor:
-        hasMore && tail
-          ? JSON.stringify([
-              direction,
-              'REQUESTED',
-              tail.requestedSort ?? tail.requestedAt ?? 0,
-              tail.key,
-            ])
-          : null,
+        hasMore && tail ? JSON.stringify([tail.requestedSort, tail.key]) : null,
       hasMore,
       total: localPage.total,
-    };
-  }
-
-  /** Pending group invitations are synchronized by the same device-facing state feed as friend requests. */
-  async listLocalGroupInvites(): Promise<ClientGroupInviteIntent[]> {
-    return (await this.webdb.getGroupInviteIntents()).filter(
-      (invite) => invite.status === 'REQUESTED',
-    );
-  }
-
-  private clientIntentSelf(id: number): ClientIntentUser {
-    const profile = this.sessionProfile();
-    return {
-      id,
-      account: profile?.account ?? '',
-      name: profile?.name ?? '',
-      avatar: profile?.avatar ?? '',
-      domain: profile?.domain ?? 'local',
-      isForeigner: false,
+      actionableTotal: localPage.actionableTotal,
     };
   }
 
@@ -830,6 +789,10 @@ export class UserService {
       `${apiPrefix()}/invite/accept`,
       params,
     );
+  }
+
+  markFriendRequestAccepted(key: string): Promise<void> {
+    return this.webdb.markFriendRequestAccepted(key);
   }
 
   joinGroupRequest(params: { groupId: number }) {

@@ -1,5 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { and, asc, eq, gt, max, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, sql } from 'drizzle-orm';
 import {
   DatabaseService,
   type DatabaseTransaction,
@@ -17,6 +17,7 @@ import {
 } from '../database/schema.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
+import { ClientMessageFeedWriter } from './client-message-feed.service.js';
 
 @Injectable()
 export class DeletedMessageService {
@@ -54,13 +55,6 @@ export class DeletedMessageService {
         `stale federation deletion response for thread ${threadId}`,
       );
     }
-  }
-
-  async currentHwm(): Promise<string> {
-    const [row] = await this.database.db
-      .select({ id: max(deletedMessage.id) })
-      .from(deletedMessage);
-    return (row.id ?? 0n).toString();
   }
 
   async queryThread(threadId: number, afterId: bigint, take: number) {
@@ -142,6 +136,11 @@ export class DeletedMessageService {
         )?.id;
       if (deletionId === undefined)
         throw new Error('deleted message log was not persisted');
+      await ClientMessageFeedWriter.publishTombstone(
+        tx,
+        threadId,
+        deletionId,
+      );
 
       return { id: deletionId.toString(), threadId, seq };
     });
@@ -197,6 +196,11 @@ export class DeletedMessageService {
       )?.id;
     if (deletionId === undefined)
       throw new Error('deleted message log was not persisted');
+    await ClientMessageFeedWriter.publishTombstone(
+      tx,
+      threadId,
+      deletionId,
+    );
 
     return deletionId.toString();
   }
@@ -393,6 +397,12 @@ export class DeletedMessageService {
         })
         .returning({ id: deletedMessage.id });
       localDeletedId = created?.id ?? null;
+      if (localDeletedId !== null)
+        await ClientMessageFeedWriter.publishTombstone(
+          tx,
+          params.threadId,
+          localDeletedId,
+        );
       // This table is only an unmatched-deletion inbox. Once the target exists, DeletedMessage is
       // the durable local fact and the pending row must disappear in the same transaction.
       await tx

@@ -14,7 +14,7 @@ import { UpdateService } from './services/update.service';
 import { PushService } from './services/push.service';
 import { WebPushService } from './services/web-push.service';
 import { SseLifecycleService } from './services/sse-lifecycle.service';
-import { MissedSyncService } from './services/missed-sync.service';
+import { ThreadCatchUpService } from './services/thread-catch-up.service';
 import { UnreadAttentionService } from './services/unread-attention.service';
 import { BackgroundSyncService } from './services/background-sync.service';
 import { NavStateMachineService } from './services/nav-state.service';
@@ -80,10 +80,9 @@ export class AppComponent {
   // close), reconnects on resume. PC/browser keep SSE alive. Eagerly constructed so the listener is
   // live for the whole session.
   private readonly sseLifecycle = inject(SseLifecycleService);
-  // MissedSyncService pages POST /notifications/missed on app-open (DB-ready) + reconnect, hydrating the
-  // message store for threads that grew while the app was closed (the SSE stream does not replay offline).
+  // ThreadCatchUpService drains the per-user message and tombstone feeds after open/reconnect.
   // Eagerly constructed so its DB-ready effect + reconnect subscription are live for the whole session.
-  private readonly missedSync = inject(MissedSyncService);
+  private readonly catchUp = inject(ThreadCatchUpService);
   // UnreadAttentionService prefixes the window/tab title with "(N)" + posts a system notification
   // when a NEW_MESSAGE arrives while the window is unfocused. Covers PC desktop + browser. Eagerly
   // constructed so the focus listener + SSE subscription are live for the whole session.

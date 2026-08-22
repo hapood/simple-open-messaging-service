@@ -107,12 +107,12 @@ describe('WebdbService native SQLite routing', () => {
 
   it('sends missed-summary rows and cursor through one atomic native command', async () => {
     const items = [{ threadId: 7, type: 'GROUP' }] as ConversationItem[];
-    const cursor = { threadId: 7, seq: 9 };
+    const cursor = 9;
 
-    await service.applyMissedSummary(items, cursor);
+    await service.applyCatchUp(items, cursor);
 
     expect(calls.at(-1)).toEqual({
-      cmd: 'native_db_apply_missed_summary',
+      cmd: 'native_db_apply_catch_up',
       args: { userId: 42, items, cursor },
     });
   });

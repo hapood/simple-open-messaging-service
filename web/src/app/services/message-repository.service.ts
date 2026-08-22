@@ -149,7 +149,7 @@ export class MessageRepository {
   constructor() {
     // Own the NEW_MESSAGE SSE: identity-only {threadId, seq, ts} (no body — single data source = pull).
     // Advance the per-thread ceiling + emit the live signal so the open chat-box pulls the body via
-    // getNewer; nothing is cached here (the body arrives via the missed-summary pull / query-messages).
+    // getNewer; nothing is cached here (the body arrives via catch-up / query-messages).
     this.ws.eventSubject
       .pipe(
         filter(

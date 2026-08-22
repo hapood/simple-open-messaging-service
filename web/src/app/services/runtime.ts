@@ -98,9 +98,7 @@ declare global {
        *  onRequestPermissionsResult). Seeds PushService's one-shot auto-prompt guard so it fires once
        *  EVER, not once per cold start. Android-only. */
       getNotifPermRequested: () => boolean;
-      /** Away-notification grouping pref — "thread" (one card per conversation, default) or "all" (one folded
-       *  card). Read by BackgroundSyncService to seed the Settings toggle; the native fetcher sends it as
-       *  `grouping` on /notifications/missed. Android-only. */
+      /** Away-notification preview privacy mode used by the native fetcher. */
       getNotificationPreviewMode: () => string;
       /** Set the away-notification grouping pref ("thread" | "all"). Persists to SomsSecureStore; takes effect
        *  on the next background fetch. Android-only. */
@@ -109,17 +107,11 @@ declare global {
       setNotificationAlertPolicy: (policy: string) => void;
       /** Push the session token (POST /auth/login, app client) into Android encrypted storage so the
        *  native RealtimeService can authenticate /events and the background fetchers (FCM/WorkManager) can
-       *  authenticate /notifications/missed while the WebView is suspended. Pass null/empty on logout to
+       *  authenticate /notification-feed/query while the WebView is suspended. Pass null/empty on logout to
        *  clear (and stop the native stream). Android-only. */
       setSessionToken: (token: string | null) => void;
-      /** Push the threadlist's missed-summary high-water mark `{threadId, seq}` (the newest message it has
-       *  accounted for) into EncryptedSharedPreferences — the SAME store the native background fetchers
-       *  (FCM / WorkManager) read. They pass it as `since` to /notifications/missed while the WebView is
-       *  suspended/destroyed, so the HWM MUST live in native durable storage (not just the WebView's IDB,
-       *  which the native layer can't reach + which dies with the WebView). Webview→native, one-way: the
-       *  webview owns + advances the HWM; native only reads. Passed as a JSON STRING (`{"threadId":..,"seq":..}`)
-       *  because Android's @JavascriptInterface bridge doesn't reliably map JS objects to structured params
-       *  (mirrors setFirebaseConfig). Pass null on logout. Android-only. */
+      /** Mirror the per-user integer message-feed cursor into native notification storage. */
+      setMessageFeedCursor: (cursor: number) => void;
       /** Synchronous read of the persisted session token from EncryptedSharedPreferences (the same store
        *  setSessionToken writes + the native RealtimeService reads). AuthService.restoreSession uses it to
        *  re-establish the session on a cold start with NO plaintext copy in JS storage. Returns null when

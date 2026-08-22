@@ -9,7 +9,7 @@ import { serializeBody } from './serialize.interceptor.js';
  * frame shape.
  *
  * Frame format: `event: <name>\ndata: <JSON>\n\n` (no `id:` line — Last-Event-ID resume is unused; the
- * missed-summary pull + HELLO handshake reconcile gaps instead). The heartbeat is a NAMED `ping` event
+ * durable per-user feed + HELLO handshake reconcile gaps instead). The heartbeat is a NAMED `ping` event
  * (not a `:` comment) so a client's dispatcher observes it and can run a liveness watchdog — a
  * comment frame is invisible to a fetch-event-source reader, so a silently half-open connection would
  * otherwise go undetected.
@@ -67,7 +67,7 @@ export function initSseResponse(
 }
 
 /** Format one SSE frame: `event: <name>\ndata: <JSON>\n\n`. No `id:` line — Last-Event-ID resume is
- *  deliberately unused (a transient drop / offline gap is reconciled by the missed-summary pull + the HELLO
+ *  deliberately unused (a transient drop / offline gap is reconciled by durable feed catch-up + the HELLO
  *  connect handshake, not by SSE replay), so no frame carries a resume cursor.
  *
  *  The payload is normalized through `serializeBody` (Date→epoch-ms, BigInt→string) before stringifying, so

@@ -63,6 +63,16 @@
       "responseEnvelope": true
     },
     {
+      "id": "groupMeta",
+      "method": "GET",
+      "path": "/s2s/v1/group-meta",
+      "authentication": "recognized-http-message-signature",
+      "successStatus": [200],
+      "parameterSchema": "urn:socfp:v1:http-parameters#/$defs/groupMetaQuery",
+      "responseSchema": "urn:socfp:v1:group-meta",
+      "responseEnvelope": true
+    },
+    {
       "id": "messageTombstoneFeed",
       "method": "GET",
       "path": "/s2s/v1/message-tombstone-feed",

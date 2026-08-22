@@ -110,6 +110,7 @@ describe('Federation v1 protocol documentation', () => {
       'POST /s2s/v1/feed-heads',
       'GET /s2s/v1/state-feed',
       'GET /s2s/v1/message-feed',
+      'GET /s2s/v1/group-meta',
       'GET /s2s/v1/message-tombstone-feed',
       'GET /s2s/v1/messages',
       'GET /s2s/v1/message-tombstones',

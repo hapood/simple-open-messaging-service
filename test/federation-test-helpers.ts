@@ -167,12 +167,21 @@ export async function establishFederatedFriendship(params: {
   remoteDomain: string;
   note?: string;
 }): Promise<{ remoteStubIdOnLocal: number; localStubIdOnRemote: number }> {
-  const card = await resolveFederatedCard(
-    params.local,
-    params.localToken,
-    params.remoteAccount,
-    params.remoteDomain,
-  );
+  let card: Awaited<ReturnType<typeof resolveFederatedCard>> | undefined;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    card = await resolveFederatedCard(
+      params.local,
+      params.localToken,
+      params.remoteAccount,
+      params.remoteDomain,
+    );
+    const transient =
+      card.event === 'failed' &&
+      (card.data.reason === 'UNREACHABLE' || card.data.reason === 'TIMEOUT');
+    if (!transient || attempt === 3) break;
+    await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+  }
+  if (!card) throw new Error('federated card lookup did not run');
   if (card.event !== 'resolved')
     throw new Error(
       `federated card lookup failed: ${JSON.stringify(card.data)}`,
@@ -189,8 +198,8 @@ export async function establishFederatedFriendship(params: {
     throw new Error(`federated request failed: ${JSON.stringify(sent.body)}`);
 
   let incomingFound = false;
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
+  const requestDeadline = Date.now() + 30_000;
+  while (Date.now() < requestDeadline) {
     const incoming = await request(params.remote.baseUrl)
       .post('/api/v1/invite/incoming')
       .set('Authorization', `Bearer ${params.remoteToken}`)
@@ -223,7 +232,12 @@ export async function establishFederatedFriendship(params: {
       `federated accept failed: ${JSON.stringify(accepted.body)}`,
     );
 
-  while (Date.now() < deadline + 10_000) {
+  // Acceptance starts a separate asynchronous S2S propagation phase. Give it
+  // its own deadline: reusing the request deadline makes time spent waiting for
+  // delivery silently reduce the convergence budget, especially under a busy
+  // multi-worker run.
+  const convergenceDeadline = Date.now() + 30_000;
+  while (Date.now() < convergenceDeadline) {
     const [remoteStub, localStub] = await Promise.all([
       params.local.database.query.user.findFirst({
         where: and(

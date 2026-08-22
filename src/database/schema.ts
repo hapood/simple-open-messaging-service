@@ -74,9 +74,12 @@ export const threadParticipantState = pgEnum('ThreadParticipantState', [
 ]);
 export const peerStateEventType = pgEnum('PeerStateEventType', [
   'PROFILE',
-  'MEMBER_PROFILE',
   'RELATIONSHIP_INTENT',
-  'GROUP_META',
+  'GROUP_META_FEED_HEAD',
+]);
+export const groupMetaMemberOperation = pgEnum('GroupMetaMemberOperation', [
+  'UPSERT',
+  'DELETE',
 ]);
 export const relationshipIntentStatus = pgEnum('RelationshipIntentStatus', [
   'REQUESTED',
@@ -1339,6 +1342,7 @@ export const group = pgTable(
     ownerId: integer().notNull(),
     rosterRev: integer().default(0).notNull(),
     remoteRosterRev: integer(),
+    remoteGroupMetaFeedId: bigint({ mode: 'bigint' }),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -1487,6 +1491,120 @@ export const clientStateFeed = pgTable(
       name: 'ClientStateFeed_userId_fkey',
     }).onDelete('cascade'),
     check('ClientStateFeed_revision_check', sql`${table.revision} > 0`),
+  ],
+);
+
+/** Per-user allocator for the two independent device-facing message feeds. Updating this row is the
+ * serialization point for one user's feed coordinates; writers lock users in ascending id order. */
+export const clientMessageFeedTarget = pgTable(
+  'ClientMessageFeedTarget',
+  {
+    userId: integer().primaryKey().notNull(),
+    messageAllocatedThrough: integer().default(0).notNull(),
+    tombstoneAllocatedThrough: integer()
+      .default(0)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [user.id],
+      name: 'ClientMessageFeedTarget_userId_fkey',
+    }).onDelete('cascade'),
+    check(
+      'ClientMessageFeedTarget_messageAllocatedThrough_check',
+      sql`${table.messageAllocatedThrough} >= 0`,
+    ),
+    check(
+      'ClientMessageFeedTarget_tombstoneAllocatedThrough_check',
+      sql`${table.tombstoneAllocatedThrough} >= 0`,
+    ),
+  ],
+);
+
+/** Compacted per-user message-discovery projection. messageEndSeq identifies the latest message admitted
+ * by the client-feed policy, while visibility, block and read state are still resolved at query time. */
+export const clientMessageFeed = pgTable(
+  'ClientMessageFeed',
+  {
+    userId: integer().notNull(),
+    threadId: integer().notNull(),
+    feedId: integer().notNull(),
+    messageEndSeq: integer().notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.userId, table.threadId],
+      name: 'ClientMessageFeed_pkey',
+    }),
+    uniqueIndex('ClientMessageFeed_user_feedId_key').on(
+      table.userId,
+      table.feedId,
+    ),
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [user.id],
+      name: 'ClientMessageFeed_userId_fkey',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.threadId],
+      foreignColumns: [messageThread.id],
+      name: 'ClientMessageFeed_threadId_fkey',
+    }).onDelete('cascade'),
+    check('ClientMessageFeed_feedId_check', sql`${table.feedId} > 0`),
+    check(
+      'ClientMessageFeed_messageEndSeq_check',
+      sql`${table.messageEndSeq} > 0`,
+    ),
+  ],
+);
+
+/** Compacted per-user deletion-discovery projection. Its coordinate space is intentionally independent
+ * from ClientMessageFeed so either stream can be drained and committed without coupling failures. */
+export const clientMessageTombstoneFeed = pgTable(
+  'ClientMessageTombstoneFeed',
+  {
+    userId: integer().notNull(),
+    threadId: integer().notNull(),
+    feedId: integer().notNull(),
+    tombstoneEndSeq: bigint({ mode: 'bigint' }).notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.userId, table.threadId],
+      name: 'ClientMessageTombstoneFeed_pkey',
+    }),
+    uniqueIndex('ClientMessageTombstoneFeed_user_feedId_key').on(
+      table.userId,
+      table.feedId,
+    ),
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [user.id],
+      name: 'ClientMessageTombstoneFeed_userId_fkey',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.threadId],
+      foreignColumns: [messageThread.id],
+      name: 'ClientMessageTombstoneFeed_threadId_fkey',
+    }).onDelete('cascade'),
+    check(
+      'ClientMessageTombstoneFeed_feedId_check',
+      sql`${table.feedId} > 0`,
+    ),
+    check(
+      'ClientMessageTombstoneFeed_tombstoneEndSeq_check',
+      sql`${table.tombstoneEndSeq} > 0`,
+    ),
   ],
 );
 
@@ -1692,83 +1810,98 @@ export const peerStateFeedTarget = pgTable(
   ],
 );
 
-/** One authoritative reason why an origin-owned group currently exposes a member to a target peer.
- * Cardinality is derived with EXISTS/COUNT; no separately persisted sourceCount can drift. */
-export const federationMemberProfileSource = pgTable(
-  'FederationMemberProfileSource',
+/** Origin-authoritative group roster feed. feedId is the transport cursor; memberRev is the
+ * independent business revision of one stable member address. */
+export const groupMetaMemberFeed = pgTable(
+  'GroupMetaMemberFeed',
   {
     targetPeerDomain: varchar({ length: 63 }).notNull(),
+    groupUserId: integer().notNull(),
+    feedId: bigint({ mode: 'bigint' }).notNull(),
     memberAccount: varchar({ length: 31 }).notNull(),
     memberDomain: varchar({ length: 63 }).notNull(),
-    threadId: integer().notNull(),
+    memberRev: integer().notNull(),
+    operation: groupMetaMemberOperation().notNull(),
+    body: jsonb().notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [
-        table.targetPeerDomain,
-        table.memberAccount,
-        table.memberDomain,
-        table.threadId,
-      ],
-      name: 'FederationMemberProfileSource_pkey',
-    }),
-    index('FederationMemberProfileSource_member_idx').on(
-      table.targetPeerDomain,
-      table.memberDomain,
-      table.memberAccount,
-    ),
-    foreignKey({
-      columns: [table.targetPeerDomain],
-      foreignColumns: [federatedPeer.domain],
-      name: 'FederationMemberProfileSource_targetPeerDomain_fkey',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.threadId],
-      foreignColumns: [messageThread.id],
-      name: 'FederationMemberProfileSource_threadId_fkey',
-    }).onDelete('cascade'),
-  ],
-);
-
-/** Outbound MEMBER_PROFILE stable-key state. revision advances on semantic projection changes,
- * including AVAILABLE→REMOVED→AVAILABLE even when the underlying user's profile revision is unchanged. */
-export const federationMemberProfilePublication = pgTable(
-  'FederationMemberProfilePublication',
-  {
-    targetPeerDomain: varchar({ length: 63 }).notNull(),
-    memberAccount: varchar({ length: 31 }).notNull(),
-    memberDomain: varchar({ length: 63 }).notNull(),
-    revision: integer().default(0).notNull(),
-    availability: varchar({ length: 16 }).notNull(),
-    bodyHash: varchar({ length: 64 }).notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
   (table) => [
     primaryKey({
-      columns: [
-        table.targetPeerDomain,
-        table.memberAccount,
-        table.memberDomain,
-      ],
-      name: 'FederationMemberProfilePublication_pkey',
+      columns: [table.targetPeerDomain, table.groupUserId, table.feedId],
+      name: 'GroupMetaMemberFeed_pkey',
+    }),
+    uniqueIndex('GroupMetaMemberFeed_member_rev_key').on(
+      table.targetPeerDomain,
+      table.groupUserId,
+      table.memberDomain,
+      table.memberAccount,
+      table.memberRev,
+    ),
+    index('GroupMetaMemberFeed_member_feed_idx').on(
+      table.targetPeerDomain,
+      table.groupUserId,
+      table.memberDomain,
+      table.memberAccount,
+      table.feedId,
+    ),
+    foreignKey({
+      columns: [table.targetPeerDomain],
+      foreignColumns: [federatedPeer.domain],
+      name: 'GroupMetaMemberFeed_targetPeerDomain_fkey',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.groupUserId],
+      foreignColumns: [user.id],
+      name: 'GroupMetaMemberFeed_groupUserId_fkey',
+    }).onDelete('cascade'),
+    check('GroupMetaMemberFeed_feedId_check', sql`${table.feedId} > 0`),
+    check('GroupMetaMemberFeed_memberRev_check', sql`${table.memberRev} >= 0`),
+    check(
+      'GroupMetaMemberFeed_body_check',
+      sql`(${table.operation} = 'UPSERT' AND ${table.body} <> '{}'::jsonb) OR (${table.operation} = 'DELETE' AND ${table.body} = '{}'::jsonb)`,
+    ),
+  ],
+);
+
+export const groupMetaFeedTarget = pgTable(
+  'GroupMetaFeedTarget',
+  {
+    targetPeerDomain: varchar({ length: 63 }).notNull(),
+    groupUserId: integer().notNull(),
+    allocatedThrough: bigint({ mode: 'bigint' }).default(0n).notNull(),
+    oldestAvailableAfter: bigint({ mode: 'bigint' }).default(0n).notNull(),
+    active: boolean().default(true).notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.targetPeerDomain, table.groupUserId],
+      name: 'GroupMetaFeedTarget_pkey',
     }),
     foreignKey({
       columns: [table.targetPeerDomain],
       foreignColumns: [federatedPeer.domain],
-      name: 'FederationMemberProfilePublication_targetPeerDomain_fkey',
+      name: 'GroupMetaFeedTarget_targetPeerDomain_fkey',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.groupUserId],
+      foreignColumns: [user.id],
+      name: 'GroupMetaFeedTarget_groupUserId_fkey',
     }).onDelete('cascade'),
     check(
-      'FederationMemberProfilePublication_revision_check',
-      sql`${table.revision} >= 0`,
+      'GroupMetaFeedTarget_allocatedThrough_check',
+      sql`${table.allocatedThrough} >= 0`,
     ),
     check(
-      'FederationMemberProfilePublication_availability_check',
-      sql`${table.availability} IN ('AVAILABLE', 'REMOVED')`,
+      'GroupMetaFeedTarget_oldestAvailableAfter_check',
+      sql`${table.oldestAvailableAfter} >= 0 AND ${table.oldestAvailableAfter} <= ${table.allocatedThrough}`,
     ),
   ],
 );

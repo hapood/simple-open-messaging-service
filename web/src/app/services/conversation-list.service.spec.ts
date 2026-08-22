@@ -43,8 +43,8 @@ describe('ConversationListService stable markRead flush', () => {
             openThreadId: signal<number | undefined>(7).asReadonly(),
             items: signal([]).asReadonly(),
             refreshPeerOnOpen: vi.fn().mockName('refreshPeerOnOpen'),
-            missedCursor: signal(null).asReadonly(),
-            advanceMissedCursor: vi.fn().mockName('advanceMissedCursor'),
+            messageFeedCursor: signal(null).asReadonly(),
+            advanceMessageFeedCursor: vi.fn().mockName('advanceMessageFeedCursor'),
             markTopOnNextUpdate: vi.fn().mockName('markTopOnNextUpdate'),
             load: vi.fn().mockName('load'),
           },
@@ -113,20 +113,20 @@ describe('ConversationListService stable markRead flush', () => {
 });
 
 /**
- * The away-cursor + per-thread dismiss-HWM delegations. `missedCursor`/`threadHwms` are METHOD delegators
+ * The away-cursor + per-thread dismiss-HWM delegations. `messageFeedCursor`/`threadHwms` are METHOD delegators
  * (the repo exposes them as methods, not bound signals), so they must reach the repo on call — the legacy
- * `readonly = this.repo.missedCursor` field-copy captured an UNBOUND method and threw (silently swallowed by
+ * `readonly = this.repo.messageFeedCursor` field-copy captured an UNBOUND method and threw (silently swallowed by
  * the away-renderer's try/catch). This guard pins the fix.
  */
 describe('ConversationListService (cursor + threadHwms delegation)', () => {
   let convList: ConversationListService;
-  let missedCursor: Mock;
+  let messageFeedCursor: Mock;
   let threadHwms: Mock;
   let recordThreadDismiss: Mock;
   let clearThreadDismiss: Mock;
 
   beforeEach(() => {
-    missedCursor = vi.fn().mockName('missedCursor').mockReturnValue(null);
+    messageFeedCursor = vi.fn().mockName('messageFeedCursor').mockReturnValue(0);
     threadHwms = vi.fn().mockName('threadHwms').mockReturnValue({ 7: 3 });
     recordThreadDismiss = vi.fn().mockName('recordThreadDismiss');
     clearThreadDismiss = vi.fn().mockName('clearThreadDismiss');
@@ -146,9 +146,8 @@ describe('ConversationListService (cursor + threadHwms delegation)', () => {
             ).asReadonly(),
             topInserted: signal(null).asReadonly(),
             setOpenThread: vi.fn().mockName('setOpenThread'),
-            missedCursor,
+            messageFeedCursor,
             threadHwms,
-            advanceMissedCursor: vi.fn().mockName('advanceMissedCursor'),
             recordThreadDismiss,
             clearThreadDismiss,
           },
@@ -166,9 +165,9 @@ describe('ConversationListService (cursor + threadHwms delegation)', () => {
     convList = TestBed.inject(ConversationListService);
   });
 
-  it('missedCursor / threadHwms delegate to the repo (method delegators, not field-copies)', () => {
-    expect(convList.missedCursor()).toBeNull();
-    expect(missedCursor).toHaveBeenCalledTimes(1);
+  it('messageFeedCursor / threadHwms delegate to the repo (method delegators, not field-copies)', () => {
+    expect(convList.messageFeedCursor()).toBe(0);
+    expect(messageFeedCursor).toHaveBeenCalledTimes(1);
     expect(convList.threadHwms()).toEqual({ 7: 3 });
     expect(threadHwms).toHaveBeenCalledTimes(1);
   });

@@ -66,6 +66,7 @@ import {
   SystemMessageType,
 } from './system-message.js';
 import { loadFederationConfig } from '../federation/federation.config.js';
+import { ClientMessageFeedWriter } from './client-message-feed.service.js';
 
 interface ReplyPreview {
   author: string;
@@ -377,6 +378,7 @@ export class MessageService {
               eq(threadParticipant.threadId, threadId),
             ),
           );
+        await ClientMessageFeedWriter.publishMessage(tx, threadId, seq, userId);
         // Per-object media authz: record the CAS digest this message references so the /uploads/cas/*
         // gate can authorize readers against thread membership (one indexed row). One message carries
         // one media (MediaMessage is 1:1). PURE_TEXT/
@@ -487,6 +489,12 @@ export class MessageService {
           eq(threadParticipant.threadId, threadId),
         ),
       );
+    await ClientMessageFeedWriter.publishMessage(
+      tx,
+      threadId,
+      seq,
+      actorUserId,
+    );
     return { message: stripMessageId(stored), messageId: stored.id };
   }
 
@@ -952,6 +960,12 @@ export class MessageService {
               eq(threadParticipant.threadId, stage.threadId),
             ),
           );
+        await ClientMessageFeedWriter.publishMessage(
+          tx,
+          stage.threadId,
+          seq,
+          stage.creatorId,
+        );
         // Insert EVERY referenced digest (1 for single-file, N for GALLERY) — the old promoteStaged
         // path only inserted the first, which silently dropped authz rows for multi-digest content.
         const digests = extractDigests(content);
@@ -1329,7 +1343,7 @@ export class MessageService {
     });
   }
 
-  /** Batched lookup of messages by their per-thread (threadId, seq) identity — the missed summary fetches
+  /** Batched lookup of messages by their per-thread (threadId, seq) identity — catch-up fetches
    *  each thread's newest message body in ONE query (seq = thread.lastMessageSeq). Returns FULL Message
    *  rows (BigInt id intact) so the caller can funnel them through {@link attachMediaStatus}, which strips
    *  id before it reaches a client. Empty input → empty output (no empty-OR SQL). The composite
@@ -1355,309 +1369,6 @@ export class MessageService {
     return this.database.db.query.messageThread.findFirst({
       where: eq(messageThread.id, id),
     });
-  }
-
-  /**
-   * Cross-thread message catch-up for the repurposed POST /notifications/missed — backs the app-open /
-   * reconnect incremental sync (and the init seed). Membership-scoped (an active ThreadParticipant row
-   * for the user) and blocked-creator-hidden, mirroring the per-viewer rules in {@link queryMessages}.
-   * Returns FULL Message rows (BigInt `id` intact) — the caller funnels them through
-   * {@link attachMediaStatus}, which strips `id` before it can reach a client.
-   *
-   * Two modes (selected by `init`):
-   *  - init (no high-water-mark yet): the NEWEST message per thread (`DISTINCT ON (threadId)`), so every
-   *    conversation gets a latest-message preview seed in one query. Bounded by `take` (one row per
-   *    thread; threads past the cap get no seed — their preview arrives on the next live/catch-up event).
-   *  - catch-up (since a high-water-mark): every message with `(createdAt, id) > (sinceMs, sinceId)`,
-   *    ordered `createdAt ASC, id ASC` (the time-ascending contract the client applies in arrival order).
-   *    The composite `(createdAt, id)` bound makes pagination strictly monotonic — no same-ms skip and no
-   *    re-fetch loop — without ever exposing the internal `id` (it travels only inside the opaque cursor).
-   *
-   * Served by the `Message(createdAt)` index (migration 20260715130000) for the global time range scan;
-   * the ThreadParticipant join scopes it to the user's active conversations.
-   */
-  async missedMessages(
-    userId: number,
-    opts: {
-      init: boolean;
-      sinceMs?: number | null;
-      sinceId?: bigint;
-      take: number;
-      hideCreatorIds?: number[];
-    },
-  ): Promise<Message[]> {
-    const blocked = opts.hideCreatorIds ?? [];
-    const blockedClause = blocked.length
-      ? sql`AND m."creator" NOT IN (${this.joinSql(blocked)})`
-      : sql.empty();
-
-    if (opts.init) {
-      // Newest message per active thread. DISTINCT ON picks the first row per threadId under the given
-      // ORDER BY, so `ORDER BY threadId, seq DESC` yields each thread's highest-seq (latest) message.
-      const where = blocked.length
-        ? sql`WHERE m."creator" NOT IN (${this.joinSql(blocked)})`
-        : sql.empty();
-      return this.queryRaw<Message[]>`
-        SELECT DISTINCT ON (m."threadId") m.*
-        FROM "Message" m
-        JOIN "ThreadParticipant" tp
-          ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp.state <> 'AUTHORIZED'
-        ${where}
-        ORDER BY m."threadId" DESC, m."seq" DESC
-        LIMIT ${opts.take}
-      `;
-    }
-
-    // Catch-up: composite (createdAt, id) > (sinceMs, sinceId). The `OR` same-ms branch advances past
-    // rows already seen at the cursor's millisecond, so paging is strictly forward.
-    const since = new Date(opts.sinceMs ?? 0);
-    const sinceId = opts.sinceId ?? 0n;
-    return this.queryRaw<Message[]>`
-      SELECT m.*
-      FROM "Message" m
-      JOIN "ThreadParticipant" tp
-        ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp.state <> 'AUTHORIZED'
-      WHERE (m."createdAt" > ${since} OR (m."createdAt" = ${since} AND m."id" > ${sinceId}))
-        ${blockedClause}
-      ORDER BY m."createdAt" ASC, m."id" ASC
-      LIMIT ${opts.take + 1}
-    `;
-  }
-
-  /**
-   * Away-notification sender aggregation for POST /notifications/missed — distinct senders + their message
-   * counts for messages newer than `sinceId` (membership-scoped), sampling the first `limit` by id. LEAN:
-   * selects only `creator` (NO content/body, NO threadId) — the away-summary needs only WHO + how-many, not
-   * WHAT nor which threads. Hides blocked creators AND messages in threads the caller has MUTED: mute = don't
-   * disturb, so a muted thread never contributes to the away count. The mute check is per-row on the already-
-   * joined participant, so a sender who also messages in an UNMUTED thread still contributes those unmuted
-   * messages. The caller aggregates the rows in JS (a `limit`-sized batch of one int column is trivial).
-   * `overflow=true` when ≥`limit` messages exist → the "999+" capped display (the count covers only the
-   * sampled `limit`). Backed by Message(id) for the id range.
-   */
-  async senderCountsSince(
-    userId: number,
-    sinceId: bigint,
-    limit: number,
-    hideCreatorIds: number[] = [],
-  ): Promise<{ counts: Map<number, number>; overflow: boolean }> {
-    const blockedClause = hideCreatorIds.length
-      ? sql`AND m."creator" NOT IN (${this.joinSql(hideCreatorIds)})`
-      : sql.empty();
-    const rows = await this.queryRaw<Array<{ creator: number }>>`
-      SELECT m."creator" AS creator
-      FROM "Message" m
-      JOIN "ThreadParticipant" tp
-        ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp.state <> 'AUTHORIZED'
-      WHERE m."id" > ${sinceId} ${blockedClause} AND tp."muted" = false
-      ORDER BY m."id" ASC
-      LIMIT ${limit}
-    `;
-    const counts = new Map<number, number>();
-    for (const r of rows) {
-      counts.set(r.creator, (counts.get(r.creator) ?? 0) + 1);
-    }
-    return { counts, overflow: rows.length >= limit };
-  }
-
-  /**
-   * Folded away-notification read model. Sender counts and mention attention are computed from the exact
-   * same bounded sample, so the presentation layer never performs a second mention query with a drifting
-   * cursor.
-   */
-  async senderAttentionSince(
-    userId: number,
-    selfAccount: string,
-    sinceId: bigint,
-    limit: number,
-    hideCreatorIds: number[] = [],
-  ): Promise<{
-    counts: Map<number, number>;
-    mention: UnreadMentionState;
-    overflow: boolean;
-  }> {
-    const hiddenClause = hideCreatorIds.length
-      ? sql`AND m."creator" NOT IN (${this.joinSql(hideCreatorIds)})`
-      : sql.empty();
-    const rows = await this.queryRaw<
-      Array<{ creator: number; contentType: string; content: string }>
-    >`
-      SELECT m.creator, m."contentType" AS "contentType", m.content
-      FROM "Message" m
-      JOIN "ThreadParticipant" tp
-        ON tp."threadId" = m."threadId"
-       AND tp."userId" = ${userId}
-       AND tp.state <> 'AUTHORIZED'
-       AND tp.muted = false
-      WHERE m.id > ${sinceId}
-        AND m.creator <> ${userId}
-        AND m."isDeleted" = false
-        ${hiddenClause}
-      ORDER BY m.id ASC
-      LIMIT ${limit}
-    `;
-    const counts = new Map<number, number>();
-    const mentionContents: string[] = [];
-    for (const row of rows) {
-      counts.set(row.creator, (counts.get(row.creator) ?? 0) + 1);
-      if (
-        row.contentType === 'PURE_TEXT' &&
-        (row.content.includes('](socfp://user/') ||
-          row.content.includes('](socfp://audience/all)'))
-      ) {
-        mentionContents.push(row.content);
-      }
-    }
-    return {
-      counts,
-      mention: this.mentionState(mentionContents, selfAccount),
-      overflow: rows.length >= limit,
-    };
-  }
-
-  /**
-   * Away-notification per-thread aggregation (Query A) for `grouping:'thread'`: the threads with new LIVE
-   * messages since `sinceId`, each with its count + latest seq. To BOUND the scan, it first samples the
-   * `sampleLimit` (default 1000) NEWEST qualifying messages, then groups the sample by thread (newest-thread-
-   * first, capped at `threadLimit` cards). So a thread's count is its share of the recent 1000 — past that the
-   * exact total is unknown (the per-thread display caps at "999+"). Muted threads + blocked creators + soft-
-   * deleted messages excluded. The count is a real COUNT (not seq arithmetic — soft-deletes occupy seq but
-   * must not count). For threads the client has NOT dismissed (cumulative since `since`); dismissed threads
-   * override via {@link threadCountsSinceBounds}. Backed by Message(id).
-   */
-  async threadAwayBuckets(
-    userId: number,
-    sinceId: bigint,
-    threadLimit: number,
-    hideCreatorIds: number[] = [],
-    sampleLimit = 1000,
-  ): Promise<Map<number, { count: number; latestSeq: number }>> {
-    const blockedClause = hideCreatorIds.length
-      ? sql`AND m."creator" NOT IN (${this.joinSql(hideCreatorIds)})`
-      : sql.empty();
-    const rows = await this.queryRaw<
-      Array<{ threadId: number; cnt: bigint; latest: number }>
-    >`
-      WITH sample AS (
-        SELECT m."threadId" AS tid, m."seq" AS seq, m."id" AS id
-        FROM "Message" m
-        JOIN "ThreadParticipant" tp
-          ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp.state <> 'AUTHORIZED'
-        WHERE m."id" > ${sinceId} ${blockedClause} AND tp."muted" = false AND m."isDeleted" = false
-        ORDER BY m."id" DESC
-        LIMIT ${sampleLimit}
-      )
-      SELECT tid AS "threadId", COUNT(*) AS "cnt", MAX(seq) AS "latest"
-      FROM sample
-      GROUP BY tid
-      ORDER BY MAX(id) DESC
-      LIMIT ${threadLimit}
-    `;
-    const buckets = new Map<number, { count: number; latestSeq: number }>();
-    for (const r of rows)
-      buckets.set(r.threadId, { count: Number(r.cnt), latestSeq: r.latest });
-    return buckets;
-  }
-
-  /**
-   * Away-notification per-thread count (Query B), BATCHED for all DISMISSED threads in ONE query: for each
-   * `(threadId, sinceSeq)` pair, the EXACT count of LIVE messages newer than `sinceSeq` (the thread's dismiss
-   * HWM) AND newer than the global `globalSinceId` (so pre-foreground messages are never re-counted). The
-   * client passes its dismiss HWMs in `threadHwms`; this returns the cumulative-since-dismiss count per thread
-   * (dismiss resets it to 0 until newer messages). One UNNEST join replaces N per-thread queries. Same muted /
-   * blocked / soft-deleted filters. Backed by Message(id, seq). Empty input → empty map (no query).
-   */
-  async threadCountsSinceBounds(
-    userId: number,
-    globalSinceId: bigint,
-    pairs: Array<{ tid: number; sinceSeq: number }>,
-    hideCreatorIds: number[] = [],
-  ): Promise<Map<number, number>> {
-    if (pairs.length === 0) return new Map();
-    const blockedClause = hideCreatorIds.length
-      ? sql`AND m."creator" NOT IN (${this.joinSql(hideCreatorIds)})`
-      : sql.empty();
-    const tids = pairs.map((p) => p.tid);
-    const seqs = pairs.map((p) => p.sinceSeq);
-    const rows = await this.queryRaw<Array<{ tid: number; cnt: bigint }>>`
-      SELECT u.tid AS tid, COUNT(m.id) AS cnt
-      FROM UNNEST(ARRAY[${this.joinSql(tids)}]::int[], ARRAY[${this.joinSql(seqs)}]::int[]) AS u(tid, sinceseq)
-      JOIN "Message" m
-        ON m."threadId" = u.tid AND m."seq" > u.sinceseq AND m."id" > ${globalSinceId} AND m."isDeleted" = false
-      JOIN "ThreadParticipant" tp
-        ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp.state <> 'AUTHORIZED' AND tp."muted" = false
-      WHERE TRUE ${blockedClause}
-      GROUP BY u.tid
-    `;
-    const out = new Map<number, number>();
-    for (const r of rows) out.set(r.tid, Number(r.cnt));
-    return out;
-  }
-
-  /**
-   * The user's globally-newest message across their active threads (the highest internal `id` — the strict-
-   * total-order key), as a `(threadId, seq, ts)` cursor. Backs the SSE `HELLO` connect handshake: the server
-   * pushes this so the client has its `to` (the missed-summary walk's pinned upper bound) the instant SSE
-   * connects — no separate "get newest" round-trip, and the walk seeds/catches-up correctly on first boot
-   * (no local data) AND on reopen. Membership-scoped (an active ThreadParticipant row). `null` when the user
-   * has no messages yet. Backed by Message(id) DESC + the ThreadParticipant join.
-   */
-  async findNewestForUser(
-    userId: number,
-  ): Promise<{ threadId: number; seq: number; ts: number } | null> {
-    const rows = await this.queryRaw<
-      Array<{ threadId: number; seq: number; createdAt: Date | string }>
-    >`
-      SELECT m."threadId" AS "threadId", m."seq" AS seq, m."createdAt" AS "createdAt"
-      FROM "Message" m
-      JOIN "ThreadParticipant" tp
-        ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp.state <> 'AUTHORIZED'
-      ORDER BY m."id" DESC
-      LIMIT 1
-    `;
-    const r = rows[0];
-    if (!r) return null;
-    const ts =
-      r.createdAt instanceof Date
-        ? r.createdAt.getTime()
-        : new Date(r.createdAt).getTime();
-    return { threadId: r.threadId, seq: r.seq, ts };
-  }
-
-  /**
-   * Unread counts for a user across the given threads, in ONE query. Unread = messages authored by someone
-   * else with a per-thread seq greater than the read watermark. A null watermark means "nothing read", so
-   * its lower bound is 0 (message seq starts at 1). Excluding the caller here is a defensive invariant in addition
-   * to the send transaction advancing their read cursor: it keeps counts correct if an older client, import,
-   * or recovery path leaves that cursor behind. Uses the Message(threadId,seq) index for the range scan.
-   * Threads with zero unread remain present because the message predicates stay on the LEFT JOIN.
-   */
-  async countUnreadByThread(
-    userId: number,
-    threadIds: number[],
-  ): Promise<Map<number, number>> {
-    if (threadIds.length === 0) return new Map();
-    const rows = await this.queryRaw<
-      Array<{ threadId: number; unread: number }>
-    >`
-      SELECT tp."threadId" AS "threadId", COUNT(m.seq)::int AS "unread"
-      FROM "ThreadParticipant" tp
-      LEFT JOIN LATERAL (
-        SELECT msg.seq
-        FROM "Message" msg
-        WHERE msg."threadId" = tp."threadId"
-          AND msg.seq > COALESCE(tp."lastReadSeq", 0)
-          AND msg.creator <> ${userId}
-          AND msg."isDeleted" = false
-        ORDER BY msg.seq ASC
-        LIMIT 1000
-      ) m ON TRUE
-      WHERE tp."userId" = ${userId}
-        AND tp.state <> 'AUTHORIZED'
-        AND tp."threadId" IN (${this.joinSql(threadIds)})
-      GROUP BY tp."threadId"
-    `;
-    return new Map(rows.map((r) => [r.threadId, r.unread]));
   }
 
   /**
@@ -1838,15 +1549,24 @@ export class MessageService {
   async awayAttentionByThread(
     userId: number,
     selfAccount: string,
-    globalSinceId: bigint,
     threadLimit: number,
     threadHwms: Record<number, number> = {},
     hideCreatorIds: number[] = [],
     sampleLimit = 1000,
+    threadIds?: number[],
+    globalSinceId?: bigint,
   ): Promise<Map<number, AwayThreadAttentionState>> {
     const hiddenClause = hideCreatorIds.length
       ? sql`AND m."creator" NOT IN (${this.joinSql(hideCreatorIds)})`
       : sql.empty();
+    const globalClause =
+      globalSinceId === undefined
+        ? sql.empty()
+        : sql`AND m.id > ${globalSinceId}`;
+    const threadClause =
+      threadIds && threadIds.length > 0
+        ? sql`AND m."threadId" IN (${this.joinSql(threadIds)})`
+        : sql.empty();
     const hwmEntries = Object.entries(threadHwms)
       .map(([threadId, seq]) => ({ threadId: Number(threadId), seq }))
       .filter((p) => Number.isInteger(p.threadId) && Number.isInteger(p.seq));
@@ -1874,8 +1594,9 @@ export class MessageService {
          AND tp.state <> 'AUTHORIZED'
          AND tp.muted = false
         LEFT JOIN thread_hwm h ON h.tid = m."threadId"
-        WHERE m.id > ${globalSinceId}
-          AND m.seq > COALESCE(h.since_seq, 0)
+        WHERE m.seq > GREATEST(COALESCE(h.since_seq, 0), COALESCE(tp."lastReadSeq", 0))
+          ${globalClause}
+          ${threadClause}
           AND m.creator <> ${userId}
           AND m."isDeleted" = false
           ${hiddenClause}
@@ -1916,16 +1637,20 @@ export class MessageService {
   /** Recent messages for MessagingStyle, bounded independently per conversation. */
   async awayNotificationMessages(
     userId: number,
-    globalSinceId: bigint,
     threadIds: number[],
     threadHwms: Record<number, number> = {},
     hideCreatorIds: number[] = [],
     perThreadLimit = 5,
+    globalSinceId?: bigint,
   ): Promise<Map<number, AwayNotificationMessage[]>> {
     if (threadIds.length === 0) return new Map();
     const hiddenClause = hideCreatorIds.length
       ? sql`AND m.creator NOT IN (${this.joinSql(hideCreatorIds)})`
       : sql.empty();
+    const globalClause =
+      globalSinceId === undefined
+        ? sql.empty()
+        : sql`AND m.id > ${globalSinceId}`;
     const hwmEntries = Object.entries(threadHwms)
       .map(([threadId, seq]) => ({ threadId: Number(threadId), seq }))
       .filter((p) => Number.isInteger(p.threadId) && Number.isInteger(p.seq));
@@ -1953,8 +1678,8 @@ export class MessageService {
          AND tp.muted = false
         LEFT JOIN thread_hwm h ON h.tid = m."threadId"
         WHERE m."threadId" IN (${this.joinSql(threadIds)})
-          AND m.id > ${globalSinceId}
-          AND m.seq > COALESCE(h.since_seq, 0)
+          ${globalClause}
+          AND m.seq > GREATEST(COALESCE(h.since_seq, 0), COALESCE(tp."lastReadSeq", 0))
           AND m.creator <> ${userId}
           AND m."isDeleted" = false
           ${hiddenClause}

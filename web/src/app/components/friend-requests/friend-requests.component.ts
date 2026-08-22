@@ -24,7 +24,8 @@ import {
   UserService,
   User,
 } from '../../services/user.service';
-import { displayUserName, Invite } from '../../services/model';
+import { displayUserName } from '../../services/model';
+import type { FriendRequestProjection } from '../../services/friend-request-state';
 import {
   UserAvatarComponent,
   UserAvatarType,
@@ -33,10 +34,7 @@ import { translateBizResult } from '../../services/biz-code';
 import dayjs from 'dayjs';
 import { FriendInviteDialogComponent } from '../friend-invite-dialog/friend-invite-dialog.component';
 import { VirtualInfiniteListComponent } from '../virtual-infinite-list/virtual-infinite-list.component';
-import {
-  FriendRequestCardComponent,
-  FriendRequestCardModel,
-} from '../friend-request-card/friend-request-card.component';
+import { FriendRequestCardComponent } from '../friend-request-card/friend-request-card.component';
 import { UserIdentityLabelComponent } from '../user-identity-label/user-identity-label.component';
 
 export enum AddTabStatus {
@@ -58,6 +56,7 @@ const FEDERATED_RESOLVE_STAGES: readonly FederatedResolveStage[] = [
 // (fromUser for incoming, toUser for outgoing), so no separate profile lookup is needed.
 type PendingReq = {
   id: string;
+  projectionKey: string;
   /** Existing stub id, or an Address key while no stub exists. */
   peerId?: number | string;
   name?: string;
@@ -137,7 +136,7 @@ export class FriendRequestsComponent implements OnDestroy {
   readonly sentReqList = signal([] as PendingReq[]);
   readonly sentErrTxt = signal('');
   readonly sentLoading = signal(true);
-  readonly selectedRequest = signal<FriendRequestCardModel | null>(null);
+  readonly selectedRequest = signal<PendingReq | null>(null);
   readonly selectedDirection = signal<'INCOMING' | 'OUTGOING'>('INCOMING');
   readonly pendingCount = signal(0);
   readonly sentCount = signal(0);
@@ -183,7 +182,7 @@ export class FriendRequestsComponent implements OnDestroy {
     this.selectedRequest.set(null);
   }
 
-  deleteSelected(req: FriendRequestCardModel): void {
+  deleteSelected(req: PendingReq): void {
     if (this.selectedDirection() === 'OUTGOING') this.cancelSent(req);
     this.closeRequest();
   }
@@ -464,12 +463,9 @@ export class FriendRequestsComponent implements OnDestroy {
           // Optimistic "added": patch the current row by identity. A state-feed refresh may have
           // replaced or reordered the list while the request was in flight, so a captured index is
           // not safe. If the authoritative refresh already removed the row, do not resurrect it.
-          this.pendingReqList.update((items) =>
-            items.map((item) =>
-              item.id === req.id ? { ...item, status: 1, errText: '' } : item,
-            ),
-          );
-          this.pendingCount.update((count) => Math.max(0, count - 1));
+          void this.userService
+            .markFriendRequestAccepted(req.projectionKey)
+            .then(() => this.loadIncomingInvites(true));
           if (this.selectedRequest()?.id === req.id) this.closeRequest();
         } else {
           this.pendingReqList.update((items) =>
@@ -573,60 +569,48 @@ export class FriendRequestsComponent implements OnDestroy {
       : { inviteId: req.id };
   }
 
-  /** Incoming invite → pending-row (the peer is the inviter, fromUser). */
-  private inviteToPending(inv: Invite): PendingReq {
-    return this.toPendingReq(inv, inv.fromUser);
-  }
-
-  /** Outgoing invite → sent-row (the peer is the recipient, toUser). */
-  private inviteToSent(inv: Invite): PendingReq {
-    return this.toPendingReq(inv, inv.toUser);
-  }
-
-  private groupInviteToPending(
-    inv: import('../../services/user.service').ClientGroupInviteIntent,
-  ): PendingReq {
-    const local = inv.group.isLocal;
-    const expired = inv.expiresAt === null || inv.expiresAt <= Date.now();
+  private projectionToPending(projection: FriendRequestProjection): PendingReq {
+    if (projection.kind === 'FRIEND') {
+      const peer = projection.peer!;
+      return {
+        id: projection.inviteId ?? projection.key,
+        projectionKey: projection.key,
+        peerId: this.userIdentity(peer),
+        name: peer.name,
+        avatar: peer.avatar,
+        account: peer.account,
+        isForeigner: peer.isForeigner,
+        domain: peer.domain,
+        reqMessage: projection.note,
+        status:
+          projection.status === 'ACCEPTED'
+            ? 1
+            : projection.status === 'REVOKED'
+              ? -3
+              : 0,
+        date: projection.requestedAt,
+        errText: '',
+        kind: 'FRIEND',
+      };
+    }
+    const group = projection.group!;
     return {
-      id: `group:${inv.domain}:${inv.account}`,
-      peerId: `pending-group:${inv.domain}\u0000${inv.account}`,
-      name:
-        inv.group.name || this.transloco.translate('friend.groupInviteExpired'),
-      avatar: inv.group.avatar,
-      account: inv.group.account,
-      domain: inv.group.domain,
-      reqMessage: expired
-        ? this.transloco.translate('friend.groupInviteExpired')
-        : inv.group.description,
-      status: expired ? -2 : 0,
-      date: inv.requestedAt ?? 0,
+      id: projection.inviteId ?? projection.key,
+      projectionKey: projection.key,
+      peerId: `pending-group:${group.domain}\u0000${group.account}`,
+      name: group.name,
+      avatar: group.avatar,
+      account: group.account,
+      domain: group.domain,
+      isForeigner: !group.isLocal,
+      reqMessage: group.description,
+      status: projection.status === 'ACCEPTED' ? 1 : 0,
+      date: projection.requestedAt,
       errText: '',
       kind: 'GROUP',
-      sourceLabel: local
+      sourceLabel: group.isLocal
         ? this.transloco.translate('friend.localGroup')
-        : inv.group.domain,
-    };
-  }
-
-  private toPendingReq(inv: Invite, peer: Invite['fromUser']): PendingReq {
-    return {
-      id: inv.id,
-      peerId: this.userIdentity(peer),
-      name: peer.name,
-      avatar: peer.avatar,
-      account: peer.account,
-      isForeigner: peer.isForeigner,
-      domain: peer.domain,
-      reqMessage: inv.note,
-      status:
-        inv.status === 'REVOKED'
-          ? -3
-          : inv.status === 'EXPIRED' || inv.expiresAt <= Date.now()
-            ? -2
-            : 0,
-      date: inv.createdAt,
-      errText: '',
+        : group.domain,
     };
   }
 
@@ -671,25 +655,21 @@ export class FriendRequestsComponent implements OnDestroy {
     // Parameterless: backend hardcodes last-7-days / ≤200 / FRIEND / PENDING, and filters out peers
     // who are already friends. The inviter profile is embedded (fromUser), so no queryUserInfo round-trip.
     try {
-      const page = await this.userService.listLocalFriendInvites(
+      const page = await this.userService.listLocalFriendRequests(
         'INCOMING',
         this.pendingCursor,
         20,
       );
       if (generation !== this.pendingLoadGeneration) return;
-      const groupInvites = reset
-        ? await this.userService.listLocalGroupInvites()
-        : [];
-      const nextItems = [
-        ...page.items.map((inv) => this.inviteToPending(inv)),
-        ...groupInvites.map((inv) => this.groupInviteToPending(inv)),
-      ].sort((a, b) => b.date - a.date);
+      const nextItems = page.items.map((item) =>
+        this.projectionToPending(item),
+      );
       this.pendingReqList.update((items) =>
         reset ? nextItems : [...items, ...nextItems],
       );
       this.pendingCursor = page.nextCursor;
       this.pendingHasMore.set(page.hasMore);
-      this.pendingCount.set(page.total + groupInvites.length);
+      this.pendingCount.set(page.actionableTotal);
     } catch {
       if (generation !== this.pendingLoadGeneration) return;
       this.toPendingErrTxt.set(
@@ -713,13 +693,15 @@ export class FriendRequestsComponent implements OnDestroy {
     this.sentLoading.set(true);
 
     try {
-      const page = await this.userService.listLocalFriendInvites(
+      const page = await this.userService.listLocalFriendRequests(
         'OUTGOING',
         this.sentCursor,
         20,
       );
       if (generation !== this.sentLoadGeneration) return;
-      const nextItems = page.items.map((inv) => this.inviteToSent(inv));
+      const nextItems = page.items.map((item) =>
+        this.projectionToPending(item),
+      );
       this.sentReqList.update((items) =>
         reset ? nextItems : [...items, ...nextItems],
       );

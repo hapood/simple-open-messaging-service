@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
 import type { PeerStateFeedPage } from './peer-state-feed.service.js';
+import { RemoteFeedCursorUnavailableError } from './federation-feed-cursor-error.js';
 
 function page(scannedThrough: string, hasMore = false): PeerStateFeedPage {
   return {
@@ -99,5 +100,23 @@ describe('PeerStateFeedPullService atomic page application', () => {
       }),
     ).rejects.toThrow('unordered');
     expect(apply).not.toHaveBeenCalled();
+  });
+
+  it('starts a replacement rebuild before committing a corrected cursor', async () => {
+    const { service, order } = harness(2n);
+    const fetch = vi
+      .fn()
+      .mockRejectedValueOnce(new RemoteFeedCursorUnavailableError(0n, 4n))
+      .mockRejectedValueOnce(new Error('replacement fetch failed'));
+    await expect(
+      service.run('peer.test', {
+        fetch,
+        beginRebuild: async () => void order.push('rebuild'),
+        apply: async () => void order.push('state'),
+      }),
+    ).rejects.toThrow('replacement fetch failed');
+    expect(order).toEqual(['rebuild', 'cursor']);
+    expect(fetch).toHaveBeenNthCalledWith(1, 2n, undefined);
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 });

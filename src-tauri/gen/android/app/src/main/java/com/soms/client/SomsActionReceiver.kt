@@ -52,23 +52,13 @@ class SomsActionReceiver : BroadcastReceiver() {
         val actionId = intent.getStringExtra(EXTRA_ACTION_ID) ?: return
         val tag = intent.getStringExtra(EXTRA_TAG) ?: ""
         val notifId = intent.getIntExtra(EXTRA_NOTIF_ID, SomsMessagingService.AWAY_NOTIF_ID)
-        // `dismiss` is a PURE frontend op: advance the away-HWM to the descriptor's `{threadId, seq}` cursor
-        // (so the next background fetch's `since` gates past these messages — they won't re-fire) AND cancel
-        // THIS notification, by the id the action carried (not a hardcoded one). No POST, no read-watermark
-        // change (lastReadSeq is untouched — the messages stay unread until the user opens the thread).
+        // Dismiss is a frontend-only action. The per-thread sequence HWM suppresses the same unread range;
+        // the global per-user feed cursor was already committed when the descriptor response was accepted.
         if (actionId == "dismiss") {
             val tid = intent.getIntExtra(EXTRA_THREAD_ID, -1)
             val seq = intent.getIntExtra(EXTRA_SEQ, -1)
             if (intent.getBooleanExtra(EXTRA_IS_THREAD, false)) {
-                // per-thread dismiss (#5: routed by the explicit EXTRA_IS_THREAD the action builder set, NOT
-                // the tag prefix): record the thread's seq IN MEMORY — the next fetch's `threadHwms` makes the
-                // server count this thread FROM it, so dismiss resets its cumulative count to 0 until newer
-                // messages. Cancels THIS card only; no global-HWM change (the other cards stay).
                 if (tid > 0 && seq >= 0) SomsMessagingService.recordThreadDismiss(context, tid, seq)
-            } else {
-                // all-mode dismiss: advance the GLOBAL away-HWM (so the next fetch's `since` gates past
-                // everything) + cancel the away card.
-                if (tid > 0 && seq >= 0) ClientStateDb.setNotificationCursor(context, tid, seq)
             }
             NotificationManagerCompat.from(context).cancel(notifId)
             return

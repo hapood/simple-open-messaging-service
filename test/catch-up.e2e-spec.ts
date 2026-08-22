@@ -15,19 +15,20 @@ import {
   userBlock,
 } from '../src/database/schema';
 import { ContentType } from '../src/database/enums.js';
+import { BusinessCode } from '../src/common/business-code.js';
+import { ClientMessageFeedWriter } from '../src/message/client-message-feed.service.js';
 import { seedUser, seedSession } from './seed';
 
 /**
- * /notifications/missed-summary + /notifications/missed e2e — the two SEPARATED endpoints:
- *  - missed-summary (threadlist body pre-warm): the `(from, to]` double-boundary walk of per-thread latest
- *    bodies. `to ≤ from` (stale SSE) → empty no-op.
- *  - missed (away-notification renderers): one descriptor per conversation. Message mode includes a bounded
+ * /thread-sync/catch-up + /notification-feed/query e2e — the two separated domain endpoints:
+ *  - catch-up: the `(after, through]` walk of the per-user compacted message feed.
+ *  - notification-feed query: one descriptor per conversation. Message mode includes a bounded
  *    recent-message sample; private mode omits content entirely.
  *
  * The BigInt message `id` is NEVER exposed — only per-thread `seq` + time. Three P2P threads seeded in
  * insertion order (Alice → Bob → Carol) so message ids strictly increase → deterministic.
  */
-describe('notifications/missed-summary + notifications/missed', () => {
+describe('thread catch-up + notification feed', () => {
   let app: INestApplication;
   let database: DatabaseService;
   let sessionToken: string;
@@ -101,12 +102,15 @@ describe('notifications/missed-summary + notifications/missed', () => {
         updatedAt: now,
       })),
     );
+    await database.db.transaction((tx) =>
+      ClientMessageFeedWriter.publishMessage(tx, thread.id, 3, peer.id),
+    );
     return thread.id;
   }
 
   function postSummary(body: Record<string, unknown>) {
     return request(app.getHttpServer())
-      .post('/api/v1/notifications/missed-summary')
+      .post('/api/v1/thread-sync/catch-up')
       .set('Authorization', `Bearer ${sessionToken}`)
       .send(body);
   }
@@ -116,19 +120,19 @@ describe('notifications/missed-summary + notifications/missed', () => {
     headers: Record<string, string> = {},
   ) {
     return request(app.getHttpServer())
-      .post('/api/v1/notifications/missed')
+      .post('/api/v1/notification-feed/query')
       .set('Authorization', `Bearer ${sessionToken}`)
       .set(headers)
       .send(body);
   }
 
-  // ── /notifications/missed-summary (threadlist) ───────────────────────────────────────────────
+  // ── /thread-sync/catch-up ───────────────────────────────────────────────────────────────────
 
-  it('missed-summary: threads whose latest-id ∈ (from, to], ASC; nextCursor = page max', async () => {
+  it('catch-up returns feed changes in ascending feed order', async () => {
     // from = Alice's latest, to = Carol's latest → range = Bob + Carol (Alice's latest is the lower bound).
     const res = await postSummary({
-      from: { threadId: tAlice, seq: 3 },
-      to: { threadId: tCarol, seq: 3 },
+      after: 1,
+      through: 3,
       take: 50,
     });
     expect(res.body.code).toBe(0);
@@ -136,7 +140,8 @@ describe('notifications/missed-summary + notifications/missed', () => {
       res.body.data.items.map((i: { threadId: number }) => i.threadId),
     ).toEqual([tBob, tCarol]);
     expect(res.body.data.hasMore).toBe(false);
-    expect(res.body.data.nextCursor).toBeNull();
+    expect(res.body.data.scannedThrough).toBe(3);
+    expect(res.body.data.messageFeedEndId).toBe(3);
     // Each item carries its thread's newest body (no BigInt id leaks).
     const bob = res.body.data.items.find(
       (i: { threadId: number }) => i.threadId === tBob,
@@ -148,33 +153,65 @@ describe('notifications/missed-summary + notifications/missed', () => {
     expect(bob.latestMessage).not.toHaveProperty('id');
   });
 
-  it('missed-summary: paginates — nextCursor = page max-id when hasMore (ASC oldest-first)', async () => {
+  it('catch-up paginates and advances scannedThrough to the page boundary', async () => {
     // from absent (first boot), to = Carol's latest, take 2 → ASC oldest-first 2 of (−∞, carolLatest].
     const res = await postSummary({
-      to: { threadId: tCarol, seq: 3 },
+      after: 0,
+      through: 3,
       take: 2,
     });
     expect(
       res.body.data.items.map((i: { threadId: number }) => i.threadId),
     ).toEqual([tAlice, tBob]); // ids 3,6
     expect(res.body.data.hasMore).toBe(true);
-    expect(res.body.data.nextCursor).toEqual({ threadId: tBob, seq: 3 }); // page max → the next `from`
+    expect(res.body.data.scannedThrough).toBe(2);
   });
 
-  it('missed-summary: to ≤ from (stale SSE) → empty no-op', async () => {
+  it('does not advance the recipient feed or preview for a self-authored message', async () => {
+    const now = new Date();
+    await database.db.transaction(async (tx) => {
+      await tx.insert(message).values({
+        threadId: tAlice,
+        seq: 4,
+        originSeq: 4,
+        contentType: ContentType.PURE_TEXT,
+        content: JSON.stringify({ text: 'self-only' }),
+        creator: recipientId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await tx
+        .update(messageThread)
+        .set({ curSeq: 4, lastMessageSeq: 4, lastMessageAt: now, updatedAt: now })
+        .where(eq(messageThread.id, tAlice));
+      await ClientMessageFeedWriter.publishMessage(tx, tAlice, 4, recipientId);
+    });
+
+    const unchanged = await postSummary({ after: 3, take: 50 });
+    expect(unchanged.body.data.items).toEqual([]);
+    expect(unchanged.body.data.messageFeedEndId).toBe(3);
+
+    const replay = await postSummary({ after: 0, through: 3, take: 50 });
+    const alice = replay.body.data.items.find(
+      (item: { threadId: number }) => item.threadId === tAlice,
+    );
+    expect(alice.latestMessage.seq).toBe(3);
+    expect(alice.latestMessage.content).not.toContain('self-only');
+  });
+
+  it('catch-up rejects a through cursor below after', async () => {
     const res = await postSummary({
-      from: { threadId: tCarol, seq: 3 },
-      to: { threadId: tAlice, seq: 3 },
+      after: 3,
+      through: 1,
       take: 50,
     });
-    expect(res.body.data.items).toEqual([]);
-    expect(res.body.data.hasMore).toBe(false);
+    expect(res.body.code).toBe(BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE);
   });
 
-  // ── /notifications/missed (renderer) ─────────────────────────────────────────────────────────
+  // ── /notification-feed/query ─────────────────────────────────────────────────────────────────
 
-  it('missed: since absent (first-ever) → clear descriptor', async () => {
-    const res = await postMissed({});
+  it('notification feed at the current end returns a clear descriptor', async () => {
+    const res = await postMissed({ after: 3 });
     expect(res.body.data.notifications).toHaveLength(1);
     expect(res.body.data.notifications[0].kind).toBe('clear');
   });
@@ -183,7 +220,7 @@ describe('notifications/missed-summary + notifications/missed', () => {
     // since = Alice's seq 1 (the globally-oldest message) → everything after it: Alice 2,3 + Bob 1,2,3 +
     // Carol 1,2,3 = 8 messages across 3 senders → manyConv "Alice, Bob +1 sent you 8 messages".
     const res = await postMissed(
-      { since: { threadId: tAlice, seq: 1 } },
+      { after: 0, threadHwms: { [tAlice]: 1 } },
       { 'Accept-Language': 'en' },
     );
     const descriptors = res.body.data.notifications;
@@ -211,7 +248,7 @@ describe('notifications/missed-summary + notifications/missed', () => {
 
   it('missed: private mode contains no sender or message content', async () => {
     const res = await postMissed(
-      { since: { threadId: tAlice, seq: 1 }, previewMode: 'private' },
+      { after: 0, threadHwms: { [tAlice]: 1 }, previewMode: 'private' },
       { 'Accept-Language': 'zh-CN,zh;q=0.9' },
     );
     expect(res.body.data.notifications).toHaveLength(3);
@@ -244,7 +281,7 @@ describe('notifications/missed-summary + notifications/missed', () => {
       blockedId: carolPeer.userId,
     });
     const res = await postMissed(
-      { since: { threadId: tAlice, seq: 1 } },
+      { after: 0, threadHwms: { [tAlice]: 1 } },
       { 'Accept-Language': 'en' },
     );
     expect(
@@ -266,7 +303,7 @@ describe('notifications/missed-summary + notifications/missed', () => {
         ),
       );
     const res = await postMissed(
-      { since: { threadId: tAlice, seq: 1 } },
+      { after: 0, threadHwms: { [tAlice]: 1 } },
       { 'Accept-Language': 'en' },
     );
     expect(
@@ -276,8 +313,10 @@ describe('notifications/missed-summary + notifications/missed', () => {
     ).toEqual([tCarol, tAlice]);
   });
 
-  it('missed: HWM at the global newest → no conversation descriptors', async () => {
-    const res = await postMissed({ since: { threadId: tCarol, seq: 3 } });
-    expect(res.body.data.notifications).toEqual([]);
+  it('notification feed at the current end returns no conversation descriptors', async () => {
+    const res = await postMissed({ after: 3 });
+    expect(res.body.data.notifications).toEqual([
+      expect.objectContaining({ kind: 'clear' }),
+    ]);
   });
 });

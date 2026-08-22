@@ -353,6 +353,27 @@
       }
     },
     {
+      "name": "group-meta full page rejects deletion records",
+      "schema": "urn:socfp:v1:group-meta",
+      "value": {
+        "account": "!group",
+        "mode": "full",
+        "items": [
+          {
+            "feedId": "2",
+            "account": "alice",
+            "domain": "a.example",
+            "rev": 2,
+            "operation": "DELETE",
+            "body": {}
+          }
+        ],
+        "scannedThrough": "2",
+        "groupMetaFeedEndId": "2",
+        "hasMore": false
+      }
+    },
+    {
       "name": "success is not an error envelope",
       "schema": "urn:socfp:v1:error",
       "value": { "code": 0, "message": "ok" }

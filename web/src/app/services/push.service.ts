@@ -145,7 +145,7 @@ export class PushService {
 
   /** Called by AuthService after a successful login — the access token is now in the interceptor, so
    *  the register POST will carry the Authorization header. (The Android background fetchers no longer
-   *  need a scoped notification token — they authenticate /notifications/missed with the session token,
+   *  need a scoped notification token — they authenticate /notification-feed/query with the session token,
    *  which AuthService pushes to Kotlin via SomsFcm.setSessionToken.) */
   onLogin() {
     if (!isTauri()) return;

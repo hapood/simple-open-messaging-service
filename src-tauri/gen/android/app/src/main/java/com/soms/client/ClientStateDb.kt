@@ -20,20 +20,19 @@ object ClientStateDb {
                 SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING,
         )
         db.execSQL(
+            """CREATE TABLE IF NOT EXISTS notification_feed_state (
+                account_id INTEGER PRIMARY KEY,
+                feed_id INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )""".trimIndent(),
+        )
+        db.execSQL(
             """CREATE TABLE IF NOT EXISTS client_preferences (
                 scope TEXT NOT NULL,
                 key TEXT NOT NULL,
                 value_json TEXT NOT NULL,
                 updated_at INTEGER NOT NULL,
                 PRIMARY KEY (scope, key)
-            )""".trimIndent(),
-        )
-        db.execSQL(
-            """CREATE TABLE IF NOT EXISTS notification_global_state (
-                account_id INTEGER PRIMARY KEY,
-                cursor_thread_id INTEGER,
-                cursor_seq INTEGER,
-                updated_at INTEGER NOT NULL
             )""".trimIndent(),
         )
         db.execSQL(
@@ -48,28 +47,20 @@ object ClientStateDb {
         return db
     }
 
-    fun getNotificationCursor(ctx: Context): Pair<Int, Int>? = open(ctx).use { db ->
+    fun getMessageFeedCursor(ctx: Context): Int = open(ctx).use { db ->
         db.rawQuery(
-            "SELECT cursor_thread_id, cursor_seq FROM notification_global_state WHERE account_id = ?",
+            "SELECT feed_id FROM notification_feed_state WHERE account_id = ?",
             arrayOf(ACTIVE_ACCOUNT.toString()),
-        ).use { cursor ->
-            if (!cursor.moveToFirst() || cursor.isNull(0) || cursor.isNull(1)) null
-            else Pair(cursor.getInt(0), cursor.getInt(1))
-        }
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
     }
 
-    fun setNotificationCursor(ctx: Context, threadId: Int?, seq: Int?) = open(ctx).use { db ->
-        if (threadId == null || seq == null) {
-            db.delete("notification_global_state", "account_id = ?", arrayOf(ACTIVE_ACCOUNT.toString()))
-        } else {
-            db.execSQL(
-                """INSERT INTO notification_global_state(account_id, cursor_thread_id, cursor_seq, updated_at)
-                   VALUES(?, ?, ?, ?)
-                   ON CONFLICT(account_id) DO UPDATE SET cursor_thread_id=excluded.cursor_thread_id,
-                     cursor_seq=excluded.cursor_seq, updated_at=excluded.updated_at""",
-                arrayOf(ACTIVE_ACCOUNT, threadId, seq, System.currentTimeMillis()),
-            )
-        }
+    fun setMessageFeedCursor(ctx: Context, feedId: Int) = open(ctx).use { db ->
+        require(feedId >= 0)
+        db.execSQL(
+            """INSERT INTO notification_feed_state(account_id, feed_id, updated_at) VALUES(?, ?, ?)
+               ON CONFLICT(account_id) DO UPDATE SET feed_id=excluded.feed_id, updated_at=excluded.updated_at""",
+            arrayOf(ACTIVE_ACCOUNT, feedId, System.currentTimeMillis()),
+        )
     }
 
     fun dismissedThreadSeqs(ctx: Context): Map<Int, Int> = open(ctx).use { db ->
@@ -96,7 +87,7 @@ object ClientStateDb {
     fun clearNotificationState(ctx: Context) = open(ctx).use { db ->
         db.beginTransaction()
         try {
-            db.delete("notification_global_state", "account_id = ?", arrayOf(ACTIVE_ACCOUNT.toString()))
+            db.delete("notification_feed_state", "account_id = ?", arrayOf(ACTIVE_ACCOUNT.toString()))
             db.delete("notification_thread_state", "account_id = ?", arrayOf(ACTIVE_ACCOUNT.toString()))
             db.setTransactionSuccessful()
         } finally {

@@ -5,12 +5,12 @@
 // TRUNCATEs `User` in its setup — if they shared one DB, one fork's TRUNCATE would wipe another's
 // just-seeded user mid-test (observed as spurious 401s). Per-fork DBs make that impossible.
 //
-// The fork DBs persist across runs: the SQL migration runner is idempotent, so an existing fork DB
-// is reused (no orphans accumulate). global-setup only ensures the base `soms_test` is reachable.
+// global-setup recreates all fork DBs from the fully migrated `soms_test` template before workers
+// start. setupFiles only selects the already-prepared database for the current worker.
 import 'dotenv/config';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ensureDatabase, resetAndMigrateDatabase } from './database.js';
+import { ensureDatabase } from './database.js';
 
 if (!process.env.DATABASE_URL) {
   throw new Error(
@@ -22,7 +22,6 @@ const poolId = process.env.VITEST_POOL_ID ?? '0';
 const forkDb = `soms_test_fork${poolId}`;
 
 const forkUrl = await ensureDatabase(process.env.DATABASE_URL, forkDb);
-await resetAndMigrateDatabase(forkUrl);
 process.env.DATABASE_URL = forkUrl;
 
 // Keep structured logs out of the repo and quiet during e2e. LoggerModule builds the pino instance

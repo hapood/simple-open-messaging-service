@@ -206,13 +206,48 @@ function semanticValid(schema: string, value: unknown): boolean {
       );
     });
   }
+  if (schema === 'urn:socfp:v1:group-meta') {
+    const page = value as {
+      mode?: string;
+      scannedThrough?: string;
+      groupMetaFeedEndId?: string;
+      items?: Array<{
+        feedId?: string;
+        rev?: number;
+        operation?: string;
+      }>;
+    };
+    if (
+      page.scannedThrough === undefined ||
+      page.groupMetaFeedEndId === undefined ||
+      BigInt(page.scannedThrough) > BigInt(page.groupMetaFeedEndId)
+    )
+      return false;
+    let previousFeedId = 0n;
+    for (const member of page.items ?? []) {
+      const feedId = BigInt(member.feedId!);
+      if (
+        feedId <= previousFeedId ||
+        feedId > BigInt(page.scannedThrough) ||
+        !Number.isSafeInteger(member.rev) ||
+        (page.mode === 'full' && member.operation !== 'UPSERT')
+      )
+        return false;
+      previousFeedId = feedId;
+    }
+    return true;
+  }
   if (schema === 'urn:socfp:v1:error') {
     const error = value as {
       code?: number;
-      data?: { resumeAfter?: string };
+      data?: { resumeAfter?: string; resumeBefore?: string };
     };
     if (error.code !== 50019) return true;
-    return error.data?.resumeAfter !== undefined;
+    return (
+      error.data?.resumeAfter !== undefined &&
+      error.data.resumeBefore !== undefined &&
+      BigInt(error.data.resumeBefore) > BigInt(error.data.resumeAfter)
+    );
   }
   return true;
 }
@@ -283,6 +318,7 @@ async function validateManifest(ajv: Ajv2020Instance): Promise<void> {
     'POST /s2s/v1/feed-heads',
     'GET /s2s/v1/state-feed',
     'GET /s2s/v1/message-feed',
+    'GET /s2s/v1/group-meta',
     'GET /s2s/v1/messages',
     'GET /s2s/v1/message-tombstone-feed',
     'GET /s2s/v1/message-tombstones',

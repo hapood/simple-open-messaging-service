@@ -75,6 +75,7 @@ export enum BusinessCode {
   THREAD_NOT_FOUND = 30003, // no such conversation
   FORWARD_MAX_DEPTH_EXCEEDED = 30004, // forwarding a depth-3 bundle would create an unsupported depth-4 snapshot
   FORWARD_INVALID_BUNDLE = 30005, // malformed/missing/inaccessible forward bundle or source message
+  CLIENT_FEED_CURSOR_UNAVAILABLE = 30006, // client message/tombstone feed cursor is invalid; data carries integer resume bounds
 
   // 40xxx group domain
   GROUP_NOT_FRIEND = 40002, // non-friend cannot be invited
@@ -109,7 +110,7 @@ export enum BusinessCode {
   FEDERATION_LOCAL_IDENTITY_LOST = 50014, // local federation service cannot sign safely (HTTP 503)
   FEDERATION_IDENTITY_MISMATCH = 50015, // registered fatal root identity conflict (HTTP 409)
   FEDERATION_PEER_IDENTITY_LOST = 50016, // internal/local diagnostic; not a Federation v1 wire code
-  FEDERATION_FEED_CURSOR_UNAVAILABLE = 50019, // missing/expired feed cursor; data returns { resumeAfter }
+  FEDERATION_FEED_CURSOR_UNAVAILABLE = 50019, // missing/expired feed cursor; data carries operation-specific recovery boundaries
   FEDERATION_PROTOCOL_VERSION_UNSUPPORTED = 50020, // registered fatal version conflict (HTTP 409)
   FEDERATION_RANGE_NOT_SATISFIABLE = 50021,
   FEDERATION_PROFILE_NOT_DISCLOSED = 50023, // the user has chosen not to disclose the public profile

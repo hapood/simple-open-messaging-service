@@ -63,15 +63,19 @@ request itself remains address-only locally until local action.
 `PROFILE` is an independently revisioned snapshot and may carry localized avatar
 bytes. It is published only after the local direction publishes `ACCEPTED`
 through explicit acceptance, crossed requests, or valid peer confirmation.
-`GROUP_META` does not embed member avatars. Every group snapshot is followed by
-the complete `MEMBER_PROFILE` set that it references. Once a person is neither a
-local member's friend nor a shared-group member, the publisher
-omits that profile from its current projection without a deletion item; the consumer garbage-collects
-unreferenced source-scoped profiles only after a complete state drain.
+`GROUP_META_FEED_HEAD.groupMetaFeedEndId` carries the target group feed's latest
+`feedId`.
+The separate `/s2s/v1/group-meta` feed carries members, roles, and source-scoped
+display profiles. Full and Delta use the common `after/take/through` pagination
+contract; Delta includes explicit `DELETE` records for departed members. A
+Delta cursor older than retained history falls back to a bounded Full
+replacement through the standard `resumeAfter/resumeBefore` window.
+Different group origins may publish different display projections for the same
+member address, so receivers cache them by source origin plus member address.
 
 The user client exposes one `stateRevision` cursor for thread membership and cached profile changes.
 `HELLO` and `STATE_REV_UPDATED` carry that name. The client applies relationship,
-profile, group metadata, and member-profile state in dependency order, then
+profile and group-member state in dependency order, then
 processes the missed-message summary. There are no chat-open profile/meta
 revision probes.
 
@@ -116,6 +120,7 @@ capability negotiation. See the normative [call specification](../../spec/v1/cal
 - `POST /s2s/v1/healthy`
 - `POST /s2s/v1/feed-heads`
 - `GET /s2s/v1/state-feed`
+- `GET /s2s/v1/group-meta`
 - `GET /s2s/v1/message-feed`
 - `GET /s2s/v1/message-tombstone-feed`
 - `GET /s2s/v1/messages`

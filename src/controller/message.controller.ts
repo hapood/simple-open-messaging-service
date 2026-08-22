@@ -100,15 +100,6 @@ export class MessageController {
     return this.messageReports.create(req.user.userId, dto);
   }
 
-  @ApiBearerAuth()
-  @Get('deleted-messages/hwm')
-  @ApiOperation({
-    summary: 'Get the account bootstrap deletion high-water mark',
-  })
-  async getDeletedMessageHwm() {
-    return { hwm: await this.deletedMessages.currentHwm() };
-  }
-
   @UseGuards(ThreadAccessGuard)
   @ResourceId<QueryDeletedMessagesDto>('threadId')
   @ApiBearerAuth()

@@ -409,43 +409,6 @@ describe('MessageService.queryMessages quote previews', () => {
   });
 });
 
-describe('MessageService.countUnreadByThread', () => {
-  it('counts after cursor 0 for a null watermark and excludes the current user', async () => {
-    const queryRaw = vi.fn().mockResolvedValue([
-      { threadId: 7, unread: 2 },
-      { threadId: 8, unread: 0 },
-    ]);
-    const svc = new MessageService(
-      databaseMock({
-        execute: vi.fn(async () => ({ rows: await queryRaw() })),
-      }) as never,
-      {} as never,
-    );
-
-    await expect(svc.countUnreadByThread(42, [7, 8])).resolves.toEqual(
-      new Map([
-        [7, 2],
-        [8, 0],
-      ]),
-    );
-
-    expect(queryRaw).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not query PostgreSQL for an empty thread list', async () => {
-    const queryRaw = vi.fn();
-    const svc = new MessageService(
-      databaseMock({
-        execute: vi.fn(async () => ({ rows: await queryRaw() })),
-      }) as never,
-      {} as never,
-    );
-
-    await expect(svc.countUnreadByThread(42, [])).resolves.toEqual(new Map());
-    expect(queryRaw).not.toHaveBeenCalled();
-  });
-});
-
 describe('MessageService.unreadMentionStates', () => {
   it('uses semantic entities, ignores escaped protocol text, and preserves both mention kinds', async () => {
     const queryRaw = vi.fn().mockResolvedValue([
@@ -567,7 +530,16 @@ describe('MessageService unified attention queries', () => {
     );
 
     await expect(
-      svc.awayAttentionByThread(42, 'self', 100n, 30, { 7: 10 }, [42]),
+      svc.awayAttentionByThread(
+        42,
+        'self',
+        30,
+        { 7: 10 },
+        [42],
+        1000,
+        undefined,
+        100n,
+      ),
     ).resolves.toEqual(
       new Map([[7, { count: 2, latestSeq: 12, mention: ['me'] }]]),
     );

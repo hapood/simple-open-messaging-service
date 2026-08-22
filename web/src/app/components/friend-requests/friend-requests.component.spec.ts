@@ -24,13 +24,12 @@ describe('FriendRequestsComponent federated search progress', () => {
       friendRequestStateRevision: signal(0),
       friendIntentStateRevision: signal(0),
       friendReqBadge: signal(false),
-      listLocalFriendInvites: vi.fn().mockImplementation(
+      listLocalFriendRequests: vi.fn().mockImplementation(
         () =>
           new Promise<FriendIntentPage>((resolve) => {
             pending.push({ resolve });
           }),
       ),
-      listLocalGroupInvites: vi.fn().mockResolvedValue([]),
     };
     TestBed.configureTestingModule({
       imports: [FriendRequestsComponent],
@@ -54,24 +53,23 @@ describe('FriendRequestsComponent federated search progress', () => {
     const page = (id: string, name: string) => ({
       items: [
         {
-          id,
+          key: `friend:${id}`,
           kind: 'FRIEND' as const,
+          direction: 'INCOMING' as const,
+          status: 'REQUESTED' as const,
+          localStatus: null,
+          remoteStatus: 'REQUESTED' as const,
+          locallyAccepted: false,
+          inviteId: id,
           note: '',
-          status: 'PENDING' as const,
-          createdAt: 1,
+          requestedAt: 1,
+          requestedSort: 1,
+          updatedAt: 1,
           expiresAt: Date.now() + 60_000,
-          fromUser: {
+          peer: {
             id: Number(id),
             account: name,
             name,
-            avatar: '',
-            domain: '',
-            isForeigner: false,
-          },
-          toUser: {
-            id: 99,
-            account: 'me',
-            name: 'Me',
             avatar: '',
             domain: '',
             isForeigner: false,
@@ -81,6 +79,7 @@ describe('FriendRequestsComponent federated search progress', () => {
       nextCursor: null,
       hasMore: false,
       total: 1,
+      actionableTotal: 1,
     });
 
     pending[1].resolve(page('2', 'newer'));
@@ -140,8 +139,10 @@ describe('FriendRequestsComponent federated search progress', () => {
       friendRequestStateRevision: revision,
       friendIntentStateRevision: revision,
       friendReqBadge: signal(false),
-      listLocalFriendInvites: vi.fn().mockResolvedValue(emptyPage),
-      listLocalGroupInvites: vi.fn().mockResolvedValue([]),
+      listLocalFriendRequests: vi.fn().mockResolvedValue({
+        ...emptyPage,
+        actionableTotal: 0,
+      }),
       markFriendReqRead: vi.fn(),
     };
     TestBed.resetTestingModule();
@@ -163,14 +164,14 @@ describe('FriendRequestsComponent federated search progress', () => {
     fixture.detectChanges();
     await fixture.whenStable();
 
-    expect(userService.listLocalFriendInvites).toHaveBeenCalledTimes(2);
+    expect(userService.listLocalFriendRequests).toHaveBeenCalledTimes(2);
     expect(userService.markFriendReqRead).toHaveBeenCalledTimes(1);
 
     revision.set(5);
     fixture.detectChanges();
     await fixture.whenStable();
 
-    expect(userService.listLocalFriendInvites).toHaveBeenCalledTimes(4);
+    expect(userService.listLocalFriendRequests).toHaveBeenCalledTimes(4);
     expect(userService.markFriendReqRead).toHaveBeenCalledTimes(1);
 
     fixture.componentInstance.setTab(1);
@@ -488,13 +489,13 @@ describe('FriendRequestsComponent federated search progress', () => {
       friendIntentStateRevision: signal(0),
       friendReqBadge: signal(false),
       acceptInvite: vi.fn().mockReturnValue(acceptResult),
-      listLocalFriendInvites: vi.fn().mockImplementation(
+      listLocalFriendRequests: vi.fn().mockImplementation(
         () =>
           new Promise<FriendIntentPage>((resolve) => {
             resolveRefresh = resolve;
           }),
       ),
-      listLocalGroupInvites: vi.fn().mockResolvedValue([]),
+      markFriendRequestAccepted: vi.fn().mockResolvedValue(undefined),
     };
     TestBed.resetTestingModule();
     TestBed.configureTestingModule({
@@ -515,6 +516,7 @@ describe('FriendRequestsComponent federated search progress', () => {
     ).componentInstance;
     const request = {
       id: '41',
+      projectionKey: 'friend:41',
       status: 0,
       date: 1,
       errText: '',
@@ -538,24 +540,23 @@ describe('FriendRequestsComponent federated search progress', () => {
     resolveRefresh({
       items: [
         {
-          id: request.id,
+          key: request.projectionKey,
           kind: 'FRIEND',
+          direction: 'INCOMING',
           note: '',
-          status: 'PENDING',
-          createdAt: 2,
+          status: 'REQUESTED',
+          localStatus: null,
+          remoteStatus: 'REQUESTED',
+          locallyAccepted: false,
+          inviteId: request.id,
+          requestedAt: 2,
+          requestedSort: 2,
+          updatedAt: 2,
           expiresAt: Date.now() + 60_000,
-          fromUser: {
+          peer: {
             id: 41,
             account: 'alice',
             name: 'Alice refreshed',
-            avatar: '',
-            domain: '',
-            isForeigner: false,
-          },
-          toUser: {
-            id: 99,
-            account: 'me',
-            name: 'Me',
             avatar: '',
             domain: '',
             isForeigner: false,
@@ -565,6 +566,7 @@ describe('FriendRequestsComponent federated search progress', () => {
       nextCursor: null,
       hasMore: false,
       total: 1,
+      actionableTotal: 1,
     });
     await refresh;
 
@@ -573,9 +575,12 @@ describe('FriendRequestsComponent federated search progress', () => {
 
     acceptResult.next({ code: 0 });
     acceptResult.complete();
+    await Promise.resolve();
 
     expect(acceptResult.observed).toBe(false);
     expect(component.isInviteActionPending(request.id)).toBe(false);
-    expect(component.pendingReqList()[0].status).toBe(1);
+    expect(userService.markFriendRequestAccepted).toHaveBeenCalledWith(
+      request.projectionKey,
+    );
   });
 });

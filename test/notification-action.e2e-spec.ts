@@ -14,6 +14,7 @@ import {
   user,
 } from '../src/database/schema';
 import { ContentType } from '../src/database/enums.js';
+import { ClientMessageFeedWriter } from '../src/message/client-message-feed.service.js';
 import { seedUser, seedSession } from './seed';
 
 /**
@@ -80,7 +81,7 @@ describe('notifications/action (descriptor button round-trip)', () => {
       { userId: peerId, threadId, updatedAt: now },
     ]);
     // seq 1 = the recipient's own outgoing message (the high-water mark before backgrounding); seq 2 =
-    // Alice's reply that arrives while away. /notifications/missed is pulled with since = seq 1.
+    // Alice's reply that arrives while away and advances the recipient's message feed.
     await database.db.insert(message).values([
       {
         threadId,
@@ -103,6 +104,9 @@ describe('notifications/action (descriptor button round-trip)', () => {
         updatedAt: now,
       },
     ]);
+    await database.db.transaction((tx) =>
+      ClientMessageFeedWriter.publishMessage(tx, threadId, 2, peerId),
+    );
   });
 
   function auth() {
@@ -111,9 +115,9 @@ describe('notifications/action (descriptor button round-trip)', () => {
 
   it('the descriptor carries a single dismiss action + no routing data (the tap is pure frontend)', async () => {
     const res = await request(app.getHttpServer())
-      .post('/api/v1/notifications/missed')
+      .post('/api/v1/notification-feed/query')
       .set(auth())
-      .send({ since: { threadId, seq: 1 } });
+      .send({ after: 0, threadHwms: { [threadId]: 1 } });
     const d = res.body.data.notifications[0];
     expect(d.kind).toBe('thread-message');
     expect(d.title).toBe('Alice');

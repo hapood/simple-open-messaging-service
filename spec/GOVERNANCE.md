@@ -6,7 +6,7 @@ This repository maintains the Simple Open Chat Federation Protocol (SOCFP), but 
 
 Protocol issues and changes are accepted through this repository's GitHub Issues and Pull Requests. Contributors need no standards-body application, registration form, or additional process document; a clear description of the problem and proposed change is sufficient. In each Pull Request, maintainers review compatibility, security impact, and whether normative text and tests must change together. Implementation behavior alone does not constitute a protocol change.
 
-Editorial corrections may be merged within the same release candidate. Any addition, removal, or change to observable wire behavior requires a new release candidate and an entry in that version's changelog. After `FINAL`, incompatible changes require a new major URL version.
+Editorial corrections may be merged within the same release candidate. Any addition, removal, or change to observable wire behavior requires a new release candidate and must be identified in the reviewable Pull Request and release notes. After `FINAL`, incompatible changes require a new major URL version.
 
 ## Decisions and releases
 
@@ -14,7 +14,6 @@ Maintainers decide changes and releases through the reviewable history of GitHub
 
 - normative text and its status;
 - JSON Schema, HTTP manifest, and test vectors;
-- changelog; and
 - the conformance tool version or reproducible instructions for running it.
 
 `spec/` MUST be independently distributable and include, at minimum, version metadata, a license, a specification entry point, machine-readable artifacts, and validation instructions. A recipient must not need to read SOMS source code to interpret the wire contract.

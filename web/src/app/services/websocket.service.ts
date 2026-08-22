@@ -68,7 +68,7 @@ export class WebsocketService implements OnDestroy {
 
   /** The deadline within which the server MUST push its HELLO connect handshake after the stream opens.
    *  HELLO carries the stateRevision the state delta-replays from and the newest-message cursor the
-   *  missed-summary walks toward — without it the list cannot build, so a missing HELLO is a hard failure,
+   *  durable feed catch-up starts from — without it the list cannot build, so a missing HELLO is a hard failure,
    *  not a graceful wait. The server sends HELLO right after flushing headers (sub-second normally); 10s is
    *  a generous threshold that avoids false triggers on slow networks. If it fires the open stream is
    *  treated as unusable: the disconnect surfaces at the connection indicator and the stream is force-

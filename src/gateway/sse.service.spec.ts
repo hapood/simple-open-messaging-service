@@ -24,13 +24,8 @@ describe('SseService', () => {
         },
       },
     };
-    const messages = { findNewestForUser: vi.fn().mockResolvedValue(null) };
     const callState = { get: vi.fn().mockReturnValue(null) };
-    return new SseService(
-      database as never,
-      messages as never,
-      callState as never,
-    );
+    return new SseService(database as never, callState as never);
   }
 
   /** A mock hijacked raw response that records everything written so a FORCE_LOGOUT frame is detectable. */

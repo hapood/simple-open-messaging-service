@@ -16,7 +16,7 @@ import {
 import { DiscoveryService } from '../src/federation/discovery.service.js';
 import { signingCertificateStatement } from '../src/federation/federation-certificate.js';
 import { startS2sProxy, type S2sProxy } from './federation-proxy.js';
-import { ensureDatabase, resetAndMigrateDatabase } from './database.js';
+import { ensureDatabase } from './database.js';
 
 export type { S2sProxy };
 
@@ -62,7 +62,7 @@ const APP_MAIN = join(
 
 /** Compile the subprocess entry + its deps to .e2e-build/ via tsc, IF missing or stale. Staleness is
  *  gated (any relevant source newer than the build → recompile) so the ~10s compile runs only when needed. */
-function ensureCompiledEntry(): void {
+export function ensureCompiledEntry(): void {
   const sources =
     'src test/federation-app.main.ts test/federation-harness.ts test/federation-proxy.ts test/federation-test-helpers.ts tsconfig.json tsconfig.e2e.json';
   try {
@@ -188,7 +188,7 @@ function federationDbNames(): { a: string; b: string } {
   return { a: `${base}_a`, b: `${base}_b` };
 }
 
-/** Create + migrate both per-app DBs for this fork. Idempotent. Returns the two datasource URLs. */
+/** Resolve both per-app DBs prepared by global setup. Returns the two datasource URLs. */
 export async function ensureFederationDbs(): Promise<{
   urlA: string;
   urlB: string;
@@ -209,8 +209,6 @@ export async function ensureFederationDbs(): Promise<{
   const urlB = mkUrl(b);
   await ensureDatabase(base.toString(), a);
   await ensureDatabase(base.toString(), b);
-  await resetAndMigrateDatabase(urlA);
-  await resetAndMigrateDatabase(urlB);
   return { urlA, urlB };
 }
 
@@ -416,9 +414,9 @@ export async function bootFederationPair(): Promise<{
   );
   const dataDirA = join(federationDataRoot, `${poolId}-a`);
   const dataDirB = join(federationDataRoot, `${poolId}-b`);
-  // setup-env resets this worker's databases for every spec file. Reset the matching node data roots
-  // at the same boundary so deterministic media fixtures cannot be mistaken for already-local CAS
-  // objects left by an earlier file or test run. restart() deliberately does not clean these paths:
+  // Each federation spec truncates this worker's databases after boot. Reset the matching node data
+  // roots at the same boundary so deterministic media fixtures cannot be mistaken for already-local
+  // CAS objects left by an earlier file or test run. restart() deliberately does not clean these paths:
   // restart coverage must exercise durable on-disk state within the current test pair.
   rmSync(dataDirA, { recursive: true, force: true });
   rmSync(dataDirB, { recursive: true, force: true });

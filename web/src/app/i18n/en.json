@@ -717,6 +717,7 @@
     "invitedPartial": "Invited {{n}}; {{skipped}} couldn't be invited",
     "noInvites": "No invites sent",
     "networkError": "Network error, please retry",
+    "stateSyncFatal": "A serious synchronization error occurred. New state processing has been stopped.",
     "serverError": "Server is having trouble — please retry",
     "theGroup": "the group",
     "role": {

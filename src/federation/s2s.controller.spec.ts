@@ -48,6 +48,7 @@ function target() {
       }),
     ),
   };
+  const groupMetaFeed = { serve: vi.fn().mockResolvedValue({}) };
   const controller = new S2sController(
     federation as never,
     messageFeed as never,
@@ -57,6 +58,7 @@ function target() {
     {} as never,
     peerStateFeed as never,
     peerStateFeedPull as never,
+    groupMetaFeed as never,
   );
   return {
     controller,
@@ -67,6 +69,7 @@ function target() {
     messageFeedPull,
     tombstonePull,
     peerStateFeedPull,
+    groupMetaFeed,
   };
 }
 
@@ -240,8 +243,101 @@ describe('S2sController state and tombstone feed bootstrap', () => {
   });
 });
 
+describe('S2sController group-meta modes', () => {
+  it('routes both modes with the common feed pagination parameters', async () => {
+    const { controller, groupMetaFeed } = target();
+    const fullReq = {
+      query: {
+        account: '!01arz3ndektsv4rrffq69g5fav',
+        mode: 'full',
+        after: '0',
+        take: '25',
+        through: '40',
+      },
+      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+    } as unknown as FastifyRequest;
+    await controller.getGroupMeta(
+      fullReq,
+      '!01arz3ndektsv4rrffq69g5fav',
+      'full',
+      '0',
+      '25',
+      '40',
+    );
+    expect(groupMetaFeed.serve).toHaveBeenLastCalledWith(
+      'a.example',
+      '!01arz3ndektsv4rrffq69g5fav',
+      'full',
+      0n,
+      25,
+      40n,
+    );
+
+    const deltaReq = {
+      query: {
+        account: '!01arz3ndektsv4rrffq69g5fav',
+        mode: 'delta',
+        after: '7',
+      },
+      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+    } as unknown as FastifyRequest;
+    await controller.getGroupMeta(
+      deltaReq,
+      '!01arz3ndektsv4rrffq69g5fav',
+      'delta',
+      '7',
+    );
+    expect(groupMetaFeed.serve).toHaveBeenLastCalledWith(
+      'a.example',
+      '!01arz3ndektsv4rrffq69g5fav',
+      'delta',
+      7n,
+      undefined,
+      undefined,
+    );
+  });
+});
+
 describe('S2sController feed-head recovery', () => {
-  it('retries a transient drain failure without requiring another feed-head', async () => {
+  it('drains in-flight work and rejects new scheduling during shutdown', async () => {
+    const { controller, federation } = target();
+    let release!: () => void;
+    federation.pullStateFromPeer.mockImplementationOnce(
+      () =>
+        new Promise<bigint>((resolve) => {
+          release = () => resolve(7n);
+        }),
+    );
+    const req = {
+      body: {
+        origin: 'a.example',
+        stateFeedEndId: '7',
+        messageFeedEndId: '8',
+        tombstoneFeedEndId: '9',
+      },
+      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+    } as unknown as FastifyRequest;
+
+    await controller.postDiscoveryHwm(req);
+    await vi.waitFor(() =>
+      expect(federation.pullStateFromPeer).toHaveBeenCalledOnce(),
+    );
+    let destroyed = false;
+    const shutdown = controller.onModuleDestroy().then(() => {
+      destroyed = true;
+    });
+    await Promise.resolve();
+    expect(destroyed).toBe(false);
+
+    await controller.postDiscoveryHwm(req);
+    expect(federation.pullStateFromPeer).toHaveBeenCalledOnce();
+    release();
+    await shutdown;
+    expect(federation.pullTombstonesFromPeer).toHaveBeenCalledOnce();
+    expect(federation.pullMissedFromPeer).toHaveBeenCalledOnce();
+  });
+
+  it('backs off and merges lightweight heads before retrying', async () => {
     vi.useFakeTimers();
     try {
       const { controller, federation } = target();
@@ -262,13 +358,35 @@ describe('S2sController feed-head recovery', () => {
       await vi.waitFor(() =>
         expect(federation.pullStateFromPeer).toHaveBeenCalledTimes(1),
       );
-      await vi.advanceTimersByTimeAsync(250);
+      await vi.waitFor(() =>
+        expect(
+          (
+            controller as unknown as {
+              feedDrainRetryTimers: Map<string, unknown>;
+            }
+          ).feedDrainRetryTimers.has('a.example'),
+        ).toBe(true),
+      );
+      await controller.postDiscoveryHwm({
+        ...req,
+        body: {
+          ...req.body,
+          stateFeedEndId: '11',
+          messageFeedEndId: '12',
+          tombstoneFeedEndId: '13',
+        },
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
       await vi.waitFor(() =>
         expect(federation.pullMissedFromPeer).toHaveBeenCalledOnce(),
       );
+      expect(federation.pullStateFromPeer).toHaveBeenLastCalledWith(
+        'a.example',
+        11n,
+      );
       expect(federation.pullTombstonesFromPeer).toHaveBeenCalledWith(
         'a.example',
-        7n,
+        11n,
       );
     } finally {
       vi.useRealTimers();

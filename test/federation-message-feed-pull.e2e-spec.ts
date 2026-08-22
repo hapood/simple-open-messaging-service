@@ -46,6 +46,10 @@ describe('FederationMessageFeedPullService', () => {
   });
 
   afterAll(async () => {
+    // A Vitest worker reuses its database across spec files. Leave the shared
+    // fork database in the same empty state this suite expects on entry so a
+    // later DB-backed suite cannot observe this fixture as application data.
+    await database.pool.query('TRUNCATE TABLE "FederatedPeer" CASCADE');
     await mod.close();
   });
 

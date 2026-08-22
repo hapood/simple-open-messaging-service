@@ -49,18 +49,6 @@ export interface NotificationDescriptor {
     timestamp: number;
   }>;
   previewMode?: 'message' | 'private';
-  /** Routing payload, opaque to the server. The `message-summary` carries the new away-HWM target
-   *  `{threadId, seq}` (the global newest message it covered) — the pure-frontend `dismiss` advances the
-   *  client's away-HWM to it + closes the shade (no POST, no read-watermark change), so the next background
-   *  fetch gates past these messages. A future `single-message` kind would carry one `threadId` + `seq` to
-   *  identify its message (e.g. for an inline reply). */
+  /** Routing payload for opening, dismissing or replying to a per-thread notification. */
   data: { threadId?: number; seq?: number; [k: string]: unknown };
-}
-
-/** The forward-pagination cursor for `POST /notifications/missed` — the client's last-accounted message
- *  `(threadId, seq)` (the backend resolves it to the internal BigInt `id` it never exposes). Absent →
- *  snapshot (the away-notification / initial hydrate). */
-export interface MissedCursor {
-  threadId: number;
-  seq: number;
 }

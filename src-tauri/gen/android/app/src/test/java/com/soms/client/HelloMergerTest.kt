@@ -2,6 +2,7 @@ package com.soms.client
 
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -25,8 +26,7 @@ class HelloMergerTest {
         assertEquals(6, c!!.getInt("stateRevision"))
 
         c = HelloMerger.merge(c, "NEW_MESSAGE", """{"threadId":7,"seq":9,"ts":123}""")
-        assertEquals(7, c!!.getJSONObject("latestMessage").getInt("threadId"))
-        assertEquals(9, c.getJSONObject("latestMessage").getInt("seq"))
+        assertFalse(c!!.has("latestMessage"))
     }
 
     @Test

@@ -226,6 +226,10 @@ export async function configureApp(
         method: RequestMethod.GET,
       },
       {
+        path: `${FEDERATION_API_PREFIX}/group-meta`,
+        method: RequestMethod.GET,
+      },
+      {
         path: `${FEDERATION_API_PREFIX}/message-feed`,
         method: RequestMethod.GET,
       },

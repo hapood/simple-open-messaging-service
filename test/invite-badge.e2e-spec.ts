@@ -252,11 +252,12 @@ describe('Friend-request client state e2e', () => {
       .set(authA)
       .send({ toUserId: b.id, note: 'old A to B' });
     expect(old.body.code).toBe(0);
+    const expiredAt = Date.now();
     await database.db
       .update(relationshipIntent)
       .set({
-        requestedAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000),
-        expiresAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
+        requestedAt: new Date(expiredAt - 8 * 24 * 60 * 60 * 1000),
+        expiresAt: new Date(expiredAt - 24 * 60 * 60 * 1000),
       })
       .where(
         and(

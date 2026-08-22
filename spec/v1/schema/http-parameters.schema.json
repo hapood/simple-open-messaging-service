@@ -122,6 +122,18 @@
         }
       ]
     },
+    "groupMetaQuery": {
+      "type": "object",
+      "required": ["account", "mode", "after"],
+      "properties": {
+        "account": { "$ref": "urn:socfp:v1:common#/$defs/groupAccount" },
+        "mode": { "enum": ["full", "delta"] },
+        "after": { "$ref": "urn:socfp:v1:common#/$defs/decimalString" },
+        "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" },
+        "through": { "$ref": "urn:socfp:v1:common#/$defs/decimalString" }
+      },
+      "additionalProperties": false
+    },
     "mediaParameters": {
       "type": "object",
       "required": ["digest", "fromAccount", "fromDomain", "toAccount", "seq"],

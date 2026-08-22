@@ -12,7 +12,7 @@ The key words `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, and `MAY` are to be in
 
 ## 0. Normative documents and precedence
 
-Federation v1 requirements are jointly defined by this document and the explicitly referenced [Transport and Security](./transport-security.md), [Peer Recognition](./recognition.md), [State Feed](./state-feed.md), [Message Feed](./message-feed.md), [Message Tombstone Feed](./message-tombstone-feed.md), [Resources](./resources.md), [Calls](./calls.md), and [Stable Error Registry](./errors.md). This document owns the shared protocol contract. An operation document MAY tighten fields, states, and authorization for its operation without weakening this document's security baseline. Conflicting requirements for the same externally observable behavior are a specification defect. An implementation MUST fail closed and MUST NOT choose the less restrictive interpretation.
+Federation v1 requirements are jointly defined by this document and the explicitly referenced [Transport and Security](./transport-security.md), [Peer Recognition](./recognition.md), [State Feed](./state-feed.md), [Group Meta Feed](./group-meta.md), [Message Feed](./message-feed.md), [Message Tombstone Feed](./message-tombstone-feed.md), [Resources](./resources.md), [Calls](./calls.md), and [Stable Error Registry](./errors.md). This document owns the shared protocol contract. An operation document MAY tighten fields, states, and authorization for its operation without weakening this document's security baseline. Conflicting requirements for the same externally observable behavior are a specification defect. An implementation MUST fail closed and MUST NOT choose the less restrictive interpretation.
 
 JSON Schema, the HTTP manifest, and vectors under `schema/` are validation artifacts and cannot override normative text. They MUST remain aligned field by field with the text, with conformance checks preventing drift.
 
@@ -31,10 +31,10 @@ JSON Schema, the HTTP manifest, and vectors under `schema/` are validation artif
 
 The Federation v1 data plane uses a fixed authoritative topology. An author's home server directly publishes a P2P authored message or withdrawal to the other endpoint. Group data has only a submission leg from member home to origin and an authoritative distribution leg from origin to mirrors. Recognition creates mesh connectivity; it does not allow an arbitrary recognized peer to relay another authority's facts.
 
-- **Durable fact**: business state retained by a server, such as a relationship direction, group-roster snapshot, or message copy. Its validity and lifecycle follow business state and do not depend on delivery of a revision hint.
-- **Durable change**: an ordered source record allocated by a publisher for a specific peer to discover or synchronize a durable fact. It has a source revision and is exposed according to cursor and compacted-projection rules. Reading is not an acknowledgement; removing the source record does not remove the corresponding durable fact.
+- **Durable fact**: business state retained by a server, such as a relationship direction, group-roster snapshot, or message copy. Its validity and lifecycle follow business state and do not depend on delivery of a feed-head hint.
+- **Durable change**: an ordered source record allocated by a publisher for a specific peer to discover or synchronize a durable fact. It has a source feed coordinate and is exposed according to cursor and compacted-projection rules. Reading is not an acknowledgement; removing the source record does not remove the corresponding durable fact.
 - **Feed-head hint**: a lossy wake-up carrying consistent inclusive feed endpoints.
-- **Cursor**: a source revision safely committed by the consumer. A hint or failed response cannot advance it.
+- **Cursor**: a source feed or query position safely committed by the consumer. A hint or failed response cannot advance it.
 - **Reset**: an administrator-authorized destructive identity lifecycle. An ordinary disconnect or DNS change is not a reset.
 - **Wire format**: the method, path, query, headers, and body bytes actually transferred over HTTP; it excludes database structure, internal objects, and local execution strategy.
 
@@ -69,6 +69,7 @@ The following table is the complete v1 surface. Its synchronization surface cont
 | `POST` | `/s2s/v1/healthy`                   | status signed          | JSON signer domain        | `200`       | bare privacy-safe status |
 | `POST` | `/s2s/v1/feed-heads`                | lightweight signed     | JSON feed-head hint       | `200`       | success ACK envelope     |
 | `GET`  | `/s2s/v1/state-feed`                | recognized signed      | feed query                | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/group-meta`                | recognized signed      | group/meta mode query     | `200`       | success data envelope    |
 | `GET`  | `/s2s/v1/message-feed`              | recognized signed      | feed query                | `200`       | success data envelope    |
 | `GET`  | `/s2s/v1/message-tombstone-feed`    | recognized signed      | feed query                | `200`       | success data envelope    |
 | `GET`  | `/s2s/v1/messages`                  | recognized signed      | thread data query         | `200`       | success data envelope    |
@@ -123,25 +124,25 @@ Each operation specification defines its body's top-level type, required fields,
 
 When an operation references a type in this table, it MUST follow the listed format, range, and normalization requirements and MUST NOT redefine or weaken them.
 
-| Name                     | v1 wire grammar and semantics                                                                                                                                                                                 |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Domain`                 | A lower-case ASCII DNS name, 1–253 characters overall, with labels of 1–63 characters containing only `a-z`, `0-9`, and `-`. A label MUST NOT begin or end with `-`. The wire value has no trailing root dot. |
-| `UserAccount`            | A normalized lower-case ASCII user account matching `^[a-z0-9][a-z0-9._-]{0,29}$`, 1–30 characters overall.                                                                                                   |
+| Name                     | v1 wire grammar and semantics                                                                                                                                                                                                                                                                               |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Domain`                 | A lower-case ASCII DNS name, 1–253 characters overall, with labels of 1–63 characters containing only `a-z`, `0-9`, and `-`. A label MUST NOT begin or end with `-`. The wire value has no trailing root dot.                                                                                               |
+| `UserAccount`            | A normalized lower-case ASCII user account matching `^[a-z0-9][a-z0-9._-]{0,29}$`, 1–30 characters overall.                                                                                                                                                                                                 |
 | `GroupAccount`           | A globally unique, immutable group identifier: `!` followed by a normalized lower-case ASCII opaque ID matching `^![a-z0-9]{2,30}$`, 3–31 characters overall. Creators MUST mint it with enough cryptographic randomness to make federation-wide collision negligible, and MUST retry on a local collision. |
-| `Account`                | A `UserAccount` or `GroupAccount`. It is case-sensitive and accepts only the lower-case forms above. An operation MUST reject an account of the wrong resource type.                                          |
-| `Address`                | The closed JSON object `{ "account": Account, "domain": Domain }`.                                                                                                                                            |
-| `DecimalString`          | The literal `"0"`, or a non-empty string of ASCII decimal digits without a leading `0`. It MUST NOT be replaced by a JSON number.                                                                             |
-| `SignedDecimalString`    | The literal `"0"`, or an optional `-` followed by a non-empty string of ASCII decimal digits without a leading `0`. `-0` is forbidden. It MUST NOT be replaced by a JSON number.                              |
-| `PositiveDecimalString`  | A non-empty string whose first character is `1..9` and remaining characters are `0..9`.                                                                                                                       |
-| `SafeInteger`            | A JSON integer in `0..9007199254740991`.                                                                                                                                                                      |
-| `PositiveSafeInteger`    | A JSON integer in `1..9007199254740991`.                                                                                                                                                                      |
-| `ThreadSequence`         | A JSON integer in `1..9007199254740990` (`SafeInteger - 1`). The remaining safe-integer value is reserved as the maximum exclusive reverse-query cursor.                                                       |
-| `EpochMilliseconds`      | Unix epoch milliseconds encoded as a `SafeInteger`.                                                                                                                                                           |
-| `Sha256Hex`              | `^[a-f0-9]{64}$`.                                                                                                                                                                                             |
-| `Base64Ed25519Key`       | RFC 4648 padded base64 decoding to exactly 32 bytes.                                                                                                                                                          |
-| `Base64Ed25519Signature` | RFC 4648 padded base64 decoding to exactly 64 bytes.                                                                                                                                                          |
-| `KeyId`                  | `Domain "/" KeyName`, where `KeyName` matches `^[A-Za-z0-9._-]{1,64}$`; the complete string before the first `/` is the signer domain.                                                                        |
-| `CanonicalUuid`          | Lower-case RFC 4122 text form with version nibble `1..8` and variant nibble `8`, `9`, `a`, or `b`.                                                                                                            |
+| `Account`                | A `UserAccount` or `GroupAccount`. It is case-sensitive and accepts only the lower-case forms above. An operation MUST reject an account of the wrong resource type.                                                                                                                                        |
+| `Address`                | The closed JSON object `{ "account": Account, "domain": Domain }`.                                                                                                                                                                                                                                          |
+| `DecimalString`          | The literal `"0"`, or a non-empty string of ASCII decimal digits without a leading `0`. It MUST NOT be replaced by a JSON number.                                                                                                                                                                           |
+| `SignedDecimalString`    | The literal `"0"`, or an optional `-` followed by a non-empty string of ASCII decimal digits without a leading `0`. `-0` is forbidden. It MUST NOT be replaced by a JSON number.                                                                                                                            |
+| `PositiveDecimalString`  | A non-empty string whose first character is `1..9` and remaining characters are `0..9`.                                                                                                                                                                                                                     |
+| `SafeInteger`            | A JSON integer in `0..9007199254740991`.                                                                                                                                                                                                                                                                    |
+| `PositiveSafeInteger`    | A JSON integer in `1..9007199254740991`.                                                                                                                                                                                                                                                                    |
+| `ThreadSequence`         | A JSON integer in `1..9007199254740990` (`SafeInteger - 1`). The remaining safe-integer value is reserved as the maximum exclusive reverse-query cursor.                                                                                                                                                    |
+| `EpochMilliseconds`      | Unix epoch milliseconds encoded as a `SafeInteger`.                                                                                                                                                                                                                                                         |
+| `Sha256Hex`              | `^[a-f0-9]{64}$`.                                                                                                                                                                                                                                                                                           |
+| `Base64Ed25519Key`       | RFC 4648 padded base64 decoding to exactly 32 bytes.                                                                                                                                                                                                                                                        |
+| `Base64Ed25519Signature` | RFC 4648 padded base64 decoding to exactly 64 bytes.                                                                                                                                                                                                                                                        |
+| `KeyId`                  | `Domain "/" KeyName`, where `KeyName` matches `^[A-Za-z0-9._-]{1,64}$`; the complete string before the first `/` is the signer domain.                                                                                                                                                                      |
+| `CanonicalUuid`          | Lower-case RFC 4122 text form with version nibble `1..8` and variant nibble `8`, `9`, `a`, or `b`.                                                                                                                                                                                                          |
 
 v1 accepts only normalized `Domain` and `Account` values on the wire. A sender MUST send both as lower-case ASCII. The RFC 6762 special-use `.local` namespace is not a globally stable server identity, so `local` and any `Domain` ending in `.local` MUST NOT appear on the SOCFP wire. An implementation may use `local` as an internal storage marker, but it MUST convert that marker to the server's real `Domain` at the federation boundary and MUST NOT expose it to a peer.
 
@@ -209,15 +210,43 @@ An accepted cursor position represents every accepted item through that position
 
 ## 8. Durable state and lifecycle
 
-`state-feed` carries home-owned `PROFILE`, source-scoped `MEMBER_PROFILE`, one account-generic `RELATIONSHIP_INTENT`, and origin-authoritative `GROUP_META`. Snapshots are applied by stable key in `feedId` order. User/user and user/group query authorization is directional: an effective `REQUESTED` or valid `ACCEPTED` authored by the source grants the target peer identical access to that source's relationship data. The source MUST be able to serve that access before publishing either state; reverse confirmation does not expand it. Group/group relationships are invalid. Initiating or accepting creates the local placeholder account and thread; later profile state supplies display metadata. The origin aggregates effective group relationships and roles into `GROUP_META`.
+`state-feed` carries home-owned `PROFILE`, one account-generic `RELATIONSHIP_INTENT`, and `GROUP_META_FEED_HEAD` hints. The group-meta feed is the sole source of group members, roles, and source-scoped member profiles. Its first read is `full`; later reads use `delta`, with `DELETE` records for departed members. User/user and user/group query authorization is directional: an effective `REQUESTED` or valid `ACCEPTED` authored by the source grants the target peer identical access to that source's relationship data. Group/group relationships are invalid.
 
-[Federation v1 State Feed](./state-feed.md) defines complete pages, all four event bodies, field constraints, and merge semantics. [Federation v1 Message Feed](./message-feed.md) defines the compacted `thread + messageEndSeq` index and `/messages` query. [Message](./message.md) defines the ten core message contents and their media and forward bodies. [Federation v1 Message Tombstone Feed](./message-tombstone-feed.md) defines the compacted tombstone index and authoritative deletion query. Those documents and this one jointly form the v1 normative text; this summary cannot override their field-level requirements.
+[Federation v1 State Feed](./state-feed.md) defines complete pages, its three event bodies, field constraints, and merge semantics. [Group Meta Feed](./group-meta.md) defines per-peer group-member projection. [Federation v1 Message Feed](./message-feed.md) defines the compacted `thread + messageEndSeq` index and `/messages` query. [Message](./message.md) defines the ten core message contents and their media and forward bodies. [Federation v1 Message Tombstone Feed](./message-tombstone-feed.md) defines the compacted tombstone index and authoritative deletion query. Those documents and this one jointly form the v1 normative text; this summary cannot override their field-level requirements.
 
 One-to-one real-time calls use WebRTC media/JSEP and signed `/s2s/v1/call` frames for federation signaling. [Federation v1 Audio and Video Calls](./calls.md) defines the complete HTTP operation, frame, lifecycle, failure semantics, and one-way AUDIO-to-VIDEO upgrade on the same connection. Real-time frames do not enter a feed; terminal history is an ordinary `CALL` message.
 
-Relationship revocation, leaving, removal, dissolution, and profile or roster updates MUST converge through durable state and cannot depend on a revision hint or ordinary message payload.
+Relationship revocation, leaving, removal, dissolution, and profile or roster updates MUST converge through durable state and cannot depend on a feed-head hint or ordinary message payload.
 
 Authorization revocation stops subsequent allocation but does not delete historical proof already allocated to a peer. Historical reads and media authorization validate their respective thread audiences; message-feed allocation cannot replace resource authorization for media or a forward bundle. A server's local group capacity, quota, and retention policy are not protocol constants.
+
+### 8.1 State-derived authorization closure
+
+All state, group-meta, message-index, tombstone-index, thread-query, media, and
+forward-bundle operations MUST derive their disclosure and authorization from
+the same durable directional relationships, effective group members, thread
+audiences, and historical allocation proofs that state-feed converges. An item,
+feed head, retained cursor, cached mirror, or prior successful
+request is never authorization proof by itself.
+
+The required closure is:
+
+| Operation                                   | Required state-derived rule                                                                                                                                                  |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `state-feed`                                | Publishes only relationship facts authored for the peer and profile/feed-head projections visible through those durable facts.                                               |
+| `group-meta`                                | Publishes only the target peer's projection derived from effective group-member relationships. It cannot add a member not justified by that origin's durable state.          |
+| `message-feed` and `message-tombstone-feed` | Allocate or retain discovery entries only for thread audiences justified by the durable state and the operation's historical rules. An index entry grants no content access. |
+| `/messages` and `/message-tombstones`       | Recompute current relationship, group audience, and historical allocation authorization on every request; stale index state returns no authority.                            |
+| Media and forward bundles                   | Recompute the exact authorized message/thread binding independently of every feed cursor or hint.                                                                            |
+
+Consumers MUST drain state first and MUST NOT use data learned from another
+feed to invent a relationship or member absent from the applicable state
+closure. Publishers MUST return `FORBIDDEN` when the current closure does not
+authorize an operation. When a peer's last effective group member leaves, the
+origin-authored `RELATIONSHIP_INTENT` becomes `REVOKED` and group-meta access
+ends; no terminal group-meta exception exists. Member `DELETE` records remain
+available only to other peers whose origin-authored `ACCEPTED` relationship
+still authorizes group-meta access.
 
 ## 9. Feeds, delivery, cursors, and media recovery
 
@@ -239,7 +268,7 @@ This specification uses the following feed-coordinate terms consistently. An unq
 - `after`: the exclusive scan position supplied by the consumer. The source does not treat it as an ACK or validate monotonicity.
 - `through`: the inclusive upper bound of a bounded drain. It is not an acknowledgement.
 - `scannedThrough`: the direction-relative boundary through which a page has scanned continuously. It becomes the next `after` for a forward query or the next `before` for a reverse thread query after successful commit.
-- `resumeAfter` and `resumeBefore`: the source's exclusive lower and upper serviceable boundaries. Every cursor-unavailable result carries both; a forward query adopts `resumeAfter`, while a reverse thread query adopts `resumeBefore`.
+- `resumeAfter` and `resumeBefore`: the source's exclusive lower and upper serviceable boundaries for feed and thread-query recovery. A forward query adopts `resumeAfter`, while a reverse thread query adopts `resumeBefore`. Group Meta delta recovery changes to Full mode as defined by [Group Meta Feed](./group-meta.md).
 - `stateFeedEndId`, `messageFeedEndId`, and `tombstoneFeedEndId`: the three independent inclusive drain bounds published by `feed-heads`. They are drain targets, not consumer cursors, business revisions, thread-authorization boundaries, or relationship-terminal positions, and MUST NOT appear in a `RELATIONSHIP_INTENT` body.
 - `messageEndSeq` and `tombstoneEndSeq`: inclusive upper bounds for queryable content in a thread. They belong to two thread-local coordinate spaces and are not feed IDs.
 - The stable federation-thread key is the canonical source-user/target-peer-user
@@ -258,7 +287,7 @@ message `seq` or tombstone `deletionSeq` greater than `SafeInteger - 1`.
 
 ### 9.2 Common feed rules
 
-Each of the three feeds permits omitting `after` to query its current available window. The source then returns `FEDERATION_FEED_CURSOR_UNAVAILABLE` with both `resumeAfter` and `resumeBefore` and no page. A request omitting `after` MUST NOT carry another page parameter. `resumeAfter` is the feed's forward bootstrap base and `resumeBefore` is one greater than the current feed end. Draining from `resumeAfter` MUST reveal the complete compacted projection currently visible to that peer. The source MUST NOT simply return the current feed end and skip existing current items.
+Each of the three cross-thread feeds permits omitting `after` to query its current available window. The source then returns `FEDERATION_FEED_CURSOR_UNAVAILABLE` with both `resumeAfter` and `resumeBefore` and no page. A request omitting `after` MUST NOT carry another page parameter. `resumeAfter` is the feed's forward bootstrap base and `resumeBefore` is one greater than the current feed end. State feed MUST reconstruct its complete current projection from that base. Message feed reconstructs the retained discovery window allowed by its capacity policy. A source MUST NOT skip an item that its operation requires to remain in the advertised window.
 
 Each feed permits optional `take` and the inclusive feed-ID upper bound `through`. `take` is only the consumer's suggested scan count; the source SHOULD consider it but MAY choose another page size according to service capacity. The operation defines exact rules for each feed. Consecutive pagination with `through` MUST keep the value unchanged. It limits only the read window and is not an acknowledgement, deletion, or historical-degradation operation. Each feed has an independent per-peer allocator and consumer-local cursor; the source does not retain a consumer ACK or cursor. A page returns `scannedThrough`, its feed end, and `hasMore`.
 
@@ -266,7 +295,7 @@ Every feed-ID window is open on the left and closed on the right. `after=A&throu
 
 Applying a page and adopting its cursor position MUST be atomic from the protocol's perspective. A repeated page MUST be idempotent. An empty page may still advance through `scannedThrough`. The source does not validate whether `after` equals the preceding page; the consumer ensures its local cursor never moves backward. Feed IDs need only strictly increase, not remain contiguous. `scannedThrough` and the next item ID MAY cross arbitrarily large deleted or unallocated gaps.
 
-All three feeds are durable compacted projections and MUST NOT establish a retained floor based on time, capacity, or historical cleanup. A new item may replace an old stable-key item but MUST receive a greater feed ID. Under its operation rules, state feed may omit a member projection with no remaining visibility source. After a relationship ends, message and tombstone feeds may independently remove the current peer/thread projection without moving their feed ends backward. The two data feeds have independent thread sets and need not align; a thread with no withdrawal may have only a message projection. Recreating a removed projection MUST allocate a new, greater feed ID. Body cleanup affects only message query. Tombstone facts remain permanent even when loss of authorization removes their current discovery-index projection.
+Feed retention is operation-specific. State feed MUST retain every current non-deletion stable-key projection needed to rebuild from its advertised oldest boundary. Group-meta MUST retain every current `UPSERT`, but MAY prune old member `DELETE` records under capacity pressure; an affected delta cursor is explicitly unavailable and recovers through `full`. Message feed MAY prune older discovery-index projections under capacity pressure and advance its advertised lower boundary. A source MUST never disguise a pruned interval as a successful empty page. Message-feed pruning does not delete message entities; message query has its independent serviceable window. Tombstone facts remain permanent even when loss of authorization removes their current discovery-index projection.
 
 The closed `feed-heads` fields are `origin`, `stateFeedEndId`, `messageFeedEndId`, and `tombstoneFeedEndId`. The three ends are independent inclusive scan bounds for compacted feeds, used only for wake-up and bounded draining. They are not ACKs, business revisions, or query sequences. A publisher MUST commit state and its feed index before making a dependent data-feed item visible. A hint may be lost, duplicated, or reordered and MUST NOT be the sole recovery mechanism.
 

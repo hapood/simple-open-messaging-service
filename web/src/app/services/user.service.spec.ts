@@ -77,9 +77,9 @@ describe('UserService profile refresh', () => {
               .mockResolvedValue(undefined),
             getMeta: vi.fn().mockName('getMeta').mockResolvedValue(undefined),
             putMeta: vi.fn().mockName('putMeta').mockResolvedValue(undefined),
-            cleanupExpiredPendingFriendProfiles: vi
+            cleanupFriendRequests: vi
               .fn()
-              .mockName('cleanupExpiredPendingFriendProfiles')
+              .mockName('cleanupFriendRequests')
               .mockResolvedValue(undefined),
           },
         },
@@ -229,9 +229,9 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
               domain: '',
             }),
             putMeta: vi.fn().mockName('putMeta').mockResolvedValue(undefined),
-            cleanupExpiredPendingFriendProfiles: vi
+            cleanupFriendRequests: vi
               .fn()
-              .mockName('cleanupExpiredPendingFriendProfiles')
+              .mockName('cleanupFriendRequests')
               .mockResolvedValue(undefined),
           },
         },

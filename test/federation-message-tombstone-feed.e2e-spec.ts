@@ -37,7 +37,12 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
     service = new FederationMessageTombstoneFeedService(database);
   });
 
-  afterAll(async () => mod.close());
+  afterAll(async () => {
+    await database.pool.query(
+      'TRUNCATE TABLE "User", "FederatedPeer" RESTART IDENTITY CASCADE',
+    );
+    await mod.close();
+  });
 
   async function seedDeletion() {
     const now = new Date('2026-08-12T01:02:03.000Z');

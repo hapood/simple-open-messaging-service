@@ -81,7 +81,7 @@ export class NativeEventTransport extends RealtimeTransport {
   /** A connection-state transition from Kotlin. Forwards it to the banner, AND emits the reconnect backfill
    *  pulse on every open after the first — so a native reconnect (Android resume after the stream was
    *  dropped, or a transient-drop recovery) drives the SAME downstream backfill the worker transport does:
-   *  `ThreadRepository` force-reboots the list snapshot, and `MissedSyncService` catches up missed message
+   *  `ThreadRepository` force-reboots the list snapshot, and `ThreadCatchUpService` catches up missed message
    *  bodies. Without this, `reconnect$` (and thus post-resume catch-up) would be dead on Android, since the
    *  native transport owns no connection of its own to observe. */
   private onConnState(state: ConnectionState): void {

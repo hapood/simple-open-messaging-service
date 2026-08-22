@@ -276,5 +276,5 @@ describe('Federation destructive reset', () => {
         ),
       );
     expect(inheritedParticipants).toHaveLength(0);
-  });
+  }, 120_000);
 });

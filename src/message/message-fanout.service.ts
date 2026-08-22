@@ -60,7 +60,7 @@ export class MessageFanoutService {
     const senderUserId = message.creator;
     const threadId = message.threadId;
     // Identity-only signal — every signal (SSE + push) carries only {threadId, seq, ts}; the body is
-    // pulled by the client via /notifications/missed + /query-messages (single data source).
+    // pulled by the client via the message feed + /query-messages (single data source).
     const ts = message.createdAt.getTime();
     // Unified fan-out: every active participant of the thread (P2P = both sides, GROUP = all members).
     const participants =

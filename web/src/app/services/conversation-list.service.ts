@@ -3,7 +3,6 @@ import { UserService } from './user.service';
 import { GroupService } from './group.service';
 import { ThreadRepository } from './thread-store.service';
 import { User } from './model';
-import type { MissedCursor } from './notification-descriptor.model';
 
 export { ConversationLoadStatus } from './thread-store.service';
 
@@ -82,11 +81,11 @@ export class ConversationListService {
   readonly readCommitPending = this.repo.readCommitPending;
   readonly topInserted = this.repo.topInserted;
   /** The persisted high-water mark (the away-notification `since`). A METHOD delegator, NOT a `readonly =`
-   *  field like the signal delegations above — the repo exposes `missedCursor` as a method (not a bound
+   *  field like the signal delegations above — the repo exposes `messageFeedCursor` as a method (not a bound
    *  signal), so a field copy would capture an UNBOUND method and throw on call (it was, silently, caught by
    *  the away-renderer's try/catch). Delegates to the repo. */
-  missedCursor(): MissedCursor | null {
-    return this.repo.missedCursor();
+  messageFeedCursor(): number {
+    return this.repo.messageFeedCursor();
   }
 
   /** The per-thread dismiss-HWM map (sent as `threadHwms` on the away fetch). Delegates to the repo. */
@@ -94,14 +93,8 @@ export class ConversationListService {
     return this.repo.threadHwms();
   }
 
-  /** Advance the away-HWM to `cursor` — the away-notification dismiss path (acknowledge the batch so the next
-   *  background fetch's `since` gates past it). Delegates to the repo. */
-  advanceMissedCursor(cursor: MissedCursor): void {
-    this.repo.advanceMissedCursor(cursor);
-  }
-
   /** Record a per-thread dismiss (advance that thread's HWM to `seq`). Delegates to the repo. */
-  recordThreadDismiss(c: MissedCursor): void {
+  recordThreadDismiss(c: { threadId: number; seq: number }): void {
     this.repo.recordThreadDismiss(c);
   }
 

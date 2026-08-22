@@ -2001,7 +2001,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         expect(row).toBeDefined();
         return row!;
       },
-      { timeout: 5000, interval: 100 },
+      // Group propagation is durable but asynchronous. Under a full multi-worker
+      // run it can fall back to the missed-feed sweep instead of the immediate
+      // wake-up, so use the same budget as the other durable-feed assertions.
+      { timeout: 40_000, interval: 150 },
     );
 
     // The owner is already member #1. Fill the origin roster to its local
@@ -2223,7 +2226,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           }),
         ).toBeUndefined();
       },
-      { timeout: 5000, interval: 100 },
+      { timeout: 40_000, interval: 150 },
     );
     await vi.waitFor(
       async () => {
@@ -2234,7 +2237,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           await findActiveP2pBetween(appB, bobLocalIdB, aliceStubIdOnB),
         ).toEqual(oldThreadB);
       },
-      { timeout: 5000, interval: 100 },
+      { timeout: 40_000, interval: 150 },
     );
 
     const [resumedAudience, targetBeforeContinue, peerBeforeContinue] =
@@ -2285,9 +2288,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           }),
         ).toBeDefined();
       },
-      { timeout: 5000, interval: 100 },
+      { timeout: 40_000, interval: 150 },
     );
-  });
+  }, 120_000);
 
   it('rejects an inbound state wake-up signed by an untrusted domain', async () => {
     // evil.local: a real Ed25519 key, but never init'd → not in FederatedPeer.

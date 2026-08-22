@@ -626,11 +626,6 @@ export class GroupService {
             params.targetUserId,
             params.threadId,
           );
-      const [targetIdentity] = await tx
-        .select({ domain: user.domain, isForeigner: user.isForeigner })
-        .from(user)
-        .where(eq(user.id, params.targetUserId))
-        .limit(1);
       const clientRevisions: Array<{ userId: number; revision: number }> = [];
       const requestState =
         await this.federation.writeGroupRelationshipIntentInTx(
@@ -644,7 +639,6 @@ export class GroupService {
       const groupState = await this.federation.writeGroupStateInTx(
         tx,
         params.threadId,
-        targetIdentity?.isForeigner ? [targetIdentity.domain] : [],
       );
       const refreshes =
         await this.threadRevisionService.recordActiveLocalThreadRefreshInTx(

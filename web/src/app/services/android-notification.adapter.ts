@@ -15,7 +15,7 @@ import type { NotificationDescriptor } from './notification-descriptor.model';
  * Dormant in practice: the WebView is never unfocused while the activity is alive, so the foreground
  * {@link UnreadAttentionService} never fires `showDescriptor` on Android — background delivery is owned
  * natively by the FCM / WorkManager / RealtimeService paths (which render the SAME descriptor from the
- * `/notifications/missed` pull).
+ * `/notification-feed/query` pull).
  */
 export class AndroidNotificationAdapter extends NotificationAdapter {
   async showDescriptor(d: NotificationDescriptor): Promise<void> {

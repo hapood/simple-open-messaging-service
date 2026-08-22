@@ -1522,7 +1522,7 @@ class MainActivity : TauriActivity() {
         }
 
         /** Push the session token (POST /auth/login, app client) into encrypted storage so the Kotlin-owned
-         *  /events stream (RealtimeService) and the background `/notifications/missed` fetchers
+         *  /events stream (RealtimeService) and the background `/notification-feed/query` fetchers
          *  (FCM / WorkManager) can authenticate while the WebView is suspended. Called from JS on login;
          *  pass null/empty on logout to clear. */
         @JavascriptInterface
@@ -1540,6 +1540,13 @@ class MainActivity : TauriActivity() {
                     Intent(a, RealtimeService::class.java).setAction(RealtimeService.ACTION_FOREGROUND),
                 )
             }
+        }
+
+        /** Mirror the WebView's committed per-user message-feed cursor for background notification queries. */
+        @JavascriptInterface
+        fun setMessageFeedCursor(cursor: Int) {
+            val a = activityRef.get() ?: return
+            if (cursor >= 0) ClientStateDb.setMessageFeedCursor(a, cursor)
         }
 
         /** Synchronous read of the persisted session token from encrypted storage — the SAME store

@@ -4,7 +4,7 @@ import { ConversationListService } from './conversation-list.service';
 import { WebsocketService } from './websocket.service';
 import { isAndroidNative, isTauri } from './runtime';
 import { NotificationPrefsService } from './notification-prefs.service';
-import { MissedSyncService } from './missed-sync.service';
+import { NotificationFeedService } from './notification-feed.service';
 import { NotificationAdapter } from './notification-adapter';
 import { BrowserNotificationAdapter } from './browser-notification.adapter';
 import { TauriNotificationAdapter } from './tauri-notification.adapter';
@@ -20,8 +20,8 @@ import { SOMS_NOTIF_MSG, type SwNotifMessage } from './sw-notif-protocol';
  *     (the Slack/Discord/Telegram convention: a static prefix, NOT a blinking toggle). `document.title`
  *     drives BOTH a browser tab's title AND — on Tauri desktop — the OS window title (Tauri syncs it
  *     automatically), so one mechanism covers both surfaces.
- *  2. On each NEW_MESSAGE arriving while unfocused, **debounced-pulls** `/notifications/missed` (no cursor
- *     → the current unread snapshot) and renders the server-authored descriptor(s) via the per-platform
+ *  2. On each NEW_MESSAGE arriving while unfocused, debounces `/notification-feed/query` from the frozen
+ *     foreground cursor and renders the server-authored descriptor(s) via the per-platform
  *     {@link NotificationAdapter}. A burst collapses into one trailing pull (the server composes the body +
  *     the stacked-avatar icon, so there is no local tally/composition). The notification is dismissed the
  *     instant the window regains focus.
@@ -35,11 +35,12 @@ export class UnreadAttentionService {
   private readonly convList = inject(ConversationListService);
   private readonly ws = inject(WebsocketService);
   private readonly prefs = inject(NotificationPrefsService);
-  private readonly missedSync = inject(MissedSyncService);
+  private readonly notificationFeed = inject(NotificationFeedService);
   private readonly nav = inject(NavStateMachineService);
 
   /** The page's original title, captured at construction before any prefix is applied. */
-  private readonly baseTitle = typeof document !== 'undefined' ? document.title : 'SOMS';
+  private readonly baseTitle =
+    typeof document !== 'undefined' ? document.title : 'SOMS';
   /** Whether the window/tab currently has focus. Drives the title-prefix + notification gate. */
   private readonly focused = signal(true);
 
@@ -54,10 +55,13 @@ export class UnreadAttentionService {
     this.convList.items().reduce((sum, it) => sum + (it.unreadCount ?? 0), 0),
   );
 
-  /** Coalesce a burst of NEW_MESSAGE frames into one trailing missed-summary pull + render. The server
+  /** Coalesce a burst of NEW_MESSAGE frames into one trailing notification-feed query + render. The server
    *  composes the descriptor, so a single debounced fetch (not a per-message post) is enough. */
   private static readonly DEBOUNCE_MS = 300;
   private awayFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Frozen message-feed cursor from the foreground→away edge. Reusing it makes replacement cards
+   * cumulative for the whole away period even though thread catch-up continues in parallel. */
+  private awayAfter = 0;
 
   /** Per-platform notification display adapter (browser / desktop-Tauri / Android), selected once at
    *  construction — this class delegates every render to it and carries no platform branching. */
@@ -74,8 +78,12 @@ export class UnreadAttentionService {
       : new BrowserNotificationAdapter(this.prefs);
     // Track focus. visibilitychange catches tab-switch; blur/focus catches the window losing focus to
     // another app without the tab hiding (the desktop case the user specifically wants covered).
-    window.addEventListener('blur', () => this.onFocusChange(false), { passive: true });
-    window.addEventListener('focus', () => this.onFocusChange(true), { passive: true });
+    window.addEventListener('blur', () => this.onFocusChange(false), {
+      passive: true,
+    });
+    window.addEventListener('focus', () => this.onFocusChange(true), {
+      passive: true,
+    });
     document.addEventListener('visibilitychange', () =>
       this.onFocusChange(document.visibilityState === 'visible'),
     );
@@ -85,7 +93,9 @@ export class UnreadAttentionService {
     // SW postMessages the page (spec-delivered even though ngsw, not sw-push, controls this page). Routed in
     // {@link onSwMessage} to the per-thread HWM store (dismiss) + thread navigation (open).
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.addEventListener('message', (e) => this.onSwMessage(e));
+      navigator.serviceWorker.addEventListener('message', (e) =>
+        this.onSwMessage(e),
+      );
     }
 
     // React to unread/focus changes: apply or clear the "(N)" title prefix.
@@ -101,6 +111,8 @@ export class UnreadAttentionService {
   }
 
   private onFocusChange(focused: boolean): void {
+    if (!focused && this.focused())
+      this.awayAfter = this.convList.messageFeedCursor();
     // The effect owns document.title; flipping `focused` re-runs it and restores the base title.
     this.focused.set(focused);
     if (focused) this.dismissActive();
@@ -111,7 +123,9 @@ export class UnreadAttentionService {
    *  effect so it reacts to unread/focus changes. */
   private syncTitle(unread: number, focused: boolean): void {
     document.title =
-      unread > 0 && !focused ? `(${this.unreadTotal()}) ${this.baseTitle}` : this.baseTitle;
+      unread > 0 && !focused
+        ? `(${this.unreadTotal()}) ${this.baseTitle}`
+        : this.baseTitle;
   }
 
   /** Tear down the away notification when the user returns to the tab: cancel any pending pull (so a
@@ -165,12 +179,15 @@ export class UnreadAttentionService {
    *  Fire-and-forget. */
   private async pullAndRender(): Promise<void> {
     try {
-      const notifications = await this.missedSync.fetchAwayNotifications(
-        this.convList.missedCursor(),
+      const result = await this.notificationFeed.query(
+        this.awayAfter,
         this.prefs.previewMode(),
         this.convList.threadHwms(),
       );
-      await Promise.all(notifications.map((d) => this.adapter.showDescriptor(d)));
+      if (!result) return;
+      await Promise.all(
+        result.notifications.map((d) => this.adapter.showDescriptor(d)),
+      );
     } catch {
       /* best-effort — a transient fetch failure just means no notification this cycle */
     }

@@ -11,6 +11,10 @@ import { RemoteFeedCursorUnavailableError } from './federation-feed-cursor-error
 export interface PeerStateFeedPullCallbacks {
   fetch(after?: bigint, through?: bigint): Promise<PeerStateFeedPage>;
   apply(tx: DatabaseTransaction, page: PeerStateFeedPage): Promise<void>;
+  /** Start a replacement rebuild after the publisher rejects our cursor. The
+   * callback and corrected cursor are committed together, before the first
+   * replacement page is requested. */
+  beginRebuild?(tx: DatabaseTransaction): Promise<void>;
   afterCommit?(page: PeerStateFeedPage): Promise<void> | void;
   afterDrain?(through: bigint): Promise<void> | void;
 }
@@ -124,6 +128,7 @@ export class PeerStateFeedPullService {
         ) {
           throw new Error('peer returned an invalid state-feed resume cursor');
         }
+        await callbacks.beginRebuild?.(tx);
         await tx
           .update(peerStateFeedPullCursor)
           .set({

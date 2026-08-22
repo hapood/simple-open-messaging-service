@@ -287,7 +287,7 @@ client parsing/rendering failures are logged and replaced with a generic localiz
 
 ### Federation
 
-Two SOMS instances federate over HTTPS with RFC 9421-signed S2S requests (`FederationModule`). Identity is `user@domain`; state and messages propagate through two pull feeds plus a lightweight revision hint, while media uses exact-message-authorized `/media/:digest` Range requests. Pinned peer identity and daily quotas bound the trust and traffic. See [federation-protocol.md](./federation-protocol.md).
+Two SOMS instances federate over HTTPS with RFC 9421-signed S2S requests (`FederationModule`). Identity is `user@domain`; state, Group Meta, message indexes, and tombstone indexes propagate through pull feeds plus lightweight feed-head hints, while media uses exact-message-authorized `/media/:digest` Range requests. Pinned peer identity and daily quotas bound the trust and traffic. See [federation-protocol.md](./federation-protocol.md).
 
 ## Known Issues and Improvements
 

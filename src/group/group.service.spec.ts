@@ -158,7 +158,6 @@ describe('GroupService membership lifecycle', () => {
         ],
         [target],
         [{ groupUserId: 99 }],
-        [],
         [
           {
             id: 7,

@@ -147,7 +147,6 @@ describe('FederationService state-feed drain window', () => {
         ) => Promise<void>;
       };
       pullStateFeedPage: typeof pullStateFeedPage;
-      sweepFederatedMemberProfiles: (domain: string) => Promise<void>;
       readStatePullCursor: (domain: string) => Promise<bigint>;
     };
     target.stateFeedPull = {
@@ -157,7 +156,6 @@ describe('FederationService state-feed drain window', () => {
       }),
     };
     target.pullStateFeedPage = pullStateFeedPage;
-    target.sweepFederatedMemberProfiles = vi.fn().mockResolvedValue(undefined);
     target.readStatePullCursor = vi.fn().mockResolvedValue(5n);
 
     await svc.pullStateFromPeer('peer.test', 5n);

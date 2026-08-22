@@ -3,37 +3,17 @@
   "$id": "urn:socfp:v1:state-feed",
   "title": "GET /s2s/v1/state-feed response data",
   "$defs": {
-    "profileAvatar": {
+    "avatar": {
       "type": "object",
       "required": ["digest", "mimeType", "base64", "width", "height"],
       "properties": {
         "digest": { "$ref": "urn:socfp:v1:common#/$defs/sha256Hex" },
         "mimeType": { "type": "string", "minLength": 1 },
         "base64": { "type": "string", "minLength": 4, "maxLength": 1048576 },
-        "width": {
-          "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
-        },
-        "height": {
-          "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
-        }
+        "width": { "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger" },
+        "height": { "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger" }
       },
       "additionalProperties": false
-    },
-    "intentProperties": {
-      "status": { "enum": ["REQUESTED", "ACCEPTED", "REVOKED"] },
-      "note": { "type": "string", "maxLength": 255 },
-      "requestedAt": {
-        "oneOf": [
-          { "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds" },
-          { "type": "null" }
-        ]
-      },
-      "expiresAt": {
-        "oneOf": [
-          { "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds" },
-          { "type": "null" }
-        ]
-      }
     },
     "profileBody": {
       "type": "object",
@@ -45,21 +25,7 @@
         "displayName": { "type": "string", "minLength": 1, "maxLength": 30 },
         "bio": { "type": "string", "maxLength": 120 },
         "avatar": {
-          "oneOf": [{ "$ref": "#/$defs/profileAvatar" }, { "type": "null" }]
-        }
-      },
-      "additionalProperties": false
-    },
-    "memberProfileBody": {
-      "type": "object",
-      "required": ["profileRev", "displayName", "avatar"],
-      "properties": {
-        "profileRev": {
-          "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
-        },
-        "displayName": { "type": "string", "minLength": 1, "maxLength": 30 },
-        "avatar": {
-          "oneOf": [{ "$ref": "#/$defs/profileAvatar" }, { "type": "null" }]
+          "oneOf": [{ "$ref": "#/$defs/avatar" }, { "type": "null" }]
         }
       },
       "additionalProperties": false
@@ -72,105 +38,32 @@
         "note": { "type": "string", "maxLength": 255 },
         "requestedAt": {
           "oneOf": [
-            {
-              "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds"
-            },
+            { "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds" },
             { "type": "null" }
           ]
         },
         "expiresAt": {
           "oneOf": [
-            {
-              "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds"
-            },
+            { "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds" },
             { "type": "null" }
           ]
         }
       },
-      "allOf": [
-        {
-          "if": {
-            "properties": { "status": { "const": "REQUESTED" } },
-            "required": ["status"]
-          },
-          "then": {
-            "properties": {
-              "requestedAt": { "type": "integer" },
-              "expiresAt": { "type": "integer" }
-            }
-          },
-          "else": { "properties": { "expiresAt": { "type": "null" } } }
-        }
-      ],
       "additionalProperties": false
     },
-    "groupMetaBody": {
+    "groupMetaFeedHeadBody": {
       "type": "object",
-      "required": [
-        "rosterRev",
-        "active",
-        "dissolved",
-        "owner",
-        "membersCanInvite",
-        "members"
-      ],
+      "required": ["groupMetaFeedEndId"],
       "properties": {
-        "rosterRev": {
-          "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
-        },
-        "active": { "type": "boolean" },
-        "dissolved": { "type": "boolean" },
-        "owner": {
-          "oneOf": [
-            { "$ref": "urn:socfp:v1:common#/$defs/address" },
-            { "type": "null" }
-          ]
-        },
-        "membersCanInvite": { "type": "boolean" },
-        "members": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "required": ["account", "domain", "role"],
-            "properties": {
-              "account": {
-                "$ref": "urn:socfp:v1:common#/$defs/userAccount"
-              },
-              "domain": {
-                "$ref": "urn:socfp:v1:common#/$defs/domain"
-              },
-              "role": { "enum": ["OWNER", "ADMIN", "MEMBER"] }
-            },
-            "additionalProperties": false
-          }
+        "groupMetaFeedEndId": {
+          "$ref": "urn:socfp:v1:common#/$defs/decimalString"
         }
       },
-      "allOf": [
-        {
-          "if": {
-            "properties": { "dissolved": { "const": true } },
-            "required": ["dissolved"]
-          },
-          "then": {
-            "properties": {
-              "active": { "const": false },
-              "owner": { "type": "null" },
-              "members": { "maxItems": 0 }
-            }
-          }
-        }
-      ],
       "additionalProperties": false
     },
     "itemBase": {
       "type": "object",
-      "required": [
-        "account",
-        "domain",
-        "eventType",
-        "feedId",
-        "body"
-      ],
+      "required": ["account", "domain", "eventType", "feedId", "body"],
       "properties": {
         "account": { "$ref": "urn:socfp:v1:common#/$defs/account" },
         "domain": { "$ref": "urn:socfp:v1:common#/$defs/domain" },
@@ -194,36 +87,9 @@
         {
           "$ref": "#/$defs/itemBase",
           "properties": {
-            "account": {
-              "$ref": "urn:socfp:v1:common#/$defs/userAccount"
-            },
-            "eventType": { "const": "MEMBER_PROFILE" },
-            "body": { "$ref": "#/$defs/memberProfileBody" }
-          },
-          "unevaluatedProperties": false
-        },
-        {
-          "$ref": "#/$defs/itemBase",
-          "properties": {
-            "account": {
-              "$ref": "urn:socfp:v1:common#/$defs/account"
-            },
             "eventType": { "const": "RELATIONSHIP_INTENT" },
-            "localAccount": {
-              "$ref": "urn:socfp:v1:common#/$defs/account"
-            },
+            "localAccount": { "$ref": "urn:socfp:v1:common#/$defs/account" },
             "body": { "$ref": "#/$defs/relationshipIntentBody" }
-          },
-          "not": {
-            "properties": {
-              "account": {
-                "$ref": "urn:socfp:v1:common#/$defs/groupAccount"
-              },
-              "localAccount": {
-                "$ref": "urn:socfp:v1:common#/$defs/groupAccount"
-              }
-            },
-            "required": ["account", "localAccount"]
           },
           "required": ["localAccount"],
           "unevaluatedProperties": false
@@ -231,11 +97,9 @@
         {
           "$ref": "#/$defs/itemBase",
           "properties": {
-            "account": {
-              "$ref": "urn:socfp:v1:common#/$defs/groupAccount"
-            },
-            "eventType": { "const": "GROUP_META" },
-            "body": { "$ref": "#/$defs/groupMetaBody" }
+            "account": { "$ref": "urn:socfp:v1:common#/$defs/groupAccount" },
+            "eventType": { "const": "GROUP_META_FEED_HEAD" },
+            "body": { "$ref": "#/$defs/groupMetaFeedHeadBody" }
           },
           "unevaluatedProperties": false
         }
@@ -246,12 +110,8 @@
   "required": ["items", "scannedThrough", "stateFeedEndId", "hasMore"],
   "properties": {
     "items": { "type": "array", "items": { "$ref": "#/$defs/item" } },
-    "scannedThrough": {
-      "$ref": "urn:socfp:v1:common#/$defs/decimalString"
-    },
-    "stateFeedEndId": {
-      "$ref": "urn:socfp:v1:common#/$defs/decimalString"
-    },
+    "scannedThrough": { "$ref": "urn:socfp:v1:common#/$defs/decimalString" },
+    "stateFeedEndId": { "$ref": "urn:socfp:v1:common#/$defs/decimalString" },
     "hasMore": { "type": "boolean" }
   },
   "additionalProperties": false
