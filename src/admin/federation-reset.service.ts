@@ -113,12 +113,9 @@ export class FederationResetService implements OnModuleInit {
           (SELECT count(*)::int FROM "ThreadParticipant" tp JOIN remote_users ru ON ru.id = tp."userId") AS "participantCount",
           (SELECT count(*)::int FROM affected_threads) AS "affectedThreadCount",
           (SELECT count(*)::int FROM "Message" m JOIN remote_users ru ON ru.id = m.creator) AS "authoredMessageCount",
-          ((SELECT count(*)::int FROM "FriendRequest" r
-             WHERE r."requesterUserId" IN (SELECT id FROM remote_users)
-                OR r."targetUserId" IN (SELECT id FROM remote_users))
-           + (SELECT count(*)::int FROM "GroupMembershipRequest" r
-             WHERE r."groupUserId" IN (SELECT id FROM remote_users)
-                OR r."memberUserId" IN (SELECT id FROM remote_users))) AS "inviteCount",
+          (SELECT count(*)::int FROM "RelationshipIntent" r
+             WHERE r."authorUserId" IN (SELECT id FROM remote_users)
+                OR r."subjectUserId" IN (SELECT id FROM remote_users)) AS "inviteCount",
           (SELECT count(*)::int FROM "UserBlock" b WHERE b."blockerId" IN (SELECT id FROM remote_users)
              OR b."blockedId" IN (SELECT id FROM remote_users)) AS "userBlockCount",
           (SELECT count(*)::int FROM "FederationDeletedCursor" WHERE "peerDomain" = ${normalized}) AS "deletionCursorCount",
@@ -267,8 +264,11 @@ export class FederationResetService implements OnModuleInit {
       sql`DELETE FROM "PendingMedia" WHERE "threadId" = ${threadId}`,
     );
     await this.database.db.execute(sql`
-      DELETE FROM "GroupMembershipRequest"
-      WHERE "groupUserId" = (
+      DELETE FROM "RelationshipIntent"
+      WHERE "authorUserId" = (
+        SELECT "groupUserId" FROM "MessageThread" WHERE id = ${threadId}
+      )
+         OR "subjectUserId" = (
         SELECT "groupUserId" FROM "MessageThread" WHERE id = ${threadId}
       )
     `);
@@ -330,18 +330,9 @@ export class FederationResetService implements OnModuleInit {
           SELECT id FROM "User"
           WHERE domain = ${domain} AND "isForeigner" = true
         )
-        DELETE FROM "FriendRequest"
-        WHERE "requesterUserId" IN (SELECT id FROM remote_users)
-           OR "targetUserId" IN (SELECT id FROM remote_users)
-      `);
-      await tx.execute(sql`
-        WITH remote_users AS (
-          SELECT id FROM "User"
-          WHERE domain = ${domain} AND "isForeigner" = true
-        )
-        DELETE FROM "GroupMembershipRequest"
-        WHERE "groupUserId" IN (SELECT id FROM remote_users)
-           OR "memberUserId" IN (SELECT id FROM remote_users)
+        DELETE FROM "RelationshipIntent"
+        WHERE "authorUserId" IN (SELECT id FROM remote_users)
+           OR "subjectUserId" IN (SELECT id FROM remote_users)
       `);
       await tx.execute(sql`
         WITH remote_users AS (

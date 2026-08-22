@@ -125,7 +125,7 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
 
     const page = await service.query(
       peerDomain,
-      { type: 'P2P', account: 'alice', peerAccount: 'bob' },
+      { type: 'P2P', account: 'alice', localAccount: 'bob' },
       0n,
       undefined,
       deletion.id,
@@ -152,6 +152,23 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
     expect(replay).toEqual(first);
   });
 
+  it('queries tombstones backwards with an exclusive before cursor', async () => {
+    const { deletion } = await seedDeletion();
+    const page = await service.query(
+      peerDomain,
+      { type: 'P2P', account: 'alice', localAccount: 'bob' },
+      undefined,
+      1,
+      undefined,
+      deletion.id + 1n,
+    );
+    expect(page).toMatchObject({
+      tombstones: [{ deletionSeq: deletion.id.toString() }],
+      scannedThrough: deletion.id.toString(),
+      hasMore: false,
+    });
+  });
+
   it('rejects tombstone queries after current audience closes', async () => {
     const { thread } = await seedDeletion();
     await service.fill(peerDomain);
@@ -162,7 +179,7 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
     await expect(
       service.query(
         peerDomain,
-        { type: 'P2P', account: 'alice', peerAccount: 'bob' },
+        { type: 'P2P', account: 'alice', localAccount: 'bob' },
         0n,
       ),
     ).rejects.toMatchObject({ bizCode: BusinessCode.FORBIDDEN });
@@ -186,17 +203,20 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
     await seedDeletion();
     await expect(service.rejectMissingAfter(peerDomain)).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
-      data: { resumeAfter: '0' },
+      data: { resumeAfter: '0', resumeBefore: '2' },
     });
     await expect(
       service.rejectMissingQueryAfter(peerDomain, {
         type: 'P2P',
         account: 'alice',
-        peerAccount: 'bob',
+        localAccount: 'bob',
       }),
     ).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
-      data: { resumeAfter: '0' },
+      data: {
+        resumeAfter: '0',
+        resumeBefore: expect.stringMatching(/^[1-9]\d*$/),
+      },
     });
   });
 });

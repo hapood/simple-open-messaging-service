@@ -347,7 +347,7 @@ describe('WebdbService', () => {
         revision: 2,
         account: 'alice',
         domain: 'local',
-        eventType: 'P2P_INTENT' as const,
+        eventType: 'RELATIONSHIP_INTENT' as const,
         subjectAccount: 'bob',
         subjectDomain: 'peer.test',
         body: {
@@ -392,7 +392,7 @@ describe('WebdbService', () => {
         revision: 17,
         account: 'local',
         domain: 'local',
-        eventType: 'P2P_INTENT' as const,
+        eventType: 'RELATIONSHIP_INTENT' as const,
         subjectAccount: 'remote',
         subjectDomain: 'peer.test',
         body: {
@@ -428,7 +428,7 @@ describe('WebdbService', () => {
         revision: 17,
         account: 'remote',
         domain: 'peer.test',
-        eventType: 'P2P_INTENT' as const,
+        eventType: 'RELATIONSHIP_INTENT' as const,
         subjectAccount: 'local',
         subjectDomain: 'local',
         body: {

@@ -14,7 +14,7 @@
           "$ref": "urn:socfp:v1:message-feed#/$defs/thread"
         },
         "messageSeq": {
-          "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
+          "$ref": "urn:socfp:v1:common#/$defs/positiveThreadSequence"
         },
         "type": { "enum": ["WITHDRAW", "REPORT"] },
         "deletedAt": {

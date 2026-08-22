@@ -66,11 +66,8 @@ The author server validates that a mention applies to the thread before first pe
 ```json
 {
   "thread": {
-    "type": "P2P",
-    "participants": [
-      { "account": "alice", "domain": "a.example" },
-      { "account": "bob", "domain": "b.example" }
-    ]
+    "account": "alice",
+    "localAccount": "bob"
   },
   "author": { "account": "alice", "domain": "a.example" },
   "seq": 42,
@@ -88,11 +85,8 @@ The author server validates that a mention applies to the thread before first pe
 ```json
 {
   "thread": {
-    "type": "P2P",
-    "participants": [
-      { "account": "alice", "domain": "a.example" },
-      { "account": "bob", "domain": "b.example" }
-    ]
+    "account": "alice",
+    "localAccount": "bob"
   },
   "author": { "account": "bob", "domain": "b.example" },
   "seq": 57,

@@ -1,5 +1,17 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { and, asc, eq, gt, inArray, isNull, lte, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  gte,
+  inArray,
+  isNull,
+  lt,
+  lte,
+  sql,
+} from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import type { MessageDeleteType } from '../database/enums.js';
@@ -63,11 +75,15 @@ export class FederationMessageTombstoneFeedService {
 
   async rejectMissingAfter(peerDomain: string): Promise<never> {
     await this.requireTarget(peerDomain);
+    await this.fill(peerDomain);
+    const end = await this.database.db.transaction((tx) =>
+      this.readEndInTx(tx, peerDomain),
+    );
     throw new BusinessException(
       BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
       'after is required; initialize the tombstone feed cursor',
       HttpStatus.OK,
-      { resumeAfter: '0' },
+      { resumeAfter: '0', resumeBefore: (end + 1n).toString() },
     );
   }
 
@@ -177,7 +193,7 @@ export class FederationMessageTombstoneFeedService {
           BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
           'tombstone feed cursor is outside the available coordinate space',
           HttpStatus.OK,
-          { resumeAfter: '0' },
+          { resumeAfter: '0', resumeBefore: (end + 1n).toString() },
         );
       }
       const requestEnd = through === undefined || through > end ? end : through;
@@ -201,6 +217,7 @@ export class FederationMessageTombstoneFeedService {
       const addresses = await this.threadAddressesInTx(
         tx,
         selected.map((row) => row.threadId),
+        peerDomain,
       );
       const items = selected.map((row) => ({
         feedId: row.feedId.toString(),
@@ -222,24 +239,31 @@ export class FederationMessageTombstoneFeedService {
     peerDomain: string,
     selector: FederationThreadQuery,
   ): Promise<never> {
-    await this.resolveAuthorizedThread(peerDomain, selector);
+    const threadId = await this.resolveAuthorizedThread(peerDomain, selector);
+    const currentEnd = await this.readThreadEnd(threadId);
     throw new BusinessException(
       BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
       'after is required; initialize the tombstone query cursor',
       HttpStatus.OK,
-      { resumeAfter: '0' },
+      { resumeAfter: '0', resumeBefore: (currentEnd + 1n).toString() },
     );
   }
 
   async query(
     peerDomain: string,
     selector: FederationThreadQuery,
-    after: bigint,
+    after: bigint | undefined,
     requestedTake?: number,
     through?: bigint,
+    before?: bigint,
   ): Promise<FederationMessageTombstoneQueryPage> {
     const take = this.pageSize(requestedTake);
-    if (through !== undefined && through < after) this.invalidThrough();
+    if ((after === undefined) === (before === undefined))
+      this.invalidDirection();
+    if (after !== undefined && through !== undefined && through < after)
+      this.invalidThrough();
+    if (before !== undefined && through !== undefined && through > before)
+      this.invalidReverseThrough();
     const threadId = await this.resolveAuthorizedThread(peerDomain, selector);
     return this.database.db.transaction(async (tx) => {
       const [tail] = await tx
@@ -254,16 +278,36 @@ export class FederationMessageTombstoneFeedService {
         )
         .where(eq(deletedMessage.threadId, threadId));
       const currentEnd = tail?.end ?? 0n;
-      if (after > currentEnd) {
+      const resumeAfter = 0n;
+      const resumeBefore = currentEnd + 1n;
+      if (
+        (after !== undefined &&
+          (after < resumeAfter || after >= resumeBefore)) ||
+        (before !== undefined &&
+          (before <= resumeAfter + 1n || before > resumeBefore))
+      ) {
         throw new BusinessException(
           BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
           'tombstone query cursor is beyond the current thread end',
           HttpStatus.OK,
-          { resumeAfter: currentEnd.toString() },
+          {
+            resumeAfter: resumeAfter.toString(),
+            resumeBefore: resumeBefore.toString(),
+          },
         );
       }
-      const queryEnd =
-        through === undefined || through > currentEnd ? currentEnd : through;
+      const forward = after !== undefined;
+      const queryEnd = forward
+        ? through === undefined || through > currentEnd
+          ? currentEnd
+          : through
+        : 0n;
+      const queryStart = forward ? 0n : (through ?? resumeAfter + 1n);
+      const queryBefore = forward
+        ? 0n
+        : before! < resumeBefore
+          ? before!
+          : resumeBefore;
       const rows = await tx
         .select({
           deletionId: deletedMessage.id,
@@ -285,14 +329,22 @@ export class FederationMessageTombstoneFeedService {
           and(
             eq(deletedMessage.threadId, threadId),
             isNull(deletedMessage.federationSourceDomain),
-            gt(deletedMessage.id, after),
-            lte(deletedMessage.id, queryEnd),
+            forward
+              ? gt(deletedMessage.id, after!)
+              : gte(deletedMessage.id, queryStart),
+            forward
+              ? lte(deletedMessage.id, queryEnd)
+              : lt(deletedMessage.id, queryBefore),
           ),
         )
-        .orderBy(asc(deletedMessage.id))
+        .orderBy(forward ? asc(deletedMessage.id) : desc(deletedMessage.id))
         .limit(take + 1);
       const selected = rows.slice(0, take);
-      const addresses = await this.threadAddressesInTx(tx, [threadId]);
+      const addresses = await this.threadAddressesInTx(
+        tx,
+        [threadId],
+        peerDomain,
+      );
       const thread = this.requiredAddress(addresses, threadId);
       const tombstones = selected.map((row) => ({
         deletionSeq: row.deletionId.toString(),
@@ -302,13 +354,50 @@ export class FederationMessageTombstoneFeedService {
         deletedAt: row.deletedAt.getTime(),
       }));
       const scannedThrough =
-        rows.length > take ? selected.at(-1)!.deletionId : queryEnd;
+        rows.length > take
+          ? selected.at(-1)!.deletionId
+          : forward
+            ? queryEnd
+            : queryStart;
       return {
         tombstones,
         scannedThrough: scannedThrough.toString(),
-        hasMore: scannedThrough < queryEnd,
+        hasMore: forward
+          ? scannedThrough < queryEnd
+          : scannedThrough > queryStart,
       };
     });
+  }
+
+  private async readThreadEnd(threadId: number): Promise<bigint> {
+    const [tail] = await this.database.db
+      .select({ end: sql<bigint>`COALESCE(MAX(${deletedMessage.id}), 0)` })
+      .from(deletedMessage)
+      .innerJoin(
+        message,
+        and(
+          eq(message.threadId, deletedMessage.threadId),
+          eq(message.seq, deletedMessage.seq),
+        ),
+      )
+      .where(eq(deletedMessage.threadId, threadId));
+    return tail?.end ?? 0n;
+  }
+
+  private invalidDirection(): never {
+    throw new BusinessException(
+      BusinessCode.FEDERATION_MALFORMED,
+      'exactly one of after or before is required',
+      HttpStatus.BAD_REQUEST,
+    );
+  }
+
+  private invalidReverseThrough(): never {
+    throw new BusinessException(
+      BusinessCode.FEDERATION_MALFORMED,
+      'through must be less than or equal to before',
+      HttpStatus.BAD_REQUEST,
+    );
   }
 
   async readAllocatedThrough(peerDomain: string): Promise<bigint> {
@@ -327,8 +416,7 @@ export class FederationMessageTombstoneFeedService {
             SELECT thread.id AS "threadId"
             FROM "MessageThread" thread
             JOIN "User" group_user ON group_user.id = thread."groupUserId"
-            WHERE thread.type = 'GROUP' AND group_user.account = ${selector.groupAccount}
-              AND (CASE WHEN group_user.domain = 'local' THEN ${this.localDomain} ELSE group_user.domain END) = ${selector.groupDomain}
+            WHERE thread.type = 'GROUP' AND group_user.account = ${selector.account}
               AND EXISTS (SELECT 1 FROM "ThreadAudience" audience
                 WHERE audience."threadId" = thread.id
                   AND audience."targetDomain" = ${peerDomain}
@@ -346,7 +434,7 @@ export class FederationMessageTombstoneFeedService {
               AND EXISTS (SELECT 1 FROM "ThreadParticipant" p JOIN "User" u ON u.id = p."userId"
                 WHERE p."threadId" = thread.id AND u.account = ${selector.account} AND u."isForeigner" = false)
               AND EXISTS (SELECT 1 FROM "ThreadParticipant" p JOIN "User" u ON u.id = p."userId"
-                WHERE p."threadId" = thread.id AND u.account = ${selector.peerAccount}
+                WHERE p."threadId" = thread.id AND u.account = ${selector.localAccount}
                   AND u."isForeigner" = true AND u.domain = ${peerDomain})
             LIMIT 1
           `);
@@ -364,6 +452,7 @@ export class FederationMessageTombstoneFeedService {
   private async threadAddressesInTx(
     tx: DatabaseTransaction,
     threadIds: number[],
+    peerDomain: string,
   ): Promise<Map<number, FederationThreadAddress>> {
     if (threadIds.length === 0) return new Map();
     const rows = await tx.execute<{
@@ -395,26 +484,30 @@ export class FederationMessageTombstoneFeedService {
         row.threadId,
         row.type === 'GROUP'
           ? {
-              type: 'GROUP' as const,
               account: row.groupAccount!,
-              domain: this.wireDomain(row.groupDomain!),
             }
-          : {
-              type: 'P2P' as const,
-              participants: participants
-                .filter((member) => member.threadId === row.threadId)
-                .map((member) => ({
-                  account: member.account,
-                  domain: this.wireDomain(member.domain),
-                }))
-                .sort(
-                  (a, b) =>
-                    a.domain.localeCompare(b.domain) ||
-                    a.account.localeCompare(b.account),
-                ),
-            },
+          : this.p2pThreadAddress(row.threadId, participants, peerDomain),
       ]),
     );
+  }
+
+  private p2pThreadAddress(
+    threadId: number,
+    participants: Array<{ threadId: number; account: string; domain: string }>,
+    peerDomain: string,
+  ): FederationThreadAddress {
+    const members = participants.filter(
+      (member) => member.threadId === threadId,
+    );
+    const source = members.find(
+      (member) => this.wireDomain(member.domain) === this.localDomain,
+    );
+    const target = members.find(
+      (member) => this.wireDomain(member.domain) === peerDomain,
+    );
+    if (!source || !target)
+      throw new Error(`P2P thread ${threadId} has no peer-relative address`);
+    return { account: source.account, localAccount: target.account };
   }
 
   private requiredAddress(

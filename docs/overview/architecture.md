@@ -218,21 +218,26 @@ The SSE stream does not replay history (no `Last-Event-ID`). After a reconnect, 
 
 ### Threads, Participants, and Invites
 
-All conversations are `MessageThread` rows (`type` `P2P` or `GROUP`). Membership is **`ThreadParticipant`** — one row per (user, thread) carrying `lastReadSeq`, `role` (GROUP only), `muted`, `pinned`, `clearedSeq`, `alias`, `leftAt`. There is no longer a polymorphic `UserMessageThread` or a separate `GroupMember` table.
+All conversations are `MessageThread` rows (`type` `P2P` or `GROUP`). Membership is **`ThreadParticipant`** — one row per (user, thread) carrying per-user state and a three-state lifecycle: `AUTHORIZED` is a hidden request shell, `ESTABLISHED` is formal and writable, and `REVOKED` retains a formally established conversation as visible read-only history. Only expired authorization-only shells are garbage-collected. There is no polymorphic `UserMessageThread` or separate `GroupMember` table.
 
-Friend and group requests are stored as independent directed facts:
+Friend and group requests use the same pair of directed account facts. User/user
+pairs become P2P relationships; user/group pairs become memberships; group/group
+pairs are invalid. An unexpired `REQUESTED` immediately authorizes the target
+peer to query the publisher's direction, including a successful empty query on
+a new thread; it does not authorize the reverse direction. Initiating or
+accepting creates the local placeholder and thread. Crossed requests and a valid
+peer `ACCEPTED` both upgrade a matching local `REQUESTED` to `ACCEPTED`; an
+already accepted direction creates no echo.
+For a P2P request shell, both participant rows are `AUTHORIZED`; formal
+acceptance upgrades both to `ESTABLISHED`. This local lifecycle state does not
+grant the reverse federation direction, which remains determined exclusively by
+the authored relationship intents. In a group, existing members remain
+`ESTABLISHED`; only the invited or joining candidate uses `AUTHORIZED` before
+acceptance.
 
-- **FRIEND**: `FriendRequest(A,B)` and `FriendRequest(B,A)` retain separate notes. Both
-  must explicitly be `FRIEND` to activate the canonical `FriendPair` and P2P thread; an unexpired
-  `REQUESTED` row alone never grants messaging. Requests expire after seven days; accepting advances
-  the local direction and confirmation returns through the state feed, not a special S2S command.
-  Wire `ACCEPTED` has no admission effect outside a still-effective request flow; stub existence never
-  bypasses that gate. Accepting a new request always republishes `ACCEPTED` at a new feed ID,
-  including when the local direction is already `FRIEND` and its wire body is unchanged.
-- **GROUP**: `GroupMembershipRequest` stores GROUP→USER invitation and USER→GROUP join directions. The
-  group origin remains authoritative and activates mirrors through `GROUP_META`.
-
-The friend-request badge is derived from the revision of the latest incoming REQUESTED `P2P_INTENT` in the unified state delta versus a per-device seen revision stored in the local account database.
+The request badge is derived from the revision of the latest incoming
+`RELATIONSHIP_INTENT/REQUESTED` in the unified state delta versus a per-device
+seen revision stored in the local account database.
 
 ### Thread-list versioning
 
@@ -242,7 +247,7 @@ Profile changes, incoming friend requests, and roster mutations share the public
 
 `POST /send-message` (`{ threadId, content, contentType?, clientMessageId? }`) → `MessageService.writeMsgToThread()`:
 
-1. `ThreadAccessGuard` validates membership (P2P additionally that the peer is an active participant).
+1. `ThreadAccessGuard` requires an `ESTABLISHED` participant; protocol-only `AUTHORIZED` shells are not exposed to client thread operations.
 2. Allocates a per-thread `seq` atomically (`UPDATE curSeq = curSeq + 1 RETURNING`) inside the create tx — gapless, no retry loop.
 
 ### Read HWM and unread badges

@@ -29,8 +29,7 @@ import {
   peerStateFeedTarget,
   peerStateFeedPullCursor,
   profileStateRevision,
-  friendRequest,
-  groupMembershipRequest,
+  relationshipIntent,
 } from './schema.js';
 
 export const federatedPeerRelations = relations(
@@ -180,17 +179,11 @@ export const userRelations = relations(user, ({ one, many }) => ({
   messages: many(message),
   admins: many(admin),
   pushTokens: many(pushToken),
-  sentFriendRequests: many(friendRequest, {
-    relationName: 'friendRequest_requester',
+  authoredRelationshipIntents: many(relationshipIntent, {
+    relationName: 'relationshipIntent_author',
   }),
-  receivedFriendRequests: many(friendRequest, {
-    relationName: 'friendRequest_target',
-  }),
-  groupMembershipRequests: many(groupMembershipRequest, {
-    relationName: 'groupMembershipRequest_member',
-  }),
-  issuedGroupMembershipRequests: many(groupMembershipRequest, {
-    relationName: 'groupMembershipRequest_group',
+  subjectRelationshipIntents: many(relationshipIntent, {
+    relationName: 'relationshipIntent_subject',
   }),
   group: one(group, {
     fields: [user.id],
@@ -241,31 +234,18 @@ export const pushTokenRelations = relations(pushToken, ({ one }) => ({
   }),
 }));
 
-export const friendRequestRelations = relations(friendRequest, ({ one }) => ({
-  requester: one(user, {
-    fields: [friendRequest.requesterUserId],
-    references: [user.id],
-    relationName: 'friendRequest_requester',
-  }),
-  target: one(user, {
-    fields: [friendRequest.targetUserId],
-    references: [user.id],
-    relationName: 'friendRequest_target',
-  }),
-}));
-
-export const groupMembershipRequestRelations = relations(
-  groupMembershipRequest,
+export const relationshipIntentRelations = relations(
+  relationshipIntent,
   ({ one }) => ({
-    groupUser: one(user, {
-      fields: [groupMembershipRequest.groupUserId],
+    author: one(user, {
+      fields: [relationshipIntent.authorUserId],
       references: [user.id],
-      relationName: 'groupMembershipRequest_group',
+      relationName: 'relationshipIntent_author',
     }),
-    member: one(user, {
-      fields: [groupMembershipRequest.memberUserId],
+    subject: one(user, {
+      fields: [relationshipIntent.subjectUserId],
       references: [user.id],
-      relationName: 'groupMembershipRequest_member',
+      relationName: 'relationshipIntent_subject',
     }),
   }),
 );

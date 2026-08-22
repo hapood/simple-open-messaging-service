@@ -1,5 +1,17 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { and, asc, eq, gt, inArray, lte, ne, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  gte,
+  inArray,
+  lt,
+  lte,
+  ne,
+  sql,
+} from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { ContentType } from '../database/enums.js';
@@ -39,15 +51,12 @@ export const FEDERATED_MESSAGE_CONTENT_TYPES: ContentType[] = Object.values(
 ).filter((type) => type !== ContentType.SYSTEM);
 
 export type FederationThreadAddress =
-  | { type: 'GROUP'; account: string; domain: string }
-  | {
-      type: 'P2P';
-      participants: FederationAddress[];
-    };
+  | { account: string; localAccount: string }
+  | { account: string };
 
 export type FederationThreadQuery =
-  | { type: 'GROUP'; groupAccount: string; groupDomain: string }
-  | { type: 'P2P'; account: string; peerAccount: string };
+  | { type: 'GROUP'; account: string }
+  | { type: 'P2P'; account: string; localAccount: string };
 
 export type FederationMessageFeedAsset = FederationByteDescriptor;
 
@@ -97,11 +106,15 @@ export class FederationMessageFeedService {
 
   async rejectMissingAfter(peerDomain: string): Promise<never> {
     await this.requireTarget(peerDomain);
+    await this.indexer.fill(peerDomain);
+    const end = await this.database.db.transaction((tx) =>
+      this.readEndInTx(tx, peerDomain),
+    );
     throw new BusinessException(
       BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
       'after is required; initialize the message feed cursor',
       HttpStatus.OK,
-      { resumeAfter: '0' },
+      { resumeAfter: '0', resumeBefore: (end + 1n).toString() },
     );
   }
 
@@ -121,7 +134,7 @@ export class FederationMessageFeedService {
           BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
           'message feed cursor is outside the available coordinate space',
           HttpStatus.OK,
-          { resumeAfter: '0' },
+          { resumeAfter: '0', resumeBefore: (end + 1n).toString() },
         );
       }
       const requestEnd = through === undefined || through > end ? end : through;
@@ -145,6 +158,7 @@ export class FederationMessageFeedService {
       const addresses = await this.threadAddressesInTx(
         tx,
         selected.map((row) => row.threadId),
+        peerDomain,
       );
       const items = selected.map((row) => ({
         feedId: row.feedId.toString(),
@@ -167,27 +181,42 @@ export class FederationMessageFeedService {
     selector: FederationThreadQuery,
   ): Promise<never> {
     const threadId = await this.resolveAuthorizedThread(peerDomain, selector);
-    void threadId;
+    const [projection] = await this.database.db
+      .select({ end: federationMessageFeedIndex.messageEndSeq })
+      .from(federationMessageFeedIndex)
+      .where(
+        and(
+          eq(federationMessageFeedIndex.peerDomain, peerDomain),
+          eq(federationMessageFeedIndex.threadId, threadId),
+        ),
+      )
+      .limit(1);
+    const currentEnd = projection?.end ?? 0;
     throw new BusinessException(
       BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
       'after is required; initialize the message query cursor',
       HttpStatus.OK,
-      { resumeAfter: '0' },
+      { resumeAfter: '0', resumeBefore: (currentEnd + 1).toString() },
     );
   }
 
   async query(
     peerDomain: string,
     selector: FederationThreadQuery,
-    after: number,
+    after: number | undefined,
     requestedTake?: number,
     through?: number,
     includeSelf = true,
+    before?: number,
   ): Promise<FederationMessageQueryPage> {
     const take = this.pageSize(requestedTake);
-    if (after < 0 || (through !== undefined && through < 0))
+    if ((after === undefined) === (before === undefined))
+      this.invalidDirection();
+    if (through !== undefined && through < 0) this.invalidThrough();
+    if (after !== undefined && through !== undefined && through < after)
       this.invalidThrough();
-    if (through !== undefined && through < after) this.invalidThrough();
+    if (before !== undefined && through !== undefined && through > before)
+      this.invalidReverseThrough();
     const threadId = await this.resolveAuthorizedThread(peerDomain, selector);
     return this.database.db.transaction(async (tx) => {
       const [projection] = await tx
@@ -201,49 +230,67 @@ export class FederationMessageFeedService {
         )
         .limit(1);
       const currentEnd = projection?.end ?? 0;
-      if (after > currentEnd) {
+      const resumeAfter = 0;
+      const resumeBefore = currentEnd + 1;
+      if (
+        (after !== undefined &&
+          (after < resumeAfter || after >= resumeBefore)) ||
+        (before !== undefined &&
+          (before <= resumeAfter + 1 || before > resumeBefore))
+      ) {
         throw new BusinessException(
           BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
           'message query cursor is beyond the current thread end',
           HttpStatus.OK,
-          { resumeAfter: currentEnd.toString() },
+          {
+            resumeAfter: resumeAfter.toString(),
+            resumeBefore: resumeBefore.toString(),
+          },
         );
       }
-      const queryEnd = Math.min(through ?? currentEnd, currentEnd);
-      const rows =
-        queryEnd <= after
-          ? []
-          : await tx
-              .select({
-                messageId: message.id,
-                threadId: message.threadId,
-                seq: message.seq,
-                originSeq: message.originSeq,
-                originServerTime: message.originServerTime,
-                contentType: message.contentType,
-                content: message.content,
-                createdAt: message.createdAt,
-                clientMessageId: message.clientMessageId,
-                threadType: messageThread.type,
-                groupUserId: messageThread.groupUserId,
-                authorAccount: user.account,
-                authorDomain: user.domain,
-              })
-              .from(message)
-              .innerJoin(messageThread, eq(messageThread.id, message.threadId))
-              .innerJoin(user, eq(user.id, message.creator))
-              .where(
-                and(
-                  eq(message.threadId, threadId),
-                  gt(message.seq, after),
-                  lte(message.seq, queryEnd),
-                  eq(message.isDeleted, false),
-                  ne(message.contentType, ContentType.SYSTEM),
-                  includeSelf ? undefined : ne(user.domain, peerDomain),
-                ),
-              )
-              .orderBy(asc(message.seq))
-              .limit(take + 1);
+      const forward = after !== undefined;
+      const queryEnd = forward
+        ? Math.min(through ?? currentEnd, currentEnd)
+        : 0;
+      const queryStart = forward ? 0 : (through ?? resumeAfter + 1);
+      const queryBefore = forward ? 0 : Math.min(before!, resumeBefore);
+      const rows = (forward ? queryEnd <= after! : queryBefore <= queryStart)
+        ? []
+        : await tx
+            .select({
+              messageId: message.id,
+              threadId: message.threadId,
+              seq: message.seq,
+              originSeq: message.originSeq,
+              originServerTime: message.originServerTime,
+              contentType: message.contentType,
+              content: message.content,
+              createdAt: message.createdAt,
+              clientMessageId: message.clientMessageId,
+              threadType: messageThread.type,
+              groupUserId: messageThread.groupUserId,
+              authorAccount: user.account,
+              authorDomain: user.domain,
+            })
+            .from(message)
+            .innerJoin(messageThread, eq(messageThread.id, message.threadId))
+            .innerJoin(user, eq(user.id, message.creator))
+            .where(
+              and(
+                eq(message.threadId, threadId),
+                forward
+                  ? gt(message.seq, after!)
+                  : gte(message.seq, queryStart),
+                forward
+                  ? lte(message.seq, queryEnd)
+                  : lt(message.seq, queryBefore),
+                eq(message.isDeleted, false),
+                ne(message.contentType, ContentType.SYSTEM),
+                includeSelf ? undefined : ne(user.domain, peerDomain),
+              ),
+            )
+            .orderBy(forward ? asc(message.seq) : desc(message.seq))
+            .limit(take + 1);
       const selected = rows.slice(0, take);
       const messages = await this.serializeMessagesInTx(
         tx,
@@ -251,13 +298,35 @@ export class FederationMessageFeedService {
         peerDomain,
       );
       const scannedThrough =
-        rows.length > take ? selected.at(-1)!.seq : queryEnd;
+        rows.length > take
+          ? selected.at(-1)!.seq
+          : forward
+            ? queryEnd
+            : queryStart;
       return {
         messages,
-        scannedThrough: Math.max(scannedThrough, after).toString(),
-        hasMore: scannedThrough < queryEnd,
+        scannedThrough: scannedThrough.toString(),
+        hasMore: forward
+          ? scannedThrough < queryEnd
+          : scannedThrough > queryStart,
       };
     });
+  }
+
+  private invalidDirection(): never {
+    throw new BusinessException(
+      BusinessCode.FEDERATION_MALFORMED,
+      'exactly one of after or before is required',
+      HttpStatus.BAD_REQUEST,
+    );
+  }
+
+  private invalidReverseThrough(): never {
+    throw new BusinessException(
+      BusinessCode.FEDERATION_MALFORMED,
+      'through must be less than or equal to before',
+      HttpStatus.BAD_REQUEST,
+    );
   }
 
   private async serializeMessagesInTx(
@@ -281,9 +350,27 @@ export class FederationMessageFeedService {
   ): Promise<FederationMessageFeedMessage[]> {
     if (rows.length === 0) return [];
     const messageIds = rows.map((row) => row.messageId);
-    const addresses = await this.threadAddressesInTx(tx, [
-      ...new Set(rows.map((row) => row.threadId)),
-    ]);
+    const addresses = await this.threadAddressesInTx(
+      tx,
+      [...new Set(rows.map((row) => row.threadId))],
+      peerDomain,
+    );
+    const groupUserIds = rows.flatMap((row) =>
+      row.groupUserId === null ? [] : [row.groupUserId],
+    );
+    const groupUsers =
+      groupUserIds.length === 0
+        ? []
+        : await tx
+            .select({ id: user.id, domain: user.domain })
+            .from(user)
+            .where(inArray(user.id, groupUserIds));
+    const groupOriginByUserId = new Map(
+      groupUsers.map((groupUser) => [
+        groupUser.id,
+        this.wireDomain(groupUser.domain),
+      ]),
+    );
     const assetRows = await tx
       .select({
         messageId: messageAsset.messageId,
@@ -358,7 +445,7 @@ export class FederationMessageFeedService {
       );
       if (row.contentType === ContentType.CALL) {
         const local = parseCallContent(row.content);
-        if (!local || thread.type !== 'P2P')
+        if (!local || row.threadType !== 'P2P')
           throw new Error('invalid federated CALL projection');
         content = buildFederatedCallContent(local);
       }
@@ -375,9 +462,9 @@ export class FederationMessageFeedService {
           : candidateAssets.filter((asset) => contentDigests.has(asset.digest));
       const isProcessingReceipt =
         row.originSeq !== null &&
-        (thread.type === 'P2P'
+        (row.threadType === 'P2P'
           ? author.domain === peerDomain
-          : thread.domain === peerDomain);
+          : groupOriginByUserId.get(row.groupUserId!) === peerDomain);
       const item: FederationMessageFeedMessage = {
         thread,
         author,
@@ -411,8 +498,7 @@ export class FederationMessageFeedService {
             FROM "MessageThread" thread
             JOIN "User" group_user ON group_user.id = thread."groupUserId"
             WHERE thread.type = 'GROUP'
-              AND group_user.account = ${selector.groupAccount}
-              AND (CASE WHEN group_user.domain = 'local' THEN ${this.localDomain} ELSE group_user.domain END) = ${selector.groupDomain}
+              AND group_user.account = ${selector.account}
               AND EXISTS (
                 SELECT 1 FROM "ThreadAudience" audience
                 WHERE audience."threadId" = thread.id
@@ -442,7 +528,7 @@ export class FederationMessageFeedService {
                 SELECT 1 FROM "ThreadParticipant" participant
                 JOIN "User" member ON member.id = participant."userId"
                 WHERE participant."threadId" = thread.id
-                  AND member.account = ${selector.peerAccount}
+                  AND member.account = ${selector.localAccount}
                   AND member."isForeigner" = true
                   AND member.domain = ${peerDomain}
               )
@@ -462,6 +548,7 @@ export class FederationMessageFeedService {
   private async threadAddressesInTx(
     tx: DatabaseTransaction,
     threadIds: number[],
+    peerDomain: string,
   ): Promise<Map<number, FederationThreadAddress>> {
     if (threadIds.length === 0) return new Map();
     const threads = await tx
@@ -499,24 +586,25 @@ export class FederationMessageFeedService {
         if (!group)
           throw new Error(`group identity missing for thread ${thread.id}`);
         result.set(thread.id, {
-          type: 'GROUP',
           account: group.account,
-          domain: this.wireDomain(group.domain),
         });
       } else {
+        const members = participants.filter(
+          (row) => row.threadId === thread.id,
+        );
+        const source = members.find(
+          (row) => this.wireDomain(row.domain) === this.localDomain,
+        );
+        const target = members.find(
+          (row) => this.wireDomain(row.domain) === peerDomain,
+        );
+        if (!source || !target)
+          throw new Error(
+            `P2P thread ${thread.id} has no peer-relative address`,
+          );
         result.set(thread.id, {
-          type: 'P2P',
-          participants: participants
-            .filter((row) => row.threadId === thread.id)
-            .map((row) => ({
-              account: row.account,
-              domain: this.wireDomain(row.domain),
-            }))
-            .sort(
-              (a, b) =>
-                a.domain.localeCompare(b.domain) ||
-                a.account.localeCompare(b.account),
-            ),
+          account: source.account,
+          localAccount: target.account,
         });
       }
     }

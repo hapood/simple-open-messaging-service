@@ -13,8 +13,8 @@ interface Address {
 }
 
 type ThreadAddress =
-  | { type: 'GROUP'; account: GroupAccount; domain: Domain }
-  | { type: 'P2P'; participants: Address[] };
+  | { account: UserAccount; localAccount: UserAccount }
+  | { account: GroupAccount };
 
 interface BlobDescriptor {
   digest: Sha256Hex;
@@ -22,7 +22,7 @@ interface BlobDescriptor {
 }
 
 interface QuoteTarget {
-  targetSeq: PositiveSafeInteger;
+  targetSeq: ThreadSequence;
 }
 
 type JsonObjectString = string;
@@ -35,8 +35,8 @@ interface EncodedMessageContent {
 interface FederatedMessage extends EncodedMessageContent {
   thread: ThreadAddress;
   author: Address;
-  seq: PositiveSafeInteger;
-  originSeq: PositiveSafeInteger | null;
+  seq: ThreadSequence;
+  originSeq: ThreadSequence | null;
   originCreatedAt: EpochMilliseconds | null;
   createdAt: EpochMilliseconds;
   quoteTarget?: QuoteTarget;
@@ -48,16 +48,27 @@ interface FederatedMessage extends EncodedMessageContent {
 
 ## 2. Thread and author
 
-- GROUP identity is identified by `thread.account/domain`; `account` MUST be a `GroupAccount`.
-- P2P `participants` MUST contain exactly two distinct addresses and MUST include `author`; ordering has no semantics.
-- The `account` of a message author or P2P participant MUST be a `UserAccount`.
-- A consumer constructs the local P2P unique key by sorting normalized addresses in ASCII lexicographic `(domain, account)` order.
+- Thread addresses are relative to the authenticated S2S exchange. The source
+  domain comes from the verified HTTP Message Signature and the target domain is
+  the consumer's own domain; neither is repeated inside `thread`.
+- When `thread.account` is a `UserAccount`, the thread is P2P. `account` is
+  hosted by the source domain and `localAccount` MUST be a distinct
+  `UserAccount` hosted by the target domain.
+- When `thread.account` is a `GroupAccount`, the thread is GROUP and
+  `localAccount` MUST be absent. Group delivery is scoped to the target peer,
+  not to an individual member hosted on that peer.
+- The message author remains the explicit `author` address. It MUST NOT be
+  inferred from `thread.account`; in particular, a group publisher may relay a
+  message authored on another member domain.
 
 ## 3. Ordering and origin time
 
 The message wire has no client-authoritative `date` field:
 
 - `seq` is the thread-local sequence assigned when the current publisher writes this copy into its local thread. A consumer assigns its own local `seq` on persistence and MUST NOT force reuse of the wire `seq`.
+- `seq`, non-null `originSeq`, and `quoteTarget.targetSeq` MUST NOT exceed
+  `SafeInteger - 1`; `SafeInteger` is reserved as the maximum exclusive reverse
+  query cursor.
 - `createdAt` is the epoch-millisecond time at which the current publisher first persisted this copy. It is not client send time, device time, or a cross-server ordering time.
 - When the authoritative origin publishes a timeline message, `originSeq/originCreatedAt` MUST be `null/null`.
 - When a consumer pulls from its direct publisher and creates a non-authoritative copy, its origin pair MUST equal the incoming `seq/createdAt`.

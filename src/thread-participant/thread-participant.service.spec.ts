@@ -54,7 +54,7 @@ describe('ThreadParticipantService.endP2P transaction boundary', () => {
       statePeers: [],
     });
     expect(tx.execute).toHaveBeenCalledTimes(6);
-    // FriendPair is locked first, then MessageThread (the third execute), and
+    // RelationshipPair is locked first, then MessageThread (the third execute), and
     // only afterwards may participant/audience mutation begin.
     expect(tx.execute.mock.invocationCallOrder[2]).toBeLessThan(
       tx.update.mock.invocationCallOrder[0],

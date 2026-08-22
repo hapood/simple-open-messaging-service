@@ -17,7 +17,7 @@ See [CHANGELOG](./CHANGELOG.md) for release history, [CONFORMANCE](./CONFORMANCE
 1. [Core Protocol](./protocol.md): roles, versioning, HTTP surface, shared types, responses, durable state, and evolution rules.
 2. [Transport and Security](./transport-security.md): well-known discovery, root and signing keys, SRV, TLS, logical authority, digests, and HTTP Message Signatures.
 3. [Peer Recognition](./recognition.md): bidirectional Recognize, root public-key pinning, Healthy availability queries, degraded state, timing, and failure handling.
-4. [State Feed](./state-feed.md): snapshot-based compacted feed, six state types, member-reference ordering, and projection omission.
+4. [State Feed](./state-feed.md): snapshot-based compacted feed, four state types, relationship matching, member-reference ordering, and projection omission.
 5. [Message Feed and Query](./message-feed.md): index-based compacted feed and thread-content query.
 6. [Message Tombstone Feed and Query](./message-tombstone-feed.md): tombstone index, permanent deletion facts, and race convergence.
 7. [Message](./message.md): message identity, content types, resource references, replies, and forward closure.

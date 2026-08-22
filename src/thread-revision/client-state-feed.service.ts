@@ -9,7 +9,7 @@ export interface ClientStateFeedWrite {
   userId: number;
   account: string;
   domain: string;
-  eventType: 'P2P_INTENT' | 'GROUP_INVITE_INTENT';
+  eventType: 'RELATIONSHIP_INTENT';
   subjectAccount: string;
   subjectDomain: string;
   body: Record<string, unknown>;

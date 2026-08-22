@@ -5,13 +5,13 @@ import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
   federatedPeer,
-  groupMembershipRequest,
+  relationshipIntent,
   peerStateFeed,
   peerStateFeedTarget,
   user,
 } from '../src/database/schema.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
-import { GroupMembershipStateService } from '../src/group/group-membership-state.service.js';
+import { RelationshipIntentService } from '../src/invite/relationship-intent.service.js';
 
 const DOMAINS = ['state-feed-a.test', 'state-feed-b.test'];
 
@@ -20,16 +20,16 @@ describe('per-peer state feed', () => {
   let mod: TestingModule;
   let database: DatabaseService;
   let feed: PeerStateFeedService;
-  let membership: GroupMembershipStateService;
+  let membership: RelationshipIntentService;
 
   beforeAll(async () => {
     mod = await Test.createTestingModule({
       imports: [DatabaseModule],
-      providers: [PeerStateFeedService, GroupMembershipStateService],
+      providers: [PeerStateFeedService, RelationshipIntentService],
     }).compile();
     database = mod.get(DatabaseService);
     feed = mod.get(PeerStateFeedService);
-    membership = mod.get(GroupMembershipStateService);
+    membership = mod.get(RelationshipIntentService);
     await database.db
       .insert(federatedPeer)
       .values(DOMAINS.map((domain) => ({ domain, trustLevel: 'available' })))
@@ -109,7 +109,7 @@ describe('per-peer state feed', () => {
             domain: 'local.test',
             subjectAccount: 'bob',
             subjectDomain: domain,
-            eventType: 'P2P_INTENT',
+            eventType: 'RELATIONSHIP_INTENT',
             body,
           },
         ]);
@@ -120,7 +120,7 @@ describe('per-peer state feed', () => {
             domain: 'local.test',
             subjectAccount: 'bob',
             subjectDomain: domain,
-            eventType: 'P2P_INTENT',
+            eventType: 'RELATIONSHIP_INTENT',
             body,
             forceReindex: true,
           },
@@ -129,8 +129,48 @@ describe('per-peer state feed', () => {
 
       const page = await feed.serve(domain, 0n);
       expect(page.stateFeedEndId).toBe('2');
+      expect(page.items).toEqual([
+        {
+          account: 'alice',
+          domain: 'local.test',
+          eventType: 'RELATIONSHIP_INTENT',
+          localAccount: 'bob',
+          feedId: '2',
+          body: {
+            status: 'ACCEPTED',
+            note: '',
+            requestedAt: wireTime.getTime(),
+            expiresAt: null,
+          },
+        },
+      ]);
+    } finally {
+      await database.db
+        .delete(federatedPeer)
+        .where(eq(federatedPeer.domain, domain));
+    }
+  });
+
+  it('reuses a current snapshot revision even when reindexing is requested', async () => {
+    const domain = 'state-feed-snapshot-revision.test';
+    await database.db.insert(federatedPeer).values({ domain });
+    try {
+      const write = {
+        peerDomain: domain,
+        account: 'alice',
+        domain: 'local.test',
+        eventType: 'PROFILE' as const,
+        body: { profileRev: 7, displayName: 'Alice', bio: '', avatar: null },
+      };
+      await database.db.transaction(async (tx) => {
+        await feed.writeManyInTx(tx, [write]);
+        await feed.writeManyInTx(tx, [{ ...write, forceReindex: true }]);
+      });
+
+      const page = await feed.serve(domain, 0n);
+      expect(page.stateFeedEndId).toBe('1');
       expect(page.items).toMatchObject([
-        { feedId: '2', body: { status: 'ACCEPTED' } },
+        { feedId: '1', body: { profileRev: 7 } },
       ]);
     } finally {
       await database.db
@@ -148,8 +188,13 @@ describe('per-peer state feed', () => {
           domain: 'local.test',
           subjectAccount: 'bob',
           subjectDomain: DOMAINS[0],
-          eventType: 'P2P_INTENT',
-          body: { recognizesFriend: true },
+          eventType: 'RELATIONSHIP_INTENT',
+          body: {
+            status: 'ACCEPTED',
+            note: '',
+            requestedAt: null,
+            expiresAt: null,
+          },
         },
         {
           peerDomain: DOMAINS[0],
@@ -157,8 +202,13 @@ describe('per-peer state feed', () => {
           domain: 'local.test',
           subjectAccount: 'carol',
           subjectDomain: DOMAINS[0],
-          eventType: 'P2P_INTENT',
-          body: { recognizesFriend: false },
+          eventType: 'RELATIONSHIP_INTENT',
+          body: {
+            status: 'REVOKED',
+            note: '',
+            requestedAt: null,
+            expiresAt: null,
+          },
         },
         {
           peerDomain: DOMAINS[1],
@@ -171,7 +221,7 @@ describe('per-peer state feed', () => {
     });
     const a = await feed.serve(DOMAINS[0], 2n);
     const b = await feed.serve(DOMAINS[1], 0n);
-    expect(a.items.map((x) => x.subjectAccount)).toEqual(['bob', 'carol']);
+    expect(a.items.map((x) => x.localAccount)).toEqual(['bob', 'carol']);
     expect(b.items).toHaveLength(1);
     expect(b.items[0].body).toMatchObject({ name: 'private-to-b' });
   });
@@ -256,46 +306,44 @@ describe('per-peer state feed', () => {
 
     try {
       await database.db.transaction((tx) =>
-        membership.applyRemoteDirectionInTx(tx, {
+        membership.applyRemoteIntentInTx(tx, {
           groupUserId: groupUser.id,
           memberUserId: memberUser.id,
-          direction: 'INVITE',
+          authorUserId: groupUser.id,
           status: 'REQUESTED',
           note: 'first',
           requestedAt: new Date('2026-01-01T00:00:00Z'),
           expiresAt: new Date('2026-01-08T00:00:00Z'),
         }),
       );
-      const before = await database.db.query.groupMembershipRequest.findFirst({
+      const before = await database.db.query.relationshipIntent.findFirst({
         where: and(
-          eq(groupMembershipRequest.groupUserId, groupUser.id),
-          eq(groupMembershipRequest.memberUserId, memberUser.id),
-          eq(groupMembershipRequest.direction, 'INVITE'),
+          eq(relationshipIntent.authorUserId, groupUser.id),
+          eq(relationshipIntent.subjectUserId, memberUser.id),
         ),
       });
 
       const replay = await database.db.transaction((tx) =>
-        membership.applyRemoteDirectionInTx(tx, {
+        membership.applyRemoteIntentInTx(tx, {
           groupUserId: groupUser.id,
           memberUserId: memberUser.id,
-          direction: 'INVITE',
-          status: 'NOT_MEMBER',
+          authorUserId: groupUser.id,
+          status: 'REVOKED',
           note: 'must not overwrite',
           requestedAt: null,
           expiresAt: null,
         }),
       );
-      const after = await database.db.query.groupMembershipRequest.findFirst({
+      const after = await database.db.query.relationshipIntent.findFirst({
         where: and(
-          eq(groupMembershipRequest.groupUserId, groupUser.id),
-          eq(groupMembershipRequest.memberUserId, memberUser.id),
-          eq(groupMembershipRequest.direction, 'INVITE'),
+          eq(relationshipIntent.authorUserId, groupUser.id),
+          eq(relationshipIntent.subjectUserId, memberUser.id),
         ),
       });
 
       expect(replay.changed).toBe(true);
       expect(after).not.toEqual(before);
-      expect(after?.status).toBe('NOT_MEMBER');
+      expect(after?.status).toBe('REVOKED');
     } finally {
       await database.db
         .delete(user)

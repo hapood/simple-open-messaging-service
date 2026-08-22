@@ -62,9 +62,12 @@
     },
     "feedCursorUnavailableData": {
       "type": "object",
-      "required": ["resumeAfter"],
+      "required": ["resumeAfter", "resumeBefore"],
       "properties": {
         "resumeAfter": {
+          "$ref": "urn:socfp:v1:common#/$defs/decimalString"
+        },
+        "resumeBefore": {
           "$ref": "urn:socfp:v1:common#/$defs/decimalString"
         }
       },

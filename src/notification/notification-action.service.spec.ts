@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NotificationActionService } from './notification-action.service.js';
+import { ThreadParticipantState } from '../database/enums.js';
 
 /**
  * handleAction — the notification button round-trip. Only `reply` reaches the backend:
@@ -25,7 +26,9 @@ describe('NotificationActionService.handleAction', () => {
   });
 
   it('reply: membership-gated writeMsgToThread + dispatch', async () => {
-    findParticipant.mockResolvedValue({ leftAt: null });
+    findParticipant.mockResolvedValue({
+      state: ThreadParticipantState.ESTABLISHED,
+    });
     const sent = { threadId: 1, seq: 9, content: 'hi' };
     writeMsgToThread.mockResolvedValue(sent);
 

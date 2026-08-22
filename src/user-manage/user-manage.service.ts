@@ -33,7 +33,7 @@ export class UserManageService {
           threadId: threadParticipant.threadId,
           role: threadParticipant.role,
           joinedAt: threadParticipant.joinedAt,
-          leftAt: threadParticipant.leftAt,
+          state: threadParticipant.state,
           groupAccount: user.account,
           groupName: user.name,
         })

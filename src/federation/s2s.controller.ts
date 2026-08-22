@@ -221,44 +221,48 @@ export class S2sController {
   @Get('message-tombstones')
   async queryMessageTombstones(
     @Req() req: FastifyRequest,
-    @Query('type') type?: string,
     @Query('account') account?: string,
-    @Query('peerAccount') peerAccount?: string,
-    @Query('groupAccount') groupAccount?: string,
-    @Query('groupDomain') groupDomain?: string,
+    @Query('localAccount') localAccount?: string,
     @Query('after') afterParam?: string,
+    @Query('before') beforeParam?: string,
     @Query('take') takeParam?: string,
     @Query('through') throughParam?: string,
   ) {
     this.assertQueryShape(req, [
-      'type',
       'account',
-      'peerAccount',
-      'groupAccount',
-      'groupDomain',
+      'localAccount',
       'after',
+      'before',
       'take',
       'through',
     ]);
-    const selector = this.parseThreadQuery(
-      type,
-      account,
-      peerAccount,
-      groupAccount,
-      groupDomain,
-    );
+    const selector = this.parseThreadQuery(account, localAccount);
     const peerDomain = this.signerDomain(req);
-    if (afterParam === undefined) {
+    if (afterParam !== undefined && beforeParam !== undefined) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'after and before are mutually exclusive',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    if (afterParam === undefined && beforeParam === undefined) {
       if (takeParam !== undefined || throughParam !== undefined) {
         throw new BusinessException(
           BusinessCode.FEDERATION_MALFORMED,
-          'take and through require after',
+          'take and through require after or before',
           HttpStatus.BAD_REQUEST,
         );
       }
       return this.tombstoneFeed.rejectMissingQueryAfter(peerDomain, selector);
     }
-    const after = this.parseCursorBigInt(afterParam, 'after');
+    const after =
+      afterParam === undefined
+        ? undefined
+        : this.parseCursorBigInt(afterParam, 'after');
+    const before =
+      beforeParam === undefined
+        ? undefined
+        : this.parseCursorBigInt(beforeParam, 'before');
     const take =
       takeParam === undefined
         ? undefined
@@ -267,7 +271,14 @@ export class S2sController {
       throughParam === undefined
         ? undefined
         : this.parseCursorBigInt(throughParam, 'through');
-    return this.tombstoneFeed.query(peerDomain, selector, after, take, through);
+    return this.tombstoneFeed.query(
+      peerDomain,
+      selector,
+      after,
+      take,
+      through,
+      before,
+    );
   }
 
   /** Durable cross-thread feed. feedId values stay decimal strings on the JSON wire. */
@@ -305,34 +316,24 @@ export class S2sController {
   @Get('messages')
   async queryMessages(
     @Req() req: FastifyRequest,
-    @Query('type') type?: string,
     @Query('account') account?: string,
-    @Query('peerAccount') peerAccount?: string,
-    @Query('groupAccount') groupAccount?: string,
-    @Query('groupDomain') groupDomain?: string,
+    @Query('localAccount') localAccount?: string,
     @Query('after') afterParam?: string,
+    @Query('before') beforeParam?: string,
     @Query('take') takeParam?: string,
     @Query('through') throughParam?: string,
     @Query('includeSelf') includeSelfParam?: string,
   ) {
     this.assertQueryShape(req, [
-      'type',
       'account',
-      'peerAccount',
-      'groupAccount',
-      'groupDomain',
+      'localAccount',
       'after',
+      'before',
       'take',
       'through',
       'includeSelf',
     ]);
-    const selector = this.parseThreadQuery(
-      type,
-      account,
-      peerAccount,
-      groupAccount,
-      groupDomain,
-    );
+    const selector = this.parseThreadQuery(account, localAccount);
     const peerDomain = this.signerDomain(req);
     if (
       includeSelfParam !== undefined &&
@@ -346,17 +347,31 @@ export class S2sController {
       );
     }
     const includeSelf = includeSelfParam !== 'false';
-    if (afterParam === undefined) {
+    if (afterParam !== undefined && beforeParam !== undefined) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'after and before are mutually exclusive',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    if (afterParam === undefined && beforeParam === undefined) {
       if (takeParam !== undefined || throughParam !== undefined) {
         throw new BusinessException(
           BusinessCode.FEDERATION_MALFORMED,
-          'take and through require after',
+          'take and through require after or before',
           HttpStatus.BAD_REQUEST,
         );
       }
       return this.messageFeed.rejectMissingQueryAfter(peerDomain, selector);
     }
-    const after = this.parseThreadSequence(afterParam, 'after');
+    const after =
+      afterParam === undefined
+        ? undefined
+        : this.parseThreadSequence(afterParam, 'after');
+    const before =
+      beforeParam === undefined
+        ? undefined
+        : this.parseThreadSequence(beforeParam, 'before', true);
     const take =
       takeParam === undefined
         ? undefined
@@ -372,6 +387,7 @@ export class S2sController {
       take,
       through,
       includeSelf,
+      before,
     );
   }
 
@@ -494,7 +510,11 @@ export class S2sController {
     return parsed;
   }
 
-  private parseThreadSequence(value: string, name: string): number {
+  private parseThreadSequence(
+    value: string,
+    name: string,
+    allowUpperSentinel = false,
+  ): number {
     if (!/^(?:0|[1-9]\d*)$/.test(value)) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
@@ -503,7 +523,10 @@ export class S2sController {
       );
     }
     const parsed = Number(value);
-    if (!Number.isSafeInteger(parsed)) {
+    if (
+      !Number.isSafeInteger(parsed) &&
+      !(allowUpperSentinel && parsed === Number.MAX_SAFE_INTEGER + 1)
+    ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
         `${name} must be a safe integer`,
@@ -513,44 +536,37 @@ export class S2sController {
     return parsed;
   }
 
-  private parseThreadQuery(
-    type?: string,
-    account?: string,
-    peerAccount?: string,
-    groupAccount?: string,
-    groupDomain?: string,
-  ) {
-    if (
-      type === 'P2P' &&
-      account !== undefined &&
-      peerAccount !== undefined &&
-      groupAccount === undefined &&
-      groupDomain === undefined
-    ) {
+  private parseThreadQuery(account?: string, localAccount?: string) {
+    if (account === undefined) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'account is required for a thread query',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const normalizedAccount = requireAccount(account, 'account');
+    if (!normalizedAccount.startsWith('!')) {
+      if (localAccount === undefined) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'localAccount is required for a P2P thread query',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
       return {
         type: 'P2P' as const,
-        account: requireUserAccount(account, 'account'),
-        peerAccount: requireUserAccount(peerAccount, 'peerAccount'),
+        account: requireUserAccount(normalizedAccount, 'account'),
+        localAccount: requireUserAccount(localAccount, 'localAccount'),
       };
     }
-    if (
-      type === 'GROUP' &&
-      account === undefined &&
-      peerAccount === undefined &&
-      groupAccount !== undefined &&
-      groupDomain !== undefined
-    ) {
-      return {
-        type: 'GROUP' as const,
-        groupAccount: requireAccount(groupAccount, 'groupAccount'),
-        groupDomain: requireDomain(groupDomain, 'groupDomain'),
-      };
+    if (localAccount !== undefined) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'localAccount is forbidden for a GROUP thread query',
+        HttpStatus.BAD_REQUEST,
+      );
     }
-    throw new BusinessException(
-      BusinessCode.FEDERATION_MALFORMED,
-      'thread query must be exactly one P2P or GROUP shape',
-      HttpStatus.BAD_REQUEST,
-    );
+    return { type: 'GROUP' as const, account: normalizedAccount };
   }
 
   private parseOptionalBoolean(

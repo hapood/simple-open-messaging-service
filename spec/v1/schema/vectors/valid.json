@@ -54,66 +54,36 @@
           {
             "account": "alice",
             "domain": "a.example",
-            "eventType": "PROFILE",
-            "subjectAccount": "",
-            "subjectDomain": "",
+            "eventType": "RELATIONSHIP_INTENT",
+            "localAccount": "bob",
             "feedId": "1",
             "body": {
+              "status": "ACCEPTED",
+              "note": "",
+              "requestedAt": 1700000000000,
+              "expiresAt": null
+            }
+          },
+          {
+            "account": "alice",
+            "domain": "a.example",
+            "eventType": "PROFILE",
+            "feedId": "2",
+            "body": {
+              "profileRev": 1,
               "displayName": "Alice",
               "bio": "",
               "avatar": null
             }
           },
           {
-            "account": "bob",
-            "domain": "b.example",
-            "eventType": "MEMBER_PROFILE",
-            "subjectAccount": "",
-            "subjectDomain": "",
-            "feedId": "2",
-            "body": {
-              "displayName": "Bob",
-              "avatar": null
-            }
-          },
-          {
-            "account": "alice",
+            "account": "!01arz3ndektsv4rrffq69g5fav",
             "domain": "a.example",
-            "eventType": "P2P_INTENT",
-            "subjectAccount": "bob",
-            "subjectDomain": "b.example",
+            "eventType": "RELATIONSHIP_INTENT",
+            "localAccount": "bob",
             "feedId": "3",
             "body": {
-              "status": "REQUESTED",
-              "note": "hello",
-              "requestedAt": 1700000000000,
-              "expiresAt": 1700600000000
-            }
-          },
-          {
-            "account": "!01arz3ndektsv4rrffq69g5fav",
-            "domain": "a.example",
-            "eventType": "GROUP_INVITE_INTENT",
-            "subjectAccount": "bob",
-            "subjectDomain": "b.example",
-            "feedId": "4",
-            "body": {
               "status": "ACCEPTED",
-              "note": "",
-              "requestedAt": 1700000000000,
-              "expiresAt": null,
-              "owner": { "account": "alice", "domain": "a.example" }
-            }
-          },
-          {
-            "account": "!01arz3ndektsv4rrffq69g5fav",
-            "domain": "a.example",
-            "eventType": "GROUP_JOIN_INTENT",
-            "subjectAccount": "bob",
-            "subjectDomain": "b.example",
-            "feedId": "5",
-            "body": {
-              "status": "REQUESTED",
               "note": "",
               "requestedAt": 1700000000000,
               "expiresAt": null
@@ -122,11 +92,22 @@
           {
             "account": "!01arz3ndektsv4rrffq69g5fav",
             "domain": "a.example",
-            "eventType": "GROUP_META",
-            "subjectAccount": "",
-            "subjectDomain": "",
-            "feedId": "6",
+            "eventType": "PROFILE",
+            "feedId": "4",
             "body": {
+              "profileRev": 1,
+              "displayName": "Example Group",
+              "bio": "",
+              "avatar": null
+            }
+          },
+          {
+            "account": "!01arz3ndektsv4rrffq69g5fav",
+            "domain": "a.example",
+            "eventType": "GROUP_META",
+            "feedId": "5",
+            "body": {
+              "rosterRev": 1,
               "active": true,
               "dissolved": false,
               "owner": { "account": "alice", "domain": "a.example" },
@@ -135,6 +116,17 @@
                 { "account": "alice", "domain": "a.example", "role": "OWNER" },
                 { "account": "bob", "domain": "b.example", "role": "MEMBER" }
               ]
+            }
+          },
+          {
+            "account": "bob",
+            "domain": "b.example",
+            "eventType": "MEMBER_PROFILE",
+            "feedId": "6",
+            "body": {
+              "profileRev": 1,
+              "displayName": "Bob",
+              "avatar": null
             }
           }
         ],
@@ -151,11 +143,8 @@
           {
             "feedId": "1",
             "thread": {
-              "type": "P2P",
-              "participants": [
-                { "account": "alice", "domain": "a.example" },
-                { "account": "bob", "domain": "b.example" }
-              ]
+              "account": "alice",
+              "localAccount": "bob"
             },
             "messageEndSeq": "8"
           }
@@ -172,11 +161,8 @@
         "messages": [
           {
             "thread": {
-              "type": "P2P",
-              "participants": [
-                { "account": "alice", "domain": "a.example" },
-                { "account": "bob", "domain": "b.example" }
-              ]
+              "account": "alice",
+              "localAccount": "bob"
             },
             "author": { "account": "alice", "domain": "a.example" },
             "seq": 1,
@@ -406,6 +392,23 @@
       }
     },
     {
+      "name": "P2P thread data query is selected by user account grammar",
+      "schema": "urn:socfp:v1:http-parameters#/$defs/threadDataQuery",
+      "value": {
+        "account": "alice",
+        "localAccount": "bob",
+        "after": "0"
+      }
+    },
+    {
+      "name": "group thread data query omits peer account",
+      "schema": "urn:socfp:v1:http-parameters#/$defs/threadDataQuery",
+      "value": {
+        "account": "!01arz3ndektsv4rrffq69g5fav",
+        "after": "0"
+      }
+    },
+    {
       "name": "media authorization parameters",
       "schema": "urn:socfp:v1:http-parameters#/$defs/mediaParameters",
       "value": {
@@ -424,9 +427,7 @@
           {
             "feedId": "2",
             "thread": {
-              "type": "GROUP",
-              "account": "!group",
-              "domain": "a.example"
+              "account": "!group"
             },
             "tombstoneEndSeq": "4"
           }
@@ -444,9 +445,7 @@
           {
             "deletionSeq": "4",
             "thread": {
-              "type": "GROUP",
-              "account": "!group",
-              "domain": "a.example"
+              "account": "!group"
             },
             "messageSeq": 7,
             "type": "WITHDRAW",
@@ -477,7 +476,7 @@
       "value": {
         "code": 50019,
         "message": "requested message history is no longer retained",
-        "data": { "resumeAfter": "120" }
+        "data": { "resumeAfter": "120", "resumeBefore": "501" }
       }
     },
     {

@@ -33,12 +33,12 @@
         },
         "author": { "$ref": "urn:socfp:v1:common#/$defs/address" },
         "seq": {
-          "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
+          "$ref": "urn:socfp:v1:common#/$defs/positiveThreadSequence"
         },
         "originSeq": {
           "oneOf": [
             {
-              "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
+              "$ref": "urn:socfp:v1:common#/$defs/positiveThreadSequence"
             },
             { "type": "null" }
           ]
@@ -63,7 +63,7 @@
           "required": ["targetSeq"],
           "properties": {
             "targetSeq": {
-              "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
+              "$ref": "urn:socfp:v1:common#/$defs/positiveThreadSequence"
             }
           },
           "additionalProperties": false

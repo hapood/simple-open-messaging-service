@@ -11,7 +11,7 @@ import {
   messageAsset,
   message,
   messageThread,
-  friendRequest,
+  relationshipIntent,
   pendingMedia,
   threadParticipant,
   user,
@@ -192,10 +192,10 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
     ).rejects.toMatchObject({ bizCode: BusinessCode.QUOTA_EXCEEDED });
 
     expect(
-      await database.db.query.friendRequest.findFirst({
+      await database.db.query.relationshipIntent.findFirst({
         where: and(
-          eq(friendRequest.requesterUserId, userId),
-          eq(friendRequest.targetUserId, inviteTargetIds[1]),
+          eq(relationshipIntent.authorUserId, userId),
+          eq(relationshipIntent.subjectUserId, inviteTargetIds[1]),
         ),
       }),
     ).toBeUndefined();

@@ -59,17 +59,27 @@
       "oneOf": [
         {
           "type": "object",
-          "required": ["type", "account", "peerAccount"],
-          "dependentRequired": { "take": ["after"], "through": ["after"] },
+          "required": ["account", "localAccount"],
+          "dependentSchemas": {
+            "take": {
+              "anyOf": [{ "required": ["after"] }, { "required": ["before"] }]
+            },
+            "through": {
+              "anyOf": [{ "required": ["after"] }, { "required": ["before"] }]
+            }
+          },
+          "not": { "required": ["after", "before"] },
           "properties": {
-            "type": { "const": "P2P" },
             "account": {
               "$ref": "urn:socfp:v1:common#/$defs/userAccount"
             },
-            "peerAccount": {
+            "localAccount": {
               "$ref": "urn:socfp:v1:common#/$defs/userAccount"
             },
             "after": {
+              "$ref": "urn:socfp:v1:common#/$defs/decimalString"
+            },
+            "before": {
               "$ref": "urn:socfp:v1:common#/$defs/decimalString"
             },
             "through": {
@@ -82,17 +92,24 @@
         },
         {
           "type": "object",
-          "required": ["type", "groupAccount", "groupDomain"],
-          "dependentRequired": { "take": ["after"], "through": ["after"] },
+          "required": ["account"],
+          "dependentSchemas": {
+            "take": {
+              "anyOf": [{ "required": ["after"] }, { "required": ["before"] }]
+            },
+            "through": {
+              "anyOf": [{ "required": ["after"] }, { "required": ["before"] }]
+            }
+          },
+          "not": { "required": ["after", "before"] },
           "properties": {
-            "type": { "const": "GROUP" },
-            "groupAccount": {
+            "account": {
               "$ref": "urn:socfp:v1:common#/$defs/groupAccount"
             },
-            "groupDomain": {
-              "$ref": "urn:socfp:v1:common#/$defs/domain"
-            },
             "after": {
+              "$ref": "urn:socfp:v1:common#/$defs/decimalString"
+            },
+            "before": {
               "$ref": "urn:socfp:v1:common#/$defs/decimalString"
             },
             "through": {

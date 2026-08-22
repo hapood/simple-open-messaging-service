@@ -17,6 +17,9 @@ function target() {
   const tombstonePull = { advertise: vi.fn() };
   const peerStateFeedPull = { advertise: vi.fn() };
   const messageFeed = {
+    query: vi
+      .fn()
+      .mockResolvedValue({ messages: [], scannedThrough: '1', hasMore: false }),
     rejectMissingAfter: vi.fn().mockRejectedValue(
       Object.assign(new Error('after is required'), {
         bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
@@ -25,6 +28,11 @@ function target() {
     ),
   };
   const tombstoneFeed = {
+    query: vi.fn().mockResolvedValue({
+      tombstones: [],
+      scannedThrough: '1',
+      hasMore: false,
+    }),
     rejectMissingAfter: vi.fn().mockRejectedValue(
       Object.assign(new Error('after is required'), {
         bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
@@ -167,6 +175,47 @@ describe('S2sController message-feed bootstrap', () => {
       status: 400,
     });
     expect(messageFeed.rejectMissingAfter).not.toHaveBeenCalled();
+  });
+});
+
+describe('S2sController reverse thread queries', () => {
+  it('passes before as the exclusive reverse message cursor', async () => {
+    const { controller, messageFeed } = target();
+    const req = {
+      query: { account: 'alice', localAccount: 'bob', before: '3' },
+      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+    } as unknown as FastifyRequest;
+
+    await controller.queryMessages(req, 'alice', 'bob', undefined, '3');
+    expect(messageFeed.query).toHaveBeenCalledWith(
+      'a.example',
+      { type: 'P2P', account: 'alice', localAccount: 'bob' },
+      undefined,
+      undefined,
+      undefined,
+      true,
+      3,
+    );
+  });
+
+  it('rejects supplying after and before together', async () => {
+    const { controller } = target();
+    const req = {
+      query: {
+        account: 'alice',
+        localAccount: 'bob',
+        after: '1',
+        before: '3',
+      },
+      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+    } as unknown as FastifyRequest;
+
+    await expect(
+      controller.queryMessages(req, 'alice', 'bob', '1', '3'),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_MALFORMED,
+      status: 400,
+    });
   });
 });
 

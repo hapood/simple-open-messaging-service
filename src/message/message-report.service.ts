@@ -13,7 +13,10 @@ import {
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
-import { MessageReportStatus } from '../database/enums.js';
+import {
+  MessageReportStatus,
+  ThreadParticipantState,
+} from '../database/enums.js';
 import {
   message,
   messageReport,
@@ -42,7 +45,7 @@ export class MessageReportService {
         where: and(
           eq(threadParticipant.threadId, dto.threadId),
           eq(threadParticipant.userId, userId),
-          isNull(threadParticipant.leftAt),
+          eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
         ),
         columns: { id: true },
       });

@@ -9,7 +9,7 @@ import { and, eq } from 'drizzle-orm';
 import type { Database } from '../src/database/database.service.js';
 import {
   admin,
-  friendPair,
+  relationshipPair,
   mediaAsset,
   sessionToken,
   user,
@@ -240,30 +240,30 @@ export async function establishFederatedFriendship(params: {
     ]);
     if (remoteStub && localStub) {
       const [localPair, remotePair] = await Promise.all([
-        params.local.database.query.friendPair.findFirst({
+        params.local.database.query.relationshipPair.findFirst({
           where: and(
             eq(
-              friendPair.userLowId,
+              relationshipPair.userLowId,
               Math.min(params.localUserId, remoteStub.id),
             ),
             eq(
-              friendPair.userHighId,
+              relationshipPair.userHighId,
               Math.max(params.localUserId, remoteStub.id),
             ),
-            eq(friendPair.active, true),
+            eq(relationshipPair.active, true),
           ),
         }),
-        params.remote.database.query.friendPair.findFirst({
+        params.remote.database.query.relationshipPair.findFirst({
           where: and(
             eq(
-              friendPair.userLowId,
+              relationshipPair.userLowId,
               Math.min(params.remoteUserId, localStub.id),
             ),
             eq(
-              friendPair.userHighId,
+              relationshipPair.userHighId,
               Math.max(params.remoteUserId, localStub.id),
             ),
-            eq(friendPair.active, true),
+            eq(relationshipPair.active, true),
           ),
         }),
       ]);

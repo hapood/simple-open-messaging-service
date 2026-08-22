@@ -51,38 +51,42 @@ Federation v1 wire requirements.
 
 ## State consistency
 
-- Friendship is derived from two directional facts. A time-limited `REQUESTED`
-  intent may expire and be recreated at a higher revision. A P2P thread becomes
-  active only when both directions converge to non-expiring `ACCEPTED`.
+- User/user friendship and user/group membership are derived from the same two
+  directed account facts. A time-limited `REQUESTED` may expire and be recreated
+  at a higher feed position. Initiating or accepting creates the local placeholder
+  account and thread; later profile state fills its display fields.
 - A peer `ACCEPTED` is valid only in a still-effective request flow: it either
   confirms the local `REQUESTED`, or completes a peer request already answered
   by the local `ACCEPTED`. Without either state it has no admission effect. It
   does not create an incoming request, and a foreign user stub never bypasses
   this gate.
-- Accepting every new peer request republishes the local `ACCEPTED` at a new
-  feed ID even when its body is unchanged. This lets a requester that ignored
-  an earlier unsolicited confirmation observe the confirmation for its current
-  request.
+- Accepting every new peer request publishes the local `ACCEPTED` at a new feed
+  ID. Crossed requests and a valid peer `ACCEPTED` both upgrade a matching local
+  `REQUESTED` to `ACCEPTED`. A direction already in `ACCEPTED` creates no echo.
 - A newer local negative fact cannot be overwritten by a stale remote acceptance
-  or group snapshot. The local node advances and republishes its negative intent.
-  A valid local request may instead advance to acceptance when the peer confirms.
+  or group snapshot. Each authored direction remains independently controlled.
 - Re-friending or rejoining need not wait for the peer to consume the removal.
   Stable-key compaction retains the newest revision. A group origin republishes
   `GROUP_META` for a new join revision even if its previous roster was still active.
-- Group membership combines an origin invitation and a member join direction.
-  Origin-authored `GROUP_META` is the final roster authority.
-- Group invitations require an established P2P relationship between inviter and
-  invitee. The invitation transaction publishes `GROUP_INVITE_INTENT` and the
-  required group `PROFILE`. Before publishing `GROUP_META`, it also publishes all
-  referenced `MEMBER_PROFILE` dependencies to the target peer.
+- Group membership uses `RELATIONSHIP_INTENT`: group-to-user is the
+  origin-authored direction and user-to-group is the member-authored direction.
+  Group/group relationships are invalid. `GROUP_META` aggregates the effective
+  roster and roles.
+- A received pending request remains address-only until the local side accepts or
+  independently initiates. Profile disclosure requires a locally published
+  `ACCEPTED`; the publisher orders that item before `PROFILE`, `GROUP_META`, and
+  the complete referenced `MEMBER_PROFILE` set.
 - `PROFILE` has its own revision and group metadata does not embed avatars. A
   member server may apply a profile relayed by the group origin.
-- An unchanged body does not allocate another feed ID. Dependency repair
-  may reindex semantically unchanged `GROUP_META` to restore member-before-group
-  ordering in the current projection.
+- An unchanged body normally does not allocate another feed ID. Relationship
+  confirmation may reindex `ACCEPTED`. After confirmation, an effective
+  `PROFILE`, `GROUP_META`, or `MEMBER_PROFILE` snapshot whose `profileRev` or
+  `rosterRev` already equals the publisher's current revision is reused rather
+  than reindexed. A missing or older dependency is published at a new feed ID;
+  snapshot content must not change without advancing its business revision.
 - Per-peer state feeds compact by stable key. Transport `feedId` and cursors are
   bigint values and provide the ordering coordinate for snapshots.
-- Member snapshots precede the group snapshot that references them. When the last
+- Member snapshots follow the group snapshot that references them. When the last
   visibility source disappears, the source omits that member from its projection
   and the consumer cleans the reference closure only after a complete state drain.
 

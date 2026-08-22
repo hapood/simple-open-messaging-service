@@ -57,7 +57,7 @@ describe('FederationMessageFeedPullService', () => {
   ): FederationMessageFeedPage => ({
     items: feedIds.map((feedId) => ({
       feedId: feedId.toString(),
-      thread: { type: 'P2P', participants: [] },
+      thread: { account: 'alice', localAccount: 'bob' },
       messageEndSeq: feedId.toString(),
     })),
     scannedThrough: scannedThrough.toString(),

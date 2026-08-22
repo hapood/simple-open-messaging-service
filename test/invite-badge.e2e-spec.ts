@@ -7,7 +7,11 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
 import { InviteService } from '../src/invite/invite.service';
-import { friendPair, friendRequest, user } from '../src/database/schema';
+import {
+  relationshipPair,
+  relationshipIntent,
+  user,
+} from '../src/database/schema';
 import { and, eq } from 'drizzle-orm';
 import { seedUserWithSession } from './seed';
 
@@ -97,7 +101,7 @@ describe('Friend-request client state e2e', () => {
       expect.objectContaining({
         direction: 'CLIENT_STATE',
         account: 'inviter',
-        eventType: 'P2P_INTENT',
+        eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: 'invitee',
         body: expect.objectContaining({
           status: 'REQUESTED',
@@ -139,12 +143,12 @@ describe('Friend-request client state e2e', () => {
     await database.db.transaction(async (tx) => {
       await invites.writeLocalFriendIntentInTx(tx, a.id, b.id, true);
       await tx
-        .update(friendRequest)
+        .update(relationshipIntent)
         .set({ requestedAt: pastRequestedAt, expiresAt: pastExpiresAt })
         .where(
           and(
-            eq(friendRequest.requesterUserId, a.id),
-            eq(friendRequest.targetUserId, b.id),
+            eq(relationshipIntent.authorUserId, a.id),
+            eq(relationshipIntent.subjectUserId, b.id),
           ),
         );
       await invites.applyRemoteFriendIntentInTx(tx, {
@@ -158,32 +162,32 @@ describe('Friend-request client state e2e', () => {
       });
     });
 
-    let pair = await database.db.query.friendPair.findFirst({
+    let pair = await database.db.query.relationshipPair.findFirst({
       where: and(
-        eq(friendPair.userLowId, Math.min(a.id, b.id)),
-        eq(friendPair.userHighId, Math.max(a.id, b.id)),
+        eq(relationshipPair.userLowId, Math.min(a.id, b.id)),
+        eq(relationshipPair.userHighId, Math.max(a.id, b.id)),
       ),
     });
     expect(pair?.active).toBe(false);
-    expect(pair?.threadId).toBeNull();
+    expect(pair?.threadId).not.toBeNull();
 
     await database.db.transaction(async (tx) => {
       // The same explicit request must renew an expired direction even when status and note are
       // unchanged. It refreshes its expiry, but cannot activate while the peer direction is expired.
       await invites.writeLocalFriendIntentInTx(tx, a.id, b.id, true);
     });
-    const renewedLocal = await database.db.query.friendRequest.findFirst({
+    const renewedLocal = await database.db.query.relationshipIntent.findFirst({
       where: and(
-        eq(friendRequest.requesterUserId, a.id),
-        eq(friendRequest.targetUserId, b.id),
+        eq(relationshipIntent.authorUserId, a.id),
+        eq(relationshipIntent.subjectUserId, b.id),
       ),
     });
     expect(renewedLocal?.expiresAt?.getTime()).toBeGreaterThan(Date.now());
 
-    pair = await database.db.query.friendPair.findFirst({
+    pair = await database.db.query.relationshipPair.findFirst({
       where: and(
-        eq(friendPair.userLowId, Math.min(a.id, b.id)),
-        eq(friendPair.userHighId, Math.max(a.id, b.id)),
+        eq(relationshipPair.userLowId, Math.min(a.id, b.id)),
+        eq(relationshipPair.userHighId, Math.max(a.id, b.id)),
       ),
     });
     expect(pair?.active).toBe(false);
@@ -201,32 +205,32 @@ describe('Friend-request client state e2e', () => {
       });
     });
 
-    pair = await database.db.query.friendPair.findFirst({
+    pair = await database.db.query.relationshipPair.findFirst({
       where: and(
-        eq(friendPair.userLowId, Math.min(a.id, b.id)),
-        eq(friendPair.userHighId, Math.max(a.id, b.id)),
+        eq(relationshipPair.userLowId, Math.min(a.id, b.id)),
+        eq(relationshipPair.userHighId, Math.max(a.id, b.id)),
       ),
     });
     // The peer owns this direction. Its renewed REQUESTED state cannot be
     // promoted locally; activation waits for the peer to synchronize FRIEND.
     expect(pair?.active).toBe(false);
-    expect(pair?.threadId).toBeNull();
+    expect(pair?.threadId).not.toBeNull();
 
     await database.db.transaction((tx) =>
       invites.applyRemoteFriendIntentInTx(tx, {
         localUserId: a.id,
         peerUserId: b.id,
-        status: 'FRIEND',
+        status: 'ACCEPTED',
         note: 'renewed',
         requestedAt: new Date(),
         expiresAt: null,
         origin: 'peer.test',
       }),
     );
-    pair = await database.db.query.friendPair.findFirst({
+    pair = await database.db.query.relationshipPair.findFirst({
       where: and(
-        eq(friendPair.userLowId, Math.min(a.id, b.id)),
-        eq(friendPair.userHighId, Math.max(a.id, b.id)),
+        eq(relationshipPair.userLowId, Math.min(a.id, b.id)),
+        eq(relationshipPair.userHighId, Math.max(a.id, b.id)),
       ),
     });
     expect(pair?.active).toBe(true);
@@ -249,15 +253,15 @@ describe('Friend-request client state e2e', () => {
       .send({ toUserId: b.id, note: 'old A to B' });
     expect(old.body.code).toBe(0);
     await database.db
-      .update(friendRequest)
+      .update(relationshipIntent)
       .set({
         requestedAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000),
         expiresAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
       })
       .where(
         and(
-          eq(friendRequest.requesterUserId, a.id),
-          eq(friendRequest.targetUserId, b.id),
+          eq(relationshipIntent.authorUserId, a.id),
+          eq(relationshipIntent.subjectUserId, b.id),
         ),
       );
 
@@ -266,10 +270,10 @@ describe('Friend-request client state e2e', () => {
       .set(authB)
       .send({ toUserId: a.id, note: 'new B to A' });
     expect(reverse.body.code).toBe(0);
-    let pair = await database.db.query.friendPair.findFirst({
+    let pair = await database.db.query.relationshipPair.findFirst({
       where: and(
-        eq(friendPair.userLowId, Math.min(a.id, b.id)),
-        eq(friendPair.userHighId, Math.max(a.id, b.id)),
+        eq(relationshipPair.userLowId, Math.min(a.id, b.id)),
+        eq(relationshipPair.userHighId, Math.max(a.id, b.id)),
       ),
     });
     expect(pair?.active).toBe(false);
@@ -293,18 +297,18 @@ describe('Friend-request client state e2e', () => {
     expect(accepted.body.code).toBe(0);
     expect(accepted.body.data.threadId).toBeTypeOf('number');
 
-    const directions = await database.db.query.friendRequest.findMany({
+    const directions = await database.db.query.relationshipIntent.findMany({
       where: and(
         // This pair is isolated in the test, so either direction is sufficient here.
-        eq(friendRequest.requesterUserId, a.id),
-        eq(friendRequest.targetUserId, b.id),
+        eq(relationshipIntent.authorUserId, a.id),
+        eq(relationshipIntent.subjectUserId, b.id),
       ),
     });
-    expect(directions[0]?.status).toBe('FRIEND');
-    pair = await database.db.query.friendPair.findFirst({
+    expect(directions[0]?.status).toBe('ACCEPTED');
+    pair = await database.db.query.relationshipPair.findFirst({
       where: and(
-        eq(friendPair.userLowId, Math.min(a.id, b.id)),
-        eq(friendPair.userHighId, Math.max(a.id, b.id)),
+        eq(relationshipPair.userLowId, Math.min(a.id, b.id)),
+        eq(relationshipPair.userHighId, Math.max(a.id, b.id)),
       ),
     });
     expect(pair?.active).toBe(true);

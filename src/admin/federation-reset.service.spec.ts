@@ -235,7 +235,7 @@ describe('FederationResetService', () => {
     await service.finalizeDomainReset('peer.example');
 
     expect(database.db.transaction).toHaveBeenCalledOnce();
-    expect(execute).toHaveBeenCalledTimes(20);
+    expect(execute).toHaveBeenCalledTimes(19);
   });
 
   it('resumes from the first non-truncated thread after a service restart', async () => {

@@ -140,7 +140,7 @@ export type HydratedThreadDeltaOp =
       revision: number;
       account: string;
       domain: string;
-      eventType: 'P2P_INTENT' | 'GROUP_INVITE_INTENT';
+      eventType: 'RELATIONSHIP_INTENT';
       subjectAccount: string;
       subjectDomain: string;
       body: Omit<
@@ -839,16 +839,6 @@ export class UserService {
     );
   }
 
-  /** Reject an incoming invite by id. */
-  rejectInvite(
-    params: { inviteId: string } | { account: string; domain: string },
-  ) {
-    return this.http.post<StandardResponse>(
-      `${apiPrefix()}/invite/reject`,
-      params,
-    );
-  }
-
   /** Revoke my own outgoing invite by id. */
   revokeInvite(
     params: { inviteId: string } | { account: string; domain: string },
@@ -860,9 +850,8 @@ export class UserService {
   }
 
   /**
-   * Unfriend — end an approved P2P friendship (mutual: the shared thread is soft-left for both sides).
-   * On success the caller should drop the thread from the conversation list (removeThread) and close
-   * the open chat/profile. Distinct from reject/revoke, which act on a still-pending invite.
+   * Unfriend an approved P2P relationship. The established thread remains visible as read-only
+   * history unless the caller explicitly requests local data deletion.
    */
   deleteFriend(params: { userId: number; deleteData?: boolean }) {
     return this.http.post<StandardResponse>(

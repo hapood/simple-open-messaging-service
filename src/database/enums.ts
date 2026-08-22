@@ -38,6 +38,14 @@ export const MessageThreadType = { P2P: 'P2P', GROUP: 'GROUP' } as const;
 export type MessageThreadType =
   (typeof MessageThreadType)[keyof typeof MessageThreadType];
 
+export const ThreadParticipantState = {
+  AUTHORIZED: 'AUTHORIZED',
+  ESTABLISHED: 'ESTABLISHED',
+  REVOKED: 'REVOKED',
+} as const;
+export type ThreadParticipantState =
+  (typeof ThreadParticipantState)[keyof typeof ThreadParticipantState];
+
 export const ThreadRevisionDirection = {
   ADD: 'ADD',
   DELETE: 'DELETE',

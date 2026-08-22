@@ -25,16 +25,26 @@ The core implementation decisions that survived into v1 are:
   cursors provide recovery;
 - a receiver validates and applies an entire page with its cursor in one local
   transaction;
-- group metadata is origin-authoritative and references member profiles that are
-  ordered before the group snapshot;
+- group metadata is origin-authoritative and is followed by the complete member
+  profile closure that it references;
 - message/tombstone discovery remains independent from state convergence.
 
 ## Changes made by the final protocol
 
 The early design used names such as `P2P_META`, `FRIEND`, and `NOT_FRIEND`. The
-published contract uses directional intent types and `REQUESTED`, `ACCEPTED`, and
-`REVOKED`. Requests and group invitations have an absolute lifetime of at most
+published contract uses one account-generic `RELATIONSHIP_INTENT` with
+`REQUESTED`, `ACCEPTED`, and `REVOKED`. Requests have an absolute lifetime of at most
 seven days. `REVOKED` itself has no expiration.
+
+Message-feed and tombstone-feed authorization is directional. An effective
+source-authored `REQUESTED` or valid `ACCEPTED` lets the target peer query that
+source immediately, including an empty thread before acceptance; it does not
+grant the reverse query direction. Crossed requests automatically upgrade
+each local direction to `ACCEPTED`; a valid `ACCEPTED` also upgrades a matching
+local `REQUESTED`. An already accepted direction never echoes another intent.
+Profile, group-meta, and member-profile publication starts after that locally
+published `ACCEPTED` and follows it in feed order. A feed-head
+notification alone grants nothing.
 
 The source no longer stores or validates a consumer ACK/cursor. Consumers own
 their cursors and may reread old pages. Bootstrap returns a `resumeAfter` cursor,
@@ -45,11 +55,11 @@ The source removes a member after all visibility sources disappear. A consumer
 may sweep source-scoped member profiles only after completely committing a fixed
 state drain; it must preserve stable author addresses used by message history.
 
-An exact user query does not create a human stub. A node may retain a verified
-home-authored profile by address, but materializes the human user only when that
-profile and a valid `ACCEPTED` fact are both present.
+An exact account query does not materialize a remote account or thread. Those
+objects appear when the local side initiates or accepts; state-feed
+profiles follow that confirmation.
 
-For P2P admission, `ACCEPTED` is valid only within a still-effective request
+For relationship admission, `ACCEPTED` is valid only within a still-effective request
 flow: it confirms a local request or completes a peer request already accepted
 locally. An unsolicited `ACCEPTED` has no relationship effect and
 cannot be promoted merely because the foreign user was already materialized.
@@ -57,7 +67,7 @@ Conversely, accepting a new peer request always reindexes the local `ACCEPTED`
 at a new feed position, even when the body is unchanged, so a peer that passed
 an earlier unsolicited snapshot receives a confirmation for the current flow.
 
-`P2P_INTENT/REVOKED` does not carry message or tombstone feed ends. The data feeds
+`RELATIONSHIP_INTENT/REVOKED` does not carry message or tombstone feed ends. The data feeds
 are separate compacted thread end-sequence indexes, and concrete content comes
 from per-thread queries.
 
@@ -69,8 +79,8 @@ These constraints remain useful when changing the SOMS implementation:
    order so multi-peer group transactions do not deadlock.
 2. Route a removal to the union of peers visible before and after the mutation so
    the last remote member still receives the final authoritative snapshot.
-3. Allocate no feed ID for an unchanged body. Reindex only when
-   dependency repair requires a new scan position.
+3. Allocate no feed ID for an unchanged body except for relationship
+   confirmation or dependency repair that requires a new scan position.
 4. Publish a wake-up only after commit. Lost, duplicate, reordered, or stale
    wake-ups must not affect correctness.
 5. The current receiver isolates self-contained invalid items. Page-envelope,
@@ -86,7 +96,7 @@ These constraints remain useful when changing the SOMS implementation:
 
 Tests should continue to cover stable-key compaction, independent peers, revision
 idempotency, item isolation, page-failure recovery, wake-up loss/reordering,
-member-before-group ordering, final group snapshots, multi-peer lock ordering,
+group-before-member ordering, final group snapshots, multi-peer lock ordering,
 oversized or invalid profile/roster data, page-level atomicity, deletion/reset,
 and two-node convergence without chat-open probes or follow-up synchronization
 POSTs.

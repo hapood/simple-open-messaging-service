@@ -9,7 +9,7 @@ version; bodies do not repeat a version field. The current endpoint-level contra
 
 Nodes discover the root public key, root-authorized signing-key certificates and supported major versions
 through `/.well-known/socfp`. First contact uses signed, idempotent `POST /s2s/v1/recognize` in both
-directions. Ordinary data traffic opens only after both directions and local availability facts converge.
+directions. Each effective authored direction independently opens the source's data to its target peer; the reverse direction controls only the reverse query.
 
 `POST /s2s/v1/healthy` checks an existing pinned relationship without becoming a key-fetch oracle.
 Temporary transport failures move a peer from `healthy` to `degraded` without discarding its recognition
@@ -31,44 +31,61 @@ query end sequence; concrete messages and deletion facts are fetched through per
 
 ## Relationship model
 
-Friendship consists of two directed `FriendRequest` facts and one canonical unordered `FriendPair` lock.
-Each direction owns its note, request timestamp, and expiry. A `REQUESTED` direction
-is a live request only before its absolute `expiresAt`; it is never sufficient to activate a thread.
-The default source lifetime is seven days and a receiver never renews it. Only two explicit `FRIEND`
-directions activate or restore the local P2P thread. Closing one direction leaves the opposite fact
-intact, so a later one-sided request can start a new confirmation exchange.
+User/user friendship and user/group membership use the same two directed account
+facts. Each direction owns its note, request timestamp, and expiry. A
+`REQUESTED` direction is live only before its absolute `expiresAt`; its publisher
+creates a local placeholder thread and immediately grants the target peer query
+access. The default lifetime is seven days and a receiver never renews it. The
+receiving side creates its thread when it accepts or independently initiates.
+Group/group relationships are invalid.
 
 On the federation wire, peer `ACCEPTED` is valid only in a still-effective
 request flow: it confirms a local request or completes a peer request already
-accepted locally. Otherwise it is ignored for admission and does not become an
-incoming request, and cannot materialize or activate a relationship merely
-because a foreign `User` stub exists. Accepting each new peer request republishes
-the local `ACCEPTED` with a new feed ID, even if the body is unchanged.
+accepted locally. A valid confirmation of the local `REQUESTED` upgrades and
+publishes the local direction as `ACCEPTED`. Otherwise it is ignored for
+admission and does not become an incoming request, and cannot materialize or
+activate a relationship merely because a foreign account row exists. Accepting
+each new peer request republishes the local `ACCEPTED` with a new feed ID, even
+if the body is unchanged.
 
-Group membership is also directional: the group origin authors `GROUP_INVITE_INTENT`, and the member
-server authors `GROUP_JOIN_INTENT`. The origin's `GROUP_META` snapshot is the final roster authority. A
-member server may create an inert local mirror when it receives an invitation, but it activates the local
-participant and audience only after a newer origin snapshot confirms membership.
+Every direction is independently authored. `REQUESTED` creates the initiating
+side's local thread and authorization; `ACCEPTED` creates the accepting side's
+thread and authorization. Crossed requests automatically upgrade each local
+direction to `ACCEPTED`; a valid peer `ACCEPTED` likewise upgrades a matching
+local `REQUESTED`, while an already accepted direction publishes no echo.
+Each effective direction independently authorizes queries against its publisher.
+A one-sided request therefore lets its recipient query the requester's new,
+possibly empty thread, while the reverse query remains forbidden. The received
+request itself remains address-only locally until local action.
 
 ## Profiles and client state
 
-`PROFILE` is an independently revisioned snapshot and may carry localized avatar bytes. `GROUP_META`
-does not embed member avatars. A required `MEMBER_PROFILE` is indexed before the group revision that first
-references it. Once a person is neither a local member's friend nor a shared-group member, the publisher
+`PROFILE` is an independently revisioned snapshot and may carry localized avatar
+bytes. It is published only after the local direction publishes `ACCEPTED`
+through explicit acceptance, crossed requests, or valid peer confirmation.
+`GROUP_META` does not embed member avatars. Every group snapshot is followed by
+the complete `MEMBER_PROFILE` set that it references. Once a person is neither a
+local member's friend nor a shared-group member, the publisher
 omits that profile from its current projection without a deletion item; the consumer garbage-collects
 unreferenced source-scoped profiles only after a complete state drain.
 
 The user client exposes one `stateRevision` cursor for thread membership and cached profile changes.
-`HELLO` and `STATE_REV_UPDATED` carry that name. The client applies profile state before membership state,
-then processes the missed-message summary. There are no chat-open profile/meta revision probes.
+`HELLO` and `STATE_REV_UPDATED` carry that name. The client applies relationship,
+profile, group metadata, and member-profile state in dependency order, then
+processes the missed-message summary. There are no chat-open profile/meta
+revision probes.
 
 ## Message and media delivery
 
 `/s2s/v1/message-feed` and `/s2s/v1/message-tombstone-feed` are index-only compacted feeds. Their items
 advance per-thread `messageEndSeq` and `tombstoneEndSeq`; `/s2s/v1/messages` and
 `/s2s/v1/message-tombstones` return the concrete arrays after checking current durable authorization.
-Pulled messages are idempotent by stable author identity and `originSeq`. Tombstone facts are permanent;
-message bodies may be retained according to source policy and can return a corrected query `resumeAfter`.
+Pulled messages are idempotent by stable author identity and `originSeq`.
+Thread queries scan forward with exclusive `after` or backward with exclusive
+`before`; `through` is the fixed inclusive opposite bound. Cursor-unavailable
+results always return the open serviceable window
+`(resumeAfter, resumeBefore)`. Tombstone facts are permanent; message bodies may
+be retained according to source policy and can return corrected window bounds.
 
 For group leave, membership converges only through the state feed. The origin keeps a member-server's
 thread audience open while that server has any active member, so a

@@ -11,7 +11,11 @@ import {
   threadParticipant,
   user,
 } from '../database/schema.js';
-import { GroupRole, MessageThreadType } from '../database/enums.js';
+import {
+  GroupRole,
+  MessageThreadType,
+  ThreadParticipantState,
+} from '../database/enums.js';
 import {
   PendingThreadRevision,
   ThreadRevisionService,
@@ -26,8 +30,8 @@ import { closeFederatedAudienceInTx } from '../federation/federation-audience.js
  * state (read position, mute, role). It replaces both the participation half of UserMessageThread and
  * the whole GroupMember table. P2P and GROUP share it; role is null for P2P.
  *
- * GROUP access requires an active participant. P2P keeps a participant row readable after unfriend:
- * `leftAt` ends the friendship/write capability, while the retained row continues to authorize history.
+ * `AUTHORIZED` rows represent request-time protocol authorization but are hidden from the normal client.
+ * `ESTABLISHED` rows are formal and writable; `REVOKED` rows retain visible read-only history.
  */
 @Injectable()
 export class ThreadParticipantService {
@@ -37,7 +41,7 @@ export class ThreadParticipantService {
     private readonly stateFeed: PeerStateFeedService,
   ) {}
 
-  /** The caller's participant row, regardless of leftAt. */
+  /** The caller's participant row, including a protocol-only authorized shell. */
   findParticipant(userId: number, threadId: number) {
     return this.database.db.query.threadParticipant
       .findFirst({
@@ -49,10 +53,10 @@ export class ThreadParticipantService {
       .then((row) => row ?? null);
   }
 
-  /** The caller's participant row only if still active (not left). Null otherwise. */
+  /** The caller's formal participant row. Null for authorization-only shells. */
   async findActiveParticipant(userId: number, threadId: number) {
     const p = await this.findParticipant(userId, threadId);
-    return p && p.leftAt === null ? p : null;
+    return p?.state === ThreadParticipantState.ESTABLISHED ? p : null;
   }
 
   /** Active member userIds of a conversation — the SSE fan-out set (P2P and GROUP alike).
@@ -63,14 +67,13 @@ export class ThreadParticipantService {
     return this.database.db.query.threadParticipant.findMany({
       where: and(
         eq(threadParticipant.threadId, threadId),
-        isNull(threadParticipant.leftAt),
+        eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
       ),
       columns: { userId: true, muted: true, blocked: true },
     });
   }
 
-  /** Resolve a history-readable participant with the thread type. GROUP rows must still be active;
-   *  P2P rows remain readable after unfriend so the old conversation can be opened without a composer. */
+  /** Resolve a formal participant with the thread type. */
   async findActiveParticipantWithThread(userId: number, threadId: number) {
     const [row] = await this.database.db
       .select({
@@ -89,6 +92,7 @@ export class ThreadParticipantService {
         and(
           eq(threadParticipant.userId, userId),
           eq(threadParticipant.threadId, threadId),
+          ne(threadParticipant.state, ThreadParticipantState.AUTHORIZED),
         ),
       )
       .limit(1);
@@ -162,7 +166,7 @@ export class ThreadParticipantService {
     return this.database.db.query.threadParticipant.findMany({
       where: and(
         eq(threadParticipant.threadId, threadId),
-        isNull(threadParticipant.leftAt),
+        eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
       ),
       with: { user: true },
       orderBy: asc(threadParticipant.joinedAt),
@@ -175,7 +179,7 @@ export class ThreadParticipantService {
     return this.database.db.query.threadParticipant.findMany({
       where: and(
         inArray(threadParticipant.threadId, threadIds),
-        isNull(threadParticipant.leftAt),
+        eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
       ),
       with: { user: true },
       orderBy: asc(threadParticipant.joinedAt),
@@ -191,8 +195,8 @@ export class ThreadParticipantService {
     const rows = await this.database.db.query.threadParticipant.findMany({
       where: and(
         eq(threadParticipant.userId, params.where.userId),
-        params.where.leftAt === null
-          ? isNull(threadParticipant.leftAt)
+        params.where.active
+          ? ne(threadParticipant.state, ThreadParticipantState.AUTHORIZED)
           : undefined,
         typeof threadId === 'number'
           ? eq(threadParticipant.threadId, threadId)
@@ -235,13 +239,7 @@ export class ThreadParticipantService {
   }
 
   /**
-   * The id of the ACTIVE P2P thread two users share, or null. With the Friendship table gone, "are A
-   * and B friends" is exactly "do they share an active (leftAt IS NULL on BOTH sides) P2P thread".
-   *
-   * Critical: BOTH participant rows must be active. `deleteFriend` soft-leaves both rows (leftAt=now)
-   * but keeps the thread, and re-friending mints a NEW thread — so two P2P threads can exist between a
-   * pair (the stale soft-left one + the new active one). Filtering leftAt:null on both sides selects
-   * only the live edge. This is the S2S message/file serving authz gate after unfriend.
+   * The formal P2P thread two users share, or null. Both rows must be established.
    */
   async findP2PThreadBetween(
     userX: number,
@@ -254,8 +252,8 @@ export class ThreadParticipantService {
       JOIN "MessageThread" thread ON thread.id = mine."threadId"
       WHERE mine."userId" = ${userX}
         AND peer."userId" = ${userY}
-        AND mine."leftAt" IS NULL
-        AND peer."leftAt" IS NULL
+        AND mine.state = 'ESTABLISHED'
+        AND peer.state = 'ESTABLISHED'
         AND thread.type = ${MessageThreadType.P2P}
       LIMIT 1
     `);
@@ -282,20 +280,15 @@ export class ThreadParticipantService {
     return result.rows[0]?.threadId ?? null;
   }
 
-  /**
-   * End a P2P friendship: soft-leave BOTH active participants of the thread (leftAt=now). The thread
-   * row + participants are kept (history); findP2PThreadBetween now returns null for the pair, and
-   * re-friending mints a fresh thread. The unfriend is LOCAL-ONLY — no S2S notification (the peer
-   * discovers the severed edge lazily via a 403 on its next pull, per the federation protocol).
-   */
+  /** Retain an established P2P conversation after revocation and mark it read-only. */
   async softLeaveP2PBoth(threadId: number): Promise<void> {
     await this.database.db
       .update(threadParticipant)
-      .set({ leftAt: new Date(), updatedAt: new Date() })
+      .set({ state: ThreadParticipantState.REVOKED, updatedAt: new Date() })
       .where(
         and(
           eq(threadParticipant.threadId, threadId),
-          isNull(threadParticipant.leftAt),
+          eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
         ),
       );
   }
@@ -326,11 +319,11 @@ export class ThreadParticipantService {
         const low = Math.min(callerUserId, peer.userId);
         const high = Math.max(callerUserId, peer.userId);
         await tx.execute(sql`
-          INSERT INTO "FriendPair" ("userLowId", "userHighId") VALUES (${low}, ${high})
+          INSERT INTO "RelationshipPair" ("userLowId", "userHighId") VALUES (${low}, ${high})
           ON CONFLICT DO NOTHING
         `);
         await tx.execute(sql`
-          SELECT 1 FROM "FriendPair" WHERE "userLowId" = ${low} AND "userHighId" = ${high}
+          SELECT 1 FROM "RelationshipPair" WHERE "userLowId" = ${low} AND "userHighId" = ${high}
           FOR UPDATE
         `);
       }
@@ -355,11 +348,11 @@ export class ThreadParticipantService {
             );
       const ended = await tx
         .update(threadParticipant)
-        .set({ leftAt: now, updatedAt: now })
+        .set({ state: ThreadParticipantState.REVOKED, updatedAt: now })
         .where(
           and(
             eq(threadParticipant.threadId, threadId),
-            isNull(threadParticipant.leftAt),
+            eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
           ),
         )
         .returning({ id: threadParticipant.id });
@@ -383,8 +376,7 @@ export class ThreadParticipantService {
       const transitioned = ended.length > 0;
       const statePeers: string[] = [];
       if (transitioned) {
-        // Local visibility ends immediately. Remote discovery projections are removed with the
-        // audience; REVOKED carries relationship state only.
+        // Remote discovery authorization ends immediately; local thread visibility remains.
         await tx.execute(sql`
           DELETE FROM "ThreadAudience" audience
           WHERE audience."threadId" = ${threadId}
@@ -399,17 +391,17 @@ export class ThreadParticipantService {
           const low = Math.min(callerUserId, peer.userId);
           const high = Math.max(callerUserId, peer.userId);
           const request = await tx.execute(sql`
-            INSERT INTO "FriendRequest" (
-              "requesterUserId", "targetUserId", status, note, "updatedAt"
-            ) VALUES (${callerUserId}, ${peer.userId}, 'NOT_FRIEND', '', CURRENT_TIMESTAMP)
-            ON CONFLICT ("requesterUserId", "targetUserId") DO UPDATE SET
-              status = 'NOT_FRIEND', note = '',
+            INSERT INTO "RelationshipIntent" (
+              "authorUserId", "subjectUserId", status, note, "updatedAt"
+            ) VALUES (${callerUserId}, ${peer.userId}, 'REVOKED', '', CURRENT_TIMESTAMP)
+            ON CONFLICT ("authorUserId", "subjectUserId") DO UPDATE SET
+              status = 'REVOKED', note = '',
               "expiresAt" = NULL, "updatedAt" = CURRENT_TIMESTAMP
-            WHERE "FriendRequest".status <> 'NOT_FRIEND'
+            WHERE "RelationshipIntent".status <> 'REVOKED'
             RETURNING 1
           `);
           const pair = await tx.execute<{ revision: number }>(sql`
-            UPDATE "FriendPair" SET active = false, revision = revision + 1,
+            UPDATE "RelationshipPair" SET active = false, revision = revision + 1,
               "updatedAt" = CURRENT_TIMESTAMP
             WHERE "userLowId" = ${low} AND "userHighId" = ${high} AND active = true
             RETURNING revision
@@ -418,7 +410,6 @@ export class ThreadParticipantService {
           await tx
             .update(threadParticipant)
             .set({
-              recognizesFriend: false,
               ...(relationshipRev === undefined ? {} : { relationshipRev }),
               updatedAt: now,
             })
@@ -434,7 +425,7 @@ export class ThreadParticipantService {
                 domain: localDomain,
                 subjectAccount: peer.account,
                 subjectDomain: peer.domain,
-                eventType: 'P2P_INTENT',
+                eventType: 'RELATIONSHIP_INTENT',
                 body: {
                   status: 'REVOKED',
                   note: '',
@@ -518,10 +509,17 @@ export class ThreadParticipantService {
       });
       return;
     }
-    if (existing.leftAt !== null || existing.role !== role) {
+    if (
+      existing.state !== ThreadParticipantState.ESTABLISHED ||
+      existing.role !== role
+    ) {
       await tx
         .update(threadParticipant)
-        .set({ leftAt: null, role, updatedAt: new Date() })
+        .set({
+          state: ThreadParticipantState.ESTABLISHED,
+          role,
+          updatedAt: new Date(),
+        })
         .where(eq(threadParticipant.id, existing.id));
     }
   }
@@ -535,16 +533,16 @@ export class ThreadParticipantService {
     return this.upsertMemberInTx(this.database.db, threadId, userId, role);
   }
 
-  /** Soft-leave a single member (set leftAt). No-op if already left / not a member. */
+  /** Retain a former group member's visible history in the revoked state. */
   async softLeaveMember(threadId: number, userId: number): Promise<void> {
     await this.database.db
       .update(threadParticipant)
-      .set({ leftAt: new Date(), updatedAt: new Date() })
+      .set({ state: ThreadParticipantState.REVOKED, updatedAt: new Date() })
       .where(
         and(
           eq(threadParticipant.threadId, threadId),
           eq(threadParticipant.userId, userId),
-          isNull(threadParticipant.leftAt),
+          eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
         ),
       );
   }
@@ -586,8 +584,8 @@ export class ThreadParticipantService {
       JOIN "MessageThread" thread ON thread.id = mine."threadId"
       WHERE mine."userId" = ${userId}
         AND peer."userId" <> ${userId}
-        AND mine."leftAt" IS NULL
-        AND peer."leftAt" IS NULL
+        AND mine.state = 'ESTABLISHED'
+        AND peer.state = 'ESTABLISHED'
         AND thread.type = ${MessageThreadType.P2P}
     `);
     return result.rows.map((row) => row.userId);
@@ -643,7 +641,7 @@ export class ThreadParticipantService {
 type ParticipantQuery = {
   where: {
     userId: number;
-    leftAt?: null;
+    active?: true;
     threadId?: number | { in: number[] };
   };
   include?: { thread: true };

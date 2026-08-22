@@ -94,7 +94,7 @@ function makeStubs() {
     } as never, // transportConfig
     {} as never, // stateFeedPull
     {} as never, // stateFeed
-    {} as never, // groupMembershipState
+    {} as never, // relationshipIntents
   );
   return {
     svc,

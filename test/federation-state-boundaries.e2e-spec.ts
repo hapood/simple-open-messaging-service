@@ -5,7 +5,7 @@ import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import { MessageThreadType } from '../src/database/enums.js';
 import {
-  friendRequest,
+  relationshipIntent,
   group,
   groupMembershipRequest,
   messageThread,
@@ -59,11 +59,11 @@ describe('federation directed-state boundaries', () => {
 
   it('ignores a peer FRIEND snapshot outside an effective request flow', async () => {
     const { local, peer } = await createPair(Date.now().toString(36));
-    await database.db.insert(friendRequest).values([
+    await database.db.insert(relationshipIntent).values([
       {
         requesterUserId: local.id,
         targetUserId: peer.id,
-        status: 'NOT_FRIEND',
+        status: 'REVOKED',
         note: '',
         requestedAt: null,
         expiresAt: null,
@@ -72,7 +72,7 @@ describe('federation directed-state boundaries', () => {
       {
         requesterUserId: peer.id,
         targetUserId: local.id,
-        status: 'FRIEND',
+        status: 'ACCEPTED',
         note: '',
         requestedAt: new Date(),
         expiresAt: null,
@@ -84,7 +84,7 @@ describe('federation directed-state boundaries', () => {
       invites.applyRemoteFriendIntentInTx(tx, {
         localUserId: local.id,
         peerUserId: peer.id,
-        status: 'FRIEND',
+        status: 'ACCEPTED',
         note: '',
         requestedAt: new Date(),
         expiresAt: null,
@@ -100,20 +100,20 @@ describe('federation directed-state boundaries', () => {
     expect(effect.requestCreated).toBe(false);
     const directions = await database.db
       .select({
-        requesterUserId: friendRequest.requesterUserId,
-        status: friendRequest.status,
-        expiresAt: friendRequest.expiresAt,
+        requesterUserId: relationshipIntent.authorUserId,
+        status: relationshipIntent.status,
+        expiresAt: relationshipIntent.expiresAt,
       })
-      .from(friendRequest)
+      .from(relationshipIntent)
       .where(
         and(
-          eq(friendRequest.requesterUserId, local.id),
-          eq(friendRequest.targetUserId, peer.id),
+          eq(relationshipIntent.authorUserId, local.id),
+          eq(relationshipIntent.subjectUserId, peer.id),
         ),
       );
     expect(directions[0]).toMatchObject({
       requesterUserId: local.id,
-      status: 'NOT_FRIEND',
+      status: 'REVOKED',
       expiresAt: null,
     });
   });
@@ -122,7 +122,7 @@ describe('federation directed-state boundaries', () => {
     const { local, peer } = await createPair(
       `${Date.now().toString(36)}-valid`,
     );
-    await database.db.insert(friendRequest).values({
+    await database.db.insert(relationshipIntent).values({
       requesterUserId: local.id,
       targetUserId: peer.id,
       status: 'REQUESTED',
@@ -136,7 +136,7 @@ describe('federation directed-state boundaries', () => {
       invites.applyRemoteFriendIntentInTx(tx, {
         localUserId: local.id,
         peerUserId: peer.id,
-        status: 'FRIEND',
+        status: 'ACCEPTED',
         note: '',
         requestedAt: new Date(),
         expiresAt: null,
@@ -145,14 +145,16 @@ describe('federation directed-state boundaries', () => {
     );
 
     expect(effect.localStateRevision).toBeDefined();
-    const localDirection = await database.db.query.friendRequest.findFirst({
-      where: and(
-        eq(friendRequest.requesterUserId, local.id),
-        eq(friendRequest.targetUserId, peer.id),
-      ),
-    });
+    const localDirection = await database.db.query.relationshipIntent.findFirst(
+      {
+        where: and(
+          eq(relationshipIntent.authorUserId, local.id),
+          eq(relationshipIntent.subjectUserId, peer.id),
+        ),
+      },
+    );
     expect(localDirection).toMatchObject({
-      status: 'FRIEND',
+      status: 'ACCEPTED',
       expiresAt: null,
     });
   });
@@ -162,11 +164,11 @@ describe('federation directed-state boundaries', () => {
       `${Date.now().toString(36)}-final`,
     );
     const requestedAt = new Date();
-    await database.db.insert(friendRequest).values([
+    await database.db.insert(relationshipIntent).values([
       {
         requesterUserId: local.id,
         targetUserId: peer.id,
-        status: 'FRIEND',
+        status: 'ACCEPTED',
         note: '',
         requestedAt,
         expiresAt: null,
@@ -187,7 +189,7 @@ describe('federation directed-state boundaries', () => {
       invites.applyRemoteFriendIntentInTx(tx, {
         localUserId: local.id,
         peerUserId: peer.id,
-        status: 'FRIEND',
+        status: 'ACCEPTED',
         note: '',
         requestedAt: new Date(),
         expiresAt: null,
@@ -196,14 +198,14 @@ describe('federation directed-state boundaries', () => {
     );
 
     expect(effect.changed).toBe(true);
-    const peerDirection = await database.db.query.friendRequest.findFirst({
+    const peerDirection = await database.db.query.relationshipIntent.findFirst({
       where: and(
-        eq(friendRequest.requesterUserId, peer.id),
-        eq(friendRequest.targetUserId, local.id),
+        eq(relationshipIntent.authorUserId, peer.id),
+        eq(relationshipIntent.subjectUserId, local.id),
       ),
     });
     expect(peerDirection).toMatchObject({
-      status: 'FRIEND',
+      status: 'ACCEPTED',
       expiresAt: null,
     });
   });
@@ -213,7 +215,7 @@ describe('federation directed-state boundaries', () => {
       `${Date.now().toString(36)}-expired`,
     );
     const expiredAt = new Date(Date.now() - 60_000);
-    await database.db.insert(friendRequest).values([
+    await database.db.insert(relationshipIntent).values([
       {
         requesterUserId: local.id,
         targetUserId: peer.id,
@@ -244,10 +246,10 @@ describe('federation directed-state boundaries', () => {
       ),
     );
 
-    const refreshed = await database.db.query.friendRequest.findFirst({
+    const refreshed = await database.db.query.relationshipIntent.findFirst({
       where: and(
-        eq(friendRequest.requesterUserId, local.id),
-        eq(friendRequest.targetUserId, peer.id),
+        eq(relationshipIntent.authorUserId, local.id),
+        eq(relationshipIntent.subjectUserId, peer.id),
       ),
     });
     expect(refreshed).toMatchObject({

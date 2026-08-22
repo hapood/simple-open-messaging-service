@@ -106,18 +106,18 @@ describe('FederationMessageFeedService compacted feed', () => {
     await expect(service.rejectMissingAfter(peerDomain)).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
       status: 200,
-      data: { resumeAfter: '0' },
+      data: { resumeAfter: '0', resumeBefore: '1' },
     });
     await expect(
       service.rejectMissingQueryAfter(peerDomain, {
         type: 'P2P',
         account: 'alice',
-        peerAccount: 'bob',
+        localAccount: 'bob',
       }),
     ).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
       status: 200,
-      data: { resumeAfter: '0' },
+      data: { resumeAfter: '0', resumeBefore: '1' },
     });
   });
 
@@ -136,7 +136,7 @@ describe('FederationMessageFeedService compacted feed', () => {
 
     const page = await service.query(
       peerDomain,
-      { type: 'P2P', account: 'alice', peerAccount: 'bob' },
+      { type: 'P2P', account: 'alice', localAccount: 'bob' },
       0,
       undefined,
       1,
@@ -160,7 +160,43 @@ describe('FederationMessageFeedService compacted feed', () => {
 
     await expect(service.serve(peerDomain, 99n)).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
-      data: { resumeAfter: '0' },
+      data: { resumeAfter: '0', resumeBefore: '3' },
+    });
+  });
+
+  it('queries retained messages backwards with an exclusive before cursor', async () => {
+    const { alice, thread } = await seed();
+    await append(thread.id, alice.id, 1);
+    await append(thread.id, alice.id, 2);
+
+    const first = await service.query(
+      peerDomain,
+      { type: 'P2P', account: 'alice', localAccount: 'bob' },
+      undefined,
+      1,
+      undefined,
+      true,
+      3,
+    );
+    expect(first).toMatchObject({
+      messages: [{ seq: 2 }],
+      scannedThrough: '2',
+      hasMore: true,
+    });
+
+    const second = await service.query(
+      peerDomain,
+      { type: 'P2P', account: 'alice', localAccount: 'bob' },
+      undefined,
+      1,
+      undefined,
+      true,
+      2,
+    );
+    expect(second).toMatchObject({
+      messages: [{ seq: 1 }],
+      scannedThrough: '1',
+      hasMore: false,
     });
   });
 
@@ -201,7 +237,7 @@ describe('FederationMessageFeedService compacted feed', () => {
 
     const page = await service.query(
       peerDomain,
-      { type: 'P2P', account: 'alice', peerAccount: 'bob' },
+      { type: 'P2P', account: 'alice', localAccount: 'bob' },
       0,
       undefined,
       1,
@@ -226,7 +262,7 @@ describe('FederationMessageFeedService compacted feed', () => {
     await expect(
       service.query(
         peerDomain,
-        { type: 'P2P', account: 'alice', peerAccount: 'bob' },
+        { type: 'P2P', account: 'alice', localAccount: 'bob' },
         0,
       ),
     ).rejects.toMatchObject({

@@ -114,7 +114,9 @@ export async function advanceFederatedAudienceInTx(
   return true;
 }
 
-/** Reauthorization starts after the current thread tail, so an inactive interval is never backfilled. */
+/** Open directional peer query access. Repeated REQUESTED/ACCEPTED writes are idempotent and never
+ * move the audience scan position backwards. A newly authorized audience starts at the current
+ * thread boundary, so first authorization and reauthorization cannot expose an unauthorized gap. */
 export async function openFederatedAudienceInTx(
   tx: DatabaseTransaction,
   peerDomain: string,
@@ -134,10 +136,9 @@ export async function openFederatedAudienceInTx(
       threadId,
       messageScannedThroughSeq: thread.curSeq,
     })
-    .onConflictDoUpdate({
+    .onConflictDoNothing({
       target: [threadAudience.targetDomain, threadAudience.threadId],
-      targetWhere: sql`${threadAudience.targetDomain} <> 'local'`,
-      set: { messageScannedThroughSeq: thread.curSeq },
+      where: sql`${threadAudience.targetDomain} <> 'local'`,
     });
 }
 

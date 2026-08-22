@@ -28,7 +28,7 @@ export class GroupManageService {
     const activeParticipants = sql<number>`(
       select count(*)::int from ${threadParticipant}
       where ${threadParticipant.threadId} = ${messageThread.id}
-        and ${threadParticipant.leftAt} is null
+        and ${threadParticipant.state} = 'ESTABLISHED'
     )`;
     const base = this.database.db
       .select({

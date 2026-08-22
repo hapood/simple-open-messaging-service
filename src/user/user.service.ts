@@ -96,7 +96,8 @@ export class UserService {
         FROM "ThreadParticipant" mine
         JOIN "ThreadParticipant" peer ON peer."threadId" = mine."threadId"
         JOIN "User" consumer ON consumer.id = peer."userId"
-        WHERE mine."userId" = ${userId} AND mine."leftAt" IS NULL AND peer."leftAt" IS NULL
+        WHERE mine."userId" = ${userId}
+          AND mine.state = 'ESTABLISHED' AND peer.state = 'ESTABLISHED'
           AND consumer."isForeigner" = false
       `);
       const pending = await this.stateRevision.recordProfileStateInTx(

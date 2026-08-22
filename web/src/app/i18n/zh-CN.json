@@ -324,7 +324,6 @@
     "friendStatus": "已是好友",
     "selfStatus": "本人",
     "retry": "重新搜索",
-    "declinedToast": "已拒绝好友申请",
     "revokedToast": "已撤回好友申请",
     "time": {
       "justNow": "刚刚",

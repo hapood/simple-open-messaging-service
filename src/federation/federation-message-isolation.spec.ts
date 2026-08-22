@@ -9,11 +9,8 @@ const item = (
   sequence: string,
 ): FederationMessageFeedPage['messages'][number] => ({
   thread: {
-    type: 'P2P',
-    participants: [
-      { account: 'alice', domain: 'local.test' },
-      { account: 'bob', domain: 'peer.test' },
-    ],
+    account: 'alice',
+    localAccount: 'bob',
   },
   author: { account: 'alice', domain: 'local.test' },
   seq: Number(sequence),

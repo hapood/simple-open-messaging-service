@@ -16,7 +16,7 @@ The query is a closed parameter set:
 
 | Field     | Type                               | Requirement                                                                                                                               |
 | --------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `after`   | `DecimalString` query string       | Optional exclusive consumer scan position. When omitted, only `resumeAfter` is returned, not a page.                                      |
+| `after`   | `DecimalString` query string       | Optional exclusive consumer scan position. When omitted, both resume boundaries are returned, not a page.                                |
 | `take`    | `PositiveSafeInteger` query string | Optional requested maximum number of items. The publisher MAY return fewer but MUST NOT return more.                                      |
 | `through` | `DecimalString` query string       | Optional inclusive upper bound for this scan. It MUST be greater than or equal to `after` and remain unchanged across bounded pagination. |
 
@@ -32,9 +32,10 @@ downgrade state.
 
 When `after` is omitted, `take` and `through` MUST also be omitted. The source
 MUST return HTTP `200 FEDERATION_FEED_CURSOR_UNAVAILABLE` whose data contains
-only the currently available exclusive cursor `resumeAfter`. The consumer
-atomically stores that value and starts normal reads with `after=resumeAfter`;
-it MUST NOT guess an initial ID. The publisher defines this starting point.
+the current exclusive boundaries `resumeAfter` and `resumeBefore`, where
+`resumeBefore=stateFeedEndId+1`. The consumer atomically stores the window and
+starts normal reads with `after=resumeAfter`; it MUST NOT guess an initial ID.
+The publisher defines the lower starting point.
 Feed item IDs are positive integers, while cursors and ends are non-negative
 integers. `0` is the exclusive cursor before the first item, not an item ID.
 Draining from `resumeAfter` MUST reconstruct the complete current state
@@ -98,47 +99,47 @@ make a cursor unavailable.
 type StateEventType =
   | 'PROFILE'
   | 'MEMBER_PROFILE'
-  | 'P2P_INTENT'
-  | 'GROUP_INVITE_INTENT'
-  | 'GROUP_JOIN_INTENT'
+  | 'RELATIONSHIP_INTENT'
   | 'GROUP_META';
 
-interface StateFeedItem {
+interface StateFeedItemBase {
   account: Account;
   domain: Domain;
   eventType: StateEventType;
-  subjectAccount: Account | '';
-  subjectDomain: Domain | '';
   feedId: PositiveDecimalString;
   body: StateBody;
+}
+
+interface RelationshipIntentItem extends StateFeedItemBase {
+  eventType: 'RELATIONSHIP_INTENT';
+  localAccount: Account;
 }
 ```
 
 Every item and body is a closed object. The stable key is:
 
 ```text
-(domain, account, eventType, subjectDomain, subjectAccount)
+(domain, account, eventType)
+(domain, account, RELATIONSHIP_INTENT, localAccount)
 ```
 
 `feedId` is both the scan position and the ordering coordinate for the snapshot.
 Consumers apply items in increasing `feedId` order and atomically commit the
 page effects with its cursor. Repeated reads are idempotent because items at or
-below the committed cursor are not applied again. Except for the
-member-before-group dependency repair in Section 6, an unchanged body does not
-receive a new `feedId`.
+below the committed cursor are not applied again. Except for relationship
+confirmation or reconfirmation, an unchanged body does not receive a new
+`feedId`. Disclosure dependencies follow the revision reuse and repair rules in
+Section 5.2.
 
-For `PROFILE`, `MEMBER_PROFILE`, and `GROUP_META`, both subject fields MUST be
-`""`. For each intent, the subject fields MUST form a complete non-empty
-`Address`.
+Only `RELATIONSHIP_INTENT` carries `localAccount`, which is hosted by the
+receiving authority. Every other event MUST omit `localAccount`.
 
-| Event                 | `account/domain`         | `subjectAccount/subjectDomain` | Signer requirement                                                                                                  |
-| --------------------- | ------------------------ | ------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
-| `PROFILE`             | Profile subject          | Empty                          | `domain` MUST equal the signer domain.                                                                              |
-| `MEMBER_PROFILE`      | Member profile subject   | Empty                          | The signer publishes this source-scoped snapshot; the subject may belong to another domain.                         |
-| `P2P_INTENT`          | Actor for this direction | Other party                    | Actor domain MUST equal the signer and subject domain MUST equal the consumer. Both accounts MUST be `UserAccount`. |
-| `GROUP_INVITE_INTENT` | Origin-owned group       | Invited member                 | Group domain MUST equal the signer and member domain MUST equal the consumer.                                       |
-| `GROUP_JOIN_INTENT`   | Origin-owned group       | Applying member                | Group domain MUST equal the consumer and member domain MUST equal the signer.                                       |
-| `GROUP_META`          | Origin-owned group       | Empty                          | Group domain MUST equal the pinned signer/origin.                                                                   |
+| Event                 | `account/domain`         | `localAccount` | Signer requirement                                                                                                                                |
+| --------------------- | ------------------------ | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PROFILE`             | Profile subject          | Omitted        | `domain` MUST equal the signer domain.                                                                                                            |
+| `MEMBER_PROFILE`      | Member profile subject   | Omitted        | The signer publishes this source-scoped snapshot; the subject may belong to another domain.                                                       |
+| `RELATIONSHIP_INTENT` | Remote relationship end  | Local end      | `domain` MUST equal the signer; `localAccount` is hosted by the consumer. Endpoints MUST be user/user or user/group; group/group is invalid.      |
+| `GROUP_META`          | Origin-owned group       | Omitted        | Group domain MUST equal the pinned signer/origin.                                                                                                 |
 
 ## 4. Display profiles and minimum disclosure
 
@@ -165,29 +166,32 @@ grant no identity, relationship, membership, message, or resource permission.
 ### 4.1 `PROFILE`
 
 `PROFILE` is the complete account profile published by an identity home server
-to a peer with direct profile visibility. The subject may be a `UserAccount`
-needed for an exact P2P request or existing P2P relationship, or an
-origin-owned `GroupAccount` needed for a group invitation or audience.
+to a peer with an effective relationship. The subject may be a `UserAccount`
+in a friendship or an origin-owned `GroupAccount` in a group relationship.
 
 ```ts
 interface ProfileBody {
+  profileRev: SafeInteger;
   displayName: string;
   bio: string;
   avatar: ProfileAvatar | null;
 }
 ```
 
-A publisher MUST allocate the profile only to a peer that currently has direct P2P or group profile
-visibility, or needs it for an exact P2P request or group-invitation mirror.
+A publisher MUST allocate `PROFILE` only after both directions are authorizing
+and its locally authored direction is `ACCEPTED`. A lone request does not grant
+state-feed profile visibility. Explicit acceptance, crossed requests, and a
+valid peer `ACCEPTED` that confirms the local `REQUESTED` all cause the local
+direction to publish `ACCEPTED`; `PROFILE.feedId` MUST be greater than that
+locally published item.
 
 Exact user lookup is a separate disclosure context. `GET /users/:account`
 returns only the minimum public identity card defined by the resource
 specification and MUST NOT be expanded merely because `PROFILE` contains `bio`
 state. A consumer MUST NOT treat a proxied lookup result as a
-relationship or state projection. A human user's home-authored profile is not
-sufficient to establish a persistent relationship identity: a valid
-`ACCEPTED` intent and a profile from that identity home are both
-required. This rule does not constrain lazy materialization of group mirrors.
+relationship or state projection. A local initiation or acceptance creates the
+placeholder account and thread; a later home-authored `PROFILE` supplies display
+state but grants no additional authority.
 
 ### 4.2 `MEMBER_PROFILE`
 
@@ -197,6 +201,7 @@ group; only `GROUP_META.members` defines the roster.
 
 ```ts
 interface MemberProfileBody {
+  profileRev: SafeInteger;
   displayName: string;
   avatar: ProfileAvatar | null;
 }
@@ -227,7 +232,7 @@ later page MUST use `through=target`. Cleanup is permitted only after committing
 all page effects and the final cursor with
 `hasMore: false && scannedThrough === target`.
 
-The consumer then evaluates snapshots against the latest committed P2P
+The consumer then evaluates snapshots against the latest committed account
 relationships and complete replacement group rosters from that signer. A
 member snapshot may be removed only when the member is neither a friend of a
 local user nor shares any group with a local user. Cleanup MUST NOT occur
@@ -236,10 +241,9 @@ display metadata MUST NOT remove messages or their stable author addresses.
 State re-indexed beyond the fixed target is reconciled by a later hint or
 periodic drain.
 
-## 5. Directional intents
+## 5. Directed account relationships
 
-P2P relationships, group invitations, and group join requests share one
-directional state:
+User friendships and user/group membership use the same directed state:
 
 ```ts
 type IntentStatus = 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
@@ -251,25 +255,32 @@ interface IntentBody {
   expiresAt: EpochMilliseconds | null;
 }
 
-type P2PIntentBody = IntentBody;
+type RelationshipIntentBody = IntentBody;
 ```
 
-- `REQUESTED` means this direction currently requests or agrees to establish
-  the relationship. `requestedAt` MUST be non-null.
-- `ACCEPTED` means this direction has observed and confirmed successful
-  completion of both sides' flow. `expiresAt` MUST be `null`.
+- `REQUESTED` means this direction authorizes the relationship and asks the
+  other account to authorize its direction. The publisher MUST create its local
+  thread and local authorization state before publishing it. `requestedAt` and
+  `expiresAt` MUST be non-null.
+- `ACCEPTED` means this direction authorizes the relationship in response to a
+  current reverse `REQUESTED`. The accepting side MUST create or activate its
+  local thread atomically with this state. `expiresAt` MUST be `null`.
 - `REVOKED` means this direction rejects, withdraws, or terminates the
   relationship. `expiresAt` MUST be `null`.
 - `note` describes only this direction, grants no permission, and contains at
   most 255 Unicode code points.
+- These statuses are current state for the ordered account pair, not events
+  bound to a request instance. `requestedAt` and `expiresAt` determine whether a
+  `REQUESTED` snapshot is currently effective; they are not a generation ID or
+  causal correlation token.
 - Expiry invalidates only `REQUESTED` and does not itself allocate a new
   `feedId`. An expired request may be omitted from the current projection
   without a `REVOKED` event. A consumer MUST stop treating it as effective at
   its absolute expiry time whether or not the key appears again.
 
-For every intent type, `REQUESTED` MUST have a non-null `expiresAt` satisfying
+`REQUESTED` MUST have a non-null `expiresAt` satisfying
 `requestedAt < expiresAt <= requestedAt + 7 days`. v1 does not permit a
-permanently pending friend request, group invitation, or group join request.
+permanently pending relationship request.
 
 `REVOKED` has no semantic expiry. It is a best-effort notification of refusal,
 withdrawal, or termination. The publisher SHOULD retain its current projection
@@ -278,79 +289,188 @@ consumer MUST NOT interpret omission as restoration. Current authorization
 checks and immediate message-query refusal provide eventual convergence after
 cleanup.
 
-### 5.1 P2P
+### 5.1 Reverse-direction matching and confirmation
 
-A P2P relationship exists only when the latest direction from each party is
-`ACCEPTED`. On receiving a valid peer `REQUESTED`, an implementation with an
-effective local direction may advance its direction to `ACCEPTED` and return
-it. Crossing requests converge idempotently through ordered feed snapshots. As
-soon as either party publishes `REVOKED`, the relationship becomes invalid and
-future P2P message allocation to that closed audience stops. The other
-direction is not rewritten as if authored by the revoking party.
+A consumer applies an incoming intent by looking up the latest locally authored
+intent whose actor and subject are reversed. It MUST use those two durable
+directions as the complete relationship state; protocol behavior does not
+depend on which UI operation originally produced them.
 
-A received peer `ACCEPTED` is valid only within a matching, still-effective
-request flow. It may confirm the consumer's own `REQUESTED`, or complete a peer
-`REQUESTED` that the consumer already accepted and answered with `ACCEPTED`.
-Without either state, the consumer MUST ignore the peer `ACCEPTED` for
-relationship admission. It MUST NOT create an incoming friend request,
-materialize a persistent relationship identity, change the local direction,
-activate a P2P relationship, or grant message or resource access. An existing
-foreign user stub MUST NOT bypass this check. After validating the item, the
-consumer may still commit the page and advance its feed cursor.
+Relationship decisions use current committed snapshots, not causal
+acknowledgements. At the moment of a local operation, the implementation MUST
+treat the latest committed item for the reverse stable key as the peer's current
+state and evaluate the operation against that item. It MUST NOT attempt to infer
+whether the peer observed an intermediate local state from feed ends, unrelated
+feed IDs, timing, or delivery attempts. A later item for the reverse key is a new
+current snapshot and is matched again through the same transition table. The
+protocol carries no relationship ACK, causal token, or peer-awareness watermark.
 
-Whenever a party accepts a peer `REQUESTED`, it MUST publish its current
-direction as `ACCEPTED` with a new, greater `feedId`. This applies even when its
-local direction is already the friendship fact represented by `ACCEPTED` and
-the body is unchanged. The confirming re-index is an exception to the general
-rule that an unchanged body receives no new `feedId`: the requester may have
-ignored and passed an earlier unsolicited `ACCEPTED`, so only a newly indexed
-confirmation can complete the current request flow.
+The reverse matcher uses the following transition table. Crossed effective
+requests and a valid peer `ACCEPTED` confirming a local effective `REQUESTED`
+upgrade the local direction and publish `ACCEPTED`. A new effective peer
+`REQUESTED` also re-indexes an already local `ACCEPTED` without changing its
+business state. Other incoming states do not rewrite locally authored state.
+`Peer may query
+local` is controlled only by the consumer's authored direction. `Local may
+query peer` is controlled only by the incoming peer direction. The two query
+permissions are independent.
 
-`P2P_INTENT` is a closed body. It MUST NOT contain `messageFeedEndId`,
-`tombstoneFeedEndId`, a data-feed cursor, or a historical authorization
-boundary. Feed ends are global index scan bounds, not thread-closure bounds.
-After receiving `REVOKED`, a consumer MUST invalidate current message and
-tombstone query targets for that peer/thread and stop retrying them. The source
-MAY independently remove the thread's current projections from the two index
-feeds. If a query returns `FORBIDDEN` before state convergence, the consumer
-MUST perform the same invalidation and prioritize another state-feed drain.
+| Local before | Incoming remote | Local after | Peer may query local | Local may query peer | Required local action |
+| ------------ | --------------- | ----------- | -------------------- | -------------------- | --------------------- |
+| absent       | `REQUESTED`     | absent      | no                   | yes                  | Store the incoming request; local queries may return the peer's empty thread, but do not create a local thread or publish a response. |
+| absent       | `ACCEPTED`      | absent      | no                   | no                   | Ignore the unmatched acceptance for admission; do not materialize a thread. |
+| absent       | `REVOKED`       | absent      | no                   | no                   | Store or discard the remote negative fact according to local policy. |
+| `REQUESTED`  | `REQUESTED`     | `ACCEPTED`  | yes                  | yes                  | Atomically upgrade the local direction and publish `ACCEPTED`. |
+| `REQUESTED`  | `ACCEPTED`      | `ACCEPTED`  | yes                  | yes                  | Atomically upgrade the local direction and publish `ACCEPTED`; query permission and coordinates remain unchanged. |
+| `REQUESTED`  | `REVOKED`       | `REQUESTED` | yes                  | no                   | Keep serving the locally authorized direction and publish no response. |
+| `ACCEPTED`   | `REQUESTED`     | `ACCEPTED`  | yes                  | yes                  | Keep the business state unchanged, but re-index and publish the local `ACCEPTED` for this new effective request flow. |
+| `ACCEPTED`   | `ACCEPTED`      | `ACCEPTED`  | yes                  | yes                  | Retain both query directions without publishing a response. |
+| `ACCEPTED`   | `REVOKED`       | `ACCEPTED`  | yes                  | no                   | Stop querying the peer; continue serving the locally authorized direction. |
+| `REVOKED`    | `REQUESTED`     | `REVOKED`   | no                   | yes                  | The local side may query the peer, but the peer may not query local data; keep the request available for explicit acceptance. |
+| `REVOKED`    | `ACCEPTED`      | `REVOKED`   | no                   | no                   | Ignore the unmatched acceptance and do not restore authorization automatically. |
+| `REVOKED`    | `REVOKED`       | `REVOKED`   | no                   | no                   | Keep both query directions disabled. |
 
-After a relationship closes or is restored, the source determines the
-currently readable message and tombstone ranges from durable facts and local
-policy. A per-peer feed ID MUST NOT be interpreted as thread-message
-authorization, and restoration MUST NOT decrease a committed thread-local
-query cursor.
+Local actions use the same authored direction but are not incoming-match rows:
 
-### 5.2 Group invitations and join requests
+| Local action | Proposed local state | Evaluation |
+| ------------ | -------------------- | ---------- |
+| Initiate     | `REQUESTED`          | Create the local thread and authorization, then publish `REQUESTED`; the peer may query it immediately, including receiving an empty page before any message exists. |
+| Accept       | `ACCEPTED`           | Valid only with a current, unexpired remote `REQUESTED`; create the local thread and authorization, publish `ACCEPTED`, and enable both query directions immediately. |
+| Reject, withdraw, or terminate | `REVOKED` | Publish `REVOKED` and make the relationship inactive. |
 
-A group invitation MUST be initiated through an established P2P relationship
-between the inviter and invitee; it MUST NOT bypass friendship admission. The
-state projection visible to the invitee MUST contain the inviter profile and
-the group profile needed to present the invitation. Any referenced group
-roster MUST also satisfy the member-before-group ordering in Section 6. A
-consumer MUST NOT rely on a later user lookup to complete invitation state.
+Accepting a remote request from local `absent` or `REVOKED` therefore creates a
+new local `ACCEPTED`; it does not mutate the stored remote `REQUESTED` and does
+not require a second confirmation.
 
-`GROUP_INVITE_INTENT` additionally carries the current owner needed to create a
-lazy mirror:
+A local initiate, accept, revoke, or terminate operation MUST atomically store
+its authored direction and allocate the target peer's next state-feed ID
+(`stateFeedEndId + 1`) under Section 2.1. After commit it MUST advertise the new
+end through `feed-heads` under Core Protocol Section 9.2. Applying an incoming
+item MUST NOT publish a relationship intent or allocate another intent feed ID
+except for either `REQUESTED` confirmation row or the `ACCEPTED + REQUESTED`
+reconfirmation row above. Each upgrade or reconfirmation allocates a new local
+`ACCEPTED` and advertises the new feed end. Receiving `ACCEPTED` while the local
+direction is already `ACCEPTED`, absent, or `REVOKED` produces no relationship
+item. Dependent state newly authorized or reopened by the transition follows
+its own publication rules.
 
-```ts
-interface GroupInviteIntentBody extends IntentBody {
-  owner: Address;
-}
-```
+Query authorization is directional. A source MUST allow the target peer to
+query the relationship while the source's authored direction is an unexpired
+`REQUESTED` or a valid `ACCEPTED`; it MUST return `FORBIDDEN` when that direction
+is absent, expired, or `REVOKED`. The reverse direction is used only to validate
+that an `ACCEPTED` belongs to a current request flow; it is not otherwise a
+requirement for serving the source's authored grant. A newly requested empty
+thread therefore returns a successful empty page rather than `FORBIDDEN`. The
+two latest directions determine the two independent query permissions. A
+feed-head hint or uncommitted page effect MUST NOT enable either permission.
+For the same federation-thread stable key, `REQUESTED` and `ACCEPTED` grant
+identical message and tombstone query permission. Reverse confirmation MUST NOT
+expand or reset that permission or its sequence-coordinate space solely because
+of confirmation.
 
-`owner` MUST be a `UserAccount` hosted by the origin domain.
-`GROUP_JOIN_INTENT` has exactly the closed `IntentBody`; it MUST NOT contain an
-owner, historical message boundary, or feed cursor.
+Without either matching state, the consumer MUST ignore the peer `ACCEPTED` for
+admission. It MUST NOT create an incoming request, materialize a persistent
+remote account, create or activate a thread, change the local direction, or
+grant message or resource access. An existing foreign account row MUST NOT
+bypass this gate. After validating the item, the consumer may still commit the
+page and advance its feed cursor.
 
-After an effective invite `REQUESTED` and join `REQUESTED` converge, the origin
-MAY apply local admission policy. On admission, the origin publishes a new
-invite snapshot as `ACCEPTED` and an authoritative `GROUP_META`. After
-the member server observes that member in the authoritative roster, it
-publishes a new join snapshot as `ACCEPTED`. Either direction's
-`REVOKED` prevents new admission or requests removal of an existing member,
-but `GROUP_META` remains the final membership authority. An intent alone grants
-no message, media, or group-resource permission.
+An explicit accept of the current reverse `REQUESTED` always publishes a new
+local `ACCEPTED`. Crossing `REQUESTED` items cause each consumer to upgrade its
+own direction to `ACCEPTED`. A valid peer `ACCEPTED` likewise confirms and
+upgrades a local `REQUESTED`. These upgrades open profile disclosure without an
+additional user decision and terminate after both directions are `ACCEPTED`.
+
+When a new effective peer `REQUESTED` arrives while the local direction is
+already `ACCEPTED`, the publisher MUST allocate a new `feedId` for its unchanged
+`ACCEPTED`. This reconfirmation binds the retained local acceptance to the new
+request flow and lets a requester recover after an earlier confirmation was
+delayed past request expiry or otherwise passed without admission. It is not a
+response loop: an incoming `ACCEPTED` against an already local `ACCEPTED` does
+not publish another item.
+
+As soon as a party publishes `REVOKED`, its authored grant becomes ineffective:
+the target peer MUST stop querying that publisher and the publisher stops future
+allocation to that peer. The reverse authored grant remains independently
+effective until it expires or is revoked. An incoming item updates only the
+remote direction.
+
+`RELATIONSHIP_INTENT` is a closed body. It MUST NOT contain `owner`, `sinceSeq`,
+`messageFeedEndId`, `tombstoneFeedEndId`, a data-feed cursor, or a historical
+authorization boundary. Feed ends are global index scan bounds, not
+thread-closure bounds. After receiving `REVOKED`, a consumer MUST invalidate
+message and tombstone query targets against that publisher and stop retrying
+them. Its own independently authored grant remains unchanged. The source MAY
+independently remove the thread's current
+projections from the two index feeds. If a query returns `FORBIDDEN` before
+state convergence, the consumer MUST perform the same invalidation and
+prioritize another state-feed drain.
+
+After a relationship closes or is restored, the source determines the currently
+readable message and tombstone ranges from durable facts and local policy. A
+per-peer feed ID MUST NOT be interpreted as thread-message authorization, and
+restoration MUST NOT decrease a committed thread-local query cursor.
+
+### 5.2 Post-acceptance dependency closure
+
+After every newly published `ACCEPTED`, including a reconfirmation that leaves
+the business relationship unchanged, the publisher MUST ensure that its current
+effective projection contains the complete disclosure dependency closure for
+that relationship. The closure consists of the required `PROFILE`, applicable
+`GROUP_META`, and every `MEMBER_PROFILE` referenced by that group snapshot.
+Every retained snapshot MUST carry the publisher's current `profileRev` or
+`rosterRev`.
+
+When an effective snapshot already has the current business revision, the
+publisher SHOULD reuse it without allocating another `feedId`. When a required
+snapshot is absent or has an older business revision, the publisher MUST publish
+the current complete snapshot at a new `feedId`. Newly allocated dependencies
+MUST follow the `ACCEPTED` in this order: `PROFILE`, applicable `GROUP_META`, then
+newly allocated `MEMBER_PROFILE` snapshots. Snapshot content MUST NOT change
+without advancing its business revision.
+
+This is a closure check after every acceptance, not an instruction to republish
+the whole closure after every acceptance. A publisher MUST finish repairing any
+missing or stale required dependency before it treats the acceptance publication
+as complete.
+
+### 5.3 Projection removal and retention
+
+The publisher MUST remove a `PROFILE`, `GROUP_META`, or `MEMBER_PROFILE` stable
+key from the effective projection after its last relationship, group, or member
+visibility source disappears. Removing a key is projection compaction, not a
+removal event, and MUST NOT erase retained messages or stable author addresses.
+If another visibility source still requires the same key, the publisher MUST
+retain it.
+
+An expired `REQUESTED` stable key MAY be removed without publishing `REVOKED`.
+A current `REVOKED` stable key MAY also be removed as historical cleanup because
+live authorization is derived independently and still MUST reject access. These
+permissions do not weaken the mandatory cleanup of no-longer-needed profile,
+group-meta, and member-profile disclosure.
+
+### 5.4 Account types and materialization
+
+The account grammar determines the relationship kind. `UserAccount` to
+`UserAccount` is a friendship direction. `GroupAccount` to `UserAccount` is the
+group-authored direction, including an invitation or origin confirmation.
+`UserAccount` to `GroupAccount` is the member-authored direction, including a
+join request or acceptance of an invitation. A relationship between two group
+accounts is invalid.
+
+A group invitation MUST be initiated by an authorized local user under origin
+policy; it MUST NOT bypass friendship or group policy. The initiating side
+creates its local placeholder group/account and thread before publishing
+`REQUESTED`. A receiving side stores the request by stable addresses and creates
+its placeholder and thread only when it accepts or independently initiates the
+reverse direction. Missing display fields use address-derived placeholders and
+are updated when the later `PROFILE` arrives.
+
+Before publishing `ACCEPTED`, the accepting side MUST complete its admission
+checks and ensure that it can honor the acceptance, including capacity and
+policy requirements. It MUST atomically create or activate its local
+relationship, roster, audience, and thread as applicable. No second
+confirmation is required.
 
 ## 6. `GROUP_META`
 
@@ -358,6 +478,7 @@ no message, media, or group-resource permission.
 type GroupRole = 'OWNER' | 'ADMIN' | 'MEMBER';
 
 interface GroupMetaBody {
+  rosterRev: SafeInteger;
   active: boolean;
   dissolved: boolean;
   owner: Address | null;
@@ -383,23 +504,27 @@ history isolation among local members on the same peer. A consumer may apply a
 stricter local display policy but MUST NOT interpret it as origin-verifiable
 per-member access control.
 
-The publisher MUST make the authoritative `GROUP_META` update and the
-corresponding opening or closing of that peer's group-message audience visible
-atomically. Message-feed allocation that depends on a new audience may occur
-only afterward. A consumer MUST commit state-feed effects before processing
-subsequently fetched data-feed items.
+The publisher MUST make the authoritative `GROUP_META` update, the corresponding
+relationship activation, and the opening or closing of that peer's group-message
+audience visible atomically. It MUST NOT publish group profile or roster state
+until its locally authored direction is `ACCEPTED`. The local `ACCEPTED` that
+opens disclosure MUST have a lower `feedId` than `PROFILE`; the publisher then
+allocates `PROFILE` and `GROUP_META`. Message-feed allocation that depends on a
+new audience may occur only afterward. A consumer MUST commit state-feed effects
+before processing subsequently fetched data-feed items.
 
-For each member newly referenced by `GROUP_META.members`, the publisher MUST
-ensure that the target peer's current state projection contains the matching
-`MEMBER_PROFILE` with a lower `feedId` before allocating the `GROUP_META`
-`feedId`. If a later member-profile update receives a `feedId` above a
-`GROUP_META` that still references it, the publisher MUST re-index the related
-`GROUP_META` so the compact current projection preserves member-before-group
-order. This dependency repair MAY allocate a new `feedId` while retaining an
-identical body; consumers treat it as an idempotent
-no-op while still advancing the feed cursor. A consistent page snapshot MUST
-NOT contain a group snapshot whose referenced member projection cannot be
-resolved.
+After every `GROUP_META` publication, the publisher MUST ensure that complete
+`MEMBER_PROFILE` snapshots for all members visible to the target peer exist in
+the effective projection. A member snapshot already carrying the current
+`profileRev` SHOULD be reused. A missing or older member snapshot MUST be
+published after that `GROUP_META` at a greater `feedId`. The publisher MUST NOT
+publish a newly disclosed member snapshot before the corresponding group
+snapshot or before the relationship becomes effective.
+
+A consumer MAY reject, ignore, quarantine, or defer a `PROFILE`, `GROUP_META`,
+or `MEMBER_PROFILE` whose required preceding relationship or state closure is
+absent or inconsistent. Regardless of local handling, such an item MUST NOT
+grant relationship, membership, message, or resource authorization.
 
 `active: false` revokes future allocation and makes current message-query
 access return `FORBIDDEN`, but does not erase historical allocation proofs or
@@ -412,10 +537,11 @@ across restart, replay, audience closure, and restoration.
 ## 7. Application, recovery, and safety
 
 The consumer MUST validate page structure, identity, bindings, and each stable
-key in wire `feedId` order. After the entire page validates, it first
-applies `PROFILE` and `MEMBER_PROFILE`, then the `GROUP_META` and intent items
-that reference them. A dependency-repair item with an identical body is a
-no-op, but its feed cursor still advances.
+key in increasing `feedId` order. A valid dependency chain consequently applies
+the disclosure-opening `ACCEPTED` before `PROFILE`, `PROFILE` before
+`GROUP_META`, and `GROUP_META` before the `MEMBER_PROFILE` items it authorizes.
+A re-indexed item with an identical body is a business no-op, but its feed cursor
+still advances.
 
 `MEMBER_PROFILE` visibility is determined by the publisher's current source
 set. Consumers perform reference-closure cleanup only after a complete bounded

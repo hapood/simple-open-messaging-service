@@ -98,7 +98,7 @@ describe('FederationMessageFeedPullService commit boundary', () => {
     const { service, state } = harness(0n, false);
     const fetch = vi
       .fn()
-      .mockRejectedValueOnce(new RemoteFeedCursorUnavailableError(4n))
+      .mockRejectedValueOnce(new RemoteFeedCursorUnavailableError(4n, 10n))
       .mockResolvedValueOnce(page('6'))
       .mockResolvedValueOnce(page('6'));
 
@@ -173,7 +173,7 @@ describe('FederationMessageFeedPullService commit boundary', () => {
     const { service, state } = harness();
     const fetch = vi
       .fn()
-      .mockRejectedValueOnce(new RemoteFeedCursorUnavailableError(5n))
+      .mockRejectedValueOnce(new RemoteFeedCursorUnavailableError(5n, 10n))
       .mockResolvedValueOnce(page('8'))
       .mockResolvedValueOnce(page('8'));
     const apply = vi.fn();
@@ -195,7 +195,7 @@ describe('FederationMessageFeedPullService commit boundary', () => {
     const { service, state, whereUpdate } = harness(5n);
     const fetch = vi
       .fn()
-      .mockRejectedValueOnce(new RemoteFeedCursorUnavailableError(4n))
+      .mockRejectedValueOnce(new RemoteFeedCursorUnavailableError(4n, 10n))
       .mockResolvedValueOnce(page('4'));
 
     await service.run('peer.test', {

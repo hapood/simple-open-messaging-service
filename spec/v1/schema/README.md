@@ -11,7 +11,7 @@ This directory ships with the v1 normative text as a non-normative validation re
 - `common.schema.json`: shared Federation types for identity, time, cursors, digests, and addresses.
 - `discovery.schema.json`: cross-version bootstrap and key discovery at `/.well-known/socfp`.
 - `identity.schema.json`: closed JSON shapes for Recognize, Healthy, and feed-head hints.
-- `state-feed.schema.json`: complete pages and all six event bodies.
+- `state-feed.schema.json`: complete pages and all four event bodies.
 - `message-feed.schema.json`: message index feed pages and `thread + messageEndSeq` items.
 - `message-tombstone-feed.schema.json`: tombstone index feed pages and `thread + tombstoneEndSeq` items.
 - `message-query.schema.json` and `message-tombstone-query.schema.json`: messages and authoritative deletion facts returned by thread queries.
@@ -20,7 +20,7 @@ This directory ships with the v1 normative text as a non-normative validation re
 - `profile.schema.json`, `forward-bundle.schema.json`, and `error.schema.json`: the remaining JSON operations.
 - `http-parameters.schema.json`: normalized query and path parameter objects.
 
-JSON Schema checks closed shapes, dependencies, and canonical decimal forms. The numeric upper bound of a `PositiveSafeInteger` query string and cross-field numeric relations such as `through >= after` MUST be checked semantically after parsing into an exact integer. Implementations MUST NOT first convert such values to a potentially lossy floating-point number. A semantic failure returns `400 FEDERATION_MALFORMED` for the relevant operation.
+JSON Schema checks closed shapes, dependencies, and canonical decimal forms. The numeric upper bound of a `PositiveSafeInteger` query string and cross-field numeric relations such as forward `through >= after` and reverse `through <= before` MUST be checked semantically after parsing into an exact integer. Every thread-query cursor is at most `SafeInteger`; message and tombstone business sequences and their end values are at most `SafeInteger - 1`. Implementations MUST NOT first convert such values to a potentially lossy floating-point number. A semantic failure returns `400 FEDERATION_MALFORMED` for the relevant operation.
 
 - `http-manifest.json`: the complete operation surface and its authentication, status, media-type, and schema mappings.
 - `vectors/valid.json` and `vectors/invalid.json`: positive and negative JSON vectors.

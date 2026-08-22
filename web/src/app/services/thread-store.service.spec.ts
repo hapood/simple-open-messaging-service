@@ -893,7 +893,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
             revision: 6,
             account: 'remote',
             domain: 'peer.test',
-            eventType: 'P2P_INTENT',
+            eventType: 'RELATIONSHIP_INTENT',
             subjectAccount: 'local',
             subjectDomain: 'local',
             body: {
@@ -941,7 +941,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
             revision: 6,
             account: 'remote',
             domain: 'peer.test',
-            eventType: 'P2P_INTENT',
+            eventType: 'RELATIONSHIP_INTENT',
             subjectAccount: 'local',
             subjectDomain: 'local',
             body: {

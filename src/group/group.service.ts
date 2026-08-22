@@ -9,13 +9,17 @@ import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import {
   group,
-  groupMembershipRequest,
+  relationshipIntent,
   messageThread,
   threadAudience,
   threadParticipant,
   user,
 } from '../database/schema.js';
-import { GroupRole, MessageThreadType } from '../database/enums.js';
+import {
+  GroupRole,
+  MessageThreadType,
+  ThreadParticipantState,
+} from '../database/enums.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { mintGroupAccount, isP2002 } from '../common/account.js';
@@ -241,7 +245,7 @@ export class GroupService {
   }
 
   /**
-   * Leave a group (soft: sets leftAt). The owner may not leave: they must transfer ownership or dissolve
+   * Leave a group by deactivating membership. The owner may not leave: they must transfer ownership or dissolve
    * the group, preserving the invariant that every active group has exactly one owner. Returns the
    * remaining active member ids for the caller response and follow-up effects.
    */
@@ -263,7 +267,7 @@ export class GroupService {
       const shouldDelete = params.deleteData && !hidden;
       const [current] = await tx
         .select({
-          leftAt: threadParticipant.leftAt,
+          state: threadParticipant.state,
           role: threadParticipant.role,
         })
         .from(threadParticipant)
@@ -277,7 +281,10 @@ export class GroupService {
         .limit(1);
       if (!current)
         throw new BusinessException(BusinessCode.NOT_FOUND, 'member not found');
-      if (current.leftAt === null && current.role === GroupRole.OWNER) {
+      if (
+        current.state === ThreadParticipantState.ESTABLISHED &&
+        current.role === GroupRole.OWNER
+      ) {
         throw new BusinessException(
           BusinessCode.GROUP_OWNER_MUST_TRANSFER,
           'transfer ownership or dissolve the group before leaving',
@@ -285,12 +292,12 @@ export class GroupService {
       }
       const ended = await tx
         .update(threadParticipant)
-        .set({ leftAt: now, updatedAt: now })
+        .set({ state: ThreadParticipantState.REVOKED, updatedAt: now })
         .where(
           and(
             eq(threadParticipant.userId, params.userId),
             eq(threadParticipant.threadId, params.threadId),
-            isNull(threadParticipant.leftAt),
+            eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
           ),
         )
         .returning({ id: threadParticipant.id });
@@ -340,7 +347,7 @@ export class GroupService {
         .where(
           and(
             eq(threadParticipant.threadId, params.threadId),
-            isNull(threadParticipant.leftAt),
+            eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
           ),
         );
       const revision = shouldDelete
@@ -358,11 +365,11 @@ export class GroupService {
           : null;
       const requestState =
         ended.length > 0
-          ? await this.federation.writeGroupJoinIntentInTx(
+          ? await this.federation.writeMemberRelationshipIntentInTx(
               tx,
               params.threadId,
               params.userId,
-              false,
+              'REVOKED',
             )
           : new Map<string, bigint>();
       const groupState =
@@ -447,16 +454,15 @@ export class GroupService {
         .returning({ id: group.id });
       if (dissolved.length > 0) {
         await tx
-          .update(groupMembershipRequest)
+          .update(relationshipIntent)
           .set({
-            status: 'NOT_MEMBER',
+            status: 'REVOKED',
             updatedAt: now,
           })
           .where(
             and(
-              eq(groupMembershipRequest.groupUserId, thread.groupUserId),
-              eq(groupMembershipRequest.direction, 'INVITE'),
-              eq(groupMembershipRequest.status, 'REQUESTED'),
+              eq(relationshipIntent.authorUserId, thread.groupUserId),
+              eq(relationshipIntent.status, 'REQUESTED'),
             ),
           );
       }
@@ -517,7 +523,7 @@ export class GroupService {
   }
 
   /**
-   * Kick a member (soft: sets leftAt). The operator must strictly outrank the target; the owner
+   * Kick a member by deactivating membership. The operator must strictly outrank the target; the owner
    * cannot be kicked. Throws GROUP_TARGET_NOT_MEMBER / GROUP_FORBIDDEN on invariant violation.
    */
   async kickMember(params: {
@@ -552,12 +558,13 @@ export class GroupService {
           .then(([row]) => row),
       ]);
       if (!target) {
-        throw new BusinessException(
-          BusinessCode.GROUP_TARGET_NOT_MEMBER,
-          'target is not a member',
-        );
+        return {
+          transitioned: false,
+          revisions: [],
+          statePeers: [],
+        };
       }
-      if (target.leftAt !== null)
+      if (target.state !== ThreadParticipantState.ESTABLISHED)
         return {
           transitioned: false,
           revisions: [],
@@ -565,7 +572,7 @@ export class GroupService {
         };
       if (
         !operator ||
-        operator.leftAt !== null ||
+        operator.state !== ThreadParticipantState.ESTABLISHED ||
         operator.role === null ||
         target.role === GroupRole.OWNER ||
         !outranks(operator.role, target.role)
@@ -583,11 +590,11 @@ export class GroupService {
       const now = new Date();
       const ended = await tx
         .update(threadParticipant)
-        .set({ leftAt: now, updatedAt: now })
+        .set({ state: ThreadParticipantState.REVOKED, updatedAt: now })
         .where(
           and(
             eq(threadParticipant.id, target.id),
-            isNull(threadParticipant.leftAt),
+            eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
             eq(threadParticipant.role, target.role!),
           ),
         )
@@ -625,14 +632,15 @@ export class GroupService {
         .where(eq(user.id, params.targetUserId))
         .limit(1);
       const clientRevisions: Array<{ userId: number; revision: number }> = [];
-      const requestState = await this.federation.writeGroupInviteIntentInTx(
-        tx,
-        params.threadId,
-        params.targetUserId,
-        params.reason ?? '',
-        false,
-        clientRevisions,
-      );
+      const requestState =
+        await this.federation.writeGroupRelationshipIntentInTx(
+          tx,
+          params.threadId,
+          params.targetUserId,
+          params.reason ?? '',
+          'REVOKED',
+          clientRevisions,
+        );
       const groupState = await this.federation.writeGroupStateInTx(
         tx,
         params.threadId,
@@ -695,7 +703,7 @@ export class GroupService {
           and(
             eq(threadParticipant.userId, params.fromUserId),
             eq(threadParticipant.threadId, params.threadId),
-            isNull(threadParticipant.leftAt),
+            eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
           ),
         )
         .for('update')
@@ -721,7 +729,10 @@ export class GroupService {
         )
         .for('update')
         .limit(1);
-      if (!target || target.participant.leftAt !== null) {
+      if (
+        !target ||
+        target.participant.state !== ThreadParticipantState.ESTABLISHED
+      ) {
         throw new BusinessException(
           BusinessCode.GROUP_TARGET_NOT_MEMBER,
           'target is not an active member',
@@ -820,7 +831,7 @@ export class GroupService {
         eq(threadParticipant.threadId, params.threadId),
       ),
     });
-    if (!target || target.leftAt !== null) {
+    if (!target || target.state !== ThreadParticipantState.ESTABLISHED) {
       throw new BusinessException(
         BusinessCode.GROUP_TARGET_NOT_MEMBER,
         'target is not an active member',

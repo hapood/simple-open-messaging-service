@@ -1155,7 +1155,7 @@ export class ThreadRepository {
             // Persisted atomically by WebdbService. The friend-request dialog reads the compacted
             // projection on demand, so no additional in-memory mirror is required here.
             this.userService.applyFriendIntentStateRevision(op.revision);
-            if (op.eventType === 'GROUP_INVITE_INTENT') {
+            if (op.account.startsWith('!')) {
               this.userService.applyFriendRequestStateRevision(op.revision);
               continue;
             }

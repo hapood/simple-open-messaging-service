@@ -324,7 +324,6 @@
     "friendStatus": "Friends",
     "selfStatus": "You",
     "retry": "Search again",
-    "declinedToast": "Friend request declined",
     "revokedToast": "Friend request withdrawn",
     "time": {
       "justNow": "Just now",

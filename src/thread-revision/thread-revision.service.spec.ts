@@ -97,6 +97,33 @@ describe('ThreadRevisionService hidden-thread restoration', () => {
 });
 
 describe('ThreadRevisionService revision writes', () => {
+  it('keeps an already visible thread stable across re-establishment', async () => {
+    const limit = vi.fn().mockResolvedValue([{ isDelete: false }]);
+    const where = vi.fn(() => ({ limit }));
+    const from = vi.fn(() => ({ where }));
+    const select = vi.fn(() => ({ from }));
+    const svc = new ThreadRevisionService({} as never, {} as never);
+    const recordAdd = vi.spyOn(svc, 'recordThreadAddInTx');
+
+    await expect(
+      svc.ensureThreadVisibleInTx({ select } as never, 2, 10),
+    ).resolves.toBeNull();
+    expect(recordAdd).not.toHaveBeenCalled();
+  });
+
+  it('publishes ADD when an authorized shell becomes visible', async () => {
+    const limit = vi.fn().mockResolvedValue([]);
+    const where = vi.fn(() => ({ limit }));
+    const from = vi.fn(() => ({ where }));
+    const select = vi.fn(() => ({ from }));
+    const svc = new ThreadRevisionService({} as never, {} as never);
+    vi.spyOn(svc, 'recordThreadAddInTx').mockResolvedValue(8);
+
+    await expect(
+      svc.ensureThreadVisibleInTx({ select } as never, 2, 10),
+    ).resolves.toBe(8);
+  });
+
   function writeHarness() {
     const returning = vi.fn().mockResolvedValue([{ threadRevision: 8 }]);
     const userWhere = vi.fn(() => ({ returning }));

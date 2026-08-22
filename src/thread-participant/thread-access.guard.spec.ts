@@ -5,6 +5,7 @@ import type { ThreadParticipantService } from './thread-participant.service.js';
 import type { Reflector } from '@nestjs/core';
 import { BusinessCode } from '../common/business-code.js';
 import { RESOURCE_ID_KEY } from '../common/resource-id.decorator.js';
+import { ThreadParticipantState } from '../database/enums.js';
 
 /**
  * ThreadAccessGuard is the single membership gate for every message route (send / query / mark-read).
@@ -56,7 +57,7 @@ describe('ThreadAccessGuard', () => {
       id: 9,
       userId: 7,
       threadId: 12,
-      leftAt: null,
+      state: ThreadParticipantState.ESTABLISHED,
       thread: { type: 'P2P' },
     };
     participantService.findActiveParticipantWithThread.mockResolvedValueOnce(
@@ -85,12 +86,12 @@ describe('ThreadAccessGuard', () => {
     });
   });
 
-  it('allows retained P2P history after unfriend but marks it read-only', async () => {
+  it('keeps a revoked established P2P thread visible but read-only', async () => {
     const participant = {
       id: 9,
       userId: 7,
       threadId: 12,
-      leftAt: new Date(),
+      state: ThreadParticipantState.REVOKED,
       thread: { type: 'P2P' },
     };
     participantService.findActiveParticipantWithThread.mockResolvedValueOnce(

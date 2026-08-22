@@ -33,9 +33,10 @@ Paths in this table are relative to `/s2s/v1`.
 All three feeds accept optional `after`, `take`, and `through` parameters.
 `after` is exclusive, `through` is inclusive, and a drain covers
 `(after, through]`. A bootstrap request has no query parameters: when `after` is
-omitted, `take` and `through` must also be omitted. The source returns only
-`resumeAfter`, not a page. A new SOMS feed starts at `0`; its first item ID is
-`1`. Feed IDs are positive integers, while cursors and end values are non-negative.
+omitted, `take` and `through` must also be omitted. The source returns the open
+window `(resumeAfter, resumeBefore)`, not a page. A new SOMS feed starts after
+`0`; its first item ID is `1`. Feed IDs are positive integers, while cursors and
+end values are non-negative.
 
 The source stores no consumer ACK, last-served position, or monotonic validation
 cursor. A consumer may reread with an older or duplicate `after` and atomically
@@ -47,14 +48,25 @@ rewrite the value in place under its old ID.
 ## State feed
 
 The state feed carries complete snapshots for `PROFILE`, `MEMBER_PROFILE`, the
-three directional intents, and origin-authoritative `GROUP_META`. Consumers apply
-snapshots idempotently by stable key in `feedId` order.
+account-generic `RELATIONSHIP_INTENT`, and origin-authoritative `GROUP_META`.
+Consumers apply snapshots idempotently by stable key in `feedId` order.
 
-Before a group snapshot references a new member, the publisher places that
-member's `MEMBER_PROFILE` in the current projection for the target peer with a
-lower feed ID. A later profile update may disturb this order, so the source
-reindexes group snapshots that still depend on it. Applying an unchanged business
-revision and body remains a consumer no-op.
+Relationship query authorization is directional: an effective source-authored
+`REQUESTED` or valid `ACCEPTED` lets the target peer query that source without
+waiting for the reverse direction, and both states grant identical query
+permission. Before publishing either state, the source has already established
+the thread, audience, and authorization needed to serve the query. A new empty
+thread returns an empty page.
+Profile disclosure additionally requires a locally published `ACCEPTED`;
+crossed requests and a valid peer acceptance both upgrade a local `REQUESTED`
+to that state. The publisher orders the disclosure-opening `ACCEPTED`, then
+`PROFILE`, then `GROUP_META`, then complete
+`MEMBER_PROFILE` snapshots for the roster visible to that peer. Unchanged member
+snapshots are not reindexed when the effective projection already carries the
+publisher's current `profileRev` or `rosterRev`. Only a missing or older
+dependency receives a new feed ID; the ordering requirement applies to newly
+allocated dependencies. Reusing a revision with different snapshot content is
+invalid.
 
 When a member is neither a friend visible to the target peer nor a member of any
 shared group, the publisher removes `MEMBER_PROFILE` directly from the projection;
@@ -64,13 +76,12 @@ target. It must not sweep between pages or erase stable author addresses require
 by historical messages.
 
 Exact `/users/:account` lookup is a bounded proxy query and does not create a
-human `User` stub. A verified home-authored `PROFILE` may be stored by address,
-but `REQUESTED` and `REVOKED` do not materialize a stub. Materialization requires
-both that profile and a peer `ACCEPTED` matching a still-effective request flow.
-An unsolicited `ACCEPTED` is ignored for admission regardless of
+remote account. Local initiation or acceptance creates the placeholder account
+and thread; merely receiving a request or a `REVOKED` snapshot does not. An
+unsolicited `ACCEPTED` is ignored for admission regardless of
 stub existence. Accepting a new peer request always republishes the local
-`ACCEPTED` with a new feed ID, even when its body is unchanged. Friend requests, group invites,
-and group join requests use absolute expiration no more than seven days away.
+`ACCEPTED` with a new feed ID, even when its body is unchanged. All relationship
+requests use absolute expiration no more than seven days away.
 Expired `REQUESTED` entries may disappear silently. `REVOKED` has no expiry and
 should be retained as capacity permits, but may later be omitted; live message
 and resource authorization still rejects stale access.
@@ -89,9 +100,17 @@ contains `tombstoneEndSeq`. These end sequences are independent thread-local que
 coordinates, not feed IDs. Message and tombstone arrays come only from their
 respective query operations.
 
-A message source may clean old bodies. If a requested position is before the
-serviceable floor, it may return a higher `resumeAfter`. Tombstone facts and their
-deletion sequences are permanent; cleanup cannot skip them.
+Thread queries accept either exclusive `after` for an increasing scan or
+exclusive `before` for a decreasing scan, never both. `through` is the fixed
+inclusive bound at the other end, and direction-relative `scannedThrough`
+becomes the next cursor of the same kind. A cursor-unavailable result always
+returns the open serviceable window `(resumeAfter, resumeBefore)`; forward
+queries adopt the lower boundary and reverse queries adopt the upper boundary.
+
+A message source may clean old bodies. If a requested position is outside the
+serviceable window, it may return corrected `resumeAfter` and `resumeBefore`
+boundaries. Tombstone facts and their deletion sequences are permanent; cleanup
+cannot skip them.
 
 Query `through` is the inclusive thread-sequence endpoint frozen for one bounded
 drain, not a feed ID. Every page in that drain keeps the same value so concurrent
@@ -131,9 +150,15 @@ cleanup signal. If an older query first returns `FORBIDDEN`, it stops that threa
 query and prioritizes a new state drain without rolling back the global feed
 cursor.
 
-`P2P_INTENT/REVOKED` carries no message or tombstone feed end ID. Those IDs appear
+`RELATIONSHIP_INTENT/REVOKED` carries no message or tombstone feed end ID. Those IDs appear
 only in feed pages and `feed-heads`. Index feeds carry no message body, and a
 relationship close no longer uses a feed end as a body-delivery boundary.
+
+Federation thread coordinates survive relationship-state changes. P2P matches
+the canonical source-user/target-peer-user pair; group delivery matches the
+group address and target peer domain, not an individual member on that peer.
+For either key, previously exposed message and tombstone sequence bounds never
+decrease or reset after expiry, revocation, re-request, or confirmation.
 
 Wake-ups may be lost, duplicated, or reordered, and their three coordinates may
 be max-coalesced independently. Startup and periodic reconciliation read the feeds

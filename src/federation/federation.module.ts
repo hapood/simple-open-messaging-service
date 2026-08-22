@@ -24,7 +24,6 @@ import { FederationDownloadScheduler } from './federation-download-scheduler.js'
 import { FederationDownloadRecoveryService } from './federation-download-recovery.service.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
 import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
-import { GroupMembershipStateService } from '../group/group-membership-state.service.js';
 import { FederationMessageFeedIndexerService } from './federation-message-feed-indexer.service.js';
 import { FederationFeedFulfiller } from './federation-feed-fulfiller.service.js';
 import { S2sSignatureGuard } from './s2s-signature.guard.js';
@@ -80,7 +79,6 @@ import { FederationTransportConfigService } from './federation-transport-config.
     FederationDownloadRecoveryService,
     PeerStateFeedService,
     PeerStateFeedPullService,
-    GroupMembershipStateService,
   ],
   exports: [
     KeypairService,
@@ -101,7 +99,6 @@ import { FederationTransportConfigService } from './federation-transport-config.
     FederationDownloadRecoveryService,
     PeerStateFeedService,
     PeerStateFeedPullService,
-    GroupMembershipStateService,
   ],
 })
 export class FederationModule {}

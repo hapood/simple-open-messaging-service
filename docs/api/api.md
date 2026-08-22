@@ -158,9 +158,11 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 
 > Controller: [src/controller/invite.controller.ts](../../src/controller/invite.controller.ts) · Service: [src/invite/invite.service.ts](../../src/invite/invite.service.ts)
 
-Friend and group requests use directed facts. `FriendRequest(A,B)` and `FriendRequest(B,A)` are independent
-rows with independent notes; group invitation and join intent are likewise separate
-`GroupMembershipRequest` directions. The former polymorphic `Invite` table has been removed. REST
+Friend and group requests use the same directed facts. `RelationshipIntent(A,B)` and
+`RelationshipIntent(B,A)` are independent rows with independent notes. For a group relationship,
+one account is the group account and the other is the member account; `authorUserId` identifies which
+side authored the intent. There are no separate invite, join, friend-request, or group-membership
+request tables. The former polymorphic `Invite` table has been removed. REST
 `inviteId` values are stringified ids of the corresponding directed fact.
 
 ### POST `/invite/friend` — Send friend invite
@@ -174,17 +176,19 @@ rows with independent notes; group invitation and join intent are likewise separ
 - **Body**: `{ account, domain, note?, displayName?, avatar? }`. `account + domain` are the immutable target
   Address; `displayName/avatar` are only the untrusted request-card snapshot returned by the temporary
   lookup. The client is session-authenticated but does not sign this application or its snapshot.
-- The server does not create a target stub. A human foreign stub is created only after the peer publishes
-  valid `ACCEPTED` state and a verified home-owned PROFILE is available.
+- The server creates the address-keyed relationship shell needed by the outgoing
+  request, but does not expose a formal human profile. Verified home-owned
+  `PROFILE` state later fills the placeholder's display fields after acceptance.
 - The response echoes `{ account, domain }`; no federated request id or foreign User stub is exposed.
 
-### POST `/invite/accept` · `/invite/reject` · `/invite/revoke`
+### POST `/invite/accept` · `/invite/revoke`
 
 - **Body**: local request `{ inviteId }`; pre-stub federated request `{ account, domain }`.
 - `accept`: authors the caller's reverse direction. A P2P thread becomes active only when both friend
   directions are effective in the same transaction; a federated group mirror becomes active only after
   the origin's state snapshot confirms membership.
-- `reject` / `revoke`: close only the caller-owned direction. Federation convergence is asynchronous
+- `revoke`: closes only the caller-owned direction. An incoming request has no rejection operation;
+  clients may ignore or locally remove it. Federation convergence is asynchronous
   through the state feed; there are no S2S invite command endpoints.
 - Every pending friend/group request has an absolute expiry of at most seven days. Expired requests are
   ineffective even if an old feed projection remains. REVOKED has no expiry and is retained best-effort.

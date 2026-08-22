@@ -84,7 +84,7 @@ export class GroupController {
 
   /**
    * Invite friends into a group by updating membership state. Local invitees receive a client-state
-   * projection; federated invitees receive the existing group invite intent through the state feed.
+   * projection; federated invitees receive the group-authored relationship state through the state feed.
    */
   private async writeInvites(
     inviter: number,
@@ -151,12 +151,12 @@ export class GroupController {
           undefined,
           async (tx) => {
             statePeers =
-              await this.federationService.writeGroupInviteIntentInTx(
+              await this.federationService.writeGroupRelationshipIntentInTx(
                 tx,
                 group.threadId,
                 userId,
                 '',
-                true,
+                'REQUESTED',
                 clientRevisions,
               );
           },

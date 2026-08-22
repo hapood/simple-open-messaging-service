@@ -54,7 +54,7 @@ const FEDERATED_RESOLVE_STAGES: readonly FederatedResolveStage[] = [
   'FETCHING_USER',
 ];
 // A pending invite row in the Pending / Sent tabs. `id` is the invite's BigInt id (string) — the
-// accept/reject/revoke payload. The peer profile (name/avatar/domain/…) is embedded on the invite
+// accept/revoke payload. The peer profile (name/avatar/domain/…) is embedded on the invite
 // (fromUser for incoming, toUser for outgoing), so no separate profile lookup is needed.
 type PendingReq = {
   id: string;
@@ -184,8 +184,7 @@ export class FriendRequestsComponent implements OnDestroy {
   }
 
   deleteSelected(req: FriendRequestCardModel): void {
-    if (this.selectedDirection() === 'INCOMING') this.decline(req);
-    else this.cancelSent(req);
+    if (this.selectedDirection() === 'OUTGOING') this.cancelSent(req);
     this.closeRequest();
   }
 
@@ -490,35 +489,6 @@ export class FriendRequestsComponent implements OnDestroy {
     );
   }
 
-  decline(req: PendingReq) {
-    this.runInviteAction(
-      req,
-      () => this.userService.rejectInvite(this.inviteAction(req)),
-      (res) => {
-        if (res.code === 0) {
-          // Rejected: remove from the pending list (filter by id to avoid index drift).
-          this.pendingReqList.set(
-            this.pendingReqList().filter((r) => r.id !== req.id),
-          );
-          this.snackBar.open(
-            this.transloco.translate('friend.declinedToast'),
-            undefined,
-            { duration: 3000 },
-          );
-        } else {
-          // Failed: keep it and tag the error copy (errText always renders in the template).
-          this.pendingReqList.set(
-            this.pendingReqList().map((r) =>
-              r.id === req.id
-                ? { ...r, errText: translateBizResult(res, this.transloco) }
-                : r,
-            ),
-          );
-        }
-      },
-    );
-  }
-
   cancelSent(req: PendingReq) {
     this.runInviteAction(
       req,
@@ -595,6 +565,8 @@ export class FriendRequestsComponent implements OnDestroy {
   private inviteAction(
     req: PendingReq,
   ): { inviteId: string } | { account: string; domain: string } {
+    if (req.kind === 'GROUP' && req.isForeigner && req.account && req.domain)
+      return { account: req.account, domain: req.domain };
     if (req.kind === 'GROUP' && req.account) return { inviteId: req.account };
     return req.isForeigner && req.account && req.domain
       ? { account: req.account, domain: req.domain }

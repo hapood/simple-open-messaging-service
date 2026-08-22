@@ -2,7 +2,7 @@
 
 SOMS uses PostgreSQL (+ TimescaleDB) through Drizzle ORM and `node-postgres`. The typed schema is defined in [src/database/schema.ts](../../src/database/schema.ts), relations in [src/database/relations.ts](../../src/database/relations.ts), and deployable SQL in [database/migrations/](../../database/migrations/).
 
-> Scope: this document covers the **consumer messaging** data model (identity, threads, messages, invites, media, sessions, admin, federation, quota). Rows are **soft-deleted only** (`isDeleted` / `revokedAt` / `leftAt`); the only hard-deletes are media-CAS blobs reclaimed at refcount 0. See [architecture.md](./architecture.md) for how the services use these tables.
+> Scope: this document covers the **consumer messaging** data model (identity, threads, messages, invites, media, sessions, admin, federation, quota). See [architecture.md](./architecture.md) for how the services use these tables.
 
 ## Table of Contents
 
@@ -23,7 +23,7 @@ SOMS uses PostgreSQL (+ TimescaleDB) through Drizzle ORM and `node-postgres`. Th
    └──┬───────┬───────┬────┬─────────┬──────────────────────┬──────────────┐
       │ 1:N   │ 1:N   │1:N │1:N      │ 1:N                  │ 1:N          │ 1:1
       ▼       ▼       ▼    ▼         ▼                      ▼              ▼
- SessionToken PushToken LoginCode ThreadParticipant  ThreadRevision   FriendRequest / GroupMembershipRequest
+ SessionToken PushToken LoginCode ThreadParticipant  ThreadRevision   RelationshipIntent
                                   (user↔thread)       (state log)      (directed facts)
                                           │
                                           ▼ N:1
@@ -65,7 +65,8 @@ SOMS uses PostgreSQL (+ TimescaleDB) through Drizzle ORM and `node-postgres`. Th
 
 Composite unique: `@@unique([account, domain])` — account name unique within a domain (allows a foreign stub to share a local account name). One account namespace covers users **and** admins (an admin is a linked `User` row).
 
-The incoming-request badge is derived by each client from incoming `P2P_INTENT` client-state entries.
+The incoming-request badge is derived by each client from incoming
+`RELATIONSHIP_INTENT/REQUESTED` client-state entries.
 Its read/seen cursor is per-device state and is not stored by the server.
 
 ### SessionToken — the single session credential
@@ -101,42 +102,47 @@ One row per (device, user); `token` globally unique (FCM registration token for 
 
 ### MessageThread — Conversation
 
-| Field                                                     | Type                   | Description                                                                              |
-| --------------------------------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------- |
-| `id`                                                      | Int (PK)               |                                                                                          |
-| `type`                                                    | MessageThreadType      | `P2P` \| `GROUP`                                                                         |
-| `curSeq`                                                  | Int                    | last-allocated `Message.seq` (0 = no message yet); atomic counter backing seq allocation |
-| `pullUntil`                                               | Int                    | federation pull cursor (REMOTE thread seq pulled up to); seeded by invite `sinceSeq`     |
-| `lastMessageSeq` / `lastMessagePreview` / `lastMessageAt` |                        | denormalized "last message" cache for the conversation list (hot read)                   |
-| `groupUserId`                                             | Int? (unique, FK→User) | the `!`-sigil group-User row (GROUP only); null for P2P                                  |
-| `createdAt` / `updatedAt`                                 |                        |                                                                                          |
+| Field                                                     | Type                   | Description                                                                                             |
+| --------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------- |
+| `id`                                                      | Int (PK)               |                                                                                                         |
+| `type`                                                    | MessageThreadType      | `P2P` \| `GROUP`                                                                                        |
+| `curSeq`                                                  | Int                    | last-allocated `Message.seq` (0 = no message yet); atomic counter backing seq allocation                |
+| `pullUntil`                                               | Int                    | federation pull cursor (REMOTE thread seq pulled up to); initialized when the relationship materializes |
+| `lastMessageSeq` / `lastMessagePreview` / `lastMessageAt` |                        | denormalized "last message" cache for the conversation list (hot read)                                  |
+| `groupUserId`                                             | Int? (unique, FK→User) | the `!`-sigil group-User row (GROUP only); null for P2P                                                 |
+| `createdAt` / `updatedAt`                                 |                        |                                                                                                         |
 
 ### ThreadParticipant — Membership (the single source of truth)
 
 One row per (user, thread); P2P and GROUP share this table (`role` null for P2P). Replaces the former `UserMessageThread` + `GroupMember`.
 
-| Field                                  | Type         | Description                                                       |
-| -------------------------------------- | ------------ | ----------------------------------------------------------------- |
-| `lastReadSeq`                          | Int?         | read watermark; unread = `count(Message where seq > lastReadSeq)` |
-| `role`                                 | GroupRole?   | OWNER/ADMIN/MEMBER (GROUP only); null for P2P                     |
-| `muted` / `pinned` / `pinnedAt`        |              | mute / pin / pin-order                                            |
-| `clearedSeq`                           | Int?         | per-user "clear history" sequence watermark                       |
-| `alias`                                | VarChar(64)? | per-user nickname for this thread                                 |
-| `leftAt`                               | DateTime?    | soft-leave / hidden (null = active)                               |
-| `joinedAt` / `createdAt` / `updatedAt` |              |                                                                   |
+A P2P request shell contains two `AUTHORIZED` rows so its structure is complete;
+acceptance promotes both rows together. Revocation moves them to `REVOKED`
+without removing the visible thread revision. A group request uses `AUTHORIZED`
+only for the candidate, without changing established members. Federation query
+direction is derived from relationship intents, not from this lifecycle field.
+
+| Field                                  | Type                   | Description                                                                       |
+| -------------------------------------- | ---------------------- | --------------------------------------------------------------------------------- |
+| `lastReadSeq`                          | Int?                   | read watermark; unread = `count(Message where seq > lastReadSeq)`                 |
+| `role`                                 | GroupRole?             | OWNER/ADMIN/MEMBER (GROUP only); null for P2P                                     |
+| `muted` / `pinned` / `pinnedAt`        |                        | mute / pin / pin-order                                                            |
+| `clearedSeq`                           | Int?                   | per-user "clear history" sequence watermark                                       |
+| `alias`                                | VarChar(64)?           | per-user nickname for this thread                                                 |
+| `state`                                | ThreadParticipantState | `AUTHORIZED` hidden shell, `ESTABLISHED` writable, or visible read-only `REVOKED` |
+| `joinedAt` / `createdAt` / `updatedAt` |                        |                                                                                   |
 
 Unique: `@@unique([userId, threadId])`. Indexes: `[threadId]` (roster), `[userId, pinned]` (pinned-first list).
 
 ### Directed relationship facts
 
-- **FriendRequest** — one row per `(requesterUserId, targetUserId)`, with its own `note`, integer
-  `requestedAt`, and absolute `expiresAt`. `REQUESTED` is displayable/acceptable
-  only before expiry but never activates a thread; only two `FRIEND` directions do. `FRIEND` and
-  `NOT_FRIEND` have no expiry. `FriendPair(userLowId,userHighId)` is the canonical unordered
-  lock/projection and points to the retained P2P thread.
-- **GroupMembershipRequest** — one row per `(groupUserId, memberUserId, direction)`, where direction is
-  `INVITE` (GROUP→USER) or `JOIN` (USER→GROUP). `GroupMembershipPair` is the local active projection;
-  for federation, only the origin's newer `GROUP_META` snapshot may activate a mirror.
+- **Directed account intent** — one fact per ordered account pair, with its own
+  `note`, `requestedAt`, and absolute `expiresAt`. `REQUESTED` is displayable and
+  acceptable only before expiry. Its publisher creates a placeholder thread and
+  immediately grants the target peer query access; the reverse direction remains
+  independent. User/user pairs use P2P threads and user/group pairs use group
+  threads. A received one-sided federation request remains address-keyed and
+  creates no local thread until the user accepts or independently initiates.
 - **ThreadAudience current projection** — the origin server's current authorization fact. Relationship
   removal deletes the audience row and immediately revokes message and tombstone queries. Reactivation
   recreates the audience at the current thread tail and reuses the same thread/mirror. A group peer
@@ -254,10 +260,10 @@ CREATE TYPE "AdminRole" AS ENUM ('SUPER_ADMIN', 'ADMIN', 'VIEWER');
 ## Design Notes
 
 1. **One account namespace**: users and admins share `User`; an admin is a linked profile, so user/admin account names can never collide. A `!`-sigil `User` row (`isGroup`) is a group identity — `Group` holds only owner + roster revision.
-2. **Membership is `ThreadParticipant`**: P2P and GROUP share one membership table (`role` null for P2P). There is no polymorphic `UserMessageThread` and no separate `GroupMember`. Mute/pin/clear/alias/leave are per-participant columns.
+2. **Membership is `ThreadParticipant`**: P2P and GROUP share one membership table (`role` null for P2P). `AUTHORIZED` represents a hidden request shell, `ESTABLISHED` is formal and writable, and `REVOKED` retains visible read-only history. Expired authorization-only shells are deleted.
 3. **Requests are directional facts**: friendship and group membership keep each author's direction,
    note and revision separately; canonical pair rows serialize crossed transactions.
 4. **Per-thread seq, internal id**: `Message.id` (BigInt) is an internal storage key never exposed; `seq` is the per-thread external ordering key, allocated atomically from `curSeq` (gapless). `originSeq` carries the originating server's seq for federation dedup.
 5. **Client state versioning**: thread membership and profile cache entries share one integer cursor (`stateRevision` on the wire); clients delta-replay rather than re-fetch the whole list.
-6. **Soft-delete only**: DB rows are never purged (`isDeleted`/`revokedAt`/`leftAt`); only media-CAS blobs are hard-deleted by an explicit manual cleanup after live-message/staging reachability is checked.
+6. **Lifecycle is model-specific**: revoked formal participants remain for visible read-only history; only expired authorization shells are deleted. Media-CAS blobs are reclaimed only after reachability checks.
 7. **BigInt serialization**: `Message.id` / `ThreadRevision.id` / `AdminActionLog.id` etc. use BigInt, uniformly serialized to strings by the global `SerializeInterceptor` (see [architecture.md → Unified Response Format](./architecture.md#unified-response-format)).

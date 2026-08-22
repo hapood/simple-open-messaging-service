@@ -29,7 +29,11 @@ import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { SystemMessageType } from '../message/system-message.js';
 import { GroupService } from '../group/group.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
-import { GroupRole, MessageThreadType } from '../database/enums.js';
+import {
+  GroupRole,
+  MessageThreadType,
+  ThreadParticipantState,
+} from '../database/enums.js';
 import { messageThread, threadParticipant } from '../database/schema.js';
 import { AuthService } from '../auth/auth.service.js';
 import { SseService } from '../gateway/sse.service.js';
@@ -257,14 +261,17 @@ export class UserController {
       const lb = b.thread.lastMessageAt?.getTime() ?? -Infinity;
       return lb - la || a.threadId - b.threadId;
     });
-    // Hydrate P2P peers: the other active participant on each P2P thread.
+    // Hydrate P2P peers: the other established participant on each P2P thread.
     const p2pThreadIds = list
       .filter((p) => p.thread.type === 'P2P')
       .map((p) => p.threadId);
     const peers = await this.participantService.findP2PPeers(p2pThreadIds, me);
     const peerByThread = new Map(peers.map((p) => [p.threadId, p.userId]));
     const peerActiveByThread = new Map(
-      peers.map((p) => [p.threadId, p.leftAt === null]),
+      peers.map((p) => [
+        p.threadId,
+        p.state === ThreadParticipantState.ESTABLISHED,
+      ]),
     );
     const peerUsers = await this.userService.queryUsers({
       where: {
@@ -318,7 +325,10 @@ export class UserController {
         pinnedAt: p.pinnedAt ?? null,
         clearedSeq: p.clearedSeq ?? null,
         alias: p.alias ?? null,
-        conversationState: p.leftAt === null ? 'ACTIVE' : 'READ_ONLY',
+        conversationState:
+          p.state === ThreadParticipantState.ESTABLISHED
+            ? 'ACTIVE'
+            : 'READ_ONLY',
       } as {
         id: number;
         threadId: number;
@@ -338,7 +348,8 @@ export class UserController {
       };
       if (p.thread.type === 'P2P') {
         item.friendshipActive =
-          p.leftAt === null && peerActiveByThread.get(p.threadId) === true;
+          p.state === ThreadParticipantState.ESTABLISHED &&
+          peerActiveByThread.get(p.threadId) === true;
         item.conversationState = item.friendshipActive ? 'ACTIVE' : 'READ_ONLY';
         const peerId = peerByThread.get(p.threadId);
         if (peerId !== undefined) {
@@ -380,7 +391,8 @@ export class UserController {
             }
           : undefined;
         item.conversationState =
-          p.leftAt === null && gu?.group?.dissolvedAt == null
+          p.state === ThreadParticipantState.ESTABLISHED &&
+          gu?.group?.dissolvedAt == null
             ? 'ACTIVE'
             : 'READ_ONLY';
       }
@@ -422,7 +434,7 @@ export class UserController {
         this.clientStateFeed.query(me, dto.fromRevision, dto.toRevision),
       ]);
     const { addIds, removeIds } = planThreadDelta(ops);
-    // Hydrate ONLY the net-ADD threads in one batched pass. leftAt:null is the strict "currently a member"
+    // Hydrate ONLY the net-ADD threads in one batched pass. active=true is the strict "currently a member"
     // guard; a net-ADD whose participant row is gone (a reaped edge) simply drops — the client won't insert
     // it. DELETE entries carry no info (the thread is leaving the roster, nothing to render).
     let adds: ConversationItemDto[] = [];

@@ -67,27 +67,22 @@ export const threadRevisionDirection = pgEnum('ThreadRevisionDirection', [
   'ADD',
   'DELETE',
 ]);
+export const threadParticipantState = pgEnum('ThreadParticipantState', [
+  'AUTHORIZED',
+  'ESTABLISHED',
+  'REVOKED',
+]);
 export const peerStateEventType = pgEnum('PeerStateEventType', [
   'PROFILE',
   'MEMBER_PROFILE',
-  'P2P_INTENT',
-  'GROUP_INVITE_INTENT',
-  'GROUP_JOIN_INTENT',
+  'RELATIONSHIP_INTENT',
   'GROUP_META',
 ]);
-export const friendRequestStatus = pgEnum('FriendRequestStatus', [
+export const relationshipIntentStatus = pgEnum('RelationshipIntentStatus', [
   'REQUESTED',
-  'FRIEND',
-  'NOT_FRIEND',
+  'ACCEPTED',
+  'REVOKED',
 ]);
-export const groupMembershipDirection = pgEnum('GroupMembershipDirection', [
-  'INVITE',
-  'JOIN',
-]);
-export const groupMembershipRequestStatus = pgEnum(
-  'GroupMembershipRequestStatus',
-  ['REQUESTED', 'MEMBER', 'NOT_MEMBER'],
-);
 export const messageDeleteType = pgEnum('MessageDeleteType', [
   'WITHDRAW',
   'REPORT',
@@ -321,9 +316,8 @@ export const threadParticipant = pgTable(
     pinnedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     clearedSeq: integer(),
     alias: varchar({ length: 64 }),
-    recognizesFriend: boolean().default(true).notNull(),
+    state: threadParticipantState().default('ESTABLISHED').notNull(),
     relationshipRev: integer().default(0).notNull(),
-    leftAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -338,16 +332,14 @@ export const threadParticipant = pgTable(
       'btree',
       table.threadId.asc().nullsLast().op('int4_ops'),
     ),
-    index('ThreadParticipant_threadId_joinedAt_active_idx')
-      .using(
-        'btree',
-        table.threadId.asc().nullsLast().op('int4_ops'),
-        table.joinedAt.asc().nullsLast().op('int4_ops'),
-      )
-      .where(sql`("leftAt" IS NULL)`),
-    uniqueIndex('ThreadParticipant_one_active_group_owner_key')
+    index('ThreadParticipant_threadId_joinedAt_idx').using(
+      'btree',
+      table.threadId.asc().nullsLast().op('int4_ops'),
+      table.joinedAt.asc().nullsLast().op('int4_ops'),
+    ),
+    uniqueIndex('ThreadParticipant_one_established_group_owner_key')
       .using('btree', table.threadId.asc().nullsLast().op('int4_ops'))
-      .where(sql`${table.role} = 'OWNER' AND ${table.leftAt} IS NULL`),
+      .where(sql`${table.role} = 'OWNER' AND ${table.state} = 'ESTABLISHED'`),
     index('ThreadParticipant_userId_pinned_idx').using(
       'btree',
       table.userId.asc().nullsLast().op('int4_ops'),
@@ -1673,7 +1665,7 @@ export const peerStateFeed = pgTable(
     check('PeerStateFeed_rev_check', sql`${table.rev} > 0`),
     check(
       'PeerStateFeed_subject_check',
-      sql`(${table.eventType} IN ('P2P_INTENT', 'GROUP_INVITE_INTENT', 'GROUP_JOIN_INTENT') AND ${table.subjectAccount} <> '' AND ${table.subjectDomain} <> '') OR (${table.eventType} NOT IN ('P2P_INTENT', 'GROUP_INVITE_INTENT', 'GROUP_JOIN_INTENT') AND ${table.subjectAccount} = '' AND ${table.subjectDomain} = '')`,
+      sql`(${table.eventType} = 'RELATIONSHIP_INTENT' AND ${table.subjectAccount} <> '' AND ${table.subjectDomain} <> '') OR (${table.eventType} <> 'RELATIONSHIP_INTENT' AND ${table.subjectAccount} = '' AND ${table.subjectDomain} = '')`,
     ),
   ],
 );
@@ -1911,7 +1903,7 @@ export const federatedFriendRequest = pgTable(
     ),
     check(
       'FederatedFriendRequest_status_check',
-      sql`${table.status} IN ('REQUESTED', 'REVOKED')`,
+      sql`${table.status} IN ('REQUESTED', 'ACCEPTED', 'REVOKED')`,
     ),
     check(
       'FederatedFriendRequest_profileRevision_check',
@@ -1919,7 +1911,7 @@ export const federatedFriendRequest = pgTable(
     ),
     check(
       'FederatedFriendRequest_expiry_check',
-      sql`(${table.status} = 'REQUESTED' AND ${table.requestedAt} IS NOT NULL AND ${table.expiresAt} IS NOT NULL AND ${table.expiresAt} > ${table.requestedAt} AND ${table.expiresAt} <= ${table.requestedAt} + INTERVAL '7 days') OR (${table.status} = 'REVOKED' AND ${table.expiresAt} IS NULL)`,
+      sql`(${table.status} = 'REQUESTED' AND ${table.requestedAt} IS NOT NULL AND ${table.expiresAt} IS NOT NULL AND ${table.expiresAt} > ${table.requestedAt} AND ${table.expiresAt} <= ${table.requestedAt} + INTERVAL '7 days') OR (${table.status} IN ('ACCEPTED', 'REVOKED') AND ${table.expiresAt} IS NULL)`,
     ),
   ],
 );
@@ -1987,13 +1979,13 @@ export const federationMessageFeedIndex = pgTable(
 );
 
 /** One authoritative directed request. A and B may each retain an independent row and note. */
-export const friendRequest = pgTable(
-  'FriendRequest',
+export const relationshipIntent = pgTable(
+  'RelationshipIntent',
   {
     id: bigserial({ mode: 'bigint' }).notNull(),
-    requesterUserId: integer().notNull(),
-    targetUserId: integer().notNull(),
-    status: friendRequestStatus().notNull(),
+    authorUserId: integer().notNull(),
+    subjectUserId: integer().notNull(),
+    status: relationshipIntentStatus().notNull(),
     note: varchar({ length: 255 }).default('').notNull(),
     requestedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     expiresAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
@@ -2002,27 +1994,27 @@ export const friendRequest = pgTable(
       .notNull(),
   },
   (table) => [
-    uniqueIndex('FriendRequest_id_key').on(table.id),
+    uniqueIndex('RelationshipIntent_id_key').on(table.id),
     primaryKey({
-      columns: [table.requesterUserId, table.targetUserId],
-      name: 'FriendRequest_pkey',
+      columns: [table.authorUserId, table.subjectUserId],
+      name: 'RelationshipIntent_pkey',
     }),
     foreignKey({
-      columns: [table.requesterUserId],
+      columns: [table.authorUserId],
       foreignColumns: [user.id],
-      name: 'FriendRequest_requesterUserId_fkey',
+      name: 'RelationshipIntent_authorUserId_fkey',
     }).onDelete('cascade'),
     foreignKey({
-      columns: [table.targetUserId],
+      columns: [table.subjectUserId],
       foreignColumns: [user.id],
-      name: 'FriendRequest_targetUserId_fkey',
+      name: 'RelationshipIntent_subjectUserId_fkey',
     }).onDelete('cascade'),
     check(
-      'FriendRequest_distinct_users_check',
-      sql`${table.requesterUserId} <> ${table.targetUserId}`,
+      'RelationshipIntent_distinct_users_check',
+      sql`${table.authorUserId} <> ${table.subjectUserId}`,
     ),
     check(
-      'FriendRequest_expiry_check',
+      'RelationshipIntent_expiry_check',
       sql`(${table.status} = 'REQUESTED' AND ${table.requestedAt} IS NOT NULL AND ${table.expiresAt} IS NOT NULL AND ${table.expiresAt} > ${table.requestedAt} AND ${table.expiresAt} <= ${table.requestedAt} + INTERVAL '7 days') OR (${table.status} <> 'REQUESTED' AND ${table.expiresAt} IS NULL)`,
     ),
   ],
@@ -2030,8 +2022,8 @@ export const friendRequest = pgTable(
 
 /** Canonical unordered pair row. Every relationship transaction locks this row before touching either
  * directed request, preventing crossed inserts from both missing one another. */
-export const friendPair = pgTable(
-  'FriendPair',
+export const relationshipPair = pgTable(
+  'RelationshipPair',
   {
     userLowId: integer().notNull(),
     userHighId: integer().notNull(),
@@ -2045,70 +2037,28 @@ export const friendPair = pgTable(
   (table) => [
     primaryKey({
       columns: [table.userLowId, table.userHighId],
-      name: 'FriendPair_pkey',
+      name: 'RelationshipPair_pkey',
     }),
     foreignKey({
       columns: [table.userLowId],
       foreignColumns: [user.id],
-      name: 'FriendPair_userLowId_fkey',
+      name: 'RelationshipPair_userLowId_fkey',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.userHighId],
       foreignColumns: [user.id],
-      name: 'FriendPair_userHighId_fkey',
+      name: 'RelationshipPair_userHighId_fkey',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.threadId],
       foreignColumns: [messageThread.id],
-      name: 'FriendPair_threadId_fkey',
+      name: 'RelationshipPair_threadId_fkey',
     }).onDelete('set null'),
     check(
-      'FriendPair_order_check',
+      'RelationshipPair_order_check',
       sql`${table.userLowId} < ${table.userHighId}`,
     ),
-    check('FriendPair_revision_check', sql`${table.revision} >= 0`),
-  ],
-);
-
-export const groupMembershipRequest = pgTable(
-  'GroupMembershipRequest',
-  {
-    id: bigserial({ mode: 'bigint' }).notNull(),
-    groupUserId: integer().notNull(),
-    memberUserId: integer().notNull(),
-    direction: groupMembershipDirection().notNull(),
-    status: groupMembershipRequestStatus().notNull(),
-    note: varchar({ length: 255 }).default('').notNull(),
-    requestedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
-    expiresAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    uniqueIndex('GroupMembershipRequest_id_key').on(table.id),
-    primaryKey({
-      columns: [table.groupUserId, table.memberUserId, table.direction],
-      name: 'GroupMembershipRequest_pkey',
-    }),
-    foreignKey({
-      columns: [table.groupUserId],
-      foreignColumns: [user.id],
-      name: 'GroupMembershipRequest_groupUserId_fkey',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.memberUserId],
-      foreignColumns: [user.id],
-      name: 'GroupMembershipRequest_memberUserId_fkey',
-    }).onDelete('cascade'),
-    check(
-      'GroupMembershipRequest_distinct_users_check',
-      sql`${table.groupUserId} <> ${table.memberUserId}`,
-    ),
-    check(
-      'GroupMembershipRequest_expiry_check',
-      sql`(${table.status} = 'REQUESTED' AND ${table.requestedAt} IS NOT NULL AND ${table.expiresAt} IS NOT NULL AND ${table.expiresAt} > ${table.requestedAt} AND ${table.expiresAt} <= ${table.requestedAt} + INTERVAL '7 days') OR (${table.status} <> 'REQUESTED' AND ${table.expiresAt} IS NULL)`,
-    ),
+    check('RelationshipPair_revision_check', sql`${table.revision} >= 0`),
   ],
 );
 
@@ -2140,37 +2090,6 @@ export const groupAuditLog = pgTable(
     uniqueIndex('GroupAuditLog_eventKey_key').on(table.eventKey),
     index('GroupAuditLog_groupUserId_at_idx').on(table.groupUserId, table.at),
     index('GroupAuditLog_action_at_idx').on(table.action, table.at),
-  ],
-);
-
-export const groupMembershipPair = pgTable(
-  'GroupMembershipPair',
-  {
-    groupUserId: integer().notNull(),
-    memberUserId: integer().notNull(),
-    active: boolean().default(false).notNull(),
-    role: groupRole().default('MEMBER').notNull(),
-    revision: integer().default(0).notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.groupUserId, table.memberUserId],
-      name: 'GroupMembershipPair_pkey',
-    }),
-    foreignKey({
-      columns: [table.groupUserId],
-      foreignColumns: [user.id],
-      name: 'GroupMembershipPair_groupUserId_fkey',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.memberUserId],
-      foreignColumns: [user.id],
-      name: 'GroupMembershipPair_memberUserId_fkey',
-    }).onDelete('cascade'),
-    check('GroupMembershipPair_revision_check', sql`${table.revision} >= 0`),
   ],
 );
 

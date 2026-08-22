@@ -19,7 +19,11 @@ import {
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
-import { ContentType, MessageThreadType } from '../database/enums.js';
+import {
+  ContentType,
+  MessageThreadType,
+  ThreadParticipantState,
+} from '../database/enums.js';
 import {
   forwardMessage,
   mediaAsset,
@@ -228,7 +232,7 @@ export class MessageService {
         const [writeAccess] = await tx
           .select({
             type: messageThread.type,
-            leftAt: threadParticipant.leftAt,
+            state: threadParticipant.state,
           })
           .from(messageThread)
           .innerJoin(
@@ -240,7 +244,10 @@ export class MessageService {
           )
           .where(eq(messageThread.id, threadId))
           .limit(1);
-        if (!writeAccess || writeAccess.leftAt !== null) {
+        if (
+          !writeAccess ||
+          writeAccess.state !== ThreadParticipantState.ESTABLISHED
+        ) {
           throw new BusinessException(
             writeAccess?.type === MessageThreadType.GROUP
               ? BusinessCode.GROUP_FORBIDDEN
@@ -871,7 +878,10 @@ export class MessageService {
             },
           },
         });
-        if (!participant || participant.leftAt !== null) {
+        if (
+          !participant ||
+          participant.state !== ThreadParticipantState.ESTABLISHED
+        ) {
           throw new BusinessException(
             participant?.messageThread.type === MessageThreadType.P2P
               ? BusinessCode.FRIEND_NOT_FOUND
@@ -895,7 +905,7 @@ export class MessageService {
             where: and(
               eq(threadParticipant.userId, stage.creatorId),
               eq(threadParticipant.threadId, stage.threadId),
-              isNull(threadParticipant.leftAt),
+              eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
             ),
             columns: { id: true },
           });
@@ -1391,7 +1401,7 @@ export class MessageService {
         SELECT DISTINCT ON (m."threadId") m.*
         FROM "Message" m
         JOIN "ThreadParticipant" tp
-          ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp."leftAt" IS NULL
+          ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp.state <> 'AUTHORIZED'
         ${where}
         ORDER BY m."threadId" DESC, m."seq" DESC
         LIMIT ${opts.take}
@@ -1406,7 +1416,7 @@ export class MessageService {
       SELECT m.*
       FROM "Message" m
       JOIN "ThreadParticipant" tp
-        ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp."leftAt" IS NULL
+        ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp.state <> 'AUTHORIZED'
       WHERE (m."createdAt" > ${since} OR (m."createdAt" = ${since} AND m."id" > ${sinceId}))
         ${blockedClause}
       ORDER BY m."createdAt" ASC, m."id" ASC
@@ -1438,7 +1448,7 @@ export class MessageService {
       SELECT m."creator" AS creator
       FROM "Message" m
       JOIN "ThreadParticipant" tp
-        ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp."leftAt" IS NULL
+        ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp.state <> 'AUTHORIZED'
       WHERE m."id" > ${sinceId} ${blockedClause} AND tp."muted" = false
       ORDER BY m."id" ASC
       LIMIT ${limit}
@@ -1477,7 +1487,7 @@ export class MessageService {
       JOIN "ThreadParticipant" tp
         ON tp."threadId" = m."threadId"
        AND tp."userId" = ${userId}
-       AND tp."leftAt" IS NULL
+       AND tp.state <> 'AUTHORIZED'
        AND tp.muted = false
       WHERE m.id > ${sinceId}
         AND m.creator <> ${userId}
@@ -1532,7 +1542,7 @@ export class MessageService {
         SELECT m."threadId" AS tid, m."seq" AS seq, m."id" AS id
         FROM "Message" m
         JOIN "ThreadParticipant" tp
-          ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp."leftAt" IS NULL
+          ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp.state <> 'AUTHORIZED'
         WHERE m."id" > ${sinceId} ${blockedClause} AND tp."muted" = false AND m."isDeleted" = false
         ORDER BY m."id" DESC
         LIMIT ${sampleLimit}
@@ -1575,7 +1585,7 @@ export class MessageService {
       JOIN "Message" m
         ON m."threadId" = u.tid AND m."seq" > u.sinceseq AND m."id" > ${globalSinceId} AND m."isDeleted" = false
       JOIN "ThreadParticipant" tp
-        ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp."leftAt" IS NULL AND tp."muted" = false
+        ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp.state <> 'AUTHORIZED' AND tp."muted" = false
       WHERE TRUE ${blockedClause}
       GROUP BY u.tid
     `;
@@ -1601,7 +1611,7 @@ export class MessageService {
       SELECT m."threadId" AS "threadId", m."seq" AS seq, m."createdAt" AS "createdAt"
       FROM "Message" m
       JOIN "ThreadParticipant" tp
-        ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp."leftAt" IS NULL
+        ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp.state <> 'AUTHORIZED'
       ORDER BY m."id" DESC
       LIMIT 1
     `;
@@ -1643,7 +1653,7 @@ export class MessageService {
         LIMIT 1000
       ) m ON TRUE
       WHERE tp."userId" = ${userId}
-        AND tp."leftAt" IS NULL
+        AND tp.state <> 'AUTHORIZED'
         AND tp."threadId" IN (${this.joinSql(threadIds)})
       GROUP BY tp."threadId"
     `;
@@ -1689,7 +1699,7 @@ export class MessageService {
         LIMIT 1000
       ) m ON TRUE
       WHERE tp."userId" = ${userId}
-        AND tp."leftAt" IS NULL
+        AND tp.state <> 'AUTHORIZED'
         AND tp."threadId" IN (${this.joinSql(threadIds)})
       GROUP BY tp."threadId"
     `;
@@ -1733,7 +1743,7 @@ export class MessageService {
         FROM bumped
         WHERE participant."userId" = ${userId}
           AND participant."threadId" = ${threadId}
-          AND participant."leftAt" IS NULL
+          AND participant.state <> 'AUTHORIZED'
         RETURNING participant."lastReadSeq", participant."readRevision"
       ), sample AS (
         SELECT m.seq, m.content, m."contentType"
@@ -1785,7 +1795,7 @@ export class MessageService {
       await this.database.db.query.threadParticipant.findMany({
         where: and(
           eq(threadParticipant.userId, userId),
-          isNull(threadParticipant.leftAt),
+          eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
           gt(threadParticipant.readRevision, fromRevision),
           lte(threadParticipant.readRevision, toRevision),
         ),
@@ -1861,7 +1871,7 @@ export class MessageService {
         JOIN "ThreadParticipant" tp
           ON tp."threadId" = m."threadId"
          AND tp."userId" = ${userId}
-         AND tp."leftAt" IS NULL
+         AND tp.state <> 'AUTHORIZED'
          AND tp.muted = false
         LEFT JOIN thread_hwm h ON h.tid = m."threadId"
         WHERE m.id > ${globalSinceId}
@@ -1939,7 +1949,7 @@ export class MessageService {
         JOIN "ThreadParticipant" tp
           ON tp."threadId" = m."threadId"
          AND tp."userId" = ${userId}
-         AND tp."leftAt" IS NULL
+         AND tp.state <> 'AUTHORIZED'
          AND tp.muted = false
         LEFT JOIN thread_hwm h ON h.tid = m."threadId"
         WHERE m."threadId" IN (${this.joinSql(threadIds)})
@@ -2017,7 +2027,7 @@ export class MessageService {
        AND m.seq > COALESCE(tp."lastReadSeq", 0)
        AND m.creator <> ${userId}
       WHERE tp."userId" = ${userId}
-        AND tp."leftAt" IS NULL
+        AND tp.state <> 'AUTHORIZED'
         AND tp."threadId" IN (${this.joinSql(threadIds)})
         AND m."contentType" = 'PURE_TEXT'
         AND (
@@ -2062,7 +2072,7 @@ export class MessageService {
       JOIN "ThreadParticipant" tp
         ON tp."threadId" = m."threadId"
        AND tp."userId" = ${userId}
-       AND tp."leftAt" IS NULL
+       AND tp.state <> 'AUTHORIZED'
        AND tp.muted = false
       WHERE m.id > ${sinceId}
         AND m.creator <> ${userId}

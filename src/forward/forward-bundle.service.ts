@@ -21,7 +21,7 @@ import {
   message,
   threadParticipant,
 } from '../database/schema.js';
-import { ContentType } from '../database/enums.js';
+import { ContentType, ThreadParticipantState } from '../database/enums.js';
 import {
   federatedContentDigests,
   fromFederatedMessageContent,
@@ -251,7 +251,7 @@ export class ForwardBundleService {
         where: and(
           eq(threadParticipant.userId, userId),
           inArray(threadParticipant.threadId, uniqueThreads),
-          isNull(threadParticipant.leftAt),
+          eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
         ),
         columns: { threadId: true, clearedSeq: true },
         with: {
@@ -494,7 +494,7 @@ export class ForwardBundleService {
         and(
           eq(threadParticipant.threadId, message.threadId),
           eq(threadParticipant.userId, userId),
-          isNull(threadParticipant.leftAt),
+          eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
         ),
       )
       .where(

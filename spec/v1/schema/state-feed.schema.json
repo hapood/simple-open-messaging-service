@@ -21,7 +21,7 @@
     },
     "intentProperties": {
       "status": { "enum": ["REQUESTED", "ACCEPTED", "REVOKED"] },
-      "note": { "type": "string" },
+      "note": { "type": "string", "maxLength": 255 },
       "requestedAt": {
         "oneOf": [
           { "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds" },
@@ -37,10 +37,13 @@
     },
     "profileBody": {
       "type": "object",
-      "required": ["displayName", "bio", "avatar"],
+      "required": ["profileRev", "displayName", "bio", "avatar"],
       "properties": {
-        "displayName": { "type": "string", "minLength": 1 },
-        "bio": { "type": "string" },
+        "profileRev": {
+          "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
+        },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 30 },
+        "bio": { "type": "string", "maxLength": 120 },
         "avatar": {
           "oneOf": [{ "$ref": "#/$defs/profileAvatar" }, { "type": "null" }]
         }
@@ -49,21 +52,24 @@
     },
     "memberProfileBody": {
       "type": "object",
-      "required": ["displayName", "avatar"],
+      "required": ["profileRev", "displayName", "avatar"],
       "properties": {
-        "displayName": { "type": "string", "minLength": 1 },
+        "profileRev": {
+          "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
+        },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 30 },
         "avatar": {
           "oneOf": [{ "$ref": "#/$defs/profileAvatar" }, { "type": "null" }]
         }
       },
       "additionalProperties": false
     },
-    "p2pIntentBody": {
+    "relationshipIntentBody": {
       "type": "object",
       "required": ["status", "note", "requestedAt", "expiresAt"],
       "properties": {
         "status": { "enum": ["REQUESTED", "ACCEPTED", "REVOKED"] },
-        "note": { "type": "string" },
+        "note": { "type": "string", "maxLength": 255 },
         "requestedAt": {
           "oneOf": [
             {
@@ -93,82 +99,6 @@
               "expiresAt": { "type": "integer" }
             }
           },
-          "else": { "properties": { "expiresAt": { "type": "null" } } }
-        }
-      ],
-      "additionalProperties": false
-    },
-    "groupInviteIntentBody": {
-      "type": "object",
-      "required": ["status", "note", "requestedAt", "expiresAt", "owner"],
-      "properties": {
-        "status": { "enum": ["REQUESTED", "ACCEPTED", "REVOKED"] },
-        "note": { "type": "string" },
-        "requestedAt": {
-          "oneOf": [
-            {
-              "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds"
-            },
-            { "type": "null" }
-          ]
-        },
-        "expiresAt": {
-          "oneOf": [
-            {
-              "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds"
-            },
-            { "type": "null" }
-          ]
-        },
-        "owner": { "$ref": "urn:socfp:v1:common#/$defs/address" }
-      },
-      "allOf": [
-        {
-          "if": {
-            "properties": { "status": { "const": "REQUESTED" } },
-            "required": ["status"]
-          },
-          "then": {
-            "properties": {
-              "requestedAt": { "type": "integer" },
-              "expiresAt": { "type": "integer" }
-            }
-          },
-          "else": { "properties": { "expiresAt": { "type": "null" } } }
-        }
-      ],
-      "additionalProperties": false
-    },
-    "groupJoinIntentBody": {
-      "type": "object",
-      "required": ["status", "note", "requestedAt", "expiresAt"],
-      "properties": {
-        "status": { "enum": ["REQUESTED", "ACCEPTED", "REVOKED"] },
-        "note": { "type": "string" },
-        "requestedAt": {
-          "oneOf": [
-            {
-              "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds"
-            },
-            { "type": "null" }
-          ]
-        },
-        "expiresAt": {
-          "oneOf": [
-            {
-              "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds"
-            },
-            { "type": "null" }
-          ]
-        }
-      },
-      "allOf": [
-        {
-          "if": {
-            "properties": { "status": { "const": "REQUESTED" } },
-            "required": ["status"]
-          },
-          "then": { "properties": { "requestedAt": { "type": "integer" } } },
           "else": { "properties": { "expiresAt": { "type": "null" } } }
         }
       ],
@@ -177,6 +107,7 @@
     "groupMetaBody": {
       "type": "object",
       "required": [
+        "rosterRev",
         "active",
         "dissolved",
         "owner",
@@ -184,6 +115,9 @@
         "members"
       ],
       "properties": {
+        "rosterRev": {
+          "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
+        },
         "active": { "type": "boolean" },
         "dissolved": { "type": "boolean" },
         "owner": {
@@ -234,8 +168,6 @@
         "account",
         "domain",
         "eventType",
-        "subjectAccount",
-        "subjectDomain",
         "feedId",
         "body"
       ],
@@ -243,8 +175,6 @@
         "account": { "$ref": "urn:socfp:v1:common#/$defs/account" },
         "domain": { "$ref": "urn:socfp:v1:common#/$defs/domain" },
         "eventType": { "type": "string" },
-        "subjectAccount": { "type": "string" },
-        "subjectDomain": { "type": "string" },
         "feedId": {
           "$ref": "urn:socfp:v1:common#/$defs/positiveDecimalString"
         },
@@ -257,8 +187,6 @@
           "$ref": "#/$defs/itemBase",
           "properties": {
             "eventType": { "const": "PROFILE" },
-            "subjectAccount": { "const": "" },
-            "subjectDomain": { "const": "" },
             "body": { "$ref": "#/$defs/profileBody" }
           },
           "unevaluatedProperties": false
@@ -270,8 +198,6 @@
               "$ref": "urn:socfp:v1:common#/$defs/userAccount"
             },
             "eventType": { "const": "MEMBER_PROFILE" },
-            "subjectAccount": { "const": "" },
-            "subjectDomain": { "const": "" },
             "body": { "$ref": "#/$defs/memberProfileBody" }
           },
           "unevaluatedProperties": false
@@ -280,51 +206,26 @@
           "$ref": "#/$defs/itemBase",
           "properties": {
             "account": {
-              "$ref": "urn:socfp:v1:common#/$defs/userAccount"
+              "$ref": "urn:socfp:v1:common#/$defs/account"
             },
-            "eventType": { "const": "P2P_INTENT" },
-            "subjectAccount": {
-              "$ref": "urn:socfp:v1:common#/$defs/userAccount"
+            "eventType": { "const": "RELATIONSHIP_INTENT" },
+            "localAccount": {
+              "$ref": "urn:socfp:v1:common#/$defs/account"
             },
-            "subjectDomain": {
-              "$ref": "urn:socfp:v1:common#/$defs/domain"
-            },
-            "body": { "$ref": "#/$defs/p2pIntentBody" }
+            "body": { "$ref": "#/$defs/relationshipIntentBody" }
           },
-          "unevaluatedProperties": false
-        },
-        {
-          "$ref": "#/$defs/itemBase",
-          "properties": {
-            "account": {
-              "$ref": "urn:socfp:v1:common#/$defs/groupAccount"
+          "not": {
+            "properties": {
+              "account": {
+                "$ref": "urn:socfp:v1:common#/$defs/groupAccount"
+              },
+              "localAccount": {
+                "$ref": "urn:socfp:v1:common#/$defs/groupAccount"
+              }
             },
-            "eventType": { "const": "GROUP_INVITE_INTENT" },
-            "subjectAccount": {
-              "$ref": "urn:socfp:v1:common#/$defs/userAccount"
-            },
-            "subjectDomain": {
-              "$ref": "urn:socfp:v1:common#/$defs/domain"
-            },
-            "body": { "$ref": "#/$defs/groupInviteIntentBody" }
+            "required": ["account", "localAccount"]
           },
-          "unevaluatedProperties": false
-        },
-        {
-          "$ref": "#/$defs/itemBase",
-          "properties": {
-            "account": {
-              "$ref": "urn:socfp:v1:common#/$defs/groupAccount"
-            },
-            "eventType": { "const": "GROUP_JOIN_INTENT" },
-            "subjectAccount": {
-              "$ref": "urn:socfp:v1:common#/$defs/userAccount"
-            },
-            "subjectDomain": {
-              "$ref": "urn:socfp:v1:common#/$defs/domain"
-            },
-            "body": { "$ref": "#/$defs/groupJoinIntentBody" }
-          },
+          "required": ["localAccount"],
           "unevaluatedProperties": false
         },
         {
@@ -334,8 +235,6 @@
               "$ref": "urn:socfp:v1:common#/$defs/groupAccount"
             },
             "eventType": { "const": "GROUP_META" },
-            "subjectAccount": { "const": "" },
-            "subjectDomain": { "const": "" },
             "body": { "$ref": "#/$defs/groupMetaBody" }
           },
           "unevaluatedProperties": false

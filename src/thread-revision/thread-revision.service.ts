@@ -14,6 +14,7 @@ import {
   user,
 } from '../database/schema.js';
 import { SseService } from '../gateway/sse.service.js';
+import { ThreadParticipantState } from '../database/enums.js';
 
 export interface PendingThreadRevision {
   userId: number;
@@ -106,7 +107,7 @@ export class ThreadRevisionService {
       .where(
         and(
           eq(threadParticipant.threadId, threadId),
-          isNull(threadParticipant.leftAt),
+          eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
           eq(user.isForeigner, false),
           eq(user.isDeleted, false),
         ),
@@ -258,9 +259,9 @@ export class ThreadRevisionService {
           JOIN "User" group_u ON group_u.id = thread."groupUserId"
             AND group_u.domain = ${row.sourcePeerDomain}
           JOIN "ThreadParticipant" mine ON mine."threadId" = thread.id
-            AND mine."userId" = ${userId} AND mine."leftAt" IS NULL
+            AND mine."userId" = ${userId} AND mine.state = 'ESTABLISHED'
           JOIN "ThreadParticipant" member_p ON member_p."threadId" = thread.id
-            AND member_p."leftAt" IS NULL
+            AND member_p.state = 'ESTABLISHED'
           JOIN "User" member_u ON member_u.id = member_p."userId"
           WHERE member_u.account = ${row.memberAccount}
             AND (CASE WHEN member_u.domain = 'local'
@@ -356,6 +357,28 @@ export class ThreadRevisionService {
 
   async isThreadHidden(userId: number, threadId: number): Promise<boolean> {
     return this.isThreadHiddenInTx(this.database.db, userId, threadId);
+  }
+
+  /** Publish ADD only when the thread has never been visible or the user explicitly hid it. State
+   * transitions such as REVOKED -> ESTABLISHED keep an existing visible conversation stable. */
+  async ensureThreadVisibleInTx(
+    tx: DatabaseTransaction,
+    userId: number,
+    threadId: number,
+  ): Promise<number | null> {
+    const [add] = await tx
+      .select({ isDelete: threadRevision.isDelete })
+      .from(threadRevision)
+      .where(
+        and(
+          eq(threadRevision.userId, userId),
+          eq(threadRevision.threadId, threadId),
+          eq(threadRevision.direction, 'ADD'),
+        ),
+      )
+      .limit(1);
+    if (add && !add.isDelete) return null;
+    return this.recordThreadAddInTx(tx, userId, threadId);
   }
 
   /** Re-add only participants whose current list state is DELETE. This makes a fresh message restore an

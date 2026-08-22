@@ -40,14 +40,14 @@ import {
   forwardBundle,
   forwardBundleDependency,
   forwardMessage,
-  friendPair,
-  friendRequest,
-  groupMembershipPair,
-  groupMembershipRequest,
+  relationshipPair,
+  relationshipIntent,
   mediaAsset,
   messageAsset,
   message,
   messageThread,
+  peerStateFeed,
+  peerStateFeedPullCursor,
   s2SKeyCache,
   threadParticipant,
   threadAudience,
@@ -96,7 +96,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     return app.database.query.threadParticipant.findFirst({
       where: and(
         eq(threadParticipant.userId, userId),
-        isNull(threadParticipant.leftAt),
+        eq(threadParticipant.state, 'ESTABLISHED'),
         sql`exists (select 1 from "MessageThread" mt where mt.id = "threadParticipant"."threadId" and mt.type = 'P2P')`,
       ),
       columns: { threadId: true },
@@ -117,8 +117,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         ON thread.id = first_participant."threadId" AND thread.type = 'P2P'
       WHERE first_participant."userId" = ${firstUserId}
         AND second_participant."userId" = ${secondUserId}
-        AND first_participant."leftAt" IS NULL
-        AND second_participant."leftAt" IS NULL
+        AND first_participant.state = 'ESTABLISHED'
+        AND second_participant.state = 'ESTABLISHED'
       LIMIT 1
     `);
     return result.rows[0];
@@ -154,12 +154,16 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
   async function findGroupThreadById(app: FedApp, threadId: number) {
     const [row] = await app.database
-      .select({ account: user.account, domain: user.domain })
+      .select({
+        groupUserId: messageThread.groupUserId,
+        account: user.account,
+        domain: user.domain,
+      })
       .from(messageThread)
       .innerJoin(user, eq(user.id, messageThread.groupUserId))
       .where(eq(messageThread.id, threadId))
       .limit(1);
-    return row ? { groupUser: row } : undefined;
+    return row ? { groupUserId: row.groupUserId, groupUser: row } : undefined;
   }
 
   async function findLatestForwardMessage(app: FedApp, creator: number) {
@@ -398,16 +402,16 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         ] as const) {
           const rows = await app.database
             .select()
-            .from(friendRequest)
+            .from(relationshipIntent)
             .where(
               or(
                 and(
-                  eq(friendRequest.requesterUserId, localId),
-                  eq(friendRequest.targetUserId, peerId),
+                  eq(relationshipIntent.authorUserId, localId),
+                  eq(relationshipIntent.subjectUserId, peerId),
                 ),
                 and(
-                  eq(friendRequest.requesterUserId, peerId),
-                  eq(friendRequest.targetUserId, localId),
+                  eq(relationshipIntent.authorUserId, peerId),
+                  eq(relationshipIntent.subjectUserId, localId),
                 ),
               ),
             );
@@ -416,10 +420,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             '',
             'hi from aaa',
           ]);
-          const pair = await app.database.query.friendPair.findFirst({
+          const pair = await app.database.query.relationshipPair.findFirst({
             where: and(
-              eq(friendPair.userLowId, Math.min(localId, peerId)),
-              eq(friendPair.userHighId, Math.max(localId, peerId)),
+              eq(relationshipPair.userLowId, Math.min(localId, peerId)),
+              eq(relationshipPair.userHighId, Math.max(localId, peerId)),
             ),
           });
           expect(pair?.active).toBe(true);
@@ -1062,17 +1066,16 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     );
 
     // Group invites are structural client state, not chat messages. The inbound
-    // GROUP_INVITE_INTENT must materialize the mirror's durable membership request without requiring
+    // RELATIONSHIP_INTENT must materialize the mirror's durable membership request without requiring
     // bob to open a P2P conversation or pull a legacy INVITE message card.
     await vi.waitFor(
       async () => {
         const pendingInvite =
-          await appB.database.query.groupMembershipRequest.findFirst({
+          await appB.database.query.relationshipIntent.findFirst({
             where: and(
-              eq(groupMembershipRequest.groupUserId, mirrorB.groupUserId!),
-              eq(groupMembershipRequest.memberUserId, bobLocalIdB),
-              eq(groupMembershipRequest.direction, 'INVITE'),
-              eq(groupMembershipRequest.status, 'REQUESTED'),
+              eq(relationshipIntent.authorUserId, mirrorB.groupUserId!),
+              eq(relationshipIntent.subjectUserId, bobLocalIdB),
+              eq(relationshipIntent.status, 'REQUESTED'),
             ),
           });
         expect(pendingInvite).toBeDefined();
@@ -1080,41 +1083,77 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       { timeout: 5000 },
     );
 
-    // Bob authors only the local USER→GROUP direction. Hold the origin's
-    // state-feed confirmation to prove that accepting on a mirror is pending,
-    // not optimistic membership.
-    proxy.blockStateFeed(true);
-    try {
-      const accept = await request(appB.baseUrl)
-        .post('/api/v1/group/join-request')
-        .set('Authorization', `Bearer ${tokenB}`)
-        .send({ groupId: mirrorB.id });
-      expect(accept.status).toBe(200);
-      expect(accept.body.code).toBe(BusinessCode.OK);
-      await vi.waitFor(
-        () => expect(proxy.blockedStateFeedCount()).toBeGreaterThan(0),
-        { timeout: 5000, interval: 100 },
-      );
-      const pendingJoin =
-        await appB.database.query.groupMembershipRequest.findFirst({
-          where: and(
-            eq(groupMembershipRequest.groupUserId, mirrorB.groupUserId!),
-            eq(groupMembershipRequest.memberUserId, bobLocalIdB),
-            eq(groupMembershipRequest.direction, 'JOIN'),
-          ),
-        });
-      expect(pendingJoin?.status).toBe('REQUESTED');
-      const premature = await appB.database.query.threadParticipant.findFirst({
+    // Local acceptance immediately formalizes the candidate's mirror thread. The origin later
+    // confirms and fills the authoritative roster through GROUP_META.
+    const accept = await request(appB.baseUrl)
+      .post('/api/v1/group/join-request')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send({ groupId: mirrorB.id });
+    expect(accept.status).toBe(200);
+    expect(accept.body.code).toBe(BusinessCode.OK);
+    const outboundJoin = await appB.database.query.peerStateFeed.findFirst({
+      where: and(
+        eq(peerStateFeed.peerDomain, DOM_A),
+        eq(peerStateFeed.account, 'bob'),
+        eq(peerStateFeed.subjectAccount, groupAccount),
+        eq(peerStateFeed.eventType, 'RELATIONSHIP_INTENT'),
+      ),
+    });
+    expect(outboundJoin?.body).toMatchObject({ status: 'ACCEPTED' });
+    const establishedImmediately =
+      await appB.database.query.threadParticipant.findFirst({
         where: and(
           eq(threadParticipant.threadId, mirrorB.id),
           eq(threadParticipant.userId, bobLocalIdB),
-          isNull(threadParticipant.leftAt),
+          eq(threadParticipant.state, 'ESTABLISHED'),
         ),
       });
-      expect(premature).toBeUndefined();
-    } finally {
-      proxy.blockStateFeed(false);
-    }
+    expect(establishedImmediately).toBeDefined();
+    await vi.waitFor(
+      async () => {
+        const cursor =
+          await appA.database.query.peerStateFeedPullCursor.findFirst({
+            where: eq(peerStateFeedPullCursor.peerDomain, DOM_B),
+          });
+        expect(cursor?.committedThrough ?? 0n).toBeGreaterThanOrEqual(
+          outboundJoin!.rev,
+        );
+      },
+      { timeout: 5000, interval: 100 },
+    );
+    const originMembershipRows =
+      await appA.database.query.relationshipIntent.findMany({
+        where: and(
+          or(
+            and(
+              eq(relationshipIntent.authorUserId, trdA!.groupUserId!),
+              eq(relationshipIntent.subjectUserId, bobStubIdOnA),
+            ),
+            and(
+              eq(relationshipIntent.authorUserId, bobStubIdOnA),
+              eq(relationshipIntent.subjectUserId, trdA!.groupUserId!),
+            ),
+          ),
+        ),
+      });
+    const originMembershipPair =
+      await appA.database.query.relationshipPair.findFirst({
+        where: and(
+          eq(
+            relationshipPair.userLowId,
+            Math.min(trdA!.groupUserId!, bobStubIdOnA),
+          ),
+          eq(
+            relationshipPair.userHighId,
+            Math.max(trdA!.groupUserId!, bobStubIdOnA),
+          ),
+        ),
+      });
+    expect(originMembershipRows).toMatchObject([
+      { authorUserId: trdA!.groupUserId, status: 'ACCEPTED' },
+      { authorUserId: bobStubIdOnA, status: 'ACCEPTED' },
+    ]);
+    expect(originMembershipPair?.active).toBe(true);
 
     // The origin (appA) records bob on its canonical roster (handleGroupAccept). Poll for it.
     await vi.waitFor(
@@ -1124,16 +1163,16 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             eq(threadParticipant.userId, bobStubIdOnA),
             eq(threadParticipant.threadId, groupThreadA),
           ),
-          columns: { leftAt: true },
+          columns: { state: true },
         });
-        expect(bobOnA?.leftAt).toBeNull(); // bob is an active member on the origin roster
+        expect(bobOnA?.state).toBe('ESTABLISHED'); // bob is an active member on the origin roster
 
         const bobOnMirror =
           await appB.database.query.threadParticipant.findFirst({
             where: and(
               eq(threadParticipant.userId, bobLocalIdB),
               eq(threadParticipant.threadId, mirrorB.id),
-              isNull(threadParticipant.leftAt),
+              eq(threadParticipant.state, 'ESTABLISHED'),
             ),
           });
         expect(bobOnMirror).toBeDefined();
@@ -1141,36 +1180,47 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       { timeout: 5000 },
     );
 
-    const confirmedMemberships = await appB.database
-      .select({
-        direction: groupMembershipRequest.direction,
-        status: groupMembershipRequest.status,
-        expiresAt: groupMembershipRequest.expiresAt,
-      })
-      .from(groupMembershipRequest)
-      .where(
-        and(
-          eq(groupMembershipRequest.memberUserId, bobLocalIdB),
-          inArray(groupMembershipRequest.direction, ['INVITE', 'JOIN']),
-        ),
-      );
-    expect(confirmedMemberships).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          direction: 'INVITE',
-          status: 'MEMBER',
-          expiresAt: null,
-        }),
-        expect.objectContaining({
-          direction: 'JOIN',
-          status: 'MEMBER',
-          expiresAt: null,
-        }),
-      ]),
+    await vi.waitFor(
+      async () => {
+        const confirmedMemberships = await appB.database
+          .select({
+            authorUserId: relationshipIntent.authorUserId,
+            status: relationshipIntent.status,
+            expiresAt: relationshipIntent.expiresAt,
+          })
+          .from(relationshipIntent)
+          .where(
+            or(
+              and(
+                eq(relationshipIntent.authorUserId, mirrorB.groupUserId!),
+                eq(relationshipIntent.subjectUserId, bobLocalIdB),
+              ),
+              and(
+                eq(relationshipIntent.authorUserId, bobLocalIdB),
+                eq(relationshipIntent.subjectUserId, mirrorB.groupUserId!),
+              ),
+            ),
+          );
+        expect(confirmedMemberships).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              authorUserId: mirrorB.groupUserId!,
+              status: 'ACCEPTED',
+              expiresAt: null,
+            }),
+            expect.objectContaining({
+              authorUserId: bobLocalIdB,
+              status: 'ACCEPTED',
+              expiresAt: null,
+            }),
+          ]),
+        );
+      },
+      { timeout: 5000, interval: 100 },
     );
 
-    // The origin authors exactly one durable confirmation status. It is then
-    // pulled onto the mirror like every other group message.
+    // System messages are local timeline decorations: the accepting mirror and
+    // the confirming origin each persist exactly one notice.
     await vi.waitFor(
       async () => {
         for (const [app, threadId] of [
@@ -1325,7 +1375,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           JOIN "ThreadParticipant" peer ON peer."threadId" = mine."threadId"
           JOIN "MessageThread" thread ON thread.id = mine."threadId" AND thread.type = 'P2P'
           WHERE mine."userId" = ${aliceLocalIdA} AND peer."userId" = ${daveStubIdOnA}
-            AND mine."leftAt" IS NULL AND peer."leftAt" IS NULL
+            AND mine.state = 'ESTABLISHED' AND peer.state = 'ESTABLISHED'
           LIMIT 1
         `);
         expect(pairThread.rows[0]).toBeDefined();
@@ -1345,14 +1395,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     ).toContain(daveStubIdOnA);
     await vi.waitFor(
       async () => {
-        const pending =
-          await appB.database.query.groupMembershipRequest.findFirst({
-            where: and(
-              eq(groupMembershipRequest.memberUserId, daveLocalIdB),
-              eq(groupMembershipRequest.direction, 'INVITE'),
-              eq(groupMembershipRequest.status, 'REQUESTED'),
-            ),
-          });
+        const pending = await appB.database.query.relationshipIntent.findFirst({
+          where: and(
+            eq(relationshipIntent.subjectUserId, daveLocalIdB),
+            eq(relationshipIntent.authorUserId, firstMirrorGroupUserBId),
+            eq(relationshipIntent.status, 'REQUESTED'),
+          ),
+        });
         expect(pending).toBeDefined();
       },
       { timeout: 5000 },
@@ -1371,7 +1420,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             where: and(
               eq(threadParticipant.userId, daveLocalIdB),
               eq(threadParticipant.threadId, firstMirrorBId),
-              isNull(threadParticipant.leftAt),
+              eq(threadParticipant.state, 'ESTABLISHED'),
             ),
           }),
         ).not.toBeNull();
@@ -1385,7 +1434,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await vi.waitFor(
       async () => {
         const [daveOnOrigin] = await appA.database
-          .select({ leftAt: threadParticipant.leftAt })
+          .select({ state: threadParticipant.state })
           .from(threadParticipant)
           .innerJoin(user, eq(user.id, threadParticipant.userId))
           .where(
@@ -1396,7 +1445,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             ),
           )
           .limit(1);
-        expect(daveOnOrigin?.leftAt).toBeNull();
+        expect(daveOnOrigin?.state).toBe('ESTABLISHED');
       },
       { timeout: 5000 },
     );
@@ -1407,7 +1456,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             where: and(
               eq(threadParticipant.userId, daveLocalIdB),
               eq(threadParticipant.threadId, firstMirrorBId),
-              isNull(threadParticipant.leftAt),
+              eq(threadParticipant.state, 'ESTABLISHED'),
             ),
           });
         expect(daveOnMirror).not.toBeNull();
@@ -1496,7 +1545,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         .where(
           and(
             eq(threadParticipant.threadId, firstMirrorBId),
-            isNull(threadParticipant.leftAt),
+            eq(threadParticipant.state, 'ESTABLISHED'),
             eq(user.domain, 'local'),
           ),
         );
@@ -1526,19 +1575,24 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await vi.waitFor(
       async () => {
         const joinDirection =
-          await appB.database.query.groupMembershipRequest.findFirst({
+          await appB.database.query.relationshipIntent.findFirst({
             where: and(
-              eq(groupMembershipRequest.groupUserId, firstMirrorGroupUserBId),
-              eq(groupMembershipRequest.memberUserId, daveLocalIdB),
-              eq(groupMembershipRequest.direction, 'JOIN'),
+              eq(relationshipIntent.authorUserId, daveLocalIdB),
+              eq(relationshipIntent.subjectUserId, firstMirrorGroupUserBId),
             ),
           });
-        expect(joinDirection?.status).toBe('NOT_MEMBER');
+        expect(joinDirection?.status).toBe('REVOKED');
 
-        const pair = await appB.database.query.groupMembershipPair.findFirst({
+        const pair = await appB.database.query.relationshipPair.findFirst({
           where: and(
-            eq(groupMembershipPair.groupUserId, firstMirrorGroupUserBId),
-            eq(groupMembershipPair.memberUserId, daveLocalIdB),
+            eq(
+              relationshipPair.userLowId,
+              Math.min(firstMirrorGroupUserBId, daveLocalIdB),
+            ),
+            eq(
+              relationshipPair.userHighId,
+              Math.max(firstMirrorGroupUserBId, daveLocalIdB),
+            ),
           ),
         });
         expect(pair?.active).toBe(false);
@@ -1550,7 +1604,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
               eq(threadParticipant.threadId, firstGroupThreadA),
             ),
           });
-        expect(originMember?.leftAt).not.toBeNull();
+        expect(originMember?.state).toBe('REVOKED');
 
         const boundaryMessage = await appA.database.query.message.findFirst({
           where: and(
@@ -1605,11 +1659,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await vi.waitFor(
       async () => {
         const requestRow =
-          await appB.database.query.groupMembershipRequest.findFirst({
+          await appB.database.query.relationshipIntent.findFirst({
             where: and(
-              eq(groupMembershipRequest.groupUserId, firstMirrorGroupUserBId),
-              eq(groupMembershipRequest.memberUserId, daveLocalIdB),
-              eq(groupMembershipRequest.direction, 'INVITE'),
+              eq(relationshipIntent.authorUserId, firstMirrorGroupUserBId),
+              eq(relationshipIntent.subjectUserId, daveLocalIdB),
             ),
           });
         expect(requestRow?.status).toBe('REQUESTED');
@@ -1629,7 +1682,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             eq(threadParticipant.threadId, firstMirrorBId),
           ),
         });
-        expect(dave?.leftAt).toBeNull();
+        expect(dave?.state).toBe('ESTABLISHED');
         expect(
           await appB.database.query.message.findFirst({
             where: and(
@@ -1662,7 +1715,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
               eq(threadParticipant.threadId, firstGroupThreadA),
             ),
           });
-        expect(daveOnOrigin?.leftAt).not.toBeNull();
+        expect(daveOnOrigin?.state).toBe('REVOKED');
       },
       { timeout: 5000, interval: 100 },
     );
@@ -1711,9 +1764,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
               ),
             }),
           ]);
-          expect(bobOnOrigin?.leftAt).not.toBeNull();
+          expect(bobOnOrigin?.state).toBe('REVOKED');
           expect(originAudience).toBeUndefined();
-          expect(bobOnMirror?.leftAt).not.toBeNull();
+          expect(bobOnMirror?.state).toBe('REVOKED');
         },
         { timeout: 5000, interval: 100 },
       );
@@ -1774,13 +1827,12 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(reinviteBob.body.code).toBe(BusinessCode.OK);
     await vi.waitFor(
       async () => {
-        const invite =
-          await appB.database.query.groupMembershipRequest.findFirst({
-            where: and(
-              eq(groupMembershipRequest.memberUserId, bobLocalIdB),
-              eq(groupMembershipRequest.direction, 'INVITE'),
-            ),
-          });
+        const invite = await appB.database.query.relationshipIntent.findFirst({
+          where: and(
+            eq(relationshipIntent.subjectUserId, bobLocalIdB),
+            eq(relationshipIntent.authorUserId, firstMirrorGroupUserBId),
+          ),
+        });
         expect(invite?.status).toBe('REQUESTED');
       },
       { timeout: 5000, interval: 100 },
@@ -1815,7 +1867,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         ]);
         expect(originAudience).toBeDefined();
         expect(localAudience).toBeDefined();
-        expect(bobOnMirror?.leftAt).toBeNull();
+        expect(bobOnMirror?.state).toBe('ESTABLISHED');
       },
       { timeout: 5000, interval: 100 },
     );
@@ -1868,7 +1920,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           where: and(
             eq(threadParticipant.threadId, firstMirrorBId),
             eq(threadParticipant.userId, bobLocalIdB),
-            isNull(threadParticipant.leftAt),
+            eq(threadParticipant.state, 'ESTABLISHED'),
           ),
         }),
       ).toBeUndefined();
@@ -1881,15 +1933,16 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         .set('Authorization', `Bearer ${tokenB}`)
         .send({ groupId: firstMirrorBId });
       expect(rejoin.body.code).toBe(BusinessCode.OK);
-      const pending =
-        await appB.database.query.groupMembershipRequest.findFirst({
-          where: and(
-            eq(groupMembershipRequest.groupUserId, firstMirrorGroupUserBId),
-            eq(groupMembershipRequest.memberUserId, bobLocalIdB),
-            eq(groupMembershipRequest.direction, 'JOIN'),
-          ),
-        });
-      expect(pending?.status).toBe('REQUESTED');
+      const pending = await appB.database.query.relationshipIntent.findFirst({
+        where: and(
+          eq(relationshipIntent.authorUserId, bobLocalIdB),
+          eq(relationshipIntent.subjectUserId, firstMirrorGroupUserBId),
+        ),
+      });
+      // The member explicitly rejoins against the currently observed origin ACCEPTED,
+      // so its authored direction is immediately ACCEPTED even before the origin
+      // observes the intervening REVOKED revision.
+      expect(pending?.status).toBe('ACCEPTED');
     } finally {
       await appA.restart();
     }
@@ -1901,29 +1954,26 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             where: and(
               eq(threadParticipant.threadId, firstGroupThreadA),
               eq(threadParticipant.userId, bobStubIdOnA),
-              isNull(threadParticipant.leftAt),
+              eq(threadParticipant.state, 'ESTABLISHED'),
             ),
           }),
           appB.database.query.threadParticipant.findFirst({
             where: and(
               eq(threadParticipant.threadId, firstMirrorBId),
               eq(threadParticipant.userId, bobLocalIdB),
-              isNull(threadParticipant.leftAt),
+              eq(threadParticipant.state, 'ESTABLISHED'),
             ),
           }),
         ]);
         expect(originMember).toBeDefined();
         expect(mirrorMember).toBeDefined();
-        const join = await appB.database.query.groupMembershipRequest.findFirst(
-          {
-            where: and(
-              eq(groupMembershipRequest.groupUserId, firstMirrorGroupUserBId),
-              eq(groupMembershipRequest.memberUserId, bobLocalIdB),
-              eq(groupMembershipRequest.direction, 'JOIN'),
-            ),
-          },
-        );
-        expect(join?.status).toBe('MEMBER');
+        const join = await appB.database.query.relationshipIntent.findFirst({
+          where: and(
+            eq(relationshipIntent.authorUserId, bobLocalIdB),
+            eq(relationshipIntent.subjectUserId, firstMirrorGroupUserBId),
+          ),
+        });
+        expect(join?.status).toBe('ACCEPTED');
       },
       // Feed-head notifications are ephemeral. If the wake-up races appA's restart, the durable
       // missed-feed sweep is the correctness backstop and may take one scheduler interval.
@@ -1978,59 +2028,39 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       })),
     );
 
-    proxy.blockStateFeed(true);
-    try {
-      const accepted = await request(appB.baseUrl)
-        .post('/api/v1/group/join-request')
-        .set('Authorization', `Bearer ${tokenB}`)
-        .send({ groupId: mirror.id });
-      expect(accepted.body.code).toBe(BusinessCode.OK);
-      await vi.waitFor(
-        () => expect(proxy.blockedStateFeedCount()).toBeGreaterThan(0),
-        { timeout: 5000, interval: 100 },
-      );
-      const pending =
-        await appB.database.query.groupMembershipRequest.findFirst({
-          where: and(
-            eq(groupMembershipRequest.groupUserId, mirror.groupUserId!),
-            eq(groupMembershipRequest.memberUserId, bobLocalIdB),
-            eq(groupMembershipRequest.direction, 'JOIN'),
-          ),
-        });
-      expect(pending?.status).toBe('REQUESTED');
-    } finally {
-      proxy.blockStateFeed(false);
-    }
+    const accepted = await request(appB.baseUrl)
+      .post('/api/v1/group/join-request')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send({ groupId: mirror.id });
+    expect(accepted.body.code).toBe(BusinessCode.OK);
 
     await vi.waitFor(
       async () => {
         const [invite, join] = await Promise.all([
-          appB.database.query.groupMembershipRequest.findFirst({
+          appB.database.query.relationshipIntent.findFirst({
             where: and(
-              eq(groupMembershipRequest.groupUserId, mirror.groupUserId!),
-              eq(groupMembershipRequest.memberUserId, bobLocalIdB),
-              eq(groupMembershipRequest.direction, 'INVITE'),
+              eq(relationshipIntent.authorUserId, mirror.groupUserId!),
+              eq(relationshipIntent.subjectUserId, bobLocalIdB),
             ),
           }),
-          appB.database.query.groupMembershipRequest.findFirst({
+          appB.database.query.relationshipIntent.findFirst({
             where: and(
-              eq(groupMembershipRequest.groupUserId, mirror.groupUserId!),
-              eq(groupMembershipRequest.memberUserId, bobLocalIdB),
-              eq(groupMembershipRequest.direction, 'JOIN'),
+              eq(relationshipIntent.authorUserId, bobLocalIdB),
+              eq(relationshipIntent.subjectUserId, mirror.groupUserId!),
             ),
           }),
         ]);
         expect(invite).toMatchObject({
-          status: 'NOT_MEMBER',
+          status: 'REVOKED',
           note: SERVER_GROUP_FULL_REASON,
         });
-        expect(join?.status).toBe('NOT_MEMBER');
+        expect(join?.status).toBe('ACCEPTED');
         const mirrorParticipant =
           await appB.database.query.threadParticipant.findFirst({
             where: and(
               eq(threadParticipant.threadId, mirror.id),
               eq(threadParticipant.userId, bobLocalIdB),
-              isNull(threadParticipant.leftAt),
+              eq(threadParticipant.state, 'ESTABLISHED'),
             ),
           });
         expect(mirrorParticipant).toBeUndefined();
@@ -2043,7 +2073,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .where(
         and(
           eq(threadParticipant.threadId, originThreadId),
-          isNull(threadParticipant.leftAt),
+          eq(threadParticipant.state, 'ESTABLISHED'),
         ),
       );
     expect(Number(originCount.value)).toBe(SERVER_MAX_GROUP_MEMBERS);
@@ -2052,7 +2082,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         where: and(
           eq(threadParticipant.threadId, originThreadId),
           eq(threadParticipant.userId, bobStubIdOnA),
-          isNull(threadParticipant.leftAt),
+          eq(threadParticipant.state, 'ESTABLISHED'),
         ),
       }),
     ).toBeUndefined();

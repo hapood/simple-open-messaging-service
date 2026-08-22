@@ -956,23 +956,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  '/api/v1/invite/reject': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Reject an incoming invite */
-    post: operations['InviteController_rejectInvite'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   '/api/v1/invite/revoke': {
     parameters: {
       query?: never;
@@ -6635,27 +6618,6 @@ export interface operations {
     };
   };
   InviteController_acceptInvite: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['FriendInviteActionDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  InviteController_rejectInvite: {
     parameters: {
       query?: never;
       header?: never;

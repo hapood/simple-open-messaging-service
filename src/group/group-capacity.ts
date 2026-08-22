@@ -35,10 +35,10 @@ export async function assertServerGroupCapacityInTx(
     alreadyActive: boolean;
   }>(sql`
     SELECT
-      COUNT(*) FILTER (WHERE participant."leftAt" IS NULL) AS "activeCount",
+      COUNT(*) FILTER (WHERE participant.state = 'ESTABLISHED') AS "activeCount",
       COALESCE(BOOL_OR(
         participant."userId" = ${memberUserId}
-        AND participant."leftAt" IS NULL
+        AND participant.state = 'ESTABLISHED'
       ), false) AS "alreadyActive"
     FROM "ThreadParticipant" participant
     WHERE participant."threadId" = ${threadId}

@@ -158,8 +158,7 @@ export class InviteController {
   @HttpCode(HttpStatus.OK)
   @Post('invite/federated-friend')
   @ApiOperation({
-    summary:
-      'Send a federated friend request by Address without creating a foreign User stub',
+    summary: 'Send a federated friend request by Address',
   })
   async sendFederatedFriendInvite(
     @Request() req: FastifyRequest,
@@ -174,6 +173,7 @@ export class InviteController {
       );
     await this.federationService.ensurePeerTrusted(domain);
     let statePeers = new Map<string, bigint>();
+    const clientRevisions: PendingThreadRevision[] = [];
     const result = await this.inviteService.createFederatedFriendInvite(
       req.user.userId,
       account,
@@ -188,10 +188,14 @@ export class InviteController {
             req.user.userId,
             { account, domain },
             state,
+            clientRevisions,
           );
       },
     );
     await this.federationService.pushStateFeedDomains(statePeers.keys());
+    clientRevisions.forEach((pending) =>
+      this.threadRevision.notifyThreadRevision(pending),
+    );
     return envelope(
       { account, domain },
       {
@@ -255,12 +259,14 @@ export class InviteController {
           );
       },
       async (tx, threadId) => {
-        groupStatePeers = await this.federationService.writeGroupJoinIntentInTx(
-          tx,
-          threadId,
-          req.user.userId,
-        );
-        await this.inviteService.writeGroupInviteClientStateInTx(
+        groupStatePeers =
+          await this.federationService.writeMemberRelationshipIntentInTx(
+            tx,
+            threadId,
+            req.user.userId,
+            'ACCEPTED',
+          );
+        await this.inviteService.writeGroupRequestClientStateInTx(
           tx,
           threadId,
           req.user.userId,
@@ -286,62 +292,8 @@ export class InviteController {
       return { threadId: res.threadId };
     }
 
-    // Federated join delivery is the GROUP_JOIN_INTENT written in the accept transaction above.
+    // Federated join delivery is the RELATIONSHIP_INTENT written in the accept transaction above.
     return { threadId: res.threadId };
-  }
-
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @Post('invite/reject')
-  @ApiOperation({ summary: 'Reject an incoming invite' })
-  async rejectInvite(
-    @Request() req: FastifyRequest,
-    @Body() dto: FriendInviteActionDto,
-  ): Promise<void> {
-    if (this.isAddressedAction(dto)) {
-      const peers = await this.federationService.revokeAddressedFriendRequest(
-        req.user.userId,
-        { account: dto.account!, domain: dto.domain! },
-        'INCOMING',
-      );
-      await this.federationService.pushStateFeedDomains(peers.keys());
-      return;
-    }
-    let statePeers = new Map<string, bigint>();
-    const clientRevisions: PendingThreadRevision[] = [];
-    await this.inviteService.rejectInvite(
-      dto.inviteId!,
-      req.user.userId,
-      async (tx, fromUserId) => {
-        const from = await tx.query.user.findFirst({
-          where: eq(tables.user.id, fromUserId),
-          columns: { isForeigner: true },
-        });
-        if (from?.isForeigner)
-          statePeers = await this.federationService.writeFriendIntentInTx(
-            tx,
-            req.user.userId,
-            fromUserId,
-            false,
-            '',
-            clientRevisions,
-          );
-        else
-          clientRevisions.push(
-            ...(await this.inviteService.writeLocalFriendIntentInTx(
-              tx,
-              req.user.userId,
-              fromUserId,
-              false,
-            )),
-          );
-      },
-    );
-    await this.federationService.pushStateFeedDomains(statePeers.keys());
-    clientRevisions.forEach((pending) =>
-      this.threadRevision.notifyThreadRevision(pending),
-    );
-    // Rejecting does not create another unread incoming request, so no extra state revision is needed.
   }
 
   @ApiBearerAuth()
@@ -354,10 +306,9 @@ export class InviteController {
   ): Promise<void> {
     const me = req.user.userId;
     if (this.isAddressedAction(dto)) {
-      const peers = await this.federationService.revokeAddressedFriendRequest(
+      const peers = await this.federationService.revokeAddressedOutgoingRequest(
         me,
         { account: dto.account!, domain: dto.domain! },
-        'OUTGOING',
       );
       await this.federationService.pushStateFeedDomains(peers.keys());
       return;

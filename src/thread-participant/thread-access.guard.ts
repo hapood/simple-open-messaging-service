@@ -11,6 +11,7 @@ import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { assertPositiveInt } from '../common/assert.js';
 import { RESOURCE_ID_KEY } from '../common/resource-id.decorator.js';
+import { ThreadParticipantState } from '../database/enums.js';
 
 /**
  * Membership gate for thread-keyed routes (P2P and GROUP alike). The body field carrying the id is
@@ -18,8 +19,7 @@ import { RESOURCE_ID_KEY } from '../common/resource-id.decorator.js';
  * carries no hard-coded field name: a DTO rename is a compile error at the use site, not a silent
  * drift. This mirrors the codebase's existing `RolesGuard` + `@Roles()` authorization convention.
  *
- * Resolves a history-readable ThreadParticipant. GROUP requires live membership; P2P retains read access
- * after unfriend and exposes `friendshipActive=false` so write handlers can reject it.
+ * Resolves an established ThreadParticipant. Authorization-only request shells are not client-visible.
  *
  * Both "thread does not exist" and "exists but caller is not an active member" collapse to the same
  * THREAD_NOT_FOUND outcome — deliberately non-leaking (a non-member cannot tell the thread exists).
@@ -74,8 +74,11 @@ export class ThreadAccessGuard implements CanActivate {
       threadId,
       threadType: participant.thread.type,
       participant,
-      friendshipActive: participant.leftAt === null,
-      membershipActive: participant.leftAt === null,
+      friendshipActive:
+        participant.thread.type !== 'P2P' ||
+        participant.state === ThreadParticipantState.ESTABLISHED,
+      membershipActive:
+        participant.state === ThreadParticipantState.ESTABLISHED,
       groupDissolved: participant.thread.groupUser?.group?.dissolvedAt != null,
     };
     return true;

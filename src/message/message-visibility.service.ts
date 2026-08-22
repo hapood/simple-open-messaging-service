@@ -6,7 +6,10 @@ import {
   messageThread,
   threadParticipant,
 } from '../database/schema.js';
-import { MessageThreadType } from '../database/enums.js';
+import {
+  MessageThreadType,
+  ThreadParticipantState,
+} from '../database/enums.js';
 import { UserBlockService } from '../user-block/user-block.service.js';
 
 /**
@@ -33,7 +36,7 @@ export class MessageVisibilityService {
         and(
           eq(threadParticipant.threadId, message.threadId),
           eq(threadParticipant.userId, userId),
-          isNull(threadParticipant.leftAt),
+          eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
         ),
       )
       .innerJoin(messageThread, eq(messageThread.id, message.threadId))

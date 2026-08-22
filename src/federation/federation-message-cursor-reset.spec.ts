@@ -28,12 +28,13 @@ describe('FederationService message-feed cursor reset translation', () => {
   }
 
   it('turns a valid 50019 response into a recoverable floor reset', async () => {
-    const service = serviceWith({ resumeAfter: '5200' });
+    const service = serviceWith({ resumeAfter: '5200', resumeBefore: '9001' });
 
     await expect(service.pullMissedPage('peer.test', 42n)).rejects.toEqual(
       expect.objectContaining<Partial<RemoteFeedCursorUnavailableError>>({
         name: 'RemoteFeedCursorUnavailableError',
         resumeAfter: 5200n,
+        resumeBefore: 9001n,
       }),
     );
   });
@@ -41,6 +42,7 @@ describe('FederationService message-feed cursor reset translation', () => {
   it('does not adopt malformed or extended cursor-reset data', async () => {
     const service = serviceWith({
       resumeAfter: '5200',
+      resumeBefore: '9001',
       requestedCursor: '42',
     });
 

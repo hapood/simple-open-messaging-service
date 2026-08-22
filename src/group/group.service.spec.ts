@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { GroupRole } from '../database/enums.js';
+import { GroupRole, ThreadParticipantState } from '../database/enums.js';
 import { group } from '../database/schema.js';
 import { BusinessCode } from '../common/business-code.js';
 import { GroupService } from './group.service.js';
@@ -9,9 +9,11 @@ type SelectResult = unknown[];
 function createTx(options: {
   selects: SelectResult[];
   updateResults?: unknown[][];
+  deleteResults?: unknown[][];
 }) {
   const selects = [...options.selects];
   const updateResults = [...(options.updateResults ?? [])];
+  const deleteResults = [...(options.deleteResults ?? [])];
   const sets: unknown[] = [];
   const select = vi.fn(() => {
     const result = selects.shift() ?? [];
@@ -39,7 +41,17 @@ function createTx(options: {
     };
     return query;
   });
-  return { select, update, sets };
+  const deleteFrom = vi.fn(() => {
+    const returningResult = deleteResults.shift() ?? [];
+    const query = {
+      where: vi.fn(() => query),
+      returning: vi.fn(() => Promise.resolve(returningResult)),
+      then: (resolve: (value: unknown) => unknown) =>
+        Promise.resolve(undefined).then(resolve),
+    };
+    return query;
+  });
+  return { select, update, delete: deleteFrom, sets };
 }
 
 function createService(
@@ -55,8 +67,8 @@ function createService(
   };
   const federation = {
     writeGroupStateInTx: vi.fn().mockResolvedValue(new Map()),
-    writeGroupJoinIntentInTx: vi.fn().mockResolvedValue(new Map()),
-    writeGroupInviteIntentInTx: vi.fn().mockResolvedValue(new Map()),
+    writeMemberRelationshipIntentInTx: vi.fn().mockResolvedValue(new Map()),
+    writeGroupRelationshipIntentInTx: vi.fn().mockResolvedValue(new Map()),
     pushStateFeedDomains: vi.fn().mockResolvedValue(undefined),
   };
   const revisionService = {
@@ -75,7 +87,10 @@ function createService(
 describe('GroupService membership lifecycle', () => {
   it('rejects an owner leaving while another active member remains', async () => {
     const tx = createTx({
-      selects: [[{ leftAt: null, role: GroupRole.OWNER }], [{ value: 2 }]],
+      selects: [
+        [{ state: ThreadParticipantState.ESTABLISHED, role: GroupRole.OWNER }],
+        [{ value: 2 }],
+      ],
     });
     const revisions = { isThreadHiddenInTx: vi.fn() };
     const service = createService(tx, revisions);
@@ -126,20 +141,32 @@ describe('GroupService membership lifecycle', () => {
     expect(tx.update).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps a kicked member history-visible and makes a repeat a no-op', async () => {
+  it('revokes a kicked participant and makes an absent repeat a no-op', async () => {
     const target = {
       id: 8,
       role: GroupRole.MEMBER,
-      leftAt: null as Date | null,
+      state: ThreadParticipantState.ESTABLISHED,
     };
     const tx = createTx({
       selects: [
-        [{ id: 7, role: GroupRole.OWNER, leftAt: null }],
+        [
+          {
+            id: 7,
+            role: GroupRole.OWNER,
+            state: ThreadParticipantState.ESTABLISHED,
+          },
+        ],
         [target],
         [{ groupUserId: 99 }],
         [],
-        [{ id: 7, role: GroupRole.OWNER, leftAt: null }],
-        [target],
+        [
+          {
+            id: 7,
+            role: GroupRole.OWNER,
+            state: ThreadParticipantState.ESTABLISHED,
+          },
+        ],
+        [],
       ],
       updateResults: [[{ id: 8 }], []],
     });
@@ -171,7 +198,6 @@ describe('GroupService membership lifecycle', () => {
     );
     expect(messageFanout.dispatch).toHaveBeenCalledWith(systemMessage);
 
-    target.leftAt = new Date();
     await expect(
       service.kickMember({ threadId: 10, operatorUserId: 1, targetUserId: 2 }),
     ).resolves.toEqual({ transitioned: false });
@@ -182,8 +208,20 @@ describe('GroupService membership lifecycle', () => {
   it('does not publish SSE when a kick transaction rejects after writing its revision', async () => {
     const tx = createTx({
       selects: [
-        [{ id: 7, role: GroupRole.OWNER, leftAt: null }],
-        [{ id: 8, role: GroupRole.MEMBER, leftAt: null }],
+        [
+          {
+            id: 7,
+            role: GroupRole.OWNER,
+            state: ThreadParticipantState.ESTABLISHED,
+          },
+        ],
+        [
+          {
+            id: 8,
+            role: GroupRole.MEMBER,
+            state: ThreadParticipantState.ESTABLISHED,
+          },
+        ],
         [{ groupUserId: 99 }],
       ],
       updateResults: [[{ id: 8 }], []],

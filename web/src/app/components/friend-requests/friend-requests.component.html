@@ -371,14 +371,6 @@
           >
             {{ 'friend.approve' | transloco }}
           </button>
-          <button
-            mat-button
-            type="button"
-            (click)="decline(req)"
-            [disabled]="req.status === -2 || isInviteActionPending(req.id)"
-          >
-            {{ 'friend.decline' | transloco }}
-          </button>
         }
         @if (selectedDirection() === 'OUTGOING') {
           <button

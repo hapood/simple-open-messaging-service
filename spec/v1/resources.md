@@ -171,7 +171,7 @@ GET /s2s/v1/media/:digest?fromAccount=:fromAccount&fromDomain=:fromDomain&toAcco
 | `fromAccount` | Query | Exact message author's `UserAccount` |
 | `fromDomain` | Query | Exact message author's `Domain` |
 | `toAccount` | Query | Signer-hosted recipient for P2P, or the `GroupAccount` for a group |
-| `seq` | Query | Exact outer message `seq`, encoded as a `PositiveDecimalString` no greater than `SafeInteger` |
+| `seq` | Query | Exact outer message `seq`, encoded as a `PositiveDecimalString` no greater than `SafeInteger - 1` |
 
 The query order is fixed as `fromAccount`, `fromDomain`, `toAccount`, `seq`.
 The signer domain comes only from the verified HTTP Message Signature and is

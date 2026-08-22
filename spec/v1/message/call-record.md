@@ -41,14 +41,14 @@ Both branches are closed schemas. `startedAt` is conditionally required: it is r
 
 ## 2. Outcome and field matrix
 
-| `status` | Not connected | Connected | Meaning |
-| -------- | ------------ | ------------ | ---- |
-| `completed` | Allowed | Allowed | May end normally after acceptance, either before or after media connects |
-| `failed` | Allowed | Allowed | Failure before or after connection |
-| `cancelled` | Allowed | Forbidden | Caller cancels before connection |
-| `declined` | Allowed | Forbidden | Callee declines |
-| `missed` | Allowed | Forbidden | No-answer timeout |
-| `unreachable` | Allowed | Forbidden | No remote lifecycle frame can be sent or accepted |
+| `status`      | Not connected | Connected | Meaning                                                                  |
+| ------------- | ------------- | --------- | ------------------------------------------------------------------------ |
+| `completed`   | Allowed       | Allowed   | May end normally after acceptance, either before or after media connects |
+| `failed`      | Allowed       | Allowed   | Failure before or after connection                                       |
+| `cancelled`   | Allowed       | Forbidden | Caller cancels before connection                                         |
+| `declined`    | Allowed       | Forbidden | Callee declines                                                          |
+| `missed`      | Allowed       | Forbidden | No-answer timeout                                                        |
+| `unreachable` | Allowed       | Forbidden | No remote lifecycle frame can be sent or accepted                        |
 
 Every outcome MUST include `endedAt`. A connected outcome MUST also satisfy:
 
@@ -81,11 +81,8 @@ Real-time call operations map to terminal records as follows:
 ```json
 {
   "thread": {
-    "type": "P2P",
-    "participants": [
-      { "account": "alice", "domain": "a.example" },
-      { "account": "bob", "domain": "b.example" }
-    ]
+    "account": "alice",
+    "localAccount": "bob"
   },
   "author": { "account": "alice", "domain": "a.example" },
   "seq": 81,
@@ -103,11 +100,8 @@ Real-time call operations map to terminal records as follows:
 ```json
 {
   "thread": {
-    "type": "P2P",
-    "participants": [
-      { "account": "alice", "domain": "a.example" },
-      { "account": "bob", "domain": "b.example" }
-    ]
+    "account": "alice",
+    "localAccount": "bob"
   },
   "author": { "account": "alice", "domain": "a.example" },
   "seq": 82,

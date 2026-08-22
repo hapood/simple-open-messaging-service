@@ -7,29 +7,23 @@
       "oneOf": [
         {
           "type": "object",
-          "required": ["type", "account", "domain"],
+          "required": ["account"],
           "properties": {
-            "type": { "const": "GROUP" },
             "account": {
               "$ref": "urn:socfp:v1:common#/$defs/groupAccount"
-            },
-            "domain": { "$ref": "urn:socfp:v1:common#/$defs/domain" }
+            }
           },
           "additionalProperties": false
         },
         {
           "type": "object",
-          "required": ["type", "participants"],
+          "required": ["account", "localAccount"],
           "properties": {
-            "type": { "const": "P2P" },
-            "participants": {
-              "type": "array",
-              "minItems": 2,
-              "maxItems": 2,
-              "uniqueItems": true,
-              "items": {
-                "$ref": "urn:socfp:v1:common#/$defs/address"
-              }
+            "account": {
+              "$ref": "urn:socfp:v1:common#/$defs/userAccount"
+            },
+            "localAccount": {
+              "$ref": "urn:socfp:v1:common#/$defs/userAccount"
             }
           },
           "additionalProperties": false

@@ -75,13 +75,13 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
           appA.database.query.threadParticipant.findFirst({
             where: and(
               eq(threadParticipant.userId, frankStubIdOnA),
-              isNull(threadParticipant.leftAt),
+              eq(threadParticipant.state, 'ESTABLISHED'),
             ),
           }),
           appB.database.query.threadParticipant.findFirst({
             where: and(
               eq(threadParticipant.userId, erinStubIdOnB),
-              isNull(threadParticipant.leftAt),
+              eq(threadParticipant.state, 'ESTABLISHED'),
             ),
           }),
         ]);
@@ -307,7 +307,7 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
         await appB.database.query.threadParticipant.findFirst({
           where: and(
             eq(threadParticipant.userId, erinStubIdOnB),
-            isNull(threadParticipant.leftAt),
+            eq(threadParticipant.state, 'ESTABLISHED'),
             sql`exists (select 1 from "MessageThread" mt where mt.id = "threadParticipant"."threadId" and mt.type = ${MessageThreadType.P2P})`,
           ),
           columns: { threadId: true },

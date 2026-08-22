@@ -106,7 +106,7 @@ describe('origin-server group capacity', () => {
       .where(
         and(
           eq(threadParticipant.threadId, thread.id),
-          isNull(threadParticipant.leftAt),
+          eq(threadParticipant.state, 'ESTABLISHED'),
         ),
       );
     expect(value).toBe(SERVER_MAX_GROUP_MEMBERS);
@@ -114,7 +114,7 @@ describe('origin-server group capacity', () => {
     const admitted = await database.db.query.threadParticipant.findFirst({
       where: and(
         eq(threadParticipant.threadId, thread.id),
-        isNull(threadParticipant.leftAt),
+        eq(threadParticipant.state, 'ESTABLISHED'),
       ),
       columns: { userId: true },
     });

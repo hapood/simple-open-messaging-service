@@ -4,7 +4,8 @@ import { and, eq } from 'drizzle-orm';
 import {
   clientStateFeed,
   federatedFriendRequest,
-  friendPair,
+  relationshipPair,
+  threadParticipant,
   user,
 } from '../src/database/schema.js';
 import { BusinessCode } from '../src/common/business-code.js';
@@ -18,7 +19,7 @@ import {
 } from './federation-harness.js';
 import { registerAndLogin } from './federation-test-helpers.js';
 
-describe('federated Address friend request without pre-accept stubs', () => {
+describe('federated Address friend request shells', () => {
   let appA: FedApp;
   let appB: FedApp;
   let proxy: S2sProxy;
@@ -62,7 +63,7 @@ describe('federated Address friend request without pre-accept stubs', () => {
     expect(lookup.text).not.toContain('event: progress');
   });
 
-  it('keeps lookup/request Address-based and materializes both stubs only after accept', async () => {
+  it('keeps lookup Address-based, creates the requester shell, and establishes after accept', async () => {
     const lookup = await request(appA.baseUrl)
       .get('/api/v1/user/resolve-federated-stream')
       .query({ account: 'address-bob', domain: FED_DOMAIN_B })
@@ -95,6 +96,21 @@ describe('federated Address friend request without pre-accept stubs', () => {
       account: 'address-bob',
       domain: FED_DOMAIN_B,
     });
+    const requesterStub = await appA.database.query.user.findFirst({
+      where: and(
+        eq(user.account, 'address-bob'),
+        eq(user.domain, FED_DOMAIN_B),
+      ),
+    });
+    expect(requesterStub).toBeDefined();
+    const requesterShell =
+      await appA.database.query.threadParticipant.findFirst({
+        where: and(
+          eq(threadParticipant.userId, aliceId),
+          eq(threadParticipant.state, 'AUTHORIZED'),
+        ),
+      });
+    expect(requesterShell).toBeDefined();
 
     const incoming = await vi.waitFor(
       async () => {
@@ -130,7 +146,7 @@ describe('federated Address friend request without pre-accept stubs', () => {
           eq(clientStateFeed.userId, bobId),
           eq(clientStateFeed.account, 'address-alice'),
           eq(clientStateFeed.domain, FED_DOMAIN_A),
-          eq(clientStateFeed.eventType, 'P2P_INTENT'),
+          eq(clientStateFeed.eventType, 'RELATIONSHIP_INTENT'),
           eq(clientStateFeed.subjectAccount, 'address-bob'),
         ),
       });
@@ -169,18 +185,18 @@ describe('federated Address friend request without pre-accept stubs', () => {
         expect(bobStubOnA).toBeDefined();
         expect(aliceStubOnB).toBeDefined();
         const [pairA, pairB] = await Promise.all([
-          appA.database.query.friendPair.findFirst({
+          appA.database.query.relationshipPair.findFirst({
             where: and(
-              eq(friendPair.userLowId, Math.min(aliceId, bobStubOnA!.id)),
-              eq(friendPair.userHighId, Math.max(aliceId, bobStubOnA!.id)),
-              eq(friendPair.active, true),
+              eq(relationshipPair.userLowId, Math.min(aliceId, bobStubOnA!.id)),
+              eq(relationshipPair.userHighId, Math.max(aliceId, bobStubOnA!.id)),
+              eq(relationshipPair.active, true),
             ),
           }),
-          appB.database.query.friendPair.findFirst({
+          appB.database.query.relationshipPair.findFirst({
             where: and(
-              eq(friendPair.userLowId, Math.min(bobId, aliceStubOnB!.id)),
-              eq(friendPair.userHighId, Math.max(bobId, aliceStubOnB!.id)),
-              eq(friendPair.active, true),
+              eq(relationshipPair.userLowId, Math.min(bobId, aliceStubOnB!.id)),
+              eq(relationshipPair.userHighId, Math.max(bobId, aliceStubOnB!.id)),
+              eq(relationshipPair.active, true),
             ),
           }),
         ]);
@@ -193,7 +209,7 @@ describe('federated Address friend request without pre-accept stubs', () => {
               eq(clientStateFeed.userId, bobId),
               eq(clientStateFeed.account, 'address-alice'),
               eq(clientStateFeed.domain, FED_DOMAIN_A),
-              eq(clientStateFeed.eventType, 'P2P_INTENT'),
+              eq(clientStateFeed.eventType, 'RELATIONSHIP_INTENT'),
               eq(clientStateFeed.subjectAccount, 'address-bob'),
             ),
           });

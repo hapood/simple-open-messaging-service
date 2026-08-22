@@ -1183,7 +1183,7 @@ export class WebdbService implements OnDestroy {
       if (op.direction === 'CLIENT_STATE') {
         const key = clientStateKey(op);
         const store = tx.objectStore('friendIntents');
-        if (op.eventType === 'GROUP_INVITE_INTENT') {
+        if (op.account.startsWith('!')) {
           const body = op.body as Omit<
             ClientGroupInviteIntent,
             | 'key'

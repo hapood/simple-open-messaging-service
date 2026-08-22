@@ -79,7 +79,7 @@ HTTP `409` alone is insufficient to trigger `halted`. Only HTTP `409` combined w
 | 50011 | `FEDERATION_QUOTA_EXCEEDED` | 200 | Back off for `data.retryAfter` seconds; MUST NOT degrade the peer or advance the failed page cursor. |
 | 50014 | `FEDERATION_LOCAL_IDENTITY_LOST` | 503 | The peer temporarily cannot provide federation service safely; retain the old pin and retry with backoff. |
 | 50015 | `FEDERATION_IDENTITY_MISMATCH` | 409 | Fatal: retain the old pin, record the identity contradiction, and enter `halted`; MUST NOT automatically adopt the new identity. |
-| 50019 | `FEDERATION_FEED_CURSOR_UNAVAILABLE` | 200 | Do not apply the page; validate and atomically store `data.resumeAfter`. Used for bootstrap, a clearly out-of-range cursor, and message-query content that has been purged. |
+| 50019 | `FEDERATION_FEED_CURSOR_UNAVAILABLE` | 200 | Do not apply the page; validate the exclusive serviceable window `(data.resumeAfter, data.resumeBefore)`. Forward queries resume with `after=resumeAfter`; reverse queries resume with `before=resumeBefore`. |
 | 50020 | `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED` | 409 | Fatal: record the version reason and enter `halted`; MUST NOT transparently downgrade. |
 | 50021 | `FEDERATION_RANGE_NOT_SATISFIABLE` | 416 | The current single range is unsatisfiable; read `Content-Range` under the media rules and MUST NOT interpret the resource as absent. |
 | 50023 | `FEDERATION_PROFILE_NOT_DISCLOSED` | 200 | The user chose not to disclose a public profile to this peer; stop unchanged retries. A publisher may use `NOT_FOUND` instead to conceal whether the account exists. |
@@ -101,8 +101,9 @@ interface FederationQuotaExceededData {
 }
 
 interface FederationFeedCursorUnavailableData {
-  // The next request MUST use this unchanged as exclusive `after`.
+  // Exclusive lower and upper boundaries of the serviceable window.
   resumeAfter: DecimalString;
+  resumeBefore: DecimalString;
 }
 
 interface FederationQueryRetryData {
@@ -113,7 +114,25 @@ interface FederationQueryRetryData {
 
 `FEDERATION_QUOTA_EXCEEDED` MUST carry `FederationQuotaExceededData` with `retryAfter >= 0`. The operation itself identifies the limited application category; the response MUST NOT carry a category, limit, unit, window, or server-policy parameter. An implementation may place a specific quota reason in diagnostic-only `message`; a consumer MUST NOT parse that text to determine behavior.
 
-`FEDERATION_FEED_CURSOR_UNAVAILABLE` MUST carry `FederationFeedCursorUnavailableData`. When `after` is omitted, `resumeAfter` MUST be the operation's current valid exclusive starting point; every operation's starting point MUST be non-negative. When `after` is present, exactly two corrections are usable: `resumeAfter > after` when old message content was purged, or `resumeAfter < after` when the requested position is clearly beyond the operation's current end. An equal value makes no progress and MUST be rejected. The three compacted feeds MUST NOT use this result because of historical deletion or compaction, and a tombstone query MUST NOT skip permanent deletion facts because of cleanup.
+`FEDERATION_FEED_CURSOR_UNAVAILABLE` MUST carry both fields of
+`FederationFeedCursorUnavailableData`. Together they describe the current open
+serviceable window `(resumeAfter, resumeBefore)`: `resumeAfter` is the exclusive
+lower boundary and `resumeBefore` is the exclusive upper boundary. Both values
+MUST be non-negative exact decimal strings and `resumeBefore` MUST be greater
+than `resumeAfter`.
+
+A forward query resumes with `after=resumeAfter`; a reverse thread query resumes
+with `before=resumeBefore`. The response always contains both fields regardless
+of request direction or bootstrap. A consumer MUST NOT use one field in place
+of the other. The three compacted feeds MUST NOT use this result because of
+historical deletion or compaction, and a tombstone query MUST NOT move its lower
+boundary because of cleanup.
+
+The resume fields are exclusive positions, not item coordinates. If the first
+potentially serviceable positive coordinate is `N`, then
+`resumeAfter = N - 1`. If the last is `M`, then `resumeBefore = M + 1`. The
+protocol does not guarantee that items exist at `N` or `M`, because the relevant
+coordinate space may contain unallocated, filtered, or unauthorized holes.
 
 `FEDERATION_MESSAGE_QUERY_RATE_LIMITED` and `FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE` MUST carry `FederationQueryRetryData` and may be used only by `GET /s2s/v1/messages`. Both are application deferrals after HTTP and identity authentication. They MUST NOT conceal signature, binding, authorization, or malformed errors, and MUST NOT be used by tombstone query, any of the three feeds, or for federation-wide service unavailability. They do not use the HTTP `Retry-After` header.
 
@@ -132,7 +151,7 @@ This application result promises only that the current operation may be retried 
 {
   "code": 50019,
   "message": "requested message history is no longer retained",
-  "data": { "resumeAfter": "120" }
+  "data": { "resumeAfter": "120", "resumeBefore": "501" }
 }
 ```
 
@@ -142,7 +161,7 @@ The example above is a valid content-retention-floor response. The following is 
 {
   "code": 50019,
   "message": "requested message history is no longer retained",
-  "data": { "resumeAfter": "100" }
+  "data": { "resumeAfter": "100", "resumeBefore": "501" }
 }
 ```
 

@@ -8,8 +8,8 @@ import { configureApp } from '../src/bootstrap';
 import { and, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
 import {
-  friendPair,
-  friendRequest,
+  relationshipPair,
+  relationshipIntent,
   message,
   threadAudience,
   user,
@@ -83,12 +83,12 @@ describe('First message after friend-add is delivered (single instance)', () => 
 
     const [pendingInvite] = await database.db
       .select()
-      .from(friendRequest)
+      .from(relationshipIntent)
       .where(
         and(
-          eq(friendRequest.status, 'REQUESTED'),
-          eq(friendRequest.requesterUserId, alice.id),
-          eq(friendRequest.targetUserId, bob.id),
+          eq(relationshipIntent.status, 'REQUESTED'),
+          eq(relationshipIntent.authorUserId, alice.id),
+          eq(relationshipIntent.subjectUserId, bob.id),
         ),
       )
       .limit(1);
@@ -220,10 +220,10 @@ describe('First message after friend-add is delivered (single instance)', () => 
         true,
       );
     });
-    const friendship = await database.db.query.friendPair.findFirst({
+    const friendship = await database.db.query.relationshipPair.findFirst({
       where: and(
-        eq(friendPair.userLowId, Math.min(alice.id, foreignBob.id)),
-        eq(friendPair.userHighId, Math.max(alice.id, foreignBob.id)),
+        eq(relationshipPair.userLowId, Math.min(alice.id, foreignBob.id)),
+        eq(relationshipPair.userHighId, Math.max(alice.id, foreignBob.id)),
       ),
     });
     expect(friendship?.threadId).not.toBeNull();
@@ -265,8 +265,8 @@ describe('First message after friend-add is delivered (single instance)', () => 
       .returning({ id: user.id });
     const inviteService = app.get(InviteService);
     const pairWhere = and(
-      eq(friendPair.userLowId, Math.min(alice.id, foreignBob.id)),
-      eq(friendPair.userHighId, Math.max(alice.id, foreignBob.id)),
+      eq(relationshipPair.userLowId, Math.min(alice.id, foreignBob.id)),
+      eq(relationshipPair.userHighId, Math.max(alice.id, foreignBob.id)),
     );
 
     await database.db.transaction((tx) =>
@@ -289,9 +289,10 @@ describe('First message after friend-add is delivered (single instance)', () => 
       }),
     );
 
-    const beforeConfirmation = await database.db.query.friendPair.findFirst({
-      where: pairWhere,
-    });
+    const beforeConfirmation =
+      await database.db.query.relationshipPair.findFirst({
+        where: pairWhere,
+      });
     expect(beforeConfirmation?.active).toBe(false);
     expect(beforeConfirmation?.threadId).toBeNull();
 
@@ -299,7 +300,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
       inviteService.applyRemoteFriendIntentInTx(tx, {
         localUserId: alice.id,
         peerUserId: foreignBob.id,
-        status: 'FRIEND',
+        status: 'ACCEPTED',
         note: 'crossed request',
         requestedAt: new Date(),
         expiresAt: null,
@@ -307,9 +308,10 @@ describe('First message after friend-add is delivered (single instance)', () => 
       }),
     );
 
-    const afterConfirmation = await database.db.query.friendPair.findFirst({
-      where: pairWhere,
-    });
+    const afterConfirmation =
+      await database.db.query.relationshipPair.findFirst({
+        where: pairWhere,
+      });
     expect(afterConfirmation?.active).toBe(true);
     expect(afterConfirmation?.threadId).not.toBeNull();
   });

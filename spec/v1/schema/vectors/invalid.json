@@ -61,7 +61,7 @@
       }
     },
     {
-      "name": "profile snapshot cannot have a directional subject",
+      "name": "profile snapshot cannot have localAccount",
       "schema": "urn:socfp:v1:state-feed",
       "value": {
         "items": [
@@ -69,13 +69,80 @@
             "account": "alice",
             "domain": "a.example",
             "eventType": "PROFILE",
-            "subjectAccount": "bob",
-            "subjectDomain": "b.example",
+            "localAccount": "bob",
             "feedId": "1",
             "body": {
               "displayName": "Alice",
               "bio": "",
               "avatar": null
+            }
+          }
+        ],
+        "scannedThrough": "1",
+        "stateFeedEndId": "1",
+        "hasMore": false
+      }
+    },
+    {
+      "name": "profile display name exceeds 30 code points",
+      "schema": "urn:socfp:v1:state-feed",
+      "value": {
+        "items": [
+          {
+            "account": "alice",
+            "domain": "a.example",
+            "eventType": "PROFILE",
+            "feedId": "1",
+            "body": {
+              "displayName": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+              "bio": "",
+              "avatar": null
+            }
+          }
+        ],
+        "scannedThrough": "1",
+        "stateFeedEndId": "1",
+        "hasMore": false
+      }
+    },
+    {
+      "name": "profile bio exceeds 120 code points",
+      "schema": "urn:socfp:v1:state-feed",
+      "value": {
+        "items": [
+          {
+            "account": "alice",
+            "domain": "a.example",
+            "eventType": "PROFILE",
+            "feedId": "1",
+            "body": {
+              "displayName": "Alice",
+              "bio": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "avatar": null
+            }
+          }
+        ],
+        "scannedThrough": "1",
+        "stateFeedEndId": "1",
+        "hasMore": false
+      }
+    },
+    {
+      "name": "relationship note exceeds 255 code points",
+      "schema": "urn:socfp:v1:state-feed",
+      "value": {
+        "items": [
+          {
+            "account": "alice",
+            "domain": "a.example",
+            "eventType": "RELATIONSHIP_INTENT",
+            "localAccount": "bob",
+            "feedId": "1",
+            "body": {
+              "status": "REQUESTED",
+              "note": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+              "requestedAt": 1700000000000,
+              "expiresAt": 1700600000000
             }
           }
         ],
@@ -254,6 +321,35 @@
       "schema": "urn:socfp:v1:http-parameters#/$defs/mediaParameters",
       "value": {
         "digest": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "name": "message feed rejects legacy typed thread address",
+      "schema": "urn:socfp:v1:message-feed",
+      "value": {
+        "items": [
+          {
+            "feedId": "1",
+            "thread": {
+              "type": "GROUP",
+              "account": "!group",
+              "domain": "a.example"
+            },
+            "messageEndSeq": "1"
+          }
+        ],
+        "scannedThrough": "1",
+        "messageFeedEndId": "1",
+        "hasMore": false
+      }
+    },
+    {
+      "name": "group thread selector rejects local account",
+      "schema": "urn:socfp:v1:http-parameters#/$defs/threadDataQuery",
+      "value": {
+        "account": "!group",
+        "localAccount": "bob",
+        "after": "0"
       }
     },
     {

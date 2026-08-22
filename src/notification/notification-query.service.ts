@@ -363,7 +363,7 @@ export class NotificationQueryService {
     const list = await this.participantService.queryParticipants({
       where: {
         userId,
-        leftAt: null,
+        active: true,
         ...(threadIds ? { threadId: { in: threadIds } } : {}),
       },
       orderBy: { id: 'asc' },

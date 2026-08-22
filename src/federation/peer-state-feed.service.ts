@@ -35,8 +35,7 @@ export interface PeerStateFeedPage {
     account: string;
     domain: string;
     eventType: PeerStateEventType;
-    subjectAccount: string;
-    subjectDomain: string;
+    localAccount?: string;
     feedId: string;
     body: unknown;
   }>;
@@ -48,6 +47,21 @@ export interface PeerStateFeedPage {
 const DEFAULT_TAKE = 100;
 const MAX_TAKE = 200;
 const PAGE_BYTES = 4 * 1024 * 1024;
+
+const snapshotRevision = (
+  eventType: PeerStateEventType,
+  body: PeerStateBody,
+): number | undefined => {
+  const value =
+    eventType === 'GROUP_META'
+      ? body.rosterRev
+      : eventType === 'PROFILE' || eventType === 'MEMBER_PROFILE'
+        ? body.profileRev
+        : undefined;
+  return Number.isSafeInteger(value) && Number(value) >= 0
+    ? Number(value)
+    : undefined;
+};
 
 @Injectable()
 export class PeerStateFeedService {
@@ -100,18 +114,12 @@ export class PeerStateFeedService {
       // State bodies are persisted as JSONB before the HTTP serializer sees them. Normalize at this
       // boundary so Date/BigInt use the same wire representation as every HTTP and SSE response.
       const body = serializeBody(write.body);
-      if (
-        !body ||
-        typeof body !== 'object'
-      ) {
+      if (!body || typeof body !== 'object') {
         throw new Error('invalid peer state feed write');
       }
       const subjectAccount = write.subjectAccount ?? '';
       const subjectDomain = write.subjectDomain ?? '';
-      const directional =
-        write.eventType === 'P2P_INTENT' ||
-        write.eventType === 'GROUP_INVITE_INTENT' ||
-        write.eventType === 'GROUP_JOIN_INTENT';
+      const directional = write.eventType === 'RELATIONSHIP_INTENT';
       if (
         !write.domain ||
         directional !== (subjectAccount !== '' && subjectDomain !== '')
@@ -145,7 +153,26 @@ export class PeerStateFeedService {
           ),
         )
         .limit(1);
-      if (current && isDeepStrictEqual(current.body, body) && !write.forceReindex)
+      const nextSnapshotRevision = snapshotRevision(write.eventType, body);
+      const currentSnapshotRevision = current
+        ? snapshotRevision(write.eventType, current.body as PeerStateBody)
+        : undefined;
+      if (
+        current &&
+        nextSnapshotRevision !== undefined &&
+        currentSnapshotRevision === nextSnapshotRevision
+      ) {
+        if (!isDeepStrictEqual(current.body, body))
+          throw new Error(
+            `${write.eventType} revision ${nextSnapshotRevision} changed without advancing`,
+          );
+        continue;
+      }
+      if (
+        current &&
+        isDeepStrictEqual(current.body, body) &&
+        !write.forceReindex
+      )
         continue;
       const [allocated] = await tx
         .update(peerStateFeedTarget)
@@ -209,7 +236,10 @@ export class PeerStateFeedService {
       BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
       'after is required; initialize the state feed cursor',
       HttpStatus.OK,
-      { resumeAfter: '0' },
+      {
+        resumeAfter: '0',
+        resumeBefore: ((await this.readRev(peerDomain)) + 1n).toString(),
+      },
     );
   }
 
@@ -251,7 +281,7 @@ export class PeerStateFeedService {
           BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
           'state feed cursor is outside the available coordinate space',
           HttpStatus.OK,
-          { resumeAfter: '0' },
+          { resumeAfter: '0', resumeBefore: (stateFeedEndId + 1n).toString() },
         );
       }
       const requestedScanEnd =
@@ -275,14 +305,17 @@ export class PeerStateFeedService {
       const items: PeerStateFeedPage['items'] = [];
       let bytes = 0;
       for (const row of rows) {
-        const item = {
+        const item: PeerStateFeedPage['items'][number] = {
           account: row.account,
           domain: row.domain,
           eventType: row.eventType,
-          subjectAccount: row.subjectAccount,
-          subjectDomain: row.subjectDomain,
           feedId: row.rev.toString(),
           body: row.body,
+          ...(row.eventType === 'RELATIONSHIP_INTENT'
+            ? {
+                localAccount: row.subjectAccount,
+              }
+            : {}),
         };
         const itemBytes = Buffer.byteLength(JSON.stringify(item));
         if (items.length > 0 && bytes + itemBytes > PAGE_BYTES) break;

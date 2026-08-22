@@ -488,7 +488,6 @@ describe('FriendRequestsComponent federated search progress', () => {
       friendIntentStateRevision: signal(0),
       friendReqBadge: signal(false),
       acceptInvite: vi.fn().mockReturnValue(acceptResult),
-      rejectInvite: vi.fn().mockReturnValue(new Subject<{ code: number }>()),
       listLocalFriendInvites: vi.fn().mockImplementation(
         () =>
           new Promise<FriendIntentPage>((resolve) => {
@@ -524,10 +523,8 @@ describe('FriendRequestsComponent federated search progress', () => {
 
     component.approve(request);
     component.approve(request);
-    component.decline(request);
 
     expect(userService.acceptInvite).toHaveBeenCalledTimes(1);
-    expect(userService.rejectInvite).not.toHaveBeenCalled();
     expect(component.isInviteActionPending(request.id)).toBe(true);
 
     const refresh = component.loadIncomingInvites(true);

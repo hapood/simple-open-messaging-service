@@ -31,11 +31,8 @@ This is a closed schema. `url`, `title`, `description`, and `siteName` are alway
 ```json
 {
   "thread": {
-    "type": "P2P",
-    "participants": [
-      { "account": "alice", "domain": "a.example" },
-      { "account": "bob", "domain": "b.example" }
-    ]
+    "account": "alice",
+    "localAccount": "bob"
   },
   "author": { "account": "alice", "domain": "a.example" },
   "seq": 61,

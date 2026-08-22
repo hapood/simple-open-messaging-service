@@ -7,7 +7,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
-import { friendRequest, messageAsset, message } from '../src/database/schema';
+import { relationshipIntent, messageAsset, message } from '../src/database/schema';
 import { LinkPreviewService } from '../src/link-preview/link-preview.service.js';
 import { registerAndLogin } from './federation-test-helpers';
 
@@ -85,11 +85,11 @@ describe('LINK message send (single instance)', () => {
       .expect((res) => expect(res.body.code).toBe(0));
     const [pendingInvite] = await database.db
       .select()
-      .from(friendRequest)
+      .from(relationshipIntent)
       .where(
         and(
-          eq(friendRequest.requesterUserId, alice.id),
-          eq(friendRequest.targetUserId, bob.id),
+          eq(relationshipIntent.authorUserId, alice.id),
+          eq(relationshipIntent.subjectUserId, bob.id),
         ),
       )
       .limit(1);
@@ -146,11 +146,11 @@ describe('LINK message send (single instance)', () => {
       .expect((res) => expect(res.body.code).toBe(0));
     const [pendingInvite] = await database.db
       .select()
-      .from(friendRequest)
+      .from(relationshipIntent)
       .where(
         and(
-          eq(friendRequest.requesterUserId, alice.id),
-          eq(friendRequest.targetUserId, bob.id),
+          eq(relationshipIntent.authorUserId, alice.id),
+          eq(relationshipIntent.subjectUserId, bob.id),
         ),
       )
       .limit(1);
