@@ -6,8 +6,12 @@ import {
   Optional,
 } from '@nestjs/common';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
-import { DatabaseService } from '../database/database.service.js';
 import {
+  DatabaseService,
+  type DatabaseTransaction,
+} from '../database/database.service.js';
+import {
+  clientStateFeed,
   group,
   relationshipIntent,
   messageThread,
@@ -15,19 +19,16 @@ import {
   threadParticipant,
   user,
 } from '../database/schema.js';
-import {
-  GroupRole,
-  MessageThreadType,
-  ThreadParticipantState,
-} from '../database/enums.js';
+import { GroupRole, MessageThreadType } from '../database/enums.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { mintGroupAccount, isP2002 } from '../common/account.js';
-import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
+import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import { FederationService } from '../federation/federation.service.js';
 import { MessageService } from '../message/message.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { SystemMessageType } from '../message/system-message.js';
+import { isThreadMutuallyAuthorized } from '../invite/relationship-authorization.js';
 
 /** Privilege rank — LOWER is more privileged (OWNER outranks ADMIN outranks MEMBER). */
 function roleRank(role: GroupRole | null): number {
@@ -65,13 +66,152 @@ function outranks(operator: GroupRole, target: GroupRole | null): boolean {
 export class GroupService {
   constructor(
     private database: DatabaseService,
-    private readonly threadRevisionService: ThreadRevisionService,
     private readonly federation: FederationService,
+    private readonly clientStateFeed: ClientStateFeedService,
     @Optional() private readonly messages?: MessageService,
     @Optional()
     @Inject(forwardRef(() => MessageFanoutService))
-    private readonly messageFanout?: Pick<MessageFanoutService, 'dispatch'>,
+    private readonly messageFanout?: Pick<
+      MessageFanoutService,
+      'dispatch' | 'dispatchToUsers'
+    >,
   ) {}
+
+  async queryJoinRequests(threadId: number, before?: bigint, take = 20) {
+    const rows = await this.database.db.execute<{
+      id: bigint;
+      userId: number;
+      account: string;
+      domain: string;
+      name: string;
+      avatar: string;
+      note: string;
+      requestedAt: Date;
+      expiresAt: Date;
+    }>(sql`
+      SELECT request.id, applicant.id AS "userId", applicant.account,
+        applicant.domain, applicant.name, applicant.avatar, request.note,
+        request."requestedAt", request."expiresAt"
+      FROM "RelationshipIntent" request
+      JOIN "MessageThread" thread
+        ON thread."groupUserId" = request."subjectUserId"
+      JOIN "User" applicant ON applicant.id = request."authorUserId"
+      LEFT JOIN "RelationshipIntent" decision
+        ON decision."authorUserId" = request."subjectUserId"
+       AND decision."subjectUserId" = request."authorUserId"
+      WHERE thread.id = ${threadId}
+        AND request.status = 'REQUESTED'
+        AND request."expiresAt" > CURRENT_TIMESTAMP
+        AND (decision."authorUserId" IS NULL
+          OR decision.status = 'REQUESTED'
+          OR (decision.status = 'REVOKED' AND decision."updatedAt" < request."requestedAt"))
+        ${before === undefined ? sql.empty() : sql`AND request.id < ${before}`}
+      ORDER BY request.id DESC
+      LIMIT ${take + 1}
+    `);
+    const page = rows.rows.slice(0, take);
+    return {
+      data: page.map((row) => ({
+        ...row,
+        id: row.id.toString(),
+        domain: row.domain === 'local' ? '' : row.domain,
+      })),
+      hasMore: rows.rows.length > take,
+      before: page.at(-1)?.id.toString() ?? null,
+    };
+  }
+
+  async handleJoinRequest(
+    threadId: number,
+    requestId: bigint,
+    decision: 'ACCEPTED' | 'REVOKED',
+  ): Promise<void> {
+    let statePeers = new Map<string, bigint>();
+    const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
+    await this.database.db.transaction(async (tx) => {
+      const [request] = await tx
+        .execute<{
+          memberUserId: number;
+          note: string;
+        }>(
+          sql`
+        SELECT intent."authorUserId" AS "memberUserId", intent.note
+        FROM "RelationshipIntent" intent
+        JOIN "MessageThread" thread
+          ON thread."groupUserId" = intent."subjectUserId"
+        LEFT JOIN "RelationshipIntent" prior
+          ON prior."authorUserId" = intent."subjectUserId"
+         AND prior."subjectUserId" = intent."authorUserId"
+        WHERE thread.id = ${threadId} AND intent.id = ${requestId}
+          AND intent.status = 'REQUESTED'
+          AND intent."expiresAt" > CURRENT_TIMESTAMP
+          AND (prior."authorUserId" IS NULL OR prior.status = 'REQUESTED'
+            OR (prior.status = 'REVOKED' AND prior."updatedAt" < intent."requestedAt"))
+        FOR UPDATE OF intent
+      `,
+        )
+        .then((result) => result.rows);
+      if (!request)
+        throw new BusinessException(
+          BusinessCode.NOT_FOUND,
+          'join request not found',
+        );
+      statePeers = await this.federation.writeGroupRelationshipIntentInTx(
+        tx,
+        threadId,
+        request.memberUserId,
+        decision === 'ACCEPTED' ? request.note : '',
+        decision,
+        clientFeedUpdates,
+      );
+    });
+    clientFeedUpdates.forEach((pending) =>
+      this.clientStateFeed.notifyFeedUpdated(pending),
+    );
+    await this.federation.pushStateFeedDomains(statePeers.keys());
+  }
+
+  async markJoinRequestsRead(
+    threadId: number,
+    managerUserId: number,
+    readRequestId: bigint,
+  ): Promise<void> {
+    let pending: { userId: number; feedId: number } | undefined;
+    await this.database.db.transaction(async (tx) => {
+      const [identity] = await tx
+        .select({ account: user.account })
+        .from(messageThread)
+        .innerJoin(user, eq(user.id, messageThread.groupUserId))
+        .where(eq(messageThread.id, threadId))
+        .limit(1);
+      if (!identity)
+        throw new BusinessException(BusinessCode.NOT_FOUND, 'group not found');
+      const [head] = await tx
+        .select({ domain: clientStateFeed.domain })
+        .from(clientStateFeed)
+        .where(
+          and(
+            eq(clientStateFeed.userId, managerUserId),
+            eq(clientStateFeed.account, identity.account),
+            eq(clientStateFeed.eventType, 'GROUP_JOIN_REQUEST_HEAD'),
+          ),
+        )
+        .limit(1);
+      if (!head) return;
+      const feedId = await this.clientStateFeed.writeGroupJoinRequestHeadInTx(
+        tx,
+        {
+          userId: managerUserId,
+          account: identity.account,
+          domain: head.domain,
+          threadId,
+          readRequestId,
+        },
+      );
+      if (feedId !== null) pending = { userId: managerUserId, feedId };
+    });
+    if (pending) this.clientStateFeed.notifyFeedUpdated(pending);
+  }
 
   /** Load a GROUP thread + its `!`-User (name/avatar/bio) by threadId. Returns null if missing. The read
    *  path replacing the old queryGroups/findUniqeGroup (which hit the Group table). */
@@ -100,7 +240,6 @@ export class GroupService {
         profileRev: number;
         group: {
           ownerId: number;
-          membersCanInvite: boolean;
           dissolvedAt: Date | null;
           createdAt: Date;
           updatedAt: Date;
@@ -127,7 +266,6 @@ export class GroupService {
             group: {
               columns: {
                 ownerId: true,
-                membersCanInvite: true,
                 dissolvedAt: true,
                 createdAt: true,
                 updatedAt: true,
@@ -149,7 +287,6 @@ export class GroupService {
         profileRev: number;
         group: {
           ownerId: number;
-          membersCanInvite: boolean;
           dissolvedAt: Date | null;
           createdAt: Date;
           updatedAt: Date;
@@ -221,20 +358,23 @@ export class GroupService {
             rosterRev: 0,
             updatedAt: new Date(),
           });
+          const clientFeedUpdates =
+            await this.clientStateFeed.recordGroupStateInTx(tx, thread.id);
           return {
             id: groupUser.id,
             threadId: thread.id,
             name: groupUser.name,
             avatar: groupUser.avatar,
             bio: groupUser.bio,
+            clientFeedUpdates,
           };
         });
-        // Record the thread add for the owner AFTER the tx commits (bump threadRevision + push signal).
-        await this.threadRevisionService.recordThreadAdd(
-          params.owner,
-          result.threadId,
+        result.clientFeedUpdates.forEach((pending) =>
+          this.clientStateFeed.notifyFeedUpdated(pending),
         );
-        return result;
+        const { clientFeedUpdates: _clientFeedUpdates, ...groupResult } =
+          result;
+        return groupResult;
       } catch (e) {
         if (!isP2002(e)) throw e; // regenerate a fresh ULID, never append a counter
       }
@@ -257,17 +397,10 @@ export class GroupService {
   }): Promise<{ remainingMemberIds: number[]; transitioned: boolean }> {
     const now = new Date();
     const result = await this.database.db.transaction(async (tx) => {
-      const hidden = params.deleteData
-        ? await this.threadRevisionService.isThreadHiddenInTx(
-            tx,
-            params.userId,
-            params.threadId,
-          )
-        : false;
-      const shouldDelete = params.deleteData && !hidden;
+      const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
+      const shouldDelete = params.deleteData;
       const [current] = await tx
         .select({
-          state: threadParticipant.state,
           role: threadParticipant.role,
         })
         .from(threadParticipant)
@@ -281,27 +414,48 @@ export class GroupService {
         .limit(1);
       if (!current)
         throw new BusinessException(BusinessCode.NOT_FOUND, 'member not found');
-      if (
-        current.state === ThreadParticipantState.ESTABLISHED &&
-        current.role === GroupRole.OWNER
-      ) {
+      const mutuallyAuthorized = await isThreadMutuallyAuthorized(
+        tx,
+        params.userId,
+        params.threadId,
+      );
+      if (mutuallyAuthorized && current.role === GroupRole.OWNER) {
         throw new BusinessException(
           BusinessCode.GROUP_OWNER_MUST_TRANSFER,
           'transfer ownership or dissolve the group before leaving',
         );
       }
-      const ended = await tx
-        .update(threadParticipant)
-        .set({ state: ThreadParticipantState.REVOKED, updatedAt: now })
-        .where(
-          and(
-            eq(threadParticipant.userId, params.userId),
-            eq(threadParticipant.threadId, params.threadId),
-            eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
-          ),
-        )
-        .returning({ id: threadParticipant.id });
-      if (ended.length > 0) {
+      const localRecipientIds = mutuallyAuthorized
+        ? await this.localAuthorizedRecipientIdsInTx(tx, params.threadId)
+        : [];
+      const systemMessage =
+        mutuallyAuthorized && this.messages
+          ? (
+              await this.messages.writeSystemMessageInTx(
+                tx,
+                params.threadId,
+                SystemMessageType.GROUP_LEFT,
+                params.userId,
+                {
+                  actorUserId: params.userId,
+                  recipientUserIds: localRecipientIds,
+                  markReadUserId: params.userId,
+                },
+              )
+            ).message
+          : null;
+      if (systemMessage) {
+        await tx
+          .update(threadParticipant)
+          .set({ leftSeq: systemMessage.seq, updatedAt: now })
+          .where(
+            and(
+              eq(threadParticipant.userId, params.userId),
+              eq(threadParticipant.threadId, params.threadId),
+            ),
+          );
+      }
+      if (mutuallyAuthorized) {
         await tx.execute(sql`
           DELETE FROM "ThreadAudience" audience
           WHERE audience."targetDomain" = 'local'
@@ -325,7 +479,7 @@ export class GroupService {
             ),
           );
       }
-      if (ended.length > 0) {
+      if (mutuallyAuthorized) {
         const [thread] = await tx
           .select({ groupUserId: messageThread.groupUserId })
           .from(messageThread)
@@ -341,71 +495,53 @@ export class GroupService {
             .where(eq(group.groupUserId, thread.groupUserId));
         }
       }
+      const requestState = mutuallyAuthorized
+        ? await this.federation.writeMemberRelationshipIntentInTx(
+            tx,
+            params.threadId,
+            params.userId,
+            'REVOKED',
+            clientFeedUpdates,
+          )
+        : new Map<string, bigint>();
+      const groupState = mutuallyAuthorized
+        ? await this.federation.writeGroupStateInTx(
+            tx,
+            params.threadId,
+            clientFeedUpdates,
+          )
+        : new Map<string, bigint>();
       const remaining = await tx
         .select({ userId: threadParticipant.userId })
         .from(threadParticipant)
-        .where(
-          and(
-            eq(threadParticipant.threadId, params.threadId),
-            eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
-          ),
-        );
-      const revision = shouldDelete
-        ? await this.threadRevisionService.recordThreadDeleteInTx(
-            tx,
-            params.userId,
-            params.threadId,
-          )
-        : ended.length > 0 && !hidden
-          ? await this.threadRevisionService.recordThreadAddInTx(
-              tx,
-              params.userId,
-              params.threadId,
-            )
-          : null;
-      const requestState =
-        ended.length > 0
-          ? await this.federation.writeMemberRelationshipIntentInTx(
-              tx,
-              params.threadId,
-              params.userId,
-              'REVOKED',
-            )
-          : new Map<string, bigint>();
-      const groupState =
-        ended.length > 0
-          ? await this.federation.writeGroupStateInTx(tx, params.threadId)
-          : new Map<string, bigint>();
-      const refreshes =
-        ended.length > 0
-          ? await this.threadRevisionService.recordActiveLocalThreadRefreshInTx(
-              tx,
-              params.threadId,
-            )
-          : [];
+        .where(eq(threadParticipant.threadId, params.threadId));
+      const remainingAuthorization = await Promise.all(
+        remaining.map((row) =>
+          isThreadMutuallyAuthorized(tx, row.userId, params.threadId),
+        ),
+      );
       return {
-        transitioned: ended.length > 0,
-        remainingMemberIds: remaining.map((row) => row.userId),
-        revisions: [
-          ...refreshes,
-          ...(revision === null ? [] : [{ userId: params.userId, revision }]),
-        ],
+        transitioned: mutuallyAuthorized,
+        remainingMemberIds: remaining
+          .filter((_, index) => remainingAuthorization[index])
+          .map((row) => row.userId),
         statePeers: [...requestState.keys(), ...groupState.keys()],
+        clientFeedUpdates,
+        systemMessage,
+        localRecipientIds,
       };
     });
-    result.revisions.forEach((pending) =>
-      this.threadRevisionService.notifyThreadRevision(pending),
+    result.clientFeedUpdates.forEach((pending) =>
+      this.clientStateFeed.notifyFeedUpdated(pending),
     );
     await this.federation.pushStateFeedDomains(result.statePeers);
     if (result.transitioned) {
       await this.federation.notifyGroupLeave(params.threadId, params.userId);
     }
-    if (result.transitioned)
-      await this.emitSystemMessage(
-        params.userId,
-        params.threadId,
-        SystemMessageType.GROUP_LEFT,
-        params.userId,
+    if (result.systemMessage && this.messageFanout)
+      void this.messageFanout.dispatchToUsers(
+        result.systemMessage,
+        result.localRecipientIds,
       );
     return {
       transitioned: result.transitioned,
@@ -417,19 +553,13 @@ export class GroupService {
    * revoked in the same transaction, so an old card cannot join a dissolved group. */
   async dissolveGroup(params: {
     threadId: number;
+    operatorUserId?: number;
     deleteForUserId?: number;
   }): Promise<{ transitioned: boolean }> {
     const now = new Date();
     const result = await this.database.db.transaction(async (tx) => {
-      const hidden =
-        params.deleteForUserId === undefined
-          ? false
-          : await this.threadRevisionService.isThreadHiddenInTx(
-              tx,
-              params.deleteForUserId,
-              params.threadId,
-            );
-      const shouldDelete = params.deleteForUserId !== undefined && !hidden;
+      const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
+      const shouldDelete = params.deleteForUserId !== undefined;
       const [thread] = await tx
         .select({ groupUserId: messageThread.groupUserId })
         .from(messageThread)
@@ -466,6 +596,36 @@ export class GroupService {
             ),
           );
       }
+      const localRecipientIds =
+        dissolved.length > 0 && this.messages
+          ? await this.localAuthorizedRecipientIdsInTx(tx, params.threadId)
+          : [];
+      const systemMessages: Array<{
+        message: Awaited<
+          ReturnType<MessageService['writeSystemMessageInTx']>
+        >['message'];
+        recipientUserId: number;
+      }> = [];
+      for (const recipientUserId of localRecipientIds) {
+        const written = await this.messages!.writeSystemMessageInTx(
+          tx,
+          params.threadId,
+          SystemMessageType.GROUP_LEFT,
+          recipientUserId,
+          {
+            actorUserId: params.operatorUserId,
+            recipientUserIds: [recipientUserId],
+            markReadUserId:
+              recipientUserId === params.deleteForUserId
+                ? recipientUserId
+                : undefined,
+          },
+        );
+        systemMessages.push({
+          message: written.message,
+          recipientUserId,
+        });
+      }
       if (shouldDelete && params.deleteForUserId !== undefined) {
         await tx
           .update(threadParticipant)
@@ -482,43 +642,30 @@ export class GroupService {
             ),
           );
       }
-      const revision =
-        shouldDelete && params.deleteForUserId !== undefined
-          ? await this.threadRevisionService.recordThreadDeleteInTx(
-              tx,
-              params.deleteForUserId,
-              params.threadId,
-            )
-          : null;
       const stateItems =
         dissolved.length > 0
-          ? await this.federation.writeGroupStateInTx(tx, params.threadId)
-          : new Map<string, bigint>();
-      const refreshes =
-        dissolved.length > 0
-          ? await this.threadRevisionService.recordActiveLocalThreadRefreshInTx(
+          ? await this.federation.writeGroupStateInTx(
               tx,
               params.threadId,
-              params.deleteForUserId === undefined
-                ? []
-                : [params.deleteForUserId],
+              clientFeedUpdates,
             )
-          : [];
+          : new Map<string, bigint>();
       return {
         transitioned: dissolved.length > 0,
-        revisions: [
-          ...refreshes,
-          ...(revision === null || params.deleteForUserId === undefined
-            ? []
-            : [{ userId: params.deleteForUserId, revision }]),
-        ],
         statePeers: [...stateItems.keys()],
+        clientFeedUpdates,
+        systemMessages,
       };
     });
-    result.revisions.forEach((pending) =>
-      this.threadRevisionService.notifyThreadRevision(pending),
+    result.clientFeedUpdates.forEach((pending) =>
+      this.clientStateFeed.notifyFeedUpdated(pending),
     );
     await this.federation.pushStateFeedDomains(result.statePeers);
+    if (this.messageFanout)
+      for (const systemMessage of result.systemMessages)
+        void this.messageFanout.dispatchToUsers(systemMessage.message, [
+          systemMessage.recipientUserId,
+        ]);
     return { transitioned: result.transitioned };
   }
 
@@ -560,19 +707,27 @@ export class GroupService {
       if (!target) {
         return {
           transitioned: false,
-          revisions: [],
+          clientFeedUpdates: [],
           statePeers: [],
+          systemMessage: null,
+          localRecipientIds: [],
         };
       }
-      if (target.state !== ThreadParticipantState.ESTABLISHED)
+      const [operatorAuthorized, targetAuthorized] = await Promise.all([
+        isThreadMutuallyAuthorized(tx, params.operatorUserId, params.threadId),
+        isThreadMutuallyAuthorized(tx, params.targetUserId, params.threadId),
+      ]);
+      if (!targetAuthorized)
         return {
           transitioned: false,
-          revisions: [],
+          clientFeedUpdates: [],
           statePeers: [],
+          systemMessage: null,
+          localRecipientIds: [],
         };
       if (
         !operator ||
-        operator.state !== ThreadParticipantState.ESTABLISHED ||
+        !operatorAuthorized ||
         operator.role === null ||
         target.role === GroupRole.OWNER ||
         !outranks(operator.role, target.role)
@@ -582,29 +737,37 @@ export class GroupService {
           'you can only kick members below your role',
         );
       }
-      const hidden = await this.threadRevisionService.isThreadHiddenInTx(
+      const now = new Date();
+      const localRecipientIds = await this.localAuthorizedRecipientIdsInTx(
         tx,
-        params.targetUserId,
         params.threadId,
       );
-      const now = new Date();
-      const ended = await tx
-        .update(threadParticipant)
-        .set({ state: ThreadParticipantState.REVOKED, updatedAt: now })
-        .where(
-          and(
-            eq(threadParticipant.id, target.id),
-            eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
-            eq(threadParticipant.role, target.role!),
-          ),
-        )
-        .returning({ id: threadParticipant.id });
-      if (ended.length === 0)
-        return {
-          transitioned: false,
-          revisions: [],
-          statePeers: [],
-        };
+      const systemMessage = this.messages
+        ? (
+            await this.messages.writeSystemMessageInTx(
+              tx,
+              params.threadId,
+              SystemMessageType.GROUP_LEFT,
+              params.targetUserId,
+              {
+                actorUserId: params.operatorUserId,
+                recipientUserIds: localRecipientIds,
+                markReadUserId: params.operatorUserId,
+              },
+            )
+          ).message
+        : null;
+      if (systemMessage) {
+        await tx
+          .update(threadParticipant)
+          .set({ leftSeq: systemMessage.seq, updatedAt: now })
+          .where(
+            and(
+              eq(threadParticipant.userId, params.targetUserId),
+              eq(threadParticipant.threadId, params.threadId),
+            ),
+          );
+      }
       const [thread] = await tx
         .select({ groupUserId: messageThread.groupUserId })
         .from(messageThread)
@@ -619,14 +782,7 @@ export class GroupService {
           })
           .where(eq(group.groupUserId, thread.groupUserId));
       }
-      const revision = hidden
-        ? null
-        : await this.threadRevisionService.recordThreadAddInTx(
-            tx,
-            params.targetUserId,
-            params.threadId,
-          );
-      const clientRevisions: Array<{ userId: number; revision: number }> = [];
+      const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
       const requestState =
         await this.federation.writeGroupRelationshipIntentInTx(
           tx,
@@ -634,39 +790,29 @@ export class GroupService {
           params.targetUserId,
           params.reason ?? '',
           'REVOKED',
-          clientRevisions,
+          clientFeedUpdates,
         );
       const groupState = await this.federation.writeGroupStateInTx(
         tx,
         params.threadId,
+        clientFeedUpdates,
       );
-      const refreshes =
-        await this.threadRevisionService.recordActiveLocalThreadRefreshInTx(
-          tx,
-          params.threadId,
-        );
       return {
         transitioned: true,
-        revisions: [
-          ...clientRevisions,
-          ...refreshes,
-          ...(revision === null
-            ? []
-            : [{ userId: params.targetUserId, revision }]),
-        ],
+        clientFeedUpdates,
         statePeers: [...requestState.keys(), ...groupState.keys()],
+        systemMessage,
+        localRecipientIds,
       };
     });
-    result.revisions.forEach((pending) =>
-      this.threadRevisionService.notifyThreadRevision(pending),
+    result.clientFeedUpdates.forEach((pending) =>
+      this.clientStateFeed.notifyFeedUpdated(pending),
     );
     await this.federation.pushStateFeedDomains(result.statePeers);
-    if (result.transitioned)
-      await this.emitSystemMessage(
-        params.operatorUserId,
-        params.threadId,
-        SystemMessageType.GROUP_LEFT,
-        params.targetUserId,
+    if (result.systemMessage && this.messageFanout)
+      void this.messageFanout.dispatchToUsers(
+        result.systemMessage,
+        result.localRecipientIds,
       );
     return { transitioned: result.transitioned };
   }
@@ -674,7 +820,7 @@ export class GroupService {
   /**
    * Transfer ownership to an active member: demote the caller to MEMBER, promote the target to
    * OWNER — all in one transaction so no ownerless state is visible. Group.ownerId is updated in
-   * the same transaction, then records a durable hydrated-thread refresh for every local member.
+   * the same transaction, then advances every local member's group-meta feed.
    */
   async transferOwnership(params: {
     threadId: number;
@@ -688,6 +834,7 @@ export class GroupService {
       );
     }
     const result = await this.database.db.transaction(async (tx) => {
+      const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
       // Serialize every transfer through the current OWNER row. The partial unique index prevents
       // multiple active owners; the service invariants prevent the sole owner from leaving/demotion.
       const [currentOwner] = await tx
@@ -697,12 +844,18 @@ export class GroupService {
           and(
             eq(threadParticipant.userId, params.fromUserId),
             eq(threadParticipant.threadId, params.threadId),
-            eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
           ),
         )
         .for('update')
         .limit(1);
-      if (currentOwner?.role !== GroupRole.OWNER) {
+      if (
+        currentOwner?.role !== GroupRole.OWNER ||
+        !(await isThreadMutuallyAuthorized(
+          tx,
+          params.fromUserId,
+          params.threadId,
+        ))
+      ) {
         throw new BusinessException(
           BusinessCode.GROUP_FORBIDDEN,
           'only the current owner may transfer ownership',
@@ -725,7 +878,11 @@ export class GroupService {
         .limit(1);
       if (
         !target ||
-        target.participant.state !== ThreadParticipantState.ESTABLISHED
+        !(await isThreadMutuallyAuthorized(
+          tx,
+          params.toUserId,
+          params.threadId,
+        ))
       ) {
         throw new BusinessException(
           BusinessCode.GROUP_TARGET_NOT_MEMBER,
@@ -777,16 +934,12 @@ export class GroupService {
       const state = await this.federation.writeGroupStateInTx(
         tx,
         params.threadId,
+        clientFeedUpdates,
       );
-      const revisions =
-        await this.threadRevisionService.recordActiveLocalThreadRefreshInTx(
-          tx,
-          params.threadId,
-        );
-      return { statePeers: [...state.keys()], revisions };
+      return { statePeers: [...state.keys()], clientFeedUpdates };
     });
-    result.revisions.forEach((pending) =>
-      this.threadRevisionService.notifyThreadRevision(pending),
+    result.clientFeedUpdates.forEach((pending) =>
+      this.clientStateFeed.notifyFeedUpdated(pending),
     );
     await this.federation.pushStateFeedDomains(result.statePeers);
     await this.emitSystemMessage(
@@ -807,6 +960,27 @@ export class GroupService {
     role: GroupRole;
     operatorUserId: number;
   }): Promise<void> {
+    const operator =
+      await this.database.db.query.threadParticipant.findFirst({
+        where: and(
+          eq(threadParticipant.userId, params.operatorUserId),
+          eq(threadParticipant.threadId, params.threadId),
+        ),
+        columns: { role: true },
+      });
+    if (
+      operator?.role !== GroupRole.OWNER ||
+      !(await isThreadMutuallyAuthorized(
+        this.database.db,
+        params.operatorUserId,
+        params.threadId,
+      ))
+    ) {
+      throw new BusinessException(
+        BusinessCode.GROUP_FORBIDDEN,
+        'only the group owner may change administrator roles',
+      );
+    }
     if (params.role === GroupRole.OWNER) {
       throw new BusinessException(
         BusinessCode.GROUP_FORBIDDEN,
@@ -824,8 +998,16 @@ export class GroupService {
         eq(threadParticipant.userId, params.targetUserId),
         eq(threadParticipant.threadId, params.threadId),
       ),
+      with: { user: { columns: { isForeigner: true } } },
     });
-    if (!target || target.state !== ThreadParticipantState.ESTABLISHED) {
+    if (
+      !target ||
+      !(await isThreadMutuallyAuthorized(
+        this.database.db,
+        params.targetUserId,
+        params.threadId,
+      ))
+    ) {
       throw new BusinessException(
         BusinessCode.GROUP_TARGET_NOT_MEMBER,
         'target is not an active member',
@@ -837,8 +1019,15 @@ export class GroupService {
         "cannot change the owner's role",
       );
     }
+    if (params.role === GroupRole.ADMIN && target.user.isForeigner) {
+      throw new BusinessException(
+        BusinessCode.GROUP_FORBIDDEN,
+        'cannot grant administrator role to a member on another server',
+      );
+    }
     if (target.role === params.role) return;
     const result = await this.database.db.transaction(async (tx) => {
+      const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
       await tx
         .update(threadParticipant)
         .set({ role: params.role, updatedAt: new Date() })
@@ -859,16 +1048,12 @@ export class GroupService {
       const state = await this.federation.writeGroupStateInTx(
         tx,
         params.threadId,
+        clientFeedUpdates,
       );
-      const revisions =
-        await this.threadRevisionService.recordActiveLocalThreadRefreshInTx(
-          tx,
-          params.threadId,
-        );
-      return { statePeers: [...state.keys()], revisions };
+      return { statePeers: [...state.keys()], clientFeedUpdates };
     });
-    result.revisions.forEach((pending) =>
-      this.threadRevisionService.notifyThreadRevision(pending),
+    result.clientFeedUpdates.forEach((pending) =>
+      this.clientStateFeed.notifyFeedUpdated(pending),
     );
     await this.federation.pushStateFeedDomains(result.statePeers);
     await this.emitSystemMessage(
@@ -889,13 +1074,36 @@ export class GroupService {
   ): Promise<void> {
     if (!this.messages) return;
     const message = await this.messages.tryWriteSystemMessage(
-      actorUserId,
       threadId,
       type,
       subjectUserId,
+      { actorUserId },
     );
     if (message && this.messageFanout)
       void this.messageFanout.dispatch(message);
+  }
+
+  private async localAuthorizedRecipientIdsInTx(
+    tx: DatabaseTransaction,
+    threadId: number,
+  ): Promise<number[]> {
+    const rows = await tx
+      .select({ userId: threadParticipant.userId })
+      .from(threadParticipant)
+      .innerJoin(user, eq(user.id, threadParticipant.userId))
+      .where(
+        and(
+          eq(threadParticipant.threadId, threadId),
+          eq(user.domain, 'local'),
+          eq(user.isDeleted, false),
+        ),
+      );
+    const authorized = await Promise.all(
+      rows.map((row) => isThreadMutuallyAuthorized(tx, row.userId, threadId)),
+    );
+    return rows
+      .filter((_, index) => authorized[index])
+      .map((row) => row.userId);
   }
 
   /** Update a group's name / description / avatar on the `!`-User row (only provided fields are written).
@@ -905,7 +1113,6 @@ export class GroupService {
     name?: string;
     description?: string;
     avatar?: string;
-    membersCanInvite?: boolean;
   }) {
     const trd = await this.database.db.query.messageThread.findFirst({
       where: eq(messageThread.id, params.threadId),
@@ -923,6 +1130,7 @@ export class GroupService {
     if (params.description !== undefined) data.bio = params.description;
     if (params.avatar !== undefined) data.avatar = params.avatar;
     const result = await this.database.db.transaction(async (tx) => {
+      const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
       const [row] = await tx
         .update(user)
         .set({
@@ -932,29 +1140,15 @@ export class GroupService {
         })
         .where(eq(user.id, trd.groupUserId!))
         .returning();
-      if (params.membersCanInvite !== undefined) {
-        await tx
-          .update(group)
-          .set({
-            membersCanInvite: params.membersCanInvite,
-            rosterRev: sql`${group.rosterRev} + 1`,
-            updatedAt: new Date(),
-          })
-          .where(eq(group.groupUserId, trd.groupUserId!));
-      }
       const stateItems = await this.federation.writeGroupStateInTx(
         tx,
         params.threadId,
+        clientFeedUpdates,
       );
-      const revisions =
-        await this.threadRevisionService.recordActiveLocalThreadRefreshInTx(
-          tx,
-          params.threadId,
-        );
-      return { row, statePeers: [...stateItems.keys()], revisions };
+      return { row, statePeers: [...stateItems.keys()], clientFeedUpdates };
     });
-    result.revisions.forEach((pending) =>
-      this.threadRevisionService.notifyThreadRevision(pending),
+    result.clientFeedUpdates.forEach((pending) =>
+      this.clientStateFeed.notifyFeedUpdated(pending),
     );
     await this.federation.pushStateFeedDomains(result.statePeers);
     return result.row;

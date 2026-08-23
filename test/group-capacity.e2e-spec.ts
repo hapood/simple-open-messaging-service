@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { and, count, eq, isNull } from 'drizzle-orm';
+import { and, count, eq } from 'drizzle-orm';
 import { BusinessCode } from '../src/common/business-code.js';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
@@ -8,6 +8,7 @@ import { GroupRole, MessageThreadType } from '../src/database/enums.js';
 import {
   group,
   messageThread,
+  relationshipIntent,
   threadParticipant,
   user,
 } from '../src/database/schema.js';
@@ -76,10 +77,30 @@ describe('origin-server group capacity', () => {
         updatedAt: new Date(),
       })),
     );
+    await database.db.insert(relationshipIntent).values(
+      people.slice(0, SERVER_MAX_GROUP_MEMBERS - 1).map((person) => ({
+        authorUserId: groupUser.id,
+        subjectUserId: person.id,
+        status: 'ACCEPTED' as const,
+        note: '',
+        requestedAt: new Date(),
+        expiresAt: null,
+        updatedAt: new Date(),
+      })),
+    );
 
     const join = (userId: number) =>
       database.db.transaction(async (tx) => {
         await assertServerGroupCapacityInTx(tx, thread.id, userId);
+        await tx.insert(relationshipIntent).values({
+          authorUserId: groupUser.id,
+          subjectUserId: userId,
+          status: 'ACCEPTED',
+          note: '',
+          requestedAt: new Date(),
+          expiresAt: null,
+          updatedAt: new Date(),
+        });
         await tx.insert(threadParticipant).values({
           threadId: thread.id,
           userId,
@@ -102,25 +123,29 @@ describe('origin-server group capacity', () => {
     });
     const [{ value }] = await database.db
       .select({ value: count() })
-      .from(threadParticipant)
+      .from(relationshipIntent)
       .where(
         and(
-          eq(threadParticipant.threadId, thread.id),
-          eq(threadParticipant.state, 'ESTABLISHED'),
+          eq(relationshipIntent.authorUserId, groupUser.id),
+          eq(relationshipIntent.status, 'ACCEPTED'),
         ),
       );
     expect(value).toBe(SERVER_MAX_GROUP_MEMBERS);
 
-    const admitted = await database.db.query.threadParticipant.findFirst({
+    const admitted = await database.db.query.relationshipIntent.findFirst({
       where: and(
-        eq(threadParticipant.threadId, thread.id),
-        eq(threadParticipant.state, 'ESTABLISHED'),
+        eq(relationshipIntent.authorUserId, groupUser.id),
+        eq(relationshipIntent.status, 'ACCEPTED'),
       ),
-      columns: { userId: true },
+      columns: { subjectUserId: true },
     });
     await expect(
       database.db.transaction((tx) =>
-        assertServerGroupCapacityInTx(tx, thread.id, admitted!.userId),
+        assertServerGroupCapacityInTx(
+          tx,
+          thread.id,
+          admitted!.subjectUserId,
+        ),
       ),
     ).resolves.toBeUndefined();
   }, 30_000);

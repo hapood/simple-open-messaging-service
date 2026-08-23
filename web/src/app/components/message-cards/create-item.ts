@@ -14,6 +14,7 @@ import { shouldShowDateSeparator } from './date-format';
 import type { ChatItemData, ChatMsgData, AlbumImage } from './chat-item';
 import { FileRowComponent } from './file-row/file-row.component';
 import { LinkRowComponent } from './link-row/link-row.component';
+import { ContactCardRowComponent } from './contact-card-row/contact-card-row.component';
 import { CallRowComponent } from './call-row/call-row.component';
 import { ForwardRowComponent } from './forward-row/forward-row.component';
 import { MediaRowComponent } from './media-row/media-row.component';
@@ -75,16 +76,16 @@ export function computeRowFlags(
       prev?.data.type === 'msg' && prev.data.contentType !== 'SYSTEM'
         ? prev.data
         : null;
-    const curCtx: GroupCtx = { creator: msg.creator };
+    const curCtx: GroupCtx = { creator: msg.creator ?? 'system' };
     const prevCtx: GroupCtx | null = prevMsg
-      ? { creator: prevMsg.creator }
+      ? { creator: prevMsg.creator ?? 'system' }
       : null;
     const nextMsg =
       next?.data.type === 'msg' && next.data.contentType !== 'SYSTEM'
         ? next.data
         : null;
     const nextCtx: GroupCtx | null = nextMsg
-      ? { creator: nextMsg.creator }
+      ? { creator: nextMsg.creator ?? 'system' }
       : null;
     const groupFlags = classifyGroupFlags(prevCtx, curCtx, nextCtx);
     isShowHead = groupFlags.isShowHead;
@@ -190,13 +191,15 @@ export function createMsgCbElement(
         ? MediaRowComponent
         : data.contentType === 'LINK'
           ? LinkRowComponent
-          : data.contentType === 'FILE'
-            ? FileRowComponent
-            : data.contentType === 'CALL'
-              ? CallRowComponent
-              : data.contentType === 'FORWARD'
-                ? ForwardRowComponent
-                : TextRowComponent;
+          : data.contentType === 'CONTACT_CARD'
+            ? ContactCardRowComponent
+            : data.contentType === 'FILE'
+              ? FileRowComponent
+              : data.contentType === 'CALL'
+                ? CallRowComponent
+                : data.contentType === 'FORWARD'
+                  ? ForwardRowComponent
+                  : TextRowComponent;
 
   const ref = createComponent(comp, { environmentInjector: envInjector });
   // createComponent() only constructs the view; it does not enroll it in Angular's application view
@@ -355,7 +358,7 @@ export function createMsgCbElement(
         '.msg-avatar:not(.msg-avatar-tail)',
       );
       const current = interactionItem.data as ChatMsgData;
-      if (!avatar) return;
+      if (!avatar || current.creator === null) return;
       event.preventDefault();
       event.stopPropagation();
       onOpenMemberProfile(current.creator, avatar.getBoundingClientRect());

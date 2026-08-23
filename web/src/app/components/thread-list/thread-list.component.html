@@ -110,6 +110,13 @@
                     ></app-icon>
                   </span>
                 }
+                @if (hasUnreadJoinRequests(thread)) {
+                  <span
+                    class="join-request-badge"
+                    [title]="'group.joinRequests' | transloco"
+                    aria-hidden="true"
+                  ></span>
+                }
                 @if (
                   thread.unreadCount > 0 && thread.mentionUnread.length > 0
                 ) {

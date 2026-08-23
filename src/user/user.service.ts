@@ -5,14 +5,15 @@ import { user } from '../database/schema.js';
 import { isValidUserAccount, normalizeAccount } from '../common/account.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
-import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
+import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import { FederationService } from '../federation/federation.service.js';
+import { isThreadMutuallyAuthorized } from '../invite/relationship-authorization.js';
 
 @Injectable()
 export class UserService {
   constructor(
     private readonly database: DatabaseService,
-    private readonly stateRevision: ThreadRevisionService,
+    private readonly clientStateFeed: ClientStateFeedService,
     private readonly federation: FederationService,
   ) {}
 
@@ -59,7 +60,7 @@ export class UserService {
   /** Update the current user's avatar (inline User.avatar). */
   async updateAvatar(userId: number, avatar: string) {
     const result = await this.updateProfileState(userId, { avatar });
-    result.pending.forEach((p) => this.stateRevision.notifyThreadRevision(p));
+    result.pending.forEach((p) => this.clientStateFeed.notifyFeedUpdated(p));
     await this.federation.pushStateFeedDomains(result.statePeers);
     return result.row;
   }
@@ -70,7 +71,7 @@ export class UserService {
     if (data.name !== undefined) update.name = data.name;
     if (data.bio !== undefined) update.bio = data.bio;
     const result = await this.updateProfileState(userId, update);
-    result.pending.forEach((p) => this.stateRevision.notifyThreadRevision(p));
+    result.pending.forEach((p) => this.clientStateFeed.notifyFeedUpdated(p));
     await this.federation.pushStateFeedDomains(result.statePeers);
     return result.row;
   }
@@ -89,25 +90,47 @@ export class UserService {
         })
         .where(eq(user.id, userId))
         .returning(publicUserColumns);
-      const consumers = await tx.execute<{ userId: number }>(sql`
-        SELECT ${userId}::integer AS "userId"
-        UNION
-        SELECT peer."userId"
+      const candidates = await tx.execute<{
+        userId: number;
+        threadId: number | null;
+      }>(sql`
+        SELECT ${userId}::integer AS "userId", NULL::integer AS "threadId"
+        UNION ALL
+        SELECT DISTINCT peer."userId", mine."threadId"
         FROM "ThreadParticipant" mine
         JOIN "ThreadParticipant" peer ON peer."threadId" = mine."threadId"
         JOIN "User" consumer ON consumer.id = peer."userId"
         WHERE mine."userId" = ${userId}
-          AND mine.state = 'ESTABLISHED' AND peer.state = 'ESTABLISHED'
           AND consumer."isForeigner" = false
       `);
-      const pending = await this.stateRevision.recordProfileStateInTx(
+      const consumers = (
+        await Promise.all(
+          candidates.rows.map(async (candidate) => ({
+            ...candidate,
+            authorized:
+              candidate.threadId === null ||
+              ((await isThreadMutuallyAuthorized(
+                tx,
+                userId,
+                candidate.threadId,
+              )) &&
+                (await isThreadMutuallyAuthorized(
+                  tx,
+                  candidate.userId,
+                  candidate.threadId,
+                ))),
+          })),
+        )
+      ).filter((candidate) => candidate.authorized);
+      const pending = await this.clientStateFeed.recordProfileStateInTx(
         tx,
         userId,
-        consumers.rows.map((x) => x.userId),
+        [...new Set(consumers.map((x) => x.userId))],
       );
       const stateItems = await this.federation.writeProfileStateInTx(
         tx,
         userId,
+        pending,
       );
       return { row, pending, statePeers: [...stateItems.keys()] };
     });
@@ -130,8 +153,8 @@ export class UserService {
       );
   }
 
-  /** Local user discovery: case-insensitive substring match on account OR name. Local, non-deleted
-   *  users only (isForeigner:false) — federated stubs are not discoverable here. Returns { list, total }
+  /** Local identity discovery: case-insensitive substring match on account OR name. Local, non-deleted
+   *  users and groups only (isForeigner:false) — federated stubs are not discoverable here. Returns { list, total }
    *  for pagination. The caller (POST /user/search) caps `take` as an abuse guardrail. */
   async searchUsers(
     q: string,
@@ -143,7 +166,6 @@ export class UserService {
     const where = and(
       eq(user.isDeleted, false),
       eq(user.isForeigner, false),
-      eq(user.isGroup, false),
       or(ilike(user.account, `%${q}%`), ilike(user.name, `%${q}%`)),
     );
     const [list, total] = await Promise.all([

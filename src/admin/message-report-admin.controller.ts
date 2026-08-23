@@ -20,6 +20,7 @@ import {
   ResolveMessageReportsDto,
 } from '../message/message-report.dto.js';
 import { MessageReportService } from '../message/message-report.service.js';
+import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { AdminAuthGuard } from './admin-auth.guard.js';
 import { AdminRolesGuard } from './admin-roles.guard.js';
@@ -37,6 +38,7 @@ export class MessageReportAdminController {
     private readonly participants: ThreadParticipantService,
     private readonly sse: SseService,
     private readonly federation: FederationService,
+    private readonly fanout: MessageFanoutService,
   ) {}
 
   @HttpCode(HttpStatus.OK)
@@ -84,6 +86,8 @@ export class MessageReportAdminController {
         deletion.seq,
       );
     }
+    for (const systemMessage of result.systemMessages)
+      void this.fanout.dispatch(systemMessage);
     return result;
   }
 }

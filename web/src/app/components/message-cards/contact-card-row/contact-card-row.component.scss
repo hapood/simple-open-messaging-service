@@ -1,0 +1,61 @@
+@use '../row-base' as *;
+.contact-card {
+  width: 280px;
+  display: block;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  appearance: none;
+  background: var(--bubble-bg);
+  color: var(--bubble-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.contact-card:disabled {
+  opacity: 1;
+  color: var(--bubble-text);
+  cursor: default;
+}
+.contact-card:focus-visible {
+  outline: 2px solid var(--app-focus-ring);
+  outline-offset: 2px;
+}
+.contact-card-body {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 76px;
+  box-sizing: border-box;
+  padding: 10px 12px;
+}
+.contact-card-body app-user-avatar {
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+}
+.contact-card-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.contact-card-recommend {
+  overflow: hidden;
+  color: var(--bubble-muted);
+  font-size: 12px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.contact-card-name {
+  overflow: hidden;
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.contact-card-meta {
+  width: 100%;
+}

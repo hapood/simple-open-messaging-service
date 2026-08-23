@@ -26,6 +26,7 @@ export interface FriendRequestProjection {
   localStatus: FriendRequestIntentStatus | null;
   remoteStatus: FriendRequestIntentStatus | null;
   locallyAccepted: boolean;
+  localThreadId: number | null;
   inviteId?: string;
   note: string;
   requestedAt: number;
@@ -52,6 +53,7 @@ export interface FriendIntentProjectionInput {
   subjectDomain: string;
   status: FriendRequestIntentStatus;
   direction: 'INCOMING' | 'OUTGOING';
+  localThreadId: number | null;
   inviteId?: string;
   note: string;
   requestedAt: number | null;
@@ -66,6 +68,7 @@ export interface GroupInviteProjectionInput {
   note: string;
   requestedAt: number | null;
   expiresAt: number | null;
+  direction?: 'INCOMING' | 'OUTGOING';
   threadId: number;
   group: NonNullable<FriendRequestProjection['group']>;
 }
@@ -110,6 +113,7 @@ export function applyFriendIntentToProjection(
         localStatus: null,
         remoteStatus: null,
         locallyAccepted: false,
+        localThreadId: input.localThreadId ?? null,
         note: input.note,
         requestedAt: input.requestedAt ?? 0,
         expiresAt: input.expiresAt,
@@ -118,6 +122,7 @@ export function applyFriendIntentToProjection(
         updatedAt: now,
       };
   next.updatedAt = now;
+  if (input.localThreadId != null) next.localThreadId = input.localThreadId;
 
   if (input.direction === 'OUTGOING') next.localStatus = input.status;
   else next.remoteStatus = input.status;
@@ -147,7 +152,18 @@ export function applyFriendIntentToProjection(
   // Both authoritative directions have reached ACCEPTED; the request projection has no remaining job.
   if (next.localStatus === 'ACCEPTED' && next.remoteStatus === 'ACCEPTED')
     return { record: null, becameActionable: false };
-  if (next.remoteStatus === 'REVOKED')
+  if (next.remoteStatus === 'REVOKED') {
+    // My outgoing request was rejected. Retain the compacted sent-history row; the receiver's
+    // incoming projection disappears because on that device this same direction is localStatus.
+    if (next.localStatus === 'REQUESTED') {
+      next.direction = 'OUTGOING';
+      next.status = 'REVOKED';
+      next.expiresAt = null;
+      return { record: next, becameActionable: false };
+    }
+    return { record: null, becameActionable: false };
+  }
+  if (next.localStatus === 'REVOKED' && next.direction === 'INCOMING')
     return { record: null, becameActionable: false };
 
   if (remoteRequested) {
@@ -210,11 +226,12 @@ export function applyGroupIntentToProjection(
     record: {
       key: groupRequestKey(input.domain, input.account),
       kind: 'GROUP',
-      direction: 'INCOMING',
+      direction: input.direction ?? 'INCOMING',
       status: current?.locallyAccepted ? 'ACCEPTED' : 'REQUESTED',
       localStatus: null,
       remoteStatus: 'REQUESTED',
       locallyAccepted: current?.locallyAccepted ?? false,
+      localThreadId: null,
       inviteId: input.account,
       note: input.note,
       requestedAt: input.requestedAt ?? 0,
@@ -224,7 +241,8 @@ export function applyGroupIntentToProjection(
       requestedSort: input.requestedAt ?? 0,
       updatedAt: now,
     },
-    becameActionable: current === undefined,
+    becameActionable:
+      (input.direction ?? 'INCOMING') === 'INCOMING' && current === undefined,
   };
 }
 

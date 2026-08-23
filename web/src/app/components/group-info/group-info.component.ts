@@ -110,11 +110,11 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
 
   readonly roster = signal<ResolvedMemberProfile[]>([]);
   readonly loading = signal(true);
+  readonly loadingMore = signal(false);
+  readonly rosterHasMore = signal(false);
   readonly busy = signal(false); // a mutation is in flight (disables action buttons)
   readonly blockedSaving = signal(false);
-  readonly membersInviteSaving = signal(false);
   readonly blockedControl = signal(false);
-  readonly membersCanInviteControl = signal(true);
 
   /** Invite picker state. */
   readonly selectedDict = signal<Record<number, boolean | undefined>>({});
@@ -146,18 +146,13 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   );
   readonly overviewMembers = computed(() => this.roster().slice(0, 5));
   readonly remainingMemberCount = computed(() =>
-    Math.max(0, this.roster().length - this.overviewMembers().length),
+    Math.max(
+      0,
+      (this.group()?.memberCount ?? 0) - this.overviewMembers().length,
+    ),
   );
-  readonly filteredRoster = computed(() => {
-    const q = this.memberQuery().trim().toLocaleLowerCase();
-    if (!q) return this.roster();
-    return this.roster().filter((member) =>
-      `${member.name} ${member.account}`.toLocaleLowerCase().includes(q),
-    );
-  });
-  readonly canInvite = computed(
-    () => this.isAdmin() || this.group()?.membersCanInvite !== false,
-  );
+  readonly filteredRoster = this.roster.asReadonly();
+  readonly canInvite = this.isAdmin;
   readonly existingMemberIds = computed(
     () => new Set(this.roster().map((member) => member.userId)),
   );
@@ -165,9 +160,6 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly confirmDissolve = signal(false);
 
   readonly group = computed(() => this.userMsgTrd()?.group);
-  /** Keep roster loading dependent on the membership array itself. Metadata-only group updates (for
-   * example toggling invite permission) preserve this reference and must not rebuild/scroll the panel. */
-  readonly groupMembers = computed(() => this.group()?.members);
   readonly dissolved = computed(() => this.group()?.dissolvedAt != null);
   readonly readOnly = computed(
     () =>
@@ -182,19 +174,17 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   constructor() {
     effect(() => {
       const threadId = this.threadId();
-      const members = this.groupMembers();
-      if (threadId !== undefined && members)
+      const groupMetaFeedId = this.group()?.groupMetaFeedId;
+      const search = this.memberQuery();
+      if (threadId !== undefined && groupMetaFeedId !== undefined) {
+        void search;
         untracked(() => void this.loadMembers());
+      }
     });
     effect(() => {
       const blocked = this.userMsgTrd()?.blocked === true;
       if (!this.blockedSaving())
         untracked(() => this.blockedControl.set(blocked));
-    });
-    effect(() => {
-      const enabled = this.group()?.membersCanInvite !== false;
-      if (!this.membersInviteSaving())
-        untracked(() => this.membersCanInviteControl.set(enabled));
     });
   }
 
@@ -212,11 +202,14 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
 
   async loadMembers() {
     const threadId = this.threadId();
-    const members = this.group()?.members ?? [];
     if (threadId === undefined) return;
     this.loading.set(true);
-    const resolved = await this.memberProfiles.resolveAll(threadId, members);
+    const resolved = await this.memberProfiles.queryPage(threadId, {
+      take: 50,
+      search: this.memberQuery(),
+    });
     this.roster.set(resolved);
+    this.rosterHasMore.set(resolved.length === 50);
     const memberIds = new Set(resolved.map((member) => member.userId));
     this.selectedList.update((list) =>
       list.filter((item) => !memberIds.has(item.peerUser.id)),
@@ -229,6 +222,36 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       return next;
     });
     this.loading.set(false);
+  }
+
+  async loadMoreMembers(): Promise<void> {
+    const threadId = this.threadId();
+    const current = this.roster();
+    if (
+      threadId === undefined ||
+      !this.rosterHasMore() ||
+      this.loadingMore() ||
+      current.length === 0
+    )
+      return;
+    this.loadingMore.set(true);
+    try {
+      const page = await this.memberProfiles.queryPage(threadId, {
+        afterUserId: current.at(-1)!.userId,
+        take: 50,
+        search: this.memberQuery(),
+      });
+      this.roster.update((members) => [...members, ...page]);
+      this.rosterHasMore.set(page.length === 50);
+    } finally {
+      this.loadingMore.set(false);
+    }
+  }
+
+  onRosterScroll(event: Event): void {
+    const element = event.currentTarget as HTMLElement;
+    if (element.scrollHeight - element.scrollTop - element.clientHeight < 160)
+      void this.loadMoreMembers();
   }
 
   /** Whether the caller has any action available on this member row. */
@@ -476,30 +499,6 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
         },
         error: () => {
           this.blockedControl.set(!blocked);
-          this.showNetworkError();
-        },
-      });
-  }
-
-  setMembersCanInvite(enabled: boolean): void {
-    const id = this.groupId();
-    if (id === undefined || !this.isAdmin() || this.membersInviteSaving())
-      return;
-    this.membersCanInviteControl.set(enabled);
-    this.membersInviteSaving.set(true);
-    this.groupService
-      .updateGroup({ groupId: id, membersCanInvite: enabled })
-      .pipe(finalize(() => this.membersInviteSaving.set(false)))
-      .subscribe({
-        next: (res) => {
-          if (res.code !== 0) {
-            this.membersCanInviteControl.set(!enabled);
-            return this.showBusinessError(res);
-          }
-          this.convList.applyGroupUpdate(id, { membersCanInvite: enabled });
-        },
-        error: () => {
-          this.membersCanInviteControl.set(!enabled);
           this.showNetworkError();
         },
       });

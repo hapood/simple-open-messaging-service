@@ -213,6 +213,7 @@ describe('UserAvatarComponent offline cold-start integration', () => {
       avatar: '/uploads/avatars/self-512.webp',
       bio: '',
       isForeigner: false,
+      isGroup: false,
       domain: '',
       createdAt: 0,
       updatedAt: 0,

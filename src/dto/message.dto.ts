@@ -73,6 +73,39 @@ export class SendMessageDto {
   retainLinkGeneration?: boolean;
 }
 
+export class SendContactCardDto {
+  @ApiProperty({ example: 12, description: 'Destination conversation id' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  threadId!: number;
+
+  @ApiPropertyOptional({
+    example: 34,
+    description: 'Visible user whose current identity snapshot is shared',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  targetUserId?: number;
+
+  @ApiPropertyOptional({
+    example: 56,
+    description:
+      'Visible group thread whose current identity snapshot is shared',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  targetGroupId?: number;
+
+  @ApiProperty({ description: 'Client send-idempotency UUID' })
+  @IsUUID()
+  clientMessageId!: string;
+}
+
 export class ForwardSourceMessageDto {
   @ApiProperty({ example: 8, description: 'Source conversation id' })
   @Type(() => Number)

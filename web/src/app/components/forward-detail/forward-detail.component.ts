@@ -66,6 +66,7 @@ const CONTENT_TYPES = new Set<ChatMsgData['contentType']>([
   'AUDIO',
   'GALLERY',
   'LINK',
+  'CONTACT_CARD',
   'CALL',
   'FORWARD',
 ]);
@@ -382,6 +383,16 @@ function snapshotPreview(message: ForwardManifestMessage): string {
   if (message.contentType === 'PURE_TEXT') {
     return toDisplayText(requireTextMessageContent(message.content).text);
   }
+  if (message.contentType === 'CONTACT_CARD') {
+    try {
+      const card = JSON.parse(message.content) as { displayName?: unknown };
+      return typeof card.displayName === 'string'
+        ? `[Contact] ${card.displayName}`
+        : '[Contact]';
+    } catch {
+      return '[Contact]';
+    }
+  }
   return message.contentType;
 }
 
@@ -391,7 +402,7 @@ function bindSnapshotCasUrls(
   seq: number,
 ): string {
   return content.replace(
-    /\/uploads\/cas\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}(?:\?threadId=[0-9]+&seq=[0-9]+)?/g,
+    /\/uploads\/(?:cas|msg-assets)\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}(?:\?threadId=[0-9]+&seq=[0-9]+)?/g,
     (url) => `${url.split('?')[0]}?threadId=${threadId}&seq=${seq}`,
   );
 }

@@ -10,6 +10,7 @@ describe('system message content', () => {
     const body = {
       type: SystemMessageType.GROUP_OWNER_TRANSFERRED,
       subject: { account: 'bob', domain: 'chat.example' },
+      actor: { account: 'alice', domain: 'chat.example' },
     } as const;
     expect(
       parseSystemMessageContent(stringifySystemMessageContent(body)),
@@ -39,6 +40,33 @@ describe('system message content', () => {
           type: SystemMessageType.GROUP_LEFT,
           subject: { account: 'bob', domain: '' },
           action: true,
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('validates deletion event-specific fields', () => {
+    expect(
+      parseSystemMessageContent(
+        stringifySystemMessageContent({
+          type: SystemMessageType.MESSAGE_WITHDRAWN,
+          subject: { account: 'alice', domain: 'chat.example' },
+        }),
+      ),
+    ).not.toBeNull();
+    expect(
+      parseSystemMessageContent(
+        stringifySystemMessageContent({
+          type: SystemMessageType.MESSAGES_MODERATED,
+          count: 3,
+        }),
+      ),
+    ).not.toBeNull();
+    expect(
+      parseSystemMessageContent(
+        JSON.stringify({
+          type: SystemMessageType.MESSAGES_MODERATED,
+          count: 0,
         }),
       ),
     ).toBeNull();

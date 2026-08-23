@@ -68,6 +68,10 @@ export class ChatEditorComponent {
   /** Mention candidates (playground: mock members; production: GroupService.getMembers()). Read into a
    *  ref so member updates do NOT recreate the editor (the init effect depends only on the host element). */
   readonly members = input<ChatMember[]>([]);
+  readonly memberSearch = input<
+    ((query: string) => Promise<ChatMember[]>) | undefined
+  >();
+  readonly mentionsEnabled = input(false);
   readonly placeholder = input('');
   private readonly transloco = inject(TranslocoService);
   private readonly language = inject(LanguageService);
@@ -140,8 +144,10 @@ export class ChatEditorComponent {
             allowSpaces: false,
             // P2P conversations deliberately pass no candidates. Do not start a suggestion session at
             // all there: showing an empty popup makes a literal @ look like a supported P2P mention.
-            allow: () => this.membersRef.length > 0,
-            items: ({ query }) => this.filterMembers(query),
+            allow: () =>
+              this.mentionsEnabled() || this.membersRef.length > 0,
+            items: ({ query }) =>
+              this.memberSearch()?.(query) ?? this.filterMembers(query),
             render: () => suggestionPopup(),
           },
         }),

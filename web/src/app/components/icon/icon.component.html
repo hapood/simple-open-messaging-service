@@ -1,263 +1,874 @@
-@switch(type()){
-@case (AppIcon.BACK) {
-<svg [style]="style()" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
-  <path fill="currentColor" d="M224 480h640a32 32 0 110 64H224a32 32 0 010-64z" />
-  <path fill="currentColor"
-    d="M237.248 512l265.408 265.344a32 32 0 01-45.312 45.312l-288-288a32 32 0 010-45.312l288-288a32 32 0 1145.312 45.312L237.248 512z" />
-</svg>}
-@case (AppIcon.MORE) {
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <circle cx="12" cy="6" r="1.5" fill="currentColor" />
-  <circle cx="12" cy="12" r="1.5" fill="currentColor" />
-  <circle cx="12" cy="18" r="1.5" fill="currentColor" />
-</svg>}
-@case(AppIcon.SEND){
-<svg [style]="style()" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-  <path fill="currentColor" d="M2 21 23 12 2 3v7l15 2-15 2v7Z" />
-</svg>}
-@case(AppIcon.SEARCH){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path
-    d="M14.9536 14.9458L21 21M17 10C17 13.866 13.866 17 10 17C6.13401 17 3 13.866 3 10C3 6.13401 6.13401 3 10 3C13.866 3 17 6.13401 17 10Z"
-    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-</svg>}
-@case(AppIcon.MENU){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M4 6H20M4 12H20M4 18H20" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-</svg>}
-@case(AppIcon.EYE){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path
-    d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.964-7.178z"
-    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-  <path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-    stroke-linejoin="round" />
-</svg>}
-@case(AppIcon.EYE_OFF){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path
-    d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.137 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88"
-    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-</svg>}
-@case(AppIcon.SUN){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-  <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"
-    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-</svg>}
-@case(AppIcon.MOON){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"
-    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-</svg>}
-@case(AppIcon.CONTRAST){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2" />
-  <path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor" />
-</svg>}
-@case(AppIcon.CHECK){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M5 12.5L10 17.5L19 6.5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
-    stroke-linejoin="round" />
-</svg>}
-@case(AppIcon.EDIT){
-<svg [style]="style()" viewBox="0 -960 960 960" xmlns="http://www.w3.org/2000/svg">
-  <path fill="currentColor"
-    d="M200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h357l-80 80H200v560h560v-278l80-80v358q0 33-23.5 56.5T760-120H200Zm280-360ZM360-360v-170l367-367q12-12 27-18t30-6q16 0 30.5 6t26.5 18l56 57q11 12 17 26.5t6 29.5q0 15-5.5 29.5T897-728L530-360H360Zm481-424-56-56 56 56ZM440-440h56l232-232-28-28-29-28-231 231v57Zm260-260-29-28 29 28 28 28-28-28Z" />
-</svg>}
-@case(AppIcon.CLOSE){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M6 6L18 18M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-    stroke-linejoin="round" />
-</svg>}
-@case(AppIcon.ARROW_FORWARD){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M5 12H19M19 12L13 6M19 12L13 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-    stroke-linejoin="round" />
-</svg>}
-@case(AppIcon.GLOBE){
-<svg [style]="style()" viewBox="0 -960 960 960" xmlns="http://www.w3.org/2000/svg">
-  <path fill="currentColor"
-    d="M480-80q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm-40-82v-78q-33 0-56.5-23.5T360-320v-40L168-552q-3 18-5.5 36t-2.5 36q0 121 79.5 212T440-162Zm276-102q41-45 62.5-100.5T800-480q0-98-54.5-179T600-776v16q0 33-23.5 56.5T520-680h-80v80q0 17-11.5 28.5T400-560h-80v80h240q17 0 28.5 11.5T600-440v120h40q26 0 47 15.5t29 40.5Z" />
-</svg>}
-@case(AppIcon.SETTINGS){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path
-    d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"
-    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-  <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2" />
-</svg>}
-@case(AppIcon.MUTE){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path
-    d="M11 5L6 9H3v6h3l5 4V5z"
-    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-  <path d="M23 9l-6 6M17 9l6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-</svg>}
-@case(AppIcon.SPEAKER){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M11 5 6 9H3v6h3l5 4V5Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-  <path d="M15.5 8.5a5 5 0 0 1 0 7M18 6a8.5 8.5 0 0 1 0 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-</svg>}
-@case(AppIcon.PIN){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path
-    d="M9 4h6l-1 6 4 3v2H6v-2l4-3-1-6z"
-    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-  <path d="M12 15v5" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-</svg>}
-@case(AppIcon.BLOCK){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2" />
-  <path d="M5.6 5.6l12.8 12.8" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-</svg>}
-@case(AppIcon.REPORT){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path
-    d="M12 3l9 16H3L12 3z"
-    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-  <path d="M12 10v3" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-  <circle cx="12" cy="16" r="1" fill="currentColor" />
-</svg>}
-@case(AppIcon.ERROR_OUTLINE){
-<svg [style]="style()" viewBox="0 -960 960 960" xmlns="http://www.w3.org/2000/svg">
-  <path fill="currentColor"
-    d="M480-280q17 0 28.5-11.5T520-320q0-17-11.5-28.5T480-360q-17 0-28.5 11.5T440-320q0 17 11.5 28.5T480-280Zm-40-160h80v-240h-80v240Zm40 360q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm0-80q134 0 227-93t93-227q0-134-93-227t-227-93q-134 0-227 93t-93 227q0 134 93 227t227 93Zm0-320Z" />
-</svg>}
-@case(AppIcon.TRASH){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path
-    d="M4 7h16M10 4h4M9 7v12m6-12v12M5 7l1 13a2 2 0 002 2h8a2 2 0 002-2l1-13"
-    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-</svg>}
-@case(AppIcon.LOG_OUT){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M10 5H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-  <path d="M14 8l4 4-4 4M18 12H9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-</svg>}
-@case(AppIcon.NOTIFICATIONS){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path
-    d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"
-    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-  <path d="M13.73 21a2 2 0 0 1-3.46 0" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-    stroke-linejoin="round" />
-</svg>}
-@case(AppIcon.IMAGE){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" stroke-width="2"
-    stroke-linejoin="round" />
-  <circle cx="8.5" cy="8.5" r="1.5" stroke="currentColor" stroke-width="2" />
-  <path d="M21 15l-5-5L5 21" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-    stroke-linejoin="round" />
-</svg>}
-@case(AppIcon.INFO){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2" />
-  <path d="M12 11v5" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-  <circle cx="12" cy="8" r="1" fill="currentColor" />
-</svg>}
-@case(AppIcon.CHEVRON_RIGHT){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-    stroke-linejoin="round" />
-</svg>}
-@case(AppIcon.CHEVRON_DOWN){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-    stroke-linejoin="round" />
-</svg>}
-@case(AppIcon.REFRESH){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M20 12a8 8 0 1 1-2.34-5.66" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-  <path d="M20 4v5h-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-</svg>}
-@case(AppIcon.SERVER){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect x="3" y="4" width="18" height="7" rx="2" stroke="currentColor" stroke-width="2" />
-  <rect x="3" y="13" width="18" height="7" rx="2" stroke="currentColor" stroke-width="2" />
-  <circle cx="7" cy="7.5" r="1" fill="currentColor" />
-  <circle cx="7" cy="16.5" r="1" fill="currentColor" />
-</svg>}
-@case(AppIcon.DEVICES){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect x="2" y="5" width="14" height="10" rx="2" stroke="currentColor" stroke-width="2" />
-  <path d="M2 17h11" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-  <rect x="16" y="9" width="6" height="11" rx="1.5" stroke="currentColor" stroke-width="2" />
-</svg>}
-@case(AppIcon.FILE){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"
-    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-  <path d="M14 3v5h5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-</svg>}
-@case(AppIcon.CHATS){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"
-    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-</svg>}
-@case(AppIcon.FRIEND_REQUESTS){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"
-    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-  <circle cx="9" cy="7" r="4" stroke="currentColor" stroke-width="2" />
-  <line x1="19" y1="8" x2="19" y2="14" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-  <line x1="22" y1="11" x2="16" y2="11" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-</svg>}
-@case(AppIcon.NEW_GROUP){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"
-    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-  <circle cx="9" cy="7" r="4" stroke="currentColor" stroke-width="2" />
-  <path d="M22 21v-2a4 4 0 0 0-3-3.87" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-  <path d="M16 3.13a4 4 0 0 1 0 7.75" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-</svg>}
-@case(AppIcon.PERSON_ADMIN){
-<svg [style]="style()" viewBox="0 -960 960 960" xmlns="http://www.w3.org/2000/svg">
-  <path fill="currentColor"
-    d="M722.5-297.5Q740-315 740-340t-17.5-42.5Q705-400 680-400t-42.5 17.5Q620-365 620-340t17.5 42.5Q655-280 680-280t42.5-17.5ZM680-160q31 0 57-14.5t42-38.5q-22-13-47-20t-52-7q-27 0-52 7t-47 20q16 24 42 38.5t57 14.5ZM480-80q-139-35-229.5-159.5T160-516v-244l320-120 320 120v227q-19-8-39-14.5t-41-9.5v-147l-240-90-240 90v188q0 47 12.5 94t35 89.5Q310-290 342-254t71 60q11 32 29 61t41 52q-1 0-1.5.5t-1.5.5Zm200 0q-83 0-141.5-58.5T480-280q0-83 58.5-141.5T680-480q83 0 141.5 58.5T880-280q0 83-58.5 141.5T680-80ZM480-494Z" />
-</svg>}
-@case(AppIcon.PERSON_REMOVE){
-<svg [style]="style()" viewBox="0 -960 960 960" xmlns="http://www.w3.org/2000/svg">
-  <path fill="currentColor"
-    d="M640-520v-80h240v80H640Zm-393-7q-47-47-47-113t47-113q47-47 113-47t113 47q47 47 47 113t-47 113q-47 47-113 47t-113-47ZM40-160v-112q0-34 17.5-62.5T104-378q62-31 126-46.5T360-440q66 0 130 15.5T616-378q29 15 46.5 43.5T680-272v112H40Zm80-80h480v-32q0-11-5.5-20T580-306q-54-27-109-40.5T360-360q-56 0-111 13.5T140-306q-9 5-14.5 14t-5.5 20v32Zm296.5-343.5Q440-607 440-640t-23.5-56.5Q393-720 360-720t-56.5 23.5Q280-673 280-640t23.5 56.5Q327-560 360-560t56.5-23.5ZM360-640Zm0 400Z" />
-</svg>}
-@case(AppIcon.PHONE){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M6.6 3.5h2.7l1.35 4.05-2.1 1.4a15.2 15.2 0 0 0 6.5 6.5l1.4-2.1 4.05 1.35v2.7a3.1 3.1 0 0 1-3.35 3.1A14.9 14.9 0 0 1 3.5 6.85 3.1 3.1 0 0 1 6.6 3.5Z"
-    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-</svg>}
-@case(AppIcon.PHONE_END){
-<svg [style]="style()" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-  <path fill="currentColor"
-    d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .4-.25.75-.62.9-1 .45-1.96 1.04-2.85 1.72-.18.14-.41.22-.66.22-.28 0-.53-.11-.71-.29L.29 13.1A.99.99 0 0 1 0 12.4c0-.28.11-.53.29-.71C3.34 8.73 7.46 7.12 12 7.12s8.66 1.61 11.71 4.56c.18.18.29.43.29.71s-.11.53-.29.71l-2.27 2.27c-.18.18-.43.29-.71.29-.24 0-.47-.08-.65-.22-.89-.68-1.85-1.27-2.85-1.72a.98.98 0 0 1-.62-.9v-3.1C15.15 9.25 13.6 9 12 9z" />
-</svg>}
-@case(AppIcon.MIC){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" stroke-width="2" />
-  <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M9 21h6"
-    stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-</svg>}
-@case(AppIcon.MIC_OFF){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M9 8V6a3 3 0 0 1 5.7-1.3M15 10v1a3 3 0 0 1-.45 1.58M6 11.5A6 6 0 0 0 16.2 15.8M18 11.5a6 6 0 0 1-.4 2.15M12 18v3M9 21h6M4 4l16 16"
-    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-</svg>}
-@case(AppIcon.VIDEO){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect x="3" y="6" width="13" height="12" rx="2" stroke="currentColor" stroke-width="2" />
-  <path d="M16 10l5-3v10l-5-3z" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
-</svg>}
-@case(AppIcon.VIDEO_OFF){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M10 6h4a2 2 0 0 1 2 2v3M16 15v1a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 .6-1.42M16 10l5-3v10l-3-1.8M3 3l18 18"
-    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-</svg>}
-@case(AppIcon.CAMERA_SWITCH){
-<svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M8 6l1.5-2h5L16 6h2a3 3 0 0 1 3 3v7a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V9a3 3 0 0 1 3-3h2z"
-    stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
-  <path d="M8.5 11a4 4 0 0 1 6.7-1.2L17 11.5M15.5 14a4 4 0 0 1-6.7 1.2L7 13.5M17 8.5v3h-3M7 16.5v-3h3"
-    stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
-</svg>}
+@switch (type()) {
+  @case (AppIcon.BACK) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 1024 1024"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        fill="currentColor"
+        d="M224 480h640a32 32 0 110 64H224a32 32 0 010-64z"
+      />
+      <path
+        fill="currentColor"
+        d="M237.248 512l265.408 265.344a32 32 0 01-45.312 45.312l-288-288a32 32 0 010-45.312l288-288a32 32 0 1145.312 45.312L237.248 512z"
+      />
+    </svg>
+  }
+  @case (AppIcon.MORE) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <circle cx="12" cy="6" r="1.5" fill="currentColor" />
+      <circle cx="12" cy="12" r="1.5" fill="currentColor" />
+      <circle cx="12" cy="18" r="1.5" fill="currentColor" />
+    </svg>
+  }
+  @case (AppIcon.SEND) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path fill="currentColor" d="M2 21 23 12 2 3v7l15 2-15 2v7Z" />
+    </svg>
+  }
+  @case (AppIcon.SHARE) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <circle cx="18" cy="5" r="3" stroke="currentColor" stroke-width="2" />
+      <circle cx="6" cy="12" r="3" stroke="currentColor" stroke-width="2" />
+      <circle cx="18" cy="19" r="3" stroke="currentColor" stroke-width="2" />
+      <path
+        d="m8.7 10.7 6.6-4.4M8.7 13.3l6.6 4.4"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.SEARCH) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M14.9536 14.9458L21 21M17 10C17 13.866 13.866 17 10 17C6.13401 17 3 13.866 3 10C3 6.13401 6.13401 3 10 3C13.866 3 17 6.13401 17 10Z"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.MENU) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M4 6H20M4 12H20M4 18H20"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.EYE) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.964-7.178z"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <path
+        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.EYE_OFF) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.137 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.SUN) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <circle
+        cx="12"
+        cy="12"
+        r="4"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <path
+        d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.MOON) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.CONTRAST) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2" />
+      <path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor" />
+    </svg>
+  }
+  @case (AppIcon.CHECK) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M5 12.5L10 17.5L19 6.5"
+        stroke="currentColor"
+        stroke-width="2.4"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.EDIT) {
+    <svg
+      [style]="style()"
+      viewBox="0 -960 960 960"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        fill="currentColor"
+        d="M200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h357l-80 80H200v560h560v-278l80-80v358q0 33-23.5 56.5T760-120H200Zm280-360ZM360-360v-170l367-367q12-12 27-18t30-6q16 0 30.5 6t26.5 18l56 57q11 12 17 26.5t6 29.5q0 15-5.5 29.5T897-728L530-360H360Zm481-424-56-56 56 56ZM440-440h56l232-232-28-28-29-28-231 231v57Zm260-260-29-28 29 28 28 28-28-28Z"
+      />
+    </svg>
+  }
+  @case (AppIcon.CLOSE) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M6 6L18 18M18 6L6 18"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.ARROW_FORWARD) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M5 12H19M19 12L13 6M19 12L13 18"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.GLOBE) {
+    <svg
+      [style]="style()"
+      viewBox="0 -960 960 960"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        fill="currentColor"
+        d="M480-80q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm-40-82v-78q-33 0-56.5-23.5T360-320v-40L168-552q-3 18-5.5 36t-2.5 36q0 121 79.5 212T440-162Zm276-102q41-45 62.5-100.5T800-480q0-98-54.5-179T600-776v16q0 33-23.5 56.5T520-680h-80v80q0 17-11.5 28.5T400-560h-80v80h240q17 0 28.5 11.5T600-440v120h40q26 0 47 15.5t29 40.5Z"
+      />
+    </svg>
+  }
+  @case (AppIcon.SETTINGS) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2" />
+    </svg>
+  }
+  @case (AppIcon.MUTE) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M11 5L6 9H3v6h3l5 4V5z"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <path
+        d="M23 9l-6 6M17 9l6 6"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.SPEAKER) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M11 5 6 9H3v6h3l5 4V5Z"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <path
+        d="M15.5 8.5a5 5 0 0 1 0 7M18 6a8.5 8.5 0 0 1 0 12"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.PIN) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M9 4h6l-1 6 4 3v2H6v-2l4-3-1-6z"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <path
+        d="M12 15v5"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.BLOCK) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2" />
+      <path
+        d="M5.6 5.6l12.8 12.8"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.REPORT) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M12 3l9 16H3L12 3z"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <path
+        d="M12 10v3"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+      />
+      <circle cx="12" cy="16" r="1" fill="currentColor" />
+    </svg>
+  }
+  @case (AppIcon.ERROR_OUTLINE) {
+    <svg
+      [style]="style()"
+      viewBox="0 -960 960 960"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        fill="currentColor"
+        d="M480-280q17 0 28.5-11.5T520-320q0-17-11.5-28.5T480-360q-17 0-28.5 11.5T440-320q0 17 11.5 28.5T480-280Zm-40-160h80v-240h-80v240Zm40 360q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm0-80q134 0 227-93t93-227q0-134-93-227t-227-93q-134 0-227 93t-93 227q0 134 93 227t227 93Zm0-320Z"
+      />
+    </svg>
+  }
+  @case (AppIcon.TRASH) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M4 7h16M10 4h4M9 7v12m6-12v12M5 7l1 13a2 2 0 002 2h8a2 2 0 002-2l1-13"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.LOG_OUT) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M10 5H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h4"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <path
+        d="M14 8l4 4-4 4M18 12H9"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.NOTIFICATIONS) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <path
+        d="M13.73 21a2 2 0 0 1-3.46 0"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.IMAGE) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <rect
+        x="3"
+        y="3"
+        width="18"
+        height="18"
+        rx="2"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linejoin="round"
+      />
+      <circle
+        cx="8.5"
+        cy="8.5"
+        r="1.5"
+        stroke="currentColor"
+        stroke-width="2"
+      />
+      <path
+        d="M21 15l-5-5L5 21"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.INFO) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2" />
+      <path
+        d="M12 11v5"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+      />
+      <circle cx="12" cy="8" r="1" fill="currentColor" />
+    </svg>
+  }
+  @case (AppIcon.CHEVRON_RIGHT) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M9 6l6 6-6 6"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.CHEVRON_DOWN) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M6 9l6 6 6-6"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.REFRESH) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M20 12a8 8 0 1 1-2.34-5.66"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+      />
+      <path
+        d="M20 4v5h-5"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.SERVER) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <rect
+        x="3"
+        y="4"
+        width="18"
+        height="7"
+        rx="2"
+        stroke="currentColor"
+        stroke-width="2"
+      />
+      <rect
+        x="3"
+        y="13"
+        width="18"
+        height="7"
+        rx="2"
+        stroke="currentColor"
+        stroke-width="2"
+      />
+      <circle cx="7" cy="7.5" r="1" fill="currentColor" />
+      <circle cx="7" cy="16.5" r="1" fill="currentColor" />
+    </svg>
+  }
+  @case (AppIcon.DEVICES) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <rect
+        x="2"
+        y="5"
+        width="14"
+        height="10"
+        rx="2"
+        stroke="currentColor"
+        stroke-width="2"
+      />
+      <path
+        d="M2 17h11"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+      />
+      <rect
+        x="16"
+        y="9"
+        width="6"
+        height="11"
+        rx="1.5"
+        stroke="currentColor"
+        stroke-width="2"
+      />
+    </svg>
+  }
+  @case (AppIcon.FILE) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <path
+        d="M14 3v5h5"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.CHATS) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.FRIEND_REQUESTS) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <circle cx="9" cy="7" r="4" stroke="currentColor" stroke-width="2" />
+      <line
+        x1="19"
+        y1="8"
+        x2="19"
+        y2="14"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+      />
+      <line
+        x1="22"
+        y1="11"
+        x2="16"
+        y2="11"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.NEW_GROUP) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <circle cx="9" cy="7" r="4" stroke="currentColor" stroke-width="2" />
+      <path
+        d="M22 21v-2a4 4 0 0 0-3-3.87"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <path
+        d="M16 3.13a4 4 0 0 1 0 7.75"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.PERSON_ADMIN) {
+    <svg
+      [style]="style()"
+      viewBox="0 -960 960 960"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        fill="currentColor"
+        d="M722.5-297.5Q740-315 740-340t-17.5-42.5Q705-400 680-400t-42.5 17.5Q620-365 620-340t17.5 42.5Q655-280 680-280t42.5-17.5ZM680-160q31 0 57-14.5t42-38.5q-22-13-47-20t-52-7q-27 0-52 7t-47 20q16 24 42 38.5t57 14.5ZM480-80q-139-35-229.5-159.5T160-516v-244l320-120 320 120v227q-19-8-39-14.5t-41-9.5v-147l-240-90-240 90v188q0 47 12.5 94t35 89.5Q310-290 342-254t71 60q11 32 29 61t41 52q-1 0-1.5.5t-1.5.5Zm200 0q-83 0-141.5-58.5T480-280q0-83 58.5-141.5T680-480q83 0 141.5 58.5T880-280q0 83-58.5 141.5T680-80ZM480-494Z"
+      />
+    </svg>
+  }
+  @case (AppIcon.PERSON_REMOVE) {
+    <svg
+      [style]="style()"
+      viewBox="0 -960 960 960"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        fill="currentColor"
+        d="M640-520v-80h240v80H640Zm-393-7q-47-47-47-113t47-113q47-47 113-47t113 47q47 47 47 113t-47 113q-47 47-113 47t-113-47ZM40-160v-112q0-34 17.5-62.5T104-378q62-31 126-46.5T360-440q66 0 130 15.5T616-378q29 15 46.5 43.5T680-272v112H40Zm80-80h480v-32q0-11-5.5-20T580-306q-54-27-109-40.5T360-360q-56 0-111 13.5T140-306q-9 5-14.5 14t-5.5 20v32Zm296.5-343.5Q440-607 440-640t-23.5-56.5Q393-720 360-720t-56.5 23.5Q280-673 280-640t23.5 56.5Q327-560 360-560t56.5-23.5ZM360-640Zm0 400Z"
+      />
+    </svg>
+  }
+  @case (AppIcon.PHONE) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M6.6 3.5h2.7l1.35 4.05-2.1 1.4a15.2 15.2 0 0 0 6.5 6.5l1.4-2.1 4.05 1.35v2.7a3.1 3.1 0 0 1-3.35 3.1A14.9 14.9 0 0 1 3.5 6.85 3.1 3.1 0 0 1 6.6 3.5Z"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.PHONE_END) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        fill="currentColor"
+        d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .4-.25.75-.62.9-1 .45-1.96 1.04-2.85 1.72-.18.14-.41.22-.66.22-.28 0-.53-.11-.71-.29L.29 13.1A.99.99 0 0 1 0 12.4c0-.28.11-.53.29-.71C3.34 8.73 7.46 7.12 12 7.12s8.66 1.61 11.71 4.56c.18.18.29.43.29.71s-.11.53-.29.71l-2.27 2.27c-.18.18-.43.29-.71.29-.24 0-.47-.08-.65-.22-.89-.68-1.85-1.27-2.85-1.72a.98.98 0 0 1-.62-.9v-3.1C15.15 9.25 13.6 9 12 9z"
+      />
+    </svg>
+  }
+  @case (AppIcon.MIC) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <rect
+        x="9"
+        y="3"
+        width="6"
+        height="11"
+        rx="3"
+        stroke="currentColor"
+        stroke-width="2"
+      />
+      <path
+        d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M9 21h6"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.MIC_OFF) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M9 8V6a3 3 0 0 1 5.7-1.3M15 10v1a3 3 0 0 1-.45 1.58M6 11.5A6 6 0 0 0 16.2 15.8M18 11.5a6 6 0 0 1-.4 2.15M12 18v3M9 21h6M4 4l16 16"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.VIDEO) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <rect
+        x="3"
+        y="6"
+        width="13"
+        height="12"
+        rx="2"
+        stroke="currentColor"
+        stroke-width="2"
+      />
+      <path
+        d="M16 10l5-3v10l-5-3z"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.VIDEO_OFF) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M10 6h4a2 2 0 0 1 2 2v3M16 15v1a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 .6-1.42M16 10l5-3v10l-3-1.8M3 3l18 18"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
+  @case (AppIcon.CAMERA_SWITCH) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M8 6l1.5-2h5L16 6h2a3 3 0 0 1 3 3v7a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V9a3 3 0 0 1 3-3h2z"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linejoin="round"
+      />
+      <path
+        d="M8.5 11a4 4 0 0 1 6.7-1.2L17 11.5M15.5 14a4 4 0 0 1-6.7 1.2L7 13.5M17 8.5v3h-3M7 16.5v-3h3"
+        stroke="currentColor"
+        stroke-width="1.7"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
 }

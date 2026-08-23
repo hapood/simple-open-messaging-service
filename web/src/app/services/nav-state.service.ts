@@ -11,7 +11,7 @@ import { UserService } from './user.service';
 /** The chat-scoped aside overlay kinds — peer-profile / group-info, opened from within a chat. Single-depth
  *  (no drill-in here); the Settings sub-page has its own {@link NavStateMachineService.settingsCategoryStack}
  *  state, so this type is purely overlay panels. */
-export type AsidePanel = 'profile' | 'group-info';
+export type AsidePanel = 'profile' | 'group-info' | 'group-join-requests';
 
 /** The active mobile home section (`'chats'` = conversation list; `'settings'` / `'profile'` are opened
  *  from the account menu and swap the section content inline). Desktop never reads this — its icon-rail

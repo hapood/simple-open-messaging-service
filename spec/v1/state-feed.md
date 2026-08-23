@@ -114,6 +114,12 @@ expiration, revocation, restoration, authorization, and confirmation semantics
 remain those defined by the core protocol. `REVOKED` is a current compacted
 fact, not a group-member deletion.
 
+A `REQUESTED` direction loses all authorization at its absolute `expiresAt`, independently of
+background processing. After that boundary, the author MAY atomically materialize the direction as
+`REVOKED` and allocate the resulting snapshot at a newer state-feed position. A receiver MUST NOT
+publish or otherwise invent that terminal fact on the author's behalf; until the author publishes a
+new snapshot, the receiver retains the expired `REQUESTED` as an ineffective authored fact.
+
 ## 6. GROUP_META_FEED_HEAD
 
 ```ts

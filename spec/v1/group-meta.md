@@ -103,8 +103,8 @@ merge them by member Address alone.
 
 Exactly one current member has role `OWNER` in every non-empty roster. The
 receiver derives the owner from that role and derives its local active state by
-whether one of its own users remains in the roster. Non-member-derived settings,
-including `membersCanInvite`, are local policy and are not federated facts.
+whether one of its own users remains in the roster. Non-member-derived settings
+are local policy and are not federated facts.
 
 ## 3. Full mode
 

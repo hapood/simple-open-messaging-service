@@ -2,6 +2,8 @@ import { ContentType } from '../database/enums.js';
 import { extractDigests } from '../upload/file-content.js';
 import {
   isValidGroupAccount,
+  isValidAccount,
+  isValidSocfpDomain,
   isValidUserAccount,
   isValidSocfpUserAccount,
   parseSocfpUserAddress,
@@ -73,6 +75,32 @@ function assertPositiveFinite(value: unknown): asserts value is number {
 function assertNonEmptyString(value: unknown): asserts value is string {
   if (typeof value !== 'string' || value.length === 0) {
     throw new Error('invalid non-empty string');
+  }
+}
+
+function validateContactCard(
+  value: JsonObject,
+  allowLocalDomain = false,
+): void {
+  assertKeys(
+    value,
+    ['account', 'domain', 'displayName'],
+    ['avatar', 'avatarDigest'],
+  );
+  const account = value['account'];
+  if (
+    typeof account !== 'string' ||
+    !isValidAccount(account) ||
+    typeof value['domain'] !== 'string' ||
+    !(
+      isValidSocfpDomain(value['domain']) ||
+      (allowLocalDomain && value['domain'] === 'local')
+    ) ||
+    typeof value['displayName'] !== 'string' ||
+    [...value['displayName']].length < 1 ||
+    [...value['displayName']].length > 30
+  ) {
+    throw new Error('invalid contact card');
   }
 }
 
@@ -264,8 +292,27 @@ export function toFederatedMessageContent(
         ...(value['siteName'] === undefined
           ? {}
           : { siteName: value['siteName'] }),
+        ...(value['image'] === undefined
+          ? {}
+          : { icon: digestFromUrl(value['image']) }),
+        ...(value['favicon'] === undefined
+          ? {}
+          : { favicon: digestFromUrl(value['favicon']) }),
       });
     }
+    case ContentType.CONTACT_CARD:
+      validateContactCard(value, true);
+      if (value['avatarDigest'] !== undefined) {
+        throw new Error('local contact card must not contain avatarDigest');
+      }
+      return JSON.stringify({
+        account: value['account'],
+        domain: value['domain'] === 'local' ? localDomain : value['domain'],
+        displayName: value['displayName'],
+        ...(value['avatar'] === undefined
+          ? {}
+          : { avatarDigest: digestFromUrl(value['avatar']) }),
+      });
     case ContentType.FORWARD:
       if (Object.keys(value).length === 1) {
         // Imported forward cards are deliberately stored in their URL-free wire shape. They can
@@ -357,7 +404,13 @@ export function fromFederatedMessageContent(
       return JSON.stringify({ items });
     }
     case ContentType.LINK:
-      assertKeys(value, ['url', 'title', 'description'], ['siteName']);
+      assertKeys(
+        value,
+        ['url', 'title', 'description'],
+        ['siteName', 'icon', 'favicon'],
+      );
+      if (value['icon'] !== undefined) assertDigest(value['icon']);
+      if (value['favicon'] !== undefined) assertDigest(value['favicon']);
       let parsedUrl: URL;
       try {
         parsedUrl = new URL(String(value['url']));
@@ -380,6 +433,27 @@ export function fromFederatedMessageContent(
         ...(value['siteName'] === undefined
           ? {}
           : { siteName: value['siteName'] }),
+        ...(value['icon'] === undefined
+          ? {}
+          : { image: localCasUrl(value['icon']) }),
+        ...(value['favicon'] === undefined
+          ? {}
+          : { favicon: localCasUrl(value['favicon']) }),
+      });
+    case ContentType.CONTACT_CARD:
+      validateContactCard(value);
+      if (value['avatar'] !== undefined) {
+        throw new Error('federated contact card must not contain avatar');
+      }
+      if (value['avatarDigest'] !== undefined)
+        assertDigest(value['avatarDigest']);
+      return JSON.stringify({
+        account: value['account'],
+        domain: value['domain'] === localDomain ? 'local' : value['domain'],
+        displayName: value['displayName'],
+        ...(value['avatarDigest'] === undefined
+          ? {}
+          : { avatar: localCasUrl(value['avatarDigest']) }),
       });
     case ContentType.CALL:
       if (!parseFederatedCallContent(content)) {
@@ -417,6 +491,11 @@ export function federatedContentDigests(
     result.push(
       ...value['items'].map((item) => (item as JsonObject)['digest']),
     );
+  } else if (contentType === ContentType.LINK) {
+    if (value['icon'] !== undefined) result.push(value['icon']);
+    if (value['favicon'] !== undefined) result.push(value['favicon']);
+  } else if (contentType === ContentType.CONTACT_CARD) {
+    if (value['avatarDigest'] !== undefined) result.push(value['avatarDigest']);
   }
   const digests = new Set<string>();
   for (const digest of result) {

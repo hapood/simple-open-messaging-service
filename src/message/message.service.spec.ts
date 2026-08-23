@@ -407,6 +407,46 @@ describe('MessageService.queryMessages quote previews', () => {
       imageShape: 'thumbnail',
     });
   });
+
+  it('uses contact card identity and avatar in a reply preview', async () => {
+    const reply = mk({
+      id: 9n,
+      seq: 12,
+      contentType: 'PURE_TEXT',
+      content: replyContent,
+    });
+    const target = {
+      ...mk({
+        id: 4n,
+        seq: 4,
+        contentType: 'CONTACT_CARD',
+        content: JSON.stringify({
+          account: 'alice',
+          domain: 'remote.example',
+          displayName: 'Alice',
+          avatar: '/uploads/cas/aa/bb/avatar.webp',
+        }),
+      }),
+      user: { name: 'Bob' },
+    };
+    const svc = new MessageService(
+      databaseMock({ message: vi.fn().mockResolvedValue([target]) }) as never,
+      {} as never,
+    );
+
+    const [out] = await svc.attachQuotePreviews([reply]);
+
+    expect(JSON.parse(out.content).quote).toEqual({
+      seq: 4,
+      author: 'Bob',
+      body: '[Contact] Alice',
+      contentType: 'CONTACT_CARD',
+      image: '/uploads/cas/aa/bb/avatar.webp',
+      imageLabel: 'Alice',
+      imageIdentity: 'alice',
+      imageShape: 'avatar',
+    });
+  });
 });
 
 describe('MessageService.unreadMentionStates', () => {

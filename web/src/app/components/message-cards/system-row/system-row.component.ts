@@ -18,6 +18,8 @@ const LABEL_KEYS: Record<string, string> = {
   GROUP_ADMIN_GRANTED: 'groupAdminGranted',
   GROUP_ADMIN_REVOKED: 'groupAdminRevoked',
   GROUP_OWNER_TRANSFERRED: 'groupOwnerTransferred',
+  MESSAGE_WITHDRAWN: 'messageWithdrawn',
+  MESSAGES_MODERATED: 'messagesModerated',
 };
 
 @Component({
@@ -73,6 +75,8 @@ export class SystemRowComponent {
       const body = JSON.parse(this.data().text) as {
         type?: string;
         subject?: { account?: string; domain?: string };
+        actor?: { account?: string; domain?: string };
+        count?: number;
       };
       const labelKey = LABEL_KEYS[body.type ?? ''];
       if (!labelKey) return this.fallback('unknown system message type');
@@ -80,7 +84,20 @@ export class SystemRowComponent {
       const name = body.subject?.account?.trim();
       if (body.type === 'FRIEND_ADDED')
         return this.transloco.translate('chat.systemMessage.friendAdded');
+      if (body.type === 'MESSAGES_MODERATED')
+        return this.transloco.translate(
+          'chat.systemMessage.messagesModerated',
+          { count: body.count },
+        );
       if (!name) return this.fallback('system message subject is missing');
+      if (body.type === 'MESSAGE_WITHDRAWN') {
+        return this.transloco.translate(
+          this.data().isSelf
+            ? 'chat.systemMessage.messageWithdrawnSelf'
+            : 'chat.systemMessage.messageWithdrawn',
+          { name },
+        );
+      }
       if (body.type === 'FRIEND_REMOVED') {
         if (this.data().isSelf)
           return this.transloco.translate(

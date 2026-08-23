@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { and, count, desc, eq, ilike, or, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { messageThread, threadParticipant, user } from '../database/schema.js';
+import { messageThread, user } from '../database/schema.js';
 import type { AdminGroupsListDto } from './admin.dto.js';
 
 /**
@@ -26,9 +26,11 @@ export class GroupManageService {
       : undefined;
     const where = and(eq(messageThread.type, 'GROUP'), search);
     const activeParticipants = sql<number>`(
-      select count(*)::int from ${threadParticipant}
-      where ${threadParticipant.threadId} = ${messageThread.id}
-        and ${threadParticipant.state} = 'ESTABLISHED'
+      select count(*)::int from "RelationshipIntent" authorization
+      where authorization."authorUserId" = ${messageThread.groupUserId}
+        and (authorization.status = 'ACCEPTED'
+          or (authorization.status = 'REQUESTED'
+            and authorization."expiresAt" > CURRENT_TIMESTAMP))
     )`;
     const base = this.database.db
       .select({

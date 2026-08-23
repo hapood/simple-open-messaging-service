@@ -11,17 +11,17 @@ describe('PlaygroundConversationList', () => {
       group: {
         id: 2,
         name: 'Playground Team',
-        membersCanInvite: true,
+        description: 'Before',
       },
     } as ConversationItem);
 
-    conversations.applyGroupUpdate(2, { membersCanInvite: false });
+    conversations.applyGroupUpdate(2, { description: 'After' });
 
     expect(conversations.current()?.group).toEqual(
       expect.objectContaining({
         id: 2,
         name: 'Playground Team',
-        membersCanInvite: false,
+        description: 'After',
       }),
     );
   });

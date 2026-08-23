@@ -163,6 +163,27 @@
       },
       "additionalProperties": false
     },
+    "contactCard": {
+      "type": "object",
+      "required": ["account", "domain", "displayName"],
+      "properties": {
+        "account": {
+          "$ref": "urn:socfp:v1:common#/$defs/account"
+        },
+        "domain": {
+          "$ref": "urn:socfp:v1:common#/$defs/domain"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30
+        },
+        "avatarDigest": {
+          "$ref": "urn:socfp:v1:common#/$defs/sha256Hex"
+        }
+      },
+      "additionalProperties": false
+    },
     "call": {
       "type": "object",
       "required": ["callSid", "callType", "status", "endedAt"],
@@ -251,6 +272,12 @@
     {
       "if": { "properties": { "contentType": { "const": "LINK" } } },
       "then": { "properties": { "content": { "$ref": "#/$defs/link" } } }
+    },
+    {
+      "if": { "properties": { "contentType": { "const": "CONTACT_CARD" } } },
+      "then": {
+        "properties": { "content": { "$ref": "#/$defs/contactCard" } }
+      }
     },
     {
       "if": { "properties": { "contentType": { "const": "CALL" } } },

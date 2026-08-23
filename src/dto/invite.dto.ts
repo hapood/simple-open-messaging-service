@@ -124,6 +124,20 @@ export class InviteIdDto {
   inviteId!: string;
 }
 
+/** Advance the account-wide incoming-invitation read watermark. The value is a client state-feed
+ * cursor that the caller has already applied durably; it is not an invitation business id. */
+export class ReadIncomingInvitesDto {
+  @ApiProperty({
+    example: 1234,
+    description:
+      'Highest client state-feed id durably applied before the incoming invitation list was viewed',
+  })
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  readThroughFeedId!: number;
+}
+
 /** Select a pending friend request. Local requests use their database id; pre-materialization
  * federated requests use the remote Address and never expose a second-table id namespace. */
 export class FriendInviteActionDto {

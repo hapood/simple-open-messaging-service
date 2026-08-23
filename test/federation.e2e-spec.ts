@@ -45,6 +45,7 @@ import {
   mediaAsset,
   messageAsset,
   message,
+  clientMessageFeed,
   messageThread,
   peerStateFeed,
   peerStateFeedPullCursor,
@@ -96,7 +97,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     return app.database.query.threadParticipant.findFirst({
       where: and(
         eq(threadParticipant.userId, userId),
-        eq(threadParticipant.state, 'ESTABLISHED'),
         sql`exists (select 1 from "MessageThread" mt where mt.id = "threadParticipant"."threadId" and mt.type = 'P2P')`,
       ),
       columns: { threadId: true },
@@ -117,8 +117,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         ON thread.id = first_participant."threadId" AND thread.type = 'P2P'
       WHERE first_participant."userId" = ${firstUserId}
         AND second_participant."userId" = ${secondUserId}
-        AND first_participant.state = 'ESTABLISHED'
-        AND second_participant.state = 'ESTABLISHED'
       LIMIT 1
     `);
     return result.rows[0];
@@ -1105,7 +1103,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         where: and(
           eq(threadParticipant.threadId, mirrorB.id),
           eq(threadParticipant.userId, bobLocalIdB),
-          eq(threadParticipant.state, 'ESTABLISHED'),
         ),
       });
     expect(establishedImmediately).toBeDefined();
@@ -1172,7 +1169,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             where: and(
               eq(threadParticipant.userId, bobLocalIdB),
               eq(threadParticipant.threadId, mirrorB.id),
-              eq(threadParticipant.state, 'ESTABLISHED'),
             ),
           });
         expect(bobOnMirror).toBeDefined();
@@ -1420,7 +1416,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             where: and(
               eq(threadParticipant.userId, daveLocalIdB),
               eq(threadParticipant.threadId, firstMirrorBId),
-              eq(threadParticipant.state, 'ESTABLISHED'),
             ),
           }),
         ).not.toBeNull();
@@ -1434,7 +1429,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await vi.waitFor(
       async () => {
         const [daveOnOrigin] = await appA.database
-          .select({ state: threadParticipant.state })
+          .select({ id: threadParticipant.id })
           .from(threadParticipant)
           .innerJoin(user, eq(user.id, threadParticipant.userId))
           .where(
@@ -1445,7 +1440,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             ),
           )
           .limit(1);
-        expect(daveOnOrigin?.state).toBe('ESTABLISHED');
+        expect(daveOnOrigin?.id).toBeDefined();
       },
       { timeout: 5000 },
     );
@@ -1456,7 +1451,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             where: and(
               eq(threadParticipant.userId, daveLocalIdB),
               eq(threadParticipant.threadId, firstMirrorBId),
-              eq(threadParticipant.state, 'ESTABLISHED'),
             ),
           });
         expect(daveOnMirror).not.toBeNull();
@@ -1545,7 +1539,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         .where(
           and(
             eq(threadParticipant.threadId, firstMirrorBId),
-            eq(threadParticipant.state, 'ESTABLISHED'),
             eq(user.domain, 'local'),
           ),
         );
@@ -1609,12 +1602,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         const boundaryMessage = await appA.database.query.message.findFirst({
           where: and(
             eq(message.threadId, firstGroupThreadA),
-            eq(message.creator, daveStubIdOnA),
             eq(message.contentType, ContentType.SYSTEM),
             sql`${message.content}::text like '%GROUP_LEFT%'`,
           ),
+          orderBy: desc(message.seq),
         });
-        expect(boundaryMessage).toBeDefined();
+        expect(boundaryMessage).toMatchObject({ creator: null });
+        expect(originMember?.leftSeq).toBe(boundaryMessage!.seq);
       },
       { timeout: 5000, interval: 100 },
     );
@@ -1920,7 +1914,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           where: and(
             eq(threadParticipant.threadId, firstMirrorBId),
             eq(threadParticipant.userId, bobLocalIdB),
-            eq(threadParticipant.state, 'ESTABLISHED'),
           ),
         }),
       ).toBeUndefined();
@@ -1954,14 +1947,12 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             where: and(
               eq(threadParticipant.threadId, firstGroupThreadA),
               eq(threadParticipant.userId, bobStubIdOnA),
-              eq(threadParticipant.state, 'ESTABLISHED'),
             ),
           }),
           appB.database.query.threadParticipant.findFirst({
             where: and(
               eq(threadParticipant.threadId, firstMirrorBId),
               eq(threadParticipant.userId, bobLocalIdB),
-              eq(threadParticipant.state, 'ESTABLISHED'),
             ),
           }),
         ]);
@@ -2063,7 +2054,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             where: and(
               eq(threadParticipant.threadId, mirror.id),
               eq(threadParticipant.userId, bobLocalIdB),
-              eq(threadParticipant.state, 'ESTABLISHED'),
             ),
           });
         expect(mirrorParticipant).toBeUndefined();
@@ -2073,19 +2063,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const [originCount] = await appA.database
       .select({ value: count() })
       .from(threadParticipant)
-      .where(
-        and(
-          eq(threadParticipant.threadId, originThreadId),
-          eq(threadParticipant.state, 'ESTABLISHED'),
-        ),
-      );
+      .where(and(eq(threadParticipant.threadId, originThreadId)));
     expect(Number(originCount.value)).toBe(SERVER_MAX_GROUP_MEMBERS);
     expect(
       await appA.database.query.threadParticipant.findFirst({
         where: and(
           eq(threadParticipant.threadId, originThreadId),
           eq(threadParticipant.userId, bobStubIdOnA),
-          eq(threadParticipant.state, 'ESTABLISHED'),
         ),
       }),
     ).toBeUndefined();
@@ -2291,6 +2275,62 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       { timeout: 40_000, interval: 150 },
     );
   }, 120_000);
+
+  it('materializes a federated unfriend as a local boundary SYSTEM/feed/leftSeq on the receiving server', async () => {
+    const threadA = await findActiveP2pBetween(
+      appA,
+      aliceLocalIdA,
+      bobStubIdOnA,
+    );
+    const threadB = await findActiveP2pBetween(
+      appB,
+      bobLocalIdB,
+      aliceStubIdOnB,
+    );
+    expect(threadA).toBeDefined();
+    expect(threadB).toBeDefined();
+
+    const response = await request(appA.baseUrl)
+      .post('/api/v1/user/delete-friend')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ userId: bobStubIdOnA });
+    expect(response.body.code).toBe(BusinessCode.OK);
+
+    await vi.waitFor(
+      async () => {
+        expect(
+          await findActiveP2pBetween(appB, bobLocalIdB, aliceStubIdOnB),
+        ).toBeUndefined();
+        const boundary = await appB.database.query.message.findFirst({
+          where: and(
+            eq(message.threadId, threadB!.threadId),
+            eq(message.contentType, ContentType.SYSTEM),
+            sql`${message.content}::text like '%FRIEND_REMOVED%'`,
+          ),
+          orderBy: desc(message.seq),
+        });
+        expect(boundary).toMatchObject({ creator: null });
+        const participant =
+          await appB.database.query.threadParticipant.findFirst({
+            where: and(
+              eq(threadParticipant.threadId, threadB!.threadId),
+              eq(threadParticipant.userId, bobLocalIdB),
+            ),
+          });
+        expect(participant?.leftSeq).toBe(boundary!.seq);
+        expect(
+          await appB.database.query.clientMessageFeed.findFirst({
+            where: and(
+              eq(clientMessageFeed.userId, bobLocalIdB),
+              eq(clientMessageFeed.threadId, threadB!.threadId),
+              eq(clientMessageFeed.messageEndSeq, boundary!.seq),
+            ),
+          }),
+        ).toBeDefined();
+      },
+      { timeout: 40_000, interval: 150 },
+    );
+  }, 60_000);
 
   it('rejects an inbound state wake-up signed by an untrusted domain', async () => {
     // evil.local: a real Ed25519 key, but never init'd → not in FederatedPeer.

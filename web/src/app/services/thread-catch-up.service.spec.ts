@@ -24,10 +24,12 @@ describe('ThreadCatchUpService', () => {
 
   afterEach(() => http.verify());
 
-  it('posts integer feed cursors and returns one pinned page', async () => {
+  it('gets integer feed cursors and returns one pinned page', async () => {
     const pending = service.catchUp(7, 12);
-    const req = http.expectOne('/api/v1/thread-sync/catch-up');
-    expect(req.request.body).toEqual({ after: 7, through: 12, take: 200 });
+    const req = http.expectOne(
+      '/api/v1/thread-sync/catch-up?after=7&take=200&through=12',
+    );
+    expect(req.request.method).toBe('GET');
     req.flush({
       code: 0,
       message: 'ok',
@@ -44,5 +46,24 @@ describe('ThreadCatchUpService', () => {
       messageFeedEndId: 15,
       hasMore: false,
     });
+  });
+
+  it('gets tombstones with the same feed query contract', async () => {
+    const pending = service.catchUpTombstones(4, 9);
+    const req = http.expectOne(
+      '/api/v1/thread-sync/tombstones?after=4&take=200&through=9',
+    );
+    expect(req.request.method).toBe('GET');
+    req.flush({
+      code: 0,
+      message: 'ok',
+      data: {
+        items: [],
+        scannedThrough: 9,
+        tombstoneFeedEndId: 9,
+        hasMore: false,
+      },
+    });
+    await expect(pending).resolves.toMatchObject({ scannedThrough: 9 });
   });
 });

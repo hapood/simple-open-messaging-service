@@ -113,7 +113,7 @@ describe('federated message content projection', () => {
     ).toEqual([digestA, digestB]);
   });
 
-  it('keeps LINK text metadata while dropping local artwork', () => {
+  it('federates optional LINK artwork as digests and restores local URLs', () => {
     const wire = JSON.parse(
       toFederatedMessageContent(
         ContentType.LINK,
@@ -132,10 +132,12 @@ describe('federated message content projection', () => {
       url: 'https://example.test/article',
       title: 'Title',
       description: '',
+      icon: digestA,
+      favicon: digestB,
     });
     expect(
       federatedContentDigests(ContentType.LINK, JSON.stringify(wire)),
-    ).toEqual([]);
+    ).toEqual([digestA, digestB]);
     expect(
       JSON.parse(
         fromFederatedMessageContent(
@@ -144,10 +146,112 @@ describe('federated message content projection', () => {
           'local.test',
         ),
       ),
-    ).toEqual(wire);
+    ).toEqual({
+      url: 'https://example.test/article',
+      title: 'Title',
+      description: '',
+      image: cas(digestA),
+      favicon: cas(digestB),
+    });
   });
 
-  it('rejects removed LINK artwork fields on wire input', () => {
+  it('allows empty LINK text fields and omitted artwork', () => {
+    const wire = JSON.stringify({
+      url: 'https://example.test/article',
+      title: '',
+      description: '',
+      siteName: '',
+    });
+
+    expect(
+      JSON.parse(
+        fromFederatedMessageContent(ContentType.LINK, wire, 'local.test'),
+      ),
+    ).toEqual(JSON.parse(wire));
+    expect(federatedContentDigests(ContentType.LINK, wire)).toEqual([]);
+  });
+
+  it('projects CONTACT_CARD avatar artwork without changing its user address', () => {
+    const local = {
+      account: 'carol',
+      domain: 'local',
+      displayName: 'Carol',
+      avatar: cas(digestA),
+    };
+    const wire = {
+      account: 'carol',
+      domain: 'local.test',
+      displayName: 'Carol',
+      avatarDigest: digestA,
+    };
+
+    expect(
+      JSON.parse(
+        toFederatedMessageContent(
+          ContentType.CONTACT_CARD,
+          JSON.stringify(local),
+          'local.test',
+        ),
+      ),
+    ).toEqual(wire);
+    expect(
+      federatedContentDigests(ContentType.CONTACT_CARD, JSON.stringify(wire)),
+    ).toEqual([digestA]);
+    expect(
+      JSON.parse(
+        fromFederatedMessageContent(
+          ContentType.CONTACT_CARD,
+          JSON.stringify(wire),
+          'local.test',
+        ),
+      ),
+    ).toEqual(local);
+  });
+
+  it('rejects malformed CONTACT_CARD content', () => {
+    expect(() =>
+      fromFederatedMessageContent(
+        ContentType.CONTACT_CARD,
+        JSON.stringify({
+          account: 'invalid account',
+          domain: 'c.example',
+          displayName: 'Group',
+        }),
+        'local.test',
+      ),
+    ).toThrow('invalid contact card');
+    expect(() =>
+      fromFederatedMessageContent(
+        ContentType.CONTACT_CARD,
+        JSON.stringify({
+          account: 'carol',
+          domain: 'c.example',
+          displayName: 'Carol',
+          avatarDigest: 'invalid',
+        }),
+        'local.test',
+      ),
+    ).toThrow('invalid media digest');
+  });
+
+  it('accepts a group contact without a separate discriminator', () => {
+    const wire = JSON.stringify({
+      account: '!group123',
+      domain: 'groups.test',
+      displayName: 'Project Group',
+    });
+    expect(
+      JSON.parse(
+        fromFederatedMessageContent(
+          ContentType.CONTACT_CARD,
+          wire,
+          'local.test',
+        ),
+      ),
+    ).toEqual(JSON.parse(wire));
+  });
+
+  it('rejects invalid or unknown LINK artwork fields on wire input', () => {
     expect(() =>
       fromFederatedMessageContent(
         ContentType.LINK,
@@ -160,6 +264,18 @@ describe('federated message content projection', () => {
         'local.test',
       ),
     ).toThrow('invalid fields');
+    expect(() =>
+      fromFederatedMessageContent(
+        ContentType.LINK,
+        JSON.stringify({
+          url: 'https://example.test/article',
+          title: '',
+          description: '',
+          favicon: 'not-a-digest',
+        }),
+        'local.test',
+      ),
+    ).toThrow('invalid media digest');
   });
 
   it('publishes an imported minimal FORWARD card idempotently', () => {
@@ -232,5 +348,4 @@ describe('federated message content projection', () => {
       fromFederatedMessageContent(ContentType.PURE_TEXT, wire, 'local.test'),
     ).toThrow('valid full address');
   });
-
 });

@@ -31,7 +31,7 @@ export type ConversationLoadStatus =
  * The DB-layer repository for the conversation list — the read + SSE half of the strict 3-tier
  * (UI ↔ repositories ↔ backend) for the thread-list domain. It is the ONLY service that issues the
  * list READ (`/user/query-state/delta`) and the ONLY consumer of the client-state wake
- * (`NEW_MESSAGE`, `STATE_REV_UPDATED`). UI-facing services
+ * (`NEW_MESSAGE`, `STATE_FEED_UPDATED`). UI-facing services
  * read its signals; they never fetch or mutate from SSE.
  *
  * NO write operations live here — `markRead` (a write) stays in the UI layer ({@link ConversationListService}
@@ -105,11 +105,12 @@ export class ThreadRepository {
   /** Explicit thread to force-top on the next applyItems (set by {@link markTopOnNextUpdate}). */
   private _pendingTopId: number | null = null;
 
-  /** Single-flight + tail-coalesce for STATE_REV_UPDATED (mirrors onmessagesignal-single-flight):
+  /** Single-flight + tail-coalesce for STATE_FEED_UPDATED (mirrors onmessagesignal-single-flight):
    *  while a delta pull is in-flight, the latest incoming revision is stashed as the tail; on completion
    *  the tail is pulled `(cursor, tail]`, collapsing a signal burst into ranged pulls. */
   private _deltaInFlight = false;
-  private _pendingTailRev: number | undefined;
+  private _pendingTailFeedId: number | undefined;
+  private _fullStateDrainTarget: number | undefined;
 
   /** Per-thread in-memory high-water mark for the newest message seq observed in this live session. It also
    *  avoids repeated list work for duplicate SSE
@@ -194,7 +195,7 @@ export class ThreadRepository {
         ?.threadId;
       if (
         (eventThreadId !== undefined && this.deletionLock.has(eventThreadId)) ||
-        (m.event === 'STATE_REV_UPDATED' && this.deletionLock.any)
+        (m.event === 'STATE_FEED_UPDATED' && this.deletionLock.any)
       )
         return;
       switch (m.event) {
@@ -207,11 +208,9 @@ export class ThreadRepository {
               m.data as { threadId: number; seq: number; ts: number },
             );
           break;
-        case 'STATE_REV_UPDATED':
+        case 'STATE_FEED_UPDATED':
           if (m.data !== undefined)
-            this.onStateRevisionUpdated(
-              (m.data as { stateRevision: number }).stateRevision,
-            );
+            this.onStateFeedUpdated((m.data as { feedId: number }).feedId);
           break;
         case 'ATTENTION_REV_UPDATED':
           if (m.data !== undefined)
@@ -250,7 +249,7 @@ export class ThreadRepository {
     this._topInserted.set(null);
     this._pendingTopId = null;
     this._deltaInFlight = false;
-    this._pendingTailRev = undefined;
+    this._pendingTailFeedId = undefined;
     this.lastSeenSeq.clear();
     this.serverLastReadSeq.clear();
     this.localStableReadSeq.clear();
@@ -367,6 +366,21 @@ export class ThreadRepository {
     if (changed) void this.persistThread(changed);
   }
 
+  private applyJoinRequestActivity(threadId: number, at: number): void {
+    if (!Number.isFinite(at) || at <= 0) return;
+    let changed: ConversationItem | undefined;
+    this._items.update((list) => {
+      const index = list.findIndex((thread) => thread.threadId === threadId);
+      if (index < 0 || (list[index].joinRequestAt ?? 0) >= at) return list;
+      const next = list.slice();
+      changed = { ...next[index], joinRequestAt: at };
+      next[index] = changed;
+      next.sort(byPinRank);
+      return next;
+    });
+    if (changed) void this.persistThread(changed);
+  }
+
   /** Replace a P2P item's peerUser (avatar/name/bio) after a federated profile sync. No-op for groups /
    *  absent items. (Via the facade from peer-profile / chat-open.) */
   updatePeerUser(threadId: number, user: User): void {
@@ -395,7 +409,8 @@ export class ThreadRepository {
       description?: string;
       avatar?: string;
       dissolvedAt?: number | null;
-      membersCanInvite?: boolean;
+      memberCount?: number;
+      groupMetaFeedId?: string;
     },
   ): void {
     let changed: ConversationItem | undefined;
@@ -409,8 +424,10 @@ export class ThreadRepository {
         if (patch.avatar !== undefined) group.avatar = patch.avatar;
         if (patch.dissolvedAt !== undefined)
           group.dissolvedAt = patch.dissolvedAt;
-        if (patch.membersCanInvite !== undefined)
-          group.membersCanInvite = patch.membersCanInvite;
+        if (patch.memberCount !== undefined)
+          group.memberCount = patch.memberCount;
+        if (patch.groupMetaFeedId !== undefined)
+          group.groupMetaFeedId = patch.groupMetaFeedId;
         changed = { ...t, group };
         return changed;
       }),
@@ -433,9 +450,7 @@ export class ThreadRepository {
     if (changed) void this.persistThread(changed);
   }
 
-  /** Drop a thread (self-kick / self-left / unfriend). This is the SOLE chokepoint for thread removal — the
-   *  direct unfriend paths (header menu, peer-profile aside) and the indirect delta path (leaveGroup / kicked
-   *  / a multi-device THREAD_REVISION DELETE, via {@link pullDelta}) all funnel here — so the full local
+  /** Drop a thread after an explicit delete-data action. This is the SOLE chokepoint for thread removal, so the full local
    *  cleanup lives here: drop the list row + open-thread pointer, delete the `threads`-store record, clear the
    *  stale {@link lastSeenSeq} residue, AND purge the cached message bodies via the message repo (the
    *  threadId is dead: the backend mints a fresh one on re-friend / re-join, so the orphaned bytes would
@@ -490,7 +505,10 @@ export class ThreadRepository {
     const serverLrs = new Map<number, number | null>();
     const serverUnread = new Map<number, number>();
     const serverMentions = new Map<number, Array<'all' | 'me'>>();
-    const previews = new Map<number, { text: string; creator: number }>();
+    const previews = new Map<
+      number,
+      { text: string; creator: number | null }
+    >();
     for (const i of items) {
       serverLrs.set(i.threadId, i.lastReadSeq);
       serverUnread.set(i.threadId, i.unreadCount);
@@ -558,7 +576,7 @@ export class ThreadRepository {
     if (coversLocal) this.finishReadCommit(d.threadId);
   }
 
-  /** Insert or refresh a single ConversationItem (from a delta ADD's getThreadInfo fetch). Mirrors
+  /** Insert or refresh a single ConversationItem from an explicit conversation fetch. Mirrors
    *  applyItems' FLIP: if `_pendingTopId` matches, force-top it + emit `topInserted`. Idempotent. */
   private upsertThread(
     item: Omit<
@@ -573,6 +591,7 @@ export class ThreadRepository {
       unreadCount: 0,
       mentionUnread: [],
     };
+    reconciled = this.normalizeGroupProjection(reconciled);
     this._items.update((list) => {
       const idx = list.findIndex((t) => t.threadId === reconciled.threadId);
       const base = list.slice();
@@ -622,13 +641,31 @@ export class ThreadRepository {
   }
 
   private applyItems(items: ConversationItem[]): void {
-    const reconciled = items;
+    const reconciled = items.map((item) => this.normalizeGroupProjection(item));
     const sorted = [...reconciled].sort(byPinRank);
     const topId = this.resolveTopId(reconciled);
     const ordered = topId != null ? moveToTop(sorted, topId) : sorted;
     this._items.set(ordered);
     this._status.set('READY');
     if (topId != null) this._topInserted.set(topId);
+  }
+
+  private normalizeGroupProjection(item: ConversationItem): ConversationItem {
+    if (item.type !== 'GROUP') return item;
+    const legacy = item.group as typeof item.group & { members?: unknown };
+    const { members: _members, ...group } = legacy;
+    return {
+      ...item,
+      group: {
+        ...group,
+        memberCount:
+          typeof group.memberCount === 'number' ? group.memberCount : 0,
+        groupMetaFeedId:
+          typeof group.groupMetaFeedId === 'string'
+            ? group.groupMetaFeedId
+            : '0',
+      },
+    };
   }
 
   /** Determine which thread (if any) to promote to index 0 on this update, consuming the pending flag. */
@@ -902,8 +939,8 @@ export class ThreadRepository {
     if (
       !d ||
       typeof d.userId !== 'number' ||
-      !Number.isSafeInteger(d.stateRevision) ||
-      d.stateRevision < 0
+      !Number.isSafeInteger(d.stateFeedEndId) ||
+      d.stateFeedEndId < 0
     )
       return;
     // 1. Establish the session — opens the per-user IDB on HELLO's userId (cold start: first open; warm
@@ -927,13 +964,13 @@ export class ThreadRepository {
       await this.syncReadDelta(d.readRevision);
     // 3. Delta-replay the thread list: full `(0, rev]` on first connect (cursor unseeded → seed 0),
     //    incremental `(cursor, rev]` on reconnect. The server plans (last-op-wins) + hydrates.
-    if (this.userService.stateRevCursor() === undefined) {
-      const persisted = await this.webdb.getMeta('stateRevision');
-      this.userService.seedStateRevCursor(
+    if (this.userService.stateFeedCursor() === undefined) {
+      const persisted = await this.webdb.getMeta('stateFeedId');
+      this.userService.seedStateFeedCursor(
         typeof persisted === 'number' && persisted >= 0 ? persisted : 0,
       );
     }
-    await this.pullDelta(d.stateRevision);
+    await this.pullDelta(d.stateFeedEndId);
     // 4. Fully walk the missed-message summary before startup is considered synchronized.
     await this.pullCatchUp();
     await this.pullTombstones();
@@ -1080,79 +1117,166 @@ export class ThreadRepository {
   }
 
   /**
-   * Apply a STATE_REV_UPDATED { stateRevision } signal: pull the ranged delta (cursor, revision] and
-   * apply the server's hydrated response — DELETE drops the thread locally, ADD carries the hydrated thread
-   * inline + inserts with a FLIP. Single-flight + tail-coalesce: a burst of signals collapses into one
-   * ranged pull per in-flight window. The server plans (last-op-wins) + hydrates; the client only applies.
+   * Apply a STATE_FEED_UPDATED { feedId } signal by pulling compacted state after the local cursor.
+   * Single-flight + tail-coalesce collapses a burst of signals into one bounded drain.
    */
-  onStateRevisionUpdated(toRev: number): void {
+  onStateFeedUpdated(targetFeedId: number): void {
     if (this._deltaInFlight) {
       // Delivery is normally ordered on one SSE stream, but reconnect/bridge buffering can surface an older
       // signal after a newer one. Tail coalescing must therefore be monotonic or the newer target is lost.
-      this._pendingTailRev = Math.max(this._pendingTailRev ?? toRev, toRev);
+      this._pendingTailFeedId = Math.max(
+        this._pendingTailFeedId ?? targetFeedId,
+        targetFeedId,
+      );
       return;
     }
-    void this.pullDelta(toRev);
+    void this.pullDelta(targetFeedId);
   }
 
-  private async pullDelta(toRev: number): Promise<void> {
-    const cursor = this.userService.stateRevCursor();
+  private async pullDelta(targetFeedId: number): Promise<void> {
+    const cursor = this.userService.stateFeedCursor();
     // Cursor undefined = boot hasn't seeded yet. Drop the signal — the HELLO replay reflects current state,
     // and the cursor advances past this signal once seeded.
     if (cursor === undefined) return;
-    if (toRev <= cursor) return; // already applied (our own action echoed back, or a coalesced tail)
+    if (targetFeedId <= cursor) return;
+    if (cursor === 0) this._fullStateDrainTarget = targetFeedId;
     this._deltaInFlight = true;
     try {
       const res = await firstValueFrom(
-        this.userService.queryThreadDelta({
-          fromRevision: cursor,
-          toRevision: toRev,
+        this.userService.queryStateFeed({
+          mode: this._fullStateDrainTarget === targetFeedId ? 'full' : 'delta',
+          after: cursor,
+          through: targetFeedId,
+          take: 100,
         }),
       );
       if (res.code !== 0)
         throw new Error(`state delta returned business code ${res.code}`);
       {
-        const delta = res.data ?? [];
+        const page = res.data;
+        if (
+          !page ||
+          page.mode !==
+            (this._fullStateDrainTarget === targetFeedId ? 'full' : 'delta') ||
+          !Array.isArray(page.items) ||
+          !Number.isSafeInteger(page.scannedThrough) ||
+          page.scannedThrough <= cursor ||
+          page.scannedThrough > targetFeedId ||
+          page.items.some(
+            (item, index, items) =>
+              !Number.isSafeInteger(item.feedId) ||
+              item.feedId <= cursor ||
+              item.feedId > page.scannedThrough ||
+              (index > 0 && item.feedId <= items[index - 1].feedId),
+          )
+        )
+          throw new Error('invalid client state feed page');
+        const delta = page.items;
+        const groupMeta = await this.prefetchGroupMeta(delta);
         // The rows and cursor are one durable unit. If this fails, leave both memory and cursor untouched;
         // the next HELLO retries the same idempotent range.
-        await this.webdb.applyThreadDelta(delta, toRev);
-        // One hydrated response — ADD entries carry the item inline, DELETE entries carry the threadId only.
-        // The server planned (last-op-wins) + hydrated; the client just applies (no second round-trip).
-        // A cold-start full replay (cursor === 0 — the only path that pulls `(0, rev]`) is bulk HYDRATION, not a
-        // per-thread highlight: the revision is just the watermark here, and force-topping each ADD would jam the
-        // last one to index 0 + arm a FLIP storm on every reload. markTopOnNextUpdate (→ force-top + FLIP) runs
-        // only on an incremental ADD (cursor > 0), where the ADD genuinely means a new conversation entered the
-        // list. (If threadRevCursor is ever persisted across boots, move this gate to an explicit boot flag —
-        // reload would then carry cursor > 0 too.)
-        const bulkHydrate = cursor === 0;
+        await this.webdb.applyStateFeedPage(
+          delta,
+          page.scannedThrough,
+          groupMeta,
+          page.mode === 'full' && cursor === 0,
+        );
+        if (page.mode === 'full' && cursor === 0) {
+          this._items.update((threads) =>
+            threads.map((thread) => ({
+              ...thread,
+              blocked: false,
+              ...(thread.type === 'P2P'
+                ? {
+                    friendshipActive: false,
+                    conversationState: 'READ_ONLY',
+                  }
+                : {}),
+            })),
+          );
+        }
+        const persistedThreads = groupMeta.length
+          ? await this.webdb.getThreads()
+          : [];
+        for (const update of groupMeta) {
+          const persisted = persistedThreads.find(
+            (thread) => thread.threadId === update.threadId,
+          );
+          if (persisted?.type !== 'GROUP') continue;
+          this.applyGroupUpdate(update.threadId, {
+            memberCount: persisted.group.memberCount,
+            groupMetaFeedId: persisted.group.groupMetaFeedId,
+          });
+        }
+        // State items and any referenced group-meta pages are committed with one durable cursor.
         let friendIntentRevision: number | undefined;
+        const relationshipStates = new Map<
+          number,
+          {
+            incoming?: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
+            outgoing?: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
+          }
+        >();
         for (const op of delta) {
-          if (op.direction === 'CLIENT_STATE') {
+          if (op.eventType === 'RELATIONSHIP_INTENT') {
             // Persisted atomically by WebdbService. The friend-request dialog reads the compacted
             // projection on demand, so no additional in-memory mirror is required here.
             friendIntentRevision = Math.max(
               friendIntentRevision ?? 0,
-              op.revision,
+              op.feedId,
             );
-          } else if (op.direction === 'PROFILE') {
-            this.userService.applyStateProfile(op.user);
-            this.applyPeerProfile(op.user);
-          } else if (op.direction === 'PROFILE_DELETE') {
-            this.applyPeerProfileRemoval(op.userId, op.account, op.domain);
-          } else if (op.direction === 'MEMBER_PROFILE') {
-            this.memberProfiles.notifyChanged(op.threadIds);
-          } else if (op.direction === 'DELETE') this.removeThread(op.threadId);
-          else {
-            // The revision log represents both a genuinely new conversation and metadata changes to an
-            // existing participant row as ADD. Only the former is a list insertion: mute/alias/block/etc.
-            // must update in place rather than briefly force the row to the top.
-            const isNewThread = !this._items().some(
-              (item) => item.threadId === op.threadId,
+            const body = op.body;
+            if (
+              'peer' in body &&
+              body.localThreadId !== null &&
+              Number.isSafeInteger(body.localThreadId) &&
+              body.localThreadId > 0
+            ) {
+              const state = relationshipStates.get(body.localThreadId) ?? {};
+              if (body.direction === 'INCOMING') state.incoming = body.status;
+              else state.outgoing = body.status;
+              relationshipStates.set(body.localThreadId, state);
+            }
+          } else if (op.eventType === 'PROFILE') {
+            this.applyStateProfile(op);
+          } else if (op.eventType === 'GROUP_META_FEED_HEAD') {
+            const affected = groupMeta
+              .filter((update) => update.page.account === op.account)
+              .map((update) => update.threadId);
+            if (affected.length) this.memberProfiles.notifyChanged(affected);
+          } else if (op.eventType === 'GROUP_JOIN_REQUEST_HEAD') {
+            this.userService.applyGroupJoinRequestHead(
+              op.body.threadId,
+              op.body.before,
+              op.body.readRequestId,
             );
-            if (!bulkHydrate && isNewThread)
-              this.markTopOnNextUpdate(op.threadId); // FLIP only on a genuine incremental insertion
-            this.upsertThread(op.item);
+            this.applyJoinRequestActivity(
+              op.body.threadId,
+              op.body.latestRequestAt,
+            );
+          } else if (op.eventType === 'INCOMING_INVITE_HEAD') {
+            this.userService.applyIncomingInviteReadHead(
+              op.body.readThroughFeedId,
+            );
+          } else if (op.eventType === 'THREAD_BLOCK') {
+            this.applyThreadMeta(op.body.threadId, {
+              blocked: op.body.blocked,
+            });
           }
+        }
+        for (const [threadId, state] of relationshipStates) {
+          const active =
+            state.incoming === 'ACCEPTED' && state.outgoing === 'ACCEPTED';
+          const ended =
+            state.incoming === 'REVOKED' ||
+            state.outgoing === 'REVOKED' ||
+            state.incoming === 'REQUESTED' ||
+            state.outgoing === 'REQUESTED';
+          if (!active && !ended) continue;
+          this.applyThreadMeta(threadId, {
+            friendshipActive: active,
+            conversationState: active ? 'ACTIVE' : 'READ_ONLY',
+          });
         }
         if (friendIntentRevision !== undefined)
           this.userService.applyFriendIntentStateRevision(friendIntentRevision);
@@ -1163,14 +1287,21 @@ export class ThreadRepository {
           this.userService.applyFriendRequestStateRevision(
             friendRequestRevision,
           );
-        this.userService.advanceStateRevCursor(toRev);
+        this.userService.advanceStateFeedCursor(page.scannedThrough);
+        if (page.hasMore)
+          this._pendingTailFeedId = Math.max(
+            this._pendingTailFeedId ?? targetFeedId,
+            targetFeedId,
+          );
+        else if (this._fullStateDrainTarget === targetFeedId)
+          this._fullStateDrainTarget = undefined;
       }
     } catch (error) {
       // State pages and the local cursor are one consistency boundary. Any
       // transport, validation, hydration, or durable-write failure aborts the
       // complete drain; queued tails are discarded and require a new HELLO or
       // lightweight state signal before another attempt.
-      this._pendingTailRev = undefined;
+      this._pendingTailFeedId = undefined;
       this.toast.warn(this.transloco.translate('errors.stateSyncFatal'), {
         duration: 'forever',
         interactive: true,
@@ -1178,15 +1309,122 @@ export class ThreadRepository {
       console.error('[state-feed] processing aborted', error);
     } finally {
       this._deltaInFlight = false;
-      const tail = this._pendingTailRev;
-      this._pendingTailRev = undefined;
+      const tail = this._pendingTailFeedId;
+      this._pendingTailFeedId = undefined;
       if (
         tail !== undefined &&
-        tail > (this.userService.stateRevCursor() ?? -Infinity)
+        tail > (this.userService.stateFeedCursor() ?? -Infinity)
       ) {
         void this.pullDelta(tail);
       }
     }
+  }
+
+  private applyStateProfile(
+    item: Extract<
+      import('./user.service').ClientStateFeedItem,
+      { eventType: 'PROFILE' }
+    >,
+  ): void {
+    this._items.update((threads) =>
+      threads.map((thread) => {
+        if (
+          thread.type === 'P2P' &&
+          thread.peerUser.account === item.account &&
+          (thread.peerUser.domain ?? '') === item.domain &&
+          item.body.profileRev >= (thread.peerUser.profileRev ?? 0)
+        )
+          return {
+            ...thread,
+            peerUser: {
+              ...thread.peerUser,
+              name: item.body.displayName,
+              bio: item.body.bio,
+              avatar: item.body.avatar ?? '',
+              profileRev: item.body.profileRev,
+            },
+          };
+        if (
+          thread.type === 'GROUP' &&
+          thread.group.account === item.account &&
+          thread.group.domain === item.domain &&
+          item.body.profileRev >= thread.group.profileRev
+        )
+          return {
+            ...thread,
+            group: {
+              ...thread.group,
+              name: item.body.displayName,
+              description: item.body.bio,
+              avatar: item.body.avatar ?? '',
+              profileRev: item.body.profileRev,
+            },
+          };
+        return thread;
+      }),
+    );
+  }
+
+  private async prefetchGroupMeta(
+    items: import('./user.service').ClientStateFeedItem[],
+  ): Promise<import('./webdb.service').ClientGroupMetaApply[]> {
+    const updates: import('./webdb.service').ClientGroupMetaApply[] = [];
+    for (const item of items) {
+      if (item.eventType !== 'GROUP_META_FEED_HEAD') continue;
+      const thread = this.items().find(
+        (candidate) =>
+          candidate.type === 'GROUP' &&
+          candidate.group.account === item.account &&
+          candidate.group.domain === item.domain,
+      );
+      if (!thread) throw new Error('group-meta head has no local thread');
+      const current = thread.group.groupMetaFeedId ?? '0';
+      if (BigInt(current) >= BigInt(item.body.groupMetaFeedEndId)) continue;
+      const mode = current === '0' ? 'full' : 'delta';
+      let after = current;
+      let through: string | undefined;
+      const pages: import('./user.service').ClientGroupMetaFeedPage[] = [];
+      do {
+        const requestedAfter = after;
+        const response = await firstValueFrom(
+          this.userService.queryGroupMeta({
+            threadId: thread.threadId,
+            mode,
+            after,
+            take: 100,
+            through,
+          }),
+        );
+        if (response.code !== 0 || !response.data)
+          throw new Error('group-meta pull failed');
+        const page = response.data;
+        through ??= page.groupMetaFeedEndId;
+        if (
+          page.mode !== mode ||
+          page.account !== item.account ||
+          BigInt(page.scannedThrough) < BigInt(after) ||
+          BigInt(page.scannedThrough) > BigInt(through)
+        )
+          throw new Error('invalid group-meta page');
+        pages.push(page);
+        after = page.scannedThrough;
+        if (!page.hasMore) break;
+        if (page.scannedThrough === requestedAfter)
+          throw new Error('group-meta pagination made no progress');
+      } while (true);
+      updates.push({
+        threadId: thread.threadId,
+        page: {
+          account: item.account,
+          mode,
+          items: pages.flatMap((page) => page.items),
+          scannedThrough: after,
+          groupMetaFeedEndId: through!,
+          hasMore: false,
+        },
+      });
+    }
+    return updates;
   }
 
   /** Re-derive each thread's list preview (`lastMessagePreview` + `lastMessageSenderId`) from the LOCAL
@@ -1210,7 +1448,7 @@ export class ThreadRepository {
     if (newest.size === 0) return; // nothing cached locally yet — leave the items' previews as-is
     const byThread = new Map<
       number,
-      { lastMessagePreview: string; lastMessageSenderId: number }
+      { lastMessagePreview: string; lastMessageSenderId: number | null }
     >();
     for (const it of items) {
       const m = newest.get(it.threadId);
@@ -1314,7 +1552,7 @@ export class ThreadRepository {
  *  connect), and the self-profile version (→ gate the /user/my-profile fetch). */
 interface HelloPayload {
   userId?: number;
-  stateRevision: number;
+  stateFeedEndId: number;
   readRevision?: number;
   profileRev?: number;
 }
@@ -1361,7 +1599,13 @@ function byPinRank(a: ConversationItem, b: ConversationItem): number {
     const tb = b.pinnedAt ?? -Infinity;
     return tb - ta || a.threadId - b.threadId;
   }
-  const la = a.lastMessageAt ?? -Infinity;
-  const lb = b.lastMessageAt ?? -Infinity;
+  const la = Math.max(
+    a.lastMessageAt ?? -Infinity,
+    a.joinRequestAt ?? -Infinity,
+  );
+  const lb = Math.max(
+    b.lastMessageAt ?? -Infinity,
+    b.joinRequestAt ?? -Infinity,
+  );
   return lb - la || a.threadId - b.threadId;
 }

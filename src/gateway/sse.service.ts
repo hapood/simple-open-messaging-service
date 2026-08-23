@@ -80,7 +80,7 @@ export class SseService implements OnModuleDestroy {
       const user = await this.database.db.query.user.findFirst({
         where: eq(userTable.id, userId),
         columns: {
-          threadRevision: true,
+          stateFeedAllocatedThrough: true,
           readRevision: true,
           profileRev: true,
         },
@@ -93,8 +93,8 @@ export class SseService implements OnModuleDestroy {
         // of the profile fetch.
         userId,
         // The state delta cursor. The client delta-replays (0, this] on first HELLO, then
-        // (cursor, this] on each subsequent STATE_REV_UPDATED — the sole state revision source.
-        stateRevision: user?.threadRevision ?? 0,
+        // The client pulls (cursor, stateFeedEndId] after this handshake and later feed signals.
+        stateFeedEndId: user?.stateFeedAllocatedThrough ?? 0,
         readRevision: user?.readRevision ?? 0,
         // The self-profile version. The client skips the cold-start /user/my-profile fetch when its IDB-
         // cached profileRev matches this (it already has the fresh name/avatar/bio). First-ever boot (no
@@ -108,7 +108,7 @@ export class SseService implements OnModuleDestroy {
       });
       if (!entry.res.writableEnded) entry.res.write(frame);
     } catch (e) {
-      // HELLO is load-bearing: the thread list cannot build without its stateRevision (delta replay from
+      // HELLO is load-bearing: client state cannot synchronize without its stateFeedEndId.
       // 0..rev). A send failure must therefore be OBSERVABLE, not silently swallowed — the connection still
       // establishes, and the client's HELLO-timeout will force a reconnect that re-pushes HELLO.
       this.logger.error(`HELLO handshake failed for user ${userId}`, e);
@@ -229,11 +229,10 @@ export class SseService implements OnModuleDestroy {
     this.pushToUser(userId, 'MEDIA_STATUS', data);
   }
 
-  /** Thread-list revision bumped (thread added or deleted). Signal-only: the client receives the new
-   *  revision and pulls unified deltas via query-state(from, to]. */
-  onThreadRevisionUpdated(userId: number, data: { threadRevision: number }) {
-    this.pushToUser(userId, 'STATE_REV_UPDATED', {
-      stateRevision: data.threadRevision,
+  /** Signal that the durable client state feed has advanced. */
+  onStateFeedUpdated(userId: number, data: { feedId: number }) {
+    this.pushToUser(userId, 'STATE_FEED_UPDATED', {
+      feedId: data.feedId,
     });
   }
 

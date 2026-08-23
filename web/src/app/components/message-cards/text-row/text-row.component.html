@@ -70,7 +70,7 @@
             @if (quote.imageShape === 'avatar') {
               <app-user-avatar
                 class="msg-quote-visual msg-quote-avatar"
-                [type]="UserAvatarType.GROUP"
+                [type]="quoteAvatarType(quote.imageIdentity)"
                 [name]="quote.imageLabel"
                 [identityId]="quote.imageIdentity"
                 [account]="quote.imageIdentity"
@@ -111,7 +111,7 @@
             @if (quote.imageShape === 'avatar') {
               <app-user-avatar
                 class="msg-quote-visual msg-quote-avatar"
-                [type]="UserAvatarType.GROUP"
+                [type]="quoteAvatarType(quote.imageIdentity)"
                 [name]="quote.imageLabel"
                 [identityId]="quote.imageIdentity"
                 [account]="quote.imageIdentity"

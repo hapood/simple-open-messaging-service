@@ -65,6 +65,8 @@ export interface ClientFriendIntent {
   requestedAt: number | null;
   expiresAt: number | null;
   direction: FriendIntentDirection;
+  /** Server-local conversation id for device state only. Never appears on the federation wire. */
+  localThreadId: number | null;
   peer: ClientIntentUser;
   requestedSort: number;
 }
@@ -80,6 +82,7 @@ export interface ClientGroupInviteIntent {
   note: string;
   requestedAt: number | null;
   expiresAt: number | null;
+  direction?: FriendIntentDirection;
   threadId: number;
   group: {
     account: string;
@@ -117,50 +120,97 @@ export interface FriendIntentPage {
   actionableTotal: number;
 }
 
-/** One entry of the hydrated client-state delta (POST /user/query-state/delta). The server plans
- *  (last-op-wins) + hydrates structural ADD data inline; DELETE entries carry the threadId only
- *  (the thread is leaving the roster — nothing to render). The client applies a single response — no
- *  client-side planning, no second batch-hydrate round-trip. */
-export type HydratedThreadDeltaOp =
+export type ClientStateFeedItem =
   | {
-      threadId: number;
-      direction: 'ADD';
-      item: Omit<
-        ConversationItem,
-        'lastReadSeq' | 'unreadCount' | 'mentionUnread'
-      >;
-    }
-  | { threadId: number; direction: 'DELETE' }
-  | { direction: 'PROFILE'; user: User }
-  | {
-      direction: 'PROFILE_DELETE';
-      userId: number;
+      feedId: number;
       account: string;
       domain: string;
-      revision: number;
+      eventType: 'PROFILE';
+      subjectAccount: '';
+      subjectDomain: '';
+      body: {
+        profileRev: number;
+        displayName: string;
+        bio: string;
+        avatar: string | null;
+      };
     }
   | {
-      direction: 'MEMBER_PROFILE';
-      sourcePeerDomain: string;
-      memberAccount: string;
-      memberDomain: string;
-      userId: number;
-      threadIds: number[];
-      revision: number;
-      displayName: string;
-      avatar: string;
-      profileRevision: number;
-    }
-  | {
-      direction: 'CLIENT_STATE';
-      revision: number;
+      feedId: number;
       account: string;
       domain: string;
       eventType: 'RELATIONSHIP_INTENT';
       subjectAccount: string;
       subjectDomain: string;
       body: ClientStateBody;
+    }
+  | {
+      feedId: number;
+      account: string;
+      domain: string;
+      eventType: 'GROUP_JOIN_REQUEST_HEAD';
+      subjectAccount: '';
+      subjectDomain: '';
+      body: {
+        threadId: number;
+        before: string;
+        latestRequestAt: number;
+        readRequestId: string;
+      };
+    }
+  | {
+      feedId: number;
+      account: '';
+      domain: '';
+      eventType: 'INCOMING_INVITE_HEAD';
+      subjectAccount: '';
+      subjectDomain: '';
+      body: {
+        readThroughFeedId: number;
+      };
+    }
+  | {
+      feedId: number;
+      account: string;
+      domain: string;
+      eventType: 'GROUP_META_FEED_HEAD';
+      subjectAccount: '';
+      subjectDomain: '';
+      body: { groupMetaFeedEndId: string };
+    }
+  | {
+      feedId: number;
+      account: '';
+      domain: '';
+      eventType: 'THREAD_BLOCK';
+      subjectAccount: string;
+      subjectDomain: '';
+      body: { threadId: number; blocked: boolean };
     };
+
+export interface ClientGroupMetaFeedPage {
+  account: string;
+  mode: 'full' | 'delta';
+  items: Array<{
+    feedId: string;
+    account: string;
+    domain: string;
+    rev: number;
+    operation: 'UPSERT' | 'DELETE';
+    body:
+      | {
+          userId: number;
+          role: 'OWNER' | 'ADMIN' | 'MEMBER';
+          profileRev: number;
+          displayName: string;
+          avatar: string | null;
+        }
+      | Record<string, never>;
+  }>;
+  scannedThrough: string;
+  groupMetaFeedEndId: string;
+  hasMore: boolean;
+}
 
 /** The persisted last-logged-in userId (localStorage) — the client's sole pre-HELLO source of its own
  *  userId (the session token is opaque, server-side-lookup only). Set on establishSession, cleared on
@@ -182,11 +232,11 @@ export class UserService {
    *  Other services' session-end effects key off this signal to reset their in-memory caches on logout. */
   readonly sessionUserId = signal<number | null>(null);
 
-  /** The client's applied state revision cursor — seeded from HELLO's stateRevision and advanced after
-   *  each STATE_REV_UPDATED delta is applied. Lives here so ConversationListService (which injects this
+  /** The client's applied state-feed cursor — seeded from HELLO and advanced after
+   *  each STATE_FEED_UPDATED signal is applied. Lives here so ConversationListService (which injects this
    *  service) can read/advance it without a circular DI. In-memory only — seeded fresh each connect. */
-  private readonly _stateRevCursor = signal<number | undefined>(undefined);
-  readonly stateRevCursor = this._stateRevCursor.asReadonly();
+  private readonly _stateFeedCursor = signal<number | undefined>(undefined);
+  readonly stateFeedCursor = this._stateFeedCursor.asReadonly();
 
   /** Latest incoming friend-request state revision discovered through the unified state delta. */
   readonly friendRequestStateRevision = signal(0);
@@ -194,11 +244,17 @@ export class UserService {
    *  also advances for terminal and outgoing changes so an open request dialog can refresh without
    *  turning those changes into an unread badge. */
   readonly friendIntentStateRevision = signal(0);
-  /** Per-device read cursor. It intentionally never leaves this account's local database. */
-  readonly friendRequestSeenRevision = signal(0);
+  /** Account-wide incoming-invitation read watermark, synchronized through the client state feed. */
+  readonly incomingInviteReadThroughFeedId = signal(0);
   readonly friendReqBadge = computed(
-    () => this.friendRequestStateRevision() > this.friendRequestSeenRevision(),
+    () =>
+      this.friendRequestStateRevision() >
+      this.incomingInviteReadThroughFeedId(),
   );
+  /** Latest application id and device-local read watermark, keyed by group thread. */
+  readonly groupJoinRequestHeads = signal<
+    ReadonlyMap<number, { latestRequestId: string; readRequestId: string }>
+  >(new Map());
 
   private readonly webdb = inject(WebdbService);
   private readonly profileRepo = inject(ProfileRepository);
@@ -230,10 +286,11 @@ export class UserService {
     this.freshCachePending = false;
     this.sessionUserId.set(null);
     this.sessionProfile.set(undefined);
-    this._stateRevCursor.set(undefined);
+    this._stateFeedCursor.set(undefined);
     this.friendRequestStateRevision.set(0);
     this.friendIntentStateRevision.set(0);
-    this.friendRequestSeenRevision.set(0);
+    this.incomingInviteReadThroughFeedId.set(0);
+    this.groupJoinRequestHeads.set(new Map());
     this.profileFetch = undefined;
   }
 
@@ -267,15 +324,33 @@ export class UserService {
       // recreation from publishing handles if logout/account-switch wins while it is in flight.
       await this.webdb.recreateForUser(String(userId));
     }
-    const [latest, seen] = await Promise.all([
+    const [latest, inviteHead, groupHeads, groupReads] = await Promise.all([
       this.webdb.getMeta('friendRequestStateRevision'),
-      this.webdb.getMeta('friendRequestSeenRevision'),
+      this.webdb.getMeta('incomingInviteHead'),
+      this.webdb.getMeta('groupJoinRequestHeads'),
+      this.webdb.getMeta('groupJoinRequestReadFeedIds'),
     ]);
     this.friendRequestStateRevision.set(
       typeof latest === 'number' && latest >= 0 ? latest : 0,
     );
-    this.friendRequestSeenRevision.set(
-      typeof seen === 'number' && seen >= 0 ? seen : 0,
+    const readThroughFeedId =
+      inviteHead && typeof inviteHead === 'object'
+        ? (inviteHead as { readThroughFeedId?: unknown }).readThroughFeedId
+        : undefined;
+    this.incomingInviteReadThroughFeedId.set(
+      typeof readThroughFeedId === 'number' && readThroughFeedId >= 0
+        ? readThroughFeedId
+        : 0,
+    );
+    const heads = this.integerStringRecord(groupHeads);
+    const reads = this.integerStringRecord(groupReads);
+    this.groupJoinRequestHeads.set(
+      new Map(
+        Object.entries(heads).map(([threadId, latestId]) => [
+          Number(threadId),
+          { latestRequestId: latestId, readRequestId: reads[threadId] ?? '0' },
+        ]),
+      ),
     );
     const lastCleanup = await this.webdb.getMeta('friendRequestCleanupAt');
     if (
@@ -336,12 +411,98 @@ export class UserService {
       this.friendIntentStateRevision.set(revision);
   }
 
-  /** Mark requests seen on this device only. */
+  /** Advance the account-wide read watermark to the state feed already applied by this client. */
   markFriendReqRead(): void {
-    const revision = this.friendRequestStateRevision();
-    if (revision <= this.friendRequestSeenRevision()) return;
-    this.friendRequestSeenRevision.set(revision);
-    void this.webdb.putMeta('friendRequestSeenRevision', revision);
+    const readThroughFeedId = this.stateFeedCursor();
+    if (
+      readThroughFeedId === undefined ||
+      readThroughFeedId <= this.incomingInviteReadThroughFeedId()
+    )
+      return;
+    this.http
+      .post<StandardResponse<{ readThroughFeedId: number }>>(
+        `${apiPrefix()}/invite/incoming/read`,
+        { readThroughFeedId },
+      )
+      .subscribe({
+        next: (res) => {
+          if (res.code === 0 && res.data)
+            this.applyIncomingInviteReadHead(res.data.readThroughFeedId);
+        },
+        error: (error) =>
+          console.error('[invite] failed to mark incoming requests read', error),
+      });
+  }
+
+  applyIncomingInviteReadHead(readThroughFeedId: number): void {
+    if (readThroughFeedId > this.incomingInviteReadThroughFeedId())
+      this.incomingInviteReadThroughFeedId.set(readThroughFeedId);
+  }
+
+  applyGroupJoinRequestHead(
+    threadId: number,
+    before: string,
+    serverReadRequestId: string,
+  ): void {
+    const latestId = (BigInt(before) - 1n).toString();
+    if (BigInt(latestId) < 1n) return;
+    this.groupJoinRequestHeads.update((current) => {
+      const previous = current.get(threadId);
+      const nextLatest =
+        previous && BigInt(previous.latestRequestId) > BigInt(latestId)
+          ? previous.latestRequestId
+          : latestId;
+      const nextRead =
+        previous && BigInt(previous.readRequestId) > BigInt(serverReadRequestId)
+          ? previous.readRequestId
+          : serverReadRequestId;
+      if (
+        previous?.latestRequestId === nextLatest &&
+        previous.readRequestId === nextRead
+      )
+        return current;
+      const next = new Map(current);
+      next.set(threadId, {
+        latestRequestId: nextLatest,
+        readRequestId: nextRead,
+      });
+      return next;
+    });
+    const heads = Object.fromEntries(
+      [...this.groupJoinRequestHeads()].map(([id, value]) => [
+        String(id),
+        value.latestRequestId,
+      ]),
+    );
+    void this.webdb.putMeta('groupJoinRequestHeads', heads);
+  }
+
+  markGroupJoinRequestsRead(threadId: number): void {
+    const current = this.groupJoinRequestHeads().get(threadId);
+    if (
+      !current ||
+      BigInt(current.readRequestId) >= BigInt(current.latestRequestId)
+    )
+      return;
+    const next = new Map(this.groupJoinRequestHeads());
+    next.set(threadId, {
+      ...current,
+      readRequestId: current.latestRequestId,
+    });
+    this.groupJoinRequestHeads.set(next);
+    const reads = Object.fromEntries(
+      [...next].map(([id, value]) => [String(id), value.readRequestId]),
+    );
+    void this.webdb.putMeta('groupJoinRequestReadFeedIds', reads);
+  }
+
+  private integerStringRecord(value: unknown): Record<string, string> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    return Object.fromEntries(
+      Object.entries(value)
+        .map(([key, entry]) => [key, String(entry)] as const)
+        .filter(([, entry]) => /^\d+$/.test(entry)),
+    );
   }
 
   applyStateProfile(u: User): void {
@@ -425,7 +586,7 @@ export class UserService {
   /** Idempotent self-profile get-or-load: returns the cached sessionProfile if already loaded (set by
    *  {@link establishSession} from HELLO, or a prior fetch), else fetches /user/my-profile. `force:true`
    *  re-fetches for live refresh (the friend-request state delta and post-edit re-read).
-   *  The thread-revision cursor is NOT seeded here — HELLO owns the sole revision source now. */
+   *  The state-feed cursor is NOT seeded here — HELLO owns the sole feed-end source now. */
   ensureProfile(opts?: { force?: boolean }): Observable<User> {
     if (!opts?.force && this.sessionProfile() !== undefined) {
       return of(this.sessionProfile() as User);
@@ -462,7 +623,7 @@ export class UserService {
    *  already-set sessionProfile (`ensureProfile` returns `of(cached)`) and serve stale data — which is
    *  why a live friend request didn't surface the badge, and an avatar/name edit didn't refresh the
    *  rail/drawer, until a full reload. Use ensureProfile() (no force) for the idempotent get-or-load at
-   *  boot. stateRevision is unchanged by all these triggers, so re-seeding the cursor is a no-op. */
+   *  boot. stateFeedEndId is unchanged by all these triggers, so re-seeding the cursor is a no-op. */
   updateSessionProfile() {
     this.ensureProfile({ force: true }).subscribe({
       error: (err) => {
@@ -471,15 +632,15 @@ export class UserService {
     });
   }
 
-  /** Seed the thread-revision cursor (from /user/my-profile). */
-  seedStateRevCursor(rev: number): void {
-    this._stateRevCursor.set(rev);
+  /** Seed the durable client state-feed cursor. */
+  seedStateFeedCursor(feedId: number): void {
+    this._stateFeedCursor.set(feedId);
   }
 
   /** Advance the cursor after applying a delta (monotonic — ignore a non-advancing/stale revision). */
-  advanceStateRevCursor(rev: number): void {
-    const cur = this._stateRevCursor();
-    if (cur === undefined || rev > cur) this._stateRevCursor.set(rev);
+  advanceStateFeedCursor(feedId: number): void {
+    const cur = this._stateFeedCursor();
+    if (cur === undefined || feedId > cur) this._stateFeedCursor.set(feedId);
   }
 
   register(params: { account: string; name: string; password: string }) {
@@ -524,14 +685,47 @@ export class UserService {
     );
   }
 
-  /** One entry of the hydrated client-state delta from POST /user/query-state/delta. The server plans
-   *  (last-op-wins) + hydrates structural ADD data inline; DELETE entries carry the threadId
-   *  only (the thread is leaving the roster — nothing to render). The client applies a single response —
-   *  no client-side planning, no second batch-hydrate round-trip. */
-  queryThreadDelta(params: { fromRevision: number; toRevision: number }) {
-    return this.http.post<StandardResponse<HydratedThreadDeltaOp[]>>(
-      `${apiPrefix()}/user/query-state/delta`,
-      params,
+  /** Read compacted client-state projections in one fixed feed-id range. */
+  queryStateFeed(params: {
+    mode: 'full' | 'delta';
+    after: number;
+    take?: number;
+    through?: number;
+  }) {
+    const query = new URLSearchParams({
+      after: String(params.after),
+      take: String(params.take ?? 100),
+      mode: params.mode,
+    });
+    if (params.through !== undefined)
+      query.set('through', String(params.through));
+    return this.http.get<
+      StandardResponse<{
+        mode: 'full' | 'delta';
+        items: ClientStateFeedItem[];
+        scannedThrough: number;
+        stateFeedEndId: number;
+        hasMore: boolean;
+      }>
+    >(`${apiPrefix()}/user/state-feed?${query.toString()}`);
+  }
+
+  queryGroupMeta(params: {
+    threadId: number;
+    mode: 'full' | 'delta';
+    after: string;
+    take?: number;
+    through?: string;
+  }) {
+    const query = new URLSearchParams({
+      threadId: String(params.threadId),
+      mode: params.mode,
+      after: params.after,
+      take: String(params.take ?? 100),
+    });
+    if (params.through !== undefined) query.set('through', params.through);
+    return this.http.get<StandardResponse<ClientGroupMetaFeedPage>>(
+      `${apiPrefix()}/user/group-meta?${query.toString()}`,
     );
   }
 
@@ -812,6 +1006,13 @@ export class UserService {
     );
   }
 
+  rejectInvite(params: { inviteId: string }) {
+    return this.http.post<StandardResponse>(
+      `${apiPrefix()}/invite/reject`,
+      params,
+    );
+  }
+
   /**
    * Unfriend an approved P2P relationship. The established thread remains visible as read-only
    * history unless the caller explicitly requests local data deletion.
@@ -842,17 +1043,6 @@ export class UserService {
   queryReadDelta(params: { fromRevision: number; toRevision: number }) {
     return this.http.post<StandardResponse<ThreadReadDelta>>(
       `${apiPrefix()}/thread/read-delta`,
-      params,
-    );
-  }
-
-  /**
-   * Block / unblock a user (P2P). Independent of friendship — the message path drops delivery and the
-   * blocker's query-messages hides the blocked creator's messages. `block: true` blocks, `false` unblocks.
-   */
-  setBlock(params: { userId: number; block: boolean }) {
-    return this.http.post<StandardResponse>(
-      `${apiPrefix()}/user/block`,
       params,
     );
   }

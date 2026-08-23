@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { and, asc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import {
   DatabaseService,
@@ -11,37 +11,37 @@ import {
   threadParticipant,
   user,
 } from '../database/schema.js';
-import {
-  GroupRole,
-  MessageThreadType,
-  ThreadParticipantState,
-} from '../database/enums.js';
-import {
-  PendingThreadRevision,
-  ThreadRevisionService,
-} from '../thread-revision/thread-revision.service.js';
+import { GroupRole, MessageThreadType } from '../database/enums.js';
 import { PeerStateFeedService } from '../federation/peer-state-feed.service.js';
 import { closeFederatedAudienceInTx } from '../federation/federation-audience.js';
+import {
+  isThreadMutuallyAuthorized,
+  mutuallyAuthorizedSql,
+} from '../invite/relationship-authorization.js';
+import { MessageService, type Message } from '../message/message.service.js';
+import { SystemMessageType } from '../message/system-message.js';
+import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 
 /**
  * ThreadParticipant data layer.
  *
- * ThreadParticipant is the single source of truth for "who is in a conversation" and their per-user
- * state (read position, mute, role). It replaces both the participation half of UserMessageThread and
+ * ThreadParticipant retains conversation linkage and per-user settings (read position, mute, role).
+ * It replaces both the participation half of UserMessageThread and
  * the whole GroupMember table. P2P and GROUP share it; role is null for P2P.
  *
- * `AUTHORIZED` rows represent request-time protocol authorization but are hidden from the normal client.
- * `ESTABLISHED` rows are formal and writable; `REVOKED` rows retain visible read-only history.
+ * Current authority is derived exclusively from the two directed RelationshipIntent facts. Rows may
+ * remain after revocation so clients can retain conversation history without treating them as authority.
  */
 @Injectable()
 export class ThreadParticipantService {
   constructor(
     private database: DatabaseService,
-    private readonly threadRevisionService: ThreadRevisionService,
     private readonly stateFeed: PeerStateFeedService,
+    private readonly clientStateFeed: ClientStateFeedService,
+    @Optional() private readonly messages?: MessageService,
   ) {}
 
-  /** The caller's participant row, including a protocol-only authorized shell. */
+  /** The caller's retained participant row, regardless of current relationship authorization. */
   findParticipant(userId: number, threadId: number) {
     return this.database.db.query.threadParticipant
       .findFirst({
@@ -53,27 +53,45 @@ export class ThreadParticipantService {
       .then((row) => row ?? null);
   }
 
-  /** The caller's formal participant row. Null for authorization-only shells. */
+  /** The caller's participant row when both relationship directions currently authorize the thread. */
   async findActiveParticipant(userId: number, threadId: number) {
     const p = await this.findParticipant(userId, threadId);
-    return p?.state === ThreadParticipantState.ESTABLISHED ? p : null;
+    return p && (await this.isMutuallyAuthorized(userId, threadId)) ? p : null;
+  }
+
+  isMutuallyAuthorized(userId: number, threadId: number) {
+    return isThreadMutuallyAuthorized(this.database.db, userId, threadId);
   }
 
   /** Active member userIds of a conversation — the SSE fan-out set (P2P and GROUP alike).
    *  Carries `muted` so the send path can drop notifications / push / notif-snapshot for muted
    *  recipients (the in-app bubble still renders via their own SSE pull — mute is a notification
    *  concern, not a delivery concern). */
-  getActiveParticipantUserIds(threadId: number) {
+  async getActiveParticipantUserIds(threadId: number) {
+    const rows = await this.database.db.query.threadParticipant.findMany({
+      where: eq(threadParticipant.threadId, threadId),
+      columns: { userId: true, muted: true, blocked: true },
+    });
+    const authorized = await Promise.all(
+      rows.map((row) => this.isMutuallyAuthorized(row.userId, threadId)),
+    );
+    return rows.filter((_, index) => authorized[index]);
+  }
+
+  /** Delivery settings for a transactionally captured local recipient set. No current-authorization
+   *  filter: boundary SYSTEM messages deliberately wake the participant whose relationship just closed. */
+  getParticipantDeliverySettings(threadId: number, userIds: readonly number[]) {
+    if (userIds.length === 0) return Promise.resolve([]);
     return this.database.db.query.threadParticipant.findMany({
       where: and(
         eq(threadParticipant.threadId, threadId),
-        eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
+        inArray(threadParticipant.userId, [...userIds]),
       ),
       columns: { userId: true, muted: true, blocked: true },
     });
   }
 
-  /** Resolve a formal participant with the thread type. */
+  /** Resolve a retained participant with the thread type. */
   async findActiveParticipantWithThread(userId: number, threadId: number) {
     const [row] = await this.database.db
       .select({
@@ -92,7 +110,6 @@ export class ThreadParticipantService {
         and(
           eq(threadParticipant.userId, userId),
           eq(threadParticipant.threadId, threadId),
-          ne(threadParticipant.state, ThreadParticipantState.AUTHORIZED),
         ),
       )
       .limit(1);
@@ -116,8 +133,31 @@ export class ThreadParticipantService {
   }
 
   /** Thread-scoped delivery block. Works for both P2P and groups without changing membership/history. */
-  setBlocked(userId: number, threadId: number, blocked: boolean) {
-    return this.updateParticipant(userId, threadId, { blocked });
+  async setBlocked(userId: number, threadId: number, blocked: boolean) {
+    const pending = await this.database.db.transaction(async (tx) => {
+      const [participant] = await tx
+        .update(threadParticipant)
+        .set({ blocked, updatedAt: new Date() })
+        .where(
+          and(
+            eq(threadParticipant.userId, userId),
+            eq(threadParticipant.threadId, threadId),
+          ),
+        )
+        .returning({ userId: threadParticipant.userId });
+      if (!participant) throw new Error('thread participant is missing');
+      const feedId = await this.clientStateFeed.writeInTx(tx, {
+        userId,
+        account: '',
+        domain: '',
+        eventType: 'THREAD_BLOCK',
+        subjectAccount: threadId.toString(),
+        subjectDomain: '',
+        body: { threadId, blocked },
+      });
+      return feedId === null ? null : { userId, feedId };
+    });
+    if (pending) this.clientStateFeed.notifyFeedUpdated(pending);
   }
 
   /**
@@ -162,28 +202,30 @@ export class ThreadParticipantService {
   }
 
   /** Active roster used to build authoritative group conversation snapshots. */
-  getRoster(threadId: number) {
-    return this.database.db.query.threadParticipant.findMany({
-      where: and(
-        eq(threadParticipant.threadId, threadId),
-        eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
-      ),
+  async getRoster(threadId: number) {
+    const rows = await this.database.db.query.threadParticipant.findMany({
+      where: eq(threadParticipant.threadId, threadId),
       with: { user: true },
       orderBy: asc(threadParticipant.joinedAt),
     });
+    const authorized = await Promise.all(
+      rows.map((row) => this.isMutuallyAuthorized(row.userId, threadId)),
+    );
+    return rows.filter((_, index) => authorized[index]);
   }
 
   /** Batch roster fetch used while hydrating conversation snapshots. */
-  getRosters(threadIds: number[]) {
+  async getRosters(threadIds: number[]) {
     if (threadIds.length === 0) return Promise.resolve([]);
-    return this.database.db.query.threadParticipant.findMany({
-      where: and(
-        inArray(threadParticipant.threadId, threadIds),
-        eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
-      ),
+    const rows = await this.database.db.query.threadParticipant.findMany({
+      where: inArray(threadParticipant.threadId, threadIds),
       with: { user: true },
       orderBy: asc(threadParticipant.joinedAt),
     });
+    const authorized = await Promise.all(
+      rows.map((row) => this.isMutuallyAuthorized(row.userId, row.threadId)),
+    );
+    return rows.filter((_, index) => authorized[index]);
   }
 
   /**
@@ -195,9 +237,6 @@ export class ThreadParticipantService {
     const rows = await this.database.db.query.threadParticipant.findMany({
       where: and(
         eq(threadParticipant.userId, params.where.userId),
-        params.where.active
-          ? ne(threadParticipant.state, ThreadParticipantState.AUTHORIZED)
-          : undefined,
         typeof threadId === 'number'
           ? eq(threadParticipant.threadId, threadId)
           : threadId
@@ -239,7 +278,7 @@ export class ThreadParticipantService {
   }
 
   /**
-   * The formal P2P thread two users share, or null. Both rows must be established.
+   * The currently mutually authorized P2P thread two users share, or null.
    */
   async findP2PThreadBetween(
     userX: number,
@@ -252,8 +291,7 @@ export class ThreadParticipantService {
       JOIN "MessageThread" thread ON thread.id = mine."threadId"
       WHERE mine."userId" = ${userX}
         AND peer."userId" = ${userY}
-        AND mine.state = 'ESTABLISHED'
-        AND peer.state = 'ESTABLISHED'
+        AND ${mutuallyAuthorizedSql(userX, userY)}
         AND thread.type = ${MessageThreadType.P2P}
       LIMIT 1
     `);
@@ -280,17 +318,9 @@ export class ThreadParticipantService {
     return result.rows[0]?.threadId ?? null;
   }
 
-  /** Retain an established P2P conversation after revocation and mark it read-only. */
+  /** Participant rows are retained; revocation is represented only by RelationshipIntent. */
   async softLeaveP2PBoth(threadId: number): Promise<void> {
-    await this.database.db
-      .update(threadParticipant)
-      .set({ state: ThreadParticipantState.REVOKED, updatedAt: new Date() })
-      .where(
-        and(
-          eq(threadParticipant.threadId, threadId),
-          eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
-        ),
-      );
+    void threadId;
   }
 
   /** Atomically end both sides of a P2P relation and optionally clear the caller's history boundary. */
@@ -298,8 +328,12 @@ export class ThreadParticipantService {
     threadId: number,
     callerUserId: number,
     deleteData: boolean,
-    localPeerUserId?: number,
-  ): Promise<{ transitioned: boolean; statePeers: string[] }> {
+  ): Promise<{
+    transitioned: boolean;
+    statePeers: string[];
+    systemMessage: Omit<Message, 'id'> | null;
+    localRecipientIds: number[];
+  }> {
     const now = new Date();
     const result = await this.database.db.transaction(async (tx) => {
       const identities = await tx
@@ -333,30 +367,12 @@ export class ThreadParticipantService {
       await tx.execute(sql`
         SELECT id FROM "MessageThread" WHERE id = ${threadId} FOR UPDATE
       `);
-      const callerHidden = await this.threadRevisionService.isThreadHiddenInTx(
+      const transitioned = await isThreadMutuallyAuthorized(
         tx,
         callerUserId,
         threadId,
       );
-      const peerHidden =
-        localPeerUserId === undefined
-          ? true
-          : await this.threadRevisionService.isThreadHiddenInTx(
-              tx,
-              localPeerUserId,
-              threadId,
-            );
-      const ended = await tx
-        .update(threadParticipant)
-        .set({ state: ThreadParticipantState.REVOKED, updatedAt: now })
-        .where(
-          and(
-            eq(threadParticipant.threadId, threadId),
-            eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
-          ),
-        )
-        .returning({ id: threadParticipant.id });
-      const shouldDelete = deleteData && !callerHidden;
+      const shouldDelete = deleteData;
       if (shouldDelete) {
         await tx
           .update(threadParticipant)
@@ -373,9 +389,31 @@ export class ThreadParticipantService {
             ),
           );
       }
-      const transitioned = ended.length > 0;
       const statePeers: string[] = [];
+      let systemMessage: Omit<Message, 'id'> | null = null;
+      const localRecipientIds = identities
+        .filter((identity) => identity.domain === 'local')
+        .map((identity) => identity.userId);
       if (transitioned) {
+        if (this.messages) {
+          systemMessage = (
+            await this.messages.writeSystemMessageInTx(
+              tx,
+              threadId,
+              SystemMessageType.FRIEND_REMOVED,
+              peer?.userId,
+              {
+                actorUserId: callerUserId,
+                recipientUserIds: localRecipientIds,
+                markReadUserId: callerUserId,
+              },
+            )
+          ).message;
+          await tx
+            .update(threadParticipant)
+            .set({ leftSeq: systemMessage.seq, updatedAt: now })
+            .where(eq(threadParticipant.threadId, threadId));
+        }
         // Remote discovery authorization ends immediately; local thread visibility remains.
         await tx.execute(sql`
           DELETE FROM "ThreadAudience" audience
@@ -438,42 +476,14 @@ export class ThreadParticipantService {
           }
         }
       }
-      const revisions: PendingThreadRevision[] = [];
-      if (shouldDelete) {
-        revisions.push({
-          userId: callerUserId,
-          revision: await this.threadRevisionService.recordThreadDeleteInTx(
-            tx,
-            callerUserId,
-            threadId,
-          ),
-        });
-      } else if (transitioned && !callerHidden) {
-        revisions.push({
-          userId: callerUserId,
-          revision: await this.threadRevisionService.recordThreadAddInTx(
-            tx,
-            callerUserId,
-            threadId,
-          ),
-        });
-      }
-      if (transitioned && localPeerUserId !== undefined && !peerHidden) {
-        revisions.push({
-          userId: localPeerUserId,
-          revision: await this.threadRevisionService.recordThreadAddInTx(
-            tx,
-            localPeerUserId,
-            threadId,
-          ),
-        });
-      }
-      return { transitioned, revisions, statePeers };
+      return {
+        transitioned,
+        statePeers,
+        systemMessage,
+        localRecipientIds,
+      };
     });
-    result.revisions.forEach((revision) =>
-      this.threadRevisionService.notifyThreadRevision(revision),
-    );
-    return { transitioned: result.transitioned, statePeers: result.statePeers };
+    return result;
   }
 
   // ─── raw roster mutators (federation inbound) ─────────────────────────────────
@@ -505,19 +515,18 @@ export class ThreadParticipantService {
         userId,
         threadId,
         role,
+        afterSeq: sql`(SELECT "curSeq" FROM "MessageThread" WHERE id = ${threadId})`,
         updatedAt: new Date(),
       });
       return;
     }
-    if (
-      existing.state !== ThreadParticipantState.ESTABLISHED ||
-      existing.role !== role
-    ) {
+    if (existing.role !== role || existing.leftSeq !== null) {
       await tx
         .update(threadParticipant)
         .set({
-          state: ThreadParticipantState.ESTABLISHED,
           role,
+          afterSeq: sql`(SELECT "curSeq" FROM "MessageThread" WHERE id = ${threadId})`,
+          leftSeq: null,
           updatedAt: new Date(),
         })
         .where(eq(threadParticipant.id, existing.id));
@@ -535,16 +544,8 @@ export class ThreadParticipantService {
 
   /** Retain a former group member's visible history in the revoked state. */
   async softLeaveMember(threadId: number, userId: number): Promise<void> {
-    await this.database.db
-      .update(threadParticipant)
-      .set({ state: ThreadParticipantState.REVOKED, updatedAt: new Date() })
-      .where(
-        and(
-          eq(threadParticipant.threadId, threadId),
-          eq(threadParticipant.userId, userId),
-          eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
-        ),
-      );
+    void threadId;
+    void userId;
   }
 
   /** Set a member's role (raw — the origin authorized it). */
@@ -572,7 +573,7 @@ export class ThreadParticipantService {
   /**
    * All userIds sharing an ACTIVE P2P thread with `userId` — the friend set, now derived from thread
    * membership (replaces FriendshipService.getApprovedPeerUserIds). Used by profile-update fan-out.
-   * Blocking does NOT unfriend (block lives in UserBlock, independent of thread membership), so
+   * Blocking does not unfriend or remove the retained participant row, so
    * blocked peers are still returned — a profile refresh is harmless and the conversation list still
    * shows them, mirroring the previous behavior.
    */
@@ -584,8 +585,7 @@ export class ThreadParticipantService {
       JOIN "MessageThread" thread ON thread.id = mine."threadId"
       WHERE mine."userId" = ${userId}
         AND peer."userId" <> ${userId}
-        AND mine.state = 'ESTABLISHED'
-        AND peer.state = 'ESTABLISHED'
+        AND ${mutuallyAuthorizedSql(sql`mine."userId"`, sql`peer."userId"`)}
         AND thread.type = ${MessageThreadType.P2P}
     `);
     return result.rows.map((row) => row.userId);
@@ -596,33 +596,17 @@ export class ThreadParticipantService {
     threadId: number,
     data: Partial<typeof threadParticipant.$inferInsert>,
   ) {
-    const result = await this.database.db.transaction(async (tx) => {
-      const [row] = await tx
-        .update(threadParticipant)
-        .set({ ...data, updatedAt: new Date() })
-        .where(
-          and(
-            eq(threadParticipant.userId, userId),
-            eq(threadParticipant.threadId, threadId),
-          ),
-        )
-        .returning();
-      if (!row) return { row, revision: null };
-      return {
-        row,
-        revision: await this.threadRevisionService.recordThreadAddInTx(
-          tx,
-          userId,
-          threadId,
+    const [row] = await this.database.db
+      .update(threadParticipant)
+      .set({ ...data, updatedAt: new Date() })
+      .where(
+        and(
+          eq(threadParticipant.userId, userId),
+          eq(threadParticipant.threadId, threadId),
         ),
-      };
-    });
-    if (result.revision !== null)
-      this.threadRevisionService.notifyThreadRevision({
-        userId,
-        revision: result.revision,
-      });
-    return result.row;
+      )
+      .returning();
+    return row;
   }
 
   /**

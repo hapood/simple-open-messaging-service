@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { GroupRole, ThreadParticipantState } from '../database/enums.js';
+import { GroupRole } from '../database/enums.js';
 import { group } from '../database/schema.js';
 import { BusinessCode } from '../common/business-code.js';
 import { GroupService } from './group.service.js';
@@ -19,6 +19,7 @@ function createTx(options: {
     const result = selects.shift() ?? [];
     const query = {
       from: vi.fn(() => query),
+      innerJoin: vi.fn(() => query),
       where: vi.fn(() => query),
       for: vi.fn(() => query),
       limit: vi.fn(() => Promise.resolve(result)),
@@ -51,12 +52,13 @@ function createTx(options: {
     };
     return query;
   });
-  return { select, update, delete: deleteFrom, sets };
+  const execute = vi.fn().mockResolvedValue({ rows: [{ authorized: true }] });
+  return { select, update, delete: deleteFrom, execute, sets };
 }
 
 function createService(
   tx: ReturnType<typeof createTx>,
-  revisions: object,
+  federationOverrides: object,
   messages?: object,
   messageFanout?: object,
 ) {
@@ -70,30 +72,56 @@ function createService(
     writeMemberRelationshipIntentInTx: vi.fn().mockResolvedValue(new Map()),
     writeGroupRelationshipIntentInTx: vi.fn().mockResolvedValue(new Map()),
     pushStateFeedDomains: vi.fn().mockResolvedValue(undefined),
+    ...federationOverrides,
   };
-  const revisionService = {
-    recordActiveLocalThreadRefreshInTx: vi.fn().mockResolvedValue([]),
-    ...revisions,
+  const clientStateFeed = {
+    recordGroupStateInTx: vi.fn().mockResolvedValue([]),
+    notifyFeedUpdated: vi.fn(),
   };
   return new GroupService(
     database as never,
-    revisionService as never,
     federation as never,
+    clientStateFeed as never,
     messages as never,
     messageFanout as never,
   );
 }
 
 describe('GroupService membership lifecycle', () => {
+  it('rejects administrator role changes when the operator is only an admin', async () => {
+    const transaction = vi.fn();
+    const database = {
+      db: {
+        query: {
+          threadParticipant: {
+            findFirst: vi.fn().mockResolvedValue({ role: GroupRole.ADMIN }),
+          },
+        },
+        transaction,
+      },
+    };
+    const service = new GroupService(
+      database as never,
+      {} as never,
+      {} as never,
+    );
+
+    await expect(
+      service.setRole({
+        threadId: 10,
+        targetUserId: 2,
+        role: GroupRole.ADMIN,
+        operatorUserId: 1,
+      }),
+    ).rejects.toMatchObject({ bizCode: BusinessCode.GROUP_FORBIDDEN });
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
   it('rejects an owner leaving while another active member remains', async () => {
     const tx = createTx({
-      selects: [
-        [{ state: ThreadParticipantState.ESTABLISHED, role: GroupRole.OWNER }],
-        [{ value: 2 }],
-      ],
+      selects: [[{ role: GroupRole.OWNER }], [{ value: 2 }]],
     });
-    const revisions = { isThreadHiddenInTx: vi.fn() };
-    const service = createService(tx, revisions);
+    const service = createService(tx, {});
 
     await expect(
       service.leaveGroup({
@@ -113,8 +141,7 @@ describe('GroupService membership lifecycle', () => {
       selects: [[{ groupUserId: 99 }]],
       updateResults: [[{ id: 1 }], []],
     });
-    const revisions = { recordThreadDeleteInTx: vi.fn() };
-    const service = createService(tx, revisions);
+    const service = createService(tx, {});
 
     await expect(service.dissolveGroup({ threadId: 10 })).resolves.toEqual({
       transitioned: true,
@@ -125,7 +152,6 @@ describe('GroupService membership lifecycle', () => {
       table: group,
       value: { dissolvedAt: expect.any(Date), updatedAt: expect.any(Date) },
     });
-    expect(revisions.recordThreadDeleteInTx).not.toHaveBeenCalled();
   });
 
   it('treats dissolving an already dissolved group as an idempotent success', async () => {
@@ -141,11 +167,83 @@ describe('GroupService membership lifecycle', () => {
     expect(tx.update).toHaveBeenCalledTimes(1);
   });
 
+  it('writes one self-only removal notice per local member when dissolving', async () => {
+    const tx = createTx({
+      selects: [[{ groupUserId: 99 }], [{ userId: 1 }, { userId: 2 }]],
+      updateResults: [[{ id: 1 }], []],
+    });
+    const messages = {
+      writeSystemMessageInTx: vi
+        .fn()
+        .mockImplementation(
+          (_tx, _threadId, _type, subjectUserId: number) =>
+            Promise.resolve({
+              message: {
+                threadId: 10,
+                seq: subjectUserId,
+                createdAt: new Date(),
+              },
+            }),
+        ),
+    };
+    const messageFanout = { dispatchToUsers: vi.fn() };
+    const service = createService(tx, {}, messages, messageFanout);
+
+    await service.dissolveGroup({ threadId: 10, operatorUserId: 1 });
+
+    expect(messages.writeSystemMessageInTx).toHaveBeenCalledTimes(2);
+    expect(messages.writeSystemMessageInTx).toHaveBeenNthCalledWith(
+      1,
+      tx,
+      10,
+      'GROUP_LEFT',
+      1,
+      expect.objectContaining({ actorUserId: 1, recipientUserIds: [1] }),
+    );
+    expect(messages.writeSystemMessageInTx).toHaveBeenNthCalledWith(
+      2,
+      tx,
+      10,
+      'GROUP_LEFT',
+      2,
+      expect.objectContaining({ actorUserId: 1, recipientUserIds: [2] }),
+    );
+    expect(messageFanout.dispatchToUsers).toHaveBeenCalledWith(
+      expect.objectContaining({ seq: 1 }),
+      [1],
+    );
+    expect(messageFanout.dispatchToUsers).toHaveBeenCalledWith(
+      expect.objectContaining({ seq: 2 }),
+      [2],
+    );
+  });
+
+  it.each([GroupRole.ADMIN, GroupRole.OWNER])(
+    'does not allow an admin to kick a %s',
+    async (targetRole) => {
+      const tx = createTx({
+        selects: [
+          [{ id: 7, role: GroupRole.ADMIN }],
+          [{ id: 8, role: targetRole }],
+        ],
+      });
+      const service = createService(tx, {});
+
+      await expect(
+        service.kickMember({
+          threadId: 10,
+          operatorUserId: 1,
+          targetUserId: 2,
+        }),
+      ).rejects.toMatchObject({ bizCode: BusinessCode.GROUP_FORBIDDEN });
+      expect(tx.update).not.toHaveBeenCalled();
+    },
+  );
+
   it('revokes a kicked participant and makes an absent repeat a no-op', async () => {
     const target = {
       id: 8,
       role: GroupRole.MEMBER,
-      state: ThreadParticipantState.ESTABLISHED,
     };
     const tx = createTx({
       selects: [
@@ -153,89 +251,88 @@ describe('GroupService membership lifecycle', () => {
           {
             id: 7,
             role: GroupRole.OWNER,
-            state: ThreadParticipantState.ESTABLISHED,
           },
         ],
         [target],
+        [{ userId: 1 }, { userId: 2 }],
         [{ groupUserId: 99 }],
         [
           {
             id: 7,
             role: GroupRole.OWNER,
-            state: ThreadParticipantState.ESTABLISHED,
           },
         ],
         [],
       ],
       updateResults: [[{ id: 8 }], []],
     });
-    const revisions = {
-      isThreadHiddenInTx: vi.fn().mockResolvedValue(false),
-      recordThreadAddInTx: vi.fn().mockResolvedValue(5),
-      notifyThreadRevision: vi.fn(),
+    const systemMessage = {
+      threadId: 10,
+      seq: 9,
+      creator: null,
+      createdAt: new Date(),
     };
-    const systemMessage = { id: 'kick-boundary' };
     const messages = {
-      tryWriteSystemMessage: vi.fn().mockResolvedValue(systemMessage),
+      writeSystemMessageInTx: vi
+        .fn()
+        .mockResolvedValue({ message: systemMessage }),
     };
-    const messageFanout = { dispatch: vi.fn() };
-    const service = createService(tx, revisions, messages, messageFanout);
+    const messageFanout = { dispatchToUsers: vi.fn() };
+    const service = createService(tx, {}, messages, messageFanout);
 
     await expect(
       service.kickMember({ threadId: 10, operatorUserId: 1, targetUserId: 2 }),
     ).resolves.toEqual({ transitioned: true });
-    expect(revisions.recordThreadAddInTx).toHaveBeenCalledWith(tx, 2, 10);
-    expect(revisions.notifyThreadRevision).toHaveBeenCalledWith({
-      userId: 2,
-      revision: 5,
-    });
-    expect(messages.tryWriteSystemMessage).toHaveBeenCalledWith(
-      1,
+    expect(messages.writeSystemMessageInTx).toHaveBeenCalledWith(
+      tx,
       10,
       'GROUP_LEFT',
       2,
+      {
+        actorUserId: 1,
+        markReadUserId: 1,
+        recipientUserIds: [1, 2],
+      },
     );
-    expect(messageFanout.dispatch).toHaveBeenCalledWith(systemMessage);
+    expect(messageFanout.dispatchToUsers).toHaveBeenCalledWith(
+      systemMessage,
+      [1, 2],
+    );
 
     await expect(
       service.kickMember({ threadId: 10, operatorUserId: 1, targetUserId: 2 }),
     ).resolves.toEqual({ transitioned: false });
-    expect(messages.tryWriteSystemMessage).toHaveBeenCalledTimes(1);
-    expect(tx.update).toHaveBeenCalledTimes(2);
+    expect(messages.writeSystemMessageInTx).toHaveBeenCalledTimes(1);
   });
 
-  it('does not publish SSE when a kick transaction rejects after writing its revision', async () => {
+  it('does not publish effects when a kick transaction rejects during state-feed projection', async () => {
     const tx = createTx({
       selects: [
         [
           {
             id: 7,
             role: GroupRole.OWNER,
-            state: ThreadParticipantState.ESTABLISHED,
           },
         ],
         [
           {
             id: 8,
             role: GroupRole.MEMBER,
-            state: ThreadParticipantState.ESTABLISHED,
           },
         ],
+        [{ userId: 1 }, { userId: 2 }],
         [{ groupUserId: 99 }],
       ],
       updateResults: [[{ id: 8 }], []],
     });
-    const rollback = new Error('revision write failed');
-    const revisions = {
-      isThreadHiddenInTx: vi.fn().mockResolvedValue(false),
-      recordThreadAddInTx: vi.fn().mockRejectedValue(rollback),
-      notifyThreadRevision: vi.fn(),
+    const rollback = new Error('group state write failed');
+    const federation = {
+      writeGroupStateInTx: vi.fn().mockRejectedValue(rollback),
     };
-    const service = createService(tx, revisions);
+    const service = createService(tx, federation);
 
     await expect(
       service.kickMember({ threadId: 10, operatorUserId: 1, targetUserId: 2 }),
     ).rejects.toBe(rollback);
-    expect(revisions.notifyThreadRevision).not.toHaveBeenCalled();
   });
 });

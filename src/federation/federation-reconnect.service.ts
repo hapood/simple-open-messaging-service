@@ -9,6 +9,7 @@ const SWEEP_MS = 60_000;
 const JITTER_MS = 5000;
 /** Durable reconciliation cadence for recognized peers; lightweight HWM reads return quickly. */
 const RECONCILE_MS = 5 * 60_000;
+const REQUEST_EXPIRY_SWEEP_MS = 60 * 60_000;
 
 /**
  * The 60s reconnect sweep (§4.3) — drives the self-healing the design's resilience story leans on.
@@ -56,6 +57,15 @@ export class FederationReconnectService implements OnApplicationBootstrap {
     );
   }
 
+  @Interval(REQUEST_EXPIRY_SWEEP_MS)
+  expireRequests(): void {
+    void this.federation.revokeExpiredLocalRequests().catch((error) =>
+      this.logger.warn(
+        `relationship expiry sweep failed: ${(error as Error).message}`,
+      ),
+    );
+  }
+
   private async reconcileTrustedPeers(): Promise<void> {
     const domains = await this.federation.listTrustedPeerDomains();
     for (const domain of domains) {
@@ -70,12 +80,12 @@ export class FederationReconnectService implements OnApplicationBootstrap {
   }
 
   private async reconcile(domain: string): Promise<void> {
-    const stateRevision = await this.federation.pullStateFromPeer(domain);
-    await this.federation.pullTombstonesFromPeer(domain, stateRevision);
+    const stateFeedId = await this.federation.pullStateFromPeer(domain);
+    await this.federation.pullTombstonesFromPeer(domain, stateFeedId);
     await this.federation.pullMissedFromPeer(
       this.missedPull,
       domain,
-      stateRevision,
+      stateFeedId,
     );
   }
 
@@ -101,12 +111,12 @@ export class FederationReconnectService implements OnApplicationBootstrap {
   private async recover(domain: string): Promise<void> {
     await this.federation.recoverPeerTrust(domain);
     await this.federation.pushDiscoveryHwm(domain);
-    const stateRevision = await this.federation.pullStateFromPeer(domain);
-    await this.federation.pullTombstonesFromPeer(domain, stateRevision);
+    const stateFeedId = await this.federation.pullStateFromPeer(domain);
+    await this.federation.pullTombstonesFromPeer(domain, stateFeedId);
     await this.federation.pullMissedFromPeer(
       this.missedPull,
       domain,
-      stateRevision,
+      stateFeedId,
     );
   }
 }

@@ -16,7 +16,7 @@ describe('SseService', () => {
         query: {
           user: {
             findFirst: vi.fn().mockResolvedValue({
-              threadRevision: 4,
+              stateFeedAllocatedThrough: 4,
               readRevision: 3,
               profileRev: 2,
             }),
@@ -50,7 +50,7 @@ describe('SseService', () => {
     return writes.some((w) => w.includes('event: FORCE_LOGOUT'));
   }
 
-  it('always includes the mandatory stateRevision in HELLO', async () => {
+  it('always includes the mandatory stateFeedEndId in HELLO', async () => {
     const svc = makeService();
     const client = mockRes();
 
@@ -58,7 +58,7 @@ describe('SseService', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     const hello = client.writes.find((write) => write.includes('event: HELLO'));
-    expect(hello).toContain('"stateRevision":4');
+    expect(hello).toContain('"stateFeedEndId":4');
     svc.onModuleDestroy();
   });
 

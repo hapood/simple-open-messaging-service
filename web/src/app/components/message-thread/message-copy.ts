@@ -27,6 +27,20 @@ export function messageCopyBody(
     case 'PURE_TEXT':
     case 'LINK':
       return visibleMessageText(message);
+    case 'CONTACT_CARD': {
+      try {
+        const card = JSON.parse(message.text) as {
+          account?: unknown;
+          domain?: unknown;
+        };
+        return typeof card.account === 'string' &&
+          typeof card.domain === 'string'
+          ? `${card.account}@${card.domain}`
+          : '';
+      } catch {
+        return '';
+      }
+    }
     case 'FILE':
       return joinLabel(labels.file, message.file?.name);
     case 'IMAGE':

@@ -67,7 +67,7 @@ export class WebsocketService implements OnDestroy {
   private reconnectTicker?: ReturnType<typeof setInterval>;
 
   /** The deadline within which the server MUST push its HELLO connect handshake after the stream opens.
-   *  HELLO carries the stateRevision the state delta-replays from and the newest-message cursor the
+   *  HELLO carries the stateFeedEndId the state feed replays through and the newest-message cursor the
    *  durable feed catch-up starts from — without it the list cannot build, so a missing HELLO is a hard failure,
    *  not a graceful wait. The server sends HELLO right after flushing headers (sub-second normally); 10s is
    *  a generous threshold that avoids false triggers on slow networks. If it fires the open stream is
@@ -77,7 +77,7 @@ export class WebsocketService implements OnDestroy {
    *  hang the threadlist forever. */
   private static readonly HELLO_TIMEOUT_MS = 10_000;
   private helloTimeout?: ReturnType<typeof setTimeout>;
-  private deferredRevision?: StandardMessage;
+  private deferredStateFeedUpdate?: StandardMessage;
   private readonly deletionReleaseSub: Subscription;
 
   constructor(
@@ -85,10 +85,10 @@ export class WebsocketService implements OnDestroy {
     private readonly deletionLock: ThreadDeletionLockService,
   ) {
     this.deletionReleaseSub = this.deletionLock.released$.subscribe(() => {
-      if (!this.deletionLock.any && this.deferredRevision) {
-        const revision = this.deferredRevision;
-        this.deferredRevision = undefined;
-        this.eventSubject.next(revision);
+      if (!this.deletionLock.any && this.deferredStateFeedUpdate) {
+        const update = this.deferredStateFeedUpdate;
+        this.deferredStateFeedUpdate = undefined;
+        this.eventSubject.next(update);
       }
     });
     // The sink funnels every transport's outputs onto this facade's single subjects/signal (+ the dev
@@ -97,26 +97,25 @@ export class WebsocketService implements OnDestroy {
       onEvent: (m) => {
         if (m.event === 'HELLO') {
           const hello = m.data as
-            | { userId?: unknown; stateRevision?: unknown }
+            | { userId?: unknown; stateFeedEndId?: unknown }
             | undefined;
           if (
             !Number.isSafeInteger(hello?.userId) ||
             Number(hello?.userId) <= 0 ||
-            !Number.isSafeInteger(hello?.stateRevision) ||
-            Number(hello?.stateRevision) < 0
+            !Number.isSafeInteger(hello?.stateFeedEndId) ||
+            Number(hello?.stateFeedEndId) < 0
           ) {
-            console.error('[sse] invalid HELLO stateRevision — reconnecting');
+            console.error('[sse] invalid HELLO stateFeedEndId — reconnecting');
             this.state.set('reconnecting');
             this.transport.forceReconnect();
             return;
           }
         }
-        if (m.event === 'STATE_REV_UPDATED') {
-          const revision = (m.data as { stateRevision?: unknown } | undefined)
-            ?.stateRevision;
-          if (!Number.isSafeInteger(revision) || Number(revision) < 0) {
+        if (m.event === 'STATE_FEED_UPDATED') {
+          const feedId = (m.data as { feedId?: unknown } | undefined)?.feedId;
+          if (!Number.isSafeInteger(feedId) || Number(feedId) < 0) {
             console.error(
-              '[sse] invalid STATE_REV_UPDATED stateRevision — reconnecting',
+              '[sse] invalid STATE_FEED_UPDATED feedId — reconnecting',
             );
             this.state.set('reconnecting');
             this.transport.forceReconnect();
@@ -126,23 +125,22 @@ export class WebsocketService implements OnDestroy {
         const threadId = (m.data as { threadId?: number } | undefined)
           ?.threadId;
         if (threadId !== undefined && this.deletionLock.has(threadId)) return;
-        if (m.event === 'STATE_REV_UPDATED' && this.deletionLock.any) {
-          const nextRevision = (
-            m.data as { stateRevision?: number } | undefined
-          )?.stateRevision;
-          const deferredRevision = (
-            this.deferredRevision?.data as
-              | { stateRevision?: number }
+        if (m.event === 'STATE_FEED_UPDATED' && this.deletionLock.any) {
+          const nextRevision = (m.data as { feedId?: number } | undefined)
+            ?.feedId;
+          const deferredFeedId = (
+            this.deferredStateFeedUpdate?.data as
+              | { feedId?: number }
               | undefined
-          )?.stateRevision;
+          )?.feedId;
           // A bridge/reconnect may deliver an older frame after a newer one. Keep the highest watermark so
           // releasing the deletion lock can never regress the thread-list's deferred catch-up target.
           if (
-            this.deferredRevision === undefined ||
-            deferredRevision === undefined ||
-            (nextRevision !== undefined && nextRevision > deferredRevision)
+            this.deferredStateFeedUpdate === undefined ||
+            deferredFeedId === undefined ||
+            (nextRevision !== undefined && nextRevision > deferredFeedId)
           ) {
-            this.deferredRevision = m;
+            this.deferredStateFeedUpdate = m;
           }
           return;
         }
@@ -294,7 +292,7 @@ export class WebsocketService implements OnDestroy {
   }
 
   /** HELLO never arrived within the deadline — the open stream is unusable (the threadlist cannot build
-   *  without the handshake's stateRevision + newest-message cursor). Surface it as a disconnect at the
+   *  without the handshake's stateFeedEndId + newest-message cursor). Surface it as a disconnect at the
    *  connection indicator, then force a reconnect so the new connection re-pushes HELLO. */
   private onHelloTimeout(): void {
     this.helloTimeout = undefined;

@@ -54,6 +54,14 @@ export type ChatSendIntent =
   | { kind: 'file'; files: readonly File[] }
   | { kind: 'native-files'; files: readonly NativeUploadSelection[] }
   | { kind: 'link'; generationId: string; content: LinkCardContent }
+  | {
+      kind: 'contact';
+      targetUserId: number;
+      account: string;
+      domain: string;
+      name: string;
+      avatar: string;
+    }
   | { kind: 'paste'; text: string; files: readonly File[] }
   | { kind: 'audio'; blob: Blob; duration: number; mimeType: string };
 
@@ -135,6 +143,10 @@ export class ChatInputComponent implements OnDestroy {
   /** @mention candidates (playground: mock; production group: member roster; production 1-on-1: []). Read into
    *  the editor; updates do NOT recreate the editor. */
   readonly members = input<ChatMember[]>([]);
+  readonly memberSearch = input<
+    ((query: string) => Promise<ChatMember[]>) | undefined
+  >();
+  readonly mentionsEnabled = input(false);
   readonly placeholder = input('');
   /** Browser composer drafts are partitioned by conversation. Omit in the playground. */
   readonly threadId = input<number>();
@@ -600,6 +612,12 @@ export class ChatInputComponent implements OnDestroy {
       labelKey: 'chat.sendFile',
       icon: AppIconType.FILE,
     },
+    {
+      kind: 'action',
+      key: 'contact',
+      labelKey: 'contactCard.send',
+      icon: AppIconType.FRIEND_REQUESTS,
+    },
   ] as const;
 
   toggleAttach(): void {
@@ -619,6 +637,10 @@ export class ChatInputComponent implements OnDestroy {
     this.attachOpen.set(false);
     if (key === 'photo') this.onAttachClick();
     else if (key === 'file') this.onFileClick();
+    else if (key === 'contact')
+      this.route.popupDlg(PopupType.CONTACT_PICKER, undefined, (result) => {
+        if (result) this.send.emit({ kind: 'contact', ...result });
+      });
   }
 
   /** Blank attachment-cover space behaves like an outside click; action buttons retain their own handling. */

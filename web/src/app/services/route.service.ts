@@ -35,6 +35,11 @@ import {
   type LinkCardGenerationMode,
 } from '../components/link-card-generation-dialog/link-card-generation-dialog.component';
 import type { User } from './model';
+import {
+  ContactIdentityDialogComponent,
+  type ContactIdentityDialogData,
+} from '../components/contact-identity-dialog/contact-identity-dialog.component';
+import { ContactPickerDialogComponent } from '../components/contact-picker-dialog/contact-picker-dialog.component';
 
 export enum RoutePage {
   HOME,
@@ -64,6 +69,8 @@ export enum PopupType {
   FORWARD_DETAIL,
   LINK_ORIGINAL,
   LINK_CARD_GENERATION,
+  CONTACT_IDENTITY,
+  CONTACT_PICKER,
 }
 
 // Resolve components when a dialog is opened, after the ES module graph has finished
@@ -82,6 +89,8 @@ const componentDict: Record<PopupType, () => Type<unknown>> = {
   [PopupType.FORWARD_DETAIL]: () => ForwardDetailComponent,
   [PopupType.LINK_ORIGINAL]: () => LinkOriginalDialogComponent,
   [PopupType.LINK_CARD_GENERATION]: () => LinkCardGenerationDialogComponent,
+  [PopupType.CONTACT_IDENTITY]: () => ContactIdentityDialogComponent,
+  [PopupType.CONTACT_PICKER]: () => ContactPickerDialogComponent,
 };
 
 const presentationDict: Record<PopupType, DialogPresentation> = {
@@ -96,6 +105,8 @@ const presentationDict: Record<PopupType, DialogPresentation> = {
   [PopupType.FORWARD_DETAIL]: 'viewer',
   [PopupType.LINK_ORIGINAL]: 'modal',
   [PopupType.LINK_CARD_GENERATION]: 'chatbox',
+  [PopupType.CONTACT_IDENTITY]: 'modal',
+  [PopupType.CONTACT_PICKER]: 'modal',
 };
 
 // per-popup input contracts — what each dialog's input() fields accept
@@ -126,7 +137,7 @@ export interface PopupInput {
     messages?: readonly ForwardMessageItem[];
     recordKind?: ForwardRecordKind;
     mode?: 'DIRECT' | 'HISTORY';
-    purpose?: 'FORWARD' | 'NATIVE_SHARE';
+    purpose?: 'FORWARD' | 'CHAT_CARD' | 'NATIVE_SHARE';
     sharedText?: string;
   };
   [PopupType.FORWARD_DETAIL]: { bundleId: string };
@@ -136,6 +147,8 @@ export interface PopupInput {
     mode: LinkCardGenerationMode;
     originalText: string;
   };
+  [PopupType.CONTACT_IDENTITY]: { identity: ContactIdentityDialogData };
+  [PopupType.CONTACT_PICKER]: undefined;
 }
 
 // per-popup result contracts — what a dialog passes back to its opener via closeDlg()
@@ -159,6 +172,16 @@ export interface PopupResult {
   [PopupType.FORWARD_DETAIL]: undefined;
   [PopupType.LINK_ORIGINAL]: undefined;
   [PopupType.LINK_CARD_GENERATION]: LinkCardGenerationDialogResult | undefined;
+  [PopupType.CONTACT_IDENTITY]: undefined;
+  [PopupType.CONTACT_PICKER]:
+    | {
+        targetUserId: number;
+        account: string;
+        domain: string;
+        name: string;
+        avatar: string;
+      }
+    | undefined;
 }
 
 export interface DlgInfo {

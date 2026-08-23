@@ -8,6 +8,8 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  Matches,
+  Max,
   MaxLength,
   Min,
 } from 'class-validator';
@@ -77,6 +79,53 @@ export class GroupIdDto {
   @IsInt()
   @Min(1)
   groupId!: number;
+}
+
+/** Newest-first keyset page of still-actionable USER→GROUP applications. */
+export class QueryGroupJoinRequestsDto extends GroupIdDto {
+  @ApiPropertyOptional({
+    example: '123456789',
+    description:
+      'Exclusive RelationshipIntent id cursor. Omit for the newest page.',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(/^[1-9]\d*$/, {
+    message: 'before must be a positive integer string',
+  })
+  before?: string;
+
+  @ApiPropertyOptional({ default: 20, description: 'Page size (1-50)' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  take?: number;
+}
+
+export class HandleGroupJoinRequestDto extends GroupIdDto {
+  @ApiProperty({
+    example: '123456789',
+    description: 'RelationshipIntent id (stringified BigInt)',
+  })
+  @IsString()
+  @Matches(/^[1-9]\d*$/, {
+    message: 'requestId must be a positive integer string',
+  })
+  requestId!: string;
+}
+
+export class ReadGroupJoinRequestsDto extends GroupIdDto {
+  @ApiProperty({
+    example: '123456789',
+    description: 'Highest application id displayed by the client',
+  })
+  @IsString()
+  @Matches(/^[1-9]\d*$/, {
+    message: 'readRequestId must be a positive integer string',
+  })
+  readRequestId!: string;
 }
 
 export class GroupTerminalActionDto extends GroupIdDto {
@@ -178,13 +227,4 @@ export class UpdateGroupDto {
     message: 'group description must be at most 240 characters',
   })
   description?: string;
-
-  @ApiProperty({
-    required: false,
-    example: false,
-    description: 'Whether ordinary members may invite users',
-  })
-  @IsBoolean()
-  @IsOptional()
-  membersCanInvite?: boolean;
 }

@@ -218,7 +218,6 @@ export class ConversationListService {
       description?: string;
       avatar?: string;
       dissolvedAt?: number | null;
-      membersCanInvite?: boolean;
     },
   ): void {
     this.repo.applyGroupUpdate(threadId, patch);

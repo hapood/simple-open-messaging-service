@@ -205,7 +205,7 @@ describe('FederationMessageFeedService compacted feed', () => {
     });
   });
 
-  it('does not describe sender-local LINK artwork removed from wire content', async () => {
+  it('describes optional LINK artwork referenced by wire content', async () => {
     const { alice, thread } = await seed();
     const digest = 'a'.repeat(64);
     const [link] = await database.db
@@ -253,8 +253,9 @@ describe('FederationMessageFeedService compacted feed', () => {
       url: 'https://example.test/article',
       title: 'Example',
       description: 'Description',
+      icon: digest,
     });
-    expect(page.messages[0].assets).toEqual([]);
+    expect(page.messages[0].assets).toEqual([{ digest, bytes: 123 }]);
   });
 
   it('revokes history access when the current audience closes', async () => {

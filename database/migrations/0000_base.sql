@@ -1844,38 +1844,6 @@ CREATE INDEX "ClientStateFeed_user_revision_idx" ON public."ClientStateFeed" USI
 
 
 --
--- Name: UserBlock; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."UserBlock" (
-    id integer NOT NULL,
-    "blockerId" integer NOT NULL,
-    "blockedId" integer NOT NULL,
-    "createdAt" timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
-);
-
-
---
--- Name: UserBlock_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public."UserBlock_id_seq"
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: UserBlock_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public."UserBlock_id_seq" OWNED BY public."UserBlock".id;
-
-
---
 -- Name: UserPreference; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2180,13 +2148,6 @@ ALTER TABLE ONLY public."UploadSession" ALTER COLUMN id SET DEFAULT nextval('pub
 --
 
 ALTER TABLE ONLY public."User" ALTER COLUMN id SET DEFAULT nextval('public."User_id_seq"'::regclass);
-
-
---
--- Name: UserBlock id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."UserBlock" ALTER COLUMN id SET DEFAULT nextval('public."UserBlock_id_seq"'::regclass);
 
 
 --
@@ -2698,14 +2659,6 @@ ALTER TABLE ONLY public."TwoFactorBackupCode"
 
 ALTER TABLE ONLY public."UploadSession"
     ADD CONSTRAINT "UploadSession_pkey" PRIMARY KEY (id);
-
-
---
--- Name: UserBlock UserBlock_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."UserBlock"
-    ADD CONSTRAINT "UserBlock_pkey" PRIMARY KEY (id);
 
 
 --
@@ -3402,20 +3355,6 @@ CREATE UNIQUE INDEX "UploadSession_uploadId_key" ON public."UploadSession" USING
 
 
 --
--- Name: UserBlock_blockedId_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "UserBlock_blockedId_idx" ON public."UserBlock" USING btree ("blockedId");
-
-
---
--- Name: UserBlock_blockerId_blockedId_key; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX "UserBlock_blockerId_blockedId_key" ON public."UserBlock" USING btree ("blockerId", "blockedId");
-
-
---
 -- Name: UserQuotaDailyUsage_date_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4007,22 +3946,6 @@ ALTER TABLE ONLY public."UploadSession"
 
 ALTER TABLE ONLY public."ClientStateFeed"
     ADD CONSTRAINT "ClientStateFeed_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."User"(id) ON DELETE CASCADE;
-
-
---
--- Name: UserBlock UserBlock_blockedId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."UserBlock"
-    ADD CONSTRAINT "UserBlock_blockedId_fkey" FOREIGN KEY ("blockedId") REFERENCES public."User"(id) ON UPDATE CASCADE ON DELETE RESTRICT;
-
-
---
--- Name: UserBlock UserBlock_blockerId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."UserBlock"
-    ADD CONSTRAINT "UserBlock_blockerId_fkey" FOREIGN KEY ("blockerId") REFERENCES public."User"(id) ON UPDATE CASCADE ON DELETE RESTRICT;
 
 
 --

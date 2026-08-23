@@ -8,7 +8,7 @@ import type { StandardResponse } from './model';
 const SUMMARY_TAKE = 200;
 const CLIENT_FEED_CURSOR_UNAVAILABLE = 30006;
 
-/** One thread's row in POST /thread-sync/catch-up. Mirrors the backend ThreadCatchUpItem. The
+/** One thread's row in GET /thread-sync/catch-up. Mirrors the backend ThreadCatchUpItem. The
  *  threadlist reads `latestMessage` for its own preview + the authoritative read state; the
  *  other fields are carried for parity but unused here
  *  (avatars come from the conversation snapshot). */
@@ -29,7 +29,7 @@ export interface ThreadCatchUpItem {
     seq: number;
     contentType: string;
     content: string;
-    creator: number;
+    creator: number | null;
     createdAt: number;
     mediaStatus: 'ready' | 'failed';
     sv: number;
@@ -79,13 +79,8 @@ export class ThreadCatchUpService {
     this.summaryInFlight = true;
     try {
       const res = await firstValueFrom(
-        this.http.post<StandardResponse<ThreadCatchUpResult>>(
-          `${apiPrefix()}/thread-sync/catch-up`,
-          {
-            after,
-            ...(through !== undefined ? { through } : {}),
-            take: SUMMARY_TAKE,
-          },
+        this.http.get<StandardResponse<ThreadCatchUpResult>>(
+          `${apiPrefix()}/thread-sync/catch-up?${this.feedQuery(after, through)}`,
           {
             headers: {
               Accept: 'application/json',
@@ -131,13 +126,8 @@ export class ThreadCatchUpService {
     this.tombstoneInFlight = true;
     try {
       const res = await firstValueFrom(
-        this.http.post<StandardResponse<TombstoneCatchUpResult>>(
-          `${apiPrefix()}/thread-sync/tombstones`,
-          {
-            after,
-            ...(through !== undefined ? { through } : {}),
-            take: SUMMARY_TAKE,
-          },
+        this.http.get<StandardResponse<TombstoneCatchUpResult>>(
+          `${apiPrefix()}/thread-sync/tombstones?${this.feedQuery(after, through)}`,
         ),
       ).catch(() => null);
       if (!res) return null;
@@ -164,5 +154,14 @@ export class ThreadCatchUpService {
     } finally {
       this.tombstoneInFlight = false;
     }
+  }
+
+  private feedQuery(after: number, through?: number): string {
+    const query = new URLSearchParams({
+      after: String(after),
+      take: String(SUMMARY_TAKE),
+    });
+    if (through !== undefined) query.set('through', String(through));
+    return query.toString();
   }
 }

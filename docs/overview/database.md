@@ -116,20 +116,19 @@ One row per (device, user); `token` globally unique (FCM registration token for 
 
 One row per (user, thread); P2P and GROUP share this table (`role` null for P2P). Replaces the former `UserMessageThread` + `GroupMember`.
 
-A P2P request shell contains two `AUTHORIZED` rows so its structure is complete;
-acceptance promotes both rows together. Revocation moves them to `REVOKED`
-without removing the visible thread revision. A group request uses `AUTHORIZED`
-only for the candidate, without changing established members. Federation query
-direction is derived from relationship intents, not from this lifecycle field.
+Request processing may materialize participant rows before mutual authorization
+exists. The rows provide stable thread linkage and retain per-user history state;
+they do not grant access. P2P and group membership authority is derived from the
+two directed relationship intents. Revocation leaves retained rows available for
+read-only history.
 
-| Field                                  | Type                   | Description                                                                       |
-| -------------------------------------- | ---------------------- | --------------------------------------------------------------------------------- |
+| Field                                  | Type                   | Description                                                       |
+| -------------------------------------- | ---------------------- | ----------------------------------------------------------------- |
 | `lastReadSeq`                          | Int?                   | read watermark; unread = `count(Message where seq > lastReadSeq)`                 |
 | `role`                                 | GroupRole?             | OWNER/ADMIN/MEMBER (GROUP only); null for P2P                                     |
 | `muted` / `pinned` / `pinnedAt`        |                        | mute / pin / pin-order                                                            |
 | `clearedSeq`                           | Int?                   | per-user "clear history" sequence watermark                                       |
 | `alias`                                | VarChar(64)?           | per-user nickname for this thread                                                 |
-| `state`                                | ThreadParticipantState | `AUTHORIZED` hidden shell, `ESTABLISHED` writable, or visible read-only `REVOKED` |
 | `joinedAt` / `createdAt` / `updatedAt` |                        |                                                                                   |
 
 Unique: `@@unique([userId, threadId])`. Indexes: `[threadId]` (roster), `[userId, pinned]` (pinned-first list).
@@ -260,10 +259,10 @@ CREATE TYPE "AdminRole" AS ENUM ('SUPER_ADMIN', 'ADMIN', 'VIEWER');
 ## Design Notes
 
 1. **One account namespace**: users and admins share `User`; an admin is a linked profile, so user/admin account names can never collide. A `!`-sigil `User` row (`isGroup`) is a group identity — `Group` holds only owner + roster revision.
-2. **Membership is `ThreadParticipant`**: P2P and GROUP share one membership table (`role` null for P2P). `AUTHORIZED` represents a hidden request shell, `ESTABLISHED` is formal and writable, and `REVOKED` retains visible read-only history. Expired authorization-only shells are deleted.
+2. **Conversation linkage is `ThreadParticipant`**: P2P and GROUP share one participant table (`role` null for P2P). RelationshipIntent is the sole current authorization source; retained participant rows preserve per-user settings and read-only history after revocation.
 3. **Requests are directional facts**: friendship and group membership keep each author's direction,
    note and revision separately; canonical pair rows serialize crossed transactions.
 4. **Per-thread seq, internal id**: `Message.id` (BigInt) is an internal storage key never exposed; `seq` is the per-thread external ordering key, allocated atomically from `curSeq` (gapless). `originSeq` carries the originating server's seq for federation dedup.
 5. **Client state versioning**: thread membership and profile cache entries share one integer cursor (`stateRevision` on the wire); clients delta-replay rather than re-fetch the whole list.
-6. **Lifecycle is model-specific**: revoked formal participants remain for visible read-only history; only expired authorization shells are deleted. Media-CAS blobs are reclaimed only after reachability checks.
+6. **Lifecycle is model-specific**: revoked relationship intents can leave retained participants for visible read-only history. Media-CAS blobs are reclaimed only after reachability checks.
 7. **BigInt serialization**: `Message.id` / `ThreadRevision.id` / `AdminActionLog.id` etc. use BigInt, uniformly serialized to strings by the global `SerializeInterceptor` (see [architecture.md → Unified Response Format](./architecture.md#unified-response-format)).

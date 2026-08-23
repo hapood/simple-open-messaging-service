@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, or } from 'drizzle-orm';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import { MessageThreadType } from '../src/database/enums.js';
@@ -11,7 +11,7 @@ import {
   user,
 } from '../src/database/schema.js';
 import { InviteService } from '../src/invite/invite.service.js';
-import { ClientStateFeedService } from '../src/thread-revision/client-state-feed.service.js';
+import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
 
 describe('federation directed-state boundaries', () => {
   let mod: TestingModule;
@@ -26,8 +26,10 @@ describe('federation directed-state boundaries', () => {
     invites = new InviteService(
       database,
       {} as never,
+      new ClientStateFeedService(database, {
+        onStateFeedUpdated: () => undefined,
+      } as never),
       {} as never,
-      new ClientStateFeedService(),
     );
   });
 
@@ -94,7 +96,7 @@ describe('federation directed-state boundaries', () => {
     expect(effect).toMatchObject({
       changed: false,
       requestCreated: false,
-      clientRevisions: [],
+      clientFeedUpdates: [],
     });
     expect(effect.requestCreated).toBe(false);
     const directions = await database.db
@@ -113,6 +115,44 @@ describe('federation directed-state boundaries', () => {
     expect(directions[0]).toMatchObject({
       requesterUserId: local.id,
       status: 'REVOKED',
+      expiresAt: null,
+    });
+  });
+
+  it('initializes an outbound request with a local reverse REVOKED fact', async () => {
+    const { local, peer } = await createPair(`o-${Date.now().toString(36)}`);
+
+    await database.db.transaction((tx) =>
+      invites.writeLocalFriendIntentInTx(
+        tx,
+        local.id,
+        peer.id,
+        true,
+        'hello',
+      ),
+    );
+
+    const directions = await database.db.query.relationshipIntent.findMany({
+      where: or(
+        and(
+          eq(relationshipIntent.authorUserId, local.id),
+          eq(relationshipIntent.subjectUserId, peer.id),
+        ),
+        and(
+          eq(relationshipIntent.authorUserId, peer.id),
+          eq(relationshipIntent.subjectUserId, local.id),
+        ),
+      ),
+    });
+    expect(directions).toHaveLength(2);
+    expect(
+      directions.find((direction) => direction.authorUserId === local.id),
+    ).toMatchObject({ status: 'REQUESTED' });
+    expect(
+      directions.find((direction) => direction.authorUserId === peer.id),
+    ).toMatchObject({
+      status: 'REVOKED',
+      requestedAt: null,
       expiresAt: null,
     });
   });

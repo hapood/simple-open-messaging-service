@@ -97,6 +97,35 @@ describe('SystemRowComponent', () => {
     expect(fixture.nativeElement.textContent).toContain('会话已更新');
   });
 
+  it('renders withdrawal and moderation deletion events', () => {
+    language.setLang('zh-CN');
+    TestBed.flushEffects();
+    const withdrawn = TestBed.createComponent(SystemRowComponent);
+    withdrawn.componentRef.setInput(
+      'data',
+      message(
+        JSON.stringify({
+          type: 'MESSAGE_WITHDRAWN',
+          subject: { account: '小明', domain: 'example.test' },
+        }),
+      ),
+    );
+    withdrawn.detectChanges();
+    expect(withdrawn.nativeElement.textContent).toContain(
+      '小明 撤回了一条消息',
+    );
+
+    const moderated = TestBed.createComponent(SystemRowComponent);
+    moderated.componentRef.setInput(
+      'data',
+      message(JSON.stringify({ type: 'MESSAGES_MODERATED', count: 3 })),
+    );
+    moderated.detectChanges();
+    expect(moderated.nativeElement.textContent).toContain(
+      '管理员删除了 3 条消息',
+    );
+  });
+
   it('renders friendship removal from the current user perspective', () => {
     language.setLang('zh-CN');
     TestBed.flushEffects();

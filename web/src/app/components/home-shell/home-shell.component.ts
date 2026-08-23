@@ -25,6 +25,7 @@ import { ChatListPaneComponent } from '../desktop/chat-list-pane/chat-list-pane.
 import { ChatPaneComponent } from '../desktop/chat-pane/chat-pane.component';
 import { PeerProfileComponent } from '../peer-profile/peer-profile.component';
 import { GroupInfoComponent } from '../group-info/group-info.component';
+import { GroupJoinRequestsComponent } from '../group-join-requests/group-join-requests.component';
 import { HomeHeaderComponent } from '../home-header/home-header.component';
 import { ConversationItem } from '../../services/model';
 import { ConversationListService } from '../../services/conversation-list.service';
@@ -125,6 +126,7 @@ const overlaySlide = trigger('overlaySlide', [
     ChatPaneComponent,
     PeerProfileComponent,
     GroupInfoComponent,
+    GroupJoinRequestsComponent,
     HomeHeaderComponent,
     TranslocoPipe,
     CallBannerComponent,

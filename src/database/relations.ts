@@ -10,12 +10,10 @@ import {
   user,
   userPreference,
   messageAsset,
-  userBlock,
   pushToken,
   adminActionLog,
   pendingMedia,
   group,
-  threadRevision,
   loginCode,
   sessionToken,
   twoFactorBackupCode,
@@ -28,7 +26,6 @@ import {
   peerStateFeed,
   peerStateFeedTarget,
   peerStateFeedPullCursor,
-  profileStateRevision,
   relationshipIntent,
 } from './schema.js';
 
@@ -64,22 +61,6 @@ export const peerStateFeedPullCursorRelations = relations(
     peer: one(federatedPeer, {
       fields: [peerStateFeedPullCursor.peerDomain],
       references: [federatedPeer.domain],
-    }),
-  }),
-);
-
-export const profileStateRevisionRelations = relations(
-  profileStateRevision,
-  ({ one }) => ({
-    user: one(user, {
-      fields: [profileStateRevision.userId],
-      references: [user.id],
-      relationName: 'profileStateOwner',
-    }),
-    subject: one(user, {
-      fields: [profileStateRevision.subjectUserId],
-      references: [user.id],
-      relationName: 'profileStateSubject',
     }),
   }),
 );
@@ -163,19 +144,12 @@ export const messageThreadRelations = relations(
     messageAssets: many(messageAsset),
     messages: many(message),
     pendingMedias: many(pendingMedia),
-    threadRevisions: many(threadRevision),
   }),
 );
 
 export const userRelations = relations(user, ({ one, many }) => ({
   threadParticipants: many(threadParticipant),
   messageThreads: many(messageThread),
-  userBlocks_blockedId: many(userBlock, {
-    relationName: 'userBlock_blockedId_user_id',
-  }),
-  userBlocks_blockerId: many(userBlock, {
-    relationName: 'userBlock_blockerId_user_id',
-  }),
   messages: many(message),
   admins: many(admin),
   pushTokens: many(pushToken),
@@ -189,7 +163,6 @@ export const userRelations = relations(user, ({ one, many }) => ({
     fields: [user.id],
     references: [group.groupUserId],
   }),
-  threadRevisions: many(threadRevision),
   loginCodes: many(loginCode),
   sessionTokens: many(sessionToken),
   diagnosticsReports: many(diagnosticsReport),
@@ -211,19 +184,6 @@ export const messageAssetRelations = relations(messageAsset, ({ one }) => ({
   messageThread: one(messageThread, {
     fields: [messageAsset.threadId],
     references: [messageThread.id],
-  }),
-}));
-
-export const userBlockRelations = relations(userBlock, ({ one }) => ({
-  user_blockedId: one(user, {
-    fields: [userBlock.blockedId],
-    references: [user.id],
-    relationName: 'userBlock_blockedId_user_id',
-  }),
-  user_blockerId: one(user, {
-    fields: [userBlock.blockerId],
-    references: [user.id],
-    relationName: 'userBlock_blockerId_user_id',
   }),
 }));
 
@@ -267,17 +227,6 @@ export const pendingMediaRelations = relations(pendingMedia, ({ one }) => ({
 export const groupRelations = relations(group, ({ one }) => ({
   user: one(user, {
     fields: [group.groupUserId],
-    references: [user.id],
-  }),
-}));
-
-export const threadRevisionRelations = relations(threadRevision, ({ one }) => ({
-  messageThread: one(messageThread, {
-    fields: [threadRevision.threadId],
-    references: [messageThread.id],
-  }),
-  user: one(user, {
-    fields: [threadRevision.userId],
     references: [user.id],
   }),
 }));

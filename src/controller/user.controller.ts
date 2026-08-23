@@ -29,17 +29,12 @@ import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { SystemMessageType } from '../message/system-message.js';
 import { GroupService } from '../group/group.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
-import {
-  GroupRole,
-  MessageThreadType,
-  ThreadParticipantState,
-} from '../database/enums.js';
+import { GroupRole, MessageThreadType } from '../database/enums.js';
 import { messageThread, threadParticipant } from '../database/schema.js';
 import { AuthService } from '../auth/auth.service.js';
 import { SseService } from '../gateway/sse.service.js';
-import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
-import { ClientStateFeedService } from '../thread-revision/client-state-feed.service.js';
-import { planThreadDelta } from '../thread-revision/thread-delta.js';
+import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
+import { ClientGroupMetaFeedService } from '../client-state-feed/client-group-meta-feed.service.js';
 import { Public } from '../common/public.decorator.js';
 import { ApiResultResponse, envelope } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -55,11 +50,8 @@ import {
   UserSearchDto,
   PeerTrustStatusDto,
   QueryUsersDto,
-  ThreadDeltaDto,
   UpdateProfileDto,
-  BlockDto,
 } from '../dto/user.dto.js';
-import { UserBlockService } from '../user-block/user-block.service.js';
 import {
   FederationService,
   S2sResponseError,
@@ -68,47 +60,26 @@ import {
 import { UserQuotaService } from '../quota/user-quota.service.js';
 import { InviteService } from '../invite/invite.service.js';
 import { Raw } from '../common/raw.decorator.js';
+import { STATE_FEED_PAGE_MAX_BYTES } from '../common/feed-page.js';
 import { formatSseFrame, initSseResponse } from '../common/sse-stream.js';
 import { FederationRecognitionService } from '../federation/federation-recognition.service.js';
 
-/**
- * One entry of the unified client-state delta (`POST /user/query-state/delta`). ADD entries carry the fully
- * hydrated structural {@link ConversationItemDto} inline so the client applies a single response —
- * no second batch-hydrate round-trip. DELETE entries carry the threadId only: the thread is leaving the
- * caller's roster, so there is nothing to render. The `direction` field discriminates the two.
- */
-type HydratedThreadDeltaOp =
-  | { threadId: number; direction: 'ADD'; item: ConversationItemDto }
-  | { threadId: number; direction: 'DELETE' }
-  | { direction: 'PROFILE'; user: UserResponseDto }
-  | {
-      direction: 'PROFILE_DELETE';
-      userId: number;
-      account: string;
-      domain: string;
-      revision: number;
-    }
-  | {
-      direction: 'MEMBER_PROFILE';
-      sourcePeerDomain: string;
-      memberAccount: string;
-      memberDomain: string;
-      userId: number;
-      threadIds: number[];
-      revision: number;
-      displayName: string;
-      avatar: string;
-      profileRevision: number;
-    }
-  | {
-      direction: 'CLIENT_STATE';
-      account: string;
-      domain: string;
-      eventType: string;
-      subjectAccount: string;
-      subjectDomain: string;
-      body: unknown;
-    };
+/** One item in the device-facing compacted state feed. */
+type ClientStateFeedItem = {
+  feedId: number;
+  account: string;
+  domain: string;
+  eventType:
+    | 'PROFILE'
+    | 'RELATIONSHIP_INTENT'
+    | 'GROUP_META_FEED_HEAD'
+    | 'GROUP_JOIN_REQUEST_HEAD'
+    | 'INCOMING_INVITE_HEAD'
+    | 'THREAD_BLOCK';
+  subjectAccount: string;
+  subjectDomain: string;
+  body: unknown;
+};
 
 type ParticipantWithThread = typeof threadParticipant.$inferSelect & {
   thread: typeof messageThread.$inferSelect;
@@ -134,16 +105,18 @@ export class UserController {
     private readonly uploadService: UploadService,
     private readonly sseService: SseService,
     private readonly messageService: MessageService,
-    private readonly userBlockService: UserBlockService,
     private readonly federationService: FederationService,
     private readonly federationRecognition: FederationRecognitionService,
-    private readonly threadRevisionService: ThreadRevisionService,
     private readonly clientStateFeed: ClientStateFeedService,
+    private readonly clientGroupMetaFeed: ClientGroupMetaFeedService,
     private readonly userQuotaService: UserQuotaService,
     private readonly inviteService: InviteService,
     @Optional()
     @Inject(forwardRef(() => MessageFanoutService))
-    private readonly messageFanout?: Pick<MessageFanoutService, 'dispatch'>,
+    private readonly messageFanout?: Pick<
+      MessageFanoutService,
+      'dispatch' | 'dispatchToUsers'
+    >,
   ) {}
 
   @ApiBearerAuth()
@@ -267,12 +240,6 @@ export class UserController {
       .map((p) => p.threadId);
     const peers = await this.participantService.findP2PPeers(p2pThreadIds, me);
     const peerByThread = new Map(peers.map((p) => [p.threadId, p.userId]));
-    const peerActiveByThread = new Map(
-      peers.map((p) => [
-        p.threadId,
-        p.state === ThreadParticipantState.ESTABLISHED,
-      ]),
-    );
     const peerUsers = await this.userService.queryUsers({
       where: {
         id: { in: peers.map((p) => p.userId) },
@@ -283,29 +250,12 @@ export class UserController {
     peerUsers.forEach((u) => {
       userDict[u.id] = u;
     });
-    // Hydrate each P2P peer's blocked-by-caller flag in one batched UserBlock lookup, so the chat
-    // header menu shows Block ↔ Unblock and the banner reflects state on first load.
-    const blockedPeers = await this.userBlockService.blockedAmong(
-      me,
-      peers.map((p) => p.userId),
-    );
     // Hydrate GROUP conversations by their threadId.
     const groupThreadIds = list
       .filter((p) => p.thread.type === 'GROUP')
       .map((p) => p.threadId);
     const groupByThread =
       await this.groupService.resolveGroupUsersByThreadIds(groupThreadIds);
-    const groupRosterRows =
-      await this.participantService.getRosters(groupThreadIds);
-    const groupRosterByThread = new Map<
-      number,
-      Array<(typeof groupRosterRows)[number]>
-    >();
-    for (const row of groupRosterRows) {
-      const bucket = groupRosterByThread.get(row.threadId);
-      if (bucket) bucket.push(row);
-      else groupRosterByThread.set(row.threadId, [row]);
-    }
     return list.map((p) => {
       const item = {
         id: p.id,
@@ -325,10 +275,6 @@ export class UserController {
         pinnedAt: p.pinnedAt ?? null,
         clearedSeq: p.clearedSeq ?? null,
         alias: p.alias ?? null,
-        conversationState:
-          p.state === ThreadParticipantState.ESTABLISHED
-            ? 'ACTIVE'
-            : 'READ_ONLY',
       } as {
         id: number;
         threadId: number;
@@ -340,21 +286,14 @@ export class UserController {
         pinnedAt: Date | null;
         clearedSeq: number | null;
         blocked: boolean;
-        friendshipActive?: boolean;
-        conversationState: 'ACTIVE' | 'READ_ONLY';
         alias: string | null;
         peerUser?: unknown;
         group?: unknown;
       };
       if (p.thread.type === 'P2P') {
-        item.friendshipActive =
-          p.state === ThreadParticipantState.ESTABLISHED &&
-          peerActiveByThread.get(p.threadId) === true;
-        item.conversationState = item.friendshipActive ? 'ACTIVE' : 'READ_ONLY';
         const peerId = peerByThread.get(p.threadId);
         if (peerId !== undefined) {
           item.peerUser = userDict[peerId];
-          item.blocked = item.blocked || blockedPeers.has(peerId);
         }
       } else {
         const gu = groupByThread.get(p.threadId);
@@ -370,31 +309,10 @@ export class UserController {
               domain: !gu.domain || gu.domain === 'local' ? '' : gu.domain,
               ownerId: gu.group?.ownerId ?? 0,
               dissolvedAt: gu.group?.dissolvedAt ?? null,
-              membersCanInvite: gu.group?.membersCanInvite ?? true,
               createdAt: gu.group?.createdAt ?? p.thread.createdAt,
               updatedAt: gu.group?.updatedAt ?? p.thread.updatedAt,
-              members: (groupRosterByThread.get(p.threadId) ?? []).map(
-                (member) => ({
-                  userId: member.userId,
-                  account: member.user.account,
-                  domain:
-                    !member.user.domain || member.user.domain === 'local'
-                      ? ''
-                      : member.user.domain,
-                  profileSourceDomain:
-                    !gu.domain || gu.domain === 'local' ? '' : gu.domain,
-                  role: member.role,
-                  joinedAt: member.joinedAt,
-                  isOwner: member.role === 'OWNER',
-                }),
-              ),
             }
           : undefined;
-        item.conversationState =
-          p.state === ThreadParticipantState.ESTABLISHED &&
-          gu?.group?.dissolvedAt == null
-            ? 'ACTIVE'
-            : 'READ_ONLY';
       }
       return item;
     });
@@ -402,114 +320,179 @@ export class UserController {
 
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
-  @Post('user/query-state/delta')
+  @Get('user/state-feed')
   @ApiOperation({
-    summary:
-      'Fetch the thread-list delta (from excl, to incl): structural ADD ops hydrated, DELETE ops id-only',
+    summary: 'Fetch compacted client state in a fixed feed-id range',
   })
-  async queryThreadDelta(
+  async queryStateFeed(
     @Request() req: FastifyRequest,
-    @Body() dto: ThreadDeltaDto,
+    @Query('mode') modeParam?: string,
+    @Query('after') afterParam?: string,
+    @Query('take') takeParam?: string,
+    @Query('through') throughParam?: string,
   ) {
     const me = req.user.userId;
-    // Read the raw ADD/DELETE op log in (from, to], then plan it (last-op-wins per thread). The client
-    // applies a single response: it never re-plans or batch-hydrates — the server is authoritative on both.
-    const [ops, profileOps, memberProfileOps, clientStateItems] =
-      await Promise.all([
-        this.threadRevisionService.queryDelta(
-          me,
-          dto.fromRevision,
-          dto.toRevision,
-        ),
-        this.threadRevisionService.queryProfileDelta(
-          me,
-          dto.fromRevision,
-          dto.toRevision,
-        ),
-        this.threadRevisionService.queryMemberProfileDelta(
-          me,
-          dto.fromRevision,
-          dto.toRevision,
-        ),
-        this.clientStateFeed.query(me, dto.fromRevision, dto.toRevision),
-      ]);
-    const { addIds, removeIds } = planThreadDelta(ops);
-    // Hydrate ONLY the net-ADD threads in one batched pass. active=true is the strict "currently a member"
-    // guard; a net-ADD whose participant row is gone (a reaped edge) simply drops — the client won't insert
-    // it. DELETE entries carry no info (the thread is leaving the roster, nothing to render).
-    let adds: ConversationItemDto[] = [];
-    if (addIds.length > 0) {
-      const rows = await this.participantService.queryParticipants({
-        where: {
-          userId: me,
-          threadId: { in: addIds },
-        },
-        include: { thread: true },
-      });
-      // hydrateConversationItems is the structural ConversationItem pipeline shared with
-      // /user/thread-info; its inferred return carries `unknown` peer/group, so assert the contract here.
-      adds = (await this.hydrateConversationItems(
-        me,
-        rows,
-      )) as ConversationItemDto[];
+    const mode = modeParam ?? 'delta';
+    if (mode !== 'full' && mode !== 'delta')
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'mode must be full or delta',
+        HttpStatus.BAD_REQUEST,
+      );
+    if (afterParam === undefined)
+      return this.clientStateFeed.rejectMissingAfter(me);
+    const parseCursor = (value: string, name: string): number => {
+      if (!/^(0|[1-9]\d*)$/.test(value))
+        throw new BusinessException(
+          BusinessCode.VALIDATION_FAILED,
+          `${name} must be a non-negative integer`,
+          HttpStatus.BAD_REQUEST,
+        );
+      const parsed = Number(value);
+      if (!Number.isSafeInteger(parsed))
+        throw new BusinessException(
+          BusinessCode.VALIDATION_FAILED,
+          `${name} exceeds the safe integer range`,
+          HttpStatus.BAD_REQUEST,
+        );
+      return parsed;
+    };
+    const after = parseCursor(afterParam, 'after');
+    const take = takeParam === undefined ? 100 : parseCursor(takeParam, 'take');
+    if (take < 1 || take > 200)
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'take must be an integer from 1 to 200',
+        HttpStatus.BAD_REQUEST,
+      );
+    const through =
+      throughParam === undefined
+        ? undefined
+        : parseCursor(throughParam, 'through');
+    if (through !== undefined && through < after)
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'through must be greater than or equal to after',
+        HttpStatus.BAD_REQUEST,
+      );
+    const stateFeedEndId = await this.clientStateFeed.readEndId(me);
+    if (after > stateFeedEndId)
+      throw new BusinessException(
+        BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
+        'state feed cursor is outside the available coordinate space',
+        HttpStatus.OK,
+        { resumeAfter: 0, resumeBefore: stateFeedEndId + 1 },
+      );
+    const scanEnd = Math.min(through ?? stateFeedEndId, stateFeedEndId);
+    const candidates = (
+      await this.clientStateFeed.query(me, mode, after, scanEnd)
+    ).map((item) => ({
+      account: item.account,
+      domain: item.domain,
+      eventType: item.eventType as ClientStateFeedItem['eventType'],
+      subjectAccount: item.subjectAccount,
+      subjectDomain: item.subjectDomain,
+      feedId: item.feedId,
+      body: item.body,
+    })) satisfies ClientStateFeedItem[];
+    candidates.sort((a, b) => a.feedId - b.feedId);
+    const items: ClientStateFeedItem[] = [];
+    let bytes = 0;
+    for (const item of candidates.slice(0, take)) {
+      const itemBytes = Buffer.byteLength(JSON.stringify(item));
+      if (items.length > 0 && bytes + itemBytes > STATE_FEED_PAGE_MAX_BYTES)
+        break;
+      items.push(item);
+      bytes += itemBytes;
     }
-    const profiles = await this.userService.queryUsers({
-      where: {
-        id: { in: profileOps.map((op) => op.subjectUserId) },
-      },
-    });
-    const profileById = new Map(
-      profiles.map((profile) => [profile.id, profile]),
-    );
-    const hydratedProfiles: HydratedThreadDeltaOp[] = [];
-    for (const op of profileOps) {
-      const profile = profileById.get(op.subjectUserId);
-      if (!profile) continue;
-      if (profile.isDeleted) {
-        hydratedProfiles.push({
-          direction: 'PROFILE_DELETE',
-          userId: profile.id,
-          account: profile.account,
-          domain: profile.domain,
-          revision: op.revision,
-        });
-      } else {
-        hydratedProfiles.push({
-          direction: 'PROFILE',
-          user: {
-            ...profile,
-            createdAt: profile.createdAt.getTime(),
-            updatedAt: profile.updatedAt.getTime(),
-          },
-        });
-      }
-    }
-    return [
-      ...hydratedProfiles,
-      ...memberProfileOps.map((op) => ({
-        direction: 'MEMBER_PROFILE' as const,
-        ...op,
-      })),
-      ...clientStateItems.map((item) => ({
-        direction: 'CLIENT_STATE' as const,
-        account: item.account,
-        domain: item.domain,
-        eventType: item.eventType,
-        subjectAccount: item.subjectAccount,
-        subjectDomain: item.subjectDomain,
-        revision: item.revision,
-        body: item.body,
-      })),
-      ...adds.map((item) => ({
-        threadId: item.threadId,
-        direction: 'ADD' as const,
-        item,
-      })),
-      ...removeIds.map((threadId) => ({
+    const scannedThrough =
+      items.length < candidates.length
+        ? (items.at(-1)?.feedId ?? after)
+        : scanEnd;
+    return {
+      mode,
+      items,
+      scannedThrough,
+      stateFeedEndId,
+      hasMore: scannedThrough < scanEnd,
+    };
+  }
+
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Get('user/group-meta')
+  @ApiOperation({ summary: 'Fetch one client-visible group member feed' })
+  async queryGroupMeta(
+    @Request() req: FastifyRequest,
+    @Query('threadId') threadIdParam?: string,
+    @Query('account') accountParam?: string,
+    @Query('domain') domainParam?: string,
+    @Query('mode') modeParam?: string,
+    @Query('after') afterParam?: string,
+    @Query('take') takeParam?: string,
+    @Query('through') throughParam?: string,
+  ) {
+    if ((threadIdParam === undefined) === (accountParam === undefined))
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'exactly one of threadId or account is required',
+        HttpStatus.BAD_REQUEST,
+      );
+    const parseCursor = (value: string, name: string): bigint => {
+      if (!/^(0|[1-9]\d*)$/.test(value))
+        throw new BusinessException(
+          BusinessCode.VALIDATION_FAILED,
+          `${name} must be a non-negative integer`,
+          HttpStatus.BAD_REQUEST,
+        );
+      return BigInt(value);
+    };
+    const mode = modeParam ?? 'delta';
+    if (mode !== 'full' && mode !== 'delta')
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'mode must be full or delta',
+        HttpStatus.BAD_REQUEST,
+      );
+    if (afterParam === undefined)
+      throw new BusinessException(
+        BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
+        'after is required; initialize the group meta feed cursor',
+        HttpStatus.OK,
+        { resumeAfter: '0' },
+      );
+    const threadId =
+      threadIdParam === undefined
+        ? undefined
+        : Number(parseCursor(threadIdParam, 'threadId'));
+    if (
+      threadId !== undefined &&
+      (!Number.isSafeInteger(threadId) || threadId < 1)
+    )
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'threadId must be a positive safe integer',
+        HttpStatus.BAD_REQUEST,
+      );
+    const target = await this.clientGroupMetaFeed.resolveVisibleGroup(
+      req.user.userId,
+      {
         threadId,
-        direction: 'DELETE' as const,
-      })),
-    ] satisfies HydratedThreadDeltaOp[];
+        account: accountParam,
+        domain: domainParam,
+      },
+    );
+    return this.clientGroupMetaFeed.serve(
+      req.user.userId,
+      target.groupUserId,
+      target.account,
+      mode,
+      parseCursor(afterParam, 'after'),
+      takeParam === undefined ? 100 : Number(parseCursor(takeParam, 'take')),
+      throughParam === undefined
+        ? undefined
+        : parseCursor(throughParam, 'through'),
+    );
   }
 
   @ApiBearerAuth()
@@ -527,7 +510,6 @@ export class UserController {
         'can not unfriend self',
       );
     }
-    const peer = await this.userService.findUniqueUser({ id: dto.userId });
     // Prefer the active edge. If it has already ended, retain the latest historical edge so a retry is
     // successful and may still apply the caller's `deleteData` choice.
     const activeThreadId = await this.participantService.findP2PThreadBetween(
@@ -551,52 +533,19 @@ export class UserController {
       threadId,
       me,
       dto.deleteData ?? false,
-      peer?.isForeigner ? undefined : dto.userId,
     );
     await Promise.allSettled(
       ended.statePeers.map((domain) =>
         this.federationService.pushDiscoveryHwm(domain),
       ),
     );
-    const systemMessage =
-      ended.transitioned && activeThreadId !== null
-        ? await this.messageService.tryWriteSystemMessage(
-            me,
-            threadId,
-            SystemMessageType.FRIEND_REMOVED,
-            dto.userId,
-          )
-        : null;
-    if (systemMessage && this.messageFanout) {
-      void this.messageFanout.dispatch(systemMessage);
-    }
-    return envelope(undefined, { message: 'friend removed' });
-  }
-
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @Post('user/block')
-  @ApiOperation({
-    summary:
-      'Block / unblock a user (P2P). Independent of friendship; the message path drops delivery + hides their messages.',
-  })
-  async setBlock(@Request() req: FastifyRequest, @Body() dto: BlockDto) {
-    if (req.user.userId === dto.userId) {
-      throw new BusinessException(
-        BusinessCode.FRIEND_SELF,
-        'can not block self',
+    if (ended.systemMessage && this.messageFanout) {
+      void this.messageFanout.dispatchToUsers(
+        ended.systemMessage,
+        ended.localRecipientIds,
       );
     }
-    if (dto.block) {
-      await this.userBlockService.block(req.user.userId, dto.userId);
-    } else {
-      await this.userBlockService.unblock(req.user.userId, dto.userId);
-    }
-    // No peer SSE: a block never reveals itself to the blocked user. The blocker's own other devices
-    // will refetch the thread view to show the blocked banner; no live frame is needed for correctness.
-    return envelope(undefined, {
-      message: dto.block ? 'user blocked' : 'user unblocked',
-    });
+    return envelope(undefined, { message: 'friend removed' });
   }
 
   @ApiBearerAuth()
@@ -652,12 +601,6 @@ export class UserController {
       isDeleted: false,
     });
     if (user !== null) {
-      if (user.isGroup) {
-        throw new BusinessException(
-          BusinessCode.FRIEND_INVALID_TARGET,
-          'cannot add a group as a friend',
-        );
-      }
       return user;
     }
     throw new BusinessException(
@@ -701,14 +644,16 @@ export class UserController {
         account_domain: { account, domain: 'local' },
         isDeleted: false,
       });
-      if (!localUser || localUser.isGroup) {
+      if (!localUser) {
         finish('failed', { reason: 'NOT_FOUND' });
         return;
       }
-      const [relationship] =
-        await this.inviteService.friendRelationshipStatuses(req.user.userId, [
-          localUser.id,
-        ]);
+      const [relationship] = localUser.isGroup
+        ? []
+        : await this.inviteService.friendRelationshipStatuses(
+            req.user.userId,
+            [localUser.id],
+          );
       finish('resolved', {
         user: localUser,
         relationship: relationship?.status ?? 'NONE',
@@ -742,11 +687,13 @@ export class UserController {
         })(),
         deadline,
       ]);
-      const relationship = await this.inviteService.federatedRelationshipStatus(
-        req.user.userId,
-        account,
-        domain,
-      );
+      const relationship = profile.account.startsWith('!')
+        ? 'NONE'
+        : await this.inviteService.federatedRelationshipStatus(
+            req.user.userId,
+            account,
+            domain,
+          );
       finish('resolved', {
         user: this.transientFederatedUser(profile),
         relationship,
@@ -789,7 +736,7 @@ export class UserController {
         : '',
       bio: profile.bio,
       isForeigner: true,
-      isGroup: false,
+      isGroup: profile.account.startsWith('!'),
       domain: profile.domain,
       createdAt: now,
       updatedAt: now,
@@ -805,13 +752,13 @@ export class UserController {
   @Post('user/search')
   @ApiOperation({
     summary:
-      'Fuzzy local user discovery by account OR display name (local users only)',
+      'Fuzzy local identity discovery by account OR display name (local users and groups)',
   })
   async searchUsers(@Body() dto: UserSearchDto) {
     // Discovery endpoint — the two abuse guardrails are the DTO's @MinLength(2) on q and the hard
     // take cap here (a client must never page through the whole user table). Federated users are not
     // discoverable: resolve those by exact account + domain via /user/resolve. Only local,
-    // non-deleted accounts are returned.
+    // non-deleted user and group accounts are returned.
     const take = Math.min(dto.take ?? 20, 20);
     return this.userService.searchUsers(dto.q.trim(), {
       skip: dto.skip ?? 0,

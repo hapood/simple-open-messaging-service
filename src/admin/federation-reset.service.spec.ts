@@ -8,7 +8,6 @@ const counts = {
   affectedThreadCount: 2,
   authoredMessageCount: 7,
   inviteCount: 1,
-  userBlockCount: 0,
   deletionCursorCount: 2,
   keyCacheCount: 1,
   friendOperationCount: 5,
@@ -184,21 +183,17 @@ describe('FederationResetService', () => {
         ),
       },
     };
-    const threadRevisions = { notifyThreadRevision: vi.fn() };
     const service = new FederationResetService(
       database as never,
-      threadRevisions as never,
-    ) as unknown as { truncateThread: (threadId: number) => Promise<void> };
+    ) as unknown as {
+      truncateThread: (threadId: number) => Promise<void>;
+    };
 
     await service.truncateThread(12);
 
-    expect(threadRevisions.notifyThreadRevision).toHaveBeenCalledWith({
-      userId: 4,
-      revision: 9,
-    });
     expect(database.db.transaction).toHaveBeenCalledOnce();
     expect(finalExecute).toHaveBeenCalledTimes(2);
-    expect(execute).toHaveBeenCalledTimes(12);
+    expect(execute).toHaveBeenCalledTimes(10);
   });
 
   it('finalizes the domain only after no related thread remains pending', async () => {

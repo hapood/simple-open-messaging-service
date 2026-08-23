@@ -162,16 +162,21 @@ describe('UserService profile refresh', () => {
     await preferences.remove('device', 'theme');
   });
 
-  it('derives the friend-request badge from a device-local seen revision', () => {
-    const webdb = TestBed.inject(WebdbService);
+  it('derives the friend-request badge from the synchronized read watermark', () => {
     expect(svc.friendReqBadge()).toBe(false);
 
     svc.applyFriendRequestStateRevision(20);
+    svc.seedStateFeedCursor(20);
     expect(svc.friendReqBadge()).toBe(true);
 
     svc.markFriendReqRead();
+    httpMock
+      .expectOne(
+        (req) =>
+          req.method === 'POST' && req.url.endsWith('/invite/incoming/read'),
+      )
+      .flush({ code: 0, data: { readThroughFeedId: 20 } });
     expect(svc.friendReqBadge()).toBe(false);
-    expect(webdb.putMeta).toHaveBeenCalledWith('friendRequestSeenRevision', 20);
 
     svc.applyFriendRequestStateRevision(21);
     expect(svc.friendReqBadge()).toBe(true);
@@ -266,10 +271,10 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     ).toBe(1);
   });
 
-  it('restores the friend-request latest and seen revisions from this device', async () => {
+  it('restores the local invitation revision and synchronized read head', async () => {
     webdb.getMeta.mockImplementation(async (key: string) => {
       if (key === 'friendRequestStateRevision') return 12;
-      if (key === 'friendRequestSeenRevision') return 9;
+      if (key === 'incomingInviteHead') return { readThroughFeedId: 9 };
       return {
         id: 1,
         profileRev: 0,
@@ -283,7 +288,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     await svc.establishSession(1, 0);
 
     expect(svc.friendRequestStateRevision()).toBe(12);
-    expect(svc.friendRequestSeenRevision()).toBe(9);
+    expect(svc.incomingInviteReadThroughFeedId()).toBe(9);
     expect(svc.friendReqBadge()).toBe(true);
   });
 

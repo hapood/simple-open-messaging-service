@@ -69,42 +69,36 @@ const DEMO_GROUP_CONVERSATION = {
   type: 'GROUP',
   alias: null,
   unreadCount: 0,
+  mentionUnread: [],
+  lastMessageAt: 0,
   lastMessageSeq: 100,
+  lastMessagePreview: null,
+  lastMessageSenderId: null,
+  lastReadSeq: null,
+  muted: false,
+  pinned: false,
+  pinnedAt: null,
+  clearedSeq: null,
   role: 'OWNER',
   conversationState: 'ACTIVE',
-  peerUser: {},
+  peerUser: DEMO_CONVERSATION.peerUser,
   group: {
     id: 2,
+    threadId: 2,
+    account: '!playground',
     name: 'Playground Team',
+    ownerId: 1,
     description: 'Alice · Maya · Noah · You',
     avatar: '',
     domain: '',
     profileRev: 1,
-    members: [
-      memberRef(1, 'me', 'OWNER'),
-      memberRef(2, 'alice', 'ADMIN'),
-      memberRef(3, 'maya', 'MEMBER'),
-      memberRef(4, 'noah', 'MEMBER'),
-      memberRef(5, 'olivia', 'MEMBER'),
-    ],
+    dissolvedAt: null,
+    createdAt: 0,
+    updatedAt: 0,
+    memberCount: 5,
+    groupMetaFeedId: '0',
   },
 } as ConversationItem;
-
-function memberRef(
-  userId: number,
-  account: string,
-  role: 'OWNER' | 'ADMIN' | 'MEMBER',
-) {
-  return {
-    userId,
-    account,
-    domain: '',
-    profileSourceDomain: '',
-    role,
-    joinedAt: userId,
-    isOwner: role === 'OWNER',
-  };
-}
 
 type KernelFieldKey =
   | 'initBatch'

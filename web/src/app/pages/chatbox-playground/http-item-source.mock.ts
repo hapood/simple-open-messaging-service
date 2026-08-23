@@ -486,8 +486,10 @@ export class MockItemSource implements CbSource<ChatItemData> {
   /** Collect missing creators → look them up on userService to fill `profiles` (mirrors HttpItemSource.ensureProfiles). */
   private async ensureProfiles(items: CbItem<ChatItemData>[]): Promise<void> {
     const missing = new Set<number>();
-    for (const it of items)
-      if (!this.profiles.has(it.data.creator)) missing.add(it.data.creator);
+    for (const it of items) {
+      const creator = it.data.creator;
+      if (creator !== null && !this.profiles.has(creator)) missing.add(creator);
+    }
     if (missing.size === 0) return;
     const res = await firstValueFrom(
       this.userService.queryUserInfo({ userIds: [...missing] }),
@@ -505,13 +507,14 @@ export class MockItemSource implements CbSource<ChatItemData> {
    *  fallback 'Unknown' / creator===userId). Preserves clientMessageId (the optimistic↔real reconcile key) so a confirmed
    *  real returned by getNewer still carries it — shape must not strip the correlation key the kernel pairs on. */
   private shape(it: CbItem<ChatItemData>): CbItem<ChatItemData> {
-    const p = this.profiles.get(it.data.creator);
+    const creator = it.data.creator;
+    const p = creator === null ? undefined : this.profiles.get(creator);
     const data: ChatMsgData = {
       ...it.data,
       name: p?.name ?? 'Unknown',
-      isSelf: p?.isSelf ?? it.data.creator === this.userId,
-      avatarIdentityId: it.data.creator,
-      avatarAccount: it.data.name || String(it.data.creator),
+      isSelf: p?.isSelf ?? creator === this.userId,
+      avatarIdentityId: creator ?? undefined,
+      avatarAccount: it.data.name || (creator === null ? '' : String(creator)),
       isGroupConversation: this.isGroupConversation,
     };
     return it.clientMessageId !== undefined

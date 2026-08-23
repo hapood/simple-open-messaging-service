@@ -6,7 +6,6 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
-  Max,
   MaxLength,
   Min,
 } from 'class-validator';
@@ -45,46 +44,6 @@ export class NotificationFeedQueryDto {
   })
   @IsOptional()
   threadHwms?: Record<number, number>;
-}
-
-/**
- * Input for POST /thread-sync/catch-up. `after` is the exclusive per-user feed cursor and `through` pins an
- * optional inclusive upper bound so a paginated walk converges while concurrent writes continue.
- */
-export class ThreadCatchUpDto {
-  @ApiProperty({
-    required: false,
-    default: 0,
-    description: 'Exclusive message-feed cursor.',
-  })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  after?: number;
-
-  @ApiProperty({
-    required: false,
-    description: 'Optional pinned inclusive message-feed upper bound.',
-  })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  through?: number;
-
-  @ApiProperty({
-    required: false,
-    default: 200,
-    maximum: 200,
-    description: 'Page size (threads).',
-  })
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  @Max(200)
-  @IsOptional()
-  take?: number;
 }
 
 /** Soft cap on an inline-reply text length (parity with the send-message content cap guard). */

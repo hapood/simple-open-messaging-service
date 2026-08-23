@@ -3,7 +3,9 @@
     <div class="user-summary">
       <div class="avatar">
         <app-user-avatar
-          [type]="UserAvatarType.OTHER"
+          [type]="
+            user().isGroup ? UserAvatarType.GROUP : UserAvatarType.OTHER
+          "
           [name]="user().name"
           [identityId]="avatarIdentity()"
           [account]="user().account"
@@ -20,13 +22,21 @@
     </div>
 
     <label class="note-field">
-      <span>{{ 'friend.reasonLabel' | transloco }}</span>
+      <span>
+        {{
+          (user().isGroup ? 'friend.joinReasonLabel' : 'friend.reasonLabel')
+            | transloco
+        }}
+      </span>
       <textarea
         [ngModel]="note()"
         (ngModelChange)="note.set($event)"
         maxlength="255"
         rows="4"
-        [placeholder]="'friend.reasonPh' | transloco"
+        [placeholder]="
+          (user().isGroup ? 'friend.joinReasonPh' : 'friend.reasonPh')
+            | transloco
+        "
         [disabled]="sending()"
       ></textarea>
       <span class="counter">{{ note().length }}/255</span>
@@ -45,7 +55,14 @@
       (click)="send()"
       [disabled]="sending()"
     >
-      {{ (sending() ? 'friend.sending' : 'friend.sendRequest') | transloco }}
+      {{
+        (sending()
+          ? 'friend.sending'
+          : user().isGroup
+            ? 'friend.sendJoinRequest'
+            : 'friend.sendRequest'
+        ) | transloco
+      }}
     </button>
   </div>
 </div>

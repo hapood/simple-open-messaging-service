@@ -323,6 +323,35 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly composerDrafts = inject(ComposerDraftService);
   private readonly linkGenerations = inject(LinkCardGenerationService);
   readonly mentionMembers = signal<ChatMember[]>([]);
+  readonly searchMentionMembers = async (
+    query: string,
+  ): Promise<ChatMember[]> => {
+    const threadId = this.threadId();
+    const trd = this.userMsgTrd();
+    if (threadId === undefined || trd?.type !== 'GROUP') return [];
+    const roster = await this.memberProfiles.queryPage(threadId, {
+      take: 20,
+      search: query,
+    });
+    const members = roster.map((member) => ({
+      id: member.account,
+      label: member.name,
+      avatarUrl: assetUrl(sizedAvatarUrl(member.avatar, 32)),
+    }));
+    if (
+      (trd.role === 'OWNER' || trd.role === 'ADMIN') &&
+      this.transloco
+        .translate('chat.mentionAll')
+        .toLocaleLowerCase()
+        .includes(query.toLocaleLowerCase())
+    )
+      members.unshift({
+        id: ALL_MENTION_ID,
+        label: this.transloco.translate('chat.mentionAll'),
+        avatarUrl: '',
+      });
+    return members;
+  };
   private nativeComposerContextId: number | null = null;
   private nativeComposerThreadId: number | null = null;
   private nativeLinkUrl: string | null = null;
@@ -390,12 +419,6 @@ export class MessageThreadComponent implements OnDestroy {
     memberId?: number;
     x: number;
     y: number;
-  } | null>(null);
-  readonly memberProfileCard = signal<{
-    profile: ResolvedMemberProfile;
-    x: number;
-    y: number;
-    friendThreadId?: number;
   } | null>(null);
   private lastMessageScrollTop = 0;
   private contextMenuScrollTop = 0;
@@ -589,16 +612,8 @@ export class MessageThreadComponent implements OnDestroy {
       }
       let active = true;
       const load = async () => {
-        const roster = await this.memberProfiles.resolveAll(
-          threadId,
-          trd.group.members ?? [],
-        );
         if (!active) return;
-        const members = roster.map((member) => ({
-          id: member.account,
-          label: member.name,
-          avatarUrl: assetUrl(sizedAvatarUrl(member.avatar, 32)),
-        }));
+        const members: ChatMember[] = [];
         if (trd.role === 'OWNER' || trd.role === 'ADMIN') {
           members.unshift({
             id: ALL_MENTION_ID,
@@ -1440,14 +1455,6 @@ export class MessageThreadComponent implements OnDestroy {
 
   dismissContextMenuOnOutside(event: PointerEvent): void {
     if (
-      this.memberProfileCard() &&
-      !(
-        event.target instanceof Element &&
-        event.target.closest('.member-profile-card')
-      )
-    )
-      this.memberProfileCard.set(null);
-    if (
       !this.messageContextMenu() ||
       (event.target instanceof Element &&
         event.target.closest('.msg-context-menu'))
@@ -1458,40 +1465,19 @@ export class MessageThreadComponent implements OnDestroy {
 
   private async openSenderProfile(
     userId: number,
-    anchor: DOMRect,
+    _anchor: DOMRect,
   ): Promise<void> {
     const conversation = this.userMsgTrd();
     if (conversation?.type === 'P2P') {
       if (conversation.peerUser?.id !== userId) return;
       this.dismissContextMenu();
-      this.memberProfileCard.set(null);
       this.nav.openAside('profile');
       return;
     }
     const threadId = this.threadId();
-    const member = conversation?.group.members?.find(
-      (candidate) => candidate.userId === userId,
-    );
-    if (threadId === undefined || !member) return;
-    const profile = await this.memberProfiles.resolve(threadId, member);
-    const width = 252;
-    const height = 112;
-    const inset = 8;
-    const viewport = window.visualViewport;
-    const viewportLeft = viewport?.offsetLeft ?? 0;
-    const viewportTop = viewport?.offsetTop ?? 0;
-    const viewportRight = viewportLeft + (viewport?.width ?? window.innerWidth);
-    const viewportBottom =
-      viewportTop + (viewport?.height ?? window.innerHeight);
-    const preferredX = anchor.right + 8;
-    const x = Math.max(
-      viewportLeft + inset,
-      Math.min(preferredX, viewportRight - width - inset),
-    );
-    const y = Math.max(
-      viewportTop + inset,
-      Math.min(anchor.top, viewportBottom - height - inset),
-    );
+    if (threadId === undefined) return;
+    const profile = await this.memberProfiles.get(threadId, userId);
+    if (!profile) return;
     this.dismissContextMenu();
     const friendThreadId = this.convList
       .items()
@@ -1501,28 +1487,15 @@ export class MessageThreadComponent implements OnDestroy {
           item.peerUser?.id === userId &&
           item.friendshipActive !== false,
       )?.threadId;
-    this.memberProfileCard.set({ profile, x, y, friendThreadId });
-  }
-
-  openMemberAction(): void {
-    const card = this.memberProfileCard();
-    if (!card) return;
-    this.memberProfileCard.set(null);
-    if (card.friendThreadId !== undefined) {
-      this.nav.openChat(card.friendThreadId);
-      return;
-    }
-    const profile = card.profile;
-    const isForeigner = !!profile.domain;
-    this.route.popupDlg(PopupType.FRIEND_REQUESTS, {
-      initialUser: {
-        id: isForeigner ? 0 : profile.userId,
+    this.route.popupDlg(PopupType.CONTACT_IDENTITY, {
+      identity: {
+        userId: profile.userId,
         account: profile.account,
         name: profile.name,
         avatar: profile.avatar,
-        domain: profile.domain,
-        isForeigner,
-      } as import('../../services/model').User,
+        domain: profile.domain || 'local',
+        friendThreadId,
+      },
     });
   }
 
@@ -1672,6 +1645,81 @@ export class MessageThreadComponent implements OnDestroy {
     if (items.length) this.openForwardDialog(items, 'HISTORY');
   }
 
+  openChatCardShareDialog(chat: ConversationItem): void {
+    const isGroup = chat.type === 'GROUP';
+    const target = isGroup ? chat.group : chat.peerUser;
+    const content = JSON.stringify({
+      account: target.account,
+      domain: target.domain,
+      displayName: target.name,
+      ...(target.avatar ? { avatar: target.avatar } : {}),
+    });
+    const preview: ChatMsgData = {
+      type: 'msg',
+      msgId: -1,
+      creator: this.userService.sessionProfile()?.id ?? null,
+      isSelf: true,
+      name: this.userService.sessionProfile()?.name ?? '',
+      text: content,
+      time: '',
+      contentType: 'CONTACT_CARD',
+      images: null,
+      file: null,
+      createdAtMs: Date.now(),
+    };
+    this.route.popupDlg(
+      PopupType.FORWARD,
+      {
+        purpose: 'CHAT_CARD',
+        mode: 'HISTORY',
+        recordKind: isGroup ? 'group' : 'chat',
+        messages: [
+          {
+            id: -1,
+            name: target.name,
+            summary: this.transloco.translate(
+              isGroup ? 'contactCard.group' : 'contactCard.person',
+            ),
+            original: preview,
+          },
+        ],
+      },
+      (result) => {
+        if (result) void this.sendSharedChatCard(result, chat);
+      },
+    );
+  }
+
+  private async sendSharedChatCard(
+    result: ForwardDialogResult,
+    chat: ConversationItem,
+  ): Promise<void> {
+    const outcomes = await Promise.all(
+      result.threadIds.map(async (threadId) => {
+        try {
+          const response = await firstValueFrom(
+            this.msgService.sendContactCard({
+              threadId,
+              ...(chat.type === 'GROUP'
+                ? { targetGroupId: chat.group.id }
+                : { targetUserId: chat.peerUser.id }),
+              clientMessageId: this.newClientMessageId(),
+            }),
+          );
+          return response.code === 0;
+        } catch {
+          return false;
+        }
+      }),
+    );
+    const sent = outcomes.filter(Boolean).length;
+    this.toast[sent === outcomes.length ? 'info' : 'warn'](
+      sent > 0
+        ? this.transloco.translate('forward.sent', { count: sent })
+        : this.transloco.translate('forward.sendFailed'),
+    );
+  }
+
   private openForwardDialog(
     items: readonly CbItem<ChatItemData>[],
     mode: 'DIRECT' | 'HISTORY',
@@ -1807,6 +1855,25 @@ export class MessageThreadComponent implements OnDestroy {
         imageSize: message.images[0].size,
         imageShape: 'thumbnail',
       };
+    if (message.contentType === 'CONTACT_CARD') {
+      try {
+        const card = JSON.parse(message.text) as Record<string, unknown>;
+        return {
+          ...(typeof card['avatar'] === 'string'
+            ? { image: card['avatar'] }
+            : {}),
+          ...(typeof card['displayName'] === 'string'
+            ? { imageLabel: card['displayName'] }
+            : {}),
+          ...(typeof card['account'] === 'string'
+            ? { imageIdentity: card['account'] }
+            : {}),
+          imageShape: 'avatar',
+        };
+      } catch {
+        return {};
+      }
+    }
     if (message.contentType !== 'LINK') return {};
     try {
       const card = JSON.parse(message.text) as Record<string, unknown>;
@@ -1816,6 +1883,12 @@ export class MessageThreadComponent implements OnDestroy {
     } catch {
       return {};
     }
+  }
+
+  quoteAvatarType(identity: string | undefined): UserAvatarType {
+    return identity?.startsWith('!')
+      ? UserAvatarType.GROUP
+      : UserAvatarType.OTHER;
   }
 
   private syncMountedSelectionState(): void {
@@ -2001,6 +2074,9 @@ export class MessageThreadComponent implements OnDestroy {
       case 'link':
         this.sendLink(intent.generationId, intent.content);
         return;
+      case 'contact':
+        this.sendContactCard(intent);
+        return;
       case 'paste':
         this.appendWebPaste(intent.files, intent.text);
         return;
@@ -2091,6 +2167,41 @@ export class MessageThreadComponent implements OnDestroy {
     );
     this.dispatchPending(item);
     this.dispatchHttpSendLink(item, generationId);
+  }
+
+  private sendContactCard(
+    contact: Extract<ChatSendIntent, { kind: 'contact' }>,
+  ): void {
+    const threadId = this.threadId();
+    if (!threadId) return;
+    const cid = this.newClientMessageId();
+    const item = this.makeOptimisticItem(
+      cid,
+      JSON.stringify({
+        account: contact.account,
+        domain: contact.domain,
+        displayName: contact.name,
+        ...(contact.avatar ? { avatar: contact.avatar } : {}),
+      }),
+      'CONTACT_CARD',
+      null,
+      null,
+    );
+    this.dispatchPending(item);
+    void firstValueFrom(
+      this.msgService.sendContactCard({
+        threadId,
+        targetUserId: contact.targetUserId,
+        clientMessageId: cid,
+      }),
+    )
+      .then((res) => {
+        if (res.code !== 0) {
+          this.surfaceSendFailure(res, threadId);
+          void this.failPending(item);
+        } else void this.markAccepted(item);
+      })
+      .catch(() => void this.failPending(item));
   }
 
   /** Register the complete selection synchronously, then probe media metadata in parallel. Decoding a

@@ -23,13 +23,17 @@ import {
   InviteDto,
   FriendRelationshipStateDto,
   FriendRelationshipStatusDto,
+  ReadIncomingInvitesDto,
 } from '../dto/invite.dto.js';
 import { mintUlid } from '../common/account.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
 import { eq } from 'drizzle-orm';
 import * as tables from '../database/schema.js';
-import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
-import type { PendingThreadRevision } from '../thread-revision/thread-revision.service.js';
+import {
+  ClientStateFeedService,
+  type PendingClientStateFeedUpdate,
+} from '../client-state-feed/client-state-feed.service.js';
+import { DatabaseService } from '../database/database.service.js';
 
 /**
  * Invite endpoints — the single API for friend-add (and, when wired, group-invite). The service owns
@@ -49,8 +53,27 @@ export class InviteController {
     private readonly participantService: ThreadParticipantService,
     private readonly federationService: FederationService,
     private readonly userQuota: UserQuotaService,
-    private readonly threadRevision: ThreadRevisionService,
+    private readonly clientStateFeed: ClientStateFeedService,
+    private readonly database: DatabaseService,
   ) {}
+
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('invite/incoming/read')
+  @ApiOperation({
+    summary: 'Advance the account-wide incoming-invitation read watermark',
+  })
+  async markIncomingInvitesRead(
+    @Request() req: FastifyRequest,
+    @Body() dto: ReadIncomingInvitesDto,
+  ) {
+    return {
+      readThroughFeedId: await this.clientStateFeed.markIncomingInvitesRead(
+        req.user.userId,
+        dto.readThroughFeedId,
+      ),
+    };
+  }
 
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
@@ -80,10 +103,37 @@ export class InviteController {
       );
     }
     if (target.isGroup) {
-      throw new BusinessException(
-        BusinessCode.FRIEND_INVALID_TARGET,
-        'cannot add a group as a friend',
+      const thread = await this.database.db.query.messageThread.findFirst({
+        where: eq(tables.messageThread.groupUserId, target.id),
+        columns: { id: true },
+        with: { user: { with: { group: { columns: { dissolvedAt: true } } } } },
+      });
+      if (!thread)
+        throw new BusinessException(BusinessCode.NOT_FOUND, 'group not found');
+      if (thread.user?.group?.dissolvedAt)
+        throw new BusinessException(
+          BusinessCode.GROUP_DISSOLVED,
+          'group has been dissolved',
+        );
+      const clientFeedUpdates: PendingClientStateFeedUpdate[] = [];
+      await this.database.db.transaction(async (tx) => {
+        await this.userQuota.tick(me, 'requests', tx);
+        await this.federationService.writeMemberRelationshipIntentInTx(
+          tx,
+          thread.id,
+          me,
+          'REQUESTED',
+          clientFeedUpdates,
+          dto.note ?? '',
+        );
+      });
+      clientFeedUpdates.forEach((pending) =>
+        this.clientStateFeed.notifyFeedUpdated(pending),
       );
+      return envelope(undefined, {
+        message: 'group join request sent',
+        messageKey: 'group.msg.joinRequestSent',
+      });
     }
     if (await this.participantService.areFriends(me, target.id)) {
       return envelope(undefined, {
@@ -95,7 +145,7 @@ export class InviteController {
     // Mutual auto-accept is LOCAL-only (a federated target needs an S2S round-trip on accept).
     const federatedOriginId = target.isForeigner ? mintUlid() : undefined;
     let statePeers = new Map<string, bigint>();
-    const clientRevisions: PendingThreadRevision[] = [];
+    const clientFeedUpdates: PendingClientStateFeedUpdate[] = [];
     const res = await this.inviteService.createFriendInvite(
       me,
       target.id,
@@ -111,10 +161,10 @@ export class InviteController {
             target.id,
             true,
             dto.note ?? '',
-            clientRevisions,
+            clientFeedUpdates,
           );
         } else
-          clientRevisions.push(
+          clientFeedUpdates.push(
             ...(await this.inviteService.writeLocalFriendIntentInTx(
               tx,
               me,
@@ -126,13 +176,13 @@ export class InviteController {
       },
     );
     await this.federationService.pushStateFeedDomains(statePeers.keys());
-    clientRevisions.forEach((pending) =>
-      this.threadRevision.notifyThreadRevision(pending),
+    clientFeedUpdates.forEach((pending) =>
+      this.clientStateFeed.notifyFeedUpdated(pending),
     );
 
     if (res.status === 'auto-accepted') {
       // Local mutual → friends immediately. Both sides' thread-list adds are driven by the
-      // STATE_REV_UPDATED delta (recordThreadAdd fires for both users in createFriendInvite);
+      // Client-state feed updates notify both local devices after commit.
       // no dedicated friend event — the delta subsumes it, aligning local
       // with the federated path which already dropped it).
       return envelope(
@@ -144,7 +194,7 @@ export class InviteController {
       );
     }
 
-    // Local recipients learn through STATE_REV_UPDATED; federated delivery uses the durable state feed.
+    // Local recipients learn through the client state feed; federation uses its own durable feed.
     return envelope(
       { inviteId: res.inviteId },
       {
@@ -172,8 +222,25 @@ export class InviteController {
         'local friend requests require toUserId',
       );
     await this.federationService.ensurePeerTrusted(domain);
+    if (account.startsWith('!')) {
+      await this.database.db.transaction((tx) =>
+        this.userQuota.tick(req.user.userId, 'requests', tx),
+      );
+      await this.federationService.requestFederatedGroupJoin(
+        req.user.userId,
+        { account, domain },
+        dto.note ?? '',
+      );
+      return envelope(
+        { account, domain },
+        {
+          message: 'group join request sent',
+          messageKey: 'group.msg.joinRequestSent',
+        },
+      );
+    }
     let statePeers = new Map<string, bigint>();
-    const clientRevisions: PendingThreadRevision[] = [];
+    const clientFeedUpdates: PendingClientStateFeedUpdate[] = [];
     const result = await this.inviteService.createFederatedFriendInvite(
       req.user.userId,
       account,
@@ -188,13 +255,13 @@ export class InviteController {
             req.user.userId,
             { account, domain },
             state,
-            clientRevisions,
+            clientFeedUpdates,
           );
       },
     );
     await this.federationService.pushStateFeedDomains(statePeers.keys());
-    clientRevisions.forEach((pending) =>
-      this.threadRevision.notifyThreadRevision(pending),
+    clientFeedUpdates.forEach((pending) =>
+      this.clientStateFeed.notifyFeedUpdated(pending),
     );
     return envelope(
       { account, domain },
@@ -229,7 +296,7 @@ export class InviteController {
     // acceptInvite throws BusinessException (INVITE_EXPIRED / NOT_FOUND / …) → the global filter renders it.
     let friendStatePeers = new Map<string, bigint>();
     let groupStatePeers = new Map<string, bigint>();
-    const clientRevisions: PendingThreadRevision[] = [];
+    const clientFeedUpdates: PendingClientStateFeedUpdate[] = [];
     const res = await this.inviteService.acceptInvite(
       dto.inviteId!,
       req.user.userId,
@@ -245,11 +312,11 @@ export class InviteController {
             fromUserId,
             true,
             '',
-            clientRevisions,
+            clientFeedUpdates,
             true,
           );
         } else
-          clientRevisions.push(
+          clientFeedUpdates.push(
             ...(await this.inviteService.writeLocalFriendIntentInTx(
               tx,
               req.user.userId,
@@ -265,19 +332,20 @@ export class InviteController {
             threadId,
             req.user.userId,
             'ACCEPTED',
+            clientFeedUpdates,
           );
         await this.inviteService.writeGroupRequestClientStateInTx(
           tx,
           threadId,
           req.user.userId,
-          clientRevisions,
+          clientFeedUpdates,
         );
       },
     );
     await this.federationService.pushStateFeedDomains(friendStatePeers.keys());
     await this.federationService.pushStateFeedDomains(groupStatePeers.keys());
-    clientRevisions.forEach((pending) =>
-      this.threadRevision.notifyThreadRevision(pending),
+    clientFeedUpdates.forEach((pending) =>
+      this.clientStateFeed.notifyFeedUpdated(pending),
     );
 
     if (res.kind === 'FRIEND') {
@@ -285,8 +353,7 @@ export class InviteController {
         id: res.fromUserId,
       });
       void fromUser;
-      // Local inviter: recordThreadAdd fired for both users in acceptInvite's tx → both sides get
-      // STATE_REV_UPDATED; no dedicated friend event (the delta
+      // Both local devices receive a state-feed update; no dedicated friend event (the feed
       // subsumes it, aligning local with the federated path which already dropped it). Accepting does not
       // create another unread incoming request, so no extra revision is needed.
       return { threadId: res.threadId };
@@ -306,6 +373,13 @@ export class InviteController {
   ): Promise<void> {
     const me = req.user.userId;
     if (this.isAddressedAction(dto)) {
+      if (dto.account!.startsWith('!')) {
+        await this.federationService.revokeGroupJoinRequest(me, {
+          account: dto.account!,
+          domain: dto.domain!,
+        });
+        return;
+      }
       const peers = await this.federationService.revokeAddressedOutgoingRequest(
         me,
         { account: dto.account!, domain: dto.domain! },
@@ -314,7 +388,7 @@ export class InviteController {
       return;
     }
     let statePeers = new Map<string, bigint>();
-    const clientRevisions: PendingThreadRevision[] = [];
+    const clientFeedUpdates: PendingClientStateFeedUpdate[] = [];
     await this.inviteService.revokeInvite(
       dto.inviteId!,
       me,
@@ -330,10 +404,10 @@ export class InviteController {
             toUserId,
             false,
             '',
-            clientRevisions,
+            clientFeedUpdates,
           );
         else
-          clientRevisions.push(
+          clientFeedUpdates.push(
             ...(await this.inviteService.writeLocalFriendIntentInTx(
               tx,
               me,
@@ -344,8 +418,53 @@ export class InviteController {
       },
     );
     await this.federationService.pushStateFeedDomains(statePeers.keys());
-    clientRevisions.forEach((pending) =>
-      this.threadRevision.notifyThreadRevision(pending),
+    clientFeedUpdates.forEach((pending) =>
+      this.clientStateFeed.notifyFeedUpdated(pending),
+    );
+  }
+
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('invite/reject')
+  @ApiOperation({ summary: 'Reject an incoming friend invite' })
+  async rejectInvite(
+    @Request() req: FastifyRequest,
+    @Body() dto: InviteIdDto,
+  ): Promise<void> {
+    const me = req.user.userId;
+    let statePeers = new Map<string, bigint>();
+    const clientFeedUpdates: PendingClientStateFeedUpdate[] = [];
+    await this.inviteService.rejectInvite(
+      dto.inviteId,
+      me,
+      async (tx, fromUserId) => {
+        const from = await tx.query.user.findFirst({
+          where: eq(tables.user.id, fromUserId),
+          columns: { isForeigner: true },
+        });
+        if (from?.isForeigner)
+          statePeers = await this.federationService.writeFriendIntentInTx(
+            tx,
+            me,
+            fromUserId,
+            false,
+            '',
+            clientFeedUpdates,
+          );
+        else
+          clientFeedUpdates.push(
+            ...(await this.inviteService.writeLocalFriendIntentInTx(
+              tx,
+              me,
+              fromUserId,
+              false,
+            )),
+          );
+      },
+    );
+    await this.federationService.pushStateFeedDomains(statePeers.keys());
+    clientFeedUpdates.forEach((pending) =>
+      this.clientStateFeed.notifyFeedUpdated(pending),
     );
   }
 

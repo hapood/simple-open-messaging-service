@@ -8,7 +8,9 @@
             ? 'friend.incomingDetailTitle'
             : 'friend.outgoingDetailTitle'
         : inviteUser()
-          ? 'friend.inviteDialogTitle'
+          ? inviteUser()?.isGroup
+            ? 'friend.joinRequestTitle'
+            : 'friend.inviteDialogTitle'
           : 'friend.title'
       ) | transloco
     "
@@ -159,7 +161,11 @@
                   >
                     <div class="user-avatar">
                       <app-user-avatar
-                        [type]="UserAvatarType.OTHER"
+                        [type]="
+                          u.isGroup
+                            ? UserAvatarType.GROUP
+                            : UserAvatarType.OTHER
+                        "
                         [name]="u.name"
                         [identityId]="userIdentity(u)"
                         [account]="u.account"
@@ -249,6 +255,7 @@
                 [actionPending]="isInviteActionPending(req.id)"
                 (opened)="openRequest(req, 'INCOMING')"
                 (approved)="approve(req)"
+                (rejected)="rejectIncoming(req)"
               />
             </ng-template>
             <app-virtual-infinite-list
@@ -369,7 +376,10 @@
             (click)="approve(req)"
             [disabled]="req.status === -2 || isInviteActionPending(req.id)"
           >
-            {{ 'friend.approve' | transloco }}
+            {{
+              (req.kind === 'GROUP' ? 'friend.joinGroup' : 'friend.approve')
+                | transloco
+            }}
           </button>
         }
         @if (selectedDirection() === 'OUTGOING') {
@@ -381,12 +391,17 @@
             [disabled]="
               req.status === -2 ||
               req.status === -3 ||
+              req.status === -4 ||
               isInviteActionPending(req.id)
             "
           >
             {{
-              (req.status === -3 ? 'friend.revoked' : 'friend.revoke')
-                | transloco
+              (req.status === -3
+                ? 'friend.revoked'
+                : req.status === -4
+                  ? 'friend.rejected'
+                  : 'friend.revoke'
+              ) | transloco
             }}
           </button>
         } @else {
@@ -397,7 +412,7 @@
             (click)="deleteSelected(req)"
             [disabled]="isInviteActionPending(req.id)"
           >
-            {{ 'friend.delete' | transloco }}
+            {{ 'friend.decline' | transloco }}
           </button>
         }
       </div>

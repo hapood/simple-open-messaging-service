@@ -8,7 +8,7 @@ import {
   signal,
   ChangeDetectionStrategy,
 } from '@angular/core';
-import { TranslocoPipe } from '@jsverse/transloco';
+import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { displayThreadName, type ConversationItem } from '../../services/model';
 import { RouteService } from '../../services/route.service';
@@ -21,6 +21,7 @@ import {
   conversationAvatarType,
 } from '../user-avatar/conversation-avatar.util';
 import { UserAvatarComponent } from '../user-avatar/user-avatar.component';
+import { UserAvatarType } from '../user-avatar/model';
 import {
   ForwardMessageCardComponent,
   type ForwardMessageItem,
@@ -33,6 +34,7 @@ import { FileRowComponent } from '../message-cards/file-row/file-row.component';
 import { LinkRowComponent } from '../message-cards/link-row/link-row.component';
 import { CallRowComponent } from '../message-cards/call-row/call-row.component';
 import { ForwardRowComponent } from '../message-cards/forward-row/forward-row.component';
+import { ContactCardRowComponent } from '../message-cards/contact-card-row/contact-card-row.component';
 import { LinkCardService } from '../../services/link-card.service';
 import {
   LinkCardGenerationService,
@@ -42,9 +44,13 @@ import type { ChatMsgData } from '../message-cards/chat-item';
 import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter';
 import { AppIconType, IconComponent } from '../icon/icon.component';
 import { PageHeaderComponent } from '../page-header/page-header.component';
+import {
+  SplitButtonComponent,
+  type SplitButtonOption,
+} from '../split-button/split-button.component';
 
 export type ForwardMode = 'DIRECT' | 'HISTORY';
-export type ForwardDialogPurpose = 'FORWARD' | 'NATIVE_SHARE';
+export type ForwardDialogPurpose = 'FORWARD' | 'CHAT_CARD' | 'NATIVE_SHARE';
 
 export interface ForwardDialogResult {
   readonly threadIds: readonly number[];
@@ -71,8 +77,10 @@ export interface ForwardDialogResult {
     LinkRowComponent,
     CallRowComponent,
     ForwardRowComponent,
+    ContactCardRowComponent,
     IconComponent,
     PageHeaderComponent,
+    SplitButtonComponent,
   ],
   templateUrl: './forward-dialog.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -80,6 +88,7 @@ export interface ForwardDialogResult {
 })
 export class ForwardDialogComponent {
   readonly AppIconType = AppIconType;
+  readonly UserAvatarType = UserAvatarType;
   readonly messages = input<readonly ForwardMessageItem[]>([]);
   readonly recordKind = input<ForwardRecordKind>('chat');
   readonly mode = input<ForwardMode>('HISTORY');
@@ -88,12 +97,14 @@ export class ForwardDialogComponent {
   readonly searchText = signal('');
   readonly selectedThreadIds = signal<ReadonlySet<number>>(new Set());
   readonly recentThreadIds = signal<readonly number[]>([]);
+  readonly selectedForwardMode = signal<ForwardMode>('HISTORY');
   private readonly conversations = inject(ConversationListService);
   private readonly threadAdapter = inject(MESSAGE_THREAD_ADAPTER);
   private readonly route = inject(RouteService);
   private readonly user = inject(UserService);
   private readonly linkCards = inject(LinkCardService);
   private readonly generations = inject(LinkCardGenerationService);
+  private readonly transloco = inject(TranslocoService);
   private readonly generationId = signal<string | null>(null);
   readonly shareMode = signal<'link' | 'text'>('link');
   readonly generationStarting = signal(false);
@@ -159,10 +170,37 @@ export class ForwardDialogComponent {
   readonly avatarAccount = conversationAvatarAccount;
   readonly avatarDomain = conversationAvatarDomain;
   readonly avatarSrc = conversationAvatarSrc;
-  readonly directMessage = computed(() => {
+  readonly directPreviewMessage = computed<ChatMsgData | null>(() => {
     const original = this.messages()[0]?.original;
-    return original ? { ...original, isSelf: true, quote: undefined } : null;
+    if (!original) return null;
+    const self = this.user.sessionProfile();
+    return {
+      ...original,
+      creator: self?.id ?? original.creator,
+      isSelf: true,
+      name: self?.name || self?.account || original.name,
+      avatar: self?.avatar || undefined,
+      avatarIdentityId: self?.id,
+      avatarAccount: self?.account,
+      avatarDomain: self?.domain,
+      quote: undefined,
+    };
   });
+  readonly remainingDirectMessageCount = computed(() =>
+    Math.max(0, this.messages().length - 1),
+  );
+  readonly selfProfile = this.user.sessionProfile.asReadonly();
+
+  readonly selectedForwardModeLabel = computed(() =>
+    this.transloco.translate(
+      this.selectedForwardMode() === 'DIRECT'
+        ? 'forward.direct'
+        : 'forward.merged',
+    ),
+  );
+  readonly effectiveForwardMode = computed(() =>
+    this.purpose() === 'CHAT_CARD' ? this.selectedForwardMode() : this.mode(),
+  );
 
   private readonly availableConversations = computed(
     () => this.threadAdapter.forwardTargets() ?? this.conversations.items(),
@@ -204,14 +242,14 @@ export class ForwardDialogComponent {
     this.route.closeDlg();
   }
 
-  confirm(): void {
+  confirm(mode: ForwardMode = this.effectiveForwardMode()): void {
     if (!this.canConfirm()) return;
     this.rememberRecentThreadIds([...this.selectedThreadIds()]);
     const generation = this.generation();
     this.route.closeDlg({
       threadIds: [...this.selectedThreadIds()],
       messages: this.messages(),
-      mode: this.mode(),
+      mode,
       ...(this.purpose() === 'NATIVE_SHARE'
         ? {
             nativeShare:
@@ -224,6 +262,23 @@ export class ForwardDialogComponent {
           }
         : {}),
     } satisfies ForwardDialogResult);
+  }
+
+  forwardModeOptions(): readonly SplitButtonOption<ForwardMode>[] {
+    return [
+      {
+        label: this.transloco.translate('forward.direct'),
+        value: 'DIRECT',
+      },
+      {
+        label: this.transloco.translate('forward.merged'),
+        value: 'HISTORY',
+      },
+    ];
+  }
+
+  selectForwardMode(mode: ForwardMode): void {
+    this.selectedForwardMode.set(mode);
   }
 
   retryGeneration(): void {

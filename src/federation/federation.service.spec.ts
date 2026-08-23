@@ -33,6 +33,7 @@ function makeStubs() {
   };
   const database = {
     db: {
+      execute: vi.fn().mockResolvedValue({ rows: [{ authorized: true }] }),
       query: {
         messageThread: {
           findFirst: async (...args: unknown[]) => {
@@ -72,7 +73,6 @@ function makeStubs() {
     {} as never, // message
     {} as never, // invite
     sse as never,
-    {} as never, // threadRevisionService
     {} as never, // quota
     {} as never, // linkPreview
     {} as never, // forwardBundles
@@ -94,6 +94,7 @@ function makeStubs() {
     } as never, // transportConfig
     {} as never, // stateFeedPull
     {} as never, // stateFeed
+    {} as never, // clientStateFeed
     {} as never, // relationshipIntents
   );
   return {
@@ -778,7 +779,9 @@ describe('FederationService.signalOutbound — fixed-topology routing', () => {
 
   it('P2P: signals every foreign peer except the author', async () => {
     const { svc, store } = makeStubs();
-    const push = vi.spyOn(svc, 'pushDiscoveryHwm').mockResolvedValue();
+    const push = vi
+      .spyOn(svc as never, 'offerAndPushMessage' as never)
+      .mockResolvedValue(undefined as never);
     store.messageThread.findUnique.mockResolvedValue({
       groupUser: null,
     });
@@ -790,12 +793,17 @@ describe('FederationService.signalOutbound — fixed-topology routing', () => {
 
     await svc.signalOutbound(10, 1, 5, undefined);
 
-    expect(push.mock.calls).toEqual([['b.com'], ['c.com']]);
+    expect(push.mock.calls).toEqual([
+      ['b.com', 10, 5],
+      ['c.com', 10, 5],
+    ]);
   });
 
   it('P2P: returns a receipt to fetchedFromDomain and signals other destinations', async () => {
     const { svc, store } = makeStubs();
-    const push = vi.spyOn(svc, 'pushDiscoveryHwm').mockResolvedValue();
+    const push = vi
+      .spyOn(svc as never, 'offerAndPushMessage' as never)
+      .mockResolvedValue(undefined as never);
     store.messageThread.findUnique.mockResolvedValue({
       groupUser: null,
     });
@@ -807,12 +815,17 @@ describe('FederationService.signalOutbound — fixed-topology routing', () => {
 
     await svc.signalOutbound(10, 1, 5, 'b.com');
 
-    expect(push.mock.calls).toEqual([['b.com'], ['c.com']]);
+    expect(push.mock.calls).toEqual([
+      ['b.com', 10, 5],
+      ['c.com', 10, 5],
+    ]);
   });
 
   it('GROUP origin: returns a receipt to the submission source and distributes to other mirrors', async () => {
     const { svc, store } = makeStubs();
-    const push = vi.spyOn(svc, 'pushDiscoveryHwm').mockResolvedValue();
+    const push = vi
+      .spyOn(svc as never, 'offerAndPushMessage' as never)
+      .mockResolvedValue(undefined as never);
     store.messageThread.findUnique.mockResolvedValue({
       groupUser: { account: '!grp', domain: 'local' },
     });
@@ -826,17 +839,25 @@ describe('FederationService.signalOutbound — fixed-topology routing', () => {
 
     await svc.signalOutbound(10, 1, 7, undefined);
 
-    expect(push.mock.calls).toEqual([['b.com'], ['c.com']]);
+    expect(push.mock.calls).toEqual([
+      ['b.com', 10, 7],
+      ['c.com', 10, 7],
+    ]);
 
     // The source receives the acceptance copy as its receipt; other mirrors receive normal distribution.
     push.mockClear();
     await svc.signalOutbound(10, 1, 7, 'b.com');
-    expect(push.mock.calls).toEqual([['b.com'], ['c.com']]);
+    expect(push.mock.calls).toEqual([
+      ['b.com', 10, 7],
+      ['c.com', 10, 7],
+    ]);
   });
 
   it('GROUP mirror: signals only the origin, including as a processing receipt', async () => {
     const { svc, store } = makeStubs();
-    const push = vi.spyOn(svc, 'pushDiscoveryHwm').mockResolvedValue();
+    const push = vi
+      .spyOn(svc as never, 'offerAndPushMessage' as never)
+      .mockResolvedValue(undefined as never);
     store.messageThread.findUnique.mockResolvedValue({
       groupUser: { account: '!grp', domain: 'origin.com' },
     });
@@ -844,17 +865,19 @@ describe('FederationService.signalOutbound — fixed-topology routing', () => {
 
     // A mirror's sole destination is the origin (the hub it pulls from).
     await svc.signalOutbound(10, 1, 7, undefined);
-    expect(push).toHaveBeenCalledExactlyOnceWith('origin.com');
+    expect(push).toHaveBeenCalledExactlyOnceWith('origin.com', 10, 7);
 
     // A copy pulled from the origin is queryable by that origin as a processing receipt.
     push.mockClear();
     await svc.signalOutbound(10, 1, 7, 'origin.com');
-    expect(push).toHaveBeenCalledExactlyOnceWith('origin.com');
+    expect(push).toHaveBeenCalledExactlyOnceWith('origin.com', 10, 7);
   });
 
   it('is a no-op when the thread is missing or the author is not a participant', async () => {
     const { svc, store } = makeStubs();
-    const push = vi.spyOn(svc, 'pushDiscoveryHwm').mockResolvedValue();
+    const push = vi
+      .spyOn(svc as never, 'offerAndPushMessage' as never)
+      .mockResolvedValue(undefined as never);
 
     store.messageThread.findUnique.mockResolvedValue(null);
     store.threadParticipant.findMany.mockResolvedValue([]);

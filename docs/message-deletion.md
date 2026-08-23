@@ -2,7 +2,7 @@
 
 ## Invariants
 
-- A withdrawn message is a deleted message. `Message.isDeleted=true` is authoritative for reads; clients do not render a placeholder.
+- A withdrawn message is a deleted message. `Message.isDeleted=true` is authoritative for reads; clients do not render the deleted message as a placeholder. A separate structured system event records the visible timeline notice.
 - An effective moderation report uses the same deletion log with type `REPORT`. A report that only changes the reporter's local visibility is not a federated deletion.
 - Federation propagation depends on whether the remote node is entitled to replicate the conversation, not on whether the reason is `WITHDRAW` or `REPORT`.
 - P2P withdrawal authority is the creator's home server. A group origin is the authority for its accepted group timeline: a foreign author submits a withdrawal, and the origin validates and directly publishes the resulting group deletion.
@@ -15,6 +15,13 @@
 On the account's first thread-list initialization, the app stores the current global deletion HWM before consuming thread data. That value is only a baseline: when a thread is first opened it becomes that thread's HWM, and subsequent pulls advance the per-thread value. Entering a thread performs a non-blocking deletion pull. `DELETED_MESSAGE_UPDATED` SSE is only a wake-up signal for the same pull.
 
 The browser and native clients persist tombstones in their ordinary message store. Applying a deletion page and advancing its HWM is one transaction. A later or concurrent message-page write cannot replace a tombstone. Mounted messages are removed; a deleted member of a merged media album rebuilds the row from the remaining members with viewport-anchor compensation. Message-scoped viewers and menus close when their target is deleted.
+
+The transaction that first creates a local deletion fact also creates a local-only structured system
+message. Withdrawals render as `You withdrew a message` or `<account> withdrew a message`. An upheld
+moderation batch creates one `An administrator deleted <count> message(s)` event per affected thread.
+These notices are presentation history, not deletion authority, and idempotent deletion retries do not
+create duplicates. Because system messages are deliberately excluded from federation message feeds, a
+receiving server creates its corresponding local notice when it first applies the authoritative tombstone.
 
 ## Federation flow
 

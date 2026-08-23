@@ -13,7 +13,6 @@ import {
 import { ConversationListService } from '../../services/conversation-list.service';
 import { RouteService } from '../../services/route.service';
 import { displayThreadName } from '../../services/model';
-import { AppIconType, IconComponent } from '../icon/icon.component';
 import { PageHeaderComponent } from '../page-header/page-header.component';
 import {
   categorizeFilename,
@@ -31,13 +30,12 @@ interface UploadGroup {
 @Component({
   selector: 'app-upload-detail-dialog',
   standalone: true,
-  imports: [IconComponent, TranslocoPipe, PageHeaderComponent],
+  imports: [TranslocoPipe, PageHeaderComponent],
   templateUrl: './upload-detail-dialog.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './upload-detail-dialog.component.scss',
 })
 export class UploadDetailDialogComponent {
-  readonly AppIconType = AppIconType;
   readonly threadId = input<number>();
   private readonly route = inject(RouteService);
   private readonly transfers = inject(MediaTransferService);

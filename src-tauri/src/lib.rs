@@ -637,11 +637,10 @@ pub fn run() {
                     native_db::native_db_put_thread,
                     native_db::native_db_replace_threads,
                     native_db::native_db_delete_thread,
-                    native_db::native_db_apply_thread_delta,
+                    native_db::native_db_apply_state_feed_page,
                     native_db::native_db_apply_catch_up,
                     native_db::native_db_get_profile,
-                    native_db::native_db_get_member_profile,
-                    native_db::native_db_list_member_profiles,
+                    native_db::native_db_query_group_members,
                     native_db::native_db_put_profile,
                     native_db::native_db_get_meta,
                     native_db::native_db_put_meta,
@@ -711,11 +710,10 @@ pub fn run() {
                     native_db::native_db_put_thread,
                     native_db::native_db_replace_threads,
                     native_db::native_db_delete_thread,
-                    native_db::native_db_apply_thread_delta,
+                    native_db::native_db_apply_state_feed_page,
                     native_db::native_db_apply_catch_up,
                     native_db::native_db_get_profile,
-                    native_db::native_db_get_member_profile,
-                    native_db::native_db_list_member_profiles,
+                    native_db::native_db_query_group_members,
                     native_db::native_db_put_profile,
                     native_db::native_db_get_meta,
                     native_db::native_db_put_meta,
@@ -2803,7 +2801,7 @@ fn sse_net(online: bool, sse: tauri::State<'_, SseSupervisor>) -> Result<(), Str
 
 /// Hand a freshly-attached webview the cached HELLO. A retained open stream does NOT re-push HELLO (it is
 /// sent once per `register`), yet a re-attached webview (renderer reclaim, or an Android cold start where the
-/// FGS opened `/events` before the webview mounted) needs one to bootstrap (userId / threadRevision /
+/// FGS opened `/events` before the webview mounted) needs one to bootstrap (userId / stateFeedEndId /
 /// profileRev). The supervisor caches the last HELLO and merges every
 /// incremental revision frame into it (see `open_one_stream`), so this replays the CURRENT merged HELLO down
 /// the same `soms-sse-event` channel the original used — no reconnect, no connection churn, no event gap.
@@ -2957,11 +2955,11 @@ fn merge_cached_hello(
         return;
     };
     match event {
-        "STATE_REV_UPDATED" => {
-            if let Some(inc) = data.get("stateRevision").and_then(|v| v.as_i64()) {
-                let cur = obj.get("stateRevision").and_then(|v| v.as_i64());
+        "STATE_FEED_UPDATED" => {
+            if let Some(inc) = data.get("feedId").and_then(|v| v.as_i64()) {
+                let cur = obj.get("stateFeedEndId").and_then(|v| v.as_i64());
                 if cur.is_none_or(|c| inc >= c) {
-                    obj.insert("stateRevision".to_string(), serde_json::Value::from(inc));
+                    obj.insert("stateFeedEndId".to_string(), serde_json::Value::from(inc));
                 }
             }
         }

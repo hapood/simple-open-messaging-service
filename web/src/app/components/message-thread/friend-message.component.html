@@ -22,6 +22,7 @@
     <app-message-header
       #msgHeader
       [userMsgTrd]="userMsgTrd()"
+      (shareChatCard)="openChatCardShareDialog($event)"
       (searchJump)="onSearchJump($event)"
       [style.--soms-safe-top]="showCallBanner() ? '0px' : null"
       [style.--msg-header-h]="showCallBanner() ? '56px' : null"
@@ -128,53 +129,6 @@
           </button>
         }
       </div>
-    }
-
-    @if (memberProfileCard(); as card) {
-      <section
-        class="member-profile-card"
-        role="dialog"
-        [style.left.px]="card.x"
-        [style.top.px]="card.y"
-        [attr.aria-label]="'profile.memberCardAria' | transloco"
-      >
-        <div class="member-profile-summary">
-          <app-user-avatar
-            [type]="UserAvatarType.OTHER"
-            [name]="card.profile.name"
-            [identityId]="card.profile.userId"
-            [account]="card.profile.account"
-            [federatedDomain]="card.profile.domain || null"
-            [src]="card.profile.avatar"
-          />
-          <div class="member-profile-copy">
-            <strong>{{ card.profile.name || card.profile.account }}</strong>
-            @if (card.profile.account) {
-              <span>{{
-                displayUserAccount({
-                  account: card.profile.account,
-                  domain: card.profile.domain,
-                  isForeigner: !!card.profile.domain,
-                })
-              }}</span>
-            }
-          </div>
-        </div>
-        @if (card.profile.userId !== selfUserId()) {
-          <button
-            type="button"
-            class="member-profile-action"
-            (click)="openMemberAction()"
-          >
-            {{
-              (card.friendThreadId !== undefined
-                ? 'profile.openChat'
-                : 'friend.addAction'
-              ) | transloco
-            }}
-          </button>
-        }
-      </section>
     }
 
     <!-- (transitionend) recomputes the sticky-date pill when the keyboard-lift transform settles: the
@@ -598,6 +552,8 @@
           [class.msg-composer--dialog-hidden]="chatboxDialogOpen()"
           [attr.aria-hidden]="selectionMode() || chatboxDialogOpen()"
           [members]="mentionMembers()"
+          [mentionsEnabled]="userMsgTrd()?.type === 'GROUP'"
+          [memberSearch]="searchMentionMembers"
           [threadId]="threadId()"
           (send)="onSendIntent($event)"
         >
@@ -606,7 +562,7 @@
               @if (quote.imageShape === 'avatar') {
                 <app-user-avatar
                   class="msg-compose-quote-avatar"
-                  [type]="UserAvatarType.GROUP"
+                  [type]="quoteAvatarType(quote.imageIdentity)"
                   [name]="quote.imageLabel"
                   [identityId]="quote.imageIdentity"
                   [account]="quote.imageIdentity"

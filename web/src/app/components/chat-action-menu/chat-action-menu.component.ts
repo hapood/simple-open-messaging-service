@@ -5,7 +5,11 @@ import {
   Output,
   ChangeDetectionStrategy,
 } from '@angular/core';
-import { ConnectedPosition, CdkOverlayOrigin, OverlayModule } from '@angular/cdk/overlay';
+import {
+  ConnectedPosition,
+  CdkOverlayOrigin,
+  OverlayModule,
+} from '@angular/cdk/overlay';
 import { TranslocoModule } from '@jsverse/transloco';
 import { IconComponent } from '../icon/icon.component';
 import { AppIconType } from '../icon/model';
@@ -24,6 +28,7 @@ export type ChatMenuEntry =
       labelKey: string;
       icon?: AppIconType;
       danger?: boolean;
+      badge?: boolean;
     };
 
 /**
@@ -53,7 +58,10 @@ export type ChatMenuEntry =
       (overlayKeydown)="onOverlayKeydown($event)"
     >
       <div class="chat-menu" role="menu" (click)="$event.stopPropagation()">
-        @for (entry of entries; track entry.kind === 'divider' ? 'd' + $index : entry.key) {
+        @for (
+          entry of entries;
+          track entry.kind === 'divider' ? 'd' + $index : entry.key
+        ) {
           @if (entry.kind === 'divider') {
             <div class="chat-menu-divider" aria-hidden="true"></div>
           } @else {
@@ -65,54 +73,87 @@ export type ChatMenuEntry =
               (click)="select.emit(entry.key)"
             >
               @if (entry.icon) {
-                <app-icon class="chat-menu-icon" [type]="entry.icon" [style]="{ width: '18px', height: '18px' }"></app-icon>
+                <app-icon
+                  class="chat-menu-icon"
+                  [type]="entry.icon"
+                  [style]="{ width: '18px', height: '18px' }"
+                ></app-icon>
               }
-              <span class="chat-menu-label">{{ entry.labelKey | transloco }}</span>
+              <span class="chat-menu-label">{{
+                entry.labelKey | transloco
+              }}</span>
+              @if (entry.badge) {
+                <span class="chat-menu-badge" aria-hidden="true"></span>
+              }
             </button>
           }
         }
       </div>
     </ng-template>
   `,
-  styles: [`
-    .chat-menu {
-      /* Root-level overlay (CDK attaches at document body) → paints above all shell/pane tiers. */
-      min-width: 208px;
-      max-width: 280px;
-      background: var(--app-surface);
-      border: 1px solid var(--app-border);
-      border-radius: var(--app-radius-md, 10px);
-      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
-      overflow: hidden;
-      padding: 6px 0;
-    }
-    .chat-menu-item {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      width: 100%;
-      height: 40px;
-      padding: 0 16px;
-      border: none;
-      background: transparent;
-      color: var(--app-text);
-      text-align: left;
-      cursor: pointer;
-      font-size: 14px;
-      line-height: 20px; /* integer line-height — keeps the 40px row a whole pixel */
-      box-sizing: border-box;
-    }
-    .chat-menu-item:hover { background: var(--app-hover); }
-    .chat-menu-item:focus-visible { outline: 2px solid var(--app-brand); outline-offset: -2px; }
-    .chat-menu-item.danger { color: var(--app-danger, #d33); }
-    .chat-menu-icon { display: inline-flex; flex: 0 0 18px; }
-    .chat-menu-label { flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .chat-menu-divider {
-      height: 1px;
-      margin: 4px 0;
-      background: var(--app-border);
-    }
-  `],
+  styles: [
+    `
+      .chat-menu {
+        /* Root-level overlay (CDK attaches at document body) → paints above all shell/pane tiers. */
+        min-width: 208px;
+        max-width: 280px;
+        background: var(--app-surface);
+        border: 1px solid var(--app-border);
+        border-radius: var(--app-radius-md, 10px);
+        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
+        overflow: hidden;
+        padding: 6px 0;
+      }
+      .chat-menu-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        width: 100%;
+        height: 40px;
+        padding: 0 16px;
+        border: none;
+        background: transparent;
+        color: var(--app-text);
+        text-align: left;
+        cursor: pointer;
+        font-size: 14px;
+        line-height: 20px; /* integer line-height — keeps the 40px row a whole pixel */
+        box-sizing: border-box;
+      }
+      .chat-menu-item:hover {
+        background: var(--app-hover);
+      }
+      .chat-menu-item:focus-visible {
+        outline: 2px solid var(--app-brand);
+        outline-offset: -2px;
+      }
+      .chat-menu-item.danger {
+        color: var(--app-danger, #d33);
+      }
+      .chat-menu-icon {
+        display: inline-flex;
+        flex: 0 0 18px;
+      }
+      .chat-menu-label {
+        flex: 1 1 auto;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .chat-menu-badge {
+        width: 8px;
+        height: 8px;
+        flex: 0 0 8px;
+        border-radius: 50%;
+        background: var(--app-danger);
+      }
+      .chat-menu-divider {
+        height: 1px;
+        margin: 4px 0;
+        background: var(--app-border);
+      }
+    `,
+  ],
 })
 export class ChatActionMenuComponent {
   /** The entries to render. Swapping this list drives the two-tap confirm flow (parent-owned). */

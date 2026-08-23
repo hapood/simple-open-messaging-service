@@ -26,6 +26,40 @@ export class ThreadListSyncService {
     private readonly readModel: NotificationQueryService,
   ) {}
 
+  async rejectMissingAfter(
+    userId: number,
+    kind: 'message' | 'tombstone',
+  ): Promise<never> {
+    const end = await this.readEndId(userId, kind);
+    throw new BusinessException(
+      BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
+      `after is required; initialize the client ${kind} feed cursor`,
+      HttpStatus.OK,
+      { resumeAfter: 0, resumeBefore: end + 1 },
+    );
+  }
+
+  private async readEndId(
+    userId: number,
+    kind: 'message' | 'tombstone',
+  ): Promise<number> {
+    await this.database.db
+      .insert(clientMessageFeedTarget)
+      .values({ userId })
+      .onConflictDoNothing({ target: clientMessageFeedTarget.userId });
+    const target =
+      await this.database.db.query.clientMessageFeedTarget.findFirst({
+        where: eq(clientMessageFeedTarget.userId, userId),
+        columns: {
+          messageAllocatedThrough: true,
+          tombstoneAllocatedThrough: true,
+        },
+      });
+    return kind === 'message'
+      ? (target?.messageAllocatedThrough ?? 0)
+      : (target?.tombstoneAllocatedThrough ?? 0);
+  }
+
   async catchUp(
     userId: number,
     opts: { after: number; through?: number; take: number },

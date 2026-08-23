@@ -64,7 +64,7 @@ export interface ChatMsgData {
   /** = Message.id (virtual-scroll track key + WS/pagination dedup). */
   msgId: number;
   /** Sender userId (classifyGroupFlags keys group-start off this). */
-  creator: number;
+  creator: number | null;
   /** = creator === current user's userId. */
   isSelf: boolean;
   /** Sender labels are useful in group chats but redundant beside avatars in a direct conversation. */
@@ -114,6 +114,7 @@ export interface ChatMsgData {
     | 'AUDIO'
     | 'GALLERY'
     | 'LINK'
+    | 'CONTACT_CARD'
     | 'CALL'
     | 'FORWARD'
     | 'SYSTEM';

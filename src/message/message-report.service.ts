@@ -13,10 +13,8 @@ import {
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
-import {
-  MessageReportStatus,
-  ThreadParticipantState,
-} from '../database/enums.js';
+import { MessageReportStatus } from '../database/enums.js';
+import { isThreadMutuallyAuthorized } from '../invite/relationship-authorization.js';
 import {
   message,
   messageReport,
@@ -30,12 +28,15 @@ import type {
   ResolveMessageReportsDto,
 } from './message-report.dto.js';
 import { DeletedMessageService } from './deleted-message.service.js';
+import { MessageService } from './message.service.js';
+import { SystemMessageType } from './system-message.js';
 
 @Injectable()
 export class MessageReportService {
   constructor(
     private readonly database: DatabaseService,
     private readonly deletedMessages: DeletedMessageService,
+    private readonly messages: MessageService,
   ) {}
 
   async create(userId: number, dto: CreateMessageReportsDto) {
@@ -45,11 +46,13 @@ export class MessageReportService {
         where: and(
           eq(threadParticipant.threadId, dto.threadId),
           eq(threadParticipant.userId, userId),
-          eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
         ),
         columns: { id: true },
       });
-      if (!participant) {
+      if (
+        !participant ||
+        !(await isThreadMutuallyAuthorized(tx, userId, dto.threadId))
+      ) {
         throw new BusinessException(
           BusinessCode.FORBIDDEN,
           'thread unavailable',
@@ -195,6 +198,9 @@ export class MessageReportService {
       originSeq: number;
       deletedId: string;
     }[];
+    systemMessages: Array<
+      Awaited<ReturnType<MessageService['writeSystemMessageInTx']>>['message']
+    >;
   }> {
     const ids = [...new Set(dto.reportIds.map((id) => BigInt(id)))];
     return this.database.db.transaction(async (tx) => {
@@ -245,6 +251,9 @@ export class MessageReportService {
         originSeq: number;
         deletedId: string;
       }[] = [];
+      const systemMessages: Array<
+        Awaited<ReturnType<MessageService['writeSystemMessageInTx']>>['message']
+      > = [];
       if (dto.status === MessageReportStatus.UPHELD) {
         const targets = await tx
           .select({
@@ -264,6 +273,8 @@ export class MessageReportService {
           targets.map((target) => [`${target.threadId}:${target.seq}`, target]),
         );
         for (const target of uniqueTargets.values()) {
+          if (target.creator === null)
+            throw new Error('SYSTEM messages cannot be moderated');
           const deletedId = await this.deletedMessages.deleteByReportInTx(
             tx,
             target.threadId,
@@ -271,9 +282,31 @@ export class MessageReportService {
           );
           deletions.push({
             ...target,
+            creator: target.creator,
             originSeq: target.originSeq ?? target.seq,
             deletedId,
           });
+        }
+        const byThread = new Map<number, { count: number }>();
+        for (const target of uniqueTargets.values()) {
+          const current = byThread.get(target.threadId);
+          if (current) current.count++;
+          else
+            byThread.set(target.threadId, {
+              count: 1,
+            });
+        }
+        for (const [threadId, notice] of byThread) {
+          const system = await this.messages.writeSystemMessageInTx(
+            tx,
+            threadId,
+            SystemMessageType.MESSAGES_MODERATED,
+            undefined,
+            {
+              count: notice.count,
+            },
+          );
+          systemMessages.push(system.message);
         }
       }
       return {
@@ -282,6 +315,7 @@ export class MessageReportService {
           status: dto.status,
         })),
         deletions,
+        systemMessages,
       };
     });
   }

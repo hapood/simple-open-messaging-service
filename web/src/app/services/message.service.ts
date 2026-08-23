@@ -69,6 +69,19 @@ export class MsgService {
     );
   }
 
+  sendContactCard(params: {
+    threadId: number;
+    targetUserId?: number;
+    targetGroupId?: number;
+    clientMessageId: string;
+  }) {
+    return this.http.post<StandardResponse<Message>>(
+      `${apiPrefix()}/send-contact-card`,
+      params,
+      { context: new HttpContext().set(REPLAY_SAFE, true) },
+    );
+  }
+
   /**
    * Ask the server to snapshot messages the caller can currently see and attach the immutable bundle
    * to a new FORWARD message in the destination thread. A clientMessageId is mandatory because the

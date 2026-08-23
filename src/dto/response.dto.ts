@@ -40,6 +40,9 @@ export class UserResponseDto {
   @ApiProperty({ example: false, description: 'Whether an external user' })
   isForeigner!: boolean;
 
+  @ApiProperty({ example: false, description: 'Whether this identity is a group' })
+  isGroup!: boolean;
+
   @ApiProperty({ example: 'example.com', description: 'Domain (nullable)' })
   domain?: string;
 
@@ -65,7 +68,7 @@ export class UserResponseDto {
   @ApiProperty({ example: false })
   isDeleted!: boolean;
 
-  // Note: hashPwd never appears in responses. threadRevision is NOT here either — it is pushed via the
+  // Note: hashPwd never appears in responses. The state-feed cursor is delivered by the
   // SSE HELLO connect handshake (the threadlist's sole delta-replay cursor), never the profile response.
   // Friend-request notification state is delivered through the unified state delta; its seen cursor is
   // device-local and never appears in an API response.
@@ -118,8 +121,12 @@ export class MessageResponseDto {
   @ApiProperty({ example: 12, description: 'Owning thread id' })
   threadId!: number;
 
-  @ApiProperty({ example: 1, description: 'Sender userId' })
-  creator!: number;
+  @ApiProperty({
+    example: 1,
+    nullable: true,
+    description: 'Sender userId; null for server-authored SYSTEM messages',
+  })
+  creator!: number | null;
 
   @ApiProperty({ example: 1_700_000_000_000 })
   createdAt!: number;
@@ -205,12 +212,6 @@ export class GroupResponseDto {
   description!: string;
 
   @ApiProperty({
-    example: true,
-    description: 'Whether ordinary members may invite users to this group',
-  })
-  membersCanInvite!: boolean;
-
-  @ApiProperty({
     example: 'soms.io',
     description:
       "The group's home (origin) domain. Empty for a locally-originated group (this server is the " +
@@ -226,34 +227,6 @@ export class GroupResponseDto {
 
   @ApiProperty({ example: 1_700_000_000_000 })
   updatedAt!: number;
-
-  @ApiProperty({ type: () => [GroupMemberRefDto] })
-  members!: GroupMemberRefDto[];
-}
-
-/** Membership/role facts carried by the authoritative conversation snapshot.
- * Display metadata is resolved from PROFILE or source-scoped MEMBER_PROFILE state. */
-export class GroupMemberRefDto {
-  @ApiProperty({ example: 7 })
-  userId!: number;
-
-  @ApiProperty({ example: 'alice' })
-  account!: string;
-
-  @ApiProperty({ example: 'example.com' })
-  domain!: string;
-
-  @ApiProperty({ example: 'group-origin.example' })
-  profileSourceDomain!: string;
-
-  @ApiProperty({ enum: GroupRole })
-  role!: GroupRole;
-
-  @ApiProperty({ example: 1_700_000_000_000 })
-  joinedAt!: number;
-
-  @ApiProperty({ example: false })
-  isOwner!: boolean;
 }
 
 /**
@@ -262,13 +235,6 @@ export class GroupMemberRefDto {
  * Replaces the overloaded UserMessageThreadResponseDto: friendship state no longer lives here.
  */
 export class ConversationItemDto {
-  @ApiProperty({
-    enum: ['ACTIVE', 'READ_ONLY'],
-    description:
-      'Rendered state for a visible conversation. Hidden/deleted rows are not returned.',
-  })
-  conversationState!: 'ACTIVE' | 'READ_ONLY';
-
   @ApiProperty({
     example: 1,
     description: "This user's ThreadParticipant row id",
@@ -350,14 +316,6 @@ export class ConversationItemDto {
       'Whether the caller blocks new messages from this conversation. Applies to P2P and GROUP.',
   })
   blocked?: boolean;
-
-  @ApiProperty({
-    required: false,
-    example: true,
-    description:
-      'Whether the P2P friendship is active. False keeps the historical conversation readable but read-only; absent on GROUP.',
-  })
-  friendshipActive?: boolean;
 
   @ApiProperty({
     type: String,

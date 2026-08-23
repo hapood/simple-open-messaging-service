@@ -11,6 +11,8 @@ import {
   relationshipPair,
   relationshipIntent,
   message,
+  clientMessageFeed,
+  threadParticipant,
   threadAudience,
   user,
 } from '../src/database/schema';
@@ -176,14 +178,51 @@ describe('First message after friend-add is delivered (single instance)', () => 
       await reader.cancel();
     }
 
-    await request(baseUrl)
-      .post('/api/v1/user/delete-friend')
-      .set('Authorization', `Bearer ${alice.token}`)
-      .send({ userId: bob.id })
-      .expect((res) => {
-        expect(res.status).toBe(200);
-        expect(res.body.code).toBe(0);
+    const deleteReader = await openSse(baseUrl, bob.token);
+    try {
+      await request(baseUrl)
+        .post('/api/v1/user/delete-friend')
+        .set('Authorization', `Bearer ${alice.token}`)
+        .send({ userId: bob.id })
+        .expect((res) => {
+          expect(res.status).toBe(200);
+          expect(res.body.code).toBe(0);
+        });
+      const boundaryWake = (await waitForSseEvent(
+        deleteReader,
+        (event, data) =>
+          event === 'NEW_MESSAGE' &&
+          typeof data === 'object' &&
+          data !== null &&
+          (data as { threadId?: number }).threadId === threadId,
+      )) as { seq: number };
+      const boundary = await database.db.query.message.findFirst({
+        where: and(
+          eq(message.threadId, threadId),
+          eq(message.seq, boundaryWake.seq),
+          eq(message.contentType, 'SYSTEM'),
+        ),
       });
+      expect(boundary).toMatchObject({ creator: null });
+      const participants = await database.db.query.threadParticipant.findMany({
+        where: eq(threadParticipant.threadId, threadId),
+      });
+      expect(participants.map((participant) => participant.leftSeq)).toEqual([
+        boundaryWake.seq,
+        boundaryWake.seq,
+      ]);
+      const projections = await database.db.query.clientMessageFeed.findMany({
+        where: and(
+          eq(clientMessageFeed.threadId, threadId),
+          eq(clientMessageFeed.messageEndSeq, boundaryWake.seq),
+        ),
+      });
+      expect(projections.map((projection) => projection.userId).sort()).toEqual(
+        [alice.id, bob.id].sort(),
+      );
+    } finally {
+      await deleteReader.cancel();
+    }
     const revokedAudiences = await database.db
       .select({ id: threadAudience.id })
       .from(threadAudience)

@@ -103,6 +103,7 @@ Every object is a closed schema. Inner `content` uses the corresponding message-
 - `avatarDigest` is genuinely optional; when present, it MUST appear in the parent `assets`.
 - `quoteTargetId` is conditional; when present, it MUST identify a target in the same enclosing `messages[]`. A quote carries no preview.
 - The filename, MIME type, and media kind come from the inner content that references the digest and are not repeated in the asset descriptor.
+- An inner CONTACT_CARD retains its original address and display snapshot; its optional `avatarDigest` participates in the parent asset set like every other inner-content digest.
 - The deduplicated set of all author-avatar and inner-content digests MUST exactly equal the parent `assets`.
 - A child has no independent assets array.
 - The consumer computes local counts from the actual lengths of the parent messages, all child messages, and assets, and may persist them for quota, garbage collection, and administrative statistics. The publisher does not declare these counts on the wire.

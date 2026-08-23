@@ -1,8 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { MessageService } from '../message/message.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
-import { ContentType, ThreadParticipantState } from '../database/enums.js';
+import { ContentType } from '../database/enums.js';
 import type { ReportActionDto } from '../dto/notification.dto.js';
 import { stringifyTextMessageContent } from '../../shared/text-message-content.js';
 
@@ -26,7 +25,6 @@ export class NotificationActionService {
   private readonly logger = new Logger(NotificationActionService.name);
 
   constructor(
-    private readonly participantService: ThreadParticipantService,
     private readonly messageService: MessageService,
     private readonly fanout: MessageFanoutService,
   ) {}
@@ -59,8 +57,6 @@ export class NotificationActionService {
     threadId: number,
     text: string,
   ): Promise<void> {
-    const p = await this.participantService.findParticipant(userId, threadId);
-    if (!p || p.state !== ThreadParticipantState.ESTABLISHED) return;
     const data = await this.messageService.writeMsgToThread(
       userId,
       threadId,

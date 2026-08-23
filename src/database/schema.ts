@@ -48,6 +48,7 @@ export const contentType = pgEnum('ContentType', [
   'FILE',
   'AUDIO',
   'LINK',
+  'CONTACT_CARD',
   'CALL',
   'FORWARD',
   // Phase 7: multi-asset bundle. Appended last so ALTER TYPE ADD VALUE keeps enum sort order.
@@ -63,15 +64,6 @@ export const uploadSessionStatus = pgEnum('UploadSessionStatus', [
   'COMPLETED',
   'ABORTED',
 ]);
-export const threadRevisionDirection = pgEnum('ThreadRevisionDirection', [
-  'ADD',
-  'DELETE',
-]);
-export const threadParticipantState = pgEnum('ThreadParticipantState', [
-  'AUTHORIZED',
-  'ESTABLISHED',
-  'REVOKED',
-]);
 export const peerStateEventType = pgEnum('PeerStateEventType', [
   'PROFILE',
   'RELATIONSHIP_INTENT',
@@ -86,6 +78,7 @@ export const relationshipIntentStatus = pgEnum('RelationshipIntentStatus', [
   'ACCEPTED',
   'REVOKED',
 ]);
+
 export const messageDeleteType = pgEnum('MessageDeleteType', [
   'WITHDRAW',
   'REPORT',
@@ -255,7 +248,7 @@ export const user = pgTable(
     isDeleted: boolean().default(false).notNull(),
     profileRev: integer().default(0).notNull(),
     remoteProfileRev: integer(),
-    threadRevision: integer().default(0).notNull(),
+    stateFeedAllocatedThrough: integer().default(0).notNull(),
     readRevision: integer().default(0).notNull(),
     mustChangePassword: boolean().default(false).notNull(),
   },
@@ -318,8 +311,13 @@ export const threadParticipant = pgTable(
     pinned: boolean().default(false).notNull(),
     pinnedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     clearedSeq: integer(),
+    /** First thread sequence observed when this retained participant was created/reactivated. Reserved
+     *  for future lower-bound visibility policy; current local history reads intentionally do not use it. */
+    afterSeq: integer().default(0).notNull(),
+    /** Inclusive local history boundary. Null means currently active; a departed participant may read
+     *  messages through this sequence, including the boundary SYSTEM notice. */
+    leftSeq: integer(),
     alias: varchar({ length: 64 }),
-    state: threadParticipantState().default('ESTABLISHED').notNull(),
     relationshipRev: integer().default(0).notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
@@ -340,9 +338,9 @@ export const threadParticipant = pgTable(
       table.threadId.asc().nullsLast().op('int4_ops'),
       table.joinedAt.asc().nullsLast().op('int4_ops'),
     ),
-    uniqueIndex('ThreadParticipant_one_established_group_owner_key')
+    uniqueIndex('ThreadParticipant_one_group_owner_key')
       .using('btree', table.threadId.asc().nullsLast().op('int4_ops'))
-      .where(sql`${table.role} = 'OWNER' AND ${table.state} = 'ESTABLISHED'`),
+      .where(sql`${table.role} = 'OWNER'`),
     index('ThreadParticipant_userId_pinned_idx').using(
       'btree',
       table.userId.asc().nullsLast().op('int4_ops'),
@@ -375,6 +373,11 @@ export const threadParticipant = pgTable(
     check(
       'ThreadParticipant_cleared_seq_check',
       sql`${table.clearedSeq} IS NULL OR ${table.clearedSeq} >= 0`,
+    ),
+    check('ThreadParticipant_after_seq_check', sql`${table.afterSeq} >= 0`),
+    check(
+      'ThreadParticipant_left_seq_check',
+      sql`${table.leftSeq} IS NULL OR ${table.leftSeq} > 0`,
     ),
     check(
       'ThreadParticipant_relationship_rev_check',
@@ -609,43 +612,6 @@ export const linkCardRule = pgTable(
   ],
 );
 
-export const userBlock = pgTable(
-  'UserBlock',
-  {
-    id: serial().primaryKey().notNull(),
-    blockerId: integer().notNull(),
-    blockedId: integer().notNull(),
-    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    index('UserBlock_blockedId_idx').using(
-      'btree',
-      table.blockedId.asc().nullsLast().op('int4_ops'),
-    ),
-    uniqueIndex('UserBlock_blockerId_blockedId_key').using(
-      'btree',
-      table.blockerId.asc().nullsLast().op('int4_ops'),
-      table.blockedId.asc().nullsLast().op('int4_ops'),
-    ),
-    foreignKey({
-      columns: [table.blockedId],
-      foreignColumns: [user.id],
-      name: 'UserBlock_blockedId_fkey',
-    })
-      .onUpdate('cascade')
-      .onDelete('restrict'),
-    foreignKey({
-      columns: [table.blockerId],
-      foreignColumns: [user.id],
-      name: 'UserBlock_blockerId_fkey',
-    })
-      .onUpdate('cascade')
-      .onDelete('restrict'),
-  ],
-);
-
 export const message = pgTable(
   'Message',
   {
@@ -654,7 +620,8 @@ export const message = pgTable(
     contentType: contentType().notNull(),
     content: jsonbText().notNull(),
     threadId: integer().notNull(),
-    creator: integer().notNull(),
+    /** Null only for server-authored SYSTEM timeline notices. */
+    creator: integer(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -676,6 +643,10 @@ export const message = pgTable(
   },
   (table) => [
     check('Message_seq_check', sql`${table.seq} > 0`),
+    check(
+      'Message_system_creator_check',
+      sql`(${table.contentType} = 'SYSTEM' AND ${table.creator} IS NULL) OR (${table.contentType} <> 'SYSTEM' AND ${table.creator} IS NOT NULL)`,
+    ),
     check(
       'Message_origin_seq_check',
       sql`${table.originSeq} IS NULL OR ${table.originSeq} > 0`,
@@ -1352,8 +1323,6 @@ export const group = pgTable(
       mode: 'date',
     }).notNull(),
     dissolvedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
-    /** Members may invite by default. When false, only OWNER/ADMIN participants may invite. */
-    membersCanInvite: boolean().default(true).notNull(),
   },
   (table) => [
     uniqueIndex('Group_groupUserId_key').using(
@@ -1374,84 +1343,8 @@ export const group = pgTable(
   ],
 );
 
-export const threadRevision = pgTable(
-  'ThreadRevision',
-  {
-    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
-    userId: integer().notNull(),
-    threadId: integer().notNull(),
-    direction: threadRevisionDirection().notNull(),
-    revision: integer().notNull(),
-    isDelete: boolean().default(false).notNull(),
-    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    index('ThreadRevision_userId_revision_idx').using(
-      'btree',
-      table.userId.asc().nullsLast().op('int4_ops'),
-      table.revision.asc().nullsLast().op('int4_ops'),
-    ),
-    uniqueIndex('ThreadRevision_userId_threadId_direction_key').using(
-      'btree',
-      table.userId.asc().nullsLast().op('enum_ops'),
-      table.threadId.asc().nullsLast().op('enum_ops'),
-      table.direction.asc().nullsLast().op('int4_ops'),
-    ),
-    foreignKey({
-      columns: [table.threadId],
-      foreignColumns: [messageThread.id],
-      name: 'ThreadRevision_threadId_fkey',
-    })
-      .onUpdate('cascade')
-      .onDelete('cascade'),
-    foreignKey({
-      columns: [table.userId],
-      foreignColumns: [user.id],
-      name: 'ThreadRevision_userId_fkey',
-    })
-      .onUpdate('cascade')
-      .onDelete('cascade'),
-  ],
-);
-
-/** Profile entries sharing User.threadRevision's state cursor with thread ADD/DELETE entries. */
-export const profileStateRevision = pgTable(
-  'ProfileStateRevision',
-  {
-    userId: integer().notNull(),
-    subjectUserId: integer().notNull(),
-    revision: integer().notNull(),
-    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.userId, table.subjectUserId],
-      name: 'ProfileStateRevision_pkey',
-    }),
-    index('ProfileStateRevision_userId_revision_idx').on(
-      table.userId,
-      table.revision,
-    ),
-    foreignKey({
-      columns: [table.userId],
-      foreignColumns: [user.id],
-      name: 'ProfileStateRevision_userId_fkey',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.subjectUserId],
-      foreignColumns: [user.id],
-      name: 'ProfileStateRevision_subjectUserId_fkey',
-    }).onDelete('cascade'),
-    check('ProfileStateRevision_revision_check', sql`${table.revision} > 0`),
-  ],
-);
-
 /** Per-client compacted state projection. This is the device-facing analogue of PeerStateFeed:
- * revision is the owning user's unified client-state scan coordinate (User.threadRevision).
+ * feedId is the owning user's unified client-state scan coordinate.
  * Intent tombstones remain as
  * REVOKED snapshots, so a client resuming from an older cursor can converge without a delete log. */
 export const clientStateFeed = pgTable(
@@ -1463,7 +1356,7 @@ export const clientStateFeed = pgTable(
     eventType: varchar({ length: 31 }).notNull(),
     subjectAccount: varchar({ length: 31 }).default('').notNull(),
     subjectDomain: varchar({ length: 63 }).default('').notNull(),
-    revision: integer().notNull(),
+    feedId: integer().notNull(),
     body: jsonb().notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
@@ -1484,13 +1377,13 @@ export const clientStateFeed = pgTable(
       ],
       name: 'ClientStateFeed_pkey',
     }),
-    index('ClientStateFeed_user_revision_idx').on(table.userId, table.revision),
+    index('ClientStateFeed_user_feedId_idx').on(table.userId, table.feedId),
     foreignKey({
       columns: [table.userId],
       foreignColumns: [user.id],
       name: 'ClientStateFeed_userId_fkey',
     }).onDelete('cascade'),
-    check('ClientStateFeed_revision_check', sql`${table.revision} > 0`),
+    check('ClientStateFeed_feedId_check', sql`${table.feedId} > 0`),
   ],
 );
 
@@ -1501,9 +1394,7 @@ export const clientMessageFeedTarget = pgTable(
   {
     userId: integer().primaryKey().notNull(),
     messageAllocatedThrough: integer().default(0).notNull(),
-    tombstoneAllocatedThrough: integer()
-      .default(0)
-      .notNull(),
+    tombstoneAllocatedThrough: integer().default(0).notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -1597,51 +1488,10 @@ export const clientMessageTombstoneFeed = pgTable(
       foreignColumns: [messageThread.id],
       name: 'ClientMessageTombstoneFeed_threadId_fkey',
     }).onDelete('cascade'),
-    check(
-      'ClientMessageTombstoneFeed_feedId_check',
-      sql`${table.feedId} > 0`,
-    ),
+    check('ClientMessageTombstoneFeed_feedId_check', sql`${table.feedId} > 0`),
     check(
       'ClientMessageTombstoneFeed_tombstoneEndSeq_check',
       sql`${table.tombstoneEndSeq} > 0`,
-    ),
-  ],
-);
-
-/** Latest source-scoped member-profile change visible to one local user. This shares User.threadRevision
- * with thread/profile/friend-request state so reconnecting clients durably re-trigger affected roster
- * reads after applying the fixed state target. */
-export const memberProfileStateRevision = pgTable(
-  'MemberProfileStateRevision',
-  {
-    userId: integer().notNull(),
-    sourcePeerDomain: varchar({ length: 63 }).notNull(),
-    memberAccount: varchar({ length: 31 }).notNull(),
-    memberDomain: varchar({ length: 63 }).notNull(),
-    revision: integer().notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [
-        table.userId,
-        table.sourcePeerDomain,
-        table.memberAccount,
-        table.memberDomain,
-      ],
-      name: 'MemberProfileStateRevision_pkey',
-    }),
-    index('MemberProfileStateRevision_user_revision_idx').on(
-      table.userId,
-      table.revision,
-    ),
-    foreignKey({
-      columns: [table.userId],
-      foreignColumns: [user.id],
-      name: 'MemberProfileStateRevision_userId_fkey',
-    }).onDelete('cascade'),
-    check(
-      'MemberProfileStateRevision_revision_check',
-      sql`${table.revision} > 0`,
     ),
   ],
 );
@@ -1901,6 +1751,105 @@ export const groupMetaFeedTarget = pgTable(
     ),
     check(
       'GroupMetaFeedTarget_oldestAvailableAfter_check',
+      sql`${table.oldestAvailableAfter} >= 0 AND ${table.oldestAvailableAfter} <= ${table.allocatedThrough}`,
+    ),
+  ],
+);
+
+/** Per-user device projection of one group's member feed. */
+export const clientGroupMetaMemberFeed = pgTable(
+  'ClientGroupMetaMemberFeed',
+  {
+    userId: integer().notNull(),
+    groupUserId: integer().notNull(),
+    feedId: bigint({ mode: 'bigint' }).notNull(),
+    memberAccount: varchar({ length: 31 }).notNull(),
+    memberDomain: varchar({ length: 63 }).notNull(),
+    memberRev: integer().notNull(),
+    operation: groupMetaMemberOperation().notNull(),
+    body: jsonb().notNull(),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.userId, table.groupUserId, table.feedId],
+      name: 'ClientGroupMetaMemberFeed_pkey',
+    }),
+    uniqueIndex('ClientGroupMetaMemberFeed_member_rev_key').on(
+      table.userId,
+      table.groupUserId,
+      table.memberDomain,
+      table.memberAccount,
+      table.memberRev,
+    ),
+    index('ClientGroupMetaMemberFeed_member_feed_idx').on(
+      table.userId,
+      table.groupUserId,
+      table.memberDomain,
+      table.memberAccount,
+      table.feedId,
+    ),
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [user.id],
+      name: 'ClientGroupMetaMemberFeed_userId_fkey',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.groupUserId],
+      foreignColumns: [user.id],
+      name: 'ClientGroupMetaMemberFeed_groupUserId_fkey',
+    }).onDelete('cascade'),
+    check('ClientGroupMetaMemberFeed_feedId_check', sql`${table.feedId} > 0`),
+    check(
+      'ClientGroupMetaMemberFeed_memberRev_check',
+      sql`${table.memberRev} >= 0`,
+    ),
+    check(
+      'ClientGroupMetaMemberFeed_body_check',
+      sql`(${table.operation} = 'UPSERT' AND ${table.body} <> '{}'::jsonb) OR (${table.operation} = 'DELETE' AND ${table.body} = '{}'::jsonb)`,
+    ),
+  ],
+);
+
+/** Allocation and retention boundary for a user's view of one group-member feed. */
+export const clientGroupMetaFeedTarget = pgTable(
+  'ClientGroupMetaFeedTarget',
+  {
+    userId: integer().notNull(),
+    groupUserId: integer().notNull(),
+    allocatedThrough: bigint({ mode: 'bigint' }).default(0n).notNull(),
+    oldestAvailableAfter: bigint({ mode: 'bigint' }).default(0n).notNull(),
+    active: boolean().default(true).notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.userId, table.groupUserId],
+      name: 'ClientGroupMetaFeedTarget_pkey',
+    }),
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [user.id],
+      name: 'ClientGroupMetaFeedTarget_userId_fkey',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.groupUserId],
+      foreignColumns: [user.id],
+      name: 'ClientGroupMetaFeedTarget_groupUserId_fkey',
+    }).onDelete('cascade'),
+    check(
+      'ClientGroupMetaFeedTarget_allocatedThrough_check',
+      sql`${table.allocatedThrough} >= 0`,
+    ),
+    check(
+      'ClientGroupMetaFeedTarget_oldestAvailableAfter_check',
       sql`${table.oldestAvailableAfter} >= 0 AND ${table.oldestAvailableAfter} <= ${table.allocatedThrough}`,
     ),
   ],

@@ -114,11 +114,13 @@ The corresponding content document defines type-specific conditional fields.
 
 `assets` is the authoritative manifest of CAS bytes directly referenced by content:
 
-| `contentType`                          | Digests and `assets`                                |
-| -------------------------------------- | --------------------------------------------------- |
-| `PURE_TEXT`, `LINK`, `CALL`, `FORWARD` | Reference no digest directly; MUST be empty         |
-| `IMAGE`, `VIDEO`, `AUDIO`, `FILE`      | Exactly one digest and a descriptor for that digest |
-| `GALLERY`                              | The complete deduplicated set of item digests       |
+| `contentType`                     | Digests and `assets`                                |
+| --------------------------------- | --------------------------------------------------- |
+| `PURE_TEXT`, `CALL`, `FORWARD`    | Reference no digest directly; MUST be empty         |
+| `LINK`                            | The optional `icon` and `favicon` digests           |
+| `CONTACT_CARD`                    | The optional `avatarDigest`                          |
+| `IMAGE`, `VIDEO`, `AUDIO`, `FILE` | Exactly one digest and a descriptor for that digest |
+| `GALLERY`                         | The complete deduplicated set of item digests       |
 
 - Each digest appears at most once.
 - The deduplicated set of digests referenced by content MUST exactly equal `assets`.

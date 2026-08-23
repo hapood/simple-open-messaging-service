@@ -22,6 +22,8 @@ export function deriveMessagePreview(
         .slice(0, MESSAGE_PREVIEW_MAX_LENGTH);
     case 'LINK':
       return linkPreview(content);
+    case 'CONTACT_CARD':
+      return contactCardPreview(content);
     case 'IMAGE':
       return '[Photo]';
     case 'SYSTEM':
@@ -40,6 +42,17 @@ export function deriveMessagePreview(
       return callPreview(content);
     default:
       return content.slice(0, MESSAGE_PREVIEW_MAX_LENGTH);
+  }
+}
+
+function contactCardPreview(content: string): string {
+  try {
+    const value = JSON.parse(content) as { displayName?: unknown };
+    const name =
+      typeof value.displayName === 'string' ? value.displayName.trim() : '';
+    return name ? `[Contact] ${name}` : '[Contact]';
+  } catch {
+    return '[Contact]';
   }
 }
 

@@ -8,6 +8,18 @@ export interface GrpCreateInfo {
   groupId: number;
 }
 
+export interface GroupJoinRequest {
+  id: string;
+  userId: number;
+  account: string;
+  domain: string;
+  name: string;
+  avatar: string;
+  note: string;
+  requestedAt: string;
+  expiresAt: string;
+}
+
 @Injectable({
   providedIn: 'root',
 })
@@ -78,10 +90,44 @@ export class GroupService {
     name?: string;
     description?: string;
     avatar?: string;
-    membersCanInvite?: boolean;
   }) {
     return this.http.post<StandardResponse>(
       `${apiPrefix()}/group/update`,
+      params,
+    );
+  }
+
+  queryJoinRequests(params: {
+    groupId: number;
+    before?: string;
+    take?: number;
+  }) {
+    return this.http.post<
+      StandardResponse<{
+        data: GroupJoinRequest[];
+        hasMore: boolean;
+        before: string | null;
+      }>
+    >(`${apiPrefix()}/group/join-requests`, params);
+  }
+
+  markJoinRequestsRead(params: { groupId: number; readRequestId: string }) {
+    return this.http.post<StandardResponse>(
+      `${apiPrefix()}/group/join-requests/read`,
+      params,
+    );
+  }
+
+  acceptJoinRequest(params: { groupId: number; requestId: string }) {
+    return this.http.post<StandardResponse>(
+      `${apiPrefix()}/group/join-request/accept`,
+      params,
+    );
+  }
+
+  rejectJoinRequest(params: { groupId: number; requestId: string }) {
+    return this.http.post<StandardResponse>(
+      `${apiPrefix()}/group/join-request/reject`,
       params,
     );
   }

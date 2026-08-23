@@ -6,7 +6,6 @@ import {
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
-import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
 
 export interface FederationResetPreview {
   domain: string;
@@ -16,7 +15,6 @@ export interface FederationResetPreview {
   affectedThreadCount: number;
   authoredMessageCount: number;
   inviteCount: number;
-  userBlockCount: number;
   deletionCursorCount: number;
   keyCacheCount: number;
   friendOperationCount: number;
@@ -42,10 +40,7 @@ export class FederationResetService implements OnModuleInit {
   private readonly logger = new Logger(FederationResetService.name);
   private cleanupWorker: Promise<void> | null = null;
 
-  constructor(
-    private readonly database: DatabaseService,
-    private readonly threadRevisions: ThreadRevisionService,
-  ) {}
+  constructor(private readonly database: DatabaseService) {}
 
   onModuleInit(): void {
     this.startCleanupWorker();
@@ -116,8 +111,6 @@ export class FederationResetService implements OnModuleInit {
           (SELECT count(*)::int FROM "RelationshipIntent" r
              WHERE r."authorUserId" IN (SELECT id FROM remote_users)
                 OR r."subjectUserId" IN (SELECT id FROM remote_users)) AS "inviteCount",
-          (SELECT count(*)::int FROM "UserBlock" b WHERE b."blockerId" IN (SELECT id FROM remote_users)
-             OR b."blockedId" IN (SELECT id FROM remote_users)) AS "userBlockCount",
           (SELECT count(*)::int FROM "FederationDeletedCursor" WHERE "peerDomain" = ${normalized}) AS "deletionCursorCount",
           (SELECT count(*)::int FROM "S2SKeyCache" WHERE domain = ${normalized}) AS "keyCacheCount",
           0::int AS "friendOperationCount"
@@ -207,40 +200,6 @@ export class FederationResetService implements OnModuleInit {
    * participant link and the generation marker flip form one short transaction.
    */
   private async truncateThread(threadId: number): Promise<void> {
-    const revisions = await this.database.db.execute<{
-      userId: number;
-      revision: number;
-    }>(sql`
-      WITH candidates AS (
-        SELECT DISTINCT tp."userId"
-        FROM "ThreadParticipant" tp
-        JOIN "User" u ON u.id = tp."userId"
-        WHERE tp."threadId" = ${threadId}
-          AND u."isForeigner" = false
-          AND NOT EXISTS (
-            SELECT 1 FROM "ThreadRevision" tr
-            WHERE tr."userId" = tp."userId"
-              AND tr."threadId" = ${threadId}
-              AND tr.direction = 'DELETE'
-          )
-      ), bumped AS (
-        UPDATE "User" u
-        SET "threadRevision" = u."threadRevision" + 1,
-            "updatedAt" = CURRENT_TIMESTAMP
-        FROM candidates c
-        WHERE u.id = c."userId"
-        RETURNING u.id AS "userId", u."threadRevision" AS revision
-      )
-      INSERT INTO "ThreadRevision" ("userId", "threadId", direction, revision, "isDelete")
-      SELECT "userId", ${threadId}, 'DELETE', revision, false FROM bumped
-      ON CONFLICT ("userId", "threadId", direction)
-      DO UPDATE SET revision = EXCLUDED.revision
-      RETURNING "userId", revision
-    `);
-    await this.database.db.execute(sql`
-      UPDATE "ThreadRevision" SET "isDelete" = true
-      WHERE "threadId" = ${threadId} AND direction = 'ADD'
-    `);
     await this.database.db.execute(
       sql`DELETE FROM "MessageReport" WHERE "threadId" = ${threadId}`,
     );
@@ -298,9 +257,6 @@ export class FederationResetService implements OnModuleInit {
         WHERE id = ${threadId} AND "federationTruncated" = false
       `);
     });
-    for (const revision of revisions.rows) {
-      this.threadRevisions.notifyThreadRevision(revision);
-    }
   }
 
   private async finalizeDomainReset(domain: string): Promise<void> {
@@ -333,15 +289,6 @@ export class FederationResetService implements OnModuleInit {
         DELETE FROM "RelationshipIntent"
         WHERE "authorUserId" IN (SELECT id FROM remote_users)
            OR "subjectUserId" IN (SELECT id FROM remote_users)
-      `);
-      await tx.execute(sql`
-        WITH remote_users AS (
-          SELECT id FROM "User"
-          WHERE domain = ${domain} AND "isForeigner" = true
-        )
-        DELETE FROM "UserBlock"
-        WHERE "blockerId" IN (SELECT id FROM remote_users)
-           OR "blockedId" IN (SELECT id FROM remote_users)
       `);
       await tx.execute(sql`
         DELETE FROM "UploadSession"

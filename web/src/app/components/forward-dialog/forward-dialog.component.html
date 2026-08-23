@@ -1,23 +1,47 @@
 <div class="forward-dialog">
   <app-page-header
     [title]="
-      (purpose() === 'NATIVE_SHARE' ? 'nativeShare.title' : 'forward.title')
-        | transloco
+      (purpose() === 'NATIVE_SHARE'
+        ? 'nativeShare.title'
+        : purpose() === 'CHAT_CARD'
+          ? 'contactCard.shareTitle'
+          : 'forward.title'
+      ) | transloco
     "
     (back)="close()"
   >
-    <button
-      pageHeaderAction
-      type="button"
-      class="forward-dialog__header-action forward-dialog__header-action--primary"
-      [disabled]="!canConfirm()"
-      (click)="confirm()"
-    >
-      {{
-        (purpose() === 'NATIVE_SHARE' ? 'nativeShare.send' : 'forward.send')
-          | transloco: { count: selectedCount() }
-      }}
-    </button>
+    @if (purpose() === 'CHAT_CARD') {
+      <app-split-button
+        pageHeaderAction
+        [label]="selectedForwardModeLabel()"
+        [menuAriaLabel]="'forward.chooseMode' | transloco"
+        [options]="forwardModeOptions()"
+        [selectedValue]="selectedForwardMode()"
+        [disabled]="!canConfirm()"
+        (primaryAction)="confirm()"
+        (optionAction)="selectForwardMode($event)"
+      />
+    } @else if (purpose() === 'FORWARD') {
+      <button
+        pageHeaderAction
+        type="button"
+        class="forward-dialog__header-action forward-dialog__header-action--primary"
+        [disabled]="!canConfirm()"
+        (click)="confirm()"
+      >
+        {{ 'forward.send' | transloco }}
+      </button>
+    } @else {
+      <button
+        pageHeaderAction
+        type="button"
+        class="forward-dialog__header-action forward-dialog__header-action--primary"
+        [disabled]="!canConfirm()"
+        (click)="confirm()"
+      >
+        {{ 'nativeShare.send' | transloco: { count: selectedCount() } }}
+      </button>
+    }
   </app-page-header>
 
   <div class="forward-dialog__workspace">
@@ -60,39 +84,75 @@
               }
             }
           }
-        } @else if (mode() === 'HISTORY') {
+        } @else if (effectiveForwardMode() === 'HISTORY') {
           <app-forward-message-card
             [messages]="messages()"
             [recordKind]="recordKind()"
             [compact]="true"
           ></app-forward-message-card>
-        } @else if (directMessage(); as message) {
-          <div class="forward-dialog__direct-preview">
-            @switch (message.contentType) {
-              @case ('IMAGE') {
-                <app-msg-media-row [data]="message" />
-              }
-              @case ('VIDEO') {
-                <app-msg-media-row [data]="message" />
-              }
-              @case ('AUDIO') {
-                <app-msg-media-row [data]="message" />
-              }
-              @case ('FILE') {
-                <app-msg-file-row [data]="message" />
-              }
-              @case ('LINK') {
-                <app-msg-link-row [data]="message" />
-              }
-              @case ('CALL') {
-                <app-msg-call-row [data]="message" />
-              }
-              @case ('FORWARD') {
-                <app-msg-forward-row [data]="message" />
-              }
-              @default {
-                <app-msg-text-row [data]="message" />
-              }
+        } @else {
+          <div class="forward-dialog__direct-preview-list">
+            @if (directPreviewMessage(); as message) {
+              <div class="forward-dialog__direct-preview">
+                @switch (message.contentType) {
+                  @case ('IMAGE') {
+                    <app-msg-media-row [data]="message" />
+                  }
+                  @case ('VIDEO') {
+                    <app-msg-media-row [data]="message" />
+                  }
+                  @case ('AUDIO') {
+                    <app-msg-media-row [data]="message" />
+                  }
+                  @case ('FILE') {
+                    <app-msg-file-row [data]="message" />
+                  }
+                  @case ('LINK') {
+                    <app-msg-link-row [data]="message" />
+                  }
+                  @case ('CONTACT_CARD') {
+                    <app-msg-contact-card-row [data]="message" />
+                  }
+                  @case ('CALL') {
+                    <app-msg-call-row [data]="message" />
+                  }
+                  @case ('FORWARD') {
+                    <app-msg-forward-row [data]="message" />
+                  }
+                  @default {
+                    <app-msg-text-row [data]="message" />
+                  }
+                }
+              </div>
+            }
+            @if (remainingDirectMessageCount() > 0) {
+              <div
+                class="forward-dialog__direct-more"
+                [attr.aria-label]="
+                  'forward.remainingDirect'
+                    | transloco: { count: remainingDirectMessageCount() }
+                "
+              >
+                <app-user-avatar
+                  [type]="UserAvatarType.SELF"
+                  [name]="selfProfile()?.name || selfProfile()?.account || ''"
+                  [identityId]="selfProfile()?.id"
+                  [account]="selfProfile()?.account"
+                  [federatedDomain]="selfProfile()?.domain"
+                  [src]="selfProfile()?.avatar"
+                />
+                <div class="forward-dialog__direct-more-content">
+                  <span class="forward-dialog__direct-more-name">{{
+                    selfProfile()?.name || selfProfile()?.account
+                  }}</span>
+                  <span class="forward-dialog__direct-more-bubble">
+                    {{
+                      'forward.remainingDirect'
+                        | transloco: { count: remainingDirectMessageCount() }
+                    }}
+                  </span>
+                </div>
+              </div>
             }
           </div>
         }

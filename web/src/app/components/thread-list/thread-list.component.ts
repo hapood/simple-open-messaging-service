@@ -190,7 +190,18 @@ export class ThreadListComponent implements OnInit {
   };
 
   previewTime(t: ConversationItem): number | null | undefined {
-    return this.composerDrafts.get(t.threadId)?.updatedAt ?? t.lastMessageAt;
+    const draft = this.composerDrafts.get(t.threadId);
+    if (draft) return draft.updatedAt;
+    if (t.lastMessageAt == null) return t.joinRequestAt;
+    if (t.joinRequestAt == null) return t.lastMessageAt;
+    return Math.max(t.lastMessageAt, t.joinRequestAt);
+  }
+
+  hasUnreadJoinRequests(t: ConversationItem): boolean {
+    if (t.type !== 'GROUP' || (t.role !== 'OWNER' && t.role !== 'ADMIN'))
+      return false;
+    const head = this.userService.groupJoinRequestHeads().get(t.threadId);
+    return !!head && BigInt(head.readRequestId) < BigInt(head.latestRequestId);
   }
 
   // Conversation→avatar derivation lives in the shared conversation-avatar util (single source of truth,
@@ -234,6 +245,8 @@ export class ThreadListComponent implements OnInit {
     if ((t.mentionUnread?.length ?? 0) > 0) {
       parts.push(this.transloco.translate('threadList.mentionedYou'));
     }
+    if (this.hasUnreadJoinRequests(t))
+      parts.push(this.transloco.translate('group.joinRequests'));
     if (t.muted && !t.blocked)
       parts.push(this.transloco.translate('threadList.muted'));
     if (t.pinned) parts.push(this.transloco.translate('threadList.pinned'));

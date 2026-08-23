@@ -8,11 +8,12 @@ import type { DatabaseTransaction } from '../database/database.service.js';
  * protocol: another implementation may choose a different origin-group limit.
  */
 export const SERVER_MAX_GROUP_MEMBERS = 999;
-export const SERVER_GROUP_FULL_REASON = `Group has reached this server's ${SERVER_MAX_GROUP_MEMBERS}-member limit.`;
+export const SERVER_GROUP_FULL_REASON = `Group invitations, including pending invitations, have reached this server's ${SERVER_MAX_GROUP_MEMBERS}-person limit.`;
 
 /**
  * Serialize joins at the origin group and reserve one local membership slot.
- * Existing active members consume no new slot, which keeps retries idempotent.
+ * Existing locally authorized members consume no new slot, which keeps retries idempotent. The
+ * origin reserves capacity when it authors REQUESTED; member acceptance is deliberately irrelevant.
  */
 export async function assertServerGroupCapacityInTx(
   tx: DatabaseTransaction,
@@ -31,26 +32,28 @@ export async function assertServerGroupCapacityInTx(
   }
 
   const state = await tx.execute<{
-    activeCount: string | number;
-    alreadyActive: boolean;
+    authorizedCount: string | number;
+    alreadyAuthorized: boolean;
   }>(sql`
     SELECT
-      COUNT(*) FILTER (WHERE participant.state = 'ESTABLISHED') AS "activeCount",
+      COUNT(*) AS "authorizedCount",
       COALESCE(BOOL_OR(
-        participant."userId" = ${memberUserId}
-        AND participant.state = 'ESTABLISHED'
-      ), false) AS "alreadyActive"
-    FROM "ThreadParticipant" participant
-    WHERE participant."threadId" = ${threadId}
+        authorization."subjectUserId" = ${memberUserId}
+      ), false) AS "alreadyAuthorized"
+    FROM "RelationshipIntent" authorization
+    WHERE authorization."authorUserId" = ${locked.rows[0].groupUserId}
+      AND (authorization.status = 'ACCEPTED'
+        OR (authorization.status = 'REQUESTED'
+          AND authorization."expiresAt" > CURRENT_TIMESTAMP))
   `);
-  const activeCount = Number(state.rows[0]?.activeCount ?? 0);
+  const authorizedCount = Number(state.rows[0]?.authorizedCount ?? 0);
   if (
-    !state.rows[0]?.alreadyActive &&
-    activeCount >= SERVER_MAX_GROUP_MEMBERS
+    !state.rows[0]?.alreadyAuthorized &&
+    authorizedCount >= SERVER_MAX_GROUP_MEMBERS
   ) {
     throw new BusinessException(
       BusinessCode.GROUP_FULL,
-      `this server limits groups to ${SERVER_MAX_GROUP_MEMBERS} members`,
+      `group invitations, including pending invitations, have reached the ${SERVER_MAX_GROUP_MEMBERS}-person limit`,
     );
   }
 }

@@ -1,0 +1,33 @@
+<section class="identity-dialog">
+  <div class="identity-summary">
+    <app-user-avatar
+      [type]="avatarType()"
+      [name]="identity().name"
+      [identityId]="identity().userId ?? identity().account"
+      [account]="identity().account"
+      [federatedDomain]="federatedDomain()"
+      [src]="identity().avatar"
+    />
+    <div class="identity-copy">
+      <strong>{{ identity().name || identity().account }}</strong>
+      <span>{{ identity().account }}&#64;{{ identity().domain }}</span>
+    </div>
+  </div>
+  <div class="identity-meta">
+    <span>
+      @if (identity().domain === 'local') {
+        {{ 'contactCard.local' | transloco }}
+      } @else {
+        {{ identity().domain }}
+      }
+    </span>
+    <span>{{
+      (isGroup() ? 'contactCard.group' : 'contactCard.person') | transloco
+    }}</span>
+  </div>
+  @if (actionKey(); as key) {
+    <button type="button" class="identity-action" (click)="act()">
+      {{ key | transloco }}
+    </button>
+  }
+</section>

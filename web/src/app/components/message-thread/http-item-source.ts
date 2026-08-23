@@ -604,10 +604,11 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     for (const m of msgs) {
       const id = m.seq;
       if (id > this.loadedSeq) this.loadedSeq = id;
-      let creatorSeqs = this.seqsByCreator.get(m.creator);
+      const creatorKey = m.creator ?? 0;
+      let creatorSeqs = this.seqsByCreator.get(creatorKey);
       if (!creatorSeqs) {
         creatorSeqs = new Set<number>();
-        this.seqsByCreator.set(m.creator, creatorSeqs);
+        this.seqsByCreator.set(creatorKey, creatorSeqs);
       }
       creatorSeqs.add(id);
       // Each IMAGE/VIDEO/AUDIO message → a single-element media array (carrying its own msgId); consecutive
@@ -676,7 +677,25 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     images: AlbumImage[] | null,
     file: FileInfo | null,
   ): ChatMsgData {
-    const p = this.profiles.get(m.creator);
+    const p = m.creator === null ? undefined : this.profiles.get(m.creator);
+    let systemActorIsSelf = false;
+    if (m.contentType === 'SYSTEM') {
+      try {
+        const actor = (
+          JSON.parse(m.content) as {
+            actor?: { account?: string; domain?: string };
+          }
+        ).actor;
+        const self = this.userService.sessionProfile();
+        systemActorIsSelf =
+          !!actor &&
+          !!self &&
+          actor.account === self.account &&
+          actor.domain === self.domain;
+      } catch {
+        // The system row owns malformed-content fallback rendering.
+      }
+    }
     const textContent =
       m.contentType === 'PURE_TEXT'
         ? requireTextMessageContent(m.content)
@@ -691,11 +710,14 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       type: 'msg',
       msgId: m.seq,
       creator: m.creator,
-      isSelf: p?.isSelf ?? m.creator === this.selfUserId,
+      isSelf:
+        m.contentType === 'SYSTEM'
+          ? systemActorIsSelf
+          : (p?.isSelf ?? m.creator === this.selfUserId),
       isGroupConversation: this.conv.type === 'GROUP',
       name: p?.name ?? '',
       avatar: p?.avatar ?? '',
-      avatarIdentityId: m.creator,
+      ...(m.creator === null ? {} : { avatarIdentityId: m.creator }),
       avatarAccount: p?.account ?? '',
       avatarDomain: p?.domain ?? '',
       // Non-text cards keep their wire content in `text` as well. In particular, FORWARD content is
@@ -751,6 +773,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     const missing = new Set<number>();
     for (const m of msgs)
       if (
+        m.creator !== null &&
         !this.profiles.has(m.creator) &&
         !this.profilesInFlight.has(m.creator)
       )

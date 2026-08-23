@@ -123,6 +123,22 @@
   gap: 2px;
 }
 
+.icon-btn {
+  position: relative;
+}
+
+.more-badge {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 8px;
+  height: 8px;
+  border: 2px solid var(--app-surface);
+  border-radius: 50%;
+  background: var(--app-danger);
+  box-sizing: content-box;
+}
+
 // align-self:flex-start defeats the column's default align-items:stretch — otherwise a short name
 // ("Mom") stretches the box across the whole .msg-title column (~260px), making the entire header
 // middle one phantom hover-dim + click target. max-width:100% then caps a long name at the column

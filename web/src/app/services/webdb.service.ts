@@ -10,7 +10,8 @@ import type { ConversationItem, DeletedMessageItem, Message } from './model';
 import type {
   ClientFriendIntent,
   ClientGroupInviteIntent,
-  HydratedThreadDeltaOp,
+  ClientGroupMetaFeedPage,
+  ClientStateFeedItem,
 } from './user.service';
 import { isAndroidNative, isTauri, tauriInvoke } from './runtime';
 import {
@@ -68,23 +69,21 @@ export interface ProfileRecord {
   expiresAt?: number;
 }
 
-/** Source-scoped group-member display snapshot, materialized from MEMBER_PROFILE state. */
-export interface MemberProfileRecord {
-  sourcePeerDomain: string;
-  memberAccount: string;
-  memberDomain: string;
-  displayName: string;
-  avatar: string;
-  profileRevision: number;
-}
-
-/** A thread-local roster edge referencing one source-scoped member profile. */
+/** One materialized group roster member. */
 export interface ThreadParticipantRecord {
   threadId: number;
   userId: number;
-  sourcePeerDomain: string;
   memberAccount: string;
   memberDomain: string;
+  role: 'OWNER' | 'ADMIN' | 'MEMBER';
+  displayName: string;
+  avatar: string;
+  profileRev: number;
+}
+
+export interface ClientGroupMetaApply {
+  threadId: number;
+  page: ClientGroupMetaFeedPage;
 }
 
 /** A value persisted in the stable `settings` store (keyPath `'key'`), including integer feed cursors.
@@ -176,14 +175,10 @@ function messageCoverageKey(threadId: number): string {
 export interface WebdbSchema extends DBSchema {
   avatars: { key: string; value: AvatarRecord };
   profiles: { key: string; value: ProfileRecord };
-  memberProfiles: {
-    key: [string, string, string];
-    value: MemberProfileRecord;
-  };
   threadParticipants: {
     key: [number, number];
     value: ThreadParticipantRecord;
-    indexes: { memberProfile: [string, string, string] };
+    indexes: { identity: [number, string, string] };
   };
   /** One record per conversation, keyed by `threadId` (the field is the keyPath). */
   threads: { key: number; value: ConversationItem };
@@ -211,7 +206,7 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-export const CACHE_SCHEMA_VERSION = 2;
+export const CACHE_SCHEMA_VERSION = 3;
 // Version 2 invalidates rows written before PURE_TEXT became a strict JSON envelope. Message history is
 // rebuildable from the server, so recreating this cache is safer than letting a stale row abort chat mount.
 export const MESSAGE_CACHE_SCHEMA_VERSION = 2;
@@ -493,7 +488,6 @@ export class WebdbService implements OnDestroy {
     const required = [
       'avatars',
       'profiles',
-      'memberProfiles',
       'threadParticipants',
       'threads',
       'friendRequests',
@@ -519,16 +513,13 @@ export class WebdbService implements OnDestroy {
           throw new Error('cache recreation expected an empty IndexedDB');
         db.createObjectStore('avatars', { keyPath: 'identity' });
         db.createObjectStore('profiles', { keyPath: 'identity' });
-        db.createObjectStore('memberProfiles', {
-          keyPath: ['sourcePeerDomain', 'memberAccount', 'memberDomain'],
-        });
         const threadParticipants = db.createObjectStore('threadParticipants', {
           keyPath: ['threadId', 'userId'],
         });
-        threadParticipants.createIndex('memberProfile', [
-          'sourcePeerDomain',
-          'memberAccount',
+        threadParticipants.createIndex('identity', [
+          'threadId',
           'memberDomain',
+          'memberAccount',
         ]);
         db.createObjectStore('threads', { keyPath: 'threadId' });
         const friendRequests = db.createObjectStore('friendRequests', {
@@ -1141,25 +1132,36 @@ export class WebdbService implements OnDestroy {
     await (await this.db()).delete('threads', threadId);
   }
 
-  /** Apply one server-planned thread delta and its revision in the same durable transaction. */
-  async applyThreadDelta(
-    delta: HydratedThreadDeltaOp[],
-    revision: number,
+  /** Apply one compacted state-feed page and its cursor atomically. */
+  async applyStateFeedPage(
+    items: ClientStateFeedItem[],
+    feedId: number,
+    groupMeta: readonly ClientGroupMetaApply[] = [],
+    resetProjection = false,
   ): Promise<void> {
     return this.runAccountOperation(() =>
-      this.applyThreadDeltaInternal(delta, revision),
+      this.applyStateFeedPageInternal(
+        items,
+        feedId,
+        groupMeta,
+        resetProjection,
+      ),
     );
   }
 
-  private async applyThreadDeltaInternal(
-    delta: HydratedThreadDeltaOp[],
-    revision: number,
+  private async applyStateFeedPageInternal(
+    items: ClientStateFeedItem[],
+    feedId: number,
+    groupMeta: readonly ClientGroupMetaApply[],
+    resetProjection: boolean,
   ): Promise<void> {
     if (isTauri() && this.currentUserId != null) {
-      await tauriInvoke('native_db_apply_thread_delta', {
+      await tauriInvoke('native_db_apply_state_feed_page', {
         userId: Number(this.currentUserId),
-        revision,
-        delta,
+        feedId,
+        items,
+        groupMeta,
+        resetProjection,
       });
       return;
     }
@@ -1168,16 +1170,113 @@ export class WebdbService implements OnDestroy {
       [
         'threads',
         'profiles',
-        'memberProfiles',
         'threadParticipants',
-        'avatars',
         'friendRequests',
         'settings',
       ],
       'readwrite',
     );
-    for (const op of delta) {
-      if (op.direction === 'CLIENT_STATE') {
+    const relationshipStates = new Map<
+      number,
+      {
+        incoming?: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
+        outgoing?: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
+      }
+    >();
+    if (resetProjection) {
+      await tx.objectStore('friendRequests').clear();
+      await tx.objectStore('threadParticipants').clear();
+      const profiles = tx.objectStore('profiles');
+      for (const profile of await profiles.getAll()) {
+        if (
+          profile.source === 'OUTGOING_FRIEND_REQUEST' ||
+          profile.source === 'GROUP_INVITE'
+        )
+          await profiles.delete(profile.identity);
+      }
+      const threads = tx.objectStore('threads');
+      for (const thread of await threads.getAll()) {
+        await threads.put({
+          ...thread,
+          blocked: false,
+          ...(thread.type === 'P2P'
+            ? {
+                friendshipActive: false,
+                conversationState: 'READ_ONLY' as const,
+              }
+            : {}),
+        });
+      }
+    }
+    for (const update of groupMeta) {
+      const participants = tx.objectStore('threadParticipants');
+      let memberCount = 0;
+      if (update.page.mode === 'full') {
+        let cursor = await participants.openCursor(
+          IDBKeyRange.bound(
+            [update.threadId, Number.MIN_SAFE_INTEGER],
+            [update.threadId, Number.MAX_SAFE_INTEGER],
+          ),
+        );
+        while (cursor) {
+          await cursor.delete();
+          cursor = await cursor.continue();
+        }
+      } else {
+        const thread = await tx.objectStore('threads').get(update.threadId);
+        memberCount =
+          thread?.type === 'GROUP' ? (thread.group.memberCount ?? 0) : 0;
+      }
+      for (const item of update.page.items) {
+        const previous = await participants
+          .index('identity')
+          .get([update.threadId, item.domain, item.account]);
+        if (item.operation === 'DELETE') {
+          if (previous) {
+            await participants.delete([update.threadId, previous.userId]);
+            memberCount--;
+          }
+          continue;
+        }
+        const body = item.body as {
+          userId: number;
+          role: 'OWNER' | 'ADMIN' | 'MEMBER';
+          profileRev: number;
+          displayName: string;
+          avatar: string | null;
+        };
+        if (!Number.isSafeInteger(body.userId) || body.userId < 1)
+          throw new Error('group-meta UPSERT has no valid userId');
+        await participants.put({
+          threadId: update.threadId,
+          userId: body.userId,
+          memberAccount: item.account,
+          memberDomain: item.domain,
+          role: body.role,
+          displayName: body.displayName,
+          avatar: body.avatar ?? '',
+          profileRev: body.profileRev,
+        });
+        if (!previous) memberCount++;
+      }
+      const thread = await tx.objectStore('threads').get(update.threadId);
+      if (thread?.type === 'GROUP') {
+        const { members: _members, ...group } =
+          thread.group as typeof thread.group & {
+            members?: unknown;
+          };
+        await tx.objectStore('threads').put({
+          ...thread,
+          group: {
+            ...group,
+            memberCount,
+            groupMetaFeedId: update.page.scannedThrough,
+          },
+        });
+      }
+    }
+    for (const op of items) {
+      if (op.eventType === 'RELATIONSHIP_INTENT') {
         const store = tx.objectStore('friendRequests');
         if (op.account.startsWith('!')) {
           const body = op.body as Omit<
@@ -1223,7 +1322,7 @@ export class WebdbService implements OnDestroy {
           if (transition.becameActionable)
             await tx.objectStore('settings').put({
               key: 'friendRequestStateRevision',
-              value: op.revision,
+              value: op.feedId,
             });
           continue;
         }
@@ -1236,6 +1335,16 @@ export class WebdbService implements OnDestroy {
           | 'subjectDomain'
           | 'requestedSort'
         >;
+        if (
+          body.localThreadId !== null &&
+          Number.isSafeInteger(body.localThreadId) &&
+          body.localThreadId > 0
+        ) {
+          const state = relationshipStates.get(body.localThreadId) ?? {};
+          if (body.direction === 'INCOMING') state.incoming = body.status;
+          else state.outgoing = body.status;
+          relationshipStates.set(body.localThreadId, state);
+        }
         const projectionKey = friendPairKey(op);
         const transition = applyFriendIntentToProjection(
           await store.get(projectionKey),
@@ -1278,128 +1387,135 @@ export class WebdbService implements OnDestroy {
         if (transition.becameActionable)
           await tx.objectStore('settings').put({
             key: 'friendRequestStateRevision',
-            value: op.revision,
+            value: op.feedId,
           });
         continue;
       }
-      if (op.direction === 'PROFILE') {
-        const u = op.user;
-        const identity = `u${u.id}`;
-        const previous = await tx.objectStore('profiles').get(identity);
-        if (!previous || u.profileRev >= previous.profileRev) {
-          await tx.objectStore('profiles').put({
-            identity,
-            id: u.id,
-            kind: 'user',
-            name: u.name,
-            account: u.account,
-            avatar: u.avatar,
-            bio: u.bio ?? '',
-            domain: u.domain ?? '',
-            profileRev: u.profileRev,
-          });
-        }
-        continue;
-      }
-      if (op.direction === 'PROFILE_DELETE') {
-        const identity = `u${op.userId}`;
-        await tx.objectStore('profiles').delete(identity);
-        await tx.objectStore('avatars').delete(identity);
-        continue;
-      }
-      if (op.direction === 'MEMBER_PROFILE') {
-        const store = tx.objectStore('memberProfiles');
-        const profileKey: [string, string, string] = [
-          op.sourcePeerDomain,
-          op.memberAccount,
-          op.memberDomain,
-        ];
-        const previous = await store.get(profileKey);
-        if (!previous || op.profileRevision >= previous.profileRevision)
-          await store.put({
-            sourcePeerDomain: op.sourcePeerDomain,
-            memberAccount: op.memberAccount,
-            memberDomain: op.memberDomain,
-            displayName: op.displayName,
-            avatar: op.avatar,
-            profileRevision: op.profileRevision,
-          });
-        const participants = tx.objectStore('threadParticipants');
-        for (const threadId of op.threadIds) {
-          await participants.put({
-            threadId,
-            userId: op.userId,
-            sourcePeerDomain: op.sourcePeerDomain,
-            memberAccount: op.memberAccount,
-            memberDomain: op.memberDomain,
+      if (op.eventType === 'PROFILE') {
+        const profiles = tx.objectStore('profiles');
+        const body = op.body;
+        for (const profile of await profiles.getAll()) {
+          if (
+            profile.account !== op.account ||
+            profile.domain !== op.domain ||
+            body.profileRev < profile.profileRev
+          )
+            continue;
+          await profiles.put({
+            ...profile,
+            name: body.displayName,
+            avatar: body.avatar ?? '',
+            bio: body.bio,
+            profileRev: body.profileRev,
           });
         }
-        continue;
-      }
-      if (op.direction === 'DELETE') {
-        await tx.objectStore('threads').delete(op.threadId);
-        const participants = tx.objectStore('threadParticipants');
-        const removed = (await participants.getAll()).filter(
-          (participant) => participant.threadId === op.threadId,
-        );
-        for (const participant of removed)
-          await participants.delete([participant.threadId, participant.userId]);
-      } else {
-        const store = tx.objectStore('threads');
-        const previous = await store.get(op.threadId);
-        await store.put({
-          ...op.item,
-          lastReadSeq: previous?.lastReadSeq ?? null,
-          unreadCount: previous?.unreadCount ?? 0,
-          mentionUnread: previous?.mentionUnread ?? [],
-          lastMessagePreview: previous?.lastMessagePreview ?? null,
-          lastMessageSenderId: previous?.lastMessageSenderId ?? null,
-        });
-        if (op.item.type === 'GROUP') {
-          const participants = tx.objectStore('threadParticipants');
-          const stale = new Map(
-            (await participants.getAll())
-              .filter((participant) => participant.threadId === op.threadId)
-              .map((participant) => [participant.userId, participant]),
-          );
-          for (const member of op.item.group.members ?? []) {
-            await participants.put({
-              threadId: op.threadId,
-              userId: member.userId,
-              sourcePeerDomain: member.profileSourceDomain,
-              memberAccount: member.account,
-              memberDomain: member.domain,
+        const threads = tx.objectStore('threads');
+        for (const thread of await threads.getAll()) {
+          if (
+            thread.type === 'P2P' &&
+            thread.peerUser.account === op.account &&
+            (thread.peerUser.domain ?? '') === op.domain &&
+            body.profileRev >= (thread.peerUser.profileRev ?? 0)
+          )
+            await threads.put({
+              ...thread,
+              peerUser: {
+                ...thread.peerUser,
+                name: body.displayName,
+                bio: body.bio,
+                avatar: body.avatar ?? '',
+                profileRev: body.profileRev,
+              },
             });
-            stale.delete(member.userId);
-          }
-          for (const participant of stale.values())
-            await participants.delete([
-              participant.threadId,
-              participant.userId,
-            ]);
+          else if (
+            thread.type === 'GROUP' &&
+            thread.group.account === op.account &&
+            thread.group.domain === op.domain &&
+            body.profileRev >= thread.group.profileRev
+          )
+            await threads.put({
+              ...thread,
+              group: {
+                ...thread.group,
+                name: body.displayName,
+                description: body.bio,
+                avatar: body.avatar ?? '',
+                profileRev: body.profileRev,
+              },
+            });
         }
+        continue;
+      }
+      if (op.eventType === 'GROUP_JOIN_REQUEST_HEAD') {
+        const latestId = (BigInt(op.body.before) - 1n).toString();
+        if (BigInt(latestId) > 0n) {
+          const setting = await tx
+            .objectStore('settings')
+            .get('groupJoinRequestHeads');
+          const heads =
+            setting?.value && typeof setting.value === 'object'
+              ? { ...(setting.value as Record<string, string>) }
+              : {};
+          const current = heads[String(op.body.threadId)] ?? '0';
+          heads[String(op.body.threadId)] =
+            BigInt(current) >= BigInt(latestId) ? current : latestId;
+          await tx.objectStore('settings').put({
+            key: 'groupJoinRequestHeads',
+            value: heads,
+          });
+          const readSetting = await tx
+            .objectStore('settings')
+            .get('groupJoinRequestReadFeedIds');
+          const reads =
+            readSetting?.value && typeof readSetting.value === 'object'
+              ? { ...(readSetting.value as Record<string, string>) }
+              : {};
+          const currentRead = reads[String(op.body.threadId)] ?? '0';
+          reads[String(op.body.threadId)] =
+            BigInt(currentRead) >= BigInt(op.body.readRequestId)
+              ? currentRead
+              : op.body.readRequestId;
+          await tx.objectStore('settings').put({
+            key: 'groupJoinRequestReadFeedIds',
+            value: reads,
+          });
+        }
+        continue;
+      }
+      if (op.eventType === 'INCOMING_INVITE_HEAD') {
+        await tx.objectStore('settings').put({
+          key: 'incomingInviteHead',
+          value: op.body,
+        });
+        continue;
+      }
+      if (op.eventType === 'THREAD_BLOCK') {
+        const thread = await tx.objectStore('threads').get(op.body.threadId);
+        if (thread)
+          await tx.objectStore('threads').put({
+            ...thread,
+            blocked: op.body.blocked,
+          });
       }
     }
-    const participants = tx.objectStore('threadParticipants');
-    const profiles = tx.objectStore('memberProfiles');
-    for (const profile of await profiles.getAll()) {
-      const references = await participants
-        .index('memberProfile')
-        .count([
-          profile.sourcePeerDomain,
-          profile.memberAccount,
-          profile.memberDomain,
-        ]);
-      if (references === 0)
-        await profiles.delete([
-          profile.sourcePeerDomain,
-          profile.memberAccount,
-          profile.memberDomain,
-        ]);
+    for (const [threadId, state] of relationshipStates) {
+      const active =
+        state.incoming === 'ACCEPTED' && state.outgoing === 'ACCEPTED';
+      const ended =
+        state.incoming === 'REVOKED' ||
+        state.outgoing === 'REVOKED' ||
+        state.incoming === 'REQUESTED' ||
+        state.outgoing === 'REQUESTED';
+      if (!active && !ended) continue;
+      const thread = await tx.objectStore('threads').get(threadId);
+      if (!thread || thread.type !== 'P2P') continue;
+      await tx.objectStore('threads').put({
+        ...thread,
+        friendshipActive: active,
+        conversationState: active ? 'ACTIVE' : 'READ_ONLY',
+      });
     }
-    await tx
-      .objectStore('settings')
-      .put({ key: 'stateRevision', value: revision });
+    await tx.objectStore('settings').put({ key: 'stateFeedId', value: feedId });
     await tx.done;
   }
 
@@ -1430,58 +1546,46 @@ export class WebdbService implements OnDestroy {
     return this.runAccountOperation(() => this.getProfileInternal(identity));
   }
 
-  async getMemberProfile(
-    threadId: number,
-    userId: number,
-  ): Promise<MemberProfileRecord | undefined> {
+  async queryGroupMembers(params: {
+    threadId: number;
+    afterUserId?: number;
+    take: number;
+    search?: string;
+  }): Promise<ThreadParticipantRecord[]> {
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId != null)
-        return (
-          (await tauriInvoke<MemberProfileRecord | null>(
-            'native_db_get_member_profile',
-            {
-              userId: Number(this.currentUserId),
-              threadId,
-              memberUserId: userId,
-            },
-          )) ?? undefined
+        return tauriInvoke<ThreadParticipantRecord[]>(
+          'native_db_query_group_members',
+          {
+            userId: Number(this.currentUserId),
+            threadId: params.threadId,
+            afterUserId: params.afterUserId ?? 0,
+            take: params.take,
+            search: params.search?.trim() ?? '',
+          },
         );
       const db = await this.db();
-      const participant = await db.get('threadParticipants', [
-        threadId,
-        userId,
-      ]);
-      if (!participant) return undefined;
-      return db.get('memberProfiles', [
-        participant.sourcePeerDomain,
-        participant.memberAccount,
-        participant.memberDomain,
-      ]);
-    });
-  }
-
-  async listMemberProfiles(threadId: number): Promise<MemberProfileRecord[]> {
-    return this.runAccountOperation(async () => {
-      if (isTauri() && this.currentUserId != null)
-        return tauriInvoke<MemberProfileRecord[]>(
-          'native_db_list_member_profiles',
-          { userId: Number(this.currentUserId), threadId },
-        );
-      const db = await this.db();
-      const participants = (await db.getAll('threadParticipants')).filter(
-        (participant) => participant.threadId === threadId,
-      );
-      return (
-        await Promise.all(
-          participants.map((participant) =>
-            db.get('memberProfiles', [
-              participant.sourcePeerDomain,
-              participant.memberAccount,
-              participant.memberDomain,
-            ]),
+      const result: ThreadParticipantRecord[] = [];
+      const search = params.search?.trim().toLocaleLowerCase() ?? '';
+      let cursor = await db
+        .transaction('threadParticipants')
+        .store.openCursor(
+          IDBKeyRange.bound(
+            [params.threadId, (params.afterUserId ?? 0) + 1],
+            [params.threadId, Number.MAX_SAFE_INTEGER],
           ),
+        );
+      while (cursor && result.length < params.take) {
+        const member = cursor.value;
+        if (
+          !search ||
+          member.displayName.toLocaleLowerCase().includes(search) ||
+          member.memberAccount.toLocaleLowerCase().includes(search)
         )
-      ).filter((profile): profile is MemberProfileRecord => !!profile);
+          result.push(member);
+        cursor = await cursor.continue();
+      }
+      return result;
     });
   }
 

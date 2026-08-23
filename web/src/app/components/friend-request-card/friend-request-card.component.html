@@ -53,11 +53,23 @@
       <button mat-button type="button" disabled>
         {{ 'friend.revoked' | transloco }}
       </button>
+    } @else if (request().status === -4) {
+      <button mat-button type="button" disabled>
+        {{ 'friend.rejected' | transloco }}
+      </button>
     } @else if (request().status === -2) {
       <button mat-button type="button" disabled>
         {{ 'friend.expired' | transloco }}
       </button>
     } @else if (direction() === 'INCOMING') {
+      <button
+        mat-button
+        type="button"
+        [disabled]="actionPending()"
+        (click)="act($event, 'reject')"
+      >
+        {{ 'friend.decline' | transloco }}
+      </button>
       <button
         mat-flat-button
         color="primary"
@@ -65,7 +77,10 @@
         [disabled]="actionPending()"
         (click)="act($event, 'approve')"
       >
-        {{ 'friend.approve' | transloco }}
+        {{
+          (request().kind === 'GROUP' ? 'friend.joinGroup' : 'friend.approve')
+            | transloco
+        }}
       </button>
     } @else {
       <button

@@ -8,7 +8,7 @@ export interface ResolvedMemberProfile extends GroupMemberRef {
   avatar: string;
 }
 
-/** Local-first reader for group membership facts plus their display-profile projection. */
+/** Paginated local-database reader for the materialized group roster. */
 @Injectable({ providedIn: 'root' })
 export class MemberProfileRepository {
   private readonly webdb = inject(WebdbService);
@@ -18,27 +18,32 @@ export class MemberProfileRepository {
     this.changed$.next(threadIds);
   }
 
-  async resolve(
+  async queryPage(
     threadId: number,
-    member: GroupMemberRef,
-  ): Promise<ResolvedMemberProfile> {
-    const scoped = member.profileSourceDomain
-      ? await this.webdb.getMemberProfile(threadId, member.userId)
-      : undefined;
-    const home = scoped
-      ? undefined
-      : await this.webdb.getProfile(`u${member.userId}`);
-    return {
-      ...member,
-      name: scoped?.displayName ?? home?.name ?? member.account,
-      avatar: scoped?.avatar ?? home?.avatar ?? '',
-    };
+    params: { afterUserId?: number; take: number; search?: string },
+  ): Promise<ResolvedMemberProfile[]> {
+    const members = await this.webdb.queryGroupMembers({ threadId, ...params });
+    return members.map((member) => ({
+      userId: member.userId,
+      account: member.memberAccount,
+      domain: member.memberDomain,
+      profileSourceDomain: member.memberDomain,
+      role: member.role,
+      joinedAt: 0,
+      isOwner: member.role === 'OWNER',
+      name: member.displayName,
+      avatar: member.avatar,
+    }));
   }
 
-  async resolveAll(
+  async get(
     threadId: number,
-    members: readonly GroupMemberRef[],
-  ): Promise<ResolvedMemberProfile[]> {
-    return Promise.all(members.map((member) => this.resolve(threadId, member)));
+    userId: number,
+  ): Promise<ResolvedMemberProfile | undefined> {
+    const [member] = await this.queryPage(threadId, {
+      afterUserId: userId - 1,
+      take: 1,
+    });
+    return member?.userId === userId ? member : undefined;
   }
 }

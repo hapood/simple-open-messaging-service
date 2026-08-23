@@ -22,12 +22,13 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { MessageResponseDto } from '../dto/response.dto.js';
 import { UserIdDto } from '../dto/user.dto.js';
+import { UserService } from '../user/user.service.js';
+import { GroupService } from '../group/group.service.js';
 import { SseService } from '../gateway/sse.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { ThreadAccessGuard } from '../thread-participant/thread-access.guard.js';
 import { ResourceId } from '../common/resource-id.decorator.js';
 import { parseLinkContent } from '../upload/file-content.js';
-import { UserBlockService } from '../user-block/user-block.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { FederationService } from '../federation/federation.service.js';
 import { LinkPreviewService } from '../link-preview/link-preview.service.js';
@@ -50,6 +51,7 @@ import {
   ForwardMode,
   QueryDeletedMessagesDto,
   WithdrawMessageDto,
+  SendContactCardDto,
 } from '../dto/message.dto.js';
 import {
   serializeAudienceMention,
@@ -76,7 +78,6 @@ export class MessageController {
     private readonly messageService: MessageService,
     private readonly sseService: SseService,
     private readonly participantService: ThreadParticipantService,
-    private readonly userBlockService: UserBlockService,
     private readonly fanout: MessageFanoutService,
     private readonly federation: FederationService,
     private readonly linkPreview: LinkPreviewService,
@@ -84,6 +85,8 @@ export class MessageController {
     private readonly userQuota: UserQuotaService,
     private readonly deletedMessages: DeletedMessageService,
     private readonly messageReports: MessageReportService,
+    private readonly users: UserService,
+    private readonly groups: GroupService,
   ) {}
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -145,6 +148,7 @@ export class MessageController {
         deleted.id,
       );
     }
+    if (deleted.systemMessage) void this.fanout.dispatch(deleted.systemMessage);
     // The existing federation hint is only a wake-up signal. Receivers always pull both the message
     // stream and the durable deletion stream, so reusing it keeps delivery lossy-safe without making
     // the push itself authoritative.
@@ -279,9 +283,17 @@ export class MessageController {
     const hasQuote =
       contentType === ContentType.PURE_TEXT &&
       parseTextMessageContent(dto.content)?.quote !== undefined;
-    if (hasQuote && req.threadAccess.threadType === 'P2P') {
-      const blocked = await this.userBlockService.blockedByMe(req.user.userId);
-      if (blocked.size > 0) quoteVisibility.hideCreatorIds = [...blocked];
+    if (
+      hasQuote &&
+      req.threadAccess.threadType === 'P2P' &&
+      req.threadAccess.participant.blocked
+    ) {
+      const peers = await this.participantService.findP2PPeers(
+        [dto.threadId],
+        req.user.userId,
+      );
+      if (peers.length > 0)
+        quoteVisibility.hideCreatorIds = peers.map((peer) => peer.userId);
     }
     await this.userQuota.assertCanSend(req.user.userId);
     const data = await this.messageService.writeMsgToThread(
@@ -303,6 +315,122 @@ export class MessageController {
     // fan-out (SSE + push + notif + federation hint) runs off the request critical path. The client
     // reconciles by seq/id, so an SSE frame landing after the 200 is harmless. The staged-media promote
     // path uses the same dispatch, so text and media fan out identically.
+    void this.fanout.dispatch(data);
+    return data;
+  }
+
+  @UseGuards(ThrottleGuard, ThreadAccessGuard)
+  @ResourceId<SendContactCardDto>('threadId')
+  @Throttle('message.send')
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('send-contact-card')
+  @ApiOperation({ summary: 'Share an immutable user contact snapshot' })
+  @ApiResultResponse(MessageResponseDto)
+  async sendContactCard(
+    @Request() req: FastifyRequest,
+    @Body() dto: SendContactCardDto,
+  ) {
+    const prior = await this.messageService.findByClientMessageId(
+      dto.clientMessageId,
+    );
+    if (prior) {
+      if (
+        prior.creator !== req.user.userId ||
+        prior.threadId !== dto.threadId ||
+        prior.contentType !== ContentType.CONTACT_CARD
+      ) {
+        throw new BusinessException(
+          BusinessCode.VALIDATION_FAILED,
+          'invalid clientMessageId',
+        );
+      }
+      return prior;
+    }
+    if (
+      (req.threadAccess.threadType === 'P2P' &&
+        !req.threadAccess.friendshipActive) ||
+      (req.threadAccess.threadType === 'GROUP' &&
+        !req.threadAccess.membershipActive)
+    ) {
+      throw new BusinessException(
+        req.threadAccess.threadType === 'GROUP'
+          ? BusinessCode.GROUP_FORBIDDEN
+          : BusinessCode.FRIEND_NOT_FOUND,
+        'conversation is read-only',
+      );
+    }
+    if (req.threadAccess.groupDissolved) {
+      throw new BusinessException(
+        BusinessCode.GROUP_DISSOLVED,
+        'group has been dissolved',
+      );
+    }
+    if (req.threadAccess.threadType === 'GROUP') {
+      await this.federation.assertGroupWritable(dto.threadId);
+    } else {
+      await this.federation.assertP2PWritable(dto.threadId, req.user.userId);
+    }
+    if (
+      (dto.targetUserId === undefined) ===
+      (dto.targetGroupId === undefined)
+    ) {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'exactly one contact-card target is required',
+      );
+    }
+    const groupVisibility =
+      dto.targetGroupId === undefined
+        ? null
+        : await this.participantService.findActiveParticipantWithThread(
+            req.user.userId,
+            dto.targetGroupId,
+          );
+    const groupTarget =
+      dto.targetGroupId === undefined ||
+      groupVisibility?.thread.type !== 'GROUP' ||
+      groupVisibility.leftSeq !== null
+        ? null
+        : await this.groups.findGroupByThreadId(dto.targetGroupId);
+    const target =
+      dto.targetUserId === undefined
+        ? groupTarget?.groupUser
+        : await this.users.findUniqueUser({
+            id: dto.targetUserId,
+            isDeleted: false,
+          });
+    if (!target) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'contact user not found',
+      );
+    }
+    const avatar = target.avatar
+      ? await this.forwardBundles.snapshotAvatarForMessage(target.avatar)
+      : null;
+    await this.userQuota.assertCanSend(req.user.userId);
+    const data = await this.messageService.writeMsgToThread(
+      req.user.userId,
+      dto.threadId,
+      JSON.stringify({
+        account: target.account,
+        domain: target.domain,
+        displayName: target.name,
+        ...(avatar
+          ? {
+              avatar: `/uploads/msg-assets/${avatar.digest.slice(0, 2)}/${avatar.digest.slice(2, 4)}/${avatar.digest}`,
+            }
+          : {}),
+      }),
+      ContentType.CONTACT_CARD,
+      dto.clientMessageId,
+      undefined,
+      async (tx) => {
+        await this.userQuota.tickLax(req.user.userId, 'messages', tx);
+        if (avatar) await this.userQuota.tickLax(req.user.userId, 'files', tx);
+      },
+    );
     void this.fanout.dispatch(data);
     return data;
   }
@@ -617,9 +745,11 @@ export class MessageController {
     // is blocked and can query the retained history again after unblocking.
     const filters: {
       clearedThroughSeq?: number | null;
+      visibleThroughSeq?: number | null;
       hideCreatorIds?: number[];
     } = {
       clearedThroughSeq: req.threadAccess.participant.clearedSeq,
+      visibleThroughSeq: req.threadAccess.participant.leftSeq,
     };
     const rows = await this.messageService.queryMessages(
       dto.threadId,
@@ -760,18 +890,6 @@ export class MessageController {
       dto.threadId,
       dto.blocked,
     );
-    // Preserve compatibility with existing P2P UserBlock rows and the sender-side delivery guard.
-    if (req.threadAccess.threadType === 'P2P') {
-      const [peer] = await this.participantService.findP2PPeers(
-        [dto.threadId],
-        req.user.userId,
-      );
-      if (peer) {
-        if (dto.blocked)
-          await this.userBlockService.block(req.user.userId, peer.userId);
-        else await this.userBlockService.unblock(req.user.userId, peer.userId);
-      }
-    }
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)

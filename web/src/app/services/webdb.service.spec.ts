@@ -3,7 +3,7 @@ import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { openDB } from 'idb';
 import type { Message } from './model';
-import type { HydratedThreadDeltaOp } from './user.service';
+import type { ClientStateFeedItem } from './user.service';
 import {
   CACHE_SCHEMA_VERSION,
   LocalCacheVersionMismatchError,
@@ -84,7 +84,6 @@ describe('WebdbService', () => {
       expect([...db!.objectStoreNames].sort()).toEqual([
         'avatars',
         'friendRequests',
-        'memberProfiles',
         'profiles',
         'settings',
         'threadParticipants',
@@ -292,122 +291,31 @@ describe('WebdbService', () => {
       expect(await webdb.getThreads()).toEqual([]);
     });
 
-    it('commits a thread delta and its revision together', async () => {
+    it('atomically advances the state-feed cursor and derives P2P read-only state', async () => {
       await webdb.openForUser('1');
-      const item = { threadId: 7, type: 'P2P' } as never;
-      await webdb.applyThreadDelta(
-        [{ threadId: 7, direction: 'ADD', item }],
-        12,
-      );
-      expect(
-        (await webdb.getThreads()).map((thread) => thread.threadId),
-      ).toEqual([7]);
-      expect(await webdb.getMeta('stateRevision')).toBe(12);
-
-      await webdb.applyThreadDelta([{ threadId: 7, direction: 'DELETE' }], 13);
-      expect(await webdb.getThreads()).toEqual([]);
-      expect(await webdb.getMeta('stateRevision')).toBe(13);
-    });
-
-    it('stores source-scoped profiles once and resolves them through thread participants', async () => {
-      await webdb.openForUser('1');
-      const snapshot = {
-        direction: 'MEMBER_PROFILE' as const,
-        revision: 12,
-        sourcePeerDomain: 'group.example',
-        memberAccount: 'alice',
-        memberDomain: 'home.example',
-        userId: 8,
-        threadIds: [7, 9],
-        displayName: 'Alice',
-        avatar: '/a.webp',
-        profileRevision: 6,
-      };
-
-      await webdb.applyThreadDelta([snapshot], 12);
-
-      expect(await webdb.getMemberProfile(7, 8)).toEqual({
-        sourcePeerDomain: 'group.example',
-        memberAccount: 'alice',
-        memberDomain: 'home.example',
-        displayName: 'Alice',
-        avatar: '/a.webp',
-        profileRevision: 6,
-      });
-      expect(await webdb.listMemberProfiles(9)).toEqual([
-        expect.objectContaining({ displayName: 'Alice' }),
-      ]);
-      expect(await webdb.getMeta('stateRevision')).toBe(12);
-    });
-
-    it('mark-and-sweeps stale participants and unreferenced profiles after a full group snapshot', async () => {
-      await webdb.openForUser('1');
-      const profile = (userId: number, account: string) => ({
-        direction: 'MEMBER_PROFILE' as const,
-        revision: 1,
-        sourcePeerDomain: 'group.example',
-        memberAccount: account,
-        memberDomain: 'home.example',
-        userId,
-        threadIds: [7],
-        displayName: account,
-        avatar: '',
-        profileRevision: 1,
-      });
-      await webdb.applyThreadDelta([profile(8, 'alice'), profile(9, 'bob')], 1);
-
-      await webdb.applyThreadDelta(
-        [
-          {
-            threadId: 7,
-            direction: 'ADD',
-            item: {
-              threadId: 7,
-              type: 'GROUP',
-              group: {
-                members: [
-                  {
-                    userId: 8,
-                    account: 'alice',
-                    domain: 'home.example',
-                    profileSourceDomain: 'group.example',
-                  },
-                ],
-              },
-            } as never,
-          },
-        ],
-        2,
-      );
-
-      expect(await webdb.getMemberProfile(7, 8)).toMatchObject({
-        memberAccount: 'alice',
-      });
-      expect(await webdb.getMemberProfile(7, 9)).toBeUndefined();
-      const db = await webdb.db();
-      expect(await db.getAll('memberProfiles')).toEqual([
-        expect.objectContaining({ memberAccount: 'alice' }),
-      ]);
-    });
-
-    it('folds directional intents into one durable request projection', async () => {
-      await webdb.openForUser('1');
-      const base = {
-        direction: 'CLIENT_STATE' as const,
-        revision: 2,
+      await webdb.putThread({
+        threadId: 7,
+        type: 'P2P',
+        friendshipActive: true,
+        conversationState: 'ACTIVE',
+        blocked: true,
+      } as never);
+      const revoked: ClientStateFeedItem = {
+        feedId: 12,
         account: 'alice',
-        domain: 'local',
-        eventType: 'RELATIONSHIP_INTENT' as const,
+        domain: '',
+        eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: 'bob',
         subjectDomain: 'peer.test',
         body: {
-          status: 'REQUESTED' as const,
-          note: 'hello',
-          requestedAt: 10,
-          expiresAt: Date.now() + 60_000,
-          direction: 'OUTGOING' as const,
+          status: 'REVOKED',
+          note: '',
+          requestedAt: null,
+          expiresAt: null,
+          direction: 'OUTGOING',
+          localThreadId: 7,
           peer: {
-            id: 0,
+            id: 2,
             account: 'bob',
             name: 'Bob',
             avatar: '',
@@ -416,205 +324,144 @@ describe('WebdbService', () => {
           },
         },
       };
-      await webdb.applyThreadDelta([base], 2);
-      await webdb.applyThreadDelta(
-        [
-          {
-            ...base,
-            revision: 3,
-            body: { ...base.body, status: 'REVOKED' },
-          },
-        ],
-        3,
-      );
+
+      await webdb.applyStateFeedPage([revoked], 12);
+
+      expect(await webdb.getMeta('stateFeedId')).toBe(12);
       expect(
-        await webdb.getFriendRequestPage('OUTGOING', null, 20, true),
+        (await webdb.getThreads()).find((item) => item.threadId === 7),
       ).toMatchObject({
-        items: [expect.objectContaining({ status: 'REVOKED', note: 'hello' })],
+        friendshipActive: false,
+        conversationState: 'READ_ONLY',
       });
     });
 
-    it('includes revoked tombstones only when sent-request history asks for them', async () => {
-      await webdb.openForUser('1');
-      const base = {
-        direction: 'CLIENT_STATE' as const,
-        revision: 17,
-        account: 'local',
-        domain: 'local',
-        eventType: 'RELATIONSHIP_INTENT' as const,
-        subjectAccount: 'remote',
-        subjectDomain: 'peer.test',
-        body: {
-          status: 'REVOKED' as const,
-          note: '',
-          requestedAt: 10,
-          expiresAt: null,
-          direction: 'OUTGOING' as const,
-          peer: {
-            id: 0,
-            account: 'remote',
-            name: 'Remote',
-            avatar: '',
-            domain: 'peer.test',
-            isForeigner: true,
-          },
-        },
-      };
-      await webdb.applyThreadDelta([base], 17);
-
-      expect(
-        (await webdb.getFriendRequestPage('OUTGOING', null, 20)).items,
-      ).toEqual([]);
-      expect(
-        (await webdb.getFriendRequestPage('OUTGOING', null, 20, true)).items,
-      ).toEqual([expect.objectContaining({ status: 'REVOKED' })]);
-    });
-
-    it('derives an incoming friend-request badge from client state atomically', async () => {
-      await webdb.openForUser('1');
-      const op = {
-        direction: 'CLIENT_STATE' as const,
-        revision: 17,
-        account: 'remote',
-        domain: 'peer.test',
-        eventType: 'RELATIONSHIP_INTENT' as const,
-        subjectAccount: 'local',
-        subjectDomain: 'local',
-        body: {
-          status: 'REQUESTED' as const,
-          note: '',
-          requestedAt: 10,
-          expiresAt: Date.now() + 60_000,
-          direction: 'INCOMING' as const,
-          peer: {
-            id: 2,
-            account: 'remote',
-            name: 'Remote',
-            avatar: '',
-            domain: 'peer.test',
-            isForeigner: true,
-          },
-        },
-      };
-      await webdb.applyThreadDelta([op], 17);
-      expect(await webdb.getMeta('friendRequestStateRevision')).toBe(17);
-      expect(await webdb.getMeta('stateRevision')).toBe(17);
-    });
-
-    it('retains ACCEPTED + null and folds a late incoming REQUESTED into an accepted row without a badge', async () => {
-      await webdb.openForUser('1');
-      const peer = {
-        id: 2,
-        account: 'remote',
-        name: 'Remote',
+    it('clears state-feed projections only on the first full page', async () => {
+      const db = await webdb.openForUser('1');
+      await webdb.putThread({
+        threadId: 7,
+        type: 'P2P',
+        friendshipActive: true,
+        conversationState: 'ACTIVE',
+      } as never);
+      await webdb.putThread({
+        threadId: 9,
+        type: 'GROUP',
+        blocked: true,
+        group: { memberCount: 1, groupMetaFeedId: '1' },
+      } as never);
+      await db!.put('threadParticipants', {
+        threadId: 9,
+        userId: 8,
+        memberAccount: 'alice',
+        memberDomain: '',
+        role: 'MEMBER',
+        displayName: 'Alice',
         avatar: '',
-        domain: 'peer.test',
-        isForeigner: true,
-      };
-      const base = {
-        direction: 'CLIENT_STATE' as const,
-        eventType: 'RELATIONSHIP_INTENT' as const,
-        account: 'local',
-        domain: 'local',
-        subjectAccount: 'remote',
-        subjectDomain: 'peer.test',
-      };
-      await webdb.applyThreadDelta(
-        [
-          {
-            ...base,
-            revision: 20,
-            body: {
-              status: 'ACCEPTED' as const,
-              note: '',
-              requestedAt: Date.now(),
-              expiresAt: null,
-              direction: 'OUTGOING' as const,
-              peer,
-            },
-          },
-        ] as HydratedThreadDeltaOp[],
-        20,
-      );
-      expect(
-        (await webdb.getFriendRequestPage('INCOMING', null, 20)).items,
-      ).toEqual([]);
-      expect(await webdb.getMeta('friendRequestStateRevision')).toBeUndefined();
+        profileRev: 1,
+      });
 
-      await webdb.applyThreadDelta(
-        [
-          {
-            ...base,
-            account: 'remote',
-            domain: 'peer.test',
-            subjectAccount: 'local',
-            subjectDomain: 'local',
-            revision: 21,
-            body: {
-              status: 'REQUESTED' as const,
-              note: 'late request',
-              requestedAt: Date.now(),
-              expiresAt: Date.now() + 60_000,
-              direction: 'INCOMING' as const,
-              peer,
-            },
-          },
-        ] as HydratedThreadDeltaOp[],
-        21,
+      await webdb.applyStateFeedPage([], 3, [], true);
+
+      expect(await db!.getAll('threadParticipants')).toEqual([]);
+      expect(await webdb.getThreads()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            threadId: 7,
+            friendshipActive: false,
+            conversationState: 'READ_ONLY',
+            blocked: false,
+          }),
+          expect.objectContaining({ threadId: 9, blocked: false }),
+        ]),
       );
-      const page = await webdb.getFriendRequestPage('INCOMING', null, 20);
-      expect(page.items).toEqual([
-        expect.objectContaining({
-          localStatus: 'ACCEPTED',
-          remoteStatus: 'REQUESTED',
-          status: 'ACCEPTED',
-        }),
-      ]);
-      expect(page.actionableTotal).toBe(0);
-      expect(await webdb.getMeta('friendRequestStateRevision')).toBeUndefined();
+
+      await db!.put('threadParticipants', {
+        threadId: 9,
+        userId: 10,
+        memberAccount: 'bob',
+        memberDomain: '',
+        role: 'MEMBER',
+        displayName: 'Bob',
+        avatar: '',
+        profileRev: 1,
+      });
+      await webdb.applyStateFeedPage([], 4);
+
+      expect(await db!.getAll('threadParticipants')).toHaveLength(1);
+      expect(await webdb.getMeta('stateFeedId')).toBe(4);
     });
 
-    it('garbage-collects an expired request projection in the state layer', async () => {
+    it('applies THREAD_BLOCK true and false deltas to the cached thread', async () => {
       await webdb.openForUser('1');
-      const expiresAt = Date.now() + 60_000;
-      await webdb.applyThreadDelta(
-        [
-          {
-            direction: 'CLIENT_STATE',
-            revision: 30,
-            account: 'remote',
-            domain: 'peer.test',
-            eventType: 'RELATIONSHIP_INTENT',
-            subjectAccount: 'local',
-            subjectDomain: 'local',
-            body: {
-              status: 'REQUESTED',
-              note: '',
-              requestedAt: Date.now(),
-              expiresAt,
-              direction: 'INCOMING',
-              peer: {
-                id: 2,
-                account: 'remote',
-                name: 'Remote',
-                avatar: '',
-                domain: 'peer.test',
-                isForeigner: true,
+      await webdb.putThread({ threadId: 7, type: 'P2P', blocked: false } as never);
+      const event = (feedId: number, blocked: boolean): ClientStateFeedItem => ({
+        feedId,
+        account: '',
+        domain: '',
+        eventType: 'THREAD_BLOCK',
+        subjectAccount: '7',
+        subjectDomain: '',
+        body: { threadId: 7, blocked },
+      });
+
+      await webdb.applyStateFeedPage([event(5, true)], 5);
+      expect((await webdb.getThreads())[0]).toMatchObject({ blocked: true });
+
+      await webdb.applyStateFeedPage([event(6, false)], 6);
+      expect((await webdb.getThreads())[0]).toMatchObject({ blocked: false });
+      expect(await webdb.getMeta('stateFeedId')).toBe(6);
+    });
+
+    it('materializes full group metadata and pages/searches the local roster', async () => {
+      await webdb.openForUser('1');
+      await webdb.putThread({
+        threadId: 9,
+        type: 'GROUP',
+        group: { memberCount: 0, groupMetaFeedId: '0' },
+      } as never);
+
+      await webdb.applyStateFeedPage([], 3, [
+        {
+          threadId: 9,
+          page: {
+            account: '!team',
+            mode: 'full',
+            items: [
+              {
+                feedId: '1',
+                operation: 'UPSERT',
+                account: 'alice',
+                domain: 'home.example',
+                rev: 1,
+                body: {
+                  userId: 8,
+                  role: 'ADMIN',
+                  profileRev: 6,
+                  displayName: 'Alice',
+                  avatar: '/a.webp',
+                },
               },
-            },
+            ],
+            hasMore: false,
+            scannedThrough: '1',
+            groupMetaFeedEndId: '1',
           },
-        ],
-        30,
-      );
-      expect(
-        (await webdb.getFriendRequestPage('INCOMING', null, 20)).items,
-      ).toHaveLength(1);
-
-      await webdb.cleanupFriendRequests(expiresAt);
+        },
+      ]);
 
       expect(
-        (await webdb.getFriendRequestPage('INCOMING', null, 20)).items,
-      ).toEqual([]);
+        await webdb.queryGroupMembers({
+          threadId: 9,
+          take: 20,
+          search: 'ali',
+        }),
+      ).toEqual([expect.objectContaining({ userId: 8, displayName: 'Alice' })]);
+      expect(
+        (await webdb.getThreads()).find((item) => item.threadId === 9),
+      ).toMatchObject({
+        group: { memberCount: 1, groupMetaFeedId: '1' },
+      });
     });
 
     it('commits missed-summary threads and cursor together', async () => {

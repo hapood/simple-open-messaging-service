@@ -6,7 +6,6 @@ import { AwayNotificationService } from '../notification/away-notification.servi
 import { ThreadListSyncService } from '../thread-sync/thread-list-sync.service.js';
 import { GatewayModule } from '../gateway/gateway.module.js';
 import { PushModule } from '../push/push.module.js';
-import { UserBlockModule } from '../user-block/user-block.module.js';
 import { ThreadParticipantModule } from '../thread-participant/thread-participant.module.js';
 import { MessageModule } from './message.module.js';
 import { UserModule } from '../user/user.module.js';
@@ -32,7 +31,6 @@ import { UploadModule } from '../upload/upload.module.js';
   imports: [
     GatewayModule,
     PushModule,
-    UserBlockModule,
     ThreadParticipantModule,
     MessageModule,
     UserModule,

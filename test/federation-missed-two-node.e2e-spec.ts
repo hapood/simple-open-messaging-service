@@ -82,7 +82,6 @@ describe('federation durable missed transport (two nodes)', () => {
         const active = await appB.database.query.threadParticipant.findFirst({
           where: and(
             eq(threadParticipant.userId, aliceStubIdB),
-            eq(threadParticipant.state, 'ESTABLISHED'),
           ),
         });
         expect(active).toBeDefined();
@@ -90,7 +89,6 @@ describe('federation durable missed transport (two nodes)', () => {
           {
             where: and(
               eq(threadParticipant.userId, bobStubIdA),
-              eq(threadParticipant.state, 'ESTABLISHED'),
             ),
           },
         );
@@ -110,7 +108,6 @@ describe('federation durable missed transport (two nodes)', () => {
     const bobThread = await appB.database.query.threadParticipant.findFirst({
       where: and(
         eq(threadParticipant.userId, aliceStubIdB),
-        eq(threadParticipant.state, 'ESTABLISHED'),
       ),
     });
     expect(bobThread).toBeDefined();
@@ -179,7 +176,6 @@ describe('federation durable missed transport (two nodes)', () => {
     const aliceThread = await appA.database.query.threadParticipant.findFirst({
       where: and(
         eq(threadParticipant.userId, bobStub!.id),
-        eq(threadParticipant.state, 'ESTABLISHED'),
       ),
     });
     expect(aliceThread).toBeDefined();
@@ -360,7 +356,6 @@ describe('federation durable missed transport (two nodes)', () => {
     const aliceThread = await appA.database.query.threadParticipant.findFirst({
       where: and(
         eq(threadParticipant.userId, bobStub!.id),
-        eq(threadParticipant.state, 'ESTABLISHED'),
       ),
     });
     expect(aliceThread).toBeDefined();

@@ -39,6 +39,10 @@ access. The default lifetime is seven days and a receiver never renews it. The
 receiving side creates its thread when it accepts or independently initiates.
 Group/group relationships are invalid.
 
+Expiry removes authorization at the timestamp itself. A later source-side sweep may compact the
+already-expired authored direction to `REVOKED` and publish that newer fact; a receiver never creates
+or publishes a revocation on behalf of the remote author.
+
 On the federation wire, peer `ACCEPTED` is valid only in a still-effective
 request flow: it confirms a local request or completes a peer request already
 accepted locally. A valid confirmation of the local `REQUESTED` upgrades and

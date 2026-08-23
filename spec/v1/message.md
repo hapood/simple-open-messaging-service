@@ -10,17 +10,18 @@ See [Message Feed and Query](./message-feed.md) for feed and query pagination se
 
 In the outer message shape, `content` is always a string containing an encoded JSON object. A consumer MUST validate `FederatedMessage` first, parse `content` once as JSON, and strictly validate the corresponding closed core schema.
 
-| `contentType` | Detailed specification                  | Semantics                                       | Direct resources                 |
-| ------------- | --------------------------------------- | ----------------------------------------------- | -------------------------------- |
-| `PURE_TEXT`   | [Text](./message/text.md)               | Text, mentions, and an optional reply reference | None                             |
-| `IMAGE`       | [Media](./message/media.md)             | One image                                       | One asset                        |
-| `VIDEO`       | [Media](./message/media.md)             | Video and display metadata                      | One asset                        |
-| `AUDIO`       | [Media](./message/media.md)             | Audio and display metadata                      | One asset                        |
-| `FILE`        | [Media](./message/media.md)             | General file                                    | One asset                        |
-| `GALLERY`     | [Media](./message/media.md#4-gallery)   | Ordered mixed-media collection                  | Deduplicated set of item digests |
-| `LINK`        | [Link](./message/link.md)               | Page metadata                                   | None                             |
-| `CALL`        | [Call Record](./message/call-record.md) | Terminal P2P call record                        | None                             |
-| `FORWARD`     | [Forward](./message/forward.md)         | Bundle root card                                | No direct card asset             |
+| `contentType`  | Detailed specification                    | Semantics                                       | Direct resources                 |
+| -------------- | ----------------------------------------- | ----------------------------------------------- | -------------------------------- |
+| `PURE_TEXT`    | [Text](./message/text.md)                 | Text, mentions, and an optional reply reference | None                             |
+| `IMAGE`        | [Media](./message/media.md)               | One image                                       | One asset                        |
+| `VIDEO`        | [Media](./message/media.md)               | Video and display metadata                      | One asset                        |
+| `AUDIO`        | [Media](./message/media.md)               | Audio and display metadata                      | One asset                        |
+| `FILE`         | [Media](./message/media.md)               | General file                                    | One asset                        |
+| `GALLERY`      | [Media](./message/media.md#4-gallery)     | Ordered mixed-media collection                  | Deduplicated set of item digests |
+| `LINK`         | [Link](./message/link.md)                 | Page metadata                                   | None                             |
+| `CONTACT_CARD` | [Contact Card](./message/contact-card.md) | User-address and display snapshot               | Optional avatar asset            |
+| `CALL`         | [Call Record](./message/call-record.md)   | Terminal P2P call record                        | None                             |
+| `FORWARD`      | [Forward](./message/forward.md)           | Bundle root card                                | No direct card asset             |
 
 A consumer processes an item of a known type in this order:
 
@@ -59,6 +60,7 @@ type CoreContentType =
   | 'FILE'
   | 'AUDIO'
   | 'LINK'
+  | 'CONTACT_CARD'
   | 'CALL'
   | 'FORWARD'
   | 'GALLERY';
@@ -66,7 +68,7 @@ type CoreContentType =
 type ContentType = CoreContentType;
 ```
 
-These nine values are the complete v1 set. Any other `contentType` is malformed.
+These ten values are the complete v1 set. Any other `contentType` is malformed.
 
 ## 5. `PURE_TEXT`
 
@@ -88,14 +90,20 @@ See [Media, Section 4](./message/media.md#4-gallery) for the strict item union a
 
 See [Link](./message/link.md) for the sole specification, genuinely optional fields, and thumbnail combinations.
 
-## 9. `CALL`
+## 9. `CONTACT_CARD`
+
+See [Contact Card](./message/contact-card.md) for the sole specification of
+`CONTACT_CARD`, its immutable display snapshot, optional avatar resource, and
+non-authoritative identity semantics.
+
+## 10. `CALL`
 
 See [Call Record](./message/call-record.md) for the sole specification, outcome matrix, and connected and unconnected examples. `durationMs` is locally derived and is not part of the federation wire.
 
-## 10. `FORWARD`
+## 11. `FORWARD`
 
 See [Forward](./message/forward.md) for the sole specification, bundle graph, local references, and examples. The wire card carries only `bundleId`; the recipient generates summaries and counts locally after validating the bundle.
 
-## 11. Processing receipts, group submission, and authoritative distribution
+## 12. Processing receipts, group submission, and authoritative distribution
 
 See [Message Envelope, Section 8](./message/envelope.md#8-processing-receipts) for processing receipts. A group member's home server MAY submit only messages authored by a member in its own domain. After accepting the message and assigning its authoritative timeline coordinate, the group origin distributes it to mirrors. A mirror accepts only a known origin and MUST NOT republish the message to a third peer.

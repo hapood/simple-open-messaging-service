@@ -90,18 +90,31 @@ describe('WebdbService native SQLite routing', () => {
     );
   });
 
-  it('sends the complete delta and revision through one atomic native command', async () => {
-    const item = { threadId: 7, type: 'GROUP' } as ConversationItem;
-    const delta = [
-      { threadId: 3, direction: 'DELETE' as const },
-      { threadId: 7, direction: 'ADD' as const, item },
+  it('sends a state-feed page and group metadata through one atomic native command', async () => {
+    const items = [
+      {
+        feedId: 81,
+        account: 'alice',
+        domain: '',
+        eventType: 'PROFILE' as const,
+        subjectAccount: '' as const,
+        subjectDomain: '' as const,
+        body: { displayName: 'Alice', avatar: '', bio: '', profileRev: 2 },
+      },
     ];
+    const groupMeta: never[] = [];
 
-    await service.applyThreadDelta(delta, 81);
+    await service.applyStateFeedPage(items, 81, groupMeta, true);
 
     expect(calls.at(-1)).toEqual({
-      cmd: 'native_db_apply_thread_delta',
-      args: { userId: 42, revision: 81, delta },
+      cmd: 'native_db_apply_state_feed_page',
+      args: {
+        userId: 42,
+        feedId: 81,
+        items,
+        groupMeta,
+        resetProjection: true,
+      },
     });
   });
 
@@ -135,40 +148,45 @@ describe('WebdbService native SQLite routing', () => {
 
     expect(await service.putProfile(profile)).toBe(true);
     expect(await service.getProfile('u8')).toEqual(profile);
-    await service.putMeta('stateRevision', 12);
-    expect(await service.getMeta('stateRevision')).toBe(12);
+    await service.putMeta('stateFeedId', 12);
+    expect(await service.getMeta('stateFeedId')).toBe(12);
 
     expect(
       calls.find((call) => call.cmd === 'native_db_put_profile')?.args,
     ).toEqual(expect.objectContaining({ userId: 42, profileRev: 6, profile }));
   });
 
-  it('reads source-scoped member profiles through native SQLite commands', async () => {
-    const profile = {
+  it('queries a paginated group roster through native SQLite', async () => {
+    const member = {
       threadId: 9,
       userId: 8,
-      sourcePeerDomain: 'group.example',
       memberAccount: 'alice',
       memberDomain: 'home.example',
+      role: 'MEMBER',
       displayName: 'Alice',
       avatar: '/a.webp',
-      profileRevision: 6,
+      profileRev: 6,
     };
-    responses.set('native_db_get_member_profile', profile);
-    responses.set('native_db_list_member_profiles', [profile]);
+    responses.set('native_db_query_group_members', [member]);
 
-    expect(await service.getMemberProfile(9, 8)).toEqual(profile);
-    expect(await service.listMemberProfiles(9)).toEqual([profile]);
-    expect(calls).toContainEqual(
-      expect.objectContaining({
-        cmd: 'native_db_get_member_profile',
-        args: { userId: 42, threadId: 9, memberUserId: 8 },
+    expect(
+      await service.queryGroupMembers({
+        threadId: 9,
+        afterUserId: 4,
+        take: 20,
+        search: 'ali',
       }),
-    );
+    ).toEqual([member]);
     expect(calls).toContainEqual(
       expect.objectContaining({
-        cmd: 'native_db_list_member_profiles',
-        args: { userId: 42, threadId: 9 },
+        cmd: 'native_db_query_group_members',
+        args: {
+          userId: 42,
+          threadId: 9,
+          afterUserId: 4,
+          take: 20,
+          search: 'ali',
+        },
       }),
     );
   });

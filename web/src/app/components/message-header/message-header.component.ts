@@ -67,6 +67,7 @@ export class MessageHeaderComponent {
 
   /** Emits a message seq to center the kernel on (the parent owns the kernel + calls scrollToIndex). */
   readonly searchJump = output<number>();
+  readonly shareChatCard = output<ConversationItem>();
   private readonly nav = inject(NavStateMachineService);
   private readonly layout = inject(LayoutService);
   private readonly threadAdapter = inject(MESSAGE_THREAD_ADAPTER);
@@ -163,7 +164,7 @@ export class MessageHeaderComponent {
   /** Group size shown as quiet context beside the title. P2P threads omit it. */
   readonly groupMemberCount = computed(() => {
     const trd = this.userMsgTrd();
-    return trd?.type === 'GROUP' ? trd.group.members.length : undefined;
+    return trd?.type === 'GROUP' ? trd.group.memberCount : undefined;
   });
 
   /** Optional subtitle line under the title: the peer's bio (P2P) or the group description (GROUP).
@@ -178,6 +179,16 @@ export class MessageHeaderComponent {
 
   /** Whether the action menu overlay is open. */
   readonly menuOpen = signal(false);
+  readonly hasUnreadJoinRequests = computed(() => {
+    const trd = this.userMsgTrd();
+    if (
+      trd?.type !== 'GROUP' ||
+      (trd.role !== 'OWNER' && trd.role !== 'ADMIN')
+    )
+      return false;
+    const head = this.userService.groupJoinRequestHeads().get(trd.threadId);
+    return !!head && BigInt(head.readRequestId) < BigInt(head.latestRequestId);
+  });
   /** The action awaiting a two-tap confirm (null = normal menu list). */
   readonly confirmKey = signal<string | null>(null);
 
@@ -222,6 +233,14 @@ export class MessageHeaderComponent {
         icon: AppIconType.PIN,
       },
     ];
+    if (!isP2P && (trd.role === 'OWNER' || trd.role === 'ADMIN'))
+      list.splice(1, 0, {
+        kind: 'action',
+        key: 'joinRequests',
+        labelKey: 'group.joinRequests',
+        icon: AppIconType.FRIEND_REQUESTS,
+        badge: this.hasUnreadJoinRequests(),
+      });
     return list;
   }
 
@@ -288,6 +307,9 @@ export class MessageHeaderComponent {
       case 'search':
         this.nav.openSearch();
         return;
+      case 'joinRequests':
+        this.nav.openAside('group-join-requests');
+        return;
       case 'mute':
         this.toggleMute(threadId, trd.muted);
         return;
@@ -335,12 +357,12 @@ export class MessageHeaderComponent {
   /** Block / unblock (P2P). The backend drops delivery + query-messages hides the blocked creator. The
    *  banner + input swap are derived from the conv item's `blocked` field, so patching it here flips them. */
   private toggleBlock(trd: ConversationItem, block: boolean): void {
-    const peerId = trd.peerUser?.id;
-    if (peerId === undefined) return;
-    this.userService.setBlock({ userId: peerId, block }).subscribe((res) => {
-      if (res.code !== 0) return;
-      this.convList.applyThreadMeta(trd.threadId, { blocked: block });
-    });
+    this.threadAdapter
+      .setBlocked({ threadId: trd.threadId, blocked: block })
+      .subscribe((res) => {
+        if (res.code !== 0) return;
+        this.convList.applyThreadMeta(trd.threadId, { blocked: block });
+      });
   }
 
   /** Unfriend ends write capability but retains this conversation and its history. */

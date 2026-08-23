@@ -72,6 +72,7 @@ function textQueryRow(seq: number, content: string, name: string) {
 function databaseFake(childDepth: number, tx?: unknown) {
   return {
     db: {
+      execute: vi.fn().mockResolvedValue({ rows: [{ authorized: true }] }),
       query: {
         threadParticipant: {
           findMany: vi.fn().mockResolvedValue([
@@ -167,15 +168,11 @@ const messageServiceFake = {
   ),
 };
 
-const userBlockServiceFake = {
-  blockedByMe: vi.fn().mockResolvedValue(new Set<number>()),
-};
 
 function forwardService(database: unknown) {
   return new ForwardBundleService(
     database as never,
     messageServiceFake as never,
-    userBlockServiceFake as never,
     {
       findVisibleByThreadSeq: vi.fn().mockResolvedValue(null),
     } as never,
@@ -301,7 +298,6 @@ describe('ForwardBundleService', () => {
     const service = new ForwardBundleService(
       database as never,
       messageServiceFake as never,
-      userBlockServiceFake as never,
       {
         findVisibleByThreadSeq: vi.fn().mockResolvedValue({
           id: 7n,
@@ -325,7 +321,6 @@ describe('ForwardBundleService', () => {
       const service = new ForwardBundleService(
         databaseFake(0) as never,
         messageServiceFake as never,
-        userBlockServiceFake as never,
         {
           findVisibleByThreadSeq: vi.fn().mockResolvedValue({
             id: 7n,
@@ -349,7 +344,6 @@ describe('ForwardBundleService', () => {
     const service = new ForwardBundleService(
       database as never,
       messageServiceFake as never,
-      userBlockServiceFake as never,
       {
         findVisibleByThreadSeq: vi.fn().mockResolvedValue({
           id: 7n,
@@ -464,7 +458,7 @@ describe('ForwardBundleService', () => {
     expect(prepared.messages[0].quoteTargetId).toBeUndefined();
   });
 
-  it('reuses cleared-history and P2P-block filters when resolving quote previews', async () => {
+  it('reuses cleared-history filters when resolving quote previews', async () => {
     const clearedSeq = 3;
     const reply = textQueryRow(
       7,
@@ -476,11 +470,11 @@ describe('ForwardBundleService', () => {
       {
         threadId: 4,
         clearedSeq,
+        blocked: false,
         messageThread: { type: 'P2P' },
       },
     ]);
     database.db.query.message.findFirst.mockResolvedValueOnce(reply);
-    userBlockServiceFake.blockedByMe.mockResolvedValueOnce(new Set([12]));
     messageServiceFake.attachQuotePreviews.mockClear();
     const service = forwardService(database);
 
@@ -489,13 +483,12 @@ describe('ForwardBundleService', () => {
     const filters = messageServiceFake.attachQuotePreviews.mock.calls[0][1];
     expect(filters.get(4)).toEqual({
       clearedThroughSeq: clearedSeq,
-      hideCreatorIds: [12],
     });
   });
 
   it.each([
-    ['cleared history', 7, new Set<number>()],
-    ['a blocked P2P creator', null, new Set([9])],
+    ['cleared history', 7, false],
+    ['a blocked thread', null, true],
   ])(
     'rejects a source message hidden by %s',
     async (_label, clearedSeq, blocked) => {
@@ -504,10 +497,10 @@ describe('ForwardBundleService', () => {
         {
           threadId: 4,
           clearedSeq,
+          blocked,
           messageThread: { type: 'P2P' },
         },
       ]);
-      userBlockServiceFake.blockedByMe.mockResolvedValueOnce(blocked);
       messageServiceFake.attachQuotePreviews.mockClear();
       const service = forwardService(database);
 

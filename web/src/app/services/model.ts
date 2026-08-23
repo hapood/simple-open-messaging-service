@@ -45,8 +45,8 @@ export interface GroupMemberRef {
 export type Group = S['GroupResponseDto'] & {
   profileRev: number;
   dissolvedAt?: number | null;
-  membersCanInvite?: boolean;
-  members: GroupMemberRef[];
+  memberCount: number;
+  groupMetaFeedId: string;
 };
 
 // peerUser/group are optional on the generated DTO (mutually exclusive by type), but templates branch on
@@ -76,6 +76,8 @@ export type ConversationItem = Omit<
   // conversation can pass it as the mark-read `lastReadSeq` (mark all current). Mirrors the backend
   // ConversationItemDto.lastMessageSeq — also present in the generated type after the next `gen:api` run.
   lastMessageSeq?: number | null;
+  /** Latest group-join application activity; local/client-state metadata used only for list recency. */
+  joinRequestAt?: number | null;
 };
 
 export interface ThreadReadState {

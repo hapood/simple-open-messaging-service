@@ -19,11 +19,7 @@ import {
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
-import {
-  ContentType,
-  MessageThreadType,
-  ThreadParticipantState,
-} from '../database/enums.js';
+import { ContentType, MessageThreadType } from '../database/enums.js';
 import {
   forwardMessage,
   mediaAsset,
@@ -47,6 +43,7 @@ import { LinkPreviewService } from '../link-preview/link-preview.service.js';
 import { MEDIA_STATUS } from '../common/media-status.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
+import { isThreadMutuallyAuthorized } from '../invite/relationship-authorization.js';
 import {
   parseMessageEntities,
   toDisplayText,
@@ -233,7 +230,6 @@ export class MessageService {
         const [writeAccess] = await tx
           .select({
             type: messageThread.type,
-            state: threadParticipant.state,
           })
           .from(messageThread)
           .innerJoin(
@@ -247,7 +243,7 @@ export class MessageService {
           .limit(1);
         if (
           !writeAccess ||
-          writeAccess.state !== ThreadParticipantState.ESTABLISHED
+          !(await isThreadMutuallyAuthorized(tx, userId, threadId))
         ) {
           throw new BusinessException(
             writeAccess?.type === MessageThreadType.GROUP
@@ -323,7 +319,8 @@ export class MessageService {
             (quoteVisibility?.clearedThroughSeq !== null &&
               quoteVisibility?.clearedThroughSeq !== undefined &&
               quoteTarget.seq <= quoteVisibility.clearedThroughSeq) ||
-            quoteVisibility?.hideCreatorIds?.includes(quoteTarget.creator))
+            (quoteTarget.creator !== null &&
+              quoteVisibility?.hideCreatorIds?.includes(quoteTarget.creator)))
         ) {
           throw new BusinessException(
             BusinessCode.NOT_FOUND,
@@ -389,6 +386,7 @@ export class MessageService {
           type === ContentType.VIDEO ||
           type === ContentType.AUDIO ||
           type === ContentType.LINK ||
+          type === ContentType.CONTACT_CARD ||
           type === ContentType.GALLERY
         ) {
           const digests = extractDigests(storedContent);
@@ -423,15 +421,23 @@ export class MessageService {
    * never allocated to the federation message feed. Relationship/roster state remains authoritative. */
   async writeSystemMessageInTx(
     tx: DatabaseTransaction,
-    actorUserId: number,
     threadId: number,
     type: SystemMessageType,
     subjectUserId?: number,
+    options?: {
+      count?: number;
+      actorUserId?: number;
+      recipientUserIds?: readonly number[];
+      markReadUserId?: number;
+    },
   ): Promise<{ message: Omit<Message, 'id'>; messageId: bigint }> {
-    if (type !== SystemMessageType.FRIEND_ADDED && subjectUserId === undefined)
+    const subjectRequired =
+      type !== SystemMessageType.FRIEND_ADDED &&
+      type !== SystemMessageType.MESSAGES_MODERATED;
+    if (subjectRequired && subjectUserId === undefined)
       throw new Error('system message subject is required');
-    if (type === SystemMessageType.FRIEND_ADDED && subjectUserId !== undefined)
-      throw new Error('FRIEND_ADDED does not accept a subject');
+    if (!subjectRequired && subjectUserId !== undefined)
+      throw new Error(`${type} does not accept a subject`);
     const subject =
       subjectUserId === undefined
         ? undefined
@@ -441,19 +447,27 @@ export class MessageService {
           });
     if (subjectUserId !== undefined && !subject)
       throw new Error('system message subject does not exist');
+    const actor =
+      options?.actorUserId === undefined
+        ? undefined
+        : await tx.query.user.findFirst({
+            where: eq(user.id, options.actorUserId),
+            columns: { account: true, domain: true },
+          });
+    if (options?.actorUserId !== undefined && !actor)
+      throw new Error('system message actor does not exist');
+    const toAddress = (identity: { account: string; domain: string }) => ({
+      account: identity.account,
+      domain:
+        identity.domain === 'local'
+          ? loadFederationConfig().domain
+          : identity.domain,
+    });
     const content = stringifySystemMessageContent({
       type,
-      ...(subject
-        ? {
-            subject: {
-              account: subject.account,
-              domain:
-                subject.domain === 'local'
-                  ? loadFederationConfig().domain
-                  : subject.domain,
-            },
-          }
-        : {}),
+      ...(subject ? { subject: toAddress(subject) } : {}),
+      ...(actor ? { actor: toAddress(actor) } : {}),
+      ...(options?.count === undefined ? {} : { count: options.count }),
     });
     const [{ curSeq: seq }] = await tx
       .update(messageThread)
@@ -466,7 +480,7 @@ export class MessageService {
         content,
         contentType: ContentType.SYSTEM,
         threadId,
-        creator: actorUserId,
+        creator: null,
         seq,
         updatedAt: new Date(),
       })
@@ -480,38 +494,43 @@ export class MessageService {
         updatedAt: new Date(),
       })
       .where(eq(messageThread.id, threadId));
-    await tx
-      .update(threadParticipant)
-      .set({ lastReadSeq: seq, updatedAt: new Date() })
-      .where(
-        and(
-          eq(threadParticipant.userId, actorUserId),
-          eq(threadParticipant.threadId, threadId),
-        ),
+    if (options?.markReadUserId !== undefined) {
+      await tx
+        .update(threadParticipant)
+        .set({ lastReadSeq: seq, updatedAt: new Date() })
+        .where(
+          and(
+            eq(threadParticipant.userId, options.markReadUserId),
+            eq(threadParticipant.threadId, threadId),
+          ),
+        );
+    }
+    if (options?.recipientUserIds) {
+      await ClientMessageFeedWriter.publishMessageToUsers(
+        tx,
+        threadId,
+        seq,
+        options.recipientUserIds,
       );
-    await ClientMessageFeedWriter.publishMessage(
-      tx,
-      threadId,
-      seq,
-      actorUserId,
-    );
+    } else {
+      await ClientMessageFeedWriter.publishMessage(tx, threadId, seq, null);
+    }
     return { message: stripMessageId(stored), messageId: stored.id };
   }
 
   async writeSystemMessage(
-    actorUserId: number,
     threadId: number,
     type: SystemMessageType,
     subjectUserId?: number,
+    options?: {
+      count?: number;
+      actorUserId?: number;
+      recipientUserIds?: readonly number[];
+      markReadUserId?: number;
+    },
   ): Promise<Omit<Message, 'id'>> {
     const result = await this.database.db.transaction((tx) =>
-      this.writeSystemMessageInTx(
-        tx,
-        actorUserId,
-        threadId,
-        type,
-        subjectUserId,
-      ),
+      this.writeSystemMessageInTx(tx, threadId, type, subjectUserId, options),
     );
     return result.message;
   }
@@ -519,17 +538,22 @@ export class MessageService {
   /** Best-effort local timeline decoration. State/meta callers invoke this only after their authoritative
    * transaction commits; a bad payload, missing subject or storage failure must never roll state back. */
   async tryWriteSystemMessage(
-    actorUserId: number,
     threadId: number,
     type: SystemMessageType,
     subjectUserId?: number,
+    options?: {
+      count?: number;
+      actorUserId?: number;
+      recipientUserIds?: readonly number[];
+      markReadUserId?: number;
+    },
   ): Promise<Omit<Message, 'id'> | null> {
     try {
       return await this.writeSystemMessage(
-        actorUserId,
         threadId,
         type,
         subjectUserId,
+        options,
       );
     } catch (error) {
       this.logger.error(
@@ -888,7 +912,11 @@ export class MessageService {
         });
         if (
           !participant ||
-          participant.state !== ThreadParticipantState.ESTABLISHED
+          !(await isThreadMutuallyAuthorized(
+            tx,
+            stage.creatorId,
+            stage.threadId,
+          ))
         ) {
           throw new BusinessException(
             participant?.messageThread.type === MessageThreadType.P2P
@@ -908,16 +936,13 @@ export class MessageService {
           .set({ curSeq: sql`${messageThread.curSeq} + 1` })
           .where(eq(messageThread.id, stage.threadId))
           .returning({ curSeq: messageThread.curSeq });
-        const activeAfterThreadLock =
-          await tx.query.threadParticipant.findFirst({
-            where: and(
-              eq(threadParticipant.userId, stage.creatorId),
-              eq(threadParticipant.threadId, stage.threadId),
-              eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
-            ),
-            columns: { id: true },
-          });
-        if (!activeAfterThreadLock) {
+        if (
+          !(await isThreadMutuallyAuthorized(
+            tx,
+            stage.creatorId,
+            stage.threadId,
+          ))
+        ) {
           throw new BusinessException(
             participant.messageThread.type === MessageThreadType.P2P
               ? BusinessCode.FRIEND_NOT_FOUND
@@ -998,7 +1023,11 @@ export class MessageService {
   async queryMessages(
     threadId: number,
     params: MessageQueryParams,
-    filters?: { clearedThroughSeq?: number | null; hideCreatorIds?: number[] },
+    filters?: {
+      clearedThroughSeq?: number | null;
+      visibleThroughSeq?: number | null;
+      hideCreatorIds?: number[];
+    },
   ) {
     // The viewer's per-thread filters, layered on top of the membership-resolved threadId:
     //  - clearedThroughSeq: per-user "clear history" watermark — hide rows through it for THIS user only.
@@ -1013,6 +1042,11 @@ export class MessageService {
       filters?.clearedThroughSeq !== undefined
     )
       conditions.push(gt(message.seq, filters.clearedThroughSeq));
+    if (
+      filters?.visibleThroughSeq !== null &&
+      filters?.visibleThroughSeq !== undefined
+    )
+      conditions.push(lte(message.seq, filters.visibleThroughSeq));
     if (filters?.hideCreatorIds?.length)
       conditions.push(notInArray(message.creator, filters.hideCreatorIds));
     const cursorSeq = params.cursor?.threadId_seq.seq;
@@ -1091,6 +1125,21 @@ export class MessageService {
           ? { image: link['image'], imageShape: 'thumbnail' }
           : {};
       }
+      if (contentType === ContentType.CONTACT_CARD) {
+        const card = JSON.parse(rawContent) as Record<string, unknown>;
+        return {
+          ...(typeof card['avatar'] === 'string'
+            ? { image: card['avatar'] }
+            : {}),
+          ...(typeof card['displayName'] === 'string'
+            ? { imageLabel: card['displayName'] }
+            : {}),
+          ...(typeof card['account'] === 'string'
+            ? { imageIdentity: card['account'] }
+            : {}),
+          imageShape: 'avatar',
+        };
+      }
       if (contentType === ContentType.GALLERY) {
         // Reply thumbnail = the first item that carries a CAS url (digest-sorted order).
         const items = Array.isArray(content['items'])
@@ -1150,13 +1199,14 @@ export class MessageService {
         (viewerFilters?.clearedThroughSeq !== null &&
           viewerFilters?.clearedThroughSeq !== undefined &&
           target.seq <= viewerFilters.clearedThroughSeq) ||
-        viewerFilters?.hideCreatorIds?.includes(target.creator)
+        (target.creator !== null &&
+          viewerFilters?.hideCreatorIds?.includes(target.creator))
       );
     });
     const previews = await Promise.all(
       visibleTargets.map(async (target): Promise<[string, ReplyPreview]> => {
         const text = this.deriveReplyText(
-          target.user.name,
+          target.user?.name ?? 'System',
           target.contentType,
           target.content,
         );
@@ -1410,7 +1460,6 @@ export class MessageService {
         LIMIT 1000
       ) m ON TRUE
       WHERE tp."userId" = ${userId}
-        AND tp.state <> 'AUTHORIZED'
         AND tp."threadId" IN (${this.joinSql(threadIds)})
       GROUP BY tp."threadId"
     `;
@@ -1454,7 +1503,6 @@ export class MessageService {
         FROM bumped
         WHERE participant."userId" = ${userId}
           AND participant."threadId" = ${threadId}
-          AND participant.state <> 'AUTHORIZED'
         RETURNING participant."lastReadSeq", participant."readRevision"
       ), sample AS (
         SELECT m.seq, m.content, m."contentType"
@@ -1506,7 +1554,6 @@ export class MessageService {
       await this.database.db.query.threadParticipant.findMany({
         where: and(
           eq(threadParticipant.userId, userId),
-          eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
           gt(threadParticipant.readRevision, fromRevision),
           lte(threadParticipant.readRevision, toRevision),
         ),
@@ -1591,7 +1638,6 @@ export class MessageService {
         JOIN "ThreadParticipant" tp
           ON tp."threadId" = m."threadId"
          AND tp."userId" = ${userId}
-         AND tp.state <> 'AUTHORIZED'
          AND tp.muted = false
         LEFT JOIN thread_hwm h ON h.tid = m."threadId"
         WHERE m.seq > GREATEST(COALESCE(h.since_seq, 0), COALESCE(tp."lastReadSeq", 0))
@@ -1674,7 +1720,6 @@ export class MessageService {
         JOIN "ThreadParticipant" tp
           ON tp."threadId" = m."threadId"
          AND tp."userId" = ${userId}
-         AND tp.state <> 'AUTHORIZED'
          AND tp.muted = false
         LEFT JOIN thread_hwm h ON h.tid = m."threadId"
         WHERE m."threadId" IN (${this.joinSql(threadIds)})
@@ -1752,7 +1797,6 @@ export class MessageService {
        AND m.seq > COALESCE(tp."lastReadSeq", 0)
        AND m.creator <> ${userId}
       WHERE tp."userId" = ${userId}
-        AND tp.state <> 'AUTHORIZED'
         AND tp."threadId" IN (${this.joinSql(threadIds)})
         AND m."contentType" = 'PURE_TEXT'
         AND (
@@ -1797,7 +1841,6 @@ export class MessageService {
       JOIN "ThreadParticipant" tp
         ON tp."threadId" = m."threadId"
        AND tp."userId" = ${userId}
-       AND tp.state <> 'AUTHORIZED'
        AND tp.muted = false
       WHERE m.id > ${sinceId}
         AND m.creator <> ${userId}

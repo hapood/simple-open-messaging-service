@@ -77,7 +77,7 @@ export abstract class RealtimeTransport {
 
   /** Force a reconnect of an already-OPEN stream — used by the facade's HELLO-timeout (an open stream that
    *  never delivered its HELLO handshake is unusable: the threadlist cannot delta-replay without HELLO's
-   *  stateRevision). `retryNow` cannot serve this: it is a skip-pending-backoff primitive that is a
+   *  stateFeedEndId). `retryNow` cannot serve this: it is a skip-pending-backoff primitive that is a
    *  documented no-op against an already-open stream, so it cannot break the open-but-HELLO-less socket.
    *  Default: tear down + restart — correct for transports that own their connection (the browser worker +
    *  the desktop Rust supervisor). The Android {@link NativeEventTransport} overrides it, since it cannot

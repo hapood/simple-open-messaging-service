@@ -33,7 +33,6 @@ export class UserManageService {
           threadId: threadParticipant.threadId,
           role: threadParticipant.role,
           joinedAt: threadParticipant.joinedAt,
-          state: threadParticipant.state,
           groupAccount: user.account,
           groupName: user.name,
         })
@@ -97,7 +96,7 @@ export class UserManageService {
           isDeleted: user.isDeleted,
           profileRev: user.profileRev,
           remoteProfileRev: user.remoteProfileRev,
-          threadRevision: user.threadRevision,
+          stateFeedAllocatedThrough: user.stateFeedAllocatedThrough,
           mustChangePassword: user.mustChangePassword,
         })
         .from(user)

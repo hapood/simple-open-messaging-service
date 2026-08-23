@@ -108,11 +108,11 @@ describe('thread catch-up + notification feed', () => {
     return thread.id;
   }
 
-  function postSummary(body: Record<string, unknown>) {
+  function getSummary(params: Record<string, string | number>) {
     return request(app.getHttpServer())
-      .post('/api/v1/thread-sync/catch-up')
+      .get('/api/v1/thread-sync/catch-up')
       .set('Authorization', `Bearer ${sessionToken}`)
-      .send(body);
+      .query(params);
   }
 
   function postMissed(
@@ -130,7 +130,7 @@ describe('thread catch-up + notification feed', () => {
 
   it('catch-up returns feed changes in ascending feed order', async () => {
     // from = Alice's latest, to = Carol's latest → range = Bob + Carol (Alice's latest is the lower bound).
-    const res = await postSummary({
+    const res = await getSummary({
       after: 1,
       through: 3,
       take: 50,
@@ -155,7 +155,7 @@ describe('thread catch-up + notification feed', () => {
 
   it('catch-up paginates and advances scannedThrough to the page boundary', async () => {
     // from absent (first boot), to = Carol's latest, take 2 → ASC oldest-first 2 of (−∞, carolLatest].
-    const res = await postSummary({
+    const res = await getSummary({
       after: 0,
       through: 3,
       take: 2,
@@ -182,16 +182,21 @@ describe('thread catch-up + notification feed', () => {
       });
       await tx
         .update(messageThread)
-        .set({ curSeq: 4, lastMessageSeq: 4, lastMessageAt: now, updatedAt: now })
+        .set({
+          curSeq: 4,
+          lastMessageSeq: 4,
+          lastMessageAt: now,
+          updatedAt: now,
+        })
         .where(eq(messageThread.id, tAlice));
       await ClientMessageFeedWriter.publishMessage(tx, tAlice, 4, recipientId);
     });
 
-    const unchanged = await postSummary({ after: 3, take: 50 });
+    const unchanged = await getSummary({ after: 3, take: 50 });
     expect(unchanged.body.data.items).toEqual([]);
     expect(unchanged.body.data.messageFeedEndId).toBe(3);
 
-    const replay = await postSummary({ after: 0, through: 3, take: 50 });
+    const replay = await getSummary({ after: 0, through: 3, take: 50 });
     const alice = replay.body.data.items.find(
       (item: { threadId: number }) => item.threadId === tAlice,
     );
@@ -200,12 +205,28 @@ describe('thread catch-up + notification feed', () => {
   });
 
   it('catch-up rejects a through cursor below after', async () => {
-    const res = await postSummary({
+    const res = await getSummary({
       after: 3,
       through: 1,
       take: 50,
     });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe(BusinessCode.VALIDATION_FAILED);
+  });
+
+  it('catch-up returns recovery bounds when after is missing', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/thread-sync/catch-up')
+      .set('Authorization', `Bearer ${sessionToken}`);
+    expect(res.status).toBe(200);
     expect(res.body.code).toBe(BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE);
+    expect(res.body.data).toEqual({ resumeAfter: 0, resumeBefore: 4 });
+  });
+
+  it('catch-up rejects an invalid page size instead of clamping it', async () => {
+    const res = await getSummary({ after: 0, take: 201 });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe(BusinessCode.VALIDATION_FAILED);
   });
 
   // ── /notification-feed/query ─────────────────────────────────────────────────────────────────

@@ -1,7 +1,6 @@
 import { Module } from '@nestjs/common';
 import { MessageService } from './message.service.js';
 import { LinkPreviewModule } from '../link-preview/link-preview.module.js';
-import { UserBlockModule } from '../user-block/user-block.module.js';
 import { MessageVisibilityService } from './message-visibility.service.js';
 import { DeletedMessageService } from './deleted-message.service.js';
 import { MessageReportService } from './message-report.service.js';
@@ -14,7 +13,7 @@ import { MessageReportService } from './message-report.service.js';
     DeletedMessageService,
     MessageReportService,
   ],
-  imports: [LinkPreviewModule, UserBlockModule],
+  imports: [LinkPreviewModule],
   exports: [
     MessageService,
     MessageVisibilityService,

@@ -27,9 +27,9 @@ import { RolesGuard } from '../group/roles.guard.js';
 import { Roles } from '../group/roles.decorator.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import {
-  ThreadRevisionService,
-  type PendingThreadRevision,
-} from '../thread-revision/thread-revision.service.js';
+  ClientStateFeedService,
+  type PendingClientStateFeedUpdate,
+} from '../client-state-feed/client-state-feed.service.js';
 import {
   CreateGroupDto,
   InviteGroupDto,
@@ -39,6 +39,9 @@ import {
   TransferGroupDto,
   SetRoleGroupDto,
   UpdateGroupDto,
+  QueryGroupJoinRequestsDto,
+  HandleGroupJoinRequestDto,
+  ReadGroupJoinRequestsDto,
 } from '../dto/group.dto.js';
 import {
   CreateGroupResponseDto,
@@ -55,7 +58,7 @@ export class GroupController {
     private readonly federationService: FederationService,
     private readonly userService: UserService,
     private readonly database: DatabaseService,
-    private readonly threadRevision: ThreadRevisionService,
+    private readonly clientStateFeed: ClientStateFeedService,
   ) {}
 
   @UseGuards(ThrottleGuard)
@@ -142,7 +145,7 @@ export class GroupController {
       }
       try {
         let statePeers = new Map<string, bigint>();
-        const clientRevisions: PendingThreadRevision[] = [];
+        const clientFeedUpdates: PendingClientStateFeedUpdate[] = [];
         await this.inviteService.createGroupInvite(
           inviter,
           group.threadId,
@@ -157,13 +160,13 @@ export class GroupController {
                 userId,
                 '',
                 'REQUESTED',
-                clientRevisions,
+                clientFeedUpdates,
               );
           },
         );
         await this.federationService.pushStateFeedDomains(statePeers.keys());
-        clientRevisions.forEach((pending) =>
-          this.threadRevision.notifyThreadRevision(pending),
+        clientFeedUpdates.forEach((pending) =>
+          this.clientStateFeed.notifyFeedUpdated(pending),
         );
         invited.push(userId);
       } catch (e) {
@@ -194,11 +197,7 @@ export class GroupController {
     const trd = await this.groupService.findGroupByThreadId(threadId);
     const gu = trd?.groupUser;
     const role = req.threadAccess!.participant.role;
-    if (
-      gu?.group?.membersCanInvite === false &&
-      role !== GroupRole.OWNER &&
-      role !== GroupRole.ADMIN
-    ) {
+    if (role !== GroupRole.OWNER && role !== GroupRole.ADMIN) {
       throw new BusinessException(
         BusinessCode.GROUP_FORBIDDEN,
         'only group managers may invite',
@@ -243,7 +242,6 @@ export class GroupController {
       avatar: gu.avatar,
       profileRev: gu.profileRev,
       description: gu.bio,
-      membersCanInvite: gu.group?.membersCanInvite ?? true,
       // groupUser.domain uses 'local' as the origin sentinel; expose '' for a local-origin group,
       // matching UserResponseDto.domain for a local peer.
       domain: !gu.domain || gu.domain === 'local' ? '' : gu.domain,
@@ -264,6 +262,82 @@ export class GroupController {
         isOwner: member.role === GroupRole.OWNER,
       })),
     };
+  }
+
+  @UseGuards(ThreadAccessGuard, RolesGuard)
+  @Roles(GroupRole.OWNER, GroupRole.ADMIN)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ResourceId<QueryGroupJoinRequestsDto>('groupId')
+  @Post('group/join-requests')
+  @ApiOperation({ summary: 'List valid pending group join applications' })
+  async queryJoinRequests(
+    @Request() req: FastifyRequest,
+    @Body() dto: QueryGroupJoinRequestsDto,
+  ) {
+    return this.groupService.queryJoinRequests(
+      req.threadAccess!.threadId,
+      dto.before === undefined ? undefined : BigInt(dto.before),
+      dto.take ?? 20,
+    );
+  }
+
+  @UseGuards(ThreadAccessGuard, RolesGuard)
+  @Roles(GroupRole.OWNER, GroupRole.ADMIN)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ResourceId<ReadGroupJoinRequestsDto>('groupId')
+  @Post('group/join-requests/read')
+  @ApiOperation({
+    summary: 'Advance the account-wide join-request read watermark',
+  })
+  async markJoinRequestsRead(
+    @Request() req: FastifyRequest,
+    @Body() dto: ReadGroupJoinRequestsDto,
+  ): Promise<void> {
+    await this.groupService.markJoinRequestsRead(
+      req.threadAccess!.threadId,
+      req.user.userId,
+      BigInt(dto.readRequestId),
+    );
+  }
+
+  @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
+  @Throttle('group.join-request-action')
+  @Roles(GroupRole.OWNER, GroupRole.ADMIN)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ResourceId<HandleGroupJoinRequestDto>('groupId')
+  @Post('group/join-request/accept')
+  @ApiOperation({ summary: 'Accept a pending group join application' })
+  async acceptJoinRequest(
+    @Request() req: FastifyRequest,
+    @Body() dto: HandleGroupJoinRequestDto,
+  ): Promise<void> {
+    await this.groupService.handleJoinRequest(
+      req.threadAccess!.threadId,
+      BigInt(dto.requestId),
+      'ACCEPTED',
+    );
+  }
+
+  @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
+  @Throttle('group.join-request-action')
+  @Roles(GroupRole.OWNER, GroupRole.ADMIN)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ResourceId<HandleGroupJoinRequestDto>('groupId')
+  @Post('group/join-request/reject')
+  @ApiOperation({ summary: 'Reject/delete a pending group join application' })
+  async rejectJoinRequest(
+    @Request() req: FastifyRequest,
+    @Body() dto: HandleGroupJoinRequestDto,
+  ): Promise<void> {
+    await this.groupService.handleJoinRequest(
+      req.threadAccess!.threadId,
+      BigInt(dto.requestId),
+      'REVOKED',
+    );
   }
 
   @UseGuards(ThrottleGuard)
@@ -330,6 +404,7 @@ export class GroupController {
     const threadId = req.threadAccess!.threadId;
     await this.groupService.dissolveGroup({
       threadId,
+      operatorUserId: req.user.userId,
       deleteForUserId: dto.deleteData ? req.user.userId : undefined,
     });
   }
@@ -413,7 +488,6 @@ export class GroupController {
       name: dto.name,
       description: dto.description,
       avatar: dto.avatar,
-      membersCanInvite: dto.membersCanInvite,
     });
   }
 }

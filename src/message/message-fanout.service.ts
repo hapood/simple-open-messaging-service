@@ -2,11 +2,10 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { Message } from './message.service.js';
 import { SseService } from '../gateway/sse.service.js';
 import { PushService } from '../push/push.service.js';
-import { UserBlockService } from '../user-block/user-block.service.js';
 import { FederationService } from '../federation/federation.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
-import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
 import { ContentType } from '../database/enums.js';
+import { planLiveDelivery } from './message-delivery-plan.js';
 
 /**
  * Unified NEW_MESSAGE fan-out for every locally-authored message, shared by the text send path
@@ -38,10 +37,8 @@ export class MessageFanoutService {
   constructor(
     private readonly sseService: SseService,
     private readonly pushService: PushService,
-    private readonly userBlockService: UserBlockService,
     private readonly federation: FederationService,
     private readonly participantService: ThreadParticipantService,
-    private readonly threadRevisionService: ThreadRevisionService,
   ) {}
 
   async dispatch(message: Omit<Message, 'id'>): Promise<void> {
@@ -56,6 +53,33 @@ export class MessageFanoutService {
     }
   }
 
+  /** Wake an explicit local recipient snapshot captured by the source transaction. */
+  async dispatchToUsers(
+    message: Omit<Message, 'id'>,
+    recipientUserIds: readonly number[],
+  ): Promise<void> {
+    try {
+      const participants =
+        await this.participantService.getParticipantDeliverySettings(
+          message.threadId,
+          recipientUserIds,
+        );
+      const ts = message.createdAt.getTime();
+      const plan = planLiveDelivery(participants, message.creator);
+      for (const userId of plan.sseUserIds)
+        this.sseService.onNewMessage(userId, message.threadId, message.seq, ts);
+      void this.pushService.dispatchForMessage(
+        plan.pushUserIds.map((userId) => ({ userId })),
+        message.threadId,
+        message.seq,
+      );
+    } catch (e) {
+      this.logger.warn(
+        `explicit message fan-out failed (seq ${message.seq}): ${(e as Error).message}`,
+      );
+    }
+  }
+
   private async fanout(message: Omit<Message, 'id'>): Promise<void> {
     const senderUserId = message.creator;
     const threadId = message.threadId;
@@ -65,26 +89,16 @@ export class MessageFanoutService {
     // Unified fan-out: every active participant of the thread (P2P = both sides, GROUP = all members).
     const participants =
       await this.participantService.getActiveParticipantUserIds(threadId);
-    await this.threadRevisionService.restoreHiddenThreads(
-      threadId,
-      participants.map((p) => p.userId),
-    );
     // BLOCK: a recipient who blocks the sender must not receive the message AT ALL (no SSE, no push —
     // the blocked user is invisible to the blocker's message stream).
-    const blockers = await this.userBlockService.blockersOf(senderUserId);
-    const sseTargets = participants.filter(
-      (p) => !p.blocked && !blockers.has(p.userId),
-    );
-    sseTargets.forEach((p) => {
-      this.sseService.onNewMessage(p.userId, threadId, message.seq, ts);
+    const plan = planLiveDelivery(participants, senderUserId);
+    plan.sseUserIds.forEach((userId) => {
+      this.sseService.onNewMessage(userId, threadId, message.seq, ts);
     });
     // Push wake-up (FCM / Web Push): additionally exclude MUTED recipients (mute = suppress the heads-up
     // notification, NOT the in-app delivery) and the sender. Fire-and-forget.
-    const notifTargets = sseTargets.filter(
-      (p) => !p.muted && p.userId !== senderUserId,
-    );
     void this.pushService.dispatchForMessage(
-      notifTargets,
+      plan.pushUserIds.map((userId) => ({ userId })),
       threadId,
       message.seq,
     );
@@ -92,7 +106,7 @@ export class MessageFanoutService {
     // the peer-global /message-feed; this notification is ephemeral and safe to lose.
     // This service handles locally-authored rows. Their local seq is the wire originSeq until the
     // self-authored delivery receipt returns and fills the nullable receipt columns.
-    if (message.contentType !== ContentType.SYSTEM)
+    if (message.contentType !== ContentType.SYSTEM && senderUserId !== null)
       void this.federation.notifyOnSend(senderUserId, threadId, message.seq);
   }
 }

@@ -1,0 +1,69 @@
+.identity-dialog {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 20px;
+  color: var(--app-text);
+}
+.identity-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+}
+.identity-summary app-user-avatar {
+  width: 56px;
+  height: 56px;
+  flex: 0 0 56px;
+}
+.identity-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.identity-copy strong {
+  overflow: hidden;
+  font-size: 18px;
+  line-height: 24px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.identity-copy span {
+  overflow-wrap: anywhere;
+  color: var(--app-text-muted);
+  font-size: 13px;
+  line-height: 20px;
+}
+.identity-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 10px;
+  border-top: 1px solid var(--app-border);
+  color: var(--app-text-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+.identity-action {
+  width: 100%;
+  height: 40px;
+  margin-top: 16px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: var(--app-radius-md);
+  color: var(--app-on-brand);
+  background: var(--app-brand);
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.identity-action:hover {
+  background: var(--app-brand-hover);
+}
+.identity-action:focus-visible {
+  outline: 2px solid var(--app-focus-ring);
+  outline-offset: 2px;
+}

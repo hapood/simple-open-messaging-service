@@ -137,27 +137,27 @@ describe('WebsocketService (reconnect countdown clock)', () => {
     expect(ws.reconnectIn()).toBeNull();
   });
 
-  it('defers thread revisions behind a deletion lock and releases only the highest watermark', () => {
+  it('defers state-feed wakes behind a deletion lock and releases only the highest feed id', () => {
     const received: number[] = [];
     ws.eventSubject.subscribe((message) =>
       received.push(
         (
           message.data as {
-            stateRevision: number;
+            feedId: number;
           }
-        ).stateRevision,
+        ).feedId,
       ),
     );
     deletionLock.begin(7);
 
-    for (const stateRevision of [6, 9, 8]) {
+    for (const feedId of [6, 9, 8]) {
       liveWorker!.emit({
         type: 'event',
         payload: {
-          event: 'STATE_REV_UPDATED',
+          event: 'STATE_FEED_UPDATED',
           status: 0,
           message: '',
-          data: { stateRevision },
+          data: { feedId },
         },
       });
     }
@@ -174,9 +174,9 @@ describe('WebsocketService (reconnect countdown clock)', () => {
       received.push(
         (
           message.data as {
-            stateRevision: number;
+            feedId: number;
           }
-        ).stateRevision,
+        ).feedId,
       ),
     );
     deletionLock.begin(7);
@@ -184,10 +184,10 @@ describe('WebsocketService (reconnect countdown clock)', () => {
     liveWorker!.emit({
       type: 'event',
       payload: {
-        event: 'STATE_REV_UPDATED',
+        event: 'STATE_FEED_UPDATED',
         status: 0,
         message: '',
-        data: { stateRevision: 9 },
+        data: { feedId: 9 },
       },
     });
 
@@ -197,7 +197,7 @@ describe('WebsocketService (reconnect countdown clock)', () => {
     expect(received).toEqual([9]);
   });
 
-  it('rejects HELLO without the mandatory stateRevision', () => {
+  it('rejects HELLO without the mandatory stateFeedEndId', () => {
     const received: StandardMessage[] = [];
     ws.eventSubject.subscribe((message) => received.push(message));
     liveWorker!.emit({ type: 'state', state: 'open' });
@@ -216,14 +216,14 @@ describe('WebsocketService (reconnect countdown clock)', () => {
     expect(received).toEqual([]);
   });
 
-  it('rejects STATE_REV_UPDATED without the mandatory stateRevision', () => {
+  it('rejects STATE_FEED_UPDATED without the mandatory feedId', () => {
     const received: StandardMessage[] = [];
     ws.eventSubject.subscribe((message) => received.push(message));
     liveWorker!.emit({ type: 'state', state: 'open' });
     liveWorker!.emit({
       type: 'event',
       payload: {
-        event: 'STATE_REV_UPDATED',
+        event: 'STATE_FEED_UPDATED',
         status: 0,
         message: '',
         data: {},

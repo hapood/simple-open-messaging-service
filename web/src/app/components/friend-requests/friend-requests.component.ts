@@ -65,7 +65,7 @@ type PendingReq = {
   isForeigner?: boolean;
   domain?: string;
   reqMessage?: string;
-  status: number; // 0 pending, 1 accepted, -1 invalid, -2 expired, -3 revoked
+  status: number; // 0 pending, 1 accepted, -1 invalid, -2 expired, -3 revoked, -4 rejected
   date: number;
   errText: string;
   kind?: 'FRIEND' | 'GROUP';
@@ -184,7 +184,31 @@ export class FriendRequestsComponent implements OnDestroy {
 
   deleteSelected(req: PendingReq): void {
     if (this.selectedDirection() === 'OUTGOING') this.cancelSent(req);
-    this.closeRequest();
+    else this.rejectIncoming(req);
+  }
+
+  rejectIncoming(req: PendingReq): void {
+    if (req.kind !== 'FRIEND' || !req.id) return;
+    this.runInviteAction(
+      req,
+      () => this.userService.rejectInvite({ inviteId: req.id }),
+      (res) => {
+        if (res.code === 0) {
+          this.pendingReqList.update((items) =>
+            items.filter((item) => item.id !== req.id),
+          );
+          if (this.selectedRequest()?.id === req.id) this.closeRequest();
+        } else {
+          this.pendingReqList.update((items) =>
+            items.map((item) =>
+              item.id === req.id
+                ? { ...item, errText: translateBizResult(res, this.transloco) }
+                : item,
+            ),
+          );
+        }
+      },
+    );
   }
 
   constructor(
@@ -349,6 +373,12 @@ export class FriendRequestsComponent implements OnDestroy {
    *  state to decide can-add / already-friends / request-already-sent / they-sent-you-one, then show
    *  the single-user card. Shared by both search paths so the post-select UX is identical. */
   private applySelectedUser(user: User) {
+    if (user.isGroup) {
+      this.relationshipStates.set(new Map());
+      this.localResults.set([user]);
+      this.addTabStatus.set(AddTabStatus.SUCCESS);
+      return;
+    }
     if (this.isSelf(user)) {
       this.relationshipStates.set(new Map());
       this.localResults.set([user]);
@@ -561,7 +591,7 @@ export class FriendRequestsComponent implements OnDestroy {
   private inviteAction(
     req: PendingReq,
   ): { inviteId: string } | { account: string; domain: string } {
-    if (req.kind === 'GROUP' && req.isForeigner && req.account && req.domain)
+    if (req.kind === 'GROUP' && req.account && req.domain)
       return { account: req.account, domain: req.domain };
     if (req.kind === 'GROUP' && req.account) return { inviteId: req.account };
     return req.isForeigner && req.account && req.domain
@@ -586,7 +616,9 @@ export class FriendRequestsComponent implements OnDestroy {
           projection.status === 'ACCEPTED'
             ? 1
             : projection.status === 'REVOKED'
-              ? -3
+              ? projection.remoteStatus === 'REVOKED'
+                ? -4
+                : -3
               : 0,
         date: projection.requestedAt,
         errText: '',

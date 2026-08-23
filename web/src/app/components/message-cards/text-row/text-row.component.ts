@@ -58,6 +58,12 @@ export class TextRowComponent {
       this.data().isGroupConversation === true &&
       !this.data().isSelf,
   );
+
+  quoteAvatarType(identity: string | undefined): UserAvatarType {
+    return identity?.startsWith('!')
+      ? UserAvatarType.GROUP
+      : UserAvatarType.OTHER;
+  }
   /** Render a status tick (clock/check/retry) only for self-sent messages that carry a delivery status. */
   readonly statusTick = computed(
     () => this.data().isSelf && !!this.data().status,

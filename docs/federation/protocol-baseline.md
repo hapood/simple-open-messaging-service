@@ -105,6 +105,10 @@ Federation v1 wire requirements.
   storage, not required federation database fields.
 - Unknown message content types make a message invalid. Index feeds contain no
   content payload.
+- `CONTACT_CARD` carries a valid user or group address and an immutable, untrusted display
+  snapshot. Its optional avatar digest is a direct message asset. Receiving a
+  card does not establish account existence, profile authority, or a
+  relationship.
 - Group leave converges through state. While a server still has another active
   member, its shared mirror continues receiving history. When its last member
   leaves, the origin freezes that peer audience. Rejoining reuses the mirror and

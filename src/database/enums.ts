@@ -19,6 +19,7 @@ export const ContentType = {
   FILE: 'FILE',
   AUDIO: 'AUDIO',
   LINK: 'LINK',
+  CONTACT_CARD: 'CONTACT_CARD',
   CALL: 'CALL',
   FORWARD: 'FORWARD',
   // Phase 7: multi-asset bundle (N files share one batchId).
@@ -37,21 +38,6 @@ export type GroupRole = (typeof GroupRole)[keyof typeof GroupRole];
 export const MessageThreadType = { P2P: 'P2P', GROUP: 'GROUP' } as const;
 export type MessageThreadType =
   (typeof MessageThreadType)[keyof typeof MessageThreadType];
-
-export const ThreadParticipantState = {
-  AUTHORIZED: 'AUTHORIZED',
-  ESTABLISHED: 'ESTABLISHED',
-  REVOKED: 'REVOKED',
-} as const;
-export type ThreadParticipantState =
-  (typeof ThreadParticipantState)[keyof typeof ThreadParticipantState];
-
-export const ThreadRevisionDirection = {
-  ADD: 'ADD',
-  DELETE: 'DELETE',
-} as const;
-export type ThreadRevisionDirection =
-  (typeof ThreadRevisionDirection)[keyof typeof ThreadRevisionDirection];
 
 export const MessageDeleteType = {
   WITHDRAW: 'WITHDRAW',

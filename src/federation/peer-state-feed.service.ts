@@ -13,6 +13,7 @@ import {
   type DatabaseTransaction,
 } from '../database/database.service.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
+import { STATE_FEED_PAGE_MAX_BYTES } from '../common/feed-page.js';
 
 export type PeerStateEventType = (typeof peerStateEventType.enumValues)[number];
 /** The `/s2s/v1` route is the schema version; bodies contain business state only. */
@@ -46,7 +47,6 @@ export interface PeerStateFeedPage {
 
 const DEFAULT_TAKE = 100;
 const MAX_TAKE = 200;
-const PAGE_BYTES = 4 * 1024 * 1024;
 
 const snapshotRevision = (
   eventType: PeerStateEventType,
@@ -318,7 +318,11 @@ export class PeerStateFeedService {
             : {}),
         };
         const itemBytes = Buffer.byteLength(JSON.stringify(item));
-        if (items.length > 0 && bytes + itemBytes > PAGE_BYTES) break;
+        if (
+          items.length > 0 &&
+          bytes + itemBytes > STATE_FEED_PAGE_MAX_BYTES
+        )
+          break;
         items.push(item);
         bytes += itemBytes;
       }

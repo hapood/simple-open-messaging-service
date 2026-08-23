@@ -1,0 +1,65 @@
+<section class="join-requests">
+  <app-page-header
+    [title]="'group.joinRequests' | transloco"
+    (back)="close()"
+  />
+  <div class="request-list">
+    @if (loading()) {
+      <p class="state">{{ 'common.loading' | transloco }}</p>
+    } @else if (requests().length === 0) {
+      <p class="state">{{ 'group.noJoinRequests' | transloco }}</p>
+    } @else {
+      @for (request of requests(); track request.id) {
+        <article class="request-row">
+          <app-user-avatar
+            class="avatar"
+            [type]="UserAvatarType.OTHER"
+            [name]="request.name"
+            [identityId]="'u' + request.userId"
+            [account]="request.account"
+            [src]="request.avatar"
+            [federatedDomain]="request.domain || null"
+          />
+          <div class="request-copy">
+            <div class="request-name">{{ request.name }}</div>
+            <div class="request-account">
+              {{ request.account }}
+              @if (request.domain) {
+                &#64;{{ request.domain }}
+              }
+            </div>
+            @if (request.note) {
+              <div class="request-note">{{ request.note }}</div>
+            }
+          </div>
+          <div class="request-actions">
+            <button
+              mat-button
+              type="button"
+              [disabled]="acting().has(request.id)"
+              (click)="act(request.id, false)"
+            >
+              {{ 'friend.decline' | transloco }}
+            </button>
+            <button
+              mat-flat-button
+              type="button"
+              color="primary"
+              [disabled]="acting().has(request.id)"
+              (click)="act(request.id, true)"
+            >
+              {{ 'friend.approve' | transloco }}
+            </button>
+          </div>
+        </article>
+      }
+      @if (hasMore()) {
+        <button mat-button type="button" class="load-more" (click)="loadMore()">
+          {{
+            (loadingMore() ? 'common.loading' : 'common.loadMore') | transloco
+          }}
+        </button>
+      }
+    }
+  </div>
+</section>

@@ -8,7 +8,7 @@ import { rawPreview, ThreadRepository } from './thread-store.service';
 import { MessageRepository } from './message-repository.service';
 import { ThreadCatchUpService } from './thread-catch-up.service';
 import { ProfileRepository } from './profile-store.service';
-import { UserService, type HydratedThreadDeltaOp } from './user.service';
+import { UserService } from './user.service';
 import { MsgService } from './message.service';
 import { WebsocketService } from './websocket.service';
 import { ConversationItem, Message, User } from './model';
@@ -62,14 +62,6 @@ function p2p(
   };
 }
 
-/** A hydrated ADD delta op (the server hydrates ADDs inline; DELETEs carry only the threadId). */
-function addOp(item: ConversationItem): HydratedThreadDeltaOp {
-  return { threadId: item.threadId, direction: 'ADD', item };
-}
-function deleteOp(threadId: number): HydratedThreadDeltaOp {
-  return { threadId, direction: 'DELETE' };
-}
-
 describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   let repo: ThreadRepository;
   let webdb: WebdbService;
@@ -80,7 +72,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   let sessionUserId: ReturnType<typeof signal<number | null>>;
   let sessionProfile: ReturnType<typeof signal<User | undefined>>;
   let establishSessionSpy: Mock;
-  let queryThreadDeltaSpy: Mock;
+  let queryStateFeedSpy: Mock;
   let getThreadInfoSpy: Mock;
   let queryReadDeltaSpy: Mock;
   let queryUserInfoSpy: Mock;
@@ -169,15 +161,28 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
               .mockImplementation(async (userId: number) => {
                 sessionUserId.set(userId);
               })),
-            stateRevCursor: () => cursorSignal(),
-            seedStateRevCursor: (rev: number) => cursorSignal.set(rev),
-            advanceStateRevCursor: (advanceCursorSpy = vi
+            stateFeedCursor: () => cursorSignal(),
+            seedStateFeedCursor: (rev: number) => cursorSignal.set(rev),
+            advanceStateFeedCursor: (advanceCursorSpy = vi
               .fn()
-              .mockName('advanceStateRevCursor')
+              .mockName('advanceStateFeedCursor')
               .mockImplementation((r: number) => cursorSignal.set(r))),
-            queryThreadDelta: (queryThreadDeltaSpy = vi
+            queryStateFeed: (queryStateFeedSpy = vi
               .fn()
-              .mockName('queryThreadDelta')),
+              .mockName('queryStateFeed')
+              .mockImplementation(
+                (params: { mode: 'full' | 'delta'; through: number }) =>
+                  of({
+                    code: 0,
+                    data: {
+                      mode: params.mode,
+                      items: [],
+                      hasMore: false,
+                      scannedThrough: params.through,
+                      stateFeedEndId: params.through,
+                    },
+                  }),
+              )),
             getThreadInfo: (getThreadInfoSpy = vi
               .fn()
               .mockName('getThreadInfo')
@@ -253,7 +258,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   /** Emit the HELLO connect handshake — revision replay plus durable feed catch-up. */
   function emitHello(data: {
     userId?: number;
-    stateRevision: number;
+    stateFeedEndId: number;
     profileRev?: number;
     readRevision?: number;
   }): void {
@@ -271,19 +276,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     for (const it of items) await tx.store.put(it);
     await tx.done;
     await repo.load();
-  }
-
-  /** Populate via a HELLO-driven delta replay (seeds cursor 0, replays (0,rev] with hydrated ADD ops). For
-   *  tests that exercise the delta path + need the cursor set (live delta, reconnect). */
-  async function populateViaDelta(
-    items: ConversationItem[],
-    rev = 5,
-  ): Promise<void> {
-    queryThreadDeltaSpy.mockReturnValue(
-      of({ code: 0, data: items.map(addOp) }),
-    );
-    emitHello({ userId: 1, stateRevision: rev });
-    await flush(20);
   }
 
   // ── eager cache-paint (load — the instant pre-HELLO boot path) ─────────────────────────────────
@@ -311,22 +303,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
 
   // The clobber guard: a cache-paint that runs AFTER a fresher HELLO delta already populated the list
   // must BAIL — a late IDB read must not revert the list to the (now stale) cache.
-  it('load() bails if the list is already populated (a late cache read cannot clobber a fresher delta)', async () => {
-    // Delta populates [1] (the fresher state) + writes it through to IDB.
-    queryThreadDeltaSpy.mockReturnValue(
-      of({ code: 0, data: [addOp(p2p(1, 11))] }),
-    );
-    emitHello({ userId: 1, stateRevision: 5 });
-    await flush(20);
-    expect(repo.items().map((t) => t.threadId)).toEqual([1]);
-
-    // Sneak a stale extra thread into the IDB cache, then load() — it must NOT revert/add it.
-    await seedCachedThread(p2p(99, 99));
-    repo.load();
-    await flush(20);
-    expect(repo.items().map((t) => t.threadId)).toEqual([1]); // 99 not clobbered in
-  });
-
   // Regression guard for the "暂无消息 on first launch" bug: the list embeds NO preview content, so each
   // thread's preview must be derived from its newest CACHED local message (local-first). load()'s paint
   // runs hydratePreviews — seed a local newest message + the cached thread, load, assert the preview +
@@ -341,164 +317,20 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(items[0].lastMessageSenderId).toBe(77);
   });
 
-  it('warm HELLO replay preserves the cached preview while local hydration is pending', async () => {
-    const cached = p2p(1, 77, {
-      lastMessageSeq: 5,
-      lastMessagePreview: 'cached preview',
-      lastMessageSenderId: 77,
-    });
-    await seedCachedThread(cached);
-
-    // Hold hydration open so this assertion observes the exact gap between the body-less delta replay and
-    // the eventual IDB preview read. This was the Android restart flicker window.
-    vi.spyOn(
-      TestBed.inject(MessageRepository),
-      'getNewestMessages',
-    ).mockReturnValue(new Promise<Map<number, Message>>(() => undefined));
-    repo.load();
-    await flush(20);
-    expect(repo.items()[0].lastMessagePreview).toBe('cached preview');
-
-    queryThreadDeltaSpy.mockReturnValue(
-      of({
-        code: 0,
-        data: [addOp(p2p(1, 77, { lastMessageSeq: 5 }))],
-      }),
-    );
-    emitHello({ userId: 1, stateRevision: 5 });
-    await flush(20);
-
-    expect(repo.items()[0].lastMessagePreview).toBe('cached preview');
-    expect(repo.items()[0].lastMessageSenderId).toBe(77);
-  });
-
   // ── HELLO (the network-refresh half: delta-replay + missed-summary walk) ───────────────────────
 
   it('HELLO without a userId is ignored (no session established, no fetch)', async () => {
-    queryThreadDeltaSpy.mockReturnValue(of({ code: 0, data: [] }));
-    emitHello({ stateRevision: 0 }); // no userId → onHello bails before establishing the session
+    emitHello({ stateFeedEndId: 0 }); // no userId → onHello bails before establishing the session
     await flush(20);
     expect(establishSessionSpy).not.toHaveBeenCalled();
-    expect(queryThreadDeltaSpy).not.toHaveBeenCalled();
-  });
-
-  it('cold start: HELLO seeds cursor 0, replays (0,rev] with hydrated ADD ops, populates the list', async () => {
-    queryThreadDeltaSpy.mockReturnValue(
-      of({ code: 0, data: [addOp(p2p(1, 11)), addOp(p2p(2, 22))] }),
-    );
-    emitHello({ userId: 1, stateRevision: 5 });
-    await flush(20);
-
-    expect(
-      repo
-        .items()
-        .map((t) => t.threadId)
-        .sort(),
-    ).toEqual([1, 2]);
-    expect(repo.status()).toBe('READY');
-    // ONE request — the delta hydrates the ADDs inline (no second batch-hydrate round-trip).
-    expect(queryThreadDeltaSpy).toHaveBeenCalledWith({
-      fromRevision: 0,
-      toRevision: 5,
-    });
-    expect(advanceCursorSpy).toHaveBeenCalledWith(5);
-  });
-
-  // ── FLIP gate: bulk hydration (cursor 0) vs incremental ADD (cursor > 0) ──────────────────────
-  // A cold-start full replay (cursor === 0) is bulk HYDRATION, not a per-thread highlight — markTopOnNextUpdate
-  // must NOT fire, so no FLIP is armed + the order follows byPinRank (the last ADD is not force-topped to 0).
-
-  // Regression guard for the reload FLIP-storm: the IDB cache already holds the threads (paint-from-cache ran
-  // pre-HELLO), then HELLO replays the SAME threads (cursor undefined → seed 0 → full (0,rev]). Every ADD is
-  // an existing thread → no force-top, no FLIP; the last ADD (a rank-LOSER here) must NOT be jammed to index 0.
-  it('cold-start bulk replay (cursor 0) arms NO FLIP — topInserted stays null, order stays byPinRank', async () => {
-    sessionUserId.set(1); // activate the session first so HELLO's establishSession is a no-op (no list reset)
-    await populate([
-      p2p(1, 11, { lastMessageAt: 100 }),
-      p2p(2, 22, { lastMessageAt: 200 }),
-    ]);
-    expect(repo.topInserted()).toBeNull(); // cache-paint never arms a FLIP
-
-    // The delta's LAST ADD is the rank-loser (lastMessageAt 100) — a force-top bug would jam it to index 0.
-    queryThreadDeltaSpy.mockReturnValue(
-      of({
-        code: 0,
-        data: [
-          addOp(p2p(2, 22, { lastMessageAt: 200 })),
-          addOp(p2p(1, 11, { lastMessageAt: 100 })),
-        ],
-      }),
-    );
-    emitHello({ userId: 1, stateRevision: 5 });
-    await flush(20);
-
-    expect(repo.topInserted()).toBeNull(); // ← the gate: bulk replay arms no FLIP
-    expect(repo.items().map((t) => t.threadId)).toEqual([2, 1]); // byPinRank (200 > 100), not last-ADD-jammed
-    expect(cursorSignal()).toBe(5);
-  });
-
-  // The positive counterpart: an incremental ADD (cursor > 0) genuinely means a new conversation entered the
-  // list → markTopOnNextUpdate DOES fire → the thread is force-topped + flagged for FLIP, even when its
-  // lastMessageAt is older than an existing thread's.
-  it('an incremental ADD (cursor > 0) arms a FLIP — topInserted is the added thread, force-topped', async () => {
-    await populateViaDelta([p2p(1, 11, { lastMessageAt: 100 })], 5); // cursor → 5 (bulk, no FLIP)
-    expect(repo.topInserted()).toBeNull();
-
-    queryThreadDeltaSpy.mockReturnValue(
-      of({ code: 0, data: [addOp(p2p(2, 22, { lastMessageAt: 50 }))] }),
-    );
-    eventSubject.next({
-      event: 'STATE_REV_UPDATED',
-      data: { stateRevision: 6 },
-    });
-    await flush(20);
-
-    expect(repo.topInserted()).toBe(2); // ← the added thread is flagged for FLIP
-    // Force-topped to index 0 even though its lastMessageAt (50) < thread 1's (100).
-    expect(repo.items().map((t) => t.threadId)).toEqual([2, 1]);
-    repo.clearTopInserted();
-    expect(repo.topInserted()).toBeNull(); // the component clears the pulse after animating
-  });
-
-  it('an incremental ADD for existing thread metadata updates in place without arming a FLIP', async () => {
-    await populateViaDelta([p2p(1, 11, { lastMessageAt: 200 })], 5);
-    queryThreadDeltaSpy.mockReturnValue(
-      of({
-        code: 0,
-        data: [addOp(p2p(2, 22, { lastMessageAt: 100 }))],
-      }),
-    );
-    eventSubject.next({
-      event: 'STATE_REV_UPDATED',
-      data: { stateRevision: 6 },
-    });
-    await flush(20);
-    expect(repo.items().map((t) => t.threadId)).toEqual([2, 1]);
-    repo.clearTopInserted();
-
-    queryThreadDeltaSpy.mockReturnValue(
-      of({
-        code: 0,
-        data: [addOp(p2p(2, 22, { lastMessageAt: 100, muted: true }))],
-      }),
-    );
-    eventSubject.next({
-      event: 'STATE_REV_UPDATED',
-      data: { stateRevision: 7 },
-    });
-    await flush(20);
-
-    expect(repo.topInserted()).toBeNull();
-    expect(repo.items().map((t) => t.threadId)).toEqual([2, 1]);
-    expect(repo.items()[0].muted).toBe(true);
+    expect(queryStateFeedSpy).not.toHaveBeenCalled();
   });
 
   it('HELLO always reconciles the durable message feed', async () => {
     const missed = TestBed.inject(ThreadCatchUpService) as unknown as {
       catchUp: Mock;
     };
-    queryThreadDeltaSpy.mockReturnValue(of({ code: 0, data: [] }));
-    emitHello({ userId: 1, stateRevision: 5 });
+    emitHello({ userId: 1, stateFeedEndId: 5 });
     await flush(700);
     expect(missed.catchUp).toHaveBeenCalledWith(0, undefined);
   });
@@ -535,10 +367,9 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       scannedThrough: 1,
       messageFeedEndId: 1,
     });
-    queryThreadDeltaSpy.mockReturnValue(of({ code: 0, data: [] }));
     emitHello({
       userId: 1,
-      stateRevision: 5,
+      stateFeedEndId: 5,
     });
     await flush(700);
     expect(missed.catchUp).toHaveBeenCalledWith(0, undefined);
@@ -547,44 +378,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
 
   // ── reconnect (the SSE stream re-pushes HELLO → onHello re-runs; no separate reconnect wiring) ──
 
-  it('a second HELLO (reconnect) re-establishes the session + replays the incremental delta', async () => {
-    await populateViaDelta([p2p(1, 11), p2p(2, 22)], 5); // cursor → 5
-    expect(
-      repo
-        .items()
-        .map((t) => t.threadId)
-        .sort(),
-    ).toEqual([1, 2]);
-
-    establishSessionSpy.mockClear();
-    queryThreadDeltaSpy.mockClear();
-    // The reconnect re-pushes HELLO with the same userId + a newer revision → incremental (5, 6] (the
-    // cursor survives in-memory across the reconnect, so it is NOT re-seeded to 0).
-    queryThreadDeltaSpy.mockReturnValue(
-      of({ code: 0, data: [addOp(p2p(3, 33))] }),
-    );
-    emitHello({ userId: 1, stateRevision: 6 });
-    await flush(20);
-
-    expect(establishSessionSpy).toHaveBeenCalledWith(1, 0);
-    expect(queryThreadDeltaSpy).toHaveBeenCalledWith({
-      fromRevision: 5,
-      toRevision: 6,
-    });
-    expect(
-      repo
-        .items()
-        .map((t) => t.threadId)
-        .sort(),
-    ).toEqual([1, 2, 3]);
-    expect(cursorSignal()).toBe(6);
-  });
-
-  // ── session-end reset (logout / account switch) ───────────────────────────────────────────────
-
-  // Regression guard for the account-switch bug: logout (sessionUserId → null) must drop the previous
-  // user's cached list + flip status back to LOADING, so the next login's list re-loads instead of
-  // painting stale data.
   it('session-end (sessionUserId→null) drops the cached list + re-arms LOADING', async () => {
     sessionUserId.set(1); // simulate HELLO→establishSession activating the session (populate is cache-only)
     await populate([p2p(1, 11), p2p(2, 22)]);
@@ -796,19 +589,11 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   });
 
   it('applyThreadMeta keeps display-only metadata changes at the current list position', async () => {
-    await populateViaDelta([p2p(1, 11, { lastMessageAt: 200 })], 5);
-    queryThreadDeltaSpy.mockReturnValue(
-      of({
-        code: 0,
-        data: [addOp(p2p(2, 22, { lastMessageAt: 100 }))],
-      }),
-    );
-    eventSubject.next({
-      event: 'STATE_REV_UPDATED',
-      data: { stateRevision: 6 },
-    });
-    await flush(20);
-    expect(repo.items().map((t) => t.threadId)).toEqual([2, 1]);
+    await populate([
+      p2p(1, 11, { lastMessageAt: 200 }),
+      p2p(2, 22, { lastMessageAt: 100 }),
+    ]);
+    expect(repo.items().map((t) => t.threadId)).toEqual([1, 2]);
 
     repo.applyThreadMeta(2, {
       muted: true,
@@ -817,8 +602,8 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     });
     await flush();
 
-    expect(repo.items().map((t) => t.threadId)).toEqual([2, 1]);
-    expect(repo.items()[0]).toEqual(
+    expect(repo.items().map((t) => t.threadId)).toEqual([1, 2]);
+    expect(repo.items()[1]).toEqual(
       expect.objectContaining({ muted: true, blocked: true, alias: 'Quiet' }),
     );
   });
@@ -861,297 +646,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(await msgCount(2)).toBe(1); // thread 2's bodies untouched — the purge is scoped
   });
 
-  // ── STATE_REV_UPDATED delta (thread and profile state share one ordered stream) ──
-
-  it('STATE_REV_UPDATED delta: DELETE removes locally, ADD (hydrated) inserts, cursor advances', async () => {
-    await populateViaDelta([p2p(1, 11), p2p(2, 22)], 5); // cursor → 5
-
-    // Live delta: delete thread 1, add thread 3 (hydrated inline — no second fetch).
-    queryThreadDeltaSpy.mockReturnValue(
-      of({ code: 0, data: [deleteOp(1), addOp(p2p(3, 33))] }),
-    );
-    eventSubject.next({
-      event: 'STATE_REV_UPDATED',
-      data: { stateRevision: 12 },
-    });
-    await flush(20);
-
-    expect(
-      repo
-        .items()
-        .map((t) => t.threadId)
-        .sort(),
-    ).toEqual([2, 3]);
-    expect(advanceCursorSpy).toHaveBeenCalledWith(12);
-    // The added thread is persisted; the deleted one is gone from IDB.
-    expect(await (await webdb.db()).get('threads', 3)).toBeDefined();
-    expect(await (await webdb.db()).get('threads', 1)).toBeUndefined();
-  });
-
-  it('derives an incoming friend-request badge from CLIENT_STATE', async () => {
-    await populateViaDelta([p2p(1, 11)], 5);
-    queryThreadDeltaSpy.mockReturnValue(
-      of({
-        code: 0,
-        data: [
-          {
-            direction: 'CLIENT_STATE',
-            revision: 6,
-            account: 'remote',
-            domain: 'peer.test',
-            eventType: 'RELATIONSHIP_INTENT',
-            subjectAccount: 'local',
-            subjectDomain: 'local',
-            body: {
-              status: 'REQUESTED',
-              note: '',
-              requestedAt: 10,
-              expiresAt: Date.now() + 60_000,
-              direction: 'INCOMING' as const,
-              peer: {
-                id: 2,
-                account: 'remote',
-                name: 'Remote',
-                avatar: '',
-                domain: 'peer.test',
-                isForeigner: true,
-              },
-            },
-          },
-        ],
-      }),
-    );
-
-    eventSubject.next({
-      event: 'STATE_REV_UPDATED',
-      data: { stateRevision: 6 },
-    });
-    await flush(20);
-
-    expect(applyFriendRequestStateRevisionSpy).toHaveBeenCalledTimes(1);
-
-    expect(applyFriendRequestStateRevisionSpy).toHaveBeenCalledWith(6);
-    expect(applyFriendIntentStateRevisionSpy).toHaveBeenCalledWith(6);
-    expect(await webdb.getMeta('friendRequestStateRevision')).toBe(6);
-    expect(cursorSignal()).toBe(6);
-  });
-
-  it('refreshes friend-intent consumers for an incoming terminal state without raising the badge', async () => {
-    await populateViaDelta([p2p(1, 11)], 5);
-    queryThreadDeltaSpy.mockReturnValue(
-      of({
-        code: 0,
-        data: [
-          {
-            direction: 'CLIENT_STATE',
-            revision: 6,
-            account: 'remote',
-            domain: 'peer.test',
-            eventType: 'RELATIONSHIP_INTENT',
-            subjectAccount: 'local',
-            subjectDomain: 'local',
-            body: {
-              status: 'ACCEPTED',
-              note: '',
-              requestedAt: 10,
-              expiresAt: null,
-              direction: 'INCOMING' as const,
-              peer: {
-                id: 2,
-                account: 'remote',
-                name: 'Remote',
-                avatar: '',
-                domain: 'peer.test',
-                isForeigner: true,
-              },
-            },
-          },
-        ],
-      }),
-    );
-
-    eventSubject.next({
-      event: 'STATE_REV_UPDATED',
-      data: { stateRevision: 6 },
-    });
-    await flush(20);
-
-    expect(applyFriendIntentStateRevisionSpy).toHaveBeenCalledWith(6);
-    expect(applyFriendRequestStateRevisionSpy).not.toHaveBeenCalled();
-  });
-
-  it('single-flights a revision burst and coalesces its tail to the highest target', async () => {
-    await populateViaDelta([p2p(1, 11)], 5);
-    queryThreadDeltaSpy.mockClear();
-    const first = new Subject<{
-      code: number;
-      data: HydratedThreadDeltaOp[];
-    }>();
-    queryThreadDeltaSpy
-      .mockReturnValueOnce(first)
-      .mockReturnValueOnce(of({ code: 0, data: [addOp(p2p(2, 22))] }));
-
-    eventSubject.next({
-      event: 'STATE_REV_UPDATED',
-      data: { stateRevision: 6 },
-    });
-    eventSubject.next({
-      event: 'STATE_REV_UPDATED',
-      data: { stateRevision: 9 },
-    });
-    // An older frame arriving last must not regress the coalesced tail from 9 to 8.
-    eventSubject.next({
-      event: 'STATE_REV_UPDATED',
-      data: { stateRevision: 8 },
-    });
-    expect(queryThreadDeltaSpy).toHaveBeenCalledTimes(1);
-
-    first.next({ code: 0, data: [] });
-    first.complete();
-    await flush(20);
-
-    expect(vi.mocked(queryThreadDeltaSpy).mock.calls).toEqual([
-      [{ fromRevision: 5, toRevision: 6 }],
-      [{ fromRevision: 6, toRevision: 9 }],
-    ]);
-    expect(cursorSignal()).toBe(9);
-  });
-
-  it('ignores a stale or replayed revision without issuing another delta request', async () => {
-    await populateViaDelta([p2p(1, 11)], 5);
-    queryThreadDeltaSpy.mockClear();
-
-    eventSubject.next({
-      event: 'STATE_REV_UPDATED',
-      data: { stateRevision: 5 },
-    });
-    eventSubject.next({
-      event: 'STATE_REV_UPDATED',
-      data: { stateRevision: 4 },
-    });
-    await flush(20);
-
-    expect(queryThreadDeltaSpy).not.toHaveBeenCalled();
-    expect(cursorSignal()).toBe(5);
-  });
-
-  it('does not apply or advance the cursor for a non-success delta response', async () => {
-    await populateViaDelta([p2p(1, 11)], 5);
-    queryThreadDeltaSpy.mockClear();
-    advanceCursorSpy.mockClear();
-    const applySpy = vi.spyOn(webdb, 'applyThreadDelta');
-    queryThreadDeltaSpy.mockReturnValue(of({ code: 1, data: [] }));
-
-    eventSubject.next({
-      event: 'STATE_REV_UPDATED',
-      data: { stateRevision: 6 },
-    });
-    await flush(20);
-
-    expect(applySpy).not.toHaveBeenCalled();
-    expect(advanceCursorSpy).not.toHaveBeenCalled();
-    expect(cursorSignal()).toBe(5);
-  });
-
-  it('keeps both local state and cursor unchanged when durable delta application fails', async () => {
-    await populateViaDelta([p2p(1, 11)], 5);
-    advanceCursorSpy.mockClear();
-    queryThreadDeltaSpy.mockReturnValue(of({ code: 0, data: [deleteOp(1)] }));
-    vi.spyOn(webdb, 'applyThreadDelta').mockRejectedValue(
-      new Error('IDB transaction aborted'),
-    );
-
-    await (
-      repo as unknown as {
-        pullDelta(toRev: number): Promise<void>;
-      }
-    ).pullDelta(6);
-
-    expect(repo.items().map((item) => item.threadId)).toEqual([1]);
-    expect(advanceCursorSpy).not.toHaveBeenCalled();
-    expect(cursorSignal()).toBe(5);
-    expect(toastWarn).toHaveBeenCalledWith('errors.stateSyncFatal', {
-      duration: 'forever',
-      interactive: true,
-    });
-  });
-
-  // A signal that lands before HELLO seeds the cursor is dropped — pullDelta's "cursor undefined → return"
-  // guard. (onHello is the sole seeder now; there is no snapshot fetch to race against.)
-  it('STATE_REV_UPDATED is dropped while the cursor is unseeded (no HELLO yet)', async () => {
-    // cursorSignal starts undefined — do NOT emit HELLO.
-    queryThreadDeltaSpy.mockReturnValue(of({ code: 0, data: [] }));
-    eventSubject.next({
-      event: 'STATE_REV_UPDATED',
-      data: { stateRevision: 12 },
-    });
-    await flush(20);
-    expect(queryThreadDeltaSpy).not.toHaveBeenCalled();
-  });
-
-  // ── PEER_PROFILE_UPDATED (a friend changed avatar/name/bio) ───────────────────────────────────
-
-  it('STATE_REV_UPDATED applies an inline PROFILE op without a profile request', async () => {
-    await populateViaDelta(
-      [
-        p2p(1, 11, {
-          peerUser: {
-            id: 11,
-            name: 'Old',
-            account: 'u11',
-            avatar: '/old.webp',
-            bio: '',
-            isForeigner: false,
-            domain: '',
-            createdAt: 0,
-            updatedAt: 0,
-            isDeleted: false,
-          } as User,
-        }),
-      ],
-      5,
-    );
-
-    queryThreadDeltaSpy.mockReturnValue(
-      of({
-        code: 0,
-        data: [
-          {
-            direction: 'PROFILE',
-            user: {
-              id: 11,
-              name: 'New',
-              account: 'u11',
-              avatar: '/new.webp',
-              bio: 'b',
-              isForeigner: false,
-              domain: '',
-              createdAt: 0,
-              updatedAt: 0,
-              isDeleted: false,
-              profileRev: 2,
-            } as User,
-          },
-        ],
-      }),
-    );
-    eventSubject.next({
-      event: 'STATE_REV_UPDATED',
-      data: { stateRevision: 6 },
-    });
-    await flush(20);
-
-    expect(queryUserInfoSpy).not.toHaveBeenCalled();
-    expect(repo.items()[0].peerUser.name).toBe('New');
-    // Profile write-through fires for the embedded peer profile.
-    expect(putProfileSpy).toHaveBeenCalledWith(
-      'u11',
-      'user',
-      expect.objectContaining({ name: 'New' }),
-    );
-  });
-
-  // ── local read HWM + authoritative commit response ─────────────────────────────────────────
+  // ── STATE_FEED_UPDATED delta (thread and profile state share one ordered stream) ──
 
   it('records a local HWM without guessing the unread badge', async () => {
     await populate([
@@ -1216,7 +711,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       }),
     );
 
-    emitHello({ userId: 1, stateRevision: 0, readRevision: 5 });
+    emitHello({ userId: 1, stateFeedEndId: 0, readRevision: 5 });
     await flush(20);
 
     expect(queryReadDeltaSpy).toHaveBeenCalledWith({
@@ -1232,7 +727,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   it('treats attention SSE as a cursor-only wake-up and pulls its projection', async () => {
     await populate([p2p(1, 11, { lastReadSeq: 2, unreadCount: 4 })]);
     await webdb.putMeta('readRevision', 2);
-    emitHello({ userId: 1, stateRevision: 0, readRevision: 2 });
+    emitHello({ userId: 1, stateFeedEndId: 0, readRevision: 2 });
     await flush(20);
     queryReadDeltaSpy.mockClear();
     queryReadDeltaSpy.mockReturnValue(
@@ -1399,8 +894,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
 
   it('loadThreadHwms hydrates from IDB on HELLO (boot restore of a persisted map)', async () => {
     await webdb.putMeta('threadHwms', { 7: 5, 9: 2 });
-    queryThreadDeltaSpy.mockReturnValue(of({ code: 0, data: [] }));
-    emitHello({ userId: 1, stateRevision: 5 });
+    emitHello({ userId: 1, stateFeedEndId: 5 });
     await flush(20);
     expect(repo.threadHwms()).toEqual({ 7: 5, 9: 2 });
   });

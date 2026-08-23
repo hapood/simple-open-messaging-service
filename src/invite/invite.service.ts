@@ -1,6 +1,5 @@
 import { forwardRef, Inject, Injectable, Optional } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
-import { randomUUID } from 'node:crypto';
 import { and, desc, eq, gt, inArray, or, sql, type SQL } from 'drizzle-orm';
 import {
   DatabaseService,
@@ -17,18 +16,13 @@ import {
   threadParticipant,
   user,
 } from '../database/schema.js';
-import {
-  GroupRole,
-  MessageThreadType,
-  ThreadParticipantState,
-} from '../database/enums.js';
+import { GroupRole, MessageThreadType } from '../database/enums.js';
 import { normalizeAccount } from '../common/account.js';
 import { loadFederationConfig } from '../federation/federation.config.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
-import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
-import { ClientStateFeedService } from '../thread-revision/client-state-feed.service.js';
+import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import { MessageService } from '../message/message.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { SystemMessageType } from '../message/system-message.js';
@@ -102,7 +96,6 @@ export class InviteService {
   constructor(
     private readonly database: DatabaseService,
     private readonly participantService: ThreadParticipantService,
-    private readonly threadRevisionService: ThreadRevisionService,
     private readonly clientStateFeed: ClientStateFeedService,
     @Optional() private readonly messages?: MessageService,
     @Optional()
@@ -126,11 +119,6 @@ export class InviteService {
         WHERE pair.active = false
           AND pair."threadId" IS NOT NULL
           AND thread.type = 'P2P'
-          AND NOT EXISTS (
-            SELECT 1 FROM "ThreadParticipant" participant
-            WHERE participant."threadId" = pair."threadId"
-              AND participant.state <> 'AUTHORIZED'
-          )
           AND NOT EXISTS (
             SELECT 1 FROM "Message" message
             WHERE message."threadId" = pair."threadId"
@@ -165,11 +153,6 @@ export class InviteService {
         WHERE thread.type = 'GROUP'
           AND group_user."isForeigner" = true
           AND NOT EXISTS (
-            SELECT 1 FROM "ThreadParticipant" participant
-            WHERE participant."threadId" = thread.id
-              AND participant.state <> 'AUTHORIZED'
-          )
-          AND NOT EXISTS (
             SELECT 1 FROM "Message" message WHERE message."threadId" = thread.id
           )
           AND NOT EXISTS (
@@ -203,7 +186,7 @@ export class InviteService {
     tx: DatabaseTransaction,
     threadId: number,
     memberUserId: number,
-    pendingRevisions: Array<{ userId: number; revision: number }>,
+    pendingFeedUpdates: Array<{ userId: number; feedId: number }>,
   ): Promise<void> {
     const [state] = await tx
       .select({
@@ -233,7 +216,7 @@ export class InviteService {
       }),
     ]);
     if (!request || !member) return;
-    const revision = await this.clientStateFeed.writeInTx(tx, {
+    const feedId = await this.clientStateFeed.writeInTx(tx, {
       userId: memberUserId,
       account: state.account,
       domain: this.config.domain,
@@ -262,8 +245,8 @@ export class InviteService {
         },
       },
     });
-    if (revision !== null)
-      pendingRevisions.push({ userId: memberUserId, revision });
+    if (feedId !== null)
+      pendingFeedUpdates.push({ userId: memberUserId, feedId });
   }
 
   /** Create an outbound federated request by immutable Address without materializing a User stub.
@@ -281,13 +264,13 @@ export class InviteService {
         requestedAt: Date;
         expiresAt: Date;
         note: string;
+        snapshot: FederatedPendingProfileSnapshot;
       },
     ) => Promise<void>,
   ): Promise<{ created: boolean }> {
     const account = normalizeAccount(remoteAccount);
     const trimmed = note.slice(0, 255);
     const now = new Date();
-    let clientRevision: number | null = null;
     const result = await this.database.db.transaction(async (tx) => {
       const [current] = await tx
         .select({
@@ -346,68 +329,14 @@ export class InviteService {
             updatedAt: now,
           },
         });
-      if (!account.startsWith('!')) {
-        const [stub] = await tx
-          .insert(user)
-          .values({
-            account,
-            domain: remoteDomain,
-            isForeigner: true,
-            hashPwd: randomUUID(),
-            name: snapshot.displayName?.slice(0, 30) || account,
-            avatar: snapshot.avatar || '',
-            updatedAt: now,
-          })
-          .onConflictDoNothing()
-          .returning({ id: user.id });
-        const remoteUser =
-          stub ??
-          (await tx.query.user.findFirst({
-            where: and(
-              eq(user.account, account),
-              eq(user.domain, remoteDomain),
-            ),
-            columns: { id: true },
-          }));
-        if (!remoteUser) throw new Error('federated request stub missing');
-        await this.lockFriendPairInTx(tx, localUserId, remoteUser.id);
-        await this.ensureP2PThreadShellInTx(tx, localUserId, remoteUser.id);
-      }
-      await afterWrite(tx, { requestedAt, expiresAt, note: trimmed });
-      const local = await tx.query.user.findFirst({
-        where: eq(user.id, localUserId),
-      });
-      if (!local) throw new Error('federated friend request owner missing');
-      clientRevision = await this.clientStateFeed.writeInTx(tx, {
-        userId: localUserId,
-        account: local.account,
-        domain: local.domain,
-        eventType: 'RELATIONSHIP_INTENT',
-        subjectAccount: account,
-        subjectDomain: remoteDomain,
-        body: {
-          status: 'REQUESTED',
-          note: trimmed,
-          requestedAt: requestedAt.getTime(),
-          expiresAt: expiresAt.getTime(),
-          direction: 'OUTGOING',
-          peer: {
-            id: 0,
-            account,
-            name: snapshot.displayName?.slice(0, 30) || account,
-            avatar: snapshot.avatar || '',
-            domain: remoteDomain,
-            isForeigner: true,
-          },
-        },
+      await afterWrite(tx, {
+        requestedAt,
+        expiresAt,
+        note: trimmed,
+        snapshot,
       });
       return { created: true };
     });
-    if (clientRevision !== null)
-      this.threadRevisionService.notifyThreadRevision({
-        userId: localUserId,
-        revision: clientRevision,
-      });
     return result;
   }
 
@@ -463,7 +392,8 @@ export class InviteService {
     peerUserId: number,
     wantsFriend: boolean,
     note = '',
-  ): Promise<Array<{ userId: number; revision: number }>> {
+    peerSnapshot?: FederatedPendingProfileSnapshot,
+  ): Promise<Array<{ userId: number; feedId: number }>> {
     await this.lockFriendPairInTx(tx, actorUserId, peerUserId);
     if (wantsFriend)
       await this.ensureP2PThreadShellInTx(tx, actorUserId, peerUserId);
@@ -480,6 +410,23 @@ export class InviteService {
         columns: { isForeigner: true, domain: true },
       }),
     ]);
+    // A federated pair is always locally total: the direction authored here is the requested grant,
+    // while an as-yet-unseen peer-authored direction is represented as REVOKED. This cached reverse
+    // fact is never published to the peer because this server is not its author; a later peer state
+    // item replaces it through the normal inbound merge path.
+    if (wantsFriend && peer?.isForeigner && !opposite) {
+      await tx
+        .insert(relationshipIntent)
+        .values({
+          authorUserId: peerUserId,
+          subjectUserId: actorUserId,
+          status: 'REVOKED',
+          note: '',
+          requestedAt: null,
+          expiresAt: null,
+        })
+        .onConflictDoNothing();
+    }
     const oppositeEffective =
       opposite?.status === 'ACCEPTED' ||
       (opposite?.status === 'REQUESTED' &&
@@ -536,15 +483,21 @@ export class InviteService {
       else
         await closeFederatedAudienceInTx(tx, peer.domain, pairEffect.threadId);
     }
-    return this.publishClientFriendPairInTx(tx, actorUserId, peerUserId);
+    return this.writeFriendRequestClientStateInTx(
+      tx,
+      actorUserId,
+      peerUserId,
+      peerSnapshot,
+    );
   }
 
-  private async publishClientFriendPairInTx(
+  async writeFriendRequestClientStateInTx(
     tx: DatabaseTransaction,
     firstUserId: number,
     secondUserId: number,
-  ): Promise<Array<{ userId: number; revision: number }>> {
-    const [first, second, directions] = await Promise.all([
+    secondUserSnapshot?: FederatedPendingProfileSnapshot,
+  ): Promise<Array<{ userId: number; feedId: number }>> {
+    const [first, second, directions, pair] = await Promise.all([
       tx.query.user.findFirst({ where: eq(user.id, firstUserId) }),
       tx.query.user.findFirst({ where: eq(user.id, secondUserId) }),
       tx.query.relationshipIntent.findMany({
@@ -559,13 +512,20 @@ export class InviteService {
           ),
         ),
       }),
+      tx.query.relationshipPair.findFirst({
+        where: and(
+          eq(relationshipPair.userLowId, Math.min(firstUserId, secondUserId)),
+          eq(relationshipPair.userHighId, Math.max(firstUserId, secondUserId)),
+        ),
+        columns: { threadId: true },
+      }),
     ]);
     if (!first || !second) throw new Error('client friend intent user missing');
     const users = new Map([
       [first.id, first],
       [second.id, second],
     ]);
-    const pending: Array<{ userId: number; revision: number }> = [];
+    const pending: Array<{ userId: number; feedId: number }> = [];
     for (const direction of directions) {
       const actor = users.get(direction.authorUserId)!;
       const subject = users.get(direction.subjectUserId)!;
@@ -583,12 +543,21 @@ export class InviteService {
       };
       for (const owner of [actor, subject]) {
         if (owner.isForeigner || owner.isDeleted) continue;
+        const peer = owner.id === actor.id ? subject : actor;
+        const projectedPeer = this.clientInviteUser(peer);
+        if (peer.id === secondUserId && secondUserSnapshot) {
+          projectedPeer.name =
+            secondUserSnapshot.displayName?.slice(0, 30) || projectedPeer.name;
+          projectedPeer.avatar =
+            secondUserSnapshot.avatar || projectedPeer.avatar;
+        }
         const body = {
           ...commonBody,
           direction: owner.id === actor.id ? 'OUTGOING' : 'INCOMING',
-          peer: this.clientInviteUser(owner.id === actor.id ? subject : actor),
+          localThreadId: pair?.threadId ?? null,
+          peer: projectedPeer,
         };
-        const revision = await this.clientStateFeed.writeInTx(tx, {
+        const feedId = await this.clientStateFeed.writeInTx(tx, {
           userId: owner.id,
           account: actor.account,
           domain: actor.domain,
@@ -597,7 +566,7 @@ export class InviteService {
           subjectDomain: subject.domain,
           body,
         });
-        if (revision !== null) pending.push({ userId: owner.id, revision });
+        if (feedId !== null) pending.push({ userId: owner.id, feedId });
       }
     }
     return pending;
@@ -711,7 +680,7 @@ export class InviteService {
     ) => Promise<void>,
   ): Promise<CreateFriendInviteResult> {
     const trimmed = (note ?? '').slice(0, 255);
-    const pendingRevisions: Array<{ userId: number; revision: number }> = [];
+    const pendingFeedUpdates: Array<{ userId: number; feedId: number }> = [];
     const result = await this.database.db.transaction<CreateFriendInviteResult>(
       async (tx) => {
         void allowAutoAccept;
@@ -729,7 +698,7 @@ export class InviteService {
           (before.expiresAt !== null && before.expiresAt <= new Date());
         if (afterInviteWrite) await afterInviteWrite(tx, created);
         else
-          pendingRevisions.push(
+          pendingFeedUpdates.push(
             ...(await this.writeLocalFriendIntentInTx(
               tx,
               fromUserId,
@@ -756,15 +725,6 @@ export class InviteService {
           columns: { active: true, threadId: true },
         });
         if (pair?.active && pair.threadId !== null) {
-          for (const userId of [fromUserId, toUserId]) {
-            const revision =
-              await this.threadRevisionService.ensureThreadVisibleInTx(
-                tx,
-                userId,
-                pair.threadId,
-              );
-            if (revision !== null) pendingRevisions.push({ userId, revision });
-          }
           return { status: 'auto-accepted', threadId: pair.threadId };
         }
         return created
@@ -772,11 +732,9 @@ export class InviteService {
           : { status: 'already-pending', inviteId: request.id.toString() };
       },
     );
-    // Record the thread add AFTER the tx commits (bump threadRevision + push signal). Auto-accept
-    // creates the P2P thread for BOTH users — mirrors acceptInvite's recordThreadAdd for both
-    // (inviter + accepter). The 'created'/'already-pending' paths create no thread, so no signal.
-    pendingRevisions.forEach((pending) =>
-      this.threadRevisionService.notifyThreadRevision(pending),
+    // Notify local devices only after the client-state writes commit.
+    pendingFeedUpdates.forEach((pending) =>
+      this.clientStateFeed.notifyFeedUpdated(pending),
     );
     if (
       result.status === 'auto-accepted' &&
@@ -784,7 +742,6 @@ export class InviteService {
       this.messageFanout
     ) {
       const system = await this.messages.tryWriteSystemMessage(
-        fromUserId,
         result.threadId,
         SystemMessageType.FRIEND_ADDED,
       );
@@ -917,7 +874,7 @@ export class InviteService {
     ) => Promise<void>,
   ): Promise<AcceptInviteResult> {
     const id = await this.resolveInviteId(inviteIdOrGroup, byUserId, true);
-    const pendingRevisions: Array<{ userId: number; revision: number }> = [];
+    const pendingFeedUpdates: Array<{ userId: number; feedId: number }> = [];
     const result = await this.database.db.transaction(
       async (tx): Promise<AcceptInviteResult> => {
         const friend = await tx.query.relationshipIntent.findFirst({
@@ -951,7 +908,7 @@ export class InviteService {
           if (afterFriendAccept)
             await afterFriendAccept(tx, friend.authorUserId);
           else
-            pendingRevisions.push(
+            pendingFeedUpdates.push(
               ...(await this.writeLocalFriendIntentInTx(
                 tx,
                 byUserId,
@@ -983,17 +940,6 @@ export class InviteService {
               fromUserId: friend.authorUserId,
             };
           }
-          if (!before?.active)
-            for (const userId of [friend.authorUserId, byUserId]) {
-              const revision =
-                await this.threadRevisionService.ensureThreadVisibleInTx(
-                  tx,
-                  userId,
-                  pair.threadId,
-                );
-              if (revision !== null)
-                pendingRevisions.push({ userId, revision });
-            }
           return {
             kind: 'FRIEND',
             threadId: pair.threadId,
@@ -1074,23 +1020,6 @@ export class InviteService {
             .onConflictDoNothing();
         }
         if (afterGroupJoin) await afterGroupJoin(tx, threadRow.id);
-        if (!isMirror) {
-          pendingRevisions.push(
-            ...(await this.threadRevisionService.recordActiveLocalThreadRefreshInTx(
-              tx,
-              threadRow.id,
-              [byUserId],
-            )),
-          );
-          const revision =
-            await this.threadRevisionService.ensureThreadVisibleInTx(
-              tx,
-              byUserId,
-              threadRow.id,
-            );
-          if (revision !== null)
-            pendingRevisions.push({ userId: byUserId, revision });
-        }
         const groupAccount = groupState?.account ?? null;
         const groupDomain = groupState?.domain ?? null;
         if (groupDomain && groupDomain !== 'local') {
@@ -1105,10 +1034,9 @@ export class InviteService {
         };
       },
     );
-    // Record the thread add AFTER the tx commits (bump threadRevision + push signal). FRIEND adds the
-    // thread for BOTH users (inviter + accepter); GROUP adds it for the joiner only.
-    pendingRevisions.forEach((pending) =>
-      this.threadRevisionService.notifyThreadRevision(pending),
+    // Notify local devices only after the client-state writes commit.
+    pendingFeedUpdates.forEach((pending) =>
+      this.clientStateFeed.notifyFeedUpdated(pending),
     );
     if (
       result.kind === 'FRIEND' &&
@@ -1117,7 +1045,6 @@ export class InviteService {
       this.messageFanout
     ) {
       const system = await this.messages.tryWriteSystemMessage(
-        byUserId,
         result.threadId,
         SystemMessageType.FRIEND_ADDED,
       );
@@ -1129,7 +1056,6 @@ export class InviteService {
         // server-local timeline decorations, so every accepting server records its own notice; a
         // later GROUP_META snapshot must not be required to recreate the acceptance event.
         const joined = await this.messages.tryWriteSystemMessage(
-          byUserId,
           result.threadId,
           SystemMessageType.GROUP_JOINED,
           byUserId,
@@ -1147,7 +1073,7 @@ export class InviteService {
     afterRevoke?: (tx: DatabaseTransaction, toUserId: number) => Promise<void>,
   ): Promise<void> {
     const id = this.parseInviteId(inviteId);
-    const pendingRevisions: Array<{ userId: number; revision: number }> = [];
+    const pendingFeedUpdates: Array<{ userId: number; feedId: number }> = [];
     await this.database.db.transaction(async (tx) => {
       const request = await tx.query.relationshipIntent.findFirst({
         where: eq(relationshipIntent.id, id),
@@ -1168,7 +1094,7 @@ export class InviteService {
       }
       if (afterRevoke) await afterRevoke(tx, request.subjectUserId);
       else
-        pendingRevisions.push(
+        pendingFeedUpdates.push(
           ...(await this.writeLocalFriendIntentInTx(
             tx,
             byUserId,
@@ -1177,9 +1103,36 @@ export class InviteService {
           )),
         );
     });
-    pendingRevisions.forEach((pending) =>
-      this.threadRevisionService.notifyThreadRevision(pending),
+    pendingFeedUpdates.forEach((pending) =>
+      this.clientStateFeed.notifyFeedUpdated(pending),
     );
+  }
+
+  /** Reject an incoming pending invite by authoring the recipient's REVOKED direction. */
+  async rejectInvite(
+    inviteId: string,
+    byUserId: number,
+    afterReject: (tx: DatabaseTransaction, fromUserId: number) => Promise<void>,
+  ): Promise<void> {
+    const id = this.parseInviteId(inviteId);
+    await this.database.db.transaction(async (tx) => {
+      const request = await tx.query.relationshipIntent.findFirst({
+        where: eq(relationshipIntent.id, id),
+      });
+      if (!request || request.status !== 'REQUESTED')
+        throw new BusinessException(
+          !request
+            ? BusinessCode.INVITE_NOT_FOUND
+            : BusinessCode.INVITE_ALREADY_HANDLED,
+          !request ? 'request not found' : 'request already handled',
+        );
+      if (request.subjectUserId !== byUserId)
+        throw new BusinessException(
+          BusinessCode.INVITE_NOT_YOURS,
+          'this request is not yours to reject',
+        );
+      await afterReject(tx, request.authorUserId);
+    });
   }
 
   /**
@@ -1315,7 +1268,7 @@ export class InviteService {
     changed: boolean;
     requestCreated: boolean;
     localStateRevision?: number;
-    clientRevisions: Array<{ userId: number; revision: number }>;
+    clientFeedUpdates: Array<{ userId: number; feedId: number }>;
     threadId?: number;
     added?: boolean;
     removed?: boolean;
@@ -1350,7 +1303,7 @@ export class InviteService {
         peerDirection.expiresAt !== null &&
         peerDirection.expiresAt > now;
       if (!confirmsLocalRequest && !completesAcceptedPeerRequest) {
-        return { changed: false, requestCreated: false, clientRevisions: [] };
+        return { changed: false, requestCreated: false, clientFeedUpdates: [] };
       }
     }
     const previous = await tx.query.relationshipIntent.findFirst({
@@ -1379,7 +1332,7 @@ export class InviteService {
       RETURNING 1
     `);
     if (!applied.rows[0])
-      return { changed: false, requestCreated: false, clientRevisions: [] };
+      return { changed: false, requestCreated: false, clientFeedUpdates: [] };
     let localStateRevision: number | undefined;
     if (desired === 'REVOKED') {
       const closed = await tx.execute(sql`
@@ -1441,7 +1394,7 @@ export class InviteService {
           pairEffect.threadId,
         );
     }
-    const clientRevisions = await this.publishClientFriendPairInTx(
+    const clientFeedUpdates = await this.writeFriendRequestClientStateInTx(
       tx,
       params.localUserId,
       params.peerUserId,
@@ -1450,7 +1403,7 @@ export class InviteService {
       return {
         changed: true,
         requestCreated: false,
-        clientRevisions,
+        clientFeedUpdates,
         ...(localStateRevision === undefined ? {} : { localStateRevision }),
         threadId: pairEffect.threadId,
         added: pairEffect.transitioned,
@@ -1464,14 +1417,14 @@ export class InviteService {
           previous?.status !== 'REQUESTED' ||
           previous.expiresAt === null ||
           previous.expiresAt <= new Date(),
-        clientRevisions,
+        clientFeedUpdates,
       };
     }
     void params.origin;
     return {
       changed: true,
       requestCreated: false,
-      clientRevisions,
+      clientFeedUpdates,
       ...(localStateRevision === undefined ? {} : { localStateRevision }),
       ...(pairEffect.threadId === undefined
         ? {}
@@ -1565,10 +1518,6 @@ export class InviteService {
           .where(eq(messageThread.id, current.threadId))
           .for('update')
           .limit(1);
-        await tx
-          .update(threadParticipant)
-          .set({ state: ThreadParticipantState.REVOKED, updatedAt: new Date() })
-          .where(eq(threadParticipant.threadId, current.threadId));
         await this.closeP2PAudiencesInTx(tx, current.threadId);
       }
       await tx.execute(sql`
@@ -1632,7 +1581,6 @@ export class InviteService {
     ].map((userId) => ({
       userId,
       threadId,
-      state: ThreadParticipantState.AUTHORIZED,
       relationshipRev: 1,
       updatedAt: new Date(),
     }));
@@ -1675,7 +1623,7 @@ export class InviteService {
     userBId: number,
   ): Promise<number> {
     const [locked] = await tx
-      .select({ id: messageThread.id })
+      .select({ id: messageThread.id, curSeq: messageThread.curSeq })
       .from(messageThread)
       .where(eq(messageThread.id, threadId))
       .limit(1);
@@ -1683,8 +1631,9 @@ export class InviteService {
     const restored = await tx
       .update(threadParticipant)
       .set({
-        state: ThreadParticipantState.ESTABLISHED,
         relationshipRev: sql`${threadParticipant.relationshipRev} + 1`,
+        afterSeq: sql`(SELECT "curSeq" FROM "MessageThread" WHERE id = ${threadId})`,
+        leftSeq: null,
         updatedAt: new Date(),
       })
       .where(
@@ -1708,8 +1657,8 @@ export class InviteService {
         .map((userId) => ({
           userId,
           threadId,
-          state: ThreadParticipantState.ESTABLISHED,
           relationshipRev: 1,
+          afterSeq: locked.curSeq,
           updatedAt: new Date(),
         }));
       if (missing.length > 0)

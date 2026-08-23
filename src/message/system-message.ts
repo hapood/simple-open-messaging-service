@@ -6,6 +6,8 @@ export const SystemMessageType = {
   GROUP_ADMIN_GRANTED: 'GROUP_ADMIN_GRANTED',
   GROUP_ADMIN_REVOKED: 'GROUP_ADMIN_REVOKED',
   GROUP_OWNER_TRANSFERRED: 'GROUP_OWNER_TRANSFERRED',
+  MESSAGE_WITHDRAWN: 'MESSAGE_WITHDRAWN',
+  MESSAGES_MODERATED: 'MESSAGES_MODERATED',
 } as const;
 
 export type SystemMessageType =
@@ -14,6 +16,8 @@ export type SystemMessageType =
 export interface SystemMessageContent {
   type: SystemMessageType;
   subject?: { account: string; domain: string };
+  actor?: { account: string; domain: string };
+  count?: number;
 }
 
 const TYPES = new Set<string>(Object.values(SystemMessageType));
@@ -25,13 +29,28 @@ export function parseSystemMessageContent(
     const body = JSON.parse(value) as Record<string, unknown>;
     const keys = Object.keys(body);
     const subject = body['subject'] as Record<string, unknown> | undefined;
+    const actor = body['actor'] as Record<string, unknown> | undefined;
     const type = String(body['type']);
-    const subjectRequired = type !== SystemMessageType.FRIEND_ADDED;
+    const subjectRequired =
+      type !== SystemMessageType.FRIEND_ADDED &&
+      type !== SystemMessageType.MESSAGES_MODERATED;
+    const countRequired = type === SystemMessageType.MESSAGES_MODERATED;
     if (
-      keys.some((key) => key !== 'type' && key !== 'subject') ||
+      keys.some(
+        (key) =>
+          key !== 'type' &&
+          key !== 'subject' &&
+          key !== 'actor' &&
+          key !== 'count',
+      ) ||
       !TYPES.has(type) ||
       (subjectRequired && subject === undefined) ||
       (!subjectRequired && subject !== undefined) ||
+      (countRequired &&
+        (typeof body['count'] !== 'number' ||
+          !Number.isSafeInteger(body['count']) ||
+          body['count'] < 1)) ||
+      (!countRequired && body['count'] !== undefined) ||
       (subject !== undefined &&
         (typeof subject !== 'object' ||
           Array.isArray(subject) ||
@@ -41,7 +60,17 @@ export function parseSystemMessageContent(
           typeof subject['account'] !== 'string' ||
           !subject['account'] ||
           typeof subject['domain'] !== 'string' ||
-          !subject['domain']))
+          !subject['domain'])) ||
+      (actor !== undefined &&
+        (typeof actor !== 'object' ||
+          Array.isArray(actor) ||
+          Object.keys(actor).some(
+            (key) => key !== 'account' && key !== 'domain',
+          ) ||
+          typeof actor['account'] !== 'string' ||
+          !actor['account'] ||
+          typeof actor['domain'] !== 'string' ||
+          !actor['domain']))
     ) {
       return null;
     }

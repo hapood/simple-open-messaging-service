@@ -18,7 +18,6 @@ import { ThreadParticipantModule } from './thread-participant/thread-participant
 import { InviteModule } from './invite/invite.module.js';
 import { InviteController } from './controller/invite.controller.js';
 import { PushModule } from './push/push.module.js';
-import { UserBlockModule } from './user-block/user-block.module.js';
 import { FederationModule } from './federation/federation.module.js';
 import { SettingsModule } from './settings/settings.module.js';
 import { DeviceController } from './controller/device.controller.js';
@@ -28,7 +27,7 @@ import { ConfigController } from './controller/config.controller.js';
 import { AuthOtpController } from './controller/auth-otp.controller.js';
 import { AuthQrController } from './controller/auth-qr.controller.js';
 import { MessageFanoutModule } from './message/message-fanout.module.js';
-import { ThreadRevisionModule } from './thread-revision/thread-revision.module.js';
+import { ClientStateFeedModule } from './client-state-feed/client-state-feed.module.js';
 import { QuotaModule } from './quota/quota.module.js';
 import { ShellModule } from './shell/shell.module.js';
 import { ShellController } from './shell/shell.controller.js';
@@ -63,12 +62,11 @@ import { RateLimitModule } from './rate-limit/rate-limit.module.js';
     ThreadParticipantModule,
     InviteModule,
     PushModule,
-    UserBlockModule,
     FederationModule,
     DatabaseModule,
     SettingsModule,
     MessageFanoutModule,
-    ThreadRevisionModule,
+    ClientStateFeedModule,
     QuotaModule,
     ShellModule,
     DiagnosticsModule,

@@ -21,7 +21,8 @@ import {
   message,
   threadParticipant,
 } from '../database/schema.js';
-import { ContentType, ThreadParticipantState } from '../database/enums.js';
+import { ContentType } from '../database/enums.js';
+import { isThreadMutuallyAuthorized } from '../invite/relationship-authorization.js';
 import {
   federatedContentDigests,
   fromFederatedMessageContent,
@@ -39,7 +40,6 @@ import {
 } from '../../shared/text-message-content.js';
 import { deriveMessagePreview } from '../../shared/message-preview.js';
 import { MessageService } from '../message/message.service.js';
-import { UserBlockService } from '../user-block/user-block.service.js';
 import { MessageVisibilityService } from '../message/message-visibility.service.js';
 import type {
   FederationAddress,
@@ -113,7 +113,6 @@ export class ForwardBundleService {
   constructor(
     private readonly database: DatabaseService,
     private readonly messagesService: MessageService,
-    private readonly userBlockService: UserBlockService,
     private readonly messageVisibility: MessageVisibilityService,
   ) {}
 
@@ -141,6 +140,7 @@ export class ForwardBundleService {
       ContentType.AUDIO,
       ContentType.FILE,
       ContentType.LINK,
+      ContentType.CONTACT_CARD,
       ContentType.GALLERY,
       ContentType.FORWARD,
     ]);
@@ -165,7 +165,11 @@ export class ForwardBundleService {
       visible.contentType === ContentType.VIDEO ||
       visible.contentType === ContentType.AUDIO;
     // GALLERY carries N item digests; single-file attached media must reference exactly one.
-    if (isAttachedMedia || visible.contentType === ContentType.GALLERY) {
+    if (
+      isAttachedMedia ||
+      visible.contentType === ContentType.GALLERY ||
+      visible.contentType === ContentType.CONTACT_CARD
+    ) {
       const digests = extractDigests(visible.content);
       if (isAttachedMedia && digests.length !== 1) {
         throw new BusinessException(
@@ -251,15 +255,28 @@ export class ForwardBundleService {
         where: and(
           eq(threadParticipant.userId, userId),
           inArray(threadParticipant.threadId, uniqueThreads),
-          eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
         ),
-        columns: { threadId: true, clearedSeq: true },
+        columns: { threadId: true, clearedSeq: true, blocked: true },
         with: {
           messageThread: { columns: { type: true } },
         },
       },
     );
-    if (memberships.length !== uniqueThreads.length) {
+    const authorizedMemberships = (
+      await Promise.all(
+        memberships.map(async (membership) => ({
+          membership,
+          authorized: await isThreadMutuallyAuthorized(
+            this.database.db,
+            userId,
+            membership.threadId,
+          ),
+        })),
+      )
+    )
+      .filter((entry) => entry.authorized)
+      .map((entry) => entry.membership);
+    if (authorizedMemberships.length !== uniqueThreads.length) {
       throw new BusinessException(
         BusinessCode.FORWARD_INVALID_BUNDLE,
         'one or more source messages are inaccessible',
@@ -311,26 +328,25 @@ export class ForwardBundleService {
       );
     }
 
-    const blocked = await this.userBlockService.blockedByMe(userId);
     const quoteFilters = new Map(
-      memberships.map((membership) => [
+      authorizedMemberships.map((membership) => [
         membership.threadId,
         {
           clearedThroughSeq: membership.clearedSeq,
-          ...(membership.messageThread.type === 'P2P' && blocked.size > 0
-            ? { hideCreatorIds: [...blocked] }
-            : {}),
         },
       ]),
     );
     if (
       sourceRows.some((row) => {
         const visibility = quoteFilters.get(row!.threadId);
+        const membership = authorizedMemberships.find(
+          (candidate) => candidate.threadId === row!.threadId,
+        );
         return (
+          membership?.blocked === true ||
           (visibility?.clearedThroughSeq !== null &&
             visibility?.clearedThroughSeq !== undefined &&
-            row!.seq <= visibility.clearedThroughSeq) ||
-          visibility?.hideCreatorIds?.includes(row!.creator)
+            row!.seq <= visibility.clearedThroughSeq)
         );
       })
     ) {
@@ -361,7 +377,10 @@ export class ForwardBundleService {
           'system messages cannot be forwarded',
         );
       }
-      const avatar = await this.snapshotAvatar(message.creatorItem.avatar);
+      const creatorItem = message.creatorItem;
+      if (!creatorItem)
+        throw new Error('user-authored forward source has no creator');
+      const avatar = await this.snapshotAvatarForMessage(creatorItem.avatar);
       if (avatar) assets.set(this.assetKey(avatar), avatar);
       const mediaAssets = await this.assetsFromContent(
         message.contentType,
@@ -371,12 +390,12 @@ export class ForwardBundleService {
       messages.push({
         id: index + 1,
         author: {
-          displayName: message.creatorItem.name,
-          account: message.creatorItem.account,
+          displayName: creatorItem.name,
+          account: creatorItem.account,
           domain:
-            message.creatorItem.domain === 'local'
+            creatorItem.domain === 'local'
               ? (process.env.SOMS_DOMAIN ?? 'local')
-              : message.creatorItem.domain,
+              : creatorItem.domain,
           ...(avatar ? { avatarDigest: avatar.digest } : {}),
         },
         contentType: message.contentType,
@@ -494,7 +513,6 @@ export class ForwardBundleService {
         and(
           eq(threadParticipant.threadId, message.threadId),
           eq(threadParticipant.userId, userId),
-          eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
         ),
       )
       .where(
@@ -877,7 +895,10 @@ export class ForwardBundleService {
     if (contentType === ContentType.GALLERY) {
       return this.galleryAssetsFromContent(content);
     }
-    if (contentType === ContentType.LINK) {
+    if (
+      contentType === ContentType.LINK ||
+      contentType === ContentType.CONTACT_CARD
+    ) {
       const result: FederationByteDescriptor[] = [];
       for (const digest of extractDigests(content)) {
         const row = await this.database.db.query.mediaAsset.findFirst({
@@ -941,7 +962,7 @@ export class ForwardBundleService {
     return result;
   }
 
-  private async snapshotAvatar(
+  async snapshotAvatarForMessage(
     url: string,
   ): Promise<FederationByteDescriptor | null> {
     if (!url.startsWith('/uploads/')) return null;

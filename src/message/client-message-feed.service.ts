@@ -1,5 +1,6 @@
 import { and, asc, eq, ne, sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../database/database.service.js';
+import { isThreadMutuallyAuthorized } from '../invite/relationship-authorization.js';
 import {
   clientMessageFeed,
   clientMessageFeedTarget,
@@ -7,6 +8,7 @@ import {
   threadParticipant,
   user,
 } from '../database/schema.js';
+import { planFeedRecipientIds } from './message-delivery-plan.js';
 
 /** Product policy switch: whether a user's own authored messages advance that user's client message feed. */
 export const CLIENT_MESSAGE_FEED_INCLUDE_SELF = false;
@@ -21,47 +23,69 @@ export class ClientMessageFeedWriter {
     tx: DatabaseTransaction,
     threadId: number,
     messageEndSeq: number,
-    creatorId: number,
+    creatorId: number | null,
+    includeCreator = CLIENT_MESSAGE_FEED_INCLUDE_SELF,
   ): Promise<void> {
     const userIds = await this.activeUserIds(
       tx,
       threadId,
-      CLIENT_MESSAGE_FEED_INCLUDE_SELF ? undefined : creatorId,
+      includeCreator || creatorId === null ? undefined : creatorId,
     );
     for (const userId of userIds) {
-      await this.ensureTarget(tx, userId);
-      // Lock before inspecting the compacted row. This makes the no-op check and allocation one ordered
-      // operation for the user even when different threads are being published concurrently.
-      await this.lockTarget(tx, userId);
-      const threadCurrent = await tx.query.clientMessageFeed.findFirst({
-        where: sql`${clientMessageFeed.userId} = ${userId} AND ${clientMessageFeed.threadId} = ${threadId}`,
-        columns: { messageEndSeq: true },
-      });
-      if (threadCurrent && threadCurrent.messageEndSeq >= messageEndSeq)
-        continue;
-      const [allocated] = await tx
-        .update(clientMessageFeedTarget)
-        .set({
-          messageAllocatedThrough: sql`${clientMessageFeedTarget.messageAllocatedThrough} + 1`,
-          updatedAt: new Date(),
-        })
-        .where(eq(clientMessageFeedTarget.userId, userId))
-        .returning({ feedId: clientMessageFeedTarget.messageAllocatedThrough });
-      if (!allocated)
-        throw new Error(`missing client feed target for user ${userId}`);
-      await tx
-        .insert(clientMessageFeed)
-        .values({ userId, threadId, feedId: allocated.feedId, messageEndSeq })
-        .onConflictDoUpdate({
-          target: [clientMessageFeed.userId, clientMessageFeed.threadId],
-          set: {
-            feedId: allocated.feedId,
-            messageEndSeq,
-            updatedAt: new Date(),
-          },
-          setWhere: sql`${clientMessageFeed.feedId} < ${allocated.feedId}`,
-        });
+      await this.publishMessageForUser(tx, userId, threadId, messageEndSeq);
     }
+  }
+
+  /** Publish to an already-authorized, transactionally captured local recipient set. Boundary SYSTEM
+   *  events use this so a relationship can close in the same transaction without a post-close auth query. */
+  static async publishMessageToUsers(
+    tx: DatabaseTransaction,
+    threadId: number,
+    messageEndSeq: number,
+    userIds: readonly number[],
+  ): Promise<void> {
+    for (const userId of [...new Set(userIds)].sort((a, b) => a - b)) {
+      await this.publishMessageForUser(tx, userId, threadId, messageEndSeq);
+    }
+  }
+
+  private static async publishMessageForUser(
+    tx: DatabaseTransaction,
+    userId: number,
+    threadId: number,
+    messageEndSeq: number,
+  ): Promise<void> {
+    await this.ensureTarget(tx, userId);
+    // Lock before inspecting the compacted row. This makes the no-op check and allocation one ordered
+    // operation for the user even when different threads are being published concurrently.
+    await this.lockTarget(tx, userId);
+    const threadCurrent = await tx.query.clientMessageFeed.findFirst({
+      where: sql`${clientMessageFeed.userId} = ${userId} AND ${clientMessageFeed.threadId} = ${threadId}`,
+      columns: { messageEndSeq: true },
+    });
+    if (threadCurrent && threadCurrent.messageEndSeq >= messageEndSeq) return;
+    const [allocated] = await tx
+      .update(clientMessageFeedTarget)
+      .set({
+        messageAllocatedThrough: sql`${clientMessageFeedTarget.messageAllocatedThrough} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(eq(clientMessageFeedTarget.userId, userId))
+      .returning({ feedId: clientMessageFeedTarget.messageAllocatedThrough });
+    if (!allocated)
+      throw new Error(`missing client feed target for user ${userId}`);
+    await tx
+      .insert(clientMessageFeed)
+      .values({ userId, threadId, feedId: allocated.feedId, messageEndSeq })
+      .onConflictDoUpdate({
+        target: [clientMessageFeed.userId, clientMessageFeed.threadId],
+        set: {
+          feedId: allocated.feedId,
+          messageEndSeq,
+          updatedAt: new Date(),
+        },
+        setWhere: sql`${clientMessageFeed.feedId} < ${allocated.feedId}`,
+      });
   }
 
   static async publishTombstone(
@@ -125,7 +149,6 @@ export class ClientMessageFeedWriter {
       .where(
         and(
           eq(threadParticipant.threadId, threadId),
-          sql`${threadParticipant.state} = 'ESTABLISHED'`,
           eq(user.domain, 'local'),
           eq(user.isDeleted, false),
           ...(excludedUserId === undefined
@@ -134,7 +157,18 @@ export class ClientMessageFeedWriter {
         ),
       )
       .orderBy(asc(threadParticipant.userId));
-    return rows.map((row) => row.userId);
+    const authorized = await Promise.all(
+      rows.map((row) => isThreadMutuallyAuthorized(tx, row.userId, threadId)),
+    );
+    return planFeedRecipientIds(
+      rows.map((row, index) => ({
+        userId: row.userId,
+        isLocal: true,
+        isDeleted: false,
+        authorized: authorized[index],
+      })),
+      excludedUserId ?? null,
+    );
   }
 
   private static async ensureTarget(

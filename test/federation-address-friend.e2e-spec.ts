@@ -107,7 +107,6 @@ describe('federated Address friend request shells', () => {
       await appA.database.query.threadParticipant.findFirst({
         where: and(
           eq(threadParticipant.userId, aliceId),
-          eq(threadParticipant.state, 'AUTHORIZED'),
         ),
       });
     expect(requesterShell).toBeDefined();

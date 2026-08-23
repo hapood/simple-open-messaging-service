@@ -53,7 +53,7 @@
 
     <!-- Compact roster preview; the complete searchable roster lives in member management. -->
     <div class="section-label">
-      {{ 'group.members' | transloco: { count: roster().length } }}
+      {{ 'group.members' | transloco: { count: group()?.memberCount ?? 0 } }}
     </div>
     @if (loading()) {
       <div class="muted center">{{ 'common.loading' | transloco }}</div>
@@ -65,7 +65,7 @@
           [disabled]="readOnly()"
           (click)="showMemberManager.set(true)"
           [attr.aria-label]="
-            'group.allMembers' | transloco: { count: roster().length }
+            'group.allMembers' | transloco: { count: group()?.memberCount ?? 0 }
           "
         >
           @for (m of overviewMembers(); track m.userId) {
@@ -115,20 +115,6 @@
             [style]="{ width: '20px', height: '20px' }"
           />
         </button>
-        @if (isAdmin()) {
-          <div class="permission-row">
-            <span class="permission-copy">
-              <strong>{{ 'group.memberInvitePermission' | transloco }}</strong>
-            </span>
-            <mat-slide-toggle
-              [checked]="membersCanInviteControl()"
-              [class.saving]="membersInviteSaving()"
-              [attr.aria-busy]="membersInviteSaving()"
-              (change)="setMembersCanInvite($event.checked)"
-              [attr.aria-label]="'group.memberInvitePermission' | transloco"
-            />
-          </div>
-        }
       </mat-card>
     }
 
@@ -266,7 +252,7 @@
         [title]="'group.manageMembers' | transloco"
         (back)="showMemberManager.set(false)"
       />
-      <div class="manager-body">
+      <div class="manager-body" (scroll)="onRosterScroll($event)">
         <input
           class="member-search"
           [ngModel]="memberQuery()"
@@ -274,7 +260,10 @@
           [placeholder]="'group.searchMembers' | transloco"
         />
         <div class="section-label">
-          {{ 'group.allMembers' | transloco: { count: roster().length } }}
+          {{
+            'group.allMembers'
+              | transloco: { count: group()?.memberCount ?? 0 }
+          }}
         </div>
         @for (m of filteredRoster(); track m.userId) {
           <div class="member">

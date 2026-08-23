@@ -68,7 +68,10 @@ describe('PlaygroundRootComponent', () => {
         },
         {
           provide: UserService,
-          useValue: { sessionProfile: signal(undefined) },
+          useValue: {
+            sessionProfile: signal(undefined),
+            sessionUserId: signal(null),
+          },
         },
         {
           provide: AvatarRepository,

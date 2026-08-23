@@ -5,7 +5,6 @@ import type { ThreadParticipantService } from './thread-participant.service.js';
 import type { Reflector } from '@nestjs/core';
 import { BusinessCode } from '../common/business-code.js';
 import { RESOURCE_ID_KEY } from '../common/resource-id.decorator.js';
-import { ThreadParticipantState } from '../database/enums.js';
 
 /**
  * ThreadAccessGuard is the single membership gate for every message route (send / query / mark-read).
@@ -17,6 +16,7 @@ import { ThreadParticipantState } from '../database/enums.js';
 describe('ThreadAccessGuard', () => {
   const participantService = {
     findActiveParticipantWithThread: vi.fn(),
+    isMutuallyAuthorized: vi.fn(),
   };
   // The guard reads the body field the route declared via @ResourceId<Dto>('threadId'). The mock
   // returns that field by default; the "missing @ResourceId" test overrides it to undefined.
@@ -32,6 +32,7 @@ describe('ThreadAccessGuard', () => {
   // current test's calls.
   beforeEach(() => {
     participantService.findActiveParticipantWithThread.mockReset();
+    participantService.isMutuallyAuthorized.mockReset();
     reflector.get.mockReset();
     reflector.get.mockReturnValue('threadId');
   });
@@ -52,14 +53,14 @@ describe('ThreadAccessGuard', () => {
     } as unknown as ExecutionContext;
   }
 
-  it('attaches req.threadAccess and allows an ACTIVE member', async () => {
+  it('attaches req.threadAccess and allows a mutually authorized member', async () => {
     const participant = {
       id: 9,
       userId: 7,
       threadId: 12,
-      state: ThreadParticipantState.ESTABLISHED,
       thread: { type: 'P2P' },
     };
+    participantService.isMutuallyAuthorized.mockResolvedValueOnce(true);
     participantService.findActiveParticipantWithThread.mockResolvedValueOnce(
       participant,
     );
@@ -86,14 +87,14 @@ describe('ThreadAccessGuard', () => {
     });
   });
 
-  it('keeps a revoked established P2P thread visible but read-only', async () => {
+  it('keeps a revoked P2P thread visible but read-only', async () => {
     const participant = {
       id: 9,
       userId: 7,
       threadId: 12,
-      state: ThreadParticipantState.REVOKED,
       thread: { type: 'P2P' },
     };
+    participantService.isMutuallyAuthorized.mockResolvedValueOnce(false);
     participantService.findActiveParticipantWithThread.mockResolvedValueOnce(
       participant,
     );

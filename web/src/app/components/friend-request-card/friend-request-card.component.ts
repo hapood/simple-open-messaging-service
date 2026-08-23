@@ -48,12 +48,14 @@ export class FriendRequestCardComponent {
   readonly opened = output<void>();
   readonly approved = output<void>();
   readonly revoked = output<void>();
+  readonly rejected = output<void>();
   readonly UserAvatarType = UserAvatarType;
 
-  act(event: Event, action: 'approve' | 'revoke'): void {
+  act(event: Event, action: 'approve' | 'revoke' | 'reject'): void {
     event.stopPropagation();
     if (this.actionPending()) return;
     if (action === 'approve') this.approved.emit();
-    else this.revoked.emit();
+    else if (action === 'revoke') this.revoked.emit();
+    else this.rejected.emit();
   }
 }

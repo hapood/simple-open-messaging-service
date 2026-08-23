@@ -6,11 +6,7 @@ import {
   messageThread,
   threadParticipant,
 } from '../database/schema.js';
-import {
-  MessageThreadType,
-  ThreadParticipantState,
-} from '../database/enums.js';
-import { UserBlockService } from '../user-block/user-block.service.js';
+import { MessageThreadType } from '../database/enums.js';
 
 /**
  * The single object-level visibility boundary for user-facing Message lookups.
@@ -18,10 +14,7 @@ import { UserBlockService } from '../user-block/user-block.service.js';
  */
 @Injectable()
 export class MessageVisibilityService {
-  constructor(
-    private readonly database: DatabaseService,
-    private readonly userBlocks: UserBlockService,
-  ) {}
+  constructor(private readonly database: DatabaseService) {}
 
   async findVisibleByThreadSeq(userId: number, threadId: number, seq: number) {
     const [row] = await this.database.db
@@ -29,6 +22,8 @@ export class MessageVisibilityService {
         message,
         threadType: messageThread.type,
         clearedSeq: threadParticipant.clearedSeq,
+        leftSeq: threadParticipant.leftSeq,
+        blocked: threadParticipant.blocked,
       })
       .from(message)
       .innerJoin(
@@ -36,7 +31,6 @@ export class MessageVisibilityService {
         and(
           eq(threadParticipant.threadId, message.threadId),
           eq(threadParticipant.userId, userId),
-          eq(threadParticipant.state, ThreadParticipantState.ESTABLISHED),
         ),
       )
       .innerJoin(messageThread, eq(messageThread.id, message.threadId))
@@ -46,15 +40,13 @@ export class MessageVisibilityService {
           eq(message.seq, seq),
           eq(message.isDeleted, false),
           sql`${message.seq} > COALESCE(${threadParticipant.clearedSeq}, 0)`,
+          sql`${threadParticipant.leftSeq} IS NULL OR ${message.seq} <= ${threadParticipant.leftSeq}`,
         ),
       )
       .limit(1);
     if (!row) return null;
 
-    if (row.threadType === MessageThreadType.P2P) {
-      const blocked = await this.userBlocks.blockedByMe(userId);
-      if (blocked.has(row.message.creator)) return null;
-    }
+    if (row.threadType === MessageThreadType.P2P && row.blocked) return null;
     return row.message;
   }
 }

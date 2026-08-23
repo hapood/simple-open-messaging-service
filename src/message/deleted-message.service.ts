@@ -4,7 +4,7 @@ import {
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
-import { MessageDeleteType } from '../database/enums.js';
+import { ContentType, MessageDeleteType } from '../database/enums.js';
 import {
   deletedMessage,
   federatedMessageTombstone,
@@ -18,10 +18,15 @@ import {
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { ClientMessageFeedWriter } from './client-message-feed.service.js';
+import { MessageService, type Message } from './message.service.js';
+import { SystemMessageType } from './system-message.js';
 
 @Injectable()
 export class DeletedMessageService {
-  constructor(private readonly database: DatabaseService) {}
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly messages: MessageService,
+  ) {}
 
   private async assertFederatedResponseWritable(
     tx: DatabaseTransaction,
@@ -136,13 +141,20 @@ export class DeletedMessageService {
         )?.id;
       if (deletionId === undefined)
         throw new Error('deleted message log was not persisted');
-      await ClientMessageFeedWriter.publishTombstone(
-        tx,
-        threadId,
-        deletionId,
-      );
+      await ClientMessageFeedWriter.publishTombstone(tx, threadId, deletionId);
+      const systemMessage = inserted
+        ? (
+            await this.messages.writeSystemMessageInTx(
+              tx,
+              threadId,
+              SystemMessageType.MESSAGE_WITHDRAWN,
+              userId,
+              { actorUserId: userId },
+            )
+          ).message
+        : null;
 
-      return { id: deletionId.toString(), threadId, seq };
+      return { id: deletionId.toString(), threadId, seq, systemMessage };
     });
   }
 
@@ -196,11 +208,7 @@ export class DeletedMessageService {
       )?.id;
     if (deletionId === undefined)
       throw new Error('deleted message log was not persisted');
-    await ClientMessageFeedWriter.publishTombstone(
-      tx,
-      threadId,
-      deletionId,
-    );
+    await ClientMessageFeedWriter.publishTombstone(tx, threadId, deletionId);
 
     return deletionId.toString();
   }
@@ -317,7 +325,12 @@ export class DeletedMessageService {
         eq(message.federationSourceDomain, params.sourceDomain),
         eq(message.originSeq, params.messageSeq),
       ),
-      columns: { seq: true, isDeleted: true },
+      columns: {
+        seq: true,
+        creator: true,
+        contentType: true,
+        isDeleted: true,
+      },
     });
     const pending = await tx.query.federatedMessageTombstone.findFirst({
       where: and(
@@ -368,7 +381,10 @@ export class DeletedMessageService {
           .onConflictDoNothing();
     }
     let localDeletedId: bigint | null = null;
+    let systemMessage: Omit<Message, 'id'> | null = null;
     if (target) {
+      if (target.contentType === ContentType.SYSTEM || target.creator === null)
+        throw new Error('SYSTEM messages cannot enter deletion processing');
       const now = new Date();
       await tx
         .update(message)
@@ -403,6 +419,25 @@ export class DeletedMessageService {
           params.threadId,
           localDeletedId,
         );
+      if (localDeletedId !== null) {
+        systemMessage = (
+          await this.messages.writeSystemMessageInTx(
+            tx,
+            params.threadId,
+            params.type === MessageDeleteType.WITHDRAW
+              ? SystemMessageType.MESSAGE_WITHDRAWN
+              : SystemMessageType.MESSAGES_MODERATED,
+            params.type === MessageDeleteType.WITHDRAW
+              ? target.creator
+              : undefined,
+            params.type === MessageDeleteType.REPORT
+              ? { count: 1 }
+              : { actorUserId: target.creator ?? undefined },
+          )
+        ).message;
+      } else {
+        systemMessage = null;
+      }
       // This table is only an unmatched-deletion inbox. Once the target exists, DeletedMessage is
       // the durable local fact and the pending row must disappear in the same transaction.
       await tx
@@ -513,7 +548,11 @@ export class DeletedMessageService {
         });
     }
     return target && localDeletedId !== null
-      ? { id: localDeletedId.toString(), seq: target.seq }
+      ? {
+          id: localDeletedId.toString(),
+          seq: target.seq,
+          systemMessage: systemMessage!,
+        }
       : null;
   }
 }

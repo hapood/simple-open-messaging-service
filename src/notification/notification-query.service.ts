@@ -7,7 +7,6 @@ import {
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { UserService } from '../user/user.service.js';
 import { GroupService } from '../group/group.service.js';
-import { UserBlockService } from '../user-block/user-block.service.js';
 import { derivePreview } from '../message/message.service.js';
 import { pickLocale, type SupportedLocale } from '../common/locale.js';
 import {
@@ -48,7 +47,7 @@ export interface ThreadCatchUpItem {
     seq: number;
     contentType: string;
     content: string;
-    creator: number;
+    creator: number | null;
     createdAt: Date;
     mediaStatus: 'ready' | 'failed';
     sv: number;
@@ -67,7 +66,6 @@ export class NotificationQueryService {
     private readonly messageService: MessageService,
     private readonly userService: UserService,
     private readonly groupService: GroupService,
-    private readonly userBlockService: UserBlockService,
   ) {}
 
   /** Hydrate feed-discovered threads with the current list preview and authoritative read state. The feed
@@ -82,6 +80,7 @@ export class NotificationQueryService {
       userId,
       threadIds,
       new Map(changes.map((change) => [change.threadId, change.messageEndSeq])),
+      true,
     );
     const byId = new Map(ctx.active.map((row) => [row.threadId, row]));
     const rows = threadIds
@@ -151,8 +150,7 @@ export class NotificationQueryService {
     threadHwms?: Record<number, number>,
     threadIds?: number[],
   ): Promise<NotificationDescriptor[]> {
-    const blocked = await this.userBlockService.blockedByMe(userId);
-    const hiddenCreators = [...blocked, userId];
+    const hiddenCreators = [userId];
     // Query A: threads with new LIVE messages since the global HWM — {count, latestSeq}, newest-first, capped.
     const self = await this.userService.findUniqueUser({ id: userId });
     const buckets = self
@@ -270,6 +268,7 @@ export class NotificationQueryService {
     userId: number,
     threadIds?: number[],
     previewSeqByThread?: Map<number, number>,
+    includeRetained = false,
   ): Promise<{
     active: Array<{
       threadId: number;
@@ -289,7 +288,7 @@ export class NotificationQueryService {
     const list = await this.participantService.queryParticipants({
       where: {
         userId,
-        active: true,
+        ...(includeRetained ? {} : { active: true }),
         ...(threadIds ? { threadId: { in: threadIds } } : {}),
       },
       orderBy: { id: 'asc' },
@@ -316,22 +315,13 @@ export class NotificationQueryService {
     const attached =
       await this.messageService.attachMediaStatus(latestVisibleMsgs);
     const latestIdByThread = new Map<number, bigint>();
-    const creatorByThread = new Map<number, number>();
     for (const m of identityMsgs) {
       latestIdByThread.set(m.threadId, m.id);
-      creatorByThread.set(m.threadId, m.creator);
     }
-    const blocked = await this.userBlockService.blockedByMe(userId);
     const attachedByThread = new Map(attached.map((m) => [m.threadId, m]));
-    // Active = threads with a latest message, minus P2P-blocked latest senders.
+    // Active = threads with a latest message whose local participant has not blocked delivery.
     const active = list.filter(
-      (p) =>
-        !p.blocked &&
-        latestIdByThread.has(p.threadId) &&
-        !(
-          p.thread.type === 'P2P' &&
-          blocked.has(creatorByThread.get(p.threadId) ?? -1)
-        ),
+      (p) => !p.blocked && latestIdByThread.has(p.threadId),
     );
     const cmpByIdAsc = (a: { threadId: number }, b: { threadId: number }) => {
       const ai = latestIdByThread.get(a.threadId)!;
@@ -448,7 +438,7 @@ type AttachedMessage = {
   seq: number;
   contentType: string;
   content: string;
-  creator: number;
+  creator: number | null;
   createdAt: Date;
   mediaStatus: 'ready' | 'failed';
   sv: number;

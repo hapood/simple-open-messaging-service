@@ -38,21 +38,6 @@ export class DeleteFriendDto extends UserIdDto {
   deleteData?: boolean;
 }
 
-/** Block or unblock a user (P2P). Independent of the friendship state machine — blocking survives an
- *  unfriend and applies to strangers. The message path drops fan-out to the blocker and filters
- *  query-messages so the blocker never sees the blocked user's messages. */
-export class BlockDto {
-  @ApiProperty({ example: 1, description: 'User id to block / unblock' })
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  userId!: number;
-
-  @ApiProperty({ example: true, description: 'true = block, false = unblock' })
-  @IsBoolean()
-  block!: boolean;
-}
-
 export class ThreadIdDto {
   @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
   @Type(() => Number)
@@ -173,18 +158,17 @@ export class QueryUsersDto {
   userIds!: number[];
 }
 
-/** Body for /user/query-state/delta — pull unified client-state deltas in (fromRevision, toRevision]
- *  (from exclusive, to inclusive). The client applies them in revision order. */
-export class ThreadDeltaDto {
-  @ApiProperty({ example: 0, description: 'From revision (exclusive)' })
+/** Pull compacted client-state feed items in (afterFeedId, targetFeedId]. */
+export class StateFeedDto {
+  @ApiProperty({ example: 0, description: 'Last scanned feed id (exclusive)' })
   @Type(() => Number)
   @IsInt()
   @Min(0)
-  fromRevision!: number;
+  afterFeedId!: number;
 
-  @ApiProperty({ example: 5, description: 'To revision (inclusive)' })
+  @ApiProperty({ example: 5, description: 'Fixed feed target (inclusive)' })
   @Type(() => Number)
   @IsInt()
   @Min(0)
-  toRevision!: number;
+  targetFeedId!: number;
 }
