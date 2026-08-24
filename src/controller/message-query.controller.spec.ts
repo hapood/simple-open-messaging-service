@@ -16,6 +16,8 @@ function setup(rows: Array<{ seq: number }> = []) {
     {} as never,
     {} as never,
     {} as never,
+    { queryThread: vi.fn().mockResolvedValue([]) } as never,
+    {} as never,
     {} as never,
   );
   const req = {
@@ -134,7 +136,6 @@ describe('MessageController.withdrawMessage quota', () => {
       { onDeletedMessageUpdated: vi.fn() } as never,
       { getActiveParticipantUserIds: vi.fn().mockResolvedValue([]) } as never,
       {} as never,
-      {} as never,
       {
         notifyOnSend: vi.fn(),
         signalDeletionOutbound: vi.fn(),
@@ -143,6 +144,7 @@ describe('MessageController.withdrawMessage quota', () => {
       {} as never,
       { assertCanSend, tickLax } as never,
       { withdraw } as never,
+      {} as never,
       {} as never,
       {} as never,
     );
@@ -177,13 +179,16 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
         {} as never,
         {} as never,
         {} as never,
-        {} as never,
         {
           assertP2PWritable: vi.fn().mockResolvedValue(undefined),
         } as never,
         {} as never,
         {} as never,
         { assertCanSend, tick } as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
       );
       const req = {
         user: { userId: 7 },
@@ -222,13 +227,16 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
       {} as never,
       {} as never,
       {} as never,
-      {} as never,
       {
         assertP2PWritable: vi.fn().mockResolvedValue(undefined),
       } as never,
       {} as never,
       {} as never,
       { assertCanSend: vi.fn().mockResolvedValue(undefined) } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
     );
     const req = {
       user: { userId: 7 },

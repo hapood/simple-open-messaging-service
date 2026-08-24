@@ -17,6 +17,10 @@ import {
 import { FederationCursorService } from '../src/federation/federation-cursor.service.js';
 import { FederationMessageFeedIndexerService } from '../src/federation/federation-message-feed-indexer.service.js';
 import { FederationMessageFeedService } from '../src/federation/federation-message-feed.service.js';
+import {
+  closeFederatedAudienceInTx,
+  openFederatedAudienceInTx,
+} from '../src/federation/federation-audience.js';
 
 describe('FederationMessageFeedService compacted feed', () => {
   let mod: TestingModule;
@@ -83,7 +87,7 @@ describe('FederationMessageFeedService compacted feed', () => {
     await database.db.insert(threadAudience).values({
       targetDomain: peerDomain,
       threadId: thread.id,
-      messageScannedThroughSeq: 0,
+      messageAccessAfterSeq: 0,
     });
     await new FederationCursorService(database).initializePeer(peerDomain, 0n);
     return { alice, thread };
@@ -273,6 +277,38 @@ describe('FederationMessageFeedService compacted feed', () => {
       ),
     ).rejects.toMatchObject({
       bizCode: BusinessCode.FORBIDDEN,
+    });
+  });
+
+  it('reauthorizes the stable thread above its prior history and returns a correcting cursor', async () => {
+    const { alice, thread } = await seed();
+    await append(thread.id, alice.id, 1);
+    await database.db.transaction(async (tx) => {
+      await closeFederatedAudienceInTx(tx, peerDomain, thread.id);
+      await openFederatedAudienceInTx(tx, peerDomain, thread.id);
+    });
+
+    await expect(
+      service.query(
+        peerDomain,
+        { type: 'P2P', account: 'alice', localAccount: 'bob' },
+        0,
+      ),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
+      data: { resumeAfter: '1', resumeBefore: '2' },
+    });
+
+    await append(thread.id, alice.id, 2);
+    const page = await service.query(
+      peerDomain,
+      { type: 'P2P', account: 'alice', localAccount: 'bob' },
+      1,
+    );
+    expect(page).toMatchObject({
+      messages: [{ seq: 2 }],
+      scannedThrough: '2',
+      hasMore: false,
     });
   });
 });

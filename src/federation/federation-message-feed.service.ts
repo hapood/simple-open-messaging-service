@@ -180,7 +180,8 @@ export class FederationMessageFeedService {
     peerDomain: string,
     selector: FederationThreadQuery,
   ): Promise<never> {
-    const threadId = await this.resolveAuthorizedThread(peerDomain, selector);
+    const { threadId, messageAccessAfterSeq } =
+      await this.resolveAuthorizedThread(peerDomain, selector);
     const [projection] = await this.database.db
       .select({ end: federationMessageFeedIndex.messageEndSeq })
       .from(federationMessageFeedIndex)
@@ -191,12 +192,15 @@ export class FederationMessageFeedService {
         ),
       )
       .limit(1);
-    const currentEnd = projection?.end ?? 0;
+    const currentEnd = Math.max(projection?.end ?? 0, messageAccessAfterSeq);
     throw new BusinessException(
       BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
       'after is required; initialize the message query cursor',
       HttpStatus.OK,
-      { resumeAfter: '0', resumeBefore: (currentEnd + 1).toString() },
+      {
+        resumeAfter: messageAccessAfterSeq.toString(),
+        resumeBefore: (currentEnd + 1).toString(),
+      },
     );
   }
 
@@ -217,7 +221,8 @@ export class FederationMessageFeedService {
       this.invalidThrough();
     if (before !== undefined && through !== undefined && through > before)
       this.invalidReverseThrough();
-    const threadId = await this.resolveAuthorizedThread(peerDomain, selector);
+    const { threadId, messageAccessAfterSeq } =
+      await this.resolveAuthorizedThread(peerDomain, selector);
     return this.database.db.transaction(async (tx) => {
       const [projection] = await tx
         .select({ end: federationMessageFeedIndex.messageEndSeq })
@@ -229,8 +234,8 @@ export class FederationMessageFeedService {
           ),
         )
         .limit(1);
-      const currentEnd = projection?.end ?? 0;
-      const resumeAfter = 0;
+      const currentEnd = Math.max(projection?.end ?? 0, messageAccessAfterSeq);
+      const resumeAfter = messageAccessAfterSeq;
       const resumeBefore = currentEnd + 1;
       if (
         (after !== undefined &&
@@ -252,7 +257,7 @@ export class FederationMessageFeedService {
       const queryEnd = forward
         ? Math.min(through ?? currentEnd, currentEnd)
         : 0;
-      const queryStart = forward ? 0 : (through ?? resumeAfter + 1);
+      const queryStart = forward ? resumeAfter : (through ?? resumeAfter + 1);
       const queryBefore = forward ? 0 : Math.min(before!, resumeBefore);
       const rows = (forward ? queryEnd <= after! : queryBefore <= queryStart)
         ? []
@@ -490,33 +495,35 @@ export class FederationMessageFeedService {
   private async resolveAuthorizedThread(
     peerDomain: string,
     selector: FederationThreadQuery,
-  ): Promise<number> {
+  ): Promise<{ threadId: number; messageAccessAfterSeq: number }> {
     const rows =
       selector.type === 'GROUP'
-        ? await this.database.db.execute<{ threadId: number }>(sql`
-            SELECT thread.id AS "threadId"
+        ? await this.database.db.execute<{
+            threadId: number;
+            messageAccessAfterSeq: number;
+          }>(sql`
+            SELECT thread.id AS "threadId",
+              audience."messageAccessAfterSeq" AS "messageAccessAfterSeq"
             FROM "MessageThread" thread
             JOIN "User" group_user ON group_user.id = thread."groupUserId"
+            JOIN "ThreadAudience" audience ON audience."threadId" = thread.id
+              AND audience."targetDomain" = ${peerDomain}
+              AND audience."localUserId" IS NULL
             WHERE thread.type = 'GROUP'
               AND group_user.account = ${selector.account}
-              AND EXISTS (
-                SELECT 1 FROM "ThreadAudience" audience
-                WHERE audience."threadId" = thread.id
-                  AND audience."targetDomain" = ${peerDomain}
-                  AND audience."localUserId" IS NULL
-              )
             LIMIT 1
           `)
-        : await this.database.db.execute<{ threadId: number }>(sql`
-            SELECT thread.id AS "threadId"
+        : await this.database.db.execute<{
+            threadId: number;
+            messageAccessAfterSeq: number;
+          }>(sql`
+            SELECT thread.id AS "threadId",
+              audience."messageAccessAfterSeq" AS "messageAccessAfterSeq"
             FROM "MessageThread" thread
+            JOIN "ThreadAudience" audience ON audience."threadId" = thread.id
+              AND audience."targetDomain" = ${peerDomain}
+              AND audience."localUserId" IS NULL
             WHERE thread.type = 'P2P'
-              AND EXISTS (
-                SELECT 1 FROM "ThreadAudience" audience
-                WHERE audience."threadId" = thread.id
-                  AND audience."targetDomain" = ${peerDomain}
-                  AND audience."localUserId" IS NULL
-              )
               AND EXISTS (
                 SELECT 1 FROM "ThreadParticipant" participant
                 JOIN "User" member ON member.id = participant."userId"
@@ -534,15 +541,15 @@ export class FederationMessageFeedService {
               )
             LIMIT 1
           `);
-    const threadId = rows.rows[0]?.threadId;
-    if (threadId === undefined) {
+    const authorized = rows.rows[0];
+    if (!authorized) {
       throw new BusinessException(
         BusinessCode.FORBIDDEN,
         'the signed peer does not currently have access to this thread',
         HttpStatus.OK,
       );
     }
-    return threadId;
+    return authorized;
   }
 
   private async threadAddressesInTx(

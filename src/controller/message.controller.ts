@@ -390,7 +390,7 @@ export class MessageController {
     const groupTarget =
       dto.targetGroupId === undefined ||
       groupVisibility?.thread.type !== 'GROUP' ||
-      groupVisibility.leftSeq !== null
+      groupVisibility.messageVisibleBeforeSeq !== null
         ? null
         : await this.groups.findGroupByThreadId(dto.targetGroupId);
     const target =
@@ -745,11 +745,11 @@ export class MessageController {
     // is blocked and can query the retained history again after unblocking.
     const filters: {
       clearedThroughSeq?: number | null;
-      visibleThroughSeq?: number | null;
+      visibleBeforeSeq?: number | null;
       hideCreatorIds?: number[];
     } = {
       clearedThroughSeq: req.threadAccess.participant.clearedSeq,
-      visibleThroughSeq: req.threadAccess.participant.leftSeq,
+      visibleBeforeSeq: req.threadAccess.participant.messageVisibleBeforeSeq,
     };
     const rows = await this.messageService.queryMessages(
       dto.threadId,

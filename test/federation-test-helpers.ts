@@ -409,3 +409,89 @@ export async function waitForSseEvent(
   }
   throw new Error(`SSE event not received within ${timeoutMs}ms`);
 }
+
+/** Continuously consume an SSE reader while retaining parsed events. Tests that learn an event's exact
+ * identity only after its durable row commits can therefore match the already-arrived frame without
+ * assuming it was the first event on a multiplexed stream. */
+export function collectSseEvents(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): {
+  waitFor: (
+    predicate: (event: string, data: unknown) => boolean,
+    timeoutMs?: number,
+  ) => Promise<unknown>;
+} {
+  const decoder = new TextDecoder();
+  const events: Array<{ event: string; data: unknown }> = [];
+  const changed = new Set<() => void>();
+  let buf = '';
+  let terminal: Error | undefined;
+
+  const notify = () => {
+    for (const listener of changed) listener();
+    changed.clear();
+  };
+  void (async () => {
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done)
+          throw new Error('SSE stream closed before the expected event');
+        buf += decoder.decode(value, { stream: true });
+        let idx: number;
+        while ((idx = buf.indexOf('\n\n')) >= 0) {
+          const frame = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          const lines = frame.split('\n');
+          const event =
+            lines
+              .find((line) => line.startsWith('event:'))
+              ?.slice(6)
+              .trim() ?? '';
+          const dataRaw = lines
+            .filter((line) => line.startsWith('data:'))
+            .map((line) => line.slice(5).replace(/^ /, ''))
+            .join('\n');
+          let data: unknown;
+          if (dataRaw) {
+            try {
+              data = JSON.parse(dataRaw);
+            } catch {
+              continue;
+            }
+          }
+          events.push({ event, data });
+        }
+        notify();
+      }
+    } catch (error) {
+      terminal = error as Error;
+      notify();
+    }
+  })();
+
+  return {
+    async waitFor(predicate, timeoutMs = 5000): Promise<unknown> {
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        const match = events.find(({ event, data }) => predicate(event, data));
+        if (match) return match.data;
+        if (terminal) throw terminal;
+        const remaining = deadline - Date.now();
+        if (remaining <= 0)
+          throw new Error(`SSE event not received within ${timeoutMs}ms`);
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(() => {
+            changed.delete(onChanged);
+            resolve();
+          }, remaining);
+          const onChanged = () => {
+            clearTimeout(timer);
+            resolve();
+          };
+          changed.add(onChanged);
+        });
+      }
+    },
+  };
+}

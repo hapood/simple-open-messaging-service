@@ -1619,8 +1619,7 @@ export class InviteService {
       .update(threadParticipant)
       .set({
         relationshipRev: sql`${threadParticipant.relationshipRev} + 1`,
-        afterSeq: sql`(SELECT "curSeq" FROM "MessageThread" WHERE id = ${threadId})`,
-        leftSeq: null,
+        messageVisibleBeforeSeq: null,
         updatedAt: new Date(),
       })
       .where(
@@ -1645,7 +1644,6 @@ export class InviteService {
           userId,
           threadId,
           relationshipRev: 1,
-          afterSeq: locked.curSeq,
           updatedAt: new Date(),
         }));
       if (missing.length > 0)

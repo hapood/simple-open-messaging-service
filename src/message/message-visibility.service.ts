@@ -22,7 +22,7 @@ export class MessageVisibilityService {
         message,
         threadType: messageThread.type,
         clearedSeq: threadParticipant.clearedSeq,
-        leftSeq: threadParticipant.leftSeq,
+        messageVisibleBeforeSeq: threadParticipant.messageVisibleBeforeSeq,
         blocked: threadParticipant.blocked,
       })
       .from(message)
@@ -40,7 +40,7 @@ export class MessageVisibilityService {
           eq(message.seq, seq),
           eq(message.isDeleted, false),
           sql`${message.seq} > COALESCE(${threadParticipant.clearedSeq}, 0)`,
-          sql`${threadParticipant.leftSeq} IS NULL OR ${message.seq} <= ${threadParticipant.leftSeq}`,
+          sql`${threadParticipant.messageVisibleBeforeSeq} IS NULL OR ${message.seq} < ${threadParticipant.messageVisibleBeforeSeq}`,
         ),
       )
       .limit(1);

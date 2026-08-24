@@ -662,11 +662,10 @@ export class MessageRepository {
    * self-leave / self-kick / a multi-device THREAD_REVISION DELETE).
    *
    * This is the ONE exception to the add-only rule above. It is NOT a per-message delete (the backend has no
-   * such command); it is whole-thread cache garbage collection. The threadId is dead — the backend mints a
-   * FRESH threadId on re-friend / re-join (a soft-leave retains the old row server-side only as history), so
-   * these cached bytes will never be re-queried. Dropping them reclaims orphaned cache without diverging from
-   * server state, exactly as {@link WebdbService.closeAndDelete} reclaims the whole DB on logout. The stale
-   * {@link maxSeenSeq} ceiling is cleared too, so the (never-reused) threadId leaves no in-memory residue.
+   * such command); it is whole-thread cache garbage collection. An explicit delete-data action removes the
+   * local bytes even if a later relationship reuses the stable thread id. This matches the user's deletion
+   * choice, exactly as {@link WebdbService.closeAndDelete} reclaims the whole DB on logout. The stale
+   * {@link maxSeenSeq} ceiling is cleared too so no in-memory residue survives the removal.
    *
    * Best-effort: IDB unavailable → graceful no-op (a transient miss just leaves the cache behind until the
    * next logout wipes the whole DB).

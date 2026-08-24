@@ -311,12 +311,9 @@ export const threadParticipant = pgTable(
     pinned: boolean().default(false).notNull(),
     pinnedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     clearedSeq: integer(),
-    /** First thread sequence observed when this retained participant was created/reactivated. Reserved
-     *  for future lower-bound visibility policy; current local history reads intentionally do not use it. */
-    afterSeq: integer().default(0).notNull(),
-    /** Inclusive local history boundary. Null means currently active; a departed participant may read
-     *  messages through this sequence, including the boundary SYSTEM notice. */
-    leftSeq: integer(),
+    /** Exclusive local-history upper bound. Null means currently active. When a participant leaves,
+     *  this is one greater than the boundary SYSTEM message sequence so that message remains visible. */
+    messageVisibleBeforeSeq: bigint({ mode: 'number' }),
     alias: varchar({ length: 64 }),
     relationshipRev: integer().default(0).notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -374,10 +371,9 @@ export const threadParticipant = pgTable(
       'ThreadParticipant_cleared_seq_check',
       sql`${table.clearedSeq} IS NULL OR ${table.clearedSeq} >= 0`,
     ),
-    check('ThreadParticipant_after_seq_check', sql`${table.afterSeq} >= 0`),
     check(
-      'ThreadParticipant_left_seq_check',
-      sql`${table.leftSeq} IS NULL OR ${table.leftSeq} > 0`,
+      'ThreadParticipant_messageVisibleBeforeSeq_check',
+      sql`${table.messageVisibleBeforeSeq} IS NULL OR ${table.messageVisibleBeforeSeq} > 1`,
     ),
     check(
       'ThreadParticipant_relationship_rev_check',
@@ -446,9 +442,9 @@ export const threadAudience = pgTable(
     targetDomain: varchar({ length: 63 }).notNull(),
     localUserId: integer(),
     threadId: integer().notNull(),
-    /** Implementation-only message discovery progress for the current authorization. Rejoining
-     * resets it to the thread's then-current seq; it is not a historical access generation. */
-    messageScannedThroughSeq: integer(),
+    /** Exclusive federation message-access lower bound. A peer audience may query only messages with
+     *  a greater thread sequence. It advances when a closed relationship is reauthorized. */
+    messageAccessAfterSeq: integer().default(0).notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -502,8 +498,8 @@ export const threadAudience = pgTable(
       sql`(${table.targetDomain} = 'local' AND ${table.localUserId} IS NOT NULL) OR (${table.targetDomain} <> 'local' AND ${table.localUserId} IS NULL)`,
     ),
     check(
-      'ThreadAudience_messageScannedThroughSeq_check',
-      sql`${table.messageScannedThroughSeq} IS NULL OR ${table.messageScannedThroughSeq} >= 0`,
+      'ThreadAudience_messageAccessAfterSeq_check',
+      sql`${table.messageAccessAfterSeq} >= 0`,
     ),
   ],
 );

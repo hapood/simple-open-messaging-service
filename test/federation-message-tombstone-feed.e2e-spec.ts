@@ -80,7 +80,7 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
     await database.db.insert(threadAudience).values({
       targetDomain: peerDomain,
       threadId: thread.id,
-      messageScannedThroughSeq: 0,
+      messageAccessAfterSeq: 0,
     });
     const [target] = await database.db
       .insert(message)
@@ -188,6 +188,24 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
         0n,
       ),
     ).rejects.toMatchObject({ bizCode: BusinessCode.FORBIDDEN });
+  });
+
+  it('does not expose tombstones for messages below a reauthorized audience floor', async () => {
+    const { deletion, thread } = await seedDeletion();
+    await database.db
+      .update(threadAudience)
+      .set({ messageAccessAfterSeq: 1 })
+      .where(eq(threadAudience.threadId, thread.id));
+
+    const page = await service.query(
+      peerDomain,
+      { type: 'P2P', account: 'alice', localAccount: 'bob' },
+      0n,
+      undefined,
+      deletion.id,
+    );
+    expect(page.tombstones).toEqual([]);
+    expect(page.scannedThrough).toBe(deletion.id.toString());
   });
 
   it('does not publish a deletion without current audience access', async () => {

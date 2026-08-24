@@ -1024,7 +1024,7 @@ export class MessageService {
     params: MessageQueryParams,
     filters?: {
       clearedThroughSeq?: number | null;
-      visibleThroughSeq?: number | null;
+      visibleBeforeSeq?: number | null;
       hideCreatorIds?: number[];
     },
   ) {
@@ -1042,10 +1042,10 @@ export class MessageService {
     )
       conditions.push(gt(message.seq, filters.clearedThroughSeq));
     if (
-      filters?.visibleThroughSeq !== null &&
-      filters?.visibleThroughSeq !== undefined
+      filters?.visibleBeforeSeq !== null &&
+      filters?.visibleBeforeSeq !== undefined
     )
-      conditions.push(lte(message.seq, filters.visibleThroughSeq));
+      conditions.push(lt(message.seq, filters.visibleBeforeSeq));
     if (filters?.hideCreatorIds?.length)
       conditions.push(notInArray(message.creator, filters.hideCreatorIds));
     const cursorSeq = params.cursor?.threadId_seq.seq;

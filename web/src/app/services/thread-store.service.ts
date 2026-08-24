@@ -452,9 +452,9 @@ export class ThreadRepository {
 
   /** Drop a thread after an explicit delete-data action. This is the SOLE chokepoint for thread removal, so the full local
    *  cleanup lives here: drop the list row + open-thread pointer, delete the `threads`-store record, clear the
-   *  stale {@link lastSeenSeq} residue, AND purge the cached message bodies via the message repo (the
-   *  threadId is dead: the backend mints a fresh one on re-friend / re-join, so the orphaned bytes would
-   *  otherwise linger until logout). Both IDB writes are best-effort + fire-and-forget. */
+   *  stale {@link lastSeenSeq} residue, AND purge the cached message bodies via the message repo. An explicit
+   *  delete-data choice must survive even when the backend later reuses the stable relationship thread.
+   *  Both IDB writes are best-effort + fire-and-forget. */
   async removeThread(threadId: number): Promise<void> {
     this._items.update((list) => list.filter((t) => t.threadId !== threadId));
     if (this._openThreadId() === threadId) this._openThreadId.set(undefined);

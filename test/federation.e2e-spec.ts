@@ -17,6 +17,7 @@ import {
   resolveFederatedCard,
   getAdminCookie,
   openSse,
+  collectSseEvents,
   waitForSseEvent,
 } from './federation-test-helpers.js';
 import { BusinessCode } from '../src/common/business-code.js';
@@ -1873,51 +1874,16 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // Open BOTH SSE streams; alice sends; assert BOTH bob AND dave receive it (the multi-local-member fan).
     const readerBob = await openSse(appB.baseUrl, tokenB);
     const readerDave = await openSse(appB.baseUrl, tokenDave);
+    const bobEvents = collectSseEvents(readerBob);
+    const daveEvents = collectSseEvents(readerDave);
     try {
       // `openSse` resolves as soon as the server flushes `: connected`; registration happens
       // immediately after that write in the server process, so across processes the final connection
       // can still have a tiny not-yet-registered window. HELLO is the protocol-level ready barrier.
       await Promise.all([
-        waitForSseEvent(readerBob, (event) => event === 'HELLO'),
-        waitForSseEvent(readerDave, (event) => event === 'HELLO'),
+        bobEvents.waitFor((event) => event === 'HELLO'),
+        daveEvents.waitFor((event) => event === 'HELLO'),
       ]);
-      const [receiverBoundary] = await appB.database
-        .select({ seq: sql<number>`COALESCE(MAX(${message.seq}), 0)::int` })
-        .from(message)
-        .where(eq(message.threadId, firstMirrorBId));
-      const sendStartedAt = Date.now();
-      // Start consuming both streams before the send. Waiting for the database first leaves a test-only
-      // race where the short SSE frame can already have passed through one undrained response body.
-      const bobEvent = waitForSseEvent(
-        readerBob,
-        (event, data) =>
-          event === 'NEW_MESSAGE' &&
-          typeof data === 'object' &&
-          data !== null &&
-          (data as { threadId?: number }).threadId === firstMirrorBId &&
-          ((data as { seq?: number }).seq ?? 0) > receiverBoundary.seq &&
-          ((data as { ts?: number }).ts ?? 0) >= sendStartedAt,
-        30_000,
-      ).catch((error) => {
-        throw new Error(
-          `bob did not receive shared-mirror message: ${(error as Error).message}`,
-        );
-      });
-      const daveEvent = waitForSseEvent(
-        readerDave,
-        (event, data) =>
-          event === 'NEW_MESSAGE' &&
-          typeof data === 'object' &&
-          data !== null &&
-          (data as { threadId?: number }).threadId === firstMirrorBId &&
-          ((data as { seq?: number }).seq ?? 0) > receiverBoundary.seq &&
-          ((data as { ts?: number }).ts ?? 0) >= sendStartedAt,
-        30_000,
-      ).catch((error) => {
-        throw new Error(
-          `dave did not receive shared-mirror message: ${(error as Error).message}`,
-        );
-      });
       const sharedSend = await request(appA.baseUrl)
         .post('/api/v1/send-message')
         .set('Authorization', `Bearer ${tokenA}`)
@@ -2004,9 +1970,23 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       expect(activeLocalRecipients.map((row) => row.userId).sort()).toEqual(
         [bobLocalIdB, daveLocalIdB].sort(),
       );
+      const isHiBothSignal = (event: string, data: unknown) =>
+        event === 'NEW_MESSAGE' &&
+        typeof data === 'object' &&
+        data !== null &&
+        (data as { threadId?: number }).threadId === firstMirrorBId &&
+        (data as { seq?: number }).seq === hiBoth.seq;
       const [bobSignal, daveSignal] = (await Promise.all([
-        bobEvent,
-        daveEvent,
+        bobEvents.waitFor(isHiBothSignal, 30_000).catch((error) => {
+          throw new Error(
+            `bob did not receive shared-mirror message: ${(error as Error).message}`,
+          );
+        }),
+        daveEvents.waitFor(isHiBothSignal, 30_000).catch((error) => {
+          throw new Error(
+            `dave did not receive shared-mirror message: ${(error as Error).message}`,
+          );
+        }),
       ])) as Array<{ seq?: number }>;
       expect(bobSignal.seq).toBe(hiBoth.seq);
       expect(daveSignal.seq).toBe(hiBoth.seq);
@@ -2067,7 +2047,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           orderBy: desc(message.seq),
         });
         expect(boundaryMessage).toMatchObject({ creator: null });
-        expect(originMember?.leftSeq).toBe(boundaryMessage!.seq);
+        expect(originMember?.messageVisibleBeforeSeq).toBe(
+          boundaryMessage!.seq + 1,
+        );
         expect(
           await appB.database.query.federatedGroupMember.findFirst({
             where: and(
@@ -2396,7 +2378,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             eq(threadParticipant.userId, bobLocalIdB),
           ),
         }),
-      ).toMatchObject({ leftSeq: expect.any(Number) });
+      ).toMatchObject({ messageVisibleBeforeSeq: expect.any(Number) });
       expect(
         await appB.database.query.relationshipPair.findFirst({
           where: and(
@@ -2715,6 +2697,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         }),
       ]);
     expect(resumedAudience).toBeDefined();
+    expect(resumedAudience!.messageAccessAfterSeq).toBeGreaterThanOrEqual(
+      lastBeforeDelete.body.data.seq,
+    );
     expect(peerBeforeContinue?.trustLevel).toBe('available');
 
     const continued = await request(appA.baseUrl)
@@ -2751,7 +2736,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     );
   }, 120_000);
 
-  it('materializes a federated unfriend as a local boundary SYSTEM/feed/leftSeq on the receiving server', async () => {
+  it('materializes a federated unfriend as a local exclusive SYSTEM/feed visibility boundary on the receiving server', async () => {
     const threadA = await findActiveP2pBetween(
       appA,
       aliceLocalIdA,
@@ -2792,7 +2777,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
               eq(threadParticipant.userId, bobLocalIdB),
             ),
           });
-        expect(participant?.leftSeq).toBe(boundary!.seq);
+        expect(participant?.messageVisibleBeforeSeq).toBe(boundary!.seq + 1);
         expect(
           await appB.database.query.clientMessageFeed.findFirst({
             where: and(

@@ -207,10 +207,9 @@ describe('First message after friend-add is delivered (single instance)', () => 
       const participants = await database.db.query.threadParticipant.findMany({
         where: eq(threadParticipant.threadId, threadId),
       });
-      expect(participants.map((participant) => participant.leftSeq)).toEqual([
-        boundaryWake.seq,
-        boundaryWake.seq,
-      ]);
+      expect(
+        participants.map((participant) => participant.messageVisibleBeforeSeq),
+      ).toEqual([boundaryWake.seq + 1, boundaryWake.seq + 1]);
       const projections = await database.db.query.clientMessageFeed.findMany({
         where: and(
           eq(clientMessageFeed.threadId, threadId),
@@ -289,7 +288,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
     expect(audiences).toHaveLength(2);
   });
 
-  it('keeps the federated thread shell inactive until the peer confirms FRIEND', async () => {
+  it('immediately confirms crossed federated friend requests', async () => {
     const appLike = { baseUrl, database: database.db };
     const alice = await registerAndLogin(appLike, 'strict-alice', 'Alice');
     const [foreignBob] = await database.db
@@ -328,12 +327,12 @@ describe('First message after friend-add is delivered (single instance)', () => 
       }),
     );
 
-    const beforeConfirmation =
+    const afterCrossedRequest =
       await database.db.query.relationshipPair.findFirst({
         where: pairWhere,
       });
-    expect(beforeConfirmation?.active).toBe(false);
-    expect(beforeConfirmation?.threadId).not.toBeNull();
+    expect(afterCrossedRequest?.active).toBe(true);
+    expect(afterCrossedRequest?.threadId).not.toBeNull();
 
     await database.db.transaction((tx) =>
       inviteService.applyRemoteFriendIntentInTx(tx, {

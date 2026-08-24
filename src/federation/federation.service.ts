@@ -4942,7 +4942,7 @@ export class FederationService {
             await tx
               .update(tables.threadParticipant)
               .set({
-                leftSeq: boundary.message.seq,
+                messageVisibleBeforeSeq: boundary.message.seq + 1,
                 updatedAt: new Date(),
               })
               .where(eq(tables.threadParticipant.threadId, effect.threadId));
@@ -5448,7 +5448,10 @@ export class FederationService {
             );
             await tx
               .update(tables.threadParticipant)
-              .set({ leftSeq: boundary.message.seq, updatedAt: new Date() })
+              .set({
+                messageVisibleBeforeSeq: boundary.message.seq + 1,
+                updatedAt: new Date(),
+              })
               .where(
                 and(
                   eq(tables.threadParticipant.threadId, originThread.id),

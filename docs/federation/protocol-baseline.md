@@ -125,6 +125,11 @@ Federation v1 wire requirements.
   member, its shared mirror continues receiving history. When its last member
   leaves, the origin freezes that peer audience. Rejoining reuses the mirror and
   resumes new delivery without backfilling the unsubscribed interval.
+- SOMS applies a stricter implementation-local federation access floor when a
+  closed P2P or peer-domain group audience is reopened. The stable thread and
+  sequence space are retained, but the peer may query only messages allocated
+  above the new exclusive floor. This does not constrain another conforming
+  implementation's local presentation of history that it already stores.
 - Message-body commit and media download are separate. Pending downloads survive
   restart; a quota pause stays recoverable and wakes after capacity is increased.
 - CAS and forward-bundle access validates exact message/thread ownership and the

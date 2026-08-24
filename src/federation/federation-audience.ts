@@ -8,11 +8,9 @@ import {
   threadAudience,
 } from '../database/schema.js';
 
-const DRAIN_BATCH = 500;
-
 /**
- * Materialize all currently committed, eligible messages after an audience's durable thread scan
- * position. One scan advancement allocates at most one new compacted feed ID for the thread.
+ * Materialize the newest currently committed, eligible message above the audience's access floor.
+ * The compacted feed index is itself the durable discovery position, so no second scan cursor is stored.
  */
 export async function advanceFederatedAudienceInTx(
   tx: DatabaseTransaction,
@@ -22,7 +20,7 @@ export async function advanceFederatedAudienceInTx(
   const [audience] = await tx
     .select({
       id: threadAudience.id,
-      scannedThrough: threadAudience.messageScannedThroughSeq,
+      messageAccessAfterSeq: threadAudience.messageAccessAfterSeq,
     })
     .from(threadAudience)
     .where(
@@ -42,40 +40,18 @@ export async function advanceFederatedAudienceInTx(
     .where(eq(messageThread.id, threadId))
     .limit(1);
   if (!thread) throw new Error(`thread ${threadId} does not exist`);
-  let scanned = audience.scannedThrough ?? thread.curSeq;
-  let messageEndSeq: number | null = null;
-
-  while (scanned < thread.curSeq) {
-    const rows = await tx.execute<{
-      messageId: string;
-      messageSeq: number;
-      eligible: boolean;
-    }>(sql`
-      SELECT target.id::text AS "messageId", target.seq AS "messageSeq",
-             target."contentType" <> 'SYSTEM' AS eligible
-      FROM "Message" target
-      JOIN "MessageThread" thread ON thread.id = target."threadId"
-      WHERE target."threadId" = ${threadId}
-        AND target.seq > ${scanned}
-        AND target.seq <= ${thread.curSeq}
-      ORDER BY target.seq
-      LIMIT ${DRAIN_BATCH}
-    `);
-    if (rows.rows.length === 0) {
-      scanned = thread.curSeq;
-      break;
-    }
-    const eligible = rows.rows.filter((row) => row.eligible);
-    if (eligible.length > 0) messageEndSeq = eligible.at(-1)!.messageSeq;
-    scanned = rows.rows.at(-1)!.messageSeq;
-  }
-
-  await tx
-    .update(threadAudience)
-    .set({ messageScannedThroughSeq: scanned })
-    .where(eq(threadAudience.id, audience.id));
-
-  if (messageEndSeq === null) return false;
+  const latest = await tx.execute<{ messageEndSeq: number }>(sql`
+    SELECT target.seq AS "messageEndSeq"
+    FROM "Message" target
+    WHERE target."threadId" = ${threadId}
+      AND target.seq > ${audience.messageAccessAfterSeq}
+      AND target.seq <= ${thread.curSeq}
+      AND target."contentType" <> 'SYSTEM'
+    ORDER BY target.seq DESC
+    LIMIT 1
+  `);
+  const messageEndSeq = latest.rows[0]?.messageEndSeq;
+  if (messageEndSeq === undefined) return false;
   const [current] = await tx
     .select({ messageEndSeq: federationMessageFeedIndex.messageEndSeq })
     .from(federationMessageFeedIndex)
@@ -134,7 +110,7 @@ export async function openFederatedAudienceInTx(
       targetDomain: peerDomain,
       localUserId: null,
       threadId,
-      messageScannedThroughSeq: thread.curSeq,
+      messageAccessAfterSeq: thread.curSeq,
     })
     .onConflictDoNothing({
       target: [threadAudience.targetDomain, threadAudience.threadId],

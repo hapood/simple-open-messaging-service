@@ -35,7 +35,9 @@ describe('ThreadAudience schema', () => {
     expect(constraints.get('ThreadAudience_target_check')).toContain('local');
     expect(constraints.get('ThreadAudience_target_check')).toContain('<>');
     expect(constraints.has('ThreadAudience_accessEpoch_check')).toBe(false);
-    expect(constraints.has('ThreadAudience_visibleRange_check')).toBe(false);
+    expect(constraints.has('ThreadAudience_messageAccessAfterSeq_check')).toBe(
+      true,
+    );
     expect(constraints.has('ThreadAudience_scope_check')).toBe(false);
     expect(constraints.has('ThreadAudience_deliverThroughChangeId_check')).toBe(
       false,
@@ -59,6 +61,8 @@ describe('ThreadAudience schema', () => {
         'remoteRelationshipRev',
       ]),
     );
+    expect(names).toContain('messageAccessAfterSeq');
+    expect(names).not.toContain('messageScannedThroughSeq');
 
     const peerColumns = await database.pool.query<{ column_name: string }>(
       `SELECT column_name

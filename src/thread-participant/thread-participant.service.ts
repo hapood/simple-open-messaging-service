@@ -411,7 +411,10 @@ export class ThreadParticipantService {
           ).message;
           await tx
             .update(threadParticipant)
-            .set({ leftSeq: systemMessage.seq, updatedAt: now })
+            .set({
+              messageVisibleBeforeSeq: systemMessage.seq + 1,
+              updatedAt: now,
+            })
             .where(eq(threadParticipant.threadId, threadId));
         }
         // Remote discovery authorization ends immediately; local thread visibility remains.
@@ -515,18 +518,16 @@ export class ThreadParticipantService {
         userId,
         threadId,
         role,
-        afterSeq: sql`(SELECT "curSeq" FROM "MessageThread" WHERE id = ${threadId})`,
         updatedAt: new Date(),
       });
       return;
     }
-    if (existing.role !== role || existing.leftSeq !== null) {
+    if (existing.role !== role || existing.messageVisibleBeforeSeq !== null) {
       await tx
         .update(threadParticipant)
         .set({
           role,
-          afterSeq: sql`(SELECT "curSeq" FROM "MessageThread" WHERE id = ${threadId})`,
-          leftSeq: null,
+          messageVisibleBeforeSeq: null,
           updatedAt: new Date(),
         })
         .where(eq(threadParticipant.id, existing.id));

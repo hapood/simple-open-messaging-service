@@ -91,6 +91,7 @@ jobs:
           VERSION=$(node -p "require('./package.json').version")
           test "$GITHUB_REF_NAME" = "v$VERSION"
           echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
+      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
         with:
@@ -103,6 +104,7 @@ jobs:
           source: .
           targets: app
           set: |
+            app.platforms=linux/amd64,linux/arm64
             app.tags=ghcr.io/${{ github.repository }}:${{ github.ref_name }}
             app.output=type=registry
             runtime-base.cache-from=type=gha,scope=soms-runtime-base

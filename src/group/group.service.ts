@@ -572,7 +572,10 @@ export class GroupService {
       if (systemMessage) {
         await tx
           .update(threadParticipant)
-          .set({ leftSeq: systemMessage.seq, updatedAt: now })
+          .set({
+            messageVisibleBeforeSeq: systemMessage.seq + 1,
+            updatedAt: now,
+          })
           .where(
             and(
               eq(threadParticipant.userId, params.userId),
@@ -885,7 +888,10 @@ export class GroupService {
       if (systemMessage) {
         await tx
           .update(threadParticipant)
-          .set({ leftSeq: systemMessage.seq, updatedAt: now })
+          .set({
+            messageVisibleBeforeSeq: systemMessage.seq + 1,
+            updatedAt: now,
+          })
           .where(
             and(
               eq(threadParticipant.userId, params.targetUserId),
