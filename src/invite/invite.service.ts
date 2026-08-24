@@ -32,6 +32,7 @@ import {
   openFederatedAudienceInTx,
 } from '../federation/federation-audience.js';
 import { RelationshipIntentService } from './relationship-intent.service.js';
+import { mutuallyAuthorizedSql } from './relationship-authorization.js';
 
 /** Friend + group invite TTL: 7 days. Validated at accept time; the background sweep/GC is deferred
  *  (a row stays PENDING past expiry until then — the client renders an "expired" prompt from
@@ -64,6 +65,7 @@ export type FriendRelationshipState =
 export interface FederatedPendingProfileSnapshot {
   displayName?: string;
   avatar?: string;
+  bio: string;
 }
 
 /** Fields selected for the embedded inviter/recipient profile on list queries (never hashPwd — it is
@@ -550,6 +552,7 @@ export class InviteService {
             secondUserSnapshot.displayName?.slice(0, 30) || projectedPeer.name;
           projectedPeer.avatar =
             secondUserSnapshot.avatar || projectedPeer.avatar;
+          projectedPeer.bio = secondUserSnapshot.bio;
         }
         const body = {
           ...commonBody,
@@ -578,6 +581,7 @@ export class InviteService {
       account: value.account,
       name: value.name,
       avatar: value.avatar,
+      bio: value.bio,
       domain: value.domain,
       isForeigner: value.isForeigner,
     };
@@ -898,13 +902,6 @@ export class InviteService {
             );
           const low = Math.min(friend.authorUserId, byUserId);
           const high = Math.max(friend.authorUserId, byUserId);
-          const before = await tx.query.relationshipPair.findFirst({
-            where: and(
-              eq(relationshipPair.userLowId, low),
-              eq(relationshipPair.userHighId, high),
-            ),
-            columns: { active: true },
-          });
           if (afterFriendAccept)
             await afterFriendAccept(tx, friend.authorUserId);
           else
@@ -1468,20 +1465,10 @@ export class InviteService {
   ): Promise<{ active: boolean; transitioned: boolean; threadId?: number }> {
     const low = Math.min(userAId, userBId);
     const high = Math.max(userAId, userBId);
-    const requests = await tx.execute<{
-      authorUserId: number;
-      status: string;
-      effective: boolean;
-    }>(sql`
-      SELECT "authorUserId", status::text,
-        (status = 'ACCEPTED') AS effective
-      FROM "RelationshipIntent"
-      WHERE ("authorUserId" = ${userAId} AND "subjectUserId" = ${userBId})
-         OR ("authorUserId" = ${userBId} AND "subjectUserId" = ${userAId})
+    const derived = await tx.execute<{ active: boolean }>(sql`
+      SELECT ${mutuallyAuthorizedSql(userAId, userBId)} AS active
     `);
-    const desiredActive =
-      requests.rows.length === 2 &&
-      requests.rows.every((request) => request.effective);
+    const desiredActive = derived.rows[0]?.active ?? false;
     const pair = await tx.execute<{
       active: boolean;
       threadId: number | null;

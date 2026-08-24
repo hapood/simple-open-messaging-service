@@ -1,4 +1,4 @@
-# Simple Open Chat Federation Protocol v1 Group Meta Feed
+# Simple Open Messaging Federation Protocol v1 Group Meta Feed
 
 Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 

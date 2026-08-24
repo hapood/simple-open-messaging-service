@@ -27,9 +27,7 @@ describe('ThrottleGuard', () => {
           limit: 5,
           windowSeconds: 60,
         }),
-        bucketKey: vi
-          .fn()
-          .mockReturnValue('rl:0:admin.login:192.0.2.7'),
+        bucketKey: vi.fn().mockReturnValue('rl:0:admin.login:192.0.2.7'),
       } as unknown as FixedWindowPolicyService,
     );
     const request = {

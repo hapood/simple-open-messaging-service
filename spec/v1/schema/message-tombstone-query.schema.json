@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:socfp:v1:message-tombstone-query",
+  "$id": "urn:somfp:v1:message-tombstone-query",
   "title": "GET /s2s/v1/message-tombstones response data",
   "$defs": {
     "tombstone": {
@@ -8,17 +8,17 @@
       "required": ["deletionSeq", "thread", "messageSeq", "type", "deletedAt"],
       "properties": {
         "deletionSeq": {
-          "$ref": "urn:socfp:v1:common#/$defs/positiveDecimalString"
+          "$ref": "urn:somfp:v1:common#/$defs/positiveDecimalString"
         },
         "thread": {
-          "$ref": "urn:socfp:v1:message-feed#/$defs/thread"
+          "$ref": "urn:somfp:v1:message-feed#/$defs/thread"
         },
         "messageSeq": {
-          "$ref": "urn:socfp:v1:common#/$defs/positiveThreadSequence"
+          "$ref": "urn:somfp:v1:common#/$defs/positiveThreadSequence"
         },
         "type": { "enum": ["WITHDRAW", "REPORT"] },
         "deletedAt": {
-          "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds"
+          "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
         }
       },
       "additionalProperties": false
@@ -29,7 +29,7 @@
   "properties": {
     "tombstones": { "type": "array", "items": { "$ref": "#/$defs/tombstone" } },
     "scannedThrough": {
-      "$ref": "urn:socfp:v1:common#/$defs/decimalString"
+      "$ref": "urn:somfp:v1:common#/$defs/decimalString"
     },
     "hasMore": { "type": "boolean" }
   },

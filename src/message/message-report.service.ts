@@ -1,15 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { alias } from 'drizzle-orm/pg-core';
-import {
-  and,
-  count,
-  desc,
-  eq,
-  inArray,
-  isNull,
-  type SQL,
-  sql,
-} from 'drizzle-orm';
+import { and, count, desc, eq, inArray, type SQL, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';

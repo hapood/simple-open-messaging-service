@@ -16,44 +16,56 @@ Each backend has its own database, `data/` directory, S2S root/signing keys, JWT
 uploads, and media CAS. All three use the PostgreSQL server and credentials from the repository
 `.env` `DATABASE_URL`; only the database name is replaced.
 
-The lab reads the existing backend, Angular, and admin build outputs. The two frontend applications
-are served by three lightweight local edges without being rebuilt when the lab starts. Each edge
-serves the web SPA at `/`, the admin SPA at `/admin/`, and proxies API/uploads to its node. Both
-backend ports `3201`–`3203` and browser-facing ports `3101`–`3103` bind to `0.0.0.0`, so another device
-on the LAN can use `http://<development-machine-ip>:3101` (and the corresponding other ports).
+In the default mode, the lab starts one shared Angular development server with unhashed in-memory
+assets and one shared Vite development server. The dedicated `Caddyfile.hmr` forwards frontend HTTP
+and HMR WebSocket traffic to those servers while routing API/uploads to the edge's own backend node.
+Built mode uses `Caddyfile.built` to serve static outputs. Both backend ports `3201`–`3203` and
+browser-facing ports `3101`–`3103` bind to `0.0.0.0`, so another device on the LAN can use
+`http://<development-machine-ip>:3101` (and the corresponding other ports).
 
 ## Run
 
-Install the repository, web, and admin dependencies first, and configure a reachable PostgreSQL
-`DATABASE_URL` in the repository `.env`. The configured PostgreSQL user must be able to create the
-three lab databases.
+Install Caddy plus the repository, web, and admin dependencies first, and configure a reachable
+PostgreSQL `DATABASE_URL` in the repository `.env`. The configured PostgreSQL user must be able to
+create the three lab databases. The normal development entry point builds the backend, starts both
+frontend development servers with HMR, and starts the lab:
 
 ```bash
-npm run build
-npm run build --prefix web
-npm run build --prefix admin-web
-npm run federation:lab
+npm run dev
 ```
+
+This mode uses unhashed frontend module names and source maps. The shared dev servers are
+implementation details; browse through the `310x` edge URLs so each session reaches the intended
+backend node.
+
+For independent restarts, run the process groups in separate terminals:
+
+```bash
+npm run dev:backend
+npm run dev:frontend
+```
+
+The backend command builds before starting all three Node processes. The frontend command starts
+Angular, Vite, and Caddy without connecting to PostgreSQL.
 
 Use `Ctrl+C` to stop all six child processes. Data persists under
 `dev/federation-lab/runtime/<node>/`; starting again reuses identities and databases.
 
-For frontend debugging, build either frontend independently with source maps and without
-optimization/minification, then restart the lab:
+To test prebuilt assets rather than frontend development servers, run:
 
 ```bash
-npm run build:debug --prefix web
-npm run build:debug --prefix admin-web
-npm run federation:lab
+npm run dev:built
 ```
 
-Only rebuild the application whose source changed. The lab runs `dist/src/main.js`, serves
-`web/dist/web/browser`, and serves `admin-web/dist`; it does not run any build command itself.
+This builds the backend and both frontends with development source maps, packages the client update
+bundle, then runs the same three-node topology with `web/dist/web/browser` and `admin-web/dist`.
+These assets retain content hashes. Use `npm run build:production` separately when validating
+optimized, source-map-free deployment artifacts.
 
 To start over, stop the lab and run:
 
 ```bash
-npm run federation:lab:reset
+npm run dev:reset
 ```
 
 Reset permanently drops only the three explicitly named `soms_fed_lab_*` databases and removes the

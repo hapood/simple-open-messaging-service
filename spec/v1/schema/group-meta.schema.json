@@ -1,17 +1,17 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:socfp:v1:group-meta",
+  "$id": "urn:somfp:v1:group-meta",
   "title": "GET /s2s/v1/group-meta response data",
   "$defs": {
     "avatar": {
       "type": "object",
       "required": ["digest", "mimeType", "base64", "width", "height"],
       "properties": {
-        "digest": { "$ref": "urn:socfp:v1:common#/$defs/sha256Hex" },
+        "digest": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" },
         "mimeType": { "type": "string", "minLength": 1 },
         "base64": { "type": "string", "minLength": 4, "maxLength": 1048576 },
-        "width": { "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger" },
-        "height": { "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger" }
+        "width": { "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger" },
+        "height": { "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger" }
       },
       "additionalProperties": false
     },
@@ -21,7 +21,7 @@
       "properties": {
         "role": { "enum": ["OWNER", "ADMIN", "MEMBER"] },
         "profileRev": {
-          "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
+          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
         },
         "displayName": { "type": "string", "minLength": 1, "maxLength": 30 },
         "avatar": {
@@ -35,11 +35,11 @@
       "required": ["feedId", "account", "domain", "rev", "operation", "body"],
       "properties": {
         "feedId": {
-          "$ref": "urn:socfp:v1:common#/$defs/positiveDecimalString"
+          "$ref": "urn:somfp:v1:common#/$defs/positiveDecimalString"
         },
-        "account": { "$ref": "urn:socfp:v1:common#/$defs/userAccount" },
-        "domain": { "$ref": "urn:socfp:v1:common#/$defs/domain" },
-        "rev": { "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger" },
+        "account": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
+        "domain": { "$ref": "urn:somfp:v1:common#/$defs/domain" },
+        "rev": { "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger" },
         "operation": { "type": "string" },
         "body": { "type": "object" }
       }
@@ -75,12 +75,12 @@
     "hasMore"
   ],
   "properties": {
-    "account": { "$ref": "urn:socfp:v1:common#/$defs/groupAccount" },
+    "account": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },
     "mode": { "enum": ["full", "delta"] },
     "items": { "type": "array", "items": { "$ref": "#/$defs/item" } },
-    "scannedThrough": { "$ref": "urn:socfp:v1:common#/$defs/decimalString" },
+    "scannedThrough": { "$ref": "urn:somfp:v1:common#/$defs/decimalString" },
     "groupMetaFeedEndId": {
-      "$ref": "urn:socfp:v1:common#/$defs/decimalString"
+      "$ref": "urn:somfp:v1:common#/$defs/decimalString"
     },
     "hasMore": { "type": "boolean" }
   },

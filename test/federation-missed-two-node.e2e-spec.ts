@@ -3,7 +3,7 @@ import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { BusinessCode } from '../src/common/business-code.js';
 import {
   fileSyncProgress,
@@ -80,16 +80,12 @@ describe('federation durable missed transport (two nodes)', () => {
     await vi.waitFor(
       async () => {
         const active = await appB.database.query.threadParticipant.findFirst({
-          where: and(
-            eq(threadParticipant.userId, aliceStubIdB),
-          ),
+          where: and(eq(threadParticipant.userId, aliceStubIdB)),
         });
         expect(active).toBeDefined();
         const activeOnA = await appA.database.query.threadParticipant.findFirst(
           {
-            where: and(
-              eq(threadParticipant.userId, bobStubIdA),
-            ),
+            where: and(eq(threadParticipant.userId, bobStubIdA)),
           },
         );
         expect(activeOnA).toBeDefined();
@@ -106,9 +102,7 @@ describe('federation durable missed transport (two nodes)', () => {
 
   it('delivers through the HWM + /message-feed pipeline', async () => {
     const bobThread = await appB.database.query.threadParticipant.findFirst({
-      where: and(
-        eq(threadParticipant.userId, aliceStubIdB),
-      ),
+      where: and(eq(threadParticipant.userId, aliceStubIdB)),
     });
     expect(bobThread).toBeDefined();
 
@@ -174,9 +168,7 @@ describe('federation durable missed transport (two nodes)', () => {
     });
     expect(bobStub).toBeDefined();
     const aliceThread = await appA.database.query.threadParticipant.findFirst({
-      where: and(
-        eq(threadParticipant.userId, bobStub!.id),
-      ),
+      where: and(eq(threadParticipant.userId, bobStub!.id)),
     });
     expect(aliceThread).toBeDefined();
 
@@ -207,13 +199,7 @@ describe('federation durable missed transport (two nodes)', () => {
     // Remove appA's shard and let the proxy fixture model its remote CAS response.
     proxy.setGetFileFixture(digest, bytes);
     await unlink(
-      join(
-        appA.dataDir,
-        'cas',
-        digest.slice(0, 2),
-        digest.slice(2, 4),
-        digest,
-      ),
+      join(appA.dataDir, 'cas', digest.slice(0, 2), digest.slice(2, 4), digest),
     );
     proxy.blockGetFile(true);
     // Deliberately taking B offline makes A's circuit breaker mark it degraded. Restore transport health in
@@ -354,9 +340,7 @@ describe('federation durable missed transport (two nodes)', () => {
     });
     expect(bobStub).toBeDefined();
     const aliceThread = await appA.database.query.threadParticipant.findFirst({
-      where: and(
-        eq(threadParticipant.userId, bobStub!.id),
-      ),
+      where: and(eq(threadParticipant.userId, bobStub!.id)),
     });
     expect(aliceThread).toBeDefined();
 
@@ -406,13 +390,7 @@ describe('federation durable missed transport (two nodes)', () => {
       .pop()!;
     proxy.setGetFileFixture(digest, bytes);
     await unlink(
-      join(
-        appA.dataDir,
-        'cas',
-        digest.slice(0, 2),
-        digest.slice(2, 4),
-        digest,
-      ),
+      join(appA.dataDir, 'cas', digest.slice(0, 2), digest.slice(2, 4), digest),
     );
 
     let batchId = '';

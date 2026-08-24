@@ -1,4 +1,4 @@
-# SOCFP Security Policy
+# SOMFP Security Policy
 
 ## Supported versions
 

@@ -14,7 +14,7 @@ export interface MessageEntitySegment {
 
 export type MessageSegment = MessageTextSegment | MessageEntitySegment;
 
-export const ALL_MENTION_ID = 'socfp:audience:all';
+export const ALL_MENTION_ID = 'somfp:audience:all';
 
 interface ParsedAt {
   entity: MessageEntitySegment;
@@ -24,7 +24,7 @@ interface ParsedAt {
 export function serializeUserMention(label: string, account: string): string {
   if (!label) throw new Error('mention label must not be empty');
   if (!account) throw new Error('mention account must not be empty');
-  return `[@${escapeLabel(label)}](socfp://user/${encodeURIComponent(account)})`;
+  return `[@${escapeLabel(label)}](somfp://user/${encodeURIComponent(account)})`;
 }
 
 export function serializeAudienceMention(
@@ -32,7 +32,7 @@ export function serializeAudienceMention(
   audience: 'all',
 ): string {
   if (!label) throw new Error('mention label must not be empty');
-  return `[@${escapeLabel(label)}](socfp://audience/${audience})`;
+  return `[@${escapeLabel(label)}](somfp://audience/${audience})`;
 }
 
 export function escapePlainText(text: string): string {
@@ -174,7 +174,7 @@ function parseEntityAt(content: string, start: number): ParsedAt | null {
   } catch {
     return null;
   }
-  if (url.protocol !== 'socfp:' || !url.hostname || url.pathname.length <= 1) {
+  if (url.protocol !== 'somfp:' || !url.hostname || url.pathname.length <= 1) {
     return null;
   }
   if (url.search || url.hash || url.port || url.username || url.password)
@@ -196,9 +196,9 @@ function parseEntityAt(content: string, start: number): ParsedAt | null {
         : null;
   const canonical =
     entityType === 'user'
-      ? `socfp://user/${encodeURIComponent(entityId)}`
+      ? `somfp://user/${encodeURIComponent(entityId)}`
       : entityType === 'audience' && entityId === 'all'
-        ? 'socfp://audience/all'
+        ? 'somfp://audience/all'
         : null;
   if (entityType === null || canonical === null || uriText !== canonical)
     return null;

@@ -951,7 +951,7 @@ describe('rawPreview', () => {
       rawPreview(
         'PURE_TEXT',
         JSON.stringify({
-          text: '你好 [@张三](socfp://user/zhangsan%40example.com)',
+          text: '你好 [@张三](somfp://user/zhangsan%40example.com)',
           quote: {
             seq: 7,
             author: '李四',

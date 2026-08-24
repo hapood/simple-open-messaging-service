@@ -26,7 +26,6 @@ import { UserService } from '../user/user.service.js';
 import { UploadService } from '../upload/upload.service.js';
 import { MessageService } from '../message/message.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
-import { SystemMessageType } from '../message/system-message.js';
 import { GroupService } from '../group/group.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { GroupRole, MessageThreadType } from '../database/enums.js';
@@ -650,10 +649,9 @@ export class UserController {
       }
       const [relationship] = localUser.isGroup
         ? []
-        : await this.inviteService.friendRelationshipStatuses(
-            req.user.userId,
-            [localUser.id],
-          );
+        : await this.inviteService.friendRelationshipStatuses(req.user.userId, [
+            localUser.id,
+          ]);
       finish('resolved', {
         user: localUser,
         relationship: relationship?.status ?? 'NONE',

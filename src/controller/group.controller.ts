@@ -277,7 +277,8 @@ export class GroupController {
   ) {
     return this.groupService.queryJoinRequests(
       req.threadAccess!.threadId,
-      dto.before === undefined ? undefined : BigInt(dto.before),
+      req.user.userId,
+      dto.before,
       dto.take ?? 20,
     );
   }
@@ -298,7 +299,7 @@ export class GroupController {
     await this.groupService.markJoinRequestsRead(
       req.threadAccess!.threadId,
       req.user.userId,
-      BigInt(dto.readRequestId),
+      dto.readFeedId,
     );
   }
 

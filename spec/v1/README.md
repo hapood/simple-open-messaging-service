@@ -1,10 +1,10 @@
-# Simple Open Chat Federation Protocol v1
+# Simple Open Messaging Federation Protocol v1
 
 Status: `RELEASE CANDIDATE`
 
 Release: `v1.0.0-rc.0`
 
-This directory contains the Simple Open Chat Federation Protocol v1.0.0-rc.0 candidate package. The protocol model and mandatory features are closed. The normative text specifies only the observable wire contract, state transitions, and security boundaries between independent implementations. Database tables, workers, queues, user interfaces, deployment parameters, and local product limits are outside the protocol unless the text explicitly constrains a local behavior because it changes a peer-observable result.
+This directory contains the Simple Open Messaging Federation Protocol v1.0.0-rc.0 candidate package. The protocol model and mandatory features are closed. The normative text specifies only the observable wire contract, state transitions, and security boundaries between independent implementations. Database tables, workers, queues, user interfaces, deployment parameters, and local product limits are outside the protocol unless the text explicitly constrains a local behavior because it changes a peer-observable result.
 
 This English text is the authoritative working text for v1.0.0-rc.0.
 

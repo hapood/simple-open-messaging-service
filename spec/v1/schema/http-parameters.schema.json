@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:socfp:v1:http-parameters",
+  "$id": "urn:somfp:v1:http-parameters",
   "title": "Federation v1 normalized HTTP path/query parameter objects",
   "$defs": {
     "userProfileParameters": {
@@ -8,7 +8,7 @@
       "required": ["account"],
       "properties": {
         "account": {
-          "$ref": "urn:socfp:v1:common#/$defs/userAccount"
+          "$ref": "urn:somfp:v1:common#/$defs/userAccount"
         }
       },
       "additionalProperties": false
@@ -18,11 +18,11 @@
       "dependentRequired": { "take": ["after"], "through": ["after"] },
       "properties": {
         "after": {
-          "$ref": "urn:socfp:v1:common#/$defs/decimalString"
+          "$ref": "urn:somfp:v1:common#/$defs/decimalString"
         },
         "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" },
         "through": {
-          "$ref": "urn:socfp:v1:common#/$defs/decimalString"
+          "$ref": "urn:somfp:v1:common#/$defs/decimalString"
         }
       },
       "additionalProperties": false
@@ -32,11 +32,11 @@
       "dependentRequired": { "take": ["after"], "through": ["after"] },
       "properties": {
         "after": {
-          "$ref": "urn:socfp:v1:common#/$defs/decimalString"
+          "$ref": "urn:somfp:v1:common#/$defs/decimalString"
         },
         "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" },
         "through": {
-          "$ref": "urn:socfp:v1:common#/$defs/decimalString"
+          "$ref": "urn:somfp:v1:common#/$defs/decimalString"
         }
       },
       "additionalProperties": false
@@ -46,11 +46,11 @@
       "dependentRequired": { "take": ["after"], "through": ["after"] },
       "properties": {
         "after": {
-          "$ref": "urn:socfp:v1:common#/$defs/decimalString"
+          "$ref": "urn:somfp:v1:common#/$defs/decimalString"
         },
         "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" },
         "through": {
-          "$ref": "urn:socfp:v1:common#/$defs/decimalString"
+          "$ref": "urn:somfp:v1:common#/$defs/decimalString"
         }
       },
       "additionalProperties": false
@@ -71,19 +71,19 @@
           "not": { "required": ["after", "before"] },
           "properties": {
             "account": {
-              "$ref": "urn:socfp:v1:common#/$defs/userAccount"
+              "$ref": "urn:somfp:v1:common#/$defs/userAccount"
             },
             "localAccount": {
-              "$ref": "urn:socfp:v1:common#/$defs/userAccount"
+              "$ref": "urn:somfp:v1:common#/$defs/userAccount"
             },
             "after": {
-              "$ref": "urn:socfp:v1:common#/$defs/decimalString"
+              "$ref": "urn:somfp:v1:common#/$defs/decimalString"
             },
             "before": {
-              "$ref": "urn:socfp:v1:common#/$defs/decimalString"
+              "$ref": "urn:somfp:v1:common#/$defs/decimalString"
             },
             "through": {
-              "$ref": "urn:socfp:v1:common#/$defs/decimalString"
+              "$ref": "urn:somfp:v1:common#/$defs/decimalString"
             },
             "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" },
             "includeSelf": { "enum": ["true", "false"] }
@@ -104,16 +104,16 @@
           "not": { "required": ["after", "before"] },
           "properties": {
             "account": {
-              "$ref": "urn:socfp:v1:common#/$defs/groupAccount"
+              "$ref": "urn:somfp:v1:common#/$defs/groupAccount"
             },
             "after": {
-              "$ref": "urn:socfp:v1:common#/$defs/decimalString"
+              "$ref": "urn:somfp:v1:common#/$defs/decimalString"
             },
             "before": {
-              "$ref": "urn:socfp:v1:common#/$defs/decimalString"
+              "$ref": "urn:somfp:v1:common#/$defs/decimalString"
             },
             "through": {
-              "$ref": "urn:socfp:v1:common#/$defs/decimalString"
+              "$ref": "urn:somfp:v1:common#/$defs/decimalString"
             },
             "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" },
             "includeSelf": { "enum": ["true", "false"] }
@@ -126,11 +126,11 @@
       "type": "object",
       "required": ["account", "mode", "after"],
       "properties": {
-        "account": { "$ref": "urn:socfp:v1:common#/$defs/groupAccount" },
+        "account": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },
         "mode": { "enum": ["full", "delta"] },
-        "after": { "$ref": "urn:socfp:v1:common#/$defs/decimalString" },
+        "after": { "$ref": "urn:somfp:v1:common#/$defs/decimalString" },
         "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" },
-        "through": { "$ref": "urn:socfp:v1:common#/$defs/decimalString" }
+        "through": { "$ref": "urn:somfp:v1:common#/$defs/decimalString" }
       },
       "additionalProperties": false
     },
@@ -138,12 +138,12 @@
       "type": "object",
       "required": ["digest", "fromAccount", "fromDomain", "toAccount", "seq"],
       "properties": {
-        "digest": { "$ref": "urn:socfp:v1:common#/$defs/sha256Hex" },
+        "digest": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" },
         "fromAccount": {
-          "$ref": "urn:socfp:v1:common#/$defs/userAccount"
+          "$ref": "urn:somfp:v1:common#/$defs/userAccount"
         },
-        "fromDomain": { "$ref": "urn:socfp:v1:common#/$defs/domain" },
-        "toAccount": { "$ref": "urn:socfp:v1:common#/$defs/account" },
+        "fromDomain": { "$ref": "urn:somfp:v1:common#/$defs/domain" },
+        "toAccount": { "$ref": "urn:somfp:v1:common#/$defs/account" },
         "seq": {
           "type": "string",
           "pattern": "^[1-9][0-9]{0,15}$"

@@ -166,7 +166,7 @@ export class PeerStateFeedService {
           throw new Error(
             `${write.eventType} revision ${nextSnapshotRevision} changed without advancing`,
           );
-        continue;
+        if (!write.forceReindex) continue;
       }
       if (
         current &&
@@ -318,10 +318,7 @@ export class PeerStateFeedService {
             : {}),
         };
         const itemBytes = Buffer.byteLength(JSON.stringify(item));
-        if (
-          items.length > 0 &&
-          bytes + itemBytes > STATE_FEED_PAGE_MAX_BYTES
-        )
+        if (items.length > 0 && bytes + itemBytes > STATE_FEED_PAGE_MAX_BYTES)
           break;
         items.push(item);
         bytes += itemBytes;

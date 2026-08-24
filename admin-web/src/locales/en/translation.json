@@ -502,7 +502,7 @@
     },
     "selfCheck": {
       "title": "S2S Handshake Self-Check",
-      "desc": "Probes THIS server's federation prerequisites from the external viewpoint — DNS/SRV, TLS certificate, .well-known/socfp, key consistency, signature loopback and clock skew. Each network check is run per resolved IP (SRV→DDNS or multi-A/AAAA).",
+      "desc": "Probes THIS server's federation prerequisites from the external viewpoint — DNS/SRV, TLS certificate, .well-known/somfp, key consistency, signature loopback and clock skew. Each network check is run per resolved IP (SRV→DDNS or multi-A/AAAA).",
       "entry": "Self-check",
       "ntpServer": "Reference clock (NTP)",
       "dnsResolver": "DNS resolver",
@@ -524,12 +524,12 @@
         "config": "Local configuration",
         "key-file": "Key file permissions",
         "key-age": "Key creation time",
-        "dns-srv": "SRV record _socfp._tcp",
+        "dns-srv": "SRV record _somfp._tcp",
         "dns-a": "A records (IPv4)",
         "dns-aaaa": "AAAA records (IPv6)",
         "tls-public": "TLS certificate (per IP)",
         "tls-loopback": "Local process loopback",
-        "well-known": ".well-known/socfp (per IP)",
+        "well-known": ".well-known/somfp (per IP)",
         "key-consistency": "Published key consistency",
         "sign-loopback": "Signature loopback",
         "clock-skew": "Clock skew"
@@ -544,7 +544,7 @@
         "config": "Local configuration",
         "dns": "DNS resolution",
         "tls": "TLS certificate",
-        "well-known": ".well-known/socfp",
+        "well-known": ".well-known/somfp",
         "crypto": "Key & signature",
         "clock": "Clock skew"
       },

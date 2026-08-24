@@ -14,11 +14,22 @@ import { Client } from 'pg';
 const labDir = dirname(fileURLToPath(import.meta.url));
 const root = resolve(labDir, '..', '..');
 const runtimeDir = join(labDir, 'runtime');
-const unknown = process.argv.slice(2);
+const options = new Set(process.argv.slice(2));
+const devServer = options.delete('--dev-server');
+const backendOnly = options.delete('--backend-only');
+const frontendOnly = options.delete('--frontend-only');
+const unknown = [...options];
 if (unknown.length) throw new Error(`unknown option: ${unknown.join(' ')}`);
+if (backendOnly && frontendOnly) {
+  throw new Error('--backend-only and --frontend-only are mutually exclusive');
+}
+const runBackend = !frontendOnly;
+const runFrontend = !backendOnly;
+const webDevPort = 4200;
+const adminDevPort = 5180;
 
 const baseDatabaseUrl = process.env.DATABASE_URL?.trim();
-if (!baseDatabaseUrl) {
+if (runBackend && !baseDatabaseUrl) {
   throw new Error('DATABASE_URL is required in the repository .env');
 }
 
@@ -105,27 +116,31 @@ async function waitHealthy(node) {
   throw new Error(`${node.domain} did not become healthy within 30 seconds`);
 }
 
-if (
-  !existsSync(join(root, 'dist', 'src', 'main.js')) ||
-  !existsSync(join(root, 'web', 'dist', 'web', 'browser', 'index.html')) ||
-  !existsSync(join(root, 'admin-web', 'dist', 'index.html'))
-) {
-  throw new Error(
-    'one or more build outputs are missing; build the backend, web, and admin applications before starting the federation lab',
+const requiredOutputs = [];
+if (runBackend) requiredOutputs.push(join(root, 'dist', 'src', 'main.js'));
+if (runFrontend && !devServer) {
+  requiredOutputs.push(
+    join(root, 'web', 'dist', 'web', 'browser', 'index.html'),
+    join(root, 'admin-web', 'dist', 'index.html'),
   );
 }
+if (requiredOutputs.some((output) => !existsSync(output))) {
+  throw new Error('one or more required build outputs are missing');
+}
 
-mkdirSync(runtimeDir, { recursive: true });
-for (const node of nodes) {
-  await ensureDatabase(node.database);
-  await run('npm', ['run', 'db:migrate'], {
-    env: { ...process.env, DATABASE_URL: databaseUrl(node.database) },
-  });
-  const cwd = join(runtimeDir, node.name);
-  mkdirSync(join(cwd, 'data'), { recursive: true });
-  ensureLink(join(root, 'package.json'), join(cwd, 'package.json'));
-  ensureLink(join(root, 'config'), join(cwd, 'config'));
-  ensureLink(join(root, 'shell-bundle'), join(cwd, 'shell-bundle'));
+if (runBackend) {
+  mkdirSync(runtimeDir, { recursive: true });
+  for (const node of nodes) {
+    await ensureDatabase(node.database);
+    await run('npm', ['run', 'db:migrate'], {
+      env: { ...process.env, DATABASE_URL: databaseUrl(node.database) },
+    });
+    const cwd = join(runtimeDir, node.name);
+    mkdirSync(join(cwd, 'data'), { recursive: true });
+    ensureLink(join(root, 'package.json'), join(cwd, 'package.json'));
+    ensureLink(join(root, 'config'), join(cwd, 'config'));
+    ensureLink(join(root, 'shell-bundle'), join(cwd, 'shell-bundle'));
+  }
 }
 
 const routes = Object.fromEntries(
@@ -182,50 +197,87 @@ function stop(exitCode = 0) {
 process.on('SIGINT', () => stop(0));
 process.on('SIGTERM', () => stop(0));
 
-for (const node of nodes) {
-  const peerRoutes = { ...routes };
-  delete peerRoutes[node.domain];
-  const child = spawn('node', [join(root, 'dist', 'src', 'main.js')], {
-    cwd: join(runtimeDir, node.name),
+function spawnChild(command, args, options = {}) {
+  const child = spawn(command, args, {
+    cwd: root,
     stdio: 'inherit',
-    env: labEnvironment(node, peerRoutes),
+    env: process.env,
+    ...options,
   });
   children.push(child);
   child.once('exit', (code, signal) => {
     if (!stopping) {
-      console.error(`[lab] ${node.domain} backend exited (${signal ?? code})`);
+      console.error(
+        `[lab] ${command} ${args.join(' ')} exited (${signal ?? code})`,
+      );
       stop(1);
     }
   });
+  return child;
 }
 
-await Promise.all(nodes.map(waitHealthy));
-
-for (const node of nodes) {
-  const child = spawn(
-    'node',
-    [
-      join(labDir, 'static-edge.mjs'),
-      String(node.edgePort),
-      String(node.backendPort),
-    ],
-    { cwd: root, stdio: 'inherit', env: process.env },
-  );
-  children.push(child);
-  child.once('exit', (code, signal) => {
-    if (!stopping) {
-      console.error(`[lab] ${node.domain} edge exited (${signal ?? code})`);
-      stop(1);
-    }
-  });
+if (runFrontend && devServer) {
+  spawnChild('npm', [
+    'run',
+    'start',
+    '--prefix',
+    'web',
+    '--',
+    '--host',
+    '0.0.0.0',
+    '--port',
+    String(webDevPort),
+  ]);
+  spawnChild('npm', ['run', 'dev', '--prefix', 'admin-web']);
 }
 
-console.log('\nThree-node federation lab is ready:');
-for (const node of nodes) {
+if (runBackend) {
+  for (const node of nodes) {
+    const peerRoutes = { ...routes };
+    delete peerRoutes[node.domain];
+    const child = spawn('node', [join(root, 'dist', 'src', 'main.js')], {
+      cwd: join(runtimeDir, node.name),
+      stdio: 'inherit',
+      env: labEnvironment(node, peerRoutes),
+    });
+    children.push(child);
+    child.once('exit', (code, signal) => {
+      if (!stopping) {
+        console.error(
+          `[lab] ${node.domain} backend exited (${signal ?? code})`,
+        );
+        stop(1);
+      }
+    });
+  }
+  await Promise.all(nodes.map(waitHealthy));
+  console.log('\nThree-node federation backends are ready:');
+  for (const node of nodes) {
+    console.log(
+      `  ${node.domain.padEnd(14)} http://127.0.0.1:${node.backendPort}`,
+    );
+  }
+}
+
+if (runFrontend) {
+  spawnChild('caddy', [
+    'run',
+    '--config',
+    join(labDir, devServer ? 'Caddyfile.hmr' : 'Caddyfile.built'),
+    '--adapter',
+    'caddyfile',
+  ]);
   console.log(
-    `  ${node.domain.padEnd(14)} http://localhost:${node.edgePort}  admin: /admin/`,
+    `\nFederation frontend is ready (${devServer ? 'shared dev servers with HMR' : 'built assets'}):`,
   );
+  for (const node of nodes) {
+    console.log(
+      `  ${node.domain.padEnd(14)} http://localhost:${node.edgePort}  admin: /admin/`,
+    );
+  }
+  console.log('Use three separate browser profiles. Press Ctrl+C to stop.\n');
+} else {
+  console.log('Press Ctrl+C to stop.\n');
 }
-console.log('Use three separate browser profiles. Press Ctrl+C to stop.\n');
 
 await finished;

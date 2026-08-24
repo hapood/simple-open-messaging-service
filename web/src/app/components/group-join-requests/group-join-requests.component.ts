@@ -21,6 +21,10 @@ import {
 import { ToastService } from '../../services/toast.service';
 import { translateBizResult } from '../../services/biz-code';
 import { UserService } from '../../services/user.service';
+import {
+  applyGroupJoinRequestAction,
+  mergeGroupJoinRequestPage,
+} from '../../services/group-join-request-state';
 
 @Component({
   selector: 'app-group-join-requests',
@@ -48,7 +52,8 @@ export class GroupJoinRequestsComponent {
   readonly loadingMore = signal(false);
   readonly hasMore = signal(false);
   readonly acting = signal<ReadonlySet<string>>(new Set());
-  private before?: string;
+  private before?: number;
+  private loadVersion = 0;
 
   constructor() {
     const threadId = this.conversations.openThreadId();
@@ -61,7 +66,7 @@ export class GroupJoinRequestsComponent {
       this.groups
         .markJoinRequestsRead({
           groupId: threadId,
-          readRequestId: head.latestRequestId,
+          readFeedId: head.latestFeedId,
         })
         .subscribe();
     }
@@ -90,8 +95,16 @@ export class GroupJoinRequestsComponent {
         this.toast.warn(translateBizResult(res, this.transloco));
         return;
       }
+      // A response captured before this decision must not reopen the terminal row.
+      this.loadVersion += 1;
+      this.loading.set(false);
+      this.loadingMore.set(false);
       this.requests.update((rows) =>
-        rows.filter((row) => row.id !== requestId),
+        rows.map((row) =>
+          row.id === requestId
+            ? applyGroupJoinRequestAction(row, accept ? 'ACCEPT' : 'REJECT')
+            : row,
+        ),
       );
     } catch {
       this.toast.warn(this.transloco.translate('errors.networkError'));
@@ -107,6 +120,7 @@ export class GroupJoinRequestsComponent {
   private async load(append: boolean): Promise<void> {
     const groupId = this.conversations.openThreadId();
     if (groupId === undefined) return;
+    const version = append ? this.loadVersion : ++this.loadVersion;
     append ? this.loadingMore.set(true) : this.loading.set(true);
     try {
       const res = await firstValueFrom(
@@ -120,16 +134,19 @@ export class GroupJoinRequestsComponent {
         this.toast.warn(translateBizResult(res, this.transloco));
         return;
       }
+      if (version !== this.loadVersion) return;
       this.requests.update((rows) =>
-        append ? [...rows, ...res.data!.data] : res.data!.data,
+        mergeGroupJoinRequestPage(append ? rows : [], res.data!.data),
       );
       this.before = res.data.before ?? undefined;
       this.hasMore.set(res.data.hasMore);
     } catch {
       this.toast.warn(this.transloco.translate('errors.networkError'));
     } finally {
-      this.loading.set(false);
-      this.loadingMore.set(false);
+      if (version === this.loadVersion) {
+        this.loading.set(false);
+        this.loadingMore.set(false);
+      }
     }
   }
 }

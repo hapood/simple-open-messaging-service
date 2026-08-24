@@ -5,26 +5,26 @@
 <h1 align="center">SOMS</h1>
 
 <p align="center">
-  <strong>Simple Open Message Service</strong><br>
+  <strong>Simple Open Messaging Service</strong><br>
   A self-hosted, federated chat platform for the web and native devices.
 </p>
 
 <p align="center">
-  <a href="https://github.com/hapood/simple-open-chat-service/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/hapood/simple-open-chat-service/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/hapood/simple-open-chat-service/actions/workflows/pages.yml"><img alt="Playground deployment" src="https://github.com/hapood/simple-open-chat-service/actions/workflows/pages.yml/badge.svg"></a>
+  <a href="https://github.com/hapood/simple-open-messaging-service/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/hapood/simple-open-messaging-service/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/hapood/simple-open-messaging-service/actions/workflows/pages.yml"><img alt="Playground deployment" src="https://github.com/hapood/simple-open-messaging-service/actions/workflows/pages.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2f855a.svg"></a>
   <img alt="SOMS 0.1.0 alpha 0" src="https://img.shields.io/badge/SOMS-0.1.0--alpha.0-7c3aed.svg">
-  <a href="spec/v1/README.md"><img alt="SOCFP v1 release candidate" src="https://img.shields.io/badge/SOCFP-v1.0.0--rc.0-e95420.svg"></a>
+  <a href="spec/v1/README.md"><img alt="SOMFP v1 release candidate" src="https://img.shields.io/badge/SOMFP-v1.0.0--rc.0-e95420.svg"></a>
 </p>
 
 <p align="center">
-  <a href="https://hapood.github.io/simple-open-chat-service/"><strong>Try the live UI playground</strong></a>
+  <a href="https://hapood.github.io/simple-open-messaging-service/"><strong>Try the live UI playground — no server required</strong></a>
   ·
   <a href="spec/README.md">Federation specification</a>
   ·
   <a href="docs/development.md">Development setup</a>
   ·
-  <a href="docs/deployment.md">Docker deployment</a>
+  <a href="docs/deployment.md">NAS deployment</a>
 </p>
 
 > [!IMPORTANT]
@@ -73,16 +73,20 @@ console remain fully self-hostable.
   WebAuthn
 - Responsive, installable web client with a shared Tauri shell for native platform integrations
 
-## UI Playground
+## Deployment
 
-The [chat UI playground](https://hapood.github.io/simple-open-chat-service/) is a
-static, interactive build of the real message-list and composer components. It uses deterministic
-in-memory data, so it needs no account, server, or network API. Use its controls to try responsive
-layouts, themes, virtual scrolling, loading states, optimistic sends, replies, media, and connection
-states.
+SOMS ships as a self-contained Docker stack with PostgreSQL, automatic migrations, the application,
+and a Caddy TLS edge. The first published deployment guide covers the NAS profile: administration
+stays on the home LAN while the client and federation endpoint can be reached from the internet.
 
-GitHub Pages publishes the playground from this repository after changes to the web client. It is a
-component demonstration, not a public SOMS server: data entered there stays in the browser session.
+| Profile | Documentation status | Intended environment                                                        | Example                            |
+| ------- | -------------------- | --------------------------------------------------------------------------- | ---------------------------------- |
+| NAS     | **Published**        | Home LAN administration with a publicly reachable client                    | [`deploy/nas/`](deploy/nas/)       |
+| Public  | In progress          | Internet-facing server with standard HTTPS ports and public administration  | [`deploy/public/`](deploy/public/) |
+
+The [NAS deployment guide](docs/deployment.md) explains how to build the image, configure the NAS
+profile, initialize the administrator, obtain DNS-01 certificates, verify the deployment, and update
+it safely. The public-server deployment guide is still being written.
 
 ## Platform Roadmap
 
@@ -93,7 +97,7 @@ calls.
 | Platform  | Status            | Distribution                                                                                    |
 | --------- | ----------------- | ----------------------------------------------------------------------------------------------- |
 | Web / PWA | **Released**      | Runs in modern desktop and mobile browsers                                                      |
-| Android   | **Released**      | Tauri application with native calling and FCM integration                                       |
+| Android   | In development    | Tauri application with native calling and FCM integration                                       |
 | Windows   | Planned           | Tauri desktop application                                                                       |
 | macOS     | Planned           | Tauri desktop application                                                                       |
 | Linux     | Planned           | Tauri desktop application                                                                       |
@@ -109,7 +113,7 @@ SOMS server through its documented APIs.
  Android (Tauri) ─┼─ HTTPS + SSE ─ SOMS ───┼──── Android (Tauri)
  Desktop (Tauri) ─┘               server   └──── Third-party clients
                                       │
-                                signed SOCFP v1
+                                signed SOMFP v1
                                       │
                                   peer servers
 ```
@@ -121,36 +125,21 @@ SOMS server through its documented APIs.
 | Native applications       | Tauri 2 with platform integrations in Rust/Kotlin                      |
 | Administration console    | React 19 and Vite                                                      |
 | Real-time and calls       | SSE, Web Push, FCM, WebRTC, optional TURN                              |
-| Federation                | SOCFP v1, Ed25519 HTTP message signatures, pull-based feeds, CAS media |
+| Federation                | SOMFP v1, Ed25519 HTTP message signatures, pull-based feeds, CAS media |
 
 For the full component model and request flows, see the
 [architecture guide](docs/overview/architecture.md). The consumer and administrator endpoints are
 documented in the [HTTP API reference](docs/api/api.md).
-
-## Deployment
-
-SOMS ships as a self-contained Docker stack with PostgreSQL, automatic migrations, the application,
-and a Caddy TLS edge. The repository provides two ready-to-copy Compose examples:
-
-| Profile | Intended environment                                             | Example                            |
-| ------- | ---------------------------------------------------------------- | ---------------------------------- |
-| Public  | Internet-facing server with standard HTTPS ports                 | [`deploy/public/`](deploy/public/) |
-| NAS     | LAN/NAS server with single-port TLS and an optional LAN hostname | [`deploy/nas/`](deploy/nas/)       |
-
-The [Docker deployment guide](docs/deployment.md) explains how to choose a profile, build the image,
-copy and configure the example, initialize the administrator, obtain DNS-01 certificates, verify the
-deployment, and update it safely. For federation identity, DNS, key continuity, and peer operations,
-also read the [federated deployment guide](docs/overview/federation-protocol.md).
 
 ## Documentation
 
 | Topic                     | Entry point                                                                                                                 |
 | ------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | Development               | [Local initialization and development](docs/development.md) · [Repository conventions](AGENTS.md)                           |
-| Federation protocol       | [Specification index](spec/README.md) · [SOCFP v1](spec/v1/README.md) · [Schemas and conformance](spec/v1/schema/README.md) |
+| Federation protocol       | [Specification index](spec/README.md) · [SOMFP v1](spec/v1/README.md) · [Schemas and conformance](spec/v1/schema/README.md) |
 | Server architecture       | [Architecture](docs/overview/architecture.md) · [Database model](docs/overview/database.md)                                 |
 | APIs                      | [Client/admin HTTP API](docs/api/api.md) · [Federation S2S API](docs/api/federation-s2s-api.md)                             |
-| Deployment and federation | [Docker deployment](docs/deployment.md) · [Federated deployment guide](docs/overview/federation-protocol.md)                |
+| Deployment and federation | [NAS deployment](docs/deployment.md) · [Federation overview](docs/overview/federation-protocol.md)                         |
 | Operations                | [Rate limiting](docs/operations/rate-limiting.md) · [Call release checklist](docs/calls-release-checklist.md)               |
 | Native client             | [Tauri workspace](src-tauri/README.md) · [Android calls](docs/android-calls-client.md)                                      |
 | Security and governance   | [Protocol security](spec/SECURITY.md) · [Protocol governance](spec/GOVERNANCE.md)                                           |

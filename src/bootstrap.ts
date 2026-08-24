@@ -207,7 +207,7 @@ export async function configureApp(
   // versioned machine-to-machine surface under /s2s/v1 and is excluded from that client prefix.
   // The prefix must be set
   // before Swagger createDocument so doc paths include it). The interactive docs mount at
-  // /api/v1/docs in non-production only — see the gate below. .well-known/socfp is excluded — it must
+  // /api/v1/docs in non-production only — see the gate below. .well-known/somfp is excluded — it must
   // be served at the bare path per RFC 8615 (peers fetch it without knowing our /api/v1 prefix).
   app.setGlobalPrefix(CLIENT_API_PREFIX, {
     exclude: [
@@ -271,7 +271,7 @@ export async function configureApp(
     process.env.SWAGGER_ENABLED === 'true';
   if (swaggerEnabled) {
     const config = new DocumentBuilder()
-      .setTitle('Simple Open Chat API')
+      .setTitle('Simple Open Messaging Service API')
       .setDescription('Third-party IM integration API (P1a contract layer)')
       .setVersion('1.0')
       .addBearerAuth()

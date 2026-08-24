@@ -1,4 +1,4 @@
-# Simple Open Chat Federation Protocol v1 Message Feed and Query
+# Simple Open Messaging Federation Protocol v1 Message Feed and Query
 
 Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 Normative scope: this entire document is normative.

@@ -1,6 +1,6 @@
 {
-  "protocol": "Simple Open Chat Federation Protocol",
-  "abbreviation": "SOCFP",
+  "protocol": "Simple Open Messaging Federation Protocol",
+  "abbreviation": "SOMFP",
   "version": "1.0.0-rc.0",
   "major": 1,
   "status": "release-candidate",

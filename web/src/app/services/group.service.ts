@@ -9,15 +9,17 @@ export interface GrpCreateInfo {
 }
 
 export interface GroupJoinRequest {
+  feedId: number;
   id: string;
+  status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
   userId: number;
   account: string;
   domain: string;
   name: string;
   avatar: string;
   note: string;
-  requestedAt: string;
-  expiresAt: string;
+  requestedAt: string | null;
+  expiresAt: string | null;
 }
 
 @Injectable({
@@ -99,19 +101,19 @@ export class GroupService {
 
   queryJoinRequests(params: {
     groupId: number;
-    before?: string;
+    before?: number;
     take?: number;
   }) {
     return this.http.post<
       StandardResponse<{
         data: GroupJoinRequest[];
         hasMore: boolean;
-        before: string | null;
+        before: number | null;
       }>
     >(`${apiPrefix()}/group/join-requests`, params);
   }
 
-  markJoinRequestsRead(params: { groupId: number; readRequestId: string }) {
+  markJoinRequestsRead(params: { groupId: number; readFeedId: number }) {
     return this.http.post<StandardResponse>(
       `${apiPrefix()}/group/join-requests/read`,
       params,

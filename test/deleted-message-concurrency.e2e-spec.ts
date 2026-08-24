@@ -16,6 +16,7 @@ import {
   user,
 } from '../src/database/schema.js';
 import { DeletedMessageService } from '../src/message/deleted-message.service.js';
+import { MessageService } from '../src/message/message.service.js';
 
 describe('federated message deletion transaction ordering', () => {
   let mod: TestingModule;
@@ -33,7 +34,15 @@ describe('federated message deletion transaction ordering', () => {
   beforeAll(async () => {
     mod = await Test.createTestingModule({
       imports: [DatabaseModule],
-      providers: [DeletedMessageService],
+      providers: [
+        DeletedMessageService,
+        {
+          provide: MessageService,
+          useValue: {
+            writeSystemMessageInTx: () => ({ message: {} }),
+          },
+        },
+      ],
     }).compile();
     database = mod.get(DatabaseService);
     deletions = mod.get(DeletedMessageService);

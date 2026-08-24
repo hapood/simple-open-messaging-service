@@ -1,10 +1,10 @@
-# Simple Open Chat Federation Protocol v1
+# Simple Open Messaging Federation Protocol v1
 
 - Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 - Protocol identifier: `1`
 - S2S API prefix: `/s2s/v1`
-- Cross-version discovery path: `/.well-known/socfp`
-- DNS SRV service name: `_socfp._tcp`
+- Cross-version discovery path: `/.well-known/somfp`
+- DNS SRV service name: `_somfp._tcp`
 
 This core specification defines Federation v1 versioning, HTTP surface, transport, shared Federation types, request signatures, common responses, error classification, retry behavior, and base cursor semantics. The referenced normative operation documents define operation-specific bodies, authorization, and state machines. Implementation database fields, workers, queues, configuration, and local product limits are not protocol requirements.
 
@@ -40,11 +40,11 @@ The Federation v1 data plane uses a fixed authoritative topology. An author's ho
 
 ## 2. Versioning and compatibility
 
-SOCFP distinguishes the wire-protocol major from the specification-package version. The wire negotiates only a positive integer major such as `1`; URLs use `/s2s/v1`, and discovery uses `protocolVersions: [1]`. The package containing normative text, JSON Schema, vectors, and conformance tooling uses Semantic Versioning, such as `1.0.0-rc.0` or `1.0.0`. The package version MUST NOT appear in an S2S body, URL, or version-selection algorithm and MUST NOT be used for capability negotiation. A v1 patch release may contain only errata and artifact corrections that do not change peer-observable wire behavior. Any wire behavior change requires a new integer major.
+SOMFP distinguishes the wire-protocol major from the specification-package version. The wire negotiates only a positive integer major such as `1`; URLs use `/s2s/v1`, and discovery uses `protocolVersions: [1]`. The package containing normative text, JSON Schema, vectors, and conformance tooling uses Semantic Versioning, such as `1.0.0-rc.0` or `1.0.0`. The package version MUST NOT appear in an S2S body, URL, or version-selection algorithm and MUST NOT be used for capability negotiation. A v1 patch release may contain only errata and artifact corrections that do not change peer-observable wire behavior. Any wire behavior change requires a new integer major.
 
-Every Federation v1 S2S data-plane endpoint is under `/s2s/v1/*`. The public discovery endpoint is fixed at `/.well-known/socfp` because a caller cannot rely on an API prefix before reading discovery.
+Every Federation v1 S2S data-plane endpoint is under `/s2s/v1/*`. The public discovery endpoint is fixed at `/.well-known/somfp` because a caller cannot rely on an API prefix before reading discovery.
 
-`/.well-known/socfp` is a cross-version discovery document, not a response owned by one Federation major. `protocolVersions` is Federation's permanent cross-version bootstrap field. Every present or future major using `/.well-known/socfp` MUST support and return it and MUST NOT remove or rename it or change its type or selection semantics. It MUST be a non-empty JSON number array of unique, strictly increasing positive safe integers and MUST completely list every Federation major that the node currently enables and fully implements. A node MUST NOT publish a major for which it implements only some mandatory behavior.
+`/.well-known/somfp` is a cross-version discovery document, not a response owned by one Federation major. `protocolVersions` is Federation's permanent cross-version bootstrap field. Every present or future major using `/.well-known/somfp` MUST support and return it and MUST NOT remove or rename it or change its type or selection semantics. It MUST be a non-empty JSON number array of unique, strictly increasing positive safe integers and MUST completely list every Federation major that the node currently enables and fully implements. A node MUST NOT publish a major for which it implements only some mandatory behavior.
 
 A caller MUST first read `protocolVersions`, select the highest value `V` in the intersection of both version arrays, and then validate the shared and version-specific well-known fields according to version `V`. An empty intersection prevents federation establishment. The `/s2s/v<V>` path explicitly expresses the selected version; state, message, command, and Recognize bodies MUST NOT repeat a version field.
 
@@ -64,7 +64,7 @@ The following table is the complete v1 surface. Its synchronization surface cont
 
 | Method | Absolute path                       | Authentication context | Request                   | Success     | Response                 |
 | ------ | ----------------------------------- | ---------------------- | ------------------------- | ----------- | ------------------------ |
-| `GET`  | `/.well-known/socfp`                | public TLS             | no query or body          | `200`       | bare discovery object    |
+| `GET`  | `/.well-known/somfp`                | public TLS             | no query or body          | `200`       | bare discovery object    |
 | `POST` | `/s2s/v1/recognize`                 | bootstrap signed       | JSON signer domain        | `200`       | bare Recognize OK        |
 | `POST` | `/s2s/v1/healthy`                   | status signed          | JSON signer domain        | `200`       | bare privacy-safe status |
 | `POST` | `/s2s/v1/feed-heads`                | lightweight signed     | JSON feed-head hint       | `200`       | success ACK envelope     |
@@ -144,7 +144,7 @@ When an operation references a type in this table, it MUST follow the listed for
 | `KeyId`                  | `Domain "/" KeyName`, where `KeyName` matches `^[A-Za-z0-9._-]{1,64}$`; the complete string before the first `/` is the signer domain.                                                                                                                                                                      |
 | `CanonicalUuid`          | Lower-case RFC 4122 text form with version nibble `1..8` and variant nibble `8`, `9`, `a`, or `b`.                                                                                                                                                                                                          |
 
-v1 accepts only normalized `Domain` and `Account` values on the wire. A sender MUST send both as lower-case ASCII. The RFC 6762 special-use `.local` namespace is not a globally stable server identity, so `local` and any `Domain` ending in `.local` MUST NOT appear on the SOCFP wire. An implementation may use `local` as an internal storage marker, but it MUST convert that marker to the server's real `Domain` at the federation boundary and MUST NOT expose it to a peer.
+v1 accepts only normalized `Domain` and `Account` values on the wire. A sender MUST send both as lower-case ASCII. The RFC 6762 special-use `.local` namespace is not a globally stable server identity, so `local` and any `Domain` ending in `.local` MUST NOT appear on the SOMFP wire. An implementation may use `local` as an internal storage marker, but it MUST convert that marker to the server's real `Domain` at the federation boundary and MUST NOT expose it to a peer.
 
 An `Account` MUST come from an already-normalized Federation account ID. A sender MUST NOT place a display name or raw user input without identity mapping directly in an S2S request. Before entering the S2S boundary, the sender MUST deterministically normalize or reject case, whitespace, a Unicode domain, or a trailing root dot from user input. A receiver MUST reject a transmitted `Domain` or `Account` containing upper-case letters, whitespace, Unicode, or another non-canonical form. It MUST NOT lower-case, trim, or loosely normalize received values in a way that treats two distinct transmitted values as the same identity. A local database ID MUST NOT be used as an inter-server identity coordinate.
 
@@ -297,7 +297,7 @@ Applying a page and adopting its cursor position MUST be atomic from the protoco
 
 Feed retention is operation-specific. State feed MUST retain every current non-deletion stable-key projection needed to rebuild from its advertised oldest boundary. Group-meta MUST retain every current `UPSERT`, but MAY prune old member `DELETE` records under capacity pressure; an affected delta cursor is explicitly unavailable and recovers through `full`. Message feed MAY prune older discovery-index projections under capacity pressure and advance its advertised lower boundary. A source MUST never disguise a pruned interval as a successful empty page. Message-feed pruning does not delete message entities; message query has its independent serviceable window. Tombstone facts remain permanent even when loss of authorization removes their current discovery-index projection.
 
-The closed `feed-heads` fields are `origin`, `stateFeedEndId`, `messageFeedEndId`, and `tombstoneFeedEndId`. The three ends are independent inclusive scan bounds for compacted feeds, used only for wake-up and bounded draining. They are not ACKs, business revisions, or query sequences. A publisher MUST commit state and its feed index before making a dependent data-feed item visible. A hint may be lost, duplicated, or reordered and MUST NOT be the sole recovery mechanism.
+The closed `feed-heads` fields are `origin`, `stateFeedEndId`, `messageFeedEndId`, and `tombstoneFeedEndId`. The three ends are independent inclusive scan bounds for compacted feeds, used only for wake-up and bounded draining. They are not ACKs, business revisions, or query sequences. A publisher MUST derive every dependent data-feed item from already-written business state and its state-feed projection. This is a serial dependency, not three independent writes: if committed separately, the complete state transaction MUST commit first; if committed atomically, the data item MUST NOT be observable without the complete state closure. A hint may be lost, duplicated, or reordered and MUST NOT be the sole recovery mechanism.
 
 After receiving hint `(S, M, D)`, a consumer MUST use each feed's committed local cursor and drain in this bounded order:
 

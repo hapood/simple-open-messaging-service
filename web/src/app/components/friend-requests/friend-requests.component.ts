@@ -188,16 +188,24 @@ export class FriendRequestsComponent implements OnDestroy {
   }
 
   rejectIncoming(req: PendingReq): void {
-    if (req.kind !== 'FRIEND' || !req.id) return;
+    if (!req.id) return;
     this.runInviteAction(
       req,
-      () => this.userService.rejectInvite({ inviteId: req.id }),
+      () =>
+        req.kind === 'GROUP'
+          ? this.userService.revokeInvite(this.inviteAction(req))
+          : this.userService.rejectInvite({ inviteId: req.id }),
       (res) => {
         if (res.code === 0) {
           this.pendingReqList.update((items) =>
-            items.filter((item) => item.id !== req.id),
+            items.map((item) =>
+              item.id === req.id ? { ...item, status: -4, errText: '' } : item,
+            ),
           );
-          if (this.selectedRequest()?.id === req.id) this.closeRequest();
+          if (this.selectedRequest()?.id === req.id)
+            this.selectedRequest.update((item) =>
+              item ? { ...item, status: -4, errText: '' } : item,
+            );
         } else {
           this.pendingReqList.update((items) =>
             items.map((item) =>
@@ -636,7 +644,12 @@ export class FriendRequestsComponent implements OnDestroy {
       domain: group.domain,
       isForeigner: !group.isLocal,
       reqMessage: group.description,
-      status: projection.status === 'ACCEPTED' ? 1 : 0,
+      status:
+        projection.status === 'ACCEPTED'
+          ? 1
+          : projection.status === 'REVOKED'
+            ? -4
+            : 0,
       date: projection.requestedAt,
       errText: '',
       kind: 'GROUP',

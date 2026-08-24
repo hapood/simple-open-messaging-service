@@ -10,7 +10,7 @@
 
 | Method | Path                                | Authentication and purpose                                                             |
 | ------ | ----------------------------------- | -------------------------------------------------------------------------------------- |
-| `GET`  | `/.well-known/socfp`                | Public server identity, keys, and protocol discovery.                                  |
+| `GET`  | `/.well-known/somfp`                | Public server identity, keys, and protocol discovery.                                  |
 | `POST` | `/s2s/v1/recognize`                 | Establish one recognition direction and persistently schedule the reverse direction.   |
 | `POST` | `/s2s/v1/healthy`                   | Check an existing recognized relationship without fetching keys for an unknown caller. |
 | `POST` | `/s2s/v1/feed-heads`                | Lightweight state/message/tombstone end-ID wake-up.                                    |
@@ -56,14 +56,23 @@ Federation v1 wire requirements.
   directed account facts. A time-limited `REQUESTED` may expire and be recreated
   at a higher feed position. Initiating or accepting creates the local placeholder
   account and thread; later profile state fills its display fields.
+- `REQUESTED` has a non-null absolute expiry no more than seven days after its
+  request time. `ACCEPTED` is the durable acknowledgement of an effective
+  request flow and has no expiry; it remains effective until its author publishes
+  `REVOKED`. `REVOKED` also has no expiry.
 - A peer `ACCEPTED` is valid only in a still-effective request flow: it either
   confirms the local `REQUESTED`, or completes a peer request already answered
   by the local `ACCEPTED`. Without either state it has no admission effect. It
   does not create an incoming request, and a foreign user stub never bypasses
   this gate.
-- Accepting every new peer request publishes the local `ACCEPTED` at a new feed
-  ID. Crossed requests and a valid peer `ACCEPTED` both upgrade a matching local
-  `REQUESTED` to `ACCEPTED`. A direction already in `ACCEPTED` creates no echo.
+- Two effective positive directions derive one relationship state:
+  `REQUESTED + REQUESTED`, `REQUESTED + ACCEPTED`, and
+  `ACCEPTED + ACCEPTED` are confirmed. `REQUESTED + REQUESTED` is a confirmation
+  trigger, not a stable pending state: the observing node atomically promotes
+  its own direction while applying confirmed-dependent local effects. A valid
+  peer acceptance likewise upgrades the source's matching `REQUESTED`;
+  convergence need not wait for both directions to publish `ACCEPTED`. Either
+  direction becoming `REVOKED` immediately ends the confirmed relationship.
 - A newer local negative fact cannot be overwritten by a stale remote acceptance
   or group snapshot. Each authored direction remains independently controlled.
 - Re-friending or rejoining need not wait for the peer to consume the removal.
@@ -75,9 +84,12 @@ Federation v1 wire requirements.
   Group/group relationships are invalid. The group-meta feed aggregates the
   effective roster, roles, and source-scoped member profiles.
 - A received pending request remains address-only until the local side accepts or
-  independently initiates. Profile disclosure requires a locally published
-  `ACCEPTED`; the publisher orders that item before `PROFILE` and
-  `GROUP_META_FEED_HEAD`. The latter is applied only after pulling Group Meta.
+  independently initiates: its verified `PROFILE` snapshot is cached on the
+  address-keyed pending request, not materialized as a foreign `User`. The sender
+  publishes `REQUESTED` and then force-publishes `PROFILE`, so the pending card
+  can show its name and avatar. Acceptance keeps profile disclosure open and
+  orders relationship dependencies before group metadata. `GROUP_META_FEED_HEAD`
+  is applied only after pulling Group Meta.
 - `PROFILE` has its own revision. Group-member display profiles are carried by
   the group-meta feed and are scoped by their publishing group origin.
 - An unchanged body normally does not allocate another feed ID. Relationship
@@ -106,7 +118,7 @@ Federation v1 wire requirements.
 - Unknown message content types make a message invalid. Index feeds contain no
   content payload.
 - `CONTACT_CARD` carries a valid user or group address and an immutable, untrusted display
-  snapshot. Its optional avatar digest is a direct message asset. Receiving a
+  snapshot, including an optional biography. Its optional avatar digest is a direct message asset. Receiving a
   card does not establish account existence, profile authority, or a
   relationship.
 - Group leave converges through state. While a server still has another active

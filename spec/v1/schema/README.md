@@ -9,7 +9,7 @@ This directory ships with the v1 normative text as a non-normative validation re
 ## Files
 
 - `common.schema.json`: shared Federation types for identity, time, cursors, digests, and addresses.
-- `discovery.schema.json`: cross-version bootstrap and key discovery at `/.well-known/socfp`.
+- `discovery.schema.json`: cross-version bootstrap and key discovery at `/.well-known/somfp`.
 - `identity.schema.json`: closed JSON shapes for Recognize, Healthy, and feed-head hints.
 - `state-feed.schema.json`: complete pages and the profile, relationship, and Group Meta feed-head event bodies.
 - `group-meta.schema.json`: full and delta group-member projections, including roles and source-scoped profiles.
@@ -43,7 +43,7 @@ Third-party implementations can validate their own JSON:
 
 ```bash
 npm run federation:conformance -- \
-  --schema urn:socfp:v1:call \
+  --schema urn:somfp:v1:call \
   --file ./call-frame.json
 ```
 

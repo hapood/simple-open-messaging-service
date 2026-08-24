@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:socfp:v1:message-feed",
+  "$id": "urn:somfp:v1:message-feed",
   "title": "GET /s2s/v1/message-feed response data",
   "$defs": {
     "thread": {
@@ -10,7 +10,7 @@
           "required": ["account"],
           "properties": {
             "account": {
-              "$ref": "urn:socfp:v1:common#/$defs/groupAccount"
+              "$ref": "urn:somfp:v1:common#/$defs/groupAccount"
             }
           },
           "additionalProperties": false
@@ -20,10 +20,10 @@
           "required": ["account", "localAccount"],
           "properties": {
             "account": {
-              "$ref": "urn:socfp:v1:common#/$defs/userAccount"
+              "$ref": "urn:somfp:v1:common#/$defs/userAccount"
             },
             "localAccount": {
-              "$ref": "urn:socfp:v1:common#/$defs/userAccount"
+              "$ref": "urn:somfp:v1:common#/$defs/userAccount"
             }
           },
           "additionalProperties": false
@@ -35,11 +35,11 @@
       "required": ["feedId", "thread", "messageEndSeq"],
       "properties": {
         "feedId": {
-          "$ref": "urn:socfp:v1:common#/$defs/positiveDecimalString"
+          "$ref": "urn:somfp:v1:common#/$defs/positiveDecimalString"
         },
         "thread": { "$ref": "#/$defs/thread" },
         "messageEndSeq": {
-          "$ref": "urn:socfp:v1:common#/$defs/decimalString"
+          "$ref": "urn:somfp:v1:common#/$defs/decimalString"
         }
       },
       "additionalProperties": false
@@ -50,10 +50,10 @@
   "properties": {
     "items": { "type": "array", "items": { "$ref": "#/$defs/item" } },
     "scannedThrough": {
-      "$ref": "urn:socfp:v1:common#/$defs/decimalString"
+      "$ref": "urn:somfp:v1:common#/$defs/decimalString"
     },
     "messageFeedEndId": {
-      "$ref": "urn:socfp:v1:common#/$defs/decimalString"
+      "$ref": "urn:somfp:v1:common#/$defs/decimalString"
     },
     "hasMore": { "type": "boolean" }
   },

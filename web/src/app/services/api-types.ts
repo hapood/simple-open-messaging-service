@@ -3480,7 +3480,7 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  '/.well-known/socfp': {
+  '/.well-known/somfp': {
     parameters: {
       query?: never;
       header?: never;
@@ -4570,6 +4570,8 @@ export interface components {
       displayName?: string;
       /** @description Untrusted pending-card avatar URL/data URL. */
       avatar?: string;
+      /** @description Untrusted pending-card biography snapshot. */
+      bio: string;
       /**
        * @description Invite note (≤255 chars)
        * @example Hi from the conference

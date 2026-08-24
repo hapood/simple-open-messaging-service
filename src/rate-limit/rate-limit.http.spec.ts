@@ -23,9 +23,7 @@ import { RateLimitGuard } from './rate-limit.guard.js';
 import { RateLimitModeService } from './rate-limit-mode.service.js';
 import { RateLimitService } from './rate-limit.service.js';
 
-const MANAGED_ENV = [
-  'TRUSTED_PROXY_CIDRS',
-] as const;
+const MANAGED_ENV = ['TRUSTED_PROXY_CIDRS'] as const;
 const originalEnv = Object.fromEntries(
   MANAGED_ENV.map((name) => [name, process.env[name]]),
 );

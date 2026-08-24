@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import type { Message } from './message.service.js';
 import { SseService } from '../gateway/sse.service.js';
 import { PushService } from '../push/push.service.js';
@@ -37,7 +37,8 @@ export class MessageFanoutService {
   constructor(
     private readonly sseService: SseService,
     private readonly pushService: PushService,
-    private readonly federation: FederationService,
+    @Inject(forwardRef(() => FederationService))
+    private readonly federation: Pick<FederationService, 'notifyOnSend'>,
     private readonly participantService: ThreadParticipantService,
   ) {}
 

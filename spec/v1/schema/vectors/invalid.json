@@ -2,7 +2,7 @@
   "vectors": [
     {
       "name": "well-known scalar version is obsolete",
-      "schema": "urn:socfp:v1:discovery",
+      "schema": "urn:somfp:v1:discovery",
       "value": {
         "software": "example/1.0",
         "protocolVersion": 1,
@@ -20,7 +20,7 @@
     },
     {
       "name": "well-known version list must be strictly increasing",
-      "schema": "urn:socfp:v1:discovery",
+      "schema": "urn:somfp:v1:discovery",
       "semantic": "protocolVersions",
       "value": {
         "software": "example/1.0",
@@ -39,7 +39,7 @@
     },
     {
       "name": "recognize rejects unknown nonce fields",
-      "schema": "urn:socfp:v1:identity#/$defs/recognizeRequest",
+      "schema": "urn:somfp:v1:identity#/$defs/recognizeRequest",
       "value": {
         "domain": "a.example",
         "nonce": "abcdefghijklmnopqrstuv"
@@ -47,7 +47,7 @@
     },
     {
       "name": "healthy rejects legacy selected protocol version",
-      "schema": "urn:socfp:v1:identity#/$defs/healthResult",
+      "schema": "urn:somfp:v1:identity#/$defs/healthResult",
       "value": {
         "status": "available",
         "selectedProtocolVersion": 1
@@ -55,14 +55,14 @@
     },
     {
       "name": "recognize rejects RFC 6762 local domain",
-      "schema": "urn:socfp:v1:identity#/$defs/recognizeRequest",
+      "schema": "urn:somfp:v1:identity#/$defs/recognizeRequest",
       "value": {
         "domain": "node.local"
       }
     },
     {
       "name": "profile snapshot cannot have localAccount",
-      "schema": "urn:socfp:v1:state-feed",
+      "schema": "urn:somfp:v1:state-feed",
       "value": {
         "items": [
           {
@@ -85,7 +85,7 @@
     },
     {
       "name": "profile display name exceeds 30 code points",
-      "schema": "urn:socfp:v1:state-feed",
+      "schema": "urn:somfp:v1:state-feed",
       "value": {
         "items": [
           {
@@ -107,7 +107,7 @@
     },
     {
       "name": "profile bio exceeds 120 code points",
-      "schema": "urn:socfp:v1:state-feed",
+      "schema": "urn:somfp:v1:state-feed",
       "value": {
         "items": [
           {
@@ -128,8 +128,140 @@
       }
     },
     {
+      "name": "relationship request timestamp invariants",
+      "schema": "urn:somfp:v1:state-feed",
+      "values": [
+        {
+          "items": [
+            {
+              "account": "alice",
+              "domain": "a.example",
+              "eventType": "RELATIONSHIP_INTENT",
+              "localAccount": "bob",
+              "feedId": "1",
+              "body": {
+                "status": "REQUESTED",
+                "note": "",
+                "requestedAt": 1700000000000,
+                "expiresAt": null
+              }
+            }
+          ],
+          "scannedThrough": "1",
+          "stateFeedEndId": "1",
+          "hasMore": false
+        },
+        {
+          "items": [
+            {
+              "account": "alice",
+              "domain": "a.example",
+              "eventType": "RELATIONSHIP_INTENT",
+              "localAccount": "bob",
+              "feedId": "1",
+              "body": {
+                "status": "REQUESTED",
+                "note": "",
+                "requestedAt": 1700000000000,
+                "expiresAt": 1699999999999
+              }
+            }
+          ],
+          "scannedThrough": "1",
+          "stateFeedEndId": "1",
+          "hasMore": false
+        },
+        {
+          "items": [
+            {
+              "account": "alice",
+              "domain": "a.example",
+              "eventType": "RELATIONSHIP_INTENT",
+              "localAccount": "bob",
+              "feedId": "1",
+              "body": {
+                "status": "REQUESTED",
+                "note": "",
+                "requestedAt": 1700000000000,
+                "expiresAt": 1700604800001
+              }
+            }
+          ],
+          "scannedThrough": "1",
+          "stateFeedEndId": "1",
+          "hasMore": false
+        }
+      ]
+    },
+    {
+      "name": "relationship terminal timestamp invariants",
+      "schema": "urn:somfp:v1:state-feed",
+      "values": [
+        {
+          "items": [
+            {
+              "account": "alice",
+              "domain": "a.example",
+              "eventType": "RELATIONSHIP_INTENT",
+              "localAccount": "bob",
+              "feedId": "1",
+              "body": {
+                "status": "ACCEPTED",
+                "note": "",
+                "requestedAt": null,
+                "expiresAt": null
+              }
+            }
+          ],
+          "scannedThrough": "1",
+          "stateFeedEndId": "1",
+          "hasMore": false
+        },
+        {
+          "items": [
+            {
+              "account": "alice",
+              "domain": "a.example",
+              "eventType": "RELATIONSHIP_INTENT",
+              "localAccount": "bob",
+              "feedId": "1",
+              "body": {
+                "status": "ACCEPTED",
+                "note": "",
+                "requestedAt": 1700000000000,
+                "expiresAt": 1700604800000
+              }
+            }
+          ],
+          "scannedThrough": "1",
+          "stateFeedEndId": "1",
+          "hasMore": false
+        },
+        {
+          "items": [
+            {
+              "account": "alice",
+              "domain": "a.example",
+              "eventType": "RELATIONSHIP_INTENT",
+              "localAccount": "bob",
+              "feedId": "1",
+              "body": {
+                "status": "REVOKED",
+                "note": "",
+                "requestedAt": null,
+                "expiresAt": 1700604800000
+              }
+            }
+          ],
+          "scannedThrough": "1",
+          "stateFeedEndId": "1",
+          "hasMore": false
+        }
+      ]
+    },
+    {
       "name": "relationship note exceeds 255 code points",
-      "schema": "urn:socfp:v1:state-feed",
+      "schema": "urn:somfp:v1:state-feed",
       "value": {
         "items": [
           {
@@ -153,12 +285,12 @@
     },
     {
       "name": "unknown message content type",
-      "schema": "urn:socfp:v1:message-content",
+      "schema": "urn:somfp:v1:message-content",
       "value": { "contentType": "STICKER", "content": {} }
     },
     {
       "name": "media content rejects publisher display URL",
-      "schema": "urn:socfp:v1:message-content",
+      "schema": "urn:somfp:v1:message-content",
       "value": {
         "contentType": "IMAGE",
         "content": { "url": "/asset/0", "w": 1, "h": 1 }
@@ -166,7 +298,7 @@
     },
     {
       "name": "invite rejects publisher-local fields",
-      "schema": "urn:socfp:v1:message-content",
+      "schema": "urn:somfp:v1:message-content",
       "value": {
         "contentType": "INVITE",
         "content": {
@@ -181,7 +313,7 @@
     },
     {
       "name": "terminal call content requires endedAt",
-      "schema": "urn:socfp:v1:message-content",
+      "schema": "urn:somfp:v1:message-content",
       "value": {
         "contentType": "CALL",
         "content": {
@@ -196,7 +328,7 @@
     },
     {
       "name": "unconnected call outcome rejects duration",
-      "schema": "urn:socfp:v1:message-content",
+      "schema": "urn:somfp:v1:message-content",
       "value": {
         "contentType": "CALL",
         "content": {
@@ -214,7 +346,7 @@
     },
     {
       "name": "message page rejects retired page fields",
-      "schema": "urn:socfp:v1:message-feed",
+      "schema": "urn:somfp:v1:message-feed",
       "value": {
         "messages": [],
         "scannedThrough": "0",
@@ -225,7 +357,7 @@
     },
     {
       "name": "connected call requires startedAt",
-      "schema": "urn:socfp:v1:call",
+      "schema": "urn:somfp:v1:call",
       "value": {
         "callSid": "550e8400-e29b-41d4-a716-446655440000",
         "op": "connected",
@@ -234,7 +366,7 @@
     },
     {
       "name": "video upgrade must carry VIDEO type",
-      "schema": "urn:socfp:v1:call",
+      "schema": "urn:somfp:v1:call",
       "value": {
         "callSid": "550e8400-e29b-41d4-a716-446655440000",
         "op": "video-upgraded",
@@ -243,7 +375,7 @@
     },
     {
       "name": "call frame rejects unknown fields",
-      "schema": "urn:socfp:v1:call",
+      "schema": "urn:somfp:v1:call",
       "value": {
         "callSid": "550e8400-e29b-41d4-a716-446655440000",
         "op": "incoming",
@@ -254,7 +386,7 @@
     },
     {
       "name": "incoming call rejects ended-only field",
-      "schema": "urn:socfp:v1:call",
+      "schema": "urn:somfp:v1:call",
       "value": {
         "callSid": "550e8400-e29b-41d4-a716-446655440000",
         "op": "incoming",
@@ -264,7 +396,7 @@
     },
     {
       "name": "signal call rejects connected-only field",
-      "schema": "urn:socfp:v1:call",
+      "schema": "urn:somfp:v1:call",
       "value": {
         "callSid": "550e8400-e29b-41d4-a716-446655440000",
         "op": "signal",
@@ -279,7 +411,7 @@
     },
     {
       "name": "ended call rejects signal-only fields",
-      "schema": "urn:socfp:v1:call",
+      "schema": "urn:somfp:v1:call",
       "value": {
         "callSid": "550e8400-e29b-41d4-a716-446655440000",
         "op": "ended",
@@ -289,7 +421,7 @@
     },
     {
       "name": "ended call requires an explicit end reason",
-      "schema": "urn:socfp:v1:call",
+      "schema": "urn:somfp:v1:call",
       "value": {
         "callSid": "550e8400-e29b-41d4-a716-446655440000",
         "op": "ended",
@@ -298,7 +430,7 @@
     },
     {
       "name": "callSid rejects ULID",
-      "schema": "urn:socfp:v1:call",
+      "schema": "urn:somfp:v1:call",
       "value": {
         "callSid": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
         "op": "incoming",
@@ -308,7 +440,7 @@
     },
     {
       "name": "callSid rejects UUID version zero",
-      "schema": "urn:socfp:v1:call",
+      "schema": "urn:somfp:v1:call",
       "value": {
         "callSid": "550e8400-e29b-01d4-a716-446655440000",
         "op": "incoming",
@@ -318,14 +450,14 @@
     },
     {
       "name": "media authorization requires source coordinates",
-      "schema": "urn:socfp:v1:http-parameters#/$defs/mediaParameters",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/mediaParameters",
       "value": {
         "digest": "0000000000000000000000000000000000000000000000000000000000000000"
       }
     },
     {
       "name": "message feed rejects legacy typed thread address",
-      "schema": "urn:socfp:v1:message-feed",
+      "schema": "urn:somfp:v1:message-feed",
       "value": {
         "items": [
           {
@@ -345,7 +477,7 @@
     },
     {
       "name": "group thread selector rejects local account",
-      "schema": "urn:socfp:v1:http-parameters#/$defs/threadDataQuery",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/threadDataQuery",
       "value": {
         "account": "!group",
         "localAccount": "bob",
@@ -354,7 +486,7 @@
     },
     {
       "name": "group-meta full page rejects deletion records",
-      "schema": "urn:socfp:v1:group-meta",
+      "schema": "urn:somfp:v1:group-meta",
       "value": {
         "account": "!group",
         "mode": "full",
@@ -375,17 +507,17 @@
     },
     {
       "name": "success is not an error envelope",
-      "schema": "urn:socfp:v1:error",
+      "schema": "urn:somfp:v1:error",
       "value": { "code": 0, "message": "ok" }
     },
     {
       "name": "quota error omits its structured data",
-      "schema": "urn:socfp:v1:error",
+      "schema": "urn:somfp:v1:error",
       "value": { "code": 50011, "message": "peer quota exceeded" }
     },
     {
       "name": "quota error exposes implementation policy",
-      "schema": "urn:socfp:v1:error",
+      "schema": "urn:somfp:v1:error",
       "value": {
         "code": 50011,
         "message": "peer quota exceeded",
@@ -394,7 +526,7 @@
     },
     {
       "name": "ordinary error carries unregistered structured data",
-      "schema": "urn:socfp:v1:error",
+      "schema": "urn:somfp:v1:error",
       "value": {
         "code": 50007,
         "message": "malformed",
@@ -403,7 +535,7 @@
     },
     {
       "name": "cursor error uses obsolete fields",
-      "schema": "urn:socfp:v1:error",
+      "schema": "urn:somfp:v1:error",
       "value": {
         "code": 50019,
         "message": "requested cursor is below retained floor",
@@ -412,7 +544,7 @@
     },
     {
       "name": "message-query retry error omits retryAfter",
-      "schema": "urn:socfp:v1:error",
+      "schema": "urn:somfp:v1:error",
       "value": {
         "code": 50024,
         "message": "message query rate limited",

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { ReadableStreamDefaultReader } from 'node:stream/web';
 import request from 'supertest';
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import {
   bootFederationPair,
   truncateFederationDbs,
@@ -73,14 +73,10 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
       async () => {
         const [activeOnA, activeOnB] = await Promise.all([
           appA.database.query.threadParticipant.findFirst({
-            where: and(
-              eq(threadParticipant.userId, frankStubIdOnA),
-            ),
+            where: and(eq(threadParticipant.userId, frankStubIdOnA)),
           }),
           appB.database.query.threadParticipant.findFirst({
-            where: and(
-              eq(threadParticipant.userId, erinStubIdOnB),
-            ),
+            where: and(eq(threadParticipant.userId, erinStubIdOnB)),
           }),
         ]);
         expect(activeOnA).toBeDefined();

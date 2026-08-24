@@ -8,7 +8,7 @@ import {
 } from './message-entity';
 
 describe('message entity codec', () => {
-  const mention = '[@张三](socfp://user/zhangsan%40example.com)';
+  const mention = '[@张三](somfp://user/zhangsan%40example.com)';
 
   it('matches the canonical user mention contract', () => {
     expect(serializeUserMention('张三', 'zhangsan@example.com')).toBe(mention);
@@ -61,7 +61,7 @@ describe('message entity codec', () => {
     const inputs = [
       String.raw`C:\Users\张三`,
       mention,
-      String.raw`\[@张三](socfp://user/a)`,
+      String.raw`\[@张三](somfp://user/a)`,
       '普通 [@张三] 不是实体',
       `emoji 😀 before ${mention}`,
     ];
@@ -72,10 +72,10 @@ describe('message entity codec', () => {
 
   it('degrades malformed input to text', () => {
     for (const value of [
-      '[@张三](socfp://user/%61lice%40example.com)',
-      '[@张三](socfp://USER/alice%40example.com)',
-      '[@张三](socfp://user/alice%40example.com?extra=1)',
-      '[@发布](socfp://topic/release)',
+      '[@张三](somfp://user/%61lice%40example.com)',
+      '[@张三](somfp://USER/alice%40example.com)',
+      '[@张三](somfp://user/alice%40example.com?extra=1)',
+      '[@发布](somfp://topic/release)',
     ]) {
       expect(parseMessageEntities(value)).toEqual([
         { kind: 'text', text: value },
@@ -85,7 +85,7 @@ describe('message entity codec', () => {
 
   it('supports the all-members audience entity', () => {
     const all = serializeAudienceMention('所有人', 'all');
-    expect(all).toBe('[@所有人](socfp://audience/all)');
+    expect(all).toBe('[@所有人](somfp://audience/all)');
     expect(toDisplayText(all)).toBe('@所有人');
   });
 });

@@ -116,9 +116,9 @@ export class InviteController {
           'group has been dissolved',
         );
       const clientFeedUpdates: PendingClientStateFeedUpdate[] = [];
-      await this.database.db.transaction(async (tx) => {
+      const statePeers = await this.database.db.transaction(async (tx) => {
         await this.userQuota.tick(me, 'requests', tx);
-        await this.federationService.writeMemberRelationshipIntentInTx(
+        return this.federationService.writeMemberRelationshipIntentInTx(
           tx,
           thread.id,
           me,
@@ -127,6 +127,7 @@ export class InviteController {
           dto.note ?? '',
         );
       });
+      await this.federationService.pushStateFeedDomains(statePeers.keys());
       clientFeedUpdates.forEach((pending) =>
         this.clientStateFeed.notifyFeedUpdated(pending),
       );
@@ -246,7 +247,7 @@ export class InviteController {
       account,
       domain,
       dto.note ?? '',
-      { displayName: dto.displayName, avatar: dto.avatar },
+      { displayName: dto.displayName, avatar: dto.avatar, bio: dto.bio },
       async (tx, state) => {
         await this.userQuota.tick(req.user.userId, 'requests', tx);
         statePeers =

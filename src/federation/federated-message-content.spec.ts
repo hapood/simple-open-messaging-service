@@ -176,12 +176,14 @@ describe('federated message content projection', () => {
       account: 'carol',
       domain: 'local',
       displayName: 'Carol',
+      bio: 'Distributed systems enthusiast',
       avatar: cas(digestA),
     };
     const wire = {
       account: 'carol',
       domain: 'local.test',
       displayName: 'Carol',
+      bio: 'Distributed systems enthusiast',
       avatarDigest: digestA,
     };
 
@@ -216,6 +218,7 @@ describe('federated message content projection', () => {
           account: 'invalid account',
           domain: 'c.example',
           displayName: 'Group',
+          bio: '',
         }),
         'local.test',
       ),
@@ -227,11 +230,24 @@ describe('federated message content projection', () => {
           account: 'carol',
           domain: 'c.example',
           displayName: 'Carol',
+          bio: '',
           avatarDigest: 'invalid',
         }),
         'local.test',
       ),
     ).toThrow('invalid media digest');
+    expect(() =>
+      fromFederatedMessageContent(
+        ContentType.CONTACT_CARD,
+        JSON.stringify({
+          account: 'carol',
+          domain: 'c.example',
+          displayName: 'Carol',
+          bio: 'x'.repeat(256),
+        }),
+        'local.test',
+      ),
+    ).toThrow('invalid contact card');
   });
 
   it('accepts a group contact without a separate discriminator', () => {
@@ -239,6 +255,7 @@ describe('federated message content projection', () => {
       account: '!group123',
       domain: 'groups.test',
       displayName: 'Project Group',
+      bio: '',
     });
     expect(
       JSON.parse(
@@ -298,7 +315,7 @@ describe('federated message content projection', () => {
 
   it('drops local quote media previews on publish and rejects them on wire input', () => {
     const local = JSON.stringify({
-      text: 'hello [@Alice](socfp://user/alice%40example.test)',
+      text: 'hello [@Alice](somfp://user/alice%40example.test)',
       quote: { seq: 1, body: 'preview', image: cas(digestA) },
     });
     const wire = toFederatedMessageContent(
@@ -307,7 +324,7 @@ describe('federated message content projection', () => {
       'local.test',
     );
     expect(JSON.parse(wire)).toEqual({
-      text: 'hello [@Alice](socfp://user/alice%40example.test)',
+      text: 'hello [@Alice](somfp://user/alice%40example.test)',
     });
     expect(() =>
       fromFederatedMessageContent(ContentType.PURE_TEXT, local, 'local.test'),
@@ -316,7 +333,7 @@ describe('federated message content projection', () => {
 
   it('maps the local mention domain only at the federation boundary', () => {
     const stored = JSON.stringify({
-      text: 'hello [@Alice](socfp://user/alice%40local)',
+      text: 'hello [@Alice](somfp://user/alice%40local)',
     });
     const wire = toFederatedMessageContent(
       ContentType.PURE_TEXT,
@@ -324,7 +341,7 @@ describe('federated message content projection', () => {
       'local.test',
     );
     expect(JSON.parse(wire)).toEqual({
-      text: 'hello [@Alice](socfp://user/alice%40local.test)',
+      text: 'hello [@Alice](somfp://user/alice%40local.test)',
     });
     expect(
       JSON.parse(
@@ -342,7 +359,7 @@ describe('federated message content projection', () => {
     'alice@printer.local',
   ])('rejects invalid wire mention address %s', (address) => {
     const wire = JSON.stringify({
-      text: `hello [@Alice](socfp://user/${encodeURIComponent(address)})`,
+      text: `hello [@Alice](somfp://user/${encodeURIComponent(address)})`,
     });
     expect(() =>
       fromFederatedMessageContent(ContentType.PURE_TEXT, wire, 'local.test'),

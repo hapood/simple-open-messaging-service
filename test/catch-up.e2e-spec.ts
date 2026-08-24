@@ -3,7 +3,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
-import { and, eq, ne } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
@@ -12,12 +12,11 @@ import {
   messageThread,
   threadParticipant,
   user,
-  userBlock,
 } from '../src/database/schema';
 import { ContentType } from '../src/database/enums.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { ClientMessageFeedWriter } from '../src/message/client-message-feed.service.js';
-import { seedUser, seedSession } from './seed';
+import { seedAcceptedRelationship, seedUser, seedSession } from './seed';
 
 /**
  * /thread-sync/catch-up + /notification-feed/query e2e — the two separated domain endpoints:
@@ -90,6 +89,7 @@ describe('thread catch-up + notification feed', () => {
       { userId: recipientId, threadId: thread.id, updatedAt: now },
       { userId: peer.id, threadId: thread.id, updatedAt: now },
     ]);
+    await seedAcceptedRelationship(database.db, recipientId, peer.id);
     await database.db.insert(message).values(
       Array.from({ length: 3 }, (_, index) => ({
         threadId: thread.id,
@@ -287,20 +287,15 @@ describe('thread catch-up + notification feed', () => {
 
   it('missed: a blocked sender is excluded from the aggregation', async () => {
     // Block Carol's peer → her 3 messages drop out: Alice 1,2 + Bob 0,1,2 = 5, 2 senders.
-    const [carolPeer] = await database.db
-      .select({ userId: threadParticipant.userId })
-      .from(threadParticipant)
+    await database.db
+      .update(threadParticipant)
+      .set({ blocked: true, updatedAt: new Date() })
       .where(
         and(
+          eq(threadParticipant.userId, recipientId),
           eq(threadParticipant.threadId, tCarol),
-          ne(threadParticipant.userId, recipientId),
         ),
-      )
-      .limit(1);
-    await database.db.insert(userBlock).values({
-      blockerId: recipientId,
-      blockedId: carolPeer.userId,
-    });
+      );
     const res = await postMissed(
       { after: 0, threadHwms: { [tAlice]: 1 } },
       { 'Accept-Language': 'en' },

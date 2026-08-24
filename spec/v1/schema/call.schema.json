@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:socfp:v1:call",
+  "$id": "urn:somfp:v1:call",
   "title": "POST /s2s/v1/call request",
   "$defs": {
     "base": {
       "type": "object",
       "required": ["callSid", "op", "callType"],
       "properties": {
-        "callSid": { "$ref": "urn:socfp:v1:common#/$defs/callSid" },
+        "callSid": { "$ref": "urn:somfp:v1:common#/$defs/callSid" },
         "op": { "type": "string" },
         "callType": { "enum": ["AUDIO", "VIDEO"] }
       }
@@ -19,7 +19,7 @@
       "type": "object",
       "required": ["id", "kind", "data"],
       "properties": {
-        "id": { "$ref": "urn:socfp:v1:common#/$defs/canonicalUuid" },
+        "id": { "$ref": "urn:somfp:v1:common#/$defs/canonicalUuid" },
         "kind": { "$ref": "#/$defs/signalKind" },
         "data": { "type": "string", "minLength": 1, "maxLength": 32768 }
       },
@@ -42,10 +42,10 @@
               "required": ["fromAccount", "toAccount"],
               "properties": {
                 "fromAccount": {
-                  "$ref": "urn:socfp:v1:common#/$defs/account"
+                  "$ref": "urn:somfp:v1:common#/$defs/account"
                 },
                 "toAccount": {
-                  "$ref": "urn:socfp:v1:common#/$defs/account"
+                  "$ref": "urn:somfp:v1:common#/$defs/account"
                 }
               },
               "additionalProperties": false
@@ -93,7 +93,7 @@
               "required": ["startedAt"],
               "properties": {
                 "startedAt": {
-                  "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds"
+                  "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
                 }
               },
               "additionalProperties": false

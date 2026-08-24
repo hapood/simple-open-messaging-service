@@ -15,12 +15,13 @@ interface ContactCardContent {
   account: Account;
   domain: Domain;
   displayName: string;
+  bio: string;
   avatarDigest?: Sha256Hex;
 }
 ```
 
 This is a closed schema. `account`, `domain`, and `displayName` are required.
-`avatarDigest` is optional.
+`bio` is required and may be empty. `avatarDigest` is optional.
 
 ## 2. Address and snapshot semantics
 
@@ -29,7 +30,9 @@ This is a closed schema. `account`, `domain`, and `displayName` are required.
   grammar is the discriminator and no additional type field is carried.
 - `displayName` MUST contain 1–30 Unicode code points and MUST NOT contain an
   unpaired surrogate.
-- `displayName` and `avatarDigest` are an immutable display snapshot selected by
+- `bio` MUST contain at most 255 Unicode code points and MUST NOT
+  contain an unpaired surrogate.
+- `displayName`, `bio`, and `avatarDigest` are an immutable display snapshot selected by
   the publisher when it created its copy of the message. They are not a live
   profile and do not change when the referenced user's profile changes.
 - All card fields are untrusted assertions by the publisher. Receipt of a card
@@ -70,7 +73,7 @@ This is a closed schema. `account`, `domain`, and `displayName` are required.
   "originCreatedAt": null,
   "createdAt": 1770000020000,
   "contentType": "CONTACT_CARD",
-  "content": "{\"account\":\"carol\",\"domain\":\"c.example\",\"displayName\":\"Carol\",\"avatarDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+  "content": "{\"account\":\"carol\",\"domain\":\"c.example\",\"displayName\":\"Carol\",\"bio\":\"Distributed systems enthusiast\",\"avatarDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
   "assets": [
     {
       "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -95,6 +98,8 @@ A consumer MUST reject at least the following cases:
 - `domain` is absent or invalid.
 - `displayName` is absent, empty, longer than 30 Unicode code points, or contains
   an unpaired surrogate.
+- `bio` is absent, is not a string, is longer than 255 Unicode code points,
+  or contains an unpaired surrogate.
 - `avatarDigest` is present but is not a `Sha256Hex`.
 - The avatar-digest set differs from `assets`.
 - Content or the outer message contains a field not permitted by its schema.

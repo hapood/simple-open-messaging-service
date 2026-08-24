@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:socfp:v1:forward-bundle",
+  "$id": "urn:somfp:v1:forward-bundle",
   "title": "GET /s2s/v1/forward-bundles/:bundleId response data",
   "$defs": {
     "bundleId": {
@@ -13,9 +13,9 @@
       "type": "object",
       "required": ["digest", "bytes"],
       "properties": {
-        "digest": { "$ref": "urn:socfp:v1:common#/$defs/sha256Hex" },
+        "digest": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" },
         "bytes": {
-          "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
+          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
         }
       },
       "additionalProperties": false
@@ -25,7 +25,7 @@
       "required": ["id", "author", "contentType", "content", "sentAt"],
       "properties": {
         "id": {
-          "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
+          "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
         },
         "author": {
           "type": "object",
@@ -33,25 +33,25 @@
           "properties": {
             "displayName": { "type": "string" },
             "account": {
-              "$ref": "urn:socfp:v1:common#/$defs/userAccount"
+              "$ref": "urn:somfp:v1:common#/$defs/userAccount"
             },
-            "domain": { "$ref": "urn:socfp:v1:common#/$defs/domain" },
+            "domain": { "$ref": "urn:somfp:v1:common#/$defs/domain" },
             "avatarDigest": {
-              "$ref": "urn:socfp:v1:common#/$defs/sha256Hex"
+              "$ref": "urn:somfp:v1:common#/$defs/sha256Hex"
             }
           },
           "additionalProperties": false
         },
         "contentType": {
-          "$ref": "urn:socfp:v1:common#/$defs/contentType"
+          "$ref": "urn:somfp:v1:common#/$defs/contentType"
         },
         "content": { "type": "string" },
         "sentAt": {
-          "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds"
+          "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
         },
         "childBundleId": { "$ref": "#/$defs/bundleId" },
         "quoteTargetId": {
-          "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
+          "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
         }
       },
       "allOf": [

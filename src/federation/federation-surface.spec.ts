@@ -50,7 +50,7 @@ describe('Federation v1 surface', () => {
         .sort(),
     ).toEqual(
       [
-        'GET /.well-known/socfp',
+        'GET /.well-known/somfp',
         'GET /s2s/v1/forward-bundles/:bundleId',
         'GET /s2s/v1/group-meta',
         'GET /s2s/v1/media/:digest',
@@ -77,7 +77,7 @@ describe('Federation v1 surface', () => {
 
     const document = controller.getWellKnown();
     expect(FEDERATION_API_PREFIX).toBe('s2s/v1');
-    expect(FEDERATION_WELL_KNOWN_PATH).toBe('.well-known/socfp');
+    expect(FEDERATION_WELL_KNOWN_PATH).toBe('.well-known/somfp');
     expect(document.protocolVersions).toEqual([FEDERATION_PROTOCOL_VERSION]);
     expect(document.software).toMatch(/^soms\//);
     expect(document).not.toHaveProperty('capabilities');

@@ -185,7 +185,7 @@ export interface WebdbSchema extends DBSchema {
   friendRequests: {
     key: string;
     value: FriendRequestProjection;
-    indexes: { directionStatus: [string, string, number, string] };
+    indexes: { bucketStatus: [string, string, number, string] };
   };
   settings: { key: string; value: MetaRecord };
 }
@@ -206,10 +206,8 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-export const CACHE_SCHEMA_VERSION = 3;
-// Version 2 invalidates rows written before PURE_TEXT became a strict JSON envelope. Message history is
-// rebuildable from the server, so recreating this cache is safer than letting a stale row abort chat mount.
-export const MESSAGE_CACHE_SCHEMA_VERSION = 2;
+export const CACHE_SCHEMA_VERSION = 2;
+export const MESSAGE_CACHE_SCHEMA_VERSION = 1;
 const IDB_FORMAT_VERSION = 1;
 
 export class LocalCacheUnavailableError extends Error {
@@ -525,8 +523,8 @@ export class WebdbService implements OnDestroy {
         const friendRequests = db.createObjectStore('friendRequests', {
           keyPath: 'key',
         });
-        friendRequests.createIndex('directionStatus', [
-          'direction',
+        friendRequests.createIndex('bucketStatus', [
+          'bucket',
           'status',
           'requestedSort',
           'key',
@@ -960,10 +958,9 @@ export class WebdbService implements OnDestroy {
   }
 
   async getFriendRequestPage(
-    direction: 'INCOMING' | 'OUTGOING',
+    bucket: 'RECEIVED' | 'SENT',
     cursor: string | null,
     take: number,
-    includeRevoked = false,
   ): Promise<{
     items: FriendRequestProjection[];
     total: number;
@@ -977,27 +974,24 @@ export class WebdbService implements OnDestroy {
           actionableTotal: number;
         }>('native_db_page_friend_requests', {
           userId: Number(this.currentUserId),
-          direction,
+          bucket,
           cursor,
           take,
-          includeRevoked,
         });
       const db = await this.db();
       const index = db
         .transaction('friendRequests')
-        .store.index('directionStatus');
+        .store.index('bucketStatus');
       const statuses =
-        direction === 'INCOMING'
-          ? (['REQUESTED', 'ACCEPTED'] as const)
-          : includeRevoked
-            ? (['REQUESTED', 'REVOKED'] as const)
-            : (['REQUESTED'] as const);
+        bucket === 'RECEIVED'
+          ? (['REQUESTED', 'ACCEPTED', 'REVOKED'] as const)
+          : (['REQUESTED', 'REVOKED'] as const);
       const buckets = await Promise.all(
         statuses.map((status) =>
           index.getAll(
             IDBKeyRange.bound(
-              [direction, status, 0, ''],
-              [direction, status, Number.MAX_SAFE_INTEGER, '\uffff'],
+              [bucket, status, 0, ''],
+              [bucket, status, Number.MAX_SAFE_INTEGER, '\uffff'],
             ),
           ),
         ),
@@ -1021,8 +1015,7 @@ export class WebdbService implements OnDestroy {
       return {
         items,
         total: all.length,
-        actionableTotal:
-          direction === 'INCOMING' ? buckets[0].length : all.length,
+        actionableTotal: bucket === 'RECEIVED' ? buckets[0].length : all.length,
       };
     });
   }
@@ -1366,7 +1359,8 @@ export class WebdbService implements OnDestroy {
         }
         if (
           body.status === 'REQUESTED' &&
-          body.expiresAt !== null &&
+          transition.record?.expiresAt !== null &&
+          transition.record?.expiresAt !== undefined &&
           body.direction === 'OUTGOING'
         ) {
           const peer = body.peer;
@@ -1377,11 +1371,11 @@ export class WebdbService implements OnDestroy {
             name: peer.name || peer.account,
             account: peer.account,
             avatar: peer.avatar,
-            bio: '',
+            bio: peer.bio ?? '',
             domain: peer.domain,
             profileRev: 0,
             source: 'OUTGOING_FRIEND_REQUEST',
-            expiresAt: body.expiresAt,
+            expiresAt: transition.record.expiresAt,
           });
         }
         if (transition.becameActionable)
@@ -1447,18 +1441,18 @@ export class WebdbService implements OnDestroy {
         continue;
       }
       if (op.eventType === 'GROUP_JOIN_REQUEST_HEAD') {
-        const latestId = (BigInt(op.body.before) - 1n).toString();
-        if (BigInt(latestId) > 0n) {
+        const latestFeedId = op.body.latestFeedId;
+        if (latestFeedId > 0) {
           const setting = await tx
             .objectStore('settings')
             .get('groupJoinRequestHeads');
           const heads =
             setting?.value && typeof setting.value === 'object'
-              ? { ...(setting.value as Record<string, string>) }
+              ? { ...(setting.value as Record<string, number>) }
               : {};
-          const current = heads[String(op.body.threadId)] ?? '0';
+          const current = Number(heads[String(op.body.threadId)] ?? 0);
           heads[String(op.body.threadId)] =
-            BigInt(current) >= BigInt(latestId) ? current : latestId;
+            current >= latestFeedId ? current : latestFeedId;
           await tx.objectStore('settings').put({
             key: 'groupJoinRequestHeads',
             value: heads,
@@ -1468,13 +1462,13 @@ export class WebdbService implements OnDestroy {
             .get('groupJoinRequestReadFeedIds');
           const reads =
             readSetting?.value && typeof readSetting.value === 'object'
-              ? { ...(readSetting.value as Record<string, string>) }
+              ? { ...(readSetting.value as Record<string, number>) }
               : {};
-          const currentRead = reads[String(op.body.threadId)] ?? '0';
+          const currentRead = Number(reads[String(op.body.threadId)] ?? 0);
           reads[String(op.body.threadId)] =
-            BigInt(currentRead) >= BigInt(op.body.readRequestId)
+            currentRead >= op.body.readFeedId
               ? currentRead
-              : op.body.readRequestId;
+              : op.body.readFeedId;
           await tx.objectStore('settings').put({
             key: 'groupJoinRequestReadFeedIds',
             value: reads,

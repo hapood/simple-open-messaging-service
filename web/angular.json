@@ -62,6 +62,12 @@
               "sourceMap": true,
               "outputHashing": "all"
             },
+            "development-server": {
+              "optimization": false,
+              "extractLicenses": false,
+              "sourceMap": true,
+              "outputHashing": "none"
+            },
             "playground": {
               "browser": "src/playground/main.ts",
               "tsConfig": "tsconfig.playground.json",
@@ -97,7 +103,7 @@
               "buildTarget": "web:build:production"
             },
             "development": {
-              "buildTarget": "web:build:development"
+              "buildTarget": "web:build:development-server"
             },
             "playground": {
               "buildTarget": "web:build:playground-development"

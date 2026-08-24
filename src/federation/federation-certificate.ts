@@ -17,7 +17,7 @@ export function signingCertificateStatement(
   return JSON.stringify({
     keyId: certificate.keyId,
     ed25519: certificate.ed25519,
-    usage: 'socfp-http-message-signature',
+    usage: 'somfp-http-message-signature',
     notBefore: certificate.notBefore,
     notAfter: certificate.notAfter,
   });

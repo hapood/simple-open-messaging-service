@@ -193,6 +193,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     closeAndDelete: Mock;
     getMeta: Mock;
     putMeta: Mock;
+    cleanupFriendRequests: Mock;
   };
 
   beforeEach(async () => {
@@ -269,6 +270,74 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     expect(
       await TestBed.inject(PreferenceStore).get('device', 'soms.lastUserId'),
     ).toBe(1);
+  });
+
+  it('runs request garbage collection on startup when no prior cleanup exists', async () => {
+    webdb.getMeta.mockImplementation(async (key: string) =>
+      key === 'selfProfile'
+        ? {
+            id: 1,
+            profileRev: 0,
+            name: 'A',
+            avatar: '',
+            bio: '',
+            domain: '',
+          }
+        : undefined,
+    );
+
+    await svc.establishSession(1, 0);
+    await flush();
+
+    expect(webdb.cleanupFriendRequests).toHaveBeenCalledTimes(1);
+    expect(webdb.putMeta).toHaveBeenCalledWith(
+      'friendRequestCleanupAt',
+      expect.any(Number),
+    );
+  });
+
+  it('skips startup request garbage collection within the 24-hour interval', async () => {
+    const recent = Date.now() - 1_000;
+    webdb.getMeta.mockImplementation(async (key: string) => {
+      if (key === 'friendRequestCleanupAt') return recent;
+      if (key === 'selfProfile')
+        return {
+          id: 1,
+          profileRev: 0,
+          name: 'A',
+          avatar: '',
+          bio: '',
+          domain: '',
+        };
+      return undefined;
+    });
+
+    await svc.establishSession(1, 0);
+    await flush();
+
+    expect(webdb.cleanupFriendRequests).not.toHaveBeenCalled();
+  });
+
+  it('runs startup request garbage collection when the 24-hour interval has elapsed', async () => {
+    const stale = Date.now() - 86_400_000 - 1_000;
+    webdb.getMeta.mockImplementation(async (key: string) => {
+      if (key === 'friendRequestCleanupAt') return stale;
+      if (key === 'selfProfile')
+        return {
+          id: 1,
+          profileRev: 0,
+          name: 'A',
+          avatar: '',
+          bio: '',
+          domain: '',
+        };
+      return undefined;
+    });
+
+    await svc.establishSession(1, 0);
+    await flush();
+
+    expect(webdb.cleanupFriendRequests).toHaveBeenCalledTimes(1);
   });
 
   it('restores the local invitation revision and synchronized read head', async () => {

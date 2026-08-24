@@ -63,14 +63,11 @@ describe('Admin authentication HTTP security', () => {
     // an in-process request without reaching into KvStoreService's private maps.
     await kv.del(
       ...['127.0.0.1', '::1', '::ffff:127.0.0.1', 'unknown'].flatMap((ip) =>
-        ['admin/login', 'admin/login/verify'].map(
-          (path) =>
-            fixedWindowPolicies.bucketKey(
-              path === 'admin/login'
-                ? 'admin.login'
-                : 'admin.login.verify',
-              ip,
-            ),
+        ['admin/login', 'admin/login/verify'].map((path) =>
+          fixedWindowPolicies.bucketKey(
+            path === 'admin/login' ? 'admin.login' : 'admin.login.verify',
+            ip,
+          ),
         ),
       ),
     );

@@ -89,7 +89,10 @@ export class RateLimitMonitoringController {
     try {
       return await this.fixedWindows.set(body);
     } catch (error) {
-      if (error instanceof Error && error.message !== 'database is unavailable') {
+      if (
+        error instanceof Error &&
+        error.message !== 'database is unavailable'
+      ) {
         throw new BadRequestException(error.message);
       }
       throw error;
@@ -105,7 +108,10 @@ export class RateLimitMonitoringController {
     try {
       return await this.modes.setConfiguration(body);
     } catch (error) {
-      if (error instanceof Error && error.message !== 'database is unavailable') {
+      if (
+        error instanceof Error &&
+        error.message !== 'database is unavailable'
+      ) {
         throw new BadRequestException(error.message);
       }
       throw error;

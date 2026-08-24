@@ -19,6 +19,7 @@ export interface ContactIdentityDialogData {
   account: string;
   name: string;
   avatar?: string;
+  bio: string;
   domain: string;
   friendThreadId?: number;
   groupThreadId?: number;
@@ -73,6 +74,7 @@ export class ContactIdentityDialogComponent {
         account: identity.account,
         name: identity.name,
         avatar: identity.avatar ?? '',
+        bio: identity.bio ?? '',
         domain: identity.domain === 'local' ? 'local' : identity.domain,
         isForeigner: identity.domain !== 'local',
       } as User,

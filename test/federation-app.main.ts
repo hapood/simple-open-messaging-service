@@ -11,7 +11,7 @@
 // The app prints `FED_APP_READY <port>` on stdout once listening; the harness awaits that. SIGTERM →
 // graceful app.close() (the degradation test stops appB this way to force a real ECONNREFUSED on appA).
 import 'dotenv/config';
-import { Controller, Get, Query } from '@nestjs/common';
+import { Controller, Get, Post, Query } from '@nestjs/common';
 import { Public } from '../src/common/public.decorator.js';
 import { Raw } from '../src/common/raw.decorator.js';
 import { Test } from '@nestjs/testing';
@@ -24,10 +24,21 @@ import { configureApp } from '../src/bootstrap.js';
 import { KeypairService } from '../src/federation/keypair.service.js';
 import { SignatureService } from '../src/federation/signature.service.js';
 import { DiscoveryService } from '../src/federation/discovery.service.js';
+import { S2sController } from '../src/federation/s2s.controller.js';
 import {
   TestDiscoveryService,
   makeInMemoryKeypair,
 } from './federation-harness.js';
+
+const feedDrainDiagnostics = {
+  pullsStarted: 0,
+  pullsCompleted: 0,
+  pullErrors: 0,
+  retriesScheduled: 0,
+  maxHeadToPullStartMs: 0,
+  maxPullDurationMs: 0,
+};
+const latestFeedHeadAt = new Map<string, number>();
 
 /**
  * Test-only probe (NOT in prod — this is the test subprocess entry): drive a signed S2S GET as THIS app
@@ -74,6 +85,21 @@ class TestS2sHookController {
     }
     return { status: upstream.status, body };
   }
+
+  @Get('feed-drain-diagnostics')
+  feedDrainDiagnosticSnapshot(): typeof feedDrainDiagnostics {
+    return { ...feedDrainDiagnostics };
+  }
+
+  @Post('feed-drain-diagnostics/reset')
+  resetFeedDrainDiagnostics(): typeof feedDrainDiagnostics {
+    for (const key of Object.keys(feedDrainDiagnostics) as Array<
+      keyof typeof feedDrainDiagnostics
+    >)
+      feedDrainDiagnostics[key] = 0;
+    latestFeedHeadAt.clear();
+    return { ...feedDrainDiagnostics };
+  }
 }
 
 async function main(): Promise<void> {
@@ -109,6 +135,74 @@ async function main(): Promise<void> {
     .compile();
   const adapter = new FastifyAdapter();
   const app = moduleRef.createNestApplication<NestFastifyApplication>(adapter);
+  const controller = moduleRef.get(S2sController, {
+    strict: false,
+  }) as unknown as {
+    federation: {
+      pullStateFromPeer: (
+        peerDomain: string,
+        requiredRevision?: bigint,
+      ) => Promise<bigint>;
+    };
+    scheduleFeedDrainRetry: (peerDomain: string) => void;
+  };
+  const originalPull = controller.federation.pullStateFromPeer.bind(
+    controller.federation,
+  );
+  controller.federation.pullStateFromPeer = async (
+    peerDomain: string,
+    requiredRevision?: bigint,
+  ): Promise<bigint> => {
+    const startedAt = Date.now();
+    feedDrainDiagnostics.pullsStarted += 1;
+    const headAt = latestFeedHeadAt.get(peerDomain);
+    if (headAt !== undefined)
+      feedDrainDiagnostics.maxHeadToPullStartMs = Math.max(
+        feedDrainDiagnostics.maxHeadToPullStartMs,
+        startedAt - headAt,
+      );
+    if (process.env.FED_E2E_DEBUG === '1')
+      console.log(
+        `FED_STATE_PULL_START ${domain} ${peerDomain} required=${requiredRevision?.toString() ?? 'none'} at=${startedAt}`,
+      );
+    try {
+      const revision = await originalPull(peerDomain, requiredRevision);
+      feedDrainDiagnostics.pullsCompleted += 1;
+      feedDrainDiagnostics.maxPullDurationMs = Math.max(
+        feedDrainDiagnostics.maxPullDurationMs,
+        Date.now() - startedAt,
+      );
+      if (process.env.FED_E2E_DEBUG === '1')
+        console.log(
+          `FED_STATE_PULL_DONE ${domain} ${peerDomain} revision=${revision.toString()} elapsed=${Date.now() - startedAt}`,
+        );
+      return revision;
+    } catch (error) {
+      feedDrainDiagnostics.pullErrors += 1;
+      if (process.env.FED_E2E_DEBUG === '1')
+        console.error(
+          `FED_STATE_PULL_ERROR ${domain} ${peerDomain} elapsed=${Date.now() - startedAt} error=${error instanceof Error ? (error.stack ?? error.message) : String(error)}`,
+        );
+      throw error;
+    }
+  };
+  const originalScheduleRetry =
+    controller.scheduleFeedDrainRetry.bind(controller);
+  controller.scheduleFeedDrainRetry = (peerDomain: string): void => {
+    feedDrainDiagnostics.retriesScheduled += 1;
+    originalScheduleRetry(peerDomain);
+  };
+  adapter.getInstance().addHook('preHandler', (request, _reply, done) => {
+    if (request.url === '/s2s/v1/feed-heads') {
+      const origin = (request.body as { origin?: unknown } | undefined)?.origin;
+      if (typeof origin === 'string') latestFeedHeadAt.set(origin, Date.now());
+      if (process.env.FED_E2E_DEBUG === '1')
+        console.log(
+          `FED_FEED_HEAD ${domain} at=${Date.now()} body=${JSON.stringify(request.body)}`,
+        );
+    }
+    done();
+  });
   await configureApp(app, adapter);
   await app.listen(port, '0.0.0.0');
   // Signal readiness to the harness (which awaits this exact line on stdout).

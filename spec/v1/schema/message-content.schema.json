@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:socfp:v1:message-content",
+  "$id": "urn:somfp:v1:message-content",
   "title": "Parsed Federation v1 message content selected by contentType",
   "$defs": {
     "positiveNumber": { "type": "number", "exclusiveMinimum": 0 },
@@ -16,12 +16,12 @@
       "type": "object",
       "required": ["digest", "w", "h"],
       "properties": {
-        "digest": { "$ref": "urn:socfp:v1:common#/$defs/sha256Hex" },
+        "digest": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" },
         "w": {
-          "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
+          "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
         },
         "h": {
-          "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
+          "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
         }
       },
       "additionalProperties": false
@@ -30,7 +30,7 @@
       "type": "object",
       "required": ["digest", "name", "mimeType"],
       "properties": {
-        "digest": { "$ref": "urn:socfp:v1:common#/$defs/sha256Hex" },
+        "digest": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" },
         "name": { "type": "string", "minLength": 1 },
         "mimeType": { "type": "string", "minLength": 1 }
       },
@@ -40,14 +40,14 @@
       "type": "object",
       "required": ["digest", "name", "mimeType", "w", "h", "duration"],
       "properties": {
-        "digest": { "$ref": "urn:socfp:v1:common#/$defs/sha256Hex" },
+        "digest": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" },
         "name": { "type": "string", "minLength": 1 },
         "mimeType": { "type": "string", "minLength": 1 },
         "w": {
-          "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
+          "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
         },
         "h": {
-          "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
+          "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
         },
         "duration": { "$ref": "#/$defs/positiveNumber" }
       },
@@ -57,7 +57,7 @@
       "type": "object",
       "required": ["digest", "name", "mimeType", "duration"],
       "properties": {
-        "digest": { "$ref": "urn:socfp:v1:common#/$defs/sha256Hex" },
+        "digest": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" },
         "name": { "type": "string", "minLength": 1 },
         "mimeType": { "type": "string", "minLength": 1 },
         "duration": { "$ref": "#/$defs/positiveNumber" }
@@ -72,13 +72,13 @@
           "properties": {
             "kind": { "const": "IMAGE" },
             "digest": {
-              "$ref": "urn:socfp:v1:common#/$defs/sha256Hex"
+              "$ref": "urn:somfp:v1:common#/$defs/sha256Hex"
             },
             "w": {
-              "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
+              "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
             },
             "h": {
-              "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
+              "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
             }
           },
           "additionalProperties": false
@@ -97,15 +97,15 @@
           "properties": {
             "kind": { "const": "VIDEO" },
             "digest": {
-              "$ref": "urn:socfp:v1:common#/$defs/sha256Hex"
+              "$ref": "urn:somfp:v1:common#/$defs/sha256Hex"
             },
             "name": { "type": "string", "minLength": 1 },
             "mimeType": { "type": "string", "minLength": 1 },
             "w": {
-              "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
+              "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
             },
             "h": {
-              "$ref": "urn:socfp:v1:common#/$defs/positiveSafeInteger"
+              "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
             },
             "duration": { "$ref": "#/$defs/positiveNumber" }
           },
@@ -117,7 +117,7 @@
           "properties": {
             "kind": { "const": "AUDIO" },
             "digest": {
-              "$ref": "urn:socfp:v1:common#/$defs/sha256Hex"
+              "$ref": "urn:somfp:v1:common#/$defs/sha256Hex"
             },
             "name": { "type": "string", "minLength": 1 },
             "mimeType": { "type": "string", "minLength": 1 },
@@ -131,7 +131,7 @@
           "properties": {
             "kind": { "const": "FILE" },
             "digest": {
-              "$ref": "urn:socfp:v1:common#/$defs/sha256Hex"
+              "$ref": "urn:somfp:v1:common#/$defs/sha256Hex"
             },
             "name": { "type": "string", "minLength": 1 },
             "mimeType": { "type": "string", "minLength": 1 }
@@ -165,21 +165,25 @@
     },
     "contactCard": {
       "type": "object",
-      "required": ["account", "domain", "displayName"],
+      "required": ["account", "domain", "displayName", "bio"],
       "properties": {
         "account": {
-          "$ref": "urn:socfp:v1:common#/$defs/account"
+          "$ref": "urn:somfp:v1:common#/$defs/account"
         },
         "domain": {
-          "$ref": "urn:socfp:v1:common#/$defs/domain"
+          "$ref": "urn:somfp:v1:common#/$defs/domain"
         },
         "displayName": {
           "type": "string",
           "minLength": 1,
           "maxLength": 30
         },
+        "bio": {
+          "type": "string",
+          "maxLength": 255
+        },
         "avatarDigest": {
-          "$ref": "urn:socfp:v1:common#/$defs/sha256Hex"
+          "$ref": "urn:somfp:v1:common#/$defs/sha256Hex"
         }
       },
       "additionalProperties": false
@@ -189,7 +193,7 @@
       "required": ["callSid", "callType", "status", "endedAt"],
       "properties": {
         "callSid": {
-          "$ref": "urn:socfp:v1:common#/$defs/canonicalUuid"
+          "$ref": "urn:somfp:v1:common#/$defs/canonicalUuid"
         },
         "callType": { "enum": ["AUDIO", "VIDEO"] },
         "status": {
@@ -203,10 +207,10 @@
           ]
         },
         "startedAt": {
-          "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds"
+          "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
         },
         "endedAt": {
-          "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds"
+          "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
         }
       },
       "allOf": [
@@ -244,7 +248,7 @@
   "required": ["contentType", "content"],
   "properties": {
     "contentType": {
-      "$ref": "urn:socfp:v1:common#/$defs/contentType"
+      "$ref": "urn:somfp:v1:common#/$defs/contentType"
     },
     "content": { "type": "object" }
   },

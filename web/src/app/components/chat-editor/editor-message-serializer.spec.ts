@@ -24,13 +24,13 @@ describe('serializeEditorBlocks', () => {
       },
     ]);
     expect(stored).toBe(
-      '请 [@张三](socfp://user/zhangsan%40example.com) 通知 [@所有人](socfp://audience/all)',
+      '请 [@张三](somfp://user/zhangsan%40example.com) 通知 [@所有人](somfp://audience/all)',
     );
     expect(toDisplayText(stored)).toBe('请 @张三 通知 @所有人');
   });
 
   it('serializes native UTF-16 mention ranges and escapes literal protocol text', () => {
-    const literal = '[@假](socfp://user/fake)';
+    const literal = '[@假](somfp://user/fake)';
     const text = `😀 @张三 ${literal} @所有人`;
     expect(
       serializeNativeComposerText(text, [
@@ -45,12 +45,12 @@ describe('serializeEditorBlocks', () => {
           start: text.length - 4,
           end: text.length,
           kind: 'all',
-          id: 'socfp:audience:all',
+          id: 'somfp:audience:all',
           label: '所有人',
         },
       ]),
     ).toBe(
-      `😀 [@张三](socfp://user/zhangsan%40example.com) \\${literal} [@所有人](socfp://audience/all)`,
+      `😀 [@张三](somfp://user/zhangsan%40example.com) \\${literal} [@所有人](somfp://audience/all)`,
     );
   });
 
@@ -69,7 +69,7 @@ describe('serializeEditorBlocks', () => {
   });
 
   it('escapes identical protocol syntax when it came from a text node', () => {
-    const literal = '[@张三](socfp://user/zhangsan%40example.com)';
+    const literal = '[@张三](somfp://user/zhangsan%40example.com)';
     const stored = serializeEditorBlocks([
       {
         type: 'paragraph',

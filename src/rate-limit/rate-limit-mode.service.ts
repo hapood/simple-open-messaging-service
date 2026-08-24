@@ -1,4 +1,10 @@
-import { Inject, Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  OnModuleInit,
+  Optional,
+} from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import { systemSetting } from '../database/schema.js';
@@ -101,7 +107,6 @@ export class RateLimitModeService implements OnModuleInit {
       policies: this.configs,
     });
   }
-
 
   forPolicy(name: string): AuthRateLimitConfig {
     const config = this.configs[name];

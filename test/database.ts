@@ -15,8 +15,8 @@ export async function ensureDatabase(
   const client = new Client({ connectionString: adminUrl });
   await client.connect();
   try {
-    const exists = await client.query(
-      'SELECT 1 FROM pg_database WHERE datname = $1',
+    const exists = await client.query<{ datallowconn: boolean }>(
+      'SELECT datallowconn FROM pg_database WHERE datname = $1',
       [database],
     );
     if (exists.rowCount === 0) {
@@ -24,6 +24,14 @@ export async function ensureDatabase(
         throw new Error(`unsafe test database name: ${database}`);
       }
       await client.query(`CREATE DATABASE "${database}"`);
+    }
+    // A previously interrupted template clone may have exited after closing
+    // the connection gate but before its finally block reopened it. Avoid an
+    // unnecessary ALTER on prepared worker databases because PostgreSQL may
+    // transiently expose a clone target as invalid while CREATE DATABASE is
+    // still completing in global setup.
+    if (exists.rows[0]?.datallowconn === false) {
+      await client.query(`ALTER DATABASE "${database}" ALLOW_CONNECTIONS true`);
     }
   } finally {
     await client.end();
@@ -45,12 +53,26 @@ export async function recreateDatabaseFromTemplate(
   const client = new Client({ connectionString: adminUrl });
   await client.connect();
   try {
+    // TimescaleDB starts a per-database background worker after migrations. It can reconnect to the
+    // template between pg_terminate_backend() and CREATE DATABASE ... TEMPLATE, producing 55006 even
+    // though no test process is using the database. Close the connection gate for the whole clone.
     await client.query(
-      'SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()',
-      [database],
+      `ALTER DATABASE "${template}" WITH ALLOW_CONNECTIONS false`,
     );
-    await client.query(`DROP DATABASE IF EXISTS "${database}"`);
-    await client.query(`CREATE DATABASE "${database}" TEMPLATE "${template}"`);
+    try {
+      await client.query(
+        'SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ANY($1::text[]) AND pid <> pg_backend_pid()',
+        [[database, template]],
+      );
+      await client.query(`DROP DATABASE IF EXISTS "${database}"`);
+      await client.query(
+        `CREATE DATABASE "${database}" TEMPLATE "${template}"`,
+      );
+    } finally {
+      await client.query(
+        `ALTER DATABASE "${template}" WITH ALLOW_CONNECTIONS true`,
+      );
+    }
   } finally {
     await client.end();
   }

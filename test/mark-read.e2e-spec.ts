@@ -70,9 +70,9 @@ describe('POST /thread/mark-read authoritative state', () => {
           content: JSON.stringify({
             text:
               seq === 2
-                ? '[@所有人](socfp://audience/all)'
+                ? '[@所有人](somfp://audience/all)'
                 : seq === 3
-                  ? '[@Reader](socfp://user/reader)'
+                  ? '[@Reader](somfp://user/reader)'
                   : `message-${seq}`,
           }),
           // The viewer's own seq=1 message must never contribute to unreadCount.

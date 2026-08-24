@@ -14,7 +14,7 @@ export interface MessageEntitySegment {
 
 export type MessageSegment = MessageTextSegment | MessageEntitySegment;
 
-export const ALL_MENTION_ID = 'socfp:audience:all';
+export const ALL_MENTION_ID = 'somfp:audience:all';
 
 interface ParsedAt {
   entity: MessageEntitySegment;
@@ -25,7 +25,7 @@ interface ParsedAt {
 export function serializeUserMention(label: string, account: string): string {
   if (!label) throw new Error('mention label must not be empty');
   if (!account) throw new Error('mention account must not be empty');
-  return `[@${escapeLabel(label)}](socfp://user/${encodeURIComponent(account)})`;
+  return `[@${escapeLabel(label)}](somfp://user/${encodeURIComponent(account)})`;
 }
 
 /** Serialize the canonical v1 representation of a group-wide mention. */
@@ -34,11 +34,11 @@ export function serializeAudienceMention(
   audience: 'all',
 ): string {
   if (!label) throw new Error('mention label must not be empty');
-  return `[@${escapeLabel(label)}](socfp://audience/${audience})`;
+  return `[@${escapeLabel(label)}](somfp://audience/${audience})`;
 }
 
 /**
- * Encode an editor plain-text node for storage. A complete SOCFP entity typed or
+ * Encode an editor plain-text node for storage. A complete SOMFP entity typed or
  * pasted as text is escaped at its opening bracket; a real editor entity node
  * bypasses this function and calls its entity serializer instead.
  */
@@ -101,7 +101,7 @@ export function parseMessageEntities(content: string): MessageSegment[] {
   return segments;
 }
 
-/** Produce copy/search/preview text without exposing the SOCFP URI. */
+/** Produce copy/search/preview text without exposing the SOMFP URI. */
 export function toDisplayText(content: string): string {
   return parseMessageEntities(content)
     .map((segment) =>
@@ -156,7 +156,7 @@ function parseEntityAt(content: string, start: number): ParsedAt | null {
   } catch {
     return null;
   }
-  if (url.protocol !== 'socfp:' || !url.hostname || url.pathname.length <= 1) {
+  if (url.protocol !== 'somfp:' || !url.hostname || url.pathname.length <= 1) {
     return null;
   }
   if (url.search || url.hash || url.port || url.username || url.password)
@@ -178,9 +178,9 @@ function parseEntityAt(content: string, start: number): ParsedAt | null {
         : null;
   const canonical =
     entityType === 'user'
-      ? `socfp://user/${encodeURIComponent(entityId)}`
+      ? `somfp://user/${encodeURIComponent(entityId)}`
       : entityType === 'audience' && entityId === 'all'
-        ? 'socfp://audience/all'
+        ? 'somfp://audience/all'
         : null;
   if (entityType === null || canonical === null || uriText !== canonical)
     return null;

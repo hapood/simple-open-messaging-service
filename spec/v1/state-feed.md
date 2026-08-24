@@ -1,4 +1,4 @@
-# Simple Open Chat Federation Protocol v1 State Feed
+# Simple Open Messaging Federation Protocol v1 State Feed
 
 Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
@@ -93,8 +93,13 @@ profile type apply. Profile data grants no relationship, membership, message,
 or resource permission.
 
 The source publishes a profile only while the target peer has the corresponding
-effective disclosure source. An unchanged `profileRev` MUST have identical
-content and does not allocate another feed ID.
+effective disclosure source. After publishing a new user/user `REQUESTED`, the
+source MUST publish the requester's current `PROFILE` to that peer at a greater
+`feedId`. It MUST allocate this profile item even when the same `profileRev` is
+already projected, so a receiver that discarded earlier pending state can apply
+the request with a complete display snapshot. Outside this request-bound
+reindex, an unchanged `profileRev` MUST have identical content and does not
+allocate another feed ID.
 
 ## 5. RELATIONSHIP_INTENT
 
@@ -109,16 +114,71 @@ interface RelationshipIntentBody {
 
 This item is one source-authored user/user or user/group direction.
 `account/domain` is the signer-hosted end and `localAccount` is hosted by
-the receiver. Group/group relationships are invalid. Request, acceptance,
-expiration, revocation, restoration, authorization, and confirmation semantics
-remain those defined by the core protocol. `REVOKED` is a current compacted
-fact, not a group-member deletion.
+the receiver. Group/group relationships are invalid. Each direction is
+controlled exclusively by its author; a receiver MUST NOT invent or publish a
+transition on the author's behalf. `ACCEPTED` is a durable acknowledgement of a
+request flow, not a second request and not a transport acknowledgement.
 
-A `REQUESTED` direction loses all authorization at its absolute `expiresAt`, independently of
-background processing. After that boundary, the author MAY atomically materialize the direction as
-`REVOKED` and allocate the resulting snapshot at a newer state-feed position. A receiver MUST NOT
-publish or otherwise invent that terminal fact on the author's behalf; until the author publishes a
-new snapshot, the receiver retains the expired `REQUESTED` as an ineffective authored fact.
+The timestamp fields have the following state-dependent invariants:
+
+- `REQUESTED` MUST have non-null `requestedAt` and `expiresAt`, with
+  `requestedAt < expiresAt` and a lifetime no greater than seven days.
+- `ACCEPTED` MUST have a non-null `requestedAt` identifying the request flow
+  that was confirmed and MUST have `expiresAt: null`. It does not expire.
+- `REVOKED` MUST have `expiresAt: null`. Its `requestedAt` MAY retain the time of
+  the superseded request flow or be `null`; it has no effect on revocation.
+
+The two independently authored directions derive one relationship state. In the
+following table, an effective `REQUESTED` has not expired, and a valid
+`ACCEPTED` is an acknowledgement admitted under the rules below:
+
+| One authored direction        | Reverse direction                         | Derived relationship |
+| ----------------------------- | ----------------------------------------- | -------------------- |
+| effective `REQUESTED`         | absent, expired, or `REVOKED`             | unconfirmed          |
+| effective `REQUESTED`         | effective `REQUESTED`                     | confirmed            |
+| effective `REQUESTED`         | valid `ACCEPTED`                          | confirmed            |
+| valid `ACCEPTED`              | effective `REQUESTED` or valid `ACCEPTED` | confirmed            |
+| absent, expired, or `REVOKED` | any state                                 | unconfirmed          |
+
+Equivalently, for two effective positive directions, `REQUESTED + REQUESTED`,
+`REQUESTED + ACCEPTED`, and `ACCEPTED + ACCEPTED` all derive a confirmed
+relationship. This is a derivation rule; it does not merge the two
+source-authored facts or transfer authority over either direction.
+
+An author MAY transition its direction from `REVOKED` to `REQUESTED` to begin a
+new request flow. When two effective requests cross, each source MUST promote
+its own direction to `ACCEPTED`. When a valid reverse `ACCEPTED` confirms an
+effective local `REQUESTED`, that request's source MUST likewise promote its own
+direction. A node that first observes `REQUESTED + REQUESTED` MUST durably commit
+its own promotion to `ACCEPTED` in the same atomic relationship transition that
+applies confirmed-dependent local effects. It MUST NOT expose a confirmed
+relationship on the assumption that a later promotion will succeed.
+
+Consequently, `REQUESTED + REQUESTED` is a confirmation trigger rather than a
+stable pending state: after one node processes it, that node holds
+`ACCEPTED + REQUESTED` and publishes its authored `ACCEPTED`. During subsequent
+convergence, `REQUESTED + ACCEPTED` is already confirmed and triggers promotion
+of the remaining authored request. A node MUST NOT wait for
+`ACCEPTED + ACCEPTED` before applying the derived relationship, although that is
+the normal converged representation.
+
+A receiver may admit a newly observed `ACCEPTED` only when it confirms the
+receiver's still-effective local `REQUESTED`, or completes a peer request that
+the receiver has already answered with its own `ACCEPTED`. An unsolicited
+`ACCEPTED` has no relationship or authorization effect and MUST NOT become valid
+merely because the addressed account or an earlier relationship is known. Once
+valid, `ACCEPTED` remains effective without a time limit. Either author may end
+the relationship by publishing `REVOKED` for its direction. Re-establishment
+requires a new effective request flow; an old or replayed `ACCEPTED` cannot
+override a newer negative fact.
+
+A `REQUESTED` direction loses all authorization at its absolute `expiresAt`,
+independently of background processing. After that boundary, the author MAY
+atomically materialize the direction as `REVOKED` and allocate the resulting
+snapshot at a newer state-feed position. Until the author publishes a newer
+snapshot, the receiver retains the expired `REQUESTED` as an ineffective
+authored fact. `REVOKED` is a current compacted fact, not a group-member
+deletion.
 
 ## 6. GROUP_META_FEED_HEAD
 

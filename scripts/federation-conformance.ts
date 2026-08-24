@@ -59,8 +59,8 @@ async function validateReleaseMetadata(): Promise<void> {
     conformance?: string;
   };
   const expected = {
-    protocol: 'Simple Open Chat Federation Protocol',
-    abbreviation: 'SOCFP',
+    protocol: 'Simple Open Messaging Federation Protocol',
+    abbreviation: 'SOMFP',
     major: protocolVersion,
     status: 'release-candidate',
   };
@@ -105,7 +105,7 @@ function validateStrictVersions(value: unknown): boolean {
 }
 
 function semanticValid(schema: string, value: unknown): boolean {
-  if (schema === 'urn:socfp:v1:discovery') {
+  if (schema === 'urn:somfp:v1:discovery') {
     if (!validateStrictVersions(value)) return false;
     const doc = value as {
       rootKey: { ed25519: string };
@@ -125,7 +125,7 @@ function semanticValid(schema: string, value: unknown): boolean {
       const statement = JSON.stringify({
         keyId: key.keyId,
         ed25519: key.ed25519,
-        usage: 'socfp-http-message-signature',
+        usage: 'somfp-http-message-signature',
         notBefore: key.notBefore,
         notAfter: key.notAfter,
       });
@@ -136,7 +136,7 @@ function semanticValid(schema: string, value: unknown): boolean {
       );
     });
   }
-  if (schema === 'urn:socfp:v1:state-feed') {
+  if (schema === 'urn:somfp:v1:state-feed') {
     const page = value as {
       hasMore?: boolean;
       scannedThrough?: string;
@@ -146,16 +146,20 @@ function semanticValid(schema: string, value: unknown): boolean {
     if (!page.hasMore && page.scannedThrough !== page.stateFeedEndId)
       return false;
     return (page.items ?? []).every(({ body = {} }) => {
-      if (body.status !== 'REQUESTED') return true;
-      if (typeof body.requestedAt !== 'number') return false;
-      return (
-        body.expiresAt === null ||
-        (typeof body.expiresAt === 'number' &&
-          body.expiresAt > body.requestedAt)
-      );
+      if (body.status === 'REQUESTED')
+        return (
+          typeof body.requestedAt === 'number' &&
+          typeof body.expiresAt === 'number' &&
+          body.expiresAt > body.requestedAt &&
+          body.expiresAt - body.requestedAt <= 7 * 24 * 60 * 60 * 1000
+        );
+      if (body.status === 'ACCEPTED')
+        return typeof body.requestedAt === 'number' && body.expiresAt === null;
+      if (body.status === 'REVOKED') return body.expiresAt === null;
+      return true;
     });
   }
-  if (schema === 'urn:socfp:v1:message-feed') {
+  if (schema === 'urn:somfp:v1:message-feed') {
     const page = value as {
       scannedThrough?: string;
       messageFeedEndId?: string;
@@ -177,7 +181,7 @@ function semanticValid(schema: string, value: unknown): boolean {
       return ordered && feedId <= BigInt(page.scannedThrough!);
     });
   }
-  if (schema === 'urn:socfp:v1:message-query') {
+  if (schema === 'urn:somfp:v1:message-query') {
     const page = value as {
       scannedThrough?: string;
       messages?: Array<{
@@ -206,7 +210,7 @@ function semanticValid(schema: string, value: unknown): boolean {
       );
     });
   }
-  if (schema === 'urn:socfp:v1:group-meta') {
+  if (schema === 'urn:somfp:v1:group-meta') {
     const page = value as {
       mode?: string;
       scannedThrough?: string;
@@ -237,7 +241,7 @@ function semanticValid(schema: string, value: unknown): boolean {
     }
     return true;
   }
-  if (schema === 'urn:socfp:v1:error') {
+  if (schema === 'urn:somfp:v1:error') {
     const error = value as {
       code?: number;
       data?: { resumeAfter?: string; resumeBefore?: string };
@@ -263,7 +267,7 @@ function parsedContent(contentType: string, encoded: string): unknown | null {
 }
 
 async function validateVectors(ajv: Ajv2020Instance): Promise<void> {
-  contentValidator = ajv.getSchema('urn:socfp:v1:message-content');
+  contentValidator = ajv.getSchema('urn:somfp:v1:message-content');
   if (!contentValidator)
     throw new Error('message content schema was not registered');
   for (const [file, expected] of [
@@ -312,7 +316,7 @@ async function validateManifest(ajv: Ajv2020Instance): Promise<void> {
     throw new Error('HTTP manifest version/prefix differs from code constants');
   }
   const expected = new Set([
-    'GET /.well-known/socfp',
+    'GET /.well-known/somfp',
     'POST /s2s/v1/recognize',
     'POST /s2s/v1/healthy',
     'POST /s2s/v1/feed-heads',
@@ -462,7 +466,7 @@ async function main(): Promise<void> {
   await validateVectors(ajv);
   await validateSignatureVector('http-message-signature.json');
   await validateSignatureVector('call-http-message-signature.json');
-  console.log('SOCFP v1 conformance package: PASS');
+  console.log('SOMFP v1 conformance package: PASS');
 }
 
 await main();

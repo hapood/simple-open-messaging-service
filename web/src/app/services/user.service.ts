@@ -49,6 +49,7 @@ export interface ClientIntentUser {
   account: string;
   name: string;
   avatar: string;
+  bio: string;
   domain: string;
   isForeigner: boolean;
 }
@@ -153,9 +154,9 @@ export type ClientStateFeedItem =
       subjectDomain: '';
       body: {
         threadId: number;
-        before: string;
+        latestFeedId: number;
         latestRequestAt: number;
-        readRequestId: string;
+        readFeedId: number;
       };
     }
   | {
@@ -251,9 +252,9 @@ export class UserService {
       this.friendRequestStateRevision() >
       this.incomingInviteReadThroughFeedId(),
   );
-  /** Latest application id and device-local read watermark, keyed by group thread. */
+  /** Latest application projection coordinate and read watermark, keyed by group thread. */
   readonly groupJoinRequestHeads = signal<
-    ReadonlyMap<number, { latestRequestId: string; readRequestId: string }>
+    ReadonlyMap<number, { latestFeedId: number; readFeedId: number }>
   >(new Map());
 
   private readonly webdb = inject(WebdbService);
@@ -263,7 +264,6 @@ export class UserService {
   private webdbUserKey: string | null = null;
   /** Set only by a real credential/OTP/QR login. Cold-start restore and reconnect never set it. */
   private freshCachePending = false;
-  private readonly pendingProfileFetches = new Set<string>();
 
   constructor(private http: HttpClient) {}
 
@@ -342,13 +342,13 @@ export class UserService {
         ? readThroughFeedId
         : 0,
     );
-    const heads = this.integerStringRecord(groupHeads);
-    const reads = this.integerStringRecord(groupReads);
+    const heads = this.nonNegativeIntegerRecord(groupHeads);
+    const reads = this.nonNegativeIntegerRecord(groupReads);
     this.groupJoinRequestHeads.set(
       new Map(
-        Object.entries(heads).map(([threadId, latestId]) => [
+        Object.entries(heads).map(([threadId, latestFeedId]) => [
           Number(threadId),
-          { latestRequestId: latestId, readRequestId: reads[threadId] ?? '0' },
+          { latestFeedId, readFeedId: reads[threadId] ?? 0 },
         ]),
       ),
     );
@@ -420,17 +420,19 @@ export class UserService {
     )
       return;
     this.http
-      .post<StandardResponse<{ readThroughFeedId: number }>>(
-        `${apiPrefix()}/invite/incoming/read`,
-        { readThroughFeedId },
-      )
+      .post<
+        StandardResponse<{ readThroughFeedId: number }>
+      >(`${apiPrefix()}/invite/incoming/read`, { readThroughFeedId })
       .subscribe({
         next: (res) => {
           if (res.code === 0 && res.data)
             this.applyIncomingInviteReadHead(res.data.readThroughFeedId);
         },
         error: (error) =>
-          console.error('[invite] failed to mark incoming requests read', error),
+          console.error(
+            '[invite] failed to mark incoming requests read',
+            error,
+          ),
       });
   }
 
@@ -441,37 +443,30 @@ export class UserService {
 
   applyGroupJoinRequestHead(
     threadId: number,
-    before: string,
-    serverReadRequestId: string,
+    latestFeedId: number,
+    serverReadFeedId: number,
   ): void {
-    const latestId = (BigInt(before) - 1n).toString();
-    if (BigInt(latestId) < 1n) return;
+    if (latestFeedId < 1) return;
     this.groupJoinRequestHeads.update((current) => {
       const previous = current.get(threadId);
-      const nextLatest =
-        previous && BigInt(previous.latestRequestId) > BigInt(latestId)
-          ? previous.latestRequestId
-          : latestId;
-      const nextRead =
-        previous && BigInt(previous.readRequestId) > BigInt(serverReadRequestId)
-          ? previous.readRequestId
-          : serverReadRequestId;
+      const nextLatest = Math.max(previous?.latestFeedId ?? 0, latestFeedId);
+      const nextRead = Math.max(previous?.readFeedId ?? 0, serverReadFeedId);
       if (
-        previous?.latestRequestId === nextLatest &&
-        previous.readRequestId === nextRead
+        previous?.latestFeedId === nextLatest &&
+        previous.readFeedId === nextRead
       )
         return current;
       const next = new Map(current);
       next.set(threadId, {
-        latestRequestId: nextLatest,
-        readRequestId: nextRead,
+        latestFeedId: nextLatest,
+        readFeedId: nextRead,
       });
       return next;
     });
     const heads = Object.fromEntries(
       [...this.groupJoinRequestHeads()].map(([id, value]) => [
         String(id),
-        value.latestRequestId,
+        value.latestFeedId,
       ]),
     );
     void this.webdb.putMeta('groupJoinRequestHeads', heads);
@@ -479,29 +474,28 @@ export class UserService {
 
   markGroupJoinRequestsRead(threadId: number): void {
     const current = this.groupJoinRequestHeads().get(threadId);
-    if (
-      !current ||
-      BigInt(current.readRequestId) >= BigInt(current.latestRequestId)
-    )
-      return;
+    if (!current || current.readFeedId >= current.latestFeedId) return;
     const next = new Map(this.groupJoinRequestHeads());
     next.set(threadId, {
       ...current,
-      readRequestId: current.latestRequestId,
+      readFeedId: current.latestFeedId,
     });
     this.groupJoinRequestHeads.set(next);
     const reads = Object.fromEntries(
-      [...next].map(([id, value]) => [String(id), value.readRequestId]),
+      [...next].map(([id, value]) => [String(id), value.readFeedId]),
     );
     void this.webdb.putMeta('groupJoinRequestReadFeedIds', reads);
   }
 
-  private integerStringRecord(value: unknown): Record<string, string> {
+  private nonNegativeIntegerRecord(value: unknown): Record<string, number> {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
     return Object.fromEntries(
-      Object.entries(value)
-        .map(([key, entry]) => [key, String(entry)] as const)
-        .filter(([, entry]) => /^\d+$/.test(entry)),
+      Object.entries(value).filter(
+        (entry): entry is [string, number] =>
+          typeof entry[1] === 'number' &&
+          Number.isSafeInteger(entry[1]) &&
+          entry[1] >= 0,
+      ),
     );
   }
 
@@ -875,6 +869,7 @@ export class UserService {
     domain: string;
     displayName?: string;
     avatar?: string;
+    bio: string;
     note?: string;
   }) {
     return this.http.post<
@@ -913,20 +908,11 @@ export class UserService {
       };
     await this.webdb.cleanupFriendRequests();
     const localPage = await this.webdb.getFriendRequestPage(
-      direction,
+      direction === 'INCOMING' ? 'RECEIVED' : 'SENT',
       cursor,
       take + 1,
-      direction === 'OUTGOING',
     );
     const items = localPage.items.slice(0, take);
-    for (const item of items)
-      if (
-        item.kind === 'FRIEND' &&
-        item.direction === 'OUTGOING' &&
-        item.peer &&
-        item.expiresAt !== null
-      )
-        void this.ensurePendingFriendProfile(item.peer, item.expiresAt);
     const hasMore = localPage.items.length > take;
     const tail = items.at(-1);
     return {
@@ -937,42 +923,6 @@ export class UserService {
       total: localPage.total,
       actionableTotal: localPage.actionableTotal,
     };
-  }
-
-  private async ensurePendingFriendProfile(
-    peer: ClientIntentUser,
-    expiresAt: number,
-  ): Promise<void> {
-    if (!peer.isForeigner || !peer.domain || !peer.account) return;
-    const identity = `pending:${peer.domain}\u0000${peer.account}`;
-    if (await this.webdb.getProfile(identity)) return;
-    if (this.pendingProfileFetches.has(identity)) return;
-    this.pendingProfileFetches.add(identity);
-    try {
-      const resolved = await firstValueFrom(
-        this.resolveFederatedUser({
-          account: peer.account,
-          domain: peer.domain,
-        }),
-      );
-      await this.webdb.putProfile({
-        identity,
-        id: 0,
-        kind: 'user',
-        name: resolved.user.name || peer.account,
-        account: peer.account,
-        avatar: resolved.user.avatar,
-        bio: resolved.user.bio ?? '',
-        domain: peer.domain,
-        profileRev: resolved.user.profileRev,
-        source: 'OUTGOING_FRIEND_REQUEST',
-        expiresAt,
-      });
-    } catch {
-      // The default card remains usable; a later panel open may retry.
-    } finally {
-      this.pendingProfileFetches.delete(identity);
-    }
   }
 
   /** Accept an invite by id (friend → P2P thread; group → join). data carries the threadId. */

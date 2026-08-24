@@ -3,8 +3,8 @@ import type { FastifyRequest } from 'fastify';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import {
-  isValidSocfpDomain,
-  isValidSocfpUserAccount,
+  isValidSomfpDomain,
+  isValidSomfpUserAccount,
 } from '../common/account.js';
 
 const GROUP_ACCOUNT_RE = /^![a-z0-9]{2,30}$/;
@@ -128,19 +128,19 @@ export function parseFederationResourceRequest(
 }
 
 export function requireUserAccount(value: string, name: string): string {
-  if (!isValidSocfpUserAccount(value))
+  if (!isValidSomfpUserAccount(value))
     malformed(`${name} is not a UserAccount`);
   return value;
 }
 
 export function requireAccount(value: string, name: string): string {
-  if (!isValidSocfpUserAccount(value) && !GROUP_ACCOUNT_RE.test(value))
+  if (!isValidSomfpUserAccount(value) && !GROUP_ACCOUNT_RE.test(value))
     malformed(`${name} is not an Account`);
   return value;
 }
 
 export function requireDomain(value: string, name: string): string {
-  if (!isValidSocfpDomain(value)) malformed(`${name} is not a Domain`);
+  if (!isValidSomfpDomain(value)) malformed(`${name} is not a Domain`);
   return value;
 }
 

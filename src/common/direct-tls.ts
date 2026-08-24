@@ -8,9 +8,10 @@ export interface DirectTlsPaths {
  * A partial pair is always a configuration error: silently falling back to
  * plaintext would make an operator believe TLS is enabled when it is not.
  */
-export function resolveDirectTlsPaths(
-  env: { TLS_CERT?: string; TLS_KEY?: string },
-): DirectTlsPaths | undefined {
+export function resolveDirectTlsPaths(env: {
+  TLS_CERT?: string;
+  TLS_KEY?: string;
+}): DirectTlsPaths | undefined {
   const cert = env.TLS_CERT;
   const key = env.TLS_KEY;
 

@@ -22,7 +22,7 @@ import {
 } from '../src/database/schema';
 import { BusinessCode } from '../src/common/business-code';
 import { makePng } from './federation-harness';
-import { seedUserWithSession } from './seed';
+import { seedAcceptedRelationship, seedUserWithSession } from './seed';
 import { MediaMetadataService } from '../src/upload/media-metadata.service';
 
 // Verifies the surfaces rewritten for the Express→Fastify migration that the auth e2e does
@@ -63,6 +63,7 @@ async function createThread(database: Database, userId: number) {
     { userId, threadId: thread.id, updatedAt: now },
     { userId: peer.id, threadId: thread.id, updatedAt: now },
   ]);
+  await seedAcceptedRelationship(database, userId, peer.id);
   return thread;
 }
 

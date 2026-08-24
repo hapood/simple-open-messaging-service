@@ -81,7 +81,9 @@ export class FederationTransportConfigService implements OnModuleInit {
       Object.keys(record).length !== keys.length ||
       Object.keys(record).some((key) => !keys.includes(key as never))
     ) {
-      throw new Error('federation transport settings must contain exactly the supported fields');
+      throw new Error(
+        'federation transport settings must contain exactly the supported fields',
+      );
     }
     const value = {} as FederationTransportConfig;
     for (const key of keys) {

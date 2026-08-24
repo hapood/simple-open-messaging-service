@@ -1,10 +1,15 @@
 import { Injectable } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../database/database.service.js';
+import {
+  isEffectiveRelationshipIntent,
+  type RelationshipIntentStatus,
+} from './relationship-intent-state.js';
+import { mutuallyAuthorizedSql } from './relationship-authorization.js';
+
+export type { RelationshipIntentStatus } from './relationship-intent-state.js';
 
 const REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-
-export type RelationshipIntentStatus = 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
 
 export interface RelationshipIntentState extends Record<string, unknown> {
   status: RelationshipIntentStatus;
@@ -70,9 +75,10 @@ export class RelationshipIntentService {
       params.authorUserId,
       subjectUserId,
     );
-    const reverseRequestIsValid = this.isValidRequest(reverse);
-    const reverseRelationshipIsCurrent =
-      reverseRequestIsValid || reverse?.status === 'ACCEPTED';
+    const reverseRelationshipIsCurrent = isEffectiveRelationshipIntent(
+      reverse,
+      new Date(),
+    );
     if (
       params.status === 'ACCEPTED' &&
       !reverseRelationshipIsCurrent &&
@@ -80,7 +86,7 @@ export class RelationshipIntentService {
     )
       throw new Error('cannot accept without a current reverse relationship');
     const status: RelationshipIntentStatus =
-      params.status === 'REQUESTED' && reverseRequestIsValid
+      params.status === 'REQUESTED' && reverseRelationshipIsCurrent
         ? 'ACCEPTED'
         : params.status;
     const requestedAt = status !== 'REVOKED' ? new Date() : null;
@@ -98,7 +104,7 @@ export class RelationshipIntentService {
         ${requestedAt}, ${expiresAt}, CURRENT_TIMESTAMP)
       ON CONFLICT ("authorUserId", "subjectUserId") DO UPDATE SET
         status = EXCLUDED.status, note = EXCLUDED.note,
-        "requestedAt" = CASE WHEN EXCLUDED.status = 'REQUESTED' THEN EXCLUDED."requestedAt"
+        "requestedAt" = CASE WHEN EXCLUDED.status IN ('REQUESTED', 'ACCEPTED') THEN EXCLUDED."requestedAt"
                              ELSE "RelationshipIntent"."requestedAt" END,
         "expiresAt" = EXCLUDED."expiresAt", "updatedAt" = CURRENT_TIMESTAMP
       WHERE "RelationshipIntent".status IS DISTINCT FROM EXCLUDED.status
@@ -258,15 +264,8 @@ export class RelationshipIntentService {
     firstUserId: number,
     secondUserId: number,
   ) {
-    const [low, high] = this.canonicalPair(firstUserId, secondUserId);
     const result = await tx.execute<{ active: boolean }>(sql`
-      SELECT COUNT(*) FILTER (
-        WHERE status <> 'REVOKED'
-          AND ("expiresAt" IS NULL OR "expiresAt" > CURRENT_TIMESTAMP)
-      ) = 2 AND BOOL_OR(status = 'ACCEPTED') AS active
-      FROM "RelationshipIntent"
-      WHERE ("authorUserId" = ${low} AND "subjectUserId" = ${high})
-         OR ("authorUserId" = ${high} AND "subjectUserId" = ${low})
+      SELECT ${mutuallyAuthorizedSql(firstUserId, secondUserId)} AS active
     `);
     return result.rows[0]?.active ?? false;
   }

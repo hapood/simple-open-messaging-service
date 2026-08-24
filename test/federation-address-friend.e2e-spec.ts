@@ -89,6 +89,7 @@ describe('federated Address friend request shells', () => {
         account: 'address-bob',
         domain: FED_DOMAIN_B,
         displayName: 'Address Bob',
+        bio: '',
         note: 'address request',
       });
     expect(sent.body.code, JSON.stringify(sent.body)).toBe(BusinessCode.OK);
@@ -105,9 +106,7 @@ describe('federated Address friend request shells', () => {
     expect(requesterStub).toBeDefined();
     const requesterShell =
       await appA.database.query.threadParticipant.findFirst({
-        where: and(
-          eq(threadParticipant.userId, aliceId),
-        ),
+        where: and(eq(threadParticipant.userId, aliceId)),
       });
     expect(requesterShell).toBeDefined();
 
@@ -187,14 +186,20 @@ describe('federated Address friend request shells', () => {
           appA.database.query.relationshipPair.findFirst({
             where: and(
               eq(relationshipPair.userLowId, Math.min(aliceId, bobStubOnA!.id)),
-              eq(relationshipPair.userHighId, Math.max(aliceId, bobStubOnA!.id)),
+              eq(
+                relationshipPair.userHighId,
+                Math.max(aliceId, bobStubOnA!.id),
+              ),
               eq(relationshipPair.active, true),
             ),
           }),
           appB.database.query.relationshipPair.findFirst({
             where: and(
               eq(relationshipPair.userLowId, Math.min(bobId, aliceStubOnB!.id)),
-              eq(relationshipPair.userHighId, Math.max(bobId, aliceStubOnB!.id)),
+              eq(
+                relationshipPair.userHighId,
+                Math.max(bobId, aliceStubOnB!.id),
+              ),
               eq(relationshipPair.active, true),
             ),
           }),

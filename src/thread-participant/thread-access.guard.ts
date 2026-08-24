@@ -76,8 +76,7 @@ export class ThreadAccessGuard implements CanActivate {
       threadId,
       threadType: participant.thread.type,
       participant,
-      friendshipActive:
-        participant.thread.type !== 'P2P' || mutuallyAuthorized,
+      friendshipActive: participant.thread.type !== 'P2P' || mutuallyAuthorized,
       membershipActive: mutuallyAuthorized,
       groupDissolved: participant.thread.groupUser?.group?.dissolvedAt != null,
     };

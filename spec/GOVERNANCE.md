@@ -1,6 +1,6 @@
-# SOCFP Governance
+# SOMFP Governance
 
-This repository maintains the Simple Open Chat Federation Protocol (SOCFP), but the protocol is independent of any single implementation. SOMS is the reference implementation and has no special authority to change the meaning of the specification.
+This repository maintains the Simple Open Messaging Federation Protocol (SOMFP), but the protocol is independent of any single implementation. SOMS is the reference implementation and has no special authority to change the meaning of the specification.
 
 ## Proposing changes
 
@@ -22,7 +22,7 @@ The release package is the smallest unit with a release status. Ordinary chapter
 
 ## Implementation neutrality
 
-Normative text may constrain only behavior observable by a peer. SOMS-specific database, configuration, deployment, client, and migration policy belongs in `docs/`. The reference implementation may provide compatibility endpoints outside the protocol, but it must not publish them as negotiated SOCFP v1 capabilities or conformance requirements.
+Normative text may constrain only behavior observable by a peer. SOMS-specific database, configuration, deployment, client, and migration policy belongs in `docs/`. The reference implementation may provide compatibility endpoints outside the protocol, but it must not publish them as negotiated SOMFP v1 capabilities or conformance requirements.
 
 ## License and security
 

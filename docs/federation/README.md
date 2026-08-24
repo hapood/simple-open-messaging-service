@@ -1,6 +1,6 @@
 # SOMS Federation Implementation Documentation
 
-This directory describes how SOMS implements the Simple Open Chat Federation
+This directory describes how SOMS implements the Simple Open Messaging Federation
 Protocol, including implementation audits and historical design records. The
 specification for independent implementations is published as a first-class
 artifact under [`spec/`](../../spec/). Implementation details here cannot

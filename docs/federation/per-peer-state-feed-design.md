@@ -34,7 +34,8 @@ The core implementation decisions that survived into v1 are:
 The early design used names such as `P2P_META`, `FRIEND`, and `NOT_FRIEND`. The
 published contract uses one account-generic `RELATIONSHIP_INTENT` with
 `REQUESTED`, `ACCEPTED`, and `REVOKED`. Requests have an absolute lifetime of at most
-seven days. `REVOKED` itself has no expiration.
+seven days. `ACCEPTED` is the durable acknowledgement of a still-effective
+request flow and has no expiration; `REVOKED` itself also has no expiration.
 
 Message-feed and tombstone-feed authorization is directional. An effective
 source-authored `REQUESTED` or valid `ACCEPTED` lets the target peer query that

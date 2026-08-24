@@ -1,4 +1,4 @@
-# Simple Open Chat Federation Protocol v1 Peer Recognition
+# Simple Open Messaging Federation Protocol v1 Peer Recognition
 
 Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
@@ -7,7 +7,7 @@ Operations：
 - `POST /s2s/v1/recognize`
 - `POST /s2s/v1/healthy`
 
-This document defines the directional semantics and bidirectional establishment timing of peer recognition, identity pinning, success confirmation, failure handling, and the privacy-preserving behavior of health queries. [Simple Open Chat Federation Protocol v1](./protocol.md) defines shared Federation types and response envelopes; [Transport and Security](./transport-security.md) defines HTTPS, discovery, key certificates, and HTTP Message Signatures; the [Stable Error Registry](./errors.md) defines error classification.
+This document defines the directional semantics and bidirectional establishment timing of peer recognition, identity pinning, success confirmation, failure handling, and the privacy-preserving behavior of health queries. [Simple Open Messaging Federation Protocol v1](./protocol.md) defines shared Federation types and response envelopes; [Transport and Security](./transport-security.md) defines HTTPS, discovery, key certificates, and HTTP Message Signatures; the [Stable Error Registry](./errors.md) defines error classification.
 
 The key words `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, and `MAY` are to be interpreted as described in RFC 2119 and RFC 8174.
 
@@ -161,7 +161,7 @@ Ordinary feed, call, user, media, and forward-bundle operations use the `recogni
 Before sending Recognize to peer domain `B`, A MUST:
 
 1. Locate B using the SRV, TLS, and authority rules in protocol.md.
-2. Fetch B's `/.well-known/socfp` over HTTPS with successful hostname verification.
+2. Fetch B's `/.well-known/somfp` over HTTPS with successful hostname verification.
 3. Select the highest common major version and require the selected version to be `1`, matching the request path.
 4. Strictly decode `rootKey.ed25519` to exactly 32 bytes.
 5. Validate at least one currently valid, root-authorized signing-key certificate for B.
@@ -249,7 +249,7 @@ sequenceDiagram
     participant A as Peer A
     participant B as Peer B
 
-    A->>B: GET /.well-known/socfp
+    A->>B: GET /.well-known/somfp
     B-->>A: B versions, root, signing certificates
     Note over A: Validate and pin B root<br/>A recognizes B
     A->>B: POST /s2s/v1/recognize {domain: a.example}
@@ -464,7 +464,7 @@ The following vectors use the public test signing private key `ICEiIyQlJicoKSorL
       "ed25519": "Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=",
       "notBefore": 1699990000000,
       "notAfter": 1800000000000,
-      "authorizationSignature": "sfjYJ8fpmatbR3e2S0rflH8CgsPqBnDxvKoTrH2gwVXW00Xb8BNz4YA75j9pwF8beG8qV6DPalT4j7j2UAdkCw=="
+      "authorizationSignature": "mPwPCPikeeOi90FHS8cA/YhwWUYid11G8bQGOMMgidhOyW1/k9BbrK669CkBTlsDPyu/t4FDxqmZlrZZGSAkDA=="
     }
   ]
 }

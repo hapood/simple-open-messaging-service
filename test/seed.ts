@@ -8,7 +8,8 @@
 // federation-test-helpers.ts, which uses its own Drizzle client.
 import type { INestApplication } from '@nestjs/common';
 import { DatabaseService } from '../src/database/database.service';
-import { user } from '../src/database/schema';
+import { relationshipIntent, user } from '../src/database/schema';
+import type { Database } from '../src/database/database.service';
 import {
   SessionTokenService,
   type SessionClient,
@@ -18,6 +19,31 @@ import { PasswordHasher } from '../src/auth/password-hasher.service';
 export interface SeededUser {
   id: number;
   account: string;
+}
+
+/** Seed the two directed facts required for an active P2P relationship. */
+export async function seedAcceptedRelationship(
+  database: Database,
+  firstUserId: number,
+  secondUserId: number,
+): Promise<void> {
+  const updatedAt = new Date();
+  await database.insert(relationshipIntent).values([
+    {
+      authorUserId: firstUserId,
+      subjectUserId: secondUserId,
+      status: 'ACCEPTED',
+      requestedAt: updatedAt,
+      updatedAt,
+    },
+    {
+      authorUserId: secondUserId,
+      subjectUserId: firstUserId,
+      status: 'ACCEPTED',
+      requestedAt: updatedAt,
+      updatedAt,
+    },
+  ]);
 }
 
 /** Insert a local user directly. `password` (optional) is hashed via the app's PasswordHasher

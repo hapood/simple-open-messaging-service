@@ -71,7 +71,7 @@ describe('Friend-request client state e2e', () => {
 
     const before = await database.db.query.user.findFirst({
       where: eq(user.id, inviteeId),
-      columns: { threadRevision: true },
+      columns: { stateFeedAllocatedThrough: true },
     });
     expect(before).toBeDefined();
 
@@ -84,26 +84,29 @@ describe('Friend-request client state e2e', () => {
 
     const after = await database.db.query.user.findFirst({
       where: eq(user.id, inviteeId),
-      columns: { threadRevision: true },
+      columns: { stateFeedAllocatedThrough: true },
     });
     // The compacted client intent itself drives the device-local notification watermark.
-    expect(after!.threadRevision).toBe(before!.threadRevision + 1);
+    expect(after!.stateFeedAllocatedThrough).toBe(
+      before!.stateFeedAllocatedThrough + 1,
+    );
 
     const delta = await request(http)
-      .post('/api/v1/user/query-state/delta')
+      .get('/api/v1/user/state-feed')
       .set(authB)
-      .send({
-        fromRevision: before!.threadRevision,
-        toRevision: after!.threadRevision,
+      .query({
+        mode: 'delta',
+        after: before!.stateFeedAllocatedThrough,
+        through: after!.stateFeedAllocatedThrough,
       });
     expect(delta.body.code).toBe(0);
-    expect(delta.body.data).toContainEqual(
+    expect(delta.body.data.items).toContainEqual(
       expect.objectContaining({
-        direction: 'CLIENT_STATE',
         account: 'inviter',
         eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: 'invitee',
         body: expect.objectContaining({
+          direction: 'INCOMING',
           status: 'REQUESTED',
           inviteId: invite.body.data.inviteId,
         }),
@@ -117,19 +120,22 @@ describe('Friend-request client state e2e', () => {
     expect(accepted.body.code).toBe(0);
     const acceptedHead = await database.db.query.user.findFirst({
       where: eq(user.id, inviteeId),
-      columns: { threadRevision: true },
+      columns: { stateFeedAllocatedThrough: true },
     });
     const handledDelta = await request(http)
-      .post('/api/v1/user/query-state/delta')
+      .get('/api/v1/user/state-feed')
       .set(authB)
-      .send({
-        fromRevision: after!.threadRevision,
-        toRevision: acceptedHead!.threadRevision,
+      .query({
+        mode: 'delta',
+        after: after!.stateFeedAllocatedThrough,
+        through: acceptedHead!.stateFeedAllocatedThrough,
       });
-    expect(handledDelta.body.data).toContainEqual(
+    expect(handledDelta.body.data.items).toContainEqual(
       expect.objectContaining({
-        direction: 'CLIENT_STATE',
-        body: expect.objectContaining({ status: 'ACCEPTED' }),
+        body: expect.objectContaining({
+          direction: 'INCOMING',
+          status: 'ACCEPTED',
+        }),
       }),
     );
   });

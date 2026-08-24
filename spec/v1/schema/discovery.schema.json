@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:socfp:v1:discovery",
-  "title": "GET /.well-known/socfp response for a v1-capable node",
+  "$id": "urn:somfp:v1:discovery",
+  "title": "GET /.well-known/somfp response for a v1-capable node",
   "type": "object",
   "required": ["protocolVersions", "rootKey", "keys"],
   "properties": {
@@ -18,7 +18,7 @@
       "required": ["ed25519"],
       "properties": {
         "ed25519": {
-          "$ref": "urn:socfp:v1:common#/$defs/base64Ed25519Key"
+          "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Key"
         }
       },
       "additionalProperties": false
@@ -38,16 +38,16 @@
         "properties": {
           "keyId": { "type": "string", "minLength": 3 },
           "ed25519": {
-            "$ref": "urn:socfp:v1:common#/$defs/base64Ed25519Key"
+            "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Key"
           },
           "notBefore": {
-            "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds"
+            "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
           },
           "notAfter": {
-            "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds"
+            "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
           },
           "authorizationSignature": {
-            "$ref": "urn:socfp:v1:common#/$defs/base64Ed25519Signature"
+            "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Signature"
           }
         },
         "additionalProperties": false

@@ -25,22 +25,24 @@ export default async function globalSetup(): Promise<void> {
   // Clone the fully migrated, empty template before workers start. PostgreSQL
   // database cloning is both faster and more deterministic than launching a
   // migration process from every spec while the suite is under load.
-  await Promise.all(
-    Array.from({ length: E2E_MAX_WORKERS }, async (_, index) => {
-      const poolId = index + 1;
-      for (const database of [
-        `soms_test_fork${poolId}`,
-        `soms_test_fork${poolId}_a`,
-        `soms_test_fork${poolId}_b`,
-      ]) {
-        await recreateDatabaseFromTemplate(
-          process.env.DATABASE_URL!,
-          database,
-          'soms_test',
-        );
-      }
-    }),
-  );
+  // PostgreSQL requires the source database to have no competing sessions while CREATE DATABASE
+  // copies it as a template. Parallel clone attempts therefore race with one another and can fail
+  // with 55006 (or wait indefinitely behind a concurrent copy). Build the worker databases in a
+  // deterministic sequence; Vitest still runs the completed databases in parallel afterwards.
+  for (let index = 0; index < E2E_MAX_WORKERS; index++) {
+    const poolId = index + 1;
+    for (const database of [
+      `soms_test_fork${poolId}`,
+      `soms_test_fork${poolId}_a`,
+      `soms_test_fork${poolId}_b`,
+    ]) {
+      await recreateDatabaseFromTemplate(
+        process.env.DATABASE_URL,
+        database,
+        'soms_test',
+      );
+    }
+  }
 
   // Federation specs fork compiled Node processes. Build their entry once,
   // before Vitest starts its worker pool, so a stale build cannot make every

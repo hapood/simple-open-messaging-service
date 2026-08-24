@@ -15,7 +15,7 @@ import {
 } from '../src/database/schema';
 import { ContentType } from '../src/database/enums.js';
 import { ClientMessageFeedWriter } from '../src/message/client-message-feed.service.js';
-import { seedUser, seedSession } from './seed';
+import { seedAcceptedRelationship, seedUser, seedSession } from './seed';
 
 /**
  * /notifications/action e2e — the descriptor button round-trip. Seeds a P2P thread with an unread message,
@@ -80,6 +80,7 @@ describe('notifications/action (descriptor button round-trip)', () => {
       { userId: recipientId, threadId, updatedAt: now },
       { userId: peerId, threadId, updatedAt: now },
     ]);
+    await seedAcceptedRelationship(database.db, recipientId, peerId);
     // seq 1 = the recipient's own outgoing message (the high-water mark before backgrounding); seq 2 =
     // Alice's reply that arrives while away and advances the recipient's message feed.
     await database.db.insert(message).values([

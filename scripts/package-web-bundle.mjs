@@ -12,8 +12,8 @@
 //
 // This is a BUILD artifact, not runtime state. In production the Dockerfile bakes shell-bundle/ read-only
 // into the image at /app/shell-bundle — OUTSIDE the bind-mounted /app/data volume — so the bundle is
-// immutable per image and never drifts into operator-writable state. Locally (`npm run bundle:package`)
-// it writes ./shell-bundle/ at the repo root (gitignored).
+// immutable per image and never drifts into operator-writable state. Locally it writes
+// ./shell-bundle/ at the repo root (gitignored).
 //
 // (downloadUrl is NOT stored here — the backend merges it in at serve time from a fixed route path.
 // The shell owns version compatibility via a hard-coded backend-version upper bound in its Cargo source,
@@ -26,7 +26,9 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const webPkg = JSON.parse(readFileSync(resolve(root, 'web/package.json'), 'utf8'));
+const webPkg = JSON.parse(
+  readFileSync(resolve(root, 'web/package.json'), 'utf8'),
+);
 const webVersion = webPkg.version;
 if (!webVersion) {
   console.error('package-web-bundle: web/package.json has no version');
@@ -35,7 +37,9 @@ if (!webVersion) {
 
 const browserDir = resolve(root, 'web/dist/web/browser');
 if (!existsSync(browserDir)) {
-  console.error(`package-web-bundle: web build output not found at ${browserDir} — run "npm --prefix web run build" first`);
+  console.error(
+    `package-web-bundle: web build output not found at ${browserDir} — run "npm --prefix web run build" first`,
+  );
   process.exit(1);
 }
 
@@ -45,13 +49,20 @@ const tarball = resolve(outDir, `soms-web-${webVersion}.tar.gz`);
 
 // tar+gzip the browser build (content of dist/web/browser, not the dist root) via the system tar
 // (available in the node image + every dev host). -C chdirs in so the archive root IS the browser dir.
-execFileSync('tar', ['-czf', tarball, '-C', browserDir, '.'], { stdio: 'inherit' });
+execFileSync('tar', ['-czf', tarball, '-C', browserDir, '.'], {
+  stdio: 'inherit',
+});
 
 const bytes = readFileSync(tarball);
 const sha256 = createHash('sha256').update(bytes).digest('hex');
 
 const manifest = { webVersion, sha256 };
-writeFileSync(resolve(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
+writeFileSync(
+  resolve(outDir, 'manifest.json'),
+  JSON.stringify(manifest, null, 2) + '\n',
+);
 
-console.log(`package-web-bundle: wrote shell-bundle/soms-web-${webVersion}.tar.gz (${bytes.length} bytes) + manifest.json`);
+console.log(
+  `package-web-bundle: wrote shell-bundle/soms-web-${webVersion}.tar.gz (${bytes.length} bytes) + manifest.json`,
+);
 console.log(`  webVersion=${webVersion} sha256=${sha256.slice(0, 16)}…`);

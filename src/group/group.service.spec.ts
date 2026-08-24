@@ -175,15 +175,14 @@ describe('GroupService membership lifecycle', () => {
     const messages = {
       writeSystemMessageInTx: vi
         .fn()
-        .mockImplementation(
-          (_tx, _threadId, _type, subjectUserId: number) =>
-            Promise.resolve({
-              message: {
-                threadId: 10,
-                seq: subjectUserId,
-                createdAt: new Date(),
-              },
-            }),
+        .mockImplementation((_tx, _threadId, _type, subjectUserId: number) =>
+          Promise.resolve({
+            message: {
+              threadId: 10,
+              seq: subjectUserId,
+              createdAt: new Date(),
+            },
+          }),
         ),
     };
     const messageFanout = { dispatchToUsers: vi.fn() };

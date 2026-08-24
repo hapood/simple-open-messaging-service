@@ -11,9 +11,13 @@ function databaseStub(stored?: string) {
       db: {
         query: {
           systemSetting: {
-            findFirst: vi.fn().mockResolvedValue(
-              stored ? { key: 'rateLimit:authPolicies', value: stored } : undefined,
-            ),
+            findFirst: vi
+              .fn()
+              .mockResolvedValue(
+                stored
+                  ? { key: 'rateLimit:authPolicies', value: stored }
+                  : undefined,
+              ),
           },
         },
         insert,
@@ -84,9 +88,9 @@ describe('RateLimitModeService', () => {
     await service.onModuleInit();
     const configuration = service.monitoringConfig();
 
-    await expect(service.setConfiguration(configuration.slice(1))).rejects.toThrow(
-      'must include every authentication policy',
-    );
+    await expect(
+      service.setConfiguration(configuration.slice(1)),
+    ).rejects.toThrow('must include every authentication policy');
     configuration[0].buckets[0].burst = 0;
     await expect(service.setConfiguration(configuration)).rejects.toThrow(
       'invalid rate or burst',

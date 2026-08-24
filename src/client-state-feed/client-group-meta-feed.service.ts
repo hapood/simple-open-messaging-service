@@ -174,13 +174,14 @@ export class ClientGroupMetaFeedService {
     take: number,
     through?: bigint,
   ) {
-    const target = await this.database.db.query.clientGroupMetaFeedTarget.findFirst({
-      where: and(
-        eq(clientGroupMetaFeedTarget.userId, userId),
-        eq(clientGroupMetaFeedTarget.groupUserId, groupUserId),
-        eq(clientGroupMetaFeedTarget.active, true),
-      ),
-    });
+    const target =
+      await this.database.db.query.clientGroupMetaFeedTarget.findFirst({
+        where: and(
+          eq(clientGroupMetaFeedTarget.userId, userId),
+          eq(clientGroupMetaFeedTarget.groupUserId, groupUserId),
+          eq(clientGroupMetaFeedTarget.active, true),
+        ),
+      });
     if (!target)
       throw new BusinessException(
         BusinessCode.FORBIDDEN,

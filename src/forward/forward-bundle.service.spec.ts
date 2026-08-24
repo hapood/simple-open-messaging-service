@@ -168,7 +168,6 @@ const messageServiceFake = {
   ),
 };
 
-
 function forwardService(database: unknown) {
   return new ForwardBundleService(
     database as never,

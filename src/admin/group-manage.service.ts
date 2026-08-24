@@ -26,11 +26,11 @@ export class GroupManageService {
       : undefined;
     const where = and(eq(messageThread.type, 'GROUP'), search);
     const activeParticipants = sql<number>`(
-      select count(*)::int from "RelationshipIntent" authorization
-      where authorization."authorUserId" = ${messageThread.groupUserId}
-        and (authorization.status = 'ACCEPTED'
-          or (authorization.status = 'REQUESTED'
-            and authorization."expiresAt" > CURRENT_TIMESTAMP))
+      select count(*)::int from "RelationshipIntent" intent
+      where intent."authorUserId" = ${messageThread.groupUserId}
+        and (intent.status = 'ACCEPTED'
+          or (intent.status = 'REQUESTED'
+            and intent."expiresAt" > CURRENT_TIMESTAMP))
     )`;
     const base = this.database.db
       .select({

@@ -22,6 +22,7 @@ import { UserQuotaService } from '../src/quota/user-quota.service';
 import { BusinessCode } from '../src/common/business-code';
 import { InviteService } from '../src/invite/invite.service';
 import type { OutboundFilePayload } from '../src/upload/file-content';
+import { seedAcceptedRelationship } from './seed';
 
 /**
  * Local media send staging (Phase 7 barrier model): a media message is NOT committed as a Message until
@@ -72,7 +73,7 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
       await database.db
         .insert(user)
         .values(
-          [1, 2].map((n) => ({
+          [1, 2, 3].map((n) => ({
             account: `st-target-${n}-${randomUUID().slice(0, 8)}`,
             hashPwd: 'x',
             name: `target ${n}`,
@@ -87,9 +88,11 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
       .values({ type: 'P2P', updatedAt: now })
       .returning({ id: messageThread.id });
     threadId = thread.id;
-    await database.db
-      .insert(threadParticipant)
-      .values({ userId, threadId, updatedAt: now });
+    await database.db.insert(threadParticipant).values([
+      { userId, threadId, updatedAt: now },
+      { userId: inviteTargetIds[2], threadId, updatedAt: now },
+    ]);
+    await seedAcceptedRelationship(database.db, userId, inviteTargetIds[2]);
   });
 
   afterAll(async () => {

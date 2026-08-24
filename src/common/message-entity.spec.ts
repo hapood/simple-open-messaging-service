@@ -9,7 +9,7 @@ import {
 } from './message-entity.js';
 
 describe('message entity codec', () => {
-  const mention = '[@张三](socfp://user/zhangsan%40example.com)';
+  const mention = '[@张三](somfp://user/zhangsan%40example.com)';
 
   it('serializes and parses a canonical user mention', () => {
     expect(serializeUserMention('张三', 'zhangsan@example.com')).toBe(mention);
@@ -40,7 +40,7 @@ describe('message entity codec', () => {
     const inputs = [
       String.raw`C:\Users\张三`,
       mention,
-      String.raw`\[@张三](socfp://user/a)`,
+      String.raw`\[@张三](somfp://user/a)`,
       '普通 [@张三] 不是实体',
       'emoji 😀 before ' + mention,
     ];
@@ -56,7 +56,7 @@ describe('message entity codec', () => {
 
   it('serializes the extensible all-members audience', () => {
     const all = serializeAudienceMention('所有人', 'all');
-    expect(all).toBe('[@所有人](socfp://audience/all)');
+    expect(all).toBe('[@所有人](somfp://audience/all)');
     expect(parseMessageEntities(all)[0]).toMatchObject({
       kind: 'entity',
       entityType: 'audience',
@@ -66,25 +66,25 @@ describe('message entity codec', () => {
   });
 
   it('transforms real entities without touching escaped protocol text', () => {
-    const escaped = String.raw`\[@Fake](socfp://user/fake%40example.com)`;
+    const escaped = String.raw`\[@Fake](somfp://user/fake%40example.com)`;
     const content = `${escaped} ${mention}`;
     expect(
       transformMessageEntities(content, (entity) =>
         serializeUserMention('张三（规范）', entity.entityId),
       ),
-    ).toBe(`${escaped} [@张三（规范）](socfp://user/zhangsan%40example.com)`);
+    ).toBe(`${escaped} [@张三（规范）](somfp://user/zhangsan%40example.com)`);
   });
 
   it('treats malformed tokens as ordinary text', () => {
     const malformed = [
       '[@张三]',
       '[@张三](https://example.com)',
-      '[@张三](socfp://user/)',
-      '[@张三](socfp://user/a?v=0)',
-      '[@张三](socfp://user/%61lice%40example.com)',
-      '[@张三](socfp://USER/alice%40example.com)',
-      '[@张三](socfp://user/alice%40example.com?extra=1)',
-      '[@发布](socfp://topic/release)',
+      '[@张三](somfp://user/)',
+      '[@张三](somfp://user/a?v=0)',
+      '[@张三](somfp://user/%61lice%40example.com)',
+      '[@张三](somfp://USER/alice%40example.com)',
+      '[@张三](somfp://user/alice%40example.com?extra=1)',
+      '[@发布](somfp://topic/release)',
     ];
     for (const value of malformed) {
       expect(parseMessageEntities(value)).toEqual([

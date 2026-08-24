@@ -100,7 +100,11 @@ export class FixedWindowPolicyService implements OnModuleInit {
     const updatedAt = new Date();
     await this.database.db
       .insert(systemSetting)
-      .values({ key: SETTING_KEY, value: JSON.stringify(Object.values(policies)), updatedAt })
+      .values({
+        key: SETTING_KEY,
+        value: JSON.stringify(Object.values(policies)),
+        updatedAt,
+      })
       .onConflictDoUpdate({
         target: systemSetting.key,
         set: { value: JSON.stringify(Object.values(policies)), updatedAt },
@@ -112,29 +116,54 @@ export class FixedWindowPolicyService implements OnModuleInit {
 
   private defaults(): Record<FixedWindowPolicyName, FixedWindowPolicy> {
     return Object.fromEntries(
-      Object.entries(FIXED_WINDOW_DEFAULTS).map(([policy, [limit, windowSeconds]]) => [
-        policy,
-        { policy, limit, windowSeconds },
-      ]),
+      Object.entries(FIXED_WINDOW_DEFAULTS).map(
+        ([policy, [limit, windowSeconds]]) => [
+          policy,
+          { policy, limit, windowSeconds },
+        ],
+      ),
     ) as Record<FixedWindowPolicyName, FixedWindowPolicy>;
   }
 
-  private validate(input: unknown): Record<FixedWindowPolicyName, FixedWindowPolicy> {
-    if (!Array.isArray(input)) throw new Error('fixed-window policies must be an array');
-    const expected = Object.keys(FIXED_WINDOW_DEFAULTS) as FixedWindowPolicyName[];
-    if (input.length !== expected.length) throw new Error('all fixed-window policies are required');
+  private validate(
+    input: unknown,
+  ): Record<FixedWindowPolicyName, FixedWindowPolicy> {
+    if (!Array.isArray(input))
+      throw new Error('fixed-window policies must be an array');
+    const expected = Object.keys(
+      FIXED_WINDOW_DEFAULTS,
+    ) as FixedWindowPolicyName[];
+    if (input.length !== expected.length)
+      throw new Error('all fixed-window policies are required');
     const result = {} as Record<FixedWindowPolicyName, FixedWindowPolicy>;
     for (const item of input) {
-      if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('invalid fixed-window policy');
+      if (!item || typeof item !== 'object' || Array.isArray(item))
+        throw new Error('invalid fixed-window policy');
       const { policy, limit, windowSeconds } = item as Record<string, unknown>;
-      if (typeof policy !== 'string' || !expected.includes(policy as FixedWindowPolicyName) || result[policy as FixedWindowPolicyName]) {
-        throw new Error('fixed-window policy names must be unique and supported');
+      if (
+        typeof policy !== 'string' ||
+        !expected.includes(policy as FixedWindowPolicyName) ||
+        result[policy as FixedWindowPolicyName]
+      ) {
+        throw new Error(
+          'fixed-window policy names must be unique and supported',
+        );
       }
-      if (!Number.isSafeInteger(limit) || (limit as number) < 1 || (limit as number) > 100_000) {
+      if (
+        !Number.isSafeInteger(limit) ||
+        (limit as number) < 1 ||
+        (limit as number) > 100_000
+      ) {
         throw new Error(`${policy}.limit must be an integer from 1 to 100000`);
       }
-      if (!Number.isSafeInteger(windowSeconds) || (windowSeconds as number) < 1 || (windowSeconds as number) > 86_400) {
-        throw new Error(`${policy}.windowSeconds must be an integer from 1 to 86400`);
+      if (
+        !Number.isSafeInteger(windowSeconds) ||
+        (windowSeconds as number) < 1 ||
+        (windowSeconds as number) > 86_400
+      ) {
+        throw new Error(
+          `${policy}.windowSeconds must be an integer from 1 to 86400`,
+        );
       }
       result[policy as FixedWindowPolicyName] = {
         policy,

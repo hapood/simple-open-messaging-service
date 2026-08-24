@@ -374,7 +374,7 @@
             color="primary"
             type="button"
             (click)="approve(req)"
-            [disabled]="req.status === -2 || isInviteActionPending(req.id)"
+            [disabled]="req.status !== 0 || isInviteActionPending(req.id)"
           >
             {{
               (req.kind === 'GROUP' ? 'friend.joinGroup' : 'friend.approve')
@@ -410,9 +410,12 @@
             type="button"
             class="delete-btn"
             (click)="deleteSelected(req)"
-            [disabled]="isInviteActionPending(req.id)"
+            [disabled]="req.status !== 0 || isInviteActionPending(req.id)"
           >
-            {{ 'friend.decline' | transloco }}
+            {{
+              (req.status === -4 ? 'friend.rejected' : 'friend.decline')
+                | transloco
+            }}
           </button>
         }
       </div>

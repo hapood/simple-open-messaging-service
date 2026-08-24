@@ -15,6 +15,7 @@ import {
 import { MessageService } from '../src/message/message.service';
 import { ResumableUploadService } from '../src/upload/resumable-upload.service';
 import { eq } from 'drizzle-orm';
+import { seedAcceptedRelationship } from './seed';
 
 describe('sequential resumable uploads', () => {
   let app: INestApplication;
@@ -47,14 +48,26 @@ describe('sequential resumable uploads', () => {
       })
       .returning({ id: user.id });
     userId = createdUser.id;
+    const [peer] = await database.db
+      .insert(user)
+      .values({
+        account: `resume-peer-${randomUUID().slice(0, 8)}`,
+        hashPwd: 'x',
+        name: 'resume peer',
+        isForeigner: false,
+        updatedAt: now,
+      })
+      .returning({ id: user.id });
     const [createdThread] = await database.db
       .insert(messageThread)
       .values({ type: 'P2P', updatedAt: now })
       .returning({ id: messageThread.id });
     threadId = createdThread.id;
-    await database.db
-      .insert(threadParticipant)
-      .values({ userId, threadId, updatedAt: now });
+    await database.db.insert(threadParticipant).values([
+      { userId, threadId, updatedAt: now },
+      { userId: peer.id, threadId, updatedAt: now },
+    ]);
+    await seedAcceptedRelationship(database.db, userId, peer.id);
   });
 
   afterAll(async () => app.close());

@@ -19,9 +19,13 @@ function database(stored?: unknown) {
       db: {
         query: {
           systemSetting: {
-            findFirst: vi.fn().mockResolvedValue(
-              stored === undefined ? undefined : { value: JSON.stringify(stored) },
-            ),
+            findFirst: vi
+              .fn()
+              .mockResolvedValue(
+                stored === undefined
+                  ? undefined
+                  : { value: JSON.stringify(stored) },
+              ),
           },
         },
         insert,

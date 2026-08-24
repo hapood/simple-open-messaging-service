@@ -11,21 +11,33 @@ export const effectiveRelationshipIntentSql = (
   authorUserId: SQLWrapper | number,
   subjectUserId: SQLWrapper | number,
 ) => sql`EXISTS (
-  SELECT 1 FROM "RelationshipIntent" authorization
-  WHERE authorization."authorUserId" = ${authorUserId}
-    AND authorization."subjectUserId" = ${subjectUserId}
-    AND (authorization.status = 'ACCEPTED'
-      OR (authorization.status = 'REQUESTED'
-        AND authorization."expiresAt" > CURRENT_TIMESTAMP))
+  SELECT 1 FROM "RelationshipIntent" intent
+  WHERE intent."authorUserId" = ${authorUserId}
+    AND intent."subjectUserId" = ${subjectUserId}
+    AND (intent.status = 'ACCEPTED'
+      OR (intent.status = 'REQUESTED'
+        AND intent."expiresAt" > CURRENT_TIMESTAMP))
 )`;
 
-/** Current write/member authority requires a live grant in both authored directions. */
+/**
+ * Current write/member authority requires two live directions and a durably
+ * committed acknowledgement. Crossed requests are promoted before this
+ * predicate becomes observable outside their relationship transaction.
+ */
 export const mutuallyAuthorizedSql = (
   firstUserId: SQLWrapper | number,
   secondUserId: SQLWrapper | number,
 ) => sql`(
   ${effectiveRelationshipIntentSql(firstUserId, secondUserId)}
   AND ${effectiveRelationshipIntentSql(secondUserId, firstUserId)}
+  AND EXISTS (
+    SELECT 1 FROM "RelationshipIntent" confirmation
+    WHERE confirmation.status = 'ACCEPTED'
+      AND ((confirmation."authorUserId" = ${firstUserId}
+            AND confirmation."subjectUserId" = ${secondUserId})
+        OR (confirmation."authorUserId" = ${secondUserId}
+            AND confirmation."subjectUserId" = ${firstUserId}))
+  )
 )`;
 
 export async function isPairMutuallyAuthorized(

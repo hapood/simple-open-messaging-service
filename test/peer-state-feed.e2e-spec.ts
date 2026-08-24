@@ -4,7 +4,9 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
+  federatedFriendRequest,
   federatedPeer,
+  federatedProfile,
   relationshipIntent,
   peerStateFeed,
   peerStateFeedTarget,
@@ -12,6 +14,8 @@ import {
 } from '../src/database/schema.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
 import { RelationshipIntentService } from '../src/invite/relationship-intent.service.js';
+import { FederationService } from '../src/federation/federation.service.js';
+import type { DatabaseTransaction } from '../src/database/database.service.js';
 
 const DOMAINS = ['state-feed-a.test', 'state-feed-b.test'];
 
@@ -91,6 +95,84 @@ describe('per-peer state feed', () => {
     ]);
   });
 
+  it('does not persist an unsolicited human PROFILE without a preceding request', async () => {
+    const account = 'unsolicited-profile';
+    const peerDomain = DOMAINS[0];
+    const receiver = Object.create(
+      FederationService.prototype,
+    ) as FederationService;
+    Object.assign(receiver, {
+      config: { domain: 'receiver.test' },
+    });
+    const applyStateFeedPageInTx = receiver['applyStateFeedPageInTx'].bind(
+      receiver,
+    ) as (
+      tx: DatabaseTransaction,
+      domain: string,
+      page: {
+        stateFeedEndId: string;
+        scannedThrough: string;
+        hasMore: boolean;
+        items: Array<{
+          account: string;
+          domain: string;
+          eventType: 'PROFILE';
+          feedId: string;
+          body: {
+            profileRev: number;
+            displayName: string;
+            bio: string;
+            avatar: null;
+          };
+        }>;
+      },
+    ) => Promise<unknown>;
+
+    await database.db.transaction((tx) =>
+      applyStateFeedPageInTx(tx, peerDomain, {
+        stateFeedEndId: '1',
+        scannedThrough: '1',
+        hasMore: false,
+        items: [
+          {
+            account,
+            domain: peerDomain,
+            eventType: 'PROFILE',
+            feedId: '1',
+            body: {
+              profileRev: 1,
+              displayName: 'Unsolicited Profile',
+              bio: '',
+              avatar: null,
+            },
+          },
+        ],
+      }),
+    );
+
+    expect(
+      await database.db.query.federatedProfile.findFirst({
+        where: and(
+          eq(federatedProfile.domain, peerDomain),
+          eq(federatedProfile.account, account),
+        ),
+      }),
+    ).toBeUndefined();
+    expect(
+      await database.db.query.federatedFriendRequest.findFirst({
+        where: and(
+          eq(federatedFriendRequest.remoteDomain, peerDomain),
+          eq(federatedFriendRequest.remoteAccount, account),
+        ),
+      }),
+    ).toBeUndefined();
+    expect(
+      await database.db.query.user.findFirst({
+        where: and(eq(user.domain, peerDomain), eq(user.account, account)),
+      }),
+    ).toBeUndefined();
+  });
+
   it('reindexes an unchanged confirmation when explicitly required', async () => {
     const domain = 'state-feed-confirmation.test';
     await database.db.insert(federatedPeer).values({ domain });
@@ -151,7 +233,7 @@ describe('per-peer state feed', () => {
     }
   });
 
-  it('reuses a current snapshot revision even when reindexing is requested', async () => {
+  it('advances the feed while reusing the current snapshot revision', async () => {
     const domain = 'state-feed-snapshot-revision.test';
     await database.db.insert(federatedPeer).values({ domain });
     try {
@@ -168,10 +250,93 @@ describe('per-peer state feed', () => {
       });
 
       const page = await feed.serve(domain, 0n);
+      expect(page.stateFeedEndId).toBe('2');
+      expect(page.items).toMatchObject([
+        { feedId: '2', body: { profileRev: 7 } },
+      ]);
+    } finally {
+      await database.db
+        .delete(federatedPeer)
+        .where(eq(federatedPeer.domain, domain));
+    }
+  });
+
+  it('deduplicates an unchanged snapshot revision without reindexing', async () => {
+    const domain = 'state-feed-snapshot-dedup.test';
+    await database.db.insert(federatedPeer).values({ domain });
+    try {
+      const write = {
+        peerDomain: domain,
+        account: 'alice',
+        domain: 'local.test',
+        eventType: 'PROFILE' as const,
+        body: { profileRev: 8, displayName: 'Alice', bio: '', avatar: null },
+      };
+      await database.db.transaction(async (tx) => {
+        await feed.writeManyInTx(tx, [write]);
+        await feed.writeManyInTx(tx, [write]);
+      });
+
+      const page = await feed.serve(domain, 0n);
       expect(page.stateFeedEndId).toBe('1');
       expect(page.items).toMatchObject([
-        { feedId: '1', body: { profileRev: 7 } },
+        { feedId: '1', body: { profileRev: 8 } },
       ]);
+    } finally {
+      await database.db
+        .delete(federatedPeer)
+        .where(eq(federatedPeer.domain, domain));
+    }
+  });
+
+  it('rejects PROFILE changes that do not advance the snapshot revision', async () => {
+    const domain = 'state-feed-snapshot-mutation.test';
+    await database.db.insert(federatedPeer).values({ domain });
+    try {
+      await expect(
+        database.db.transaction(async (tx) => {
+          await feed.writeManyInTx(tx, [
+            {
+              peerDomain: domain,
+              account: 'alice',
+              domain: 'local.test',
+              eventType: 'PROFILE',
+              body: {
+                profileRev: 9,
+                displayName: 'Alice',
+                bio: '',
+                avatar: null,
+              },
+            },
+          ]);
+          await feed.writeManyInTx(tx, [
+            {
+              peerDomain: domain,
+              account: 'alice',
+              domain: 'local.test',
+              eventType: 'PROFILE',
+              forceReindex: true,
+              body: {
+                profileRev: 9,
+                displayName: 'Changed without revision',
+                bio: '',
+                avatar: null,
+              },
+            },
+          ]);
+        }),
+      ).rejects.toThrow('PROFILE revision 9 changed without advancing');
+
+      expect(
+        await database.db.query.peerStateFeedTarget.findFirst({
+          where: eq(peerStateFeedTarget.peerDomain, domain),
+        }),
+      ).toBeUndefined();
+      expect(
+        await database.db.query.peerStateFeed.findFirst({
+          where: eq(peerStateFeed.peerDomain, domain),
+        }),
+      ).toBeUndefined();
     } finally {
       await database.db
         .delete(federatedPeer)
@@ -192,7 +357,7 @@ describe('per-peer state feed', () => {
           body: {
             status: 'ACCEPTED',
             note: '',
-            requestedAt: null,
+            requestedAt: wireTime,
             expiresAt: null,
           },
         },

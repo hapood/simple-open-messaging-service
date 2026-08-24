@@ -81,19 +81,17 @@ export class GroupIdDto {
   groupId!: number;
 }
 
-/** Newest-first keyset page of still-actionable USER→GROUP applications. */
+/** Newest-first keyset page of projected USER→GROUP applications. */
 export class QueryGroupJoinRequestsDto extends GroupIdDto {
   @ApiPropertyOptional({
-    example: '123456789',
-    description:
-      'Exclusive RelationshipIntent id cursor. Omit for the newest page.',
+    example: 123,
+    description: 'Exclusive projection feed cursor. Omit for the newest page.',
   })
   @IsOptional()
-  @IsString()
-  @Matches(/^[1-9]\d*$/, {
-    message: 'before must be a positive integer string',
-  })
-  before?: string;
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  before?: number;
 
   @ApiPropertyOptional({ default: 20, description: 'Page size (1-50)' })
   @IsOptional()
@@ -118,14 +116,14 @@ export class HandleGroupJoinRequestDto extends GroupIdDto {
 
 export class ReadGroupJoinRequestsDto extends GroupIdDto {
   @ApiProperty({
-    example: '123456789',
-    description: 'Highest application id displayed by the client',
+    example: 123,
+    description:
+      'Highest application projection feed id displayed by the client',
   })
-  @IsString()
-  @Matches(/^[1-9]\d*$/, {
-    message: 'readRequestId must be a positive integer string',
-  })
-  readRequestId!: string;
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  readFeedId!: number;
 }
 
 export class GroupTerminalActionDto extends GroupIdDto {

@@ -1,4 +1,4 @@
-# Simple Open Chat Federation Protocol v1 Message
+# Simple Open Messaging Federation Protocol v1 Message
 
 Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 

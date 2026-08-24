@@ -160,7 +160,7 @@ The NestJS backend must be running and reachable at `SOMS_API_ORIGIN`. No CORS c
 needed — the backend reflects any Origin:
 
 ```bash
-npm run start:prod
+node dist/src/main.js
 ```
 
 ## Known caveats

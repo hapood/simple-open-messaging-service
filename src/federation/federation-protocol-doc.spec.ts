@@ -104,7 +104,7 @@ describe('Federation v1 protocol documentation', () => {
         (operation) => `${operation.method} ${operation.path}`,
       ),
     ).toEqual([
-      'GET /.well-known/socfp',
+      'GET /.well-known/somfp',
       'POST /s2s/v1/recognize',
       'POST /s2s/v1/healthy',
       'POST /s2s/v1/feed-heads',

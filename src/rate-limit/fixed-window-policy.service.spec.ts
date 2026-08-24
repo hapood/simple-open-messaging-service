@@ -15,7 +15,10 @@ function database(stored?: unknown) {
             findFirst: vi.fn().mockResolvedValue(
               stored === undefined
                 ? undefined
-                : { value: JSON.stringify(stored), updatedAt: new Date(1000) },
+                : {
+                    value: JSON.stringify(stored),
+                    updatedAt: new Date(1000),
+                  },
             ),
           },
         },
@@ -35,15 +38,19 @@ describe('FixedWindowPolicyService', () => {
       limit: 60,
       windowSeconds: 60,
     });
-    expect(service.list()).toHaveLength(Object.keys(FIXED_WINDOW_DEFAULTS).length);
+    expect(service.list()).toHaveLength(
+      Object.keys(FIXED_WINDOW_DEFAULTS).length,
+    );
   });
 
   it('persists and immediately applies a complete replacement', async () => {
     const db = database();
     const service = new FixedWindowPolicyService(db.value as never);
-    const next = service.list().map((policy) =>
-      policy.policy === 'message.send' ? { ...policy, limit: 75 } : policy,
-    );
+    const next = service
+      .list()
+      .map((policy) =>
+        policy.policy === 'message.send' ? { ...policy, limit: 75 } : policy,
+      );
     await service.set(next);
     expect(service.get('message.send').limit).toBe(75);
     expect(db.onConflictDoUpdate).toHaveBeenCalledOnce();
@@ -56,6 +63,8 @@ describe('FixedWindowPolicyService', () => {
     );
     const duplicate = service.list();
     duplicate[1] = { ...duplicate[1], policy: duplicate[0].policy };
-    await expect(service.set(duplicate)).rejects.toThrow('unique and supported');
+    await expect(service.set(duplicate)).rejects.toThrow(
+      'unique and supported',
+    );
   });
 });

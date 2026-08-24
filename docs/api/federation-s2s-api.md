@@ -1,4 +1,4 @@
-# SOMS Simple Open Chat Federation Protocol S2S API Reference
+# SOMS Simple Open Messaging Federation Protocol S2S API Reference
 
 > Non-normative reference for the current SOMS `/s2s/v1` implementation. The
 > [Federation Protocol v1](../../spec/v1/protocol.md) is the normative wire
@@ -57,10 +57,13 @@ waiting for the reverse direction, and both states grant identical query
 permission. Before publishing either state, the source has already established
 the thread, audience, and authorization needed to serve the query. A new empty
 thread returns an empty page.
-Profile disclosure additionally requires a locally published `ACCEPTED`;
-crossed requests and a valid peer acceptance both upgrade a local `REQUESTED`
-to that state. The publisher orders the disclosure-opening `ACCEPTED`, then
-`PROFILE`, then `GROUP_META`, then complete
+For a new user friend request, profile disclosure opens with the locally
+published `REQUESTED`. The publisher force-reindexes the current `PROFILE`
+immediately after that relationship item, even when `profileRev` is unchanged,
+so the receiver can populate its address-keyed pending card before acceptance.
+Crossed requests and a valid peer acceptance upgrade a local `REQUESTED` to
+`ACCEPTED`; that state keeps disclosure open. For acceptance-dependent group
+visibility, the publisher orders `ACCEPTED`, then `PROFILE`, then `GROUP_META`, then complete
 `MEMBER_PROFILE` snapshots for the roster visible to that peer. Unchanged member
 snapshots are not reindexed when the effective projection already carries the
 publisher's current `profileRev` or `rosterRev`. Only a missing or older

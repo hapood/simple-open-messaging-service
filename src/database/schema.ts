@@ -1387,6 +1387,78 @@ export const clientStateFeed = pgTable(
   ],
 );
 
+/** Manager-facing materialized view of USER→GROUP applications. A row survives terminal decisions
+ * until its original seven-day retention boundary, allowing every manager device to converge on the
+ * same history without consulting the directional relationship intents. */
+export const groupJoinRequestProjection = pgTable(
+  'GroupJoinRequestProjection',
+  {
+    managerUserId: integer().notNull(),
+    threadId: integer().notNull(),
+    applicantUserId: integer().notNull(),
+    feedId: integer().notNull(),
+    requestId: bigint({ mode: 'bigint' }).notNull(),
+    status: varchar({ length: 15 }).notNull(),
+    note: varchar({ length: 255 }).default('').notNull(),
+    requestedAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }).notNull(),
+    expiresAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }).notNull(),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.managerUserId, table.threadId, table.applicantUserId],
+      name: 'GroupJoinRequestProjection_pkey',
+    }),
+    uniqueIndex('GroupJoinRequestProjection_manager_feed_key').on(
+      table.managerUserId,
+      table.feedId,
+    ),
+    index('GroupJoinRequestProjection_thread_feed_idx').on(
+      table.managerUserId,
+      table.threadId,
+      table.feedId,
+    ),
+    index('GroupJoinRequestProjection_expiry_idx').on(table.expiresAt),
+    foreignKey({
+      columns: [table.managerUserId],
+      foreignColumns: [user.id],
+      name: 'GroupJoinRequestProjection_managerUserId_fkey',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.threadId],
+      foreignColumns: [messageThread.id],
+      name: 'GroupJoinRequestProjection_threadId_fkey',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.applicantUserId],
+      foreignColumns: [user.id],
+      name: 'GroupJoinRequestProjection_applicantUserId_fkey',
+    }).onDelete('cascade'),
+    check('GroupJoinRequestProjection_feedId_check', sql`${table.feedId} > 0`),
+    check(
+      'GroupJoinRequestProjection_status_check',
+      sql`${table.status} IN ('REQUESTED', 'ACCEPTED', 'REVOKED')`,
+    ),
+    check(
+      'GroupJoinRequestProjection_retention_check',
+      sql`${table.expiresAt} > ${table.requestedAt} AND ${table.expiresAt} <= ${table.requestedAt} + INTERVAL '7 days'`,
+    ),
+  ],
+);
+
 /** Per-user allocator for the two independent device-facing message feeds. Updating this row is the
  * serialization point for one user's feed coordinates; writers lock users in ascending id order. */
 export const clientMessageFeedTarget = pgTable(
@@ -1897,6 +1969,53 @@ export const federatedMemberProfile = pgTable(
   ],
 );
 
+/** Receiver-side authoritative roster for a federated group. Group-meta full/delta pages mutate this
+ * projection first; ThreadParticipant is derived from it and is never used as the delta baseline. */
+export const federatedGroupMember = pgTable(
+  'FederatedGroupMember',
+  {
+    sourcePeerDomain: varchar({ length: 63 }).notNull(),
+    groupAccount: varchar({ length: 31 }).notNull(),
+    memberAccount: varchar({ length: 31 }).notNull(),
+    memberDomain: varchar({ length: 63 }).notNull(),
+    memberRev: integer().notNull(),
+    role: groupRole().notNull(),
+    seenAtFeedId: bigint({ mode: 'bigint' }).notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.sourcePeerDomain,
+        table.groupAccount,
+        table.memberAccount,
+        table.memberDomain,
+      ],
+      name: 'FederatedGroupMember_pkey',
+    }),
+    foreignKey({
+      columns: [table.sourcePeerDomain],
+      foreignColumns: [federatedPeer.domain],
+      name: 'FederatedGroupMember_sourcePeerDomain_fkey',
+    }).onDelete('cascade'),
+    index('FederatedGroupMember_group_idx').on(
+      table.sourcePeerDomain,
+      table.groupAccount,
+    ),
+    check(
+      'FederatedGroupMember_groupAccount_check',
+      sql`${table.groupAccount} LIKE '!%'`,
+    ),
+    check('FederatedGroupMember_memberRev_check', sql`${table.memberRev} >= 0`),
+    check(
+      'FederatedGroupMember_seenAtFeedId_check',
+      sql`${table.seenAtFeedId} >= 0`,
+    ),
+  ],
+);
+
 /** Home-authored federated profile projection keyed by immutable Address. Human profiles may exist
  * here before a durable User stub is justified (for example while a friend request is pending).
  * Accepting the relationship promotes this verified projection into User; resolve-only results never
@@ -1993,7 +2112,7 @@ export const federatedFriendRequest = pgTable(
     ),
     check(
       'FederatedFriendRequest_expiry_check',
-      sql`(${table.status} = 'REQUESTED' AND ${table.requestedAt} IS NOT NULL AND ${table.expiresAt} IS NOT NULL AND ${table.expiresAt} > ${table.requestedAt} AND ${table.expiresAt} <= ${table.requestedAt} + INTERVAL '7 days') OR (${table.status} IN ('ACCEPTED', 'REVOKED') AND ${table.expiresAt} IS NULL)`,
+      sql`(${table.status} = 'REQUESTED' AND ${table.requestedAt} IS NOT NULL AND ${table.expiresAt} IS NOT NULL AND ${table.expiresAt} > ${table.requestedAt} AND ${table.expiresAt} <= ${table.requestedAt} + INTERVAL '7 days') OR (${table.status} = 'ACCEPTED' AND ${table.requestedAt} IS NOT NULL AND ${table.expiresAt} IS NULL) OR (${table.status} = 'REVOKED' AND ${table.expiresAt} IS NULL)`,
     ),
   ],
 );
@@ -2097,7 +2216,7 @@ export const relationshipIntent = pgTable(
     ),
     check(
       'RelationshipIntent_expiry_check',
-      sql`(${table.status} = 'REQUESTED' AND ${table.requestedAt} IS NOT NULL AND ${table.expiresAt} IS NOT NULL AND ${table.expiresAt} > ${table.requestedAt} AND ${table.expiresAt} <= ${table.requestedAt} + INTERVAL '7 days') OR (${table.status} <> 'REQUESTED' AND ${table.expiresAt} IS NULL)`,
+      sql`(${table.status} = 'REQUESTED' AND ${table.requestedAt} IS NOT NULL AND ${table.expiresAt} IS NOT NULL AND ${table.expiresAt} > ${table.requestedAt} AND ${table.expiresAt} <= ${table.requestedAt} + INTERVAL '7 days') OR (${table.status} = 'ACCEPTED' AND ${table.requestedAt} IS NOT NULL AND ${table.expiresAt} IS NULL) OR (${table.status} = 'REVOKED' AND ${table.expiresAt} IS NULL)`,
     ),
   ],
 );

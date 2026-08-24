@@ -38,13 +38,13 @@ export async function assertServerGroupCapacityInTx(
     SELECT
       COUNT(*) AS "authorizedCount",
       COALESCE(BOOL_OR(
-        authorization."subjectUserId" = ${memberUserId}
+        intent."subjectUserId" = ${memberUserId}
       ), false) AS "alreadyAuthorized"
-    FROM "RelationshipIntent" authorization
-    WHERE authorization."authorUserId" = ${locked.rows[0].groupUserId}
-      AND (authorization.status = 'ACCEPTED'
-        OR (authorization.status = 'REQUESTED'
-          AND authorization."expiresAt" > CURRENT_TIMESTAMP))
+    FROM "RelationshipIntent" intent
+    WHERE intent."authorUserId" = ${locked.rows[0].groupUserId}
+      AND (intent.status = 'ACCEPTED'
+        OR (intent.status = 'REQUESTED'
+          AND intent."expiresAt" > CURRENT_TIMESTAMP))
   `);
   const authorizedCount = Number(state.rows[0]?.authorizedCount ?? 0);
   if (

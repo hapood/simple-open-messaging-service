@@ -24,7 +24,7 @@ import {
   messageThread,
   threadParticipant,
 } from '../src/database/schema.js';
-import { seedSession, seedUser } from './seed.js';
+import { seedAcceptedRelationship, seedSession, seedUser } from './seed.js';
 
 describe('message report HTTP workflow', () => {
   let app: INestApplication;
@@ -87,6 +87,7 @@ describe('message report HTTP workflow', () => {
       { userId: reporter.id, threadId: thread.id, updatedAt: now },
       { userId: creator.id, threadId: thread.id, updatedAt: now },
     ]);
+    await seedAcceptedRelationship(database.db, reporter.id, creator.id);
     await database.db.insert(message).values([
       {
         seq: 1,
@@ -204,7 +205,13 @@ describe('message report HTTP workflow', () => {
       },
     );
     expect(visible.body.code).toBe(BusinessCode.OK);
-    expect(visible.body.data).toEqual([]);
+    expect(visible.body.data).toEqual([
+      expect.objectContaining({
+        seq: 3,
+        contentType: 'SYSTEM',
+        content: JSON.stringify({ type: 'MESSAGES_MODERATED', count: 2 }),
+      }),
+    ]);
 
     const durable = await consumerPost(
       conversation.reporterToken,

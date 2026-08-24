@@ -58,7 +58,7 @@ export class LoginDto {
  * returning 200 + code:2.
  */
 export class RegisterDto {
-  // Account grammar follows SOCFP UserAccount. The Transform
+  // Account grammar follows SOMFP UserAccount. The Transform
   // lowercases on input (Postgres @@unique is case-sensitive — the /i flag alone is insufficient), then
   // @Matches enforces the grammar. The DB column also accommodates the longer `!` group form.
   @ApiProperty({

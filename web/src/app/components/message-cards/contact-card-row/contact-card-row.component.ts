@@ -19,6 +19,7 @@ interface ContactCard {
   account: string;
   domain: string;
   displayName: string;
+  bio: string;
   avatar?: string;
 }
 
@@ -52,7 +53,8 @@ export class ContactCardRowComponent {
       const value = JSON.parse(this.data().text) as Partial<ContactCard>;
       return typeof value.account === 'string' &&
         typeof value.domain === 'string' &&
-        typeof value.displayName === 'string'
+        typeof value.displayName === 'string' &&
+        typeof value.bio === 'string'
         ? (value as ContactCard)
         : null;
     } catch {
@@ -88,6 +90,7 @@ export class ContactCardRowComponent {
       identity: {
         account: card.account,
         name: card.displayName,
+        bio: card.bio,
         avatar: card.avatar,
         domain: card.domain,
         ...(conversation?.type === 'GROUP'

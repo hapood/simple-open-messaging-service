@@ -90,7 +90,9 @@ describe('ThreadParticipantService.setBlocked', () => {
     const tx = { update: vi.fn(() => ({ set })) };
     const database = {
       db: {
-        transaction: vi.fn(async (fn: (client: typeof tx) => unknown) => fn(tx)),
+        transaction: vi.fn(async (fn: (client: typeof tx) => unknown) =>
+          fn(tx),
+        ),
       },
     };
     const clientFeed = {
@@ -118,8 +120,8 @@ describe('ThreadParticipantService.setBlocked', () => {
       userId: 4,
       feedId: 12,
     });
-    expect(
-      database.db.transaction.mock.invocationCallOrder[0],
-    ).toBeLessThan(clientFeed.notifyFeedUpdated.mock.invocationCallOrder[0]);
+    expect(database.db.transaction.mock.invocationCallOrder[0]).toBeLessThan(
+      clientFeed.notifyFeedUpdated.mock.invocationCallOrder[0],
+    );
   });
 });

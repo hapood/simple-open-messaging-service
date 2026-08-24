@@ -58,6 +58,7 @@ export class FriendInviteDialogComponent {
             domain: user.domain,
             displayName: user.name,
             avatar: user.avatar,
+            bio: user.bio ?? '',
             note: this.note().trim().slice(0, 255),
           })
         : this.userService.sendFriendInvite({

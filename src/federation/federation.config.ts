@@ -1,12 +1,12 @@
 import { requireEnv } from '../common/env.js';
-import { isValidSocfpDomain } from '../common/account.js';
+import { isValidSomfpDomain } from '../common/account.js';
 import { dataDirectory } from '../common/data-directory.js';
 
 /**
  * Federation (S2S) configuration. Loaded from env at module-init time (fail-fast via requireEnv).
  */
 export interface FederationConfig {
-  /** This server's public domain — the domain in @user@domain handles and in .well-known/socfp. */
+  /** This server's public domain — the domain in @user@domain handles and in .well-known/somfp. */
   domain: string;
   /** File path to the persisted Ed25519 S2S keypair (generated on first boot). */
   keyPath: string;
@@ -45,7 +45,7 @@ function loadDevRoutes(allowInsecureHttp: boolean): Record<string, string> {
   const routes: Record<string, string> = {};
   for (const [domain, value] of Object.entries(parsed)) {
     const normalized = domain.toLowerCase();
-    if (domain !== normalized || !isValidSocfpDomain(normalized)) {
+    if (domain !== normalized || !isValidSomfpDomain(normalized)) {
       throw new Error(
         `SOMS_DEV_FEDERATION_ROUTES contains invalid canonical domain: ${domain}`,
       );
@@ -83,9 +83,9 @@ function loadDevRoutes(allowInsecureHttp: boolean): Record<string, string> {
 export function loadFederationConfig(): FederationConfig {
   const allowInsecureHttp = process.env.SOMS_ALLOW_INSECURE_HTTP === '1';
   const domain = requireEnv('SOMS_DOMAIN');
-  if (!isValidSocfpDomain(domain)) {
+  if (!isValidSomfpDomain(domain)) {
     throw new Error(
-      'SOMS_DOMAIN must be a canonical SOCFP Domain and must not use the RFC 6762 .local namespace',
+      'SOMS_DOMAIN must be a canonical SOMFP Domain and must not use the RFC 6762 .local namespace',
     );
   }
   return {

@@ -201,7 +201,7 @@ export class ThreadListComponent implements OnInit {
     if (t.type !== 'GROUP' || (t.role !== 'OWNER' && t.role !== 'ADMIN'))
       return false;
     const head = this.userService.groupJoinRequestHeads().get(t.threadId);
-    return !!head && BigInt(head.readRequestId) < BigInt(head.latestRequestId);
+    return !!head && head.readFeedId < head.latestFeedId;
   }
 
   // Conversation→avatar derivation lives in the shared conversation-avatar util (single source of truth,

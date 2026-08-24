@@ -8,7 +8,7 @@ version; bodies do not repeat a version field. The current endpoint-level contra
 ## Identity and recovery
 
 Nodes discover the root public key, root-authorized signing-key certificates and supported major versions
-through `/.well-known/socfp`. First contact uses signed, idempotent `POST /s2s/v1/recognize` in both
+through `/.well-known/somfp`. First contact uses signed, idempotent `POST /s2s/v1/recognize` in both
 directions. Each effective authored direction independently opens the source's data to its target peer; the reverse direction controls only the reverse query.
 
 `POST /s2s/v1/healthy` checks an existing pinned relationship without becoming a key-fetch oracle.
@@ -65,8 +65,13 @@ request itself remains address-only locally until local action.
 ## Profiles and client state
 
 `PROFILE` is an independently revisioned snapshot and may carry localized avatar
-bytes. It is published only after the local direction publishes `ACCEPTED`
-through explicit acceptance, crossed requests, or valid peer confirmation.
+bytes. When a user sends a friend request, the publisher force-publishes the
+current `PROFILE` immediately after `REQUESTED`, even when its business revision
+is unchanged. This preserves the relationship-before-profile dependency order
+and lets the receiver render the pending requester's name and avatar without
+creating a foreign `User` stub. The same projection remains
+available after `ACCEPTED` and is removed after `REVOKED` when no other disclosure
+source remains.
 `GROUP_META_FEED_HEAD.groupMetaFeedEndId` carries the target group feed's latest
 `feedId`.
 The separate `/s2s/v1/group-meta` feed carries members, roles, and source-scoped
@@ -119,7 +124,7 @@ capability negotiation. See the normative [call specification](../../spec/v1/cal
 
 ## Current S2S surface
 
-- `GET /.well-known/socfp`
+- `GET /.well-known/somfp`
 - `POST /s2s/v1/recognize`
 - `POST /s2s/v1/healthy`
 - `POST /s2s/v1/feed-heads`

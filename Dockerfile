@@ -54,11 +54,11 @@ RUN npm run build
 # the output. No signing key — integrity over the wire is TLS (https) + the bundle SHA-256.
 COPY web/package.json ./web/package.json
 COPY --from=web-build /build/web/dist/web/browser ./web/dist/web/browser
-# scripts/ holds the packager invoked next (package-web-bundle.mjs); copy it in so `npm run
-# bundle:package` can tgz the browser build and emit manifest.json under shell-bundle/.
+# scripts/ holds the packager invoked next (package-web-bundle.mjs); copy it in so the browser build
+# can be archived and its manifest emitted under shell-bundle/.
 COPY scripts ./scripts
 COPY database ./database
-RUN npm run bundle:package
+RUN node scripts/package-web-bundle.mjs
 # Drop devDependencies; keep prod deps with the compiled argon2 .node + prebuilt sharp binaries.
 RUN npm prune --omit=dev
 
@@ -68,7 +68,7 @@ RUN npm prune --omit=dev
 #   docker build -t soms-base:latest -f Dockerfile.base .   (scripts/build-image.sh does this for you)
 FROM ${SOMS_BASE} AS runtime
 # App version, injected at build time (scripts/build-image.sh reads package.json). Surfaces in
-# `docker image inspect`, /api/v1/health (reads package.json), and /.well-known/socfp. Default "dev".
+# `docker image inspect`, /api/v1/health (reads package.json), and /.well-known/somfp. Default "dev".
 ARG APP_VERSION=dev
 LABEL org.opencontainers.image.version="${APP_VERSION}"
 WORKDIR /app

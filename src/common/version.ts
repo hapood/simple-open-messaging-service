@@ -8,7 +8,7 @@ import { resolve } from 'node:path';
  * be wasteful. Falls back to 'unknown' rather than throwing — version display must never crash the
  * process (a liveness probe must never 500 on a config quirk).
  *
- * Shared by HealthController (/api/v1/health) and WellKnownController (/.well-known/socfp software).
+ * Shared by HealthController (/api/v1/health) and WellKnownController (/.well-known/somfp software).
  */
 export const SERVER_VERSION: string = (() => {
   try {

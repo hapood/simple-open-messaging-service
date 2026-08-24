@@ -45,6 +45,29 @@ Object.defineProperty(window, 'matchMedia', {
   value: matchMedia,
 });
 
+// jsdom exposes these browser APIs as "not implemented" placeholders that
+// report errors whenever application cleanup or notification handling invokes
+// them. Unit tests do not perform real window activation or media playback, so
+// provide deterministic no-op implementations. Individual tests can still
+// spy on or replace them when their calls are part of the behavior under test.
+Object.defineProperty(window, 'focus', {
+  configurable: true,
+  writable: true,
+  value: () => {},
+});
+Object.defineProperties(HTMLMediaElement.prototype, {
+  load: {
+    configurable: true,
+    writable: true,
+    value: () => {},
+  },
+  pause: {
+    configurable: true,
+    writable: true,
+    value: () => {},
+  },
+});
+
 if (!navigator.serviceWorker) {
   const serviceWorker = new EventTarget() as ServiceWorkerContainer;
   Object.assign(serviceWorker, {

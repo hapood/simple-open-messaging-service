@@ -1,12 +1,146 @@
 use super::{
-    merge_covered_tail, merge_message_section, update_message_coverage, CoveredInterval,
-    MessageSection,
+    apply_friend_request_intent, cleanup_friend_requests, merge_covered_tail,
+    merge_message_section, update_message_coverage, CoveredInterval, MessageSection,
 };
 use rusqlite::{params, Connection};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn interval(left: i64, right: i64) -> Option<CoveredInterval> {
     Some(CoveredInterval { left, right })
+}
+
+fn request_connection() -> Connection {
+    let conn = Connection::open_in_memory().expect("open request sqlite");
+    conn.execute_batch(
+        "CREATE TABLE friend_requests(
+           user_id INTEGER NOT NULL, stable_key TEXT NOT NULL, payload_json TEXT NOT NULL,
+           PRIMARY KEY(user_id, stable_key)
+         );
+         CREATE TABLE profiles(
+           user_id INTEGER NOT NULL, identity TEXT NOT NULL, payload_json TEXT NOT NULL,
+           profile_rev INTEGER NOT NULL DEFAULT 0,
+           PRIMARY KEY(user_id, identity)
+         );
+         CREATE TABLE sync_state(
+           user_id INTEGER NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL,
+           PRIMARY KEY(user_id, key)
+         );",
+    )
+    .expect("create request schema");
+    conn
+}
+
+fn friend_body(direction: &str, status: &str, expires_at: Option<i64>) -> serde_json::Value {
+    let requested_at = expires_at.map(|value| value - 60_000);
+    serde_json::json!({
+        "direction": direction,
+        "status": status,
+        "localThreadId": 7,
+        "inviteId": "9",
+        "note": "hello",
+        "requestedAt": if status == "REQUESTED" { serde_json::Value::from(requested_at.unwrap()) } else { serde_json::Value::Null },
+        "expiresAt": expires_at,
+        "peer": {
+            "id": 2, "account": "peer", "name": "Peer", "avatar": "", "bio": "",
+            "domain": "peer.test", "isForeigner": true
+        }
+    })
+}
+
+#[test]
+fn native_projection_retains_rejected_received_request_without_rearming_badge() {
+    let mut conn = request_connection();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let tx = conn.transaction().unwrap();
+    apply_friend_request_intent(
+        &tx,
+        1,
+        10,
+        "peer",
+        "peer.test",
+        "me",
+        "local.test",
+        &friend_body("INCOMING", "REQUESTED", Some(now + 60_000)),
+    )
+    .unwrap();
+    apply_friend_request_intent(
+        &tx,
+        1,
+        11,
+        "peer",
+        "peer.test",
+        "me",
+        "local.test",
+        &friend_body("OUTGOING", "REVOKED", None),
+    )
+    .unwrap();
+    tx.commit().unwrap();
+
+    let payload: String = conn
+        .query_row("SELECT payload_json FROM friend_requests", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let projection: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(projection["bucket"], "RECEIVED");
+    assert_eq!(projection["status"], "REVOKED");
+    assert_eq!(projection["requestedSort"], now);
+    let revision: String = conn
+        .query_row(
+            "SELECT value_json FROM sync_state WHERE key='friendRequestStateRevision'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(revision, "10");
+}
+
+#[test]
+fn native_cleanup_removes_expired_projection_and_temporary_profile() {
+    let conn = request_connection();
+    conn.execute(
+        "INSERT INTO friend_requests VALUES(1,'friend:test',?1)",
+        [serde_json::json!({"expiresAt": 10, "status": "REQUESTED"}).to_string()],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO friend_requests VALUES(1,'group:test',?1)",
+        [serde_json::json!({"expiresAt": 10, "status": "REQUESTED"}).to_string()],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO profiles VALUES(1,'pending:peer.test',?1,0)",
+        [serde_json::json!({
+            "source": "OUTGOING_FRIEND_REQUEST", "expiresAt": 10
+        })
+        .to_string()],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO profiles VALUES(1,'pending-group:test',?1,0)",
+        [serde_json::json!({"source": "GROUP_INVITE", "expiresAt": 10}).to_string()],
+    )
+    .unwrap();
+
+    cleanup_friend_requests(&conn, 1, 10).unwrap();
+
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM friend_requests", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM profiles", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap(),
+        0
+    );
 }
 
 #[test]

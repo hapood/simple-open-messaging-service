@@ -5,6 +5,7 @@ import {
   Injectable,
   Optional,
 } from '@nestjs/common';
+import { Interval } from '@nestjs/schedule';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import {
   DatabaseService,
@@ -13,6 +14,7 @@ import {
 import {
   clientStateFeed,
   group,
+  groupJoinRequestProjection,
   relationshipIntent,
   messageThread,
   threadAudience,
@@ -77,48 +79,143 @@ export class GroupService {
     >,
   ) {}
 
-  async queryJoinRequests(threadId: number, before?: bigint, take = 20) {
+  async queryJoinRequests(
+    threadId: number,
+    managerUserId: number,
+    before?: number,
+    take = 20,
+  ) {
     const rows = await this.database.db.execute<{
-      id: bigint;
+      feedId: number;
+      id: string;
+      status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
       userId: number;
       account: string;
       domain: string;
       name: string;
       avatar: string;
       note: string;
-      requestedAt: Date;
-      expiresAt: Date;
+      requestedAt: number | null;
+      expiresAt: number | null;
     }>(sql`
-      SELECT request.id, applicant.id AS "userId", applicant.account,
-        applicant.domain, applicant.name, applicant.avatar, request.note,
-        request."requestedAt", request."expiresAt"
-      FROM "RelationshipIntent" request
-      JOIN "MessageThread" thread
-        ON thread."groupUserId" = request."subjectUserId"
-      JOIN "User" applicant ON applicant.id = request."authorUserId"
-      LEFT JOIN "RelationshipIntent" decision
-        ON decision."authorUserId" = request."subjectUserId"
-       AND decision."subjectUserId" = request."authorUserId"
-      WHERE thread.id = ${threadId}
-        AND request.status = 'REQUESTED'
-        AND request."expiresAt" > CURRENT_TIMESTAMP
-        AND (decision."authorUserId" IS NULL
-          OR decision.status = 'REQUESTED'
-          OR (decision.status = 'REVOKED' AND decision."updatedAt" < request."requestedAt"))
-        ${before === undefined ? sql.empty() : sql`AND request.id < ${before}`}
-      ORDER BY request.id DESC
+      SELECT projection."feedId", projection."requestId"::text AS id,
+        projection.status, applicant.id AS "userId", applicant.account,
+        CASE WHEN applicant.domain = 'local' THEN '' ELSE applicant.domain END AS domain,
+        applicant.name, applicant.avatar, projection.note,
+        (EXTRACT(EPOCH FROM projection."requestedAt") * 1000)::bigint AS "requestedAt",
+        (EXTRACT(EPOCH FROM projection."expiresAt") * 1000)::bigint AS "expiresAt"
+      FROM "GroupJoinRequestProjection" projection
+      JOIN "User" applicant ON applicant.id = projection."applicantUserId"
+      WHERE projection."managerUserId" = ${managerUserId}
+        AND projection."threadId" = ${threadId}
+        ${before === undefined ? sql.empty() : sql`AND projection."feedId" < ${before}`}
+      ORDER BY projection."feedId" DESC
       LIMIT ${take + 1}
     `);
     const page = rows.rows.slice(0, take);
     return {
       data: page.map((row) => ({
         ...row,
-        id: row.id.toString(),
-        domain: row.domain === 'local' ? '' : row.domain,
+        requestedAt:
+          row.requestedAt === null
+            ? null
+            : new Date(Number(row.requestedAt)).toISOString(),
+        expiresAt:
+          row.expiresAt === null
+            ? null
+            : new Date(Number(row.expiresAt)).toISOString(),
       })),
       hasMore: rows.rows.length > take,
-      before: page.at(-1)?.id.toString() ?? null,
+      before: page.at(-1)?.feedId ?? null,
     };
+  }
+
+  /** Physically collect projections at seven days, or when their manager loses the group reference. */
+  @Interval(60 * 60 * 1000)
+  async garbageCollectJoinRequestProjections(): Promise<number> {
+    const pending: Array<{ userId: number; feedId: number }> = [];
+    const count = await this.database.db.transaction(async (tx) => {
+      const candidates = await tx.execute<{
+        managerUserId: number;
+        threadId: number;
+        latestFeedId: number;
+      }>(sql`
+        SELECT projection."managerUserId", projection."threadId",
+          MAX(projection."feedId")::integer AS "latestFeedId"
+        FROM "GroupJoinRequestProjection" projection
+        LEFT JOIN "ThreadParticipant" manager
+          ON manager."userId" = projection."managerUserId"
+         AND manager."threadId" = projection."threadId"
+         AND manager.role IN ('OWNER', 'ADMIN')
+        WHERE projection."expiresAt" <= CURRENT_TIMESTAMP
+           OR manager."userId" IS NULL
+        GROUP BY projection."managerUserId", projection."threadId"
+      `);
+      let removed = 0;
+      for (const candidate of candidates.rows) {
+        const deleted = await tx
+          .delete(groupJoinRequestProjection)
+          .where(
+            and(
+              eq(
+                groupJoinRequestProjection.managerUserId,
+                candidate.managerUserId,
+              ),
+              eq(groupJoinRequestProjection.threadId, candidate.threadId),
+              sql`(${groupJoinRequestProjection.expiresAt} <= CURRENT_TIMESTAMP OR NOT EXISTS (
+                SELECT 1 FROM "ThreadParticipant" manager
+                WHERE manager."userId" = ${candidate.managerUserId}
+                  AND manager."threadId" = ${candidate.threadId}
+                  AND manager.role IN ('OWNER', 'ADMIN')
+              ))`,
+            ),
+          )
+          .returning({
+            feedId: groupJoinRequestProjection.feedId,
+            applicantUserId: groupJoinRequestProjection.applicantUserId,
+          });
+        removed += deleted.length;
+        if (deleted.length === 0) continue;
+        for (const applicantUserId of new Set(
+          deleted.map((row) => row.applicantUserId),
+        ))
+          await this.clientStateFeed.cleanupProfileStateIfUnreferencedInTx(
+            tx,
+            candidate.managerUserId,
+            applicantUserId,
+          );
+        const [head] = await tx
+          .select({
+            account: clientStateFeed.account,
+            domain: clientStateFeed.domain,
+          })
+          .from(clientStateFeed)
+          .where(
+            and(
+              eq(clientStateFeed.userId, candidate.managerUserId),
+              eq(clientStateFeed.eventType, 'GROUP_JOIN_REQUEST_HEAD'),
+              sql`(${clientStateFeed.body}->>'threadId')::integer = ${candidate.threadId}`,
+            ),
+          )
+          .limit(1);
+        if (!head) continue;
+        const feedId = await this.clientStateFeed.writeGroupJoinRequestHeadInTx(
+          tx,
+          {
+            userId: candidate.managerUserId,
+            account: head.account,
+            domain: head.domain,
+            threadId: candidate.threadId,
+            readFeedId: candidate.latestFeedId,
+          },
+        );
+        if (feedId !== null)
+          pending.push({ userId: candidate.managerUserId, feedId });
+      }
+      return removed;
+    });
+    pending.forEach((update) => this.clientStateFeed.notifyFeedUpdated(update));
+    return count;
   }
 
   async handleJoinRequest(
@@ -174,7 +271,7 @@ export class GroupService {
   async markJoinRequestsRead(
     threadId: number,
     managerUserId: number,
-    readRequestId: bigint,
+    readFeedId: number,
   ): Promise<void> {
     let pending: { userId: number; feedId: number } | undefined;
     await this.database.db.transaction(async (tx) => {
@@ -205,7 +302,7 @@ export class GroupService {
           account: identity.account,
           domain: head.domain,
           threadId,
-          readRequestId,
+          readFeedId,
         },
       );
       if (feedId !== null) pending = { userId: managerUserId, feedId };
@@ -358,8 +455,36 @@ export class GroupService {
             rosterRev: 0,
             updatedAt: new Date(),
           });
-          const clientFeedUpdates =
-            await this.clientStateFeed.recordGroupStateInTx(tx, thread.id);
+          const clientFeedUpdates: Array<{
+            userId: number;
+            feedId: number;
+          }> = [];
+          await this.federation.writeGroupRelationshipIntentInTx(
+            tx,
+            thread.id,
+            params.owner,
+            '',
+            'REQUESTED',
+            clientFeedUpdates,
+          );
+          await this.federation.writeMemberRelationshipIntentInTx(
+            tx,
+            thread.id,
+            params.owner,
+            'ACCEPTED',
+            clientFeedUpdates,
+          );
+          await this.federation.writeGroupRelationshipIntentInTx(
+            tx,
+            thread.id,
+            params.owner,
+            '',
+            'ACCEPTED',
+            clientFeedUpdates,
+          );
+          clientFeedUpdates.push(
+            ...(await this.clientStateFeed.recordGroupStateInTx(tx, thread.id)),
+          );
           return {
             id: groupUser.id,
             threadId: thread.id,
@@ -936,6 +1061,18 @@ export class GroupService {
         params.threadId,
         clientFeedUpdates,
       );
+      await this.federation.reconcileGroupJoinRequestManagerInTx(
+        tx,
+        params.threadId,
+        params.fromUserId,
+        clientFeedUpdates,
+      );
+      await this.federation.reconcileGroupJoinRequestManagerInTx(
+        tx,
+        params.threadId,
+        params.toUserId,
+        clientFeedUpdates,
+      );
       return { statePeers: [...state.keys()], clientFeedUpdates };
     });
     result.clientFeedUpdates.forEach((pending) =>
@@ -960,14 +1097,13 @@ export class GroupService {
     role: GroupRole;
     operatorUserId: number;
   }): Promise<void> {
-    const operator =
-      await this.database.db.query.threadParticipant.findFirst({
-        where: and(
-          eq(threadParticipant.userId, params.operatorUserId),
-          eq(threadParticipant.threadId, params.threadId),
-        ),
-        columns: { role: true },
-      });
+    const operator = await this.database.db.query.threadParticipant.findFirst({
+      where: and(
+        eq(threadParticipant.userId, params.operatorUserId),
+        eq(threadParticipant.threadId, params.threadId),
+      ),
+      columns: { role: true },
+    });
     if (
       operator?.role !== GroupRole.OWNER ||
       !(await isThreadMutuallyAuthorized(
@@ -1048,6 +1184,12 @@ export class GroupService {
       const state = await this.federation.writeGroupStateInTx(
         tx,
         params.threadId,
+        clientFeedUpdates,
+      );
+      await this.federation.reconcileGroupJoinRequestManagerInTx(
+        tx,
+        params.threadId,
+        params.targetUserId,
         clientFeedUpdates,
       );
       return { statePeers: [...state.keys()], clientFeedUpdates };

@@ -22,7 +22,6 @@ import {
   message,
   messageThread,
   threadParticipant,
-  threadRevision,
 } from '../src/database/schema.js';
 
 describe('Federation destructive reset', () => {
@@ -89,12 +88,6 @@ describe('Federation destructive reset', () => {
           updatedAt: new Date(),
         },
       ]);
-      await tx.insert(threadRevision).values({
-        userId: aliceId,
-        threadId: thread.id,
-        direction: 'ADD',
-        revision: 0,
-      });
       await tx.insert(message).values({
         seq: 1,
         contentType: 'PURE_TEXT',
@@ -204,8 +197,6 @@ describe('Federation destructive reset', () => {
         users: number;
         participants: number;
         messages: number;
-        deleteRevisions: number;
-        liveAddRevisions: number;
         peerAudiences: number;
         serveCursors: number;
       }>(
@@ -217,12 +208,6 @@ describe('Federation destructive reset', () => {
           WHERE "threadId" = ${affectedThreadId}) AS participants,
         (SELECT count(*)::int FROM "Message"
           WHERE "threadId" = ${affectedThreadId}) AS messages,
-        (SELECT count(*)::int FROM "ThreadRevision"
-          WHERE "threadId" = ${affectedThreadId}
-            AND direction = 'DELETE') AS "deleteRevisions",
-        (SELECT count(*)::int FROM "ThreadRevision"
-          WHERE "threadId" = ${affectedThreadId}
-            AND direction = 'ADD' AND "isDelete" = false) AS "liveAddRevisions",
         (SELECT count(*)::int FROM "ThreadAudience"
           WHERE "targetDomain" = ${FED_DOMAIN_B}) AS "peerAudiences",
         (SELECT count(*)::int FROM "FederationServeCursor"
@@ -234,8 +219,6 @@ describe('Federation destructive reset', () => {
       users: 0,
       participants: 0,
       messages: 0,
-      deleteRevisions: 1,
-      liveAddRevisions: 0,
       peerAudiences: 0,
       serveCursors: 0,
     });

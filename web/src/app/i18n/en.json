@@ -389,7 +389,9 @@
   "group": {
     "title": "Group Info",
     "joinRequests": "Join requests",
-    "noJoinRequests": "No pending join requests",
+    "noJoinRequests": "No join requests",
+    "joinRequestAccepted": "Accepted",
+    "joinRequestRejected": "Rejected",
     "groupNamePlaceholder": "Group name",
     "groupName": "Group name",
     "groupDescription": "Group description",

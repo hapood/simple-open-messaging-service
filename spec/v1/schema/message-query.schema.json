@@ -1,15 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:socfp:v1:message-query",
+  "$id": "urn:somfp:v1:message-query",
   "title": "GET /s2s/v1/messages response data",
   "$defs": {
     "asset": {
       "type": "object",
       "required": ["digest", "bytes"],
       "properties": {
-        "digest": { "$ref": "urn:socfp:v1:common#/$defs/sha256Hex" },
+        "digest": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" },
         "bytes": {
-          "$ref": "urn:socfp:v1:common#/$defs/safeNonNegativeInteger"
+          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
         }
       },
       "additionalProperties": false
@@ -29,16 +29,16 @@
       ],
       "properties": {
         "thread": {
-          "$ref": "urn:socfp:v1:message-feed#/$defs/thread"
+          "$ref": "urn:somfp:v1:message-feed#/$defs/thread"
         },
-        "author": { "$ref": "urn:socfp:v1:common#/$defs/address" },
+        "author": { "$ref": "urn:somfp:v1:common#/$defs/address" },
         "seq": {
-          "$ref": "urn:socfp:v1:common#/$defs/positiveThreadSequence"
+          "$ref": "urn:somfp:v1:common#/$defs/positiveThreadSequence"
         },
         "originSeq": {
           "oneOf": [
             {
-              "$ref": "urn:socfp:v1:common#/$defs/positiveThreadSequence"
+              "$ref": "urn:somfp:v1:common#/$defs/positiveThreadSequence"
             },
             { "type": "null" }
           ]
@@ -46,24 +46,24 @@
         "originCreatedAt": {
           "oneOf": [
             {
-              "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds"
+              "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
             },
             { "type": "null" }
           ]
         },
         "contentType": {
-          "$ref": "urn:socfp:v1:common#/$defs/contentType"
+          "$ref": "urn:somfp:v1:common#/$defs/contentType"
         },
         "content": { "type": "string", "minLength": 2 },
         "createdAt": {
-          "$ref": "urn:socfp:v1:common#/$defs/epochMilliseconds"
+          "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
         },
         "quoteTarget": {
           "type": "object",
           "required": ["targetSeq"],
           "properties": {
             "targetSeq": {
-              "$ref": "urn:socfp:v1:common#/$defs/positiveThreadSequence"
+              "$ref": "urn:somfp:v1:common#/$defs/positiveThreadSequence"
             }
           },
           "additionalProperties": false
@@ -78,7 +78,7 @@
   "properties": {
     "messages": { "type": "array", "items": { "$ref": "#/$defs/message" } },
     "scannedThrough": {
-      "$ref": "urn:socfp:v1:common#/$defs/decimalString"
+      "$ref": "urn:somfp:v1:common#/$defs/decimalString"
     },
     "hasMore": { "type": "boolean" }
   },

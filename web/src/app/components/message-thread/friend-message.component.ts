@@ -1493,6 +1493,7 @@ export class MessageThreadComponent implements OnDestroy {
         account: profile.account,
         name: profile.name,
         avatar: profile.avatar,
+        bio: '',
         domain: profile.domain || 'local',
         friendThreadId,
       },
@@ -1648,10 +1649,13 @@ export class MessageThreadComponent implements OnDestroy {
   openChatCardShareDialog(chat: ConversationItem): void {
     const isGroup = chat.type === 'GROUP';
     const target = isGroup ? chat.group : chat.peerUser;
+    const bio =
+      chat.type === 'GROUP' ? chat.group.description : chat.peerUser.bio;
     const content = JSON.stringify({
       account: target.account,
       domain: target.domain,
       displayName: target.name,
+      ...(bio ? { bio } : {}),
       ...(target.avatar ? { avatar: target.avatar } : {}),
     });
     const preview: ChatMsgData = {

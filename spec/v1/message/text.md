@@ -31,21 +31,21 @@ A quote carries no author, body, or content-type preview. The consumer generates
 The canonical wire form of an inline entity is:
 
 ```text
-[@<label>](socfp://<entity-type>/<percent-encoded-id>)
+[@<label>](somfp://<entity-type>/<percent-encoded-id>)
 ```
 
 v1 supports user mentions and group-wide audience mentions:
 
 ```text
-[@Alice](socfp://user/alice%40example.com)
-[@everyone](socfp://audience/all)
+[@Alice](somfp://user/alice%40example.com)
+[@everyone](somfp://audience/all)
 ```
 
-`socfp` is an identifier scheme inside message text, not a transport scheme. An implementation MUST NOT issue a network request for this URI. Relative references, base-URI resolution, queries, fragments, ports, and userinfo are not defined. A canonical v1 URI has exactly one of these two ASCII forms:
+`somfp` is an identifier scheme inside message text, not a transport scheme. An implementation MUST NOT issue a network request for this URI. Relative references, base-URI resolution, queries, fragments, ports, and userinfo are not defined. A canonical v1 URI has exactly one of these two ASCII forms:
 
 ```abnf
-socfp-user     = "socfp://user/" user-account "%40" domain
-socfp-audience = "socfp://audience/all"
+somfp-user     = "somfp://user/" user-account "%40" domain
+somfp-audience = "somfp://audience/all"
 ```
 
 `user-account` and `domain` strictly use the `UserAccount` and `Domain` ASCII grammars defined by the [core protocol](../protocol.md#62-shared-federation-types). The separating `@` MUST be encoded as `%40` using uppercase hexadecimal. No other character may be percent-encoded. Consequently, `%4a`, `%4A`, encoding an unreserved character, double encoding, an empty host, an extra path segment, a port, a fragment, or a query does not form a canonical v1 entity.
@@ -75,7 +75,7 @@ The author server validates that a mention applies to the thread before first pe
   "originCreatedAt": null,
   "createdAt": 1770000000000,
   "contentType": "PURE_TEXT",
-  "content": "{\"text\":\"Hello [@Alice](socfp://user/alice%40example.com)\"}",
+  "content": "{\"text\":\"Hello [@Alice](somfp://user/alice%40example.com)\"}",
   "assets": []
 }
 ```

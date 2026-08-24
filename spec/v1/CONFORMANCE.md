@@ -1,6 +1,6 @@
-# SOCFP v1 Conformance
+# SOMFP v1 Conformance
 
-An implementation may claim `SOCFP v1 conformant` and publish `1` in discovery `protocolVersions` only if it fully supports every mandatory behavior in this release package. v1 defines neither partial conformance nor per-chapter negotiation.
+An implementation may claim `SOMFP v1 conformant` and publish `1` in discovery `protocolVersions` only if it fully supports every mandatory behavior in this release package. v1 defines neither partial conformance nor per-chapter negotiation.
 
 ## Mandatory specification modules
 
@@ -32,7 +32,7 @@ Validate third-party JSON with:
 
 ```bash
 npm run federation:conformance -- \
-  --schema urn:socfp:v1:call \
+  --schema urn:somfp:v1:call \
   --file ./call.json
 ```
 

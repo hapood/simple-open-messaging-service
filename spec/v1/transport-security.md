@@ -1,8 +1,8 @@
-# Simple Open Chat Federation Protocol v1 Transport and Security
+# Simple Open Messaging Federation Protocol v1 Transport and Security
 
 Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
-This document defines the Federation v1 discovery document, root identity, signing-key certificates, network discovery, TLS, HTTP request targets, Content-Digest, and HTTP Message Signature profile. It is a normative component explicitly referenced by the [Simple Open Chat Federation Protocol v1](./protocol.md). An operation document cannot weaken its identity, transport, or signature-security requirements.
+This document defines the Federation v1 discovery document, root identity, signing-key certificates, network discovery, TLS, HTTP request targets, Content-Digest, and HTTP Message Signature profile. It is a normative component explicitly referenced by the [Simple Open Messaging Federation Protocol v1](./protocol.md). An operation document cannot weaken its identity, transport, or signature-security requirements.
 
 The key words `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, and `MAY` are to be interpreted as described in RFC 2119 and RFC 8174.
 
@@ -10,7 +10,7 @@ The key words `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, and `MAY` are to be in
 
 ### 1.1 Public discovery mode
 
-`GET /.well-known/socfp` without a query is a public discovery request and does not use an HTTP Message Signature. A successful response MUST use `Content-Type: application/json` and return this bare JSON object:
+`GET /.well-known/somfp` without a query is a public discovery request and does not use an HTTP Message Signature. A successful response MUST use `Content-Type: application/json` and return this bare JSON object:
 
 ```ts
 interface DiscoveryDocumentV1View {
@@ -70,7 +70,7 @@ The domain in `keyId` MUST equal the publisher's server domain, and `notBefore <
 `authorizationSignature` is an Ed25519 signature by the root private key over this canonical certificate statement. The statement is UTF-8 JSON with fixed field order and no extra whitespace. `notBefore` and `notAfter` use the JSON integer literals from the certificate:
 
 ```text
-{"keyId":"<key-id>","ed25519":"<base64-key>","usage":"socfp-http-message-signature","notBefore":<epoch-ms>,"notAfter":<epoch-ms>}
+{"keyId":"<key-id>","ed25519":"<base64-key>","usage":"somfp-http-message-signature","notBefore":<epoch-ms>,"notAfter":<epoch-ms>}
 ```
 
 The statement above is the exact signed input used by v1 to validate `authorizationSignature`. A later major MAY reuse this shared certificate core or add its own certificate fields, but MUST NOT change existing fields or the v1 meaning of `authorizationSignature`. If an added field affects key authorization, the new major MUST define a new independently verifiable signature field or structure. Well-known needs no separate `certificateVersion`; the selected Federation major determines the applicable requirements.
@@ -91,7 +91,7 @@ A Federation peer is a server-configured and recognized domain identity, not an 
 
 ### 2.1 Mandatory SRV resolution
 
-Given canonical peer `Domain` value `D`, an implementation MUST query the DNS SRV RRset at the exact owner name `_socfp._tcp.D`. Publishing a valid SRV record is mandatory for a server enabling Federation. v1 does not permit bypassing SRV to resolve `D` directly and defines no alternative discovery path such as default port `443` or local direct-connect configuration:
+Given canonical peer `Domain` value `D`, an implementation MUST query the DNS SRV RRset at the exact owner name `_somfp._tcp.D`. Publishing a valid SRV record is mandatory for a server enabling Federation. v1 does not permit bypassing SRV to resolve `D` directly and defines no alternative discovery path such as default port `443` or local direct-connect configuration:
 
 1. For a non-empty, syntactically valid SRV RRset, apply RFC 2782: lowest `priority` first and weighted random selection among records of equal priority. `priority` and `weight` MUST be in `0..65535`. For a target other than `.`, `port` MUST be in `1..65535`, and the target MUST be a DNS hostname normalizable as the `Domain` in [Core Protocol, Section 6.2](./protocol.md). A target MUST NOT be an IPv4 or IPv6 address literal; bracketed IPv6, decimal IPv4, and every other direct IP representation are invalid. A target MAY be outside `D` but MUST NOT be a CNAME alias under RFC 2782.
 2. Resolve A/AAAA for a selected target and connect to its selected port. Each connectable target MUST resolve to at least one usable A or AAAA record; supporting both IPv4 and IPv6 is not required. v1 does not prescribe address-family or same-family address priority. A caller MAY select, interleave, or race connection attempts according to local routing, historical success, connection latency, and current network conditions. After a failed connection, it SHOULD continue with untried addresses and SRV records while preserving SRV priority and weight semantics. An A/AAAA result is only a substitute connection address for the hostname, not an SRV target, peer identity, TLS name, or HTTP authority. A target without a usable A/AAAA result is not connectable; its text MUST NOT be interpreted as another IP notation.
@@ -99,7 +99,7 @@ Given canonical peer `Domain` value `D`, an implementation MUST query the DNS SR
 4. Address-level racing means racing connection establishment only. Unless the operation explicitly makes the request safely retryable under the same idempotency key, a caller MUST NOT send the same side-effecting HTTP request concurrently merely because multiple addresses are reachable. A retry after an uncertain connection result remains subject to [Core Protocol, Section 7.4](./protocol.md) and the operation's idempotency rules.
 5. A definitive `NXDOMAIN` or `NODATA` SRV answer means `D` does not currently publish Federation service. The caller MUST NOT issue a Federation request or try `D:443` or another guessed location. It may query again only after the negative DNS TTL expires or an administrator explicitly triggers it.
 6. DNS timeout, `SERVFAIL`, `REFUSED`, or another temporary resolution failure is a retryable discovery failure. The caller MUST back off and retain existing pins, cursors, and mirrors. It MUST NOT interpret the failure as an unpublished service or identity loss.
-7. A sole SRV target `.` explicitly states that the domain provides no SOCFP service. This special record SHOULD use port `0`, and no connection MUST be attempted. Mixing `.` with another target, using an IP literal or invalid hostname or port, or returning an RRset without one unambiguous interpretation is a configuration error.
+7. A sole SRV target `.` explicitly states that the domain provides no SOMFP service. This special record SHOULD use port `0`, and no connection MUST be attempted. Mixing `.` with another target, using an IP literal or invalid hostname or port, or returning an RRset without one unambiguous interpretation is a configuration error.
 8. If every usable target in a valid RRset fails to connect, the operation ends with connection failure. The caller MUST NOT fall back to resolving `D` directly, try a bare IP or another common port, or infer an alternative location from well-known or an HTTP redirect.
 
 Positive and negative SRV/A/AAAA caching MUST NOT exceed the effective TTL supplied by the DNS resolver. Resolution after TTL expiry MAY change the connection location but MUST NOT change peer identity. v1 does not require DNSSEC because DNS and SRV provide only untrusted routing input. An implementation MAY use DNSSEC, a fixed resolver, IP or egress policy, or other local hardening, but MUST NOT use a DNS result to skip HTTPS, root-pin, or request-signature validation.
@@ -107,7 +107,7 @@ Positive and negative SRV/A/AAAA caching MUST NOT exceed the effective TTL suppl
 Minimal valid publication example:
 
 ```dns
-_socfp._tcp.chat.example. 3600 IN SRV 0 0 443 chat.example.
+_somfp._tcp.chat.example. 3600 IN SRV 0 0 443 chat.example.
 chat.example.            3600 IN A   192.0.2.10
 chat.example.            3600 IN AAAA 2001:db8::10
 ```
@@ -123,7 +123,7 @@ SRV delegates only the TCP connection to target `T` and port `P`. The logical re
 - The HTTP Message Signature `@authority` MUST cover the logical authority actually sent.
 - Well-known and every S2S operation MUST NOT automatically follow an HTTP redirect. Any `3xx` fails the current operation. A redirect target MUST NOT become a new peer, establish a pin, supply accepted response data, or advance a cursor.
 
-For example, if `_socfp._tcp.chat.example` returns target `edge.provider.example` and port `8443`, the client connects to `edge.provider.example:8443` but sends TLS SNI `chat.example`, validates `chat.example` in the certificate, sends `Host: chat.example:8443`, and signs `"@authority": chat.example:8443`.
+For example, if `_somfp._tcp.chat.example` returns target `edge.provider.example` and port `8443`, the client connects to `edge.provider.example:8443` but sends TLS SNI `chat.example`, validates `chat.example` in the certificate, sends `Host: chat.example:8443`, and signs `"@authority": chat.example:8443`.
 
 DNS and SRV results determine only connection location and MUST NOT change a pinned root identity or bidirectional recognition fact. An identity contradiction after a DNS change MUST be handled fail closed; the current domain controller cannot automatically be treated as the original peer.
 

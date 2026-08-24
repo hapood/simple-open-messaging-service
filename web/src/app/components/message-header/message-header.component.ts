@@ -181,13 +181,10 @@ export class MessageHeaderComponent {
   readonly menuOpen = signal(false);
   readonly hasUnreadJoinRequests = computed(() => {
     const trd = this.userMsgTrd();
-    if (
-      trd?.type !== 'GROUP' ||
-      (trd.role !== 'OWNER' && trd.role !== 'ADMIN')
-    )
+    if (trd?.type !== 'GROUP' || (trd.role !== 'OWNER' && trd.role !== 'ADMIN'))
       return false;
     const head = this.userService.groupJoinRequestHeads().get(trd.threadId);
-    return !!head && BigInt(head.readRequestId) < BigInt(head.latestRequestId);
+    return !!head && head.readFeedId < head.latestFeedId;
   });
   /** The action awaiting a two-tap confirm (null = normal menu list). */
   readonly confirmKey = signal<string | null>(null);

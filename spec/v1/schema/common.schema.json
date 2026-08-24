@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:socfp:v1:common",
-  "title": "Simple Open Chat Federation Protocol v1 common wire scalars",
+  "$id": "urn:somfp:v1:common",
+  "title": "Simple Open Messaging Federation Protocol v1 common wire scalars",
   "$defs": {
     "contentType": {
       "enum": [

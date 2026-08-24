@@ -14,11 +14,13 @@ import {
   message,
   messageReport,
   messageThread,
+  relationshipIntent,
   threadParticipant,
   user,
 } from '../src/database/schema.js';
 import { DeletedMessageService } from '../src/message/deleted-message.service.js';
 import { MessageReportService } from '../src/message/message-report.service.js';
+import { MessageService } from '../src/message/message.service.js';
 
 describe('message report workflow', () => {
   let mod: TestingModule;
@@ -32,7 +34,16 @@ describe('message report workflow', () => {
   beforeAll(async () => {
     mod = await Test.createTestingModule({
       imports: [DatabaseModule],
-      providers: [DeletedMessageService, MessageReportService],
+      providers: [
+        DeletedMessageService,
+        MessageReportService,
+        {
+          provide: MessageService,
+          useValue: {
+            writeSystemMessageInTx: () => ({ message: {} }),
+          },
+        },
+      ],
     }).compile();
     database = mod.get(DatabaseService);
     reports = mod.get(MessageReportService);
@@ -96,6 +107,26 @@ describe('message report workflow', () => {
     await database.db.insert(threadParticipant).values([
       { userId: reporterId, threadId, updatedAt: now },
       { userId: creatorId, threadId, updatedAt: now },
+    ]);
+    await database.db.insert(relationshipIntent).values([
+      {
+        authorUserId: reporterId,
+        subjectUserId: creatorId,
+        status: 'ACCEPTED',
+        note: '',
+        requestedAt: now,
+        expiresAt: null,
+        updatedAt: now,
+      },
+      {
+        authorUserId: creatorId,
+        subjectUserId: reporterId,
+        status: 'ACCEPTED',
+        note: '',
+        requestedAt: now,
+        expiresAt: null,
+        updatedAt: now,
+      },
     ]);
     await database.db.insert(message).values([
       {

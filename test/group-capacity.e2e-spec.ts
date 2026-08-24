@@ -82,6 +82,7 @@ describe('origin-server group capacity', () => {
         authorUserId: groupUser.id,
         subjectUserId: person.id,
         status: 'ACCEPTED' as const,
+        requestedAt: new Date(),
         note: '',
         requestedAt: new Date(),
         expiresAt: null,
@@ -141,11 +142,7 @@ describe('origin-server group capacity', () => {
     });
     await expect(
       database.db.transaction((tx) =>
-        assertServerGroupCapacityInTx(
-          tx,
-          thread.id,
-          admitted!.subjectUserId,
-        ),
+        assertServerGroupCapacityInTx(tx, thread.id, admitted!.subjectUserId),
       ),
     ).resolves.toBeUndefined();
   }, 30_000);

@@ -389,7 +389,9 @@
   "group": {
     "title": "群信息",
     "joinRequests": "入群申请",
-    "noJoinRequests": "暂无待处理的入群申请",
+    "noJoinRequests": "暂无入群申请",
+    "joinRequestAccepted": "已同意",
+    "joinRequestRejected": "已拒绝",
     "groupNamePlaceholder": "群名称",
     "groupName": "群名称",
     "groupDescription": "群简介",

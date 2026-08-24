@@ -1,0 +1,31 @@
+{
+	admin off
+}
+
+(hmr_edge) {
+	@backend path /api/* /uploads/* /s2s/* /.well-known/*
+	handle @backend {
+		reverse_proxy 127.0.0.1:{args.0}
+	}
+
+	@admin path /admin /admin/*
+	handle @admin {
+		reverse_proxy 127.0.0.1:5180
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:4200
+	}
+}
+
+http://:3101 {
+	import hmr_edge 3201
+}
+
+http://:3102 {
+	import hmr_edge 3202
+}
+
+http://:3103 {
+	import hmr_edge 3203
+}

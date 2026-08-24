@@ -499,7 +499,7 @@
     },
     "selfCheck": {
       "title": "S2S 握手自检",
-      "desc": "从外部视角诊断本服务器的联邦前置件——DNS/SRV、TLS 证书、.well-known/socfp、密钥一致性、签名回环与时钟偏移。每项网络检查按解析出的每个 IP 独立执行（SRV→DDNS 或多 A/AAAA 记录）。",
+      "desc": "从外部视角诊断本服务器的联邦前置件——DNS/SRV、TLS 证书、.well-known/somfp、密钥一致性、签名回环与时钟偏移。每项网络检查按解析出的每个 IP 独立执行（SRV→DDNS 或多 A/AAAA 记录）。",
       "entry": "握手自检",
       "ntpServer": "参考时钟 (NTP)",
       "dnsResolver": "DNS 解析器",
@@ -521,12 +521,12 @@
         "config": "本地配置",
         "key-file": "密钥文件权限",
         "key-age": "密钥创建时间",
-        "dns-srv": "SRV 记录 _socfp._tcp",
+        "dns-srv": "SRV 记录 _somfp._tcp",
         "dns-a": "A 记录（IPv4）",
         "dns-aaaa": "AAAA 记录（IPv6）",
         "tls-public": "TLS 证书（逐 IP）",
         "tls-loopback": "本地进程回环",
-        "well-known": ".well-known/socfp（逐 IP）",
+        "well-known": ".well-known/somfp（逐 IP）",
         "key-consistency": "已发布密钥一致性",
         "sign-loopback": "签名回环",
         "clock-skew": "时钟偏移"
@@ -541,7 +541,7 @@
         "config": "本地配置",
         "dns": "DNS 解析",
         "tls": "TLS 证书",
-        "well-known": ".well-known/socfp",
+        "well-known": ".well-known/somfp",
         "crypto": "密钥与签名",
         "clock": "时钟偏移"
       },

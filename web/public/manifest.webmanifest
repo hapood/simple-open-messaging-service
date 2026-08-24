@@ -1,7 +1,7 @@
 {
-  "name": "SOMS — Simple Open Chat",
+  "name": "SOMS — Simple Open Messaging Service",
   "short_name": "SOMS",
-  "description": "Simple open chat service.",
+  "description": "Simple Open Messaging Service.",
   "id": "/",
   "start_url": "/",
   "scope": "/",

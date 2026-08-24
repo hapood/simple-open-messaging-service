@@ -29,11 +29,9 @@ describe('RateLimitMonitoringController', () => {
         },
       ]),
     } as unknown as RateLimitModeService;
-    const result = new RateLimitMonitoringController(
-      service,
-      modes,
-      { list: () => [] } as never,
-    ).getSnapshot();
+    const result = new RateLimitMonitoringController(service, modes, {
+      list: () => [],
+    } as never).getSnapshot();
 
     expect(result.policies[0]).toMatchObject({
       policy: 'auth.password.login',

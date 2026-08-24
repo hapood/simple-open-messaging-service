@@ -11,6 +11,9 @@
     <div class="identity-copy">
       <strong>{{ identity().name || identity().account }}</strong>
       <span>{{ identity().account }}&#64;{{ identity().domain }}</span>
+      @if (identity().bio) {
+        <span>{{ identity().bio }}</span>
+      }
     </div>
   </div>
   <div class="identity-meta">

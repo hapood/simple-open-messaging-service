@@ -455,17 +455,17 @@ describe('MessageService.unreadMentionStates', () => {
       {
         threadId: 7,
         content: JSON.stringify({
-          text: '大家好 [@所有人](socfp://audience/all)',
+          text: '大家好 [@所有人](somfp://audience/all)',
         }),
       },
       {
         threadId: 7,
-        content: JSON.stringify({ text: '请看 [@我](socfp://user/self)' }),
+        content: JSON.stringify({ text: '请看 [@我](somfp://user/self)' }),
       },
       {
         threadId: 8,
         content: JSON.stringify({
-          text: String.raw`\[@我](socfp://user/self)`,
+          text: String.raw`\[@我](somfp://user/self)`,
         }),
       },
     ]);
@@ -493,8 +493,8 @@ describe('MessageService unified attention queries', () => {
         readRevision: 4,
         unread: 1000,
         mentionContents: [
-          JSON.stringify({ text: '[@所有人](socfp://audience/all)' }),
-          JSON.stringify({ text: '[@我](socfp://user/self)' }),
+          JSON.stringify({ text: '[@所有人](somfp://audience/all)' }),
+          JSON.stringify({ text: '[@我](somfp://user/self)' }),
         ],
         account: 'self',
       },
@@ -522,16 +522,16 @@ describe('MessageService unified attention queries', () => {
         unread: 3,
         mentionContents: [
           JSON.stringify({
-            text: '大家好 [@所有人](socfp://audience/all)',
+            text: '大家好 [@所有人](somfp://audience/all)',
           }),
-          JSON.stringify({ text: '请看 [@我](socfp://user/self)' }),
+          JSON.stringify({ text: '请看 [@我](somfp://user/self)' }),
         ],
       },
       {
         threadId: 8,
         unread: 1,
         mentionContents: [
-          JSON.stringify({ text: String.raw`\[@我](socfp://user/self)` }),
+          JSON.stringify({ text: String.raw`\[@我](somfp://user/self)` }),
         ],
       },
     ]);
@@ -559,7 +559,7 @@ describe('MessageService unified attention queries', () => {
         threadId: 7,
         cnt: 2n,
         latest: 12,
-        mentionContents: [JSON.stringify({ text: '[@我](socfp://user/self)' })],
+        mentionContents: [JSON.stringify({ text: '[@我](somfp://user/self)' })],
       },
     ]);
     const svc = new MessageService(

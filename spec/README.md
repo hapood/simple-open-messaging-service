@@ -1,6 +1,6 @@
-# Simple Open Chat Federation Protocol Specification
+# Simple Open Messaging Federation Protocol Specification
 
-This directory publishes the **Simple Open Chat Federation Protocol** (SOCFP) for independent implementers. The normative text defines only the observable, interoperable wire contract between nodes. SOMS is the reference implementation; its implementation audits, internal design, and operations documentation live in [`docs/`](../docs/) and cannot override this specification.
+This directory publishes the **Simple Open Messaging Federation Protocol** (SOMFP) for independent implementers. The normative text defines only the observable, interoperable wire contract between nodes. SOMS is the reference implementation; its implementation audits, internal design, and operations documentation live in [`docs/`](../docs/) and cannot override this specification.
 
 ## Directory layout
 
@@ -40,6 +40,6 @@ Protocol changes and releases follow [Governance](./GOVERNANCE.md). Security iss
 - `FINAL`: the current major version's wire contract is frozen. Incompatible changes require a new URL major version.
 - `SUPERSEDED`: a later major version has replaced this one; it remains available for compatible implementations and historical reference.
 
-The current candidate is [Simple Open Chat Federation Protocol v1.0.0-rc.0](./v1/README.md). Every implementation claiming compatibility, including SOMS, must demonstrate conformance through tests. Implementation code, implementation-specific reviews, JSON Schema, and examples cannot independently alter the meaning of the normative text.
+The current candidate is [Simple Open Messaging Federation Protocol v1.0.0-rc.0](./v1/README.md). Every implementation claiming compatibility, including SOMS, must demonstrate conformance through tests. Implementation code, implementation-specific reviews, JSON Schema, and examples cannot independently alter the meaning of the normative text.
 
-The conformant discovery identifiers are `/.well-known/socfp` and `_socfp._tcp`. No alternative discovery identifier belongs to the SOCFP v1 surface.
+The conformant discovery identifiers are `/.well-known/somfp` and `_somfp._tcp`. No alternative discovery identifier belongs to the SOMFP v1 surface.

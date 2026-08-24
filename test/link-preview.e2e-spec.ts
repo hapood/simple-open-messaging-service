@@ -7,7 +7,11 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
-import { relationshipIntent, messageAsset, message } from '../src/database/schema';
+import {
+  relationshipIntent,
+  messageAsset,
+  message,
+} from '../src/database/schema';
 import { LinkPreviewService } from '../src/link-preview/link-preview.service.js';
 import { registerAndLogin } from './federation-test-helpers';
 

@@ -1,7 +1,11 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
 import { and, asc, eq, gt, lte, sql } from 'drizzle-orm';
-import { clientStateFeed, user } from '../database/schema.js';
+import {
+  clientStateFeed,
+  groupJoinRequestProjection,
+  user,
+} from '../database/schema.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import { DatabaseService } from '../database/database.service.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -124,9 +128,9 @@ export class ClientStateFeedService {
       account: string;
       domain: string;
       threadId: number;
-      latestRequestId?: bigint;
+      latestFeedId?: number;
       latestRequestAt?: number;
-      readRequestId?: bigint;
+      readFeedId?: number;
     },
   ): Promise<number | null> {
     const [current] = await tx
@@ -144,31 +148,34 @@ export class ClientStateFeedService {
       )
       .limit(1);
     const body = current?.body as
-      | { before?: unknown; latestRequestAt?: unknown; readRequestId?: unknown }
+      | {
+          latestFeedId?: unknown;
+          latestRequestAt?: unknown;
+          readFeedId?: unknown;
+        }
       | undefined;
     const currentLatest =
-      typeof body?.before === 'string' ? BigInt(body.before) - 1n : 0n;
+      typeof body?.latestFeedId === 'number' ? body.latestFeedId : 0;
     const currentRead =
-      typeof body?.readRequestId === 'string' ? BigInt(body.readRequestId) : 0n;
-    const latestRequestId =
-      write.latestRequestId !== undefined &&
-      write.latestRequestId > currentLatest
-        ? write.latestRequestId
+      typeof body?.readFeedId === 'number' ? body.readFeedId : 0;
+    const latestFeedId =
+      write.latestFeedId !== undefined && write.latestFeedId > currentLatest
+        ? write.latestFeedId
         : currentLatest;
     const latestRequestAt =
-      write.latestRequestId !== undefined &&
-      write.latestRequestId >= currentLatest &&
+      write.latestFeedId !== undefined &&
+      write.latestFeedId >= currentLatest &&
       write.latestRequestAt !== undefined
         ? write.latestRequestAt
         : typeof body?.latestRequestAt === 'number'
           ? body.latestRequestAt
           : 0;
     const requestedRead =
-      write.readRequestId !== undefined && write.readRequestId > currentRead
-        ? write.readRequestId
+      write.readFeedId !== undefined && write.readFeedId > currentRead
+        ? write.readFeedId
         : currentRead;
-    const readRequestId =
-      requestedRead > latestRequestId ? latestRequestId : requestedRead;
+    const readFeedId =
+      requestedRead > latestFeedId ? latestFeedId : requestedRead;
     return this.writeInTx(tx, {
       userId: write.userId,
       account: write.account,
@@ -178,11 +185,86 @@ export class ClientStateFeedService {
       subjectDomain: '',
       body: {
         threadId: write.threadId,
-        before: (latestRequestId + 1n).toString(),
+        latestFeedId,
         latestRequestAt,
-        readRequestId: readRequestId.toString(),
+        readFeedId,
       },
     });
+  }
+
+  /** Persist one manager-facing join-application projection. Original request timestamps are immutable:
+   * terminal intents clear their own expiry, while the projection must retain its seven-day GC boundary. */
+  async writeGroupJoinRequestInTx(
+    tx: DatabaseTransaction,
+    write: {
+      managerUserId: number;
+      threadId: number;
+      applicantUserId: number;
+      requestId: bigint;
+      status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
+      note: string;
+      requestedAt: Date | null;
+      expiresAt: Date | null;
+    },
+  ): Promise<number | null> {
+    const [current] = await tx
+      .select({
+        status: groupJoinRequestProjection.status,
+        note: groupJoinRequestProjection.note,
+        requestId: groupJoinRequestProjection.requestId,
+        requestedAt: groupJoinRequestProjection.requestedAt,
+        expiresAt: groupJoinRequestProjection.expiresAt,
+      })
+      .from(groupJoinRequestProjection)
+      .where(
+        and(
+          eq(groupJoinRequestProjection.managerUserId, write.managerUserId),
+          eq(groupJoinRequestProjection.threadId, write.threadId),
+          eq(groupJoinRequestProjection.applicantUserId, write.applicantUserId),
+        ),
+      )
+      .limit(1);
+    const requestedAt = write.requestedAt ?? current?.requestedAt;
+    const expiresAt = write.expiresAt ?? current?.expiresAt;
+    if (!requestedAt || !expiresAt) return null;
+    const note = write.note || current?.note || '';
+    if (
+      current?.status === write.status &&
+      current.note === note &&
+      current.requestId === write.requestId &&
+      current.requestedAt.getTime() === requestedAt.getTime() &&
+      current.expiresAt.getTime() === expiresAt.getTime()
+    )
+      return null;
+    const [owner] = await tx
+      .update(user)
+      .set({
+        stateFeedAllocatedThrough: sql`${user.stateFeedAllocatedThrough} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(eq(user.id, write.managerUserId))
+      .returning({ feedId: user.stateFeedAllocatedThrough });
+    if (!owner) throw new Error('join-request projection owner missing');
+    await tx
+      .insert(groupJoinRequestProjection)
+      .values({ ...write, note, requestedAt, expiresAt, feedId: owner.feedId })
+      .onConflictDoUpdate({
+        target: [
+          groupJoinRequestProjection.managerUserId,
+          groupJoinRequestProjection.threadId,
+          groupJoinRequestProjection.applicantUserId,
+        ],
+        set: {
+          feedId: owner.feedId,
+          requestId: write.requestId,
+          status: write.status,
+          note,
+          requestedAt,
+          expiresAt,
+          updatedAt: new Date(),
+        },
+      });
+    return owner.feedId;
   }
 
   /** Monotonically advance the account-wide incoming friend/group invitation read watermark. */
@@ -198,7 +280,8 @@ export class ClientStateFeedService {
         .where(eq(user.id, userId))
         .for('update')
         .limit(1);
-      if (!owner) throw new Error(`client state feed owner ${userId} is missing`);
+      if (!owner)
+        throw new Error(`client state feed owner ${userId} is missing`);
       if (requestedReadThrough > owner.allocatedThrough)
         throw new BusinessException(
           BusinessCode.VALIDATION_FAILED,
@@ -279,6 +362,51 @@ export class ClientStateFeedService {
       if (feedId !== null) pending.push({ userId, feedId });
     }
     return pending;
+  }
+
+  /** Remove an applicant PROFILE only after every client-facing reference owned by this user is gone. */
+  async cleanupProfileStateIfUnreferencedInTx(
+    tx: DatabaseTransaction,
+    ownerUserId: number,
+    subjectUserId: number,
+  ): Promise<void> {
+    const subject = await tx.query.user.findFirst({
+      where: eq(user.id, subjectUserId),
+      columns: { account: true, domain: true },
+    });
+    if (!subject) return;
+    const domain = subject.domain === 'local' ? '' : subject.domain;
+    const references = await tx.execute<{ referenced: boolean }>(sql`
+      SELECT EXISTS (
+        SELECT 1 FROM "GroupJoinRequestProjection" projection
+        WHERE projection."managerUserId" = ${ownerUserId}
+          AND projection."applicantUserId" = ${subjectUserId}
+        UNION ALL
+        SELECT 1 FROM "ClientStateFeed" intent
+        WHERE intent."userId" = ${ownerUserId}
+          AND intent."eventType" = 'RELATIONSHIP_INTENT'
+          AND ((intent.account = ${subject.account} AND intent.domain = ${domain})
+            OR (intent."subjectAccount" = ${subject.account}
+              AND intent."subjectDomain" = ${domain}))
+        UNION ALL
+        SELECT 1 FROM "ClientGroupMetaMemberFeed" member
+        WHERE member."userId" = ${ownerUserId}
+          AND member."memberAccount" = ${subject.account}
+          AND member."memberDomain" = ${domain}
+          AND member.operation = 'UPSERT'
+      ) AS referenced
+    `);
+    if (references.rows[0]?.referenced) return;
+    await tx
+      .delete(clientStateFeed)
+      .where(
+        and(
+          eq(clientStateFeed.userId, ownerUserId),
+          eq(clientStateFeed.account, subject.account),
+          eq(clientStateFeed.domain, domain),
+          eq(clientStateFeed.eventType, 'PROFILE'),
+        ),
+      );
   }
 
   async recordGroupStateInTx(
@@ -395,8 +523,7 @@ export class ClientStateFeedService {
           lte(clientStateFeed.feedId, targetFeedId),
           mode === 'full'
             ? sql`NOT (
-                (${clientStateFeed.eventType} = 'RELATIONSHIP_INTENT' AND ${clientStateFeed.body}->>'status' = 'REVOKED')
-                OR (${clientStateFeed.eventType} = 'THREAD_BLOCK' AND ${clientStateFeed.body}->>'blocked' = 'false')
+                ${clientStateFeed.eventType} = 'THREAD_BLOCK' AND ${clientStateFeed.body}->>'blocked' = 'false'
               )`
             : undefined,
         ),

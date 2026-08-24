@@ -4,9 +4,9 @@ import {
   GROUP_ACCOUNT_RE,
   normalizeAccount,
   isValidUserAccount,
-  isValidSocfpDomain,
-  isValidSocfpUserAccount,
-  parseSocfpUserAddress,
+  isValidSomfpDomain,
+  isValidSomfpUserAccount,
+  parseSomfpUserAddress,
   isValidGroupAccount,
   isValidAccount,
   isGroupAccount,
@@ -79,13 +79,13 @@ describe('account grammar + minting', () => {
     expect(normalizeAccount('!01HZ')).toBe('!01hz');
   });
 
-  it('validates already-canonical SOCFP wire identities', () => {
-    expect(isValidSocfpUserAccount('a')).toBe(true);
-    expect(isValidSocfpUserAccount('Alice')).toBe(false);
-    expect(isValidSocfpDomain('chat.example')).toBe(true);
-    expect(isValidSocfpDomain('local')).toBe(false);
-    expect(isValidSocfpDomain('printer.local')).toBe(false);
-    expect(parseSocfpUserAddress('a@chat.example')).toEqual({
+  it('validates already-canonical SOMFP wire identities', () => {
+    expect(isValidSomfpUserAccount('a')).toBe(true);
+    expect(isValidSomfpUserAccount('Alice')).toBe(false);
+    expect(isValidSomfpDomain('chat.example')).toBe(true);
+    expect(isValidSomfpDomain('local')).toBe(false);
+    expect(isValidSomfpDomain('printer.local')).toBe(false);
+    expect(parseSomfpUserAddress('a@chat.example')).toEqual({
       account: 'a',
       domain: 'chat.example',
     });
@@ -98,7 +98,7 @@ describe('account grammar + minting', () => {
       'a@local',
       'a@printer.local',
     ]) {
-      expect(parseSocfpUserAddress(value)).toBeNull();
+      expect(parseSomfpUserAddress(value)).toBeNull();
     }
   });
 

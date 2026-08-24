@@ -1247,8 +1247,8 @@ export class ThreadRepository {
           } else if (op.eventType === 'GROUP_JOIN_REQUEST_HEAD') {
             this.userService.applyGroupJoinRequestHead(
               op.body.threadId,
-              op.body.before,
-              op.body.readRequestId,
+              op.body.latestFeedId,
+              op.body.readFeedId,
             );
             this.applyJoinRequestActivity(
               op.body.threadId,

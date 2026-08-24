@@ -33,23 +33,34 @@
             }
           </div>
           <div class="request-actions">
-            <button
-              mat-button
-              type="button"
-              [disabled]="acting().has(request.id)"
-              (click)="act(request.id, false)"
-            >
-              {{ 'friend.decline' | transloco }}
-            </button>
-            <button
-              mat-flat-button
-              type="button"
-              color="primary"
-              [disabled]="acting().has(request.id)"
-              (click)="act(request.id, true)"
-            >
-              {{ 'friend.approve' | transloco }}
-            </button>
+            @if (request.status === 'REQUESTED') {
+              <button
+                mat-button
+                type="button"
+                [disabled]="acting().has(request.id)"
+                (click)="act(request.id, false)"
+              >
+                {{ 'friend.decline' | transloco }}
+              </button>
+              <button
+                mat-flat-button
+                type="button"
+                color="primary"
+                [disabled]="acting().has(request.id)"
+                (click)="act(request.id, true)"
+              >
+                {{ 'friend.approve' | transloco }}
+              </button>
+            } @else {
+              <span class="request-status">
+                {{
+                  (request.status === 'ACCEPTED'
+                    ? 'group.joinRequestAccepted'
+                    : 'group.joinRequestRejected'
+                  ) | transloco
+                }}
+              </span>
+            }
           </div>
         </article>
       }

@@ -319,6 +319,7 @@ describe('WebdbService', () => {
             account: 'bob',
             name: 'Bob',
             avatar: '',
+            bio: '',
             domain: 'peer.test',
             isForeigner: true,
           },
@@ -334,6 +335,219 @@ describe('WebdbService', () => {
         friendshipActive: false,
         conversationState: 'READ_ONLY',
       });
+    });
+
+    it('does not advance the unread badge revision when an incoming request is rejected', async () => {
+      const db = await webdb.openForUser('1');
+      const requestedAt = Date.now();
+      const expiresAt = Date.now() + 60_000;
+      const event = (
+        feedId: number,
+        direction: 'INCOMING' | 'OUTGOING',
+        status: 'REQUESTED' | 'REVOKED',
+      ): ClientStateFeedItem => ({
+        feedId,
+        account: 'alice',
+        domain: 'peer.test',
+        eventType: 'RELATIONSHIP_INTENT',
+        subjectAccount: 'me',
+        subjectDomain: 'local.test',
+        body: {
+          status,
+          note: 'hello',
+          requestedAt: status === 'REQUESTED' ? requestedAt : null,
+          expiresAt: status === 'REQUESTED' ? expiresAt : null,
+          direction,
+          localThreadId: 7,
+          peer: {
+            id: 2,
+            account: 'alice',
+            name: 'Alice',
+            avatar: '',
+            bio: 'About Alice',
+            domain: 'peer.test',
+            isForeigner: true,
+          },
+        },
+      });
+
+      await webdb.applyStateFeedPage([event(10, 'INCOMING', 'REQUESTED')], 10);
+      expect(await webdb.getMeta('friendRequestStateRevision')).toBe(10);
+      expect(
+        await webdb.getFriendRequestPage('RECEIVED', null, 20),
+      ).toMatchObject({ total: 1, actionableTotal: 1 });
+
+      await webdb.applyStateFeedPage([event(11, 'OUTGOING', 'REVOKED')], 11);
+      expect(await webdb.getMeta('friendRequestStateRevision')).toBe(10);
+      expect(await db!.getAll('friendRequests')).toEqual([
+        expect.objectContaining({
+          bucket: 'RECEIVED',
+          status: 'REVOKED',
+          requestedSort: requestedAt,
+        }),
+      ]);
+      const rejectedPage = await webdb.getFriendRequestPage(
+        'RECEIVED',
+        null,
+        20,
+      );
+      expect(rejectedPage).toMatchObject({ total: 1, actionableTotal: 0 });
+      expect(rejectedPage.items).toEqual([
+        expect.objectContaining({ bucket: 'RECEIVED', status: 'REVOKED' }),
+      ]);
+    });
+
+    it('hydrates an existing incoming request when its profile-backed update arrives', async () => {
+      const db = await webdb.openForUser('1');
+      const requestedAt = Date.now();
+      const expiresAt = requestedAt + 60_000;
+      const incoming = (
+        feedId: number,
+        peer: { name: string; avatar: string },
+      ): ClientStateFeedItem => ({
+        feedId,
+        account: 'alice',
+        domain: 'peer.test',
+        eventType: 'RELATIONSHIP_INTENT',
+        subjectAccount: 'me',
+        subjectDomain: 'local.test',
+        body: {
+          status: 'REQUESTED',
+          note: 'hello',
+          requestedAt,
+          expiresAt,
+          direction: 'INCOMING',
+          localThreadId: null,
+          peer: {
+            id: 0,
+            account: 'alice',
+            name: peer.name,
+            avatar: peer.avatar,
+            bio: '',
+            domain: 'peer.test',
+            isForeigner: true,
+          },
+        },
+      });
+
+      await webdb.applyStateFeedPage(
+        [incoming(30, { name: 'alice', avatar: '' })],
+        30,
+      );
+      expect(await db!.getAll('friendRequests')).toEqual([
+        expect.objectContaining({
+          status: 'REQUESTED',
+          peer: expect.objectContaining({ name: 'alice', avatar: '' }),
+        }),
+      ]);
+
+      await webdb.applyStateFeedPage(
+        [incoming(31, { name: 'Alice', avatar: '/uploads/alice-512.webp' })],
+        31,
+      );
+
+      expect(await db!.getAll('friendRequests')).toEqual([
+        expect.objectContaining({
+          status: 'REQUESTED',
+          peer: expect.objectContaining({
+            id: 0,
+            name: 'Alice',
+            avatar: '/uploads/alice-512.webp',
+          }),
+        }),
+      ]);
+      expect(await webdb.getMeta('friendRequestStateRevision')).toBe(30);
+      expect(await webdb.getMeta('stateFeedId')).toBe(31);
+    });
+
+    it('garbage-collects an expired request projection and its temporary profile', async () => {
+      const db = await webdb.openForUser('1');
+      const expiresAt = Date.now() + 1_000;
+      const request: ClientStateFeedItem = {
+        feedId: 20,
+        account: 'me',
+        domain: 'local.test',
+        eventType: 'RELATIONSHIP_INTENT',
+        subjectAccount: 'alice',
+        subjectDomain: 'peer.test',
+        body: {
+          status: 'REQUESTED',
+          note: 'hello',
+          requestedAt: expiresAt - 1_000,
+          expiresAt,
+          direction: 'OUTGOING',
+          localThreadId: 7,
+          peer: {
+            id: 2,
+            account: 'alice',
+            name: 'Alice',
+            avatar: 'avatar.webp',
+            bio: 'About Alice',
+            domain: 'peer.test',
+            isForeigner: true,
+          },
+        },
+      };
+
+      await webdb.applyStateFeedPage([request], 20);
+      expect(await db!.getAll('friendRequests')).toHaveLength(1);
+      expect(
+        await webdb.getProfile('pending:peer.test\u0000alice'),
+      ).toMatchObject({
+        name: 'Alice',
+        bio: 'About Alice',
+      });
+
+      await webdb.cleanupFriendRequests(expiresAt);
+
+      expect(await db!.getAll('friendRequests')).toEqual([]);
+      expect(
+        await webdb.getProfile('pending:peer.test\u0000alice'),
+      ).toBeUndefined();
+    });
+
+    it('garbage-collects an expired group-invite projection and its temporary profile', async () => {
+      const db = await webdb.openForUser('1');
+      const requestedAt = Date.now();
+      const expiresAt = requestedAt + 1_000;
+      const invite: ClientStateFeedItem = {
+        feedId: 21,
+        account: '!group',
+        domain: 'groups.test',
+        eventType: 'RELATIONSHIP_INTENT',
+        subjectAccount: 'me',
+        subjectDomain: 'local.test',
+        body: {
+          status: 'REQUESTED',
+          note: 'join us',
+          requestedAt,
+          expiresAt,
+          direction: 'INCOMING',
+          threadId: 8,
+          group: {
+            account: '!group',
+            domain: 'groups.test',
+            isLocal: false,
+            name: 'Group',
+            avatar: 'group.webp',
+            description: 'About group',
+            profileRev: 2,
+          },
+        },
+      };
+
+      await webdb.applyStateFeedPage([invite], 21);
+      expect(await db!.getAll('friendRequests')).toHaveLength(1);
+      expect(
+        await webdb.getProfile('pending-group:groups.test\u0000!group'),
+      ).toMatchObject({ source: 'GROUP_INVITE', bio: 'About group' });
+
+      await webdb.cleanupFriendRequests(expiresAt);
+
+      expect(await db!.getAll('friendRequests')).toEqual([]);
+      expect(
+        await webdb.getProfile('pending-group:groups.test\u0000!group'),
+      ).toBeUndefined();
     });
 
     it('clears state-feed projections only on the first full page', async () => {
@@ -394,8 +608,15 @@ describe('WebdbService', () => {
 
     it('applies THREAD_BLOCK true and false deltas to the cached thread', async () => {
       await webdb.openForUser('1');
-      await webdb.putThread({ threadId: 7, type: 'P2P', blocked: false } as never);
-      const event = (feedId: number, blocked: boolean): ClientStateFeedItem => ({
+      await webdb.putThread({
+        threadId: 7,
+        type: 'P2P',
+        blocked: false,
+      } as never);
+      const event = (
+        feedId: number,
+        blocked: boolean,
+      ): ClientStateFeedItem => ({
         feedId,
         account: '',
         domain: '',

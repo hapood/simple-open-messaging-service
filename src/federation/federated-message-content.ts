@@ -1,12 +1,10 @@
 import { ContentType } from '../database/enums.js';
 import { extractDigests } from '../upload/file-content.js';
 import {
-  isValidGroupAccount,
   isValidAccount,
-  isValidSocfpDomain,
-  isValidUserAccount,
-  isValidSocfpUserAccount,
-  parseSocfpUserAddress,
+  isValidSomfpDomain,
+  isValidSomfpUserAccount,
+  parseSomfpUserAddress,
 } from '../common/account.js';
 import { parseFederatedCallContent } from '../calls/call-content.js';
 import {
@@ -14,6 +12,10 @@ import {
   serializeUserMention,
   transformMessageEntities,
 } from '../common/message-entity.js';
+import {
+  hasUnpairedSurrogate,
+  unicodeCodePointLength,
+} from '../../shared/text-message-content.js';
 
 const SHA256_RE = /^[a-f0-9]{64}$/;
 
@@ -84,7 +86,7 @@ function validateContactCard(
 ): void {
   assertKeys(
     value,
-    ['account', 'domain', 'displayName'],
+    ['account', 'domain', 'displayName', 'bio'],
     ['avatar', 'avatarDigest'],
   );
   const account = value['account'];
@@ -93,15 +95,22 @@ function validateContactCard(
     !isValidAccount(account) ||
     typeof value['domain'] !== 'string' ||
     !(
-      isValidSocfpDomain(value['domain']) ||
+      isValidSomfpDomain(value['domain']) ||
       (allowLocalDomain && value['domain'] === 'local')
     ) ||
     typeof value['displayName'] !== 'string' ||
-    [...value['displayName']].length < 1 ||
-    [...value['displayName']].length > 30
+    unicodeCodePointLength(value['displayName']) < 1 ||
+    unicodeCodePointLength(value['displayName']) > 30 ||
+    hasUnpairedSurrogate(value['displayName'])
   ) {
     throw new Error('invalid contact card');
   }
+  if (
+    typeof value['bio'] !== 'string' ||
+    unicodeCodePointLength(value['bio']) > 255 ||
+    hasUnpairedSurrogate(value['bio'])
+  )
+    throw new Error('invalid contact card');
 }
 
 function validateSingleFields(value: JsonObject, extra: string[]): void {
@@ -139,9 +148,9 @@ function projectTextContent(
     if (segment.kind !== 'entity' || segment.entityType !== 'user') continue;
     if (publishingLocalContent && segment.entityId.endsWith('@local')) {
       const account = segment.entityId.slice(0, -'@local'.length);
-      if (isValidSocfpUserAccount(account)) continue;
+      if (isValidSomfpUserAccount(account)) continue;
     }
-    if (!parseSocfpUserAddress(segment.entityId)) {
+    if (!parseSomfpUserAddress(segment.entityId)) {
       throw new Error('federated user mention must use a valid full address');
     }
   }
@@ -309,6 +318,7 @@ export function toFederatedMessageContent(
         account: value['account'],
         domain: value['domain'] === 'local' ? localDomain : value['domain'],
         displayName: value['displayName'],
+        bio: value['bio'],
         ...(value['avatar'] === undefined
           ? {}
           : { avatarDigest: digestFromUrl(value['avatar']) }),
@@ -451,6 +461,7 @@ export function fromFederatedMessageContent(
         account: value['account'],
         domain: value['domain'] === localDomain ? 'local' : value['domain'],
         displayName: value['displayName'],
+        bio: value['bio'],
         ...(value['avatarDigest'] === undefined
           ? {}
           : { avatar: localCasUrl(value['avatarDigest']) }),

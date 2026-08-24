@@ -6,7 +6,6 @@ import {
   gt,
   inArray,
   isNotNull,
-  isNull,
   gte,
   lt,
   lte,
@@ -49,8 +48,8 @@ import {
   toDisplayText,
 } from '../common/message-entity.js';
 import {
-  isValidSocfpUserAccount,
-  parseSocfpUserAddress,
+  isValidSomfpUserAccount,
+  parseSomfpUserAddress,
 } from '../common/account.js';
 import {
   parseTextMessageContent,
@@ -272,8 +271,8 @@ export class MessageService {
               : null;
             if (
               (localAccount === null ||
-                !isValidSocfpUserAccount(localAccount)) &&
-              !parseSocfpUserAddress(segment.entityId)
+                !isValidSomfpUserAccount(localAccount)) &&
+              !parseSomfpUserAddress(segment.entityId)
             ) {
               throw new BusinessException(
                 BusinessCode.VALIDATION_FAILED,
@@ -1442,8 +1441,8 @@ export class MessageService {
           ARRAY_AGG(m.content::text) FILTER (
             WHERE m."contentType" = 'PURE_TEXT'
               AND (
-                strpos(m.content ->> 'text', '](socfp://user/') > 0
-                OR strpos(m.content ->> 'text', '](socfp://audience/all)') > 0
+                strpos(m.content ->> 'text', '](somfp://user/') > 0
+                OR strpos(m.content ->> 'text', '](somfp://audience/all)') > 0
               )
           ),
           ARRAY[]::text[]
@@ -1522,8 +1521,8 @@ export class MessageService {
           ARRAY_AGG(s.content::text) FILTER (
             WHERE s."contentType" = 'PURE_TEXT'
               AND (
-                strpos(s.content ->> 'text', '](socfp://user/') > 0
-                OR strpos(s.content ->> 'text', '](socfp://audience/all)') > 0
+                strpos(s.content ->> 'text', '](somfp://user/') > 0
+                OR strpos(s.content ->> 'text', '](somfp://audience/all)') > 0
               )
           ),
           ARRAY[]::text[]
@@ -1657,8 +1656,8 @@ export class MessageService {
           ARRAY_AGG(content::text) FILTER (
             WHERE "contentType" = 'PURE_TEXT'
               AND (
-                strpos(content ->> 'text', '](socfp://user/') > 0
-                OR strpos(content ->> 'text', '](socfp://audience/all)') > 0
+                strpos(content ->> 'text', '](somfp://user/') > 0
+                OR strpos(content ->> 'text', '](somfp://audience/all)') > 0
               )
           ),
           ARRAY[]::text[]
@@ -1778,7 +1777,7 @@ export class MessageService {
 
   /**
    * Whether each requested thread's unread range contains a semantic mention of the viewer. SQL narrows the
-   * scan to text rows that resemble a SOCFP mention, then the canonical parser is the authority (so escaped
+   * scan to text rows that resemble a SOMFP mention, then the canonical parser is the authority (so escaped
    * protocol-looking plain text cannot create a false mention). `me` outranks `all`.
    */
   async unreadMentionStates(
@@ -1800,8 +1799,8 @@ export class MessageService {
         AND tp."threadId" IN (${this.joinSql(threadIds)})
         AND m."contentType" = 'PURE_TEXT'
         AND (
-          strpos(m.content ->> 'text', '](socfp://user/') > 0
-          OR strpos(m.content ->> 'text', '](socfp://audience/all)') > 0
+          strpos(m.content ->> 'text', '](somfp://user/') > 0
+          OR strpos(m.content ->> 'text', '](somfp://audience/all)') > 0
         )
     `;
     const contents = new Map<number, string[]>();
@@ -1848,8 +1847,8 @@ export class MessageService {
         AND m."contentType" = 'PURE_TEXT'
         ${threadClause}
         AND (
-          strpos(m.content ->> 'text', '](socfp://user/') > 0
-          OR strpos(m.content ->> 'text', '](socfp://audience/all)') > 0
+          strpos(m.content ->> 'text', '](somfp://user/') > 0
+          OR strpos(m.content ->> 'text', '](somfp://audience/all)') > 0
         )
     `;
     const contents = new Map<number, string[]>();

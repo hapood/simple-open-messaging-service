@@ -55,6 +55,7 @@ describe('FriendRequestsComponent federated search progress', () => {
         {
           key: `friend:${id}`,
           kind: 'FRIEND' as const,
+          bucket: 'RECEIVED' as const,
           direction: 'INCOMING' as const,
           status: 'REQUESTED' as const,
           localStatus: null,
@@ -72,6 +73,7 @@ describe('FriendRequestsComponent federated search progress', () => {
             account: name,
             name,
             avatar: '',
+            bio: '',
             domain: '',
             isForeigner: false,
           },
@@ -543,6 +545,7 @@ describe('FriendRequestsComponent federated search progress', () => {
         {
           key: request.projectionKey,
           kind: 'FRIEND',
+          bucket: 'RECEIVED',
           direction: 'INCOMING',
           note: '',
           status: 'REQUESTED',
@@ -560,6 +563,7 @@ describe('FriendRequestsComponent federated search progress', () => {
             account: 'alice',
             name: 'Alice refreshed',
             avatar: '',
+            bio: '',
             domain: '',
             isForeigner: false,
           },

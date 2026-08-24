@@ -35,7 +35,7 @@ it does not imply that internal implementation work has ended.
 
 | Endpoint | Status | Closure evidence |
 | --- | --- | --- |
-| `/.well-known/socfp` | CLOSED | Publishes the root/signing identity and protocol version without capability forks. |
+| `/.well-known/somfp` | CLOSED | Publishes the root/signing identity and protocol version without capability forks. |
 | `/s2s/v1/recognize` | CLOSED | Persists the directional fact, schedules reverse recognition, pins the root, initializes cursors, and converges bidirectionally. |
 | `/s2s/v1/healthy` | CLOSED | Verifies through the pinned cache, returns a uniform privacy-preserving unavailable response, and recovers degraded peers. |
 | `/s2s/v1/feed-heads` | CLOSED | Treats wake-ups as lossy, duplicate, and unordered; coordinates are max-coalesced and never persisted as facts. |

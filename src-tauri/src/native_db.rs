@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use tauri::Manager;
 
 const DB_FILENAME: &str = "soms-local.sqlite3";
-const CACHE_SCHEMA_VERSION: i64 = 3;
+const CACHE_SCHEMA_VERSION: i64 = 2;
 
 fn db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app
@@ -465,6 +465,7 @@ fn apply_friend_request_intent(
         serde_json::json!({
             "key": key,
             "kind": "FRIEND",
+            "bucket": if direction == "INCOMING" { "RECEIVED" } else { "SENT" },
             "direction": direction,
             "status": intent_status,
             "localStatus": null,
@@ -481,6 +482,14 @@ fn apply_friend_request_intent(
     let object = payload
         .as_object_mut()
         .ok_or_else(|| "friend-request projection is not an object".to_string())?;
+    if !object.contains_key("bucket") {
+        let bucket = if object.get("direction").and_then(Value::as_str) == Some("INCOMING") {
+            "RECEIVED"
+        } else {
+            "SENT"
+        };
+        object.insert("bucket".into(), Value::String(bucket.into()));
+    }
     let status_field = if direction == "OUTGOING" {
         "localStatus"
     } else {
@@ -499,6 +508,15 @@ fn apply_friend_request_intent(
             "requestedSort".into(),
             body.get("requestedAt").cloned().unwrap_or(Value::from(0)),
         );
+        if let (Some(requested_at), Some(expires_at)) = (
+            body.get("requestedAt").and_then(Value::as_i64),
+            body.get("expiresAt").and_then(Value::as_i64),
+        ) {
+            object.insert(
+                "expiresAt".into(),
+                Value::from(expires_at.min(requested_at + 604_800_000)),
+            );
+        }
     }
     let local = object
         .get("localStatus")
@@ -517,21 +535,26 @@ fn apply_friend_request_intent(
         return Ok(());
     }
     if remote.as_deref() == Some("REVOKED") {
-        if let Some(peer) = object.get("peer") {
-            let peer_account = peer.get("account").and_then(Value::as_str).unwrap_or("");
-            let peer_domain = peer.get("domain").and_then(Value::as_str).unwrap_or("");
-            let identity = format!("pending:{peer_domain}\0{peer_account}");
-            tx.execute(
-                "DELETE FROM profiles WHERE user_id=?1 AND identity=?2",
-                params![user_id, identity],
-            )
-            .map_err(|e| format!("delete revoked friend-request profile: {e}"))?;
+        if local.as_deref() == Some("REQUESTED") {
+            object.insert("direction".into(), Value::String("OUTGOING".into()));
+            object.insert("bucket".into(), Value::String("SENT".into()));
+            object.insert("status".into(), Value::String("REVOKED".into()));
+            save_request_projection(tx, user_id, &key, &payload)?;
+            return Ok(());
         }
         tx.execute(
             "DELETE FROM friend_requests WHERE user_id=?1 AND stable_key=?2",
             params![user_id, key],
         )
         .map_err(|e| format!("delete revoked incoming friend request: {e}"))?;
+        return Ok(());
+    }
+    if local.as_deref() == Some("REVOKED")
+        && object.get("bucket").and_then(Value::as_str) == Some("RECEIVED")
+    {
+        object.insert("direction".into(), Value::String("INCOMING".into()));
+        object.insert("status".into(), Value::String("REVOKED".into()));
+        save_request_projection(tx, user_id, &key, &payload)?;
         return Ok(());
     }
     let expires = object.get("expiresAt").and_then(Value::as_i64);
@@ -769,10 +792,9 @@ pub(crate) async fn native_db_list_friend_requests(
 pub(crate) async fn native_db_page_friend_requests(
     app: tauri::AppHandle,
     user_id: i64,
-    direction: String,
+    bucket: String,
     cursor: Option<String>,
     take: i64,
-    include_revoked: bool,
 ) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open(&app)?;
@@ -795,10 +817,10 @@ pub(crate) async fn native_db_page_friend_requests(
             .prepare(
                 "SELECT payload_json FROM friend_requests
                  WHERE user_id = ?1
-                   AND json_extract(payload_json, '$.direction') = ?2
+                   AND json_extract(payload_json, '$.bucket') = ?2
                    AND (json_extract(payload_json, '$.status') = 'REQUESTED'
-                     OR (?2 = 'INCOMING' AND json_extract(payload_json, '$.status') = 'ACCEPTED')
-                     OR (?7 = 1 AND json_extract(payload_json, '$.status') = 'REVOKED'))
+                     OR (?2 = 'RECEIVED' AND json_extract(payload_json, '$.status') = 'ACCEPTED')
+                     OR json_extract(payload_json, '$.status') = 'REVOKED')
                    AND (?3 = 0 OR CAST(json_extract(payload_json, '$.requestedSort') AS INTEGER) < ?4
                      OR (CAST(json_extract(payload_json, '$.requestedSort') AS INTEGER) = ?4
                        AND stable_key < ?5))
@@ -811,12 +833,11 @@ pub(crate) async fn native_db_page_friend_requests(
             .query_map(
                 params![
                     user_id,
-                    direction,
+                    bucket,
                     if parsed_cursor.is_some() { 1 } else { 0 },
                     cursor_time,
                     cursor_key,
-                    take.clamp(1, 100),
-                    if include_revoked { 1 } else { 0 }
+                    take.clamp(1, 100)
                 ],
                 |row| row.get::<_, String>(0),
             )
@@ -831,11 +852,11 @@ pub(crate) async fn native_db_page_friend_requests(
             .query_row(
                 "SELECT COUNT(*) FROM friend_requests
                  WHERE user_id = ?1
-                   AND json_extract(payload_json, '$.direction') = ?2
+                   AND json_extract(payload_json, '$.bucket') = ?2
                    AND (json_extract(payload_json, '$.status') = 'REQUESTED'
-                     OR (?2 = 'INCOMING' AND json_extract(payload_json, '$.status') = 'ACCEPTED')
-                     OR (?3 = 1 AND json_extract(payload_json, '$.status') = 'REVOKED'))",
-                params![user_id, direction, if include_revoked { 1 } else { 0 }],
+                     OR (?2 = 'RECEIVED' AND json_extract(payload_json, '$.status') = 'ACCEPTED')
+                     OR json_extract(payload_json, '$.status') = 'REVOKED')",
+                params![user_id, bucket],
                 |row| row.get::<_, i64>(0),
             )
             .map_err(|e| format!("count friend intents: {e}"))?;
@@ -843,9 +864,9 @@ pub(crate) async fn native_db_page_friend_requests(
             .query_row(
                 "SELECT COUNT(*) FROM friend_requests
                  WHERE user_id = ?1
-                   AND json_extract(payload_json, '$.direction') = ?2
+                   AND json_extract(payload_json, '$.bucket') = ?2
                    AND json_extract(payload_json, '$.status') = 'REQUESTED'",
-                params![user_id, direction],
+                params![user_id, bucket],
                 |row| row.get::<_, i64>(0),
             )
             .map_err(|e| format!("count actionable friend requests: {e}"))?;
@@ -901,7 +922,14 @@ pub(crate) async fn native_db_cleanup_friend_requests(
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open(&app)?;
-        conn.execute(
+        cleanup_friend_requests(&conn, user_id, now)
+    })
+    .await
+    .map_err(|e| format!("join friend-request cleanup: {e}"))?
+}
+
+fn cleanup_friend_requests(conn: &Connection, user_id: i64, now: i64) -> Result<(), String> {
+    conn.execute(
             "DELETE FROM friend_requests
              WHERE user_id=?1
                AND ((json_extract(payload_json, '$.expiresAt') IS NOT NULL
@@ -911,7 +939,7 @@ pub(crate) async fn native_db_cleanup_friend_requests(
             params![user_id, now],
         )
         .map_err(|e| format!("cleanup expired friend requests: {e}"))?;
-        conn.execute(
+    conn.execute(
             "DELETE FROM profiles
              WHERE user_id=?1
                AND json_extract(payload_json, '$.source') IN ('OUTGOING_FRIEND_REQUEST', 'GROUP_INVITE')
@@ -919,10 +947,7 @@ pub(crate) async fn native_db_cleanup_friend_requests(
             params![user_id, now],
         )
         .map_err(|e| format!("cleanup expired request profiles: {e}"))?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("join friend-request cleanup: {e}"))?
+    Ok(())
 }
 
 #[tauri::command]
@@ -1147,7 +1172,9 @@ pub(crate) async fn native_db_apply_state_feed_page(
                             let group = body.get("group").cloned().unwrap_or(Value::Null);
                             let requested_at = body.get("requestedAt").and_then(Value::as_i64).unwrap_or(0);
                             let projection = serde_json::json!({
-                                "key": key, "kind": "GROUP", "direction": direction,
+                                "key": key, "kind": "GROUP",
+                                "bucket": if direction == "INCOMING" { "RECEIVED" } else { "SENT" },
+                                "direction": direction,
                                 "status": if current_status == Some("ACCEPTED") { "ACCEPTED" } else { "REQUESTED" },
                                 "localStatus": null, "remoteStatus": "REQUESTED",
                                 "locallyAccepted": current_status == Some("ACCEPTED"),
@@ -1183,6 +1210,25 @@ pub(crate) async fn native_db_apply_state_feed_page(
                                     params![user_id, item_feed_id.to_string()],
                                 ).map_err(|e| format!("save group-request unread revision: {e}"))?;
                             }
+                        } else if status == "REVOKED" {
+                            if let Some(mut projection) = current {
+                                if projection.get("bucket").is_none() {
+                                    let bucket = if projection.get("direction").and_then(Value::as_str) == Some("INCOMING") {
+                                        "RECEIVED"
+                                    } else {
+                                        "SENT"
+                                    };
+                                    projection["bucket"] = Value::String(bucket.into());
+                                }
+                                projection["status"] = Value::String("REVOKED".into());
+                                projection["updatedAt"] = Value::from(chrono_millis());
+                                if direction == "OUTGOING" {
+                                    projection["localStatus"] = Value::String("REVOKED".into());
+                                } else {
+                                    projection["remoteStatus"] = Value::String("REVOKED".into());
+                                }
+                                save_request_projection(&tx, user_id, &key, &projection)?;
+                            }
                         } else {
                             if let Some(group) = current.as_ref().and_then(|value| value.get("group")) {
                                 let group_account = group.get("account").and_then(Value::as_str).unwrap_or("");
@@ -1214,7 +1260,13 @@ pub(crate) async fn native_db_apply_state_feed_page(
                     let direction = body.get("direction").and_then(Value::as_str).unwrap_or("");
                     let outgoing_requested = direction == "OUTGOING"
                         && body.get("status").and_then(Value::as_str) == Some("REQUESTED");
-                    let expires_at = body.get("expiresAt").and_then(Value::as_i64);
+                    let expires_at = body
+                        .get("requestedAt")
+                        .and_then(Value::as_i64)
+                        .zip(body.get("expiresAt").and_then(Value::as_i64))
+                        .map(|(requested_at, expires_at)| {
+                            expires_at.min(requested_at + 604_800_000)
+                        });
                     if outgoing_requested {
                         if let Some(expires_at) = expires_at {
                             let peer = body.get("peer").and_then(Value::as_object).cloned().unwrap_or_default();
@@ -1235,7 +1287,7 @@ pub(crate) async fn native_db_apply_state_feed_page(
                                     "name": peer.get("name").and_then(Value::as_str).filter(|v| !v.is_empty()).unwrap_or(peer_account),
                                     "account": peer_account,
                                     "avatar": peer.get("avatar").and_then(Value::as_str).unwrap_or(""),
-                                    "bio": "",
+                                    "bio": peer.get("bio").and_then(Value::as_str).unwrap_or(""),
                                     "domain": peer_domain,
                                     "profileRev": 0,
                                     "source": "OUTGOING_FRIEND_REQUEST",
@@ -1507,7 +1559,10 @@ pub(crate) async fn native_db_query_group_members(
             )
             .map_err(|e| format!("prepare group member page: {e}"))?;
         let rows = statement
-            .query_map(params![user_id, thread_id, after_user_id, search, take], |row| row.get::<_, String>(0))
+            .query_map(
+                params![user_id, thread_id, after_user_id, search, take],
+                |row| row.get::<_, String>(0),
+            )
             .map_err(|e| format!("query group member page: {e}"))?;
         let mut values = Vec::new();
         for row in rows {

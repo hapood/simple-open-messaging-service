@@ -59,11 +59,13 @@ export class FederationReconnectService implements OnApplicationBootstrap {
 
   @Interval(REQUEST_EXPIRY_SWEEP_MS)
   expireRequests(): void {
-    void this.federation.revokeExpiredLocalRequests().catch((error) =>
-      this.logger.warn(
-        `relationship expiry sweep failed: ${(error as Error).message}`,
-      ),
-    );
+    void this.federation
+      .revokeExpiredLocalRequests()
+      .catch((error) =>
+        this.logger.warn(
+          `relationship expiry sweep failed: ${(error as Error).message}`,
+        ),
+      );
   }
 
   private async reconcileTrustedPeers(): Promise<void> {

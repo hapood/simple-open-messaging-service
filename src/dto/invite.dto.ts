@@ -62,7 +62,7 @@ export class SendFriendInviteDto {
 }
 
 /** Send a federated friend request before a foreign User stub exists. Address is the routing identity;
- * displayName/avatar are an untrusted card snapshot and never establish identity or relationship. */
+ * displayName/avatar/bio are an untrusted card snapshot and never establish identity or relationship. */
 export class SendFederatedFriendInviteDto {
   @ApiProperty({
     example: 'alice',
@@ -100,6 +100,13 @@ export class SendFederatedFriendInviteDto {
   @IsString()
   @MaxLength(1_500_000)
   avatar?: string;
+
+  @ApiProperty({
+    description: 'Untrusted pending-card biography snapshot.',
+  })
+  @IsString()
+  @MaxLength(255)
+  bio!: string;
 
   @ApiProperty({
     required: false,

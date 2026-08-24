@@ -6,8 +6,10 @@ import { DatabaseService } from '../src/database/database.service.js';
 import { MessageThreadType } from '../src/database/enums.js';
 import {
   relationshipIntent,
+  relationshipPair,
   group,
   messageThread,
+  threadParticipant,
   user,
 } from '../src/database/schema.js';
 import { InviteService } from '../src/invite/invite.service.js';
@@ -123,13 +125,7 @@ describe('federation directed-state boundaries', () => {
     const { local, peer } = await createPair(`o-${Date.now().toString(36)}`);
 
     await database.db.transaction((tx) =>
-      invites.writeLocalFriendIntentInTx(
-        tx,
-        local.id,
-        peer.id,
-        true,
-        'hello',
-      ),
+      invites.writeLocalFriendIntentInTx(tx, local.id, peer.id, true, 'hello'),
     );
 
     const directions = await database.db.query.relationshipIntent.findMany({
@@ -155,6 +151,174 @@ describe('federation directed-state boundaries', () => {
       requestedAt: null,
       expiresAt: null,
     });
+  });
+
+  it('atomically confirms crossed requests after promoting the local direction', async () => {
+    const { local, peer } = await createPair(
+      `${Date.now().toString(36)}-crossed`,
+    );
+    const requestedAt = new Date();
+    await database.db.insert(relationshipIntent).values({
+      authorUserId: local.id,
+      subjectUserId: peer.id,
+      status: 'REQUESTED',
+      note: 'local request',
+      requestedAt,
+      expiresAt: new Date(requestedAt.getTime() + 24 * 60 * 60 * 1000),
+      updatedAt: requestedAt,
+    });
+
+    const effect = await database.db.transaction((tx) =>
+      invites.applyRemoteFriendIntentInTx(tx, {
+        localUserId: local.id,
+        peerUserId: peer.id,
+        status: 'REQUESTED',
+        note: 'peer request',
+        requestedAt,
+        expiresAt: new Date(requestedAt.getTime() + 24 * 60 * 60 * 1000),
+        origin: 'peer.test',
+      }),
+    );
+
+    expect(effect).toMatchObject({
+      added: true,
+      requestCreated: false,
+      localStateRevision: 1,
+      threadId: expect.any(Number),
+    });
+    const directions = await database.db.query.relationshipIntent.findMany({
+      where: or(
+        and(
+          eq(relationshipIntent.authorUserId, local.id),
+          eq(relationshipIntent.subjectUserId, peer.id),
+        ),
+        and(
+          eq(relationshipIntent.authorUserId, peer.id),
+          eq(relationshipIntent.subjectUserId, local.id),
+        ),
+      ),
+    });
+    expect(
+      directions.find((row) => row.authorUserId === local.id),
+    ).toMatchObject({ status: 'ACCEPTED', expiresAt: null });
+    expect(
+      directions.find((row) => row.authorUserId === peer.id),
+    ).toMatchObject({ status: 'REQUESTED' });
+    expect(
+      await database.db.query.relationshipPair.findFirst({
+        where: and(
+          eq(relationshipPair.userLowId, Math.min(local.id, peer.id)),
+          eq(relationshipPair.userHighId, Math.max(local.id, peer.id)),
+        ),
+      }),
+    ).toMatchObject({ active: true, threadId: effect.threadId });
+    expect(
+      await database.db.query.threadParticipant.findMany({
+        where: eq(threadParticipant.threadId, effect.threadId!),
+      }),
+    ).toHaveLength(2);
+  });
+
+  it('confirms ACCEPTED + REQUESTED without waiting for a second acknowledgement', async () => {
+    const { local, peer } = await createPair(
+      `ar-${Date.now().toString(36).slice(-6)}`,
+    );
+    const requestedAt = new Date();
+    await database.db.insert(relationshipIntent).values({
+      authorUserId: local.id,
+      subjectUserId: peer.id,
+      status: 'ACCEPTED',
+      note: '',
+      requestedAt,
+      expiresAt: null,
+      updatedAt: requestedAt,
+    });
+
+    const effect = await database.db.transaction((tx) =>
+      invites.applyRemoteFriendIntentInTx(tx, {
+        localUserId: local.id,
+        peerUserId: peer.id,
+        status: 'REQUESTED',
+        note: 'peer request',
+        requestedAt,
+        expiresAt: new Date(requestedAt.getTime() + 24 * 60 * 60 * 1000),
+        origin: 'peer.test',
+      }),
+    );
+
+    expect(effect).toMatchObject({
+      added: true,
+      requestCreated: false,
+      localStateRevision: 1,
+      threadId: expect.any(Number),
+    });
+    expect(
+      await database.db.query.relationshipPair.findFirst({
+        where: and(
+          eq(relationshipPair.userLowId, Math.min(local.id, peer.id)),
+          eq(relationshipPair.userHighId, Math.max(local.id, peer.id)),
+        ),
+      }),
+    ).toMatchObject({ active: true });
+  });
+
+  it('does not confirm an expired request paired with a fresh request', async () => {
+    const { local, peer } = await createPair(
+      `ec-${Date.now().toString(36).slice(-6)}`,
+    );
+    const requestedAt = new Date(Date.now() - 120_000);
+    await database.db.insert(relationshipIntent).values({
+      authorUserId: local.id,
+      subjectUserId: peer.id,
+      status: 'REQUESTED',
+      note: 'expired',
+      requestedAt,
+      expiresAt: new Date(Date.now() - 60_000),
+      updatedAt: requestedAt,
+    });
+    const remoteRequestedAt = new Date();
+
+    const effect = await database.db.transaction((tx) =>
+      invites.applyRemoteFriendIntentInTx(tx, {
+        localUserId: local.id,
+        peerUserId: peer.id,
+        status: 'REQUESTED',
+        note: 'fresh',
+        requestedAt: remoteRequestedAt,
+        expiresAt: new Date(remoteRequestedAt.getTime() + 24 * 60 * 60 * 1000),
+        origin: 'peer.test',
+      }),
+    );
+
+    expect(effect).toMatchObject({
+      requestCreated: true,
+    });
+    expect(effect.added).toBeUndefined();
+    expect(
+      await database.db.query.relationshipPair.findFirst({
+        where: and(
+          eq(relationshipPair.userLowId, Math.min(local.id, peer.id)),
+          eq(relationshipPair.userHighId, Math.max(local.id, peer.id)),
+        ),
+      }),
+    ).toMatchObject({ active: false, threadId: null });
+  });
+
+  it('rejects an ACCEPTED database fact without a request timestamp', async () => {
+    const { local, peer } = await createPair(
+      `ia-${Date.now().toString(36).slice(-6)}`,
+    );
+
+    await expect(
+      database.db.insert(relationshipIntent).values({
+        authorUserId: local.id,
+        subjectUserId: peer.id,
+        status: 'ACCEPTED',
+        requestedAt: null,
+        expiresAt: null,
+        updatedAt: new Date(),
+      }),
+    ).rejects.toThrow();
   });
 
   it('confirms FRIEND and removes the TTL when the local request is still valid', async () => {

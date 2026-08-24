@@ -77,7 +77,7 @@ export class DiscoveryService {
     );
   }
 
-  /** Resolve the mandatory SOCFP SRV record while keeping the logical peer as HTTP/TLS authority. */
+  /** Resolve the mandatory SOMFP SRV record while keeping the logical peer as HTTP/TLS authority. */
   async resolveBase(domain: string): Promise<string> {
     const normalized = this.normalizeDomain(domain);
     const ttlMs = this.transportConfig.get().keyCacheTtlSec * 1000;
@@ -106,7 +106,7 @@ export class DiscoveryService {
 
     let records;
     try {
-      records = await resolveSrv(`_socfp._tcp.${normalized}`);
+      records = await resolveSrv(`_somfp._tcp.${normalized}`);
     } catch (error) {
       throw new FederationDomainResolutionError(
         `SRV discovery for ${normalized} failed`,
@@ -115,12 +115,12 @@ export class DiscoveryService {
     }
     if (records.length === 0)
       throw new FederationDomainResolutionError(
-        `${normalized} does not publish SOCFP SRV`,
+        `${normalized} does not publish SOMFP SRV`,
       );
     if (records.some((record) => record.name === '.')) {
       if (records.length === 1)
         throw new FederationDomainResolutionError(
-          `${normalized} explicitly disables SOCFP`,
+          `${normalized} explicitly disables SOMFP`,
         );
       throw new FederationDomainResolutionError(
         `${normalized} publishes an invalid mixed SRV RRset`,
@@ -138,7 +138,7 @@ export class DiscoveryService {
     );
     if (valid.length !== records.length)
       throw new FederationDomainResolutionError(
-        `${normalized} publishes an invalid SOCFP SRV RRset`,
+        `${normalized} publishes an invalid SOMFP SRV RRset`,
       );
     const priority = Math.min(...valid.map((record) => record.priority));
     const candidates = valid.filter((record) => record.priority === priority);
@@ -194,7 +194,7 @@ export class DiscoveryService {
     const base = await this.resolveBase(domain);
     const release = await this.acquireRequestSlot(domain);
     try {
-      const response = await this.request(`${base}/.well-known/socfp`, {
+      const response = await this.request(`${base}/.well-known/somfp`, {
         signal: AbortSignal.timeout(
           this.transportConfig.get().callTimeoutSec * 1000,
         ),

@@ -40,7 +40,10 @@ export class UserResponseDto {
   @ApiProperty({ example: false, description: 'Whether an external user' })
   isForeigner!: boolean;
 
-  @ApiProperty({ example: false, description: 'Whether this identity is a group' })
+  @ApiProperty({
+    example: false,
+    description: 'Whether this identity is a group',
+  })
   isGroup!: boolean;
 
   @ApiProperty({ example: 'example.com', description: 'Domain (nullable)' })

@@ -9,7 +9,7 @@ import { FEDERATION_PROTOCOL_VERSIONS } from './federation-protocol.js';
 /**
  * Publish this server's S2S signing keys. PUBLIC (no auth) — peers fetch this over HTTPS to discover
  * and verify our signing keys (RFC 8615 well-known URI). Excluded from the /api/v1 global prefix in
- * bootstrap.ts so it's served at exactly /.well-known/socfp.
+ * bootstrap.ts so it's served at exactly /.well-known/somfp.
  *
  * S2S endpoint paths (friend-request, friend-approve, users, messages, …) are NOT published here —
  * peers derive them from the resolved base URL as `${base}/s2s/v1/<path>`, the same way the
@@ -25,7 +25,7 @@ export class WellKnownController {
 
   constructor(private readonly keypair: KeypairService) {}
 
-  @Get('socfp')
+  @Get('somfp')
   getWellKnown() {
     return {
       software: `soms/${SERVER_VERSION}`,
