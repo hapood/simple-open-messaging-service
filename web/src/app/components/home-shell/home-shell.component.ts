@@ -29,9 +29,10 @@ import { GroupJoinRequestsComponent } from '../group-join-requests/group-join-re
 import { HomeHeaderComponent } from '../home-header/home-header.component';
 import { ConversationItem } from '../../services/model';
 import { ConversationListService } from '../../services/conversation-list.service';
-import { TranslocoPipe } from '@jsverse/transloco';
+import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { PreferenceStore } from '../../services/preference-store.service';
 import { CallBannerComponent } from '../call-banner/call-banner.component';
+import { ToastService } from '../../services/toast.service';
 
 const LIST_WIDTH_KEY = 'soms.client.listWidth';
 const MIN_LIST = 280,
@@ -142,6 +143,8 @@ export class HomeShellComponent {
   private readonly navState = inject(NavStateMachineService);
   private readonly chatListPane = viewChild(ChatListPaneComponent);
   private readonly preferences = inject(PreferenceStore);
+  private readonly toast = inject(ToastService);
+  private readonly transloco = inject(TranslocoService);
   private widthWriteRevision = 0;
 
   readonly mode = this.layout.mode;
@@ -194,6 +197,16 @@ export class HomeShellComponent {
     effect(() => {
       const tid = this.navState.chatThreadId();
       if (tid !== undefined) {
+        if (
+          this.convList.status() === 'READY' &&
+          !this.convList.items().some((item) => item.threadId === tid)
+        ) {
+          this.toast.warn(
+            this.transloco.translate('errors.biz.threadNotFound'),
+          );
+          this.navState.closeChat();
+          return;
+        }
         this.convList.open(tid);
       } else if (this.mode() !== 'compact') {
         this.convList.close();

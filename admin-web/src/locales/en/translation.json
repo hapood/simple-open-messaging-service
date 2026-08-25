@@ -58,7 +58,6 @@
     "logs": "Logs",
     "rateLimits": "Rate Limits",
     "media": "Media & Storage",
-    "linkCards": "Link Cards",
     "settings": "Settings",
     "security": "My Account",
     "audit": "Audit Trail",
@@ -70,25 +69,6 @@
       "system": "System",
       "account": "Account"
     }
-  },
-  "linkCards": {
-    "title": "Link Card Rules",
-    "desc": "Clients generate cards for links whose domain is on this allowlist.",
-    "add": "Add rule",
-    "edit": "Edit rule",
-    "hostname": "Domain",
-    "note": "Note",
-    "imageSelection": "OG image",
-    "descriptionSelection": "OG description",
-    "imageSelectionValues": {
-      "first": "First",
-      "last": "Last"
-    },
-    "formDesc": "Enter a domain without a protocol or path. Subdomains are included automatically.",
-    "empty": "No link card rules",
-    "saved": "Rule saved",
-    "deleted": "Rule deleted",
-    "confirmDelete": "Delete {{name}}?"
   },
   "quota": {
     "title": "Daily Quotas",

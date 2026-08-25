@@ -10,6 +10,44 @@ import {
   S2sResponseError,
 } from './federation.service.js';
 import { BusinessCode } from '../common/business-code.js';
+import { ContentType } from '../database/enums.js';
+import { UploadService } from '../upload/upload.service.js';
+
+describe('federated contact-card avatar limits', () => {
+  const digest = 'a'.repeat(64);
+  const content = JSON.stringify({
+    account: 'alice',
+    domain: 'peer.test',
+    displayName: 'Alice',
+    bio: '',
+    avatarDigest: digest,
+  });
+
+  function validate(bytes: number) {
+    const { svc } = makeStubs();
+    const target = svc as unknown as {
+      assertMissedAssetDescriptors(item: unknown): void;
+    };
+    target.assertMissedAssetDescriptors({
+      contentType: ContentType.CONTACT_CARD,
+      content,
+      assets: [{ digest, bytes }],
+    });
+  }
+
+  it('accepts the shared profile-avatar decoded-byte ceiling', () => {
+    expect(() => validate(UploadService.MAX_AVATAR_WIRE_BYTES)).not.toThrow();
+  });
+
+  it('rejects empty and oversized contact-card avatars', () => {
+    expect(() => validate(0)).toThrow(
+      'contact-card avatar exceeds the profile avatar size limit',
+    );
+    expect(() => validate(UploadService.MAX_AVATAR_WIRE_BYTES + 1)).toThrow(
+      'contact-card avatar exceeds the profile avatar size limit',
+    );
+  });
+});
 
 describe('client group intent compaction identity', () => {
   it('keeps group-authored and member-authored intents as distinct directed facts', () => {
@@ -21,6 +59,87 @@ describe('client group intent compaction identity', () => {
       account: 'alice',
       subjectAccount: '!dev',
     });
+  });
+});
+
+describe('federated profile resource path', () => {
+  it('canonically percent-encodes a group account', async () => {
+    const { svc } = makeStubs();
+    const getSigned = vi.fn().mockResolvedValue({});
+    const target = svc as unknown as {
+      getSigned: typeof getSigned;
+      fetchRemoteUser(address: {
+        account: string;
+        domain: string;
+      }): Promise<unknown>;
+    };
+    target.getSigned = getSigned;
+
+    await target.fetchRemoteUser({ account: '!group', domain: 'peer.test' });
+
+    expect(getSigned).toHaveBeenCalledWith(
+      '/s2s/v1/users/%21group',
+      'peer.test',
+    );
+  });
+});
+
+describe('federated group join request', () => {
+  it('writes the request with the resolved card snapshot without prefetching the remote profile', async () => {
+    const { svc, database } = makeStubs();
+    const fetchRemoteUser = vi.fn();
+    const ensureShell = vi.fn().mockResolvedValue({
+      groupUserId: 17,
+      threadId: 23,
+    });
+    const writeIntent = vi.fn().mockResolvedValue(new Map([['peer.test', 5n]]));
+    const pushStateFeedDomains = vi.fn().mockResolvedValue(undefined);
+    database.db.transaction = vi.fn(async (operation) => operation({}));
+    const target = svc as unknown as {
+      fetchRemoteUser: typeof fetchRemoteUser;
+      ensureFederatedGroupRequestShellInTx: typeof ensureShell;
+      writeMemberRelationshipIntentInTx: typeof writeIntent;
+      clientStateFeed: { notifyFeedUpdated: () => void };
+      pushStateFeedDomains: typeof pushStateFeedDomains;
+    };
+    target.fetchRemoteUser = fetchRemoteUser;
+    target.ensureFederatedGroupRequestShellInTx = ensureShell;
+    target.writeMemberRelationshipIntentInTx = writeIntent;
+    target.clientStateFeed = { notifyFeedUpdated: vi.fn() };
+    target.pushStateFeedDomains = pushStateFeedDomains;
+
+    await svc.requestFederatedGroupJoin(
+      11,
+      { account: '!group', domain: 'peer.test' },
+      'hello',
+      {
+        displayName: 'Remote Group',
+        avatar: 'group-avatar',
+      },
+    );
+
+    expect(fetchRemoteUser).not.toHaveBeenCalled();
+    expect(ensureShell).toHaveBeenCalledWith(
+      expect.anything(),
+      '!group',
+      'peer.test',
+      11,
+    );
+    expect(writeIntent).toHaveBeenCalledWith(
+      expect.anything(),
+      23,
+      11,
+      'REQUESTED',
+      expect.any(Array),
+      'hello',
+      {
+        displayName: 'Remote Group',
+        avatar: 'group-avatar',
+      },
+    );
+    expect(pushStateFeedDomains).toHaveBeenCalledWith(
+      expect.objectContaining({ [Symbol.iterator]: expect.any(Function) }),
+    );
   });
 });
 

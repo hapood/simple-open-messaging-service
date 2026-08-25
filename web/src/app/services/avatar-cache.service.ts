@@ -25,7 +25,9 @@ export class AvatarRepository {
 
   /** Per-identity counter bumped each time the blob is refreshed, so a mounted
    *  {@link UserAvatarComponent} re-resolves (reads the new IDB bytes) without comparing URLs. */
-  private readonly _refreshTick = signal<ReadonlyMap<string, number>>(new Map());
+  private readonly _refreshTick = signal<ReadonlyMap<string, number>>(
+    new Map(),
+  );
 
   /** The refresh counter for `identity` — read inside a component effect to track refreshes
    *  (signal-driven freshness; the component never compares URLs). */
@@ -47,9 +49,39 @@ export class AvatarRepository {
     }
     const blob = await this.fetchBlob(path);
     if (blob) {
-      void this.webdb.putAvatar({ identity, blob, path, lastRender: Date.now() }).catch(() => {});
+      void this.webdb
+        .putAvatar({ identity, blob, path, lastRender: Date.now() })
+        .catch(() => {});
     }
     return blob;
+  }
+
+  /** Convert an already-loaded avatar into the self-contained data URL used by pending-request
+   * snapshots. This deliberately never fetches: an absent/not-yet-cached avatar is simply omitted. */
+  async getCachedDataUrl(
+    identity: string,
+    path: string,
+  ): Promise<string | undefined> {
+    if (!path) return undefined;
+    if (path.startsWith('data:')) return path;
+    let blob: Blob | undefined;
+    try {
+      const record = await this.webdb.getAvatar(identity);
+      if (record?.path === path) blob = record.blob;
+    } catch {
+      return undefined;
+    }
+    if (!blob) return undefined;
+    try {
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      let binary = '';
+      for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+      }
+      return `data:${blob.type || 'application/octet-stream'};base64,${btoa(binary)}`;
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -61,7 +93,12 @@ export class AvatarRepository {
     const blob = await this.fetchBlob(path);
     if (!blob) return;
     try {
-      await this.webdb.putAvatar({ identity, blob, path, lastRender: Date.now() });
+      await this.webdb.putAvatar({
+        identity,
+        blob,
+        path,
+        lastRender: Date.now(),
+      });
       // Bump AFTER the IDB write lands so a re-resolve reads the new bytes.
       this._refreshTick.update((m) => {
         const n = new Map(m);
@@ -76,7 +113,9 @@ export class AvatarRepository {
   /** Fetch avatar bytes from a server path (cookie-auth browser / Bearer Tauri via assetUrl). */
   private async fetchBlob(path: string): Promise<Blob | undefined> {
     try {
-      return await firstValueFrom(this.http.get(assetUrl(path), { responseType: 'blob' }));
+      return await firstValueFrom(
+        this.http.get(assetUrl(path), { responseType: 'blob' }),
+      );
     } catch {
       return undefined;
     }

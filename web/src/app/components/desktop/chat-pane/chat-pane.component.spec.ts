@@ -22,6 +22,7 @@ import { NavStateMachineService } from '../../../services/nav-state.service';
 import { LayoutService } from '../../../services/layout.service';
 import { InlineTranslocoLoader } from '../../../i18n/transloco.loader';
 import { CspSafeIcuTranspiler } from '../../../i18n/csp-safe-icu.transpiler';
+import { ChatContextService } from '../../message-thread/chat-context.service';
 import {
   createP2PConversation,
   type ConversationItem,
@@ -134,6 +135,10 @@ describe('ChatPaneComponent A/B coordinator', () => {
           },
         },
         { provide: LayoutService, useValue: { mode } },
+        {
+          provide: ChatContextService,
+          useValue: { initialize: vi.fn(), clear: vi.fn() },
+        },
       ],
     });
     // Swap the heavy real panes for stubs so the coordinator's routing can be asserted in isolation.

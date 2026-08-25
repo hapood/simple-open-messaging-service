@@ -304,7 +304,7 @@ describe('WebdbService', () => {
       const revoked: ClientStateFeedItem = {
         feedId: 12,
         account: 'alice',
-        domain: '',
+        domain: 'local',
         eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: 'bob',
         subjectDomain: 'peer.test',
@@ -346,17 +346,17 @@ describe('WebdbService', () => {
         name: 'Bob',
         avatar: '',
         bio: '',
-        domain: '',
+        domain: 'local',
         isForeigner: false,
       };
       const items: ClientStateFeedItem[] = [
         {
           feedId: 20,
           account: 'alice',
-          domain: '',
+          domain: 'local',
           eventType: 'RELATIONSHIP_INTENT',
           subjectAccount: 'bob',
-          subjectDomain: '',
+          subjectDomain: 'local',
           body: {
             status: 'ACCEPTED',
             note: '',
@@ -370,10 +370,10 @@ describe('WebdbService', () => {
         {
           feedId: 21,
           account: 'bob',
-          domain: '',
+          domain: 'local',
           eventType: 'RELATIONSHIP_INTENT',
           subjectAccount: 'alice',
-          subjectDomain: '',
+          subjectDomain: 'local',
           body: {
             status: 'ACCEPTED',
             note: '',
@@ -394,10 +394,68 @@ describe('WebdbService', () => {
           type: 'P2P',
           friendshipActive: true,
           conversationState: 'ACTIVE',
-          peerUser: expect.objectContaining({ account: 'bob', domain: '' }),
+          peerUser: expect.objectContaining({
+            account: 'bob',
+            domain: 'local',
+          }),
         }),
       ]);
       expect(await webdb.getMeta('stateFeedId')).toBe(21);
+    });
+
+    it('folds an address request and its materialized acceptance into one local-domain projection', async () => {
+      const db = await webdb.openForUser('1');
+      const requestedAt = Date.now();
+      const peer = {
+        id: 2,
+        account: 'admin',
+        name: 'admin',
+        avatar: '',
+        bio: '',
+        domain: 'bravo.test',
+        isForeigner: true,
+      };
+      const event = (
+        feedId: number,
+        direction: 'INCOMING' | 'OUTGOING',
+        subjectDomain: string,
+        status: 'REQUESTED' | 'ACCEPTED',
+      ): ClientStateFeedItem => ({
+        feedId,
+        account: 'admin',
+        domain: 'bravo.test',
+        eventType: 'RELATIONSHIP_INTENT',
+        subjectAccount: 'bravo',
+        subjectDomain,
+        body: {
+          status,
+          note: '',
+          requestedAt: status === 'REQUESTED' ? requestedAt : null,
+          expiresAt: status === 'REQUESTED' ? requestedAt + 60_000 : null,
+          direction,
+          localThreadId: status === 'ACCEPTED' ? 7 : null,
+          peer,
+        },
+      });
+
+      await webdb.applyStateFeedPage(
+        [event(30, 'INCOMING', 'local', 'REQUESTED')],
+        30,
+      );
+      const [pending] = await db!.getAll('friendRequests');
+      await webdb.markFriendRequestAccepted(pending.key);
+      await webdb.applyStateFeedPage(
+        [
+          event(31, 'INCOMING', 'local', 'ACCEPTED'),
+          event(32, 'OUTGOING', 'local', 'ACCEPTED'),
+        ],
+        32,
+      );
+
+      expect(await db!.getAll('friendRequests')).toHaveLength(1);
+      expect(
+        await webdb.getFriendRequestPage('RECEIVED', null, 20),
+      ).toMatchObject({ total: 1, actionableTotal: 0 });
     });
 
     it('does not advance the unread badge revision when an incoming request is rejected', async () => {
@@ -619,6 +677,52 @@ describe('WebdbService', () => {
       expect(await db!.getAll('friendRequests')).toEqual([]);
     });
 
+    it('uses explicit OUTGOING direction for a legacy group-first federated key', async () => {
+      const db = await webdb.openForUser('1');
+      const requestedAt = Date.now();
+      await webdb.applyStateFeedPage(
+        [
+          {
+            feedId: 22,
+            // Older federated writers used GROUP->MEMBER as the compaction key even for a
+            // member-authored request. The body direction is the authoritative authored side.
+            account: '!group',
+            domain: 'groups.test',
+            eventType: 'RELATIONSHIP_INTENT',
+            subjectAccount: 'me',
+            subjectDomain: 'local.test',
+            body: {
+              status: 'REQUESTED',
+              note: 'let me in',
+              requestedAt,
+              expiresAt: requestedAt + 60_000,
+              direction: 'OUTGOING',
+              threadId: 8,
+              group: {
+                account: '!group',
+                domain: 'groups.test',
+                isLocal: false,
+                name: 'Group',
+                avatar: '',
+                description: '',
+                profileRev: 1,
+              },
+            },
+          },
+        ],
+        22,
+      );
+
+      expect(await db!.getAll('friendRequests')).toEqual([
+        expect.objectContaining({
+          kind: 'GROUP',
+          bucket: 'SENT',
+          direction: 'OUTGOING',
+          status: 'REQUESTED',
+        }),
+      ]);
+    });
+
     it('clears state-feed projections only on the first full page', async () => {
       const db = await webdb.openForUser('1');
       await webdb.putThread({
@@ -688,10 +792,10 @@ describe('WebdbService', () => {
       ): ClientStateFeedItem => ({
         feedId,
         account: '',
-        domain: '',
+        domain: 'local',
         eventType: 'THREAD_BLOCK',
         subjectAccount: '7',
-        subjectDomain: '',
+        subjectDomain: 'local',
         body: { threadId: 7, blocked },
       });
 
@@ -721,6 +825,20 @@ describe('WebdbService', () => {
               {
                 feedId: '1',
                 operation: 'UPSERT',
+                account: 'self',
+                domain: 'local',
+                rev: 1,
+                body: {
+                  userId: 1,
+                  role: 'OWNER',
+                  profileRev: 1,
+                  displayName: 'Self',
+                  avatar: null,
+                },
+              },
+              {
+                feedId: '2',
+                operation: 'UPSERT',
                 account: 'alice',
                 domain: 'home.example',
                 rev: 1,
@@ -734,8 +852,8 @@ describe('WebdbService', () => {
               },
             ],
             hasMore: false,
-            scannedThrough: '1',
-            groupMetaFeedEndId: '1',
+            scannedThrough: '2',
+            groupMetaFeedEndId: '2',
           },
         },
       ]);
@@ -750,15 +868,74 @@ describe('WebdbService', () => {
       expect(
         (await webdb.getThreads()).find((item) => item.threadId === 9),
       ).toMatchObject({
-        group: { memberCount: 1, groupMetaFeedId: '1' },
+        role: 'OWNER',
+        group: { memberCount: 2, groupMetaFeedId: '2' },
       });
+
+      await webdb.applyStateFeedPage([], 4, [
+        {
+          threadId: 9,
+          page: {
+            account: '!team',
+            mode: 'delta',
+            items: [
+              {
+                feedId: '3',
+                operation: 'UPSERT',
+                account: 'self',
+                domain: 'local',
+                rev: 2,
+                body: {
+                  userId: 1,
+                  role: 'ADMIN',
+                  profileRev: 1,
+                  displayName: 'Self',
+                  avatar: null,
+                },
+              },
+            ],
+            hasMore: false,
+            scannedThrough: '3',
+            groupMetaFeedEndId: '3',
+          },
+        },
+      ]);
+      expect(
+        (await webdb.getThreads()).find((item) => item.threadId === 9),
+      ).toMatchObject({ role: 'ADMIN' });
+
+      await webdb.applyStateFeedPage([], 5, [
+        {
+          threadId: 9,
+          page: {
+            account: '!team',
+            mode: 'delta',
+            items: [
+              {
+                feedId: '4',
+                operation: 'DELETE',
+                account: 'self',
+                domain: 'local',
+                rev: 3,
+                body: {},
+              },
+            ],
+            hasMore: false,
+            scannedThrough: '4',
+            groupMetaFeedEndId: '4',
+          },
+        },
+      ]);
+      expect(
+        (await webdb.getThreads()).find((item) => item.threadId === 9),
+      ).toMatchObject({ role: null });
     });
 
     it('materializes an active group conversation from bilateral intents before group metadata', async () => {
       await webdb.openForUser('1');
       const group = {
         account: '!dev',
-        domain: '',
+        domain: 'local',
         isLocal: true,
         name: 'dev',
         avatar: '',
@@ -781,18 +958,18 @@ describe('WebdbService', () => {
           ...common,
           feedId: 1,
           account: '!dev',
-          domain: '',
+          domain: 'local',
           subjectAccount: 'alice',
-          subjectDomain: '',
+          subjectDomain: 'local',
           body: { ...common.body, direction: 'INCOMING' },
         },
         {
           ...common,
           feedId: 2,
           account: 'alice',
-          domain: '',
+          domain: 'local',
           subjectAccount: '!dev',
-          subjectDomain: '',
+          subjectDomain: 'local',
           body: { ...common.body, direction: 'OUTGOING' },
         },
       ];

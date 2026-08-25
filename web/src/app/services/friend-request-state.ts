@@ -344,7 +344,8 @@ export function applyGroupIntentToProjection(
     authored.expiresAt > now
   ) {
     next.direction = direction;
-    next.status = direction === 'INCOMING' ? 'REQUESTED' : null;
+    next.bucket = direction === 'INCOMING' ? 'RECEIVED' : 'SENT';
+    next.status = 'REQUESTED';
     next.note = input.note;
     next.requestedAt = input.requestedAt ?? 0;
     next.requestedSort = input.requestedAt ?? 0;

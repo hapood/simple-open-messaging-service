@@ -14,6 +14,8 @@ import {
 } from '../../user-avatar/user-avatar.component';
 import { RouteService, PopupType } from '../../../services/route.service';
 import { ConversationListService } from '../../../services/conversation-list.service';
+import { UserService } from '../../../services/user.service';
+import { NavStateMachineService } from '../../../services/nav-state.service';
 
 interface ContactCard {
   account: string;
@@ -34,6 +36,8 @@ interface ContactCard {
 export class ContactCardRowComponent {
   private readonly route = inject(RouteService);
   private readonly conversations = inject(ConversationListService);
+  private readonly userService = inject(UserService);
+  private readonly nav = inject(NavStateMachineService);
   readonly UserAvatarType = UserAvatarType;
   readonly data = input.required<ChatMsgData>();
   readonly isShowHead = input(false);
@@ -86,25 +90,38 @@ export class ContactCardRowComponent {
             item.peerUser.domain === card.domain &&
             item.friendshipActive !== false,
       );
-    this.route.popupDlg(PopupType.CONTACT_IDENTITY, {
-      identity: {
-        account: card.account,
-        name: card.displayName,
-        bio: card.bio,
-        avatar: card.avatar,
-        domain: card.domain,
-        ...(conversation?.type === 'GROUP'
-          ? {
-              groupThreadId: conversation.threadId,
-              userId: conversation.group.id,
-            }
-          : conversation?.type === 'P2P'
+    this.route.popupDlg(
+      PopupType.CONTACT_IDENTITY,
+      {
+        identity: {
+          account: card.account,
+          name: card.displayName,
+          bio: card.bio,
+          avatar: card.avatar,
+          domain: card.domain,
+          relationship:
+            card.account === this.userService.sessionProfile()?.account &&
+            card.domain ===
+              (this.userService.sessionProfile()?.domain || 'local')
+              ? 'SELF'
+              : conversation?.type === 'P2P'
+                ? 'FRIEND'
+                : 'NONE',
+          ...(conversation?.type === 'GROUP'
             ? {
-                friendThreadId: conversation.threadId,
-                userId: conversation.peerUser.id,
+                groupThreadId: conversation.threadId,
+                userId: conversation.group.id,
               }
-            : {}),
+            : conversation?.type === 'P2P'
+              ? {
+                  friendThreadId: conversation.threadId,
+                  userId: conversation.peerUser.id,
+                }
+              : {}),
+        },
       },
-    });
+      undefined,
+      { scopeThreadId: this.nav.chatThreadId() },
+    );
   }
 }

@@ -3,6 +3,7 @@ import { Router } from '@angular/router';
 import { Subject } from 'rxjs';
 import { AvatarEditorComponent } from '../components/avatar-editor/avatar-editor.component';
 import { FriendRequestsComponent } from '../components/friend-requests/friend-requests.component';
+import { FriendInviteDialogComponent } from '../components/friend-invite-dialog/friend-invite-dialog.component';
 import { NewGroupComponent } from '../components/new-group/new-group.component';
 import { EditProfileComponent } from '../components/edit-profile/edit-profile.component';
 import { ConfirmDialogComponent } from '../components/confirm-dialog/confirm-dialog.component';
@@ -59,6 +60,7 @@ export enum RoutePage {
  */
 export enum PopupType {
   FRIEND_REQUESTS,
+  FRIEND_INVITE,
   NEW_GROUP,
   EDIT_PROFILE,
   AVATAR_EDITOR,
@@ -79,6 +81,7 @@ export enum PopupType {
 // make NgComponentOutlet fail while looking up the component definition (`ɵcmp`).
 const componentDict: Record<PopupType, () => Type<unknown>> = {
   [PopupType.FRIEND_REQUESTS]: () => FriendRequestsComponent,
+  [PopupType.FRIEND_INVITE]: () => FriendInviteDialogComponent,
   [PopupType.NEW_GROUP]: () => NewGroupComponent,
   [PopupType.EDIT_PROFILE]: () => EditProfileComponent,
   [PopupType.AVATAR_EDITOR]: () => AvatarEditorComponent,
@@ -95,6 +98,7 @@ const componentDict: Record<PopupType, () => Type<unknown>> = {
 
 const presentationDict: Record<PopupType, DialogPresentation> = {
   [PopupType.FRIEND_REQUESTS]: 'page',
+  [PopupType.FRIEND_INVITE]: 'modal',
   [PopupType.NEW_GROUP]: 'page',
   [PopupType.EDIT_PROFILE]: 'page',
   [PopupType.AVATAR_EDITOR]: 'viewer',
@@ -105,7 +109,7 @@ const presentationDict: Record<PopupType, DialogPresentation> = {
   [PopupType.FORWARD_DETAIL]: 'viewer',
   [PopupType.LINK_ORIGINAL]: 'modal',
   [PopupType.LINK_CARD_GENERATION]: 'chatbox',
-  [PopupType.CONTACT_IDENTITY]: 'modal',
+  [PopupType.CONTACT_IDENTITY]: 'chatbox',
   [PopupType.CONTACT_PICKER]: 'modal',
 };
 
@@ -116,6 +120,7 @@ export interface PopupInput {
     initialTab?: 'add' | 'pending';
     initialUser?: User;
   };
+  [PopupType.FRIEND_INVITE]: { user: User; standalone: true };
   [PopupType.NEW_GROUP]: undefined;
   [PopupType.EDIT_PROFILE]: undefined;
   [PopupType.AVATAR_EDITOR]: { file: File };
@@ -156,6 +161,9 @@ export interface PopupResult {
   [PopupType.FRIEND_REQUESTS]:
     | { userId: number; status: 'OUTGOING_PENDING' | 'FRIEND' }
     | undefined;
+  [PopupType.FRIEND_INVITE]:
+    | { userId: number; status: 'OUTGOING_PENDING' | 'FRIEND' }
+    | undefined;
   [PopupType.NEW_GROUP]: { groupId: number };
   [PopupType.EDIT_PROFILE]: boolean;
   // cropped File on Save; undefined on Cancel/back.
@@ -174,13 +182,13 @@ export interface PopupResult {
   [PopupType.LINK_CARD_GENERATION]: LinkCardGenerationDialogResult | undefined;
   [PopupType.CONTACT_IDENTITY]: undefined;
   [PopupType.CONTACT_PICKER]:
-    | ({ targetUserId: number } | { targetGroupId: number }) & {
+    | (({ targetUserId: number } | { targetGroupId: number }) & {
         account: string;
         domain: string;
         name: string;
         avatar: string;
         bio: string;
-      }
+      })
     | undefined;
 }
 

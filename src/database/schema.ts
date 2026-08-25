@@ -570,44 +570,6 @@ export const mediaAsset = pgTable(
   ],
 );
 
-/** Server-maintained hostname allowlist for client-derived cards. Message content is never rewritten. */
-export const linkCardRule = pgTable(
-  'LinkCardRule',
-  {
-    id: serial().primaryKey().notNull(),
-    hostname: varchar({ length: 255 }).notNull(),
-    note: varchar({ length: 100 }),
-    imageSelection: varchar({ length: 5 })
-      .$type<'first' | 'last'>()
-      .default('first')
-      .notNull(),
-    descriptionSelection: varchar({ length: 5 })
-      .$type<'first' | 'last'>()
-      .default('first')
-      .notNull(),
-    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    uniqueIndex('LinkCardRule_hostname_key').using(
-      'btree',
-      table.hostname.asc(),
-    ),
-    check(
-      'LinkCardRule_imageSelection_check',
-      sql`${table.imageSelection} IN ('first', 'last')`,
-    ),
-    check(
-      'LinkCardRule_descriptionSelection_check',
-      sql`${table.descriptionSelection} IN ('first', 'last')`,
-    ),
-  ],
-);
-
 export const message = pgTable(
   'Message',
   {
@@ -1351,7 +1313,7 @@ export const clientStateFeed = pgTable(
     domain: varchar({ length: 63 }).notNull(),
     eventType: varchar({ length: 31 }).notNull(),
     subjectAccount: varchar({ length: 31 }).default('').notNull(),
-    subjectDomain: varchar({ length: 63 }).default('').notNull(),
+    subjectDomain: varchar({ length: 63 }).default('local').notNull(),
     feedId: integer().notNull(),
     body: jsonb().notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -1667,7 +1629,7 @@ export const peerStateFeed = pgTable(
     domain: varchar({ length: 63 }).notNull(),
     eventType: peerStateEventType().notNull(),
     subjectAccount: varchar({ length: 31 }).default('').notNull(),
-    subjectDomain: varchar({ length: 63 }).default('').notNull(),
+    subjectDomain: varchar({ length: 63 }).default('local').notNull(),
     rev: bigint({ mode: 'bigint' }).notNull(),
     body: jsonb().notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -1701,7 +1663,7 @@ export const peerStateFeed = pgTable(
     check('PeerStateFeed_rev_check', sql`${table.rev} > 0`),
     check(
       'PeerStateFeed_subject_check',
-      sql`(${table.eventType} = 'RELATIONSHIP_INTENT' AND ${table.subjectAccount} <> '' AND ${table.subjectDomain} <> '') OR (${table.eventType} <> 'RELATIONSHIP_INTENT' AND ${table.subjectAccount} = '' AND ${table.subjectDomain} = '')`,
+      sql`(${table.eventType} = 'RELATIONSHIP_INTENT' AND ${table.subjectAccount} <> '' AND ${table.subjectDomain} <> '') OR (${table.eventType} <> 'RELATIONSHIP_INTENT' AND ${table.subjectAccount} = '' AND ${table.subjectDomain} = 'local')`,
     ),
   ],
 );

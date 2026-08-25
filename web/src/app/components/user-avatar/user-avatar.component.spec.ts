@@ -131,6 +131,19 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
     expect(fixture.componentInstance.bg()).not.toBe(localColor);
   });
 
+  it('positions the group badge just beyond the avatar bottom-right edge', () => {
+    fixture.componentRef.setInput('type', UserAvatarType.GROUP);
+    fixture.componentRef.setInput('name', 'Group');
+    fixture.detectChanges();
+
+    const badgePath = fixture.nativeElement.querySelector(
+      '.group-avatar-badge path',
+    ) as SVGPathElement;
+    expect(badgePath.getAttribute('transform')).toBe(
+      'translate(71 76) scale(1.25)',
+    );
+  });
+
   it('renders the federated marker in the same scalable coordinate system as the avatar', () => {
     fixture.componentRef.setInput('name', 'Remote user');
     fixture.componentRef.setInput('federatedDomain', 'remote.example');
@@ -140,11 +153,24 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
       '.avatar-federated-icon',
     ) as SVGElement;
     expect(marker.getAttribute('viewBox')).toBe('0 0 100 100');
-    expect(marker.querySelector('.avatar-federated-ground')).not.toBeNull();
+    expect(marker.querySelector('.avatar-federated-ground')).toBeNull();
+    expect(marker.querySelector('.avatar-federated-disc')).not.toBeNull();
+    expect(marker.querySelector('.avatar-federated-halo')).not.toBeNull();
     const globe = marker.querySelector('.avatar-federated-globe');
-    expect(globe?.querySelector('circle')?.getAttribute('cx')).toBe('81');
-    expect(globe?.querySelector('circle')?.getAttribute('cy')).toBe('19');
+    expect(globe?.querySelector('circle')?.getAttribute('cx')).toBe('90');
+    expect(globe?.querySelector('circle')?.getAttribute('cy')).toBe('10');
+    expect(globe?.querySelector('circle')?.getAttribute('r')).toBe('10');
     expect(marker.querySelector('app-icon')).toBeNull();
+  });
+
+  it('does not render the federated marker for the local domain sentinel', () => {
+    fixture.componentRef.setInput('name', 'Local user');
+    fixture.componentRef.setInput('federatedDomain', 'local');
+    fixture.detectChanges();
+
+    expect(
+      fixture.nativeElement.querySelector('.avatar-federated-icon'),
+    ).toBeNull();
   });
 
   it('passes a local-preview src (blob:/data:) straight through without the DB', () => {
@@ -214,7 +240,7 @@ describe('UserAvatarComponent offline cold-start integration', () => {
       bio: '',
       isForeigner: false,
       isGroup: false,
-      domain: '',
+      domain: 'local',
       createdAt: 0,
       updatedAt: 0,
       profileRev: 3,

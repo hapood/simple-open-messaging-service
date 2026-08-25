@@ -95,10 +95,10 @@ describe('WebdbService native SQLite routing', () => {
       {
         feedId: 81,
         account: 'alice',
-        domain: '',
+        domain: 'local',
         eventType: 'PROFILE' as const,
         subjectAccount: '' as const,
-        subjectDomain: '' as const,
+        subjectDomain: 'local' as const,
         body: { displayName: 'Alice', avatar: '', bio: '', profileRev: 2 },
       },
     ];
@@ -139,7 +139,7 @@ describe('WebdbService native SQLite routing', () => {
       account: 'alice',
       avatar: '/a.webp',
       bio: '',
-      domain: '',
+      domain: 'local',
       profileRev: 6,
     };
     responses.set('native_db_put_profile', true);

@@ -63,9 +63,19 @@ export type FriendRelationshipState =
   | 'FRIEND';
 
 export interface FederatedPendingProfileSnapshot {
-  displayName?: string;
+  displayName: string;
   avatar?: string;
-  bio: string;
+}
+
+export function applyFederatedPendingProfileSnapshot(
+  profile: { name: string; avatar: string },
+  snapshot?: FederatedPendingProfileSnapshot,
+): { name: string; avatar: string } {
+  if (!snapshot) return profile;
+  return {
+    name: snapshot.displayName.slice(0, 30),
+    avatar: snapshot.avatar ?? '',
+  };
 }
 
 /** Fields selected for the embedded inviter/recipient profile on list queries (never hashPwd — it is
@@ -548,11 +558,13 @@ export class InviteService {
         const peer = owner.id === actor.id ? subject : actor;
         const projectedPeer = this.clientInviteUser(peer);
         if (peer.id === secondUserId && secondUserSnapshot) {
-          projectedPeer.name =
-            secondUserSnapshot.displayName?.slice(0, 30) || projectedPeer.name;
-          projectedPeer.avatar =
-            secondUserSnapshot.avatar || projectedPeer.avatar;
-          projectedPeer.bio = secondUserSnapshot.bio;
+          Object.assign(
+            projectedPeer,
+            applyFederatedPendingProfileSnapshot(
+              projectedPeer,
+              secondUserSnapshot,
+            ),
+          );
         }
         const body = {
           ...commonBody,
@@ -563,10 +575,10 @@ export class InviteService {
         const feedId = await this.clientStateFeed.writeInTx(tx, {
           userId: owner.id,
           account: actor.account,
-          domain: actor.domain === 'local' ? '' : actor.domain,
+          domain: actor.domain,
           eventType: 'RELATIONSHIP_INTENT',
           subjectAccount: subject.account,
-          subjectDomain: subject.domain === 'local' ? '' : subject.domain,
+          subjectDomain: subject.domain,
           body,
         });
         if (feedId !== null) pending.push({ userId: owner.id, feedId });
@@ -582,7 +594,7 @@ export class InviteService {
       name: value.name,
       avatar: value.avatar,
       bio: value.bio,
-      domain: value.domain === 'local' ? '' : value.domain,
+      domain: value.domain,
       isForeigner: value.isForeigner,
     };
   }

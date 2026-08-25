@@ -303,6 +303,40 @@ describe('friend request rejection projection', () => {
     expect(friendProjectionIsActive(active, 2_001)).toBe(true);
   });
 
+  it('keeps an outgoing group join application in sent history', () => {
+    const result = applyGroupIntentToProjection(
+      undefined,
+      {
+        account: '!group',
+        domain: 'local.test',
+        status: 'REQUESTED',
+        direction: 'OUTGOING',
+        note: 'Please let me in',
+        requestedAt: 1_000,
+        expiresAt: 10_000,
+        threadId: 8,
+        group: {
+          account: '!group',
+          domain: 'local.test',
+          isLocal: true,
+          name: 'Group',
+          avatar: '',
+          description: '',
+          profileRev: 1,
+        },
+      },
+      2_000,
+    ).record;
+
+    expect(result).toMatchObject({
+      kind: 'GROUP',
+      direction: 'OUTGOING',
+      bucket: 'SENT',
+      status: 'REQUESTED',
+      local: { status: 'REQUESTED' },
+    });
+  });
+
   it('marks only a fresh incoming group invite actionable and drops an expired one', () => {
     const input = {
       account: '!group',

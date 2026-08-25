@@ -57,6 +57,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   let advanceCursorSpy: Mock;
   let applyFriendRequestStateRevisionSpy: Mock;
   let applyFriendIntentStateRevisionSpy: Mock;
+  let applyGroupJoinRequestHeadSpy: Mock;
   let cursorSignal: ReturnType<typeof signal<number | undefined>>;
   let putProfileSpy: Mock;
   let toastWarn: Mock;
@@ -161,6 +162,10 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
                     },
                   }),
               )),
+            applyGroupJoinRequestHead: (applyGroupJoinRequestHeadSpy = vi
+              .fn()
+              .mockName('applyGroupJoinRequestHead')
+              .mockReturnValue(true)),
             queryReadDelta: (queryReadDeltaSpy = vi
               .fn()
               .mockName('queryReadDelta')
@@ -254,6 +259,39 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       data,
     });
   }
+
+  it('rebuilds from a code 30006 recovery window', async () => {
+    cursorSignal.set(9);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    queryStateFeedSpy
+      .mockReturnValueOnce(
+        of({ code: 30006, data: { resumeAfter: 0, resumeBefore: 7 } }),
+      )
+      .mockReturnValueOnce(
+        of({
+          code: 0,
+          data: {
+            mode: 'full',
+            items: [],
+            hasMore: false,
+            scannedThrough: 6,
+            stateFeedEndId: 6,
+          },
+        }),
+      );
+
+    repo.onStateFeedUpdated(10);
+    await flush(30);
+
+    expect(warn).toHaveBeenCalledWith(
+      '[state-feed] cursor unavailable; rebuilding from 0 through 6',
+    );
+    expect(queryStateFeedSpy.mock.calls[1][0]).toEqual(
+      expect.objectContaining({ mode: 'full', after: 0, through: 6 }),
+    );
+    expect(cursorSignal()).toBe(6);
+    warn.mockRestore();
+  });
 
   /** Populate via the EAGER CACHE-PAINT (seed IDB + load) — the instant pre-HELLO path. For tests that
    *  just need a populated list (mutations, messages, peer profile) without exercising the delta. */
@@ -596,6 +634,89 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
 
   // ── STATE_FEED_UPDATED delta (thread and profile state share one ordered stream) ──
 
+  it('does not move a thread when a join-request head is only the optimistic read acknowledgement', async () => {
+    await populate([
+      p2p(1, 11, { lastMessageAt: 200 }),
+      p2p(2, 22, { lastMessageAt: 100 }),
+    ]);
+    cursorSignal.set(1);
+    applyGroupJoinRequestHeadSpy.mockReturnValue(false);
+    queryStateFeedSpy.mockReturnValue(
+      of({
+        code: 0,
+        data: {
+          mode: 'delta',
+          items: [
+            {
+              feedId: 2,
+              account: '!group',
+              domain: 'local',
+              eventType: 'GROUP_JOIN_REQUEST_HEAD',
+              subjectAccount: '',
+              subjectDomain: 'local',
+              body: {
+                threadId: 2,
+                latestFeedId: 12,
+                latestRequestAt: 300,
+                readFeedId: 12,
+              },
+            },
+          ],
+          hasMore: false,
+          scannedThrough: 2,
+          stateFeedEndId: 2,
+        },
+      }),
+    );
+
+    eventSubject.next({ event: 'STATE_FEED_UPDATED', data: { feedId: 2 } });
+    await flush(30);
+
+    expect(repo.items().map((thread) => thread.threadId)).toEqual([1, 2]);
+    expect(repo.items()[1].joinRequestAt).toBeUndefined();
+  });
+
+  it('moves an ordinary thread to the ordinary-tier head for a genuinely new join request', async () => {
+    await populate([
+      p2p(1, 11, { lastMessageAt: 200 }),
+      p2p(2, 22, { lastMessageAt: 100 }),
+    ]);
+    cursorSignal.set(1);
+    queryStateFeedSpy.mockReturnValue(
+      of({
+        code: 0,
+        data: {
+          mode: 'delta',
+          items: [
+            {
+              feedId: 2,
+              account: '!group',
+              domain: 'local',
+              eventType: 'GROUP_JOIN_REQUEST_HEAD',
+              subjectAccount: '',
+              subjectDomain: 'local',
+              body: {
+                threadId: 2,
+                latestFeedId: 13,
+                latestRequestAt: 300,
+                readFeedId: 12,
+              },
+            },
+          ],
+          hasMore: false,
+          scannedThrough: 2,
+          stateFeedEndId: 2,
+        },
+      }),
+    );
+
+    eventSubject.next({ event: 'STATE_FEED_UPDATED', data: { feedId: 2 } });
+    await flush(30);
+
+    expect(repo.items().map((thread) => thread.threadId)).toEqual([2, 1]);
+    expect(repo.items()[0].joinRequestAt).toBe(300);
+  });
+
   it('hydrates a newly activated zero-message friendship thread from relationship state', async () => {
     emitHello({ userId: 1, stateFeedEndId: 0 });
     await flush(20);
@@ -684,7 +805,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     cursorSignal.set(1);
     const group = {
       account: '!dev',
-      domain: '',
+      domain: 'local',
       isLocal: true,
       name: 'dev',
       avatar: '',
@@ -700,10 +821,10 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
             {
               feedId: 2,
               account: '!dev',
-              domain: '',
+              domain: 'local',
               eventType: 'RELATIONSHIP_INTENT',
               subjectAccount: 'alice',
-              subjectDomain: '',
+              subjectDomain: 'local',
               body: {
                 status: 'ACCEPTED',
                 note: '',
@@ -717,10 +838,10 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
             {
               feedId: 3,
               account: 'alice',
-              domain: '',
+              domain: 'local',
               eventType: 'RELATIONSHIP_INTENT',
               subjectAccount: '!dev',
-              subjectDomain: '',
+              subjectDomain: 'local',
               body: {
                 status: 'ACCEPTED',
                 note: '',
@@ -734,10 +855,10 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
             {
               feedId: 4,
               account: '!dev',
-              domain: '',
+              domain: 'local',
               eventType: 'GROUP_META_FEED_HEAD',
               subjectAccount: '',
-              subjectDomain: '',
+              subjectDomain: 'local',
               body: { groupMetaFeedEndId: '1' },
             },
           ],
@@ -769,7 +890,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       name: 'Bob',
       avatar: '',
       bio: '',
-      domain: '',
+      domain: 'local',
       isForeigner: false,
     };
     const secondPage = new Subject<unknown>();
@@ -783,10 +904,10 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
               {
                 feedId: 2,
                 account: 'bob',
-                domain: '',
+                domain: 'local',
                 eventType: 'RELATIONSHIP_INTENT',
                 subjectAccount: 'alice',
-                subjectDomain: '',
+                subjectDomain: 'local',
                 body: {
                   status: 'ACCEPTED',
                   note: '',
@@ -826,10 +947,10 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
           {
             feedId: 3,
             account: 'alice',
-            domain: '',
+            domain: 'local',
             eventType: 'RELATIONSHIP_INTENT',
             subjectAccount: 'bob',
-            subjectDomain: '',
+            subjectDomain: 'local',
             body: {
               status: 'ACCEPTED',
               note: '',

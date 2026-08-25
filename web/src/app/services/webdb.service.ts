@@ -214,7 +214,7 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-export const CACHE_SCHEMA_VERSION = 3;
+export const CACHE_SCHEMA_VERSION = 5;
 export const MESSAGE_CACHE_SCHEMA_VERSION = 1;
 const IDB_FORMAT_VERSION = 1;
 
@@ -1211,7 +1211,12 @@ export class WebdbService implements OnDestroy {
         continue;
       const body = op.body as Omit<
         ClientGroupInviteIntent,
-        'key' | 'account' | 'domain' | 'subjectAccount' | 'subjectDomain' | 'kind'
+        | 'key'
+        | 'account'
+        | 'domain'
+        | 'subjectAccount'
+        | 'subjectDomain'
+        | 'kind'
       >;
       const groupAuthored = op.account.startsWith('!');
       const groupAccount = groupAuthored ? op.account : op.subjectAccount;
@@ -1223,7 +1228,8 @@ export class WebdbService implements OnDestroy {
           account: groupAccount,
           domain: groupDomain,
           ...body,
-          direction: groupAuthored ? 'INCOMING' : 'OUTGOING',
+          direction:
+            body.direction ?? (groupAuthored ? 'INCOMING' : 'OUTGOING'),
         },
         Date.now(),
       );
@@ -1303,12 +1309,18 @@ export class WebdbService implements OnDestroy {
       }
       const thread = await tx.objectStore('threads').get(update.threadId);
       if (thread?.type === 'GROUP') {
+        const selfUserId = Number(this.currentUserId);
+        const self =
+          this.currentUserId !== null && Number.isSafeInteger(selfUserId)
+            ? await participants.get([update.threadId, selfUserId])
+            : undefined;
         const { members: _members, ...group } =
           thread.group as typeof thread.group & {
             members?: unknown;
           };
         await tx.objectStore('threads').put({
           ...thread,
+          role: self?.role ?? null,
           group: {
             ...group,
             memberCount,
@@ -1340,7 +1352,8 @@ export class WebdbService implements OnDestroy {
               account: groupAccount,
               domain: groupDomain,
               ...body,
-              direction: groupAuthored ? 'INCOMING' : 'OUTGOING',
+              direction:
+                body.direction ?? (groupAuthored ? 'INCOMING' : 'OUTGOING'),
             },
             Date.now(),
           );

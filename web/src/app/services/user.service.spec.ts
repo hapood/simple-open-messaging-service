@@ -37,7 +37,7 @@ const profile = (
     name: 'A',
     avatar: '',
     bio: '',
-    domain: '',
+    domain: 'local',
     ...over,
   } as User,
 });
@@ -96,6 +96,30 @@ describe('UserService profile refresh', () => {
     });
     svc = TestBed.inject(UserService);
     httpMock = TestBed.inject(HttpTestingController);
+  });
+
+  it('treats a join-request head covered by the optimistic read watermark as an acknowledgement', () => {
+    svc.groupJoinRequestHeads.set(
+      new Map([[7, { latestFeedId: 12, readFeedId: 12 }]]),
+    );
+
+    expect(svc.applyGroupJoinRequestHead(7, 12, 12)).toBe(false);
+    expect(svc.groupJoinRequestHeads().get(7)).toEqual({
+      latestFeedId: 12,
+      readFeedId: 12,
+    });
+  });
+
+  it('reports only a head newer than the local read watermark as new attention', () => {
+    svc.groupJoinRequestHeads.set(
+      new Map([[7, { latestFeedId: 12, readFeedId: 12 }]]),
+    );
+
+    expect(svc.applyGroupJoinRequestHead(7, 13, 12)).toBe(true);
+    expect(svc.groupJoinRequestHeads().get(7)).toEqual({
+      latestFeedId: 13,
+      readFeedId: 12,
+    });
   });
 
   afterEach(() => {
@@ -232,7 +256,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
               name: 'A',
               avatar: '',
               bio: '',
-              domain: '',
+              domain: 'local',
             }),
             putMeta: vi.fn().mockName('putMeta').mockResolvedValue(undefined),
             cleanupFriendRequests: vi
@@ -281,7 +305,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
             name: 'A',
             avatar: '',
             bio: '',
-            domain: '',
+            domain: 'local',
           }
         : undefined,
     );
@@ -307,7 +331,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
           name: 'A',
           avatar: '',
           bio: '',
-          domain: '',
+          domain: 'local',
         };
       return undefined;
     });
@@ -329,7 +353,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
           name: 'A',
           avatar: '',
           bio: '',
-          domain: '',
+          domain: 'local',
         };
       return undefined;
     });
@@ -350,7 +374,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
         name: 'A',
         avatar: '',
         bio: '',
-        domain: '',
+        domain: 'local',
       };
     });
 

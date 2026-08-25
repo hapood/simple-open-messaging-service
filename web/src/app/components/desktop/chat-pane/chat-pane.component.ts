@@ -20,6 +20,7 @@ import { LayoutService } from '../../../services/layout.service';
 import { NativeComposerService } from '../../../services/native-composer.service';
 import { prefersReducedMotion } from '../../../lib/motion-utils';
 import type { ConversationItem } from '../../../services/model';
+import { ChatContextService } from '../../message-thread/chat-context.service';
 
 /** Celebratory group-join reveal duration (ms). Ordinary thread changes use the shorter CSS dissolve. */
 const GROUP_JOIN_REVEAL_MS = 300;
@@ -250,6 +251,7 @@ export class ChatPaneComponent implements OnDestroy {
   private readonly nav = inject(NavStateMachineService);
   private readonly layout = inject(LayoutService);
   private readonly nativeComposer = inject(NativeComposerService);
+  private readonly chatContext = inject(ChatContextService);
 
   /** The thread the shell has marked open (URL-driven; sole writer is the home shell). */
   readonly openThreadId = this.convList.openThreadId;
@@ -330,6 +332,15 @@ export class ChatPaneComponent implements OnDestroy {
   private readonly reducedMotion = prefersReducedMotion();
 
   constructor() {
+    effect(() => {
+      const threadId = this.openThreadId();
+      const conversation = this.convList
+        .items()
+        .find((item) => item.threadId === threadId);
+      if (conversation) this.chatContext.initialize(conversation);
+      else this.chatContext.clear();
+    });
+
     // The switch coordinator: read the target + the current foreground's item, hand the target to the
     // background pane to reset (hidden), await ready, then promote.
     effect(() => {

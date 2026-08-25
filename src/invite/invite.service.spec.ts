@@ -1,5 +1,31 @@
-import { InviteService } from './invite.service.js';
+import {
+  applyFederatedPendingProfileSnapshot,
+  InviteService,
+} from './invite.service.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+describe('applyFederatedPendingProfileSnapshot', () => {
+  const profile = {
+    name: '!remote-group',
+    avatar: 'stored-avatar',
+  };
+
+  it('applies the same pending-card snapshot fields for users and groups', () => {
+    expect(
+      applyFederatedPendingProfileSnapshot(profile, {
+        displayName: 'Remote Group',
+        avatar: 'snapshot-avatar',
+      }),
+    ).toEqual({
+      name: 'Remote Group',
+      avatar: 'snapshot-avatar',
+    });
+  });
+
+  it('retains identity-backed presentation only when no snapshot is supplied', () => {
+    expect(applyFederatedPendingProfileSnapshot(profile)).toEqual(profile);
+  });
+});
 
 describe('InviteService.friendRelationshipStatuses', () => {
   process.env.SOMS_DOMAIN = 'local.test';
@@ -52,7 +78,7 @@ describe('InviteService.friendRelationshipStatuses', () => {
 });
 
 describe('InviteService local friend client-state projection', () => {
-  it('keeps both authored directions under distinct normalized client-feed keys', async () => {
+  it('keeps both authored directions under distinct local-domain client-feed keys', async () => {
     const alice = {
       id: 1,
       account: 'alice',
@@ -128,16 +154,16 @@ describe('InviteService local friend client-state projection', () => {
       expect.arrayContaining([
         expect.objectContaining({
           account: 'alice',
-          domain: '',
+          domain: 'local',
           subjectAccount: 'bob',
-          subjectDomain: '',
+          subjectDomain: 'local',
           body: expect.objectContaining({ direction: 'OUTGOING' }),
         }),
         expect.objectContaining({
           account: 'bob',
-          domain: '',
+          domain: 'local',
           subjectAccount: 'alice',
-          subjectDomain: '',
+          subjectDomain: 'local',
           body: expect.objectContaining({ direction: 'INCOMING' }),
         }),
       ]),
@@ -153,6 +179,8 @@ describe('InviteService local friend client-state projection', () => {
     expect(ownerOne.every((write) => write.body.localThreadId === 7)).toBe(
       true,
     );
-    expect(ownerOne.every((write) => write.body.peer.domain === '')).toBe(true);
+    expect(ownerOne.every((write) => write.body.peer.domain === 'local')).toBe(
+      true,
+    );
   });
 });

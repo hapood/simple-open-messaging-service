@@ -89,7 +89,7 @@ const playgroundUserService = {
     account: 'me',
     name: 'Me',
     avatar: '',
-    domain: '',
+    domain: 'local',
     isForeigner: false,
   }),
   sendFriendInvite: () =>

@@ -84,7 +84,7 @@ export class UserAvatarComponent {
   /** Optional real avatar image URL. A server path (`/uploads/...`) is read from the DB by {@link identityId};
    *  a local preview (`blob:`/`data:`/absolute) passes through directly. Empty → initial-letter fallback. */
   readonly src = input<string | undefined | null>(undefined);
-  /** Home domain for a federated identity; renders the shared top-right globe marker. */
+  /** Identity home domain. Empty/`local` means local; a foreign domain renders the shared top-right globe marker. */
   readonly federatedDomain = input<string | undefined | null>(undefined);
   /** Stable identity of the user/group this avatar depicts — the IDB cache key (combined with {@link
    *  type}: GROUP → `g<id>`, else `u<id>`). Usually the numeric id; for a group known only by its
@@ -96,6 +96,13 @@ export class UserAvatarComponent {
    *  `!sessionProfile()` while the source signal is still loading. */
   readonly loading = input(false);
   readonly UserAvatarType = UserAvatarType;
+
+  /** Normalized foreign domain used by the marker. Some API projections represent local identities with
+   *  the explicit `local` sentinel, so truthiness alone is not sufficient to identify federation. */
+  readonly federatedMarkerDomain = computed(() => {
+    const domain = this.federatedDomain()?.trim();
+    return domain && domain.toLowerCase() !== 'local' ? domain : null;
+  });
 
   /** Message cards deliberately carry only render-ready message data, so their SELF avatar call sites do
    *  not repeat the session profile on every row. Resolve omitted SELF inputs from the cached session
@@ -217,7 +224,7 @@ export class UserAvatarComponent {
    * namespaced account + home domain. Local identities use the explicit `local` domain. */
   private hashColorKey(): number {
     const account = this.account() ?? '';
-    const domain = this.federatedDomain()?.trim().toLowerCase() || 'local';
+    const domain = this.federatedMarkerDomain()?.toLowerCase() || 'local';
     const namespace = this.type() === UserAvatarType.GROUP ? 'g' : 'u';
     const n = account ? `${namespace}\u0000${domain}\u0000${account}` : '';
     let h = 0;

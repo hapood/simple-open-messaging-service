@@ -1,0 +1,15 @@
+<footer class="dialog-action-footer">
+  <button mat-button type="button" (click)="cancelled.emit()">
+    {{ cancelLabel() }}
+  </button>
+  @if (primaryLabel(); as label) {
+    <button
+      mat-flat-button
+      type="button"
+      [disabled]="primaryDisabled()"
+      (click)="confirmed.emit()"
+    >
+      {{ label }}
+    </button>
+  }
+</footer>

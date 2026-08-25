@@ -70,9 +70,8 @@ installKeyboardInsetBridge();
 // Kotlin-authoritative; Rust follows). No-op in the browser/desktop build.
 installActiveOriginBridge();
 
-// The native launch overlay is already visible at this point. Session restoration followed by link-card
-// rule preloading for an authenticated session is one ordered APP_INITIALIZER, so label that otherwise
-// quiet wait before Angular constructs AppComponent. No-op outside Android.
+// The native launch overlay is already visible at this point. Session restoration is an APP_INITIALIZER,
+// so label that otherwise quiet wait before Angular constructs AppComponent. No-op outside Android.
 window.SomsShell?.setSplashStage?.('session');
 
 bootstrapApplication(AppComponent, appConfig).catch((err) =>

@@ -10,11 +10,6 @@ function serviceWith(
     safeFetch as never,
     { parse: vi.fn().mockReturnValue(meta) } as never,
     { saveGeneratedWebp } as never,
-    {
-      metadataSelectionsForUrl: vi
-        .fn()
-        .mockResolvedValue({ image: 'first', description: 'first' }),
-    } as never,
   );
 }
 

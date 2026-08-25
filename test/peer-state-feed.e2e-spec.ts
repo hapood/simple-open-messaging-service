@@ -58,6 +58,8 @@ describe('per-peer state feed', () => {
           account: 'alice',
           domain: 'local.test',
           eventType: 'PROFILE',
+          subjectAccount: '',
+          subjectDomain: 'local',
           body: { name: 'A' },
         },
       ]);
@@ -67,6 +69,8 @@ describe('per-peer state feed', () => {
           account: 'alice',
           domain: 'local.test',
           eventType: 'PROFILE',
+          subjectAccount: '',
+          subjectDomain: 'local',
           body: { name: 'B', updatedAt: wireTime, opaqueRevision: 9n },
         },
       ]);
@@ -76,6 +80,8 @@ describe('per-peer state feed', () => {
           account: 'alice',
           domain: 'local.test',
           eventType: 'PROFILE',
+          subjectAccount: '',
+          subjectDomain: 'local',
           body: { name: 'B', updatedAt: wireTime, opaqueRevision: 9n },
         },
       ]);
@@ -242,6 +248,8 @@ describe('per-peer state feed', () => {
         account: 'alice',
         domain: 'local.test',
         eventType: 'PROFILE' as const,
+        subjectAccount: '',
+        subjectDomain: 'local',
         body: { profileRev: 7, displayName: 'Alice', bio: '', avatar: null },
       };
       await database.db.transaction(async (tx) => {
@@ -270,6 +278,8 @@ describe('per-peer state feed', () => {
         account: 'alice',
         domain: 'local.test',
         eventType: 'PROFILE' as const,
+        subjectAccount: '',
+        subjectDomain: 'local',
         body: { profileRev: 8, displayName: 'Alice', bio: '', avatar: null },
       };
       await database.db.transaction(async (tx) => {
@@ -301,6 +311,8 @@ describe('per-peer state feed', () => {
               account: 'alice',
               domain: 'local.test',
               eventType: 'PROFILE',
+              subjectAccount: '',
+              subjectDomain: 'local',
               body: {
                 profileRev: 9,
                 displayName: 'Alice',
@@ -315,6 +327,8 @@ describe('per-peer state feed', () => {
               account: 'alice',
               domain: 'local.test',
               eventType: 'PROFILE',
+              subjectAccount: '',
+              subjectDomain: 'local',
               forceReindex: true,
               body: {
                 profileRev: 9,
@@ -380,6 +394,8 @@ describe('per-peer state feed', () => {
           account: 'alice',
           domain: 'local.test',
           eventType: 'PROFILE',
+          subjectAccount: '',
+          subjectDomain: 'local',
           body: { name: 'private-to-b' },
         },
       ]);
@@ -409,6 +425,8 @@ describe('per-peer state feed', () => {
             account: 'rollback',
             domain: 'local.test',
             eventType: 'PROFILE',
+            subjectAccount: '',
+            subjectDomain: 'local',
             body: {},
           },
         ]);
@@ -437,6 +455,8 @@ describe('per-peer state feed', () => {
           account: 'alice',
           domain: 'local.test',
           eventType: 'PROFILE',
+          subjectAccount: '',
+          subjectDomain: 'local',
           body: {},
         },
       ]),

@@ -318,7 +318,7 @@
     "outgoingDetailTitle": "已发送的好友申请",
     "reasonLabel": "验证消息（可选）",
     "sending": "发送中…",
-    "addAction": "添加",
+    "addAction": "添加好友",
     "sentStatus": "已发送",
     "reviewRequest": "去处理",
     "friendStatus": "已是好友",
@@ -988,6 +988,9 @@
     "incompatibleDismiss": "知道了"
   },
   "contactCard": {
+    "profileTitle": "个人名片",
+    "groupProfileTitle": "群聊名片",
+    "noBio": "暂无简介",
     "shareTitle": "分享名片",
     "shareAria": "分享聊天名片",
     "label": "名片",

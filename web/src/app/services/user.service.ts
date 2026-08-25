@@ -13,7 +13,10 @@ import { WebdbService } from './webdb.service';
 import { ProfileRepository } from './profile-store.service';
 import { PreferenceStore } from './preference-store.service';
 import { isTauri } from './runtime';
-import type { FriendRequestProjection } from './friend-request-state';
+import {
+  friendProjectionIsActive,
+  type FriendRequestProjection,
+} from './friend-request-state';
 
 export type { User } from './model';
 
@@ -115,7 +118,7 @@ type ClientStateBody =
 
 export interface FriendIntentPage {
   items: FriendRequestProjection[];
-  nextCursor: string | null;
+  scannedThrough: string | null;
   hasMore: boolean;
   total: number;
   actionableTotal: number;
@@ -128,7 +131,7 @@ export type ClientStateFeedItem =
       domain: string;
       eventType: 'PROFILE';
       subjectAccount: '';
-      subjectDomain: '';
+      subjectDomain: 'local';
       body: {
         profileRev: number;
         displayName: string;
@@ -151,7 +154,7 @@ export type ClientStateFeedItem =
       domain: string;
       eventType: 'GROUP_JOIN_REQUEST_HEAD';
       subjectAccount: '';
-      subjectDomain: '';
+      subjectDomain: 'local';
       body: {
         threadId: number;
         latestFeedId: number;
@@ -162,10 +165,10 @@ export type ClientStateFeedItem =
   | {
       feedId: number;
       account: '';
-      domain: '';
+      domain: 'local';
       eventType: 'INCOMING_INVITE_HEAD';
       subjectAccount: '';
-      subjectDomain: '';
+      subjectDomain: 'local';
       body: {
         readThroughFeedId: number;
       };
@@ -176,16 +179,16 @@ export type ClientStateFeedItem =
       domain: string;
       eventType: 'GROUP_META_FEED_HEAD';
       subjectAccount: '';
-      subjectDomain: '';
+      subjectDomain: 'local';
       body: { groupMetaFeedEndId: string };
     }
   | {
       feedId: number;
       account: '';
-      domain: '';
+      domain: 'local';
       eventType: 'THREAD_BLOCK';
       subjectAccount: string;
-      subjectDomain: '';
+      subjectDomain: 'local';
       body: { threadId: number; blocked: boolean };
     };
 
@@ -445,8 +448,12 @@ export class UserService {
     threadId: number,
     latestFeedId: number,
     serverReadFeedId: number,
-  ): void {
-    if (latestFeedId < 1) return;
+  ): boolean {
+    if (latestFeedId < 1) return false;
+    const previous = this.groupJoinRequestHeads().get(threadId);
+    // The panel advances readFeedId optimistically. The server then republishes the compacted head with
+    // the same latestFeedId; that acknowledgement is not new attention and must not move the thread.
+    const hasNewUnread = latestFeedId > (previous?.readFeedId ?? 0);
     this.groupJoinRequestHeads.update((current) => {
       const previous = current.get(threadId);
       const nextLatest = Math.max(previous?.latestFeedId ?? 0, latestFeedId);
@@ -470,6 +477,7 @@ export class UserService {
       ]),
     );
     void this.webdb.putMeta('groupJoinRequestHeads', heads);
+    return hasNewUnread;
   }
 
   markGroupJoinRequestsRead(threadId: number): void {
@@ -858,37 +866,44 @@ export class UserService {
 
   /** Send a friend invite. Federated targets are delivered via S2S automatically. On auto-accept (the
    *  target already invited me back, local-only) data carries threadId instead of inviteId. */
-  sendFriendInvite(params: { toUserId: number; note?: string }) {
+  sendFriendInvite(params: {
+    account: string;
+    domain: string;
+    displayName: string;
+    avatar?: string;
+    note?: string;
+  }) {
     return this.http.post<
       StandardResponse<{ inviteId?: string; threadId?: number }>
     >(`${apiPrefix()}/invite/friend`, params);
   }
 
-  sendFederatedFriendInvite(params: {
-    account: string;
-    domain: string;
-    displayName?: string;
-    avatar?: string;
-    bio: string;
-    note?: string;
-  }) {
-    return this.http.post<
-      StandardResponse<{ inviteId?: string; threadId?: number }>
-    >(`${apiPrefix()}/invite/federated-friend`, params);
-  }
-
-  /** Authoritative relationship/invite state for discovery rows. Server-backed so refreshes and other
-   *  devices see the same state; accepts a batch to avoid one request per search result. */
-  friendRelationshipStatuses(params: { userIds: number[] }) {
-    return this.http.post<
-      StandardResponse<
-        Array<{
-          userId: number;
-          status: 'NONE' | 'OUTGOING_PENDING' | 'INCOMING_PENDING' | 'FRIEND';
-          inviteId?: string;
-        }>
-      >
-    >(`${apiPrefix()}/invite/friend-status`, params);
+  /** Relationship state from synchronized local projections: an active P2P thread owns FRIEND, while
+   * the request-intent projection owns pending directions. No relationship network request is needed. */
+  async localRelationship(user: Pick<User, 'id' | 'account' | 'domain'>) {
+    const threads = await this.webdb.getThreads();
+    const friendship = threads.some(
+      (item) =>
+        item.type === 'P2P' &&
+        item.friendshipActive !== false &&
+        (item.peerUser.id === user.id ||
+          (item.peerUser.account === user.account &&
+            item.peerUser.domain === (user.domain || 'local'))),
+    );
+    if (friendship) return 'FRIEND' as const;
+    const matches = (item: FriendRequestProjection) =>
+      item.kind === 'FRIEND' &&
+      friendProjectionIsActive(item, Date.now()) &&
+      (item.peer?.id === user.id ||
+        (item.peer?.account === user.account &&
+          item.peer.domain === (user.domain || 'local')));
+    const [incoming, outgoing] = await Promise.all([
+      this.listLocalFriendRequests('INCOMING', null, 200),
+      this.listLocalFriendRequests('OUTGOING', null, 200),
+    ]);
+    if (outgoing.items.some(matches)) return 'OUTGOING_PENDING' as const;
+    if (incoming.items.some(matches)) return 'INCOMING_PENDING' as const;
+    return 'NONE' as const;
   }
 
   /** Reads the durable request projection produced by the local intent-pair state machine. */
@@ -901,7 +916,7 @@ export class UserService {
     if (me === null)
       return {
         items: [],
-        nextCursor: null,
+        scannedThrough: null,
         hasMore: false,
         total: 0,
         actionableTotal: 0,
@@ -917,8 +932,9 @@ export class UserService {
     const tail = items.at(-1);
     return {
       items,
-      nextCursor:
-        hasMore && tail ? JSON.stringify([tail.requestedSort, tail.key]) : null,
+      scannedThrough: tail
+        ? JSON.stringify([tail.requestedSort, tail.key])
+        : cursor,
       hasMore,
       total: localPage.total,
       actionableTotal: localPage.actionableTotal,

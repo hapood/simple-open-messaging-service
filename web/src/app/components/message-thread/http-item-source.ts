@@ -169,7 +169,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         name: self.name,
         account: self.account,
         avatar: self.avatar,
-        domain: '',
+        domain: 'local',
         isSelf: true,
       });
     if (conv.type === 'P2P' && conv.peerUser)
@@ -177,7 +177,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         name: conv.peerUser.name,
         account: conv.peerUser.account,
         avatar: conv.peerUser.avatar,
-        domain: conv.peerUser.isForeigner ? conv.peerUser.domain : '',
+        domain: conv.peerUser.isForeigner ? conv.peerUser.domain : 'local',
         isSelf: conv.peerUser.id === this.selfUserId,
       });
     this.pending = outbox.forThread(conv.threadId);
@@ -792,9 +792,9 @@ export class HttpItemSource implements CbSource<ChatItemData> {
               avatar: cached.avatar,
               avatarIdentityId: id,
               avatarDomain:
-                cached.domain && cached.domain !== 'local' ? cached.domain : '',
+                cached.domain || 'local',
               domain:
-                cached.domain && cached.domain !== 'local' ? cached.domain : '',
+                cached.domain || 'local',
               isSelf: id === this.selfUserId,
             };
             this.profiles.set(id, profile);

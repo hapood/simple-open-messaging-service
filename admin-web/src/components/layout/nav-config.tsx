@@ -11,7 +11,6 @@ import {
   Radio,
   ScrollText,
   Settings,
-  Link2,
   ShieldBan,
   Gauge,
   MessageSquareWarning,
@@ -34,7 +33,6 @@ export type NavKey =
   | 'settings'
   | 'security'
   | 'audit'
-  | 'linkCards'
   | 'rateLimits'
   | 'messageReports';
 
@@ -95,7 +93,6 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: '/push', key: 'push', icon: Bell },
       { to: '/media', key: 'media', icon: HardDrive },
-      { to: '/link-cards', key: 'linkCards', icon: Link2 },
       { to: '/logs', key: 'logs', icon: ScrollText },
       { to: '/rate-limits', key: 'rateLimits', icon: Gauge },
       { to: '/settings', key: 'settings', icon: Settings },

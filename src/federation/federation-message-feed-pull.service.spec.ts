@@ -171,6 +171,8 @@ describe('FederationMessageFeedPullService commit boundary', () => {
 
   it('atomically adopts a monotonic remote floor and continues draining', async () => {
     const { service, state } = harness();
+    const warn = vi.fn();
+    (service as unknown as { logger: { warn: typeof warn } }).logger.warn = warn;
     const fetch = vi
       .fn()
       .mockRejectedValueOnce(new RemoteFeedCursorUnavailableError(5n, 10n))
@@ -189,6 +191,9 @@ describe('FederationMessageFeedPullService commit boundary', () => {
     });
     expect(apply).toHaveBeenCalledOnce();
     expect(afterCommit).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(
+      'message-feed history for peer.test is unavailable before 5; resumed from that cursor',
+    );
   });
 
   it('accepts a correcting cursor when the local after is beyond the source end', async () => {

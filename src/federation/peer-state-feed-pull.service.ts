@@ -71,7 +71,7 @@ export class PeerStateFeedPullService {
         drainTarget,
       );
       if (!applied) return;
-      if (!applied.page) continue;
+      if ('cursorReset' in applied) continue;
       drainTarget ??= applied.sourceEndId;
       await callbacks.afterCommit?.(applied.page);
       if (applied.hasMore) continue;
@@ -129,6 +129,9 @@ export class PeerStateFeedPullService {
           throw new Error('peer returned an invalid state-feed resume cursor');
         }
         await callbacks.beginRebuild?.(tx);
+        this.logger.warn(
+          `state-feed cursor for peer ${peerDomain} is unavailable; rebuilding from ${error.resumeAfter.toString()}`,
+        );
         await tx
           .update(peerStateFeedPullCursor)
           .set({
@@ -138,10 +141,7 @@ export class PeerStateFeedPullService {
           })
           .where(eq(peerStateFeedPullCursor.peerDomain, peerDomain));
         return {
-          requestedAfter: cursor.committedThrough,
-          scannedThrough: error.resumeAfter,
-          hasMore: true,
-          page: null,
+          cursorReset: true,
         };
       }
       if (!cursor.initialized) {

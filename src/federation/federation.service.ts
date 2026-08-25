@@ -9,6 +9,7 @@ import {
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { createHash, randomUUID } from 'node:crypto';
 import { normalizeAccount, isValidAccount } from '../common/account.js';
+import { encodeFederationResourceComponent } from './federation-resource-request.js';
 import { dataDirectory } from '../common/data-directory.js';
 import {
   DatabaseService,
@@ -54,6 +55,7 @@ import { BusinessCode } from '../common/business-code.js';
 import { QuotaService } from '../quota/quota.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import {
+  applyFederatedPendingProfileSnapshot,
   InviteService,
   type FederatedPendingProfileSnapshot,
 } from '../invite/invite.service.js';
@@ -780,6 +782,8 @@ export class FederationService {
         account: u.account,
         domain: this.config.domain,
         eventType: 'PROFILE' as const,
+        subjectAccount: '',
+        subjectDomain: 'local',
         body: {
           profileRev: u.profileRev,
           displayName: u.name,
@@ -849,6 +853,8 @@ export class FederationService {
         account: u.account,
         domain: this.config.domain,
         eventType: 'PROFILE',
+        subjectAccount: '',
+        subjectDomain: 'local',
         forceReindex,
         body: {
           profileRev: u.profileRev,
@@ -897,6 +903,8 @@ export class FederationService {
       account: localAccount,
       domain: this.config.domain,
       eventType: 'PROFILE',
+      subjectAccount: '',
+      subjectDomain: 'local',
     });
   }
 
@@ -935,12 +943,16 @@ export class FederationService {
       account: groupAccount,
       domain: this.config.domain,
       eventType: 'PROFILE',
+      subjectAccount: '',
+      subjectDomain: 'local',
     });
     await this.stateFeed.deleteProjectionInTx(tx, {
       peerDomain,
       account: groupAccount,
       domain: this.config.domain,
       eventType: 'GROUP_META_FEED_HEAD',
+      subjectAccount: '',
+      subjectDomain: 'local',
     });
     return new Map();
   }
@@ -1249,9 +1261,9 @@ export class FederationService {
     memberUserId: number,
     address: S2SAddress,
     note: string,
+    snapshot: FederatedPendingProfileSnapshot,
   ): Promise<void> {
-    const profile = await this.fetchRemoteUser(address);
-    if (!profile.account.startsWith('!'))
+    if (!address.account.startsWith('!'))
       throw new BusinessException(
         BusinessCode.FRIEND_INVALID_TARGET,
         'target is not a group',
@@ -1260,8 +1272,8 @@ export class FederationService {
     const state = await this.database.db.transaction(async (tx) => {
       const shell = await this.ensureFederatedGroupRequestShellInTx(
         tx,
-        profile.account,
-        profile.domain,
+        address.account,
+        address.domain,
         memberUserId,
       );
       return this.writeMemberRelationshipIntentInTx(
@@ -1271,6 +1283,7 @@ export class FederationService {
         'REQUESTED',
         clientFeedUpdates,
         note,
+        snapshot,
       );
     });
     clientFeedUpdates.forEach((pending) =>
@@ -1328,13 +1341,18 @@ export class FederationService {
         'REVOKED',
         clientFeedUpdates,
       );
+      const endpoints = clientGroupIntentEndpoints(
+        account,
+        member.account,
+        'MEMBER',
+      );
       const feedId = await this.clientStateFeed.writeInTx(tx, {
         userId: memberUserId,
-        account,
-        domain,
+        account: endpoints.account,
+        domain: 'local',
         eventType: 'RELATIONSHIP_INTENT',
-        subjectAccount: member.account,
-        subjectDomain: this.config.domain,
+        subjectAccount: endpoints.subjectAccount,
+        subjectDomain: domain,
         body: {
           status: 'REVOKED',
           note: '',
@@ -1580,10 +1598,10 @@ export class FederationService {
       const clientFeedId = await this.clientStateFeed.writeInTx(tx, {
         userId: memberUserId,
         account: endpoints.account,
-        domain: '',
+        domain: 'local',
         eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: endpoints.subjectAccount,
-        subjectDomain: '',
+        subjectDomain: 'local',
         body: {
           status: groupIntentWireStatus(membership.request.status),
           note: membership.request.note,
@@ -1592,7 +1610,7 @@ export class FederationService {
           threadId,
           group: {
             account: state.groupAccount,
-            domain: '',
+            domain: 'local',
             isLocal: true,
             name: state.groupName,
             avatar: state.groupAvatar,
@@ -1658,6 +1676,7 @@ export class FederationService {
     status: GroupIntentWireStatus = 'REQUESTED',
     clientFeedUpdates?: PendingClientStateFeedUpdate[],
     note = '',
+    groupSnapshot?: FederatedPendingProfileSnapshot,
   ): Promise<Map<string, bigint>> {
     const [thread] = await tx
       .select({ groupUserId: tables.messageThread.groupUserId })
@@ -1684,6 +1703,10 @@ export class FederationService {
     ]);
     if (!groupUser || !member || member.isForeigner)
       throw new Error('group join identities are invalid');
+    const projectedGroup = applyFederatedPendingProfileSnapshot(
+      { name: groupUser.name, avatar: groupUser.avatar },
+      groupSnapshot,
+    );
     const membership = await this.relationshipIntents.writeAuthoredIntentInTx(
       tx,
       {
@@ -1734,10 +1757,10 @@ export class FederationService {
           // Preserve the authored direction in the compacted key. Reusing group->member here would
           // overwrite the group's intent and make bilateral authorization impossible to reconstruct.
           account: endpoints.account,
-          domain: '',
+          domain: 'local',
           eventType: 'RELATIONSHIP_INTENT',
           subjectAccount: endpoints.subjectAccount,
-          subjectDomain: '',
+          subjectDomain: 'local',
           body: {
             status: groupIntentWireStatus(membership.request.status),
             note: membership.request.note,
@@ -1747,10 +1770,10 @@ export class FederationService {
             threadId,
             group: {
               account: groupUser.account,
-              domain: '',
+              domain: 'local',
               isLocal: true,
-              name: groupUser.name,
-              avatar: groupUser.avatar,
+              name: projectedGroup.name,
+              avatar: projectedGroup.avatar,
               description: groupUser.bio,
               profileRev: groupUser.profileRev,
             },
@@ -1810,13 +1833,18 @@ export class FederationService {
       membership.changed &&
       membership.request.status === 'REQUESTED'
     ) {
+      const endpoints = clientGroupIntentEndpoints(
+        groupUser.account,
+        member.account,
+        'MEMBER',
+      );
       const feedId = await this.clientStateFeed.writeInTx(tx, {
         userId: memberUserId,
-        account: groupUser.account,
-        domain: groupUser.domain,
+        account: endpoints.account,
+        domain: 'local',
         eventType: 'RELATIONSHIP_INTENT',
-        subjectAccount: member.account,
-        subjectDomain: this.config.domain,
+        subjectAccount: endpoints.subjectAccount,
+        subjectDomain: groupUser.domain,
         body: {
           status: 'REQUESTED',
           note: membership.request.note,
@@ -1828,8 +1856,8 @@ export class FederationService {
             account: groupUser.account,
             domain: groupUser.domain,
             isLocal: false,
-            name: groupUser.name,
-            avatar: groupUser.avatar,
+            name: projectedGroup.name,
+            avatar: projectedGroup.avatar,
             description: groupUser.bio,
             profileRev: groupUser.profileRev,
           },
@@ -2404,6 +2432,8 @@ export class FederationService {
           account: state.account,
           domain: this.config.domain,
           eventType: 'PROFILE' as const,
+          subjectAccount: '',
+          subjectDomain: 'local',
           revision: state.profileRev,
           body: {
             profileRev: state.profileRev,
@@ -2417,6 +2447,8 @@ export class FederationService {
           account: state.account,
           domain: this.config.domain,
           eventType: 'GROUP_META_FEED_HEAD' as const,
+          subjectAccount: '',
+          subjectDomain: 'local',
           body: {
             groupMetaFeedEndId: groupMetaHeads.get(peerDomain)!.toString(),
           },
@@ -3945,6 +3977,9 @@ export class FederationService {
             BigInt(recovery.resumeBefore) <= BigInt(recovery.resumeAfter)
           )
             throw new Error('invalid group-meta recovery window');
+          this.logger.warn(
+            `group-meta cursor for ${account}@${domain} is unavailable; rebuilding from ${recovery.resumeAfter} through ${(BigInt(recovery.resumeBefore) - 1n).toString()}`,
+          );
           return this.pullGroupMetaFeed(
             domain,
             account,
@@ -6528,6 +6563,9 @@ export class FederationService {
             )
               throw mapped;
             cursorCorrected = true;
+            this.logger.warn(
+              `message query cursor for peer ${domain} thread ${item.thread.account} is unavailable; resuming from ${mapped.resumeAfter.toString()}`,
+            );
             after = mapped.resumeAfter;
             continue;
           }
@@ -7241,6 +7279,19 @@ export class FederationService {
         );
       }
       described.add(asset.digest);
+    }
+    if (item.contentType === ContentType.CONTACT_CARD) {
+      const avatar = item.assets[0];
+      if (
+        avatar &&
+        (avatar.bytes < 1 || avatar.bytes > UploadService.MAX_AVATAR_WIRE_BYTES)
+      ) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'contact-card avatar exceeds the profile avatar size limit',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
     }
     if (
       expected.size !== described.size ||
@@ -8701,6 +8752,9 @@ export class FederationService {
           if (mapped instanceof RemoteFeedCursorUnavailableError) {
             if (cursorCorrected || mapped.resumeAfter === after) throw mapped;
             cursorCorrected = true;
+            this.logger.warn(
+              `tombstone query cursor for peer ${domain} thread ${item.thread.account} is unavailable; resuming from ${mapped.resumeAfter.toString()}`,
+            );
             after = mapped.resumeAfter;
             continue;
           }
@@ -9168,11 +9222,7 @@ export class FederationService {
             .onConflictDoNothing();
         }
       }
-      await ClientMessageFeedWriter.publishMessage(
-        tx,
-        threadId,
-        seq,
-      );
+      await ClientMessageFeedWriter.publishMessage(tx, threadId, seq);
       if (localDeletionId !== null)
         await ClientMessageFeedWriter.publishTombstone(
           tx,
@@ -9902,7 +9952,7 @@ export class FederationService {
    */
   async fetchRemoteUser(address: S2SAddress): Promise<S2SProfile> {
     return this.getSigned<S2SProfile>(
-      `/s2s/v1/users/${address.account}`,
+      `/s2s/v1/users/${encodeFederationResourceComponent(address.account)}`,
       address.domain,
     );
   }

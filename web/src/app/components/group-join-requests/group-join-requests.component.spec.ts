@@ -19,7 +19,7 @@ function row(feedId: number, status: GroupJoinRequest['status'] = 'REQUESTED') {
     status,
     userId: feedId,
     account: `user-${feedId}`,
-    domain: '',
+    domain: 'local',
     name: `User ${feedId}`,
     avatar: '',
     note: '',

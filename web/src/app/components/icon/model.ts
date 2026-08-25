@@ -31,6 +31,7 @@ export enum AppIconType {
   DEVICES,
   FILE,
   CHATS,
+  GROUPS,
   FRIEND_REQUESTS,
   NEW_GROUP,
   PERSON_ADMIN,

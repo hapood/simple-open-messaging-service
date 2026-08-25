@@ -133,7 +133,7 @@ export function createP2PConversation(
       bio: '',
       isForeigner: false,
       isGroup: false,
-      domain: '',
+      domain: 'local',
       createdAt: 0,
       updatedAt: 0,
       profileRev: 0,
@@ -175,7 +175,7 @@ export function createGroupConversation(
     group: {
       avatar: '',
       description: '',
-      domain: '',
+      domain: 'local',
       threadId,
       createdAt: 0,
       updatedAt: 0,

@@ -38,7 +38,7 @@ describe('system message content', () => {
       parseSystemMessageContent(
         JSON.stringify({
           type: SystemMessageType.GROUP_LEFT,
-          subject: { account: 'bob', domain: '' },
+          subject: { account: 'bob', domain: 'local' },
           action: true,
         }),
       ),

@@ -55,6 +55,12 @@ export interface TombstoneCatchUpResult {
   tombstoneFeedEndId: number;
 }
 
+export interface FeedCursorReset {
+  kind: 'cursor-reset';
+  resumeAfter: number;
+  resumeBefore: number;
+}
+
 /**
  * HTTP client for the two independent per-user compacted feeds. Callers own and durably commit the integer
  * cursors; the service owns only one single-flight guard per feed.
@@ -74,7 +80,7 @@ export class ThreadCatchUpService {
   async catchUp(
     after: number,
     through?: number,
-  ): Promise<ThreadCatchUpResult | null> {
+  ): Promise<ThreadCatchUpResult | FeedCursorReset | null> {
     if (this.summaryInFlight) return null;
     this.summaryInFlight = true;
     try {
@@ -103,11 +109,13 @@ export class ThreadCatchUpService {
         ) {
           const after = reset.resumeAfter as number;
           const end = (reset.resumeBefore as number) - 1;
+          console.warn(
+            `[message-feed] cursor unavailable; resuming from ${after} through ${end}`,
+          );
           return {
-            items: [],
-            scannedThrough: after,
-            messageFeedEndId: end,
-            hasMore: after < end,
+            kind: 'cursor-reset',
+            resumeAfter: after,
+            resumeBefore: reset.resumeBefore as number,
           };
         }
       }
@@ -121,7 +129,7 @@ export class ThreadCatchUpService {
   async catchUpTombstones(
     after: number,
     through?: number,
-  ): Promise<TombstoneCatchUpResult | null> {
+  ): Promise<TombstoneCatchUpResult | FeedCursorReset | null> {
     if (this.tombstoneInFlight) return null;
     this.tombstoneInFlight = true;
     try {
@@ -142,11 +150,13 @@ export class ThreadCatchUpService {
         ) {
           const resetAfter = reset.resumeAfter as number;
           const end = (reset.resumeBefore as number) - 1;
+          console.warn(
+            `[tombstone-feed] cursor unavailable; resuming from ${resetAfter} through ${end}`,
+          );
           return {
-            items: [],
-            scannedThrough: resetAfter,
-            tombstoneFeedEndId: end,
-            hasMore: resetAfter < end,
+            kind: 'cursor-reset',
+            resumeAfter: resetAfter,
+            resumeBefore: reset.resumeBefore as number,
           };
         }
       }

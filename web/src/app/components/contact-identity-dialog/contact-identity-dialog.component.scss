@@ -1,19 +1,30 @@
 .identity-dialog {
   width: 100%;
   box-sizing: border-box;
-  padding: 20px;
   color: var(--app-text);
+}
+.identity-dialog__header {
+  height: 46px;
+  padding: 0 20px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid rgba(127, 127, 127, 0.16);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
 }
 .identity-summary {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
-  min-height: 56px;
+  min-height: 48px;
+  padding: 20px 20px 12px;
 }
 .identity-summary app-user-avatar {
-  width: 56px;
-  height: 56px;
-  flex: 0 0 56px;
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
 }
 .identity-copy {
   min-width: 0;
@@ -34,36 +45,17 @@
   font-size: 13px;
   line-height: 20px;
 }
-.identity-meta {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 16px;
-  padding-top: 10px;
-  border-top: 1px solid var(--app-border);
-  color: var(--app-text-muted);
-  font-size: 12px;
-  line-height: 18px;
-}
-.identity-action {
-  width: 100%;
-  height: 40px;
-  margin-top: 16px;
-  padding: 0 16px;
-  border: 0;
+.identity-account {
+  width: fit-content;
+  max-width: calc(100% - 40px);
+  box-sizing: border-box;
+  margin: 0 20px 16px;
+  padding: 1px 7px;
+  border: 1px solid var(--app-border);
   border-radius: var(--app-radius-md);
-  color: var(--app-on-brand);
-  background: var(--app-brand);
-  font: inherit;
-  font-size: 14px;
-  line-height: 20px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.identity-action:hover {
-  background: var(--app-brand-hover);
-}
-.identity-action:focus-visible {
-  outline: 2px solid var(--app-focus-ring);
-  outline-offset: 2px;
+  background: color-mix(in srgb, var(--app-text) 4%, transparent);
+  color: var(--app-text-muted);
+  font-size: 11px;
+  line-height: 14px;
+  overflow-wrap: anywhere;
 }

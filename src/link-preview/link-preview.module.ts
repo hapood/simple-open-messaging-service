@@ -4,8 +4,6 @@ import { OpenGraphService } from './open-graph.service.js';
 import { LinkPreviewService } from './link-preview.service.js';
 import { LinkPreviewController } from './link-preview.controller.js';
 import { UploadModule } from '../upload/upload.module.js';
-import { LinkCardRuleController } from './link-card-rule.controller.js';
-import { LinkCardRuleService } from './link-card-rule.service.js';
 
 /**
  * Web link card (OpenGraph preview) feature. The SSRF-safe fetch + OG parser create short-lived
@@ -16,13 +14,8 @@ import { LinkCardRuleService } from './link-card-rule.service.js';
   // LinkPreviewService stores fetched card assets in CAS. forwardRef pairs with UploadModule's deferred
   // MessageModule import to break Upload -> Message -> LinkPreview -> Upload under native ESM initialization.
   imports: [forwardRef(() => UploadModule)],
-  controllers: [LinkPreviewController, LinkCardRuleController],
-  providers: [
-    SafeFetchService,
-    OpenGraphService,
-    LinkPreviewService,
-    LinkCardRuleService,
-  ],
-  exports: [LinkPreviewService, LinkCardRuleService],
+  controllers: [LinkPreviewController],
+  providers: [SafeFetchService, OpenGraphService, LinkPreviewService],
+  exports: [LinkPreviewService],
 })
 export class LinkPreviewModule {}

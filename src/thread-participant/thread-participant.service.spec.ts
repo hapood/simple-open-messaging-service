@@ -110,10 +110,10 @@ describe('ThreadParticipantService.setBlocked', () => {
     expect(clientFeed.writeInTx).toHaveBeenCalledWith(tx, {
       userId: 4,
       account: '',
-      domain: '',
+      domain: 'local',
       eventType: 'THREAD_BLOCK',
       subjectAccount: '9',
-      subjectDomain: '',
+      subjectDomain: 'local',
       body: { threadId: 9, blocked: true },
     });
     expect(clientFeed.notifyFeedUpdated).toHaveBeenCalledWith({

@@ -223,11 +223,6 @@ export class ConversationListService {
     this.repo.applyGroupUpdate(threadId, patch);
   }
 
-  /** Apply an optimistic local role change; the durable group snapshot remains authoritative. */
-  applyRole(threadId: number, role: 'OWNER' | 'ADMIN' | 'MEMBER'): void {
-    this.repo.applyRole(threadId, role);
-  }
-
   /** Drop a thread (self-kick / self-left / unfriend). */
   removeThread(threadId: number): Promise<void> {
     return this.repo.removeThread(threadId);

@@ -213,15 +213,17 @@ export class UserController {
     @Query('through') throughParam?: string,
   ) {
     const me = req.user.userId;
-    const mode = modeParam ?? 'delta';
-    if (mode !== 'full' && mode !== 'delta')
+    const requestedMode = modeParam ?? 'delta';
+    if (requestedMode !== 'full' && requestedMode !== 'delta')
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
         'mode must be full or delta',
         HttpStatus.BAD_REQUEST,
       );
-    if (afterParam === undefined)
+    const mode: 'full' | 'delta' = requestedMode;
+    if (afterParam === undefined) {
       return this.clientStateFeed.rejectMissingAfter(me);
+    }
     const parseCursor = (value: string, name: string): number => {
       if (!/^(0|[1-9]\d*)$/.test(value))
         throw new BusinessException(
@@ -257,13 +259,14 @@ export class UserController {
         HttpStatus.BAD_REQUEST,
       );
     const stateFeedEndId = await this.clientStateFeed.readEndId(me);
-    if (after > stateFeedEndId)
+    if (after > stateFeedEndId) {
       throw new BusinessException(
         BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
         'state feed cursor is outside the available coordinate space',
         HttpStatus.OK,
         { resumeAfter: 0, resumeBefore: stateFeedEndId + 1 },
       );
+    }
     const scanEnd = Math.min(through ?? stateFeedEndId, stateFeedEndId);
     const candidates = (
       await this.clientStateFeed.query(me, mode, after, scanEnd)

@@ -31,6 +31,7 @@ import { ToastService } from '../../services/toast.service';
 import { ThreadDeletionLockService } from '../../services/thread-deletion-lock.service';
 import { firstValueFrom } from 'rxjs';
 import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter';
+import { ChatContextService } from '../message-thread/chat-context.service';
 
 /**
  * Chat surface header: back (mobile), the thread title (tap → peer-profile / group-info aside), and
@@ -82,6 +83,7 @@ export class MessageHeaderComponent {
   private readonly transloco = inject(TranslocoService);
   private readonly toast = inject(ToastService);
   private readonly deletionLock = inject(ThreadDeletionLockService);
+  private readonly chatContext = inject(ChatContextService);
 
   /** Whether the call button shows: 1:1 calling is supported (Android native only — web/desktop calling is
    *  deferred) AND this is a P2P thread (groups can't be called 1:1). */
@@ -179,7 +181,7 @@ export class MessageHeaderComponent {
   readonly menuOpen = signal(false);
   readonly hasUnreadJoinRequests = computed(() => {
     const trd = this.userMsgTrd();
-    if (trd?.type !== 'GROUP' || (trd.role !== 'OWNER' && trd.role !== 'ADMIN'))
+    if (trd?.type !== 'GROUP' || !this.chatContext.canAdministerGroup())
       return false;
     const head = this.userService.groupJoinRequestHeads().get(trd.threadId);
     return !!head && head.readFeedId < head.latestFeedId;
@@ -234,7 +236,7 @@ export class MessageHeaderComponent {
         icon: AppIconType.PIN,
       },
     ];
-    if (!isP2P && (trd.role === 'OWNER' || trd.role === 'ADMIN'))
+    if (!isP2P && this.chatContext.canAdministerGroup())
       list.splice(1, 0, {
         kind: 'action',
         key: 'joinRequests',
@@ -387,9 +389,7 @@ export class MessageHeaderComponent {
         void this.runLockedDelete(
           trd.threadId,
           () =>
-            firstValueFrom(
-              this.userService.deleteFriend({ userId: peerId }),
-            ),
+            firstValueFrom(this.userService.deleteFriend({ userId: peerId })),
           () =>
             this.convList.applyThreadMeta(trd.threadId, {
               friendshipActive: false,
@@ -417,8 +417,7 @@ export class MessageHeaderComponent {
         if (!result) return;
         void this.runLockedDelete(
           trd.threadId,
-          () =>
-            firstValueFrom(this.groupService.leaveGroup({ groupId })),
+          () => firstValueFrom(this.groupService.leaveGroup({ groupId })),
           () =>
             this.convList.applyThreadMeta(trd.threadId, {
               conversationState: 'READ_ONLY',

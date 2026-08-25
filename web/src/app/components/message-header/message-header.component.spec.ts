@@ -19,7 +19,12 @@ import { CallAdapterService } from '../../services/call-adapter';
 import { CallEventService } from '../../services/call-event.service';
 import { IDLE_CALL } from '../../services/call-adapter';
 import { AvatarRepository } from '../../services/avatar-cache.service';
-import { ConversationItem, createP2PConversation } from '../../services/model';
+import { ChatContextService } from '../message-thread/chat-context.service';
+import {
+  ConversationItem,
+  createGroupConversation,
+  createP2PConversation,
+} from '../../services/model';
 
 /**
  * Covers the header's local computed state and action dispatch. ConversationListService is stubbed with controllable
@@ -32,6 +37,8 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
   let fixture: ComponentFixture<MessageHeaderComponent>;
   let items: ReturnType<typeof signal<ConversationItem[]>>;
   let openThreadId: ReturnType<typeof signal<number | undefined>>;
+  let openAside: ReturnType<typeof vi.fn>;
+  let canAdministerGroup: ReturnType<typeof signal<boolean>>;
 
   /** Minimal ConversationItem — only threadId + unreadCount are exercised by the badge sum. */
   function item(threadId: number, unreadCount: number): ConversationItem {
@@ -49,6 +56,8 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
   beforeEach(() => {
     items = signal<ConversationItem[]>([]);
     openThreadId = signal<number | undefined>(undefined);
+    openAside = vi.fn();
+    canAdministerGroup = signal(false);
 
     TestBed.configureTestingModule({
       imports: [MessageHeaderComponent],
@@ -70,7 +79,7 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
         { provide: ConversationListService, useValue: { items, openThreadId } },
         {
           provide: NavStateMachineService,
-          useValue: { searchOpen: signal(false) },
+          useValue: { searchOpen: signal(false), openAside },
         },
         {
           provide: LayoutService,
@@ -79,7 +88,14 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
           },
         },
         { provide: MsgService, useValue: {} },
-        { provide: UserService, useValue: {} },
+        {
+          provide: UserService,
+          useValue: {
+            sessionProfile: signal({ id: 1 }),
+            groupJoinRequestHeads: signal(new Map()),
+          },
+        },
+        { provide: ChatContextService, useValue: { canAdministerGroup } },
         { provide: GroupService, useValue: {} },
         { provide: RouteService, useValue: {} },
         { provide: CallAdapterService, useValue: {} },
@@ -148,5 +164,22 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
 
     comp.onSelect('shareContact');
     expect(shared).toEqual([chat]);
+  });
+
+  it('offers join requests directly in an admin group More menu', () => {
+    const chat = createGroupConversation(
+      8,
+      { id: 80, account: 'group-80', name: 'Group 80', ownerId: 1 },
+      { role: 'ADMIN' },
+    );
+    canAdministerGroup.set(true);
+    fixture.componentRef.setInput('userMsgTrd', chat);
+
+    expect(comp.entries()).toContainEqual(
+      expect.objectContaining({ kind: 'action', key: 'joinRequests' }),
+    );
+
+    comp.onSelect('joinRequests');
+    expect(openAside).toHaveBeenCalledWith('group-join-requests');
   });
 });

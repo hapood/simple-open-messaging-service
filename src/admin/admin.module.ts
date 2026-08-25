@@ -38,8 +38,6 @@ import { DiagnosticsModule } from '../diagnostics/diagnostics.module.js';
 import { AdminDiagnosticsController } from '../diagnostics/diagnostics-admin.controller.js';
 import { LoggerModule } from '../logger/logger.module.js';
 import { LogViewerController } from '../logger/log-viewer.controller.js';
-import { LinkPreviewModule } from '../link-preview/link-preview.module.js';
-import { LinkCardRuleAdminController } from './link-card-rule-admin.controller.js';
 import { RateLimitMonitoringController } from './rate-limit-monitoring.controller.js';
 import { FederationResetService } from './federation-reset.service.js';
 import { MessageModule } from '../message/message.module.js';
@@ -64,7 +62,6 @@ import { MessageReportAdminController } from './message-report-admin.controller.
     DiagnosticsModule,
     // LogViewerService (exported by LoggerModule) backs LogViewerController (admin log tail + history).
     LoggerModule,
-    LinkPreviewModule,
     MessageModule,
     ThreadParticipantModule,
   ],
@@ -82,7 +79,6 @@ import { MessageReportAdminController } from './message-report-admin.controller.
     WebAuthnController,
     AdminDiagnosticsController,
     LogViewerController,
-    LinkCardRuleAdminController,
     RateLimitMonitoringController,
     MessageReportAdminController,
   ],

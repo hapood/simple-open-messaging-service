@@ -32,7 +32,8 @@ function malformed(message: string): never {
   );
 }
 
-function canonicalComponent(value: string): string {
+/** Encode one federation resource path/query value in canonical RFC 3986 form. */
+export function encodeFederationResourceComponent(value: string): string {
   const bytes = new TextEncoder().encode(value);
   let encoded = '';
   for (const byte of bytes) {
@@ -53,7 +54,7 @@ function decodeComponent(raw: string, name: string): string {
   } catch {
     return malformed(`${name} is not valid UTF-8 percent encoding`);
   }
-  if (canonicalComponent(decoded) !== raw) {
+  if (encodeFederationResourceComponent(decoded) !== raw) {
     return malformed(`${name} has non-canonical percent encoding`);
   }
   return decoded;

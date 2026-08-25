@@ -33,7 +33,6 @@ import {
 import { correlationIdInterceptor } from './correlation-id.interceptor';
 import { GlobalErrorHandler } from './global-error.handler';
 import { AuthService } from './services/auth.service';
-import { LinkCardService } from './services/link-card.service';
 import { routes } from './app.routes';
 import { InlineTranslocoLoader } from './i18n/transloco.loader';
 import { isTauri } from './services/runtime';
@@ -65,17 +64,12 @@ export const appConfig: ApplicationConfig = {
     { provide: CSP_NONCE, useValue: readCspNonce() },
     // Restore the native session from OS secure storage (Android EncryptedSharedPreferences / desktop
     // keyring) BEFORE the router resolves, so isLoggedIn() + the HTTP interceptor see the restored token
-    // with no race on a trusted-device cold start. Only authenticated clients preload link-card rules;
-    // otherwise a guest launch would make a guaranteed-to-fail request to the protected endpoint.
+    // with no race on a trusted-device cold start.
     {
       provide: APP_INITIALIZER,
       multi: true,
-      deps: [AuthService, LinkCardService],
-      useFactory:
-        (auth: AuthService, linkCards: LinkCardService) => async () => {
-          await auth.restoreSession();
-          if (auth.isLoggedIn()) await linkCards.loadRules();
-        },
+      deps: [AuthService],
+      useFactory: (auth: AuthService) => () => auth.restoreSession(),
     },
     provideZonelessChangeDetection(),
     {

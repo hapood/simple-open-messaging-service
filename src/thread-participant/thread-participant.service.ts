@@ -149,10 +149,10 @@ export class ThreadParticipantService {
       const feedId = await this.clientStateFeed.writeInTx(tx, {
         userId,
         account: '',
-        domain: '',
+        domain: 'local',
         eventType: 'THREAD_BLOCK',
         subjectAccount: threadId.toString(),
-        subjectDomain: '',
+        subjectDomain: 'local',
         body: { threadId, blocked },
       });
       return feedId === null ? null : { userId, feedId };

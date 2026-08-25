@@ -104,6 +104,8 @@ describe('PeerStateFeedPullService atomic page application', () => {
 
   it('starts a replacement rebuild before committing a corrected cursor', async () => {
     const { service, order } = harness(2n);
+    const warn = vi.fn();
+    (service as unknown as { logger: { warn: typeof warn } }).logger.warn = warn;
     const fetch = vi
       .fn()
       .mockRejectedValueOnce(new RemoteFeedCursorUnavailableError(0n, 4n))
@@ -116,6 +118,9 @@ describe('PeerStateFeedPullService atomic page application', () => {
       }),
     ).rejects.toThrow('replacement fetch failed');
     expect(order).toEqual(['rebuild', 'cursor']);
+    expect(warn).toHaveBeenCalledWith(
+      'state-feed cursor for peer peer.test is unavailable; rebuilding from 0',
+    );
     expect(fetch).toHaveBeenNthCalledWith(1, 2n, undefined);
     expect(fetch).toHaveBeenCalledTimes(2);
   });

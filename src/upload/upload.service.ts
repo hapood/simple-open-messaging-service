@@ -192,6 +192,10 @@ export class UploadService {
    *  This exists ONLY to stop a trusted-but-broken peer OOM-ing us with a huge b64 before `Buffer.from`
    *  allocates — a round number avoids the imprecise base64 4/3 ceil math. See design-review item C3. */
   static readonly MAX_AVATAR_WIRE_B64_LEN = 1024 * 1024;
+  /** Maximum decoded bytes represented by MAX_AVATAR_WIRE_B64_LEN. Contact-card avatar assets use
+   *  the same federation avatar ceiling, but advertise raw bytes instead of padded Base64 length. */
+  static readonly MAX_AVATAR_WIRE_BYTES =
+    (UploadService.MAX_AVATAR_WIRE_B64_LEN / 4) * 3;
 
   /**
    * Consume a single image from multipart/form-data: whitelist the image mimetype, cap at

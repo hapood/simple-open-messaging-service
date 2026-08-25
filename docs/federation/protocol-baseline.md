@@ -118,7 +118,8 @@ Federation v1 wire requirements.
 - Unknown message content types make a message invalid. Index feeds contain no
   content payload.
 - `CONTACT_CARD` carries a valid user or group address and an immutable, untrusted display
-  snapshot, including an optional biography. Its optional avatar digest is a direct message asset. Receiving a
+  snapshot, including an optional biography. Its optional avatar digest is a direct message asset
+  and uses the same encoded-size and decoded-pixel limits as the public profile avatar. Receiving a
   card does not establish account existence, profile authority, or a
   relationship.
 - Group leave converges through state. While a server still has another active

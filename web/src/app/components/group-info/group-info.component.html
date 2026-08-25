@@ -17,11 +17,7 @@
     </div>
     <mat-card appearance="outlined" class="group-profile-card">
       <div class="profile-meta">
-        @if (group()?.domain; as domain) {
-          &#64;{{ domain }}
-        } @else {
-          {{ 'group.localGroup' | transloco }}
-        }
+        {{ group()?.account }}&#64;{{ group()?.domain || 'local' }}
       </div>
       <button
         class="group-profile-row"

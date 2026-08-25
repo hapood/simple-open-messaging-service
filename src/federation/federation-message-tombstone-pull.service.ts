@@ -78,7 +78,7 @@ export class FederationMessageTombstonePullService {
     for (;;) {
       const applied = await this.applyOne(peerDomain, callbacks);
       if (!applied) return;
-      if (!applied.page) continue;
+      if ('cursorReset' in applied) continue;
       await callbacks.afterCommit?.(applied.page);
       if (applied.hasMore) continue;
       const cursor =
@@ -147,6 +147,9 @@ export class FederationMessageTombstonePullService {
             'peer returned an invalid tombstone-feed resume cursor',
           );
         }
+        this.logger.warn(
+          `tombstone-feed cursor for peer ${peerDomain} is unavailable; resuming from ${error.resumeAfter.toString()}`,
+        );
         await tx
           .update(federationTombstonePullCursor)
           .set({
@@ -156,10 +159,7 @@ export class FederationMessageTombstonePullService {
           })
           .where(eq(federationTombstonePullCursor.peerDomain, peerDomain));
         return {
-          requestedAfter: cursor.committedThrough,
-          scannedThrough: error.resumeAfter,
-          hasMore: true,
-          page: null,
+          cursorReset: true,
         };
       }
       if (!cursor.initialized) {

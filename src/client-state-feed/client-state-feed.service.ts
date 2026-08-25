@@ -13,6 +13,7 @@ import { BusinessException } from '../common/business.exception.js';
 import { SseService } from '../gateway/sse.service.js';
 import { mutuallyAuthorizedSql } from '../invite/relationship-authorization.js';
 import { ClientGroupMetaFeedService } from './client-group-meta-feed.service.js';
+import { serializeBody } from '../common/serialize.interceptor.js';
 
 export interface ClientStateFeedWrite {
   userId: number;
@@ -73,6 +74,7 @@ export class ClientStateFeedService {
     tx: DatabaseTransaction,
     write: ClientStateFeedWrite,
   ): Promise<number | null> {
+    const body = serializeBody(write.body) as Record<string, unknown>;
     const [current] = await tx
       .select({
         body: clientStateFeed.body,
@@ -89,7 +91,7 @@ export class ClientStateFeedService {
         ),
       )
       .limit(1);
-    if (current && isDeepStrictEqual(current.body, write.body)) return null;
+    if (current && isDeepStrictEqual(current.body, body)) return null;
     const [owner] = await tx
       .update(user)
       .set({
@@ -101,7 +103,7 @@ export class ClientStateFeedService {
     if (!owner) throw new Error('client state feed owner missing');
     await tx
       .insert(clientStateFeed)
-      .values({ ...write, feedId: owner.feedId })
+      .values({ ...write, body, feedId: owner.feedId })
       .onConflictDoUpdate({
         target: [
           clientStateFeed.userId,
@@ -113,7 +115,7 @@ export class ClientStateFeedService {
         ],
         set: {
           feedId: owner.feedId,
-          body: write.body,
+          body,
           updatedAt: new Date(),
         },
       });
@@ -143,7 +145,7 @@ export class ClientStateFeedService {
           eq(clientStateFeed.domain, write.domain),
           eq(clientStateFeed.eventType, 'GROUP_JOIN_REQUEST_HEAD'),
           eq(clientStateFeed.subjectAccount, ''),
-          eq(clientStateFeed.subjectDomain, ''),
+          eq(clientStateFeed.subjectDomain, 'local'),
         ),
       )
       .limit(1);
@@ -182,7 +184,7 @@ export class ClientStateFeedService {
       domain: write.domain,
       eventType: 'GROUP_JOIN_REQUEST_HEAD',
       subjectAccount: '',
-      subjectDomain: '',
+      subjectDomain: 'local',
       body: {
         threadId: write.threadId,
         latestFeedId,
@@ -295,10 +297,10 @@ export class ClientStateFeedService {
           and(
             eq(clientStateFeed.userId, userId),
             eq(clientStateFeed.account, ''),
-            eq(clientStateFeed.domain, ''),
+            eq(clientStateFeed.domain, 'local'),
             eq(clientStateFeed.eventType, 'INCOMING_INVITE_HEAD'),
             eq(clientStateFeed.subjectAccount, ''),
-            eq(clientStateFeed.subjectDomain, ''),
+            eq(clientStateFeed.subjectDomain, 'local'),
           ),
         )
         .limit(1);
@@ -313,10 +315,10 @@ export class ClientStateFeedService {
       const feedId = await this.writeInTx(tx, {
         userId,
         account: '',
-        domain: '',
+        domain: 'local',
         eventType: 'INCOMING_INVITE_HEAD',
         subjectAccount: '',
-        subjectDomain: '',
+        subjectDomain: 'local',
         body: { readThroughFeedId: next },
       });
       if (feedId !== null) pending = { userId, feedId };
@@ -348,10 +350,10 @@ export class ClientStateFeedService {
       const feedId = await this.writeInTx(tx, {
         userId,
         account: subject.account,
-        domain: subject.domain === 'local' ? '' : subject.domain,
+        domain: subject.domain,
         eventType: 'PROFILE',
         subjectAccount: '',
-        subjectDomain: '',
+        subjectDomain: 'local',
         body: {
           profileRev: subject.profileRev,
           displayName: subject.name,
@@ -375,7 +377,7 @@ export class ClientStateFeedService {
       columns: { account: true, domain: true },
     });
     if (!subject) return;
-    const domain = subject.domain === 'local' ? '' : subject.domain;
+    const domain = subject.domain;
     const references = await tx.execute<{ referenced: boolean }>(sql`
       SELECT EXISTS (
         SELECT 1 FROM "GroupJoinRequestProjection" projection
@@ -456,7 +458,7 @@ export class ClientStateFeedService {
     `);
     const memberProjection = members.rows.map((member) => ({
       account: member.account,
-      domain: member.domain === 'local' ? '' : member.domain,
+      domain: member.domain,
       body: {
         userId: member.userId,
         role: member.role,
@@ -474,10 +476,10 @@ export class ClientStateFeedService {
       const profileFeedId = await this.writeInTx(tx, {
         userId,
         account: group.account,
-        domain: group.domain === 'local' ? '' : group.domain,
+        domain: group.domain,
         eventType: 'PROFILE',
         subjectAccount: '',
-        subjectDomain: '',
+        subjectDomain: 'local',
         body: {
           profileRev: group.profileRev,
           displayName: group.displayName,
@@ -496,10 +498,10 @@ export class ClientStateFeedService {
       const feedId = await this.writeInTx(tx, {
         userId,
         account: group.account,
-        domain: group.domain === 'local' ? '' : group.domain,
+        domain: group.domain,
         eventType: 'GROUP_META_FEED_HEAD',
         subjectAccount: '',
-        subjectDomain: '',
+        subjectDomain: 'local',
         body: { groupMetaFeedEndId: groupMetaFeedEndId.toString() },
       });
       if (feedId !== null) pending.push({ userId, feedId });

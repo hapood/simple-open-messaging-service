@@ -3,9 +3,7 @@
     <div class="user-summary">
       <div class="avatar">
         <app-user-avatar
-          [type]="
-            user().isGroup ? UserAvatarType.GROUP : UserAvatarType.OTHER
-          "
+          [type]="user().isGroup ? UserAvatarType.GROUP : UserAvatarType.OTHER"
           [name]="user().name"
           [identityId]="avatarIdentity()"
           [account]="user().account"
@@ -47,22 +45,18 @@
     }
   </div>
 
-  <div class="dialog-actions">
-    <button
-      mat-flat-button
-      color="primary"
-      type="button"
-      (click)="send()"
-      [disabled]="sending()"
-    >
-      {{
-        (sending()
-          ? 'friend.sending'
-          : user().isGroup
-            ? 'friend.sendJoinRequest'
-            : 'friend.sendRequest'
-        ) | transloco
-      }}
-    </button>
-  </div>
+  <app-dialog-action-footer
+    [cancelLabel]="'common.cancel' | transloco"
+    [primaryLabel]="
+      (sending()
+        ? 'friend.sending'
+        : user().isGroup
+          ? 'friend.sendJoinRequest'
+          : 'friend.sendRequest'
+      ) | transloco
+    "
+    [primaryDisabled]="sending()"
+    (cancelled)="cancel()"
+    (confirmed)="send()"
+  />
 </div>

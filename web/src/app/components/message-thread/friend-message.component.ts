@@ -143,6 +143,7 @@ import {
   MemberProfileRepository,
   type ResolvedMemberProfile,
 } from '../../services/member-profile-store.service';
+import { ChatContextService } from './chat-context.service';
 import { ChatAppearanceService } from '../../services/chat-appearance.service';
 import {
   ALL_MENTION_ID,
@@ -254,6 +255,7 @@ export class MessageThreadComponent implements OnDestroy {
   readonly displayUserAccount = displayUserAccount;
   readonly threadId = input<number>();
   readonly userMsgTrd = input<ConversationItem>();
+  private readonly chatContext = inject(ChatContextService);
   /** The A/B host keeps two threads mounted; only the foreground layer may own the one native composer. */
   readonly nativeComposerActive = input(false);
   private readonly chatInput = viewChild(ChatInputComponent);
@@ -311,6 +313,11 @@ export class MessageThreadComponent implements OnDestroy {
           dialog.scopeThreadId === threadId,
       );
   });
+  /** Every routed dialog visually covers the composer. Keep the browser composer mounted and hide only
+   *  its paint so the scroller's measured tail geometry cannot change while a global modal opens. */
+  readonly dialogOpen = computed(() =>
+    this.nav.paneStack().some((pane) => pane.kind === 'dialog'),
+  );
   private readonly sendOutbox = inject(ThreadSendOutbox);
   private readonly debugTools = inject(DebugToolsService);
   private readonly transloco = inject(TranslocoService);
@@ -339,7 +346,7 @@ export class MessageThreadComponent implements OnDestroy {
       avatarUrl: assetUrl(sizedAvatarUrl(member.avatar, 32)),
     }));
     if (
-      (trd.role === 'OWNER' || trd.role === 'ADMIN') &&
+      this.chatContext.canAdministerGroup() &&
       this.transloco
         .translate('chat.mentionAll')
         .toLocaleLowerCase()
@@ -614,7 +621,7 @@ export class MessageThreadComponent implements OnDestroy {
       const load = async () => {
         if (!active) return;
         const members: ChatMember[] = [];
-        if (trd.role === 'OWNER' || trd.role === 'ADMIN') {
+        if (this.chatContext.canAdministerGroup()) {
           members.unshift({
             id: ALL_MENTION_ID,
             label: this.transloco.translate('chat.mentionAll'),
@@ -1487,17 +1494,28 @@ export class MessageThreadComponent implements OnDestroy {
           item.peerUser?.id === userId &&
           item.friendshipActive !== false,
       )?.threadId;
-    this.route.popupDlg(PopupType.CONTACT_IDENTITY, {
-      identity: {
-        userId: profile.userId,
-        account: profile.account,
-        name: profile.name,
-        avatar: profile.avatar,
-        bio: '',
-        domain: profile.domain || 'local',
-        friendThreadId,
+    this.route.popupDlg(
+      PopupType.CONTACT_IDENTITY,
+      {
+        identity: {
+          userId: profile.userId,
+          account: profile.account,
+          name: profile.name,
+          avatar: profile.avatar,
+          bio: '',
+          domain: profile.domain || 'local',
+          friendThreadId,
+          relationship:
+            profile.userId === this.userService.sessionProfile()?.id
+              ? 'SELF'
+              : friendThreadId === undefined
+                ? 'NONE'
+                : 'FRIEND',
+        },
       },
-    });
+      undefined,
+      { scopeThreadId: threadId },
+    );
   }
 
   exitSelectionMode(): void {

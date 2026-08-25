@@ -58,7 +58,6 @@
     "logs": "日志",
     "rateLimits": "限流监控",
     "media": "媒体与存储",
-    "linkCards": "链接卡片",
     "settings": "设置",
     "security": "我的账户",
     "audit": "操作审计",
@@ -70,25 +69,6 @@
       "system": "系统",
       "account": "账户"
     }
-  },
-  "linkCards": {
-    "title": "链接卡片规则",
-    "desc": "客户端会为命中域名白名单的链接生成卡片。",
-    "add": "添加规则",
-    "edit": "编辑规则",
-    "hostname": "域名",
-    "note": "备注",
-    "imageSelection": "OG 图片",
-    "descriptionSelection": "OG 描述",
-    "imageSelectionValues": {
-      "first": "第一张",
-      "last": "最后一张"
-    },
-    "formDesc": "填写不带协议和路径的域名，子域名会自动匹配。",
-    "empty": "暂无链接卡片规则",
-    "saved": "规则已保存",
-    "deleted": "规则已删除",
-    "confirmDelete": "确定删除 {{name}} 吗？"
   },
   "quota": {
     "title": "每日配额",

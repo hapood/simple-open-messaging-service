@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use tauri::Manager;
 
 const DB_FILENAME: &str = "soms-local.sqlite3";
-const CACHE_SCHEMA_VERSION: i64 = 3;
+const CACHE_SCHEMA_VERSION: i64 = 5;
 
 fn db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app
@@ -1486,6 +1486,18 @@ pub(crate) async fn native_db_apply_state_feed_page(
                 if !existed { member_count += 1; }
             }
             if let Some(mut thread) = thread.take() {
+                let self_role: Option<String> = tx.query_row(
+                    "SELECT role FROM thread_participants
+                     WHERE user_id=?1 AND thread_id=?2 AND member_user_id=?1",
+                    params![user_id, update.thread_id],
+                    |row| row.get(0),
+                ).optional().map_err(|e| format!("read current group role: {e}"))?;
+                if let Some(object) = thread.as_object_mut() {
+                    object.insert(
+                        "role".into(),
+                        self_role.map(Value::String).unwrap_or(Value::Null),
+                    );
+                }
                 if let Some(group) = thread.get_mut("group").and_then(Value::as_object_mut) {
                     group.remove("members");
                     group.insert("memberCount".into(), Value::from(member_count.max(0)));

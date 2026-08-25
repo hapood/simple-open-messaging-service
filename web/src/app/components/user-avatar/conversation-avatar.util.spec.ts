@@ -20,7 +20,7 @@ describe('conversation-avatar util', () => {
     peerUser: {
       id: 7,
       account: 'alice',
-      domain: '',
+      domain: 'local',
       isForeigner: false,
       avatar: '/uploads/u7.png',
     },

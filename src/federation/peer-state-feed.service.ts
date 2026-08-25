@@ -24,8 +24,8 @@ export interface PeerStateFeedWrite {
   account: string;
   domain: string;
   eventType: PeerStateEventType;
-  subjectAccount?: string;
-  subjectDomain?: string;
+  subjectAccount: string;
+  subjectDomain: string;
   body: PeerStateBody;
   /** Reallocate the same body after one of its referenced compacted keys moved later. */
   forceReindex?: boolean;
@@ -89,8 +89,8 @@ export class PeerStateFeedService {
           eq(peerStateFeed.account, key.account),
           eq(peerStateFeed.domain, key.domain),
           eq(peerStateFeed.eventType, key.eventType),
-          eq(peerStateFeed.subjectAccount, key.subjectAccount ?? ''),
-          eq(peerStateFeed.subjectDomain, key.subjectDomain ?? ''),
+          eq(peerStateFeed.subjectAccount, key.subjectAccount),
+          eq(peerStateFeed.subjectDomain, key.subjectDomain),
         ),
       );
   }
@@ -107,8 +107,8 @@ export class PeerStateFeedService {
         a.domain.localeCompare(b.domain) ||
         a.account.localeCompare(b.account) ||
         a.eventType.localeCompare(b.eventType) ||
-        (a.subjectDomain ?? '').localeCompare(b.subjectDomain ?? '') ||
-        (a.subjectAccount ?? '').localeCompare(b.subjectAccount ?? ''),
+        a.subjectDomain.localeCompare(b.subjectDomain) ||
+        a.subjectAccount.localeCompare(b.subjectAccount),
     );
     for (const write of ordered) {
       // State bodies are persisted as JSONB before the HTTP serializer sees them. Normalize at this
@@ -117,12 +117,14 @@ export class PeerStateFeedService {
       if (!body || typeof body !== 'object') {
         throw new Error('invalid peer state feed write');
       }
-      const subjectAccount = write.subjectAccount ?? '';
-      const subjectDomain = write.subjectDomain ?? '';
+      const subjectAccount = write.subjectAccount;
+      const subjectDomain = write.subjectDomain;
       const directional = write.eventType === 'RELATIONSHIP_INTENT';
       if (
         !write.domain ||
-        directional !== (subjectAccount !== '' && subjectDomain !== '')
+        (directional
+          ? subjectAccount === '' || subjectDomain === ''
+          : subjectAccount !== '' || subjectDomain !== 'local')
       ) {
         throw new Error(
           'state address key is incomplete or has an invalid directional subject',

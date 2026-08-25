@@ -128,6 +128,7 @@
   width: 100%;
   margin-top: 8px;
   display: flex;
+  justify-content: center;
   gap: 8px;
 
   button {
@@ -136,6 +137,10 @@
 }
 
 // Spacing + baseline alignment for the logout icon inside the mat-stroked-button.
+.logout-btn {
+  max-width: 320px;
+}
+
 .logout-btn svg {
   margin-right: 8px;
   vertical-align: middle;

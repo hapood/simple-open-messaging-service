@@ -14,6 +14,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
 import { ConversationLoadStatus } from '../../services/thread-store.service';
 import {
   ConversationItem,
+  createGroupConversation,
   createP2PConversation,
   P2PConversationItem,
 } from '../../services/model';
@@ -242,6 +243,27 @@ describe('ThreadListComponent', () => {
     ).click();
 
     expect(selected).toEqual([thread]);
+  });
+
+  it('marks group avatars with a groups icon but leaves P2P avatars unbadged', async () => {
+    items.set([
+      createGroupConversation(1, {
+        id: 21,
+        account: 'team',
+        name: 'Team',
+        ownerId: 11,
+      }),
+      p2p(2, 12),
+    ]);
+    status.set(ConversationLoadStatus.READY);
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    const rows = fixture.nativeElement.querySelectorAll(
+      '.thread-item',
+    ) as NodeListOf<HTMLElement>;
+    expect(rows[0].querySelector('.group-avatar-badge')).not.toBeNull();
+    expect(rows[1].querySelector('.group-avatar-badge')).toBeNull();
   });
 
   it('shows a separate @ badge only while the conversation has an unread mention', async () => {

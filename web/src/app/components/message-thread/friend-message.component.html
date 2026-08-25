@@ -541,16 +541,16 @@
       <div class="msg-blocked-banner">
         {{ 'chat.quotaPausedBanner' | transloco }}
       </div>
-    } @else if (nativeComposerOccluded()) {
-      <!-- A routed pane owns the interaction surface. Keep no web composer DOM behind it; the matching
-           component effect also hides the native sibling composer. Persistent conversation-state banners
-           are handled above and remain independent from composer visibility. -->
     } @else {
       @if (!nativeComposer.supported) {
         <app-chat-input
           [class.msg-composer--selection-hidden]="selectionMode()"
-          [class.msg-composer--dialog-hidden]="chatboxDialogOpen()"
-          [attr.aria-hidden]="selectionMode() || chatboxDialogOpen()"
+          [class.msg-composer--dialog-hidden]="
+            dialogOpen() || nativeComposerOccluded()
+          "
+          [attr.aria-hidden]="
+            selectionMode() || dialogOpen() || nativeComposerOccluded()
+          "
           [members]="mentionMembers()"
           [mentionsEnabled]="userMsgTrd()?.type === 'GROUP'"
           [memberSearch]="searchMentionMembers"

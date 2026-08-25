@@ -4,8 +4,12 @@ import {
   TemplateRef,
   input,
   output,
+  viewChild,
 } from '@angular/core';
-import { ScrollingModule } from '@angular/cdk/scrolling';
+import {
+  CdkVirtualScrollViewport,
+  ScrollingModule,
+} from '@angular/cdk/scrolling';
 import { NgTemplateOutlet } from '@angular/common';
 
 /** Fixed-height, cursor-paged virtual list. Callers own data fetching and item presentation. */
@@ -14,6 +18,7 @@ import { NgTemplateOutlet } from '@angular/common';
   imports: [ScrollingModule, NgTemplateOutlet],
   template: `
     <cdk-virtual-scroll-viewport
+      #viewport
       class="viewport"
       [itemSize]="itemSize()"
       [minBufferPx]="itemSize() * 4"
@@ -47,6 +52,7 @@ import { NgTemplateOutlet } from '@angular/common';
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class VirtualInfiniteListComponent<T extends { id: string | number }> {
+  private readonly viewport = viewChild(CdkVirtualScrollViewport);
   readonly items = input.required<readonly T[]>();
   readonly itemTemplate = input.required<TemplateRef<{ $implicit: T }>>();
   readonly itemSize = input.required<number>();
@@ -55,10 +61,12 @@ export class VirtualInfiniteListComponent<T extends { id: string | number }> {
 
   readonly trackByKey = (_index: number, item: T) => item.id;
 
+  scrollToTop(): void {
+    this.viewport()?.scrollToIndex(0, 'auto');
+  }
+
   onIndex(index: number): void {
-    if (
-      this.hasMore() && index + 8 >= this.items().length
-    )
+    if (this.hasMore() && index + 8 >= this.items().length)
       this.loadMore.emit();
   }
 }

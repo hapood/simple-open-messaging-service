@@ -54,8 +54,13 @@ This is a closed schema. `account`, `domain`, and `displayName` are required.
 - A present `avatarDigest` MUST have exactly one matching descriptor in the
   outer `assets`; no other digest may appear there. When `avatarDigest` is
   absent, `assets` MUST be empty.
-- A consumer MUST treat the avatar as untrusted media and apply its resource
-  size, digest-verification, decoding, and display policies.
+- The avatar uses the same encoded-size, non-empty-image, and decoded-pixel
+  constraints as the public profile avatar in [Resources, Section
+  2.2](../resources.md#22-successful-response). Because a card transports the
+  decoded resource instead of padded Base64, its `BlobDescriptor.bytes` MUST be
+  in the inclusive range 1–786,432. A consumer MUST verify the actual byte
+  count, digest, image decoding, real dimensions, and `w * h <= 16000000`
+  before displaying it.
 - A consumer MUST NOT fetch a user profile merely because `avatarDigest` is
   absent or the corresponding resource cannot be downloaded.
 

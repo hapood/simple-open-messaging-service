@@ -3,6 +3,7 @@ import type { FastifyRequest } from 'fastify';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import {
+  encodeFederationResourceComponent,
   parseFederationRange,
   parseFederationResourceRequest,
   requireBundleId,
@@ -56,6 +57,11 @@ function expectMalformed(action: () => unknown): void {
 }
 
 describe('Federation resource raw request validation', () => {
+  it('uses canonical RFC 3986 encoding for resource components', () => {
+    expect(encodeFederationResourceComponent('!group')).toBe('%21group');
+    expect(encodeFederationResourceComponent('alice')).toBe('alice');
+  });
+
   it('preserves the exact ordered media authorization query', () => {
     const digest = 'a'.repeat(64);
     const parsed = parseFederationResourceRequest(

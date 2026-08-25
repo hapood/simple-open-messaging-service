@@ -5,6 +5,7 @@ import {
   input,
   signal,
   untracked,
+  viewChild,
   OnDestroy,
   ChangeDetectionStrategy,
 } from '@angular/core';
@@ -152,6 +153,7 @@ export class FriendRequestsComponent implements OnDestroy {
   private pendingLoadInFlightGeneration: number | null = null;
   private sentLoadInFlightGeneration: number | null = null;
   private observedRequestRevision: number | undefined;
+  private countRefreshGeneration = 0;
   private inviteListsInitialized = false;
   readonly pendingInviteActionIds = signal<ReadonlySet<string>>(new Set());
   private readonly inviteActionSubscriptions = new Map<
@@ -167,6 +169,10 @@ export class FriendRequestsComponent implements OnDestroy {
   initialUser = input<User | undefined>(undefined);
   activeTab = signal(0);
   isShowBackBtn = signal(true);
+  private readonly incomingList =
+    viewChild<VirtualInfiniteListComponent<PendingReq>>('incomingList');
+  private readonly outgoingList =
+    viewChild<VirtualInfiniteListComponent<PendingReq>>('outgoingList');
 
   UserAvatarType = UserAvatarType;
   AddTabStatus = AddTabStatus;
@@ -235,20 +241,41 @@ export class FriendRequestsComponent implements OnDestroy {
         return;
       }
       this.observedRequestRevision = revision;
-      // A live revision refreshes both counters and lists, regardless of the visible tab. It deliberately
-      // does not advance the seen revision: a request arriving while this dialog is open stays unread until
-      // the user explicitly visits Incoming again (or opens the dialog there next time).
+      // Preserve the snapshot the user is currently reading. A live revision only updates the tab
+      // counters; clicking a counter explicitly replaces that tab with a fresh first page.
       untracked(() => {
-        void Promise.all([
-          this.loadIncomingInvites(true),
-          this.loadOutgoingInvites(true),
-        ]);
+        void this.refreshInviteCounts();
       });
     });
   }
   setTab(tab: number) {
     this.activeTab.set(tab);
     if (tab === 1) this.userService.markFriendReqRead();
+  }
+
+  async refreshIncomingTab(): Promise<void> {
+    this.setTab(1);
+    await this.loadIncomingInvites(true);
+    this.incomingList()?.scrollToTop();
+  }
+
+  async refreshOutgoingTab(): Promise<void> {
+    this.setTab(2);
+    await this.loadOutgoingInvites(true);
+    this.outgoingList()?.scrollToTop();
+  }
+
+  private async refreshInviteCounts(): Promise<void> {
+    const generation = ++this.countRefreshGeneration;
+    const [incoming, outgoing] = await Promise.allSettled([
+      this.userService.listLocalFriendRequests('INCOMING', null, 1),
+      this.userService.listLocalFriendRequests('OUTGOING', null, 1),
+    ]);
+    if (generation !== this.countRefreshGeneration) return;
+    if (incoming.status === 'fulfilled')
+      this.pendingCount.set(incoming.value.actionableTotal);
+    if (outgoing.status === 'fulfilled')
+      this.sentCount.set(outgoing.value.total);
   }
 
   goBack() {
@@ -396,29 +423,16 @@ export class FriendRequestsComponent implements OnDestroy {
     this.showResults([user]);
   }
 
-  private showResults(users: User[]) {
-    this.userService
-      .friendRelationshipStatuses({ userIds: users.map((user) => user.id) })
-      .subscribe({
-        next: (res) => {
-          if (res.code !== 0 || !res.data) {
-            this.errMsg.set(translateBizResult(res, this.transloco));
-            this.addTabStatus.set(AddTabStatus.ERROR);
-            return;
-          }
-          this.relationshipStates.set(
-            new Map(res.data.map((item) => [item.userId, item.status])),
-          );
-          this.localResults.set(users);
-          this.addTabStatus.set(AddTabStatus.SUCCESS);
-        },
-        error: () => {
-          this.errMsg.set(
-            this.transloco.translate('friend.error.unknownError'),
-          );
-          this.addTabStatus.set(AddTabStatus.ERROR);
-        },
-      });
+  private async showResults(users: User[]) {
+    const states = await Promise.all(
+      users.map(
+        async (user) =>
+          [user.id, await this.userService.localRelationship(user)] as const,
+      ),
+    );
+    this.relationshipStates.set(new Map(states));
+    this.localResults.set(users);
+    this.addTabStatus.set(AddTabStatus.SUCCESS);
   }
 
   activateResult(user: User) {
@@ -723,7 +737,7 @@ export class FriendRequestsComponent implements OnDestroy {
       this.pendingReqList.update((items) =>
         reset ? nextItems : [...items, ...nextItems],
       );
-      this.pendingCursor = page.nextCursor;
+      this.pendingCursor = page.scannedThrough;
       this.pendingHasMore.set(page.hasMore);
       this.pendingCount.set(page.actionableTotal);
     } catch {
@@ -761,7 +775,7 @@ export class FriendRequestsComponent implements OnDestroy {
       this.sentReqList.update((items) =>
         reset ? nextItems : [...items, ...nextItems],
       );
-      this.sentCursor = page.nextCursor;
+      this.sentCursor = page.scannedThrough;
       this.sentHasMore.set(page.hasMore);
       this.sentCount.set(page.total);
     } catch {

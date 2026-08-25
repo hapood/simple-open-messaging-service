@@ -4,6 +4,7 @@ import {
   HttpTestingController,
   provideHttpClientTesting,
 } from '@angular/common/http/testing';
+import { vi } from 'vitest';
 import { ThreadCatchUpService } from './thread-catch-up.service';
 
 describe('ThreadCatchUpService', () => {
@@ -65,5 +66,43 @@ describe('ThreadCatchUpService', () => {
       },
     });
     await expect(pending).resolves.toMatchObject({ scannedThrough: 9 });
+  });
+
+  it('warns and returns a resumable message window for code 30006', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const pending = service.catchUp(2);
+    http.expectOne('/api/v1/thread-sync/catch-up?after=2&take=200').flush({
+      code: 30006,
+      message: 'cursor unavailable',
+      data: { resumeAfter: 5, resumeBefore: 10 },
+    });
+
+    await expect(pending).resolves.toEqual({
+      kind: 'cursor-reset',
+      resumeAfter: 5,
+      resumeBefore: 10,
+    });
+    expect(warn).toHaveBeenCalledWith(
+      '[message-feed] cursor unavailable; resuming from 5 through 9',
+    );
+  });
+
+  it('warns and returns a resumable tombstone window for code 30006', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const pending = service.catchUpTombstones(4);
+    http.expectOne('/api/v1/thread-sync/tombstones?after=4&take=200').flush({
+      code: 30006,
+      message: 'cursor unavailable',
+      data: { resumeAfter: 6, resumeBefore: 8 },
+    });
+
+    await expect(pending).resolves.toEqual({
+      kind: 'cursor-reset',
+      resumeAfter: 6,
+      resumeBefore: 8,
+    });
+    expect(warn).toHaveBeenCalledWith(
+      '[tombstone-feed] cursor unavailable; resuming from 6 through 7',
+    );
   });
 });

@@ -1,3 +1,5 @@
+@use '../../assets/utils.scss' as *;
+
 .thread-list {
   height: 100%;
   min-height: 0;
@@ -171,15 +173,8 @@
     }
 
     .join-request-badge {
-      width: 10px;
-      height: 10px;
-      flex: 0 0 10px;
-      border: 2px solid var(--app-surface);
-      border-radius: 50%;
-      background: var(--app-danger);
-      box-shadow: 0 0 0 1px
-        color-mix(in srgb, var(--app-danger) 28%, transparent);
-      box-sizing: content-box;
+      @include unread-attention-dot;
+      flex: 0 0 auto;
     }
   }
 }

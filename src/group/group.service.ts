@@ -100,7 +100,7 @@ export class GroupService {
     }>(sql`
       SELECT projection."feedId", projection."requestId"::text AS id,
         projection.status, applicant.id AS "userId", applicant.account,
-        CASE WHEN applicant.domain = 'local' THEN '' ELSE applicant.domain END AS domain,
+        applicant.domain,
         applicant.name, applicant.avatar, projection.note,
         (EXTRACT(EPOCH FROM projection."requestedAt") * 1000)::bigint AS "requestedAt",
         (EXTRACT(EPOCH FROM projection."expiresAt") * 1000)::bigint AS "expiresAt"

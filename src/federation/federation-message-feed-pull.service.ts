@@ -26,7 +26,11 @@ interface AppliedPage {
   requestedAfter: bigint;
   scannedThrough: bigint;
   hasMore: boolean;
-  page: FederationMessageFeedPage | null;
+  page: FederationMessageFeedPage;
+}
+
+interface CursorReset {
+  cursorReset: true;
 }
 
 /**
@@ -105,11 +109,11 @@ export class FederationMessageFeedPullService {
       const applied = await this.applyOnePage(peerDomain, callbacks);
       if (!applied) return; // another process owns the NOWAIT cursor lock
 
-      if (applied.page) await callbacks.afterCommit?.(applied.page);
-
       // A valid 50019 reset is committed atomically by applyOnePage. Retry immediately from the
       // supplied floor without applying or publishing a synthetic page.
-      if (!applied.page) continue;
+      if ('cursorReset' in applied) continue;
+
+      await callbacks.afterCommit?.(applied.page);
 
       if (applied.hasMore) continue;
 
@@ -130,7 +134,7 @@ export class FederationMessageFeedPullService {
   private async applyOnePage(
     peerDomain: string,
     callbacks: FederationMessageFeedPullCallbacks,
-  ): Promise<AppliedPage | null> {
+  ): Promise<AppliedPage | CursorReset | null> {
     const cursor = await this.readCursor(peerDomain);
     if (!cursor) return null;
 
@@ -220,10 +224,7 @@ export class FederationMessageFeedPullService {
             : `initialized message-feed cursor for ${peerDomain} at ${cursorReset.resumeAfter.toString()}`,
         );
         return {
-          requestedAfter: cursor.committedThrough,
-          scannedThrough: cursorReset.resumeAfter,
-          hasMore: true,
-          page: null,
+          cursorReset: true,
         };
       }
       if (!page) throw new Error('message-feed fetch returned no page');

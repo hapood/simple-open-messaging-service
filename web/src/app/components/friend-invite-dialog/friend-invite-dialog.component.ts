@@ -8,11 +8,13 @@ import {
   ChangeDetectionStrategy,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { MatButtonModule } from '@angular/material/button';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { translateBizResult } from '../../services/biz-code';
 import { displayUserName } from '../../services/model';
 import { User, UserService } from '../../services/user.service';
+import { RouteService } from '../../services/route.service';
+import { AvatarRepository } from '../../services/avatar-cache.service';
+import { DialogActionFooterComponent } from '../dialog-action-footer/dialog-action-footer.component';
 import {
   UserAvatarComponent,
   UserAvatarType,
@@ -20,7 +22,12 @@ import {
 
 @Component({
   selector: 'app-friend-invite-dialog',
-  imports: [FormsModule, MatButtonModule, TranslocoPipe, UserAvatarComponent],
+  imports: [
+    FormsModule,
+    TranslocoPipe,
+    UserAvatarComponent,
+    DialogActionFooterComponent,
+  ],
   templateUrl: './friend-invite-dialog.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './friend-invite-dialog.component.scss',
@@ -28,12 +35,17 @@ import {
 export class FriendInviteDialogComponent {
   private readonly userService = inject(UserService);
   private readonly transloco = inject(TranslocoService);
+  private readonly route = inject(RouteService);
+  private readonly avatarRepo = inject(AvatarRepository);
 
   readonly user = input.required<User>();
+  /** Direct popup mode; embedded uses continue to delegate completion to their parent. */
+  readonly standalone = input(false);
   readonly completed = output<{
     userId: number;
     status: 'OUTGOING_PENDING' | 'FRIEND';
   }>();
+  readonly cancelled = output<void>();
   readonly note = signal('');
   readonly sending = signal(false);
   readonly errorText = signal('');
@@ -46,36 +58,40 @@ export class FriendInviteDialogComponent {
       : `${user.domain ?? 'local'}\u0000${user.account}`;
   });
 
-  send() {
+  cancel(): void {
+    if (this.standalone()) this.route.closeDlg();
+    else this.cancelled.emit();
+  }
+
+  async send() {
     if (this.sending()) return;
     this.sending.set(true);
     this.errorText.set('');
     const user = this.user();
-    const request =
-      user.id === 0 && user.isForeigner && user.domain
-        ? this.userService.sendFederatedFriendInvite({
-            account: user.account,
-            domain: user.domain,
-            displayName: user.name,
-            avatar: user.avatar,
-            bio: user.bio ?? '',
-            note: this.note().trim().slice(0, 255),
-          })
-        : this.userService.sendFriendInvite({
-            toUserId: user.id,
-            note: this.note().trim().slice(0, 255),
-          });
+    const avatarIdentity = `${user.isGroup ? 'g' : 'u'}${this.avatarIdentity()}`;
+    const avatar = user.avatar
+      ? await this.avatarRepo.getCachedDataUrl(avatarIdentity, user.avatar)
+      : undefined;
+    const request = this.userService.sendFriendInvite({
+      account: user.account,
+      domain: user.domain || 'local',
+      displayName: user.name,
+      avatar,
+      note: this.note().trim().slice(0, 255),
+    });
     request.subscribe({
       next: (res) => {
         if (res.code === 0) {
-          this.completed.emit({
+          const result = {
             userId: this.user().id,
             status:
               res.data?.threadId ||
               res.messageKey === 'friend.msg.alreadyFriends'
                 ? 'FRIEND'
                 : 'OUTGOING_PENDING',
-          });
+          } as const;
+          if (this.standalone()) this.route.closeDlg(result);
+          else this.completed.emit(result);
           return;
         }
         this.errorText.set(translateBizResult(res, this.transloco));

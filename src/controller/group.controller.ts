@@ -242,21 +242,15 @@ export class GroupController {
       avatar: gu.avatar,
       profileRev: gu.profileRev,
       description: gu.bio,
-      // groupUser.domain uses 'local' as the origin sentinel; expose '' for a local-origin group,
-      // matching UserResponseDto.domain for a local peer.
-      domain: !gu.domain || gu.domain === 'local' ? '' : gu.domain,
+      domain: gu.domain || 'local',
       threadId,
       createdAt: trd.createdAt,
       updatedAt: gu.group?.updatedAt ?? trd.updatedAt,
       members: roster.map((member) => ({
         userId: member.userId,
         account: member.user.account,
-        domain:
-          !member.user.domain || member.user.domain === 'local'
-            ? ''
-            : member.user.domain,
-        profileSourceDomain:
-          !gu.domain || gu.domain === 'local' ? '' : gu.domain,
+        domain: member.user.domain || 'local',
+        profileSourceDomain: gu.domain || 'local',
         role: member.role,
         joinedAt: member.joinedAt,
         isOwner: member.role === GroupRole.OWNER,

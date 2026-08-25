@@ -57,8 +57,8 @@
 }
 
 .profile-meta {
-  height: 24px;
-  padding: 0 12px;
+  min-height: 24px;
+  padding: 4px 12px;
   display: flex;
   align-items: center;
   box-sizing: border-box;
@@ -69,9 +69,7 @@
   font-weight: var(--app-font-weight-medium, 500);
   line-height: 16px;
   letter-spacing: 0.02em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .group-profile-row {

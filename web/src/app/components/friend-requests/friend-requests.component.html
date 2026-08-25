@@ -22,6 +22,7 @@
     <app-friend-invite-dialog
       class="invite-view"
       [user]="selectedUser"
+      (cancelled)="inviteUser.set(null)"
       (completed)="completeInvite($event)"
     />
   }
@@ -214,7 +215,7 @@
 
     <mat-tab>
       <ng-template mat-tab-label>
-        <span class="tab-label">
+        <span class="tab-label" (click)="refreshIncomingTab()">
           <span class="tab-text">{{ 'friend.tab.pending' | transloco }}</span>
           @if (pendingCount() > 0) {
             <span
@@ -255,6 +256,7 @@
               />
             </ng-template>
             <app-virtual-infinite-list
+              #incomingList
               [items]="pendingReqList()"
               [itemTemplate]="incomingCard"
               [itemSize]="92"
@@ -271,7 +273,7 @@
 
     <mat-tab>
       <ng-template mat-tab-label>
-        <span class="tab-label">
+        <span class="tab-label" (click)="refreshOutgoingTab()">
           <span class="tab-text">{{ 'friend.tab.sent' | transloco }}</span>
           @if (sentCount() > 0) {
             <span class="tab-count outgoing-count" aria-hidden="true">
@@ -305,6 +307,7 @@
               />
             </ng-template>
             <app-virtual-infinite-list
+              #outgoingList
               [items]="sentReqList()"
               [itemTemplate]="outgoingCard"
               [itemSize]="92"

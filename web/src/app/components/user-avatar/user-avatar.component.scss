@@ -14,24 +14,62 @@
   pointer-events: none;
 }
 
-.avatar-federated-ground {
-  fill: var(--app-action-primary);
-  stroke: var(--app-on-action-primary);
-  stroke-width: 3px;
+.avatar-federated-disc {
+  fill: var(--app-surface);
+}
+
+.avatar-federated-halo {
+  fill: none;
+  stroke: var(--app-surface);
+  stroke-width: 4px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .avatar-federated-globe {
   fill: none;
-  stroke: var(--app-on-action-primary);
+  stroke: var(--app-action-primary);
   stroke-width: 2px;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+:host-context([data-theme='dark']) {
+  .avatar-federated-disc {
+    fill: var(--app-surface-elevated);
+  }
+
+  .avatar-federated-halo {
+    stroke: var(--app-surface-elevated);
+  }
+
+  .avatar-federated-globe {
+    stroke: color-mix(in srgb, var(--app-action-primary) 78%, white);
+  }
 }
 
 .ua {
   display: block;
   width: 100%;
   height: 100%;
+}
+
+.group-avatar-badge {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  fill: var(--app-action-primary);
+  stroke: var(--app-surface);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  paint-order: stroke fill;
+}
+
+:host-context([data-theme='dark']) .group-avatar-badge {
+  stroke: var(--app-surface-elevated);
 }
 
 .ua.img {

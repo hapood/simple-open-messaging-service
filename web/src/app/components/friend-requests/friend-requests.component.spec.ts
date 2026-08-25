@@ -76,12 +76,12 @@ describe('FriendRequestsComponent federated search progress', () => {
             name,
             avatar: '',
             bio: '',
-            domain: '',
+            domain: 'local',
             isForeigner: false,
           },
         },
       ],
-      nextCursor: null,
+      scannedThrough: null,
       hasMore: false,
       total: 1,
       actionableTotal: 1,
@@ -132,11 +132,11 @@ describe('FriendRequestsComponent federated search progress', () => {
     expect(fixture.componentInstance.inviteUser()).toBe(local);
   });
 
-  it('refreshes both request tabs on a live revision without marking it read', async () => {
+  it('refreshes only request counts on a live revision without replacing either list', async () => {
     const revision = signal(4);
     const emptyPage = {
       items: [],
-      nextCursor: null,
+      scannedThrough: null,
       hasMore: false,
       total: 0,
     };
@@ -171,19 +171,36 @@ describe('FriendRequestsComponent federated search progress', () => {
 
     expect(userService.listLocalFriendRequests).toHaveBeenCalledTimes(2);
     expect(userService.markFriendReqRead).toHaveBeenCalledTimes(1);
+    const component = fixture.componentInstance;
+    const incomingReload = vi.spyOn(component, 'loadIncomingInvites');
+    const outgoingReload = vi.spyOn(component, 'loadOutgoingInvites');
 
     revision.set(5);
     fixture.detectChanges();
     await fixture.whenStable();
 
     expect(userService.listLocalFriendRequests).toHaveBeenCalledTimes(4);
+    expect(incomingReload).not.toHaveBeenCalled();
+    expect(outgoingReload).not.toHaveBeenCalled();
+    expect(userService.listLocalFriendRequests).toHaveBeenNthCalledWith(
+      3,
+      'INCOMING',
+      null,
+      1,
+    );
+    expect(userService.listLocalFriendRequests).toHaveBeenNthCalledWith(
+      4,
+      'OUTGOING',
+      null,
+      1,
+    );
     expect(userService.markFriendReqRead).toHaveBeenCalledTimes(1);
 
-    fixture.componentInstance.setTab(1);
+    component.setTab(1);
     expect(userService.markFriendReqRead).toHaveBeenCalledTimes(2);
   });
 
-  it('uses exact resolution for a local account and exposes at most one result', () => {
+  it('uses exact resolution for a local account and exposes at most one result', async () => {
     const local = {
       id: 7,
       account: 'alice',
@@ -192,13 +209,19 @@ describe('FriendRequestsComponent federated search progress', () => {
     } as User;
     const userService = {
       sessionProfile: () => ({ id: 1 }),
+      friendIntentStateRevision: signal(0),
+      friendReqBadge: signal(false),
+      markFriendReqRead: vi.fn(),
+      listLocalFriendRequests: vi.fn().mockResolvedValue({
+        items: [],
+        scannedThrough: null,
+        hasMore: false,
+        total: 0,
+        actionableTotal: 0,
+      }),
       resolveUser: vi.fn().mockReturnValue(of({ code: 0, data: local })),
       searchUsers: vi.fn(),
-      friendRelationshipStatuses: vi
-        .fn()
-        .mockReturnValue(
-          of({ code: 0, data: [{ userId: local.id, status: 'NONE' }] }),
-        ),
+      localRelationship: vi.fn().mockResolvedValue('NONE'),
     };
     TestBed.configureTestingModule({
       imports: [FriendRequestsComponent],
@@ -219,6 +242,7 @@ describe('FriendRequestsComponent federated search progress', () => {
     component.searchText.set('alice');
 
     component.searchUser();
+    await Promise.resolve();
 
     expect(userService.resolveUser).toHaveBeenCalledTimes(1);
 
@@ -226,7 +250,7 @@ describe('FriendRequestsComponent federated search progress', () => {
       account: 'alice',
     });
     expect(userService.searchUsers).not.toHaveBeenCalled();
-    expect(component.localResults()).toEqual([local]);
+    await vi.waitFor(() => expect(component.localResults()).toEqual([local]));
   });
 
   it('shows but does not activate the current user resolved by a bare account', () => {
@@ -239,7 +263,7 @@ describe('FriendRequestsComponent federated search progress', () => {
     const userService = {
       sessionProfile: () => ({ id: self.id }),
       resolveUser: vi.fn().mockReturnValue(of({ code: 0, data: self })),
-      friendRelationshipStatuses: vi.fn(),
+      localRelationship: vi.fn(),
     };
     TestBed.resetTestingModule();
     TestBed.configureTestingModule({
@@ -266,7 +290,7 @@ describe('FriendRequestsComponent federated search progress', () => {
     expect(component.localResults()).toEqual([self]);
     expect(component.addTabStatus()).toBe(AddTabStatus.SUCCESS);
     expect(component.inviteUser()).toBeNull();
-    expect(userService.friendRelationshipStatuses).not.toHaveBeenCalled();
+    expect(userService.localRelationship).not.toHaveBeenCalled();
   });
 
   it('shows first-contact handshake progress until resolve and localization finish', () => {
@@ -331,7 +355,7 @@ describe('FriendRequestsComponent federated search progress', () => {
       id: 7,
       account: 'alice',
       name: 'Alice',
-      domain: '',
+      domain: 'local',
       isForeigner: false,
     } as User;
     const userService = {
@@ -375,7 +399,7 @@ describe('FriendRequestsComponent federated search progress', () => {
       id: 1,
       account: 'me',
       name: 'Me',
-      domain: '',
+      domain: 'local',
       isForeigner: false,
     } as User;
     const userService = {
@@ -568,12 +592,12 @@ describe('FriendRequestsComponent federated search progress', () => {
             name: 'Alice refreshed',
             avatar: '',
             bio: '',
-            domain: '',
+            domain: 'local',
             isForeigner: false,
           },
         },
       ],
-      nextCursor: null,
+      scannedThrough: null,
       hasMore: false,
       total: 1,
       actionableTotal: 1,

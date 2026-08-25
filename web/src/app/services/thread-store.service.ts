@@ -24,6 +24,8 @@ import { MemberProfileRepository } from './member-profile-store.service';
 import { ToastService } from './toast.service';
 import { TranslocoService } from '@jsverse/transloco';
 
+const CLIENT_FEED_CURSOR_UNAVAILABLE = 30006;
+
 /** Load status as a const object so it can be used as a VALUE in templates and as a TYPE. */
 export const ConversationLoadStatus = {
   LOADING: 'LOADING',
@@ -369,10 +371,14 @@ export class ThreadRepository {
       const next = list.slice();
       changed = { ...next[idx], ...patch };
       next[idx] = changed;
-      if ('pinned' in patch || 'pinnedAt' in patch) next.sort(byPinRank);
+      if ('pinned' in patch && patch.pinned !== list[idx].pinned)
+        return stablePinnedTiers(next);
       return next;
     });
-    if (changed) void this.persistThread(changed);
+    if (changed) {
+      void this.persistThread(changed);
+      if ('pinned' in patch) void this.persistThreadOrder();
+    }
   }
 
   private applyJoinRequestActivity(threadId: number, at: number): void {
@@ -384,10 +390,12 @@ export class ThreadRepository {
       const next = list.slice();
       changed = { ...next[index], joinRequestAt: at };
       next[index] = changed;
-      next.sort(byPinRank);
-      return next;
+      return moveToTierTop(next, threadId);
     });
-    if (changed) void this.persistThread(changed);
+    if (changed) {
+      void this.persistThread(changed);
+      void this.persistThreadOrder();
+    }
   }
 
   /** Replace a P2P item's peerUser (avatar/name/bio) after a federated profile sync. No-op for groups /
@@ -420,6 +428,7 @@ export class ThreadRepository {
       dissolvedAt?: number | null;
       memberCount?: number;
       groupMetaFeedId?: string;
+      role?: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
     },
   ): void {
     let changed: GroupConversationItem | undefined;
@@ -437,7 +446,11 @@ export class ThreadRepository {
           group.memberCount = patch.memberCount;
         if (patch.groupMetaFeedId !== undefined)
           group.groupMetaFeedId = patch.groupMetaFeedId;
-        changed = { ...t, group };
+        changed = {
+          ...t,
+          ...(patch.role !== undefined ? { role: patch.role } : {}),
+          group,
+        };
         return changed;
       }),
     );
@@ -445,18 +458,6 @@ export class ThreadRepository {
       void this.persistThread(changed);
       this.writeGroupProfile(changed.group);
     }
-  }
-
-  /** Apply an optimistic local role change; the durable group snapshot remains authoritative. */
-  applyRole(threadId: number, role: 'OWNER' | 'ADMIN' | 'MEMBER'): void {
-    let changed: ConversationItem | undefined;
-    this._items.update((list) => {
-      const found = list.find((t) => t.threadId === threadId);
-      if (!found) return list;
-      changed = { ...found, role };
-      return list.map((t) => (t.threadId === threadId ? changed! : t));
-    });
-    if (changed) void this.persistThread(changed);
   }
 
   /** Drop a thread after an explicit delete-data action. This is the SOLE chokepoint for thread removal, so the full local
@@ -532,7 +533,7 @@ export class ThreadRepository {
         });
       }
     }
-    return this._items().map((it) => {
+    let merged = this._items().map((it) => {
       if (!serverLrs.has(it.threadId)) return it;
       const isOpen = it.threadId === this._openThreadId();
       const next = {
@@ -556,6 +557,11 @@ export class ThreadRepository {
       };
       return next;
     });
+    // Catch-up items arrive in ascending message-feed order. Replaying their explicit moves in that order
+    // makes the newest feed activity end at the ordinary-tier head without any timestamp comparator.
+    for (const item of items)
+      merged = moveToTierTop(merged, item.threadId);
+    return merged;
   }
 
   /** Apply the atomic read-commit response; this is the only in-session writer of the open row's badge. */
@@ -588,7 +594,6 @@ export class ThreadRepository {
   /** Insert or refresh a single ConversationItem from an explicit conversation fetch. Mirrors
    *  applyItems' FLIP: if `_pendingTopId` matches, force-top it + emit `topInserted`. Idempotent. */
   private upsertThread(item: ConversationItem): void {
-    let shouldSort = false;
     let reconciled: ConversationItem =
       item.type === 'P2P'
         ? {
@@ -608,13 +613,9 @@ export class ThreadRepository {
       const idx = list.findIndex((t) => t.threadId === reconciled.threadId);
       const base = list.slice();
       if (idx === -1) {
-        shouldSort = true;
         base.unshift(reconciled);
       } else {
         const current = base[idx];
-        shouldSort =
-          current.pinned !== reconciled.pinned ||
-          current.pinnedAt !== reconciled.pinnedAt;
         reconciled = {
           ...reconciled,
           lastReadSeq: current.lastReadSeq,
@@ -635,15 +636,15 @@ export class ThreadRepository {
         }
         base[idx] = reconciled;
       }
-      const sorted = shouldSort ? base.sort(byPinRank) : base;
       return this._pendingTopId === reconciled.threadId
-        ? moveToTop(sorted, reconciled.threadId)
-        : sorted;
+        ? moveToTierTop(base, reconciled.threadId)
+        : stablePinnedTiers(base);
     });
     if (this._pendingTopId === reconciled.threadId) {
       this._topInserted.set(reconciled.threadId);
       this._pendingTopId = null;
     }
+    void this.persistThreadOrder();
     this._status.set('READY');
     void this.persistThread(reconciled);
     // A fresh item carries an embedded peer/group profile — write it through too (avatar freshness).
@@ -654,9 +655,9 @@ export class ThreadRepository {
 
   private applyItems(items: ConversationItem[]): void {
     const reconciled = items.map((item) => this.normalizeGroupProjection(item));
-    const sorted = [...reconciled].sort(byPinRank);
+    const sorted = stablePinnedTiers(reconciled);
     const topId = this.resolveTopId(reconciled);
-    const ordered = topId != null ? moveToTop(sorted, topId) : sorted;
+    const ordered = topId != null ? moveToTierTop(sorted, topId) : sorted;
     this._items.set(ordered);
     this._status.set('READY');
     if (topId != null) this._topInserted.set(topId);
@@ -737,7 +738,10 @@ export class ThreadRepository {
         return changed;
       }),
     );
-    if (changed) void this.persistThread(changed);
+    if (changed) {
+      void this.persistThread(changed);
+      void this.persistThreadOrder();
+    }
   }
 
   /**
@@ -795,8 +799,7 @@ export class ThreadRepository {
       };
       const next = list.slice();
       next[idx] = changed;
-      next.sort(byPinRank);
-      return next;
+      return moveToTierTop(next, msg.threadId);
     });
     if (changed) void this.persistThread(changed);
     return existed;
@@ -1061,6 +1064,11 @@ export class ThreadRepository {
       for (let i = 0; i < ThreadRepository.PULL_MAX_PAGES; i++) {
         const res = await this.catchUp.catchUp(after, through);
         if (!res) return;
+        if ('kind' in res) {
+          after = res.resumeAfter;
+          through = res.resumeBefore - 1;
+          continue;
+        }
         through ??= res.messageFeedEndId;
         summary.push(...res.items);
         after = res.scannedThrough;
@@ -1072,6 +1080,7 @@ export class ThreadRepository {
       if (caughtUp) {
         const updated = this.mergedSummaryThreads(summary);
         await this.webdb.applyCatchUp(updated, after);
+        await this.persistThreadOrder(updated);
         for (const item of summary)
           this.serverLastReadSeq.set(item.threadId, item.lastReadSeq);
         this._items.set(updated);
@@ -1089,6 +1098,11 @@ export class ThreadRepository {
     for (let i = 0; i < ThreadRepository.PULL_MAX_PAGES; i++) {
       const page = await this.catchUp.catchUpTombstones(after, through);
       if (!page) return;
+      if ('kind' in page) {
+        after = page.resumeAfter;
+        through = page.resumeBefore - 1;
+        continue;
+      }
       through ??= page.tombstoneFeedEndId;
       for (const item of page.items)
         await this.messageRepo.syncDeleted(item.threadId);
@@ -1123,7 +1137,11 @@ export class ThreadRepository {
     // Cursor undefined = boot hasn't seeded yet. Drop the signal — the HELLO replay reflects current state,
     // and the cursor advances past this signal once seeded.
     if (cursor === undefined) return;
-    if (targetFeedId <= cursor) return;
+    if (targetFeedId === cursor) return;
+    if (targetFeedId < cursor)
+      console.warn(
+        `[state-feed] local cursor ${cursor} is ahead of server ${targetFeedId}; requesting recovery`,
+      );
     if (cursor === 0) this._fullStateDrainTarget = targetFeedId;
     this._deltaInFlight = true;
     let pageCommitted = false;
@@ -1136,6 +1154,28 @@ export class ThreadRepository {
           take: 100,
         }),
       );
+      if (res.code === CLIENT_FEED_CURSOR_UNAVAILABLE) {
+        const reset = res.data as unknown as {
+          resumeAfter?: unknown;
+          resumeBefore?: unknown;
+        };
+        if (
+          !Number.isSafeInteger(reset?.resumeAfter) ||
+          !Number.isSafeInteger(reset?.resumeBefore) ||
+          (reset.resumeAfter as number) < 0 ||
+          (reset.resumeBefore as number) <= (reset.resumeAfter as number)
+        )
+          throw new Error('invalid client state-feed recovery window');
+        const resumeAfter = reset.resumeAfter as number;
+        const resumeThrough = (reset.resumeBefore as number) - 1;
+        console.warn(
+          `[state-feed] cursor unavailable; rebuilding from ${resumeAfter} through ${resumeThrough}`,
+        );
+        this.userService.seedStateFeedCursor(resumeAfter);
+        this._fullStateDrainTarget = resumeThrough;
+        this._pendingTailFeedId = resumeThrough;
+        return;
+      }
       if (res.code !== 0)
         throw new Error(`state delta returned business code ${res.code}`);
       {
@@ -1194,6 +1234,7 @@ export class ThreadRepository {
           this.applyGroupUpdate(update.threadId, {
             memberCount: persisted.group.memberCount,
             groupMetaFeedId: persisted.group.groupMetaFeedId,
+            role: persisted.role,
           });
         }
         // State items and any referenced group-meta pages are committed with one durable cursor.
@@ -1230,15 +1271,16 @@ export class ThreadRepository {
               .map((update) => update.threadId);
             if (affected.length) this.memberProfiles.notifyChanged(affected);
           } else if (op.eventType === 'GROUP_JOIN_REQUEST_HEAD') {
-            this.userService.applyGroupJoinRequestHead(
+            const hasNewUnread = this.userService.applyGroupJoinRequestHead(
               op.body.threadId,
               op.body.latestFeedId,
               op.body.readFeedId,
             );
-            this.applyJoinRequestActivity(
-              op.body.threadId,
-              op.body.latestRequestAt,
-            );
+            if (hasNewUnread)
+              this.applyJoinRequestActivity(
+                op.body.threadId,
+                op.body.latestRequestAt,
+              );
           } else if (op.eventType === 'INCOMING_INVITE_HEAD') {
             this.userService.applyIncomingInviteReadHead(
               op.body.readThroughFeedId,
@@ -1391,7 +1433,8 @@ export class ThreadRepository {
       const groupIntents = items.filter(
         (candidate) =>
           candidate.eventType === 'RELATIONSHIP_INTENT' &&
-          ((candidate.account === item.account && candidate.domain === item.domain) ||
+          ((candidate.account === item.account &&
+            candidate.domain === item.domain) ||
             (candidate.subjectAccount === item.account &&
               candidate.subjectDomain === item.domain)),
       );
@@ -1401,10 +1444,15 @@ export class ThreadRepository {
           (body): body is import('./user.service').ClientGroupInviteIntent =>
             'threadId' in body && Number.isSafeInteger(body.threadId),
         )?.threadId;
-      if ((!thread || thread.type !== 'GROUP') && projectedThreadId === undefined)
+      if (
+        (!thread || thread.type !== 'GROUP') &&
+        projectedThreadId === undefined
+      )
         throw new Error('group-meta head has no local thread');
-      const threadId = thread?.type === 'GROUP' ? thread.threadId : projectedThreadId!;
-      const current = thread?.type === 'GROUP' ? (thread.group.groupMetaFeedId ?? '0') : '0';
+      const threadId =
+        thread?.type === 'GROUP' ? thread.threadId : projectedThreadId!;
+      const current =
+        thread?.type === 'GROUP' ? (thread.group.groupMetaFeedId ?? '0') : '0';
       if (BigInt(current) >= BigInt(item.body.groupMetaFeedEndId)) continue;
       const mode = current === '0' ? 'full' : 'delta';
       let after = current;
@@ -1508,14 +1556,38 @@ export class ThreadRepository {
 
   // ── IDB persistence helpers (best-effort; IDB unavailable → graceful no-op) ────────────────
 
-  /** Read all cached threads from IDB, ordered by pin rank (for instant boot paint). */
+  /** Read all cached threads from IDB. Their durable recency is replayed by the message feed; only keep
+   * the fixed/non-fixed boundary here, without reconstructing order from wall-clock timestamps. */
   private async readCachedThreads(): Promise<ConversationItem[]> {
     try {
       const all = await this.webdb.getThreads();
-      return all.sort(byPinRank);
+      const storedOrder = await this.webdb.getMeta('threadListOrder');
+      const ids = Array.isArray(storedOrder)
+        ? storedOrder.filter(
+            (id): id is number => Number.isSafeInteger(id) && id > 0,
+          )
+        : [];
+      const rank = new Map(ids.map((id, index) => [id, index]));
+      const restored = all
+        .map((item, index) => ({ item, index }))
+        .sort(
+          (a, b) =>
+            (rank.get(a.item.threadId) ?? Number.MAX_SAFE_INTEGER) -
+              (rank.get(b.item.threadId) ?? Number.MAX_SAFE_INTEGER) ||
+            a.index - b.index,
+        )
+        .map(({ item }) => item);
+      return stablePinnedTiers(restored);
     } catch {
       return [];
     }
+  }
+
+  private persistThreadOrder(items = this._items()): Promise<void> {
+    return this.webdb.putMeta(
+      'threadListOrder',
+      items.map((item) => item.threadId),
+    );
   }
 
   /** Rewrite the whole `threads` store from a snapshot (clear + put all, in one transaction). */
@@ -1614,24 +1686,26 @@ function moveToTop<T extends { threadId: number }>(
   return next;
 }
 
-/** Pin-aware conversation-list rank comparator — the SINGLE source of truth for client-side ordering,
- *  kept in lockstep with the backend's query-thread/valid ORDER BY. Pinned tier first (most-recently-
- *  pinned first via pinnedAt desc); then unpinned recent-first by lastMessageAt; empty threads sink;
- *  threadId breaks ties deterministically. */
-function byPinRank(a: ConversationItem, b: ConversationItem): number {
-  if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-  if (a.pinned) {
-    const ta = a.pinnedAt ?? -Infinity;
-    const tb = b.pinnedAt ?? -Infinity;
-    return tb - ta || a.threadId - b.threadId;
-  }
-  const la = Math.max(
-    a.lastMessageAt ?? -Infinity,
-    a.joinRequestAt ?? -Infinity,
-  );
-  const lb = Math.max(
-    b.lastMessageAt ?? -Infinity,
-    b.joinRequestAt ?? -Infinity,
-  );
-  return lb - la || a.threadId - b.threadId;
+/** Keep fixed threads ahead of ordinary threads without changing either tier's event-maintained order. */
+function stablePinnedTiers<T extends { pinned: boolean }>(items: T[]): T[] {
+  return [
+    ...items.filter((item) => item.pinned),
+    ...items.filter((item) => !item.pinned),
+  ];
+}
+
+/** Move an ordinary thread to the head of the ordinary tier. Fixed threads never move on activity. */
+function moveToTierTop<T extends { threadId: number; pinned: boolean }>(
+  items: T[],
+  threadId: number,
+): T[] {
+  const index = items.findIndex((item) => item.threadId === threadId);
+  if (index < 0 || items[index].pinned) return items;
+  const pinnedCount = items.findIndex((item) => !item.pinned);
+  const target = pinnedCount < 0 ? items.length - 1 : pinnedCount;
+  if (index === target) return items;
+  const next = items.slice();
+  const [moved] = next.splice(index, 1);
+  next.splice(target, 0, moved);
+  return next;
 }

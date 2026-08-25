@@ -40,7 +40,6 @@ import {
 import { PopupType, RouteService } from '../../services/route.service';
 import { ComposerDraftService } from '../../services/composer-draft.service';
 import { assetUrl } from '../../services/runtime';
-import { LinkCardService } from '../../services/link-card.service';
 
 /**
  * A structured send intent emitted by {@link ChatInputComponent}. One discriminated union (rather than three
@@ -172,7 +171,6 @@ export class ChatInputComponent implements OnDestroy {
   private readonly keyboardInset = inject(KeyboardInsetService);
   private readonly preferences = inject(PreferenceStore);
   private readonly generations = inject(LinkCardGenerationService);
-  private readonly linkCards = inject(LinkCardService);
   private readonly route = inject(RouteService);
   private readonly composerDrafts = inject(ComposerDraftService);
   private recentsWriteRevision = 0;
@@ -260,7 +258,7 @@ export class ChatInputComponent implements OnDestroy {
           expiresAt: draft.generationExpiresAt,
         });
       } else if (draft.linkUrl && draft.generationTriggered) {
-        this.scheduleGeneration(draft.plainText, draft.linkUrl, true);
+        void this.startGeneration(draft.plainText, draft.linkUrl, true);
       }
     });
   }
@@ -312,22 +310,9 @@ export class ChatInputComponent implements OnDestroy {
   }
 
   private detectAndMaybeGenerate(): void {
-    const editor = this.editor();
-    const text = editor?.getText() ?? '';
     const url = this.pendingLinkUrl;
     if (url !== this.detectedLink()) this.resetGeneration();
     this.detectedLink.set(url);
-    if (url && this.linkCards.matchFirst(url)?.url === url)
-      this.scheduleGeneration(text, url, false);
-  }
-
-  private scheduleGeneration(
-    text: string,
-    url: string,
-    triggered: boolean,
-  ): void {
-    if (this.generationId() || this.generationStarting()) return;
-    void this.startGeneration(text, url, triggered);
   }
 
   private async startGeneration(

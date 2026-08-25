@@ -1,9 +1,8 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
-  ArrayMaxSize,
-  IsArray,
   IsInt,
+  IsDataURI,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -12,43 +11,51 @@ import {
   ValidateIf,
 } from 'class-validator';
 
-export class FriendRelationshipStatusDto {
-  @ApiProperty({
-    type: Number,
-    isArray: true,
-    example: [2, 3],
-    description: 'Target user ids (≤50)',
-  })
-  @IsArray()
-  @ArrayMaxSize(50)
-  @IsInt({ each: true })
-  userIds!: number[];
-}
-
-export class FriendRelationshipStateDto {
-  @ApiProperty() userId!: number;
-  @ApiProperty({
-    enum: ['NONE', 'OUTGOING_PENDING', 'INCOMING_PENDING', 'FRIEND'],
-  })
-  status!: 'NONE' | 'OUTGOING_PENDING' | 'INCOMING_PENDING' | 'FRIEND';
-  @ApiProperty({
-    required: false,
-    description: 'Pending invite id, when applicable',
-  })
-  inviteId?: string;
-}
-
-/** Send a friend invite (optionally with a ≤255-char note) to a local user or an existing
- * federated stub. A foreign Address without a stub uses SendFederatedFriendInviteDto instead. */
+/** Send a friend or group request by stable Address. Local identities use domain `local`; foreign
+ * identities use their home domain. The display snapshot never establishes identity. */
 export class SendFriendInviteDto {
   @ApiProperty({
-    example: 1,
-    description: 'Target local user id or existing federated stub id',
+    required: false,
+    description: 'Legacy local/existing-stub target id',
   })
+  @ValidateIf((value: SendFriendInviteDto) => !value.account)
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  toUserId!: number;
+  toUserId?: number;
+
+  @ApiProperty({
+    example: 'alice',
+    description: 'Target account',
+  })
+  @ValidateIf((value: SendFriendInviteDto) => value.toUserId === undefined)
+  @IsString()
+  @IsNotEmpty()
+  account!: string;
+
+  @ApiProperty({ example: 'local', description: 'Target home domain' })
+  @ValidateIf((value: SendFriendInviteDto) => value.toUserId === undefined)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(63)
+  domain!: string;
+
+  @ApiProperty({ description: 'Pending-card display-name snapshot.' })
+  @ValidateIf((value: SendFriendInviteDto) => value.toUserId === undefined)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(30)
+  displayName!: string;
+
+  @ApiProperty({
+    required: false,
+    description: 'Pending-card avatar Base64 data URL.',
+  })
+  @IsOptional()
+  @IsString()
+  @IsDataURI()
+  @MaxLength(1_500_000)
+  avatar?: string;
 
   @ApiProperty({
     required: false,
@@ -61,9 +68,9 @@ export class SendFriendInviteDto {
   note?: string;
 }
 
-/** Send a federated friend request before a foreign User stub exists. Address is the routing identity;
- * displayName/avatar/bio are an untrusted card snapshot and never establish identity or relationship. */
-export class SendFederatedFriendInviteDto {
+/** Backward-compatible federated route DTO. Address is the routing identity; displayName/avatar are an
+ * untrusted card snapshot and never establish identity or relationship. */
+export class SendFederatedFriendInviteDto extends SendFriendInviteDto {
   @ApiProperty({
     example: 'alice',
     description:
@@ -84,39 +91,22 @@ export class SendFederatedFriendInviteDto {
   domain!: string;
 
   @ApiProperty({
-    required: false,
     description: 'Untrusted pending-card display snapshot.',
   })
-  @IsOptional()
   @IsString()
+  @IsNotEmpty()
   @MaxLength(30)
-  displayName?: string;
+  displayName!: string;
 
   @ApiProperty({
     required: false,
-    description: 'Untrusted pending-card avatar URL/data URL.',
+    description: 'Untrusted pending-card avatar Base64 data URL.',
   })
   @IsOptional()
   @IsString()
+  @IsDataURI()
   @MaxLength(1_500_000)
   avatar?: string;
-
-  @ApiProperty({
-    description: 'Untrusted pending-card biography snapshot.',
-  })
-  @IsString()
-  @MaxLength(255)
-  bio!: string;
-
-  @ApiProperty({
-    required: false,
-    example: 'Hi from the conference',
-    description: 'Invite note (≤255 chars)',
-  })
-  @IsOptional()
-  @IsString()
-  @MaxLength(255)
-  note?: string;
 }
 
 /** Identify an invite by its id. The id is a BigInt carried as a string on the wire (JSON has no

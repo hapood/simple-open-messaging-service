@@ -318,7 +318,7 @@
     "outgoingDetailTitle": "Sent Friend Request",
     "reasonLabel": "Message (optional)",
     "sending": "Sending…",
-    "addAction": "Add",
+    "addAction": "Add friend",
     "sentStatus": "Sent",
     "reviewRequest": "Review",
     "friendStatus": "Friends",
@@ -988,6 +988,9 @@
     "incompatibleDismiss": "OK"
   },
   "contactCard": {
+    "profileTitle": "Contact card",
+    "groupProfileTitle": "Group card",
+    "noBio": "No bio yet",
     "shareTitle": "Share contact card",
     "shareAria": "Share chat contact card",
     "label": "Contact card",

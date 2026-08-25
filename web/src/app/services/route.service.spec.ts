@@ -146,6 +146,29 @@ describe('RouteService adaptive account surfaces', () => {
     );
   });
 
+  it('opens contact identity inside the scoped chatbox', () => {
+    service.popupDlg(
+      PopupType.CONTACT_IDENTITY,
+      {
+        identity: {
+          account: 'alice',
+          domain: 'local',
+          name: 'Alice',
+          bio: '',
+        },
+      },
+      undefined,
+      { scopeThreadId: 17 },
+    );
+
+    expect(nav.pushPane).toHaveBeenCalledWith(
+      expect.objectContaining({
+        presentation: 'chatbox',
+        scopeThreadId: 17,
+      }),
+    );
+  });
+
   it('opens the shared forwarding workspace as a wide desktop dialog', () => {
     service.popupDlg(PopupType.FORWARD, {
       purpose: 'NATIVE_SHARE',

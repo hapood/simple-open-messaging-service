@@ -5,6 +5,17 @@
   padding: unset
 }
 
+// Shared unread-attention dot used by compact navigation surfaces. Callers own positioning/layout;
+// this mixin keeps the painted size, surface cutout, and semantic color identical.
+@mixin unread-attention-dot {
+  width: 8px;
+  height: 8px;
+  border: 2px solid var(--app-surface);
+  border-radius: 50%;
+  background: var(--app-danger);
+  box-sizing: content-box;
+}
+
 // Shared treatment for editable avatars: a compact translucent caption anchored
 // to the bottom of the image. The host controls its own dimensions and positioning.
 @mixin avatar-edit-hint($height: 24px, $vertical-padding: 2px) {

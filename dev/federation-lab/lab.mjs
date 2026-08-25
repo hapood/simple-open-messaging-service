@@ -101,19 +101,65 @@ function ensureLink(target, path) {
   symlinkSync(target, path, 'dir');
 }
 
-async function waitHealthy(node) {
-  const deadline = Date.now() + 30_000;
-  const url = `http://127.0.0.1:${node.backendPort}/api/v1/health`;
+async function waitForUrl(url, timeoutMs = 300_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastResult = 'no response';
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(url);
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(2_000),
+      });
       if (response.ok) return;
-    } catch {
-      // The process is still booting.
+      lastResult = `HTTP ${response.status}`;
+    } catch (error) {
+      lastResult = error instanceof Error ? error.message : String(error);
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
   }
-  throw new Error(`${node.domain} did not become healthy within 30 seconds`);
+  throw new Error(
+    `${url} was not ready within ${timeoutMs / 1000} seconds (${lastResult})`,
+  );
+}
+
+async function waitForServices(services) {
+  const statuses = Object.fromEntries(
+    services.map(({ name }) => [name, 'waiting']),
+  );
+  const report = () => {
+    console.log(
+      `[lab] readiness: ${services.map(({ name }) => `${name}=${statuses[name]}`).join(' ')}`,
+    );
+  };
+  const reporter = setInterval(report, 2_000);
+
+  try {
+    await Promise.all(
+      services.map(async ({ name, check }) => {
+        try {
+          await check();
+          statuses[name] = 'ready';
+        } catch (error) {
+          statuses[name] = 'failed';
+          throw error;
+        }
+      }),
+    );
+  } catch (error) {
+    report();
+    console.error(
+      `[lab] readiness failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    stop(1);
+    await finished;
+    throw error;
+  } finally {
+    clearInterval(reporter);
+  }
+
+  report();
+  console.log(
+    `[lab] ${services.map(({ name }) => name).join(', ')} are ready.`,
+  );
 }
 
 const requiredOutputs = [];
@@ -250,7 +296,17 @@ if (runBackend) {
       }
     });
   }
-  await Promise.all(nodes.map(waitHealthy));
+  await waitForServices([
+    {
+      name: 'be',
+      check: () =>
+        Promise.all(
+          nodes.map((node) =>
+            waitForUrl(`http://127.0.0.1:${node.backendPort}/api/v1/health`),
+          ),
+        ),
+    },
+  ]);
   console.log('\nThree-node federation backends are ready:');
   for (const node of nodes) {
     console.log(
@@ -260,6 +316,28 @@ if (runBackend) {
 }
 
 if (runFrontend) {
+  if (devServer) {
+    await waitForServices([
+      {
+        name: 'admin',
+        check: () =>
+          waitForUrl(`http://127.0.0.1:${adminDevPort}/admin/`, 300_000),
+      },
+      {
+        name: 'be',
+        check: () =>
+          Promise.all(
+            nodes.map((node) =>
+              waitForUrl(`http://127.0.0.1:${node.backendPort}/api/v1/health`),
+            ),
+          ),
+      },
+      {
+        name: 'web',
+        check: () => waitForUrl(`http://127.0.0.1:${webDevPort}/`, 300_000),
+      },
+    ]);
+  }
   spawnChild('caddy', [
     'run',
     '--config',

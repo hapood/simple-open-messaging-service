@@ -21,8 +21,6 @@ import {
   InviteIdDto,
   FriendInviteActionDto,
   InviteDto,
-  FriendRelationshipStateDto,
-  FriendRelationshipStatusDto,
   ReadIncomingInvitesDto,
 } from '../dto/invite.dto.js';
 import { mintUlid } from '../common/account.js';
@@ -87,13 +85,26 @@ export class InviteController {
     @Body() dto: SendFriendInviteDto,
   ) {
     const me = req.user.userId;
-    if (me === dto.toUserId) {
+    const account = dto.account?.trim().toLowerCase();
+    const domain = dto.domain?.trim().toLowerCase();
+    if (
+      dto.toUserId === undefined &&
+      domain !== 'local' &&
+      domain !== this.federationService.ourDomain
+    )
+      return this.sendFederatedFriendInvite(req, dto);
+    const target =
+      dto.toUserId !== undefined
+        ? await this.userService.findUniqueUser({ id: dto.toUserId })
+        : await this.userService.findUniqueUser({
+            account_domain: { account: account!, domain: 'local' },
+          });
+    if (target && me === target.id) {
       throw new BusinessException(
         BusinessCode.FRIEND_SELF,
         'can not invite yourself',
       );
     }
-    const target = await this.userService.findUniqueUser({ id: dto.toUserId });
     if (!target) {
       // Errors are localized client-side by their numeric code (see ApiResult.messageKey) — they carry no
       // messageKey — so this throws and flows through the global AllExceptionsFilter like every other error.
@@ -125,6 +136,9 @@ export class InviteController {
           'REQUESTED',
           clientFeedUpdates,
           dto.note ?? '',
+          dto.displayName
+            ? { displayName: dto.displayName, avatar: dto.avatar }
+            : undefined,
         );
       });
       await this.federationService.pushStateFeedDomains(statePeers.keys());
@@ -172,6 +186,9 @@ export class InviteController {
               target.id,
               true,
               dto.note ?? '',
+              dto.displayName
+                ? { displayName: dto.displayName, avatar: dto.avatar }
+                : undefined,
             )),
           );
       },
@@ -231,6 +248,7 @@ export class InviteController {
         req.user.userId,
         { account, domain },
         dto.note ?? '',
+        { displayName: dto.displayName, avatar: dto.avatar },
       );
       return envelope(
         { account, domain },
@@ -247,7 +265,7 @@ export class InviteController {
       account,
       domain,
       dto.note ?? '',
-      { displayName: dto.displayName, avatar: dto.avatar, bio: dto.bio },
+      { displayName: dto.displayName, avatar: dto.avatar },
       async (tx, state) => {
         await this.userQuota.tick(req.user.userId, 'requests', tx);
         statePeers =
@@ -517,22 +535,5 @@ export class InviteController {
     ]);
     const friends = new Set(friendIds);
     return rows.filter((r) => !friends.has(r.toUserId));
-  }
-
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @Post('invite/friend-status')
-  @ApiOperation({
-    summary: 'Get authoritative friend/invite status for up to 50 users',
-  })
-  @ApiResultResponse(FriendRelationshipStateDto, true)
-  friendStatus(
-    @Request() req: FastifyRequest,
-    @Body() dto: FriendRelationshipStatusDto,
-  ) {
-    return this.inviteService.friendRelationshipStatuses(
-      req.user.userId,
-      dto.userIds,
-    );
   }
 }

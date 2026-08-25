@@ -956,23 +956,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  '/api/v1/invite/friend-status': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Get authoritative friend/invite status for up to 50 users */
-    post: operations['InviteController_friendStatus'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   '/api/v1/devices/register': {
     parameters: {
       query?: never;
@@ -1542,23 +1525,6 @@ export interface paths {
     };
     /** Read an in-memory link-card generation result */
     get: operations['LinkPreviewController_generation'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/link-card-rules': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** List enabled client-side link card hostname rules */
-    get: operations['LinkCardRuleController_list'];
     put?: never;
     post?: never;
     delete?: never;
@@ -3296,71 +3262,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  '/api/v1/admin/link-card-rules': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** List all link card rules */
-    post: operations['LinkCardRuleAdminController_list'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/link-card-rules/create': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    post: operations['LinkCardRuleAdminController_create'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/link-card-rules/{id}/update': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    post: operations['LinkCardRuleAdminController_update'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/admin/link-card-rules/{id}/delete': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    post: operations['LinkCardRuleAdminController_remove'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   '/api/v1/admin/rate-limits': {
     parameters: {
       query?: never;
@@ -4439,10 +4340,23 @@ export interface components {
     };
     SendFriendInviteDto: {
       /**
-       * @description Target local user id or existing federated stub id
-       * @example 1
+       * @description Legacy local/existing-stub target id
        */
-      toUserId: number;
+      toUserId?: number;
+      /**
+       * @description Target account
+       * @example alice
+       */
+      account: string;
+      /**
+       * @description Target home domain
+       * @example local
+       */
+      domain: string;
+      /** @description Pending-card display-name snapshot. */
+      displayName: string;
+      /** @description Pending-card avatar Base64 data URL. */
+      avatar?: string;
       /**
        * @description Invite note (≤255 chars)
        * @example Hi from the conference
@@ -4461,11 +4375,9 @@ export interface components {
        */
       domain: string;
       /** @description Untrusted pending-card display snapshot. */
-      displayName?: string;
-      /** @description Untrusted pending-card avatar URL/data URL. */
+      displayName: string;
+      /** @description Untrusted pending-card avatar Base64 data URL. */
       avatar?: string;
-      /** @description Untrusted pending-card biography snapshot. */
-      bio: string;
       /**
        * @description Invite note (≤255 chars)
        * @example Hi from the conference
@@ -4501,23 +4413,6 @@ export interface components {
       /** @description Expiry (ms epoch). expiresAt < Date.now() → expired. */
       expiresAt: number;
       createdAt: number;
-    };
-    FriendRelationshipStateDto: {
-      userId: number;
-      /** @enum {string} */
-      status: 'NONE' | 'OUTGOING_PENDING' | 'INCOMING_PENDING' | 'FRIEND';
-      /** @description Pending invite id, when applicable */
-      inviteId?: string;
-    };
-    FriendRelationshipStatusDto: {
-      /**
-       * @description Target user ids (≤50)
-       * @example [
-       *       2,
-       *       3
-       *     ]
-       */
-      userIds: number[];
     };
     RegisterDeviceDto: {
       /**
@@ -5178,22 +5073,6 @@ export interface components {
       scope?: string;
       /** @description Exact structured task identifier */
       taskId?: string;
-    };
-    SaveLinkCardRuleDto: {
-      /** @example example.com */
-      hostname: string;
-      /** @example Douyin */
-      note?: string;
-      /**
-       * @default first
-       * @enum {string}
-       */
-      imageSelection: 'first' | 'last';
-      /**
-       * @default first
-       * @enum {string}
-       */
-      descriptionSelection: 'first' | 'last';
     };
     AdminListMessageReportsDto: {
       /** @default 0 */
@@ -6432,31 +6311,6 @@ export interface operations {
       };
     };
   };
-  InviteController_friendStatus: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['FriendRelationshipStatusDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['FriendRelationshipStateDto'][];
-          };
-        };
-      };
-    };
-  };
   DeviceController_register: {
     parameters: {
       query?: never;
@@ -7125,23 +6979,6 @@ export interface operations {
       path: {
         generationId: string;
       };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  LinkCardRuleController_list: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
       cookie?: never;
     };
     requestBody?: never;
@@ -9170,86 +9007,6 @@ export interface operations {
     };
     responses: {
       201: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  LinkCardRuleAdminController_list: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  LinkCardRuleAdminController_create: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['SaveLinkCardRuleDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  LinkCardRuleAdminController_update: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: number;
-      };
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['SaveLinkCardRuleDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  LinkCardRuleAdminController_remove: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: number;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
         headers: {
           [name: string]: unknown;
         };

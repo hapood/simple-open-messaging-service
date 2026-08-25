@@ -314,14 +314,14 @@ export class CallsService implements OnModuleDestroy {
       callerName: caller?.name ?? '',
       callerAvatar: caller?.avatar ?? '',
       callerAccount: caller?.account ?? '',
-      callerDomain: caller?.domain === 'local' ? '' : (caller?.domain ?? ''),
+      callerDomain: caller?.domain ?? '',
       callType: call.callType,
     });
     if (caller?.account) {
       this.callState.setPeerIdentity(
         call.calleeId,
         caller.account,
-        caller.domain === 'local' ? '' : caller.domain,
+        caller.domain,
       );
     }
     void this.push.dispatchForCall(call.calleeId, {
@@ -330,7 +330,7 @@ export class CallsService implements OnModuleDestroy {
       callerName: caller?.name ?? '',
       callerAvatar: caller?.avatar ?? '',
       callerAccount: caller?.account ?? '',
-      callerDomain: caller?.domain === 'local' ? '' : (caller?.domain ?? ''),
+      callerDomain: caller?.domain ?? '',
       threadId: call.threadId,
       callType: call.callType,
     });

@@ -44,6 +44,7 @@ import {
   type ResolvedMemberProfile,
 } from '../../services/member-profile-store.service';
 import { PageHeaderComponent } from '../page-header/page-header.component';
+import { ChatContextService } from '../message-thread/chat-context.service';
 
 type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
 
@@ -94,6 +95,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   private readonly transloco = inject(TranslocoService);
   private readonly toast = inject(ToastService);
   private readonly threadAdapter = inject(MESSAGE_THREAD_ADAPTER);
+  private readonly chatContext = inject(ChatContextService);
 
   /** The open thread id (template-bound for the alias editor). */
   readonly threadId = this.convList.openThreadId;
@@ -135,11 +137,8 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly pendingAvatar = signal<string | undefined>(undefined);
 
   readonly myUserId = computed(() => this.userService.sessionProfile()?.id);
-  /** Caller's role, derived from the roster (fresh after each reload); falls back to the item's role. */
-  readonly myRole = computed<Role | undefined>(() => {
-    const me = this.roster().find((m) => m.userId === this.myUserId());
-    return me?.role ?? this.userMsgTrd()?.role ?? undefined;
-  });
+  /** Caller's role comes from the chatbox context initialized when this chat was opened. */
+  readonly myRole = this.chatContext.groupRole;
   readonly isOwner = computed(() => this.myRole() === 'OWNER');
   readonly isAdmin = computed(
     () => this.myRole() === 'OWNER' || this.myRole() === 'ADMIN',

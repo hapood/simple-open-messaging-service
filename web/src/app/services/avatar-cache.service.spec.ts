@@ -97,4 +97,26 @@ describe('AvatarRepository', () => {
       .flush(new Blob(['not found']), { status: 404, statusText: 'Not Found' });
     await expect(p).resolves.toEqual(undefined);
   });
+
+  it('serializes an already-cached avatar without issuing another media request', async () => {
+    const path = '/uploads/avatars/snapshot-512.webp';
+    await TestBed.inject(WebdbService).putAvatar({
+      identity: 'gpeer.test\u0000!group',
+      path,
+      blob: new Blob(['avatar'], { type: 'image/webp' }),
+      lastRender: Date.now(),
+    });
+
+    await expect(
+      repo.getCachedDataUrl('gpeer.test\u0000!group', path),
+    ).resolves.toBe('data:image/webp;base64,YXZhdGFy');
+    httpMock.verify();
+  });
+
+  it('omits an avatar snapshot when the resource has not been cached', async () => {
+    await expect(
+      repo.getCachedDataUrl('upeer.test\u0000alice', '/uploads/missing.webp'),
+    ).resolves.toBeUndefined();
+    httpMock.verify();
+  });
 });

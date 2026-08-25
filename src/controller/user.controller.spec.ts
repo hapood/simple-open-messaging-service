@@ -17,8 +17,6 @@ function setup() {
     {} as never,
     {} as never,
     {} as never,
-    {} as never,
-    {} as never,
     clientStateFeed as never,
     {} as never,
     {} as never,
@@ -35,10 +33,10 @@ describe('UserController.queryStateFeed', () => {
       {
         feedId: 5,
         account: 'alice',
-        domain: '',
+        domain: 'local',
         eventType: 'PROFILE',
         subjectAccount: '',
-        subjectDomain: '',
+        subjectDomain: 'local',
         body: { displayName: 'Alice', avatar: null, bio: '', profileRev: 2 },
       },
     ]);
@@ -55,12 +53,25 @@ describe('UserController.queryStateFeed', () => {
     expect(clientStateFeed.query).toHaveBeenCalledWith(7, 'full', 0, 6);
   });
 
-  it('delegates a missing cursor to the feed reset response', async () => {
+  it('returns the recovery error when the cursor is missing', async () => {
     const { controller, clientStateFeed, req } = setup();
-    const reset = { resumeAfter: 0, resumeBefore: 7 };
-    clientStateFeed.rejectMissingAfter.mockReturnValue(reset);
+    const error = new Error('cursor unavailable');
+    clientStateFeed.rejectMissingAfter.mockRejectedValue(error);
 
-    await expect(controller.queryStateFeed(req, 'delta')).resolves.toBe(reset);
+    await expect(controller.queryStateFeed(req, 'delta')).rejects.toBe(error);
+    expect(clientStateFeed.rejectMissingAfter).toHaveBeenCalledWith(7);
+    expect(clientStateFeed.query).not.toHaveBeenCalled();
+  });
+
+  it('returns code 30006 data when the cursor is ahead of the feed', async () => {
+    const { controller, clientStateFeed, req } = setup();
+
+    await expect(
+      controller.queryStateFeed(req, 'delta', '9', '100', '9'),
+    ).rejects.toMatchObject({
+      bizCode: 30006,
+      data: { resumeAfter: 0, resumeBefore: 7 },
+    });
     expect(clientStateFeed.query).not.toHaveBeenCalled();
   });
 });
