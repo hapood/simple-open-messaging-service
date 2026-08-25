@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use tauri::Manager;
 
 const DB_FILENAME: &str = "soms-local.sqlite3";
-const CACHE_SCHEMA_VERSION: i64 = 5;
+const CACHE_SCHEMA_VERSION: i64 = 6;
 
 fn db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app
@@ -81,6 +81,7 @@ fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
         "profiles",
         "thread_participants",
         "friend_requests",
+        "relationship_intents",
         "sync_state",
         "notification_global_state",
         "notification_thread_state",
@@ -155,6 +156,13 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
         CREATE TABLE IF NOT EXISTS friend_requests (
           user_id INTEGER NOT NULL,
           stable_key TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          PRIMARY KEY (user_id, stable_key)
+        );
+        CREATE TABLE IF NOT EXISTS relationship_intents (
+          user_id INTEGER NOT NULL,
+          stable_key TEXT NOT NULL,
+          reverse_key TEXT NOT NULL,
           payload_json TEXT NOT NULL,
           PRIMARY KEY (user_id, stable_key)
         );
@@ -234,6 +242,7 @@ fn drop_cache_schema(conn: &Connection) -> Result<(), String> {
          DROP TABLE IF EXISTS thread_participants;
          DROP TABLE IF EXISTS friend_intents;
          DROP TABLE IF EXISTS friend_requests;
+         DROP TABLE IF EXISTS relationship_intents;
          DROP TABLE IF EXISTS sync_state;
          DROP TABLE IF EXISTS notification_global_state;
          DROP TABLE IF EXISTS notification_thread_state;
@@ -395,23 +404,6 @@ fn parse_json(value: String) -> Result<Value, String> {
     serde_json::from_str(&value).map_err(|e| format!("decode native db value: {e}"))
 }
 
-fn friend_pair_key(
-    account: &str,
-    domain: &str,
-    subject_account: &str,
-    subject_domain: &str,
-) -> Result<String, String> {
-    let mut endpoints = vec![
-        format!("{domain}\0{account}"),
-        format!("{subject_domain}\0{subject_account}"),
-    ];
-    endpoints.sort();
-    Ok(format!(
-        "friend:{}",
-        json_text(&serde_json::json!(endpoints))?
-    ))
-}
-
 fn save_request_projection(
     tx: &Transaction<'_>,
     user_id: i64,
@@ -441,7 +433,102 @@ fn intent_is_effective(value: Option<&Value>, now: i64) -> bool {
     }
 }
 
-fn apply_group_relationship_intent(
+fn relationship_intent_key(
+    account: &str,
+    domain: &str,
+    subject_account: &str,
+    subject_domain: &str,
+) -> String {
+    format!("{domain}\0{account}->{subject_domain}\0{subject_account}")
+}
+
+fn apply_relationship_intent_fact(
+    tx: &Transaction<'_>,
+    user_id: i64,
+    account: &str,
+    domain: &str,
+    subject_account: &str,
+    subject_domain: &str,
+    body: &Value,
+) -> Result<bool, String> {
+    let now = chrono_millis();
+    let status = body
+        .get("status")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "relationship intent has no status".to_string())?;
+    let expires_at = body.get("expiresAt").and_then(Value::as_i64);
+    let key = relationship_intent_key(account, domain, subject_account, subject_domain);
+    let reverse_key = relationship_intent_key(subject_account, subject_domain, account, domain);
+    let fact = serde_json::json!({
+        "status": status,
+        "expiresAt": expires_at,
+        "localThreadId": body.get("localThreadId")
+            .or_else(|| body.get("threadId"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "updatedAt": now,
+    });
+    tx.execute(
+        "INSERT INTO relationship_intents(user_id,stable_key,reverse_key,payload_json)
+             VALUES(?1,?2,?3,?4)
+             ON CONFLICT(user_id,stable_key) DO UPDATE SET
+               reverse_key=excluded.reverse_key,payload_json=excluded.payload_json",
+        params![user_id, key, reverse_key, json_text(&fact)?],
+    )
+    .map_err(|e| format!("save relationship intent fact: {e}"))?;
+    let read_fact = |fact_key: &str| -> Result<Option<Value>, String> {
+        tx.query_row(
+            "SELECT payload_json FROM relationship_intents WHERE user_id=?1 AND stable_key=?2",
+            params![user_id, fact_key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| format!("read relationship intent fact: {e}"))?
+        .map(parse_json)
+        .transpose()
+    };
+    let first = read_fact(&key)?;
+    let second = read_fact(&reverse_key)?;
+    Ok(intent_is_effective(first.as_ref(), now)
+        && intent_is_effective(second.as_ref(), now)
+        && [first.as_ref(), second.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|fact| fact.get("status").and_then(Value::as_str) == Some("ACCEPTED")))
+}
+
+fn update_live_request_projection(
+    tx: &Transaction<'_>,
+    user_id: i64,
+    key: &str,
+    status: &str,
+    now: i64,
+) -> Result<(), String> {
+    let current: Option<String> = tx
+        .query_row(
+            "SELECT payload_json FROM friend_requests WHERE user_id=?1 AND stable_key=?2",
+            params![user_id, key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("read request projection effect target: {e}"))?;
+    let Some(mut projection) = current.map(parse_json).transpose()? else {
+        return Ok(());
+    };
+    if projection.get("status").and_then(Value::as_str) != Some("REQUESTED")
+        || !projection
+            .get("expiresAt")
+            .and_then(Value::as_i64)
+            .is_some_and(|expires_at| expires_at > now)
+    {
+        return Ok(());
+    }
+    projection["status"] = Value::String(status.into());
+    projection["updatedAt"] = Value::from(now);
+    save_request_projection(tx, user_id, key, &projection)
+}
+
+fn apply_friend_request_effect(
     tx: &Transaction<'_>,
     user_id: i64,
     revision: i64,
@@ -452,502 +539,150 @@ fn apply_group_relationship_intent(
     body: &Value,
 ) -> Result<(), String> {
     let now = chrono_millis();
-    let group_authored = account.starts_with('!');
-    let (group_account, group_domain, direction) = if group_authored {
-        (account, domain, "INCOMING")
+    let status = body.get("status").and_then(Value::as_str).unwrap_or("");
+    let direction = body.get("direction").and_then(Value::as_str).unwrap_or("");
+    if status == "ACCEPTED" && direction == "OUTGOING" {
+        return Ok(());
+    }
+    let reverse = status == "ACCEPTED";
+    let authored = if reverse {
+        relationship_intent_key(subject_account, subject_domain, account, domain)
     } else {
-        (subject_account, subject_domain, "OUTGOING")
+        relationship_intent_key(account, domain, subject_account, subject_domain)
     };
-    let key = format!("group:{group_domain}\0{group_account}");
-    let current: Option<String> = tx
+    let key = format!("friend:{}", json_text(&Value::String(authored))?);
+    if status != "REQUESTED" {
+        return update_live_request_projection(tx, user_id, &key, status, now);
+    }
+    let requested_at = body.get("requestedAt").and_then(Value::as_i64).unwrap_or(0);
+    let Some(expires_at) = body
+        .get("expiresAt")
+        .and_then(Value::as_i64)
+        .map(|value| value.min(requested_at.saturating_add(604_800_000)))
+        .filter(|value| *value > now)
+    else {
+        return Ok(());
+    };
+    let prior_actionable: bool = tx
         .query_row(
-            "SELECT payload_json FROM friend_requests WHERE user_id=?1 AND stable_key=?2",
+            "SELECT EXISTS(SELECT 1 FROM friend_requests
+             WHERE user_id=?1 AND stable_key=?2
+               AND json_extract(payload_json,'$.status')='REQUESTED')",
             params![user_id, key],
             |row| row.get(0),
         )
-        .optional()
-        .map_err(|e| format!("read group relationship projection: {e}"))?;
-    let prior = current.map(parse_json).transpose()?;
-    let prior_actionable = prior.as_ref().is_some_and(|value| {
-        value.get("direction").and_then(Value::as_str) == Some("INCOMING")
-            && value.get("status").and_then(Value::as_str) == Some("REQUESTED")
+        .map_err(|e| format!("read request projection actionability: {e}"))?;
+    let projection = serde_json::json!({
+        "key": key,
+        "kind": "FRIEND",
+        "bucket": if direction == "INCOMING" { "RECEIVED" } else { "SENT" },
+        "direction": direction,
+        "status": "REQUESTED",
+        "expiresAt": expires_at,
+        "localThreadId": body.get("localThreadId").cloned().unwrap_or(Value::Null),
+        "inviteId": body.get("inviteId").cloned().unwrap_or(Value::Null),
+        "note": body.get("note").cloned().unwrap_or(Value::String(String::new())),
+        "requestedAt": requested_at,
+        "peer": body.get("peer").cloned().unwrap_or(Value::Null),
+        "requestedSort": requested_at,
+        "updatedAt": now,
     });
-    let status = body
-        .get("status")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "group relationship intent has no status".to_string())?;
-    let thread_id = body
-        .get("threadId")
-        .and_then(Value::as_i64)
-        .ok_or_else(|| "group relationship intent has no threadId".to_string())?;
-    let group = body
-        .get("group")
-        .cloned()
-        .ok_or_else(|| "group relationship intent has no group".to_string())?;
-    let mut projection = prior.unwrap_or_else(|| {
-        serde_json::json!({
-            "key": key,
-            "kind": "GROUP",
-            "bucket": if direction == "INCOMING" { "RECEIVED" } else { "SENT" },
-            "direction": direction,
-            "status": null,
-            "local": null,
-            "remote": null,
-            "locallyAccepted": false,
-            "localThreadId": thread_id,
-            "inviteId": group_account,
-            "note": body.get("note").cloned().unwrap_or(Value::String(String::new())),
-            "requestedAt": body.get("requestedAt").cloned().unwrap_or(Value::from(0)),
-            "group": group,
-            "sourceLabel": if group.get("isLocal").and_then(Value::as_bool) == Some(true) { "local" } else { group_domain },
-            "requestedSort": body.get("requestedAt").cloned().unwrap_or(Value::from(0)),
-            "updatedAt": now,
-        })
-    });
-    let object = projection
-        .as_object_mut()
-        .ok_or_else(|| "group relationship projection is not an object".to_string())?;
-    let expires_at = match (
-        body.get("requestedAt").and_then(Value::as_i64),
-        body.get("expiresAt").and_then(Value::as_i64),
-    ) {
-        (Some(requested_at), Some(expires_at)) => {
-            Value::from(expires_at.min(requested_at + 604_800_000))
-        }
-        _ => Value::Null,
-    };
-    object.insert(
-        if direction == "OUTGOING" {
-            "local"
-        } else {
-            "remote"
-        }
-        .into(),
-        serde_json::json!({ "status": status, "expiresAt": expires_at }),
-    );
-    object.insert("group".into(), group.clone());
-    object.insert("localThreadId".into(), Value::from(thread_id));
-    object.insert("updatedAt".into(), Value::from(now));
+    save_request_projection(tx, user_id, &key, &projection)?;
+    if direction == "INCOMING" && !prior_actionable {
+        tx.execute(
+            "INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,'friendRequestStateRevision',?2)
+             ON CONFLICT(user_id,key) DO UPDATE SET value_json=excluded.value_json",
+            params![user_id, revision.to_string()],
+        )
+        .map_err(|e| format!("save friend-request unread revision: {e}"))?;
+    }
+    Ok(())
+}
 
-    let local = object.get("local");
-    let remote = object.get("remote");
-    let active = intent_is_effective(local, now)
-        && intent_is_effective(remote, now)
-        && [local, remote]
-            .into_iter()
-            .flatten()
-            .any(|intent| intent.get("status").and_then(Value::as_str) == Some("ACCEPTED"));
-    if active {
-        object.insert("status".into(), Value::Null);
-        let group_object = group.as_object().cloned().unwrap_or_default();
-        let thread = serde_json::json!({
-            "threadId": thread_id,
-            "type": "GROUP",
-            "role": null,
-            "lastMessageAt": null,
-            "lastMessageSeq": null,
-            "muted": false,
-            "blocked": false,
-            "pinned": false,
-            "pinnedAt": null,
-            "clearedSeq": null,
-            "alias": null,
-            "conversationState": "ACTIVE",
-            "lastReadSeq": null,
-            "unreadCount": 0,
-            "mentionUnread": [],
-            "lastMessagePreview": null,
-            "lastMessageSenderId": null,
-            "group": {
-                "id": thread_id,
-                "account": group_object.get("account").cloned().unwrap_or(Value::String(group_account.into())),
-                "name": group_object.get("name").cloned().unwrap_or(Value::String(group_account.into())),
-                "ownerId": 0,
-                "avatar": group_object.get("avatar").cloned().unwrap_or(Value::String(String::new())),
-                "description": group_object.get("description").cloned().unwrap_or(Value::String(String::new())),
-                "domain": group_object.get("domain").cloned().unwrap_or(Value::String(group_domain.into())),
-                "threadId": thread_id,
-                "createdAt": 0,
-                "updatedAt": 0,
-                "profileRev": group_object.get("profileRev").cloned().unwrap_or(Value::from(0)),
-                "dissolvedAt": null,
-                "memberCount": 0,
-                "groupMetaFeedId": "0"
-            }
+fn apply_group_request_effect(
+    tx: &Transaction<'_>,
+    user_id: i64,
+    revision: i64,
+    group_account: &str,
+    group_domain: &str,
+    direction: &str,
+    body: &Value,
+) -> Result<(), String> {
+    let now = chrono_millis();
+    let status = body.get("status").and_then(Value::as_str).unwrap_or("");
+    if status == "ACCEPTED" && direction == "OUTGOING" {
+        return Ok(());
+    }
+    let target_direction = if status == "ACCEPTED" {
+        "OUTGOING"
+    } else {
+        direction
+    };
+    let key = format!("group:{group_domain}\0{group_account}:{target_direction}");
+    if status != "REQUESTED" {
+        return update_live_request_projection(tx, user_id, &key, status, now);
+    }
+    let requested_at = body.get("requestedAt").and_then(Value::as_i64).unwrap_or(0);
+    let Some(expires_at) = body
+        .get("expiresAt")
+        .and_then(Value::as_i64)
+        .map(|value| value.min(requested_at.saturating_add(604_800_000)))
+        .filter(|value| *value > now)
+    else {
+        return Ok(());
+    };
+    let projection = serde_json::json!({
+        "key": key,
+        "kind": "GROUP",
+        "bucket": if direction == "INCOMING" { "RECEIVED" } else { "SENT" },
+        "direction": direction,
+        "status": "REQUESTED",
+        "expiresAt": expires_at,
+        "localThreadId": body.get("threadId").cloned().unwrap_or(Value::Null),
+        "inviteId": group_account,
+        "note": body.get("note").cloned().unwrap_or(Value::String(String::new())),
+        "requestedAt": requested_at,
+        "group": body.get("group").cloned().unwrap_or(Value::Null),
+        "sourceLabel": if body.get("group").and_then(|group| group.get("isLocal")).and_then(Value::as_bool) == Some(true) { "local" } else { group_domain },
+        "requestedSort": requested_at,
+        "updatedAt": now,
+    });
+    let prior_actionable: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM friend_requests
+             WHERE user_id=?1 AND stable_key=?2
+               AND json_extract(payload_json,'$.status')='REQUESTED')",
+            params![user_id, key],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("read group request projection actionability: {e}"))?;
+    save_request_projection(tx, user_id, &key, &projection)?;
+    if let Some(group) = body.get("group").and_then(Value::as_object) {
+        let identity = format!("pending-group:{group_domain}\0{group_account}");
+        let profile = serde_json::json!({
+            "identity": identity, "id": 0, "kind": "group",
+            "name": group.get("name").cloned().unwrap_or(Value::String(group_account.into())),
+            "account": group_account,
+            "avatar": group.get("avatar").cloned().unwrap_or(Value::String(String::new())),
+            "bio": group.get("description").cloned().unwrap_or(Value::String(String::new())),
+            "domain": group_domain,
+            "profileRev": group.get("profileRev").cloned().unwrap_or(Value::from(0)),
+            "source": "GROUP_INVITE", "expiresAt": expires_at,
         });
         tx.execute(
-            "INSERT INTO threads(user_id,thread_id,payload_json) VALUES(?1,?2,?3)
-             ON CONFLICT(user_id,thread_id) DO NOTHING",
-            params![user_id, thread_id, json_text(&thread)?],
+            "INSERT INTO profiles(user_id,identity,payload_json,profile_rev) VALUES(?1,?2,?3,0)
+             ON CONFLICT(user_id,identity) DO UPDATE SET payload_json=excluded.payload_json",
+            params![user_id, identity, json_text(&profile)?],
         )
-        .map_err(|e| format!("materialize group thread projection: {e}"))?;
-        let identity = format!("pending-group:{group_domain}\0{group_account}");
-        tx.execute(
-            "DELETE FROM profiles WHERE user_id=?1 AND identity=?2",
-            params![user_id, identity],
-        )
-        .map_err(|e| format!("delete activated group profile: {e}"))?;
-    } else if status == "REQUESTED"
-        && body
-            .get("expiresAt")
-            .and_then(Value::as_i64)
-            .is_some_and(|value| value > now)
-    {
-        object.insert("direction".into(), Value::String(direction.into()));
-        object.insert(
-            "status".into(),
-            if direction == "INCOMING" {
-                Value::String("REQUESTED".into())
-            } else {
-                Value::Null
-            },
-        );
-    } else if status == "REVOKED" {
-        object.insert("status".into(), Value::String("REVOKED".into()));
+        .map_err(|e| format!("cache group request profile: {e}"))?;
     }
-    let actionable = object.get("direction").and_then(Value::as_str) == Some("INCOMING")
-        && object.get("status").and_then(Value::as_str) == Some("REQUESTED");
-    save_request_projection(tx, user_id, &key, &projection)?;
-    if actionable && !prior_actionable {
+    if direction == "INCOMING" && !prior_actionable {
         tx.execute(
             "INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,'friendRequestStateRevision',?2)
              ON CONFLICT(user_id,key) DO UPDATE SET value_json=excluded.value_json",
             params![user_id, revision.to_string()],
         )
         .map_err(|e| format!("save group-request unread revision: {e}"))?;
-    }
-    Ok(())
-}
-
-fn apply_friend_request_intent(
-    tx: &Transaction<'_>,
-    user_id: i64,
-    revision: i64,
-    account: &str,
-    domain: &str,
-    subject_account: &str,
-    subject_domain: &str,
-    body: &Value,
-) -> Result<(), String> {
-    let now = chrono_millis();
-    let key = friend_pair_key(account, domain, subject_account, subject_domain)?;
-    let current: Option<String> = tx
-        .query_row(
-            "SELECT payload_json FROM friend_requests WHERE user_id=?1 AND stable_key=?2",
-            params![user_id, key],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("read friend-request projection: {e}"))?;
-    let prior = current.map(parse_json).transpose()?;
-    let prior_actionable = prior.as_ref().is_some_and(|value| {
-        value.get("direction").and_then(Value::as_str) == Some("INCOMING")
-            && value.get("status").and_then(Value::as_str) == Some("REQUESTED")
-    });
-    let direction = body
-        .get("direction")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "friend intent has no direction".to_string())?;
-    let intent_status = body
-        .get("status")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "friend intent has no status".to_string())?;
-    let mut payload = prior.unwrap_or_else(|| {
-        serde_json::json!({
-            "key": key,
-            "kind": "FRIEND",
-            "bucket": if direction == "INCOMING" { "RECEIVED" } else { "SENT" },
-            "direction": direction,
-            "status": intent_status,
-            "local": null,
-            "remote": null,
-            "locallyAccepted": false,
-            "localThreadId": body.get("localThreadId").cloned().unwrap_or(Value::Null),
-            "note": body.get("note").cloned().unwrap_or(Value::String(String::new())),
-            "requestedAt": body.get("requestedAt").cloned().unwrap_or(Value::from(0)),
-            "peer": body.get("peer").cloned().unwrap_or(Value::Null),
-            "requestedSort": body.get("requestedAt").cloned().unwrap_or(Value::from(0)),
-            "updatedAt": now,
-        })
-    });
-    let object = payload
-        .as_object_mut()
-        .ok_or_else(|| "friend-request projection is not an object".to_string())?;
-    if !object.contains_key("bucket") {
-        let bucket = if object.get("direction").and_then(Value::as_str) == Some("INCOMING") {
-            "RECEIVED"
-        } else {
-            "SENT"
-        };
-        object.insert("bucket".into(), Value::String(bucket.into()));
-    }
-    let intent_field = if direction == "OUTGOING" {
-        "local"
-    } else {
-        "remote"
-    };
-    object.insert(
-        intent_field.into(),
-        serde_json::json!({
-            "status": intent_status,
-            "expiresAt": body.get("expiresAt").cloned().unwrap_or(Value::Null),
-        }),
-    );
-    object.insert("updatedAt".into(), Value::from(now));
-    if let Some(local_thread_id) = body.get("localThreadId").and_then(Value::as_i64) {
-        object.insert("localThreadId".into(), Value::from(local_thread_id));
-    }
-    if intent_status == "REQUESTED" {
-        object.insert("direction".into(), Value::String(direction.into()));
-        for field in ["inviteId", "note", "requestedAt", "peer"] {
-            if let Some(value) = body.get(field) {
-                object.insert(field.into(), value.clone());
-            }
-        }
-        object.insert(
-            "requestedSort".into(),
-            body.get("requestedAt").cloned().unwrap_or(Value::from(0)),
-        );
-        if let (Some(requested_at), Some(expires_at)) = (
-            body.get("requestedAt").and_then(Value::as_i64),
-            body.get("expiresAt").and_then(Value::as_i64),
-        ) {
-            if let Some(intent) = object.get_mut(intent_field).and_then(Value::as_object_mut) {
-                intent.insert(
-                    "expiresAt".into(),
-                    Value::from(expires_at.min(requested_at + 604_800_000)),
-                );
-            }
-        }
-    }
-    let local = object
-        .get("local")
-        .and_then(|value| value.get("status"))
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    let remote = object
-        .get("remote")
-        .and_then(|value| value.get("status"))
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    if local.as_deref() == Some("ACCEPTED") && remote.as_deref() == Some("ACCEPTED") {
-        if object.get("bucket").and_then(Value::as_str) == Some("RECEIVED") {
-            object.insert("direction".into(), Value::String("INCOMING".into()));
-            object.insert("status".into(), Value::String("ACCEPTED".into()));
-        } else {
-            object.insert("direction".into(), Value::String("OUTGOING".into()));
-            object.insert("status".into(), Value::Null);
-        }
-        save_request_projection(tx, user_id, &key, &payload)?;
-        return Ok(());
-    }
-    if remote.as_deref() == Some("REVOKED") {
-        if local.as_deref() == Some("REQUESTED") {
-            object.insert("direction".into(), Value::String("OUTGOING".into()));
-            object.insert("bucket".into(), Value::String("SENT".into()));
-            object.insert("status".into(), Value::String("REVOKED".into()));
-            save_request_projection(tx, user_id, &key, &payload)?;
-            return Ok(());
-        }
-        if object.get("bucket").and_then(Value::as_str) == Some("RECEIVED") {
-            object.insert("direction".into(), Value::String("INCOMING".into()));
-            object.insert("status".into(), Value::String("REVOKED".into()));
-        } else {
-            object.insert("status".into(), Value::Null);
-        }
-        save_request_projection(tx, user_id, &key, &payload)?;
-        return Ok(());
-    }
-    if local.as_deref() == Some("REVOKED")
-        && object.get("bucket").and_then(Value::as_str) == Some("RECEIVED")
-    {
-        object.insert("direction".into(), Value::String("INCOMING".into()));
-        object.insert("status".into(), Value::String("REVOKED".into()));
-        save_request_projection(tx, user_id, &key, &payload)?;
-        return Ok(());
-    }
-    let remote_valid = object
-        .get("remote")
-        .and_then(|value| value.get("expiresAt"))
-        .and_then(Value::as_i64)
-        .is_some_and(|value| value > now);
-    let local_valid = object
-        .get("local")
-        .and_then(|value| value.get("expiresAt"))
-        .and_then(Value::as_i64)
-        .is_some_and(|value| value > now);
-    let locally_accepted = object
-        .get("locallyAccepted")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    if remote.as_deref() == Some("REQUESTED") && remote_valid {
-        object.insert("direction".into(), Value::String("INCOMING".into()));
-        object.insert(
-            "status".into(),
-            Value::String(
-                if locally_accepted || local.as_deref() == Some("ACCEPTED") {
-                    "ACCEPTED"
-                } else {
-                    "REQUESTED"
-                }
-                .into(),
-            ),
-        );
-    } else if local.as_deref() == Some("REQUESTED") && local_valid {
-        object.insert("direction".into(), Value::String("OUTGOING".into()));
-        object.insert(
-            "status".into(),
-            Value::String(
-                if remote.as_deref() == Some("ACCEPTED") {
-                    ""
-                } else {
-                    "REQUESTED"
-                }
-                .into(),
-            ),
-        );
-        if remote.as_deref() == Some("ACCEPTED") {
-            object.insert("status".into(), Value::Null);
-        }
-    } else if object.get("direction").and_then(Value::as_str) == Some("OUTGOING")
-        && local.as_deref() == Some("REVOKED")
-    {
-        object.insert("status".into(), Value::String("REVOKED".into()));
-    } else if local.as_deref() == Some("ACCEPTED") || remote.as_deref() == Some("ACCEPTED") {
-        object.insert("direction".into(), Value::String("OUTGOING".into()));
-        object.insert("status".into(), Value::Null);
-    } else {
-        tx.execute(
-            "DELETE FROM friend_requests WHERE user_id=?1 AND stable_key=?2",
-            params![user_id, key],
-        )
-        .map_err(|e| format!("delete terminal friend-request projection: {e}"))?;
-        return Ok(());
-    }
-    let actionable = object.get("direction").and_then(Value::as_str) == Some("INCOMING")
-        && object.get("status").and_then(Value::as_str) == Some("REQUESTED");
-    save_request_projection(tx, user_id, &key, &payload)?;
-    if actionable && !prior_actionable {
-        tx.execute(
-            "INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,'friendRequestStateRevision',?2)
-             ON CONFLICT(user_id,key) DO UPDATE SET value_json=excluded.value_json",
-            params![user_id, revision.to_string()],
-        ).map_err(|e| format!("save friend-request unread revision: {e}"))?;
-    }
-    Ok(())
-}
-
-fn apply_friend_thread_projection(
-    tx: &Transaction<'_>,
-    user_id: i64,
-    account: &str,
-    domain: &str,
-    subject_account: &str,
-    subject_domain: &str,
-) -> Result<(), String> {
-    let key = friend_pair_key(account, domain, subject_account, subject_domain)?;
-    let payload: Option<String> = tx
-        .query_row(
-            "SELECT payload_json FROM friend_requests WHERE user_id=?1 AND stable_key=?2",
-            params![user_id, key],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("read friend thread projection: {e}"))?;
-    let Some(projection) = payload.map(parse_json).transpose()? else {
-        return Ok(());
-    };
-    let Some(thread_id) = projection.get("localThreadId").and_then(Value::as_i64) else {
-        return Ok(());
-    };
-    if thread_id < 1 {
-        return Ok(());
-    }
-    let now = chrono_millis();
-    let effective = |field: &str| {
-        let intent = projection.get(field);
-        intent
-            .and_then(|value| value.get("status"))
-            .and_then(Value::as_str)
-            == Some("ACCEPTED")
-            || (intent
-                .and_then(|value| value.get("status"))
-                .and_then(Value::as_str)
-                == Some("REQUESTED")
-                && intent
-                    .and_then(|value| value.get("expiresAt"))
-                    .and_then(Value::as_i64)
-                    .is_some_and(|expiry| expiry > now))
-    };
-    let local = projection
-        .get("local")
-        .and_then(|value| value.get("status"))
-        .and_then(Value::as_str);
-    let remote = projection
-        .get("remote")
-        .and_then(|value| value.get("status"))
-        .and_then(Value::as_str);
-    let active = effective("local")
-        && effective("remote")
-        && (local == Some("ACCEPTED") || remote == Some("ACCEPTED"));
-    let existing: Option<String> = tx
-        .query_row(
-            "SELECT payload_json FROM threads WHERE user_id=?1 AND thread_id=?2",
-            params![user_id, thread_id],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("read projected friend thread: {e}"))?;
-    if let Some(existing) = existing {
-        let mut thread = parse_json(existing)?;
-        if thread.get("type").and_then(Value::as_str) == Some("P2P") {
-            thread["friendshipActive"] = Value::Bool(active);
-            thread["conversationState"] =
-                Value::String(if active { "ACTIVE" } else { "READ_ONLY" }.into());
-            if let Some(peer) = projection.get("peer") {
-                thread["peerUser"] = peer.clone();
-            }
-            tx.execute(
-                "UPDATE threads SET payload_json=?3 WHERE user_id=?1 AND thread_id=?2",
-                params![user_id, thread_id, json_text(&thread)?],
-            )
-            .map_err(|e| format!("update projected friend thread: {e}"))?;
-        }
-    } else if active {
-        let mut peer = projection.get("peer").cloned().unwrap_or(Value::Null);
-        if let Some(peer) = peer.as_object_mut() {
-            peer.entry("isGroup").or_insert(Value::Bool(false));
-            peer.entry("profileRev").or_insert(Value::from(0));
-            peer.entry("createdAt").or_insert(Value::from(0));
-            peer.entry("updatedAt").or_insert(Value::from(0));
-            peer.entry("isDeleted").or_insert(Value::Bool(false));
-        }
-        let thread = serde_json::json!({
-            "threadId": thread_id,
-            "type": "P2P",
-            "role": null,
-            "lastMessageAt": null,
-            "lastMessageSeq": null,
-            "muted": false,
-            "blocked": false,
-            "pinned": false,
-            "pinnedAt": null,
-            "clearedSeq": null,
-            "alias": null,
-            "peerUser": peer,
-            "friendshipActive": true,
-            "conversationState": "ACTIVE",
-            "lastReadSeq": null,
-            "unreadCount": 0,
-            "mentionUnread": [],
-            "lastMessagePreview": null,
-            "lastMessageSenderId": null,
-        });
-        tx.execute(
-            "INSERT INTO threads(user_id,thread_id,payload_json) VALUES(?1,?2,?3)",
-            params![user_id, thread_id, json_text(&thread)?],
-        )
-        .map_err(|e| format!("insert projected friend thread: {e}"))?;
     }
     Ok(())
 }
@@ -996,6 +731,110 @@ pub(crate) struct NativeAvatar {
     mime: String,
     data: Vec<u8>,
     last_render: i64,
+}
+
+fn materialize_group_thread_from_fact(
+    tx: &Transaction<'_>,
+    user_id: i64,
+    group_account: &str,
+    group_domain: &str,
+    body: &Value,
+    active: bool,
+) -> Result<(), String> {
+    if !active {
+        return Ok(());
+    }
+    let Some(thread_id) = body.get("threadId").and_then(Value::as_i64) else {
+        return Ok(());
+    };
+    let group = body.get("group").cloned().unwrap_or(Value::Null);
+    let group_object = group.as_object().cloned().unwrap_or_default();
+    let thread = serde_json::json!({
+        "threadId": thread_id, "type": "GROUP", "role": null,
+        "lastMessageAt": null, "lastMessageSeq": null, "muted": false,
+        "blocked": false, "pinned": false, "pinnedAt": null,
+        "clearedSeq": null, "alias": null, "conversationState": "ACTIVE",
+        "lastReadSeq": null, "unreadCount": 0, "mentionUnread": [],
+        "lastMessagePreview": null, "lastMessageSenderId": null,
+        "group": {
+            "id": thread_id,
+            "account": group_object.get("account").cloned().unwrap_or(Value::String(group_account.into())),
+            "name": group_object.get("name").cloned().unwrap_or(Value::String(group_account.into())),
+            "ownerId": 0,
+            "avatar": group_object.get("avatar").cloned().unwrap_or(Value::String(String::new())),
+            "description": group_object.get("description").cloned().unwrap_or(Value::String(String::new())),
+            "domain": group_object.get("domain").cloned().unwrap_or(Value::String(group_domain.into())),
+            "threadId": thread_id, "createdAt": 0, "updatedAt": 0,
+            "profileRev": group_object.get("profileRev").cloned().unwrap_or(Value::from(0)),
+            "dissolvedAt": null, "memberCount": 0, "groupMetaFeedId": "0"
+        }
+    });
+    tx.execute(
+        "INSERT INTO threads(user_id,thread_id,payload_json) VALUES(?1,?2,?3)
+         ON CONFLICT(user_id,thread_id) DO NOTHING",
+        params![user_id, thread_id, json_text(&thread)?],
+    )
+    .map_err(|e| format!("materialize group thread from relationship facts: {e}"))?;
+    Ok(())
+}
+
+fn apply_friend_thread_from_facts(
+    tx: &Transaction<'_>,
+    user_id: i64,
+    body: &Value,
+    active: bool,
+) -> Result<(), String> {
+    let Some(thread_id) = body.get("localThreadId").and_then(Value::as_i64) else {
+        return Ok(());
+    };
+    let existing: Option<String> = tx
+        .query_row(
+            "SELECT payload_json FROM threads WHERE user_id=?1 AND thread_id=?2",
+            params![user_id, thread_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("read friend thread projection: {e}"))?;
+    if let Some(existing) = existing {
+        let mut thread = parse_json(existing)?;
+        if thread.get("type").and_then(Value::as_str) == Some("P2P") {
+            thread["friendshipActive"] = Value::Bool(active);
+            thread["conversationState"] =
+                Value::String(if active { "ACTIVE" } else { "READ_ONLY" }.into());
+            if let Some(peer) = body.get("peer") {
+                thread["peerUser"] = peer.clone();
+            }
+            tx.execute(
+                "UPDATE threads SET payload_json=?3 WHERE user_id=?1 AND thread_id=?2",
+                params![user_id, thread_id, json_text(&thread)?],
+            )
+            .map_err(|e| format!("update friend thread from relationship facts: {e}"))?;
+        }
+    } else if active {
+        let mut peer = body.get("peer").cloned().unwrap_or(Value::Null);
+        if let Some(peer) = peer.as_object_mut() {
+            peer.entry("isGroup").or_insert(Value::Bool(false));
+            peer.entry("profileRev").or_insert(Value::from(0));
+            peer.entry("createdAt").or_insert(Value::from(0));
+            peer.entry("updatedAt").or_insert(Value::from(0));
+            peer.entry("isDeleted").or_insert(Value::Bool(false));
+        }
+        let thread = serde_json::json!({
+            "threadId": thread_id, "type": "P2P", "role": null,
+            "lastMessageAt": null, "lastMessageSeq": null, "muted": false,
+            "blocked": false, "pinned": false, "pinnedAt": null,
+            "clearedSeq": null, "alias": null, "peerUser": peer,
+            "friendshipActive": true, "conversationState": "ACTIVE",
+            "lastReadSeq": null, "unreadCount": 0, "mentionUnread": [],
+            "lastMessagePreview": null, "lastMessageSenderId": null,
+        });
+        tx.execute(
+            "INSERT INTO threads(user_id,thread_id,payload_json) VALUES(?1,?2,?3)",
+            params![user_id, thread_id, json_text(&thread)?],
+        )
+        .map_err(|e| format!("insert friend thread from relationship facts: {e}"))?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1208,44 +1047,6 @@ pub(crate) async fn native_db_page_friend_requests(
 }
 
 #[tauri::command]
-pub(crate) async fn native_db_mark_friend_request_accepted(
-    app: tauri::AppHandle,
-    user_id: i64,
-    key: String,
-) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let conn = open(&app)?;
-        let current: Option<String> = conn
-            .query_row(
-                "SELECT payload_json FROM friend_requests WHERE user_id=?1 AND stable_key=?2",
-                params![user_id, key],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| format!("read friend request for accept: {e}"))?;
-        let Some(current) = current else {
-            return Ok(());
-        };
-        let mut payload = parse_json(current)?;
-        let object = payload
-            .as_object_mut()
-            .ok_or_else(|| "friend request is not an object".to_string())?;
-        object.insert("direction".into(), Value::String("INCOMING".into()));
-        object.insert("status".into(), Value::String("ACCEPTED".into()));
-        object.insert("locallyAccepted".into(), Value::Bool(true));
-        object.insert("updatedAt".into(), Value::from(chrono_millis()));
-        conn.execute(
-            "UPDATE friend_requests SET payload_json=?3 WHERE user_id=?1 AND stable_key=?2",
-            params![user_id, key, json_text(&payload)?],
-        )
-        .map_err(|e| format!("mark friend request accepted: {e}"))?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("join mark friend request accepted: {e}"))?
-}
-
-#[tauri::command]
 pub(crate) async fn native_db_cleanup_friend_requests(
     app: tauri::AppHandle,
     user_id: i64,
@@ -1364,6 +1165,8 @@ pub(crate) async fn native_db_apply_state_feed_page(
         if reset_projection {
             tx.execute("DELETE FROM friend_requests WHERE user_id=?1", [user_id])
                 .map_err(|e| format!("clear state-feed friend requests: {e}"))?;
+            tx.execute("DELETE FROM relationship_intents WHERE user_id=?1", [user_id])
+                .map_err(|e| format!("clear state-feed relationship intents: {e}"))?;
             tx.execute("DELETE FROM thread_participants WHERE user_id=?1", [user_id])
                 .map_err(|e| format!("clear state-feed thread participants: {e}"))?;
             tx.execute(
@@ -1413,21 +1216,89 @@ pub(crate) async fn native_db_apply_state_feed_page(
             }
             let account = op.account.as_deref().unwrap_or("");
             let subject_account = op.subject_account.as_deref().unwrap_or("");
-            if !account.starts_with('!') && !subject_account.starts_with('!') {
-                continue;
-            }
-            apply_group_relationship_intent(
+            let body = op
+                .body
+                .as_ref()
+                .ok_or_else(|| "relationship intent has no body".to_string())?;
+            let active = apply_relationship_intent_fact(
                 &tx,
                 user_id,
-                op.feed_id.ok_or_else(|| "state-feed item has no feedId".to_string())?,
                 account,
                 op.domain.as_deref().unwrap_or(""),
                 subject_account,
                 op.subject_domain.as_deref().unwrap_or(""),
-                op.body
-                    .as_ref()
-                    .ok_or_else(|| "group relationship intent has no body".to_string())?,
+                body,
             )?;
+            if account.starts_with('!') || subject_account.starts_with('!') {
+                let group_authored = account.starts_with('!');
+                let (group_account, group_domain, direction) = if group_authored {
+                    (account, op.domain.as_deref().unwrap_or(""), "INCOMING")
+                } else {
+                    (subject_account, op.subject_domain.as_deref().unwrap_or(""), "OUTGOING")
+                };
+                apply_group_request_effect(
+                    &tx,
+                    user_id,
+                    op.feed_id.ok_or_else(|| "state-feed item has no feedId".to_string())?,
+                    group_account,
+                    group_domain,
+                    direction,
+                    body,
+                )?;
+                materialize_group_thread_from_fact(
+                    &tx,
+                    user_id,
+                    group_account,
+                    group_domain,
+                    body,
+                    active,
+                )?;
+            } else {
+                apply_friend_request_effect(
+                    &tx,
+                    user_id,
+                    op.feed_id
+                        .ok_or_else(|| "state-feed item has no feedId".to_string())?,
+                    account,
+                    op.domain.as_deref().unwrap_or(""),
+                    subject_account,
+                    op.subject_domain.as_deref().unwrap_or(""),
+                    body,
+                )?;
+                apply_friend_thread_from_facts(&tx, user_id, body, active)?;
+                if body.get("direction").and_then(Value::as_str) == Some("OUTGOING")
+                    && body.get("status").and_then(Value::as_str) == Some("REQUESTED")
+                {
+                    if let (Some(expires_at), Some(peer)) = (
+                        body.get("expiresAt").and_then(Value::as_i64),
+                        body.get("peer").and_then(Value::as_object),
+                    ) {
+                        let peer_account =
+                            peer.get("account").and_then(Value::as_str).unwrap_or("");
+                        let peer_domain =
+                            peer.get("domain").and_then(Value::as_str).unwrap_or("");
+                        if !peer_account.is_empty() && !peer_domain.is_empty() {
+                            let identity = format!("pending:{peer_domain}\0{peer_account}");
+                            let profile = serde_json::json!({
+                                "identity": identity, "id": 0, "kind": "user",
+                                "name": peer.get("name").cloned().unwrap_or(Value::String(peer_account.into())),
+                                "account": peer_account,
+                                "avatar": peer.get("avatar").cloned().unwrap_or(Value::String(String::new())),
+                                "bio": peer.get("bio").cloned().unwrap_or(Value::String(String::new())),
+                                "domain": peer_domain, "profileRev": 0,
+                                "source": "OUTGOING_FRIEND_REQUEST", "expiresAt": expires_at,
+                            });
+                            tx.execute(
+                                "INSERT INTO profiles(user_id,identity,payload_json,profile_rev)
+                                 VALUES(?1,?2,?3,0)
+                                 ON CONFLICT(user_id,identity) DO UPDATE SET payload_json=excluded.payload_json",
+                                params![user_id, identity, json_text(&profile)?],
+                            )
+                            .map_err(|e| format!("cache outgoing request profile: {e}"))?;
+                        }
+                    }
+                }
+            }
         }
         for update in group_meta {
             let payload: Option<String> = tx.query_row(
@@ -1511,168 +1382,7 @@ pub(crate) async fn native_db_apply_state_feed_page(
         }
         for op in items {
             match op.event_type.as_deref().unwrap_or("") {
-                "RELATIONSHIP_INTENT" => {
-                    let item_feed_id = op.feed_id.ok_or_else(|| "state-feed item has no feedId".to_string())?;
-                    let account = op.account.ok_or_else(|| "CLIENT_STATE has no account".to_string())?;
-                    let domain = op.domain.ok_or_else(|| "CLIENT_STATE has no domain".to_string())?;
-                    let subject_account = op.subject_account.ok_or_else(|| "CLIENT_STATE has no subjectAccount".to_string())?;
-                    let subject_domain = op.subject_domain.ok_or_else(|| "CLIENT_STATE has no subjectDomain".to_string())?;
-                    let body = op.body.ok_or_else(|| "CLIENT_STATE has no body".to_string())?;
-                    if account.starts_with('!') || subject_account.starts_with('!') {
-                        continue;
-                    }
-                    if account.starts_with('!') {
-                        let key = format!("group:{domain}\0{account}");
-                        let status = body.get("status").and_then(Value::as_str).unwrap_or("");
-                        let direction = body.get("direction").and_then(Value::as_str).unwrap_or("INCOMING");
-                        let expires_at = body.get("expiresAt").and_then(Value::as_i64);
-                        let current_payload: Option<String> = tx.query_row(
-                            "SELECT payload_json FROM friend_requests WHERE user_id=?1 AND stable_key=?2",
-                            params![user_id, key], |row| row.get(0)
-                        ).optional().map_err(|e| format!("read group-request projection: {e}"))?;
-                        let current = current_payload.map(parse_json).transpose()?;
-                        let current_status = current.as_ref().and_then(|value| value.get("status")).and_then(Value::as_str);
-                        if status == "REQUESTED" && expires_at.is_some_and(|value| value > chrono_millis()) {
-                            let group = body.get("group").cloned().unwrap_or(Value::Null);
-                            let requested_at = body.get("requestedAt").and_then(Value::as_i64).unwrap_or(0);
-                            let bounded_expires_at = expires_at
-                                .map(|value| value.min(requested_at.saturating_add(604_800_000)));
-                            let projection = serde_json::json!({
-                                "key": key, "kind": "GROUP",
-                                "bucket": if direction == "INCOMING" { "RECEIVED" } else { "SENT" },
-                                "direction": direction,
-                                "status": if current_status == Some("ACCEPTED") { "ACCEPTED" } else { "REQUESTED" },
-                                "local": if direction == "OUTGOING" {
-                                    serde_json::json!({ "status": "REQUESTED", "expiresAt": bounded_expires_at })
-                                } else { Value::Null },
-                                "remote": if direction == "INCOMING" {
-                                    serde_json::json!({ "status": "REQUESTED", "expiresAt": bounded_expires_at })
-                                } else { Value::Null },
-                                "locallyAccepted": current_status == Some("ACCEPTED"),
-                                "inviteId": account, "note": body.get("note").cloned().unwrap_or(Value::String(String::new())),
-                                "requestedAt": requested_at,
-                                "group": group, "requestedSort": requested_at, "updatedAt": chrono_millis()
-                            });
-                            save_request_projection(&tx, user_id, &key, &projection)?;
-                            if let Some(group_object) = group.as_object() {
-                                let group_account = group_object.get("account").and_then(Value::as_str).unwrap_or("");
-                                let group_domain = group_object.get("domain").and_then(Value::as_str).unwrap_or("");
-                                let identity = format!("pending-group:{group_domain}\0{group_account}");
-                                let profile = serde_json::json!({
-                                    "identity": identity, "id": 0, "kind": "group",
-                                    "name": group_object.get("name").cloned().unwrap_or(Value::String(String::new())),
-                                    "account": group_account,
-                                    "avatar": group_object.get("avatar").cloned().unwrap_or(Value::String(String::new())),
-                                    "bio": group_object.get("description").cloned().unwrap_or(Value::String(String::new())),
-                                    "domain": group_domain,
-                                    "profileRev": group_object.get("profileRev").cloned().unwrap_or(Value::from(0)),
-                                    "source": "GROUP_INVITE", "expiresAt": bounded_expires_at,
-                                });
-                                tx.execute(
-                                    "INSERT INTO profiles(user_id,identity,payload_json,profile_rev) VALUES(?1,?2,?3,0)
-                                     ON CONFLICT(user_id,identity) DO UPDATE SET payload_json=excluded.payload_json",
-                                    params![user_id, identity, json_text(&profile)?],
-                                ).map_err(|e| format!("cache group-request profile: {e}"))?;
-                            }
-                            if current_status.is_none() && direction == "INCOMING" {
-                                tx.execute(
-                                    "INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,'friendRequestStateRevision',?2)
-                                     ON CONFLICT(user_id,key) DO UPDATE SET value_json=excluded.value_json",
-                                    params![user_id, item_feed_id.to_string()],
-                                ).map_err(|e| format!("save group-request unread revision: {e}"))?;
-                            }
-                        } else if status == "REVOKED" {
-                            if let Some(mut projection) = current {
-                                if projection.get("bucket").is_none() {
-                                    let bucket = if projection.get("direction").and_then(Value::as_str) == Some("INCOMING") {
-                                        "RECEIVED"
-                                    } else {
-                                        "SENT"
-                                    };
-                                    projection["bucket"] = Value::String(bucket.into());
-                                }
-                                projection["status"] = Value::String("REVOKED".into());
-                                projection["updatedAt"] = Value::from(chrono_millis());
-                                if direction == "OUTGOING" {
-                                    projection["local"] = serde_json::json!({
-                                        "status": "REVOKED", "expiresAt": null
-                                    });
-                                } else {
-                                    projection["remote"] = serde_json::json!({
-                                        "status": "REVOKED", "expiresAt": null
-                                    });
-                                }
-                                save_request_projection(&tx, user_id, &key, &projection)?;
-                            }
-                        } else {
-                            if let Some(group) = current.as_ref().and_then(|value| value.get("group")) {
-                                let group_account = group.get("account").and_then(Value::as_str).unwrap_or("");
-                                let group_domain = group.get("domain").and_then(Value::as_str).unwrap_or("");
-                                let identity = format!("pending-group:{group_domain}\0{group_account}");
-                                tx.execute("DELETE FROM profiles WHERE user_id=?1 AND identity=?2", params![user_id, identity])
-                                    .map_err(|e| format!("delete terminal group-request profile: {e}"))?;
-                            }
-                            tx.execute("DELETE FROM friend_requests WHERE user_id=?1 AND stable_key=?2", params![user_id, key])
-                                .map_err(|e| format!("delete terminal group request: {e}"))?;
-                        }
-                        continue;
-                    }
-                    apply_friend_request_intent(
-                        &tx, user_id, item_feed_id, &account, &domain,
-                        &subject_account, &subject_domain, &body,
-                    )?;
-                    apply_friend_thread_projection(
-                        &tx, user_id, &account, &domain,
-                        &subject_account, &subject_domain,
-                    )?;
-                    let direction = body.get("direction").and_then(Value::as_str).unwrap_or("");
-                    let outgoing_requested = direction == "OUTGOING"
-                        && body.get("status").and_then(Value::as_str) == Some("REQUESTED");
-                    let expires_at = body
-                        .get("requestedAt")
-                        .and_then(Value::as_i64)
-                        .zip(body.get("expiresAt").and_then(Value::as_i64))
-                        .map(|(requested_at, expires_at)| {
-                            expires_at.min(requested_at + 604_800_000)
-                        });
-                    if outgoing_requested {
-                        if let Some(expires_at) = expires_at {
-                            let peer = body.get("peer").and_then(Value::as_object).cloned().unwrap_or_default();
-                            let peer_account = peer
-                                .get("account")
-                                .and_then(Value::as_str)
-                                .unwrap_or("");
-                            let peer_domain = peer
-                                .get("domain")
-                                .and_then(Value::as_str)
-                                .unwrap_or("");
-                            if !peer_account.is_empty() && !peer_domain.is_empty() {
-                                let identity = format!("pending:{peer_domain}\0{peer_account}");
-                                let profile = serde_json::json!({
-                                    "identity": identity,
-                                    "id": 0,
-                                    "kind": "user",
-                                    "name": peer.get("name").and_then(Value::as_str).filter(|v| !v.is_empty()).unwrap_or(peer_account),
-                                    "account": peer_account,
-                                    "avatar": peer.get("avatar").and_then(Value::as_str).unwrap_or(""),
-                                    "bio": peer.get("bio").and_then(Value::as_str).unwrap_or(""),
-                                    "domain": peer_domain,
-                                    "profileRev": 0,
-                                    "source": "OUTGOING_FRIEND_REQUEST",
-                                    "expiresAt": expires_at,
-                                });
-                                tx.execute(
-                                    "INSERT INTO profiles(user_id, identity, payload_json, profile_rev)
-                                     VALUES(?1, ?2, ?3, 0)
-                                     ON CONFLICT(user_id, identity) DO UPDATE SET
-                                       payload_json=excluded.payload_json",
-                                    params![user_id, identity, json_text(&profile)?],
-                                )
-                                .map_err(|e| format!("cache pending friend profile: {e}"))?;
-                            }
-                        }
-                    }
-                }
+                "RELATIONSHIP_INTENT" => {},
                 "PROFILE" => {
                     let account = op.account.ok_or_else(|| "PROFILE has no account".to_string())?;
                     let domain = op.domain.ok_or_else(|| "PROFILE has no domain".to_string())?;

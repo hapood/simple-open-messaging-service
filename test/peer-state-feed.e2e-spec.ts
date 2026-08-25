@@ -464,7 +464,7 @@ describe('per-peer state feed', () => {
     await database.db
       .delete(federatedPeer)
       .where(eq(federatedPeer.domain, domain));
-    expect(await feed.readRev(domain)).toBe(0n);
+    expect(await feed.readFeedEndId(domain)).toBe(0n);
   });
 
   it('applies a later received group direction snapshot', async () => {

@@ -77,6 +77,7 @@ function createService(
   const clientStateFeed = {
     recordGroupStateInTx: vi.fn().mockResolvedValue([]),
     notifyFeedUpdated: vi.fn(),
+    notifyFeedUpdates: vi.fn(),
   };
   return new GroupService(
     database as never,

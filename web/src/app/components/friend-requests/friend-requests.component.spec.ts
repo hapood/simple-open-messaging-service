@@ -58,12 +58,7 @@ describe('FriendRequestsComponent federated search progress', () => {
           bucket: 'RECEIVED' as const,
           direction: 'INCOMING' as const,
           status: 'REQUESTED' as const,
-          local: null,
-          remote: {
-            status: 'REQUESTED' as const,
-            expiresAt: Date.now() + 60_000,
-          },
-          locallyAccepted: false,
+          expiresAt: Date.now() + 60_000,
           localThreadId: null,
           inviteId: id,
           note: '',
@@ -524,7 +519,6 @@ describe('FriendRequestsComponent federated search progress', () => {
             resolveRefresh = resolve;
           }),
       ),
-      markFriendRequestAccepted: vi.fn().mockResolvedValue(undefined),
     };
     TestBed.resetTestingModule();
     TestBed.configureTestingModule({
@@ -546,6 +540,7 @@ describe('FriendRequestsComponent federated search progress', () => {
     const request = {
       id: '41',
       projectionKey: 'friend:41',
+      direction: 'INCOMING' as const,
       status: 0,
       date: 1,
       errText: '',
@@ -575,12 +570,7 @@ describe('FriendRequestsComponent federated search progress', () => {
           direction: 'INCOMING',
           note: '',
           status: 'REQUESTED',
-          local: null,
-          remote: {
-            status: 'REQUESTED',
-            expiresAt: Date.now() + 60_000,
-          },
-          locallyAccepted: false,
+          expiresAt: Date.now() + 60_000,
           localThreadId: null,
           inviteId: request.id,
           requestedAt: 2,
@@ -616,8 +606,5 @@ describe('FriendRequestsComponent federated search progress', () => {
     );
     expect(acceptResult.observed).toBe(false);
     expect(component.isInviteActionPending(request.id)).toBe(false);
-    expect(userService.markFriendRequestAccepted).toHaveBeenCalledWith(
-      request.projectionKey,
-    );
   });
 });

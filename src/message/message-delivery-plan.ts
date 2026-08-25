@@ -18,9 +18,7 @@ export function planFeedRecipientIds(
   return candidates
     .filter(
       (candidate) =>
-        candidate.isLocal &&
-        !candidate.isDeleted &&
-        candidate.authorized,
+        candidate.isLocal && !candidate.isDeleted && candidate.authorized,
     )
     .map((candidate) => candidate.userId);
 }

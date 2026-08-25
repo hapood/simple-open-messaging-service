@@ -13,10 +13,7 @@ import { WebdbService } from './webdb.service';
 import { ProfileRepository } from './profile-store.service';
 import { PreferenceStore } from './preference-store.service';
 import { isTauri } from './runtime';
-import {
-  friendProjectionIsActive,
-  type FriendRequestProjection,
-} from './friend-request-state';
+import type { FriendRequestProjection } from './friend-request-state';
 
 export type { User } from './model';
 
@@ -57,23 +54,45 @@ export interface ClientIntentUser {
   isForeigner: boolean;
 }
 
-export interface ClientFriendIntent {
+interface ClientFriendIntentBase {
   key: string;
   account: string;
   domain: string;
   subjectAccount: string;
   subjectDomain: string;
   inviteId?: string;
-  status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
   note: string;
   requestedAt: number | null;
   expiresAt: number | null;
-  direction: FriendIntentDirection;
-  /** Server-local conversation id for device state only. Never appears on the federation wire. */
-  localThreadId: number | null;
   peer: ClientIntentUser;
   requestedSort: number;
 }
+
+/** Device-facing friend intent. An authored local request always has its server-local conversation
+ * shell; a peer-authored request may remain address-only until the backend accepts it. */
+export type ClientFriendIntent = ClientFriendIntentBase &
+  (
+    | {
+        direction: 'OUTGOING';
+        status: 'REQUESTED';
+        localThreadId: number;
+      }
+    | {
+        direction: 'INCOMING';
+        status: 'REQUESTED';
+        localThreadId: number | null;
+      }
+    | {
+        direction: FriendIntentDirection;
+        status: 'ACCEPTED';
+        localThreadId: number;
+      }
+    | {
+        direction: FriendIntentDirection;
+        status: 'REVOKED';
+        localThreadId: number | null;
+      }
+  );
 
 export interface ClientGroupInviteIntent {
   key: string;
@@ -199,7 +218,6 @@ export interface ClientGroupMetaFeedPage {
     feedId: string;
     account: string;
     domain: string;
-    rev: number;
     operation: 'UPSERT' | 'DELETE';
     body:
       | {
@@ -893,7 +911,8 @@ export class UserService {
     if (friendship) return 'FRIEND' as const;
     const matches = (item: FriendRequestProjection) =>
       item.kind === 'FRIEND' &&
-      friendProjectionIsActive(item, Date.now()) &&
+      item.status === 'REQUESTED' &&
+      item.expiresAt > Date.now() &&
       (item.peer?.id === user.id ||
         (item.peer?.account === user.account &&
           item.peer.domain === (user.domain || 'local')));
@@ -949,10 +968,6 @@ export class UserService {
       `${apiPrefix()}/invite/accept`,
       params,
     );
-  }
-
-  markFriendRequestAccepted(key: string): Promise<void> {
-    return this.webdb.markFriendRequestAccepted(key);
   }
 
   joinGroupRequest(params: { groupId: number }) {

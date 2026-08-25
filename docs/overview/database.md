@@ -122,14 +122,14 @@ they do not grant access. P2P and group membership authority is derived from the
 two directed relationship intents. Revocation leaves retained rows available for
 read-only history.
 
-| Field                                  | Type                   | Description                                                       |
-| -------------------------------------- | ---------------------- | ----------------------------------------------------------------- |
-| `lastReadSeq`                          | Int?                   | read watermark; unread = `count(Message where seq > lastReadSeq)`                 |
-| `role`                                 | GroupRole?             | OWNER/ADMIN/MEMBER (GROUP only); null for P2P                                     |
-| `muted` / `pinned` / `pinnedAt`        |                        | mute / pin / pin-order                                                            |
-| `clearedSeq`                           | Int?                   | per-user "clear history" sequence watermark                                       |
-| `alias`                                | VarChar(64)?           | per-user nickname for this thread                                                 |
-| `joinedAt` / `createdAt` / `updatedAt` |                        |                                                                                   |
+| Field                                  | Type         | Description                                                       |
+| -------------------------------------- | ------------ | ----------------------------------------------------------------- |
+| `lastReadSeq`                          | Int?         | read watermark; unread = `count(Message where seq > lastReadSeq)` |
+| `role`                                 | GroupRole?   | OWNER/ADMIN/MEMBER (GROUP only); null for P2P                     |
+| `muted` / `pinned` / `pinnedAt`        |              | mute / pin / pin-order                                            |
+| `clearedSeq`                           | Int?         | per-user "clear history" sequence watermark                       |
+| `alias`                                | VarChar(64)? | per-user nickname for this thread                                 |
+| `joinedAt` / `createdAt` / `updatedAt` |              |                                                                   |
 
 Unique: `@@unique([userId, threadId])`. Indexes: `[threadId]` (roster), `[userId, pinned]` (pinned-first list).
 
@@ -150,6 +150,11 @@ Unique: `@@unique([userId, threadId])`. Indexes: `[threadId]` (roster), `[userId
 
 Crossed writes lock the canonical pair row before inspecting either direction. Notes remain separate;
 there is no JSON merge and no polymorphic `Invite` table.
+
+`GroupRequestProjection` is the non-authoritative manager-facing request index. Its
+`direction` is `APPLICATION` for member-authored join requests and `INVITATION` for group-authored
+invitations waiting for the member. Both directions share one schema, status vocabulary, paging
+coordinate, retention policy, and API response shape.
 
 ### Group — Group-exclusive state
 

@@ -2,6 +2,26 @@ import { describe, expect, it, vi } from 'vitest';
 import { ClientStateFeedService } from './client-state-feed.service.js';
 
 describe('ClientStateFeedService', () => {
+  it('coalesces one committed SSE high watermark per affected user', () => {
+    const onStateFeedUpdated = vi.fn();
+    const service = new ClientStateFeedService(
+      undefined as never,
+      { onStateFeedUpdated } as never,
+      undefined as never,
+    );
+
+    service.notifyFeedUpdates([
+      { userId: 1, feedId: 4 },
+      { userId: 2, feedId: 3 },
+      { userId: 1, feedId: 9 },
+      { userId: 2, feedId: 2 },
+    ]);
+
+    expect(onStateFeedUpdated).toHaveBeenCalledTimes(2);
+    expect(onStateFeedUpdated).toHaveBeenCalledWith(1, { feedId: 9 });
+    expect(onStateFeedUpdated).toHaveBeenCalledWith(2, { feedId: 3 });
+  });
+
   it('normalizes Date values before persisting a client feed body', async () => {
     const values = vi.fn().mockReturnValue({
       onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),

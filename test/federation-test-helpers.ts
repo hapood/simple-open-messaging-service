@@ -192,7 +192,7 @@ export async function establishFederatedFriendship(params: {
     .send({
       account: params.remoteAccount,
       domain: params.remoteDomain,
-      bio: '',
+      displayName: params.remoteAccount,
       note: params.note ?? '',
     });
   if (sent.body.code !== 0)

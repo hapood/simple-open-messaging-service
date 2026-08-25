@@ -132,9 +132,9 @@ export class PeerStateFeedService {
       }
       await this.initializePeerInTx(tx, write.peerDomain);
       // The allocator row is the per-peer serialization point. Locking before reading the compacted
-      // key prevents two concurrent writers from both observing the old revision and burning a rev.
+      // key prevents two concurrent writers from both observing the old value and burning a feed ID.
       await tx
-        .select({ rev: peerStateFeedTarget.allocatedThrough })
+        .select({ feedId: peerStateFeedTarget.allocatedThrough })
         .from(peerStateFeedTarget)
         .where(eq(peerStateFeedTarget.peerDomain, write.peerDomain))
         .for('update')
@@ -183,7 +183,7 @@ export class PeerStateFeedService {
           updatedAt: new Date(),
         })
         .where(eq(peerStateFeedTarget.peerDomain, write.peerDomain))
-        .returning({ rev: peerStateFeedTarget.allocatedThrough });
+        .returning({ feedId: peerStateFeedTarget.allocatedThrough });
       if (!allocated)
         throw new Error(`missing state feed target for ${write.peerDomain}`);
       await tx
@@ -195,7 +195,7 @@ export class PeerStateFeedService {
           eventType: write.eventType,
           subjectAccount,
           subjectDomain,
-          rev: allocated.rev,
+          feedId: allocated.feedId,
           body,
         })
         .onConflictDoUpdate({
@@ -208,23 +208,23 @@ export class PeerStateFeedService {
             peerStateFeed.subjectDomain,
           ],
           set: {
-            rev: allocated.rev,
+            feedId: allocated.feedId,
             body,
             updatedAt: new Date(),
           },
         });
-      result.set(write.peerDomain, allocated.rev);
+      result.set(write.peerDomain, allocated.feedId);
     }
     return result;
   }
 
-  async readRev(peerDomain: string): Promise<bigint> {
+  async readFeedEndId(peerDomain: string): Promise<bigint> {
     const [target] = await this.database.db
-      .select({ rev: peerStateFeedTarget.allocatedThrough })
+      .select({ feedId: peerStateFeedTarget.allocatedThrough })
       .from(peerStateFeedTarget)
       .where(eq(peerStateFeedTarget.peerDomain, peerDomain))
       .limit(1);
-    return target?.rev ?? 0n;
+    return target?.feedId ?? 0n;
   }
 
   async rejectMissingAfter(peerDomain: string): Promise<never> {
@@ -240,7 +240,7 @@ export class PeerStateFeedService {
       HttpStatus.OK,
       {
         resumeAfter: '0',
-        resumeBefore: ((await this.readRev(peerDomain)) + 1n).toString(),
+        resumeBefore: ((await this.readFeedEndId(peerDomain)) + 1n).toString(),
       },
     );
   }
@@ -297,11 +297,11 @@ export class PeerStateFeedService {
         .where(
           and(
             eq(peerStateFeed.peerDomain, peerDomain),
-            gt(peerStateFeed.rev, after),
-            lte(peerStateFeed.rev, scanEnd),
+            gt(peerStateFeed.feedId, after),
+            lte(peerStateFeed.feedId, scanEnd),
           ),
         )
-        .orderBy(asc(peerStateFeed.rev))
+        .orderBy(asc(peerStateFeed.feedId))
         .limit(take + 1);
       const rows = rawRows.slice(0, take);
       const items: PeerStateFeedPage['items'] = [];
@@ -311,7 +311,7 @@ export class PeerStateFeedService {
           account: row.account,
           domain: row.domain,
           eventType: row.eventType,
-          feedId: row.rev.toString(),
+          feedId: row.feedId.toString(),
           body: row.body,
           ...(row.eventType === 'RELATIONSHIP_INTENT'
             ? {
@@ -330,7 +330,7 @@ export class PeerStateFeedService {
       if (items.length < rows.length && last) {
         scannedThrough = BigInt(last.feedId);
       } else if (rawRows.length > take) {
-        scannedThrough = rows.at(-1)?.rev ?? after;
+        scannedThrough = rows.at(-1)?.feedId ?? after;
       } else {
         scannedThrough = scanEnd;
       }

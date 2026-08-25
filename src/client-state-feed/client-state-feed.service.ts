@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { and, asc, eq, gt, lte, sql } from 'drizzle-orm';
 import {
   clientStateFeed,
-  groupJoinRequestProjection,
+  groupRequestProjection,
   user,
 } from '../database/schema.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
@@ -49,6 +49,18 @@ export class ClientStateFeedService {
     this.sse.onStateFeedUpdated(pending.userId, {
       feedId: pending.feedId,
     });
+  }
+
+  /** Publish one committed high-watermark hint per affected user. */
+  notifyFeedUpdates(pending: Iterable<PendingClientStateFeedUpdate>): void {
+    const highWatermarks = new Map<number, number>();
+    for (const update of pending)
+      highWatermarks.set(
+        update.userId,
+        Math.max(highWatermarks.get(update.userId) ?? 0, update.feedId),
+      );
+    for (const [userId, feedId] of highWatermarks)
+      this.notifyFeedUpdated({ userId, feedId });
   }
 
   async readEndId(userId: number): Promise<number> {
@@ -194,14 +206,15 @@ export class ClientStateFeedService {
     });
   }
 
-  /** Persist one manager-facing join-application projection. Original request timestamps are immutable:
+  /** Persist one manager-facing group-request projection. Original request timestamps are immutable:
    * terminal intents clear their own expiry, while the projection must retain its seven-day GC boundary. */
-  async writeGroupJoinRequestInTx(
+  async writeGroupRequestInTx(
     tx: DatabaseTransaction,
     write: {
       managerUserId: number;
       threadId: number;
-      applicantUserId: number;
+      memberUserId: number;
+      direction: 'APPLICATION' | 'INVITATION';
       requestId: bigint;
       status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
       note: string;
@@ -211,18 +224,19 @@ export class ClientStateFeedService {
   ): Promise<number | null> {
     const [current] = await tx
       .select({
-        status: groupJoinRequestProjection.status,
-        note: groupJoinRequestProjection.note,
-        requestId: groupJoinRequestProjection.requestId,
-        requestedAt: groupJoinRequestProjection.requestedAt,
-        expiresAt: groupJoinRequestProjection.expiresAt,
+        status: groupRequestProjection.status,
+        note: groupRequestProjection.note,
+        requestId: groupRequestProjection.requestId,
+        requestedAt: groupRequestProjection.requestedAt,
+        expiresAt: groupRequestProjection.expiresAt,
       })
-      .from(groupJoinRequestProjection)
+      .from(groupRequestProjection)
       .where(
         and(
-          eq(groupJoinRequestProjection.managerUserId, write.managerUserId),
-          eq(groupJoinRequestProjection.threadId, write.threadId),
-          eq(groupJoinRequestProjection.applicantUserId, write.applicantUserId),
+          eq(groupRequestProjection.managerUserId, write.managerUserId),
+          eq(groupRequestProjection.threadId, write.threadId),
+          eq(groupRequestProjection.memberUserId, write.memberUserId),
+          eq(groupRequestProjection.direction, write.direction),
         ),
       )
       .limit(1);
@@ -246,15 +260,16 @@ export class ClientStateFeedService {
       })
       .where(eq(user.id, write.managerUserId))
       .returning({ feedId: user.stateFeedAllocatedThrough });
-    if (!owner) throw new Error('join-request projection owner missing');
+    if (!owner) throw new Error('group-request projection owner missing');
     await tx
-      .insert(groupJoinRequestProjection)
+      .insert(groupRequestProjection)
       .values({ ...write, note, requestedAt, expiresAt, feedId: owner.feedId })
       .onConflictDoUpdate({
         target: [
-          groupJoinRequestProjection.managerUserId,
-          groupJoinRequestProjection.threadId,
-          groupJoinRequestProjection.applicantUserId,
+          groupRequestProjection.managerUserId,
+          groupRequestProjection.threadId,
+          groupRequestProjection.memberUserId,
+          groupRequestProjection.direction,
         ],
         set: {
           feedId: owner.feedId,
@@ -366,7 +381,7 @@ export class ClientStateFeedService {
     return pending;
   }
 
-  /** Remove an applicant PROFILE only after every client-facing reference owned by this user is gone. */
+  /** Remove a member PROFILE only after every client-facing reference owned by this user is gone. */
   async cleanupProfileStateIfUnreferencedInTx(
     tx: DatabaseTransaction,
     ownerUserId: number,
@@ -380,9 +395,9 @@ export class ClientStateFeedService {
     const domain = subject.domain;
     const references = await tx.execute<{ referenced: boolean }>(sql`
       SELECT EXISTS (
-        SELECT 1 FROM "GroupJoinRequestProjection" projection
+        SELECT 1 FROM "GroupRequestProjection" projection
         WHERE projection."managerUserId" = ${ownerUserId}
-          AND projection."applicantUserId" = ${subjectUserId}
+          AND projection."memberUserId" = ${subjectUserId}
         UNION ALL
         SELECT 1 FROM "ClientStateFeed" intent
         WHERE intent."userId" = ${ownerUserId}

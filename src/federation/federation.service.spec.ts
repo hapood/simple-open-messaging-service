@@ -99,13 +99,13 @@ describe('federated group join request', () => {
       fetchRemoteUser: typeof fetchRemoteUser;
       ensureFederatedGroupRequestShellInTx: typeof ensureShell;
       writeMemberRelationshipIntentInTx: typeof writeIntent;
-      clientStateFeed: { notifyFeedUpdated: () => void };
+      clientStateFeed: { notifyFeedUpdates: () => void };
       pushStateFeedDomains: typeof pushStateFeedDomains;
     };
     target.fetchRemoteUser = fetchRemoteUser;
     target.ensureFederatedGroupRequestShellInTx = ensureShell;
     target.writeMemberRelationshipIntentInTx = writeIntent;
-    target.clientStateFeed = { notifyFeedUpdated: vi.fn() };
+    target.clientStateFeed = { notifyFeedUpdates: vi.fn() };
     target.pushStateFeedDomains = pushStateFeedDomains;
 
     await svc.requestFederatedGroupJoin(

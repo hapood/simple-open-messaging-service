@@ -3,7 +3,7 @@ import { matchNav, NAV_GROUPS } from './nav-config';
 
 /**
  * Guards the sidebar active-state + top-bar breadcrumb logic. These are the paths the IA
- * reorganization produced: 15 primary items, the footer Account item, and the route-driven tab
+ * reorganization produced: 14 primary items, the footer Account item, and the route-driven tab
  * sub-paths (/users/operators, /sessions/admins, /sessions/reuse, /federation/self-check,
  * /push/config, /logs/history, /logs/audit) that must still highlight their parent section.
  */
@@ -69,9 +69,9 @@ describe('matchNav', () => {
 });
 
 describe('NAV_GROUPS shape', () => {
-  it('has exactly 15 primary items + 1 footer item', () => {
+  it('has exactly 14 primary items + 1 footer item', () => {
     const primary = NAV_GROUPS.filter((g) => !g.footer).flatMap((g) => g.items);
-    expect(primary).toHaveLength(15);
+    expect(primary).toHaveLength(14);
     const footer = NAV_GROUPS.filter((g) => g.footer).flatMap((g) => g.items);
     expect(footer.map((i) => i.key)).toEqual(['security']);
   });

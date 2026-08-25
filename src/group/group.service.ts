@@ -14,7 +14,7 @@ import {
 import {
   clientStateFeed,
   group,
-  groupJoinRequestProjection,
+  groupRequestProjection,
   relationshipIntent,
   messageThread,
   threadAudience,
@@ -85,6 +85,37 @@ export class GroupService {
     before?: number,
     take = 20,
   ) {
+    return this.queryGroupRequests(
+      threadId,
+      managerUserId,
+      'APPLICATION',
+      before,
+      take,
+    );
+  }
+
+  async queryInvitations(
+    threadId: number,
+    managerUserId: number,
+    before?: number,
+    take = 20,
+  ) {
+    return this.queryGroupRequests(
+      threadId,
+      managerUserId,
+      'INVITATION',
+      before,
+      take,
+    );
+  }
+
+  private async queryGroupRequests(
+    threadId: number,
+    managerUserId: number,
+    direction: 'APPLICATION' | 'INVITATION',
+    before?: number,
+    take = 20,
+  ) {
     const rows = await this.database.db.execute<{
       feedId: number;
       id: string;
@@ -104,10 +135,11 @@ export class GroupService {
         applicant.name, applicant.avatar, projection.note,
         (EXTRACT(EPOCH FROM projection."requestedAt") * 1000)::bigint AS "requestedAt",
         (EXTRACT(EPOCH FROM projection."expiresAt") * 1000)::bigint AS "expiresAt"
-      FROM "GroupJoinRequestProjection" projection
-      JOIN "User" applicant ON applicant.id = projection."applicantUserId"
+      FROM "GroupRequestProjection" projection
+      JOIN "User" applicant ON applicant.id = projection."memberUserId"
       WHERE projection."managerUserId" = ${managerUserId}
         AND projection."threadId" = ${threadId}
+        AND projection.direction = ${direction}
         ${before === undefined ? sql.empty() : sql`AND projection."feedId" < ${before}`}
       ORDER BY projection."feedId" DESC
       LIMIT ${take + 1}
@@ -142,7 +174,7 @@ export class GroupService {
       }>(sql`
         SELECT projection."managerUserId", projection."threadId",
           MAX(projection."feedId")::integer AS "latestFeedId"
-        FROM "GroupJoinRequestProjection" projection
+        FROM "GroupRequestProjection" projection
         LEFT JOIN "ThreadParticipant" manager
           ON manager."userId" = projection."managerUserId"
          AND manager."threadId" = projection."threadId"
@@ -154,15 +186,12 @@ export class GroupService {
       let removed = 0;
       for (const candidate of candidates.rows) {
         const deleted = await tx
-          .delete(groupJoinRequestProjection)
+          .delete(groupRequestProjection)
           .where(
             and(
-              eq(
-                groupJoinRequestProjection.managerUserId,
-                candidate.managerUserId,
-              ),
-              eq(groupJoinRequestProjection.threadId, candidate.threadId),
-              sql`(${groupJoinRequestProjection.expiresAt} <= CURRENT_TIMESTAMP OR NOT EXISTS (
+              eq(groupRequestProjection.managerUserId, candidate.managerUserId),
+              eq(groupRequestProjection.threadId, candidate.threadId),
+              sql`(${groupRequestProjection.expiresAt} <= CURRENT_TIMESTAMP OR NOT EXISTS (
                 SELECT 1 FROM "ThreadParticipant" manager
                 WHERE manager."userId" = ${candidate.managerUserId}
                   AND manager."threadId" = ${candidate.threadId}
@@ -171,18 +200,18 @@ export class GroupService {
             ),
           )
           .returning({
-            feedId: groupJoinRequestProjection.feedId,
-            applicantUserId: groupJoinRequestProjection.applicantUserId,
+            feedId: groupRequestProjection.feedId,
+            memberUserId: groupRequestProjection.memberUserId,
           });
         removed += deleted.length;
         if (deleted.length === 0) continue;
-        for (const applicantUserId of new Set(
-          deleted.map((row) => row.applicantUserId),
+        for (const memberUserId of new Set(
+          deleted.map((row) => row.memberUserId),
         ))
           await this.clientStateFeed.cleanupProfileStateIfUnreferencedInTx(
             tx,
             candidate.managerUserId,
-            applicantUserId,
+            memberUserId,
           );
         const [head] = await tx
           .select({
@@ -214,7 +243,7 @@ export class GroupService {
       }
       return removed;
     });
-    pending.forEach((update) => this.clientStateFeed.notifyFeedUpdated(update));
+    this.clientStateFeed.notifyFeedUpdates(pending);
     return count;
   }
 
@@ -260,11 +289,47 @@ export class GroupService {
         decision === 'ACCEPTED' ? request.note : '',
         decision,
         clientFeedUpdates,
+        'APPLICATION',
       );
     });
-    clientFeedUpdates.forEach((pending) =>
-      this.clientStateFeed.notifyFeedUpdated(pending),
-    );
+    this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
+    await this.federation.pushStateFeedDomains(statePeers.keys());
+  }
+
+  async revokeInvitation(threadId: number, requestId: bigint): Promise<void> {
+    let statePeers = new Map<string, bigint>();
+    const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
+    await this.database.db.transaction(async (tx) => {
+      const [request] = await tx
+        .execute<{ memberUserId: number }>(
+          sql`
+          SELECT intent."subjectUserId" AS "memberUserId"
+          FROM "RelationshipIntent" intent
+          JOIN "MessageThread" thread
+            ON thread."groupUserId" = intent."authorUserId"
+          WHERE thread.id = ${threadId} AND intent.id = ${requestId}
+            AND intent.status = 'REQUESTED'
+            AND intent."expiresAt" > CURRENT_TIMESTAMP
+          FOR UPDATE OF intent
+        `,
+        )
+        .then((result) => result.rows);
+      if (!request)
+        throw new BusinessException(
+          BusinessCode.NOT_FOUND,
+          'group invitation not found',
+        );
+      statePeers = await this.federation.writeGroupRelationshipIntentInTx(
+        tx,
+        threadId,
+        request.memberUserId,
+        '',
+        'REVOKED',
+        clientFeedUpdates,
+        'INVITATION',
+      );
+    });
+    this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
     await this.federation.pushStateFeedDomains(statePeers.keys());
   }
 
@@ -494,9 +559,7 @@ export class GroupService {
             clientFeedUpdates,
           };
         });
-        result.clientFeedUpdates.forEach((pending) =>
-          this.clientStateFeed.notifyFeedUpdated(pending),
-        );
+        this.clientStateFeed.notifyFeedUpdates(result.clientFeedUpdates);
         const { clientFeedUpdates: _clientFeedUpdates, ...groupResult } =
           result;
         return groupResult;
@@ -659,9 +722,7 @@ export class GroupService {
         localRecipientIds,
       };
     });
-    result.clientFeedUpdates.forEach((pending) =>
-      this.clientStateFeed.notifyFeedUpdated(pending),
-    );
+    this.clientStateFeed.notifyFeedUpdates(result.clientFeedUpdates);
     await this.federation.pushStateFeedDomains(result.statePeers);
     if (result.transitioned) {
       await this.federation.notifyGroupLeave(params.threadId, params.userId);
@@ -785,9 +846,7 @@ export class GroupService {
         systemMessages,
       };
     });
-    result.clientFeedUpdates.forEach((pending) =>
-      this.clientStateFeed.notifyFeedUpdated(pending),
-    );
+    this.clientStateFeed.notifyFeedUpdates(result.clientFeedUpdates);
     await this.federation.pushStateFeedDomains(result.statePeers);
     if (this.messageFanout)
       for (const systemMessage of result.systemMessages)
@@ -936,9 +995,7 @@ export class GroupService {
         localRecipientIds,
       };
     });
-    result.clientFeedUpdates.forEach((pending) =>
-      this.clientStateFeed.notifyFeedUpdated(pending),
-    );
+    this.clientStateFeed.notifyFeedUpdates(result.clientFeedUpdates);
     await this.federation.pushStateFeedDomains(result.statePeers);
     if (result.systemMessage && this.messageFanout)
       void this.messageFanout.dispatchToUsers(
@@ -1081,9 +1138,7 @@ export class GroupService {
       );
       return { statePeers: [...state.keys()], clientFeedUpdates };
     });
-    result.clientFeedUpdates.forEach((pending) =>
-      this.clientStateFeed.notifyFeedUpdated(pending),
-    );
+    this.clientStateFeed.notifyFeedUpdates(result.clientFeedUpdates);
     await this.federation.pushStateFeedDomains(result.statePeers);
     await this.emitSystemMessage(
       params.fromUserId,
@@ -1200,9 +1255,7 @@ export class GroupService {
       );
       return { statePeers: [...state.keys()], clientFeedUpdates };
     });
-    result.clientFeedUpdates.forEach((pending) =>
-      this.clientStateFeed.notifyFeedUpdated(pending),
-    );
+    this.clientStateFeed.notifyFeedUpdates(result.clientFeedUpdates);
     await this.federation.pushStateFeedDomains(result.statePeers);
     await this.emitSystemMessage(
       params.operatorUserId,
@@ -1295,9 +1348,7 @@ export class GroupService {
       );
       return { row, statePeers: [...stateItems.keys()], clientFeedUpdates };
     });
-    result.clientFeedUpdates.forEach((pending) =>
-      this.clientStateFeed.notifyFeedUpdated(pending),
-    );
+    this.clientStateFeed.notifyFeedUpdates(result.clientFeedUpdates);
     await this.federation.pushStateFeedDomains(result.statePeers);
     return result.row;
   }

@@ -86,6 +86,7 @@ describe('WebdbService', () => {
         'avatars',
         'friendRequests',
         'profiles',
+        'relationshipIntents',
         'settings',
         'threadParticipants',
         'threads',
@@ -309,7 +310,7 @@ describe('WebdbService', () => {
         subjectAccount: 'bob',
         subjectDomain: 'peer.test',
         body: {
-          status: 'REVOKED',
+          status: 'REQUESTED',
           note: '',
           requestedAt: null,
           expiresAt: null,
@@ -442,8 +443,6 @@ describe('WebdbService', () => {
         [event(30, 'INCOMING', 'local', 'REQUESTED')],
         30,
       );
-      const [pending] = await db!.getAll('friendRequests');
-      await webdb.markFriendRequestAccepted(pending.key);
       await webdb.applyStateFeedPage(
         [
           event(31, 'INCOMING', 'local', 'ACCEPTED'),
@@ -455,7 +454,7 @@ describe('WebdbService', () => {
       expect(await db!.getAll('friendRequests')).toHaveLength(1);
       expect(
         await webdb.getFriendRequestPage('RECEIVED', null, 20),
-      ).toMatchObject({ total: 1, actionableTotal: 0 });
+      ).toMatchObject({ total: 1, actionableTotal: 1 });
     });
 
     it('does not advance the unread badge revision when an incoming request is rejected', async () => {
@@ -827,7 +826,6 @@ describe('WebdbService', () => {
                 operation: 'UPSERT',
                 account: 'self',
                 domain: 'local',
-                rev: 1,
                 body: {
                   userId: 1,
                   role: 'OWNER',
@@ -841,7 +839,6 @@ describe('WebdbService', () => {
                 operation: 'UPSERT',
                 account: 'alice',
                 domain: 'home.example',
-                rev: 1,
                 body: {
                   userId: 8,
                   role: 'ADMIN',
@@ -884,7 +881,6 @@ describe('WebdbService', () => {
                 operation: 'UPSERT',
                 account: 'self',
                 domain: 'local',
-                rev: 2,
                 body: {
                   userId: 1,
                   role: 'ADMIN',
@@ -916,7 +912,6 @@ describe('WebdbService', () => {
                 operation: 'DELETE',
                 account: 'self',
                 domain: 'local',
-                rev: 3,
                 body: {},
               },
             ],
@@ -986,7 +981,6 @@ describe('WebdbService', () => {
                 operation: 'UPSERT',
                 account: 'alice',
                 domain: 'local.test',
-                rev: 1,
                 body: {
                   userId: 1,
                   role: 'OWNER',

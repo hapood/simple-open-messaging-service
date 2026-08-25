@@ -89,7 +89,6 @@ describe('federated Address friend request shells', () => {
         account: 'address-bob',
         domain: FED_DOMAIN_B,
         displayName: 'Address Bob',
-        bio: '',
         note: 'address request',
       });
     expect(sent.body.code, JSON.stringify(sent.body)).toBe(BusinessCode.OK);

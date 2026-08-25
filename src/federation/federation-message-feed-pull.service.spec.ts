@@ -172,7 +172,8 @@ describe('FederationMessageFeedPullService commit boundary', () => {
   it('atomically adopts a monotonic remote floor and continues draining', async () => {
     const { service, state } = harness();
     const warn = vi.fn();
-    (service as unknown as { logger: { warn: typeof warn } }).logger.warn = warn;
+    (service as unknown as { logger: { warn: typeof warn } }).logger.warn =
+      warn;
     const fetch = vi
       .fn()
       .mockRejectedValueOnce(new RemoteFeedCursorUnavailableError(5n, 10n))

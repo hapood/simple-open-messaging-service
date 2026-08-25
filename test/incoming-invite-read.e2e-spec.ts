@@ -75,9 +75,9 @@ describe('incoming invitation read watermark', () => {
     });
     expect(head).toMatchObject({
       account: '',
-      domain: '',
+      domain: 'local',
       subjectAccount: '',
-      subjectDomain: '',
+      subjectDomain: 'local',
       feedId: 2,
       body: { readThroughFeedId: 1 },
     });

@@ -105,7 +105,8 @@ describe('PeerStateFeedPullService atomic page application', () => {
   it('starts a replacement rebuild before committing a corrected cursor', async () => {
     const { service, order } = harness(2n);
     const warn = vi.fn();
-    (service as unknown as { logger: { warn: typeof warn } }).logger.warn = warn;
+    (service as unknown as { logger: { warn: typeof warn } }).logger.warn =
+      warn;
     const fetch = vi
       .fn()
       .mockRejectedValueOnce(new RemoteFeedCursorUnavailableError(0n, 4n))

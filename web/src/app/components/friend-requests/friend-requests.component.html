@@ -247,10 +247,10 @@
             <ng-template #incomingCard let-req>
               <app-friend-request-card
                 [request]="req"
-                direction="INCOMING"
+                [direction]="req.direction"
                 [relativeDate]="relativeDate(req.date)"
                 [actionPending]="isInviteActionPending(req.id)"
-                (opened)="openRequest(req, 'INCOMING')"
+                (opened)="openRequest(req)"
                 (approved)="approve(req)"
                 (rejected)="rejectIncoming(req)"
               />
@@ -299,10 +299,10 @@
             <ng-template #outgoingCard let-req>
               <app-friend-request-card
                 [request]="req"
-                direction="OUTGOING"
+                [direction]="req.direction"
                 [relativeDate]="relativeDate(req.date)"
                 [actionPending]="isInviteActionPending(req.id)"
-                (opened)="openRequest(req, 'OUTGOING')"
+                (opened)="openRequest(req)"
                 (revoked)="cancelSent(req)"
               />
             </ng-template>

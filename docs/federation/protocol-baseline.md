@@ -99,9 +99,8 @@ Federation v1 wire requirements.
 - Per-peer state feeds compact by stable key. Transport `feedId` and cursors are
   bigint values and provide the ordering coordinate for snapshots.
 - Group Meta member `UPSERT` records contain complete roles and display
-  profiles. Every record has a unique transport `feedId` and an independent
-  stable-member `rev`; departures append `DELETE` records with both values
-  advanced in their respective coordinate spaces.
+  profiles. Every mutation has a unique ordered `feedId`; departures append a
+  `DELETE` record with a newer `feedId`.
 
 ## Messages and media
 

@@ -495,7 +495,6 @@
             "feedId": "2",
             "account": "alice",
             "domain": "a.example",
-            "rev": 2,
             "operation": "DELETE",
             "body": {}
           }

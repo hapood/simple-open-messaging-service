@@ -119,6 +119,20 @@ controlled exclusively by its author; a receiver MUST NOT invent or publish a
 transition on the author's behalf. `ACCEPTED` is a durable acknowledgement of a
 request flow, not a second request and not a transport acknowledgement.
 
+### 5.1 Authored intent state machine
+
+A `RELATIONSHIP_INTENT` is a single directed state machine from its author to
+its peer:
+
+```text
+account@domain -> peerAccount@receiver-domain
+```
+
+The reverse direction is a separate `RELATIONSHIP_INTENT`, independently
+authored and transitioned by the reverse direction's author. Observing or
+validating the reverse direction does not merge the two intents or transfer
+authority over either one.
+
 The timestamp fields have the following state-dependent invariants:
 
 - `REQUESTED` MUST have non-null `requestedAt` and `expiresAt`, with
@@ -128,11 +142,15 @@ The timestamp fields have the following state-dependent invariants:
 - `REVOKED` MUST have `expiresAt: null`. Its `requestedAt` MAY retain the time of
   the superseded request flow or be `null`; it has no effect on revocation.
 
-The two independently authored directions derive one relationship state. In the
-following table, an effective `REQUESTED` has not expired, and a valid
-`ACCEPTED` is an acknowledgement admitted under the rules below:
+### 5.2 Derived relationship
 
-| One authored direction        | Reverse direction                         | Derived relationship |
+The relationship is derived by folding two independently authored directional
+intents. The following table is a relationship-derivation matrix, not the state
+machine of either intent. In the table, an effective `REQUESTED` has not
+expired, and a valid `ACCEPTED` is an acknowledgement admitted under the rules
+below:
+
+| Direction `A -> B`            | Direction `B -> A`                        | Derived relationship |
 | ----------------------------- | ----------------------------------------- | -------------------- |
 | effective `REQUESTED`         | absent, expired, or `REVOKED`             | unconfirmed          |
 | effective `REQUESTED`         | effective `REQUESTED`                     | confirmed            |

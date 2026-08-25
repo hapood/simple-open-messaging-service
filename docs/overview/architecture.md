@@ -235,6 +235,10 @@ membership uses the same mutual rule between the member and group identity.
 Group capacity counts the effective group-authored direction independently of
 whether the candidate has accepted.
 
+The complete directed transition, pair-folding, crossed-request, revocation, renewal, and request
+projection-side-effect rules are documented in the
+[relationship intent state machine](./relationship-intent-state-machine.md).
+
 The request badge is derived from the revision of the latest incoming
 `RELATIONSHIP_INTENT/REQUESTED` in the unified state delta versus a per-device
 seen revision stored in the local account database.

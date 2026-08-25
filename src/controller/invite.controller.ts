@@ -142,9 +142,7 @@ export class InviteController {
         );
       });
       await this.federationService.pushStateFeedDomains(statePeers.keys());
-      clientFeedUpdates.forEach((pending) =>
-        this.clientStateFeed.notifyFeedUpdated(pending),
-      );
+      this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
       return envelope(undefined, {
         message: 'group join request sent',
         messageKey: 'group.msg.joinRequestSent',
@@ -194,9 +192,7 @@ export class InviteController {
       },
     );
     await this.federationService.pushStateFeedDomains(statePeers.keys());
-    clientFeedUpdates.forEach((pending) =>
-      this.clientStateFeed.notifyFeedUpdated(pending),
-    );
+    this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
 
     if (res.status === 'auto-accepted') {
       // Local mutual → friends immediately. Both sides' thread-list adds are driven by the
@@ -279,9 +275,7 @@ export class InviteController {
       },
     );
     await this.federationService.pushStateFeedDomains(statePeers.keys());
-    clientFeedUpdates.forEach((pending) =>
-      this.clientStateFeed.notifyFeedUpdated(pending),
-    );
+    this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
     return envelope(
       { account, domain },
       {
@@ -363,9 +357,7 @@ export class InviteController {
     );
     await this.federationService.pushStateFeedDomains(friendStatePeers.keys());
     await this.federationService.pushStateFeedDomains(groupStatePeers.keys());
-    clientFeedUpdates.forEach((pending) =>
-      this.clientStateFeed.notifyFeedUpdated(pending),
-    );
+    this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
 
     if (res.kind === 'FRIEND') {
       const fromUser = await this.userService.findUniqueUser({
@@ -437,9 +429,7 @@ export class InviteController {
       },
     );
     await this.federationService.pushStateFeedDomains(statePeers.keys());
-    clientFeedUpdates.forEach((pending) =>
-      this.clientStateFeed.notifyFeedUpdated(pending),
-    );
+    this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
   }
 
   @ApiBearerAuth()
@@ -482,9 +472,7 @@ export class InviteController {
       },
     );
     await this.federationService.pushStateFeedDomains(statePeers.keys());
-    clientFeedUpdates.forEach((pending) =>
-      this.clientStateFeed.notifyFeedUpdated(pending),
-    );
+    this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
   }
 
   private isAddressedAction(dto: FriendInviteActionDto): boolean {

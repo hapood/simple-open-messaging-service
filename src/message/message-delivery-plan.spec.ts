@@ -7,14 +7,12 @@ import {
 describe('local message delivery plan', () => {
   it('keeps feed delivery local and authorized, including the creator for sender-side sync', () => {
     expect(
-      planFeedRecipientIds(
-        [
-          { userId: 1, isLocal: true, isDeleted: false, authorized: true },
-          { userId: 2, isLocal: true, isDeleted: false, authorized: true },
-          { userId: 3, isLocal: false, isDeleted: false, authorized: true },
-          { userId: 4, isLocal: true, isDeleted: false, authorized: false },
-        ],
-      ),
+      planFeedRecipientIds([
+        { userId: 1, isLocal: true, isDeleted: false, authorized: true },
+        { userId: 2, isLocal: true, isDeleted: false, authorized: true },
+        { userId: 3, isLocal: false, isDeleted: false, authorized: true },
+        { userId: 4, isLocal: true, isDeleted: false, authorized: false },
+      ]),
     ).toEqual([1, 2]);
   });
 

@@ -103,6 +103,7 @@ export function MediaPage() {
   );
   const cancelTask = useCancelMediaTask();
   const currentTask = useCurrentMediaTask(isSuper);
+  const refetchPendingAssets = pendingAssets.refetch;
   const [pending, setPending] = useState<GcAction | null>(null);
   const [taskId, setTaskId] = useState<string | null>(null);
   const reportedTask = useRef<string | null>(null);
@@ -130,11 +131,11 @@ export function MediaPage() {
     if (reportedTask.current === `${task.id}:${task.status}`) return;
     reportedTask.current = `${task.id}:${task.status}`;
     void refetchStats();
-    void pendingAssets.refetch();
+    void refetchPendingAssets();
     if (task.status === 'completed') toast.success(t('media.taskCompleted'));
     else if (task.status === 'cancelled') toast.info(t('media.taskCancelled'));
     else toast.error(task.error ?? t('media.taskFailed'));
-  }, [task, pendingAssets.refetch, refetchStats, t]);
+  }, [task, refetchPendingAssets, refetchStats, t]);
 
   useEffect(() => {
     const panel = taskLogPanel.current;

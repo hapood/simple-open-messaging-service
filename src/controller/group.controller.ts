@@ -281,6 +281,25 @@ export class GroupController {
   @Roles(GroupRole.OWNER, GroupRole.ADMIN)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
+  @ResourceId<QueryGroupJoinRequestsDto>('groupId')
+  @Post('group/invitations')
+  @ApiOperation({ summary: 'List projected group invitations' })
+  async queryInvitations(
+    @Request() req: FastifyRequest,
+    @Body() dto: QueryGroupJoinRequestsDto,
+  ) {
+    return this.groupService.queryInvitations(
+      req.threadAccess!.threadId,
+      req.user.userId,
+      dto.before,
+      dto.take ?? 20,
+    );
+  }
+
+  @UseGuards(ThreadAccessGuard, RolesGuard)
+  @Roles(GroupRole.OWNER, GroupRole.ADMIN)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
   @ResourceId<ReadGroupJoinRequestsDto>('groupId')
   @Post('group/join-requests/read')
   @ApiOperation({
@@ -332,6 +351,24 @@ export class GroupController {
       req.threadAccess!.threadId,
       BigInt(dto.requestId),
       'REVOKED',
+    );
+  }
+
+  @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
+  @Throttle('group.join-request-action')
+  @Roles(GroupRole.OWNER, GroupRole.ADMIN)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ResourceId<HandleGroupJoinRequestDto>('groupId')
+  @Post('group/invitation/revoke')
+  @ApiOperation({ summary: 'Revoke a pending group invitation' })
+  async revokeInvitation(
+    @Request() req: FastifyRequest,
+    @Body() dto: HandleGroupJoinRequestDto,
+  ): Promise<void> {
+    await this.groupService.revokeInvitation(
+      req.threadAccess!.threadId,
+      BigInt(dto.requestId),
     );
   }
 

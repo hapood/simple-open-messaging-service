@@ -164,6 +164,8 @@ one account is the group account and the other is the member account; `authorUse
 side authored the intent. There are no separate invite, join, friend-request, or group-membership
 request tables. The former polymorphic `Invite` table has been removed. REST
 `inviteId` values are stringified ids of the corresponding directed fact.
+See the [relationship intent state machine](../overview/relationship-intent-state-machine.md) for
+the complete transition, pair-folding, and projection-side-effect rules.
 
 ### POST `/invite/friend` — Send friend invite
 
@@ -262,6 +264,15 @@ request tables. The former polymorphic `Invite` table has been removed. REST
 ### POST `/group/invite`
 
 - **Body**: `{ groupId, userIds: number[] }` — mint GROUP invites for existing friends. `40002` non-friend.
+
+### Group request projections
+
+- `POST /group/join-requests` and `POST /group/invitations` use the same newest-first request-page
+  contract: `{ groupId, before?, take? }`.
+- `POST /group/join-request/{accept,reject}` acts on a member-authored application.
+- `POST /group/invitation/revoke` cancels a still-live group-authored invitation.
+- These lists are backend projections written after the corresponding intent fact and relationship
+  fold commit. They are not membership authority.
 
 ### POST `/group/info`
 

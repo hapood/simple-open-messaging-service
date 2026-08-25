@@ -138,7 +138,6 @@ describe('group-meta compacted feed', () => {
       {
         feedId: '3',
         account: accounts[2],
-        rev: 2,
         operation: 'DELETE',
         body: {},
       },
@@ -190,13 +189,13 @@ describe('group-meta compacted feed', () => {
     });
   });
 
-  it('rejoining appends a newer member revision and feed id', async () => {
+  it('rejoining appends a newer feed id', async () => {
     await database.db.transaction((tx) =>
       feed.reconcileInTx(tx, peerDomain, groupUserId, [owner, member]),
     );
     const delta = await feed.serve(peerDomain, groupAccount, 'delta', 3n);
     expect(delta.items).toMatchObject([
-      { feedId: '4', account: accounts[2], rev: 3, operation: 'UPSERT' },
+      { feedId: '4', account: accounts[2], operation: 'UPSERT' },
     ]);
   });
 

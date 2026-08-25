@@ -217,7 +217,6 @@ function semanticValid(schema: string, value: unknown): boolean {
       groupMetaFeedEndId?: string;
       items?: Array<{
         feedId?: string;
-        rev?: number;
         operation?: string;
       }>;
     };
@@ -233,7 +232,6 @@ function semanticValid(schema: string, value: unknown): boolean {
       if (
         feedId <= previousFeedId ||
         feedId > BigInt(page.scannedThrough) ||
-        !Number.isSafeInteger(member.rev) ||
         (page.mode === 'full' && member.operation !== 'UPSERT')
       )
         return false;

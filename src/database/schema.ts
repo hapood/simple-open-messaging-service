@@ -1345,15 +1345,14 @@ export const clientStateFeed = pgTable(
   ],
 );
 
-/** Manager-facing materialized view of USER→GROUP applications. A row survives terminal decisions
- * until its original seven-day retention boundary, allowing every manager device to converge on the
- * same history without consulting the directional relationship intents. */
-export const groupJoinRequestProjection = pgTable(
-  'GroupJoinRequestProjection',
+/** Manager-facing request side effects for USER→GROUP applications and GROUP→USER invitations. */
+export const groupRequestProjection = pgTable(
+  'GroupRequestProjection',
   {
     managerUserId: integer().notNull(),
     threadId: integer().notNull(),
-    applicantUserId: integer().notNull(),
+    memberUserId: integer().notNull(),
+    direction: varchar({ length: 15 }).notNull(),
     feedId: integer().notNull(),
     requestId: bigint({ mode: 'bigint' }).notNull(),
     status: varchar({ length: 15 }).notNull(),
@@ -1377,41 +1376,50 @@ export const groupJoinRequestProjection = pgTable(
   },
   (table) => [
     primaryKey({
-      columns: [table.managerUserId, table.threadId, table.applicantUserId],
-      name: 'GroupJoinRequestProjection_pkey',
+      columns: [
+        table.managerUserId,
+        table.threadId,
+        table.memberUserId,
+        table.direction,
+      ],
+      name: 'GroupRequestProjection_pkey',
     }),
-    uniqueIndex('GroupJoinRequestProjection_manager_feed_key').on(
+    uniqueIndex('GroupRequestProjection_manager_feed_key').on(
       table.managerUserId,
       table.feedId,
     ),
-    index('GroupJoinRequestProjection_thread_feed_idx').on(
+    index('GroupRequestProjection_thread_feed_idx').on(
       table.managerUserId,
       table.threadId,
       table.feedId,
     ),
-    index('GroupJoinRequestProjection_expiry_idx').on(table.expiresAt),
+    index('GroupRequestProjection_expiry_idx').on(table.expiresAt),
     foreignKey({
       columns: [table.managerUserId],
       foreignColumns: [user.id],
-      name: 'GroupJoinRequestProjection_managerUserId_fkey',
+      name: 'GroupRequestProjection_managerUserId_fkey',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.threadId],
       foreignColumns: [messageThread.id],
-      name: 'GroupJoinRequestProjection_threadId_fkey',
+      name: 'GroupRequestProjection_threadId_fkey',
     }).onDelete('cascade'),
     foreignKey({
-      columns: [table.applicantUserId],
+      columns: [table.memberUserId],
       foreignColumns: [user.id],
-      name: 'GroupJoinRequestProjection_applicantUserId_fkey',
+      name: 'GroupRequestProjection_memberUserId_fkey',
     }).onDelete('cascade'),
-    check('GroupJoinRequestProjection_feedId_check', sql`${table.feedId} > 0`),
+    check('GroupRequestProjection_feedId_check', sql`${table.feedId} > 0`),
     check(
-      'GroupJoinRequestProjection_status_check',
+      'GroupRequestProjection_direction_check',
+      sql`${table.direction} IN ('APPLICATION', 'INVITATION')`,
+    ),
+    check(
+      'GroupRequestProjection_status_check',
       sql`${table.status} IN ('REQUESTED', 'ACCEPTED', 'REVOKED')`,
     ),
     check(
-      'GroupJoinRequestProjection_retention_check',
+      'GroupRequestProjection_retention_check',
       sql`${table.expiresAt} > ${table.requestedAt} AND ${table.expiresAt} <= ${table.requestedAt} + INTERVAL '7 days'`,
     ),
   ],
@@ -1630,7 +1638,7 @@ export const peerStateFeed = pgTable(
     eventType: peerStateEventType().notNull(),
     subjectAccount: varchar({ length: 31 }).default('').notNull(),
     subjectDomain: varchar({ length: 63 }).default('local').notNull(),
-    rev: bigint({ mode: 'bigint' }).notNull(),
+    feedId: bigint({ mode: 'bigint' }).notNull(),
     body: jsonb().notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
@@ -1651,16 +1659,16 @@ export const peerStateFeed = pgTable(
       ],
       name: 'PeerStateFeed_pkey',
     }),
-    uniqueIndex('PeerStateFeed_peerDomain_rev_key').on(
+    uniqueIndex('PeerStateFeed_peerDomain_feedId_key').on(
       table.peerDomain,
-      table.rev,
+      table.feedId,
     ),
     foreignKey({
       columns: [table.peerDomain],
       foreignColumns: [federatedPeer.domain],
       name: 'PeerStateFeed_peerDomain_fkey',
     }).onDelete('cascade'),
-    check('PeerStateFeed_rev_check', sql`${table.rev} > 0`),
+    check('PeerStateFeed_feedId_check', sql`${table.feedId} > 0`),
     check(
       'PeerStateFeed_subject_check',
       sql`(${table.eventType} = 'RELATIONSHIP_INTENT' AND ${table.subjectAccount} <> '' AND ${table.subjectDomain} <> '') OR (${table.eventType} <> 'RELATIONSHIP_INTENT' AND ${table.subjectAccount} = '' AND ${table.subjectDomain} = 'local')`,
@@ -1690,8 +1698,7 @@ export const peerStateFeedTarget = pgTable(
   ],
 );
 
-/** Origin-authoritative group roster feed. feedId is the transport cursor; memberRev is the
- * independent business revision of one stable member address. */
+/** Origin-authoritative group roster feed. feedId is the ordered transport and mutation cursor. */
 export const groupMetaMemberFeed = pgTable(
   'GroupMetaMemberFeed',
   {
@@ -1700,7 +1707,6 @@ export const groupMetaMemberFeed = pgTable(
     feedId: bigint({ mode: 'bigint' }).notNull(),
     memberAccount: varchar({ length: 31 }).notNull(),
     memberDomain: varchar({ length: 63 }).notNull(),
-    memberRev: integer().notNull(),
     operation: groupMetaMemberOperation().notNull(),
     body: jsonb().notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -1715,13 +1721,6 @@ export const groupMetaMemberFeed = pgTable(
       columns: [table.targetPeerDomain, table.groupUserId, table.feedId],
       name: 'GroupMetaMemberFeed_pkey',
     }),
-    uniqueIndex('GroupMetaMemberFeed_member_rev_key').on(
-      table.targetPeerDomain,
-      table.groupUserId,
-      table.memberDomain,
-      table.memberAccount,
-      table.memberRev,
-    ),
     index('GroupMetaMemberFeed_member_feed_idx').on(
       table.targetPeerDomain,
       table.groupUserId,
@@ -1740,7 +1739,6 @@ export const groupMetaMemberFeed = pgTable(
       name: 'GroupMetaMemberFeed_groupUserId_fkey',
     }).onDelete('cascade'),
     check('GroupMetaMemberFeed_feedId_check', sql`${table.feedId} > 0`),
-    check('GroupMetaMemberFeed_memberRev_check', sql`${table.memberRev} >= 0`),
     check(
       'GroupMetaMemberFeed_body_check',
       sql`(${table.operation} = 'UPSERT' AND ${table.body} <> '{}'::jsonb) OR (${table.operation} = 'DELETE' AND ${table.body} = '{}'::jsonb)`,
@@ -1795,7 +1793,6 @@ export const clientGroupMetaMemberFeed = pgTable(
     feedId: bigint({ mode: 'bigint' }).notNull(),
     memberAccount: varchar({ length: 31 }).notNull(),
     memberDomain: varchar({ length: 63 }).notNull(),
-    memberRev: integer().notNull(),
     operation: groupMetaMemberOperation().notNull(),
     body: jsonb().notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -1810,13 +1807,6 @@ export const clientGroupMetaMemberFeed = pgTable(
       columns: [table.userId, table.groupUserId, table.feedId],
       name: 'ClientGroupMetaMemberFeed_pkey',
     }),
-    uniqueIndex('ClientGroupMetaMemberFeed_member_rev_key').on(
-      table.userId,
-      table.groupUserId,
-      table.memberDomain,
-      table.memberAccount,
-      table.memberRev,
-    ),
     index('ClientGroupMetaMemberFeed_member_feed_idx').on(
       table.userId,
       table.groupUserId,
@@ -1835,10 +1825,6 @@ export const clientGroupMetaMemberFeed = pgTable(
       name: 'ClientGroupMetaMemberFeed_groupUserId_fkey',
     }).onDelete('cascade'),
     check('ClientGroupMetaMemberFeed_feedId_check', sql`${table.feedId} > 0`),
-    check(
-      'ClientGroupMetaMemberFeed_memberRev_check',
-      sql`${table.memberRev} >= 0`,
-    ),
     check(
       'ClientGroupMetaMemberFeed_body_check',
       sql`(${table.operation} = 'UPSERT' AND ${table.body} <> '{}'::jsonb) OR (${table.operation} = 'DELETE' AND ${table.body} = '{}'::jsonb)`,
@@ -1936,7 +1922,6 @@ export const federatedGroupMember = pgTable(
     groupAccount: varchar({ length: 31 }).notNull(),
     memberAccount: varchar({ length: 31 }).notNull(),
     memberDomain: varchar({ length: 63 }).notNull(),
-    memberRev: integer().notNull(),
     role: groupRole().notNull(),
     seenAtFeedId: bigint({ mode: 'bigint' }).notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -1966,7 +1951,6 @@ export const federatedGroupMember = pgTable(
       'FederatedGroupMember_groupAccount_check',
       sql`${table.groupAccount} LIKE '!%'`,
     ),
-    check('FederatedGroupMember_memberRev_check', sql`${table.memberRev} >= 0`),
     check(
       'FederatedGroupMember_seenAtFeedId_check',
       sql`${table.seenAtFeedId} >= 0`,

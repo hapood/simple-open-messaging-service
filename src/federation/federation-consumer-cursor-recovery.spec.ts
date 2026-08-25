@@ -72,21 +72,31 @@ describe('FederationService consumer cursor recovery', () => {
     const getSigned = vi
       .fn()
       .mockRejectedValueOnce(cursorUnavailable('5', '11'))
-      .mockResolvedValueOnce({ messages: [], scannedThrough: '10', hasMore: false });
+      .mockResolvedValueOnce({
+        messages: [],
+        scannedThrough: '10',
+        hasMore: false,
+      });
     Object.assign(service, {
       getSigned,
       database: {
-        db: { query: { federationMessageQueryCursor: {
-          findFirst: vi.fn().mockResolvedValue({ committedThrough: 2 }),
-        } } },
+        db: {
+          query: {
+            federationMessageQueryCursor: {
+              findFirst: vi.fn().mockResolvedValue({ committedThrough: 2 }),
+            },
+          },
+        },
       },
     });
     const page = {
-      items: [{
-        feedId: '1',
-        thread: { account: 'thread', domain: 'peer.test' },
-        messageEndSeq: '10',
-      }],
+      items: [
+        {
+          feedId: '1',
+          thread: { account: 'thread', domain: 'peer.test' },
+          messageEndSeq: '10',
+        },
+      ],
       scannedThrough: '1',
       messageFeedEndId: '1',
       hasMore: false,
@@ -126,17 +136,23 @@ describe('FederationService consumer cursor recovery', () => {
     Object.assign(service, {
       getSigned,
       database: {
-        db: { query: { federationTombstoneQueryCursor: {
-          findFirst: vi.fn().mockResolvedValue({ committedThrough: 3n }),
-        } } },
+        db: {
+          query: {
+            federationTombstoneQueryCursor: {
+              findFirst: vi.fn().mockResolvedValue({ committedThrough: 3n }),
+            },
+          },
+        },
       },
     });
     const page = {
-      items: [{
-        feedId: '1',
-        thread: { account: 'thread', domain: 'peer.test' },
-        tombstoneEndSeq: '12',
-      }],
+      items: [
+        {
+          feedId: '1',
+          thread: { account: 'thread', domain: 'peer.test' },
+          tombstoneEndSeq: '12',
+        },
+      ],
       scannedThrough: '1',
       tombstoneFeedEndId: '1',
       hasMore: false,

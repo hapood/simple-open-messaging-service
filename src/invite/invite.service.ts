@@ -749,9 +749,7 @@ export class InviteService {
       },
     );
     // Notify local devices only after the client-state writes commit.
-    pendingFeedUpdates.forEach((pending) =>
-      this.clientStateFeed.notifyFeedUpdated(pending),
-    );
+    this.clientStateFeed.notifyFeedUpdates(pendingFeedUpdates);
     if (
       result.status === 'auto-accepted' &&
       this.messages &&
@@ -1044,9 +1042,7 @@ export class InviteService {
       },
     );
     // Notify local devices only after the client-state writes commit.
-    pendingFeedUpdates.forEach((pending) =>
-      this.clientStateFeed.notifyFeedUpdated(pending),
-    );
+    this.clientStateFeed.notifyFeedUpdates(pendingFeedUpdates);
     if (
       result.kind === 'FRIEND' &&
       result.threadId !== undefined &&
@@ -1112,9 +1108,7 @@ export class InviteService {
           )),
         );
     });
-    pendingFeedUpdates.forEach((pending) =>
-      this.clientStateFeed.notifyFeedUpdated(pending),
-    );
+    this.clientStateFeed.notifyFeedUpdates(pendingFeedUpdates);
   }
 
   /** Reject an incoming pending invite by authoring the recipient's REVOKED direction. */

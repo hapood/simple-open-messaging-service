@@ -105,7 +105,6 @@ export class ClientGroupMetaFeedService {
     const changes: Array<{
       account: string;
       domain: string;
-      memberRev: number;
       operation: 'UPSERT' | 'DELETE';
       body: Record<string, unknown>;
     }> = [];
@@ -119,7 +118,6 @@ export class ClientGroupMetaFeedService {
       changes.push({
         account: member.account,
         domain: member.domain,
-        memberRev: (previous?.memberRev ?? 0) + 1,
         operation: 'UPSERT',
         body: member.body,
       });
@@ -130,7 +128,6 @@ export class ClientGroupMetaFeedService {
       changes.push({
         account: previous.memberAccount,
         domain: previous.memberDomain,
-        memberRev: previous.memberRev + 1,
         operation: 'DELETE',
         body: {},
       });
@@ -147,7 +144,6 @@ export class ClientGroupMetaFeedService {
           feedId: ++allocatedThrough,
           memberAccount: change.account,
           memberDomain: change.domain,
-          memberRev: change.memberRev,
           operation: change.operation,
           body: change.body,
         })),
@@ -233,13 +229,12 @@ export class ClientGroupMetaFeedService {
               feedId: bigint;
               memberAccount: string;
               memberDomain: string;
-              memberRev: number;
               operation: 'UPSERT' | 'DELETE';
               body: unknown;
             }>(sql`
               SELECT latest.* FROM (
                 SELECT DISTINCT ON ("memberDomain", "memberAccount")
-                  "feedId", "memberAccount", "memberDomain", "memberRev", operation, body
+                  "feedId", "memberAccount", "memberDomain", operation, body
                 FROM "ClientGroupMetaMemberFeed"
                 WHERE "userId" = ${userId} AND "groupUserId" = ${groupUserId}
                   AND "feedId" <= ${scanEnd}
@@ -259,7 +254,6 @@ export class ClientGroupMetaFeedService {
         feedId: row.feedId.toString(),
         account: row.memberAccount,
         domain: row.memberDomain,
-        rev: row.memberRev,
         operation: row.operation,
         body: row.body,
       })),

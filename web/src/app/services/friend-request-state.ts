@@ -1,17 +1,9 @@
 export type FriendRequestIntentStatus = 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
-
-export type FriendRequestProjectionStatus =
-  | 'REQUESTED'
-  | 'ACCEPTED'
-  | 'REVOKED';
-
+export type FriendRequestProjectionStatus = FriendRequestIntentStatus;
 export type FriendRequestBucket = 'RECEIVED' | 'SENT';
-export const FRIEND_INTENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+export type FriendRequestDirection = 'INCOMING' | 'OUTGOING';
 
-export interface DirectionalFriendIntent {
-  status: FriendRequestIntentStatus;
-  expiresAt: number | null;
-}
+export const FRIEND_INTENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface FriendRequestPeer {
   id: number;
@@ -23,20 +15,59 @@ export interface FriendRequestPeer {
   isForeigner: boolean;
 }
 
-/** One durable, UI-facing record per relationship pair. Directional state-feed intents are inputs to
- * this projection; request surfaces never read those intents directly. */
+export interface RelationshipIntentFact {
+  key: string;
+  reverseKey: string;
+  status: FriendRequestIntentStatus;
+  expiresAt: number | null;
+  localThreadId: number | null;
+  updatedAt: number;
+}
+
+export function relationshipIntentKey(input: {
+  account: string;
+  domain: string;
+  subjectAccount: string;
+  subjectDomain: string;
+}): string {
+  return `${input.domain}\u0000${input.account}->${input.subjectDomain}\u0000${input.subjectAccount}`;
+}
+
+export function reverseRelationshipIntentKey(input: {
+  account: string;
+  domain: string;
+  subjectAccount: string;
+  subjectDomain: string;
+}): string {
+  return `${input.subjectDomain}\u0000${input.subjectAccount}->${input.domain}\u0000${input.account}`;
+}
+
+export function relationshipFactsAreActive(
+  first: RelationshipIntentFact | undefined,
+  second: RelationshipIntentFact | undefined,
+  now: number,
+): boolean {
+  const effective = (fact: RelationshipIntentFact | undefined) =>
+    fact?.status === 'ACCEPTED' ||
+    (fact?.status === 'REQUESTED' &&
+      fact.expiresAt !== null &&
+      fact.expiresAt > now);
+  return (
+    effective(first) &&
+    effective(second) &&
+    (first?.status === 'ACCEPTED' || second?.status === 'ACCEPTED')
+  );
+}
+
+/** A disposable UI projection rooted in one authored REQUESTED fact. Relationship authorization
+ * is derived from separately persisted intent facts, never from this record. */
 export interface FriendRequestProjection {
   key: string;
   kind: 'FRIEND' | 'GROUP';
-  /** Stable request-list ownership. Terminal state changes must not move a row between lists. */
   bucket: FriendRequestBucket;
-  direction: 'INCOMING' | 'OUTGOING';
-  /** Derived presentation/index field. Null means the intent pair must be retained for convergence but
-   * has no row in either request list. The authoritative state is local + remote. */
-  status: FriendRequestProjectionStatus | null;
-  local: DirectionalFriendIntent | null;
-  remote: DirectionalFriendIntent | null;
-  locallyAccepted: boolean;
+  direction: FriendRequestDirection;
+  status: FriendRequestProjectionStatus;
+  expiresAt: number;
   localThreadId: number | null;
   inviteId?: string;
   note: string;
@@ -62,7 +93,7 @@ export interface FriendIntentProjectionInput {
   subjectAccount: string;
   subjectDomain: string;
   status: FriendRequestIntentStatus;
-  direction: 'INCOMING' | 'OUTGOING';
+  direction: FriendRequestDirection;
   localThreadId: number | null;
   inviteId?: string;
   note: string;
@@ -78,26 +109,43 @@ export interface GroupInviteProjectionInput {
   note: string;
   requestedAt: number | null;
   expiresAt: number | null;
-  direction?: 'INCOMING' | 'OUTGOING';
+  direction?: FriendRequestDirection;
   threadId: number;
   group: NonNullable<FriendRequestProjection['group']>;
 }
 
-export function friendPairKey(input: {
-  account: string;
-  domain: string;
-  subjectAccount: string;
-  subjectDomain: string;
-}): string {
-  const endpoints = [
-    `${input.domain}\u0000${input.account}`,
-    `${input.subjectDomain}\u0000${input.subjectAccount}`,
-  ].sort();
-  return `friend:${JSON.stringify(endpoints)}`;
+export function projectionDirectionForFact(input: {
+  status: FriendRequestIntentStatus;
+  direction: FriendRequestDirection;
+}): FriendRequestDirection | null {
+  if (input.status === 'ACCEPTED')
+    return input.direction === 'INCOMING' ? 'OUTGOING' : null;
+  return input.direction;
 }
 
-export function groupRequestKey(domain: string, account: string): string {
-  return `group:${domain}\u0000${account}`;
+export function friendRequestKey(
+  input: {
+    account: string;
+    domain: string;
+    subjectAccount: string;
+    subjectDomain: string;
+    direction: FriendRequestDirection;
+  },
+  targetDirection: FriendRequestDirection,
+): string {
+  const sameAuthoredDirection = input.direction === targetDirection;
+  const authored = sameAuthoredDirection
+    ? `${input.domain}\u0000${input.account}->${input.subjectDomain}\u0000${input.subjectAccount}`
+    : `${input.subjectDomain}\u0000${input.subjectAccount}->${input.domain}\u0000${input.account}`;
+  return `friend:${JSON.stringify(authored)}`;
+}
+
+export function groupRequestKey(
+  domain: string,
+  account: string,
+  direction: FriendRequestDirection,
+): string {
+  return `group:${domain}\u0000${account}:${direction}`;
 }
 
 export interface ProjectionTransition {
@@ -105,171 +153,39 @@ export interface ProjectionTransition {
   becameActionable: boolean;
 }
 
-/** Fold one directional intent into the pair projection. A locally accepted request is monotonic: a
- * late/replayed remote REQUESTED fact cannot make it actionable again or recreate an unread badge. */
 export function applyFriendIntentToProjection(
   current: FriendRequestProjection | undefined,
   input: FriendIntentProjectionInput,
   now: number,
 ): ProjectionTransition {
-  const key = friendPairKey(input);
-  const next: FriendRequestProjection = current
-    ? { ...current }
-    : {
-        key,
-        kind: 'FRIEND',
-        bucket: input.direction === 'INCOMING' ? 'RECEIVED' : 'SENT',
-        direction: input.direction,
-        status: input.status,
-        local: null,
-        remote: null,
-        locallyAccepted: false,
-        localThreadId: input.localThreadId ?? null,
-        note: input.note,
-        requestedAt: input.requestedAt ?? 0,
-        peer: input.peer,
-        requestedSort: input.requestedAt ?? 0,
-        updatedAt: now,
-      };
-  next.bucket ??= next.direction === 'INCOMING' ? 'RECEIVED' : 'SENT';
-  next.updatedAt = now;
-  if (input.localThreadId != null) next.localThreadId = input.localThreadId;
+  if (input.status === 'ACCEPTED' && input.direction === 'OUTGOING')
+    return { record: current ?? null, becameActionable: false };
+  if (input.status !== 'REQUESTED')
+    return updateLiveProjection(current, input.status, now);
 
-  if (input.direction === 'OUTGOING') {
-    next.local = {
-      status: input.status,
-      expiresAt: boundedIntentExpiry(input.requestedAt, input.expiresAt),
-    };
-  } else {
-    next.remote = {
-      status: input.status,
-      expiresAt: boundedIntentExpiry(input.requestedAt, input.expiresAt),
-    };
-  }
-
-  // The currently actionable direction owns the card payload and action id.
-  if (input.status === 'REQUESTED') {
-    next.direction = input.direction;
-    next.inviteId = input.inviteId;
-    next.note = input.note;
-    next.requestedAt = input.requestedAt ?? 0;
-    next.requestedSort = input.requestedAt ?? 0;
-    next.peer = input.peer;
-  }
-
-  const priorActionable =
-    current?.direction === 'INCOMING' && current.status === 'REQUESTED';
-  const remoteRequested =
-    next.remote?.status === 'REQUESTED' &&
-    next.remote.expiresAt != null &&
-    next.remote.expiresAt > now;
-  const localRequested =
-    next.local?.status === 'REQUESTED' &&
-    next.local.expiresAt != null &&
-    next.local.expiresAt > now;
-
-  if (next.local?.status === 'ACCEPTED' && next.remote?.status === 'ACCEPTED') {
-    // Received is also the user's request history. Preserve an accepted incoming card in its stable
-    // bucket; convergence only makes it non-actionable. A sent-side convergence projection has no
-    // received history to preserve and remains unindexed.
-    if (next.bucket === 'RECEIVED') {
-      next.direction = 'INCOMING';
-      next.status = 'ACCEPTED';
-      return { record: next, becameActionable: false };
-    }
-    next.direction = 'OUTGOING';
-    next.status = null;
-    return { record: next, becameActionable: false };
-  }
-  if (next.remote?.status === 'REVOKED') {
-    // My outgoing request was rejected. Retain the compacted sent-history row in its original bucket.
-    if (next.local?.status === 'REQUESTED') {
-      next.direction = 'OUTGOING';
-      next.bucket = 'SENT';
-      next.status = 'REVOKED';
-      return { record: next, becameActionable: false };
-    }
-    if (next.bucket === 'RECEIVED') {
-      next.direction = 'INCOMING';
-      next.status = 'REVOKED';
-    } else next.status = null;
-    return { record: next, becameActionable: false };
-  }
-  if (next.local?.status === 'REVOKED' && next.bucket === 'RECEIVED') {
-    next.direction = 'INCOMING';
-    next.status = 'REVOKED';
-    return { record: next, becameActionable: false };
-  }
-
-  if (remoteRequested) {
-    next.direction = 'INCOMING';
-    next.status =
-      next.locallyAccepted || next.local?.status === 'ACCEPTED'
-        ? 'ACCEPTED'
-        : 'REQUESTED';
-  } else if (localRequested) {
-    next.direction = 'OUTGOING';
-    next.status = next.remote?.status === 'ACCEPTED' ? null : 'REQUESTED';
-  } else if (
-    next.direction === 'OUTGOING' &&
-    next.local?.status === 'REVOKED'
-  ) {
-    next.status = 'REVOKED';
-  } else if (
-    next.local?.status === 'ACCEPTED' ||
-    next.remote?.status === 'ACCEPTED'
-  ) {
-    // One accepted half may arrive before the original request half. The intent pair itself is the
-    // state: retain ACCEPTED + null (or its mirror), but leave the derived list status unindexed.
-    next.direction = 'OUTGOING';
-    next.status = null;
-  } else {
-    return { record: null, becameActionable: false };
-  }
-
-  const actionable =
-    next.direction === 'INCOMING' && next.status === 'REQUESTED';
-  return {
-    record: next,
-    becameActionable: actionable && !priorActionable,
-  };
-}
-
-/** Client mirror of backend mutuallyAuthorizedSql. REQUESTED grants only while live; both directions
- * must grant and at least one must be the durable ACCEPTED acknowledgement. */
-export function friendProjectionIsActive(
-  projection: FriendRequestProjection,
-  now: number,
-): boolean {
-  const effective = (
-    status: FriendRequestIntentStatus | null,
-    expiresAt: number | null | undefined,
-  ) =>
-    status === 'ACCEPTED' ||
-    (status === 'REQUESTED' &&
-      typeof expiresAt === 'number' &&
-      expiresAt > now);
-  return (
-    effective(projection.local?.status ?? null, projection.local?.expiresAt) &&
-    effective(
-      projection.remote?.status ?? null,
-      projection.remote?.expiresAt,
-    ) &&
-    (projection.local?.status === 'ACCEPTED' ||
-      projection.remote?.status === 'ACCEPTED')
-  );
-}
-
-export function markProjectionAccepted(
-  current: FriendRequestProjection,
-  now = Date.now(),
-): FriendRequestProjection {
-  return {
-    ...current,
-    direction: 'INCOMING',
-    status: 'ACCEPTED',
-    locallyAccepted: true,
+  const expiresAt = boundedIntentExpiry(input.requestedAt, input.expiresAt);
+  if (expiresAt === null || expiresAt <= now)
+    return { record: current ?? null, becameActionable: false };
+  const record: FriendRequestProjection = {
+    key: friendRequestKey(input, input.direction),
+    kind: 'FRIEND',
+    bucket: input.direction === 'INCOMING' ? 'RECEIVED' : 'SENT',
+    direction: input.direction,
+    status: 'REQUESTED',
+    expiresAt,
+    localThreadId: input.localThreadId,
+    inviteId: input.inviteId,
+    note: input.note,
+    requestedAt: input.requestedAt ?? 0,
+    peer: input.peer,
+    requestedSort: input.requestedAt ?? 0,
     updatedAt: now,
+  };
+  return {
+    record,
+    becameActionable:
+      input.direction === 'INCOMING' &&
+      (current?.status !== 'REQUESTED' || current.expiresAt <= now),
   };
 }
 
@@ -279,81 +195,48 @@ export function applyGroupIntentToProjection(
   now: number,
 ): ProjectionTransition {
   const direction = input.direction ?? 'INCOMING';
-  if (input.status === 'REVOKED' && current) {
-    return {
-      record: {
-        ...current,
-        bucket:
-          current.bucket ??
-          (current.direction === 'INCOMING' ? 'RECEIVED' : 'SENT'),
-        status: 'REVOKED',
-        local:
-          direction === 'OUTGOING'
-            ? { status: 'REVOKED', expiresAt: null }
-            : current.local,
-        remote:
-          direction === 'INCOMING'
-            ? { status: 'REVOKED', expiresAt: null }
-            : current.remote,
-        updatedAt: now,
-      },
-      becameActionable: false,
-    };
-  }
-  if (
-    !current &&
-    input.status === 'REQUESTED' &&
-    (input.expiresAt === null || input.expiresAt <= now)
-  )
-    return { record: null, becameActionable: false };
-  const next: FriendRequestProjection = current
-    ? { ...current }
-    : {
-      key: groupRequestKey(input.domain, input.account),
-      kind: 'GROUP',
-      bucket: direction === 'INCOMING' ? 'RECEIVED' : 'SENT',
-      direction,
-      status: null,
-      local: null,
-      remote: null,
-      locallyAccepted: false,
-      localThreadId: null,
-      inviteId: input.account,
-      note: input.note,
-      requestedAt: input.requestedAt ?? 0,
-      group: input.group,
-      sourceLabel: input.group.isLocal ? 'local' : input.group.domain,
-      requestedSort: input.requestedAt ?? 0,
-      updatedAt: now,
-    };
-  next.updatedAt = now;
-  next.group = input.group;
-  next.localThreadId = input.threadId;
-  const authored = {
-    status: input.status,
-    expiresAt: boundedIntentExpiry(input.requestedAt, input.expiresAt),
+  if (input.status === 'ACCEPTED' && direction === 'OUTGOING')
+    return { record: current ?? null, becameActionable: false };
+  if (input.status !== 'REQUESTED')
+    return updateLiveProjection(current, input.status, now);
+
+  const expiresAt = boundedIntentExpiry(input.requestedAt, input.expiresAt);
+  if (expiresAt === null || expiresAt <= now)
+    return { record: current ?? null, becameActionable: false };
+  const record: FriendRequestProjection = {
+    key: groupRequestKey(input.domain, input.account, direction),
+    kind: 'GROUP',
+    bucket: direction === 'INCOMING' ? 'RECEIVED' : 'SENT',
+    direction,
+    status: 'REQUESTED',
+    expiresAt,
+    localThreadId: input.threadId,
+    inviteId: input.account,
+    note: input.note,
+    requestedAt: input.requestedAt ?? 0,
+    group: input.group,
+    sourceLabel: input.group.isLocal ? 'local' : input.group.domain,
+    requestedSort: input.requestedAt ?? 0,
+    updatedAt: now,
   };
-  if (direction === 'OUTGOING') next.local = authored;
-  else next.remote = authored;
-  const active = friendProjectionIsActive(next, now);
-  if (active) {
-    next.status = null;
-  } else if (
-    input.status === 'REQUESTED' &&
-    authored.expiresAt !== null &&
-    authored.expiresAt > now
-  ) {
-    next.direction = direction;
-    next.bucket = direction === 'INCOMING' ? 'RECEIVED' : 'SENT';
-    next.status = 'REQUESTED';
-    next.note = input.note;
-    next.requestedAt = input.requestedAt ?? 0;
-    next.requestedSort = input.requestedAt ?? 0;
-  }
   return {
-    record: next,
+    record,
     becameActionable:
-      next.status === 'REQUESTED' && current?.status !== 'REQUESTED',
+      direction === 'INCOMING' &&
+      (current?.status !== 'REQUESTED' || current.expiresAt <= now),
+  };
+}
+
+function updateLiveProjection(
+  current: FriendRequestProjection | undefined,
+  status: Exclude<FriendRequestIntentStatus, 'REQUESTED'>,
+  now: number,
+): ProjectionTransition {
+  if (!current || current.status !== 'REQUESTED' || current.expiresAt <= now)
+    return { record: current ?? null, becameActionable: false };
+  return {
+    record: { ...current, status, updatedAt: now },
+    becameActionable: false,
   };
 }
 
@@ -367,9 +250,7 @@ export function projectionIsExpired(
 export function projectionRequestExpiresAt(
   projection: FriendRequestProjection,
 ): number | null {
-  const intent =
-    projection.direction === 'INCOMING' ? projection.remote : projection.local;
-  return intent?.status === 'REQUESTED' ? intent.expiresAt : null;
+  return projection.status === 'REQUESTED' ? projection.expiresAt : null;
 }
 
 function boundedIntentExpiry(

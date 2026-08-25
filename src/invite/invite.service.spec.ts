@@ -78,7 +78,7 @@ describe('InviteService.friendRelationshipStatuses', () => {
 });
 
 describe('InviteService local friend client-state projection', () => {
-  it('keeps both authored directions under distinct local-domain client-feed keys', async () => {
+  it('projects both local and peer acknowledgements with the promoted local thread id', async () => {
     const alice = {
       id: 1,
       account: 'alice',
@@ -157,14 +157,22 @@ describe('InviteService local friend client-state projection', () => {
           domain: 'local',
           subjectAccount: 'bob',
           subjectDomain: 'local',
-          body: expect.objectContaining({ direction: 'OUTGOING' }),
+          body: expect.objectContaining({
+            direction: 'OUTGOING',
+            status: 'ACCEPTED',
+            localThreadId: 7,
+          }),
         }),
         expect.objectContaining({
           account: 'bob',
           domain: 'local',
           subjectAccount: 'alice',
           subjectDomain: 'local',
-          body: expect.objectContaining({ direction: 'INCOMING' }),
+          body: expect.objectContaining({
+            direction: 'INCOMING',
+            status: 'ACCEPTED',
+            localThreadId: 7,
+          }),
         }),
       ]),
     );
@@ -182,5 +190,69 @@ describe('InviteService local friend client-state projection', () => {
     expect(ownerOne.every((write) => write.body.peer.domain === 'local')).toBe(
       true,
     );
+  });
+
+  it('allows a peer request projection to remain threadless before acceptance', async () => {
+    const local = {
+      id: 1,
+      account: 'alice',
+      domain: 'local',
+      isForeigner: false,
+      isDeleted: false,
+      name: 'Alice',
+      avatar: '',
+      bio: '',
+    };
+    const peer = {
+      id: 2,
+      account: 'bob',
+      domain: 'peer.test',
+      isForeigner: true,
+      isDeleted: false,
+      name: 'Bob',
+      avatar: '',
+      bio: '',
+    };
+    const writeInTx = vi.fn().mockResolvedValue(1);
+    const service = new InviteService(
+      {} as never,
+      {} as never,
+      { writeInTx } as never,
+    );
+    const tx = {
+      query: {
+        user: {
+          findFirst: vi
+            .fn()
+            .mockResolvedValueOnce(local)
+            .mockResolvedValueOnce(peer),
+        },
+        relationshipIntent: {
+          findMany: vi.fn().mockResolvedValue([
+            {
+              id: 12n,
+              authorUserId: 2,
+              subjectUserId: 1,
+              status: 'REQUESTED',
+              note: '',
+              requestedAt: new Date(1),
+              expiresAt: new Date(Date.now() + 60_000),
+            },
+          ]),
+        },
+        relationshipPair: {
+          findFirst: vi.fn().mockResolvedValue({ threadId: null }),
+        },
+      },
+    };
+
+    await service.writeFriendRequestClientStateInTx(tx as never, 1, 2);
+
+    expect(writeInTx).toHaveBeenCalledOnce();
+    expect(writeInTx.mock.calls[0][1].body).toMatchObject({
+      direction: 'INCOMING',
+      status: 'REQUESTED',
+      localThreadId: null,
+    });
   });
 });

@@ -45,7 +45,11 @@ export class CallStateRegistry {
     if (cur) this.byUser.set(userId, { ...cur, ...patch });
   }
 
-  setPeerIdentity(userId: number, peerAccount: string, peerDomain: string): void {
+  setPeerIdentity(
+    userId: number,
+    peerAccount: string,
+    peerDomain: string,
+  ): void {
     const cur = this.byUser.get(userId);
     if (cur) this.byUser.set(userId, { ...cur, peerAccount, peerDomain });
   }

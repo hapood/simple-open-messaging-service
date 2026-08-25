@@ -58,6 +58,7 @@ const FEDERATED_RESOLVE_STAGES: readonly FederatedResolveStage[] = [
 type PendingReq = {
   id: string;
   projectionKey: string;
+  direction: 'INCOMING' | 'OUTGOING';
   /** Existing stub id, or an Address key while no stub exists. */
   peerId?: number | string;
   name?: string;
@@ -136,7 +137,9 @@ export class FriendRequestsComponent implements OnDestroy {
   readonly sentReqList = signal([] as PendingReq[]);
   readonly sentErrTxt = signal('');
   readonly selectedRequest = signal<PendingReq | null>(null);
-  readonly selectedDirection = signal<'INCOMING' | 'OUTGOING'>('INCOMING');
+  readonly selectedDirection = computed(
+    () => this.selectedRequest()?.direction ?? 'INCOMING',
+  );
   readonly pendingCount = signal(0);
   readonly sentCount = signal(0);
   readonly pendingHasMore = signal(false);
@@ -179,9 +182,8 @@ export class FriendRequestsComponent implements OnDestroy {
   AppIconType = AppIconType;
   displayUserName = displayUserName;
 
-  openRequest(req: PendingReq, direction: 'INCOMING' | 'OUTGOING'): void {
+  openRequest(req: PendingReq): void {
     this.selectedRequest.set(req);
-    this.selectedDirection.set(direction);
   }
 
   closeRequest(): void {
@@ -189,7 +191,7 @@ export class FriendRequestsComponent implements OnDestroy {
   }
 
   deleteSelected(req: PendingReq): void {
-    if (this.selectedDirection() === 'OUTGOING') this.cancelSent(req);
+    if (req.direction === 'OUTGOING') this.cancelSent(req);
     else this.rejectIncoming(req);
   }
 
@@ -528,7 +530,6 @@ export class FriendRequestsComponent implements OnDestroy {
           // accepted state; the later state-feed delta authoritatively reconciles the retained history
           // row after both federated halves converge. A forced reload here only exposed a spurious loading footer and
           // cannot make peer acknowledgement arrive sooner.
-          void this.userService.markFriendRequestAccepted(req.projectionKey);
           if (this.selectedRequest()?.id === req.id) this.closeRequest();
         } else {
           this.pendingReqList.update((items) =>
@@ -638,6 +639,7 @@ export class FriendRequestsComponent implements OnDestroy {
       return {
         id: projection.inviteId ?? projection.key,
         projectionKey: projection.key,
+        direction: projection.direction,
         peerId: this.userIdentity(peer),
         name: peer.name,
         avatar: peer.avatar,
@@ -649,7 +651,7 @@ export class FriendRequestsComponent implements OnDestroy {
           projection.status === 'ACCEPTED'
             ? 1
             : projection.status === 'REVOKED'
-              ? projection.remote?.status === 'REVOKED'
+              ? projection.direction === 'OUTGOING'
                 ? -4
                 : -3
               : 0,
@@ -662,6 +664,7 @@ export class FriendRequestsComponent implements OnDestroy {
     return {
       id: projection.inviteId ?? projection.key,
       projectionKey: projection.key,
+      direction: projection.direction,
       peerId: `pending-group:${group.domain}\u0000${group.account}`,
       name: group.name,
       avatar: group.avatar,

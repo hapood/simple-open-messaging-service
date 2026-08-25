@@ -55,7 +55,6 @@ interface GroupMetaItem {
   feedId: PositiveDecimalString;
   account: UserAccount;
   domain: Domain;
-  rev: SafeNonNegativeInteger;
   operation: 'UPSERT' | 'DELETE';
   body: GroupMetaMemberBody | Record<string, never>;
 }
@@ -74,12 +73,6 @@ strictly increasing, never reused, and independent of every other feed.
 `groupMetaFeedEndId` use this same exact-decimal coordinate space.
 Closing and later restoring authorization for the same target peer and group
 MUST NOT reset this coordinate space or reuse a prior `feedId`.
-
-Member `rev` is a separate business revision scoped to the stable member key
-`(domain, account)`. Each changed `UPSERT` or `DELETE` for that key MUST have a
-strictly greater member `rev`; rejoining MUST NOT reset it. Member revisions
-from different stable keys are unrelated and MAY be equal. A consumer uses
-`feedId` for paging and member `rev` to reject an older member projection.
 
 For one consistent source snapshot:
 
@@ -125,8 +118,8 @@ that full reconstruction.
 
 Delta mode returns retained `UPSERT` and `DELETE` changes in feed order. A
 consumer applies each item by stable member key and commits its page cursor in
-the same transaction. Replaying a committed-or-older member `rev` is a business
-no-op, while its valid feed coordinate still participates in scanning.
+the same transaction. Items at or below the committed feed cursor are already
+applied and MUST NOT be replayed.
 
 The source MAY compact obsolete history when service capacity is insufficient,
 but MUST retain the newest stable-key record needed for full reconstruction. If

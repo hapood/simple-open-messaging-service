@@ -43,7 +43,7 @@ import {
   forwardBundleDependency,
   forwardMessage,
   group,
-  groupJoinRequestProjection,
+  groupRequestProjection,
   relationshipPair,
   relationshipIntent,
   mediaAsset,
@@ -358,7 +358,12 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const res = await request(appA.baseUrl)
       .post('/api/v1/invite/federated-friend')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ account: 'bob', domain: DOM_B, bio: '', note: 'hi from aaa' });
+      .send({
+        account: 'bob',
+        domain: DOM_B,
+        displayName: 'Bob',
+        note: 'hi from aaa',
+      });
     expect(res.status).toBe(200);
     expect(res.body.code, JSON.stringify(res.body)).toBe(BusinessCode.OK);
 
@@ -409,7 +414,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     ]);
     expect(publishedProfile).toBeDefined();
     expect(publishedRequest).toBeDefined();
-    expect(publishedProfile!.rev).toBeGreaterThan(publishedRequest!.rev);
+    expect(publishedProfile!.feedId).toBeGreaterThan(publishedRequest!.feedId);
 
     const accepted = await request(appB.baseUrl)
       .post('/api/v1/invite/accept')
@@ -1287,7 +1292,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             where: eq(peerStateFeedPullCursor.peerDomain, DOM_B),
           });
         expect(cursor?.committedThrough ?? 0n).toBeGreaterThanOrEqual(
-          outboundJoin!.rev,
+          outboundJoin!.feedId,
         );
       },
       { timeout: 5000, interval: 100 },
@@ -1492,14 +1497,14 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           columns: { id: true },
         });
         expect(applicant).toBeDefined();
-        const row =
-          await appA.database.query.groupJoinRequestProjection.findFirst({
-            where: and(
-              eq(groupJoinRequestProjection.managerUserId, aliceLocalIdA),
-              eq(groupJoinRequestProjection.threadId, firstGroupThreadA),
-              eq(groupJoinRequestProjection.applicantUserId, applicant!.id),
-            ),
-          });
+        const row = await appA.database.query.groupRequestProjection.findFirst({
+          where: and(
+            eq(groupRequestProjection.managerUserId, aliceLocalIdA),
+            eq(groupRequestProjection.threadId, firstGroupThreadA),
+            eq(groupRequestProjection.memberUserId, applicant!.id),
+            eq(groupRequestProjection.direction, 'APPLICATION'),
+          ),
+        });
         expect(row).toMatchObject({ status: 'REQUESTED' });
         return row!;
       },
@@ -1526,11 +1531,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await vi.waitFor(
       async () => {
         expect(
-          await appA.database.query.groupJoinRequestProjection.findFirst({
-            where: eq(
-              groupJoinRequestProjection.requestId,
-              projected.requestId,
-            ),
+          await appA.database.query.groupRequestProjection.findFirst({
+            where: eq(groupRequestProjection.requestId, projected.requestId),
           }),
         ).toMatchObject({ status: 'REVOKED' });
       },
@@ -1555,14 +1557,14 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           columns: { id: true },
         });
         expect(applicant).toBeDefined();
-        const row =
-          await appA.database.query.groupJoinRequestProjection.findFirst({
-            where: and(
-              eq(groupJoinRequestProjection.managerUserId, aliceLocalIdA),
-              eq(groupJoinRequestProjection.threadId, firstGroupThreadA),
-              eq(groupJoinRequestProjection.applicantUserId, applicant!.id),
-            ),
-          });
+        const row = await appA.database.query.groupRequestProjection.findFirst({
+          where: and(
+            eq(groupRequestProjection.managerUserId, aliceLocalIdA),
+            eq(groupRequestProjection.threadId, firstGroupThreadA),
+            eq(groupRequestProjection.memberUserId, applicant!.id),
+            eq(groupRequestProjection.direction, 'APPLICATION'),
+          ),
+        });
         expect(row).toMatchObject({
           status: 'REQUESTED',
           note: 'renewed application',
@@ -1580,13 +1582,12 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(revoked.body.code).toBe(BusinessCode.OK);
     await vi.waitFor(
       async () => {
-        const row =
-          await appA.database.query.groupJoinRequestProjection.findFirst({
-            where: eq(
-              groupJoinRequestProjection.requestId,
-              renewedProjection.requestId,
-            ),
-          });
+        const row = await appA.database.query.groupRequestProjection.findFirst({
+          where: eq(
+            groupRequestProjection.requestId,
+            renewedProjection.requestId,
+          ),
+        });
         expect(row).toMatchObject({ status: 'REVOKED' });
         expect(row!.feedId).toBeGreaterThan(renewedProjection.feedId);
       },
@@ -1693,7 +1694,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       groupAccount: mirrorGroup!.account,
       memberAccount: 'stale-roster-member',
       memberDomain: 'stale.test',
-      memberRev: 1,
       role: GroupRole.MEMBER,
       seenAtFeedId: 0n,
       updatedAt: new Date(),

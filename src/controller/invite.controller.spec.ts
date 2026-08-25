@@ -31,7 +31,7 @@ function makeController(isForeigner: boolean) {
     {} as never,
     federationService as never,
     {} as never,
-    { notifyFeedUpdated: vi.fn() } as never,
+    { notifyFeedUpdates: vi.fn() } as never,
   );
   const request = { user: { userId: 7 } } as never;
   return { controller, inviteService, federationService, request, tx };

@@ -23,13 +23,16 @@ import { isAndroidNative, isTauri, tauriInvoke } from './runtime';
 import {
   applyFriendIntentToProjection,
   applyGroupIntentToProjection,
-  friendProjectionIsActive,
-  friendPairKey,
+  friendRequestKey,
   groupRequestKey,
-  markProjectionAccepted,
+  projectionDirectionForFact,
   projectionIsExpired,
   projectionRequestExpiresAt,
+  relationshipFactsAreActive,
+  relationshipIntentKey,
+  reverseRelationshipIntentKey,
   type FriendRequestProjection,
+  type RelationshipIntentFact,
 } from './friend-request-state';
 
 /**
@@ -93,6 +96,15 @@ export interface ClientGroupMetaApply {
   threadId: number;
   page: ClientGroupMetaFeedPage;
 }
+
+type ClientRelationshipIntentBody = Extract<
+  ClientStateFeedItem,
+  { eventType: 'RELATIONSHIP_INTENT' }
+>['body'];
+type ClientRelationshipIntentItem = Extract<
+  ClientStateFeedItem,
+  { eventType: 'RELATIONSHIP_INTENT' }
+>;
 
 /** A value persisted in the stable `settings` store (keyPath `'key'`), including integer feed cursors.
  *  `value` is opaque to the store (structured-cloneable); the caller owns its shape + narrowing.
@@ -195,6 +207,7 @@ export interface WebdbSchema extends DBSchema {
     value: FriendRequestProjection;
     indexes: { bucketStatus: [string, string, number, string] };
   };
+  relationshipIntents: { key: string; value: RelationshipIntentFact };
   settings: { key: string; value: MetaRecord };
 }
 
@@ -214,7 +227,7 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-export const CACHE_SCHEMA_VERSION = 5;
+export const CACHE_SCHEMA_VERSION = 6;
 export const MESSAGE_CACHE_SCHEMA_VERSION = 1;
 const IDB_FORMAT_VERSION = 1;
 
@@ -497,6 +510,7 @@ export class WebdbService implements OnDestroy {
       'threadParticipants',
       'threads',
       'friendRequests',
+      'relationshipIntents',
       'settings',
     ] as const;
     if (required.some((store) => !db.objectStoreNames.contains(store)))
@@ -537,6 +551,7 @@ export class WebdbService implements OnDestroy {
           'requestedSort',
           'key',
         ]);
+        db.createObjectStore('relationshipIntents', { keyPath: 'key' });
         db.createObjectStore('settings', { keyPath: 'key' });
         transaction.objectStore('settings').put({
           key: 'schemaVersion',
@@ -1028,22 +1043,6 @@ export class WebdbService implements OnDestroy {
     });
   }
 
-  async markFriendRequestAccepted(key: string): Promise<void> {
-    return this.runAccountOperation(async () => {
-      if (isTauri() && this.currentUserId != null) {
-        await tauriInvoke('native_db_mark_friend_request_accepted', {
-          userId: Number(this.currentUserId),
-          key,
-        });
-        return;
-      }
-      const db = await this.db();
-      const current = await db.get('friendRequests', key);
-      if (current)
-        await db.put('friendRequests', markProjectionAccepted(current));
-    });
-  }
-
   async cleanupFriendRequests(now = Date.now()): Promise<void> {
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId != null) {
@@ -1172,12 +1171,14 @@ export class WebdbService implements OnDestroy {
         'profiles',
         'threadParticipants',
         'friendRequests',
+        'relationshipIntents',
         'settings',
       ],
       'readwrite',
     );
     if (resetProjection) {
       await tx.objectStore('friendRequests').clear();
+      await tx.objectStore('relationshipIntents').clear();
       await tx.objectStore('threadParticipants').clear();
       const profiles = tx.objectStore('profiles');
       for (const profile of await profiles.getAll()) {
@@ -1201,60 +1202,181 @@ export class WebdbService implements OnDestroy {
         });
       }
     }
-    // Relationship intents are ordered before the group-meta head in the state page. Fold them first
-    // so an activated group conversation exists before its roster is applied in this transaction.
-    for (const op of items) {
-      if (
-        op.eventType !== 'RELATIONSHIP_INTENT' ||
-        (!op.account.startsWith('!') && !op.subjectAccount.startsWith('!'))
-      )
-        continue;
+    const applyRequestProjectionEffect = async (
+      op: ClientRelationshipIntentItem,
+    ) => {
+      const store = tx.objectStore('friendRequests');
+      if (op.account.startsWith('!') || op.subjectAccount.startsWith('!')) {
+        const body = op.body as Omit<
+          ClientGroupInviteIntent,
+          | 'key'
+          | 'account'
+          | 'domain'
+          | 'subjectAccount'
+          | 'subjectDomain'
+          | 'kind'
+        >;
+        const groupAuthored = op.account.startsWith('!');
+        const groupAccount = groupAuthored ? op.account : op.subjectAccount;
+        const groupDomain = groupAuthored ? op.domain : op.subjectDomain;
+        const direction =
+          body.direction ?? (groupAuthored ? 'INCOMING' : 'OUTGOING');
+        const targetDirection = projectionDirectionForFact({
+          status: body.status,
+          direction,
+        });
+        if (targetDirection === null) return;
+        const key = groupRequestKey(groupDomain, groupAccount, targetDirection);
+        const transition = applyGroupIntentToProjection(
+          await store.get(key),
+          { account: groupAccount, domain: groupDomain, ...body, direction },
+          Date.now(),
+        );
+        if (transition.record) await store.put(transition.record);
+        const identity = `pending-group:${groupDomain}\u0000${groupAccount}`;
+        if (
+          transition.record?.status === 'REQUESTED' &&
+          projectionRequestExpiresAt(transition.record) !== null
+        )
+          await tx.objectStore('profiles').put({
+            identity,
+            id: 0,
+            kind: 'group',
+            name: body.group.name,
+            account: body.group.account,
+            avatar: body.group.avatar,
+            bio: body.group.description,
+            domain: body.group.domain,
+            profileRev: body.group.profileRev,
+            source: 'GROUP_INVITE',
+            expiresAt: projectionRequestExpiresAt(transition.record)!,
+          });
+        if (transition.becameActionable)
+          await tx.objectStore('settings').put({
+            key: 'friendRequestStateRevision',
+            value: op.feedId,
+          });
+        return;
+      }
       const body = op.body as Omit<
-        ClientGroupInviteIntent,
+        ClientFriendIntent,
         | 'key'
         | 'account'
         | 'domain'
         | 'subjectAccount'
         | 'subjectDomain'
-        | 'kind'
+        | 'requestedSort'
       >;
-      const groupAuthored = op.account.startsWith('!');
-      const groupAccount = groupAuthored ? op.account : op.subjectAccount;
-      const groupDomain = groupAuthored ? op.domain : op.subjectDomain;
-      const key = groupRequestKey(groupDomain, groupAccount);
-      const transition = applyGroupIntentToProjection(
-        await tx.objectStore('friendRequests').get(key),
+      const targetDirection = projectionDirectionForFact(body);
+      if (targetDirection === null) return;
+      const projectionKey = friendRequestKey(
+        { ...op, direction: body.direction },
+        targetDirection,
+      );
+      const transition = applyFriendIntentToProjection(
+        await store.get(projectionKey),
         {
-          account: groupAccount,
-          domain: groupDomain,
+          account: op.account,
+          domain: op.domain,
+          subjectAccount: op.subjectAccount,
+          subjectDomain: op.subjectDomain,
           ...body,
-          direction:
-            body.direction ?? (groupAuthored ? 'INCOMING' : 'OUTGOING'),
         },
         Date.now(),
       );
-      if (transition.record)
-        await tx.objectStore('friendRequests').put(transition.record);
+      if (transition.record) await store.put(transition.record);
       if (
-        transition.record &&
-        friendProjectionIsActive(transition.record, Date.now())
+        body.status === 'REQUESTED' &&
+        transition.record !== null &&
+        projectionRequestExpiresAt(transition.record) !== null &&
+        body.direction === 'OUTGOING'
       ) {
+        const peer = body.peer;
+        await tx.objectStore('profiles').put({
+          identity: `pending:${peer.domain}\u0000${peer.account}`,
+          id: 0,
+          kind: 'user',
+          name: peer.name || peer.account,
+          account: peer.account,
+          avatar: peer.avatar,
+          bio: peer.bio ?? '',
+          domain: peer.domain,
+          profileRev: 0,
+          source: 'OUTGOING_FRIEND_REQUEST',
+          expiresAt: projectionRequestExpiresAt(transition.record)!,
+        });
+      }
+      if (transition.becameActionable)
+        await tx.objectStore('settings').put({
+          key: 'friendRequestStateRevision',
+          value: op.feedId,
+        });
+    };
+    // Apply each authoritative fact and its pair fold before running that item's disposable request
+    // projection effect. Group relationships are folded before group-meta from the same page.
+    for (const op of items) {
+      if (op.eventType !== 'RELATIONSHIP_INTENT') continue;
+      const body = op.body as ClientRelationshipIntentBody;
+      const now = Date.now();
+      const key = relationshipIntentKey(op);
+      const reverseKey = reverseRelationshipIntentKey(op);
+      const facts = tx.objectStore('relationshipIntents');
+      const fact: RelationshipIntentFact = {
+        key,
+        reverseKey,
+        status: body.status,
+        expiresAt: body.expiresAt,
+        localThreadId:
+          'localThreadId' in body ? body.localThreadId : body.threadId,
+        updatedAt: now,
+      };
+      await facts.put(fact);
+      const reverseFact = await facts.get(reverseKey);
+      const active = relationshipFactsAreActive(fact, reverseFact, now);
+      const threadId = fact.localThreadId;
+      if (threadId !== null) {
         const threads = tx.objectStore('threads');
-        const existing = await threads.get(body.threadId);
-        if (!existing) {
-          await threads.put(
-            createGroupConversation(
-              body.threadId,
-              {
-                id: body.threadId,
-                ownerId: 0,
-                ...body.group,
-              },
-              { role: null },
-            ),
-          );
+        const existing = await threads.get(threadId);
+        if (op.account.startsWith('!') || op.subjectAccount.startsWith('!')) {
+          const groupBody = body as Omit<
+            ClientGroupInviteIntent,
+            | 'key'
+            | 'account'
+            | 'domain'
+            | 'subjectAccount'
+            | 'subjectDomain'
+            | 'kind'
+          >;
+          if (active && !existing)
+            await threads.put(
+              createGroupConversation(
+                threadId,
+                { id: threadId, ownerId: 0, ...groupBody.group },
+                { role: null },
+              ),
+            );
+        } else {
+          const friendBody = body as Omit<
+            ClientFriendIntent,
+            | 'key'
+            | 'account'
+            | 'domain'
+            | 'subjectAccount'
+            | 'subjectDomain'
+            | 'requestedSort'
+          >;
+          if (existing?.type === 'P2P')
+            await threads.put({
+              ...existing,
+              friendshipActive: active,
+              conversationState: active ? 'ACTIVE' : 'READ_ONLY',
+              peerUser: { ...existing.peerUser, ...friendBody.peer },
+            });
+          else if (active)
+            await threads.put(createP2PConversation(threadId, friendBody.peer));
         }
       }
+      await applyRequestProjectionEffect(op);
     }
     for (const update of groupMeta) {
       const participants = tx.objectStore('threadParticipants');
@@ -1330,138 +1452,7 @@ export class WebdbService implements OnDestroy {
       }
     }
     for (const op of items) {
-      if (op.eventType === 'RELATIONSHIP_INTENT') {
-        const store = tx.objectStore('friendRequests');
-        if (op.account.startsWith('!') || op.subjectAccount.startsWith('!')) {
-          const body = op.body as Omit<
-            ClientGroupInviteIntent,
-            | 'key'
-            | 'account'
-            | 'domain'
-            | 'subjectAccount'
-            | 'subjectDomain'
-            | 'kind'
-          >;
-          const groupAuthored = op.account.startsWith('!');
-          const groupAccount = groupAuthored ? op.account : op.subjectAccount;
-          const groupDomain = groupAuthored ? op.domain : op.subjectDomain;
-          const key = groupRequestKey(groupDomain, groupAccount);
-          const transition = applyGroupIntentToProjection(
-            await store.get(key),
-            {
-              account: groupAccount,
-              domain: groupDomain,
-              ...body,
-              direction:
-                body.direction ?? (groupAuthored ? 'INCOMING' : 'OUTGOING'),
-            },
-            Date.now(),
-          );
-          if (transition.record) await store.put(transition.record);
-          else await store.delete(key);
-          const identity = `pending-group:${groupDomain}\u0000${groupAccount}`;
-          if (
-            transition.record?.status === 'REQUESTED' &&
-            projectionRequestExpiresAt(transition.record) !== null
-          )
-            await tx.objectStore('profiles').put({
-              identity,
-              id: 0,
-              kind: 'group',
-              name: body.group.name,
-              account: body.group.account,
-              avatar: body.group.avatar,
-              bio: body.group.description,
-              domain: body.group.domain,
-              profileRev: body.group.profileRev,
-              source: 'GROUP_INVITE',
-              expiresAt: projectionRequestExpiresAt(transition.record)!,
-            });
-          else await tx.objectStore('profiles').delete(identity);
-          if (transition.becameActionable)
-            await tx.objectStore('settings').put({
-              key: 'friendRequestStateRevision',
-              value: op.feedId,
-            });
-          continue;
-        }
-        const body = op.body as Omit<
-          ClientFriendIntent,
-          | 'key'
-          | 'account'
-          | 'domain'
-          | 'subjectAccount'
-          | 'subjectDomain'
-          | 'requestedSort'
-        >;
-        const projectionKey = friendPairKey(op);
-        const transition = applyFriendIntentToProjection(
-          await store.get(projectionKey),
-          {
-            account: op.account,
-            domain: op.domain,
-            subjectAccount: op.subjectAccount,
-            subjectDomain: op.subjectDomain,
-            ...body,
-          },
-          Date.now(),
-        );
-        if (transition.record) {
-          await store.put(transition.record);
-          const threadId = transition.record.localThreadId;
-          const peer = transition.record.peer;
-          if (threadId !== null && peer) {
-            const threads = tx.objectStore('threads');
-            const existing = await threads.get(threadId);
-            const active = friendProjectionIsActive(
-              transition.record,
-              Date.now(),
-            );
-            if (existing?.type === 'P2P') {
-              await threads.put({
-                ...existing,
-                friendshipActive: active,
-                conversationState: active ? 'ACTIVE' : 'READ_ONLY',
-                peerUser: { ...existing.peerUser, ...peer },
-              });
-            } else if (active) {
-              await threads.put(createP2PConversation(threadId, peer));
-            }
-          }
-        } else {
-          await store.delete(projectionKey);
-          await tx
-            .objectStore('profiles')
-            .delete(`pending:${body.peer.domain}\u0000${body.peer.account}`);
-        }
-        if (
-          body.status === 'REQUESTED' &&
-          transition.record !== null &&
-          projectionRequestExpiresAt(transition.record) !== null &&
-          body.direction === 'OUTGOING'
-        ) {
-          const peer = body.peer;
-          await tx.objectStore('profiles').put({
-            identity: `pending:${peer.domain}\u0000${peer.account}`,
-            id: 0,
-            kind: 'user',
-            name: peer.name || peer.account,
-            account: peer.account,
-            avatar: peer.avatar,
-            bio: peer.bio ?? '',
-            domain: peer.domain,
-            profileRev: 0,
-            source: 'OUTGOING_FRIEND_REQUEST',
-            expiresAt: projectionRequestExpiresAt(transition.record)!,
-          });
-        }
-        if (transition.becameActionable)
-          await tx.objectStore('settings').put({
-            key: 'friendRequestStateRevision',
-            value: op.feedId,
-          });
-        continue;
-      }
+      if (op.eventType === 'RELATIONSHIP_INTENT') continue;
       if (op.eventType === 'PROFILE') {
         const profiles = tx.objectStore('profiles');
         const body = op.body;

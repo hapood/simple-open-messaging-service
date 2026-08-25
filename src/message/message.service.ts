@@ -984,11 +984,7 @@ export class MessageService {
               eq(threadParticipant.threadId, stage.threadId),
             ),
           );
-        await ClientMessageFeedWriter.publishMessage(
-          tx,
-          stage.threadId,
-          seq,
-        );
+        await ClientMessageFeedWriter.publishMessage(tx, stage.threadId, seq);
         // Insert EVERY referenced digest (1 for single-file, N for GALLERY) — the old promoteStaged
         // path only inserted the first, which silently dropped authz rows for multi-digest content.
         const digests = extractDigests(content);

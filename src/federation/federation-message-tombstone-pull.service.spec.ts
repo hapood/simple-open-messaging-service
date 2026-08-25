@@ -5,11 +5,13 @@ import { FederationMessageTombstonePullService } from './federation-message-tomb
 function harness(committedThrough = 2n) {
   const state = { initialized: true, committedThrough };
   let update: Partial<typeof state> = {};
-  const limit = vi.fn(async () => [{
-    peerDomain: 'peer.test',
-    ...state,
-    updatedAt: new Date(),
-  }]);
+  const limit = vi.fn(async () => [
+    {
+      peerDomain: 'peer.test',
+      ...state,
+      updatedAt: new Date(),
+    },
+  ]);
   const tx = {
     execute: vi.fn().mockResolvedValue({ rows: [{ locked: true }] }),
     select: vi.fn(() => ({
@@ -48,7 +50,8 @@ describe('FederationMessageTombstonePullService cursor recovery', () => {
   it('warns, skips unavailable history, and resumes from the peer cursor', async () => {
     const { service, state } = harness();
     const warn = vi.fn();
-    (service as unknown as { logger: { warn: typeof warn } }).logger.warn = warn;
+    (service as unknown as { logger: { warn: typeof warn } }).logger.warn =
+      warn;
     const fetch = vi
       .fn()
       .mockRejectedValueOnce(new RemoteFeedCursorUnavailableError(5n, 9n))

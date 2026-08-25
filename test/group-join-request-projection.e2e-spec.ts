@@ -10,7 +10,7 @@ import { BusinessCode } from '../src/common/business-code.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
   clientStateFeed,
-  groupJoinRequestProjection,
+  groupRequestProjection,
   messageThread,
   relationshipIntent,
   relationshipPair,
@@ -115,20 +115,18 @@ describe('group join request projection', () => {
 
     const requestedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
     await database.db
-      .update(groupJoinRequestProjection)
+      .update(groupRequestProjection)
       .set({
         requestedAt,
         expiresAt: new Date(requestedAt.getTime() + 7 * 24 * 60 * 60 * 1000),
       })
-      .where(eq(groupJoinRequestProjection.threadId, threadId));
+      .where(eq(groupRequestProjection.threadId, threadId));
     expect(
       await app.get(GroupService).garbageCollectJoinRequestProjections(),
     ).toBe(1);
-    const afterGc = await database.db.query.groupJoinRequestProjection.findMany(
-      {
-        where: eq(groupJoinRequestProjection.threadId, threadId),
-      },
-    );
+    const afterGc = await database.db.query.groupRequestProjection.findMany({
+      where: eq(groupRequestProjection.threadId, threadId),
+    });
     expect(afterGc).toEqual([]);
     expect(
       await database.db.query.clientStateFeed.findFirst({
@@ -141,10 +139,11 @@ describe('group join request projection', () => {
     ).toBeUndefined();
 
     const now = new Date();
-    await database.db.insert(groupJoinRequestProjection).values({
+    await database.db.insert(groupRequestProjection).values({
       managerUserId: owner.id,
       threadId,
-      applicantUserId: applicant.id,
+      memberUserId: applicant.id,
+      direction: 'APPLICATION',
       feedId: history.body.data.data[0].feedId + 1,
       requestId: BigInt(history.body.data.data[0].id),
       status: 'REVOKED',
@@ -178,8 +177,8 @@ describe('group join request projection', () => {
       await app.get(GroupService).garbageCollectJoinRequestProjections(),
     ).toBe(1);
     expect(
-      await database.db.query.groupJoinRequestProjection.findMany({
-        where: eq(groupJoinRequestProjection.threadId, threadId),
+      await database.db.query.groupRequestProjection.findMany({
+        where: eq(groupRequestProjection.threadId, threadId),
       }),
     ).toEqual([]);
     expect(
@@ -191,6 +190,57 @@ describe('group join request projection', () => {
         ),
       }),
     ).toBeUndefined();
+  });
+
+  it('projects group invitations through the symmetric manager API', async () => {
+    const owner = await seedUserWithSession(app, 'invitation-projection-owner');
+    const member = await seedUserWithSession(
+      app,
+      'invitation-projection-member',
+    );
+    const friendRequest = await request(app.getHttpServer())
+      .post('/api/v1/invite/friend')
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ toUserId: member.id });
+    expect(friendRequest.body.code).toBe(BusinessCode.OK);
+    const accepted = await request(app.getHttpServer())
+      .post('/api/v1/invite/accept')
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ inviteId: friendRequest.body.data.inviteId });
+    expect(accepted.body.code).toBe(BusinessCode.OK);
+
+    const created = await request(app.getHttpServer())
+      .post('/api/v1/group/create')
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ name: 'Invitation projection' });
+    const threadId = created.body.data.threadId as number;
+    const invited = await request(app.getHttpServer())
+      .post('/api/v1/group/invite')
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ groupId: threadId, userIds: [member.id] });
+    expect(invited.body.code).toBe(BusinessCode.OK);
+    expect(invited.body.data.invited).toEqual([member.id]);
+
+    const pending = await request(app.getHttpServer())
+      .post('/api/v1/group/invitations')
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ groupId: threadId });
+    expect(pending.body.data.data).toHaveLength(1);
+    expect(pending.body.data.data[0]).toMatchObject({
+      userId: member.id,
+      status: 'REQUESTED',
+    });
+
+    const revoked = await request(app.getHttpServer())
+      .post('/api/v1/group/invitation/revoke')
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ groupId: threadId, requestId: pending.body.data.data[0].id });
+    expect(revoked.body.code).toBe(BusinessCode.OK);
+    const history = await request(app.getHttpServer())
+      .post('/api/v1/group/invitations')
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ groupId: threadId });
+    expect(history.body.data.data[0].status).toBe('REVOKED');
   });
 
   it('backfills a promoted administrator and removes its projection/profile on demotion', async () => {
@@ -255,10 +305,10 @@ describe('group join request projection', () => {
       BusinessCode.OK,
     );
     expect(
-      await database.db.query.groupJoinRequestProjection.findMany({
+      await database.db.query.groupRequestProjection.findMany({
         where: and(
-          eq(groupJoinRequestProjection.managerUserId, admin.id),
-          eq(groupJoinRequestProjection.threadId, threadId),
+          eq(groupRequestProjection.managerUserId, admin.id),
+          eq(groupRequestProjection.threadId, threadId),
         ),
       }),
     ).toHaveLength(1);
@@ -280,8 +330,8 @@ describe('group join request projection', () => {
       BusinessCode.OK,
     );
     expect(
-      await database.db.query.groupJoinRequestProjection.findMany({
-        where: eq(groupJoinRequestProjection.managerUserId, admin.id),
+      await database.db.query.groupRequestProjection.findMany({
+        where: eq(groupRequestProjection.managerUserId, admin.id),
       }),
     ).toEqual([]);
     expect(

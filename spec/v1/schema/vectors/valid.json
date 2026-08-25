@@ -193,7 +193,6 @@
             "feedId": "7",
             "account": "alice",
             "domain": "a.example",
-            "rev": 2,
             "operation": "UPSERT",
             "body": {
               "role": "OWNER",

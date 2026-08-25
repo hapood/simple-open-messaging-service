@@ -32,14 +32,13 @@
     },
     "itemBase": {
       "type": "object",
-      "required": ["feedId", "account", "domain", "rev", "operation", "body"],
+      "required": ["feedId", "account", "domain", "operation", "body"],
       "properties": {
         "feedId": {
           "$ref": "urn:somfp:v1:common#/$defs/positiveDecimalString"
         },
         "account": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
         "domain": { "$ref": "urn:somfp:v1:common#/$defs/domain" },
-        "rev": { "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger" },
         "operation": { "type": "string" },
         "body": { "type": "object" }
       }

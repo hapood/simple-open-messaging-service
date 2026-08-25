@@ -1,7 +1,7 @@
 use super::{
-    apply_friend_request_intent, apply_group_relationship_intent, cleanup_friend_requests,
-    merge_covered_tail, merge_message_section, update_message_coverage, CoveredInterval,
-    MessageSection,
+    apply_friend_request_effect, apply_group_request_effect, apply_relationship_intent_fact,
+    cleanup_friend_requests, materialize_group_thread_from_fact, merge_covered_tail,
+    merge_message_section, update_message_coverage, CoveredInterval, MessageSection,
 };
 use rusqlite::{params, Connection};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -25,10 +25,9 @@ fn native_group_intents_materialize_the_conversation_before_group_meta() {
         "avatar": "", "description": "", "profileRev": 1
     });
     let tx = conn.transaction().unwrap();
-    apply_group_relationship_intent(
+    let active = apply_relationship_intent_fact(
         &tx,
         1,
-        10,
         "!dev",
         "",
         "alice",
@@ -39,10 +38,33 @@ fn native_group_intents_materialize_the_conversation_before_group_meta() {
         }),
     )
     .unwrap();
-    apply_group_relationship_intent(
+    apply_group_request_effect(
         &tx,
         1,
-        11,
+        10,
+        "!dev",
+        "",
+        "INCOMING",
+        &serde_json::json!({
+            "status": "ACCEPTED", "note": "", "requestedAt": 1,
+            "expiresAt": null, "threadId": 12, "group": group
+        }),
+    )
+    .unwrap();
+    materialize_group_thread_from_fact(
+        &tx,
+        1,
+        "!dev",
+        "",
+        &serde_json::json!({
+            "threadId": 12, "group": group
+        }),
+        active,
+    )
+    .unwrap();
+    let active = apply_relationship_intent_fact(
+        &tx,
+        1,
         "alice",
         "",
         "!dev",
@@ -51,6 +73,30 @@ fn native_group_intents_materialize_the_conversation_before_group_meta() {
             "status": "ACCEPTED", "note": "", "requestedAt": 1,
             "expiresAt": null, "threadId": 12, "group": group
         }),
+    )
+    .unwrap();
+    apply_group_request_effect(
+        &tx,
+        1,
+        11,
+        "!dev",
+        "",
+        "OUTGOING",
+        &serde_json::json!({
+            "status": "ACCEPTED", "note": "", "requestedAt": 1,
+            "expiresAt": null, "threadId": 12, "group": group
+        }),
+    )
+    .unwrap();
+    materialize_group_thread_from_fact(
+        &tx,
+        1,
+        "!dev",
+        "",
+        &serde_json::json!({
+            "threadId": 12, "group": group
+        }),
+        active,
     )
     .unwrap();
     tx.commit().unwrap();
@@ -79,6 +125,10 @@ fn request_connection() -> Connection {
            profile_rev INTEGER NOT NULL DEFAULT 0,
            PRIMARY KEY(user_id, identity)
          );
+         CREATE TABLE relationship_intents(
+           user_id INTEGER NOT NULL, stable_key TEXT NOT NULL, reverse_key TEXT NOT NULL,
+           payload_json TEXT NOT NULL, PRIMARY KEY(user_id, stable_key)
+         );
          CREATE TABLE sync_state(
            user_id INTEGER NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL,
            PRIMARY KEY(user_id, key)
@@ -106,14 +156,14 @@ fn friend_body(direction: &str, status: &str, expires_at: Option<i64>) -> serde_
 }
 
 #[test]
-fn native_projection_retains_rejected_received_request_without_rearming_badge() {
+fn native_projection_ignores_a_local_revoke_for_a_received_request() {
     let mut conn = request_connection();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as i64;
     let tx = conn.transaction().unwrap();
-    apply_friend_request_intent(
+    apply_friend_request_effect(
         &tx,
         1,
         10,
@@ -124,14 +174,14 @@ fn native_projection_retains_rejected_received_request_without_rearming_badge() 
         &friend_body("INCOMING", "REQUESTED", Some(now + 60_000)),
     )
     .unwrap();
-    apply_friend_request_intent(
+    apply_friend_request_effect(
         &tx,
         1,
         11,
-        "peer",
-        "peer.test",
         "me",
         "local.test",
+        "peer",
+        "peer.test",
         &friend_body("OUTGOING", "REVOKED", None),
     )
     .unwrap();
@@ -144,7 +194,7 @@ fn native_projection_retains_rejected_received_request_without_rearming_badge() 
         .unwrap();
     let projection: serde_json::Value = serde_json::from_str(&payload).unwrap();
     assert_eq!(projection["bucket"], "RECEIVED");
-    assert_eq!(projection["status"], "REVOKED");
+    assert_eq!(projection["status"], "REQUESTED");
     assert_eq!(projection["requestedSort"], now);
     let revision: String = conn
         .query_row(
@@ -164,8 +214,7 @@ fn native_cleanup_removes_expired_projection_and_temporary_profile() {
         [serde_json::json!({
             "direction": "OUTGOING",
             "status": "REQUESTED",
-            "local": { "status": "REQUESTED", "expiresAt": 10 },
-            "remote": null,
+            "expiresAt": 10,
             "updatedAt": 0
         })
         .to_string()],
@@ -176,8 +225,7 @@ fn native_cleanup_removes_expired_projection_and_temporary_profile() {
         [serde_json::json!({
             "direction": "INCOMING",
             "status": "REQUESTED",
-            "local": null,
-            "remote": { "status": "REQUESTED", "expiresAt": 10 },
+            "expiresAt": 10,
             "updatedAt": 0
         })
         .to_string()],

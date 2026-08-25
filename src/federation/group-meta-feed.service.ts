@@ -24,7 +24,6 @@ export interface GroupMetaFeedItem {
   feedId: string;
   account: string;
   domain: string;
-  rev: number;
   operation: 'UPSERT' | 'DELETE';
   body: unknown;
 }
@@ -89,7 +88,6 @@ export class GroupMetaFeedService {
       .select({
         account: groupMetaMemberFeed.memberAccount,
         domain: groupMetaMemberFeed.memberDomain,
-        memberRev: groupMetaMemberFeed.memberRev,
         operation: groupMetaMemberFeed.operation,
         body: groupMetaMemberFeed.body,
       })
@@ -116,7 +114,6 @@ export class GroupMetaFeedService {
     const changes: Array<{
       account: string;
       domain: string;
-      memberRev: number;
       operation: 'UPSERT' | 'DELETE';
       body: Record<string, unknown>;
     }> = [];
@@ -130,7 +127,6 @@ export class GroupMetaFeedService {
       changes.push({
         account: member.account,
         domain: member.domain,
-        memberRev: (previous?.memberRev ?? 0) + 1,
         operation: 'UPSERT',
         body: member.body,
       });
@@ -141,7 +137,6 @@ export class GroupMetaFeedService {
       changes.push({
         account: previous.account,
         domain: previous.domain,
-        memberRev: previous.memberRev + 1,
         operation: 'DELETE',
         body: {},
       });
@@ -159,7 +154,6 @@ export class GroupMetaFeedService {
           feedId: ++allocatedThrough,
           memberAccount: change.account,
           memberDomain: change.domain,
-          memberRev: change.memberRev,
           operation: change.operation,
           body: change.body,
           updatedAt: new Date(),
@@ -262,15 +256,13 @@ export class GroupMetaFeedService {
               feedId: bigint;
               memberAccount: string;
               memberDomain: string;
-              memberRev: number;
               operation: 'UPSERT' | 'DELETE';
               body: unknown;
             }>(sql`
               SELECT latest.*
               FROM (
                 SELECT DISTINCT ON ("memberDomain", "memberAccount")
-                  "feedId", "memberAccount", "memberDomain", "memberRev",
-                  "operation", "body"
+                  "feedId", "memberAccount", "memberDomain", "operation", "body"
                 FROM "GroupMetaMemberFeed"
                 WHERE "targetPeerDomain" = ${peerDomain}
                   AND "groupUserId" = ${source.groupUserId}
@@ -293,7 +285,6 @@ export class GroupMetaFeedService {
         feedId: row.feedId.toString(),
         account: row.memberAccount,
         domain: row.memberDomain,
-        rev: row.memberRev,
         operation: row.operation,
         body: row.body,
       })),
