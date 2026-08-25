@@ -121,7 +121,7 @@ describe('FederationMessageFeedService compacted feed', () => {
       service.rejectMissingQueryAfter(peerDomain, {
         type: 'P2P',
         account: 'alice',
-        localAccount: 'bob',
+        peerAccount: 'bob',
       }),
     ).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
@@ -145,7 +145,7 @@ describe('FederationMessageFeedService compacted feed', () => {
 
     const page = await service.query(
       peerDomain,
-      { type: 'P2P', account: 'alice', localAccount: 'bob' },
+      { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
       undefined,
       1,
@@ -180,7 +180,7 @@ describe('FederationMessageFeedService compacted feed', () => {
 
     const first = await service.query(
       peerDomain,
-      { type: 'P2P', account: 'alice', localAccount: 'bob' },
+      { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       undefined,
       1,
       undefined,
@@ -195,7 +195,7 @@ describe('FederationMessageFeedService compacted feed', () => {
 
     const second = await service.query(
       peerDomain,
-      { type: 'P2P', account: 'alice', localAccount: 'bob' },
+      { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       undefined,
       1,
       undefined,
@@ -246,7 +246,7 @@ describe('FederationMessageFeedService compacted feed', () => {
 
     const page = await service.query(
       peerDomain,
-      { type: 'P2P', account: 'alice', localAccount: 'bob' },
+      { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
       undefined,
       1,
@@ -272,7 +272,7 @@ describe('FederationMessageFeedService compacted feed', () => {
     await expect(
       service.query(
         peerDomain,
-        { type: 'P2P', account: 'alice', localAccount: 'bob' },
+        { type: 'P2P', account: 'alice', peerAccount: 'bob' },
         0,
       ),
     ).rejects.toMatchObject({
@@ -291,7 +291,7 @@ describe('FederationMessageFeedService compacted feed', () => {
     await expect(
       service.query(
         peerDomain,
-        { type: 'P2P', account: 'alice', localAccount: 'bob' },
+        { type: 'P2P', account: 'alice', peerAccount: 'bob' },
         0,
       ),
     ).rejects.toMatchObject({
@@ -302,7 +302,7 @@ describe('FederationMessageFeedService compacted feed', () => {
     await append(thread.id, alice.id, 2);
     const page = await service.query(
       peerDomain,
-      { type: 'P2P', account: 'alice', localAccount: 'bob' },
+      { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       1,
     );
     expect(page).toMatchObject({

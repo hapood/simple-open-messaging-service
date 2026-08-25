@@ -118,10 +118,10 @@
           "$ref": "#/$defs/itemBase",
           "properties": {
             "eventType": { "const": "RELATIONSHIP_INTENT" },
-            "localAccount": { "$ref": "urn:somfp:v1:common#/$defs/account" },
+            "peerAccount": { "$ref": "urn:somfp:v1:common#/$defs/account" },
             "body": { "$ref": "#/$defs/relationshipIntentBody" }
           },
-          "required": ["localAccount"],
+          "required": ["peerAccount"],
           "unevaluatedProperties": false
         },
         {

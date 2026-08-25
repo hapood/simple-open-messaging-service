@@ -58,12 +58,10 @@
         }
       </div>
       <div class="contact-card-meta msg-card-meta msg-{{ side() }}">
-        <span>
-          @if (card()?.domain === 'local') {
-            {{ 'contactCard.local' | transloco }}
-          } @else {
-            {{ card()?.domain }}
-          }</span
+        <span>{{
+          (isGroupCard() ? 'contactCard.groupLabel' : 'contactCard.label')
+            | transloco
+        }}</span
         ><span>{{ data().time }}</span>
       </div>
     </button>

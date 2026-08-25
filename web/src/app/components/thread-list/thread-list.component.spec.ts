@@ -12,7 +12,11 @@ import { UserService } from '../../services/user.service';
 import { RouteService, PopupType } from '../../services/route.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { ConversationLoadStatus } from '../../services/thread-store.service';
-import { ConversationItem } from '../../services/model';
+import {
+  ConversationItem,
+  createP2PConversation,
+  P2PConversationItem,
+} from '../../services/model';
 import { InlineTranslocoLoader } from '../../i18n/transloco.loader';
 import { provideHttpClient, withXhr } from '@angular/common/http';
 
@@ -90,31 +94,12 @@ describe('ThreadListComponent', () => {
     threadId: number,
     peerId: number,
     name = `User ${peerId}`,
-  ): ConversationItem {
-    return {
-      threadId,
-      id: threadId,
-      type: 'P2P',
-      conversationState: 'ACTIVE',
-      lastReadSeq: null,
-      role: null,
-      unreadCount: 0,
-      mentionUnread: [],
-      muted: false,
-      pinned: false,
-      pinnedAt: null,
-      clearedSeq: null,
-      lastMessageAt: null,
-      lastMessageSeq: null,
-      lastMessagePreview: null,
-      lastMessageSenderId: null,
-      peerUser: {
-        id: peerId,
-        account: `u${peerId}`,
-        name,
-      } as ConversationItem['peerUser'],
-      group: undefined as unknown as ConversationItem['group'],
-    } as ConversationItem;
+  ): P2PConversationItem {
+    return createP2PConversation(threadId, {
+      id: peerId,
+      account: `u${peerId}`,
+      name,
+    });
   }
 
   it('ngOnInit triggers load() on first mount (LOADING + empty list) — the initial-boot trigger', () => {
@@ -177,6 +162,7 @@ describe('ThreadListComponent', () => {
     ['[File set] · 4', '[文件集] · 4'],
     ['[System message]', '[系统消息]'],
     ['[Missed call]', '未接来电'],
+    ['[Contact] Alice', '[名片] Alice'],
   ])('localizes the shared preview marker %s', (preview, expected) => {
     TestBed.inject(TranslocoService).setActiveLang('zh-CN');
     expect(

@@ -30,9 +30,6 @@ import { NgTemplateOutlet } from '@angular/common';
           [ngTemplateOutletContext]="{ $implicit: item }"
         />
       </div>
-      @if (loading()) {
-        <div class="tail" role="status">{{ loadingLabel() }}</div>
-      }
     </cdk-virtual-scroll-viewport>
   `,
   styles: `
@@ -46,14 +43,6 @@ import { NgTemplateOutlet } from '@angular/common';
     .item {
       box-sizing: border-box;
     }
-    .tail {
-      height: 40px;
-      display: grid;
-      place-items: center;
-      color: var(--app-text-muted);
-      font-size: 13px;
-      line-height: 18px;
-    }
   `,
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
@@ -61,18 +50,14 @@ export class VirtualInfiniteListComponent<T extends { id: string | number }> {
   readonly items = input.required<readonly T[]>();
   readonly itemTemplate = input.required<TemplateRef<{ $implicit: T }>>();
   readonly itemSize = input.required<number>();
-  readonly loading = input(false);
   readonly hasMore = input(false);
-  readonly loadingLabel = input('');
   readonly loadMore = output<void>();
 
   readonly trackByKey = (_index: number, item: T) => item.id;
 
   onIndex(index: number): void {
     if (
-      this.hasMore() &&
-      !this.loading() &&
-      index + 8 >= this.items().length
+      this.hasMore() && index + 8 >= this.items().length
     )
       this.loadMore.emit();
   }

@@ -431,6 +431,10 @@ class RealtimeService : Service() {
      *  against [replayCachedHello] so a concurrent replay never sees a mid-mutation toString. */
     private fun cacheHelloFrame(type: String?, data: String) {
         val t = type ?: return
+        if (t == "HELLO") {
+            val userId = try { JSONObject(data).optInt("userId", 0) } catch (_: Exception) { 0 }
+            if (userId > 0) SomsSecureStore.setCurrentUserId(this, userId)
+        }
         synchronized(helloLock) { cachedHello = HelloMerger.merge(cachedHello, t, data) }
     }
 
@@ -447,19 +451,27 @@ class RealtimeService : Service() {
             val sid = active.optString("callSid", "")
             val state = active.optString("state", "")
             val peerId = active.optInt("peerUserId", 0)
+            val peerAccount = active.optString("peerAccount", "")
+            val peerDomain = active.optString("peerDomain", "")
             val isCaller = active.optBoolean("isCaller", false)
             val callType = active.optString("callType", "AUDIO")
-            if (sid.isEmpty() || peerId == 0) return
+            if (sid.isEmpty() || peerId == 0 || peerAccount.isEmpty()) return
             if (state == "ringing" && !isCaller && CallController.phase == "idle") {
                 SomsLog.i("Rt") { "HELLO activeCall: re-seeding incoming (missed CALL_EVENT) sid=$sid peer=$peerId" }
-                // name/avatar/threadId are absent from the summary → name-only notification; seedIncoming is
-                // idempotent + rings (the user missed the original ring).
-                CallController.seedIncoming(sid, peerId, "", "", 0, callType)
+                // Presentation is resolved from native SQLite by the canonical peer address; the summary
+                // carries identity only. seedIncoming is idempotent + rings.
+                val peer = ClientStateDb.getCallPeer(this, peerAccount, peerDomain)
+                CallController.seedIncoming(
+                    sid, peerId, peerAccount, peerDomain, peer?.name ?: "",
+                    peer?.avatarDataUrl() ?: "", 0, callType,
+                )
                 // The recovery missed the original incoming (SSE was down) → if backgrounded, ALSO post the
                 // call notification (seedIncoming rings but doesn't notify). startIncoming's seedIncoming is a
                 // no-op now (already seeded); its startIncomingForeground posts the notification.
                 if (!SomsMessagingService.appInForeground) {
-                    CallService.startIncoming(this, sid, peerId, "", "", 0, callType)
+                    CallService.startIncoming(
+                        this, sid, peerId, peerAccount, peerDomain, 0, callType,
+                    )
                 }
             }
         } catch (e: Exception) {

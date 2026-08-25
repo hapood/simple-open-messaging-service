@@ -58,8 +58,11 @@ describe('FriendRequestsComponent federated search progress', () => {
           bucket: 'RECEIVED' as const,
           direction: 'INCOMING' as const,
           status: 'REQUESTED' as const,
-          localStatus: null,
-          remoteStatus: 'REQUESTED' as const,
+          local: null,
+          remote: {
+            status: 'REQUESTED' as const,
+            expiresAt: Date.now() + 60_000,
+          },
           locallyAccepted: false,
           localThreadId: null,
           inviteId: id,
@@ -67,7 +70,6 @@ describe('FriendRequestsComponent federated search progress', () => {
           requestedAt: 1,
           requestedSort: 1,
           updatedAt: 1,
-          expiresAt: Date.now() + 60_000,
           peer: {
             id: Number(id),
             account: name,
@@ -549,15 +551,17 @@ describe('FriendRequestsComponent federated search progress', () => {
           direction: 'INCOMING',
           note: '',
           status: 'REQUESTED',
-          localStatus: null,
-          remoteStatus: 'REQUESTED',
+          local: null,
+          remote: {
+            status: 'REQUESTED',
+            expiresAt: Date.now() + 60_000,
+          },
           locallyAccepted: false,
           localThreadId: null,
           inviteId: request.id,
           requestedAt: 2,
           requestedSort: 2,
           updatedAt: 2,
-          expiresAt: Date.now() + 60_000,
           peer: {
             id: 41,
             account: 'alice',
@@ -583,6 +587,9 @@ describe('FriendRequestsComponent federated search progress', () => {
     acceptResult.complete();
     await Promise.resolve();
 
+    expect(component.pendingReqList()[0]).toEqual(
+      expect.objectContaining({ id: request.id, status: 1 }),
+    );
     expect(acceptResult.observed).toBe(false);
     expect(component.isInviteActionPending(request.id)).toBe(false);
     expect(userService.markFriendRequestAccepted).toHaveBeenCalledWith(

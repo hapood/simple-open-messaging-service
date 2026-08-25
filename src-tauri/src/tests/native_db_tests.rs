@@ -1,12 +1,70 @@
 use super::{
-    apply_friend_request_intent, cleanup_friend_requests, merge_covered_tail,
-    merge_message_section, update_message_coverage, CoveredInterval, MessageSection,
+    apply_friend_request_intent, apply_group_relationship_intent, cleanup_friend_requests,
+    merge_covered_tail, merge_message_section, update_message_coverage, CoveredInterval,
+    MessageSection,
 };
 use rusqlite::{params, Connection};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn interval(left: i64, right: i64) -> Option<CoveredInterval> {
     Some(CoveredInterval { left, right })
+}
+
+#[test]
+fn native_group_intents_materialize_the_conversation_before_group_meta() {
+    let mut conn = request_connection();
+    conn.execute_batch(
+        "CREATE TABLE threads(
+           user_id INTEGER NOT NULL, thread_id INTEGER NOT NULL, payload_json TEXT NOT NULL,
+           PRIMARY KEY(user_id, thread_id)
+         );",
+    )
+    .unwrap();
+    let group = serde_json::json!({
+        "account": "!dev", "domain": "", "isLocal": true, "name": "dev",
+        "avatar": "", "description": "", "profileRev": 1
+    });
+    let tx = conn.transaction().unwrap();
+    apply_group_relationship_intent(
+        &tx,
+        1,
+        10,
+        "!dev",
+        "",
+        "alice",
+        "",
+        &serde_json::json!({
+            "status": "ACCEPTED", "note": "", "requestedAt": 1,
+            "expiresAt": null, "threadId": 12, "group": group
+        }),
+    )
+    .unwrap();
+    apply_group_relationship_intent(
+        &tx,
+        1,
+        11,
+        "alice",
+        "",
+        "!dev",
+        "",
+        &serde_json::json!({
+            "status": "ACCEPTED", "note": "", "requestedAt": 1,
+            "expiresAt": null, "threadId": 12, "group": group
+        }),
+    )
+    .unwrap();
+    tx.commit().unwrap();
+
+    let payload: String = conn
+        .query_row(
+            "SELECT payload_json FROM threads WHERE user_id=1 AND thread_id=12",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let thread: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(thread["type"], "GROUP");
+    assert_eq!(thread["group"]["account"], "!dev");
 }
 
 fn request_connection() -> Connection {
@@ -103,12 +161,26 @@ fn native_cleanup_removes_expired_projection_and_temporary_profile() {
     let conn = request_connection();
     conn.execute(
         "INSERT INTO friend_requests VALUES(1,'friend:test',?1)",
-        [serde_json::json!({"expiresAt": 10, "status": "REQUESTED"}).to_string()],
+        [serde_json::json!({
+            "direction": "OUTGOING",
+            "status": "REQUESTED",
+            "local": { "status": "REQUESTED", "expiresAt": 10 },
+            "remote": null,
+            "updatedAt": 0
+        })
+        .to_string()],
     )
     .unwrap();
     conn.execute(
         "INSERT INTO friend_requests VALUES(1,'group:test',?1)",
-        [serde_json::json!({"expiresAt": 10, "status": "REQUESTED"}).to_string()],
+        [serde_json::json!({
+            "direction": "INCOMING",
+            "status": "REQUESTED",
+            "local": null,
+            "remote": { "status": "REQUESTED", "expiresAt": 10 },
+            "updatedAt": 0
+        })
+        .to_string()],
     )
     .unwrap();
     conn.execute(
@@ -132,10 +204,19 @@ fn native_cleanup_removes_expired_projection_and_temporary_profile() {
             row.get::<_, i64>(0)
         })
         .unwrap(),
-        0
+        2
     );
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM profiles", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap(),
+        0
+    );
+
+    cleanup_friend_requests(&conn, 1, 604_800_000).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM friend_requests", [], |row| {
             row.get::<_, i64>(0)
         })
         .unwrap(),

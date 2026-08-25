@@ -1,19 +1,18 @@
-import type { ConversationItem } from '../app/services/model';
+import { createGroupConversation } from '../app/services/model';
 import { PlaygroundConversationList } from './playground-conversation-list.mock';
 
 describe('PlaygroundConversationList', () => {
   it('applies group settings without replacing the rest of the group', () => {
     const conversations = new PlaygroundConversationList();
-    conversations.setConversation({
-      id: 2,
-      threadId: 2,
-      type: 'GROUP',
-      group: {
+    conversations.setConversation(
+      createGroupConversation(2, {
         id: 2,
+        account: '!playground',
         name: 'Playground Team',
+        ownerId: 1,
         description: 'Before',
-      },
-    } as ConversationItem);
+      }),
+    );
 
     conversations.applyGroupUpdate(2, { description: 'After' });
 

@@ -305,7 +305,7 @@ export class CallsService implements OnModuleDestroy {
   private async ring(call: LiveCall): Promise<void> {
     const caller = await this.database.db.query.user.findFirst({
       where: eq(user.id, call.callerId),
-      columns: { name: true, avatar: true },
+      columns: { account: true, domain: true, name: true, avatar: true },
     });
     this.emit(call.calleeId, 'incoming', {
       callSid: call.callSid,
@@ -313,16 +313,24 @@ export class CallsService implements OnModuleDestroy {
       callerUserId: call.callerId,
       callerName: caller?.name ?? '',
       callerAvatar: caller?.avatar ?? '',
+      callerAccount: caller?.account ?? '',
+      callerDomain: caller?.domain === 'local' ? '' : (caller?.domain ?? ''),
       callType: call.callType,
     });
+    if (caller?.account) {
+      this.callState.setPeerIdentity(
+        call.calleeId,
+        caller.account,
+        caller.domain === 'local' ? '' : caller.domain,
+      );
+    }
     void this.push.dispatchForCall(call.calleeId, {
       callSid: call.callSid,
       callerUserId: call.callerId,
-      // The caller's display name rides inline so a COLD-STARTED callee (no live SSE → it never received the
-      // CALL_EVENT{incoming} frame that carries name/avatar) can render the incoming UI with no extra fetch.
-      // Calls are ephemeral coordination, not identity-only, so this matches the CALL_EVENT payload shape.
       callerName: caller?.name ?? '',
       callerAvatar: caller?.avatar ?? '',
+      callerAccount: caller?.account ?? '',
+      callerDomain: caller?.domain === 'local' ? '' : (caller?.domain ?? ''),
       threadId: call.threadId,
       callType: call.callType,
     });
@@ -1226,11 +1234,15 @@ export class CallsService implements OnModuleDestroy {
     this.callState.set(call.callerId, {
       ...base,
       peerUserId: call.calleeId,
+      peerAccount: call.peerAccount ?? '',
+      peerDomain: call.peerDomain ?? '',
       isCaller: true,
     });
     this.callState.set(call.calleeId, {
       ...base,
       peerUserId: call.callerId,
+      peerAccount: '',
+      peerDomain: '',
       isCaller: false,
     });
   }

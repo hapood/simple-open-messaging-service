@@ -85,15 +85,15 @@ object CallController {
     /** Account-wide CALL_EVENT frames reach every signed-in device. Only the Android instance whose user
      *  tapped Accept may transition the callee into connecting; sibling devices dismiss on `accepted`. */
     @Volatile private var acceptingLocally: Boolean = false
-    /** The peer's display name. Set by [seedIncoming] from the CALL_INCOMING FCM push — a cold-started callee
-     *  has no live SSE, so the web UI can't get the name from CALL_EVENT{incoming}; this carries it inline.
-     *  Empty for the foreground path (the SSE incoming frame owns the name there). Surfaced via [snapshotJson]. */
+    /** The peer presentation resolved from native SQLite or the foreground SSE event and exposed in snapshots. */
     @Volatile var peerName: String = ""
         private set
-    /** The peer's avatar (a /uploads/avatars path) for the call-notification Person icon. Set by initiate
-     *  (the caller passes the callee's) + the incoming paths (the SSE frame's callerAvatar / the FCM push's).
-     *  Empty when none; CallService fetches it with the Bearer → Person.setIcon. */
+    /** A native-SQLite data URL, or the foreground SSE avatar path used by the WebView call screen. */
     @Volatile var peerAvatar: String = ""
+        private set
+    @Volatile var peerAccount: String = ""
+        private set
+    @Volatile var peerDomain: String = ""
         private set
     /** UI phase, the merged call-FSM ∪ RTCPeerConnection state (Phase 5 refines the labels):
      *  idle | starting | calling | ringing | incoming | connecting | connected | reconnecting | ended.
@@ -580,6 +580,8 @@ object CallController {
             "incoming" -> {
                 // We are the CALLEE. Seed the incoming snapshot (shared with the FCM/HELLO paths via
                 // seedIncomingState — the PC is created on accept).
+                peerAccount = obj.optString("callerAccount", "")
+                peerDomain = obj.optString("callerDomain", "")
                 seedIncomingState(sid, obj.optInt("callerUserId"), obj.optString("callerName", ""),
                     obj.optString("callerAvatar", ""), obj.optInt("threadId"), obj.optString("callType", "AUDIO"))
                 // Ring + post the call notification when backgrounded. The SSE FGS (RealtimeService) is alive
@@ -589,7 +591,9 @@ object CallController {
                 if (!SomsMessagingService.appInForeground) {
                     ringer.startRing()
                     appContext?.let {
-                        CallService.startIncoming(it, sid, peerUserId, peerName, peerAvatar, threadId, callType)
+                        CallService.startIncoming(
+                            it, sid, peerUserId, peerAccount, peerDomain, threadId, callType,
+                        )
                     }
                 }
             }
@@ -759,10 +763,19 @@ object CallController {
 
     // ── public API (the SomsCallInterface bridge calls these) ─────────────────────
 
-    /** Caller starts a call. Seeds the local `starting` snapshot synchronously, then POST /calls/initiate →
+    /** Caller starts a call after native SQLite presentation lookup. Seeds the local `starting` snapshot,
+     *  then POST /calls/initiate →
      *  create the PC + offer + trickle ICE. The bridge starts [CallService] after this returns true, so its
      *  first mandatory foreground notification is built from the same snapshot as the WebView call chrome. */
-    fun initiate(calleeUserId: Int, sid: String, type: String, name: String, avatar: String, avatarDataUrl: String): Boolean {
+    fun initiate(
+        calleeUserId: Int,
+        sid: String,
+        type: String,
+        account: String,
+        domain: String,
+        name: String,
+        avatarDataUrl: String,
+    ): Boolean {
         // Seed the presentation state synchronously, before the bridge starts CallService. Both the WebView
         // call screen and the mandatory FGS notification therefore observe the SAME `starting` snapshot.
         // The server busy-line is still authoritative: `starting` is only a local presentation phase and the
@@ -780,7 +793,9 @@ object CallController {
         startedAt = 0L
         step = ""
         peerName = name
-        peerAvatar = avatar
+        peerAvatar = avatarDataUrl
+        peerAccount = account
+        peerDomain = domain
         pushSnapshot()
 
         callExecutor.execute {
@@ -821,9 +836,7 @@ object CallController {
                 startedAt = 0L
                 iceRestartTried = false
                 answerApplied = false
-                // Prefer the IDB-cached bytes (data URL); fall back to the /uploads path on an IDB miss (fetch),
-                // so an uncached peer still gets an avatar instead of the app-logo fallback.
-                CallService.instance?.loadAvatar(if (avatarDataUrl.isNotEmpty()) avatarDataUrl else avatar, peerName)
+                CallService.instance?.loadAvatar(avatarDataUrl, peerName)
                 pushSnapshot()
                 SomsLog.d(TAG) { "initiate: POST ok + state set → createPeerConnection + createOffer" }
                 val connection = createPeerConnection()
@@ -1187,11 +1200,22 @@ object CallController {
     /** Seed the incoming call from the CALL_INCOMING FCM push / HELLO activeCall recovery (the killed /
      *  backgrounded paths with no live SSE): guard (idempotent — a no-op if this call is already incoming;
      *  ignored if a different call is live), then [seedIncomingState] + start the ring. */
-    fun seedIncoming(sid: String, callerUserId: Int, name: String, avatar: String, tid: Int, type: String) {
+    fun seedIncoming(
+        sid: String,
+        callerUserId: Int,
+        account: String,
+        domain: String,
+        name: String,
+        avatar: String,
+        tid: Int,
+        type: String,
+    ) {
         if (phase != "idle" && phase != "starting") {
             if (callSid == sid) return // already ringing this call (SSE beat the push) — no-op
             return                      // a different call is live (busy) — ignore the stray push
         }
+        peerAccount = account
+        peerDomain = domain
         seedIncomingState(sid, callerUserId, name, avatar, tid, type)
         // The audible ringtone is the CHANNEL_INCOMING sound; CallRinger adds the looping vibration + wake lock.
         ringer.startRing()
@@ -1227,6 +1251,8 @@ object CallController {
         callSid = null
         threadId = 0
         peerUserId = 0
+        peerAccount = ""
+        peerDomain = ""
         startedAt = 0L
         mediaState = "new"
         speakerEnabled = false

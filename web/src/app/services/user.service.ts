@@ -974,14 +974,6 @@ export class UserService {
     );
   }
 
-  getThreadInfo(params: { threadId: number }) {
-    return this.http.post<
-      StandardResponse<
-        Omit<ConversationItem, 'lastReadSeq' | 'unreadCount' | 'mentionUnread'>
-      >
-    >(`${apiPrefix()}/user/thread-info`, params);
-  }
-
   /** Commit the viewport's local read HWM. SSE wakes the client to pull the compacted attention feed. */
   markRead(params: { threadId: number; localReadHwm: number }) {
     return this.http.post<StandardResponse>(

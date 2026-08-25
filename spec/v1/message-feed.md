@@ -43,9 +43,9 @@ interface MessageFeedItem {
 ```
 
 The stable key is `(target peer, thread)`. For P2P, `thread.account` is the
-source-hosted user and `thread.localAccount` is the target-peer-hosted user; the
+source-hosted user and `thread.peerAccount` is the target-peer-hosted user; the
 two domains come from the authenticated exchange. For a group, `thread.account`
-is the globally unique group account and `localAccount` is absent; the target
+is the globally unique group account and `peerAccount` is absent; the target
 peer is not keyed separately by each member hosted on that peer.
 Relationship status, expiry, re-request, re-acceptance, friendship restoration,
 group leave, and group rejoin do not create a new stable key.
@@ -103,13 +103,13 @@ decreasing `seq` order. An invalid combination or relation returns
 account grammar determines the thread kind; no separate type or mode parameter
 is sent:
 
-| Account kind   | Fields                    | Binding                                                                                           |
-| -------------- | ------------------------- | ------------------------------------------------------------------------------------------------- |
-| `UserAccount`  | `account`, `localAccount` | `account` is hosted by the source domain; `localAccount` is hosted by the verified signer domain. |
-| `GroupAccount` | `account`                 | The globally unique `!` account identifies the origin thread or an authorized mirror.             |
+| Account kind   | Fields                   | Binding                                                                                           |
+| -------------- | ------------------------ | ------------------------------------------------------------------------------------------------- |
+| `UserAccount`  | `account`, `peerAccount` | `account` is hosted by the source domain; `peerAccount` is hosted by the verified signer domain.  |
+| `GroupAccount` | `account`                | The globally unique `!` account identifies the origin thread or an authorized mirror.             |
 
-For a `UserAccount` selector, `localAccount` MUST be present and MUST be a
-`UserAccount`. For a `GroupAccount` selector, `localAccount` MUST be absent.
+For a `UserAccount` selector, `peerAccount` MUST be present and MUST be a
+`UserAccount`. For a `GroupAccount` selector, `peerAccount` MUST be absent.
 
 After normalization, the requested thread MUST exactly equal the feed item's
 `ThreadAddress`. The source does not accept any domain parameter declared by the
@@ -123,7 +123,7 @@ and a group query continues the coordinate space for the same group-address and
 verified-peer pair, regardless of which users on that peer currently belong to
 the group.
 
-`includeSelf` is optional. Its wire value is lowercase `true` or `false`, and omission defaults to `true`. With `includeSelf=false`, the source omits messages whose `message.author.domain` equals the verified signer domain. This comparison uses only canonical Domain and MUST NOT be inferred from a local user ID, publisher-local `seq`, or `originSeq`. A filtered sequence is a scannable hole and does not prevent `scannedThrough` from advancing in the selected direction. The parameter affects only this page projection and does not delete a processing receipt, allocation proof, or message. The fixed query-key order is `account`, optional `localAccount`, `after`, `before`, `through`, `take`, then `includeSelf`; omitted optional fields leave no placeholder.
+`includeSelf` is optional. Its wire value is lowercase `true` or `false`, and omission defaults to `true`. With `includeSelf=false`, the source omits messages whose `message.author.domain` equals the verified signer domain. This comparison uses only canonical Domain and MUST NOT be inferred from a local user ID, publisher-local `seq`, or `originSeq`. A filtered sequence is a scannable hole and does not prevent `scannedThrough` from advancing in the selected direction. The parameter affects only this page projection and does not delete a processing receipt, allocation proof, or message. The fixed query-key order is `account`, optional `peerAccount`, `after`, `before`, `through`, `take`, then `includeSelf`; omitted optional fields leave no placeholder.
 
 GROUP message query has exactly three valid directions:
 
@@ -242,7 +242,7 @@ Sequences not allocated during an absence are holes and MUST NOT be backfilled
 on rejoin. Content-retention policy may still skip a purged prefix through
 `resumeAfter` under Section 2.2.
 
-After receiving relationship-termination state from state-feed, the consumer MUST invalidate the current message-feed target for that peer and thread and stop retrying its query. If state notification is delayed, lost, or not yet locally converged, message-query `FORBIDDEN` is the fallback signal: the consumer MUST stop that thread query, invalidate its current pending end, and prioritize draining state feed again. This handling does not move the global message-feed cursor backward or delete idempotently committed messages or historical query cursors.
+After receiving relationship-termination state from state-feed, the consumer MUST invalidate the current message-feed target for that peer and thread and stop retrying its query. If state notification is delayed, lost, or not yet locally converged, P2P message-query `FORBIDDEN` is the fast-convergence fallback signal: the consumer MUST stop that thread query and invalidate its current pending end. If both retained authored directions are still `REQUESTED` or `ACCEPTED`, the consumer MUST publish `REVOKED` for its own direction. It MUST NOT manufacture or rewrite the peer-authored direction, and it MUST NOT publish another transition if either retained direction is already `REVOKED` or absent. The consumer then prioritizes the resulting state convergence. This handling does not move the global message-feed cursor backward or delete idempotently committed messages or historical query cursors. A GROUP query has no unique consumer-authored member direction at the peer boundary, so its `FORBIDDEN` stops the query and prioritizes state drain without authoring a relationship transition.
 
 Authorization calculation MAY materialize immediately derivable state from existing durable facts in the same local transaction, such as request expiration, friendship validity, or group-audience validity. This reconciliation MUST be idempotent and MUST NOT create an invitation, accept a friendship, join a group, or expand the current request's authorization merely because the peer issued a GET.
 

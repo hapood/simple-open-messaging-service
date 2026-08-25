@@ -33,12 +33,18 @@ export class ContactPickerDialogComponent {
 
   choose(item: ReturnType<typeof this.items>[number]): void {
     this.route.closeDlg({
-      targetUserId: item.type === 'GROUP' ? item.group.id : item.peerUser.id,
+      ...(item.type === 'GROUP'
+        ? { targetGroupId: item.group.id }
+        : { targetUserId: item.peerUser.id }),
       account:
         item.type === 'GROUP' ? item.group.account : item.peerUser.account,
       domain: item.type === 'GROUP' ? item.group.domain : item.peerUser.domain,
       name: this.displayName(item),
       avatar: this.avatarSrc(item),
+      bio:
+        (item.type === 'GROUP'
+          ? item.group.description
+          : item.peerUser.bio) ?? '',
     });
   }
 }

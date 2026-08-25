@@ -80,7 +80,7 @@ export class CallRowComponent {
     this.isVideo() ? 'call.videoCall' : 'call.audioCall',
   );
 
-  /** Direction- and result-aware secondary label. */
+  /** Direction- and result-aware primary label. */
   readonly statusKey = computed(() => {
     const status = this.content()?.status;
     const self = this.data().isSelf;

@@ -1,4 +1,4 @@
-import { TestBed } from '@angular/core/testing';
+import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { signal, provideZonelessChangeDetection } from '@angular/core';
 import {
   provideTransloco,
@@ -19,37 +19,31 @@ import { CallAdapterService } from '../../services/call-adapter';
 import { CallEventService } from '../../services/call-event.service';
 import { IDLE_CALL } from '../../services/call-adapter';
 import { AvatarRepository } from '../../services/avatar-cache.service';
-import { ConversationItem } from '../../services/model';
+import { ConversationItem, createP2PConversation } from '../../services/model';
 
 /**
- * Covers ONLY the back-button unread badge (`otherUnreadCount` / `otherUnreadLabel`) — the compact-mode
- * "other conversations" total shown beside Back. ConversationListService is stubbed with controllable
+ * Covers the header's local computed state and action dispatch. ConversationListService is stubbed with controllable
  * signals (mirrors thread-list.component.spec.ts); every other dep is an empty stub since no field
  * initializer the badge touches reads them. No detectChanges — only the component's computeds are read
  * (rendering the template would pull in transloco + child components + CDK overlay unnecessarily).
  */
 describe('MessageHeaderComponent — back-button unread badge', () => {
   let comp: MessageHeaderComponent;
+  let fixture: ComponentFixture<MessageHeaderComponent>;
   let items: ReturnType<typeof signal<ConversationItem[]>>;
   let openThreadId: ReturnType<typeof signal<number | undefined>>;
 
   /** Minimal ConversationItem — only threadId + unreadCount are exercised by the badge sum. */
   function item(threadId: number, unreadCount: number): ConversationItem {
-    return {
+    return createP2PConversation(
       threadId,
-      id: threadId,
-      type: 'P2P',
-      unreadCount,
-      muted: false,
-      pinned: false,
-      lastMessageAt: null,
-      lastMessagePreview: null,
-      peerUser: {
+      {
         id: threadId * 10,
         account: `u${threadId}`,
         name: `User ${threadId}`,
-      } as ConversationItem['peerUser'],
-    } as ConversationItem;
+      },
+      { unreadCount },
+    );
   }
 
   beforeEach(() => {
@@ -96,7 +90,8 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
         { provide: AvatarRepository, useValue: {} },
       ],
     });
-    comp = TestBed.createComponent(MessageHeaderComponent).componentInstance;
+    fixture = TestBed.createComponent(MessageHeaderComponent);
+    comp = fixture.componentInstance;
   });
 
   it('sums unread across all threads except the open one', () => {
@@ -139,5 +134,19 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
     items.set([item(1, -5), item(2, 3)]);
     openThreadId.set(undefined);
     expect(comp.otherUnreadCount()).toBe(3); // -5 → 0, plus 3
+  });
+
+  it('offers contact sharing in the More menu and emits the current chat', () => {
+    const chat = item(7, 0);
+    fixture.componentRef.setInput('userMsgTrd', chat);
+    const shared: ConversationItem[] = [];
+    comp.shareChatCard.subscribe((value) => shared.push(value));
+
+    expect(comp.entries()).toContainEqual(
+      expect.objectContaining({ kind: 'action', key: 'shareContact' }),
+    );
+
+    comp.onSelect('shareContact');
+    expect(shared).toEqual([chat]);
   });
 });

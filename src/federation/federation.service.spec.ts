@@ -4,8 +4,25 @@ import { describe, it, expect, vi } from 'vitest';
 // must be set before `new FederationService(...)`. Module-top runs before any test body.
 process.env.SOMS_DOMAIN ??= 'soms.io';
 
-import { FederationService, S2sResponseError } from './federation.service.js';
+import {
+  clientGroupIntentEndpoints,
+  FederationService,
+  S2sResponseError,
+} from './federation.service.js';
 import { BusinessCode } from '../common/business-code.js';
+
+describe('client group intent compaction identity', () => {
+  it('keeps group-authored and member-authored intents as distinct directed facts', () => {
+    expect(clientGroupIntentEndpoints('!dev', 'alice', 'GROUP')).toEqual({
+      account: '!dev',
+      subjectAccount: 'alice',
+    });
+    expect(clientGroupIntentEndpoints('!dev', 'alice', 'MEMBER')).toEqual({
+      account: 'alice',
+      subjectAccount: '!dev',
+    });
+  });
+});
 
 /** Build a FederationService wired with hand-rolled fakes (the project's spec style — direct
  *  construction, not the Nest DI container). */
@@ -543,18 +560,59 @@ describe('FederationService global missed transport', () => {
 });
 
 describe('FederationService thread-query revocation fallback', () => {
-  it('maps a current authorization denial to state-recoverable context loss', () => {
+  it('revokes the local P2P direction on an authenticated message-query denial', async () => {
     const { svc } = makeStubs();
     const target = svc as unknown as {
-      throwIfThreadQueryForbidden: (error: Error, threadKey: string) => void;
+      handleThreadQueryForbidden: (
+        error: Error,
+        domain: string,
+        thread: { account: string; peerAccount: string },
+      ) => Promise<void>;
+      revokeLocalFriendAfterMessageQueryForbidden: ReturnType<typeof vi.fn>;
     };
+    target.revokeLocalFriendAfterMessageQueryForbidden = vi
+      .fn()
+      .mockResolvedValue(undefined);
 
-    expect(() =>
-      target.throwIfThreadQueryForbidden(
+    await expect(
+      target.handleThreadQueryForbidden(
         new S2sResponseError('revoked', 200, BusinessCode.FORBIDDEN),
-        'v1:thread',
+        'peer.test',
+        { account: 'peer', peerAccount: 'me' },
       ),
-    ).toThrow(/thread query access was revoked/);
+    ).rejects.toThrow(/thread query access was revoked/);
+    expect(
+      target.revokeLocalFriendAfterMessageQueryForbidden,
+    ).toHaveBeenCalledWith('peer.test', {
+      account: 'peer',
+      peerAccount: 'me',
+    });
+  });
+
+  it('does not revoke for retryable or non-message-query failures', async () => {
+    const { svc } = makeStubs();
+    const target = svc as unknown as {
+      handleThreadQueryForbidden: (
+        error: Error,
+        domain: string,
+        thread: { account: string; peerAccount: string },
+      ) => Promise<void>;
+      revokeLocalFriendAfterMessageQueryForbidden: ReturnType<typeof vi.fn>;
+    };
+    target.revokeLocalFriendAfterMessageQueryForbidden = vi.fn();
+
+    await target.handleThreadQueryForbidden(
+      new S2sResponseError(
+        'busy',
+        200,
+        BusinessCode.FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE,
+      ),
+      'peer.test',
+      { account: 'peer', peerAccount: 'me' },
+    );
+    expect(
+      target.revokeLocalFriendAfterMessageQueryForbidden,
+    ).not.toHaveBeenCalled();
   });
 });
 

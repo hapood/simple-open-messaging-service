@@ -41,7 +41,9 @@ Group/group relationships are invalid.
 
 Expiry removes authorization at the timestamp itself. A later source-side sweep may compact the
 already-expired authored direction to `REVOKED` and publish that newer fact; a receiver never creates
-or publishes a revocation on behalf of the remote author.
+or publishes a revocation on behalf of the remote author. A P2P message-query `FORBIDDEN` while both
+retained directions are still `REQUESTED` or `ACCEPTED` instead makes the receiver revoke and publish
+only its own authored direction for fast convergence.
 
 On the federation wire, peer `ACCEPTED` is valid only in a still-effective
 request flow: it confirms a local request or completes a peer request already

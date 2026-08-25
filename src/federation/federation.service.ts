@@ -159,6 +159,17 @@ function groupIntentWireStatus(
   return status;
 }
 
+/** Preserve the relationship author's side in the client-feed compaction key. */
+export function clientGroupIntentEndpoints(
+  groupAccount: string,
+  memberAccount: string,
+  author: 'GROUP' | 'MEMBER',
+): { account: string; subjectAccount: string } {
+  return author === 'GROUP'
+    ? { account: groupAccount, subjectAccount: memberAccount }
+    : { account: memberAccount, subjectAccount: groupAccount };
+}
+
 function groupIntentStorageStatus(
   status: GroupIntentWireStatus,
 ): GroupIntentWireStatus {
@@ -1561,13 +1572,18 @@ export class FederationService {
           .onConflictDoNothing();
     }
     if (!member.isForeigner) {
+      const endpoints = clientGroupIntentEndpoints(
+        state.groupAccount,
+        member.account,
+        'GROUP',
+      );
       const clientFeedId = await this.clientStateFeed.writeInTx(tx, {
         userId: memberUserId,
-        account: state.groupAccount,
-        domain: this.config.domain,
+        account: endpoints.account,
+        domain: '',
         eventType: 'RELATIONSHIP_INTENT',
-        subjectAccount: member.account,
-        subjectDomain: this.config.domain,
+        subjectAccount: endpoints.subjectAccount,
+        subjectDomain: '',
         body: {
           status: groupIntentWireStatus(membership.request.status),
           note: membership.request.note,
@@ -1576,7 +1592,7 @@ export class FederationService {
           threadId,
           group: {
             account: state.groupAccount,
-            domain: this.config.domain,
+            domain: '',
             isLocal: true,
             name: state.groupName,
             avatar: state.groupAvatar,
@@ -1707,36 +1723,43 @@ export class FederationService {
       if (status === 'REVOKED') {
         return new Map();
       }
-      if (!membership.shouldBeActive) {
-        if (clientFeedUpdates && membership.changed) {
-          const feedId = await this.clientStateFeed.writeInTx(tx, {
-            userId: memberUserId,
-            account: groupUser.account,
-            domain: this.config.domain,
-            eventType: 'RELATIONSHIP_INTENT',
-            subjectAccount: member.account,
-            subjectDomain: this.config.domain,
-            body: {
-              status: groupIntentWireStatus(membership.request.status),
-              note: membership.request.note,
-              requestedAt: membership.request.requestedAt,
-              expiresAt: membership.request.expiresAt,
-              direction: 'OUTGOING',
-              threadId,
-              group: {
-                account: groupUser.account,
-                domain: this.config.domain,
-                isLocal: true,
-                name: groupUser.name,
-                avatar: groupUser.avatar,
-                description: groupUser.bio,
-                profileRev: groupUser.profileRev,
-              },
+      if (clientFeedUpdates && membership.changed) {
+        const endpoints = clientGroupIntentEndpoints(
+          groupUser.account,
+          member.account,
+          'MEMBER',
+        );
+        const feedId = await this.clientStateFeed.writeInTx(tx, {
+          userId: memberUserId,
+          // Preserve the authored direction in the compacted key. Reusing group->member here would
+          // overwrite the group's intent and make bilateral authorization impossible to reconstruct.
+          account: endpoints.account,
+          domain: '',
+          eventType: 'RELATIONSHIP_INTENT',
+          subjectAccount: endpoints.subjectAccount,
+          subjectDomain: '',
+          body: {
+            status: groupIntentWireStatus(membership.request.status),
+            note: membership.request.note,
+            requestedAt: membership.request.requestedAt,
+            expiresAt: membership.request.expiresAt,
+            direction: 'OUTGOING',
+            threadId,
+            group: {
+              account: groupUser.account,
+              domain: '',
+              isLocal: true,
+              name: groupUser.name,
+              avatar: groupUser.avatar,
+              description: groupUser.bio,
+              profileRev: groupUser.profileRev,
             },
-          });
-          if (feedId !== null)
-            clientFeedUpdates.push({ userId: memberUserId, feedId });
-        }
+          },
+        });
+        if (feedId !== null)
+          clientFeedUpdates.push({ userId: memberUserId, feedId });
+      }
+      if (!membership.shouldBeActive) {
         return new Map();
       }
       const activated = await this.relationshipIntents.setPairActiveInTx(
@@ -3758,16 +3781,91 @@ export class FederationService {
     return error instanceof Error ? error : new Error(String(error));
   }
 
+  private async handleThreadQueryForbidden(
+    error: Error,
+    domain: string,
+    thread: FederationThreadAddress,
+  ): Promise<void> {
+    if (
+      error instanceof S2sResponseError &&
+      error.code === BusinessCode.FORBIDDEN
+    ) {
+      if ('peerAccount' in thread)
+        await this.revokeLocalFriendAfterMessageQueryForbidden(domain, thread);
+      throw new FederationMessageContextError(
+        `thread query access was revoked for ${this.threadKey(thread)}`,
+      );
+    }
+  }
+
   private throwIfThreadQueryForbidden(error: Error, threadKey: string): void {
     if (
       error instanceof S2sResponseError &&
-      (error.code === BusinessCode.FORBIDDEN ||
-        error.code === BusinessCode.FRIEND_NOT_FOUND)
-    ) {
+      error.code === BusinessCode.FORBIDDEN
+    )
       throw new FederationMessageContextError(
         `thread query access was revoked for ${threadKey}`,
       );
-    }
+  }
+
+  /** An authenticated P2P message-query denial is an authoritative access-closure fact. Converge
+   * quickly by revoking only our authored direction; never manufacture the peer's intent. */
+  private async revokeLocalFriendAfterMessageQueryForbidden(
+    domain: string,
+    thread: Extract<FederationThreadAddress, { peerAccount: string }>,
+  ): Promise<void> {
+    const clientFeedUpdates: PendingClientStateFeedUpdate[] = [];
+    const statePeers = await this.database.db.transaction(async (tx) => {
+      const [local, remote] = await Promise.all([
+        tx.query.user.findFirst({
+          where: and(
+            eq(tables.user.account, normalizeAccount(thread.peerAccount)),
+            eq(tables.user.isForeigner, false),
+          ),
+          columns: { id: true },
+        }),
+        tx.query.user.findFirst({
+          where: and(
+            eq(tables.user.account, normalizeAccount(thread.account)),
+            eq(tables.user.domain, domain),
+            eq(tables.user.isForeigner, true),
+          ),
+          columns: { id: true },
+        }),
+      ]);
+      if (!local || !remote) return new Map<string, bigint>();
+      const [localIntent, remoteIntent] = await Promise.all([
+        tx.query.relationshipIntent.findFirst({
+          where: and(
+            eq(tables.relationshipIntent.authorUserId, local.id),
+            eq(tables.relationshipIntent.subjectUserId, remote.id),
+          ),
+          columns: { status: true },
+        }),
+        tx.query.relationshipIntent.findFirst({
+          where: and(
+            eq(tables.relationshipIntent.authorUserId, remote.id),
+            eq(tables.relationshipIntent.subjectUserId, local.id),
+          ),
+          columns: { status: true },
+        }),
+      ]);
+      const positive = (status: string | undefined) =>
+        status === 'REQUESTED' || status === 'ACCEPTED';
+      if (!positive(localIntent?.status) || !positive(remoteIntent?.status))
+        return new Map<string, bigint>();
+      return this.writeFriendIntentInTx(
+        tx,
+        local.id,
+        remote.id,
+        false,
+        '',
+        clientFeedUpdates,
+      );
+    });
+    for (const pending of clientFeedUpdates)
+      this.clientStateFeed.notifyFeedUpdated(pending);
+    await this.pushStateFeedDomains(statePeers.keys());
   }
 
   async pullStateFeedPage(
@@ -4204,7 +4302,7 @@ export class FederationService {
           'eventType',
           'feedId',
           'body',
-          ...(item.eventType === 'RELATIONSHIP_INTENT' ? ['localAccount'] : []),
+          ...(item.eventType === 'RELATIONSHIP_INTENT' ? ['peerAccount'] : []),
         ]);
         if (
           Object.keys(wireItem).length !== allowedKeys.size ||
@@ -4484,7 +4582,7 @@ export class FederationService {
         } else if (
           item.eventType === 'RELATIONSHIP_INTENT' &&
           !item.account.startsWith('!') &&
-          !item.localAccount?.startsWith('!')
+          !item.peerAccount?.startsWith('!')
         ) {
           const body = item.body as {
             status?: unknown;
@@ -4493,7 +4591,7 @@ export class FederationService {
             expiresAt?: unknown;
           };
           if (
-            !item.localAccount ||
+            !item.peerAccount ||
             item.domain !== peerDomain ||
             !['REQUESTED', 'ACCEPTED', 'REVOKED'].includes(
               String(body.status),
@@ -4552,7 +4650,7 @@ export class FederationService {
             .from(tables.user)
             .where(
               and(
-                eq(tables.user.account, normalizeAccount(item.localAccount)),
+                eq(tables.user.account, normalizeAccount(item.peerAccount)),
                 eq(tables.user.isForeigner, false),
               ),
             )
@@ -4957,13 +5055,13 @@ export class FederationService {
           }
         } else if (
           item.eventType === 'RELATIONSHIP_INTENT' &&
-          (item.account.startsWith('!') || item.localAccount?.startsWith('!'))
+          (item.account.startsWith('!') || item.peerAccount?.startsWith('!'))
         ) {
           const inviteDirection = item.account.startsWith('!');
           if (
-            !item.localAccount ||
+            !item.peerAccount ||
             item.domain !== peerDomain ||
-            inviteDirection === item.localAccount.startsWith('!')
+            inviteDirection === item.peerAccount.startsWith('!')
           )
             throw new PermanentFederationItemError(
               'invalid group membership state key',
@@ -5026,7 +5124,7 @@ export class FederationService {
               .from(tables.user)
               .where(
                 and(
-                  eq(tables.user.account, normalizeAccount(item.localAccount)),
+                  eq(tables.user.account, normalizeAccount(item.peerAccount)),
                   eq(tables.user.isForeigner, false),
                   eq(tables.user.isGroup, false),
                 ),
@@ -5129,7 +5227,7 @@ export class FederationService {
                 eq(
                   tables.user.account,
                   normalizeAccount(
-                    inviteDirection ? item.account : item.localAccount,
+                    inviteDirection ? item.account : item.peerAccount,
                   ),
                 ),
                 inviteDirection
@@ -5147,7 +5245,7 @@ export class FederationService {
                 eq(
                   tables.user.account,
                   normalizeAccount(
-                    inviteDirection ? item.localAccount : item.account,
+                    inviteDirection ? item.peerAccount : item.account,
                   ),
                 ),
                 inviteDirection
@@ -5251,7 +5349,7 @@ export class FederationService {
               account: groupUser.account,
               domain: peerDomain,
               eventType: 'RELATIONSHIP_INTENT',
-              subjectAccount: normalizeAccount(item.localAccount),
+              subjectAccount: normalizeAccount(item.peerAccount),
               subjectDomain: this.config.domain,
               body: {
                 status: body.status,
@@ -5361,7 +5459,7 @@ export class FederationService {
               );
               statePushDomains.push(...rejection.keys(), ...groupState.keys());
               this.logger.warn(
-                `Rejected federated group join for ${item.localAccount}@${peerDomain}: origin group is full`,
+                `Rejected federated group join for ${item.peerAccount}@${peerDomain}: origin group is full`,
               );
               continue;
             }
@@ -6433,7 +6531,7 @@ export class FederationService {
             after = mapped.resumeAfter;
             continue;
           }
-          this.throwIfThreadQueryForbidden(mapped, threadKey);
+          await this.handleThreadQueryForbidden(mapped, domain, item.thread);
           throw mapped;
         }
         if (
@@ -6487,7 +6585,9 @@ export class FederationService {
       const mapped = this.mapFeedCursorUnavailable(error);
       if (mapped instanceof RemoteFeedCursorUnavailableError)
         return mapped.resumeAfter;
-      this.throwIfThreadQueryForbidden(mapped, this.threadKey(thread));
+      if (path === '/s2s/v1/messages')
+        await this.handleThreadQueryForbidden(mapped, domain, thread);
+      else this.throwIfThreadQueryForbidden(mapped, this.threadKey(thread));
       throw mapped;
     }
     throw new Error(
@@ -6498,17 +6598,17 @@ export class FederationService {
   private threadQuery(thread: FederationThreadAddress): URLSearchParams {
     const query = new URLSearchParams();
     query.set('account', thread.account);
-    if (!('localAccount' in thread)) {
+    if (!('peerAccount' in thread)) {
       return query;
     }
-    query.set('localAccount', thread.localAccount);
+    query.set('peerAccount', thread.peerAccount);
     return query;
   }
 
   private threadKey(thread: FederationThreadAddress): string {
     const canonical =
-      'localAccount' in thread
-        ? ['P2P', thread.account, thread.localAccount]
+      'peerAccount' in thread
+        ? ['P2P', thread.account, thread.peerAccount]
         : ['GROUP', thread.account];
     // PostgreSQL text cannot contain NUL, and wire identifiers may contain punctuation. Hash a
     // canonical JSON tuple to keep the durable local cursor key fixed-size and delimiter-safe.
@@ -6806,7 +6906,7 @@ export class FederationService {
           const call = parseFederatedCallContent(item.content);
           if (
             !call ||
-            !('localAccount' in item.thread) ||
+            !('peerAccount' in item.thread) ||
             route.recipients.length !== 1
           ) {
             throw new BusinessException(
@@ -7243,11 +7343,11 @@ export class FederationService {
       typeof rawThread?.['account'] === 'string' &&
         rawThread['account'].startsWith('!')
         ? ['account']
-        : ['account', 'localAccount'],
+        : ['account', 'peerAccount'],
     );
     if (
       typeof thread['account'] !== 'string' ||
-      ('localAccount' in thread && typeof thread['localAccount'] !== 'string')
+      ('peerAccount' in thread && typeof thread['peerAccount'] !== 'string')
     ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
@@ -7295,7 +7395,7 @@ export class FederationService {
       federationVersion: number;
       toAccount: string;
     }> = [];
-    if (!('localAccount' in item.thread)) {
+    if (!('peerAccount' in item.thread)) {
       const result = await tx.execute<{
         threadId: number;
         federationVersion: number;
@@ -7369,7 +7469,7 @@ export class FederationService {
         WHERE thread.type = 'P2P'
           AND thread."federationTruncated" = false
           AND local_user.domain = 'local'
-          AND local_user.account = ${normalizeAccount(item.thread.localAccount)}
+          AND local_user.account = ${normalizeAccount(item.thread.peerAccount)}
           AND remote_user.domain = ${sourceDomain}
           AND remote_user.account = ${normalizeAccount(item.thread.account)}
           AND EXISTS (
@@ -7419,7 +7519,7 @@ export class FederationService {
     recipients: number[];
     groupOriginDomain?: string;
   }> {
-    if ('localAccount' in thread) {
+    if ('peerAccount' in thread) {
       const author = { account: thread.account, domain: sourceDomain };
       return this.resolveMissedThreadInTransaction(
         tx,
@@ -7814,8 +7914,8 @@ export class FederationService {
    *  `fromAccount` is a live local user (non-deleted), `toAccount` is the requester's foreign stub on
    *  signerDomain, and the from↔to Friendship is APPROVED — returning fromId + threadId. Throws NOT_FOUND
    *  (user missing) /
-   *  FORBIDDEN (not friends); the 403 doubles as the §9.4 lazy-unfriend signal to the peer. Consolidates
-   *  the same current P2P relationship required by message access. */
+   *  FORBIDDEN (not friends). Media denial is resource-local and does not trigger the message-query
+   *  fast-convergence rule. Consolidates the same current P2P relationship required by message access. */
   private async resolveFriendshipThread(
     fromAccount: string,
     toAccount: string,
@@ -7847,8 +7947,7 @@ export class FederationService {
       toStub.id,
     );
     if (threadId === null) {
-      // Gate 2 failed: no active P2P thread (not friends — e.g. after a local-only unfriend). The 403
-      // is also the rejection that teaches the peer about the severed edge (§9.4).
+      // Gate 2 failed: no active P2P thread (not friends — e.g. after a local-only unfriend).
       throw new BusinessException(BusinessCode.FRIEND_NOT_FOUND, 'not friends');
     }
     return { fromId, threadId };
@@ -8143,7 +8242,7 @@ export class FederationService {
           ),
         );
     }
-    await ClientMessageFeedWriter.publishMessage(tx, threadId, seq, creatorId);
+    await ClientMessageFeedWriter.publishMessage(tx, threadId, seq);
     if (localDeletionId !== null)
       await ClientMessageFeedWriter.publishTombstone(
         tx,
@@ -8709,7 +8808,7 @@ export class FederationService {
               item.thread,
               domain,
             );
-            const isGroup = !('localAccount' in item.thread);
+            const isGroup = !('peerAccount' in item.thread);
             const acceptingGroupSubmission =
               isGroup && route.groupOriginDomain === this.config.domain;
             if (isGroup) {
@@ -9073,7 +9172,6 @@ export class FederationService {
         tx,
         threadId,
         seq,
-        creatorId,
       );
       if (localDeletionId !== null)
         await ClientMessageFeedWriter.publishTombstone(

@@ -1,9 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import {
-  ContentType,
-  GroupRole,
-  MessageThreadType,
-} from '../database/enums.js';
+import { ContentType } from '../database/enums.js';
 import { MEDIA_STATUS, MediaStatus } from '../common/media-status.js';
 
 /**
@@ -237,112 +233,6 @@ export class GroupResponseDto {
  * The threadId is the conversation handle — the key clients use for send-message / query-messages.
  * Replaces the overloaded UserMessageThreadResponseDto: friendship state no longer lives here.
  */
-export class ConversationItemDto {
-  @ApiProperty({
-    example: 1,
-    description: "This user's ThreadParticipant row id",
-  })
-  id!: number;
-
-  @ApiProperty({
-    example: 12,
-    description:
-      'Conversation (MessageThread) id — the key for send-message / query-messages',
-  })
-  threadId!: number;
-
-  @ApiProperty({ enum: MessageThreadType, description: 'Conversation type' })
-  type!: MessageThreadType;
-
-  @ApiProperty({
-    enum: GroupRole,
-    nullable: true,
-    description: 'Member role for GROUP conversations; null for P2P',
-  })
-  role?: GroupRole | null;
-
-  @ApiProperty({
-    type: Number,
-    example: 1_700_000_000_000,
-    nullable: true,
-    description:
-      'When the last message was sent (ms timestamp). Null on empty threads.',
-  })
-  lastMessageAt?: number | null;
-
-  @ApiProperty({
-    type: Number,
-    nullable: true,
-    description:
-      'Per-thread seq of the newest message (the denormalized MessageThread.lastMessageSeq). Null on empty ' +
-      'threads. The client passes this as the mark-read `lastReadSeq` when opening a conversation (mark all ' +
-      'current up to this seq) — so mark-read ALWAYS carries a seq, never the no-seq "mark all" mode.',
-  })
-  lastMessageSeq?: number | null;
-
-  @ApiProperty({
-    example: false,
-    description:
-      'Whether the caller has muted this conversation (notification channels — push + notif snapshot — are suppressed; in-app delivery is not).',
-  })
-  muted!: boolean;
-
-  @ApiProperty({
-    example: false,
-    description:
-      'Whether the caller has pinned this conversation to the top of their list.',
-  })
-  pinned!: boolean;
-
-  @ApiProperty({
-    type: Number,
-    example: 1_700_000_000_000,
-    nullable: true,
-    description:
-      'Most-recently-pinned timestamp (ms). Drives pinned-tier ordering (desc). Null when not pinned.',
-  })
-  pinnedAt?: number | null;
-
-  @ApiProperty({
-    type: Number,
-    example: 31,
-    nullable: true,
-    description:
-      'Per-user "clear chat history" sequence watermark. Messages at or below it are hidden for THIS user only; the peer copy is untouched. Null when history has not been cleared.',
-  })
-  clearedSeq?: number | null;
-
-  @ApiProperty({
-    required: false,
-    example: false,
-    description:
-      'Whether the caller blocks new messages from this conversation. Applies to P2P and GROUP.',
-  })
-  blocked?: boolean;
-
-  @ApiProperty({
-    type: String,
-    required: false,
-    example: 'Alice (work)',
-    nullable: true,
-    description:
-      "Per-user alias/remark. Overrides peer.account (P2P) / group.name (GROUP) in the CALLER's chat header + list. Null when not set (real name used).",
-  })
-  alias?: string | null;
-
-  @ApiProperty({
-    type: UserResponseDto,
-    description: 'Peer user (P2P conversations only)',
-  })
-  peerUser?: UserResponseDto;
-
-  @ApiProperty({
-    type: GroupResponseDto,
-    description: 'Group (GROUP conversations only)',
-  })
-  group?: GroupResponseDto;
-}
-
 export class CreateGroupResponseDto {
   @ApiProperty({ example: 12, description: 'Group message thread id' })
   threadId!: number;

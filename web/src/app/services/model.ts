@@ -49,14 +49,17 @@ export type Group = S['GroupResponseDto'] & {
   groupMetaFeedId: string;
 };
 
-// peerUser/group are optional on the generated DTO (mutually exclusive by type), but templates branch on
-// `type` first so the accessed one is always present — override to required to keep template accessors simple.
-export type ConversationItem = Omit<
-  S['ConversationItemDto'],
-  'peerUser' | 'group' | 'lastReadSeq' | 'unreadCount' | 'mentionUnread'
-> & {
-  peerUser: S['UserResponseDto'];
-  group: Group;
+type ConversationItemBase = {
+  threadId: number;
+  role: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
+  lastMessageAt: number | null;
+  lastMessageSeq?: number | null;
+  muted: boolean;
+  blocked?: boolean;
+  pinned: boolean;
+  pinnedAt: number | null;
+  clearedSeq: number | null;
+  alias?: string | null;
   /** P2P only: false after unfriend; history remains readable but sending/calling is disabled. */
   friendshipActive?: boolean;
   conversationState?: 'ACTIVE' | 'READ_ONLY';
@@ -72,13 +75,119 @@ export type ConversationItem = Omit<
   lastMessageSenderId?: number | null;
   /** Distinct mention kinds among the server's bounded unread sample. */
   mentionUnread: Array<'all' | 'me'>;
-  // The newest message's per-thread seq (the denormalized thread.lastMessageSeq). Carried so opening a
-  // conversation can pass it as the mark-read `lastReadSeq` (mark all current). Mirrors the backend
-  // ConversationItemDto.lastMessageSeq — also present in the generated type after the next `gen:api` run.
-  lastMessageSeq?: number | null;
   /** Latest group-join application activity; local/client-state metadata used only for list recency. */
   joinRequestAt?: number | null;
 };
+
+export type ConversationItem = ConversationItemBase &
+  (
+    | {
+        type: 'P2P';
+        peerUser: S['UserResponseDto'];
+        group?: never;
+      }
+    | {
+        type: 'GROUP';
+        peerUser?: never;
+        group: Group;
+      }
+  );
+
+export type P2PConversationItem = Extract<ConversationItem, { type: 'P2P' }>;
+export type GroupConversationItem = Extract<
+  ConversationItem,
+  { type: 'GROUP' }
+>;
+
+type P2PPeerInput = Pick<S['UserResponseDto'], 'id' | 'account' | 'name'> &
+  Partial<S['UserResponseDto']>;
+
+/** Construct the canonical local projection for a newly activated, empty P2P thread. */
+export function createP2PConversation(
+  threadId: number,
+  peer: P2PPeerInput,
+  overrides: Partial<P2PConversationItem> = {},
+): P2PConversationItem {
+  return {
+    threadId,
+    type: 'P2P',
+    role: null,
+    lastMessageAt: null,
+    lastMessageSeq: null,
+    muted: false,
+    blocked: false,
+    pinned: false,
+    pinnedAt: null,
+    clearedSeq: null,
+    alias: null,
+    friendshipActive: true,
+    conversationState: 'ACTIVE',
+    lastReadSeq: null,
+    unreadCount: 0,
+    mentionUnread: [],
+    lastMessagePreview: null,
+    lastMessageSenderId: null,
+    ...overrides,
+    peerUser: {
+      avatar: '',
+      bio: '',
+      isForeigner: false,
+      isGroup: false,
+      domain: '',
+      createdAt: 0,
+      updatedAt: 0,
+      profileRev: 0,
+      isDeleted: false,
+      ...peer,
+      ...overrides.peerUser,
+    },
+  };
+}
+
+type GroupInput = Pick<Group, 'id' | 'account' | 'name' | 'ownerId'> &
+  Partial<Group>;
+
+/** Construct the canonical local projection for an empty group thread. */
+export function createGroupConversation(
+  threadId: number,
+  group: GroupInput,
+  overrides: Partial<GroupConversationItem> = {},
+): GroupConversationItem {
+  return {
+    threadId,
+    type: 'GROUP',
+    role: null,
+    lastMessageAt: null,
+    lastMessageSeq: null,
+    muted: false,
+    blocked: false,
+    pinned: false,
+    pinnedAt: null,
+    clearedSeq: null,
+    alias: null,
+    conversationState: 'ACTIVE',
+    lastReadSeq: null,
+    unreadCount: 0,
+    mentionUnread: [],
+    lastMessagePreview: null,
+    lastMessageSenderId: null,
+    ...overrides,
+    group: {
+      avatar: '',
+      description: '',
+      domain: '',
+      threadId,
+      createdAt: 0,
+      updatedAt: 0,
+      profileRev: 0,
+      dissolvedAt: null,
+      memberCount: 0,
+      groupMetaFeedId: '0',
+      ...group,
+      ...overrides.group,
+    },
+  };
+}
 
 export interface ThreadReadState {
   threadId: number;
@@ -148,7 +257,7 @@ export interface PersonalQuotaState {
 }
 
 export type QueryMessageLogParams = S['QueryMessagesDto'];
-export type MessageThreadType = S['ConversationItemDto']['type'];
+export type MessageThreadType = ConversationItem['type'];
 
 // Envelope generic (the generated ApiResult.data is unknown and cannot replace this)
 export interface StandardResponse<T = unknown> {

@@ -424,8 +424,11 @@ export class PushService {
     payload: {
       callSid: string;
       callerUserId: number;
+      /** Web Push has no native SQLite cache; Android FCM deliberately omits these fields. */
       callerName: string;
       callerAvatar: string;
+      callerAccount: string;
+      callerDomain: string;
       threadId: number;
       callType: 'AUDIO' | 'VIDEO';
     },
@@ -448,8 +451,8 @@ export class PushService {
         ts: String(Date.now()),
         callSid: payload.callSid,
         callerUserId: String(payload.callerUserId),
-        callerName: payload.callerName,
-        callerAvatar: payload.callerAvatar,
+        callerAccount: payload.callerAccount,
+        callerDomain: payload.callerDomain,
         threadId: String(payload.threadId),
         callType: payload.callType,
       };
@@ -485,7 +488,11 @@ export class PushService {
 
       // Web Push path (browser/PWA).
       if (webSubs.length > 0 && this.settings.isWebPushConfigured) {
-        const body = JSON.stringify(data);
+        const body = JSON.stringify({
+          ...data,
+          callerName: payload.callerName,
+          callerAvatar: payload.callerAvatar,
+        });
         await Promise.all(
           webSubs.map(async (s) => {
             try {

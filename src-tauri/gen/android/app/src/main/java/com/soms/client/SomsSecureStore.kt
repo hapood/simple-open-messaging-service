@@ -33,6 +33,7 @@ object SomsSecureStore {
     const val API_PREFIX = "/api/v1"
 
     private const val KEY_SESSION_TOKEN = "session_token"
+    private const val KEY_CURRENT_USER_ID = "current_user_id"
     private const val KEY_API_ORIGIN = "api_origin"
     private const val KEY_API_ORIGIN_SECONDARY = "api_origin_secondary"
     /** Kotlin SSE's active-origin choice: "primary" (default) or "secondary". */
@@ -87,6 +88,7 @@ object SomsSecureStore {
         val ed = prefs(ctx).edit()
         if (token.isNullOrEmpty()) {
             ed.remove(KEY_SESSION_TOKEN)
+            ed.remove(KEY_CURRENT_USER_ID)
             ClientStateDb.clearNotificationState(ctx)
         } else {
             ed.putString(KEY_SESSION_TOKEN, token)
@@ -95,6 +97,15 @@ object SomsSecureStore {
     }
 
     fun getSessionToken(ctx: Context): String? = prefs(ctx).getString(KEY_SESSION_TOKEN, null)
+
+    /** Numeric owner of the current device cache. This is storage partitioning only; peer identity remains
+     * the canonical account+domain pair. Populated from the authenticated SSE HELLO. */
+    fun setCurrentUserId(ctx: Context, userId: Int) {
+        if (userId > 0) prefs(ctx).edit().putInt(KEY_CURRENT_USER_ID, userId).apply()
+    }
+
+    fun getCurrentUserId(ctx: Context): Int? =
+        prefs(ctx).getInt(KEY_CURRENT_USER_ID, 0).takeIf { it > 0 }
 
     /** Whether the 6-hour background poller is enabled (default true). The WorkManager worker reads this
      *  on every fire to self-gate, so a toggle-off takes effect even for a process woken in the background

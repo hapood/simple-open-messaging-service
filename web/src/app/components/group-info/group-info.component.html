@@ -261,8 +261,7 @@
         />
         <div class="section-label">
           {{
-            'group.allMembers'
-              | transloco: { count: group()?.memberCount ?? 0 }
+            'group.allMembers' | transloco: { count: group()?.memberCount ?? 0 }
           }}
         </div>
         @for (m of filteredRoster(); track m.userId) {
@@ -364,7 +363,7 @@
         @if (canInvite()) {
           @if (selectedList().length > 0) {
             <div class="selected-friends" role="list">
-              @for (friend of selectedList(); track friend.id) {
+              @for (friend of selectedList(); track friend.threadId) {
                 <button
                   class="selected-friend"
                   type="button"

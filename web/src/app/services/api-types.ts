@@ -667,23 +667,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  '/api/v1/user/thread-info': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Get conversation details (includes peer user/group) */
-    post: operations['UserController_queryUserThreadInfo'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   '/api/v1/user/register': {
     parameters: {
       query?: never;
@@ -4266,6 +4249,14 @@ export interface components {
        */
       take?: number;
     };
+    RegisterDto: {
+      /** @description Login unique name: 1-30 chars; starts alphanumeric; then letters, digits, dot, underscore or hyphen; case-insensitive */
+      account: string;
+      /** @description Display name (1-30 chars; unicode/emoji allowed) */
+      name: string;
+      /** @description Password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()] */
+      password: string;
+    };
     GroupResponseDto: {
       /** @example 12 */
       id: number;
@@ -4318,103 +4309,6 @@ export interface components {
       createdAt: number;
       /** @example 1700000000000 */
       updatedAt: number;
-    };
-    ConversationItemDto: {
-      /**
-       * @description Rendered state for a visible conversation. Hidden/deleted rows are not returned.
-       * @enum {string}
-       */
-      conversationState: 'ACTIVE' | 'READ_ONLY';
-      /**
-       * @description This user's ThreadParticipant row id
-       * @example 1
-       */
-      id: number;
-      /**
-       * @description Conversation (MessageThread) id — the key for send-message / query-messages
-       * @example 12
-       */
-      threadId: number;
-      /**
-       * @description Conversation type
-       * @enum {string}
-       */
-      type: 'P2P' | 'GROUP';
-      /**
-       * @description Member role for GROUP conversations; null for P2P
-       * @enum {string|null}
-       */
-      role: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
-      /**
-       * @description When the last message was sent (ms timestamp). Null on empty threads.
-       * @example 1700000000000
-       */
-      lastMessageAt: number | null;
-      /** @description Per-thread seq of the newest message (the denormalized MessageThread.lastMessageSeq). Null on empty threads. The client passes this as the mark-read `lastReadSeq` when opening a conversation (mark all current up to this seq) — so mark-read ALWAYS carries a seq, never the no-seq "mark all" mode. */
-      lastMessageSeq: number | null;
-      /**
-       * @description Whether the caller has muted this conversation (notification channels — push + notif snapshot — are suppressed; in-app delivery is not).
-       * @example false
-       */
-      muted: boolean;
-      /**
-       * @description Whether the caller has pinned this conversation to the top of their list.
-       * @example false
-       */
-      pinned: boolean;
-      /**
-       * @description Most-recently-pinned timestamp (ms). Drives pinned-tier ordering (desc). Null when not pinned.
-       * @example 1700000000000
-       */
-      pinnedAt: number | null;
-      /**
-       * @description Per-user "clear chat history" sequence watermark. Messages at or below it are hidden for THIS user only; the peer copy is untouched. Null when history has not been cleared.
-       * @example 31
-       */
-      clearedSeq: number | null;
-      /**
-       * @description Whether the caller blocks new messages from this conversation. Applies to P2P and GROUP.
-       * @example false
-       */
-      blocked?: boolean;
-      /**
-       * @description Whether the P2P friendship is active. False keeps the historical conversation readable but read-only; absent on GROUP.
-       * @example true
-       */
-      friendshipActive?: boolean;
-      /**
-       * @description Per-user alias/remark. Overrides peer.account (P2P) / group.name (GROUP) in the CALLER's chat header + list. Null when not set (real name used).
-       * @example Alice (work)
-       */
-      alias?: string | null;
-      /** @description Peer user (P2P conversations only) */
-      peerUser: components['schemas']['UserResponseDto'];
-      /** @description Group (GROUP conversations only) */
-      group: components['schemas']['GroupResponseDto'];
-    };
-    ThreadIdDto: {
-      /**
-       * @description Conversation (MessageThread) id
-       * @example 12
-       */
-      threadId: number;
-    };
-    RegisterDto: {
-      /**
-       * @description Login unique name: 1-30 chars; starts alphanumeric; then letters, digits, dot, underscore or hyphen; case-insensitive
-       * @example alice
-       */
-      account: string;
-      /**
-       * @description Display name (1-30 chars; unicode/emoji allowed)
-       * @example Alice
-       */
-      name: string;
-      /**
-       * @description Password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]
-       * @example P@ssw0rd
-       */
-      password: string;
     };
     CreateGroupResponseDto: {
       /**
@@ -6174,31 +6068,6 @@ export interface operations {
           [name: string]: unknown;
         };
         content?: never;
-      };
-    };
-  };
-  UserController_queryUserThreadInfo: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['ThreadIdDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['ConversationItemDto'];
-          };
-        };
       };
     };
   };
@@ -9580,7 +9449,7 @@ export interface operations {
     parameters: {
       query: {
         account: string;
-        localAccount: string;
+        peerAccount: string;
         after: string;
         before: string;
         take: string;
@@ -9625,7 +9494,7 @@ export interface operations {
     parameters: {
       query: {
         account: string;
-        localAccount: string;
+        peerAccount: string;
         after: string;
         before: string;
         take: string;

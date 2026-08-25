@@ -13,7 +13,7 @@ interface Address {
 }
 
 type ThreadAddress =
-  | { account: UserAccount; localAccount: UserAccount }
+  | { account: UserAccount; peerAccount: UserAccount }
   | { account: GroupAccount };
 
 interface BlobDescriptor {
@@ -52,10 +52,10 @@ interface FederatedMessage extends EncodedMessageContent {
   domain comes from the verified HTTP Message Signature and the target domain is
   the consumer's own domain; neither is repeated inside `thread`.
 - When `thread.account` is a `UserAccount`, the thread is P2P. `account` is
-  hosted by the source domain and `localAccount` MUST be a distinct
+  hosted by the source domain and `peerAccount` MUST be a distinct
   `UserAccount` hosted by the target domain.
 - When `thread.account` is a `GroupAccount`, the thread is GROUP and
-  `localAccount` MUST be absent. Group delivery is scoped to the target peer,
+  `peerAccount` MUST be absent. Group delivery is scoped to the target peer,
   not to an individual member hosted on that peer.
 - The message author remains the explicit `author` address. It MUST NOT be
   inferred from `thread.account`; in particular, a group publisher may relay a

@@ -9,7 +9,11 @@ import type {
   ChatItemData,
   ChatMsgData,
 } from '../app/components/message-cards/chat-item';
-import type { ConversationItem, StandardResponse } from '../app/services/model';
+import {
+  createP2PConversation,
+  type ConversationItem,
+  type StandardResponse,
+} from '../app/services/model';
 import {
   MessageThreadAdapter,
   type MessageThreadLiveCallbacks,
@@ -296,21 +300,13 @@ function mockConversation(
   alias: string,
   peerName: string,
 ): ConversationItem {
-  return {
-    id: threadId,
+  return createP2PConversation(
     threadId,
-    type: 'P2P',
-    alias,
-    unreadCount: 0,
-    friendshipActive: true,
-    conversationState: 'ACTIVE',
-    peerUser: {
+    {
       id: threadId + 10,
       account: peerName.toLocaleLowerCase(),
       name: peerName,
-      avatar: '',
-      domain: '',
     },
-    group: {},
-  } as ConversationItem;
+    { alias },
+  );
 }

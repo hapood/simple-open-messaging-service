@@ -24,7 +24,6 @@ import { RouteService, PopupType } from '../../services/route.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
 import { CallAdapterService } from '../../services/call-adapter';
 import { CallEventService } from '../../services/call-event.service';
-import { AvatarRepository } from '../../services/avatar-cache.service';
 import { uuid } from '../../lib/uuid';
 import { TranslocoService } from '@jsverse/transloco';
 import { translateBizResult } from '../../services/biz-code';
@@ -80,7 +79,6 @@ export class MessageHeaderComponent {
   readonly callActive = computed(
     () => this.callEvents.callState().phase !== 'idle',
   );
-  private readonly avatarRepo = inject(AvatarRepository);
   private readonly transloco = inject(TranslocoService);
   private readonly toast = inject(ToastService);
   private readonly deletionLock = inject(ThreadDeletionLockService);
@@ -99,21 +97,21 @@ export class MessageHeaderComponent {
   /** Place an outgoing audio-first call to the P2P peer. Video is enabled from the shared in-call UI instead
    *  of being a second chat-header entry point. Mints a client-side callSid (the call's idempotency
    *  key + signaling address — a UUIDv4, accepted by CALL_SID_RE) and hands it to the native call layer, which
-   *  POSTs /calls/initiate + creates the offer. The peer's avatar is read from the IDB cache + passed as a
-   *  base64 data URL so the native call notification (CallStyle Person) decodes it directly — NO /uploads
-   *  fetch (the bytes are already on-device; the caller is in the peer's thread, so the avatar is cached). */
-  async placeCall(): Promise<void> {
+   *  POSTs /calls/initiate + creates the offer. Android resolves the peer presentation directly from native
+   *  SQLite by account + domain; the renderer neither
+   *  reads avatar bytes nor serializes them across the JS bridge. */
+  placeCall(): void {
     if (this.callActive()) return;
     const peer = this.userMsgTrd()?.peerUser;
     if (peer?.id === undefined) return;
-    const avatarDataUrl = await this.avatarRepo.getCachedDataUrl(`u${peer.id}`);
     this.callAdapter.initiate(
       peer.id,
       uuid(),
       'AUDIO',
       peer.name ?? '',
       peer.avatar ?? '',
-      avatarDataUrl,
+      peer.account,
+      peer.isForeigner ? (peer.domain ?? '') : '',
     );
   }
 
@@ -216,6 +214,12 @@ export class MessageHeaderComponent {
         labelKey: 'chat.menuSearch',
         icon: AppIconType.SEARCH,
       },
+      {
+        kind: 'action',
+        key: 'shareContact',
+        labelKey: 'contactCard.shareTitle',
+        icon: AppIconType.SHARE,
+      },
       { kind: 'divider' },
       {
         kind: 'action',
@@ -304,6 +308,9 @@ export class MessageHeaderComponent {
       case 'search':
         this.nav.openSearch();
         return;
+      case 'shareContact':
+        this.shareChatCard.emit(trd);
+        return;
       case 'joinRequests':
         this.nav.openAside('group-join-requests');
         return;
@@ -373,19 +380,16 @@ export class MessageHeaderComponent {
         messageKey: 'chat.unfriendConfirmBody',
         confirmKey: 'chat.menuUnfriend',
         cancelKey: 'common.cancel',
-        checkboxKey: 'chat.alsoDeleteData',
         danger: true,
       },
       (result) => {
         if (!result) return;
-        const deleteData = typeof result === 'object' && result.checked;
         void this.runLockedDelete(
           trd.threadId,
           () =>
             firstValueFrom(
-              this.userService.deleteFriend({ userId: peerId, deleteData }),
+              this.userService.deleteFriend({ userId: peerId }),
             ),
-          deleteData,
           () =>
             this.convList.applyThreadMeta(trd.threadId, {
               friendshipActive: false,
@@ -407,19 +411,14 @@ export class MessageHeaderComponent {
         messageKey: 'chat.menuLeaveGroupConfirm',
         confirmKey: 'chat.menuLeaveGroup',
         cancelKey: 'common.cancel',
-        checkboxKey: 'chat.alsoDeleteData',
         danger: true,
       },
       (result) => {
         if (!result) return;
-        const deleteData = typeof result === 'object' && result.checked;
         void this.runLockedDelete(
           trd.threadId,
           () =>
-            firstValueFrom(
-              this.groupService.leaveGroup({ groupId, deleteData }),
-            ),
-          deleteData,
+            firstValueFrom(this.groupService.leaveGroup({ groupId })),
           () =>
             this.convList.applyThreadMeta(trd.threadId, {
               conversationState: 'READ_ONLY',
@@ -432,7 +431,6 @@ export class MessageHeaderComponent {
   private async runLockedDelete(
     threadId: number,
     request: () => Promise<{ code: number; message: string }>,
-    deleteData: boolean,
     onRetain: () => void,
     reloadAfter = true,
   ): Promise<void> {
@@ -443,10 +441,7 @@ export class MessageHeaderComponent {
         this.toast.warn(translateBizResult(res, this.transloco));
         return;
       }
-      if (deleteData) {
-        await this.convList.removeThread(threadId);
-        this.nav.closeChat();
-      } else onRetain();
+      onRetain();
     } catch {
       this.toast.warn(this.transloco.translate('errors.networkError'));
     } finally {

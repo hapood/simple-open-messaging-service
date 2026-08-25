@@ -2000,21 +2000,35 @@ class MainActivity : TauriActivity() {
     private class SomsCallInterface(activity: MainActivity) {
         private val activityRef = java.lang.ref.WeakReference(activity)
 
-        /** Caller begins a call: synchronously seed the native `starting` snapshot, then start the call FGS
-         *  (anchor + audio) while the queued POST /calls/initiate → createOffer → trickle ICE proceeds.
-         *  `callType` ∈ {"AUDIO","VIDEO"}. */
+        /** Caller begins a call. Native SQLite presentation is resolved first; only then is the `starting`
+         *  snapshot published and the call foreground service started. */
         @JavascriptInterface
-        fun initiate(calleeUserId: Int, callSid: String, callType: String, peerName: String, peerAvatar: String, peerAvatarDataUrl: String) {
+        fun initiate(calleeUserId: Int, callSid: String, callType: String, peerAccount: String, peerDomain: String) {
             val a = activityRef.get() ?: return
             a.runOnUiThread {
                 a.ensureCallPermissions(callType) {
-                    if (CallController.initiate(calleeUserId, callSid, callType, peerName, peerAvatar, peerAvatarDataUrl)) {
-                        a.startCallService()
-                    } else {
-                        SomsBridge.eval(
-                            "window.__SOMS_CALL_REJECTED__ && window.__SOMS_CALL_REJECTED__('busy');",
-                        )
-                    }
+                    // Native SQLite is the presentation authority. Resolve it off the UI thread and only
+                    // publish the starting snapshot after the name/avatar are ready.
+                    Thread {
+                        val peer = ClientStateDb.getCallPeer(a.applicationContext, peerAccount, peerDomain)
+                        a.runOnUiThread {
+                            if (CallController.initiate(
+                                    calleeUserId,
+                                    callSid,
+                                    callType,
+                                    peerAccount,
+                                    peerDomain,
+                                    peer?.name ?: "",
+                                    peer?.avatarDataUrl() ?: "",
+                                )) {
+                                a.startCallService()
+                            } else {
+                                SomsBridge.eval(
+                                    "window.__SOMS_CALL_REJECTED__ && window.__SOMS_CALL_REJECTED__('busy');",
+                                )
+                            }
+                        }
+                    }.start()
                 }
             }
         }

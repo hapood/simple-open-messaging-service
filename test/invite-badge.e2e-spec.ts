@@ -140,7 +140,7 @@ describe('Friend-request client state e2e', () => {
     );
   });
 
-  it('does not activate two expired directions until both sides renew', async () => {
+  it('atomically confirms two expired directions after both sides renew', async () => {
     const a = await seedUserWithSession(app, 'expired-a', { name: 'A' });
     const b = await seedUserWithSession(app, 'expired-b', { name: 'B' });
     const pastRequestedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
@@ -217,9 +217,9 @@ describe('Friend-request client state e2e', () => {
         eq(relationshipPair.userHighId, Math.max(a.id, b.id)),
       ),
     });
-    // The peer owns this direction. Its renewed REQUESTED state cannot be
-    // promoted locally; activation waits for the peer to synchronize FRIEND.
-    expect(pair?.active).toBe(false);
+    // Applying the peer-owned renewed request promotes only the effective local request. Crossed
+    // requests are already confirmed while the peer-owned direction remains REQUESTED.
+    expect(pair?.active).toBe(true);
     expect(pair?.threadId).not.toBeNull();
 
     await database.db.transaction((tx) =>

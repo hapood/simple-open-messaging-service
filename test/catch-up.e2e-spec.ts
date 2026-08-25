@@ -167,7 +167,7 @@ describe('thread catch-up + notification feed', () => {
     expect(res.body.data.scannedThrough).toBe(2);
   });
 
-  it('does not advance the recipient feed or preview for a self-authored message', async () => {
+  it('advances the sender feed and preview for cross-device sync', async () => {
     const now = new Date();
     await database.db.transaction(async (tx) => {
       await tx.insert(message).values({
@@ -189,19 +189,27 @@ describe('thread catch-up + notification feed', () => {
           updatedAt: now,
         })
         .where(eq(messageThread.id, tAlice));
-      await ClientMessageFeedWriter.publishMessage(tx, tAlice, 4, recipientId);
+      await ClientMessageFeedWriter.publishMessage(tx, tAlice, 4);
     });
 
-    const unchanged = await getSummary({ after: 3, take: 50 });
-    expect(unchanged.body.data.items).toEqual([]);
-    expect(unchanged.body.data.messageFeedEndId).toBe(3);
+    const advanced = await getSummary({ after: 3, take: 50 });
+    expect(advanced.body.data.items).toHaveLength(1);
+    expect(advanced.body.data.items[0]).toMatchObject({
+      threadId: tAlice,
+      latestMessage: {
+        seq: 4,
+        content: JSON.stringify({ text: 'self-only' }),
+        creator: recipientId,
+      },
+    });
+    expect(advanced.body.data.messageFeedEndId).toBe(4);
 
-    const replay = await getSummary({ after: 0, through: 3, take: 50 });
+    const replay = await getSummary({ after: 0, through: 4, take: 50 });
     const alice = replay.body.data.items.find(
       (item: { threadId: number }) => item.threadId === tAlice,
     );
-    expect(alice.latestMessage.seq).toBe(3);
-    expect(alice.latestMessage.content).not.toContain('self-only');
+    expect(alice.latestMessage.seq).toBe(4);
+    expect(alice.latestMessage.content).toContain('self-only');
   });
 
   it('catch-up rejects a through cursor below after', async () => {

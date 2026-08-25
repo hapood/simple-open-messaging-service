@@ -60,14 +60,14 @@
   white-space: nowrap;
 }
 
+.msg-call--alert .msg-call-title {
+  color: var(--app-danger);
+}
+
 .msg-call-meta {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.msg-call-meta--alert {
-  color: var(--app-danger);
 }
 
 .msg-call-dot {
@@ -80,7 +80,8 @@
 }
 
 .msg-call-time {
-  flex: 0 0 auto;
   color: var(--chat-card-text);
+  font-size: 12px;
+  line-height: 16px;
   opacity: 0.6;
 }

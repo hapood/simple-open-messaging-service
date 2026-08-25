@@ -26,7 +26,7 @@ This is a closed schema with no optional fields.
 {
   "thread": {
     "account": "alice",
-    "localAccount": "bob"
+    "peerAccount": "bob"
   },
   "author": { "account": "alice", "domain": "a.example" },
   "seq": 91,

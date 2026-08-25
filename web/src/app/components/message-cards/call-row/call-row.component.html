@@ -51,22 +51,19 @@
         </div>
 
         <div class="msg-call-copy">
-          <span class="msg-call-title">{{ titleKey() | transloco }}</span>
+          <span class="msg-call-title">{{ statusKey() | transloco }}</span>
+          <span class="msg-call-time">{{ data().time }}</span>
         </div>
       </div>
 
-      <div
-        class="msg-call-meta msg-card-meta msg-{{ side() }}"
-        [class.msg-call-meta--alert]="isAlert()"
-      >
+      <div class="msg-call-meta msg-card-meta msg-{{ side() }}">
         <span>
-          {{ statusKey() | transloco }}
+          {{ titleKey() | transloco }}
           @if (duration()) {
             <span class="msg-call-dot" aria-hidden="true">·</span>
             <span class="msg-call-duration">{{ duration() }}</span>
           }
         </span>
-        <span class="msg-call-time">{{ data().time }}</span>
       </div>
     </div>
   </div>

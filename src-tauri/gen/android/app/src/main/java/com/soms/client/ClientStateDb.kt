@@ -2,6 +2,7 @@ package com.soms.client
 
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
+import android.util.Base64
 import java.io.File
 
 /** WebView-independent notification state in the same local SQLite file used by the Tauri data layer. */
@@ -45,6 +46,49 @@ object ClientStateDb {
             )""".trimIndent(),
         )
         return db
+    }
+
+    data class CallPeer(
+        val name: String,
+        val avatarMime: String?,
+        val avatarBytes: ByteArray?,
+    ) {
+        fun avatarDataUrl(): String {
+            val mime = avatarMime ?: return ""
+            val bytes = avatarBytes ?: return ""
+            return "data:$mime;base64,${Base64.encodeToString(bytes, Base64.NO_WRAP)}"
+        }
+    }
+
+    /** Resolve a direct-call UserProfile by its canonical account+domain within the current device-cache
+     * owner. FederatedMemberProfile's source-peer triple is intentionally not used: it is a group-published
+     * member snapshot, whereas 1:1 calls address a User profile. */
+    fun getCallPeer(ctx: Context, account: String, domain: String): CallPeer? {
+        val ownerUserId = SomsSecureStore.getCurrentUserId(ctx) ?: return null
+        return try {
+            open(ctx).use { db ->
+                db.rawQuery(
+                    """SELECT COALESCE(json_extract(p.payload_json, '$.name'), ''),
+                              a.mime, a.data
+                         FROM profiles p
+                    LEFT JOIN avatars a ON a.user_id = p.user_id AND a.identity = p.identity
+                        WHERE p.user_id = ?1
+                          AND json_extract(p.payload_json, '$.account') = ?2
+                          AND COALESCE(json_extract(p.payload_json, '$.domain'), '') = ?3
+                     ORDER BY p.profile_rev DESC LIMIT 1""".trimIndent(),
+                    arrayOf(ownerUserId.toString(), account, domain),
+                ).use { cursor ->
+                    if (!cursor.moveToFirst()) null else CallPeer(
+                        name = cursor.getString(0) ?: "",
+                        avatarMime = if (cursor.isNull(1)) null else cursor.getString(1),
+                        avatarBytes = if (cursor.isNull(2)) null else cursor.getBlob(2),
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            SomsLog.w("SomsCall") { "local call peer lookup failed: ${e.javaClass.simpleName}: ${e.message}" }
+            null
+        }
     }
 
     fun getMessageFeedCursor(ctx: Context): Int = open(ctx).use { db ->

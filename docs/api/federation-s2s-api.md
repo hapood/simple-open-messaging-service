@@ -149,9 +149,12 @@ The thread sets in the message and tombstone indexes are independent. A thread
 that has messages but no deletions normally appears only in the message feed.
 After a P2P relationship ends, the source may remove that thread independently
 from both projections. The consumer treats state-feed `REVOKED` as the primary
-cleanup signal. If an older query first returns `FORBIDDEN`, it stops that thread
-query and prioritizes a new state drain without rolling back the global feed
-cursor.
+cleanup signal. If an older P2P query first returns `FORBIDDEN` while both
+retained directions are still `REQUESTED` or `ACCEPTED`, it stops that thread
+query and publishes `REVOKED` for its own direction without rewriting the
+peer-authored fact. It publishes nothing if either direction is already
+negative or absent. A GROUP denial only stops the query and prioritizes a new
+state drain. Neither path rolls back the global feed cursor.
 
 `RELATIONSHIP_INTENT/REVOKED` carries no message or tombstone feed end ID. Those IDs appear
 only in feed pages and `feed-heads`. Index feeds carry no message body, and a

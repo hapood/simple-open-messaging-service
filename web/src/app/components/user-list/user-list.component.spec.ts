@@ -1,7 +1,7 @@
 import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { ConversationListService } from '../../services/conversation-list.service';
-import { ConversationItem } from '../../services/model';
+import { ConversationItem, createP2PConversation } from '../../services/model';
 import { UserListComponent } from './user-list.component';
 
 describe('UserListComponent', () => {
@@ -30,10 +30,9 @@ describe('UserListComponent', () => {
 });
 
 function item(id: number, userId: number, name: string): ConversationItem {
-  return {
-    id,
-    threadId: id,
-    type: 'P2P',
-    peerUser: { id: userId, name, account: name.toLowerCase() },
-  } as ConversationItem;
+  return createP2PConversation(id, {
+    id: userId,
+    name,
+    account: name.toLowerCase(),
+  });
 }

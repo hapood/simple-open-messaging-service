@@ -20,6 +20,8 @@ export interface ActiveCallSummary {
   state: string;
   /** The OTHER participant's userId. */
   peerUserId: number;
+  peerAccount: string;
+  peerDomain: string;
   callType: 'AUDIO' | 'VIDEO';
   isCaller: boolean;
   /** Connect epoch-ms (null until connected). */
@@ -41,6 +43,11 @@ export class CallStateRegistry {
   ): void {
     const cur = this.byUser.get(userId);
     if (cur) this.byUser.set(userId, { ...cur, ...patch });
+  }
+
+  setPeerIdentity(userId: number, peerAccount: string, peerDomain: string): void {
+    const cur = this.byUser.get(userId);
+    if (cur) this.byUser.set(userId, { ...cur, peerAccount, peerDomain });
   }
 
   clear(userId: number): void {

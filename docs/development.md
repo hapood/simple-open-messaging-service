@@ -88,12 +88,12 @@ federation node.
 The two process groups can also be restarted independently in separate terminals:
 
 ```bash
-npm run dev:backend
-npm run dev:frontend
+npm run dev:be
+npm run dev:fe
 ```
 
-`dev:backend` builds and starts the three Node processes. Backend source changes require restarting
-this process group. `dev:frontend` starts the shared Angular and Vite dev servers plus Caddy, does not
+`dev:be` builds and starts the three Node processes. Backend source changes require restarting
+this process group. `dev:fe` starts the shared Angular and Vite dev servers plus Caddy, does not
 access PostgreSQL, and applies frontend changes through HMR.
 
 To verify the same prebuilt frontend assets used by deployment, run:
@@ -110,8 +110,8 @@ When the built backend is already running separately, rebuild and restart only t
 group with:
 
 ```bash
-npm run dev:frontend:build
-npm run dev:frontend:built
+npm run dev:fe:build
+npm run dev:fe:built
 ```
 
 To permanently remove the three lab databases and their local runtime state, stop both process

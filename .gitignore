@@ -54,11 +54,6 @@ google-services.json
 
 .npmrc
 
-# Unified runtime state — NEVER tracked. Everything the app writes lives under data/ (=<cwd>/data in
-# dev, /app/data under Docker's WORKDIR): S2S Ed25519 + JWT HMAC keys, logs/, uploads/ (avatars + CAS
-# shards), Caddy state, postgres/. Bind-mounted out of the container in docker-compose.
-/data
-
 # Web bundle build artifact (scripts/package-web-bundle.mjs output). The bundle served in production is
 # image-bound — baked read-only at /app/shell-bundle by the Dockerfile, never under /app/data. This entry
 # only ignores the LOCAL dev packager output (when `npm run bundle:package` is run on the host).

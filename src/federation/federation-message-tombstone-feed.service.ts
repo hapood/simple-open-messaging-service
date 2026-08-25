@@ -445,7 +445,7 @@ export class FederationMessageTombstoneFeedService {
               AND EXISTS (SELECT 1 FROM "ThreadParticipant" p JOIN "User" u ON u.id = p."userId"
                 WHERE p."threadId" = thread.id AND u.account = ${selector.account} AND u."isForeigner" = false)
               AND EXISTS (SELECT 1 FROM "ThreadParticipant" p JOIN "User" u ON u.id = p."userId"
-                WHERE p."threadId" = thread.id AND u.account = ${selector.localAccount}
+                WHERE p."threadId" = thread.id AND u.account = ${selector.peerAccount}
                   AND u."isForeigner" = true AND u.domain = ${peerDomain})
             LIMIT 1
           `);
@@ -518,7 +518,7 @@ export class FederationMessageTombstoneFeedService {
     );
     if (!source || !target)
       throw new Error(`P2P thread ${threadId} has no peer-relative address`);
-    return { account: source.account, localAccount: target.account };
+    return { account: source.account, peerAccount: target.account };
   }
 
   private requiredAddress(

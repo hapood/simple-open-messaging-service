@@ -1,5 +1,12 @@
 import { computed, Injectable, signal } from '@angular/core';
-import type { ConversationItem } from '../app/services/model';
+import type {
+  ConversationItem,
+  P2PConversationItem,
+} from '../app/services/model';
+
+type ConversationMetaPatch = Partial<
+  Omit<P2PConversationItem, 'type' | 'peerUser' | 'group'>
+>;
 
 /**
  * Small in-memory conversation-list facade for the standalone playground.
@@ -31,11 +38,9 @@ export class PlaygroundConversationList {
     this.related.set(items.map((item) => ({ ...item })));
   }
 
-  applyThreadMeta(threadId: number, patch: Partial<ConversationItem>): void {
+  applyThreadMeta(threadId: number, patch: ConversationMetaPatch): void {
     this.current.update((item) =>
-      item?.threadId === threadId
-        ? ({ ...item, ...patch } as ConversationItem)
-        : item,
+      item?.threadId === threadId ? { ...item, ...patch } : item,
     );
   }
 
@@ -43,7 +48,12 @@ export class PlaygroundConversationList {
     threadId: number,
     peerUser: ConversationItem['peerUser'],
   ): void {
-    this.applyThreadMeta(threadId, { peerUser });
+    if (!peerUser) return;
+    this.current.update((item) =>
+      item?.threadId === threadId && item.type === 'P2P'
+        ? { ...item, peerUser }
+        : item,
+    );
   }
 
   applyGroupUpdate(
@@ -52,7 +62,7 @@ export class PlaygroundConversationList {
   ): void {
     const item = this.current();
     if (!item || item.threadId !== threadId || item.type !== 'GROUP') return;
-    this.applyThreadMeta(threadId, { group: { ...item.group, ...patch } });
+    this.current.set({ ...item, group: { ...item.group, ...patch } });
   }
 
   latestSeq(): number | undefined {

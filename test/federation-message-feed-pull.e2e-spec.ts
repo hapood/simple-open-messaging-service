@@ -61,7 +61,7 @@ describe('FederationMessageFeedPullService', () => {
   ): FederationMessageFeedPage => ({
     items: feedIds.map((feedId) => ({
       feedId: feedId.toString(),
-      thread: { account: 'alice', localAccount: 'bob' },
+      thread: { account: 'alice', peerAccount: 'bob' },
       messageEndSeq: feedId.toString(),
     })),
     scannedThrough: scannedThrough.toString(),

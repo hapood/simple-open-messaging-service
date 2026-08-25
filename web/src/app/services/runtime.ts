@@ -238,9 +238,8 @@ declare global {
         calleeUserId: number,
         callSid: string,
         callType: 'AUDIO' | 'VIDEO',
-        peerName: string,
-        peerAvatar: string,
-        peerAvatarDataUrl: string,
+        peerAccount: string,
+        peerDomain: string,
       ) => void;
       accept: (callSid: string) => void;
       decline: (callSid: string) => void;

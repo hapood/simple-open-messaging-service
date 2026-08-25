@@ -65,7 +65,7 @@ This is a closed schema. `account`, `domain`, and `displayName` are required.
 {
   "thread": {
     "account": "alice",
-    "localAccount": "bob"
+    "peerAccount": "bob"
   },
   "author": { "account": "alice", "domain": "a.example" },
   "seq": 72,

@@ -61,7 +61,7 @@
       }
     },
     {
-      "name": "profile snapshot cannot have localAccount",
+      "name": "profile snapshot cannot have peerAccount",
       "schema": "urn:somfp:v1:state-feed",
       "value": {
         "items": [
@@ -69,7 +69,7 @@
             "account": "alice",
             "domain": "a.example",
             "eventType": "PROFILE",
-            "localAccount": "bob",
+            "peerAccount": "bob",
             "feedId": "1",
             "body": {
               "displayName": "Alice",
@@ -137,7 +137,7 @@
               "account": "alice",
               "domain": "a.example",
               "eventType": "RELATIONSHIP_INTENT",
-              "localAccount": "bob",
+              "peerAccount": "bob",
               "feedId": "1",
               "body": {
                 "status": "REQUESTED",
@@ -157,7 +157,7 @@
               "account": "alice",
               "domain": "a.example",
               "eventType": "RELATIONSHIP_INTENT",
-              "localAccount": "bob",
+              "peerAccount": "bob",
               "feedId": "1",
               "body": {
                 "status": "REQUESTED",
@@ -177,7 +177,7 @@
               "account": "alice",
               "domain": "a.example",
               "eventType": "RELATIONSHIP_INTENT",
-              "localAccount": "bob",
+              "peerAccount": "bob",
               "feedId": "1",
               "body": {
                 "status": "REQUESTED",
@@ -203,7 +203,7 @@
               "account": "alice",
               "domain": "a.example",
               "eventType": "RELATIONSHIP_INTENT",
-              "localAccount": "bob",
+              "peerAccount": "bob",
               "feedId": "1",
               "body": {
                 "status": "ACCEPTED",
@@ -223,7 +223,7 @@
               "account": "alice",
               "domain": "a.example",
               "eventType": "RELATIONSHIP_INTENT",
-              "localAccount": "bob",
+              "peerAccount": "bob",
               "feedId": "1",
               "body": {
                 "status": "ACCEPTED",
@@ -243,7 +243,7 @@
               "account": "alice",
               "domain": "a.example",
               "eventType": "RELATIONSHIP_INTENT",
-              "localAccount": "bob",
+              "peerAccount": "bob",
               "feedId": "1",
               "body": {
                 "status": "REVOKED",
@@ -268,7 +268,7 @@
             "account": "alice",
             "domain": "a.example",
             "eventType": "RELATIONSHIP_INTENT",
-            "localAccount": "bob",
+            "peerAccount": "bob",
             "feedId": "1",
             "body": {
               "status": "REQUESTED",
@@ -476,11 +476,11 @@
       }
     },
     {
-      "name": "group thread selector rejects local account",
+      "name": "group thread selector rejects peer account",
       "schema": "urn:somfp:v1:http-parameters#/$defs/threadDataQuery",
       "value": {
         "account": "!group",
-        "localAccount": "bob",
+        "peerAccount": "bob",
         "after": "0"
       }
     },

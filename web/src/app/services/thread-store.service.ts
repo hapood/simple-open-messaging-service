@@ -11,7 +11,13 @@ import {
 } from './thread-catch-up.service';
 import { toDisplayText } from '../lib/message-entity';
 import { deriveMessagePreview } from '../../../../shared/message-preview';
-import { ConversationItem, ThreadReadState, User } from './model';
+import {
+  ConversationItem,
+  GroupConversationItem,
+  P2PConversationItem,
+  ThreadReadState,
+  User,
+} from './model';
 import { ThreadDeletionLockService } from './thread-deletion-lock.service';
 import { MsgService } from './message.service';
 import { MemberProfileRepository } from './member-profile-store.service';
@@ -89,13 +95,11 @@ export class ThreadRepository {
     number,
     { threadId: number; seq: number; ts: number }
   >();
-  /** Unknown-thread NEW_MESSAGE signals are retained while the complete ConversationItem is fetched.
-   *  One request per thread is enough; a burst only replaces the pending signal with its newest seq. */
+  /** A message can race ahead of the relationship state page that materializes its thread. */
   private readonly pendingUnknownMessages = new Map<
     number,
     { threadId: number; seq: number; ts: number }
   >();
-  private readonly unknownThreadHydrations = new Map<number, Promise<void>>();
 
   /** A thread promoted to index 0 on the most recent update (to be FLIP-animated by the list), or null.
    *  Set in {@link applyItems} / {@link upsertThread} when a top-insert was requested; the list clears it
@@ -111,6 +115,10 @@ export class ThreadRepository {
   private _deltaInFlight = false;
   private _pendingTailFeedId: number | undefined;
   private _fullStateDrainTarget: number | undefined;
+  /** UI-facing revisions collected across every page/tail in the current state-feed drain. Publishing
+   * them only at the drain boundary prevents consumers from rendering half of a multi-row transition. */
+  private _drainFriendIntentRevision: number | undefined;
+  private _drainFriendRequestRevision: number | undefined;
 
   /** Per-thread in-memory high-water mark for the newest message seq observed in this live session. It also
    *  avoids repeated list work for duplicate SSE
@@ -250,13 +258,14 @@ export class ThreadRepository {
     this._pendingTopId = null;
     this._deltaInFlight = false;
     this._pendingTailFeedId = undefined;
+    this._drainFriendIntentRevision = undefined;
+    this._drainFriendRequestRevision = undefined;
     this.lastSeenSeq.clear();
     this.serverLastReadSeq.clear();
     this.localStableReadSeq.clear();
     this._readCommitPending.set(new Set());
     this.bufferedNewMessage.clear();
     this.pendingUnknownMessages.clear();
-    this.unknownThreadHydrations.clear();
     this._threadHwms.set({});
     this.readRevision = undefined;
     this.readSyncInFlight = false;
@@ -384,12 +393,12 @@ export class ThreadRepository {
   /** Replace a P2P item's peerUser (avatar/name/bio) after a federated profile sync. No-op for groups /
    *  absent items. (Via the facade from peer-profile / chat-open.) */
   updatePeerUser(threadId: number, user: User): void {
-    let changed: ConversationItem | undefined;
+    let changed: P2PConversationItem | undefined;
     this._items.update((list) => {
       const found = list.find(
         (t) => t.threadId === threadId && t.type === 'P2P',
       );
-      if (!found) return list;
+      if (!found || found.type !== 'P2P') return list;
       changed = { ...found, peerUser: user };
       return list.map((t) =>
         t.threadId === threadId && t.type === 'P2P' ? changed! : t,
@@ -413,10 +422,10 @@ export class ThreadRepository {
       groupMetaFeedId?: string;
     },
   ): void {
-    let changed: ConversationItem | undefined;
+    let changed: GroupConversationItem | undefined;
     this._items.update((list) =>
       list.map((t) => {
-        if (t.threadId !== threadId || !t.group) return t;
+        if (t.threadId !== threadId || t.type !== 'GROUP') return t;
         const group = { ...t.group };
         if (patch.name !== undefined) group.name = patch.name;
         if (patch.description !== undefined)
@@ -578,19 +587,22 @@ export class ThreadRepository {
 
   /** Insert or refresh a single ConversationItem from an explicit conversation fetch. Mirrors
    *  applyItems' FLIP: if `_pendingTopId` matches, force-top it + emit `topInserted`. Idempotent. */
-  private upsertThread(
-    item: Omit<
-      ConversationItem,
-      'lastReadSeq' | 'unreadCount' | 'mentionUnread'
-    >,
-  ): void {
+  private upsertThread(item: ConversationItem): void {
     let shouldSort = false;
-    let reconciled: ConversationItem = {
-      ...item,
-      lastReadSeq: null,
-      unreadCount: 0,
-      mentionUnread: [],
-    };
+    let reconciled: ConversationItem =
+      item.type === 'P2P'
+        ? {
+            ...item,
+            lastReadSeq: null,
+            unreadCount: 0,
+            mentionUnread: [],
+          }
+        : {
+            ...item,
+            lastReadSeq: null,
+            unreadCount: 0,
+            mentionUnread: [],
+          };
     reconciled = this.normalizeGroupProjection(reconciled);
     this._items.update((list) => {
       const idx = list.findIndex((t) => t.threadId === reconciled.threadId);
@@ -682,12 +694,12 @@ export class ThreadRepository {
   }
 
   private applyPeerProfile(u: User): void {
-    let changed: ConversationItem | undefined;
+    let changed: P2PConversationItem | undefined;
     this._items.update((list) => {
       const found = list.find(
         (t) => t.type === 'P2P' && t.peerUser?.id === u.id,
       );
-      if (!found) return list;
+      if (!found || found.type !== 'P2P') return list;
       // Concurrent pulls may finish out of order; never regress an already-applied profile.
       if ((u.profileRev ?? 0) < (found.peerUser.profileRev ?? 0)) return list;
       changed = { ...found, peerUser: u };
@@ -790,9 +802,7 @@ export class ThreadRepository {
     return existed;
   }
 
-  /** Pull a complete row for a NEW_MESSAGE whose thread is absent locally. Upsert is idempotent by threadId,
-   *  so it is safe if the state-delta path inserts the same thread too. Replay the newest signal retained
-   *  during hydration so a later message cannot be missed by the response snapshot. */
+  /** Retain an early message signal until its relationship intent page materializes the thread. */
   private hydrateUnknownThread(msg: {
     threadId: number;
     seq: number;
@@ -801,31 +811,6 @@ export class ThreadRepository {
     const pending = this.pendingUnknownMessages.get(msg.threadId);
     if (!pending || msg.seq > pending.seq)
       this.pendingUnknownMessages.set(msg.threadId, msg);
-    if (this.unknownThreadHydrations.has(msg.threadId)) return;
-
-    const sessionUserId = this.userService.sessionUserId();
-    let run!: Promise<void>;
-    run = (async () => {
-      try {
-        const res = await firstValueFrom(
-          this.userService.getThreadInfo({ threadId: msg.threadId }),
-        );
-        if (this.userService.sessionUserId() !== sessionUserId) return;
-        if (res.code !== 0 || !res.data) return;
-        this.markTopOnNextUpdate(msg.threadId);
-        this.upsertThread(res.data);
-        const latest = this.pendingUnknownMessages.get(msg.threadId);
-        if (latest) this.applyNewMessageToKnownThread(latest);
-      } catch {
-        // A later NEW_MESSAGE, STATE_REV_UPDATED, or reconnect HELLO retries/reconciles the thread.
-      } finally {
-        if (this.unknownThreadHydrations.get(msg.threadId) === run) {
-          this.pendingUnknownMessages.delete(msg.threadId);
-          this.unknownThreadHydrations.delete(msg.threadId);
-        }
-      }
-    })();
-    this.unknownThreadHydrations.set(msg.threadId, run);
   }
 
   private advanceThreadSeq(threadId: number, seq: number): boolean {
@@ -1141,6 +1126,7 @@ export class ThreadRepository {
     if (targetFeedId <= cursor) return;
     if (cursor === 0) this._fullStateDrainTarget = targetFeedId;
     this._deltaInFlight = true;
+    let pageCommitted = false;
     try {
       const res = await firstValueFrom(
         this.userService.queryStateFeed({
@@ -1160,8 +1146,10 @@ export class ThreadRepository {
             (this._fullStateDrainTarget === targetFeedId ? 'full' : 'delta') ||
           !Array.isArray(page.items) ||
           !Number.isSafeInteger(page.scannedThrough) ||
+          !Number.isSafeInteger(page.stateFeedEndId) ||
           page.scannedThrough <= cursor ||
           page.scannedThrough > targetFeedId ||
+          page.stateFeedEndId < page.scannedThrough ||
           page.items.some(
             (item, index, items) =>
               !Number.isSafeInteger(item.feedId) ||
@@ -1210,13 +1198,7 @@ export class ThreadRepository {
         }
         // State items and any referenced group-meta pages are committed with one durable cursor.
         let friendIntentRevision: number | undefined;
-        const relationshipStates = new Map<
-          number,
-          {
-            incoming?: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
-            outgoing?: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
-          }
-        >();
+        const relationshipThreadIds = new Set<number>();
         for (const op of delta) {
           if (op.eventType === 'RELATIONSHIP_INTENT') {
             // Persisted atomically by WebdbService. The friend-request dialog reads the compacted
@@ -1232,10 +1214,13 @@ export class ThreadRepository {
               Number.isSafeInteger(body.localThreadId) &&
               body.localThreadId > 0
             ) {
-              const state = relationshipStates.get(body.localThreadId) ?? {};
-              if (body.direction === 'INCOMING') state.incoming = body.status;
-              else state.outgoing = body.status;
-              relationshipStates.set(body.localThreadId, state);
+              relationshipThreadIds.add(body.localThreadId);
+            } else if (
+              'group' in body &&
+              Number.isSafeInteger(body.threadId) &&
+              body.threadId > 0
+            ) {
+              relationshipThreadIds.add(body.threadId);
             }
           } else if (op.eventType === 'PROFILE') {
             this.applyStateProfile(op);
@@ -1264,27 +1249,29 @@ export class ThreadRepository {
             });
           }
         }
-        for (const [threadId, state] of relationshipStates) {
-          const active =
-            state.incoming === 'ACCEPTED' && state.outgoing === 'ACCEPTED';
-          const ended =
-            state.incoming === 'REVOKED' ||
-            state.outgoing === 'REVOKED' ||
-            state.incoming === 'REQUESTED' ||
-            state.outgoing === 'REQUESTED';
-          if (!active && !ended) continue;
-          this.applyThreadMeta(threadId, {
-            friendshipActive: active,
-            conversationState: active ? 'ACTIVE' : 'READ_ONLY',
-          });
+        if (relationshipThreadIds.size > 0) {
+          for (const thread of await this.webdb.getThreads()) {
+            if (!relationshipThreadIds.has(thread.threadId)) continue;
+            this.upsertThread(thread);
+            const pending = this.pendingUnknownMessages.get(thread.threadId);
+            if (pending) {
+              this.pendingUnknownMessages.delete(thread.threadId);
+              this.markTopOnNextUpdate(thread.threadId);
+              this.applyNewMessageToKnownThread(pending);
+            }
+          }
         }
         if (friendIntentRevision !== undefined)
-          this.userService.applyFriendIntentStateRevision(friendIntentRevision);
+          this._drainFriendIntentRevision = Math.max(
+            this._drainFriendIntentRevision ?? 0,
+            friendIntentRevision,
+          );
         const friendRequestRevision = (await this.webdb.getMeta(
           'friendRequestStateRevision',
         )) as number | undefined;
         if (typeof friendRequestRevision === 'number')
-          this.userService.applyFriendRequestStateRevision(
+          this._drainFriendRequestRevision = Math.max(
+            this._drainFriendRequestRevision ?? 0,
             friendRequestRevision,
           );
         this.userService.advanceStateFeedCursor(page.scannedThrough);
@@ -1293,8 +1280,17 @@ export class ThreadRepository {
             this._pendingTailFeedId ?? targetFeedId,
             targetFeedId,
           );
+        // The first notification for a transaction may carry the first of several allocated feed ids.
+        // The response exposes the committed account HWM, so extend this same drain through it instead
+        // of publishing an intermediate projection and waiting for the next SSE frame.
+        if (page.stateFeedEndId > page.scannedThrough)
+          this._pendingTailFeedId = Math.max(
+            this._pendingTailFeedId ?? page.stateFeedEndId,
+            page.stateFeedEndId,
+          );
         else if (this._fullStateDrainTarget === targetFeedId)
           this._fullStateDrainTarget = undefined;
+        pageCommitted = true;
       }
     } catch (error) {
       // State pages and the local cursor are one consistency boundary. Any
@@ -1302,6 +1298,8 @@ export class ThreadRepository {
       // complete drain; queued tails are discarded and require a new HELLO or
       // lightweight state signal before another attempt.
       this._pendingTailFeedId = undefined;
+      this._drainFriendIntentRevision = undefined;
+      this._drainFriendRequestRevision = undefined;
       this.toast.warn(this.transloco.translate('errors.stateSyncFatal'), {
         duration: 'forever',
         interactive: true,
@@ -1316,6 +1314,19 @@ export class ThreadRepository {
         tail > (this.userService.stateFeedCursor() ?? -Infinity)
       ) {
         void this.pullDelta(tail);
+      } else if (pageCommitted) {
+        // All pages and any coalesced tail are now durable. Consumers may safely re-read projections
+        // without observing a half-applied relationship pair.
+        if (this._drainFriendIntentRevision !== undefined)
+          this.userService.applyFriendIntentStateRevision(
+            this._drainFriendIntentRevision,
+          );
+        if (this._drainFriendRequestRevision !== undefined)
+          this.userService.applyFriendRequestStateRevision(
+            this._drainFriendRequestRevision,
+          );
+        this._drainFriendIntentRevision = undefined;
+        this._drainFriendRequestRevision = undefined;
       }
     }
   }
@@ -1377,8 +1388,23 @@ export class ThreadRepository {
           candidate.group.account === item.account &&
           candidate.group.domain === item.domain,
       );
-      if (!thread) throw new Error('group-meta head has no local thread');
-      const current = thread.group.groupMetaFeedId ?? '0';
+      const groupIntents = items.filter(
+        (candidate) =>
+          candidate.eventType === 'RELATIONSHIP_INTENT' &&
+          ((candidate.account === item.account && candidate.domain === item.domain) ||
+            (candidate.subjectAccount === item.account &&
+              candidate.subjectDomain === item.domain)),
+      );
+      const projectedThreadId = groupIntents
+        .map((candidate) => candidate.body)
+        .find(
+          (body): body is import('./user.service').ClientGroupInviteIntent =>
+            'threadId' in body && Number.isSafeInteger(body.threadId),
+        )?.threadId;
+      if ((!thread || thread.type !== 'GROUP') && projectedThreadId === undefined)
+        throw new Error('group-meta head has no local thread');
+      const threadId = thread?.type === 'GROUP' ? thread.threadId : projectedThreadId!;
+      const current = thread?.type === 'GROUP' ? (thread.group.groupMetaFeedId ?? '0') : '0';
       if (BigInt(current) >= BigInt(item.body.groupMetaFeedEndId)) continue;
       const mode = current === '0' ? 'full' : 'delta';
       let after = current;
@@ -1388,7 +1414,7 @@ export class ThreadRepository {
         const requestedAfter = after;
         const response = await firstValueFrom(
           this.userService.queryGroupMeta({
-            threadId: thread.threadId,
+            threadId,
             mode,
             after,
             take: 100,
@@ -1413,7 +1439,7 @@ export class ThreadRepository {
           throw new Error('group-meta pagination made no progress');
       } while (true);
       updates.push({
-        threadId: thread.threadId,
+        threadId,
         page: {
           account: item.account,
           mode,

@@ -291,7 +291,7 @@ export class S2sController implements OnModuleDestroy {
   async queryMessageTombstones(
     @Req() req: FastifyRequest,
     @Query('account') account?: string,
-    @Query('localAccount') localAccount?: string,
+    @Query('peerAccount') peerAccount?: string,
     @Query('after') afterParam?: string,
     @Query('before') beforeParam?: string,
     @Query('take') takeParam?: string,
@@ -299,13 +299,13 @@ export class S2sController implements OnModuleDestroy {
   ) {
     this.assertQueryShape(req, [
       'account',
-      'localAccount',
+      'peerAccount',
       'after',
       'before',
       'take',
       'through',
     ]);
-    const selector = this.parseThreadQuery(account, localAccount);
+    const selector = this.parseThreadQuery(account, peerAccount);
     const peerDomain = this.signerDomain(req);
     if (afterParam !== undefined && beforeParam !== undefined) {
       throw new BusinessException(
@@ -386,7 +386,7 @@ export class S2sController implements OnModuleDestroy {
   async queryMessages(
     @Req() req: FastifyRequest,
     @Query('account') account?: string,
-    @Query('localAccount') localAccount?: string,
+    @Query('peerAccount') peerAccount?: string,
     @Query('after') afterParam?: string,
     @Query('before') beforeParam?: string,
     @Query('take') takeParam?: string,
@@ -395,14 +395,14 @@ export class S2sController implements OnModuleDestroy {
   ) {
     this.assertQueryShape(req, [
       'account',
-      'localAccount',
+      'peerAccount',
       'after',
       'before',
       'take',
       'through',
       'includeSelf',
     ]);
-    const selector = this.parseThreadQuery(account, localAccount);
+    const selector = this.parseThreadQuery(account, peerAccount);
     const peerDomain = this.signerDomain(req);
     if (
       includeSelfParam !== undefined &&
@@ -605,7 +605,7 @@ export class S2sController implements OnModuleDestroy {
     return parsed;
   }
 
-  private parseThreadQuery(account?: string, localAccount?: string) {
+  private parseThreadQuery(account?: string, peerAccount?: string) {
     if (account === undefined) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
@@ -615,23 +615,23 @@ export class S2sController implements OnModuleDestroy {
     }
     const normalizedAccount = requireAccount(account, 'account');
     if (!normalizedAccount.startsWith('!')) {
-      if (localAccount === undefined) {
+      if (peerAccount === undefined) {
         throw new BusinessException(
           BusinessCode.FEDERATION_MALFORMED,
-          'localAccount is required for a P2P thread query',
+          'peerAccount is required for a P2P thread query',
           HttpStatus.BAD_REQUEST,
         );
       }
       return {
         type: 'P2P' as const,
         account: requireUserAccount(normalizedAccount, 'account'),
-        localAccount: requireUserAccount(localAccount, 'localAccount'),
+        peerAccount: requireUserAccount(peerAccount, 'peerAccount'),
       };
     }
-    if (localAccount !== undefined) {
+    if (peerAccount !== undefined) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'localAccount is forbidden for a GROUP thread query',
+        'peerAccount is forbidden for a GROUP thread query',
         HttpStatus.BAD_REQUEST,
       );
     }

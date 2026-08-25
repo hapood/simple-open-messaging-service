@@ -22,7 +22,10 @@ import { NavStateMachineService } from '../../../services/nav-state.service';
 import { LayoutService } from '../../../services/layout.service';
 import { InlineTranslocoLoader } from '../../../i18n/transloco.loader';
 import { CspSafeIcuTranspiler } from '../../../i18n/csp-safe-icu.transpiler';
-import type { ConversationItem } from '../../../services/model';
+import {
+  createP2PConversation,
+  type ConversationItem,
+} from '../../../services/model';
 
 /**
  * A/B double-buffer coordinator — regression + behavior coverage for the app's core thread-switch logic.
@@ -74,12 +77,7 @@ class StubThreadComponent {
 class StubEmptyComponent {}
 
 const item = (threadId: number, name: string) =>
-  ({
-    id: threadId,
-    threadId,
-    type: 'P2P',
-    peerUser: { id: threadId, account: name },
-  }) as ConversationItem;
+  createP2PConversation(threadId, { id: threadId, account: name, name });
 
 describe('ChatPaneComponent A/B coordinator', () => {
   let fixture: ReturnType<typeof TestBed.createComponent<ChatPaneComponent>>;

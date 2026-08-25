@@ -67,7 +67,7 @@ The author server validates that a mention applies to the thread before first pe
 {
   "thread": {
     "account": "alice",
-    "localAccount": "bob"
+    "peerAccount": "bob"
   },
   "author": { "account": "alice", "domain": "a.example" },
   "seq": 42,
@@ -86,7 +86,7 @@ The author server validates that a mention applies to the thread before first pe
 {
   "thread": {
     "account": "alice",
-    "localAccount": "bob"
+    "peerAccount": "bob"
   },
   "author": { "account": "bob", "domain": "b.example" },
   "seq": 57,

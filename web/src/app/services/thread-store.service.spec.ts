@@ -11,7 +11,13 @@ import { ProfileRepository } from './profile-store.service';
 import { UserService } from './user.service';
 import { MsgService } from './message.service';
 import { WebsocketService } from './websocket.service';
-import { ConversationItem, Message, User } from './model';
+import {
+  ConversationItem,
+  createP2PConversation,
+  Message,
+  P2PConversationItem,
+  User,
+} from './model';
 import { ToastService } from './toast.service';
 import { TranslocoService } from '@jsverse/transloco';
 
@@ -26,40 +32,13 @@ function flush(ms = 0): Promise<void> {
 function p2p(
   threadId: number,
   peerId: number,
-  opts: Partial<ConversationItem> = {},
-): ConversationItem {
-  return {
-    id: threadId,
+  opts: Partial<P2PConversationItem> = {},
+): P2PConversationItem {
+  return createP2PConversation(
     threadId,
-    type: 'P2P',
-    conversationState: 'ACTIVE',
-    lastReadSeq: null,
-    role: null,
-    unreadCount: 0,
-    mentionUnread: [],
-    lastMessagePreview: null,
-    lastMessageAt: null,
-    lastMessageSeq: null,
-    lastMessageSenderId: null,
-    muted: false,
-    pinned: false,
-    pinnedAt: null,
-    clearedSeq: null,
-    peerUser: {
-      id: peerId,
-      account: `u${peerId}`,
-      name: `User ${peerId}`,
-      avatar: '',
-      bio: '',
-      isForeigner: false,
-      domain: '',
-      createdAt: 0,
-      updatedAt: 0,
-      isDeleted: false,
-    } as User,
-    group: undefined as unknown as ConversationItem['group'],
-    ...opts,
-  };
+    { id: peerId, account: `u${peerId}`, name: `User ${peerId}` },
+    opts,
+  );
 }
 
 describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
@@ -73,7 +52,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   let sessionProfile: ReturnType<typeof signal<User | undefined>>;
   let establishSessionSpy: Mock;
   let queryStateFeedSpy: Mock;
-  let getThreadInfoSpy: Mock;
   let queryReadDeltaSpy: Mock;
   let queryUserInfoSpy: Mock;
   let advanceCursorSpy: Mock;
@@ -183,10 +161,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
                     },
                   }),
               )),
-            getThreadInfo: (getThreadInfoSpy = vi
-              .fn()
-              .mockName('getThreadInfo')
-              .mockReturnValue(of({ code: 1 }))),
             queryReadDelta: (queryReadDeltaSpy = vi
               .fn()
               .mockName('queryReadDelta')
@@ -197,6 +171,19 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
               .fn()
               .mockName('queryUserInfo')
               .mockReturnValue(of({ code: 0, data: [] }))),
+            queryGroupMeta: vi.fn().mockReturnValue(
+              of({
+                code: 0,
+                data: {
+                  account: '!dev',
+                  mode: 'full',
+                  items: [],
+                  scannedThrough: '1',
+                  groupMetaFeedEndId: '1',
+                  hasMore: false,
+                },
+              }),
+            ),
             applyStateProfile: (profile: User) => {
               if (profile.id === sessionProfile()?.id)
                 sessionProfile.set(profile);
@@ -532,45 +519,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(repo.items()[0].lastMessageAt).toBe(300);
   });
 
-  it('actively hydrates an unknown thread and coalesces messages behind one request', async () => {
-    await populate([p2p(1, 11)]);
-    const response = new Subject<{
-      code: number;
-      data?: ConversationItem;
-    }>();
-    getThreadInfoSpy.mockReturnValue(response);
-
-    eventSubject.next({
-      event: 'NEW_MESSAGE',
-      data: { threadId: 2, seq: 5, ts: 200 },
-    });
-    eventSubject.next({
-      event: 'NEW_MESSAGE',
-      data: { threadId: 2, seq: 7, ts: 300 },
-    });
-
-    expect(getThreadInfoSpy).toHaveBeenCalledTimes(1);
-
-    expect(getThreadInfoSpy).toHaveBeenCalledWith({ threadId: 2 });
-    response.next({
-      code: 0,
-      data: p2p(2, 22, { lastMessageSeq: 5, lastMessageAt: 200 }),
-    });
-    response.complete();
-    await flush(20);
-
-    expect(repo.items()[0]).toEqual(
-      expect.objectContaining({
-        threadId: 2,
-        lastMessageSeq: 7,
-        lastMessageAt: 300,
-      }),
-    );
-    expect(await (await webdb.db()).get('threads', 2)).toEqual(
-      expect.objectContaining({ lastMessageSeq: 7 }),
-    );
-  });
-
   // ── mutations (each writes through to IDB + emits a fine-grained signal update) ───────────────
 
   it('applyThreadMeta patches the row, re-sorts (pin), and writes through to IDB', async () => {
@@ -647,6 +595,263 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   });
 
   // ── STATE_FEED_UPDATED delta (thread and profile state share one ordered stream) ──
+
+  it('hydrates a newly activated zero-message friendship thread from relationship state', async () => {
+    emitHello({ userId: 1, stateFeedEndId: 0 });
+    await flush(20);
+    cursorSignal.set(1);
+    const peer = {
+      id: 22,
+      account: 'bob',
+      name: 'Bob',
+      avatar: '',
+      bio: '',
+      domain: 'peer.test',
+      isForeigner: true,
+    };
+    queryStateFeedSpy.mockReturnValue(
+      of({
+        code: 0,
+        data: {
+          mode: 'delta',
+          items: [
+            {
+              feedId: 2,
+              account: 'alice',
+              domain: 'local.test',
+              eventType: 'RELATIONSHIP_INTENT',
+              subjectAccount: 'bob',
+              subjectDomain: 'peer.test',
+              body: {
+                status: 'REQUESTED',
+                note: '',
+                requestedAt: Date.now(),
+                expiresAt: Date.now() + 60_000,
+                direction: 'OUTGOING',
+                localThreadId: 9,
+                peer,
+              },
+            },
+            {
+              feedId: 3,
+              account: 'bob',
+              domain: 'peer.test',
+              eventType: 'RELATIONSHIP_INTENT',
+              subjectAccount: 'alice',
+              subjectDomain: 'local.test',
+              body: {
+                status: 'ACCEPTED',
+                note: '',
+                requestedAt: 1,
+                expiresAt: null,
+                direction: 'INCOMING',
+                localThreadId: 9,
+                peer,
+              },
+            },
+          ],
+          hasMore: false,
+          scannedThrough: 3,
+          stateFeedEndId: 3,
+        },
+      }),
+    );
+    eventSubject.next({
+      event: 'NEW_MESSAGE',
+      data: { threadId: 9, seq: 7, ts: 300 },
+    });
+
+    eventSubject.next({
+      event: 'STATE_FEED_UPDATED',
+      data: { feedId: 3 },
+    });
+    await flush(30);
+
+    expect(repo.items()).toEqual([
+      expect.objectContaining({
+        threadId: 9,
+        friendshipActive: true,
+        conversationState: 'ACTIVE',
+        lastMessageSeq: 7,
+        lastMessageAt: 300,
+      }),
+    ]);
+  });
+
+  it('creates a group conversation from bilateral intents before applying its group-meta head', async () => {
+    emitHello({ userId: 1, stateFeedEndId: 0 });
+    await flush(20);
+    cursorSignal.set(1);
+    const group = {
+      account: '!dev',
+      domain: '',
+      isLocal: true,
+      name: 'dev',
+      avatar: '',
+      description: '',
+      profileRev: 1,
+    };
+    queryStateFeedSpy.mockReturnValue(
+      of({
+        code: 0,
+        data: {
+          mode: 'delta',
+          items: [
+            {
+              feedId: 2,
+              account: '!dev',
+              domain: '',
+              eventType: 'RELATIONSHIP_INTENT',
+              subjectAccount: 'alice',
+              subjectDomain: '',
+              body: {
+                status: 'ACCEPTED',
+                note: '',
+                requestedAt: 1,
+                expiresAt: null,
+                direction: 'INCOMING',
+                threadId: 12,
+                group,
+              },
+            },
+            {
+              feedId: 3,
+              account: 'alice',
+              domain: '',
+              eventType: 'RELATIONSHIP_INTENT',
+              subjectAccount: '!dev',
+              subjectDomain: '',
+              body: {
+                status: 'ACCEPTED',
+                note: '',
+                requestedAt: 1,
+                expiresAt: null,
+                direction: 'OUTGOING',
+                threadId: 12,
+                group,
+              },
+            },
+            {
+              feedId: 4,
+              account: '!dev',
+              domain: '',
+              eventType: 'GROUP_META_FEED_HEAD',
+              subjectAccount: '',
+              subjectDomain: '',
+              body: { groupMetaFeedEndId: '1' },
+            },
+          ],
+          hasMore: false,
+          scannedThrough: 4,
+          stateFeedEndId: 4,
+        },
+      }),
+    );
+
+    eventSubject.next({ event: 'STATE_FEED_UPDATED', data: { feedId: 4 } });
+    await flush(30);
+
+    expect(toastWarn).not.toHaveBeenCalled();
+    expect(repo.items()).toEqual([
+      expect.objectContaining({
+        threadId: 12,
+        type: 'GROUP',
+        group: expect.objectContaining({ account: '!dev', name: 'dev' }),
+      }),
+    ]);
+  });
+
+  it('publishes one friend-intent revision only after draining through the committed feed HWM', async () => {
+    cursorSignal.set(1);
+    const peer = {
+      id: 22,
+      account: 'bob',
+      name: 'Bob',
+      avatar: '',
+      bio: '',
+      domain: '',
+      isForeigner: false,
+    };
+    const secondPage = new Subject<unknown>();
+    queryStateFeedSpy
+      .mockReturnValueOnce(
+        of({
+          code: 0,
+          data: {
+            mode: 'delta',
+            items: [
+              {
+                feedId: 2,
+                account: 'bob',
+                domain: '',
+                eventType: 'RELATIONSHIP_INTENT',
+                subjectAccount: 'alice',
+                subjectDomain: '',
+                body: {
+                  status: 'ACCEPTED',
+                  note: '',
+                  requestedAt: 1,
+                  expiresAt: null,
+                  direction: 'INCOMING',
+                  localThreadId: 9,
+                  peer,
+                },
+              },
+            ],
+            hasMore: false,
+            scannedThrough: 2,
+            stateFeedEndId: 3,
+          },
+        }),
+      )
+      .mockReturnValueOnce(secondPage);
+
+    eventSubject.next({
+      event: 'STATE_FEED_UPDATED',
+      data: { feedId: 2 },
+    });
+    await flush(10);
+
+    expect(queryStateFeedSpy).toHaveBeenCalledTimes(2);
+    expect(queryStateFeedSpy.mock.calls[1][0]).toEqual(
+      expect.objectContaining({ after: 2, through: 3 }),
+    );
+    expect(applyFriendIntentStateRevisionSpy).not.toHaveBeenCalled();
+
+    secondPage.next({
+      code: 0,
+      data: {
+        mode: 'delta',
+        items: [
+          {
+            feedId: 3,
+            account: 'alice',
+            domain: '',
+            eventType: 'RELATIONSHIP_INTENT',
+            subjectAccount: 'bob',
+            subjectDomain: '',
+            body: {
+              status: 'ACCEPTED',
+              note: '',
+              requestedAt: 1,
+              expiresAt: null,
+              direction: 'OUTGOING',
+              localThreadId: 9,
+              peer,
+            },
+          },
+        ],
+        hasMore: false,
+        scannedThrough: 3,
+        stateFeedEndId: 3,
+      },
+    });
+    secondPage.complete();
+    await flush(10);
+
+    expect(applyFriendIntentStateRevisionSpy).toHaveBeenCalledTimes(1);
+    expect(applyFriendIntentStateRevisionSpy).toHaveBeenCalledWith(3);
+  });
 
   it('records a local HWM without guessing the unread badge', async () => {
     await populate([

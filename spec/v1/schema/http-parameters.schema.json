@@ -59,7 +59,7 @@
       "oneOf": [
         {
           "type": "object",
-          "required": ["account", "localAccount"],
+          "required": ["account", "peerAccount"],
           "dependentSchemas": {
             "take": {
               "anyOf": [{ "required": ["after"] }, { "required": ["before"] }]
@@ -73,7 +73,7 @@
             "account": {
               "$ref": "urn:somfp:v1:common#/$defs/userAccount"
             },
-            "localAccount": {
+            "peerAccount": {
               "$ref": "urn:somfp:v1:common#/$defs/userAccount"
             },
             "after": {

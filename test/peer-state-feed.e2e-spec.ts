@@ -216,7 +216,7 @@ describe('per-peer state feed', () => {
           account: 'alice',
           domain: 'local.test',
           eventType: 'RELATIONSHIP_INTENT',
-          localAccount: 'bob',
+          peerAccount: 'bob',
           feedId: '2',
           body: {
             status: 'ACCEPTED',
@@ -386,7 +386,7 @@ describe('per-peer state feed', () => {
     });
     const a = await feed.serve(DOMAINS[0], 2n);
     const b = await feed.serve(DOMAINS[1], 0n);
-    expect(a.items.map((x) => x.localAccount)).toEqual(['bob', 'carol']);
+    expect(a.items.map((x) => x.peerAccount)).toEqual(['bob', 'carol']);
     expect(b.items).toHaveLength(1);
     expect(b.items[0].body).toMatchObject({ name: 'private-to-b' });
   });

@@ -42,7 +42,7 @@
           </app-empty-state>
         }
       } @else {
-        @for (thread of filteredThreadList(); track thread.id) {
+        @for (thread of filteredThreadList(); track thread.threadId) {
           <button
             type="button"
             class="thread-item"

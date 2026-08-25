@@ -113,17 +113,16 @@ export interface CallSignalPayload {
 export abstract class CallAdapter {
   abstract setSnapshotListener(listener?: CallSnapshotListener): void;
   /** Caller begins a call (POST /calls/initiate + createOffer happen natively). `callType` ∈ AUDIO|VIDEO.
-   *  `peerName` + `peerAvatar` (a /uploads path) are the callee's display info for the call UI.
-   *  `peerAvatarDataUrl` is the callee's avatar as a base64 data URL (read from the IDB cache by the caller)
-   *  so the native call notification (CallStyle Person) decodes it directly — NO /uploads fetch (the bytes
-   *  are on-device). Empty when uncached → the notification is name-only. */
+   *  `peerName` + `peerAvatar` are renderer-WebRTC presentation data. Android ignores them and resolves
+   *  presentation from native SQLite by `peerAccount` + `peerDomain`. */
   abstract initiate(
     calleeUserId: number,
     callSid: string,
     callType: 'AUDIO' | 'VIDEO',
     peerName: string,
     peerAvatar: string,
-    peerAvatarDataUrl: string,
+    peerAccount: string,
+    peerDomain: string,
   ): void;
   /** Callee accepts the incoming ring (POST /calls/accept + createAnswer natively). */
   abstract accept(callSid: string): void;
@@ -167,17 +166,17 @@ class AndroidCallAdapter extends CallAdapter {
     calleeUserId: number,
     callSid: string,
     callType: 'AUDIO' | 'VIDEO',
-    peerName: string,
-    peerAvatar: string,
-    peerAvatarDataUrl: string,
+    _peerName: string,
+    _peerAvatar: string,
+    peerAccount: string,
+    peerDomain: string,
   ): void {
     window.SomsCall!.initiate(
       calleeUserId,
       callSid,
       callType,
-      peerName,
-      peerAvatar,
-      peerAvatarDataUrl,
+      peerAccount,
+      peerDomain,
     );
   }
   accept(callSid: string): void {
@@ -317,7 +316,8 @@ export class CallAdapterService {
     callType: 'AUDIO' | 'VIDEO',
     peerName: string,
     peerAvatar: string,
-    peerAvatarDataUrl: string,
+    peerAccount: string,
+    peerDomain: string,
   ): void {
     this.adapter.initiate(
       calleeUserId,
@@ -325,7 +325,8 @@ export class CallAdapterService {
       callType,
       peerName,
       peerAvatar,
-      peerAvatarDataUrl,
+      peerAccount,
+      peerDomain,
     );
   }
   accept(callSid: string): void {

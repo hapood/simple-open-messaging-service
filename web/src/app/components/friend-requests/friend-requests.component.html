@@ -229,11 +229,7 @@
       </ng-template>
       <div class="tab-pane">
         <div class="pending-area">
-          @if (pendingLoading() && pendingReqList().length === 0) {
-            <div class="state-hint">
-              <div class="state-title">{{ 'common.loading' | transloco }}</div>
-            </div>
-          } @else if (toPendingErrTxt().length > 0) {
+          @if (toPendingErrTxt().length > 0) {
             <div class="state-hint">
               <div class="state-title state-error">{{ toPendingErrTxt() }}</div>
             </div>
@@ -262,12 +258,13 @@
               [items]="pendingReqList()"
               [itemTemplate]="incomingCard"
               [itemSize]="92"
-              [loading]="pendingLoading()"
               [hasMore]="pendingHasMore()"
-              [loadingLabel]="'common.loading' | transloco"
               (loadMore)="loadIncomingInvites()"
             />
           }
+          <div class="history-window-note">
+            {{ 'friend.historyWindow' | transloco }}
+          </div>
         </div>
       </div>
     </mat-tab>
@@ -285,11 +282,7 @@
       </ng-template>
       <div class="tab-pane">
         <div class="pending-area">
-          @if (sentLoading() && sentReqList().length === 0) {
-            <div class="state-hint">
-              <div class="state-title">{{ 'common.loading' | transloco }}</div>
-            </div>
-          } @else if (sentErrTxt().length > 0) {
+          @if (sentErrTxt().length > 0) {
             <div class="state-hint">
               <div class="state-title state-error">{{ sentErrTxt() }}</div>
             </div>
@@ -315,12 +308,13 @@
               [items]="sentReqList()"
               [itemTemplate]="outgoingCard"
               [itemSize]="92"
-              [loading]="sentLoading()"
               [hasMore]="sentHasMore()"
-              [loadingLabel]="'common.loading' | transloco"
               (loadMore)="loadOutgoingInvites()"
             />
           }
+          <div class="history-window-note">
+            {{ 'friend.historyWindow' | transloco }}
+          </div>
         </div>
       </div>
     </mat-tab>

@@ -38,14 +38,6 @@ export class DeleteFriendDto extends UserIdDto {
   deleteData?: boolean;
 }
 
-export class ThreadIdDto {
-  @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  threadId!: number;
-}
-
 /** Exact account lookup input. POST /user/resolve accepts local/our-domain lookup; the temporary
  * federated SSE endpoint requires both account and a foreign domain. The client splits a typed
  * `alice@bbb.com`; the API never carries an @-joined string. */

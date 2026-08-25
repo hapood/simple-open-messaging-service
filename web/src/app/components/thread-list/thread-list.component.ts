@@ -150,6 +150,7 @@ export class ThreadListComponent implements OnInit {
     '[Call unreachable]': 'call.record.unreachable',
     '[Call declined]': 'call.record.declined',
     '[Call cancelled]': 'call.record.cancelled',
+    '[Contact]': 'contactCard.previewLabel',
     '[Chat history]': 'forward.previewLabel',
     '[聊天记录]': 'forward.previewLabel',
   };

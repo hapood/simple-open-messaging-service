@@ -41,8 +41,8 @@ backend node.
 For independent restarts, run the process groups in separate terminals:
 
 ```bash
-npm run dev:backend
-npm run dev:frontend
+npm run dev:be
+npm run dev:fe
 ```
 
 The backend command builds before starting all three Node processes. The frontend command starts

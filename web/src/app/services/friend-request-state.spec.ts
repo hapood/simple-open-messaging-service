@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   applyFriendIntentToProjection,
   applyGroupIntentToProjection,
+  friendProjectionIsActive,
   FRIEND_INTENT_RETENTION_MS,
   markProjectionAccepted,
+  projectionRequestExpiresAt,
+  projectionIsExpired,
   type FriendIntentProjectionInput,
 } from './friend-request-state';
 
@@ -81,7 +84,9 @@ describe('friend request rejection projection', () => {
     longLived.expiresAt = 1_000 + FRIEND_INTENT_RETENTION_MS * 2;
     expect(
       applyFriendIntentToProjection(undefined, longLived, 2_000).record,
-    ).toMatchObject({ expiresAt: 1_000 + FRIEND_INTENT_RETENTION_MS });
+    ).toMatchObject({
+      remote: { expiresAt: 1_000 + FRIEND_INTENT_RETENTION_MS },
+    });
   });
 
   it('keeps a locally accepted incoming request non-actionable until both halves converge', () => {
@@ -106,7 +111,43 @@ describe('friend request rejection projection', () => {
       intent('INCOMING', 'ACCEPTED'),
       2_002,
     );
-    expect(converged).toEqual({ record: null, becameActionable: false });
+    expect(converged.record).toMatchObject({
+      bucket: 'RECEIVED',
+      direction: 'INCOMING',
+      status: 'ACCEPTED',
+      requestedSort: 1_000,
+    });
+    expect(converged.becameActionable).toBe(false);
+  });
+
+  it('activates from one live request plus the opposite acknowledgement', () => {
+    const outgoing = applyFriendIntentToProjection(
+      undefined,
+      intent('OUTGOING', 'REQUESTED'),
+      2_000,
+    ).record!;
+    const acknowledged = applyFriendIntentToProjection(
+      outgoing,
+      intent('INCOMING', 'ACCEPTED'),
+      2_001,
+    ).record!;
+
+    expect(friendProjectionIsActive(acknowledged, 9_999)).toBe(true);
+    expect(friendProjectionIsActive(acknowledged, 10_000)).toBe(false);
+  });
+
+  it('retains terminal history independently from the original request expiry', () => {
+    const incoming = applyFriendIntentToProjection(
+      undefined,
+      intent('INCOMING', 'REQUESTED'),
+      2_000,
+    ).record!;
+    const accepted = markProjectionAccepted(incoming, 9_000);
+
+    expect(projectionIsExpired(accepted, 10_000)).toBe(false);
+    expect(
+      projectionIsExpired(accepted, 9_000 + FRIEND_INTENT_RETENTION_MS),
+    ).toBe(true);
   });
 
   it('does not let a replayed request re-arm a locally accepted projection', () => {
@@ -159,8 +200,8 @@ describe('friend request rejection projection', () => {
       direction: 'OUTGOING',
       bucket: 'SENT',
       status: 'REVOKED',
-      localStatus: 'REQUESTED',
-      remoteStatus: 'REVOKED',
+      local: { status: 'REQUESTED' },
+      remote: { status: 'REVOKED' },
     });
   });
 
@@ -212,6 +253,56 @@ describe('friend request rejection projection', () => {
     });
   });
 
+  it('activates one group projection from the two authored intent directions', () => {
+    const group = {
+      account: '!group',
+      domain: 'local.test',
+      isLocal: true,
+      name: 'Group',
+      avatar: '',
+      description: '',
+      profileRev: 1,
+    };
+    const incoming = applyGroupIntentToProjection(
+      undefined,
+      {
+        account: group.account,
+        domain: group.domain,
+        status: 'ACCEPTED',
+        direction: 'INCOMING',
+        note: '',
+        requestedAt: null,
+        expiresAt: null,
+        threadId: 8,
+        group,
+      },
+      2_000,
+    ).record!;
+    const active = applyGroupIntentToProjection(
+      incoming,
+      {
+        account: group.account,
+        domain: group.domain,
+        status: 'ACCEPTED',
+        direction: 'OUTGOING',
+        note: '',
+        requestedAt: null,
+        expiresAt: null,
+        threadId: 8,
+        group,
+      },
+      2_001,
+    ).record!;
+
+    expect(active).toMatchObject({
+      localThreadId: 8,
+      local: { status: 'ACCEPTED' },
+      remote: { status: 'ACCEPTED' },
+      status: null,
+    });
+    expect(friendProjectionIsActive(active, 2_001)).toBe(true);
+  });
+
   it('marks only a fresh incoming group invite actionable and drops an expired one', () => {
     const input = {
       account: '!group',
@@ -242,15 +333,17 @@ describe('friend request rejection projection', () => {
       record: null,
       becameActionable: false,
     });
-    expect(
-      applyGroupIntentToProjection(
-        undefined,
-        {
-          ...input,
-          expiresAt: 1_000 + FRIEND_INTENT_RETENTION_MS * 2,
-        },
-        2_000,
-      ).record,
-    ).toMatchObject({ expiresAt: 1_000 + FRIEND_INTENT_RETENTION_MS });
+    const longLived = applyGroupIntentToProjection(
+      undefined,
+      {
+        ...input,
+        expiresAt: 1_000 + FRIEND_INTENT_RETENTION_MS * 2,
+      },
+      2_000,
+    ).record!;
+    expect(projectionRequestExpiresAt(longLived)).toBe(
+      1_000 + FRIEND_INTENT_RETENTION_MS,
+    );
+    expect(projectionRequestExpiresAt(fresh.record!)).toBe(10_000);
   });
 });

@@ -14,15 +14,13 @@ export interface LiveRecipientCandidate {
 /** Pure recipient policy. Database access and authorization evaluation happen before this function. */
 export function planFeedRecipientIds(
   candidates: readonly FeedRecipientCandidate[],
-  creatorId: number | null,
 ): number[] {
   return candidates
     .filter(
       (candidate) =>
         candidate.isLocal &&
         !candidate.isDeleted &&
-        candidate.authorized &&
-        candidate.userId !== creatorId,
+        candidate.authorized,
     )
     .map((candidate) => candidate.userId);
 }

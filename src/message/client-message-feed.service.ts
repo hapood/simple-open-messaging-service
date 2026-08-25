@@ -1,4 +1,4 @@
-import { and, asc, eq, ne, sql } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import { isThreadMutuallyAuthorized } from '../invite/relationship-authorization.js';
 import {
@@ -10,9 +10,6 @@ import {
 } from '../database/schema.js';
 import { planFeedRecipientIds } from './message-delivery-plan.js';
 
-/** Product policy switch: whether a user's own authored messages advance that user's client message feed. */
-export const CLIENT_MESSAGE_FEED_INCLUDE_SELF = false;
-
 /** Transactional writer for the two per-user compacted client feeds.
  *
  * The allocator row is the commit-order lock for one user. Participant ids are always visited in ascending
@@ -23,14 +20,8 @@ export class ClientMessageFeedWriter {
     tx: DatabaseTransaction,
     threadId: number,
     messageEndSeq: number,
-    creatorId: number | null,
-    includeCreator = CLIENT_MESSAGE_FEED_INCLUDE_SELF,
   ): Promise<void> {
-    const userIds = await this.activeUserIds(
-      tx,
-      threadId,
-      includeCreator || creatorId === null ? undefined : creatorId,
-    );
+    const userIds = await this.activeUserIds(tx, threadId);
     for (const userId of userIds) {
       await this.publishMessageForUser(tx, userId, threadId, messageEndSeq);
     }
@@ -140,7 +131,6 @@ export class ClientMessageFeedWriter {
   private static async activeUserIds(
     tx: DatabaseTransaction,
     threadId: number,
-    excludedUserId?: number,
   ): Promise<number[]> {
     const rows = await tx
       .select({ userId: threadParticipant.userId })
@@ -151,9 +141,6 @@ export class ClientMessageFeedWriter {
           eq(threadParticipant.threadId, threadId),
           eq(user.domain, 'local'),
           eq(user.isDeleted, false),
-          ...(excludedUserId === undefined
-            ? []
-            : [ne(threadParticipant.userId, excludedUserId)]),
         ),
       )
       .orderBy(asc(threadParticipant.userId));
@@ -167,7 +154,6 @@ export class ClientMessageFeedWriter {
         isDeleted: false,
         authorized: authorized[index],
       })),
-      excludedUserId ?? null,
     );
   }
 

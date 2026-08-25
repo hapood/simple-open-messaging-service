@@ -374,7 +374,7 @@ export class MessageService {
               eq(threadParticipant.threadId, threadId),
             ),
           );
-        await ClientMessageFeedWriter.publishMessage(tx, threadId, seq, userId);
+        await ClientMessageFeedWriter.publishMessage(tx, threadId, seq);
         // Per-object media authz: record the CAS digest this message references so the /uploads/cas/*
         // gate can authorize readers against thread membership (one indexed row). One message carries
         // one media (MediaMessage is 1:1). PURE_TEXT/
@@ -512,7 +512,7 @@ export class MessageService {
         options.recipientUserIds,
       );
     } else {
-      await ClientMessageFeedWriter.publishMessage(tx, threadId, seq, null);
+      await ClientMessageFeedWriter.publishMessage(tx, threadId, seq);
     }
     return { message: stripMessageId(stored), messageId: stored.id };
   }
@@ -988,7 +988,6 @@ export class MessageService {
           tx,
           stage.threadId,
           seq,
-          stage.creatorId,
         );
         // Insert EVERY referenced digest (1 for single-file, N for GALLERY) — the old promoteStaged
         // path only inserted the first, which silently dropped authz rows for multi-digest content.

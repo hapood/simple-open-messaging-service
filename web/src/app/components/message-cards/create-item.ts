@@ -45,6 +45,11 @@ const MESSAGE_ITEM_TOP_GAP_PX = 6;
 const MESSAGE_GROUP_TOP_GAP_PX = 14;
 const UNREAD_DIVIDER_HEIGHT_PX = 38;
 
+/** Only plain text participates in a compact run; every non-text message is a standalone timeline block. */
+function participatesInSenderGroup(message: ChatMsgData): boolean {
+  return message.contentType === 'PURE_TEXT';
+}
+
 /**
  * Compute a message row's grouping + date-separator inputs from its older neighbor `prev` — the shared logic behind
  * both createMsgCbElement's initial mount and CbElement.update's in-place re-render. Centralized here (previously
@@ -77,14 +82,20 @@ export function computeRowFlags(
         ? prev.data
         : null;
     const curCtx: GroupCtx = { creator: msg.creator ?? 'system' };
-    const prevCtx: GroupCtx | null = prevMsg
+    const prevCtx: GroupCtx | null =
+      prevMsg &&
+      participatesInSenderGroup(prevMsg) &&
+      participatesInSenderGroup(msg)
       ? { creator: prevMsg.creator ?? 'system' }
       : null;
     const nextMsg =
       next?.data.type === 'msg' && next.data.contentType !== 'SYSTEM'
         ? next.data
         : null;
-    const nextCtx: GroupCtx | null = nextMsg
+    const nextCtx: GroupCtx | null =
+      nextMsg &&
+      participatesInSenderGroup(msg) &&
+      participatesInSenderGroup(nextMsg)
       ? { creator: nextMsg.creator ?? 'system' }
       : null;
     const groupFlags = classifyGroupFlags(prevCtx, curCtx, nextCtx);
@@ -128,8 +139,10 @@ function groupPositionFrom(
   const nextIsSameSender =
     item.data.type === 'msg' &&
     item.data.contentType !== 'SYSTEM' &&
+    participatesInSenderGroup(item.data) &&
     next?.data.type === 'msg' &&
     next.data.contentType !== 'SYSTEM' &&
+    participatesInSenderGroup(next.data) &&
     next.data.creator === item.data.creator;
   return isShowHead
     ? nextIsSameSender

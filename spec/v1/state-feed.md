@@ -67,13 +67,13 @@ interface StateFeedItem {
 
 interface RelationshipIntentItem extends StateFeedItem {
   eventType: 'RELATIONSHIP_INTENT';
-  localAccount: Account;
+  peerAccount: Account;
 }
 ```
 
 Stable keys are `(domain, account, eventType)` and, for a relationship,
-`(domain, account, RELATIONSHIP_INTENT, localAccount)`. Only relationship
-items carry `localAccount`. Unknown event types or fields are malformed.
+`(domain, account, RELATIONSHIP_INTENT, peerAccount)`. Only relationship
+items carry `peerAccount`. Unknown event types or fields are malformed.
 
 ## 4. PROFILE
 
@@ -113,7 +113,7 @@ interface RelationshipIntentBody {
 ```
 
 This item is one source-authored user/user or user/group direction.
-`account/domain` is the signer-hosted end and `localAccount` is hosted by
+`account/domain` is the signer-hosted end and `peerAccount` is hosted by
 the receiver. Group/group relationships are invalid. Each direction is
 controlled exclusively by its author; a receiver MUST NOT invent or publish a
 transition on the author's behalf. `ACCEPTED` is a durable acknowledgement of a

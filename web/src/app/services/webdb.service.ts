@@ -6,7 +6,13 @@ import {
   type IDBPDatabase,
   type IDBPTransaction,
 } from 'idb';
-import type { ConversationItem, DeletedMessageItem, Message } from './model';
+import {
+  createGroupConversation,
+  createP2PConversation,
+  type ConversationItem,
+  type DeletedMessageItem,
+  type Message,
+} from './model';
 import type {
   ClientFriendIntent,
   ClientGroupInviteIntent,
@@ -17,10 +23,12 @@ import { isAndroidNative, isTauri, tauriInvoke } from './runtime';
 import {
   applyFriendIntentToProjection,
   applyGroupIntentToProjection,
+  friendProjectionIsActive,
   friendPairKey,
   groupRequestKey,
   markProjectionAccepted,
   projectionIsExpired,
+  projectionRequestExpiresAt,
   type FriendRequestProjection,
 } from './friend-request-state';
 
@@ -206,7 +214,7 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-export const CACHE_SCHEMA_VERSION = 2;
+export const CACHE_SCHEMA_VERSION = 3;
 export const MESSAGE_CACHE_SCHEMA_VERSION = 1;
 const IDB_FORMAT_VERSION = 1;
 
@@ -1050,16 +1058,15 @@ export class WebdbService implements OnDestroy {
       for (const item of await tx.objectStore('friendRequests').getAll()) {
         if (!projectionIsExpired(item, now)) continue;
         await tx.objectStore('friendRequests').delete(item.key);
-        if (item.kind === 'GROUP')
-          await tx
-            .objectStore('profiles')
-            .delete(
-              `pending-group:${item.group?.domain ?? ''}\u0000${item.group?.account ?? ''}`,
-            );
-        else if (item.direction === 'OUTGOING' && item.peer)
-          await tx
-            .objectStore('profiles')
-            .delete(`pending:${item.peer.domain}\u0000${item.peer.account}`);
+      }
+      for (const profile of await tx.objectStore('profiles').getAll()) {
+        if (
+          (profile.source === 'OUTGOING_FRIEND_REQUEST' ||
+            profile.source === 'GROUP_INVITE') &&
+          profile.expiresAt !== undefined &&
+          profile.expiresAt <= now
+        )
+          await tx.objectStore('profiles').delete(profile.identity);
       }
       await tx.done;
     });
@@ -1169,13 +1176,6 @@ export class WebdbService implements OnDestroy {
       ],
       'readwrite',
     );
-    const relationshipStates = new Map<
-      number,
-      {
-        incoming?: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
-        outgoing?: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
-      }
-    >();
     if (resetProjection) {
       await tx.objectStore('friendRequests').clear();
       await tx.objectStore('threadParticipants').clear();
@@ -1199,6 +1199,55 @@ export class WebdbService implements OnDestroy {
               }
             : {}),
         });
+      }
+    }
+    // Relationship intents are ordered before the group-meta head in the state page. Fold them first
+    // so an activated group conversation exists before its roster is applied in this transaction.
+    for (const op of items) {
+      if (
+        op.eventType !== 'RELATIONSHIP_INTENT' ||
+        (!op.account.startsWith('!') && !op.subjectAccount.startsWith('!'))
+      )
+        continue;
+      const body = op.body as Omit<
+        ClientGroupInviteIntent,
+        'key' | 'account' | 'domain' | 'subjectAccount' | 'subjectDomain' | 'kind'
+      >;
+      const groupAuthored = op.account.startsWith('!');
+      const groupAccount = groupAuthored ? op.account : op.subjectAccount;
+      const groupDomain = groupAuthored ? op.domain : op.subjectDomain;
+      const key = groupRequestKey(groupDomain, groupAccount);
+      const transition = applyGroupIntentToProjection(
+        await tx.objectStore('friendRequests').get(key),
+        {
+          account: groupAccount,
+          domain: groupDomain,
+          ...body,
+          direction: groupAuthored ? 'INCOMING' : 'OUTGOING',
+        },
+        Date.now(),
+      );
+      if (transition.record)
+        await tx.objectStore('friendRequests').put(transition.record);
+      if (
+        transition.record &&
+        friendProjectionIsActive(transition.record, Date.now())
+      ) {
+        const threads = tx.objectStore('threads');
+        const existing = await threads.get(body.threadId);
+        if (!existing) {
+          await threads.put(
+            createGroupConversation(
+              body.threadId,
+              {
+                id: body.threadId,
+                ownerId: 0,
+                ...body.group,
+              },
+              { role: null },
+            ),
+          );
+        }
       }
     }
     for (const update of groupMeta) {
@@ -1271,7 +1320,7 @@ export class WebdbService implements OnDestroy {
     for (const op of items) {
       if (op.eventType === 'RELATIONSHIP_INTENT') {
         const store = tx.objectStore('friendRequests');
-        if (op.account.startsWith('!')) {
+        if (op.account.startsWith('!') || op.subjectAccount.startsWith('!')) {
           const body = op.body as Omit<
             ClientGroupInviteIntent,
             | 'key'
@@ -1281,22 +1330,26 @@ export class WebdbService implements OnDestroy {
             | 'subjectDomain'
             | 'kind'
           >;
-          const key = groupRequestKey(op.domain, op.account);
+          const groupAuthored = op.account.startsWith('!');
+          const groupAccount = groupAuthored ? op.account : op.subjectAccount;
+          const groupDomain = groupAuthored ? op.domain : op.subjectDomain;
+          const key = groupRequestKey(groupDomain, groupAccount);
           const transition = applyGroupIntentToProjection(
             await store.get(key),
             {
-              account: op.account,
-              domain: op.domain,
+              account: groupAccount,
+              domain: groupDomain,
               ...body,
+              direction: groupAuthored ? 'INCOMING' : 'OUTGOING',
             },
             Date.now(),
           );
           if (transition.record) await store.put(transition.record);
           else await store.delete(key);
-          const identity = `pending-group:${op.domain}\u0000${op.account}`;
+          const identity = `pending-group:${groupDomain}\u0000${groupAccount}`;
           if (
             transition.record?.status === 'REQUESTED' &&
-            transition.record.expiresAt !== null
+            projectionRequestExpiresAt(transition.record) !== null
           )
             await tx.objectStore('profiles').put({
               identity,
@@ -1309,7 +1362,7 @@ export class WebdbService implements OnDestroy {
               domain: body.group.domain,
               profileRev: body.group.profileRev,
               source: 'GROUP_INVITE',
-              expiresAt: transition.record.expiresAt,
+              expiresAt: projectionRequestExpiresAt(transition.record)!,
             });
           else await tx.objectStore('profiles').delete(identity);
           if (transition.becameActionable)
@@ -1328,16 +1381,6 @@ export class WebdbService implements OnDestroy {
           | 'subjectDomain'
           | 'requestedSort'
         >;
-        if (
-          body.localThreadId !== null &&
-          Number.isSafeInteger(body.localThreadId) &&
-          body.localThreadId > 0
-        ) {
-          const state = relationshipStates.get(body.localThreadId) ?? {};
-          if (body.direction === 'INCOMING') state.incoming = body.status;
-          else state.outgoing = body.status;
-          relationshipStates.set(body.localThreadId, state);
-        }
         const projectionKey = friendPairKey(op);
         const transition = applyFriendIntentToProjection(
           await store.get(projectionKey),
@@ -1350,8 +1393,29 @@ export class WebdbService implements OnDestroy {
           },
           Date.now(),
         );
-        if (transition.record) await store.put(transition.record);
-        else {
+        if (transition.record) {
+          await store.put(transition.record);
+          const threadId = transition.record.localThreadId;
+          const peer = transition.record.peer;
+          if (threadId !== null && peer) {
+            const threads = tx.objectStore('threads');
+            const existing = await threads.get(threadId);
+            const active = friendProjectionIsActive(
+              transition.record,
+              Date.now(),
+            );
+            if (existing?.type === 'P2P') {
+              await threads.put({
+                ...existing,
+                friendshipActive: active,
+                conversationState: active ? 'ACTIVE' : 'READ_ONLY',
+                peerUser: { ...existing.peerUser, ...peer },
+              });
+            } else if (active) {
+              await threads.put(createP2PConversation(threadId, peer));
+            }
+          }
+        } else {
           await store.delete(projectionKey);
           await tx
             .objectStore('profiles')
@@ -1359,8 +1423,8 @@ export class WebdbService implements OnDestroy {
         }
         if (
           body.status === 'REQUESTED' &&
-          transition.record?.expiresAt !== null &&
-          transition.record?.expiresAt !== undefined &&
+          transition.record !== null &&
+          projectionRequestExpiresAt(transition.record) !== null &&
           body.direction === 'OUTGOING'
         ) {
           const peer = body.peer;
@@ -1375,7 +1439,7 @@ export class WebdbService implements OnDestroy {
             domain: peer.domain,
             profileRev: 0,
             source: 'OUTGOING_FRIEND_REQUEST',
-            expiresAt: transition.record.expiresAt,
+            expiresAt: projectionRequestExpiresAt(transition.record)!,
           });
         }
         if (transition.becameActionable)
@@ -1491,23 +1555,6 @@ export class WebdbService implements OnDestroy {
             blocked: op.body.blocked,
           });
       }
-    }
-    for (const [threadId, state] of relationshipStates) {
-      const active =
-        state.incoming === 'ACCEPTED' && state.outgoing === 'ACCEPTED';
-      const ended =
-        state.incoming === 'REVOKED' ||
-        state.outgoing === 'REVOKED' ||
-        state.incoming === 'REQUESTED' ||
-        state.outgoing === 'REQUESTED';
-      if (!active && !ended) continue;
-      const thread = await tx.objectStore('threads').get(threadId);
-      if (!thread || thread.type !== 'P2P') continue;
-      await tx.objectStore('threads').put({
-        ...thread,
-        friendshipActive: active,
-        conversationState: active ? 'ACTIVE' : 'READ_ONLY',
-      });
     }
     await tx.objectStore('settings').put({ key: 'stateFeedId', value: feedId });
     await tx.done;

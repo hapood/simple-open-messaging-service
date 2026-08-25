@@ -174,12 +174,12 @@ export interface PopupResult {
   [PopupType.LINK_CARD_GENERATION]: LinkCardGenerationDialogResult | undefined;
   [PopupType.CONTACT_IDENTITY]: undefined;
   [PopupType.CONTACT_PICKER]:
-    | {
-        targetUserId: number;
+    | ({ targetUserId: number } | { targetGroupId: number }) & {
         account: string;
         domain: string;
         name: string;
         avatar: string;
+        bio: string;
       }
     | undefined;
 }

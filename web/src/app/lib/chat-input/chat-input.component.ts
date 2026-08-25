@@ -56,11 +56,13 @@ export type ChatSendIntent =
   | { kind: 'link'; generationId: string; content: LinkCardContent }
   | {
       kind: 'contact';
-      targetUserId: number;
+      targetUserId?: number;
+      targetGroupId?: number;
       account: string;
       domain: string;
       name: string;
       avatar: string;
+      bio: string;
     }
   | { kind: 'paste'; text: string; files: readonly File[] }
   | { kind: 'audio'; blob: Blob; duration: number; mimeType: string };

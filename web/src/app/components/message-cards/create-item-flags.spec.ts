@@ -39,6 +39,36 @@ describe('computeRowFlags', () => {
     );
   });
 
+  it.each([
+    'IMAGE',
+    'VIDEO',
+    'FILE',
+    'AUDIO',
+    'GALLERY',
+    'LINK',
+    'CONTACT_CARD',
+    'CALL',
+    'FORWARD',
+  ] as const)(
+    'keeps a %s message and the following text message out of compact grouping',
+    (contentType) => {
+      const textBefore = message(1, 2);
+      const card = message(2, 2, contentType);
+      const textAfter = message(3, 2);
+
+      expect(computeRowFlags(card, textBefore, textAfter)).toMatchObject({
+        isShowHead: true,
+        isGroupStart: true,
+        groupPosition: 'single',
+      });
+      expect(computeRowFlags(textAfter, card)).toMatchObject({
+        isShowHead: true,
+        isGroupStart: true,
+        groupPosition: 'single',
+      });
+    },
+  );
+
   it('classifies a same-sender run as head, body and tail', () => {
     const first = message(1, 2);
     const middle = message(2, 2);

@@ -348,10 +348,22 @@ $danger: var(--app-danger);
   min-height: 0;
   overflow-y: auto;
   padding: 12px;
+  display: flex;
+  flex-direction: column;
 
   app-virtual-infinite-list {
     display: block;
-    height: 100%;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .history-window-note {
+    flex: 0 0 auto;
+    padding-top: 8px;
+    color: var(--app-text-muted);
+    font-size: 12px;
+    line-height: 20px;
+    text-align: center;
   }
 
   .pending-row {

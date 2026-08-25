@@ -390,13 +390,11 @@ export class PeerProfileComponent {
         messageKey: 'chat.unfriendConfirmBody',
         confirmKey: 'chat.menuUnfriend',
         cancelKey: 'common.cancel',
-        checkboxKey: 'chat.alsoDeleteData',
         danger: true,
       },
       (result) => {
         if (!result) return;
-        const deleteData = typeof result === 'object' && result.checked;
-        void this.finishRemoveFriend(trd, peerId, deleteData);
+        void this.finishRemoveFriend(trd, peerId);
       },
     );
   }
@@ -404,26 +402,20 @@ export class PeerProfileComponent {
   private async finishRemoveFriend(
     trd: ConversationItem,
     peerId: number,
-    deleteData: boolean,
   ) {
     if (!this.deletionLock.begin(trd.threadId)) return;
     this.unfriendPending.set(true);
     try {
       const res = await firstValueFrom(
-        this.userService.deleteFriend({ userId: peerId, deleteData }),
+        this.userService.deleteFriend({ userId: peerId }),
       );
       if (res.code !== 0)
         return this.toast.warn(translateBizResult(res, this.transloco));
-      if (deleteData) {
-        await this.convList.removeThread(trd.threadId);
-        this.nav.closeChat();
-      } else {
-        this.convList.applyThreadMeta(trd.threadId, {
-          friendshipActive: false,
-          conversationState: 'READ_ONLY',
-        });
-        this.nav.closeAside();
-      }
+      this.convList.applyThreadMeta(trd.threadId, {
+        friendshipActive: false,
+        conversationState: 'READ_ONLY',
+      });
+      this.nav.closeAside();
     } catch {
       this.toast.warn(this.transloco.translate('errors.networkError'));
     } finally {

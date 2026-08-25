@@ -79,12 +79,14 @@ class SomsMessagingService : FirebaseMessagingService() {
                 val p = CallController.phase
                 if (CallController.callSid == sid && p != "incoming" && p != "idle") return
                 val callerUserId = data["callerUserId"]?.toIntOrNull() ?: return
+                val callerAccount = data["callerAccount"] ?: return
+                val callerDomain = data["callerDomain"] ?: return
                 val threadId = data["threadId"]?.toIntOrNull() ?: 0
                 val callType = data["callType"] ?: "AUDIO"
-                val callerName = data["callerName"] ?: ""
-                val callerAvatar = data["callerAvatar"] ?: ""
                 SomsLog.i("Notif") { "CALL_INCOMING sid=$sid from=$callerUserId type=$callType -> ring" }
-                CallService.startIncoming(this, sid, callerUserId, callerName, callerAvatar, threadId, callType)
+                CallService.startIncoming(
+                    this, sid, callerUserId, callerAccount, callerDomain, threadId, callType,
+                )
             }
         }
     }

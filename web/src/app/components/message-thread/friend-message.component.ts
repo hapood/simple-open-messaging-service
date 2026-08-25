@@ -669,10 +669,10 @@ export class MessageThreadComponent implements OnDestroy {
         }
         return;
       }
-      if (this.currentTrdId === trd.id) return;
+      if (this.currentTrdId === trd.threadId) return;
       this.teardown();
       this.initScroller(vp.nativeElement, ct.nativeElement, trd);
-      this.currentTrdId = trd.id;
+      this.currentTrdId = trd.threadId;
     });
     // A background A/B pane may finish initialization before it is promoted. Only the foreground pane starts
     // read tracking; start() immediately commits the fully-visible HWM collected during kernel layout.
@@ -1655,7 +1655,7 @@ export class MessageThreadComponent implements OnDestroy {
       account: target.account,
       domain: target.domain,
       displayName: target.name,
-      ...(bio ? { bio } : {}),
+      bio: bio ?? '',
       ...(target.avatar ? { avatar: target.avatar } : {}),
     });
     const preview: ChatMsgData = {
@@ -2185,6 +2185,7 @@ export class MessageThreadComponent implements OnDestroy {
         account: contact.account,
         domain: contact.domain,
         displayName: contact.name,
+        bio: contact.bio,
         ...(contact.avatar ? { avatar: contact.avatar } : {}),
       }),
       'CONTACT_CARD',
@@ -2195,7 +2196,9 @@ export class MessageThreadComponent implements OnDestroy {
     void firstValueFrom(
       this.msgService.sendContactCard({
         threadId,
-        targetUserId: contact.targetUserId,
+        ...(contact.targetGroupId !== undefined
+          ? { targetGroupId: contact.targetGroupId }
+          : { targetUserId: contact.targetUserId }),
         clientMessageId: cid,
       }),
     )
@@ -3634,7 +3637,7 @@ export class MessageThreadComponent implements OnDestroy {
     this.teardown();
     this.currentTrdId = null;
     this.initScroller(vp, ct, trd);
-    this.currentTrdId = trd.id;
+    this.currentTrdId = trd.threadId;
   }
 
   retryInitialLoad(): void {
@@ -3651,7 +3654,7 @@ export class MessageThreadComponent implements OnDestroy {
    *  switch. A plain method (not a signal): a synchronous snapshot read, intentionally untracked. */
   isWarm(): boolean {
     const trd = this.userMsgTrd();
-    return !!trd && this.kernelReady && this.currentTrdId === trd.id;
+    return !!trd && this.kernelReady && this.currentTrdId === trd.threadId;
   }
 
   /** Ensure this pane is initialized for its CURRENT bound thread, emitting `ready` when so. The A/B host
@@ -3664,7 +3667,7 @@ export class MessageThreadComponent implements OnDestroy {
   reset(): void {
     const trd = this.userMsgTrd();
     if (!trd) return;
-    if (this.kernelReady && this.currentTrdId === trd.id) {
+    if (this.kernelReady && this.currentTrdId === trd.threadId) {
       queueMicrotask(() => this.ready.emit(trd.threadId));
       return;
     }

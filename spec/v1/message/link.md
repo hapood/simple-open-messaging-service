@@ -36,7 +36,7 @@ This is a closed schema. `url`, `title`, and `description` are always required. 
 {
   "thread": {
     "account": "alice",
-    "localAccount": "bob"
+    "peerAccount": "bob"
   },
   "author": { "account": "alice", "domain": "a.example" },
   "seq": 61,

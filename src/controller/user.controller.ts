@@ -26,10 +26,7 @@ import { UserService } from '../user/user.service.js';
 import { UploadService } from '../upload/upload.service.js';
 import { MessageService } from '../message/message.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
-import { GroupService } from '../group/group.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
-import { GroupRole, MessageThreadType } from '../database/enums.js';
-import { messageThread, threadParticipant } from '../database/schema.js';
 import { AuthService } from '../auth/auth.service.js';
 import { SseService } from '../gateway/sse.service.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
@@ -40,11 +37,10 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { PUBLIC_CONFIG } from '../config/public-config.js';
 import { normalizeAccount } from '../common/account.js';
-import { ConversationItemDto, UserResponseDto } from '../dto/response.dto.js';
+import { UserResponseDto } from '../dto/response.dto.js';
 import { RegisterDto } from '../dto/auth.dto.js';
 import {
   DeleteFriendDto,
-  ThreadIdDto,
   UserResolveDto,
   UserSearchDto,
   PeerTrustStatusDto,
@@ -80,10 +76,6 @@ type ClientStateFeedItem = {
   body: unknown;
 };
 
-type ParticipantWithThread = typeof threadParticipant.$inferSelect & {
-  thread: typeof messageThread.$inferSelect;
-};
-
 function nextUtcMidnight(): Date {
   const now = new Date();
   return new Date(
@@ -100,7 +92,6 @@ export class UserController {
     private readonly userService: UserService,
     private readonly participantService: ThreadParticipantService,
     private readonly authService: AuthService,
-    private readonly groupService: GroupService,
     private readonly uploadService: UploadService,
     private readonly sseService: SseService,
     private readonly messageService: MessageService,
@@ -206,115 +197,6 @@ export class UserController {
     const data = await this.userService.updateProfile(req.user.userId, dto);
     // Self-profile-rev push (multi-device self refresh + native HELLO-cache merge). See updateAvatar.
     return data;
-  }
-
-  /**
-   * The single conversation-row hydration pipeline — turns ThreadParticipant rows (with `thread`
-   * included) into rendered ConversationItemDtos: P2P peer users + blocked flags,
-   * GROUP info, and the pinned/recent sort. Shared by /user/query-state/delta (hydrates the net-ADD ops)
-   * and /user/thread-info (single) so the two can never drift on what a list row looks like. Carries NO
-   * preview body — the client derives previews local-first from its message store.
-   */
-  private async hydrateConversationItems(
-    me: number,
-    list: ParticipantWithThread[],
-  ) {
-    // Pinned tier first (pinned = true), within it most-recently-pinned first (pinnedAt desc); then the
-    // unpinned tier recent-first by lastMessageAt; empty threads sink. In-memory sort of ≤take rows is
-    // trivial; threadId breaks ties deterministically. (Pinned/pinnedAt are on the participant row.)
-    list.sort((a, b) => {
-      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-      if (a.pinned) {
-        const ta = a.pinnedAt?.getTime() ?? -Infinity;
-        const tb = b.pinnedAt?.getTime() ?? -Infinity;
-        return tb - ta || a.threadId - b.threadId;
-      }
-      const la = a.thread.lastMessageAt?.getTime() ?? -Infinity;
-      const lb = b.thread.lastMessageAt?.getTime() ?? -Infinity;
-      return lb - la || a.threadId - b.threadId;
-    });
-    // Hydrate P2P peers: the other established participant on each P2P thread.
-    const p2pThreadIds = list
-      .filter((p) => p.thread.type === 'P2P')
-      .map((p) => p.threadId);
-    const peers = await this.participantService.findP2PPeers(p2pThreadIds, me);
-    const peerByThread = new Map(peers.map((p) => [p.threadId, p.userId]));
-    const peerUsers = await this.userService.queryUsers({
-      where: {
-        id: { in: peers.map((p) => p.userId) },
-        isDeleted: false,
-      },
-    });
-    const userDict: Record<number, (typeof peerUsers)[number]> = {};
-    peerUsers.forEach((u) => {
-      userDict[u.id] = u;
-    });
-    // Hydrate GROUP conversations by their threadId.
-    const groupThreadIds = list
-      .filter((p) => p.thread.type === 'GROUP')
-      .map((p) => p.threadId);
-    const groupByThread =
-      await this.groupService.resolveGroupUsersByThreadIds(groupThreadIds);
-    return list.map((p) => {
-      const item = {
-        id: p.id,
-        threadId: p.threadId,
-        type: p.thread.type,
-        role: p.role ?? undefined,
-        // The list preview is NOT embedded — the client derives it from its local message store
-        // (local-first). lastMessageAt stays (cheap, needed for sort). lastMessageSeq is the mark-read target
-        // the client passes when opening the thread (mark all current up to this seq).
-        lastMessageAt: p.thread.lastMessageAt ?? null,
-        lastMessageSeq: p.thread.lastMessageSeq ?? null,
-        // Per-user display state: mute (notification suppression), pin (top-tier ordering), and the
-        // Per-user clear-history watermark (query-messages hides rows through this seq for this user).
-        muted: p.muted,
-        blocked: p.blocked,
-        pinned: p.pinned,
-        pinnedAt: p.pinnedAt ?? null,
-        clearedSeq: p.clearedSeq ?? null,
-        alias: p.alias ?? null,
-      } as {
-        id: number;
-        threadId: number;
-        type: MessageThreadType;
-        role: GroupRole | undefined;
-        lastMessageAt: Date | null;
-        muted: boolean;
-        pinned: boolean;
-        pinnedAt: Date | null;
-        clearedSeq: number | null;
-        blocked: boolean;
-        alias: string | null;
-        peerUser?: unknown;
-        group?: unknown;
-      };
-      if (p.thread.type === 'P2P') {
-        const peerId = peerByThread.get(p.threadId);
-        if (peerId !== undefined) {
-          item.peerUser = userDict[peerId];
-        }
-      } else {
-        const gu = groupByThread.get(p.threadId);
-        item.group = gu
-          ? {
-              id: p.threadId,
-              account: gu.account,
-              threadId: p.threadId,
-              name: gu.name,
-              avatar: gu.avatar,
-              profileRev: gu.profileRev,
-              description: gu.bio,
-              domain: !gu.domain || gu.domain === 'local' ? '' : gu.domain,
-              ownerId: gu.group?.ownerId ?? 0,
-              dissolvedAt: gu.group?.dissolvedAt ?? null,
-              createdAt: gu.group?.createdAt ?? p.thread.createdAt,
-              updatedAt: gu.group?.updatedAt ?? p.thread.updatedAt,
-            }
-          : undefined;
-      }
-      return item;
-    });
   }
 
   @ApiBearerAuth()
@@ -762,39 +644,6 @@ export class UserController {
       skip: dto.skip ?? 0,
       take,
     });
-  }
-
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @Post('/user/thread-info')
-  @ApiOperation({
-    summary: 'Get conversation details (includes peer user/group)',
-  })
-  @ApiResultResponse(ConversationItemDto)
-  async queryUserThreadInfo(
-    @Request() req: FastifyRequest,
-    @Body() dto: ThreadIdDto,
-  ) {
-    const me = req.user.userId;
-    const [p] = await this.participantService.queryParticipants({
-      where: {
-        userId: me,
-        threadId: dto.threadId,
-      },
-      include: { thread: true },
-      take: 1,
-    });
-    if (!p) {
-      // Non-membership / no-such-thread collapse to THREAD_NOT_FOUND — the same code the message
-      // routes return via ThreadAccessGuard, so a client gets one consistent "no conversation"
-      // signal across thread-info / send / query / mark-read.
-      throw new BusinessException(
-        BusinessCode.THREAD_NOT_FOUND,
-        `no thread [${dto.threadId}]`,
-      );
-    }
-    const [data] = await this.hydrateConversationItems(me, [p]);
-    return data;
   }
 
   @Public()

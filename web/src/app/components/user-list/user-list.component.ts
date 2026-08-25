@@ -8,7 +8,7 @@ import {
   ChangeDetectionStrategy,
 } from '@angular/core';
 import { ConversationListService } from '../../services/conversation-list.service';
-import { ConversationItem } from '../../services/model';
+import { P2PConversationItem } from '../../services/model';
 import {
   UserAvatarComponent,
   UserAvatarType,
@@ -38,7 +38,10 @@ export class UserListComponent {
     const excluded = this.excludedUserIds();
     return this.convList
       .items()
-      .filter((t) => t.type === 'P2P' && !excluded.has(t.peerUser.id));
+      .filter(
+        (t): t is P2PConversationItem =>
+          t.type === 'P2P' && !excluded.has(t.peerUser.id),
+      );
   });
 
   readonly dispThreadList = computed(() => {
@@ -51,23 +54,17 @@ export class UserListComponent {
         })
       : this.threadList();
     const selectedDict = this.selectedDict();
-    if (selectedDict !== undefined) {
-      return filtered.map((thread) => {
-        return {
-          ...thread,
-          selected: selectedDict[thread.id],
-        } as ConversationItem & { selected: undefined };
-      });
-    } else {
-      return filtered as (ConversationItem & { selected: undefined })[];
-    }
+    return filtered.map((thread) => ({
+      ...thread,
+      selected: selectedDict?.[thread.threadId],
+    }));
   });
 
   @Output() onSelect = new EventEmitter<
-    ConversationItem & { selected: undefined }
+    P2PConversationItem & { selected?: boolean }
   >();
 
-  onUsrTrdClick(userMsgTrd: ConversationItem & { selected: undefined }) {
+  onUsrTrdClick(userMsgTrd: P2PConversationItem & { selected?: boolean }) {
     this.onSelect.emit(userMsgTrd);
   }
 }

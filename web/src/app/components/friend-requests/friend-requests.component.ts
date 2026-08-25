@@ -132,10 +132,8 @@ export class FriendRequestsComponent implements OnDestroy {
   readonly curSearchText = signal('');
   readonly pendingReqList = signal([] as PendingReq[]);
   readonly toPendingErrTxt = signal('');
-  readonly pendingLoading = signal(true);
   readonly sentReqList = signal([] as PendingReq[]);
   readonly sentErrTxt = signal('');
-  readonly sentLoading = signal(true);
   readonly selectedRequest = signal<PendingReq | null>(null);
   readonly selectedDirection = signal<'INCOMING' | 'OUTGOING'>('INCOMING');
   readonly pendingCount = signal(0);
@@ -151,6 +149,8 @@ export class FriendRequestsComponent implements OnDestroy {
    *  quick succession, so more than one reset may be in flight at once. */
   private pendingLoadGeneration = 0;
   private sentLoadGeneration = 0;
+  private pendingLoadInFlightGeneration: number | null = null;
+  private sentLoadInFlightGeneration: number | null = null;
   private observedRequestRevision: number | undefined;
   private inviteListsInitialized = false;
   readonly pendingInviteActionIds = signal<ReadonlySet<string>>(new Set());
@@ -498,12 +498,23 @@ export class FriendRequestsComponent implements OnDestroy {
       () => this.userService.acceptInvite(this.inviteAction(req)),
       (res) => {
         if (res.code === 0) {
+          // Keep the action terminal while the durable projection and the peer's federated
+          // acknowledgement catch up. finalize() clears the in-flight flag synchronously after this
+          // callback; without this patch the still-REQUESTED row briefly re-enabled both buttons and
+          // then showed the reset loader before the IndexedDB refresh removed/replaced it.
+          this.pendingReqList.update((items) =>
+            items.map((item) =>
+              item.id === req.id ? { ...item, status: 1, errText: '' } : item,
+            ),
+          );
           // Optimistic "added": patch the current row by identity. A state-feed refresh may have
           // replaced or reordered the list while the request was in flight, so a captured index is
           // not safe. If the authoritative refresh already removed the row, do not resurrect it.
-          void this.userService
-            .markFriendRequestAccepted(req.projectionKey)
-            .then(() => this.loadIncomingInvites(true));
+          // Persist the local half without forcing a list reload. The row above already represents the
+          // accepted state; the later state-feed delta authoritatively reconciles the retained history
+          // row after both federated halves converge. A forced reload here only exposed a spurious loading footer and
+          // cannot make peer acknowledgement arrive sooner.
+          void this.userService.markFriendRequestAccepted(req.projectionKey);
           if (this.selectedRequest()?.id === req.id) this.closeRequest();
         } else {
           this.pendingReqList.update((items) =>
@@ -624,7 +635,7 @@ export class FriendRequestsComponent implements OnDestroy {
           projection.status === 'ACCEPTED'
             ? 1
             : projection.status === 'REVOKED'
-              ? projection.remoteStatus === 'REVOKED'
+              ? projection.remote?.status === 'REVOKED'
                 ? -4
                 : -3
               : 0,
@@ -687,15 +698,15 @@ export class FriendRequestsComponent implements OnDestroy {
   }
 
   async loadIncomingInvites(reset = false) {
-    if (this.pendingLoading() && !reset) return;
+    if (this.pendingLoadInFlightGeneration !== null && !reset) return;
     const generation = reset
       ? ++this.pendingLoadGeneration
       : this.pendingLoadGeneration;
+    this.pendingLoadInFlightGeneration = generation;
     if (reset) {
       this.pendingCursor = null;
     }
     this.toPendingErrTxt.set('');
-    this.pendingLoading.set(true);
 
     // Parameterless: backend hardcodes last-7-days / ≤200 / FRIEND / PENDING, and filters out peers
     // who are already friends. The inviter profile is embedded (fromUser), so no queryUserInfo round-trip.
@@ -721,21 +732,21 @@ export class FriendRequestsComponent implements OnDestroy {
         this.transloco.translate('friend.error.unknownError'),
       );
     } finally {
-      if (generation === this.pendingLoadGeneration)
-        this.pendingLoading.set(false);
+      if (this.pendingLoadInFlightGeneration === generation)
+        this.pendingLoadInFlightGeneration = null;
     }
   }
 
   async loadOutgoingInvites(reset = false) {
-    if (this.sentLoading() && !reset) return;
+    if (this.sentLoadInFlightGeneration !== null && !reset) return;
     const generation = reset
       ? ++this.sentLoadGeneration
       : this.sentLoadGeneration;
+    this.sentLoadInFlightGeneration = generation;
     if (reset) {
       this.sentCursor = null;
     }
     this.sentErrTxt.set('');
-    this.sentLoading.set(true);
 
     try {
       const page = await this.userService.listLocalFriendRequests(
@@ -759,7 +770,8 @@ export class FriendRequestsComponent implements OnDestroy {
         this.transloco.translate('friend.error.unknownError'),
       );
     } finally {
-      if (generation === this.sentLoadGeneration) this.sentLoading.set(false);
+      if (this.sentLoadInFlightGeneration === generation)
+        this.sentLoadInFlightGeneration = null;
     }
   }
 

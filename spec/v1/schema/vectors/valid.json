@@ -55,7 +55,7 @@
             "account": "alice",
             "domain": "a.example",
             "eventType": "RELATIONSHIP_INTENT",
-            "localAccount": "bob",
+            "peerAccount": "bob",
             "feedId": "1",
             "body": {
               "status": "ACCEPTED",
@@ -80,7 +80,7 @@
             "account": "!01arz3ndektsv4rrffq69g5fav",
             "domain": "a.example",
             "eventType": "RELATIONSHIP_INTENT",
-            "localAccount": "bob",
+            "peerAccount": "bob",
             "feedId": "3",
             "body": {
               "status": "ACCEPTED",
@@ -126,7 +126,7 @@
               "account": "alice",
               "domain": "a.example",
               "eventType": "RELATIONSHIP_INTENT",
-              "localAccount": "bob",
+              "peerAccount": "bob",
               "feedId": "1",
               "body": {
                 "status": "REQUESTED",
@@ -146,7 +146,7 @@
               "account": "alice",
               "domain": "a.example",
               "eventType": "RELATIONSHIP_INTENT",
-              "localAccount": "bob",
+              "peerAccount": "bob",
               "feedId": "1",
               "body": {
                 "status": "REVOKED",
@@ -166,7 +166,7 @@
               "account": "alice",
               "domain": "a.example",
               "eventType": "RELATIONSHIP_INTENT",
-              "localAccount": "bob",
+              "peerAccount": "bob",
               "feedId": "1",
               "body": {
                 "status": "REVOKED",
@@ -217,7 +217,7 @@
             "feedId": "1",
             "thread": {
               "account": "alice",
-              "localAccount": "bob"
+              "peerAccount": "bob"
             },
             "messageEndSeq": "8"
           }
@@ -235,7 +235,7 @@
           {
             "thread": {
               "account": "alice",
-              "localAccount": "bob"
+              "peerAccount": "bob"
             },
             "author": { "account": "alice", "domain": "a.example" },
             "seq": 1,
@@ -488,7 +488,7 @@
       "schema": "urn:somfp:v1:http-parameters#/$defs/threadDataQuery",
       "value": {
         "account": "alice",
-        "localAccount": "bob",
+        "peerAccount": "bob",
         "after": "0"
       }
     },

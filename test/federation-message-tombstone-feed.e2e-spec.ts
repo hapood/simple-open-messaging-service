@@ -130,7 +130,7 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
 
     const page = await service.query(
       peerDomain,
-      { type: 'P2P', account: 'alice', localAccount: 'bob' },
+      { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0n,
       undefined,
       deletion.id,
@@ -161,7 +161,7 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
     const { deletion } = await seedDeletion();
     const page = await service.query(
       peerDomain,
-      { type: 'P2P', account: 'alice', localAccount: 'bob' },
+      { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       undefined,
       1,
       undefined,
@@ -184,7 +184,7 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
     await expect(
       service.query(
         peerDomain,
-        { type: 'P2P', account: 'alice', localAccount: 'bob' },
+        { type: 'P2P', account: 'alice', peerAccount: 'bob' },
         0n,
       ),
     ).rejects.toMatchObject({ bizCode: BusinessCode.FORBIDDEN });
@@ -199,7 +199,7 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
 
     const page = await service.query(
       peerDomain,
-      { type: 'P2P', account: 'alice', localAccount: 'bob' },
+      { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0n,
       undefined,
       deletion.id,
@@ -232,7 +232,7 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
       service.rejectMissingQueryAfter(peerDomain, {
         type: 'P2P',
         account: 'alice',
-        localAccount: 'bob',
+        peerAccount: 'bob',
       }),
     ).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,

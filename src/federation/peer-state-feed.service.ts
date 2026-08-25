@@ -36,7 +36,7 @@ export interface PeerStateFeedPage {
     account: string;
     domain: string;
     eventType: PeerStateEventType;
-    localAccount?: string;
+    peerAccount?: string;
     feedId: string;
     body: unknown;
   }>;
@@ -313,7 +313,7 @@ export class PeerStateFeedService {
           body: row.body,
           ...(row.eventType === 'RELATIONSHIP_INTENT'
             ? {
-                localAccount: row.subjectAccount,
+                peerAccount: row.subjectAccount,
               }
             : {}),
         };

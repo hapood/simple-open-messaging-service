@@ -44,10 +44,6 @@ import type { ChatMsgData } from '../message-cards/chat-item';
 import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter';
 import { AppIconType, IconComponent } from '../icon/icon.component';
 import { PageHeaderComponent } from '../page-header/page-header.component';
-import {
-  SplitButtonComponent,
-  type SplitButtonOption,
-} from '../split-button/split-button.component';
 
 export type ForwardMode = 'DIRECT' | 'HISTORY';
 export type ForwardDialogPurpose = 'FORWARD' | 'CHAT_CARD' | 'NATIVE_SHARE';
@@ -80,7 +76,6 @@ export interface ForwardDialogResult {
     ContactCardRowComponent,
     IconComponent,
     PageHeaderComponent,
-    SplitButtonComponent,
   ],
   templateUrl: './forward-dialog.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -97,7 +92,6 @@ export class ForwardDialogComponent {
   readonly searchText = signal('');
   readonly selectedThreadIds = signal<ReadonlySet<number>>(new Set());
   readonly recentThreadIds = signal<readonly number[]>([]);
-  readonly selectedForwardMode = signal<ForwardMode>('HISTORY');
   private readonly conversations = inject(ConversationListService);
   private readonly threadAdapter = inject(MESSAGE_THREAD_ADAPTER);
   private readonly route = inject(RouteService);
@@ -191,15 +185,8 @@ export class ForwardDialogComponent {
   );
   readonly selfProfile = this.user.sessionProfile.asReadonly();
 
-  readonly selectedForwardModeLabel = computed(() =>
-    this.transloco.translate(
-      this.selectedForwardMode() === 'DIRECT'
-        ? 'forward.direct'
-        : 'forward.merged',
-    ),
-  );
   readonly effectiveForwardMode = computed(() =>
-    this.purpose() === 'CHAT_CARD' ? this.selectedForwardMode() : this.mode(),
+    this.purpose() === 'CHAT_CARD' ? 'DIRECT' : this.mode(),
   );
 
   private readonly availableConversations = computed(
@@ -262,23 +249,6 @@ export class ForwardDialogComponent {
           }
         : {}),
     } satisfies ForwardDialogResult);
-  }
-
-  forwardModeOptions(): readonly SplitButtonOption<ForwardMode>[] {
-    return [
-      {
-        label: this.transloco.translate('forward.direct'),
-        value: 'DIRECT',
-      },
-      {
-        label: this.transloco.translate('forward.merged'),
-        value: 'HISTORY',
-      },
-    ];
-  }
-
-  selectForwardMode(mode: ForwardMode): void {
-    this.selectedForwardMode.set(mode);
   }
 
   retryGeneration(): void {

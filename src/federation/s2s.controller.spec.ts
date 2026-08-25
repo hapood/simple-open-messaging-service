@@ -185,14 +185,14 @@ describe('S2sController reverse thread queries', () => {
   it('passes before as the exclusive reverse message cursor', async () => {
     const { controller, messageFeed } = target();
     const req = {
-      query: { account: 'alice', localAccount: 'bob', before: '3' },
+      query: { account: 'alice', peerAccount: 'bob', before: '3' },
       peer: { domain: 'a.example', keyId: 'a.example/key-1' },
     } as unknown as FastifyRequest;
 
     await controller.queryMessages(req, 'alice', 'bob', undefined, '3');
     expect(messageFeed.query).toHaveBeenCalledWith(
       'a.example',
-      { type: 'P2P', account: 'alice', localAccount: 'bob' },
+      { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       undefined,
       undefined,
       undefined,
@@ -206,7 +206,7 @@ describe('S2sController reverse thread queries', () => {
     const req = {
       query: {
         account: 'alice',
-        localAccount: 'bob',
+        peerAccount: 'bob',
         after: '1',
         before: '3',
       },

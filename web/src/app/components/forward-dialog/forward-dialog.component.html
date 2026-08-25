@@ -10,18 +10,7 @@
     "
     (back)="close()"
   >
-    @if (purpose() === 'CHAT_CARD') {
-      <app-split-button
-        pageHeaderAction
-        [label]="selectedForwardModeLabel()"
-        [menuAriaLabel]="'forward.chooseMode' | transloco"
-        [options]="forwardModeOptions()"
-        [selectedValue]="selectedForwardMode()"
-        [disabled]="!canConfirm()"
-        (primaryAction)="confirm()"
-        (optionAction)="selectForwardMode($event)"
-      />
-    } @else if (purpose() === 'FORWARD') {
+    @if (purpose() !== 'NATIVE_SHARE') {
       <button
         pageHeaderAction
         type="button"

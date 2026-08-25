@@ -1,4 +1,4 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import {
   and,
   asc,
@@ -51,12 +51,12 @@ export const FEDERATED_MESSAGE_CONTENT_TYPES: ContentType[] = Object.values(
 ).filter((type) => type !== ContentType.SYSTEM);
 
 export type FederationThreadAddress =
-  | { account: string; localAccount: string }
+  | { account: string; peerAccount: string }
   | { account: string };
 
 export type FederationThreadQuery =
   | { type: 'GROUP'; account: string }
-  | { type: 'P2P'; account: string; localAccount: string };
+  | { type: 'P2P'; account: string; peerAccount: string };
 
 export type FederationMessageFeedAsset = FederationByteDescriptor;
 
@@ -97,6 +97,8 @@ export interface FederationMessageQueryPage {
 
 @Injectable()
 export class FederationMessageFeedService {
+  private readonly logger = new Logger(FederationMessageFeedService.name);
+
   private readonly localDomain = loadFederationConfig().domain;
 
   constructor(
@@ -443,20 +445,32 @@ export class FederationMessageFeedService {
         quoteSeq === undefined
           ? undefined
           : quoteTargets.get(JSON.stringify([row.threadId, quoteSeq]));
-      let content = toFederatedMessageContent(
-        row.contentType,
-        row.content,
-        this.localDomain,
-      );
-      if (row.contentType === ContentType.CALL) {
-        const local = parseCallContent(row.content);
-        if (!local || row.threadType !== 'P2P')
-          throw new Error('invalid federated CALL projection');
-        content = buildFederatedCallContent(local);
+      let content: string;
+      let contentDigests: Set<string>;
+      try {
+        content = toFederatedMessageContent(
+          row.contentType,
+          row.content,
+          this.localDomain,
+        );
+        if (row.contentType === ContentType.CALL) {
+          const local = parseCallContent(row.content);
+          if (!local || row.threadType !== 'P2P')
+            throw new Error('invalid federated CALL projection');
+          content = buildFederatedCallContent(local);
+        }
+        contentDigests = new Set(
+          federatedContentDigests(row.contentType, content),
+        );
+      } catch (error) {
+        // One malformed legacy row must not poison the peer's entire page forever. The page cursor is
+        // based on scanned source seqs rather than returned item count, so omitting this row advances
+        // past it while valid rows in the same page remain deliverable.
+        this.logger.warn(
+          `skipping malformed federated message (thread ${row.threadId}, seq ${row.seq}, type ${row.contentType}): ${(error as Error).message}`,
+        );
+        continue;
       }
-      const contentDigests = new Set(
-        federatedContentDigests(row.contentType, content),
-      );
       const candidateAssets = assets.get(row.messageId) ?? [];
       // A FORWARD card references its closure by bundleId; the closure manifest, rather than the
       // card itself, owns the referenced digests. Other message types must not leak receiver-local
@@ -535,7 +549,7 @@ export class FederationMessageFeedService {
                 SELECT 1 FROM "ThreadParticipant" participant
                 JOIN "User" member ON member.id = participant."userId"
                 WHERE participant."threadId" = thread.id
-                  AND member.account = ${selector.localAccount}
+                  AND member.account = ${selector.peerAccount}
                   AND member."isForeigner" = true
                   AND member.domain = ${peerDomain}
               )
@@ -611,7 +625,7 @@ export class FederationMessageFeedService {
           );
         result.set(thread.id, {
           account: source.account,
-          localAccount: target.account,
+          peerAccount: target.account,
         });
       }
     }

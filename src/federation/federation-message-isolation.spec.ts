@@ -10,7 +10,7 @@ const item = (
 ): FederationMessageFeedPage['messages'][number] => ({
   thread: {
     account: 'alice',
-    localAccount: 'bob',
+    peerAccount: 'bob',
   },
   author: { account: 'alice', domain: 'local.test' },
   seq: Number(sequence),

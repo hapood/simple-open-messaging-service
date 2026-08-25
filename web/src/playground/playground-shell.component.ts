@@ -17,7 +17,10 @@ import { MatInputModule } from '@angular/material/input';
 import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { TranslocoModule, TranslocoService } from '@jsverse/transloco';
 import { MessageThreadComponent } from '../app/components/message-thread/friend-message.component';
-import type { ConversationItem } from '../app/services/model';
+import {
+  createGroupConversation,
+  createP2PConversation,
+} from '../app/services/model';
 import { ThemeService } from '../app/services/theme.service';
 import { PlaygroundMessageThreadAdapter } from './playground-message-thread.adapter';
 import { PeerProfileComponent } from '../app/components/peer-profile/peer-profile.component';
@@ -29,76 +32,36 @@ import {
   type PlaygroundCallResponse,
 } from './playground-call.mock';
 
-const DEMO_CONVERSATION = {
-  id: 1,
-  threadId: 1,
-  type: 'P2P',
-  alias: null,
-  unreadCount: 0,
-  lastMessageSeq: 100,
-  friendshipActive: true,
-  conversationState: 'ACTIVE',
-  peerUser: {
+const DEMO_CONVERSATION = createP2PConversation(
+  1,
+  {
     id: 2,
     account: 'alice',
     bio: 'Product designer · Shanghai',
     name: 'Alice',
-    avatar: '',
-    domain: '',
   },
-  group: {},
-} as ConversationItem;
+  { lastMessageSeq: 100 },
+);
 
-const DEMO_INVITABLE_FRIEND = {
-  ...DEMO_CONVERSATION,
+const DEMO_INVITABLE_FRIEND = createP2PConversation(6, {
   id: 6,
-  threadId: 6,
-  peerUser: {
-    id: 6,
-    account: 'liam',
-    bio: 'Android engineer · Hangzhou',
-    name: 'Liam',
-    avatar: '',
-    domain: '',
-  },
-} as ConversationItem;
+  account: 'liam',
+  bio: 'Android engineer · Hangzhou',
+  name: 'Liam',
+});
 
-const DEMO_GROUP_CONVERSATION = {
-  id: 2,
-  threadId: 2,
-  type: 'GROUP',
-  alias: null,
-  unreadCount: 0,
-  mentionUnread: [],
-  lastMessageAt: 0,
-  lastMessageSeq: 100,
-  lastMessagePreview: null,
-  lastMessageSenderId: null,
-  lastReadSeq: null,
-  muted: false,
-  pinned: false,
-  pinnedAt: null,
-  clearedSeq: null,
-  role: 'OWNER',
-  conversationState: 'ACTIVE',
-  peerUser: DEMO_CONVERSATION.peerUser,
-  group: {
+const DEMO_GROUP_CONVERSATION = createGroupConversation(
+  2,
+  {
     id: 2,
-    threadId: 2,
     account: '!playground',
     name: 'Playground Team',
     ownerId: 1,
     description: 'Alice · Maya · Noah · You',
-    avatar: '',
-    domain: '',
-    profileRev: 1,
-    dissolvedAt: null,
-    createdAt: 0,
-    updatedAt: 0,
     memberCount: 5,
-    groupMetaFeedId: '0',
   },
-} as ConversationItem;
+  { role: 'OWNER', lastMessageAt: 0, lastMessageSeq: 100 },
+);
 
 type KernelFieldKey =
   | 'initBatch'

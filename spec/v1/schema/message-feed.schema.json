@@ -17,12 +17,12 @@
         },
         {
           "type": "object",
-          "required": ["account", "localAccount"],
+          "required": ["account", "peerAccount"],
           "properties": {
             "account": {
               "$ref": "urn:somfp:v1:common#/$defs/userAccount"
             },
-            "localAccount": {
+            "peerAccount": {
               "$ref": "urn:somfp:v1:common#/$defs/userAccount"
             }
           },

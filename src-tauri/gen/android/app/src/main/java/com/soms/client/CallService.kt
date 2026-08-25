@@ -54,12 +54,10 @@ class CallService : Service() {
     private var audioManager: AudioManager? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var focusRequest: AudioFocusRequest? = null
-    /** The incoming caller's display name + type, captured at ACTION_INCOMING for the ringing notification. */
+    /** Incoming presentation resolved from native SQLite before the ringing notification is posted. */
     @Volatile private var incomingCallerName: String = ""
-    @Volatile private var incomingCallerAvatar: String = ""
     @Volatile private var incomingCallType: String = "AUDIO"
-    /** The peer's avatar bitmap, fetched async ([loadAvatar]) for the notification Person icon. Null until
-     *  loaded — the first notification is name-only; [refreshNotification] re-posts once the icon is in. */
+    /** The peer's avatar bitmap for the notification Person icon. */
     @Volatile private var avatarBitmap: Bitmap? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -74,6 +72,13 @@ class CallService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val isIncoming = intent?.action == ACTION_INCOMING
         val sid = if (isIncoming) intent?.getStringExtra(EXTRA_SID) else null
+        val callerUserId = intent?.getIntExtra(EXTRA_CALLER_UID, 0) ?: 0
+        val callerAccount = intent?.getStringExtra(EXTRA_CALLER_ACCOUNT) ?: ""
+        val callerDomain = intent?.getStringExtra(EXTRA_CALLER_DOMAIN) ?: ""
+        val incomingThreadId = intent?.getIntExtra(EXTRA_THREAD_ID, 0) ?: 0
+        val localPeer = if (isIncoming && callerAccount.isNotEmpty()) {
+            ClientStateDb.getCallPeer(this, callerAccount, callerDomain)
+        } else null
         // Promote to foreground FIRST. The phoneCall FGS must call startForeground within ~5s of
         // startForegroundService or the system throws RemoteServiceException + kills the process (observed
         // crashing the callee on Android 9). The old code returned BEFORE startForeground on an empty sid, and
@@ -83,9 +88,11 @@ class CallService : Service() {
         // in time. The seed/loadAvatar/acquireAudio work runs after, safely past the deadline.
         try {
             if (isIncoming && !sid.isNullOrEmpty()) {
-                incomingCallerName = intent!!.getStringExtra(EXTRA_CALLER_NAME) ?: ""
-                incomingCallerAvatar = intent.getStringExtra(EXTRA_CALLER_AVATAR) ?: ""
-                incomingCallType = intent.getStringExtra(EXTRA_CALL_TYPE) ?: "AUDIO"
+                incomingCallerName = localPeer?.name ?: ""
+                incomingCallType = intent?.getStringExtra(EXTRA_CALL_TYPE) ?: "AUDIO"
+                avatarBitmap = localPeer?.avatarBytes?.let {
+                    BitmapFactory.decodeByteArray(it, 0, it.size)
+                } ?: LetterAvatar.render(this, incomingCallerName)
                 startIncomingForeground(sid)
             } else {
                 startCallForeground()
@@ -100,13 +107,14 @@ class CallService : Service() {
         if (isIncoming && !sid.isNullOrEmpty()) {
             CallController.seedIncoming(
                 sid,
-                intent!!.getIntExtra(EXTRA_CALLER_UID, 0),
+                callerUserId,
+                callerAccount,
+                callerDomain,
                 incomingCallerName,
-                incomingCallerAvatar,
-                intent.getIntExtra(EXTRA_THREAD_ID, 0),
+                localPeer?.avatarDataUrl() ?: "",
+                incomingThreadId,
                 incomingCallType,
             )
-            loadAvatar(incomingCallerAvatar, incomingCallerName)
         } else if (!isIncoming) {
             // Outgoing / re-delivered start: comms audio (the call is negotiating/active).
             acquireAudio()
@@ -335,17 +343,7 @@ class CallService : Service() {
     /** Lazily create the "Calls" channels: ONGOING (LOW — an active call is not a loud alert) + INCOMING
      *  (HIGH — the heads-up / full-screen ring surface; NO sound — the audible ring is the device ringtone
      *  played by CallController.startRing, so a channel sound would double up). Idempotent. */
-    /** Decode the peer's avatar (async) for the notification Person icon. Cached in [avatarBitmap]; the
-     *  notification builders use it if loaded (else name-only). On load, [refreshNotification] re-posts the
-     *  current notification so the icon appears.
-     *
-     *  Two sources, by prefix:
-     *   - `data:image/...;base64,...` (OUTGOING): the caller passed the IDB-cached bytes via the JS bridge —
-     *     decode directly, NO /uploads fetch (the bytes are already on-device; the caller is in the peer's
-     *     thread, so the avatar is cached).
-     *   - a `/uploads` path (INCOMING): the FCM push / SSE frame carries only the path, and at a cold-start
-     *     ring the WebView (which holds the IDB cache) may not be alive — so a Bearer fetch is the only
-     *     source. Reuses SomsMessagingService.fetchBitmap (same path as the message-notification icon). */
+    /** Decode a native-SQLite avatar data URL for an outgoing-call notification. */
     internal fun loadAvatar(src: String, name: String) {
         if (src.isEmpty()) {
             // No avatar image → render an initial-letter tile (matches the in-app avatar color exactly — the
@@ -356,22 +354,15 @@ class CallService : Service() {
             return
         }
         Thread {
-            val isDataUrl = src.startsWith("data:")
-            val bmp = decodeAvatar(src)
+            val bmp = decodeDataUrlAvatar(src)
             SomsLog.d("SomsCall") {
-                "loadAvatar: isDataUrl=$isDataUrl len=${src.length} bmp=${bmp != null}${if (bmp != null) " ${bmp.width}x${bmp.height}" else ""}"
+                "loadAvatar: len=${src.length} bmp=${bmp != null}${if (bmp != null) " ${bmp.width}x${bmp.height}" else ""}"
             }
             if (bmp != null) {
                 avatarBitmap = bmp
                 mainHandler.post { refreshNotification() }
             }
         }.start()
-    }
-
-    /** Decode `src` to a bitmap by its prefix: a base64 data URL → decode (outgoing); a /uploads path →
-     *  Bearer-fetch (incoming). Null on any failure (the notification renders name-only). */
-    private fun decodeAvatar(src: String): Bitmap? {
-        return if (src.startsWith("data:")) decodeDataUrlAvatar(src) else SomsMessagingService.fetchBitmap(this, src)
     }
 
     /** Decode the base64 payload of a `data:` URL to a bitmap. */
@@ -454,8 +445,8 @@ class CallService : Service() {
          *  decline receiver read it). Public so those callers can reference it. */
         const val EXTRA_SID = "soms_call_sid"
         private const val EXTRA_CALLER_UID = "soms_call_caller_uid"
-        private const val EXTRA_CALLER_NAME = "soms_call_caller_name"
-        private const val EXTRA_CALLER_AVATAR = "soms_call_caller_avatar"
+        private const val EXTRA_CALLER_ACCOUNT = "soms_call_caller_account"
+        private const val EXTRA_CALLER_DOMAIN = "soms_call_caller_domain"
         private const val EXTRA_THREAD_ID = "soms_call_thread_id"
         private const val EXTRA_CALL_TYPE = "soms_call_type"
         private const val REQ_ANSWER = 7001
@@ -476,8 +467,8 @@ class CallService : Service() {
             ctx: Context,
             sid: String,
             callerUserId: Int,
-            callerName: String,
-            callerAvatar: String,
+            callerAccount: String,
+            callerDomain: String,
             threadId: Int,
             callType: String,
         ) {
@@ -485,8 +476,8 @@ class CallService : Service() {
                 action = ACTION_INCOMING
                 putExtra(EXTRA_SID, sid)
                 putExtra(EXTRA_CALLER_UID, callerUserId)
-                putExtra(EXTRA_CALLER_NAME, callerName)
-                putExtra(EXTRA_CALLER_AVATAR, callerAvatar)
+                putExtra(EXTRA_CALLER_ACCOUNT, callerAccount)
+                putExtra(EXTRA_CALLER_DOMAIN, callerDomain)
                 putExtra(EXTRA_THREAD_ID, threadId)
                 putExtra(EXTRA_CALL_TYPE, callType)
             }

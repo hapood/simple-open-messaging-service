@@ -27,7 +27,7 @@ import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { GroupService } from '../../services/group.service';
 import { UserService } from '../../services/user.service';
 import { ConversationListService } from '../../services/conversation-list.service';
-import { ConversationItem } from '../../services/model';
+import { ConversationItem, P2PConversationItem } from '../../services/model';
 import {
   UserAvatarComponent,
   UserAvatarType,
@@ -118,7 +118,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
 
   /** Invite picker state. */
   readonly selectedDict = signal<Record<number, boolean | undefined>>({});
-  readonly selectedList = signal<ConversationItem[]>([]);
+  readonly selectedList = signal<P2PConversationItem[]>([]);
   readonly showInvite = signal(false);
   readonly showMemberManager = signal(false);
   readonly memberQuery = signal('');
@@ -217,7 +217,8 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     this.selectedDict.update((dict) => {
       const next = { ...dict };
       for (const item of this.convList.items()) {
-        if (memberIds.has(item.peerUser?.id)) next[item.id] = false;
+        if (item.type === 'P2P' && memberIds.has(item.peerUser.id))
+          next[item.threadId] = false;
       }
       return next;
     });
@@ -400,33 +401,27 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
         messageKey: 'chat.menuLeaveGroupConfirm',
         confirmKey: 'group.leave',
         cancelKey: 'common.cancel',
-        checkboxKey: 'chat.alsoDeleteData',
         danger: true,
       },
       (result) => {
         if (!result) return;
-        void this.leave(typeof result === 'object' && result.checked);
+        void this.leave();
       },
     );
   }
 
-  private async leave(deleteData: boolean) {
+  private async leave() {
     const id = this.groupId();
     if (id === undefined || !this.canLeave()) return;
     if (!this.deletionLock.begin(id)) return;
     this.busy.set(true);
     try {
       const res = await firstValueFrom(
-        this.groupService.leaveGroup({ groupId: id, deleteData }),
+        this.groupService.leaveGroup({ groupId: id }),
       );
       if (res.code !== 0) return this.showBusinessError(res);
-      if (deleteData) {
-        await this.convList.removeThread(id);
-        this.nav.closeChat();
-      } else {
-        this.convList.applyThreadMeta(id, { conversationState: 'READ_ONLY' });
-        this.nav.closeAside();
-      }
+      this.convList.applyThreadMeta(id, { conversationState: 'READ_ONLY' });
+      this.nav.closeAside();
     } catch {
       this.showNetworkError();
     } finally {
@@ -444,34 +439,28 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
         messageKey: 'group.dissolveConfirm',
         confirmKey: 'group.dissolve',
         cancelKey: 'common.cancel',
-        checkboxKey: 'chat.alsoDeleteData',
         danger: true,
       },
       (result) => {
         if (!result) return;
-        void this.dissolve(typeof result === 'object' && result.checked);
+        void this.dissolve();
       },
     );
   }
 
-  private async dissolve(deleteData: boolean) {
+  private async dissolve() {
     const id = this.groupId();
     if (id === undefined || !this.isOwner() || this.readOnly()) return;
     if (!this.deletionLock.begin(id)) return;
     this.busy.set(true);
     try {
       const res = await firstValueFrom(
-        this.groupService.dissolveGroup({ groupId: id, deleteData }),
+        this.groupService.dissolveGroup({ groupId: id }),
       );
       if (res.code !== 0) return this.showBusinessError(res);
-      if (deleteData) {
-        await this.convList.removeThread(id);
-        this.nav.closeChat();
-      } else {
-        this.convList.applyGroupUpdate(id, { dissolvedAt: Date.now() });
-        this.convList.applyThreadMeta(id, { conversationState: 'READ_ONLY' });
-        this.nav.closeAside();
-      }
+      this.convList.applyGroupUpdate(id, { dissolvedAt: Date.now() });
+      this.convList.applyThreadMeta(id, { conversationState: 'READ_ONLY' });
+      this.nav.closeAside();
     } catch {
       this.showNetworkError();
     } finally {
@@ -577,14 +566,14 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
 
   // ── invite (add members) ──
 
-  onTrdSelect(trdItem: ConversationItem) {
+  onTrdSelect(trdItem: P2PConversationItem) {
     let dict = { ...this.selectedDict() };
     let list = this.selectedList();
-    if (dict[trdItem.id]) {
-      dict[trdItem.id] = false;
-      list = list.filter((item) => item.id !== trdItem.id);
+    if (dict[trdItem.threadId]) {
+      dict[trdItem.threadId] = false;
+      list = list.filter((item) => item.threadId !== trdItem.threadId);
     } else {
-      dict[trdItem.id] = true;
+      dict[trdItem.threadId] = true;
       list = list.concat(trdItem);
     }
     this.selectedDict.set(dict);

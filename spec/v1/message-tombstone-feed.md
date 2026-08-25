@@ -121,7 +121,7 @@ the query to retrieve the corresponding facts.
 ## 3. Tombstone query
 
 `GET /s2s/v1/message-tombstones` uses the same account-grammar-discriminated
-thread selector, P2P `localAccount`, exclusive `after`/`before`
+thread selector, P2P `peerAccount`, exclusive `after`/`before`
 choice, fixed inclusive `through`, and directional ordering as the message
 query. Here, all three coordinates belong to the
 thread-local `deletionSeq` space, not the tombstone-feed ID space. A forward

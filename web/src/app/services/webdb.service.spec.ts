@@ -4,6 +4,7 @@ import { provideZonelessChangeDetection } from '@angular/core';
 import { openDB } from 'idb';
 import type { Message } from './model';
 import type { ClientStateFeedItem } from './user.service';
+import { FRIEND_INTENT_RETENTION_MS } from './friend-request-state';
 import {
   CACHE_SCHEMA_VERSION,
   LocalCacheVersionMismatchError,
@@ -337,6 +338,68 @@ describe('WebdbService', () => {
       });
     });
 
+    it('materializes a local P2P conversation from two distinct local intent directions', async () => {
+      await webdb.openForUser('1');
+      const peer = {
+        id: 2,
+        account: 'bob',
+        name: 'Bob',
+        avatar: '',
+        bio: '',
+        domain: '',
+        isForeigner: false,
+      };
+      const items: ClientStateFeedItem[] = [
+        {
+          feedId: 20,
+          account: 'alice',
+          domain: '',
+          eventType: 'RELATIONSHIP_INTENT',
+          subjectAccount: 'bob',
+          subjectDomain: '',
+          body: {
+            status: 'ACCEPTED',
+            note: '',
+            requestedAt: 1,
+            expiresAt: null,
+            direction: 'OUTGOING',
+            localThreadId: 7,
+            peer,
+          },
+        },
+        {
+          feedId: 21,
+          account: 'bob',
+          domain: '',
+          eventType: 'RELATIONSHIP_INTENT',
+          subjectAccount: 'alice',
+          subjectDomain: '',
+          body: {
+            status: 'ACCEPTED',
+            note: '',
+            requestedAt: 1,
+            expiresAt: null,
+            direction: 'INCOMING',
+            localThreadId: 7,
+            peer,
+          },
+        },
+      ];
+
+      await webdb.applyStateFeedPage(items, 21);
+
+      expect(await webdb.getThreads()).toEqual([
+        expect.objectContaining({
+          threadId: 7,
+          type: 'P2P',
+          friendshipActive: true,
+          conversationState: 'ACTIVE',
+          peerUser: expect.objectContaining({ account: 'bob', domain: '' }),
+        }),
+      ]);
+      expect(await webdb.getMeta('stateFeedId')).toBe(21);
+    });
+
     it('does not advance the unread badge revision when an incoming request is rejected', async () => {
       const db = await webdb.openForUser('1');
       const requestedAt = Date.now();
@@ -500,10 +563,13 @@ describe('WebdbService', () => {
 
       await webdb.cleanupFriendRequests(expiresAt);
 
-      expect(await db!.getAll('friendRequests')).toEqual([]);
+      expect(await db!.getAll('friendRequests')).toHaveLength(1);
       expect(
         await webdb.getProfile('pending:peer.test\u0000alice'),
       ).toBeUndefined();
+
+      await webdb.cleanupFriendRequests(expiresAt + FRIEND_INTENT_RETENTION_MS);
+      expect(await db!.getAll('friendRequests')).toEqual([]);
     });
 
     it('garbage-collects an expired group-invite projection and its temporary profile', async () => {
@@ -544,10 +610,13 @@ describe('WebdbService', () => {
 
       await webdb.cleanupFriendRequests(expiresAt);
 
-      expect(await db!.getAll('friendRequests')).toEqual([]);
+      expect(await db!.getAll('friendRequests')).toHaveLength(1);
       expect(
         await webdb.getProfile('pending-group:groups.test\u0000!group'),
       ).toBeUndefined();
+
+      await webdb.cleanupFriendRequests(expiresAt + FRIEND_INTENT_RETENTION_MS);
+      expect(await db!.getAll('friendRequests')).toEqual([]);
     });
 
     it('clears state-feed projections only on the first full page', async () => {
@@ -683,6 +752,92 @@ describe('WebdbService', () => {
       ).toMatchObject({
         group: { memberCount: 1, groupMetaFeedId: '1' },
       });
+    });
+
+    it('materializes an active group conversation from bilateral intents before group metadata', async () => {
+      await webdb.openForUser('1');
+      const group = {
+        account: '!dev',
+        domain: '',
+        isLocal: true,
+        name: 'dev',
+        avatar: '',
+        description: '',
+        profileRev: 1,
+      };
+      const common = {
+        eventType: 'RELATIONSHIP_INTENT' as const,
+        body: {
+          status: 'ACCEPTED' as const,
+          note: '',
+          requestedAt: null,
+          expiresAt: null,
+          threadId: 12,
+          group,
+        },
+      };
+      const items: ClientStateFeedItem[] = [
+        {
+          ...common,
+          feedId: 1,
+          account: '!dev',
+          domain: '',
+          subjectAccount: 'alice',
+          subjectDomain: '',
+          body: { ...common.body, direction: 'INCOMING' },
+        },
+        {
+          ...common,
+          feedId: 2,
+          account: 'alice',
+          domain: '',
+          subjectAccount: '!dev',
+          subjectDomain: '',
+          body: { ...common.body, direction: 'OUTGOING' },
+        },
+      ];
+
+      await webdb.applyStateFeedPage(items, 3, [
+        {
+          threadId: 12,
+          page: {
+            account: '!dev',
+            mode: 'full',
+            items: [
+              {
+                feedId: '1',
+                operation: 'UPSERT',
+                account: 'alice',
+                domain: 'local.test',
+                rev: 1,
+                body: {
+                  userId: 1,
+                  role: 'OWNER',
+                  profileRev: 1,
+                  displayName: 'Alice',
+                  avatar: null,
+                },
+              },
+            ],
+            hasMore: false,
+            scannedThrough: '1',
+            groupMetaFeedEndId: '1',
+          },
+        },
+      ]);
+
+      expect(await webdb.getThreads()).toEqual([
+        expect.objectContaining({
+          threadId: 12,
+          type: 'GROUP',
+          group: expect.objectContaining({
+            account: '!dev',
+            name: 'dev',
+            memberCount: 1,
+            groupMetaFeedId: '1',
+          }),
+        }),
+      ]);
     });
 
     it('commits missed-summary threads and cursor together', async () => {

@@ -417,6 +417,7 @@ export class MessageController {
         account: target.account,
         domain: target.domain,
         displayName: target.name,
+        bio: target.bio ?? '',
         ...(avatar
           ? {
               avatar: `/uploads/msg-assets/${avatar.digest.slice(0, 2)}/${avatar.digest.slice(2, 4)}/${avatar.digest}`,

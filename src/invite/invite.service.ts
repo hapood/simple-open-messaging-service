@@ -563,10 +563,10 @@ export class InviteService {
         const feedId = await this.clientStateFeed.writeInTx(tx, {
           userId: owner.id,
           account: actor.account,
-          domain: actor.domain,
+          domain: actor.domain === 'local' ? '' : actor.domain,
           eventType: 'RELATIONSHIP_INTENT',
           subjectAccount: subject.account,
-          subjectDomain: subject.domain,
+          subjectDomain: subject.domain === 'local' ? '' : subject.domain,
           body,
         });
         if (feedId !== null) pending.push({ userId: owner.id, feedId });
@@ -582,7 +582,7 @@ export class InviteService {
       name: value.name,
       avatar: value.avatar,
       bio: value.bio,
-      domain: value.domain,
+      domain: value.domain === 'local' ? '' : value.domain,
       isForeigner: value.isForeigner,
     };
   }

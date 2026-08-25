@@ -82,7 +82,7 @@ Real-time call operations map to terminal records as follows:
 {
   "thread": {
     "account": "alice",
-    "localAccount": "bob"
+    "peerAccount": "bob"
   },
   "author": { "account": "alice", "domain": "a.example" },
   "seq": 81,
@@ -101,7 +101,7 @@ Real-time call operations map to terminal records as follows:
 {
   "thread": {
     "account": "alice",
-    "localAccount": "bob"
+    "peerAccount": "bob"
   },
   "author": { "account": "alice", "domain": "a.example" },
   "seq": 82,
