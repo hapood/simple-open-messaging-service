@@ -792,10 +792,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
               account: cached.account,
               avatar: cached.avatar,
               avatarIdentityId: id,
-              avatarDomain:
-                cached.domain || 'local',
-              domain:
-                cached.domain || 'local',
+              avatarDomain: cached.domain || 'local',
+              domain: cached.domain || 'local',
               isSelf: id === this.selfUserId,
             };
             this.profiles.set(id, profile);
@@ -834,9 +832,11 @@ export class HttpItemSource implements CbSource<ChatItemData> {
             void this.profileRepo?.putProfile(`u${u.id}`, 'user', {
               id: u.id,
               name: u.name,
+              account: u.account,
               avatar: u.avatar ?? '',
               bio: u.bio,
               domain: u.domain,
+              sourceServer: u.domain,
               profileRev: u.profileRev ?? 0,
             });
             for (const seq of this.seqsByCreator.get(u.id) ?? [])

@@ -76,6 +76,8 @@ export interface ProfileRecord {
   avatar: string;
   bio: string;
   domain: string;
+  /** Server that supplied this profile. Local profiles use the canonical literal `local`. */
+  sourceServer: string;
   profileRev: number;
   source?: 'OUTGOING_FRIEND_REQUEST' | 'GROUP_INVITE';
   expiresAt?: number;
@@ -87,6 +89,7 @@ export interface ThreadParticipantRecord {
   userId: number;
   memberAccount: string;
   memberDomain: string;
+  profileSourceServer: string;
   role: 'OWNER' | 'ADMIN' | 'MEMBER';
   displayName: string;
   avatar: string;
@@ -95,6 +98,7 @@ export interface ThreadParticipantRecord {
 
 export interface ClientGroupMetaApply {
   threadId: number;
+  sourceServer: string;
   page: ClientGroupMetaFeedPage;
 }
 
@@ -195,7 +199,10 @@ function messageCoverageKey(threadId: number): string {
 /** Core cache schema. High-volume message data intentionally lives in MessageDbSchema. */
 export interface WebdbSchema extends DBSchema {
   avatars: { key: string; value: AvatarRecord };
-  profiles: { key: string; value: ProfileRecord };
+  profiles: {
+    key: string;
+    value: ProfileRecord;
+  };
   threadParticipants: {
     key: [number, number];
     value: ThreadParticipantRecord;
@@ -228,7 +235,7 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-export const CACHE_SCHEMA_VERSION = 6;
+export const CACHE_SCHEMA_VERSION = 7;
 export const MESSAGE_CACHE_SCHEMA_VERSION = 1;
 const IDB_FORMAT_VERSION = 1;
 
@@ -260,6 +267,12 @@ function idbAvailable(): boolean {
 
 @Injectable({ providedIn: 'root' })
 export class WebdbService implements OnDestroy {
+  private stateFeedWorker: Worker | null = null;
+  private stateFeedWorkerRequestId = 0;
+  private readonly stateFeedWorkerPending = new Map<
+    number,
+    { resolve: () => void; reject: (error: Error) => void }
+  >();
   /** The currently-open database promise (resolves to the live handle), or null when no user / closed. */
   private dbPromise: Promise<IDBPDatabase<WebdbSchema>> | null = null;
   private messageDbPromise: Promise<IDBPDatabase<MessageDbSchema>> | null =
@@ -519,7 +532,12 @@ export class WebdbService implements OnDestroy {
     if (db.objectStoreNames.length !== required.length) return false;
     try {
       const version = await db.get('settings', 'schemaVersion');
-      return version?.value === CACHE_SCHEMA_VERSION;
+      return (
+        version?.value === CACHE_SCHEMA_VERSION &&
+        db
+          .transaction('threadParticipants')
+          .store.indexNames.contains('identity')
+      );
     } catch {
       return false;
     }
@@ -533,7 +551,9 @@ export class WebdbService implements OnDestroy {
         if (oldVersion !== 0)
           throw new Error('cache recreation expected an empty IndexedDB');
         db.createObjectStore('avatars', { keyPath: 'identity' });
-        db.createObjectStore('profiles', { keyPath: 'identity' });
+        db.createObjectStore('profiles', {
+          keyPath: 'identity',
+        });
         const threadParticipants = db.createObjectStore('threadParticipants', {
           keyPath: ['threadId', 'userId'],
         });
@@ -689,6 +709,7 @@ export class WebdbService implements OnDestroy {
   }
 
   private beginAccountMaintenance(): void {
+    this.terminateStateFeedWorker();
     this.accountMaintenance = true;
     this.messageResetting = true;
     this.messageLifetime.abort();
@@ -1152,14 +1173,87 @@ export class WebdbService implements OnDestroy {
     groupMeta: readonly ClientGroupMetaApply[] = [],
     resetProjection = false,
   ): Promise<void> {
-    return this.runAccountOperation(() =>
-      this.applyStateFeedPageInternal(
+    return this.runAccountOperation(async () => {
+      if (
+        !isTauri() &&
+        typeof window !== 'undefined' &&
+        typeof Worker !== 'undefined' &&
+        this.currentUserId !== null
+      ) {
+        await this.applyStateFeedPageInWorker(
+          this.currentUserId,
+          items,
+          feedId,
+          groupMeta,
+          resetProjection,
+        );
+        return;
+      }
+      await this.applyStateFeedPageInternal(
         items,
         feedId,
         groupMeta,
         resetProjection,
-      ),
-    );
+      );
+    });
+  }
+
+  private applyStateFeedPageInWorker(
+    userId: string,
+    items: ClientStateFeedItem[],
+    feedId: number,
+    groupMeta: readonly ClientGroupMetaApply[],
+    resetProjection: boolean,
+  ): Promise<void> {
+    if (!this.stateFeedWorker) {
+      this.stateFeedWorker = new Worker(
+        new URL('./state-feed-db.worker', import.meta.url),
+        { type: 'module' },
+      );
+      this.stateFeedWorker.onmessage = (
+        event: MessageEvent<{ id: number; ok: boolean; error?: string }>,
+      ) => {
+        const pending = this.stateFeedWorkerPending.get(event.data.id);
+        if (!pending) return;
+        this.stateFeedWorkerPending.delete(event.data.id);
+        if (event.data.ok) pending.resolve();
+        else
+          pending.reject(
+            new Error(event.data.error ?? 'state-feed worker failed'),
+          );
+      };
+      this.stateFeedWorker.onerror = (event) => {
+        const error = new Error(event.message || 'state-feed worker crashed');
+        for (const pending of this.stateFeedWorkerPending.values())
+          pending.reject(error);
+        this.stateFeedWorkerPending.clear();
+        this.stateFeedWorker?.terminate();
+        this.stateFeedWorker = null;
+      };
+    }
+    const id = ++this.stateFeedWorkerRequestId;
+    return new Promise<void>((resolve, reject) => {
+      this.stateFeedWorkerPending.set(id, { resolve, reject });
+      this.stateFeedWorker!.postMessage({
+        id,
+        type: 'apply',
+        userId,
+        items,
+        feedId,
+        groupMeta,
+        resetProjection,
+      });
+    });
+  }
+
+  private terminateStateFeedWorker(): void {
+    if (!this.stateFeedWorker) return;
+    this.stateFeedWorker.terminate();
+    this.stateFeedWorker = null;
+    const error = new Error('account cache lifetime expired');
+    for (const pending of this.stateFeedWorkerPending.values())
+      pending.reject(error);
+    this.stateFeedWorkerPending.clear();
   }
 
   private async applyStateFeedPageInternal(
@@ -1193,8 +1287,8 @@ export class WebdbService implements OnDestroy {
     if (resetProjection) {
       await tx.objectStore('friendRequests').clear();
       await tx.objectStore('relationshipIntents').clear();
-      await tx.objectStore('threadParticipants').clear();
       const profiles = tx.objectStore('profiles');
+      await tx.objectStore('threadParticipants').clear();
       for (const profile of await profiles.getAll()) {
         if (
           profile.source === 'OUTGOING_FRIEND_REQUEST' ||
@@ -1261,6 +1355,7 @@ export class WebdbService implements OnDestroy {
             avatar: body.group.avatar,
             bio: body.group.description,
             domain: body.group.domain,
+            sourceServer: groupDomain,
             profileRev: body.group.profileRev,
             source: 'GROUP_INVITE',
             expiresAt: projectionRequestExpiresAt(transition.record)!,
@@ -1315,6 +1410,7 @@ export class WebdbService implements OnDestroy {
           avatar: peer.avatar,
           bio: peer.bio ?? '',
           domain: peer.domain,
+          sourceServer: peer.domain,
           profileRev: 0,
           source: 'OUTGOING_FRIEND_REQUEST',
           expiresAt: projectionRequestExpiresAt(transition.record)!,
@@ -1369,6 +1465,21 @@ export class WebdbService implements OnDestroy {
                 { role: null },
               ),
             );
+          if (!active && existing?.type === 'GROUP') {
+            const participants = tx.objectStore('threadParticipants');
+            let member = await participants.openCursor(
+              IDBKeyRange.bound(
+                [threadId, Number.MIN_SAFE_INTEGER],
+                [threadId, Number.MAX_SAFE_INTEGER],
+              ),
+            );
+            while (member) {
+              await member.delete();
+              member = await member.continue();
+            }
+            await threads.delete(threadId);
+            await tx.objectStore('profiles').delete(`g${threadId}`);
+          }
         } else {
           const friendBody = body as Omit<
             ClientFriendIntent,
@@ -1393,7 +1504,15 @@ export class WebdbService implements OnDestroy {
       await applyRequestProjectionEffect(op);
     }
     for (const update of groupMeta) {
+      if (!update.sourceServer)
+        throw new Error(
+          'group-meta sourceServer must be canonical and non-empty',
+        );
       const participants = tx.objectStore('threadParticipants');
+      const currentThread = await tx
+        .objectStore('threads')
+        .get(update.threadId);
+      if (currentThread?.type !== 'GROUP') continue;
       let memberCount = 0;
       if (update.page.mode === 'full') {
         let cursor = await participants.openCursor(
@@ -1436,6 +1555,7 @@ export class WebdbService implements OnDestroy {
           userId: body.userId,
           memberAccount: item.account,
           memberDomain: item.domain,
+          profileSourceServer: update.sourceServer,
           role: body.role,
           displayName: body.displayName,
           avatar: body.avatar ?? '',
@@ -1474,6 +1594,7 @@ export class WebdbService implements OnDestroy {
           if (
             profile.account !== op.account ||
             profile.domain !== op.domain ||
+            profile.sourceServer !== op.domain ||
             body.profileRev < profile.profileRev
           )
             continue;

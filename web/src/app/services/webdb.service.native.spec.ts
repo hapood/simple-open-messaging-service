@@ -140,6 +140,7 @@ describe('WebdbService native SQLite routing', () => {
       avatar: '/a.webp',
       bio: '',
       domain: 'local',
+      sourceServer: 'local',
       profileRev: 6,
     };
     responses.set('native_db_put_profile', true);

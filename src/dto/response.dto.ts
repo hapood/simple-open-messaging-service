@@ -39,8 +39,11 @@ export class UserResponseDto {
   })
   isGroup!: boolean;
 
-  @ApiProperty({ example: 'example.com', description: 'Domain (nullable)' })
-  domain?: string;
+  @ApiProperty({
+    example: 'example.com',
+    description: 'Canonical identity domain; local users use local',
+  })
+  domain!: string;
 
   @ApiProperty({
     example: 31,

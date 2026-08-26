@@ -42,6 +42,9 @@ describe('ProfileRepository', () => {
   it('stores a profile and fires avatar refresh on the first (path-setting) write', async () => {
     await repo.putProfile('u9', 'user', {
       id: 9,
+      account: 'alice',
+      domain: 'local',
+      sourceServer: 'local',
       name: 'Alice',
       avatar: '/uploads/avatars/a-512.webp',
       profileRev: 1,
@@ -58,6 +61,9 @@ describe('ProfileRepository', () => {
   it('does NOT refresh when the avatar path is unchanged (name-only update)', async () => {
     await repo.putProfile('u9', 'user', {
       id: 9,
+      account: 'alice',
+      domain: 'local',
+      sourceServer: 'local',
       name: 'Alice',
       avatar: '/p/x',
       profileRev: 1,
@@ -65,6 +71,9 @@ describe('ProfileRepository', () => {
     refreshSpy.mockClear();
     await repo.putProfile('u9', 'user', {
       id: 9,
+      account: 'alice',
+      domain: 'local',
+      sourceServer: 'local',
       name: 'Alice Smith',
       avatar: '/p/x',
       profileRev: 2,
@@ -76,6 +85,9 @@ describe('ProfileRepository', () => {
   it('refreshes when the avatar path changes', async () => {
     await repo.putProfile('u9', 'user', {
       id: 9,
+      account: 'alice',
+      domain: 'local',
+      sourceServer: 'local',
       name: 'Alice',
       avatar: '/p/old',
       profileRev: 1,
@@ -83,6 +95,9 @@ describe('ProfileRepository', () => {
     refreshSpy.mockClear();
     await repo.putProfile('u9', 'user', {
       id: 9,
+      account: 'alice',
+      domain: 'local',
+      sourceServer: 'local',
       name: 'Alice',
       avatar: '/p/new',
       profileRev: 2,
@@ -93,6 +108,9 @@ describe('ProfileRepository', () => {
   it('does not fire refresh for an empty avatar (avatar cleared)', async () => {
     await repo.putProfile('u9', 'user', {
       id: 9,
+      account: 'alice',
+      domain: 'local',
+      sourceServer: 'local',
       name: 'Alice',
       avatar: '',
       profileRev: 1,
@@ -107,6 +125,9 @@ describe('ProfileRepository', () => {
   it('does not let an older profile revision overwrite a newer one', async () => {
     await repo.putProfile('u9', 'user', {
       id: 9,
+      account: 'alice',
+      domain: 'local',
+      sourceServer: 'local',
       name: 'New',
       avatar: '/new',
       profileRev: 5,
@@ -114,6 +135,9 @@ describe('ProfileRepository', () => {
     refreshSpy.mockClear();
     await repo.putProfile('u9', 'user', {
       id: 9,
+      account: 'alice',
+      domain: 'local',
+      sourceServer: 'local',
       name: 'Old',
       avatar: '/old',
       profileRev: 4,

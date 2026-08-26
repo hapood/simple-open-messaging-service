@@ -7,6 +7,9 @@ import { S2sVerifyService } from './s2s-verify.service.js';
 import { FederationService } from './federation.service.js';
 import { FederationGroupMembershipService } from './federation-group-membership.service.js';
 import { FederationGroupRequestProjectionService } from './federation-group-request-projection.service.js';
+import { FederationGroupRelationshipService } from './federation-group-relationship.service.js';
+import { FederatedMemberProfileGcService } from './federated-member-profile-gc.service.js';
+import { FederationGroupRosterProjectionService } from './federation-group-roster-projection.service.js';
 import { FederationReconnectService } from './federation-reconnect.service.js';
 import { S2sController } from './s2s.controller.js';
 import { S2sRecognitionController } from './s2s-recognition.controller.js';
@@ -69,6 +72,9 @@ import { GroupMetaFeedService } from './group-meta-feed.service.js';
     FederationService,
     FederationGroupMembershipService,
     FederationGroupRequestProjectionService,
+    FederationGroupRelationshipService,
+    FederatedMemberProfileGcService,
+    FederationGroupRosterProjectionService,
     FederationReconnectService,
     FederationCursorService,
     FederationRecognitionService,

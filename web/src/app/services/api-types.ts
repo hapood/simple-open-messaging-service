@@ -4044,7 +4044,7 @@ export interface components {
        */
       isGroup: boolean;
       /**
-       * @description Domain (nullable)
+       * @description Canonical identity domain; local users use local
        * @example example.com
        */
       domain: string;

@@ -1910,8 +1910,8 @@ export const federatedMemberProfile = pgTable(
   ],
 );
 
-/** Receiver-side authoritative roster for a federated group. Group-meta full/delta pages mutate this
- * projection first; ThreadParticipant is derived from it and is never used as the delta baseline. */
+/** Receiver-side authoritative roster for a federated group. Its address triples are independent of
+ * User and ThreadParticipant; local relationship side effects maintain member projections separately. */
 export const federatedGroupMember = pgTable(
   'FederatedGroupMember',
   {

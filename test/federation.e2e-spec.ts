@@ -1300,8 +1300,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       { timeout: 5000, interval: 100 },
     );
 
-    // Local acceptance immediately formalizes the candidate's mirror thread. The origin later
-    // confirms and fills the authoritative roster through GROUP_META.
+    // Local acceptance updates the relationship state. The remote host later publishes the
+    // authoritative member roster through GROUP_META; mirrors do not derive ThreadParticipant.
     const accept = await request(appB.baseUrl)
       .post('/api/v1/group/join-request')
       .set('Authorization', `Bearer ${tokenB}`)
@@ -1324,7 +1324,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           eq(threadParticipant.userId, bobLocalIdB),
         ),
       });
-    expect(establishedImmediately).toBeDefined();
+    expect(establishedImmediately).toBeUndefined();
     await vi.waitFor(
       async () => {
         const cursor =
@@ -1389,7 +1389,18 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
               eq(threadParticipant.threadId, mirrorB.id),
             ),
           });
-        expect(bobOnMirror).toBeDefined();
+        expect(bobOnMirror).toBeUndefined();
+
+        const bobRosterAddress =
+          await appB.database.query.federatedGroupMember.findFirst({
+            where: and(
+              eq(federatedGroupMember.sourcePeerDomain, DOM_A),
+              eq(federatedGroupMember.groupAccount, groupAccount),
+              eq(federatedGroupMember.memberAccount, 'bob'),
+              eq(federatedGroupMember.memberDomain, DOM_B),
+            ),
+          });
+        expect(bobRosterAddress).toBeDefined();
       },
       { timeout: 5000 },
     );
@@ -1419,8 +1430,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           expect.arrayContaining([
             expect.objectContaining({
               authorUserId: mirrorB.groupUserId!,
-              status: 'REQUESTED',
-              expiresAt: expect.any(Date),
+              status: 'ACCEPTED',
+              expiresAt: null,
             }),
             expect.objectContaining({
               authorUserId: bobLocalIdB,

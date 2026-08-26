@@ -552,8 +552,7 @@ export class ThreadRepository {
     });
     // Catch-up items arrive in ascending message-feed order. Replaying their explicit moves in that order
     // makes the newest feed activity end at the ordinary-tier head without any timestamp comparator.
-    for (const item of items)
-      merged = moveToTierTop(merged, item.threadId);
+    for (const item of items) merged = moveToTierTop(merged, item.threadId);
     return merged;
   }
 
@@ -1285,8 +1284,32 @@ export class ThreadRepository {
           }
         }
         if (relationshipThreadIds.size > 0) {
-          for (const thread of await this.webdb.getThreads()) {
-            if (!relationshipThreadIds.has(thread.threadId)) continue;
+          const persistedRelationshipThreads = (
+            await this.webdb.getThreads()
+          ).filter((thread) => relationshipThreadIds.has(thread.threadId));
+          const persistedIds = new Set(
+            persistedRelationshipThreads.map((thread) => thread.threadId),
+          );
+          const removedIds = new Set(
+            [...relationshipThreadIds].filter(
+              (threadId) => !persistedIds.has(threadId),
+            ),
+          );
+          if (removedIds.size > 0) {
+            this._items.update((threads) =>
+              threads.filter((thread) => !removedIds.has(thread.threadId)),
+            );
+            const openThreadId = this._openThreadId();
+            if (openThreadId !== undefined && removedIds.has(openThreadId))
+              this._openThreadId.set(undefined);
+            for (const threadId of removedIds) {
+              this.pendingUnknownMessages.delete(threadId);
+              this.lastSeenSeq.delete(threadId);
+              this.serverLastReadSeq.delete(threadId);
+              this.localStableReadSeq.delete(threadId);
+            }
+          }
+          for (const thread of persistedRelationshipThreads) {
             this.upsertThread(thread);
             const pending = this.pendingUnknownMessages.get(thread.threadId);
             if (pending) {
@@ -1481,6 +1504,7 @@ export class ThreadRepository {
       } while (true);
       updates.push({
         threadId,
+        sourceServer: item.domain,
         page: {
           account: item.account,
           mode,
@@ -1614,14 +1638,18 @@ export class ThreadRepository {
     void this.profileRepo.putProfile(`u${u.id}`, 'user', {
       id: u.id,
       name: u.name,
+      account: u.account,
       avatar: u.avatar,
       bio: u.bio,
       domain: u.domain,
+      sourceServer: u.domain,
       profileRev: u.profileRev,
     });
   }
   private writeGroupProfile(g: {
     id: number;
+    account: string;
+    domain: string;
     name: string;
     avatar: string;
     profileRev: number;
@@ -1629,7 +1657,10 @@ export class ThreadRepository {
     void this.profileRepo.putProfile(`g${g.id}`, 'group', {
       id: g.id,
       name: g.name,
+      account: g.account,
       avatar: g.avatar,
+      domain: g.domain,
+      sourceServer: g.domain,
       profileRev: g.profileRev,
     });
   }

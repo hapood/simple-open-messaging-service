@@ -16,7 +16,7 @@ import {
   threadParticipant,
   user,
 } from '../database/schema.js';
-import { GroupRole, MessageThreadType } from '../database/enums.js';
+import { MessageThreadType } from '../database/enums.js';
 import { normalizeAccount } from '../common/account.js';
 import { loadFederationConfig } from '../federation/federation.config.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -421,23 +421,6 @@ export class InviteService {
         columns: { domain: true },
       }),
     ]);
-    // A federated pair is always locally total: the direction authored here is the requested grant,
-    // while an as-yet-unseen peer-authored direction is represented as REVOKED. This cached reverse
-    // fact is never published to the peer because this server is not its author; a later peer state
-    // item replaces it through the normal inbound merge path.
-    if (wantsFriend && peer?.domain !== 'local' && !opposite) {
-      await tx
-        .insert(relationshipIntent)
-        .values({
-          authorUserId: peerUserId,
-          subjectUserId: actorUserId,
-          status: 'REVOKED',
-          note: '',
-          requestedAt: null,
-          expiresAt: null,
-        })
-        .onConflictDoNothing();
-    }
     const oppositeEffective =
       opposite?.status === 'ACCEPTED' ||
       (opposite?.status === 'REQUESTED' &&
@@ -471,9 +454,8 @@ export class InviteService {
          OR (EXCLUDED.status = 'REQUESTED'
              AND "RelationshipIntent"."expiresAt" <= CURRENT_TIMESTAMP)
     `);
-    // A purely local mutual request has no wire acknowledgement to wait for;
-    // confirm the opposite direction inside this same transaction. Federated
-    // pairs must receive the peer's explicit FRIEND state before activation.
+    // Both identities are managed by this server, so accepting the crossed request may confirm the
+    // peer-authored local direction in the same transaction.
     if (desired === 'ACCEPTED' && peer?.domain === 'local') {
       await tx.execute(sql`
         UPDATE "RelationshipIntent" SET status = 'ACCEPTED', "expiresAt" = NULL,
@@ -1009,22 +991,16 @@ export class InviteService {
         const isMirror = !!groupState?.domain && groupState.domain !== 'local';
         if (!isMirror) {
           await assertServerGroupCapacityInTx(tx, threadRow.id, byUserId);
-          await this.participantService.upsertMemberInTx(
-            tx,
-            threadRow.id,
-            byUserId,
-            GroupRole.MEMBER,
-          );
-          await tx
-            .insert(threadAudience)
-            .values({
-              targetDomain: 'local',
-              localUserId: byUserId,
-              threadId: threadRow.id,
-            })
-            .onConflictDoNothing();
         }
         if (afterGroupJoin) await afterGroupJoin(tx, threadRow.id);
+        await tx
+          .insert(threadAudience)
+          .values({
+            targetDomain: 'local',
+            localUserId: byUserId,
+            threadId: threadRow.id,
+          })
+          .onConflictDoNothing();
         const groupAccount = groupState?.account ?? null;
         const groupDomain = groupState?.domain ?? null;
         if (groupDomain && groupDomain !== 'local') {
@@ -1055,9 +1031,8 @@ export class InviteService {
     }
     if (this.messages && this.messageFanout) {
       if (result.kind === 'GROUP') {
-        // Explicit acceptance establishes the local participant immediately. System messages are
-        // server-local timeline decorations, so every accepting server records its own notice; a
-        // later GROUP_META snapshot must not be required to recreate the acceptance event.
+        // System messages are server-local timeline decorations. Membership itself is maintained by
+        // the host relationship state machine or by an authoritative remote GROUP_META roster.
         const joined = await this.messages.tryWriteSystemMessage(
           result.threadId,
           SystemMessageType.GROUP_JOINED,
@@ -1302,9 +1277,8 @@ export class InviteService {
         peerDirection?.status === 'REQUESTED' &&
         peerDirection.expiresAt !== null &&
         peerDirection.expiresAt > now;
-      if (!confirmsLocalRequest && !completesAcceptedPeerRequest) {
+      if (!confirmsLocalRequest && !completesAcceptedPeerRequest)
         return { changed: false, requestCreated: false, clientFeedUpdates: [] };
-      }
     }
     const previous = await tx.query.relationshipIntent.findFirst({
       where: and(
@@ -1337,8 +1311,7 @@ export class InviteService {
     if (desired === 'REVOKED') {
       const closed = await tx.execute(sql`
         UPDATE "RelationshipIntent" SET status = 'REVOKED', note = '',
-          "expiresAt" = NULL,
-          "updatedAt" = CURRENT_TIMESTAMP
+          "expiresAt" = NULL, "updatedAt" = CURRENT_TIMESTAMP
         WHERE "authorUserId" = ${params.localUserId}
           AND "subjectUserId" = ${params.peerUserId}
           AND status <> 'REVOKED'

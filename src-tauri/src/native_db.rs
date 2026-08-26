@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use tauri::Manager;
 
 const DB_FILENAME: &str = "soms-local.sqlite3";
-const CACHE_SCHEMA_VERSION: i64 = 6;
+const CACHE_SCHEMA_VERSION: i64 = 7;
 
 fn db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app
@@ -143,6 +143,7 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
           member_user_id INTEGER NOT NULL,
           member_account TEXT NOT NULL,
           member_domain TEXT NOT NULL,
+          profile_source_server TEXT NOT NULL,
           role TEXT NOT NULL,
           display_name TEXT NOT NULL,
           avatar TEXT NOT NULL,
@@ -666,6 +667,7 @@ fn apply_group_request_effect(
             "avatar": group.get("avatar").cloned().unwrap_or(Value::String(String::new())),
             "bio": group.get("description").cloned().unwrap_or(Value::String(String::new())),
             "domain": group_domain,
+            "sourceServer": group_domain,
             "profileRev": group.get("profileRev").cloned().unwrap_or(Value::from(0)),
             "source": "GROUP_INVITE", "expiresAt": expires_at,
         });
@@ -703,6 +705,7 @@ pub(crate) struct ClientStateFeedItem {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ClientGroupMetaApply {
     thread_id: i64,
+    source_server: String,
     page: ClientGroupMetaPage,
 }
 
@@ -1176,7 +1179,9 @@ pub(crate) async fn native_db_apply_state_feed_page(
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut conn = open(&app)?;
-        let tx = conn.transaction().map_err(|e| format!("begin state-feed page: {e}"))?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| format!("begin state-feed page: {e}"))?;
         if reset_projection {
             tx.execute("DELETE FROM friend_requests WHERE user_id=?1", [user_id])
                 .map_err(|e| format!("clear state-feed friend requests: {e}"))?;
@@ -1268,6 +1273,25 @@ pub(crate) async fn native_db_apply_state_feed_page(
                     body,
                     active,
                 )?;
+                if !active {
+                    if let Some(thread_id) = body.get("threadId").and_then(Value::as_i64) {
+                        tx.execute(
+                            "DELETE FROM thread_participants WHERE user_id=?1 AND thread_id=?2",
+                            params![user_id, thread_id],
+                        )
+                        .map_err(|e| format!("delete revoked group roster: {e}"))?;
+                        tx.execute(
+                            "DELETE FROM threads WHERE user_id=?1 AND thread_id=?2",
+                            params![user_id, thread_id],
+                        )
+                        .map_err(|e| format!("delete revoked group thread: {e}"))?;
+                        tx.execute(
+                            "DELETE FROM profiles WHERE user_id=?1 AND identity=?2",
+                            params![user_id, format!("g{thread_id}")],
+                        )
+                        .map_err(|e| format!("delete revoked group profile: {e}"))?;
+                    }
+                }
             } else {
                 apply_friend_request_effect(
                     &tx,
@@ -1300,7 +1324,9 @@ pub(crate) async fn native_db_apply_state_feed_page(
                                 "account": peer_account,
                                 "avatar": peer.get("avatar").cloned().unwrap_or(Value::String(String::new())),
                                 "bio": peer.get("bio").cloned().unwrap_or(Value::String(String::new())),
-                                "domain": peer_domain, "profileRev": 0,
+                                "domain": peer_domain,
+                                "sourceServer": peer_domain,
+                                "profileRev": 0,
                                 "source": "OUTGOING_FRIEND_REQUEST", "expiresAt": expires_at,
                             });
                             tx.execute(
@@ -1316,10 +1342,17 @@ pub(crate) async fn native_db_apply_state_feed_page(
             }
         }
         for update in group_meta {
+            if update.source_server.is_empty() {
+                return Err("group-meta sourceServer must be canonical and non-empty".into());
+            }
+            let source_server = update.source_server;
             let payload: Option<String> = tx.query_row(
                 "SELECT payload_json FROM threads WHERE user_id=?1 AND thread_id=?2",
                 params![user_id, update.thread_id], |row| row.get(0),
             ).optional().map_err(|e| format!("read group thread: {e}"))?;
+            if payload.is_none() {
+                continue;
+            }
             let mut thread = payload.map(parse_json).transpose()?;
             let mut member_count = if update.page.mode == "full" {
                 tx.execute(
@@ -1355,14 +1388,16 @@ pub(crate) async fn native_db_apply_state_feed_page(
                 tx.execute(
                     "INSERT INTO thread_participants(
                        user_id,thread_id,member_user_id,member_account,member_domain,
-                       role,display_name,avatar,profile_rev
-                     ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)
+                       profile_source_server,role,display_name,avatar,profile_rev
+                     ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
                      ON CONFLICT(user_id,thread_id,member_user_id) DO UPDATE SET
                        member_account=excluded.member_account,member_domain=excluded.member_domain,
+                       profile_source_server=excluded.profile_source_server,
                        role=excluded.role,display_name=excluded.display_name,
                        avatar=excluded.avatar,profile_rev=excluded.profile_rev",
                     params![
                         user_id, update.thread_id, member_user_id, item.account, item.domain,
+                        source_server,
                         item.body.get("role").and_then(Value::as_str).unwrap_or("MEMBER"),
                         item.body.get("displayName").and_then(Value::as_str).unwrap_or(""),
                         item.body.get("avatar").and_then(Value::as_str).unwrap_or(""),
@@ -1412,6 +1447,7 @@ pub(crate) async fn native_db_apply_state_feed_page(
                          WHERE user_id=?1
                            AND json_extract(payload_json, '$.account')=?2
                            AND json_extract(payload_json, '$.domain')=?3
+                           AND json_extract(payload_json, '$.sourceServer')=?3
                            AND profile_rev <= ?7",
                         params![
                             user_id, account, domain,
@@ -1552,7 +1588,8 @@ pub(crate) async fn native_db_apply_state_feed_page(
             params![user_id, feed_id.to_string()],
         )
         .map_err(|e| format!("save thread revision: {e}"))?;
-        tx.commit().map_err(|e| format!("commit state-feed page: {e}"))
+        tx.commit().map_err(|e| format!("commit state-feed page: {e}"))?;
+        Ok(())
     })
     .await
     .map_err(|e| format!("join state-feed page: {e}"))?
@@ -1632,6 +1669,7 @@ pub(crate) async fn native_db_query_group_members(
                 "SELECT json_object(
                    'threadId', thread_id, 'userId', member_user_id,
                    'memberAccount', member_account, 'memberDomain', member_domain,
+                   'profileSourceServer', profile_source_server,
                    'role', role, 'displayName', display_name,
                    'avatar', avatar, 'profileRev', profile_rev
                  )
@@ -2430,7 +2468,16 @@ pub(crate) async fn native_db_clear_user(
         let tx = conn
             .transaction()
             .map_err(|e| format!("begin user clear: {e}"))?;
-        for table in ["threads", "profiles", "sync_state", "avatars", "messages"] {
+        for table in [
+            "threads",
+            "profiles",
+            "thread_participants",
+            "friend_requests",
+            "relationship_intents",
+            "sync_state",
+            "avatars",
+            "messages",
+        ] {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE user_id = ?1"),
                 [user_id],
@@ -2450,8 +2497,15 @@ pub(crate) async fn native_db_clear_all(app: tauri::AppHandle) -> Result<(), Str
         if path.exists() {
             let conn = open(&app)?;
             conn.execute_batch(
-                "DELETE FROM threads; DELETE FROM profiles; DELETE FROM sync_state; DELETE FROM avatars;
-                 DELETE FROM messages; VACUUM;",
+                "DELETE FROM threads;
+                 DELETE FROM profiles;
+                 DELETE FROM thread_participants;
+                 DELETE FROM friend_requests;
+                 DELETE FROM relationship_intents;
+                 DELETE FROM sync_state;
+                 DELETE FROM avatars;
+                 DELETE FROM messages;
+                 VACUUM;",
             )
             .map_err(|e| format!("clear native db: {e}"))?;
         }

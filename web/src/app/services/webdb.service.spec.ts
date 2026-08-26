@@ -831,6 +831,7 @@ describe('WebdbService', () => {
         userId: 8,
         memberAccount: 'alice',
         memberDomain: '',
+        profileSourceServer: 'local',
         role: 'MEMBER',
         displayName: 'Alice',
         avatar: '',
@@ -857,6 +858,7 @@ describe('WebdbService', () => {
         userId: 10,
         memberAccount: 'bob',
         memberDomain: '',
+        profileSourceServer: 'local',
         role: 'MEMBER',
         displayName: 'Bob',
         avatar: '',
@@ -897,16 +899,29 @@ describe('WebdbService', () => {
     });
 
     it('materializes full group metadata and pages/searches the local roster', async () => {
-      await webdb.openForUser('1');
+      const db = await webdb.openForUser('1');
       await webdb.putThread({
         threadId: 9,
         type: 'GROUP',
         group: { memberCount: 0, groupMetaFeedId: '0' },
       } as never);
+      await webdb.putProfile({
+        identity: 'u8',
+        id: 8,
+        kind: 'user',
+        name: 'Alice',
+        account: 'alice',
+        avatar: '/a.webp',
+        bio: '',
+        domain: 'home.example',
+        sourceServer: 'local',
+        profileRev: 6,
+      });
 
       await webdb.applyStateFeedPage([], 3, [
         {
           threadId: 9,
+          sourceServer: 'local',
           page: {
             account: '!team',
             mode: 'full',
@@ -962,6 +977,7 @@ describe('WebdbService', () => {
       await webdb.applyStateFeedPage([], 4, [
         {
           threadId: 9,
+          sourceServer: 'local',
           page: {
             account: '!team',
             mode: 'delta',
@@ -993,6 +1009,7 @@ describe('WebdbService', () => {
       await webdb.applyStateFeedPage([], 5, [
         {
           threadId: 9,
+          sourceServer: 'local',
           page: {
             account: '!team',
             mode: 'delta',
@@ -1014,10 +1031,58 @@ describe('WebdbService', () => {
       expect(
         (await webdb.getThreads()).find((item) => item.threadId === 9),
       ).toMatchObject({ role: null });
+
+      await webdb.applyStateFeedPage([], 6, [
+        {
+          threadId: 9,
+          sourceServer: 'local',
+          page: {
+            account: '!team',
+            mode: 'delta',
+            items: [
+              {
+                feedId: '5',
+                operation: 'DELETE',
+                account: 'alice',
+                domain: 'home.example',
+                body: {},
+              },
+            ],
+            hasMore: false,
+            scannedThrough: '5',
+            groupMetaFeedEndId: '5',
+          },
+        },
+      ]);
+      expect(await webdb.getProfile('u8')).toBeDefined();
     });
 
     it('materializes an active group conversation from bilateral intents before group metadata', async () => {
       await webdb.openForUser('1');
+      await webdb.putProfile({
+        identity: 'u8',
+        id: 8,
+        kind: 'user',
+        name: 'Bob',
+        account: 'bob',
+        avatar: '',
+        bio: '',
+        domain: 'remote.test',
+        sourceServer: 'local',
+        profileRev: 1,
+      });
+      await webdb.putProfile({
+        identity: 'g12',
+        id: 12,
+        kind: 'group',
+        name: 'dev',
+        account: '!dev',
+        avatar: '',
+        bio: '',
+        domain: 'local',
+        sourceServer: 'local',
+        profileRev: 1,
+      });
       const group = {
         account: '!dev',
         domain: 'local',
@@ -1062,6 +1127,7 @@ describe('WebdbService', () => {
       await webdb.applyStateFeedPage(items, 3, [
         {
           threadId: 12,
+          sourceServer: 'local',
           page: {
             account: '!dev',
             mode: 'full',
@@ -1079,10 +1145,23 @@ describe('WebdbService', () => {
                   avatar: null,
                 },
               },
+              {
+                feedId: '2',
+                operation: 'UPSERT',
+                account: 'bob',
+                domain: 'remote.test',
+                body: {
+                  userId: 8,
+                  role: 'MEMBER',
+                  profileRev: 1,
+                  displayName: 'Bob',
+                  avatar: null,
+                },
+              },
             ],
             hasMore: false,
-            scannedThrough: '1',
-            groupMetaFeedEndId: '1',
+            scannedThrough: '2',
+            groupMetaFeedEndId: '2',
           },
         },
       ]);
@@ -1094,11 +1173,33 @@ describe('WebdbService', () => {
           group: expect.objectContaining({
             account: '!dev',
             name: 'dev',
-            memberCount: 1,
-            groupMetaFeedId: '1',
+            memberCount: 2,
+            groupMetaFeedId: '2',
           }),
         }),
       ]);
+
+      await webdb.applyStateFeedPage(
+        [
+          {
+            feedId: 4,
+            eventType: 'RELATIONSHIP_INTENT',
+            account: 'alice',
+            domain: 'local',
+            subjectAccount: '!dev',
+            subjectDomain: 'local',
+            body: {
+              ...common.body,
+              status: 'REVOKED',
+              direction: 'OUTGOING',
+            },
+          },
+        ],
+        4,
+      );
+      expect(await webdb.getThreads()).toEqual([]);
+      expect(await webdb.getProfile('u8')).toBeDefined();
+      expect(await webdb.getProfile('g12')).toBeUndefined();
     });
 
     it('commits missed-summary threads and cursor together', async () => {

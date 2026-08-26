@@ -27,7 +27,7 @@ export class MemberProfileRepository {
       userId: member.userId,
       account: member.memberAccount,
       domain: member.memberDomain,
-      profileSourceDomain: member.memberDomain,
+      profileSourceDomain: member.profileSourceServer,
       role: member.role,
       joinedAt: 0,
       isOwner: member.role === 'OWNER',

@@ -24,6 +24,7 @@ function target() {
     withTrustedPeer: vi.fn(
       (_domain: string, operation: () => Promise<unknown>) => operation(),
     ),
+    isMessageFeedThreadPullable: vi.fn().mockResolvedValue(true),
     threadKey: vi.fn(() => 'thread-key'),
     threadQuery: vi.fn(() => new URLSearchParams({ account: 'thread' })),
   });
@@ -121,6 +122,48 @@ describe('FederationService consumer cursor recovery', () => {
     expect(warn).toHaveBeenCalledWith(
       'message query cursor for peer peer.test thread thread is unavailable; resuming from 5',
     );
+  });
+
+  it('does not query a thread rejected by the local feed-item gate', async () => {
+    const { service } = target();
+    const getSigned = vi.fn();
+    Object.assign(service, {
+      getSigned,
+      isMessageFeedThreadPullable: vi.fn().mockResolvedValue(false),
+      database: {
+        db: {
+          query: {
+            federationMessageQueryCursor: {
+              findFirst: vi.fn(),
+            },
+          },
+        },
+      },
+    });
+    const page = {
+      items: [
+        {
+          feedId: '1',
+          thread: { account: 'alice', peerAccount: 'bob' },
+          messageEndSeq: '10',
+        },
+      ],
+      scannedThrough: '1',
+      messageFeedEndId: '1',
+      hasMore: false,
+    } as FederationMessageFeedPage;
+    const pull = service as unknown as {
+      pullMessageQueriesForFeedPage(
+        domain: string,
+        page: FederationMessageFeedPage,
+      ): Promise<unknown[]>;
+    };
+
+    await expect(
+      pull.pullMessageQueriesForFeedPage('peer.test', page),
+    ).resolves.toEqual([]);
+    expect(getSigned).not.toHaveBeenCalled();
+    expect(page.queryCursors).toEqual([]);
   });
 
   it('warns and resumes a tombstone query from the peer recovery cursor', async () => {

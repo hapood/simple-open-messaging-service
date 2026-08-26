@@ -34,7 +34,6 @@ describe('relationship intent state machine', () => {
         ['requested', 'accepted'].includes(localName) &&
         ['requested', 'accepted'].includes(reverseName);
       const shouldPromote = bothEffective && localName === 'requested';
-
       it(`${localName} + ${reverseName} derives the complete transition`, () => {
         expect(deriveRelationshipIntentTransition(local, reverse, now)).toEqual(
           {

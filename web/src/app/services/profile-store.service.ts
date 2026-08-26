@@ -6,11 +6,12 @@ import { AvatarRepository } from './avatar-cache.service';
 export interface ProfileData {
   id: number;
   name: string;
-  account?: string;
+  account: string;
   /** Avatar path (the version tag — a change here drives {@link AvatarRepository.refresh}). */
   avatar: string;
   bio?: string;
-  domain?: string;
+  domain: string;
+  sourceServer: string;
   profileRev: number;
 }
 
@@ -48,10 +49,11 @@ export class ProfileRepository {
         id: data.id,
         kind,
         name: data.name,
-        account: data.account ?? prev?.account ?? '',
+        account: data.account,
         avatar: data.avatar,
         bio: data.bio ?? prev?.bio ?? '',
-        domain: data.domain ?? prev?.domain ?? '',
+        domain: data.domain,
+        sourceServer: data.sourceServer,
         profileRev: data.profileRev,
       };
       const written = await this.webdb.putProfile(record);

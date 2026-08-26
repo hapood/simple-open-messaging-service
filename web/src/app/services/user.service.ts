@@ -408,9 +408,11 @@ export class UserService {
         void this.profileRepo.putProfile(`u${u.id}`, 'user', {
           id: u.id,
           name: u.name,
+          account: u.account,
           avatar: u.avatar,
           bio: u.bio,
           domain: u.domain,
+          sourceServer: u.domain,
           profileRev: u.profileRev,
         });
       }
@@ -555,9 +557,11 @@ export class UserService {
     void this.profileRepo.putProfile(`u${u.id}`, 'user', {
       id: u.id,
       name: u.name,
+      account: u.account,
       avatar: u.avatar,
       bio: u.bio,
       domain: u.domain,
+      sourceServer: u.domain,
       profileRev: u.profileRev,
     });
   }
@@ -643,9 +647,11 @@ export class UserService {
         void this.profileRepo.putProfile(`u${u.id}`, 'user', {
           id: u.id,
           name: u.name,
+          account: u.account,
           avatar: u.avatar,
           bio: u.bio,
           domain: u.domain,
+          sourceServer: u.domain,
           profileRev: u.profileRev,
         });
         return u;

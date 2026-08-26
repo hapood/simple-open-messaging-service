@@ -26,9 +26,8 @@ export function isEffectiveRelationshipIntent(
 }
 
 /**
- * Derive the relationship effect of two independently authored directions.
- * A crossed request confirms immediately, but the caller must persist the
- * requested local promotion atomically with confirmed-dependent effects.
+ * Derive the relationship effect of two independently authored directions. A caller may promote
+ * only the locally authored request when the two directions confirm the relationship.
  */
 export function deriveRelationshipIntentTransition(
   local: RelationshipIntentSnapshot | undefined,

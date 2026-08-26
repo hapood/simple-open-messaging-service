@@ -645,38 +645,32 @@ export class GroupService {
     const result = await this.database.db.transaction(async (tx) => {
       const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
       const shouldDelete = params.deleteData;
-      const [current] = await tx
+      const [thread] = await tx
         .select({
-          role: threadParticipant.role,
           groupUserId: messageThread.groupUserId,
           groupDomain: user.domain,
         })
-        .from(threadParticipant)
-        .innerJoin(
-          messageThread,
-          eq(messageThread.id, threadParticipant.threadId),
-        )
+        .from(messageThread)
         .innerJoin(user, eq(user.id, messageThread.groupUserId))
-        .where(
-          and(
-            eq(threadParticipant.userId, params.userId),
-            eq(threadParticipant.threadId, params.threadId),
-          ),
-        )
+        .where(eq(messageThread.id, params.threadId))
         .for('update')
         .limit(1);
-      if (!current)
-        throw new BusinessException(BusinessCode.NOT_FOUND, 'member not found');
-      if (current.groupUserId === null)
+      if (!thread?.groupUserId)
         throw new BusinessException(BusinessCode.NOT_FOUND, 'group not found');
       const outgoing = await tx.execute<{ status: string }>(sql`
         SELECT status
         FROM "RelationshipIntent"
         WHERE "authorUserId" = ${params.userId}
-          AND "subjectUserId" = ${current.groupUserId}
+          AND "subjectUserId" = ${thread.groupUserId}
       `);
+      if (params.role === null && outgoing.rows.length === 0)
+        throw new BusinessException(BusinessCode.NOT_FOUND, 'member not found');
       const transitioned = outgoing.rows[0]?.status !== 'REVOKED';
-      if (transitioned && current.role === GroupRole.OWNER) {
+      if (
+        transitioned &&
+        thread.groupDomain === 'local' &&
+        params.role === GroupRole.OWNER
+      ) {
         throw new BusinessException(
           BusinessCode.GROUP_OWNER_MUST_TRANSFER,
           'transfer ownership or dissolve the group before leaving',
@@ -763,7 +757,7 @@ export class GroupService {
             clientFeedUpdates,
           )
         : new Map<string, bigint>();
-      if (transitioned && current.groupDomain === 'local') {
+      if (transitioned && thread.groupDomain === 'local') {
         await this.federation.writeGroupRelationshipIntentInTx(
           tx,
           params.threadId,

@@ -123,7 +123,6 @@ describe('federated group join request', () => {
       expect.anything(),
       '!group',
       'peer.test',
-      11,
     );
     expect(writeIntent).toHaveBeenCalledWith(
       expect.anything(),
@@ -232,8 +231,10 @@ function makeStubs() {
     {} as never, // stateFeed
     {} as never, // clientStateFeed
     {} as never, // relationshipIntents
-    {} as never, // groupMembership
     {} as never, // groupRequestProjection
+    {} as never, // groupRelationships
+    {} as never, // memberProfileGc
+    {} as never, // groupRosterProjection
   );
   return {
     svc,

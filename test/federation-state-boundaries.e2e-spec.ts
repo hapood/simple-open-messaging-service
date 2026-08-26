@@ -119,7 +119,7 @@ describe('federation directed-state boundaries', () => {
     });
   });
 
-  it('initializes an outbound request with a local reverse REVOKED fact', async () => {
+  it('does not synthesize a peer-authored direction for an outbound request', async () => {
     const { local, peer } = await createPair(`o-${Date.now().toString(36)}`);
 
     await database.db.transaction((tx) =>
@@ -138,16 +138,11 @@ describe('federation directed-state boundaries', () => {
         ),
       ),
     });
-    expect(directions).toHaveLength(2);
-    expect(
-      directions.find((direction) => direction.authorUserId === local.id),
-    ).toMatchObject({ status: 'REQUESTED' });
-    expect(
-      directions.find((direction) => direction.authorUserId === peer.id),
-    ).toMatchObject({
-      status: 'REVOKED',
-      requestedAt: null,
-      expiresAt: null,
+    expect(directions).toHaveLength(1);
+    expect(directions[0]).toMatchObject({
+      authorUserId: local.id,
+      subjectUserId: peer.id,
+      status: 'REQUESTED',
     });
   });
 
@@ -181,7 +176,6 @@ describe('federation directed-state boundaries', () => {
     expect(effect).toMatchObject({
       added: true,
       requestCreated: false,
-      localStateRevision: 1,
       threadId: expect.any(Number),
     });
     const directions = await database.db.query.relationshipIntent.findMany({
@@ -247,7 +241,6 @@ describe('federation directed-state boundaries', () => {
     expect(effect).toMatchObject({
       added: true,
       requestCreated: false,
-      localStateRevision: 1,
       threadId: expect.any(Number),
     });
     expect(
