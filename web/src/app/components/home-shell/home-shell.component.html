@@ -54,8 +54,7 @@
     <app-chat-pane />
   </div>
   <!-- aside panel (peer-profile / group-info / settings): rendered by @switch on the topmost aside
-       entry's panel (asideTop().panel — the aside is a stack, so drilling into a sub-page keeps the same
-       panel and only changes the entry's params). NO named router-outlet. Slides in from the right on
+       entry's panel (asideTop().panel — drill-down pages are pushed above their parent). NO named router-outlet. Slides in from the right on
        mobile (over the chat); desktop side panel and tablet absolute overlay stay `static`. -->
   <div
     class="aside-slot"
@@ -69,6 +68,9 @@
       }
       @case ('group-info') {
         <app-group-info />
+      }
+      @case ('group-members') {
+        <app-group-info [memberManagerMode]="true" />
       }
       @case ('group-join-requests') {
         <app-group-join-requests />

@@ -22,9 +22,9 @@
   ·
   <a href="spec/README.md">Federation specification</a>
   ·
-  <a href="docs/development.md">Development setup</a>
+  <a href="docs/development/local-development.md">Development setup</a>
   ·
-  <a href="docs/deployment.md">NAS deployment</a>
+  <a href="docs/deployment/nas.md">NAS deployment</a>
 </p>
 
 > [!IMPORTANT]
@@ -79,12 +79,12 @@ SOMS ships as a self-contained Docker stack with PostgreSQL, automatic migration
 and a Caddy TLS edge. The first published deployment guide covers the NAS profile: administration
 stays on the home LAN while the client and federation endpoint can be reached from the internet.
 
-| Profile | Documentation status | Intended environment                                                        | Example                            |
-| ------- | -------------------- | --------------------------------------------------------------------------- | ---------------------------------- |
-| NAS     | **Published**        | Home LAN administration with a publicly reachable client                    | [`deploy/nas/`](deploy/nas/)       |
-| Public  | In progress          | Internet-facing server with standard HTTPS ports and public administration  | [`deploy/public/`](deploy/public/) |
+| Profile | Documentation status | Intended environment                                                       | Example                            |
+| ------- | -------------------- | -------------------------------------------------------------------------- | ---------------------------------- |
+| NAS     | **Published**        | Home LAN administration with a publicly reachable client                   | [`deploy/nas/`](deploy/nas/)       |
+| Public  | In progress          | Internet-facing server with standard HTTPS ports and public administration | [`deploy/public/`](deploy/public/) |
 
-The [NAS deployment guide](docs/deployment.md) explains how to build the image, configure the NAS
+The [NAS deployment guide](docs/deployment/nas.md) explains how to build the image, configure the NAS
 profile, initialize the administrator, obtain DNS-01 certificates, verify the deployment, and update
 it safely. The public-server deployment guide is still being written.
 
@@ -94,14 +94,14 @@ SOMS uses one Angular client and a Tauri 2 native shell, keeping the core experi
 allowing platform-specific capabilities such as notifications, secure storage, media handling, and
 calls.
 
-| Platform  | Status            | Distribution                                                                                    |
-| --------- | ----------------- | ----------------------------------------------------------------------------------------------- |
-| Web / PWA | **Released**      | Runs in modern desktop and mobile browsers                                                      |
-| Android   | In development    | Tauri application with native calling and FCM integration                                       |
-| Windows   | Planned           | Tauri desktop application                                                                       |
-| macOS     | Planned           | Tauri desktop application                                                                       |
-| Linux     | Planned           | Tauri desktop application                                                                       |
-| iOS       | Deferred          | Development is paused because App Store distribution is not currently practical for the project |
+| Platform  | Status         | Distribution                                                                                    |
+| --------- | -------------- | ----------------------------------------------------------------------------------------------- |
+| Web / PWA | **Released**   | Runs in modern desktop and mobile browsers                                                      |
+| Android   | In development | Tauri application with native calling and FCM integration                                       |
+| Windows   | Planned        | Tauri desktop application                                                                       |
+| macOS     | Planned        | Tauri desktop application                                                                       |
+| Linux     | Planned        | Tauri desktop application                                                                       |
+| iOS       | Deferred       | Development is paused because App Store distribution is not currently practical for the project |
 
 The roadmap describes delivery priority, not protocol compatibility. Any conforming client can use a
 SOMS server through its documented APIs.
@@ -135,13 +135,14 @@ documented in the [HTTP API reference](docs/api/api.md).
 
 | Topic                     | Entry point                                                                                                                 |
 | ------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Development               | [Local initialization and development](docs/development.md) · [Repository conventions](AGENTS.md)                           |
+| Documentation             | [Documentation index](docs/README.md)                                                                                       |
+| Development               | [Local initialization and development](docs/development/local-development.md) · [Repository conventions](AGENTS.md)         |
 | Federation protocol       | [Specification index](spec/README.md) · [SOMFP v1](spec/v1/README.md) · [Schemas and conformance](spec/v1/schema/README.md) |
 | Server architecture       | [Architecture](docs/overview/architecture.md) · [Database model](docs/overview/database.md)                                 |
-| APIs                      | [Client/admin HTTP API](docs/api/api.md) · [Federation S2S API](docs/api/federation-s2s-api.md)                             |
-| Deployment and federation | [NAS deployment](docs/deployment.md) · [Federation overview](docs/overview/federation-protocol.md)                         |
-| Operations                | [Rate limiting](docs/operations/rate-limiting.md) · [Call release checklist](docs/calls-release-checklist.md)               |
-| Native client             | [Tauri workspace](src-tauri/README.md) · [Android calls](docs/android-calls-client.md)                                      |
+| APIs                      | [Client/admin HTTP API](docs/api/api.md) · [Federation HTTP surface](spec/v1/protocol.md#3-federation-v1-http-surface)      |
+| Deployment and federation | [NAS deployment](docs/deployment/nas.md) · [Federation specification](spec/README.md)                                       |
+| Operations                | [Rate limiting](docs/operations/rate-limiting.md)                                                                           |
+| Native client             | [Tauri workspace](src-tauri/README.md) · [Android calls](docs/platform/android/calls.md)                                    |
 | Security and governance   | [Protocol security](spec/SECURITY.md) · [Protocol governance](spec/GOVERNANCE.md)                                           |
 
 ## License

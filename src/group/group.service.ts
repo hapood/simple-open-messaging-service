@@ -31,6 +31,7 @@ import { MessageService } from '../message/message.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { SystemMessageType } from '../message/system-message.js';
 import { isThreadMutuallyAuthorized } from '../invite/relationship-authorization.js';
+import { mutuallyAuthorizedSql } from '../invite/relationship-authorization.js';
 
 /** Privilege rank — LOWER is more privileged (OWNER outranks ADMIN outranks MEMBER). */
 function roleRank(role: GroupRole | null): number {
@@ -79,6 +80,62 @@ export class GroupService {
     >,
   ) {}
 
+  /**
+   * Build the invitation picker from server state. The client cannot infer this page from its cached
+   * conversations because friendship, membership, and manager-facing invitation projections converge
+   * independently across federation.
+   */
+  async queryInviteCandidates(
+    threadId: number,
+    managerUserId: number,
+    afterUserId?: number,
+    search?: string,
+    take = 20,
+  ) {
+    const normalizedSearch = search?.trim() ?? '';
+    const pattern = `%${normalizedSearch.replace(/[%_\\]/g, '\\$&')}%`;
+    const rows = await this.database.db.execute<{
+      userId: number;
+      account: string;
+      domain: string;
+      name: string;
+      avatar: string;
+      bio: string;
+      state: 'AVAILABLE' | 'INVITED' | 'MEMBER';
+    }>(sql`
+      SELECT friend.id AS "userId", friend.account, friend.domain,
+        friend.name, friend.avatar, friend.bio,
+        CASE
+          WHEN member."userId" IS NOT NULL THEN 'MEMBER'
+          WHEN invitation.status = 'REQUESTED'
+            AND invitation."expiresAt" > CURRENT_TIMESTAMP THEN 'INVITED'
+          ELSE 'AVAILABLE'
+        END AS state
+      FROM "User" friend
+      LEFT JOIN "ThreadParticipant" member
+        ON member."threadId" = ${threadId} AND member."userId" = friend.id
+      LEFT JOIN "GroupRequestProjection" invitation
+        ON invitation."managerUserId" = ${managerUserId}
+       AND invitation."threadId" = ${threadId}
+       AND invitation."memberUserId" = friend.id
+       AND invitation.direction = 'INVITATION'
+      WHERE friend.id <> ${managerUserId}
+        AND friend."isGroup" = false
+        AND friend."isDeleted" = false
+        AND ${mutuallyAuthorizedSql(managerUserId, sql`friend.id`)}
+        ${afterUserId === undefined ? sql.empty() : sql`AND friend.id > ${afterUserId}`}
+        ${normalizedSearch === '' ? sql.empty() : sql`AND (friend.name ILIKE ${pattern} ESCAPE '\\' OR friend.account ILIKE ${pattern} ESCAPE '\\' OR (friend.account || '@' || COALESCE(NULLIF(friend.domain, ''), 'local')) ILIKE ${pattern} ESCAPE '\\')`}
+      ORDER BY friend.id ASC
+      LIMIT ${take + 1}
+    `);
+    const page = rows.rows.slice(0, take);
+    return {
+      data: page,
+      hasMore: rows.rows.length > take,
+      afterUserId: page.at(-1)?.userId ?? null,
+    };
+  }
+
   async queryJoinRequests(
     threadId: number,
     managerUserId: number,
@@ -119,7 +176,7 @@ export class GroupService {
     const rows = await this.database.db.execute<{
       feedId: number;
       id: string;
-      status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
+      status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED' | 'EXPIRED';
       userId: number;
       account: string;
       domain: string;
@@ -130,7 +187,10 @@ export class GroupService {
       expiresAt: number | null;
     }>(sql`
       SELECT projection."feedId", projection."requestId"::text AS id,
-        projection.status, applicant.id AS "userId", applicant.account,
+        CASE WHEN projection.status = 'REQUESTED'
+          AND projection."expiresAt" <= CURRENT_TIMESTAMP
+          THEN 'EXPIRED' ELSE projection.status END AS status,
+        applicant.id AS "userId", applicant.account,
         applicant.domain,
         applicant.name, applicant.avatar, projection.note,
         (EXTRACT(EPOCH FROM projection."requestedAt") * 1000)::bigint AS "requestedAt",

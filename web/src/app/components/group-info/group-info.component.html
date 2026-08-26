@@ -1,5 +1,20 @@
 <div class="panel">
-  <app-page-header [title]="'group.title' | transloco" (back)="goBack()" />
+  <app-page-header [title]="'group.title' | transloco" (back)="goBack()">
+    <button
+      pageHeaderAction
+      class="share-action"
+      type="button"
+      (click)="shareGroup()"
+      [attr.aria-label]="'profile.shareCardAria' | transloco"
+      [title]="'profile.shareCardAria' | transloco"
+    >
+      <app-icon
+        [type]="AppIconType.SHARE"
+        [style]="{ width: '18px', height: '18px' }"
+      />
+      <span>{{ 'profile.share' | transloco }}</span>
+    </button>
+  </app-page-header>
 
   <div class="body">
     <!-- Identity -->
@@ -47,64 +62,128 @@
       <app-thread-alias-editor [threadId]="threadId()!" />
     }
 
-    <!-- Compact roster preview; the complete searchable roster lives in member management. -->
-    <div class="section-label">
-      {{ 'group.members' | transloco: { count: group()?.memberCount ?? 0 } }}
-    </div>
+    @if (!readOnly()) {
+      <mat-card appearance="outlined" class="conversation-actions">
+        <button type="button" class="action-row" (click)="openSearch()">
+          <span class="action-icon" aria-hidden="true">
+            <app-icon
+              [type]="AppIconType.SEARCH"
+              [style]="{ width: '20px', height: '20px' }"
+            />
+          </span>
+          <span class="action-label">{{ 'chat.menuSearch' | transloco }}</span>
+          <app-icon
+            class="action-chevron"
+            [type]="AppIconType.CHEVRON_RIGHT"
+            [style]="{ width: '18px', height: '18px' }"
+          />
+        </button>
+        <div class="action-row">
+          <span class="action-icon" aria-hidden="true">
+            <app-icon
+              [type]="AppIconType.MUTE"
+              [style]="{ width: '20px', height: '20px' }"
+            />
+          </span>
+          <span class="action-label">{{ 'chat.menuMute' | transloco }}</span>
+          <mat-slide-toggle
+            [checked]="userMsgTrd()?.muted === true"
+            [disabled]="mutedSaving()"
+            [attr.aria-label]="'chat.menuMute' | transloco"
+            (change)="setMuted($event.checked)"
+          />
+        </div>
+        <div class="action-row">
+          <span class="action-icon" aria-hidden="true">
+            <app-icon
+              [type]="AppIconType.PIN"
+              [style]="{ width: '20px', height: '20px' }"
+            />
+          </span>
+          <span class="action-label">{{ 'chat.menuPin' | transloco }}</span>
+          <mat-slide-toggle
+            [checked]="userMsgTrd()?.pinned === true"
+            [disabled]="pinnedSaving()"
+            [attr.aria-label]="'chat.menuPin' | transloco"
+            (change)="setPinned($event.checked)"
+          />
+        </div>
+      </mat-card>
+    }
+
+    <!-- Compact roster preview; the complete searchable roster lives in the role-aware member list. -->
     @if (loading()) {
       <div class="muted center">{{ 'common.loading' | transloco }}</div>
     } @else {
-      <div class="member-overview">
+      <mat-card appearance="outlined" class="member-overview-card">
         <button
-          class="avatar-stack"
+          class="member-overview-row"
           type="button"
           [disabled]="readOnly()"
-          (click)="showMemberManager.set(true)"
+          (click)="openMemberManager()"
           [attr.aria-label]="
             'group.allMembers' | transloco: { count: group()?.memberCount ?? 0 }
           "
         >
-          @for (m of overviewMembers(); track m.userId) {
-            <app-user-avatar
-              [type]="UserAvatarType.OTHER"
-              [name]="m.name"
-              [identityId]="m.userId"
-              [account]="m.account"
-              [federatedDomain]="m.domain || null"
-              [src]="m.avatar"
-              [title]="m.name"
-            ></app-user-avatar>
-          }
-          @if (remainingMemberCount() > 0) {
-            <span class="more-avatar">+{{ remainingMemberCount() }}</span>
-          }
+          <span class="avatar-stack" aria-hidden="true">
+            @for (m of overviewMembers(); track m.userId) {
+              <app-user-avatar
+                [type]="UserAvatarType.OTHER"
+                [name]="m.name"
+                [identityId]="m.userId"
+                [account]="m.account"
+                [federatedDomain]="m.domain || null"
+                [src]="m.avatar"
+                [title]="m.name"
+              ></app-user-avatar>
+            }
+            @if (remainingMemberCount() > 0) {
+              <span class="more-avatar">+{{ remainingMemberCount() }}</span>
+            }
+          </span>
+          <span class="member-overview-copy">
+            <strong>
+              {{
+                (isAdmin() ? 'group.manageMembers' : 'group.memberList')
+                  | transloco
+              }}
+            </strong>
+            <span>
+              {{
+                'group.members'
+                  | transloco: { count: group()?.memberCount ?? 0 }
+              }}
+            </span>
+          </span>
+          <app-icon
+            class="member-overview-chevron"
+            [type]="AppIconType.CHEVRON_RIGHT"
+            [style]="{ width: '20px', height: '20px' }"
+          />
         </button>
-        <button
-          class="manage-members-btn"
-          type="button"
-          [disabled]="readOnly()"
-          (click)="showMemberManager.set(true)"
-        >
-          {{ 'group.manageMembers' | transloco }}
-        </button>
-      </div>
+      </mat-card>
     }
 
-    @if (!readOnly()) {
+    @if (isAdmin() && !readOnly()) {
       <mat-card appearance="outlined" class="invite-settings-card">
         <button
           class="invite-friends-row"
           type="button"
-          [disabled]="!canInvite()"
-          (click)="showInvite.set(true)"
+          (click)="openInvitesAndRequests()"
         >
           <span class="invite-icon" aria-hidden="true">
             <app-icon
-              [type]="AppIconType.FRIEND_REQUESTS"
+              [type]="AppIconType.GROUP_JOIN_REQUESTS"
               [style]="{ width: '20px', height: '20px' }"
             />
           </span>
-          <strong>{{ 'group.inviteFriends' | transloco }}</strong>
+          <strong>{{ 'group.invitesAndRequests' | transloco }}</strong>
+          @if (hasUnreadJoinRequests()) {
+            <span
+              class="invite-unread-dot"
+              aria-hidden="true"
+            ></span>
+          }
           <app-icon
             class="invite-chevron"
             [type]="AppIconType.CHEVRON_RIGHT"
@@ -242,11 +321,13 @@
     </div>
   }
 
-  @if (showMemberManager()) {
+  @if (memberManagerMode()) {
     <div class="member-manager">
       <app-page-header
-        [title]="'group.manageMembers' | transloco"
-        (back)="showMemberManager.set(false)"
+        [title]="
+          (isAdmin() ? 'group.manageMembers' : 'group.memberList') | transloco
+        "
+        (back)="goBack()"
       />
       <div class="manager-body" (scroll)="onRosterScroll($event)">
         <input
@@ -278,12 +359,14 @@
                     {{ 'common.you' | transloco }}
                   }
                 </span>
-                <span
-                  class="role-badge"
-                  [class.owner]="m.role === 'OWNER'"
-                  [class.admin]="m.role === 'ADMIN'"
-                  >{{ roleName(m.role) }}</span
-                >
+                @if (m.role !== 'MEMBER') {
+                  <span
+                    class="role-badge"
+                    [class.owner]="m.role === 'OWNER'"
+                    [class.admin]="m.role === 'ADMIN'"
+                    >{{ roleName(m.role) }}</span
+                  >
+                }
               </div>
             </div>
             @if (canActOn(m)) {
@@ -323,78 +406,6 @@
                 }
               </mat-menu>
             }
-          </div>
-        }
-      </div>
-    </div>
-  }
-
-  @if (showInvite()) {
-    <div class="member-manager invite-manager">
-      <app-page-header
-        [title]="'group.inviteFriends' | transloco"
-        (back)="showInvite.set(false)"
-      >
-        @if (canInvite()) {
-          <button
-            pageHeaderAction
-            class="invite-submit"
-            mat-flat-button
-            color="primary"
-            type="button"
-            [disabled]="busy() || selectedList().length === 0"
-            (click)="invite()"
-          >
-            {{ 'group.invite' | transloco: { count: selectedList().length } }}
-          </button>
-        }
-      </app-page-header>
-      <div class="manager-body">
-        <input
-          class="member-search"
-          [ngModel]="inviteQuery()"
-          (ngModelChange)="inviteQuery.set($event)"
-          [placeholder]="'group.searchFriends' | transloco"
-        />
-        @if (canInvite()) {
-          @if (selectedList().length > 0) {
-            <div class="selected-friends" role="list">
-              @for (friend of selectedList(); track friend.threadId) {
-                <button
-                  class="selected-friend"
-                  type="button"
-                  role="listitem"
-                  (click)="onTrdSelect(friend)"
-                  [attr.aria-label]="friend.peerUser.name"
-                  [title]="friend.peerUser.name"
-                >
-                  <app-user-avatar
-                    [type]="UserAvatarType.OTHER"
-                    [name]="friend.peerUser.name"
-                    [identityId]="friend.peerUser.id"
-                    [account]="friend.peerUser.account"
-                    [src]="friend.peerUser.avatar"
-                    [federatedDomain]="
-                      friend.peerUser.domain !== 'local'
-                        ? friend.peerUser.domain
-                        : null
-                    "
-                  ></app-user-avatar>
-                  <span class="selected-remove" aria-hidden="true">−</span>
-                  <span class="selected-name">{{ friend.peerUser.name }}</span>
-                </button>
-              }
-            </div>
-          }
-          <app-user-list
-            (onSelect)="onTrdSelect($event)"
-            [selectedDict]="selectedDict()"
-            [excludedUserIds]="existingMemberIds()"
-            [filterText]="inviteQuery()"
-          />
-        } @else {
-          <div class="invite-disabled">
-            {{ 'group.inviteAdminsOnly' | transloco }}
           </div>
         }
       </div>

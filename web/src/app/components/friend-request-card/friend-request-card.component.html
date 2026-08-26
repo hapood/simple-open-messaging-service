@@ -26,14 +26,13 @@
       <app-user-identity-label
         [name]="request().name ?? ('friend.invalidUser' | transloco)"
         [domain]="
-          request().kind === 'FRIEND' && request().domain !== 'local'
-            ? request().domain
-            : null
+          request().kind === 'GROUP'
+            ? request().sourceLabel
+            : request().domain !== 'local'
+              ? request().domain
+              : null
         "
       />
-      @if (request().kind === 'GROUP') {
-        <span class="group-source">{{ request().sourceLabel }}</span>
-      }
     </span>
     <span class="message" [class.error]="request().errText">
       {{

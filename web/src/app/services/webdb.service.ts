@@ -25,6 +25,7 @@ import {
   applyGroupIntentToProjection,
   friendRequestKey,
   groupRequestKey,
+  markProjectionAccepted,
   projectionDirectionForFact,
   projectionIsExpired,
   projectionRequestExpiresAt,
@@ -1005,10 +1006,7 @@ export class WebdbService implements OnDestroy {
       const index = db
         .transaction('friendRequests')
         .store.index('bucketStatus');
-      const statuses =
-        bucket === 'RECEIVED'
-          ? (['REQUESTED', 'ACCEPTED', 'REVOKED'] as const)
-          : (['REQUESTED', 'REVOKED'] as const);
+      const statuses = ['REQUESTED', 'ACCEPTED', 'REVOKED'] as const;
       const buckets = await Promise.all(
         statuses.map((status) =>
           index.getAll(
@@ -1040,6 +1038,22 @@ export class WebdbService implements OnDestroy {
         total: all.length,
         actionableTotal: bucket === 'RECEIVED' ? buckets[0].length : all.length,
       };
+    });
+  }
+
+  async markFriendRequestAccepted(key: string): Promise<void> {
+    return this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId != null) {
+        await tauriInvoke('native_db_mark_friend_request_accepted', {
+          userId: Number(this.currentUserId),
+          key,
+        });
+        return;
+      }
+      const db = await this.db();
+      const current = await db.get('friendRequests', key);
+      if (current)
+        await db.put('friendRequests', markProjectionAccepted(current));
     });
   }
 
@@ -1470,6 +1484,28 @@ export class WebdbService implements OnDestroy {
             bio: body.bio,
             profileRev: body.profileRev,
           });
+        }
+        const friendRequests = tx.objectStore('friendRequests');
+        for (const request of await friendRequests.getAll()) {
+          if (request.kind === 'GROUP') {
+            if (
+              request.group?.account !== op.account ||
+              request.group.domain !== op.domain ||
+              body.profileRev < request.group.profileRev
+            )
+              continue;
+            await friendRequests.put({
+              ...request,
+              group: {
+                ...request.group,
+                name: body.displayName,
+                avatar: body.avatar ?? '',
+                description: body.bio,
+                profileRev: body.profileRev,
+              },
+            });
+            continue;
+          }
         }
         const threads = tx.objectStore('threads');
         for (const thread of await threads.getAll()) {

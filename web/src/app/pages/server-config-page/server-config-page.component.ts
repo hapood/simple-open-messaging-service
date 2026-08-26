@@ -36,6 +36,7 @@ import {
 } from '../../services/runtime';
 import { RouteService, RoutePage } from '../../services/route.service';
 import { AuthViewportDirective } from '../../directives/auth-viewport.directive';
+import { AppBackDispatcherService } from '../../services/app-back-dispatcher.service';
 
 /** The connect flow phase — surfaced as a progress value + a step label. After compat + cert the installed
  *  web bundle's hash is compared to the server's manifest; if they differ (or none is installed yet) the
@@ -83,8 +84,8 @@ export function resolveOriginSelection(
  * (`setApiOrigin` → Rust config + SomsSecureStore + the live `apiOrigin` signal) and redirects to login.
  * No `handoff_to_spa` / window swap (one window, one origin).
  *
- * Owns the Android hardware-back button while active (overrides the SPA nav-state-machine's handler, which
- * is restored on destroy): reconfigure closes the dialog; required first-run setup ignores Back.
+ * Owns Android Back while active: reconfigure closes the surface; required first-run setup exits the
+ * Activity at its root instead of exposing an unusable background.
  */
 @Component({
   selector: 'app-server-config-page',
@@ -114,11 +115,11 @@ export class ServerConfigPageComponent implements OnInit {
   private readonly destroyRef = inject(DestroyRef);
   private readonly config = inject(ConfigService);
   private readonly push = inject(PushService);
+  private readonly appBack = inject(AppBackDispatcherService);
   /** The most recent /shell/compat firebaseConfig probed for the origin being connected — applied to native
    *  in finalize() (Android: re-inits FirebaseApp). Stashed so the auto-fill confirm-modal path applies it too. */
   private firebaseConfig: FirebaseClientConfigPayload | null = null;
-  /** Saved SPA nav-state `__SOMS_BACK__` to restore when this page is left. */
-  private prevBack: typeof window.__SOMS_BACK__ = window.__SOMS_BACK__;
+  private unregisterBack?: () => void;
   @ViewChild('serverInput') private serverInput?: ElementRef<HTMLInputElement>;
 
   readonly url = new FormControl(canonicalOrigin(apiOrigin()), {
@@ -134,10 +135,8 @@ export class ServerConfigPageComponent implements OnInit {
   /** The live origin value the insecure-warning reacts to (separate from the control so the warning can
    *  show before the control is considered touched). */
   readonly origin = signal(canonicalOrigin(apiOrigin()));
-  /** "Press back again to exit" hint (first-run only — reconfigure returns to login on a single back). */
-  readonly exitHint = signal(false);
   /** Whether the visible top-left back button shows (reconfigure only — a backend is already configured,
-   *  so there is a login page to return to). First-run hides it (hardware back does double-back-to-exit).
+   *  so there is a login page to return to). First-run hides it (system Back exits the Activity).
    *  Authoritative: queries Rust's `is_origin_configured` (the persisted file), NOT the secureStore-seeded
    *  signal — the two can drift on a device that configured via an older build, which would wrongly show
    *  the back button on a true first-run. */
@@ -227,9 +226,7 @@ export class ServerConfigPageComponent implements OnInit {
       this.errorDetail.set('');
     });
     this.registerDownloadProgress();
-    this.destroyRef.onDestroy(() => {
-      window.__SOMS_BACK__ = this.prevBack;
-    });
+    this.destroyRef.onDestroy(() => this.unregisterBack?.());
   }
 
   ngOnInit(): void {
@@ -400,8 +397,8 @@ export class ServerConfigPageComponent implements OnInit {
     await this.finalize(af.primary, null);
   }
 
-  /** Match the shared modal dismissal contract on browser/desktop; Android hardware-back is handled
-   * through the route-owned __SOMS_BACK__ callback below. */
+  /** Match the shared modal dismissal contract on browser/desktop; Android Back is handled through the
+   * lifecycle-scoped AppBackDispatcher registration below. */
   @HostListener('document:keydown.escape', ['$event'])
   onEscape(event: Event): void {
     if (!this.autoFill() && !this.dialog()) return;
@@ -457,10 +454,9 @@ export class ServerConfigPageComponent implements OnInit {
     this.route.redirect(RoutePage.AUTH_LOGIN);
   }
 
-  /** Own `window.__SOMS_BACK__` while active (MainActivity evals it on hardware-back). Reconfigure closes
-   * the dialog; first-run setup is required and deliberately ignores Back. */
+  /** Confirmation closes first; reconfigure returns to login; the required first-run root exits. */
   private installBackHandler(): void {
-    window.__SOMS_BACK__ = () => {
+    this.unregisterBack = this.appBack.register(() => {
       if (this.autoFill()) {
         void this.cancelAutoFill();
         return;
@@ -469,9 +465,8 @@ export class ServerConfigPageComponent implements OnInit {
         this.goBack();
         return;
       }
-      // First-run setup is a required modal: hardware Back must not dismiss it or expose an unusable
-      // background. The Activity itself can still be left through the Android task switcher/home gesture.
-    };
+      window.SomsBack?.exit();
+    });
   }
 
   /** Subscribe once to the Rust `web-download-progress` stream so the `download` phase drives a real

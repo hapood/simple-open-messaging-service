@@ -40,6 +40,7 @@ import { stringifyTextMessageContent } from '../../../shared/text-message-conten
 import { MaterialDialogComponent } from './components/material-dialog/material-dialog.component';
 import { ServerConfigPageComponent } from './pages/server-config-page/server-config-page.component';
 import { ServerConfigDialogService } from './services/server-config-dialog.service';
+import { AppBackDispatcherService } from './services/app-back-dispatcher.service';
 @Component({
   selector: 'app-root',
   imports: [
@@ -114,17 +115,16 @@ export class AppComponent {
   // session (an incoming ring can arrive at any time) — cf. the qr-scanning overlay architecture.
   private readonly callOverlay = inject(CallOverlayService);
   private readonly callPresentation = inject(CallPresentationService);
+  private readonly appBack = inject(AppBackDispatcherService);
   // Guards the incompatibility prompt to once per app session (re-armed only by a fresh app launch).
   private incompatiblePromptShown = false;
   private nativeShareDialogId: string | null = null;
   constructor() {
     this.nav.initFromUrl();
-    // Android hardware-back: Kotlin's OnBackPressedCallback evals window.__SOMS_BACK__(); peel one
-    // nav layer, and if nothing's left (at home) call SomsBack.exit() (a Kotlin @JavascriptInterface)
-    // to finish the activity. Desktop/browser have no native back — history is flat, so browser-back
-    // exits there. Dormant until the Kotlin side wires the callback (the Phase 3 Kotlin half).
+    // App-shell fallback below temporary AppBackDispatcher handlers: minimize a foreground call, peel one
+    // nav layer, then finish the Activity at the app root. Predictive commit reaches the same fixed entry.
     if (isTauri() && isAndroid()) {
-      window.__SOMS_BACK__ = () => {
+      this.appBack.setFallback(() => {
         if (
           this.callEvents.callState().phase !== 'idle' &&
           !this.callPresentation.minimized()
@@ -133,7 +133,7 @@ export class AppComponent {
           return;
         }
         if (!this.nav.back()) window.SomsBack?.exit();
-      };
+      });
     }
     this.push.init();
     effect(() => {

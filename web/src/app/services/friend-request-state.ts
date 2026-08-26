@@ -188,6 +188,15 @@ export function applyFriendIntentToProjection(
   };
 }
 
+/** Persist the request-card side effect of a successful local accept action. The authored local ACK
+ * remains an intent fact and is deliberately a projection no-op when it later arrives via the feed. */
+export function markProjectionAccepted(
+  current: FriendRequestProjection,
+  now = Date.now(),
+): FriendRequestProjection {
+  return updateLiveProjection(current, 'ACCEPTED', now).record ?? current;
+}
+
 export function applyGroupIntentToProjection(
   current: FriendRequestProjection | undefined,
   input: GroupInviteProjectionInput,

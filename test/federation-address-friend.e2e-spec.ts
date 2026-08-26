@@ -1,13 +1,15 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import {
   clientStateFeed,
   federatedFriendRequest,
+  message,
   relationshipPair,
   threadParticipant,
   user,
 } from '../src/database/schema.js';
+import { ContentType } from '../src/database/enums.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import {
   bootFederationPair,
@@ -205,6 +207,17 @@ describe('federated Address friend request shells', () => {
         ]);
         expect(pairA).toBeDefined();
         expect(pairB).toBeDefined();
+
+        const acceptingSideNotice = await appB.database.query.message.findFirst(
+          {
+            where: and(
+              eq(message.threadId, pairB!.threadId!),
+              eq(message.contentType, ContentType.SYSTEM),
+              sql`${message.content}::text like '%FRIEND_ADDED%'`,
+            ),
+          },
+        );
+        expect(acceptingSideNotice).toBeDefined();
 
         const bobClientIntents =
           await appB.database.query.clientStateFeed.findMany({

@@ -11,7 +11,7 @@ This document describes the system architecture, module responsibilities, authen
 - [Authentication Mechanism](#authentication-mechanism)
 - [Real-time Communication (SSE Downstream)](#real-time-communication-sse-downstream)
 - [Core Business Flows](#core-business-flows)
-- [Known Issues and Improvements](#known-issues-and-improvements)
+- [Current Limitation](#current-limitation)
 
 ---
 
@@ -42,7 +42,8 @@ The web/admin SPAs are served by Caddy (not the app). `@fastify/static` serves o
 
 ## Backend Module Responsibilities
 
-The application root module [src/app.module.ts](../../src/app.module.ts) imports `EventEmitterModule.forRoot()` plus 23 in-project modules, and directly registers 13 controllers. Modules marked `@Global()` (7) are shared app-wide.
+The application root module [src/app.module.ts](../../src/app.module.ts) composes the
+feature modules and controllers. Modules marked `@Global()` are shared app-wide.
 
 | Module                               | Key Files                                                                  | Responsibilities                                                                                                                                                                                                                                                          |
 | ------------------------------------ | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -55,7 +56,7 @@ The application root module [src/app.module.ts](../../src/app.module.ts) imports
 | **InviteModule**                     | [src/invite/](../../src/invite/)                                           | `InviteService` — directed friend/group request facts, pair reconciliation and friend-request badge; delegates roster writes to ThreadParticipantService                                                                                                                  |
 | **UserBlockModule**                  | [src/user-block/](../../src/user-block/)                                   | `UserBlockService` — block/unblock state consumed by message fan-out + user queries                                                                                                                                                                                       |
 | **ThreadRevisionModule** (`@Global`) | [src/thread-revision/](../../src/thread-revision/)                         | maintains the per-user state cursor and compact thread/profile delta entries                                                                                                                                                                                              |
-| **UploadModule**                     | [src/upload/](../../src/upload/)                                           | Media pipeline: `UploadService`, content-addressed `MediaAssetService` (sha256 CAS + refcount), `MediaAccessService` (per-object authz), `AvatarStackService` (sharp multi-size webp)                                                                                     |
+| **UploadModule**                     | [src/upload/](../../src/upload/)                                           | Media pipeline: `UploadService`, content-addressed `MediaAssetService` (sha256 CAS with reachability-based liveness), `MediaAccessService` (per-object authz), `AvatarStackService` (sharp multi-size webp)                                                               |
 | **PushModule**                       | [src/push/](../../src/push/)                                               | `PushService` — FCM (Android) / Web Push dispatch; skips recipients with a live SSE connection                                                                                                                                                                            |
 | **FederationModule** (`@Global`)     | [src/federation/](../../src/federation/)                                   | Server-to-server protocol: identity/signatures, commands, compacted per-peer state feed, message miss feed, and media/message pull                                                                                                                                        |
 | **QuotaModule** (`@Global`)          | [src/quota/](../../src/quota/)                                             | `QuotaService` — unified daily-quota enforcement (local node + each federated peer); DB-atomic counters                                                                                                                                                                   |
@@ -63,7 +64,7 @@ The application root module [src/app.module.ts](../../src/app.module.ts) imports
 | **LinkPreviewModule**                | [src/link-preview/](../../src/link-preview/)                               | SSRF-safe OG fetch (`SafeFetchService`) + short-lived generation ownership and OpenGraph/CAS asset processing for `ContentType.LINK` cards                                                                                                                                |
 | **ShellModule**                      | [src/shell/](../../src/shell/)                                             | `ShellService` — serves the web-shell manifest/bundle for the desktop Tauri wrapper (`/api/v1/shell/*`, incl. FCM runtime config via `compat`)                                                                                                                            |
 | **DiagnosticsModule**                | [src/diagnostics/](../../src/diagnostics/)                                 | `DiagnosticsService` + `DiagnosticsGcService` — client support-bundle list/download/GC                                                                                                                                                                                    |
-| **AdminModule**                      | [src/admin/](../../src/admin/)                                             | Admin console: 13 controllers, `AdminAuthService` (opaque `AdminSession`, separate secret), TOTP 2FA, WebAuthn passkeys, dashboard, audit, manage, GC, federation/quota admin; `AdminAuditInterceptor` (`APP_INTERCEPTOR`)                                                |
+| **AdminModule**                      | [src/admin/](../../src/admin/)                                             | Admin console, `AdminAuthService` (opaque `AdminSession`, separate secret), TOTP 2FA, WebAuthn passkeys, dashboard, audit, management, GC, federation/quota controls, and `AdminAuditInterceptor` (`APP_INTERCEPTOR`)                                                     |
 | **LoggerModule**                     | [src/logger/](../../src/logger/)                                           | `nestjs-pino` multistream (stdout + rotating file + ring buffer) + admin `LogViewerService`                                                                                                                                                                               |
 | **KvStoreModule** (`@Global`)        | [src/kv-store/](../../src/kv-store/)                                       | In-process `Map` KV (`KvStoreService` — NOT Redis) backing the SessionToken validation cache + throttle counters                                                                                                                                                          |
 | **SettingsModule** (`@Global`)       | [src/settings/](../../src/settings/)                                       | `SettingsService` — runtime settings facade plus fixed-file VAPID loading and key status                                                                                                                                                                                  |
@@ -78,27 +79,9 @@ The application root module [src/app.module.ts](../../src/app.module.ts) imports
 - `APP_INTERCEPTOR → AdminAuditInterceptor` — logs `@Audit`-tagged admin actions.
 - `useGlobalPipes(ValidationPipe)` / `useGlobalFilters(AllExceptionsFilter)` / `useGlobalInterceptors(SerializeInterceptor)` — registered in [src/bootstrap.ts](../../src/bootstrap.ts).
 
-### Controllers Overview
-
-All sit under `/api/v1` (set in `bootstrap.ts`). Most use `@Controller()` with the full path on each method.
-
-| Controller                          | File                                                                                                                                                                | Route prefix / key routes                                                                                                                                       |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| AuthController                      | [src/controller/auth.controller.ts](../../src/controller/auth.controller.ts)                                                                                        | `auth/login` (password), `auth/logout`, `auth/logout-all`, `auth/change-password`, `auth/set-password`, `auth/sessions`, `auth/revoke-session`                  |
-| AuthOtpController                   | [src/controller/auth-otp.controller.ts](../../src/controller/auth-otp.controller.ts)                                                                                | `auth/otp/login`                                                                                                                                                |
-| AuthQrController                    | [src/controller/auth-qr.controller.ts](../../src/controller/auth-qr.controller.ts)                                                                                  | `auth/qr/{create,poll,scan,confirm}`                                                                                                                            |
-| UserController                      | [src/controller/user.controller.ts](../../src/controller/user.controller.ts)                                                                                        | `user/{register,my-profile,update-avatar,update-profile,query-state/delta,delete-friend,block,query,peer-trust-status,resolve,search,thread-info}`              |
-| MessageController                   | [src/controller/message.controller.ts](../../src/controller/message.controller.ts)                                                                                  | `send-message`, `send-media`, `query-messages`, `thread/{by-user-id,mark-read,set-muted,set-pinned,clear-history,set-alias}`, `search-messages`, `media-status` |
-| GroupController                     | [src/controller/group.controller.ts](../../src/controller/group.controller.ts)                                                                                      | `group/{create,invite,info,members,leave,kick,transfer,set-role,update}`                                                                                        |
-| InviteController                    | [src/controller/invite.controller.ts](../../src/controller/invite.controller.ts)                                                                                    | `invite/{friend,accept,reject,revoke,incoming,outgoing,detail,mark-read}`                                                                                       |
-| DeviceController                    | [src/controller/device.controller.ts](../../src/controller/device.controller.ts)                                                                                    | `devices/register` (POST), `devices/register/:token` (DELETE)                                                                                                   |
-| NotificationController              | [src/controller/notification.controller.ts](../../src/controller/notification.controller.ts)                                                                        | `notifications/{vapid-key,missed-summary,missed,action}`                                                                                                        |
-| CallsController                     | [src/controller/calls.controller.ts](../../src/controller/calls.controller.ts)                                                                                      | `calls/{initiate,accept,ringing,connected,decline,cancel,end,signal,ice-servers,:callSid/signaling}`                                                            |
-| ShellController                     | [src/shell/shell.controller.ts](../../src/shell/shell.controller.ts)                                                                                                | `shell/{compat,web-manifest,web-bundle}`                                                                                                                        |
-| HealthController / ConfigController | [src/controller/health.controller.ts](../../src/controller/health.controller.ts) · [src/controller/config.controller.ts](../../src/controller/config.controller.ts) | `health` / `config` (both `@Public`, GET)                                                                                                                       |
-| EventsController                    | [src/gateway/events.controller.ts](../../src/gateway/events.controller.ts)                                                                                          | `GET /events` (SSE stream)                                                                                                                                      |
-
-Admin routes (`admin/*`) and federation routes (`s2s/*`, `.well-known/somfp`) are registered inside their own modules; see [api.md](../api/api.md) and [federation-s2s-api.md](../api/federation-s2s-api.md).
+HTTP routes use the `/api/v1` global prefix except for the SOMFP well-known
+endpoint. The maintained route summaries are the [client/admin API](../api/api.md)
+and the [SOMFP v1 HTTP surface](../../spec/v1/protocol.md#3-federation-v1-http-surface).
 
 ## Frontend Structure
 
@@ -245,7 +228,10 @@ seen revision stored in the local account database.
 
 ### Thread-list versioning
 
-Profile changes, incoming friend requests, and roster mutations share the public `stateRevision` cursor. `POST /user/query-state/delta` returns a range. The client commits state data plus its cursor atomically; missed-summary rows and their cursor are committed in a separate atomic transaction.
+Profile changes, incoming requests, and roster mutations share the client state feed.
+`GET /user/state-feed` returns a bounded page after a consumer-owned cursor. The
+client commits the page and its cursor atomically; thread previews, tombstones,
+and notification descriptors use their own catch-up resources.
 
 ### Message Sending
 
@@ -287,20 +273,13 @@ client parsing/rendering failures are logged and replaced with a generic localiz
 
 ### 1:1 Calls
 
-`CallsController` (`/calls/*`) drives a state machine (initiate → ringing → connected → end; decline/cancel/signal). The server is a **signaling coordinator + lifecycle owner only** — it never touches media. On termination `CallsService` authors a terminal `ContentType.CALL` chat bubble (bilateral). Federated calls relay over signed S2S `/s2s/v1/call`. See [docs/android-calls-client.md](../android-calls-client.md) and [docs/roadmap/android-calls-followup.md](../roadmap/android-calls-followup.md).
+`CallsController` (`/calls/*`) drives a state machine (initiate → ringing → connected → end; decline/cancel/signal). The server is a **signaling coordinator + lifecycle owner only** — it never touches media. On termination `CallsService` authors a terminal `ContentType.CALL` chat bubble (bilateral). Federated calls relay over signed S2S `/s2s/v1/call`. See the [Android calls client contract](../platform/android/calls.md).
 
 ### Federation
 
-Two SOMS instances federate over HTTPS with RFC 9421-signed S2S requests (`FederationModule`). Identity is `user@domain`; state, Group Meta, message indexes, and tombstone indexes propagate through pull feeds plus lightweight feed-head hints, while media uses exact-message-authorized `/media/:digest` Range requests. Pinned peer identity and daily quotas bound the trust and traffic. See [federation-protocol.md](./federation-protocol.md).
+Two SOMS instances federate over HTTPS with RFC 9421-signed S2S requests (`FederationModule`). Identity is `user@domain`; state, Group Meta, message indexes, and tombstone indexes propagate through pull feeds plus lightweight feed-head hints, while media uses exact-message-authorized `/media/:digest` Range requests. Pinned peer identity and daily quotas bound the trust and traffic. The wire contract is defined exclusively by the [federation specification](../../spec/README.md).
 
-## Known Issues and Improvements
+## Current Limitation
 
-> Items found during code review that affect integration and deployment. Several early items record the P0/P1 hardening of the _original_ dual-JWT auth model, which has since been **entirely replaced by the single SessionToken model** above — read those as historical milestones, not the current design.
-
-1. ~~**Hardcoded secrets**~~ ✅ Fixed (P0): secrets externalized; auto-generated at first startup under `./data/` when unset. (The subsequent SessionToken rewrite removed the access/refresh secrets entirely for users.)
-2. ~~**refresh_token stored only in memory**~~ ✅ Fixed (P0): persisted as a sha256 hash, revocable, rotating. (Later superseded: the dual access/refresh pair was replaced by the single opaque `SessionToken`.)
-3. ~~**`NotifyModule` not wired up**~~ ✅ Resolved: notification state uses unified revisions plus device-local read cursors; there is no `NotifyModule` to wire up.
-4. ~~**File upload**~~ ✅ Implemented: `UploadModule` provides `/upload` + `/send-media` through the content-addressed (sha256 CAS, refcounted `MediaAsset`) pipeline, and `/user/update-avatar` (sharp multi-size webp). Per-user rate limiting / orphan cleanup remain a deferred hardening item.
-5. ~~**Frontend authGuard not in effect**~~ ✅ Fixed: route guards are mounted (auth/guest).
-6. **`/user/query` privacy**: allows batch queries of any non-deleted user's information with no relationship-level visibility isolation. (Open.)
-7. ~~**`Date.prototype.toJSON` global override**~~ ✅ Removed (P1): replaced by the global `SerializeInterceptor`.
+`/user/query` allows batch queries of any non-deleted user's information without
+relationship-level visibility isolation.

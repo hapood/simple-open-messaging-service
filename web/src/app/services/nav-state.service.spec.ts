@@ -29,7 +29,7 @@ describe('NavStateMachineService', () => {
     svc = TestBed.inject(NavStateMachineService);
   });
 
-  // ── back() layering: pane → aside → search → chat → settingsCategoryStack → topSection → exit ──
+  // ── back() layering: pane → aside → search → settingsCategoryStack → topSection → chat → exit ──
 
   it('back() peels the topmost pane before anything beneath it', () => {
     svc.openChat(1); // chat first, then a dialog stacked over it
@@ -58,10 +58,30 @@ describe('NavStateMachineService', () => {
     expect(svc.paneStack().length).toBe(1);
   });
 
-  it('back() closes the chat-scoped aside overlay (single-depth)', () => {
+  it('back() closes a root chat-scoped aside overlay', () => {
     svc.openAside('profile');
     expect(svc.back()).toBe(true);
     expect(svc.aside().length).toBe(0);
+  });
+
+  it('back() returns from an aside drill-down to its parent', () => {
+    svc.openAside('group-info');
+    svc.pushAside('group-join-requests');
+
+    expect(svc.asideTop()?.panel).toBe('group-join-requests');
+    expect(svc.back()).toBe(true);
+    expect(svc.asideTop()?.panel).toBe('group-info');
+    expect(svc.back()).toBe(true);
+    expect(svc.aside()).toEqual([]);
+  });
+
+  it('uses the same aside drill-down stack for group member management', () => {
+    svc.openAside('group-info');
+    svc.pushAside('group-members');
+
+    expect(svc.asideTop()?.panel).toBe('group-members');
+    expect(svc.back()).toBe(true);
+    expect(svc.asideTop()?.panel).toBe('group-info');
   });
 
   it('back() closes in-chat search before the chat itself', () => {
@@ -72,14 +92,14 @@ describe('NavStateMachineService', () => {
     expect(svc.chatThreadId()).toBe(7); // chat still open
   });
 
-  it('back() closes the chat before leaving a non-chats section', () => {
+  it('back() leaves a covering section before closing the preserved chat beneath it', () => {
     svc.openChat(3);
     svc.setTopSection('settings');
     expect(svc.back()).toBe(true);
-    expect(svc.chatThreadId()).toBeUndefined();
-    expect(svc.topSection()).toBe('settings'); // section survives the chat-close back…
+    expect(svc.chatThreadId()).toBe(3);
+    expect(svc.topSection()).toBe('chats');
     expect(svc.back()).toBe(true);
-    expect(svc.topSection()).toBe('chats'); // …then peels back to chats
+    expect(svc.chatThreadId()).toBeUndefined();
   });
 
   it('back() peels the Settings drill stack one level at a time (multi-level)', () => {

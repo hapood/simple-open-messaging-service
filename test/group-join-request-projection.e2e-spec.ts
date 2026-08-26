@@ -243,6 +243,170 @@ describe('group join request projection', () => {
     expect(history.body.data.data[0].status).toBe('REVOKED');
   });
 
+  it('updates an existing application on manager ACK without creating an invitation projection', async () => {
+    const owner = await seedUserWithSession(app, 'application-ack-owner');
+    const applicant = await seedUserWithSession(app, 'application-ack-member');
+    const created = await request(app.getHttpServer())
+      .post('/api/v1/group/create')
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ name: 'Application ACK projection' });
+    const threadId = created.body.data.threadId as number;
+    const database = app.get(DatabaseService);
+    const thread = await database.db.query.messageThread.findFirst({
+      where: eq(messageThread.id, threadId),
+      columns: { groupUserId: true },
+    });
+    const sent = await request(app.getHttpServer())
+      .post('/api/v1/invite/friend')
+      .set('Authorization', `Bearer ${applicant.token}`)
+      .send({ toUserId: thread!.groupUserId, note: 'accept me' });
+    expect(sent.body.code).toBe(BusinessCode.OK);
+    const pending = await request(app.getHttpServer())
+      .post('/api/v1/group/join-requests')
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ groupId: threadId });
+    const requestId = pending.body.data.data[0].id as string;
+
+    const accepted = await request(app.getHttpServer())
+      .post('/api/v1/group/join-request/accept')
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ groupId: threadId, requestId });
+    expect(accepted.body.code).toBe(BusinessCode.OK);
+
+    const projections = await database.db.query.groupRequestProjection.findMany(
+      {
+        where: and(
+          eq(groupRequestProjection.managerUserId, owner.id),
+          eq(groupRequestProjection.threadId, threadId),
+          eq(groupRequestProjection.memberUserId, applicant.id),
+        ),
+      },
+    );
+    expect(projections).toHaveLength(1);
+    expect(projections[0]).toMatchObject({
+      direction: 'APPLICATION',
+      status: 'ACCEPTED',
+      requestId: BigInt(requestId),
+    });
+  });
+
+  it('updates an existing invitation on member ACK without creating an application projection', async () => {
+    const owner = await seedUserWithSession(app, 'invitation-ack-owner');
+    const member = await seedUserWithSession(app, 'invitation-ack-member');
+    const friendRequest = await request(app.getHttpServer())
+      .post('/api/v1/invite/friend')
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ toUserId: member.id });
+    await request(app.getHttpServer())
+      .post('/api/v1/invite/accept')
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ inviteId: friendRequest.body.data.inviteId });
+    const created = await request(app.getHttpServer())
+      .post('/api/v1/group/create')
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ name: 'Invitation ACK projection' });
+    const threadId = created.body.data.threadId as number;
+    const invited = await request(app.getHttpServer())
+      .post('/api/v1/group/invite')
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ groupId: threadId, userIds: [member.id] });
+    expect(invited.body.code).toBe(BusinessCode.OK);
+
+    const database = app.get(DatabaseService);
+    expect(
+      await database.db.query.threadParticipant.findFirst({
+        where: and(
+          eq(threadParticipant.threadId, threadId),
+          eq(threadParticipant.userId, member.id),
+        ),
+      }),
+    ).toBeUndefined();
+    const candidates = await request(app.getHttpServer())
+      .post('/api/v1/group/invite-candidates')
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ groupId: threadId, search: member.account });
+    expect(candidates.body.data.data).toEqual([
+      expect.objectContaining({ userId: member.id, state: 'INVITED' }),
+    ]);
+
+    const accepted = await request(app.getHttpServer())
+      .post('/api/v1/group/join-request')
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ groupId: threadId });
+    expect(accepted.body.code).toBe(BusinessCode.OK);
+
+    const acceptedCandidates = await request(app.getHttpServer())
+      .post('/api/v1/group/invite-candidates')
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ groupId: threadId, search: member.account });
+    expect(acceptedCandidates.body.data.data).toEqual([
+      expect.objectContaining({ userId: member.id, state: 'MEMBER' }),
+    ]);
+
+    const projections = await database.db.query.groupRequestProjection.findMany(
+      {
+        where: and(
+          eq(groupRequestProjection.managerUserId, owner.id),
+          eq(groupRequestProjection.threadId, threadId),
+          eq(groupRequestProjection.memberUserId, member.id),
+        ),
+      },
+    );
+    expect(projections).toHaveLength(1);
+    expect(projections[0]).toMatchObject({
+      direction: 'INVITATION',
+      status: 'ACCEPTED',
+    });
+
+    const left = await request(app.getHttpServer())
+      .post('/api/v1/group/leave')
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ groupId: threadId });
+    expect(left.body.code).toBe(BusinessCode.OK);
+    expect(
+      await database.db.query.threadParticipant.findFirst({
+        where: and(
+          eq(threadParticipant.threadId, threadId),
+          eq(threadParticipant.userId, member.id),
+        ),
+      }),
+    ).toBeUndefined();
+  });
+
+  it('does not manufacture a group request projection from a terminal fact', async () => {
+    const owner = await seedUserWithSession(app, 'terminal-effect-owner');
+    const member = await seedUserWithSession(app, 'terminal-effect-member');
+    const created = await request(app.getHttpServer())
+      .post('/api/v1/group/create')
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ name: 'Terminal projection effect' });
+    const threadId = created.body.data.threadId as number;
+    const database = app.get(DatabaseService);
+    const feedId = await database.db.transaction((tx) =>
+      app.get(ClientStateFeedService).writeGroupRequestInTx(tx, {
+        managerUserId: owner.id,
+        threadId,
+        memberUserId: member.id,
+        direction: 'APPLICATION',
+        requestId: 999n,
+        status: 'ACCEPTED',
+        note: '',
+        requestedAt: null,
+        expiresAt: null,
+      }),
+    );
+    expect(feedId).toBeNull();
+    expect(
+      await database.db.query.groupRequestProjection.findMany({
+        where: and(
+          eq(groupRequestProjection.managerUserId, owner.id),
+          eq(groupRequestProjection.threadId, threadId),
+          eq(groupRequestProjection.memberUserId, member.id),
+        ),
+      }),
+    ).toEqual([]);
+  });
+
   it('immediately collects manager projections on demotion and leave', async () => {
     const owner = await seedUserWithSession(app, 'join-role-owner');
     const admin = await seedUserWithSession(app, 'join-role-admin');

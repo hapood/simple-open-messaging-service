@@ -107,12 +107,6 @@
     </form>
   </div>
 
-  @if (exitHint()) {
-    <div class="cfg-toast" role="status">
-      {{ 'serverConfig.exitHint' | transloco }}
-    </div>
-  }
-
   <!-- Auto-fill confirmation modal: shown when /shell/compat supplied the field the user didn't enter. The
   field already displays the filled value; the user confirms before it's trusted as a connection target. -->
   @if (autoFill()) {

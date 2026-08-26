@@ -11,7 +11,7 @@ export interface GrpCreateInfo {
 export interface GroupJoinRequest {
   feedId: number;
   id: string;
-  status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
+  status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED' | 'EXPIRED';
   userId: number;
   account: string;
   domain: string;
@@ -20,6 +20,16 @@ export interface GroupJoinRequest {
   note: string;
   requestedAt: string | null;
   expiresAt: string | null;
+}
+
+export interface GroupInviteCandidate {
+  userId: number;
+  account: string;
+  domain: string;
+  name: string;
+  avatar: string;
+  bio: string;
+  state: 'AVAILABLE' | 'INVITED' | 'MEMBER';
 }
 
 @Injectable({
@@ -45,6 +55,21 @@ export class GroupService {
         skipped: { userId: number; reason: string }[];
       }>
     >(`${apiPrefix()}/group/invite`, params);
+  }
+
+  queryInviteCandidates(params: {
+    groupId: number;
+    afterUserId?: number;
+    search?: string;
+    take?: number;
+  }) {
+    return this.http.post<
+      StandardResponse<{
+        data: GroupInviteCandidate[];
+        hasMore: boolean;
+        afterUserId: number | null;
+      }>
+    >(`${apiPrefix()}/group/invite-candidates`, params);
   }
 
   leaveGroup(params: { groupId: number; deleteData?: boolean }) {
@@ -113,6 +138,20 @@ export class GroupService {
     >(`${apiPrefix()}/group/join-requests`, params);
   }
 
+  queryInvitations(params: {
+    groupId: number;
+    before?: number;
+    take?: number;
+  }) {
+    return this.http.post<
+      StandardResponse<{
+        data: GroupJoinRequest[];
+        hasMore: boolean;
+        before: number | null;
+      }>
+    >(`${apiPrefix()}/group/invitations`, params);
+  }
+
   markJoinRequestsRead(params: { groupId: number; readFeedId: number }) {
     return this.http.post<StandardResponse>(
       `${apiPrefix()}/group/join-requests/read`,
@@ -130,6 +169,13 @@ export class GroupService {
   rejectJoinRequest(params: { groupId: number; requestId: string }) {
     return this.http.post<StandardResponse>(
       `${apiPrefix()}/group/join-request/reject`,
+      params,
+    );
+  }
+
+  revokeInvitation(params: { groupId: number; requestId: string }) {
+    return this.http.post<StandardResponse>(
+      `${apiPrefix()}/group/invitation/revoke`,
       params,
     );
   }

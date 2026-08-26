@@ -402,7 +402,7 @@ describe('WebdbService', () => {
       expect(await webdb.getMeta('stateFeedId')).toBe(21);
     });
 
-    it('folds an address request and its materialized acceptance into one local-domain projection', async () => {
+    it('keeps accepted sent history and makes accepted received history non-actionable', async () => {
       const db = await webdb.openForUser('1');
       const requestedAt = Date.now();
       const peer = {
@@ -416,15 +416,14 @@ describe('WebdbService', () => {
       const event = (
         feedId: number,
         direction: 'INCOMING' | 'OUTGOING',
-        subjectDomain: string,
         status: 'REQUESTED' | 'ACCEPTED',
       ): ClientStateFeedItem => ({
         feedId,
-        account: 'admin',
-        domain: 'bravo.test',
+        account: direction === 'OUTGOING' ? 'bravo' : 'admin',
+        domain: direction === 'OUTGOING' ? 'local' : 'bravo.test',
         eventType: 'RELATIONSHIP_INTENT',
-        subjectAccount: 'bravo',
-        subjectDomain,
+        subjectAccount: direction === 'OUTGOING' ? 'admin' : 'bravo',
+        subjectDomain: direction === 'OUTGOING' ? 'bravo.test' : 'local',
         body: {
           status,
           note: '',
@@ -436,22 +435,62 @@ describe('WebdbService', () => {
         },
       });
 
+      await webdb.applyStateFeedPage([event(30, 'OUTGOING', 'REQUESTED')], 30);
       await webdb.applyStateFeedPage(
-        [event(30, 'INCOMING', 'local', 'REQUESTED')],
-        30,
-      );
-      await webdb.applyStateFeedPage(
-        [
-          event(31, 'INCOMING', 'local', 'ACCEPTED'),
-          event(32, 'OUTGOING', 'local', 'ACCEPTED'),
-        ],
+        [event(31, 'INCOMING', 'ACCEPTED'), event(32, 'OUTGOING', 'ACCEPTED')],
         32,
       );
 
       expect(await db!.getAll('friendRequests')).toHaveLength(1);
+      expect(await webdb.getFriendRequestPage('SENT', null, 20)).toMatchObject({
+        total: 1,
+        actionableTotal: 1,
+        items: [expect.objectContaining({ status: 'ACCEPTED' })],
+      });
+    });
+
+    it('persists a successful local accept on the existing received projection', async () => {
+      const db = await webdb.openForUser('1');
+      const requestedAt = Date.now();
+      await webdb.applyStateFeedPage(
+        [
+          {
+            feedId: 40,
+            account: 'alice',
+            domain: 'peer.test',
+            eventType: 'RELATIONSHIP_INTENT',
+            subjectAccount: 'me',
+            subjectDomain: 'local',
+            body: {
+              status: 'REQUESTED',
+              note: '',
+              requestedAt,
+              expiresAt: requestedAt + 60_000,
+              direction: 'INCOMING',
+              localThreadId: null,
+              peer: {
+                id: 2,
+                account: 'alice',
+                name: 'Alice',
+                avatar: '',
+                bio: '',
+                domain: 'peer.test',
+              },
+            },
+          },
+        ],
+        40,
+      );
+      const [projection] = await db!.getAll('friendRequests');
+      await webdb.markFriendRequestAccepted(projection.key);
+      expect(await db!.get('friendRequests', projection.key)).toMatchObject({
+        bucket: 'RECEIVED',
+        direction: 'INCOMING',
+        status: 'ACCEPTED',
+      });
       expect(
         await webdb.getFriendRequestPage('RECEIVED', null, 20),
-      ).toMatchObject({ total: 1, actionableTotal: 1 });
+      ).toMatchObject({ total: 1, actionableTotal: 0 });
     });
 
     it('does not advance the unread badge revision when an incoming request is rejected', async () => {
@@ -668,6 +707,63 @@ describe('WebdbService', () => {
 
       await webdb.cleanupFriendRequests(expiresAt + FRIEND_INTENT_RETENTION_MS);
       expect(await db!.getAll('friendRequests')).toEqual([]);
+    });
+
+    it('refreshes a pending group invite when its authoritative profile arrives', async () => {
+      const db = await webdb.openForUser('1');
+      const requestedAt = Date.now();
+      const invite: ClientStateFeedItem = {
+        feedId: 22,
+        account: '!group',
+        domain: 'groups.test',
+        eventType: 'RELATIONSHIP_INTENT',
+        subjectAccount: 'me',
+        subjectDomain: 'local.test',
+        body: {
+          status: 'REQUESTED',
+          note: 'join us',
+          requestedAt,
+          expiresAt: requestedAt + 60_000,
+          direction: 'INCOMING',
+          threadId: 8,
+          group: {
+            account: '!group',
+            domain: 'groups.test',
+            isLocal: false,
+            name: '!group',
+            avatar: '',
+            description: '',
+            profileRev: 0,
+          },
+        },
+      };
+      const profile: ClientStateFeedItem = {
+        feedId: 23,
+        account: '!group',
+        domain: 'groups.test',
+        eventType: 'PROFILE',
+        subjectAccount: '',
+        subjectDomain: 'local',
+        body: {
+          profileRev: 3,
+          displayName: 'Product Team',
+          avatar: 'team.webp',
+          bio: 'Product discussions',
+        },
+      };
+
+      await webdb.applyStateFeedPage([invite, profile], 23);
+
+      expect(await db!.getAll('friendRequests')).toEqual([
+        expect.objectContaining({
+          group: expect.objectContaining({
+            name: 'Product Team',
+            avatar: 'team.webp',
+            description: 'Product discussions',
+            profileRev: 3,
+          }),
+        }),
+      ]);
     });
 
     it('uses explicit OUTGOING direction for a legacy group-first federated key', async () => {

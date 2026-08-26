@@ -1,7 +1,8 @@
 use super::{
     apply_friend_request_effect, apply_group_request_effect, apply_relationship_intent_fact,
     cleanup_friend_requests, materialize_group_thread_from_fact, merge_covered_tail,
-    merge_message_section, update_message_coverage, CoveredInterval, MessageSection,
+    merge_message_section, update_live_request_projection, update_message_coverage,
+    CoveredInterval, MessageSection,
 };
 use rusqlite::{params, Connection};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -204,6 +205,44 @@ fn native_projection_ignores_a_local_revoke_for_a_received_request() {
         )
         .unwrap();
     assert_eq!(revision, "10");
+}
+
+#[test]
+fn native_projection_persists_a_local_accept_side_effect() {
+    let mut conn = request_connection();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let tx = conn.transaction().unwrap();
+    apply_friend_request_effect(
+        &tx,
+        1,
+        10,
+        "peer",
+        "peer.test",
+        "me",
+        "local.test",
+        &friend_body("INCOMING", "REQUESTED", Some(now + 60_000)),
+    )
+    .unwrap();
+    let key: String = tx
+        .query_row("SELECT stable_key FROM friend_requests", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    update_live_request_projection(&tx, 1, &key, "ACCEPTED", now + 1).unwrap();
+    tx.commit().unwrap();
+
+    let payload: String = conn
+        .query_row("SELECT payload_json FROM friend_requests", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let projection: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(projection["bucket"], "RECEIVED");
+    assert_eq!(projection["direction"], "INCOMING");
+    assert_eq!(projection["status"], "ACCEPTED");
 }
 
 #[test]

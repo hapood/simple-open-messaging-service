@@ -3,6 +3,7 @@ import {
   computed,
   effect,
   inject,
+  input,
   OnInit,
   OnDestroy,
   signal,
@@ -12,7 +13,6 @@ import {
 import { HttpClient } from '@angular/common/http';
 import { NavStateMachineService } from '../../services/nav-state.service';
 import { Subscription, firstValueFrom } from 'rxjs';
-import { UserListComponent } from '../user-list/user-list.component';
 import { RouteService, PopupType } from '../../services/route.service';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { MatButtonModule } from '@angular/material/button';
@@ -21,13 +21,12 @@ import { MatCardModule } from '@angular/material/card';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatMenuModule } from '@angular/material/menu';
-import { MatSnackBar } from '@angular/material/snack-bar';
 import { FormsModule } from '@angular/forms';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { GroupService } from '../../services/group.service';
 import { UserService } from '../../services/user.service';
 import { ConversationListService } from '../../services/conversation-list.service';
-import { ConversationItem, P2PConversationItem } from '../../services/model';
+import { ConversationItem } from '../../services/model';
 import {
   UserAvatarComponent,
   UserAvatarType,
@@ -44,6 +43,7 @@ import {
 } from '../../services/member-profile-store.service';
 import { PageHeaderComponent } from '../page-header/page-header.component';
 import { ChatContextService } from '../message-thread/chat-context.service';
+import { ContactCardShareService } from '../../services/contact-card-share.service';
 
 type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
 
@@ -60,7 +60,6 @@ type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
 @Component({
   selector: 'app-group-info',
   imports: [
-    UserListComponent,
     IconComponent,
     MatButtonModule,
     MatSlideToggleModule,
@@ -88,12 +87,12 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   private readonly userService = inject(UserService);
   private readonly convList = inject(ConversationListService);
   private readonly routeService = inject(RouteService);
-  private readonly snackBar = inject(MatSnackBar);
   private readonly http = inject(HttpClient);
   private readonly transloco = inject(TranslocoService);
   private readonly toast = inject(ToastService);
   private readonly threadAdapter = inject(MESSAGE_THREAD_ADAPTER);
   private readonly chatContext = inject(ChatContextService);
+  private readonly contactCardShare = inject(ContactCardShareService);
 
   /** The open thread id (template-bound for the alias editor). */
   readonly threadId = this.convList.openThreadId;
@@ -115,14 +114,12 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly busy = signal(false); // a mutation is in flight (disables action buttons)
   readonly blockedSaving = signal(false);
   readonly blockedControl = signal(false);
+  readonly mutedSaving = signal(false);
+  readonly pinnedSaving = signal(false);
 
-  /** Invite picker state. */
-  readonly selectedDict = signal<Record<number, boolean | undefined>>({});
-  readonly selectedList = signal<P2PConversationItem[]>([]);
-  readonly showInvite = signal(false);
-  readonly showMemberManager = signal(false);
+  /** Render the roster-management drill-down while reusing this component's member data and actions. */
+  readonly memberManagerMode = input(false);
   readonly memberQuery = signal('');
-  readonly inviteQuery = signal('');
 
   /** Whether the admin-only group-profile editor is open as a second-level panel. */
   readonly editing = signal(false);
@@ -141,6 +138,12 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly isAdmin = computed(
     () => this.myRole() === 'OWNER' || this.myRole() === 'ADMIN',
   );
+  readonly hasUnreadJoinRequests = computed(() => {
+    const threadId = this.threadId();
+    if (threadId === undefined) return false;
+    const head = this.userService.groupJoinRequestHeads().get(threadId);
+    return !!head && head.latestFeedId > head.readFeedId;
+  });
   readonly overviewMembers = computed(() => this.roster().slice(0, 5));
   readonly remainingMemberCount = computed(() =>
     Math.max(
@@ -149,10 +152,6 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     ),
   );
   readonly filteredRoster = this.roster.asReadonly();
-  readonly canInvite = this.isAdmin;
-  readonly existingMemberIds = computed(
-    () => new Set(this.roster().map((member) => member.userId)),
-  );
   readonly canLeave = computed(() => !this.isOwner());
   readonly confirmDissolve = signal(false);
 
@@ -207,18 +206,6 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     });
     this.roster.set(resolved);
     this.rosterHasMore.set(resolved.length === 50);
-    const memberIds = new Set(resolved.map((member) => member.userId));
-    this.selectedList.update((list) =>
-      list.filter((item) => !memberIds.has(item.peerUser.id)),
-    );
-    this.selectedDict.update((dict) => {
-      const next = { ...dict };
-      for (const item of this.convList.items()) {
-        if (item.type === 'P2P' && memberIds.has(item.peerUser.id))
-          next[item.threadId] = false;
-      }
-      return next;
-    });
     this.loading.set(false);
   }
 
@@ -386,7 +373,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
         },
         (result) => {
           if (!result) return;
-          this.showMemberManager.set(true);
+          this.openMemberManager();
         },
       );
       return;
@@ -445,12 +432,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
 
   private async dissolve() {
     const id = this.groupId();
-    if (
-      id === undefined ||
-      !this.isOwner() ||
-      this.readOnly() ||
-      this.busy()
-    )
+    if (id === undefined || !this.isOwner() || this.readOnly() || this.busy())
       return;
     this.busy.set(true);
     try {
@@ -487,6 +469,70 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
         },
         error: () => {
           this.blockedControl.set(!blocked);
+          this.showNetworkError();
+        },
+      });
+  }
+
+  shareGroup(): void {
+    const trd = this.userMsgTrd();
+    if (trd) this.contactCardShare.open(trd);
+  }
+
+  openSearch(): void {
+    this.nav.closeAside();
+    this.nav.openSearch();
+  }
+
+  setMuted(muted: boolean): void {
+    const trd = this.userMsgTrd();
+    if (!trd || this.mutedSaving()) return;
+    const previous = trd.muted;
+    this.convList.applyThreadMeta(trd.threadId, { muted });
+    this.mutedSaving.set(true);
+    this.threadAdapter
+      .setMuted({ threadId: trd.threadId, muted })
+      .pipe(finalize(() => this.mutedSaving.set(false)))
+      .subscribe({
+        next: (res) => {
+          if (res.code === 0) return;
+          this.convList.applyThreadMeta(trd.threadId, { muted: previous });
+          this.showBusinessError(res);
+        },
+        error: () => {
+          this.convList.applyThreadMeta(trd.threadId, { muted: previous });
+          this.showNetworkError();
+        },
+      });
+  }
+
+  setPinned(pinned: boolean): void {
+    const trd = this.userMsgTrd();
+    if (!trd || this.pinnedSaving()) return;
+    const previous = trd.pinned;
+    const previousPinnedAt = trd.pinnedAt;
+    this.convList.applyThreadMeta(trd.threadId, {
+      pinned,
+      pinnedAt: pinned ? Date.now() : null,
+    });
+    this.pinnedSaving.set(true);
+    this.threadAdapter
+      .setPinned({ threadId: trd.threadId, pinned })
+      .pipe(finalize(() => this.pinnedSaving.set(false)))
+      .subscribe({
+        next: (res) => {
+          if (res.code === 0) return;
+          this.convList.applyThreadMeta(trd.threadId, {
+            pinned: previous,
+            pinnedAt: previousPinnedAt,
+          });
+          this.showBusinessError(res);
+        },
+        error: () => {
+          this.convList.applyThreadMeta(trd.threadId, {
+            pinned: previous,
+            pinnedAt: previousPinnedAt,
+          });
           this.showNetworkError();
         },
       });
@@ -563,62 +609,14 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       });
   }
 
-  // ── invite (add members) ──
-
-  onTrdSelect(trdItem: P2PConversationItem) {
-    let dict = { ...this.selectedDict() };
-    let list = this.selectedList();
-    if (dict[trdItem.threadId]) {
-      dict[trdItem.threadId] = false;
-      list = list.filter((item) => item.threadId !== trdItem.threadId);
-    } else {
-      dict[trdItem.threadId] = true;
-      list = list.concat(trdItem);
-    }
-    this.selectedDict.set(dict);
-    this.selectedList.set(list);
+  openInvitesAndRequests(): void {
+    if (!this.isAdmin() || this.readOnly()) return;
+    this.nav.pushAside('group-join-requests');
   }
 
-  invite() {
-    const list = this.selectedList();
-    const id = this.groupId();
-    if (id === undefined || list.length === 0) return;
-    // One batched request (the server writes one INVITE per friend in their P2P thread). Busy gates
-    // the button; the response carries invited/skipped counts surfaced via a snackbar. The roster is
-    // NOT reloaded here — invitees are not members until they accept; they appear live via
-    // The durable group-state delta refreshes this roster once they join.
-    const existing = this.existingMemberIds();
-    const userIds = list
-      .map((item) => item.peerUser.id)
-      .filter((userId) => !existing.has(userId));
-    if (userIds.length === 0) return;
-    this.busy.set(true);
-    this.groupService
-      .inviteUsers({ groupId: id, userIds })
-      .pipe(finalize(() => this.busy.set(false)))
-      .subscribe({
-        next: (res) => {
-          if (res.code !== 0) return this.showBusinessError(res);
-          const invited = res.data?.invited?.length ?? 0;
-          const skipped = res.data?.skipped?.length ?? 0;
-          const msg =
-            skipped > 0
-              ? this.transloco.translate('errors.invitedPartial', {
-                  n: invited,
-                  skipped,
-                })
-              : invited > 0
-                ? this.transloco.translate('errors.invited', { n: invited })
-                : this.transloco.translate('errors.noInvites');
-          this.snackBar.open(msg, this.transloco.translate('common.ok'), {
-            duration: 4000,
-          });
-          this.selectedDict.set({});
-          this.selectedList.set([]);
-          this.showInvite.set(false);
-        },
-        error: () => this.showNetworkError(),
-      });
+  openMemberManager(): void {
+    if (this.readOnly()) return;
+    this.nav.pushAside('group-members');
   }
 
   private showBusinessError(res: {

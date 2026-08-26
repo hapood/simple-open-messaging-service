@@ -6,10 +6,12 @@ import {
   output,
   signal,
   ChangeDetectionStrategy,
+  inject,
 } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { IconComponent, AppIconType } from '../icon/icon.component';
+import { AppBackDispatcherService } from '../../services/app-back-dispatcher.service';
 
 /** How long the green-check "captured" badge holds over the cutout before the overlay dismisses — long enough
  *  to register that the decode succeeded, short enough not to feel laggy. Mirrors the qr-login-page scanned
@@ -77,8 +79,8 @@ export class QrScannerComponent implements OnInit, OnDestroy {
   /** Emits on an unexpected scan failure (camera/ML Kit/lazy-load error) — the caller surfaces a toast. */
   readonly failed = output<unknown>();
 
-  /** Saved SPA nav-state `__SOMS_BACK__` to restore when the scanner closes (mirrors server-config-page). */
-  private prevBack: typeof window.__SOMS_BACK__ = window.__SOMS_BACK__;
+  private readonly appBack = inject(AppBackDispatcherService);
+  private unregisterBack?: () => void;
   private badgeTimer: ReturnType<typeof setTimeout> | null = null;
   /** Cached dynamic import of the plugin (module singleton) — avoids re-importing on cancel. */
   private pluginPromise: Promise<Plugin> | null = null;
@@ -88,17 +90,15 @@ export class QrScannerComponent implements OnInit, OnDestroy {
   private settled = false;
 
   ngOnInit(): void {
-    // Take over the hardware-back hook while the scanner is up: back cancels the scan instead of navigating
-    // or exiting (MainActivity evals window.__SOMS_BACK__ on back-press; TauriActivity sets
-    // handleBackNavigation=false). Restored in ngOnDestroy.
-    window.__SOMS_BACK__ = () => {
+    // Register above ordinary app navigation while the native scan surface is alive.
+    this.unregisterBack = this.appBack.register(() => {
       void this.cancelScan();
-    };
+    });
     void this.start();
   }
 
   ngOnDestroy(): void {
-    window.__SOMS_BACK__ = this.prevBack;
+    this.unregisterBack?.();
     if (this.badgeTimer) clearTimeout(this.badgeTimer);
     // If still mid-scan (e.g. the overlay was disposed by navigation), tear down the camera and reject the
     // plugin's savedInvoke so no native camera is orphaned. cancel() is a no-op if already torn down.

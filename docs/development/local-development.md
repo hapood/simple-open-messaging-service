@@ -1,7 +1,7 @@
 # Local Development
 
 This guide covers source checkout, local initialization, database setup, and development commands.
-For an operator installation, use the published [NAS deployment guide](deployment.md) instead. The
+For an operator installation, use the published [NAS deployment guide](../deployment/nas.md) instead. The
 internet-facing server deployment guide is still being written.
 
 ## Requirements
@@ -40,7 +40,7 @@ At minimum, configure a PostgreSQL connection:
 DATABASE_URL=postgresql://username:password@localhost:5432/soms?schema=public
 ```
 
-Review [`.env.example`](../.env.example) for the remaining infrastructure settings. Never commit
+Review [`.env.example`](../../.env.example) for the remaining infrastructure settings. Never commit
 `.env` or credentials. The federation lab overrides `SOMS_DOMAIN` with `alpha.test`, `bravo.test`,
 and `charlie.test`; a repository-level domain is only relevant when running a backend outside the
 lab.
@@ -103,7 +103,7 @@ npm run dev:built
 ```
 
 This builds all three applications with development source maps, packages the client update bundle,
-and serves the resulting static assets. See the [federation lab guide](../dev/federation-lab/README.md)
+and serves the resulting static assets. See the [federation lab guide](../../dev/federation-lab/README.md)
 for topology, persistent data, browser session isolation, and reset instructions.
 
 When the built backend is already running separately, rebuild and restart only the static frontend
@@ -138,4 +138,4 @@ version synchronization, builds the backend and both optimized frontends, and pa
 client update bundle. `federation:conformance` validates the independently versioned protocol
 release and is not part of the development startup chain.
 
-See [AGENTS.md](../AGENTS.md) for repository layout, coding conventions, and additional commands.
+See [AGENTS.md](../../AGENTS.md) for repository layout, coding conventions, and additional commands.

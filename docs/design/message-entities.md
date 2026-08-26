@@ -1,4 +1,4 @@
-# SOMS message inline-entity implementation
+# Message inline entities
 
 > This document describes the SOMS editor, storage, and rendering implementation. The normative
 > wire grammar, validation, escaping, and failure behavior are defined only by

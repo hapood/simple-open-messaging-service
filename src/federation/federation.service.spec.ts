@@ -232,6 +232,8 @@ function makeStubs() {
     {} as never, // stateFeed
     {} as never, // clientStateFeed
     {} as never, // relationshipIntents
+    {} as never, // groupMembership
+    {} as never, // groupRequestProjection
   );
   return {
     svc,
@@ -874,9 +876,7 @@ describe('FederationService quote coordinates', () => {
       user: {
         findMany: vi
           .fn()
-          .mockResolvedValue([
-            { id: 22, domain: 'peer.example' },
-          ]),
+          .mockResolvedValue([{ id: 22, domain: 'peer.example' }]),
       },
       message: { findUnique: vi.fn().mockResolvedValue({ seq: 41 }) },
     };

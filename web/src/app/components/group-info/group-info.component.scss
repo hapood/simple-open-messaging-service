@@ -19,6 +19,31 @@
   padding: 12px 0 24px;
 }
 
+.share-action {
+  min-width: 0;
+  height: 36px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--app-radius-sm);
+  background: transparent;
+  color: var(--app-brand);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 20px;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--app-hover);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--app-brand);
+    outline-offset: 1px;
+  }
+}
+
 .muted {
   color: var(--app-text-muted);
   font-size: 13px;
@@ -190,15 +215,24 @@
   }
   .role-badge {
     align-self: flex-start;
-    font-size: 11px;
-    font-weight: 600;
+    height: 20px;
+    box-sizing: border-box;
+    padding: 0 6px;
+    border: 1px solid transparent;
+    border-radius: var(--app-radius-pill);
+    font-size: 12px;
+    font-weight: var(--app-font-weight-medium, 500);
     color: var(--app-text-muted);
-    line-height: 16px;
+    line-height: 18px;
     &.owner {
       color: var(--app-brand);
+      border-color: color-mix(in srgb, var(--app-brand) 22%, transparent);
+      background: color-mix(in srgb, var(--app-brand) 10%, transparent);
     }
     &.admin {
-      color: var(--app-brand, #25282c);
+      color: var(--app-text-muted);
+      border-color: var(--app-border);
+      background: var(--app-surface-subtle);
     }
   }
   .more-btn {
@@ -220,23 +254,48 @@
   }
 }
 
-.member-overview {
-  min-height: 52px;
-  padding: 4px 16px 8px;
+.member-overview-card {
+  margin: 12px 16px 0;
+  overflow: hidden;
+}
+
+.member-overview-row {
+  width: 100%;
+  min-height: 72px;
+  padding: 10px 12px 10px 14px;
+  box-sizing: border-box;
+  border: 0;
+  background: transparent;
+  color: var(--app-text);
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
+  text-align: left;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    background: var(--app-hover);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--app-brand);
+    outline-offset: -2px;
+  }
+
+  &:disabled {
+    cursor: default;
+    opacity: 0.56;
+  }
 }
 
 .avatar-stack {
-  @include styless-button;
   min-width: 0;
+  max-width: 128px;
   height: 40px;
+  flex: 0 1 auto;
   display: flex;
   align-items: center;
   padding: 0 6px 0 0;
-  cursor: pointer;
 
   app-user-avatar,
   .more-avatar {
@@ -264,67 +323,33 @@
     line-height: 32px;
     font-variant-numeric: tabular-nums;
   }
-
-  &:focus-visible {
-    outline: 2px solid var(--app-brand);
-    outline-offset: 2px;
-    border-radius: var(--app-radius-sm);
-  }
-
-  &:disabled {
-    cursor: default;
-    opacity: 0.56;
-  }
 }
 
-.manage-members-btn {
-  height: 36px;
-  flex: 0 0 auto;
-  padding: 0 12px;
-  border: 1px solid var(--app-border-strong);
-  border-radius: var(--app-radius-md);
-  background: transparent;
-  color: var(--app-brand);
-  font-size: 13px;
-  font-weight: var(--app-font-weight-medium, 500);
-  line-height: 34px;
-  cursor: pointer;
-
-  &:hover {
-    background: var(--app-hover);
-  }
-
-  &:focus-visible {
-    outline: 2px solid var(--app-brand);
-    outline-offset: 2px;
-  }
-
-  &:disabled {
-    border-color: var(--app-border);
-    color: var(--app-text-faint);
-    cursor: default;
-    opacity: 0.64;
-  }
-}
-
-// ── invite ──
-.invite-pane {
+.member-overview-copy {
+  min-width: 0;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  margin-top: 8px;
-  app-user-list {
-    flex: 1 1 auto;
-    min-height: 120px;
-    max-height: 320px;
-    overflow-y: auto;
+  gap: 2px;
+
+  strong {
+    font-size: 14px;
+    font-weight: var(--app-font-weight-medium, 500);
+    line-height: 20px;
   }
-  .invite-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-    padding: 10px 16px;
+
+  span {
+    color: var(--app-text-muted);
+    font-size: 12px;
+    line-height: 18px;
   }
 }
+
+.member-overview-chevron {
+  flex: 0 0 20px;
+  color: var(--app-text-muted);
+}
+
 .permission-card {
   margin: 12px 16px 0;
   padding: 12px 14px;
@@ -347,6 +372,63 @@
   mat-slide-toggle.saving {
     pointer-events: none;
   }
+}
+
+.conversation-actions {
+  margin: 12px 16px 0;
+  overflow: hidden;
+}
+
+.action-row {
+  width: 100%;
+  min-height: 56px;
+  padding: 8px 14px;
+  box-sizing: border-box;
+  border: 0;
+  border-bottom: 1px solid var(--app-border);
+  background: transparent;
+  color: var(--app-text);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+
+  &:last-child {
+    border-bottom: 0;
+  }
+}
+
+button.action-row {
+  cursor: pointer;
+
+  &:hover {
+    background: var(--app-hover);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--app-brand);
+    outline-offset: -2px;
+  }
+}
+
+.action-icon {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  display: grid;
+  place-items: center;
+  color: var(--app-text-muted);
+}
+
+.action-label {
+  min-width: 0;
+  flex: 1 1 auto;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.action-chevron {
+  color: var(--app-text-muted);
 }
 
 .invite-settings-card {
@@ -401,6 +483,11 @@
   display: grid;
   place-items: center;
   color: var(--app-text-muted);
+}
+
+.invite-unread-dot {
+  @include unread-attention-dot;
+  flex: 0 0 auto;
 }
 
 .invite-chevron {
@@ -529,12 +616,6 @@
   flex-direction: column;
   background: var(--app-surface);
 }
-.invite-submit {
-  min-width: 0;
-  height: 36px;
-  padding: 0 12px;
-  line-height: 36px;
-}
 .manager-body {
   flex: 1;
   min-height: 0;
@@ -556,84 +637,6 @@
   &:focus {
     border-color: var(--app-brand);
   }
-}
-.manager-body app-user-list {
-  display: block;
-  min-height: 140px;
-  max-height: 300px;
-  overflow-y: auto;
-}
-.selected-friends {
-  display: flex;
-  gap: 8px;
-  height: 82px;
-  box-sizing: border-box;
-  margin: 0 0 8px;
-  padding: 4px 16px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: thin;
-  overscroll-behavior-x: contain;
-  -webkit-overflow-scrolling: touch;
-}
-.selected-friend {
-  position: relative;
-  width: 66px;
-  height: 74px;
-  flex: 0 0 66px;
-  padding: 0;
-  border: 0;
-  border-radius: var(--app-radius-md);
-  background: transparent;
-  cursor: pointer;
-
-  app-user-avatar {
-    display: block;
-    width: 54px;
-    height: 54px;
-    margin: 0 6px;
-  }
-
-  &:focus-visible {
-    outline: 2px solid var(--app-focus-ring);
-    outline-offset: 2px;
-  }
-}
-.selected-remove {
-  position: absolute;
-  top: -2px;
-  left: 4px;
-  width: 22px;
-  height: 22px;
-  box-sizing: border-box;
-  border: 2px solid var(--app-text);
-  border-radius: var(--app-radius-pill);
-  background: var(--app-danger);
-  color: #ffffff;
-  font-size: 16px;
-  font-weight: 700;
-  line-height: 18px;
-  text-align: center;
-}
-.selected-name {
-  display: block;
-  width: 66px;
-  margin-top: 3px;
-  color: var(--app-text);
-  font-size: 12px;
-  line-height: 16px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: center;
-}
-.invite-disabled {
-  margin: 14px 16px;
-  padding: 12px;
-  border-radius: var(--app-radius-md);
-  background: var(--app-bg-muted);
-  color: var(--app-text-muted);
-  font-size: 13px;
 }
 // ── leave ── destructive Text button: real mat-button color="warn" (red text + Material's warn state
 //    layer on hover, disabled styling built in). Only the full-width inset is custom.

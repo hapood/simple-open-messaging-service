@@ -38,7 +38,9 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
   let items: ReturnType<typeof signal<ConversationItem[]>>;
   let openThreadId: ReturnType<typeof signal<number | undefined>>;
   let openAside: ReturnType<typeof vi.fn>;
-  let asideTop: ReturnType<typeof signal<{ panel: 'profile' } | undefined>>;
+  let asideTop: ReturnType<
+    typeof signal<{ panel: 'profile' | 'group-info' } | undefined>
+  >;
   let canAdministerGroup: ReturnType<typeof signal<boolean>>;
 
   /** Minimal ConversationItem — only threadId + unreadCount are exercised by the badge sum. */
@@ -58,7 +60,9 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
     items = signal<ConversationItem[]>([]);
     openThreadId = signal<number | undefined>(undefined);
     openAside = vi.fn();
-    asideTop = signal<{ panel: 'profile' } | undefined>(undefined);
+    asideTop = signal<{ panel: 'profile' | 'group-info' } | undefined>(
+      undefined,
+    );
     canAdministerGroup = signal(false);
 
     TestBed.configureTestingModule({
@@ -161,10 +165,9 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
     comp.toggleMenu();
 
     expect(openAside).toHaveBeenCalledWith('profile');
-    expect(comp.menuOpen()).toBe(false);
   });
 
-  it('keeps contact sharing in the group More menu', () => {
+  it('opens group info directly from More for a group conversation', () => {
     const chat = createGroupConversation(8, {
       id: 80,
       account: 'group-80',
@@ -172,15 +175,13 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
       ownerId: 1,
     });
     fixture.componentRef.setInput('userMsgTrd', chat);
-    const shared: ConversationItem[] = [];
-    comp.shareChatCard.subscribe((value) => shared.push(value));
 
-    comp.onSelect('shareContact');
+    comp.toggleMenu();
 
-    expect(shared).toEqual([chat]);
+    expect(openAside).toHaveBeenCalledWith('group-info');
   });
 
-  it('offers join requests directly in an admin group More menu', () => {
+  it('reports group More as expanded while the group panel is open', () => {
     const chat = createGroupConversation(
       8,
       { id: 80, account: 'group-80', name: 'Group 80', ownerId: 1 },
@@ -188,12 +189,8 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
     );
     canAdministerGroup.set(true);
     fixture.componentRef.setInput('userMsgTrd', chat);
+    asideTop.set({ panel: 'group-info' });
 
-    expect(comp.entries()).toContainEqual(
-      expect.objectContaining({ kind: 'action', key: 'joinRequests' }),
-    );
-
-    comp.onSelect('joinRequests');
-    expect(openAside).toHaveBeenCalledWith('group-join-requests');
+    expect(comp.moreExpanded()).toBe(true);
   });
 });

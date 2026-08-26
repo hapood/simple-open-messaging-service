@@ -4,6 +4,7 @@ import {
   applyGroupIntentToProjection,
   friendRequestKey,
   groupRequestKey,
+  markProjectionAccepted,
   projectionDirectionForFact,
   relationshipFactsAreActive,
   type FriendIntentProjectionInput,
@@ -101,6 +102,24 @@ describe('request projection effects', () => {
         3_000,
       ).record?.status,
     ).toBe('REQUESTED');
+  });
+
+  it('persists a local accept only as a side effect on a live incoming request', () => {
+    const incoming = applyFriendIntentToProjection(
+      undefined,
+      { ...friendInput, direction: 'INCOMING' },
+      2_000,
+    ).record!;
+    expect(markProjectionAccepted(incoming, 3_000)).toMatchObject({
+      key: incoming.key,
+      bucket: 'RECEIVED',
+      direction: 'INCOMING',
+      status: 'ACCEPTED',
+      updatedAt: 3_000,
+    });
+    expect(
+      markProjectionAccepted({ ...incoming, expiresAt: 2_000 }, 3_000),
+    ).toEqual({ ...incoming, expiresAt: 2_000 });
   });
 
   it('does not manufacture history for a missing revocation', () => {

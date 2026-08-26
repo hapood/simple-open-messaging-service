@@ -1,76 +1,263 @@
-<section class="join-requests">
+<section class="join-workspace">
   <app-page-header
-    [title]="'group.joinRequests' | transloco"
+    [title]="'group.invitesAndRequests' | transloco"
     (back)="close()"
   />
-  <div class="request-list">
-    @if (loading()) {
-      <p class="state">{{ 'common.loading' | transloco }}</p>
-    } @else if (requests().length === 0) {
-      <p class="state">{{ 'group.noJoinRequests' | transloco }}</p>
-    } @else {
-      @for (request of requests(); track request.id) {
-        <article class="request-row">
-          <app-user-avatar
-            class="avatar"
-            [type]="UserAvatarType.OTHER"
-            [name]="request.name"
-            [identityId]="'u' + request.userId"
-            [account]="request.account"
-            [src]="request.avatar"
-            [federatedDomain]="request.domain || null"
-          />
-          <div class="request-copy">
-            <div class="request-name">{{ request.name }}</div>
-            <div class="request-account">
-              {{ request.account }}
-              @if (request.domain) {
-                &#64;{{ request.domain }}
+  <mat-tab-group
+    class="tabs"
+    [selectedIndex]="activeTab()"
+    (selectedIndexChange)="setTab($event)"
+    animationDuration="200ms"
+    preserveContent
+  >
+    <mat-tab [label]="'group.sentInvitations' | transloco">
+      <div class="tab-pane">
+        @if (loadingInvitations() && invitations().length === 0) {
+          <p class="state">{{ 'common.loading' | transloco }}</p>
+        } @else if (invitations().length === 0) {
+          <p class="state">{{ 'group.noSentInvitations' | transloco }}</p>
+        } @else {
+          @for (request of invitations(); track request.id) {
+            <article class="request-row">
+              <app-user-avatar
+                class="avatar"
+                [type]="UserAvatarType.OTHER"
+                [name]="request.name"
+                [identityId]="'u' + request.userId"
+                [account]="request.account"
+                [src]="request.avatar"
+                [federatedDomain]="request.domain || null"
+              />
+              <div class="request-copy">
+                <div class="request-name">{{ request.name }}</div>
+                <div class="request-account">
+                  {{ request.account }}&#64;{{ request.domain || 'local' }}
+                </div>
+              </div>
+              @if (request.status === 'REQUESTED') {
+                <button
+                  mat-button
+                  type="button"
+                  [disabled]="acting().has(request.id)"
+                  (click)="revokeInvitation(request.id)"
+                >
+                  {{
+                    (acting().has(request.id)
+                      ? 'group.revokingInvitation'
+                      : 'group.revokeInvitation'
+                    ) | transloco
+                  }}
+                </button>
+              } @else {
+                <span class="request-status">{{
+                  requestStatusKey(request.status) | transloco
+                }}</span>
               }
-            </div>
-            @if (request.note) {
-              <div class="request-note">{{ request.note }}</div>
+            </article>
+          }
+          @if (invitationsHasMore()) {
+            <button
+              mat-button
+              type="button"
+              class="load-more"
+              [disabled]="loadingInvitations()"
+              (click)="loadMoreRequests('INVITATION')"
+            >
+              {{
+                (loadingInvitations() ? 'common.loading' : 'common.loadMore')
+                  | transloco
+              }}
+            </button>
+          }
+          <p class="history-note">{{ 'group.sevenDayHistory' | transloco }}</p>
+        }
+      </div>
+    </mat-tab>
+
+    <mat-tab [label]="'group.joinRequests' | transloco">
+      <div class="tab-pane">
+        @if (loadingApplications() && applications().length === 0) {
+          <p class="state">{{ 'common.loading' | transloco }}</p>
+        } @else if (applications().length === 0) {
+          <p class="state">{{ 'group.noJoinRequests' | transloco }}</p>
+        } @else {
+          @for (request of applications(); track request.id) {
+            <article class="request-row">
+              <app-user-avatar
+                class="avatar"
+                [type]="UserAvatarType.OTHER"
+                [name]="request.name"
+                [identityId]="'u' + request.userId"
+                [account]="request.account"
+                [src]="request.avatar"
+                [federatedDomain]="request.domain || null"
+              />
+              <div class="request-copy">
+                <div class="request-name">{{ request.name }}</div>
+                <div class="request-account">
+                  {{ request.account }}&#64;{{ request.domain || 'local' }}
+                </div>
+                @if (request.note) {
+                  <div class="request-note">{{ request.note }}</div>
+                }
+              </div>
+              <div class="request-actions">
+                @if (request.status === 'REQUESTED') {
+                  <button
+                    mat-button
+                    type="button"
+                    [disabled]="acting().has(request.id)"
+                    (click)="handleApplication(request.id, false)"
+                  >
+                    {{ 'friend.decline' | transloco }}
+                  </button>
+                  <button
+                    mat-flat-button
+                    color="primary"
+                    type="button"
+                    [disabled]="acting().has(request.id)"
+                    (click)="handleApplication(request.id, true)"
+                  >
+                    {{ 'friend.approve' | transloco }}
+                  </button>
+                } @else {
+                  <span class="request-status">{{
+                    (request.status === 'ACCEPTED'
+                      ? 'group.joinRequestAccepted'
+                      : 'group.joinRequestRejected'
+                    ) | transloco
+                  }}</span>
+                }
+              </div>
+            </article>
+          }
+          @if (applicationsHasMore()) {
+            <button
+              mat-button
+              type="button"
+              class="load-more"
+              [disabled]="loadingApplications()"
+              (click)="loadMoreRequests('APPLICATION')"
+            >
+              {{
+                (loadingApplications() ? 'common.loading' : 'common.loadMore')
+                  | transloco
+              }}
+            </button>
+          }
+          <p class="history-note">{{ 'group.sevenDayHistory' | transloco }}</p>
+        }
+      </div>
+    </mat-tab>
+
+    <mat-tab [label]="'group.inviteMembers' | transloco">
+      <div class="tab-pane candidates-pane">
+        <form class="search-bar" (ngSubmit)="search()" role="search">
+          <input
+            class="search-input"
+            [ngModel]="searchText()"
+            (ngModelChange)="searchText.set($event)"
+            [ngModelOptions]="{ standalone: true }"
+            [placeholder]="'group.searchInviteCandidates' | transloco"
+            autocomplete="off"
+          />
+          <button mat-flat-button color="primary" type="submit">
+            {{ 'common.search' | transloco }}
+          </button>
+        </form>
+        @if (invalidGroupAddress()) {
+          <p class="state compact">
+            {{ 'group.cannotInviteGroup' | transloco }}
+          </p>
+        } @else if (loadingCandidates() && candidates().length === 0) {
+          <p class="state">{{ 'common.loading' | transloco }}</p>
+        } @else if (candidates().length > 0) {
+          <div class="candidate-list">
+            @for (candidate of candidates(); track candidate.userId) {
+              <article class="candidate-row">
+                <app-user-avatar
+                  class="avatar"
+                  [type]="UserAvatarType.OTHER"
+                  [name]="candidate.name"
+                  [identityId]="candidate.userId"
+                  [account]="candidate.account"
+                  [src]="candidate.avatar"
+                  [federatedDomain]="
+                    candidate.domain !== 'local' ? candidate.domain : null
+                  "
+                />
+                <div class="candidate-meta">
+                  <app-user-identity-label
+                    [name]="candidate.name"
+                    [domain]="
+                      candidate.domain !== 'local' ? candidate.domain : null
+                    "
+                  />
+                  <div class="candidate-bio">
+                    {{ candidate.bio || ('friend.noBio' | transloco) }}
+                  </div>
+                </div>
+                <button
+                  mat-button
+                  class="candidate-action"
+                  type="button"
+                  [disabled]="
+                    candidate.state !== 'AVAILABLE' ||
+                    inviting().has(candidate.userId)
+                  "
+                  (click)="invite(candidate)"
+                >
+                  {{ candidateActionKey(candidate) | transloco }}
+                </button>
+              </article>
             }
           </div>
-          <div class="request-actions">
-            @if (request.status === 'REQUESTED') {
-              <button
-                mat-button
-                type="button"
-                [disabled]="acting().has(request.id)"
-                (click)="act(request.id, false)"
-              >
-                {{ 'friend.decline' | transloco }}
-              </button>
-              <button
-                mat-flat-button
-                type="button"
-                color="primary"
-                [disabled]="acting().has(request.id)"
-                (click)="act(request.id, true)"
-              >
-                {{ 'friend.approve' | transloco }}
-              </button>
-            } @else {
-              <span class="request-status">
-                {{
-                  (request.status === 'ACCEPTED'
-                    ? 'group.joinRequestAccepted'
-                    : 'group.joinRequestRejected'
-                  ) | transloco
-                }}
-              </span>
-            }
-          </div>
-        </article>
-      }
-      @if (hasMore()) {
-        <button mat-button type="button" class="load-more" (click)="loadMore()">
-          {{
-            (loadingMore() ? 'common.loading' : 'common.loadMore') | transloco
-          }}
-        </button>
-      }
-    }
-  </div>
+          @if (candidatesHasMore()) {
+            <button
+              mat-button
+              type="button"
+              class="load-more"
+              [disabled]="loadingCandidates()"
+              (click)="loadMoreCandidates()"
+            >
+              {{
+                (loadingCandidates() ? 'common.loading' : 'common.loadMore')
+                  | transloco
+              }}
+            </button>
+          }
+        } @else if (federatedAddress(); as address) {
+          <button
+            class="federated-lookup"
+            type="button"
+            [disabled]="resolvingFederated()"
+            (click)="resolveFederated()"
+          >
+            <span class="lookup-copy">
+              <strong>{{ 'group.queryFederatedFriend' | transloco }}</strong>
+              <span>{{ address.account }}&#64;{{ address.domain }}</span>
+              @if (resolvingFederated()) {
+                <span>{{
+                  'friend.federationStage.' + federationStage() | transloco
+                }}</span>
+              }
+            </span>
+            <span class="lookup-action">{{
+              (resolvingFederated()
+                ? 'common.searching'
+                : 'group.queryFederatedAction'
+              ) | transloco
+            }}</span>
+          </button>
+          @if (resolvingFederated()) {
+            <mat-progress-bar mode="indeterminate" />
+          }
+        } @else {
+          <p class="state compact">
+            {{ 'group.noMatchingFriends' | transloco }}
+          </p>
+        }
+      </div>
+    </mat-tab>
+  </mat-tab-group>
 </section>

@@ -75,6 +75,15 @@
   );
 }
 
+// Retained read-only history has no composer, but the final message still needs breathing room above the
+// viewport edge or system gesture area. Feed the spacing through the measured tail cap so the virtual-scroll
+// height model includes the complete base gap plus safe-area inset.
+.msg-container--friendship-ended {
+  --soms-content-bottom-reserve: calc(
+    16px + var(--soms-safe-bottom, 0px)
+  );
+}
+
 // Scroll viewport (kernel B manual compensation: overflow-anchor:none exclusively,
 // to stop the browser from fighting our scrollTop adjustments).
 .msg-viewport {

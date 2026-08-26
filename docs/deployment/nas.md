@@ -4,7 +4,7 @@ This published guide covers deployment on a NAS or another host inside a home LA
 routes accept private-range clients only, while the web client and federation endpoint can be made
 reachable from the internet through the configured public hostname and port.
 
-The internet-facing server profile under [`deploy/public`](../deploy/public/) is available for
+The internet-facing server profile under [`deploy/public`](../../deploy/public/) is available for
 development, but its deployment guide is still being written and is not part of the initial
 published deployment documentation.
 
@@ -140,13 +140,13 @@ but does not create an administrator.
 Back up `data/` and PostgreSQL before updating. The following application-owned identity files are
 generated on first use and reused on subsequent starts:
 
-| File                       | Purpose                                      |
-| -------------------------- | -------------------------------------------- |
-| `data/soms-s2s-key.json`   | Federation server identity and signing key   |
-| `data/vapid-key.json`      | Web Push application-server identity         |
-| `data/jwt-admin.key`       | Administration-session signing key           |
-| `data/password-pepper.key` | Server-side password hashing secret           |
-| `data/2fa.key`             | Encryption key for stored 2FA material       |
+| File                       | Purpose                                    |
+| -------------------------- | ------------------------------------------ |
+| `data/soms-s2s-key.json`   | Federation server identity and signing key |
+| `data/vapid-key.json`      | Web Push application-server identity       |
+| `data/jwt-admin.key`       | Administration-session signing key         |
+| `data/password-pepper.key` | Server-side password hashing secret        |
+| `data/2fa.key`             | Encryption key for stored 2FA material     |
 
 Treat these files as secrets and restore them together with the matching database snapshot. Losing
 or replacing one changes the corresponding identity or makes protected data and sessions unusable;
@@ -162,6 +162,6 @@ Keep the copied `docker-compose.yml` aligned with the source revision when templ
 preserve secrets in `.env`. `docker compose down` retains PostgreSQL unless `-v` is supplied; never use
 `down -v` for a normal update.
 
-The [federation overview](overview/federation-protocol.md) explains server identity, pinned keys, peer
+The [federation specification](../../spec/README.md) defines server identity, pinned keys, peer
 recognition, synchronization, and recovery. Losing `data/soms-s2s-key.json` changes the server identity
 seen by existing peers and requires an explicit recovery procedure.

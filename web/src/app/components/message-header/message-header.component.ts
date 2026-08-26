@@ -4,16 +4,10 @@ import {
   inject,
   input,
   output,
-  signal,
   ChangeDetectionStrategy,
 } from '@angular/core';
-import { OverlayModule } from '@angular/cdk/overlay';
 import { TranslocoModule } from '@jsverse/transloco';
 import { IconComponent, AppIconType } from '../icon/icon.component';
-import {
-  ChatActionMenuComponent,
-  ChatMenuEntry,
-} from '../chat-action-menu/chat-action-menu.component';
 import { MessageSearchComponent } from '../message-search/message-search.component';
 import { ConversationItem, displayUserName } from '../../services/model';
 import { LayoutService } from '../../services/layout.service';
@@ -23,27 +17,19 @@ import { NavStateMachineService } from '../../services/nav-state.service';
 import { CallAdapterService } from '../../services/call-adapter';
 import { CallEventService } from '../../services/call-event.service';
 import { uuid } from '../../lib/uuid';
-import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter';
 import { ChatContextService } from '../message-thread/chat-context.service';
 
 /**
  * Chat surface header: back (mobile), the thread title (tap → peer-profile / group-info aside), and
- * the top-right MORE button. P2P opens the friend-info aside directly; GROUP keeps an anchored
- * {@link ChatActionMenuComponent}. System settings is NOT here — it lives in the global nav
+ * the top-right MORE button. P2P and GROUP each open their own dedicated information panel directly.
+ * System settings is NOT here — it lives in the global nav
  * (icon-rail / nav-drawer), not a per-thread context menu.
  *
- * Mute / pin apply optimistically to the conversation list (via applyThreadMeta) and the durable state
- * delta re-confirms idempotently. P2P relationship actions are owned exclusively by the friend panel.
+ * Conversation and relationship actions are owned by those panels rather than a header dropdown.
  */
 @Component({
   selector: 'app-message-header',
-  imports: [
-    IconComponent,
-    ChatActionMenuComponent,
-    OverlayModule,
-    TranslocoModule,
-    MessageSearchComponent,
-  ],
+  imports: [IconComponent, TranslocoModule, MessageSearchComponent],
   templateUrl: './message-header.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './message-header.component.scss',
@@ -56,10 +42,8 @@ export class MessageHeaderComponent {
 
   /** Emits a message seq to center the kernel on (the parent owns the kernel + calls scrollToIndex). */
   readonly searchJump = output<number>();
-  readonly shareChatCard = output<ConversationItem>();
   private readonly nav = inject(NavStateMachineService);
   private readonly layout = inject(LayoutService);
-  private readonly threadAdapter = inject(MESSAGE_THREAD_ADAPTER);
   private readonly userService = inject(UserService);
   private readonly convList = inject(ConversationListService);
   private readonly callAdapter = inject(CallAdapterService);
@@ -161,13 +145,14 @@ export class MessageHeaderComponent {
       : (trd.group.description ?? '');
   });
 
-  /** Whether the action menu overlay is open. */
-  readonly menuOpen = signal(false);
-  readonly moreExpanded = computed(() =>
-    this.userMsgTrd()?.type === 'P2P'
-      ? this.nav.asideTop()?.panel === 'profile'
-      : this.menuOpen(),
-  );
+  readonly moreExpanded = computed(() => {
+    const trd = this.userMsgTrd();
+    if (!trd) return false;
+    return (
+      this.nav.asideTop()?.panel ===
+      (trd.type === 'GROUP' ? 'group-info' : 'profile')
+    );
+  });
   readonly hasUnreadJoinRequests = computed(() => {
     const trd = this.userMsgTrd();
     if (trd?.type !== 'GROUP' || !this.chatContext.canAdministerGroup())
@@ -175,126 +160,8 @@ export class MessageHeaderComponent {
     const head = this.userService.groupJoinRequestHeads().get(trd.threadId);
     return !!head && head.readFeedId < head.latestFeedId;
   });
-  /** Group action-menu entries. P2P bypasses this menu and opens friend info directly. */
-  readonly entries = computed<ChatMenuEntry[]>(() => this.normalEntries());
-
-  private normalEntries(): ChatMenuEntry[] {
-    const trd = this.userMsgTrd();
-    if (!trd) return [];
-    const list: ChatMenuEntry[] = [
-      // Label mirrors the panel title it opens: "Contact info" for P2P, "Group Info" for groups — so
-      // the menu item and the popup (aside panel) header read the same (chat.menuViewInfo / group.title).
-      {
-        kind: 'action',
-        key: 'viewInfo',
-        labelKey: 'group.title',
-        icon: AppIconType.EYE,
-      },
-      {
-        kind: 'action',
-        key: 'search',
-        labelKey: 'chat.menuSearch',
-        icon: AppIconType.SEARCH,
-      },
-      {
-        kind: 'action',
-        key: 'shareContact',
-        labelKey: 'contactCard.shareTitle',
-        icon: AppIconType.SHARE,
-      },
-      { kind: 'divider' },
-      {
-        kind: 'action',
-        key: 'mute',
-        labelKey: trd.muted ? 'chat.menuUnmute' : 'chat.menuMute',
-        icon: AppIconType.MUTE,
-      },
-      {
-        kind: 'action',
-        key: 'pin',
-        labelKey: trd.pinned ? 'chat.menuUnpin' : 'chat.menuPin',
-        icon: AppIconType.PIN,
-      },
-    ];
-    if (this.chatContext.canAdministerGroup())
-      list.splice(1, 0, {
-        kind: 'action',
-        key: 'joinRequests',
-        labelKey: 'group.joinRequests',
-        icon: AppIconType.FRIEND_REQUESTS,
-        badge: this.hasUnreadJoinRequests(),
-      });
-    return list;
-  }
-
   toggleMenu(): void {
-    if (this.userMsgTrd()?.type === 'P2P') {
-      this.showThreadInfo();
-      return;
-    }
-    this.menuOpen.set(!this.menuOpen());
-  }
-
-  closeMenu(): void {
-    this.menuOpen.set(false);
-  }
-
-  /** Dispatch a group menu selection, then close the anchored menu. */
-  onSelect(key: string): void {
-    this.menuOpen.set(false);
-    void this.runAction(key);
-  }
-
-  private async runAction(key: string): Promise<void> {
-    const trd = this.userMsgTrd();
-    if (!trd || trd.threadId === undefined) return;
-    const threadId = trd.threadId;
-    switch (key) {
-      case 'viewInfo':
-        this.showThreadInfo();
-        return;
-      case 'search':
-        this.nav.openSearch();
-        return;
-      case 'shareContact':
-        this.shareChatCard.emit(trd);
-        return;
-      case 'joinRequests':
-        this.nav.openAside('group-join-requests');
-        return;
-      case 'mute':
-        this.toggleMute(threadId, trd.muted);
-        return;
-      case 'pin':
-        this.togglePin(threadId, trd.pinned);
-        return;
-    }
-  }
-
-  /** Mute toggle: optimistic patch; the server confirms through the durable state delta. */
-  private toggleMute(threadId: number, muted: boolean): void {
-    const next = !muted;
-    this.convList.applyThreadMeta(threadId, { muted: next });
-    this.threadAdapter.setMuted({ threadId, muted: next }).subscribe({
-      error: () => this.convList.applyThreadMeta(threadId, { muted }), // revert on failure
-    });
-  }
-
-  private togglePin(threadId: number, pinned: boolean): void {
-    const next = !pinned;
-    // pinnedAt is resolved server-side; optimistically set a provisional now so the row re-sorts into
-    // the pinned tier immediately. The state delta overwrites it with the authoritative value.
-    this.convList.applyThreadMeta(threadId, {
-      pinned: next,
-      pinnedAt: next ? Date.now() : null,
-    });
-    this.threadAdapter.setPinned({ threadId, pinned: next }).subscribe({
-      error: () =>
-        this.convList.applyThreadMeta(threadId, {
-          pinned,
-          pinnedAt: pinned ? Date.now() : null,
-        }),
-    });
+    this.showThreadInfo();
   }
 
   /** Mobile back arrow: delegate to the nav stack's `back`, which peels layers in priority order

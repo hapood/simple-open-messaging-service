@@ -78,11 +78,8 @@
       }
       <button
         class="icon-btn"
-        cdkOverlayOrigin
-        #moreTrigger="cdkOverlayOrigin"
         (click)="toggleMenu()"
         [class.active]="moreExpanded()"
-        [attr.aria-haspopup]="userMsgTrd()?.type === 'GROUP' ? 'menu' : null"
         [attr.aria-expanded]="moreExpanded()"
         [attr.aria-label]="'nav.moreAria' | transloco"
       >
@@ -94,15 +91,6 @@
           <span class="more-badge" aria-hidden="true"></span>
         }
       </button>
-      @if (userMsgTrd()?.type === 'GROUP') {
-        <app-chat-action-menu
-          [entries]="entries()"
-          [origin]="moreTrigger"
-          [open]="menuOpen()"
-          (select)="onSelect($event)"
-          (closed)="closeMenu()"
-        />
-      }
     </div>
   }
 </div>

@@ -988,9 +988,7 @@ pub(crate) async fn native_db_page_friend_requests(
                 "SELECT payload_json FROM friend_requests
                  WHERE user_id = ?1
                    AND json_extract(payload_json, '$.bucket') = ?2
-                   AND (json_extract(payload_json, '$.status') = 'REQUESTED'
-                     OR (?2 = 'RECEIVED' AND json_extract(payload_json, '$.status') = 'ACCEPTED')
-                     OR json_extract(payload_json, '$.status') = 'REVOKED')
+                   AND json_extract(payload_json, '$.status') IN ('REQUESTED','ACCEPTED','REVOKED')
                    AND (?3 = 0 OR CAST(json_extract(payload_json, '$.requestedSort') AS INTEGER) < ?4
                      OR (CAST(json_extract(payload_json, '$.requestedSort') AS INTEGER) = ?4
                        AND stable_key < ?5))
@@ -1023,9 +1021,7 @@ pub(crate) async fn native_db_page_friend_requests(
                 "SELECT COUNT(*) FROM friend_requests
                  WHERE user_id = ?1
                    AND json_extract(payload_json, '$.bucket') = ?2
-                   AND (json_extract(payload_json, '$.status') = 'REQUESTED'
-                     OR (?2 = 'RECEIVED' AND json_extract(payload_json, '$.status') = 'ACCEPTED')
-                     OR json_extract(payload_json, '$.status') = 'REVOKED')",
+                   AND json_extract(payload_json, '$.status') IN ('REQUESTED','ACCEPTED','REVOKED')",
                 params![user_id, bucket],
                 |row| row.get::<_, i64>(0),
             )
@@ -1044,6 +1040,25 @@ pub(crate) async fn native_db_page_friend_requests(
     })
     .await
     .map_err(|e| format!("join paged friend-intent read: {e}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn native_db_mark_friend_request_accepted(
+    app: tauri::AppHandle,
+    user_id: i64,
+    key: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut conn = open(&app)?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("begin friend-request projection update: {e}"))?;
+        update_live_request_projection(&tx, user_id, &key, "ACCEPTED", chrono_millis())?;
+        tx.commit()
+            .map_err(|e| format!("commit friend-request projection update: {e}"))
+    })
+    .await
+    .map_err(|e| format!("join friend-request projection update: {e}"))?
 }
 
 #[tauri::command]
@@ -1406,6 +1421,26 @@ pub(crate) async fn native_db_apply_state_feed_page(
                             profile_rev,
                         ],
                     ).map_err(|e| format!("apply profile state: {e}"))?;
+                    tx.execute(
+                        "UPDATE friend_requests SET
+                           payload_json=json_set(payload_json,
+                             '$.group.name', ?4,
+                             '$.group.avatar', ?5,
+                             '$.group.description', ?6,
+                             '$.group.profileRev', ?7)
+                         WHERE user_id=?1
+                           AND json_extract(payload_json, '$.kind')='GROUP'
+                           AND json_extract(payload_json, '$.group.account')=?2
+                           AND json_extract(payload_json, '$.group.domain')=?3
+                           AND COALESCE(json_extract(payload_json, '$.group.profileRev'), 0) <= ?7",
+                        params![
+                            user_id, account, domain,
+                            body.get("displayName").and_then(Value::as_str).unwrap_or(""),
+                            body.get("avatar").and_then(Value::as_str).unwrap_or(""),
+                            body.get("bio").and_then(Value::as_str).unwrap_or(""),
+                            profile_rev,
+                        ],
+                    ).map_err(|e| format!("apply group request profile state: {e}"))?;
                     let mut statement = tx.prepare(
                         "SELECT thread_id,payload_json FROM threads
                          WHERE user_id=?1 AND (

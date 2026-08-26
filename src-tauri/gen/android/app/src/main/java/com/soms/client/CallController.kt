@@ -57,7 +57,7 @@ import java.util.concurrent.TimeUnit
  *
  * Phase 2 scope: AUDIO-only, same-server. Video capture / surface overlay (Phase 4), the connection-status
  * FSM polish (Phase 5), and federated glare (deferred) are not here yet. The offer/answer/ICE exchange +
- * the /calls REST sequence mirror docs/android-calls-client.md §2.
+ * the /calls REST sequence implement the server's offer/answer/ICE contract.
  */
 object CallController {
 
@@ -567,7 +567,7 @@ object CallController {
     }
 
     /** Apply one lifecycle event to the FSM + drive the JS UI via [pushSnapshot]. The incoming/accepted/
-     *  connected/ended/… types mirror docs/android-calls-client.md. ringing (Phase 1 server event) flips
+     *  connected/ended/… types mirror the server lifecycle. ringing (Phase 1 server event) flips
      *  the caller's label Calling…→Ringing…. */
     private fun handleEventFrame(obj: JSONObject) {
         val type = obj.optString("type")

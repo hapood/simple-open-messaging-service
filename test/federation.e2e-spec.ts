@@ -147,6 +147,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         groupUserId: messageThread.groupUserId,
         pullUntil: messageThread.pullUntil,
         account: user.account,
+        name: user.name,
         domain: user.domain,
       })
       .from(messageThread)
@@ -154,7 +155,14 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .where(eq(user.account, account))
       .limit(1);
     return row
-      ? { ...row, groupUser: { account: row.account, domain: row.domain } }
+      ? {
+          ...row,
+          groupUser: {
+            account: row.account,
+            name: row.name,
+            domain: row.domain,
+          },
+        }
       : undefined;
   }
 
@@ -1256,6 +1264,40 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         expect(pendingInvite).toBeDefined();
       },
       { timeout: 5000 },
+    );
+
+    const [publishedGroupProfile, publishedGroupInvite] = await Promise.all([
+      appA.database.query.peerStateFeed.findFirst({
+        where: and(
+          eq(peerStateFeed.peerDomain, DOM_B),
+          eq(peerStateFeed.account, groupAccount),
+          eq(peerStateFeed.eventType, 'PROFILE'),
+        ),
+      }),
+      appA.database.query.peerStateFeed.findFirst({
+        where: and(
+          eq(peerStateFeed.peerDomain, DOM_B),
+          eq(peerStateFeed.account, groupAccount),
+          eq(peerStateFeed.subjectAccount, 'bob'),
+          eq(peerStateFeed.eventType, 'RELATIONSHIP_INTENT'),
+        ),
+      }),
+    ]);
+    expect(publishedGroupProfile?.body).toMatchObject({
+      displayName: 'fed-group',
+    });
+    expect(publishedGroupProfile!.feedId).toBeGreaterThan(
+      publishedGroupInvite!.feedId,
+    );
+    await vi.waitFor(
+      async () => {
+        const hydratedMirror = await findGroupThreadByAccount(
+          appB,
+          groupAccount,
+        );
+        expect(hydratedMirror?.groupUser?.name).toBe('fed-group');
+      },
+      { timeout: 5000, interval: 100 },
     );
 
     // Local acceptance immediately formalizes the candidate's mirror thread. The origin later

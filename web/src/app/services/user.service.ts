@@ -989,6 +989,10 @@ export class UserService {
     );
   }
 
+  markFriendRequestAccepted(key: string): Promise<void> {
+    return this.webdb.markFriendRequestAccepted(key);
+  }
+
   joinGroupRequest(params: { groupId: number }) {
     return this.http.post<StandardResponse<void>>(
       `${apiPrefix()}/group/join-request`,

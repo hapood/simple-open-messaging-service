@@ -24,7 +24,11 @@ object SomsBridge {
      *  thread; evaluateJavascript must be called from the UI thread). Safe to call from any thread;
      *  a no-op if no webview is attached. */
     fun eval(js: String) {
-        mainHandler.post { webView?.evaluateJavascript(js, null) }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            webView?.evaluateJavascript(js, null)
+        } else {
+            mainHandler.post { webView?.evaluateJavascript(js, null) }
+        }
     }
 
     /** JSON-encode a string for safe embedding in evaluateJavascript arguments (escapes quotes and

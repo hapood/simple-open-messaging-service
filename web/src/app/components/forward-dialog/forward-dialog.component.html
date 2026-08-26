@@ -143,24 +143,6 @@
           </div>
         }
       </div>
-      @if (purpose() === 'NATIVE_SHARE') {
-        <div class="forward-dialog__preview-actions">
-          <button
-            type="button"
-            [disabled]="!canRetryGeneration()"
-            (click)="retryGeneration()"
-          >
-            {{ 'linkCard.retry' | transloco }}
-          </button>
-          <button
-            type="button"
-            [disabled]="!sharedText().trim() || shareMode() === 'text'"
-            (click)="useOriginalText()"
-          >
-            {{ 'linkCard.sendText' | transloco }}
-          </button>
-        </div>
-      }
     </section>
 
     <section class="forward-dialog__recipient-pane">

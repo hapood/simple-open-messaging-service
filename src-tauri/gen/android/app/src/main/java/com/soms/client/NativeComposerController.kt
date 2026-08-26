@@ -1018,6 +1018,11 @@ class NativeComposerController(
         imeAnimationRunning = true
     }
 
+    /** Whether Back currently belongs to a native composer surface. Predictive Back samples this at gesture
+     *  start so one gesture has a stable native-or-web owner for its whole lifetime. */
+    fun canHandleBack(): Boolean =
+        (visible && attachmentDrawerOpen) || (visible && keyboardIsOpen())
+
     fun handleBack(): Boolean {
         if (visible && attachmentDrawerOpen) {
             closeAttachmentDrawer()

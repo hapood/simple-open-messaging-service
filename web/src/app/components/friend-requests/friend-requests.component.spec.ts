@@ -506,6 +506,7 @@ describe('FriendRequestsComponent federated search progress', () => {
       friendIntentStateRevision: signal(0),
       friendReqBadge: signal(false),
       acceptInvite: vi.fn().mockReturnValue(acceptResult),
+      markFriendRequestAccepted: vi.fn().mockResolvedValue(undefined),
       listLocalFriendRequests: vi.fn().mockImplementation(
         () =>
           new Promise<FriendIntentPage>((resolve) => {
@@ -595,6 +596,9 @@ describe('FriendRequestsComponent federated search progress', () => {
 
     expect(component.pendingReqList()[0]).toEqual(
       expect.objectContaining({ id: request.id, status: 1 }),
+    );
+    expect(userService.markFriendRequestAccepted).toHaveBeenCalledWith(
+      request.projectionKey,
     );
     expect(acceptResult.observed).toBe(false);
     expect(component.isInviteActionPending(request.id)).toBe(false);

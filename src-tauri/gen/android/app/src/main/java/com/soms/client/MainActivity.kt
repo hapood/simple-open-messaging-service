@@ -32,6 +32,7 @@ import android.util.Log
 import android.util.Rational
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import androidx.activity.BackEventCompat
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.PickVisualMediaRequest
@@ -184,13 +185,41 @@ class MainActivity : TauriActivity() {
         // Seed SomsLog's file sink path before any subsystem logs. Release keeps writes disabled until the
         // persisted/hidden runtime debug gate is enabled by the web layer.
         SomsLog.init(this)
-        // Hardware-back → the web nav state machine (window.__SOMS_BACK__), which peels one layer (pane →
-        // aside → chat → home) and calls SomsBack.exit() when nothing's left. TauriActivity sets
-        // handleBackNavigation=false (WryActivity's webview-history default is off), so we own back here.
+        // System Back → the native composer first, otherwise the WebView. The predictive event stream is
+        // optional: cached/current web bundles without it keep receiving the legacy __SOMS_BACK__ commit.
+        // TauriActivity sets handleBackNavigation=false (WryActivity's web-history default is off), so this
+        // callback is the single Android owner of both button Back and gesture Back.
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            private var gestureStarted = false
+            private var nativeOwnsGesture = false
+
+            override fun handleOnBackStarted(backEvent: BackEventCompat) {
+                gestureStarted = true
+                nativeOwnsGesture = nativeComposer.canHandleBack()
+                if (!nativeOwnsGesture) emitPredictiveBack("start", backEvent)
+            }
+
+            override fun handleOnBackProgressed(backEvent: BackEventCompat) {
+                if (!nativeOwnsGesture) emitPredictiveBack("progress", backEvent)
+            }
+
+            override fun handleOnBackCancelled() {
+                if (!nativeOwnsGesture) emitPredictiveBack("cancel")
+                gestureStarted = false
+                nativeOwnsGesture = false
+            }
+
             override fun handleOnBackPressed() {
-                if (nativeComposer.handleBack()) return
-                SomsBridge.eval("window.__SOMS_BACK__ && window.__SOMS_BACK__();")
+                // Three-button navigation may commit without a predictive start callback. In that case sample
+                // native ownership now; a gesture that did start keeps its frozen owner through commit.
+                val handledNatively = if (gestureStarted) {
+                    nativeOwnsGesture && nativeComposer.handleBack()
+                } else {
+                    nativeComposer.handleBack()
+                }
+                gestureStarted = false
+                nativeOwnsGesture = false
+                if (!handledNatively) emitPredictiveBack("commit")
             }
         })
         // Capture the cold-start deep link (notification tap that launched the process) before the
@@ -237,6 +266,30 @@ class MainActivity : TauriActivity() {
         // Measure system-bar insets (status bar / gesture bar) so the web layer can pad content below
         // them. Fires on the first layout pass (~1 frame after attach) and on every inset change.
         installInsetsListener()
+    }
+
+    /** Publish Android's Predictive Back lifecycle without requiring the current web bundle to implement it.
+     *  Commit falls back to the established zero-argument handler, preserving button/hardware Back behavior
+     *  until Angular opts into the richer event stream. Coordinates stay in physical WebView pixels; progress
+     *  is normalized by Android to 0..1 and swipeEdge uses BackEventCompat's LEFT/RIGHT integer constants. */
+    private fun emitPredictiveBack(kind: String, event: BackEventCompat? = null) {
+        val payload = JSONObject().apply {
+            put("kind", kind)
+            if (event != null) {
+                put("progress", event.progress.toDouble())
+                put("touchX", event.touchX.toDouble())
+                put("touchY", event.touchY.toDouble())
+                put("swipeEdge", event.swipeEdge)
+            }
+        }
+        val fallback = if (kind == "commit") {
+            "else{window.__SOMS_BACK__?.();}"
+        } else {
+            ""
+        }
+        SomsBridge.eval(
+            "if(window.__SOMS_PREDICTIVE_BACK__){window.__SOMS_PREDICTIVE_BACK__($payload);}" + fallback,
+        )
     }
 
     /**

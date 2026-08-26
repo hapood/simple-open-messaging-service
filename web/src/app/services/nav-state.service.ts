@@ -8,10 +8,12 @@ import {
 } from '@angular/core';
 import { UserService } from './user.service';
 
-/** The chat-scoped aside overlay kinds — peer-profile / group-info, opened from within a chat. Single-depth
- *  (no drill-in here); the Settings sub-page has its own {@link NavStateMachineService.settingsCategoryStack}
- *  state, so this type is purely overlay panels. */
-export type AsidePanel = 'profile' | 'group-info' | 'group-join-requests';
+/** The chat-scoped aside overlay kinds — peer-profile / group-info, opened from within a chat. */
+export type AsidePanel =
+  | 'profile'
+  | 'group-info'
+  | 'group-members'
+  | 'group-join-requests';
 
 /** The active mobile home section (`'chats'` = conversation list; `'settings'` / `'profile'` are opened
  *  from the account menu and swap the section content inline). Desktop never reads this — its icon-rail
@@ -25,7 +27,7 @@ export type TopSection = 'chats' | 'settings' | 'profile';
  *  accidentally replay it on another conversation. */
 export type ChatOpenTransition = 'standard' | 'group-joined';
 
-/** One entry on the aside overlay stack. Single-depth — peer-profile / group-info are root-only. */
+/** One entry on the aside overlay stack. */
 export interface AsideEntry {
   readonly id: number;
   readonly panel: AsidePanel;
@@ -76,10 +78,9 @@ let nextAsideId = 0;
  * deep, so browser-back naturally exits on desktop/PWA), and mobile intercepts hardware back natively
  * and calls {@link back}.
  *
- * Layered model (back peels top-down): paneStack → aside → search → chat → settingsCategoryStack → topSection.
- * `settingsCategoryStack` (the Settings drill-down) and `chatThreadId` are mutually exclusive in practice —
- * the settings section is mobile-only and you can't be on it while a chat is open — so their relative order
- * in `back()` never matters. `topSection` is peeled last, before exit.
+ * Layered model (back peels top-down): paneStack → aside → search → settingsCategoryStack →
+ * topSection → chat. A mobile Settings/Profile section may cover a still-mounted chat; Back removes that
+ * visible section first and reveals the preserved chat beneath it.
  *
  * This service owns only the navigation state + the URL mirror. `ConversationListService.openThreadId`
  * remains the chat data-layer signal, coordinated by `HomeShellComponent` (which reads `chatThreadId` —
@@ -102,7 +103,7 @@ export class NavStateMachineService {
   private readonly pendingChatTransition = signal<
     { readonly threadId: number; readonly kind: ChatOpenTransition } | undefined
   >(undefined);
-  /** The aside overlay stack (peer-profile / group-info). Single-depth — 0 or 1 entry. */
+  /** The aside overlay stack (peer-profile / group-info and their drill-down panels). */
   readonly aside = signal<readonly AsideEntry[]>([]);
   /** The topmost aside entry, or `undefined` when the aside is closed. */
   readonly asideTop = computed(() => {
@@ -206,9 +207,16 @@ export class NavStateMachineService {
   }
 
   // --- aside layer ---
-  /** Open a chat-scoped overlay panel (peer-profile / group-info), replacing any current aside. */
+  /** Open a root chat-scoped overlay panel, replacing any current aside hierarchy. */
   openAside(panel: AsidePanel): void {
     this.aside.set([{ id: nextAsideId++, panel }]);
+  }
+  /** Drill into a child of the current aside so Back can restore its parent. */
+  pushAside(panel: AsidePanel): void {
+    this.aside.update((stack) => [
+      ...stack,
+      { id: nextAsideId++, panel },
+    ]);
   }
   /** Close the aside (bound to the desktop scrim click). */
   closeAside(): void {
@@ -316,18 +324,13 @@ export class NavStateMachineService {
       return true;
     }
     if (this.aside().length > 0) {
-      // Close the chat-scoped overlay (single-depth — peeling the one entry empties the stack).
-      this.aside.set([]);
+      this.aside.update((stack) => stack.slice(0, -1));
       return true;
     }
     // In-chat search is the innermost overlay (it lives in the chat header): peel it right before the
     // chat itself, so back exits search before leaving the thread.
     if (this.searchOpen()) {
       this.searchOpen.set(false);
-      return true;
-    }
-    if (this.chatThreadId() !== undefined) {
-      this.closeChat();
       return true;
     }
     // A drilled Settings level peels one stack entry (sub-page → its parent; the root entry popping leaves
@@ -339,6 +342,10 @@ export class NavStateMachineService {
     // A non-chats mobile section peels back to Chats before exit.
     if (this.topSection() !== 'chats') {
       this.setTopSection('chats');
+      return true;
+    }
+    if (this.chatThreadId() !== undefined) {
+      this.closeChat();
       return true;
     }
     return false;

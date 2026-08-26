@@ -40,6 +40,7 @@ import {
   SetRoleGroupDto,
   UpdateGroupDto,
   QueryGroupJoinRequestsDto,
+  QueryGroupInviteCandidatesDto,
   HandleGroupJoinRequestDto,
   ReadGroupJoinRequestsDto,
 } from '../dto/group.dto.js';
@@ -215,6 +216,28 @@ export class GroupController {
       dto.userIds,
     );
     return { invited, skipped };
+  }
+
+  @UseGuards(ThreadAccessGuard, RolesGuard)
+  @Roles(GroupRole.OWNER, GroupRole.ADMIN)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ResourceId<QueryGroupInviteCandidatesDto>('groupId')
+  @Post('group/invite-candidates')
+  @ApiOperation({
+    summary: 'List friends with authoritative group invitation state',
+  })
+  async queryInviteCandidates(
+    @Request() req: FastifyRequest,
+    @Body() dto: QueryGroupInviteCandidatesDto,
+  ) {
+    return this.groupService.queryInviteCandidates(
+      req.threadAccess!.threadId,
+      req.user.userId,
+      dto.afterUserId,
+      dto.search,
+      dto.take ?? 20,
+    );
   }
 
   @UseGuards(ThreadAccessGuard)

@@ -529,6 +529,7 @@ export class FriendRequestsComponent implements OnDestroy {
           // accepted state; the later state-feed delta authoritatively reconciles the retained history
           // row after both federated halves converge. A forced reload here only exposed a spurious loading footer and
           // cannot make peer acknowledgement arrive sooner.
+          void this.userService.markFriendRequestAccepted(req.projectionKey);
           if (this.selectedRequest()?.id === req.id) this.closeRequest();
         } else {
           this.pendingReqList.update((items) =>

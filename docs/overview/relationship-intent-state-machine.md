@@ -134,6 +134,30 @@ For `kind = FRIEND`, an incoming row is shown as a friend request. For `kind = G
 incoming row is shown as a group invitation, and an outgoing row is shown as a join application.
 Only labels and valid user actions differ.
 
+## Identity profile publication
+
+Every non-`REVOKED` federated relationship publication MUST include the author's home-owned
+`PROFILE`, irrespective of whether the author is a user account or a `!`-sigil group identity. The
+publisher writes the compacted `RELATIONSHIP_INTENT` first and the compacted `PROFILE` second. A
+receiver can therefore authorize the dependent profile from the preceding request and hydrate the
+request projection before either side accepts the relationship.
+
+This is one identity rule, not separate friend and group behavior:
+
+| Authored relationship publication | Required identity publication |
+| --------------------------------- | ----------------------------- |
+| User → user `REQUESTED`           | Author user `PROFILE`         |
+| Group → member `REQUESTED`        | Author group `PROFILE`        |
+| Member → group `REQUESTED`        | Author member `PROFILE`       |
+| Any non-`REVOKED` confirmation    | Author identity `PROFILE`     |
+
+`PROFILE` is a dependent snapshot and does not create a relationship or grant authority. A receiver
+may temporarily materialize an address-based placeholder while applying an intent, but it MUST fold
+the following PROFILE into every matching live request projection. `REVOKED` publishes no profile;
+the publisher instead removes the profile projection when no other authorized relationship retains
+it. Reindexing a renewed request MUST also reindex PROFILE so an older compacted profile cannot sort
+before the new request.
+
 ## Group-view request projections
 
 Group management has two backend projections of the same directional request facts:

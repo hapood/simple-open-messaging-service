@@ -183,6 +183,19 @@ declare global {
      *  `SomsBack.exit()` (a Kotlin @JavascriptInterface) so the activity finishes. Absent on browser +
      *  desktop Tauri (browser-back naturally exits the flat history there). See NavStateMachineService. */
     __SOMS_BACK__?: () => void;
+    /** Android Predictive Back lifecycle. Optional until the web navigation layer implements gesture-driven
+     *  previews; native commit falls back to {@link __SOMS_BACK__} while this hook is absent. Coordinates are
+     *  physical WebView pixels, progress is 0..1, and swipeEdge follows Android's LEFT/RIGHT constants. */
+    __SOMS_PREDICTIVE_BACK__?: (event:
+      | {
+          kind: 'start' | 'progress';
+          progress: number;
+          touchX: number;
+          touchY: number;
+          swipeEdge: number;
+        }
+      | { kind: 'cancel' | 'commit' }
+    ) => void;
     /** Kotlin `@JavascriptInterface` exposed by the Android shell: finishes the activity (clean app exit)
      *  when NavStateMachineService.back() has nothing left to peel. Android-only. */
     SomsBack?: { exit: () => void };

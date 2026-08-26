@@ -109,7 +109,9 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 
 ### POST `/user/register` `@Public`
 
-- **Body**: `{ account, password, name? }`. Validation: account `^(?=[\w.-]{1,20}$)(?:[\d_.-]*[a-zA-Z]){3}[\w.-]*$`; password 6–20, allowed charset.
+- **Body**: `{ account, password, name? }`. User accounts are 1–30 ASCII characters,
+  start with an alphanumeric character, may then contain alphanumerics, `.`, `_`, or `-`,
+  and are normalized to lowercase.
 - **Behavior**: creates a `User` (profile columns inline — name defaults to account) with `domain='local'`.
 - **Errors**: `10002` already exists · `10010` registration disabled (admin-provisioned accounts only — the common mode).
 
@@ -119,15 +121,12 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 - `update-profile`: `{ name?, bio? }` (handle cannot change; bumps `profileRev`).
 - `update-avatar`: `multipart/form-data` `file` → `sharp` multi-size webp (32/64/128/256/512, EXIF-oriented, cover-cropped, bomb-guarded); returns `{ avatar }` (the 512px URL).
 
-### POST `/user/query-state/delta` — Client state delta
+### GET `/user/state-feed` — Client state feed
 
-- **Body**: `{ fromRevision: number, toRevision: number }` (revision range). Returns hydrated thread
-  ADD/DELETE, PROFILE/PROFILE_DELETE, complete MEMBER_PROFILE snapshots and compacted CLIENT_STATE entries since the
-  client's `stateRevision` cursor. An ADD is an authoritative replacement snapshot and may represent a
-  group/roster/role change or a per-user thread-setting/read-state change, not only a new conversation.
-  The current user's own avatar/name/bio update is included as PROFILE in this same log.
-  MEMBER_PROFILE carries the source-scoped address, local `userId`, display name, avatar, profile revision,
-  and affected thread ids. Clients persist it locally and never merge source-scoped displays by userId alone.
+- **Query**: `after`, optional `through`, `take`, and `mode=full|delta`. Returns a bounded page of
+  compacted thread, profile, member-profile, request, and client-state changes after the client's
+  cursor. The response carries the current feed end and the next cursor for deterministic catch-up.
+- `GET /user/group-meta` serves a visible group's full or delta roster feed by `threadId` or account.
 
 ### POST `/user/query` · `/user/resolve` · `/user/search`
 
@@ -143,14 +142,13 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 - The result is an untrusted display card plus relationship status. It is never persisted and never creates
   a stub; clients may close it and start another lookup at any time.
 
-### POST `/user/delete-friend` · `/user/block`
+### POST `/user/delete-friend`
 
-- `delete-friend`: `{ threadId }` unfriend (drops the P2P `ThreadParticipant` rows; `20002` if not friends).
-- `block`: `{ userId }` one-way block (creates a `UserBlock`).
+- **Body**: `{ userId }`. Ends the active P2P relationship and its participant rows (`20002` if not friends).
 
-### POST `/user/peer-trust-status` · `/user/thread-info`
+### POST `/user/peer-trust-status`
 
-- Peer-trust status and per-thread details respectively. Federated profiles and group metadata arrive through the server state feed; there is no client-triggered freshness probe.
+- Returns the recognition/trust status for a peer domain. Federated profiles and group metadata arrive through server feeds; there is no client-triggered freshness probe.
 
 ---
 
@@ -179,30 +177,26 @@ the complete transition, pair-folding, and projection-side-effect rules.
   Address; `displayName/avatar` are only the untrusted request-card snapshot returned by the temporary
   lookup. The client is session-authenticated but does not sign this application or its snapshot.
 - The server creates the address-keyed relationship shell needed by the outgoing
-  request, but does not expose a formal human profile. Verified home-owned
-  `PROFILE` state later fills the placeholder's display fields after acceptance.
+  request, but does not expose a foreign `User` row. Every non-revoked request publishes the
+  author's verified home-owned `PROFILE` immediately after `RELATIONSHIP_INTENT`; the receiver uses
+  it to fill the address-keyed request projection before acceptance.
 - The response echoes `{ account, domain }`; no federated request id or foreign User stub is exposed.
 
-### POST `/invite/accept` · `/invite/revoke`
+### POST `/invite/accept` · `/invite/reject` · `/invite/revoke`
 
 - **Body**: local request `{ inviteId }`; pre-stub federated request `{ account, domain }`.
 - `accept`: authors the caller's reverse direction. A P2P thread becomes active only when both friend
   directions are effective in the same transaction; a federated group mirror becomes active only after
   the origin's state snapshot confirms membership.
-- `revoke`: closes only the caller-owned direction. An incoming request has no rejection operation;
-  clients may ignore or locally remove it. Federation convergence is asynchronous
+- `reject` closes an incoming local request; `revoke` closes the caller-owned outgoing direction.
+  Federation convergence is asynchronous
   through the state feed; there are no S2S invite command endpoints.
 - Every pending friend/group request has an absolute expiry of at most seven days. Expired requests are
   ineffective even if an old feed projection remains. REVOKED has no expiry and is retained best-effort.
 
-### POST `/invite/incoming` · `/invite/outgoing`
+### POST `/invite/incoming` · `/invite/outgoing` · `/invite/incoming/read`
 
-- Lists received / sent invites (`{ status?, kind? }` filters).
-
-### POST `/invite/detail`
-
-- `detail`: `{ inviteId }` full invite + resolution to accounts.
-- Reading an incoming request is client-local; each device stores its own seen state revision.
+- Lists received or sent requests. `incoming/read` advances the account's incoming-request read cursor.
 
 ---
 
@@ -213,7 +207,7 @@ the complete transition, pair-folding, and projection-side-effect rules.
 ### POST `/send-message` — Send message
 
 - **Body**: `{ threadId: number, content: string, contentType?: 'PURE_TEXT'|'LINK', clientMessageId?: UUID }`. Media messages use `/send-media` followed by the matching `/upload*` endpoint.
-- **Behavior**: `ThreadAccessGuard` checks membership; allocates a per-thread `seq` atomically from `curSeq`; `MessageFanoutService` pushes `NEW_MESSAGE` (full body) to all participants + fires push for offline recipients. `clientMessageId` is the send-idempotency key (a retry returns the original message).
+- **Behavior**: `ThreadAccessGuard` checks membership; allocates a per-thread `seq` atomically from `curSeq`; `MessageFanoutService` pushes an identity-only `NEW_MESSAGE` wake-up to live participants and notifies offline recipients. `clientMessageId` is the send-idempotency key (a retry returns the original message).
 - **Errors**: `30001` empty · `30002` not approved · `30003` thread not found.
 
 ### POST `/send-media` — Send media (staged)
@@ -297,7 +291,7 @@ the complete transition, pair-folding, and projection-side-effect rules.
 - `GET /calls/ice-servers` — TURN/STUN helper (TURN off by default; misconfig throws).
 - `GET /calls/:callSid/signaling` — caller-side answer fetch.
 
-See [docs/android-calls-client.md](../android-calls-client.md) and [docs/roadmap/android-calls-followup.md](../roadmap/android-calls-followup.md).
+See the [Android calls client contract](../platform/android/calls.md).
 
 ---
 
@@ -306,8 +300,11 @@ See [docs/android-calls-client.md](../android-calls-client.md) and [docs/roadmap
 > Controllers: [device.controller.ts](../../src/controller/device.controller.ts) · [notification.controller.ts](../../src/controller/notification.controller.ts)
 
 - `POST /devices/register` / `DELETE /devices/register/:token` — register/unregister a push token (FCM registration token for ANDROID, Web Push subscription for WEB; a device's token is re-owned to the current user on re-register).
+- `POST /devices/fcm-probes`, `GET /devices/fcm-probes/:probeId`, and `POST /devices/fcm-probes/:probeId/ack` — run and observe a one-off Android FCM delivery probe.
 - `GET /notifications/vapid-key` (`@Public`) — Web Push VAPID public key.
-- `POST /notifications/missed-summary` · `/notifications/missed` · `/notifications/action` — missed-notification catch-up (identity-only signals; the client fetches bodies) + notification action dispatch. Missed notifications carry a server-authored descriptor.
+- `GET /thread-sync/catch-up` · `/thread-sync/tombstones` — bounded message-thread and deletion catch-up feeds.
+- `POST /notification-feed/query` — build away-notification descriptors from changed threads.
+- `POST /notifications/action` — dispatch a notification action such as mark-read or inline reply.
 
 ---
 

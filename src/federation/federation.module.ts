@@ -5,6 +5,8 @@ import { SignatureService } from './signature.service.js';
 import { DiscoveryService } from './discovery.service.js';
 import { S2sVerifyService } from './s2s-verify.service.js';
 import { FederationService } from './federation.service.js';
+import { FederationGroupMembershipService } from './federation-group-membership.service.js';
+import { FederationGroupRequestProjectionService } from './federation-group-request-projection.service.js';
 import { FederationReconnectService } from './federation-reconnect.service.js';
 import { S2sController } from './s2s.controller.js';
 import { S2sRecognitionController } from './s2s-recognition.controller.js';
@@ -65,6 +67,8 @@ import { GroupMetaFeedService } from './group-meta-feed.service.js';
     S2sVerifyService,
     S2sSignatureGuard,
     FederationService,
+    FederationGroupMembershipService,
+    FederationGroupRequestProjectionService,
     FederationReconnectService,
     FederationCursorService,
     FederationRecognitionService,

@@ -10,7 +10,7 @@ import {
 } from './call-adapter';
 
 /**
- * The payload shape of a CALL_EVENT SSE frame (docs/android-calls-client.md §1). `type` is the lifecycle
+ * The payload shape of a CALL_EVENT SSE frame. `type` is the lifecycle
  * (incoming | accepted | connected | declined | cancelled | ended | missed | ringing); the rest are
  * type-specific (only `incoming` carries the caller's display name/avatar).
  */

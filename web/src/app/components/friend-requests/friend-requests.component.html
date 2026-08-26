@@ -171,7 +171,9 @@
                         [identityId]="userIdentity(u)"
                         [account]="u.account"
                         [src]="u.avatar"
-                        [federatedDomain]="u.domain !== 'local' ? u.domain : null"
+                        [federatedDomain]="
+                          u.domain !== 'local' ? u.domain : null
+                        "
                       ></app-user-avatar>
                     </div>
                     <div class="result-meta">
@@ -342,12 +344,13 @@
           <app-user-identity-label
             [name]="req.name ?? ('friend.invalidUser' | transloco)"
             [domain]="
-              req.kind === 'FRIEND' && req.domain !== 'local' ? req.domain : null
+              req.kind === 'GROUP'
+                ? req.sourceLabel
+                : req.domain !== 'local'
+                  ? req.domain
+                  : null
             "
           />
-          @if (req.kind === 'GROUP') {
-            <div class="user-account">{{ req.sourceLabel }}</div>
-          }
           <div class="detail-date">
             {{ relativeDate(req.date) }} · {{ absoluteDate(req.date) }}
           </div>

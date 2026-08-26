@@ -162,7 +162,6 @@ import {
 import { jumpToMessage } from './message-jump';
 import type { ForwardMessageItem } from '../forward-message-card/forward-message-card.component';
 import type { ForwardDialogResult } from '../forward-dialog/forward-dialog.component';
-import { ContactCardShareService } from '../../services/contact-card-share.service';
 
 type PreparedWebAttachment =
   | {
@@ -304,7 +303,6 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly nativeUploads = inject(NativeUploadService);
   private readonly attachmentUploads = inject(AttachmentUploadQueueService);
   private readonly route = inject(RouteService);
-  private readonly contactCardShare = inject(ContactCardShareService);
   readonly chatboxDialogOpen = computed(() => {
     const threadId = this.threadId();
     return this.route
@@ -1664,10 +1662,6 @@ export class MessageThreadComponent implements OnDestroy {
       .map((id) => this.selectedMessageItems.get(id))
       .filter((item): item is CbItem<ChatItemData> => item !== undefined);
     if (items.length) this.openForwardDialog(items, 'HISTORY');
-  }
-
-  openChatCardShareDialog(chat: ConversationItem): void {
-    this.contactCardShare.open(chat);
   }
 
   private openForwardDialog(

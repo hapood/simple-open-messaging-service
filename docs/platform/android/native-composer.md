@@ -11,7 +11,7 @@ Material interaction and surface language: clear elevation, Material ripple,
 48 dp touch targets, restrained corner radii, and theme-derived colors rather
 than translucent iOS-style materials.
 
-![Android native composer concept](./assets/android-native-composer-concept-v1.png)
+![Android native composer concept](../../design/assets/android-native-composer-concept-v1.png)
 
 The concept image communicates hierarchy and state, not pixel-exact Android
 widgets. The implementation dimensions below are authoritative.
@@ -74,15 +74,15 @@ cross the WebView or JavaScript bridge.
 
 Use Material theme attributes rather than hard-coded light colors:
 
-| Element | Material role |
-| --- | --- |
-| Composer surface | `surfaceContainerHigh` |
-| Input field | `surfaceContainerLowest` |
-| Primary send button | `primaryContainer` / `onPrimaryContainer` |
-| Idle icon buttons | `onSurfaceVariant` |
-| Placeholder and timer secondary text | `onSurfaceVariant` |
-| Recording indicator | `error` |
-| Divider and input outline | `outlineVariant` |
+| Element                              | Material role                             |
+| ------------------------------------ | ----------------------------------------- |
+| Composer surface                     | `surfaceContainerHigh`                    |
+| Input field                          | `surfaceContainerLowest`                  |
+| Primary send button                  | `primaryContainer` / `onPrimaryContainer` |
+| Idle icon buttons                    | `onSurfaceVariant`                        |
+| Placeholder and timer secondary text | `onSurfaceVariant`                        |
+| Recording indicator                  | `error`                                   |
+| Divider and input outline            | `outlineVariant`                          |
 
 Dark theme uses the same roles. Avoid blur, glass, gradients, permanent borders
 around every icon, and oversized shadows.

@@ -121,9 +121,6 @@ export class ForwardDialogComponent {
     if (!content) return null;
     return this.previewLinkMessage(content);
   });
-  readonly canRetryGeneration = computed(
-    () => this.generationStatus() === 'failed' && Boolean(this.sharedUrl()),
-  );
   readonly canConfirm = computed(() => {
     if (this.selectedCount() === 0) return false;
     if (this.purpose() !== 'NATIVE_SHARE') return true;
@@ -249,16 +246,6 @@ export class ForwardDialogComponent {
           }
         : {}),
     } satisfies ForwardDialogResult);
-  }
-
-  retryGeneration(): void {
-    const url = this.sharedUrl();
-    if (!url || !this.canRetryGeneration()) return;
-    void this.beginGeneration(url, this.generationId() ?? undefined);
-  }
-
-  useOriginalText(): void {
-    if (this.sharedText().trim()) this.shareMode.set('text');
   }
 
   private async beginGeneration(

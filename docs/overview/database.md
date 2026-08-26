@@ -23,8 +23,8 @@ SOMS uses PostgreSQL (+ TimescaleDB) through Drizzle ORM and `node-postgres`. Th
    └──┬───────┬───────┬────┬─────────┬──────────────────────┬──────────────┐
       │ 1:N   │ 1:N   │1:N │1:N      │ 1:N                  │ 1:N          │ 1:1
       ▼       ▼       ▼    ▼         ▼                      ▼              ▼
- SessionToken PushToken LoginCode ThreadParticipant  ThreadRevision   RelationshipIntent
-                                  (user↔thread)       (state log)      (directed facts)
+ SessionToken PushToken LoginCode ThreadParticipant  ClientStateFeed  RelationshipIntent
+                                  (user↔thread)       (state feed)     (directed facts)
                                           │
                                           ▼ N:1
                                   ┌─────────────────┐  1:1   ┌────────┐
@@ -37,7 +37,7 @@ SOMS uses PostgreSQL (+ TimescaleDB) through Drizzle ORM and `node-postgres`. Th
                   ▼                    ▼
    ┌──────────────────────┐    ┌──────────────────┐
    │ PendingMedia(staging)│    │     Message      │ seq·originSeq·clientMessageId
-   └──────────────────────┘    │ contentType incl │──────── MediaMessage ──▶ MediaAsset (sha256 CAS)
+   └──────────────────────┘    │ contentType incl │──────── MessageAsset ──▶ MediaAsset (sha256 CAS)
                                │  CALL/LINK/AUDIO │
                                └──────────────────┘
 
@@ -52,7 +52,7 @@ SOMS uses PostgreSQL (+ TimescaleDB) through Drizzle ORM and `node-postgres`. Th
 | Field                                   | Type          | Description                                                                       |
 | --------------------------------------- | ------------- | --------------------------------------------------------------------------------- |
 | `id`                                    | Int (PK)      |                                                                                   |
-| `account`                               | VarChar(31)   | user = `letters+dot`; group = `!`+ULID; case-insensitive on write                 |
+| `account`                               | VarChar(31)   | normalized SOMFP user account or `!`+opaque group id                              |
 | `hashPwd`                               | VarChar(127)? | argon2 hash; **null = OTP/QR-only account** (no password)                         |
 | `mustChangePassword`                    | Boolean       | true = admin-generated INITIAL password the user must rotate (one-time bootstrap) |
 | `name` / `avatar` / `bio`               | String        | display name / avatar path / bio — **folded in** from the former `UserExtra`      |
@@ -159,17 +159,19 @@ coordinate, retention policy, and API response shape.
 
 Identity (name/avatar/bio) lives on the group's `!`-User row; this table holds group lifecycle and federation-consumer state.
 
-| Field                       | Type                  | Description                                                               |
-| --------------------------- | --------------------- | ------------------------------------------------------------------------- |
-| `groupUserId`               | Int (unique, FK→User) | the `!`-User identity row; 1:1 with the GROUP thread                      |
-| `ownerId`                   | Int                   | denormalized owner (fast lookup)                                          |
-| `remoteGroupMetaFeedId`     | BigInt?               | last consumed Group Meta Feed ID for a federated mirror                   |
-| `dissolvedAt`               | Timestamp?            | terminal dissolve marker; null while the group remains active             |
-| `createdAt` / `updatedAt`   | Timestamp             | lifecycle timestamps                                                       |
+| Field                     | Type                  | Description                                                   |
+| ------------------------- | --------------------- | ------------------------------------------------------------- |
+| `groupUserId`             | Int (unique, FK→User) | the `!`-User identity row; 1:1 with the GROUP thread          |
+| `ownerId`                 | Int                   | denormalized owner (fast lookup)                              |
+| `remoteGroupMetaFeedId`   | BigInt?               | last consumed Group Meta Feed ID for a federated mirror       |
+| `dissolvedAt`             | Timestamp?            | terminal dissolve marker; null while the group remains active |
+| `createdAt` / `updatedAt` | Timestamp             | lifecycle timestamps                                          |
 
-### ThreadRevision / ProfileStateRevision — Client state log
+### ClientStateFeed — Client state feed
 
-Thread ADD/DELETE, PROFILE and other client-state entries share `User.threadRevision`, exposed on the wire as `stateRevision`. The client pulls `query-state(from,to]` and applies the fixed range atomically.
+Thread, profile, member-profile, request, and client-state entries use a compacted
+per-user feed. The client reads `GET /user/state-feed` after its own cursor and
+applies each returned page and cursor atomically.
 
 ### UserBlock — One-way block
 
@@ -191,10 +193,10 @@ Independent of friendship (survives unfriend; applies to strangers too). `@@uniq
 
 Unique: `@@unique([threadId, seq])` (seq identity + keyset cursor), `@@unique([threadId, creator, originSeq])` (sender seq-allocation race + receiver pull dedup).
 
-### MediaAsset / MediaMessage / PendingMedia — Media
+### MediaAsset / MessageAsset / PendingMedia — Media
 
-- **MediaAsset** — content-addressed asset: `digest` = sha256 of the raw bytes, stored once at `data/cas/<dd>/<dd>/<digest>` with no filename or extension. It stores `bytes` and `PENDING | READY | DELETING | DELETED`; GC retains `DELETED` tombstones. Liveness is derived from non-deleted ordinary messages and active staging, never a cached refcount; forward bundles deliberately do not keep blobs alive.
-- **MediaMessage** — per-object authz index (1:1 with a media-bearing Message): `(messageId, threadId, digest)`. The `/uploads/cas/*` gate answers "may this user read this READY digest?" with one indexed EXISTS joined to ThreadParticipant.
+- **MediaAsset** — verified content-addressed blob: `digest` = sha256 of the raw bytes, stored once at `data/cas/<dd>/<dd>/<digest>` with no filename or extension. It stores `bytes` and `isDeleted`; in-flight state lives in `FileSyncProgress`. Liveness is derived from reachable messages and active staging, never a cached refcount.
+- **MessageAsset** — per-object authorization index for a media-bearing message: `(messageId, threadId, digest)`. The `/uploads/cas/*` gate checks the caller's current access to a message referencing the live digest.
 - **PendingMedia** — in-flight staging: a media message is NOT committed as a `Message` until its bytes are confirmed. LOCAL: `clientMessageId` idempotency + display meta (CAS url injected at promote). FEDERATED: pulled content + `originSeq` dedup; a text message quoting staged media is also retained here with `dependsOnOriginSeq` and zero files until the target receives a local `Message.seq`. `status` pending|failed. Created BEFORE the file write so a crash always leaves an attributable record for the GC. Admin clean, tombstone handling, and stale GC recursively delete dependent quote stages when the target is abandoned.
 
 ### Federation protocol-to-local mappings

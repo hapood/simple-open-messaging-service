@@ -201,20 +201,6 @@
   }
 }
 
-.cfg-toast {
-  position: fixed;
-  left: 50%;
-  bottom: calc(var(--soms-safe-bottom, 0px) + 64px);
-  transform: translateX(-50%);
-  padding: 10px 16px;
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.8);
-  color: #fff;
-  font-size: 13px;
-  line-height: 18px;
-  z-index: 50;
-}
-
 @media (max-width: 480px) {
   .cfg-viewport {
     padding: 16px;
@@ -230,12 +216,6 @@
 
   .cfg-viewport--dialog {
     padding: 0;
-  }
-}
-
-.cfg-viewport.auth-keyboard-open {
-  .cfg-toast {
-    bottom: calc(var(--auth-keyboard-inset, 0px) + 16px);
   }
 }
 
