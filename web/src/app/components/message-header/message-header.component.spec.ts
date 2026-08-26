@@ -38,6 +38,7 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
   let items: ReturnType<typeof signal<ConversationItem[]>>;
   let openThreadId: ReturnType<typeof signal<number | undefined>>;
   let openAside: ReturnType<typeof vi.fn>;
+  let asideTop: ReturnType<typeof signal<{ panel: 'profile' } | undefined>>;
   let canAdministerGroup: ReturnType<typeof signal<boolean>>;
 
   /** Minimal ConversationItem — only threadId + unreadCount are exercised by the badge sum. */
@@ -57,6 +58,7 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
     items = signal<ConversationItem[]>([]);
     openThreadId = signal<number | undefined>(undefined);
     openAside = vi.fn();
+    asideTop = signal<{ panel: 'profile' } | undefined>(undefined);
     canAdministerGroup = signal(false);
 
     TestBed.configureTestingModule({
@@ -79,7 +81,7 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
         { provide: ConversationListService, useValue: { items, openThreadId } },
         {
           provide: NavStateMachineService,
-          useValue: { searchOpen: signal(false), openAside },
+          useValue: { searchOpen: signal(false), openAside, asideTop },
         },
         {
           provide: LayoutService,
@@ -152,17 +154,29 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
     expect(comp.otherUnreadCount()).toBe(3); // -5 → 0, plus 3
   });
 
-  it('offers contact sharing in the More menu and emits the current chat', () => {
+  it('opens friend info directly from More for a P2P conversation', () => {
     const chat = item(7, 0);
+    fixture.componentRef.setInput('userMsgTrd', chat);
+
+    comp.toggleMenu();
+
+    expect(openAside).toHaveBeenCalledWith('profile');
+    expect(comp.menuOpen()).toBe(false);
+  });
+
+  it('keeps contact sharing in the group More menu', () => {
+    const chat = createGroupConversation(8, {
+      id: 80,
+      account: 'group-80',
+      name: 'Group 80',
+      ownerId: 1,
+    });
     fixture.componentRef.setInput('userMsgTrd', chat);
     const shared: ConversationItem[] = [];
     comp.shareChatCard.subscribe((value) => shared.push(value));
 
-    expect(comp.entries()).toContainEqual(
-      expect.objectContaining({ kind: 'action', key: 'shareContact' }),
-    );
-
     comp.onSelect('shareContact');
+
     expect(shared).toEqual([chat]);
   });
 

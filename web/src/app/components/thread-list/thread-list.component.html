@@ -115,7 +115,12 @@
                     class="join-request-badge"
                     [title]="'group.joinRequests' | transloco"
                     aria-hidden="true"
-                  ></span>
+                  >
+                    <app-icon
+                      [type]="AppIconType.GROUP_JOIN_REQUESTS"
+                      [style]="{ width: '14px', height: '14px' }"
+                    ></app-icon>
+                  </span>
                 }
                 @if (
                   thread.unreadCount > 0 && thread.mentionUnread.length > 0

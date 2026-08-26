@@ -150,7 +150,7 @@ fn friend_body(direction: &str, status: &str, expires_at: Option<i64>) -> serde_
         "expiresAt": expires_at,
         "peer": {
             "id": 2, "account": "peer", "name": "Peer", "avatar": "", "bio": "",
-            "domain": "peer.test", "isForeigner": true
+            "domain": "peer.test"
         }
     })
 }

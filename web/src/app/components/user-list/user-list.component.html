@@ -14,7 +14,7 @@
           [account]="thread.peerUser.account"
           [src]="thread.peerUser.avatar"
           [federatedDomain]="
-            thread.peerUser.isForeigner ? thread.peerUser.domain : null
+            thread.peerUser.domain !== 'local' ? thread.peerUser.domain : null
           "
         ></app-user-avatar>
         @if (thread.selected === true) {

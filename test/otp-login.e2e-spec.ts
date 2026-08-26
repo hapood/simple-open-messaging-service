@@ -72,7 +72,6 @@ describe('OTP login e2e', () => {
         name: account,
         hashPwd: null,
         mustChangePassword: false,
-        isForeigner: false,
         updatedAt: new Date(),
       })
       .returning({ id: user.id });

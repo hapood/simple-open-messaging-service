@@ -7,7 +7,6 @@ import {
   isDevMode,
 } from '@angular/core';
 import { Subject } from 'rxjs';
-import type { Subscription } from 'rxjs';
 import { AuthService } from './auth.service';
 import { apiOrigin, isAndroidNative, isTauri } from './runtime';
 import {
@@ -20,7 +19,6 @@ import { WorkerSseTransport } from './worker-sse.transport';
 import { NativeEventTransport } from './native-event.transport';
 import { RustChannelSseTransport } from './rust-channel-sse.transport';
 import { isFullConsoleLoggingEnabled } from './log-buffer';
-import { ThreadDeletionLockService } from './thread-deletion-lock.service';
 
 // Re-exported for downstream consumers (HttpItemSource, ConnectionBanner, …) that
 // already import these from here — the canonical home is now realtime-transport.ts.
@@ -77,20 +75,7 @@ export class WebsocketService implements OnDestroy {
    *  hang the threadlist forever. */
   private static readonly HELLO_TIMEOUT_MS = 10_000;
   private helloTimeout?: ReturnType<typeof setTimeout>;
-  private deferredStateFeedUpdate?: StandardMessage;
-  private readonly deletionReleaseSub: Subscription;
-
-  constructor(
-    private authService: AuthService,
-    private readonly deletionLock: ThreadDeletionLockService,
-  ) {
-    this.deletionReleaseSub = this.deletionLock.released$.subscribe(() => {
-      if (!this.deletionLock.any && this.deferredStateFeedUpdate) {
-        const update = this.deferredStateFeedUpdate;
-        this.deferredStateFeedUpdate = undefined;
-        this.eventSubject.next(update);
-      }
-    });
+  constructor(private authService: AuthService) {
     // The sink funnels every transport's outputs onto this facade's single subjects/signal (+ the dev
     // trace + the FORCE_LOGOUT re-login side-effect).
     const sink: RealtimeSink = {
@@ -121,28 +106,6 @@ export class WebsocketService implements OnDestroy {
             this.transport.forceReconnect();
             return;
           }
-        }
-        const threadId = (m.data as { threadId?: number } | undefined)
-          ?.threadId;
-        if (threadId !== undefined && this.deletionLock.has(threadId)) return;
-        if (m.event === 'STATE_FEED_UPDATED' && this.deletionLock.any) {
-          const nextRevision = (m.data as { feedId?: number } | undefined)
-            ?.feedId;
-          const deferredFeedId = (
-            this.deferredStateFeedUpdate?.data as
-              | { feedId?: number }
-              | undefined
-          )?.feedId;
-          // A bridge/reconnect may deliver an older frame after a newer one. Keep the highest watermark so
-          // releasing the deletion lock can never regress the thread-list's deferred catch-up target.
-          if (
-            this.deferredStateFeedUpdate === undefined ||
-            deferredFeedId === undefined ||
-            (nextRevision !== undefined && nextRevision > deferredFeedId)
-          ) {
-            this.deferredStateFeedUpdate = m;
-          }
-          return;
         }
         // Dev-only: trace every realtime business event, so signal reception is visible under `ng serve`.
         // Gated by isDevMode() → stripped in prod AOT.
@@ -304,7 +267,6 @@ export class WebsocketService implements OnDestroy {
   }
 
   ngOnDestroy(): void {
-    this.deletionReleaseSub.unsubscribe();
     this.clearReconnectIn();
     this.clearHelloTimeout();
   }

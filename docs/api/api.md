@@ -110,7 +110,7 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 ### POST `/user/register` `@Public`
 
 - **Body**: `{ account, password, name? }`. Validation: account `^(?=[\w.-]{1,20}$)(?:[\d_.-]*[a-zA-Z]){3}[\w.-]*$`; password 6–20, allowed charset.
-- **Behavior**: creates a `User` (profile columns inline — name defaults to account); `domain='local'`, `isForeigner=false`.
+- **Behavior**: creates a `User` (profile columns inline — name defaults to account) with `domain='local'`.
 - **Errors**: `10002` already exists · `10010` registration disabled (admin-provisioned accounts only — the common mode).
 
 ### POST `/user/my-profile` · `/user/update-profile` · `/user/update-avatar`

@@ -101,7 +101,7 @@ export class UserService {
         JOIN "ThreadParticipant" peer ON peer."threadId" = mine."threadId"
         JOIN "User" consumer ON consumer.id = peer."userId"
         WHERE mine."userId" = ${userId}
-          AND consumer."isForeigner" = false
+          AND consumer.domain = 'local'
       `);
       const consumers = (
         await Promise.all(
@@ -154,7 +154,7 @@ export class UserService {
   }
 
   /** Local identity discovery: case-insensitive substring match on account OR name. Local, non-deleted
-   *  users and groups only (isForeigner:false) — federated stubs are not discoverable here. Returns { list, total }
+   *  users and groups only (domain='local') — federated stubs are not discoverable here. Returns { list, total }
    *  for pagination. The caller (POST /user/search) caps `take` as an abuse guardrail. */
   async searchUsers(
     q: string,
@@ -165,7 +165,7 @@ export class UserService {
   }> {
     const where = and(
       eq(user.isDeleted, false),
-      eq(user.isForeigner, false),
+      eq(user.domain, 'local'),
       or(ilike(user.account, `%${q}%`), ilike(user.name, `%${q}%`)),
     );
     const [list, total] = await Promise.all([
@@ -203,7 +203,6 @@ export class UserService {
         .insert(user)
         .values({
           account,
-          isForeigner: false,
           hashPwd: params.hashPwd ?? null, // null for OTP/QR-only accounts (no password)
           // Display name is now a required registration input (no longer defaulted to account).
           name: params.name,
@@ -233,7 +232,6 @@ const publicUserColumns = {
   name: user.name,
   avatar: user.avatar,
   bio: user.bio,
-  isForeigner: user.isForeigner,
   isGroup: user.isGroup,
   domain: user.domain,
   createdAt: user.createdAt,

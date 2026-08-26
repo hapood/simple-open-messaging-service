@@ -51,7 +51,6 @@ async function createThread(database: Database, userId: number) {
       account: `peer-${randomUUID().slice(0, 8)}`,
       name: 'Peer',
       hashPwd: 'x',
-      isForeigner: false,
       updatedAt: now,
     })
     .returning({ id: user.id });

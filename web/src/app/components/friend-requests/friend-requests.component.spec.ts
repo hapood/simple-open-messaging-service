@@ -72,7 +72,6 @@ describe('FriendRequestsComponent federated search progress', () => {
             avatar: '',
             bio: '',
             domain: 'local',
-            isForeigner: false,
           },
         },
       ],
@@ -97,7 +96,6 @@ describe('FriendRequestsComponent federated search progress', () => {
       id: 7,
       account: 'alice',
       name: 'Alice',
-      isForeigner: false,
     } as User;
     TestBed.configureTestingModule({
       imports: [FriendRequestsComponent],
@@ -200,7 +198,6 @@ describe('FriendRequestsComponent federated search progress', () => {
       id: 7,
       account: 'alice',
       name: 'Alice',
-      isForeigner: false,
     } as User;
     const userService = {
       sessionProfile: () => ({ id: 1 }),
@@ -253,7 +250,6 @@ describe('FriendRequestsComponent federated search progress', () => {
       id: 1,
       account: 'me',
       name: 'Me',
-      isForeigner: false,
     } as User;
     const userService = {
       sessionProfile: () => ({ id: self.id }),
@@ -298,7 +294,6 @@ describe('FriendRequestsComponent federated search progress', () => {
       account: 'bob',
       name: 'Bob',
       domain: 'peer.test',
-      isForeigner: true,
     } as User;
     const userService = {
       sessionProfile: () => ({ id: 1 }),
@@ -351,7 +346,6 @@ describe('FriendRequestsComponent federated search progress', () => {
       account: 'alice',
       name: 'Alice',
       domain: 'local',
-      isForeigner: false,
     } as User;
     const userService = {
       sessionProfile: () => ({ id: 1 }),
@@ -395,7 +389,6 @@ describe('FriendRequestsComponent federated search progress', () => {
       account: 'me',
       name: 'Me',
       domain: 'local',
-      isForeigner: false,
     } as User;
     const userService = {
       sessionProfile: () => ({ id: self.id }),
@@ -583,7 +576,6 @@ describe('FriendRequestsComponent federated search progress', () => {
             avatar: '',
             bio: '',
             domain: 'local',
-            isForeigner: false,
           },
         },
       ],

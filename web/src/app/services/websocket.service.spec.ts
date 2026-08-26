@@ -7,7 +7,6 @@ import {
 import { WebsocketService } from './websocket.service';
 import type { StandardMessage } from './realtime-transport';
 import { AuthService } from './auth.service';
-import { ThreadDeletionLockService } from './thread-deletion-lock.service';
 
 /**
  * WebsocketService unit tests — the countdown-clock + state plumbing of the realtime facade.
@@ -60,7 +59,6 @@ function flush(ms = 0): Promise<void> {
 
 describe('WebsocketService (reconnect countdown clock)', () => {
   let ws: WebsocketService;
-  let deletionLock: ThreadDeletionLockService;
 
   beforeEach(() => {
     realWorker = globalThis.Worker;
@@ -77,7 +75,6 @@ describe('WebsocketService (reconnect countdown clock)', () => {
       ],
     });
     ws = TestBed.inject(WebsocketService);
-    deletionLock = TestBed.inject(ThreadDeletionLockService);
     // Flush the ctor's apiOrigin effect's first (no-op) run so it can't fire during a test.
     TestBed.inject(ApplicationRef).tick();
   });
@@ -137,7 +134,7 @@ describe('WebsocketService (reconnect countdown clock)', () => {
     expect(ws.reconnectIn()).toBeNull();
   });
 
-  it('defers state-feed wakes behind a deletion lock and releases only the highest feed id', () => {
+  it('forwards state-feed wakes immediately', () => {
     const received: number[] = [];
     ws.eventSubject.subscribe((message) =>
       received.push(
@@ -148,8 +145,6 @@ describe('WebsocketService (reconnect countdown clock)', () => {
         ).feedId,
       ),
     );
-    deletionLock.begin(7);
-
     for (const feedId of [6, 9, 8]) {
       liveWorker!.emit({
         type: 'event',
@@ -161,40 +156,7 @@ describe('WebsocketService (reconnect countdown clock)', () => {
         },
       });
     }
-    expect(received).toEqual([]);
-
-    deletionLock.end(7);
-
-    expect(received).toEqual([9]);
-  });
-
-  it('keeps a deferred revision until every deletion lock has been released', () => {
-    const received: number[] = [];
-    ws.eventSubject.subscribe((message) =>
-      received.push(
-        (
-          message.data as {
-            feedId: number;
-          }
-        ).feedId,
-      ),
-    );
-    deletionLock.begin(7);
-    deletionLock.begin(8);
-    liveWorker!.emit({
-      type: 'event',
-      payload: {
-        event: 'STATE_FEED_UPDATED',
-        status: 0,
-        message: '',
-        data: { feedId: 9 },
-      },
-    });
-
-    deletionLock.end(7);
-    expect(received).toEqual([]);
-    deletionLock.end(8);
-    expect(received).toEqual([9]);
+    expect(received).toEqual([6, 9, 8]);
   });
 
   it('rejects HELLO without the mandatory stateFeedEndId', () => {

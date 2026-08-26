@@ -875,7 +875,7 @@ describe('FederationService quote coordinates', () => {
         findMany: vi
           .fn()
           .mockResolvedValue([
-            { id: 22, domain: 'peer.example', isForeigner: true },
+            { id: 22, domain: 'peer.example' },
           ]),
       },
       message: { findUnique: vi.fn().mockResolvedValue({ seq: 41 }) },
@@ -943,11 +943,11 @@ describe('FederationService quote coordinates', () => {
 
 const localUser = (userId: number, account: string) => ({
   userId,
-  user: { account, domain: 'local', isForeigner: false },
+  user: { account, domain: 'local' },
 });
 const foreignUser = (userId: number, account: string, domain: string) => ({
   userId,
-  user: { account, domain, isForeigner: true },
+  user: { account, domain },
 });
 
 describe('FederationService.signalOutbound — fixed-topology routing', () => {

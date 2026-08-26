@@ -39,7 +39,6 @@ describe('origin-server group capacity', () => {
           account: `cap-${suffix}-${index}`,
           name: `capacity ${index}`,
           domain: 'local',
-          isForeigner: false,
           updatedAt: new Date(),
         })),
       )
@@ -50,7 +49,6 @@ describe('origin-server group capacity', () => {
         account: `!cap${suffix}`,
         name: 'capacity group',
         domain: 'local',
-        isForeigner: false,
         isGroup: true,
         hashPwd: '',
         updatedAt: new Date(),

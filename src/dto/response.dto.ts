@@ -33,9 +33,6 @@ export class UserResponseDto {
   })
   bio!: string;
 
-  @ApiProperty({ example: false, description: 'Whether an external user' })
-  isForeigner!: boolean;
-
   @ApiProperty({
     example: false,
     description: 'Whether this identity is a group',

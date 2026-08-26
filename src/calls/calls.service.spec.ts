@@ -44,7 +44,6 @@ function mkMocks() {
         query: {
           user: {
             findFirst: vi.fn().mockResolvedValue({
-              isForeigner: false,
               account: 'alice',
               domain: 'local',
               name: 'Alice',
@@ -842,7 +841,6 @@ describe('CallsService federated initiate (outbound)', () => {
   it('a foreigner callee is rung via an S2S incoming frame (no local ring); both busy slots set', async () => {
     const { svc, m } = mkService();
     m.database.db.query.user.findFirst.mockResolvedValue({
-      isForeigner: true,
       account: 'bob',
       domain: 'bbb.local',
       name: 'Bob',
@@ -877,7 +875,6 @@ describe('CallsService federated initiate (outbound)', () => {
   it('a ring failure writes an `unreachable` bubble + throws CALL_PEER_UNREACHABLE + releases slots', async () => {
     const { svc, m } = mkService();
     m.database.db.query.user.findFirst.mockResolvedValue({
-      isForeigner: true,
       account: 'bob',
       domain: 'bbb.local',
       name: 'Bob',
@@ -902,7 +899,6 @@ describe('CallsService federated initiate (outbound)', () => {
     try {
       const { svc, m } = mkService();
       m.database.db.query.user.findFirst.mockResolvedValue({
-        isForeigner: true,
         account: 'bob',
         domain: 'bbb.local',
         name: 'Bob',
@@ -958,7 +954,6 @@ describe('CallsService federated initiate (outbound)', () => {
   it('does not let the caller server author connected', async () => {
     const { svc, m } = mkService();
     m.database.db.query.user.findFirst.mockResolvedValue({
-      isForeigner: true,
       account: 'bob',
       domain: 'bbb.local',
       name: 'Bob',
@@ -1146,7 +1141,6 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     // bubble, stamping startedAt from the `connected` frame (NOT `accepted`).
     const { svc, m } = mkService();
     m.database.db.query.user.findFirst.mockResolvedValue({
-      isForeigner: true,
       account: 'bob',
       domain: 'bbb.local',
       name: 'Bob',
@@ -1184,7 +1178,6 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
   it('absorbs a connected replay and preserves the first accepted startedAt', async () => {
     const { svc, m } = mkService();
     m.database.db.query.user.findFirst.mockResolvedValue({
-      isForeigner: true,
       account: 'bob',
       domain: 'bbb.local',
       name: 'Bob',
@@ -1246,7 +1239,6 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
   it('an inbound `ringing` frame notifies the caller (idempotent on replay)', async () => {
     const { svc, m } = mkService();
     m.database.db.query.user.findFirst.mockResolvedValue({
-      isForeigner: true,
       account: 'bob',
       domain: 'bbb.local',
       name: 'Bob',
@@ -1378,7 +1370,6 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
   it('rejects accepted during the tombstone-write window after local cancellation starts', async () => {
     const { svc, m } = mkService();
     m.database.db.query.user.findFirst.mockResolvedValue({
-      isForeigner: true,
       account: 'bob',
       domain: 'bbb.local',
       name: 'Bob',

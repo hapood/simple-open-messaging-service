@@ -165,7 +165,6 @@ export class InviteUserDto {
   @ApiProperty() name!: string;
   @ApiProperty() avatar!: string;
   @ApiProperty() domain!: string;
-  @ApiProperty() isForeigner!: boolean;
 }
 
 /** An invite as returned by /invite/incoming and /invite/outgoing. `expiresAt` (ms) lets the client

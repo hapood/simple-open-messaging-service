@@ -76,7 +76,6 @@ describe('Admin RBAC + revocation + audit', () => {
         domain: 'local',
         hashPwd: 'x',
         name: account,
-        isForeigner: false,
         updatedAt: now,
       })
       .returning({ id: user.id });
@@ -100,7 +99,6 @@ describe('Admin RBAC + revocation + audit', () => {
         domain: 'local',
         hashPwd: 'x',
         name: account,
-        isForeigner: false,
         updatedAt: new Date(),
       })
       .returning({ id: user.id });

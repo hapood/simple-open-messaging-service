@@ -24,7 +24,6 @@ import {
 import { UserService } from '../../services/user.service';
 import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter';
 import { PopupType, RouteService } from '../../services/route.service';
-import { ThreadDeletionLockService } from '../../services/thread-deletion-lock.service';
 import { ToastService } from '../../services/toast.service';
 import { translateBizResult } from '../../services/biz-code';
 import { MatCardModule } from '@angular/material/card';
@@ -32,12 +31,15 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { PageHeaderComponent } from '../page-header/page-header.component';
+import { ContactCardShareService } from '../../services/contact-card-share.service';
+import { FocusedInputRevealDirective } from '../../directives/focused-input-reveal.directive';
 
 /**
  * P2P (friend) profile panel — rendered in the `aside` auxiliary outlet (`chat/:threadId/(aside:profile)`).
  * Resolves its conversation from the parent route's `:threadId` + the shared list (no input binding
- * needed — the aside child route carries no params of its own). Relationship actions intentionally live
- * here, grouped in one quiet action card instead of competing with everyday chat controls.
+ * needed — the aside child route carries no params of its own). It is the complete P2P details surface:
+ * conversation actions follow the identity section, while relationship and destructive actions remain
+ * visually separated below them.
  */
 @Component({
   selector: 'app-peer-profile',
@@ -50,15 +52,28 @@ import { PageHeaderComponent } from '../page-header/page-header.component';
     MatSlideToggleModule,
     IconComponent,
     PageHeaderComponent,
+    FocusedInputRevealDirective,
   ],
   template: `
     <div class="panel">
-      <app-page-header
-        [title]="'profile.title' | transloco"
-        (back)="goBack()"
-      />
+      <app-page-header [title]="'profile.title' | transloco" (back)="goBack()">
+        <button
+          pageHeaderAction
+          class="share-action"
+          type="button"
+          (click)="shareContact()"
+          [attr.aria-label]="'profile.shareCardAria' | transloco"
+          [title]="'profile.shareCardAria' | transloco"
+        >
+          <app-icon
+            [type]="AppIconType.SHARE"
+            [style]="{ width: '18px', height: '18px' }"
+          />
+          <span>{{ 'profile.share' | transloco }}</span>
+        </button>
+      </app-page-header>
 
-      <div class="body">
+      <div class="body" appFocusedInputReveal>
         <div class="identity">
           <span class="profile-avatar">
             <app-user-avatar
@@ -86,7 +101,60 @@ import { PageHeaderComponent } from '../page-header/page-header.component';
 
         <app-thread-alias-editor [threadId]="threadId()!" />
 
-        <mat-card appearance="outlined" class="permission-card block-card">
+        <mat-card appearance="outlined" class="conversation-actions">
+          <button type="button" class="action-row" (click)="openSearch()">
+            <span class="action-icon" aria-hidden="true">
+              <app-icon
+                [type]="AppIconType.SEARCH"
+                [style]="{ width: '20px', height: '20px' }"
+              />
+            </span>
+            <span class="action-label">{{
+              'chat.menuSearch' | transloco
+            }}</span>
+            <app-icon
+              class="action-chevron"
+              [type]="AppIconType.CHEVRON_RIGHT"
+              [style]="{ width: '18px', height: '18px' }"
+            />
+          </button>
+          <div class="action-row">
+            <span class="action-icon" aria-hidden="true">
+              <app-icon
+                [type]="AppIconType.MUTE"
+                [style]="{ width: '20px', height: '20px' }"
+              />
+            </span>
+            <span class="action-label">{{ 'chat.menuMute' | transloco }}</span>
+            <mat-slide-toggle
+              [checked]="userMsgTrd()?.muted === true"
+              [disabled]="mutedSaving()"
+              [attr.aria-label]="'chat.menuMute' | transloco"
+              (change)="setMuted($event.checked)"
+            />
+          </div>
+          <div class="action-row">
+            <span class="action-icon" aria-hidden="true">
+              <app-icon
+                [type]="AppIconType.PIN"
+                [style]="{ width: '20px', height: '20px' }"
+              />
+            </span>
+            <span class="action-label">{{ 'chat.menuPin' | transloco }}</span>
+            <mat-slide-toggle
+              [checked]="userMsgTrd()?.pinned === true"
+              [disabled]="pinnedSaving()"
+              [attr.aria-label]="'chat.menuPin' | transloco"
+              (change)="setPinned($event.checked)"
+            />
+          </div>
+        </mat-card>
+
+        <mat-card
+          appearance="outlined"
+          class="permission-card block-card"
+          [class.on]="blockedControl()"
+        >
           <span
             class="block-icon"
             [class.on]="blockedControl()"
@@ -146,7 +214,28 @@ import { PageHeaderComponent } from '../page-header/page-header.component';
         flex: 1 1 auto;
         min-height: 0;
         overflow-y: auto;
-        padding: 12px 0 24px;
+        padding: 12px 0 calc(24px + var(--focused-input-keyboard-inset, 0px));
+      }
+      .share-action {
+        height: 40px;
+        padding: 0 8px;
+        border: 0;
+        border-radius: var(--app-radius-sm);
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        background: transparent;
+        color: var(--app-brand);
+        font-size: 14px;
+        line-height: 20px;
+        cursor: pointer;
+      }
+      .share-action:hover {
+        background: var(--app-hover);
+      }
+      .share-action:focus-visible {
+        outline: 2px solid var(--app-brand);
+        outline-offset: -2px;
       }
       .identity {
         display: flex;
@@ -223,6 +312,56 @@ import { PageHeaderComponent } from '../page-header/page-header.component';
         align-items: center;
         gap: 12px;
       }
+      .conversation-actions {
+        margin: 18px 16px 0;
+        overflow: hidden;
+      }
+      .action-row {
+        width: 100%;
+        min-height: 52px;
+        padding: 6px 14px;
+        border: 0;
+        border-bottom: 1px solid var(--app-border);
+        box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: transparent;
+        color: var(--app-text);
+        font: inherit;
+        text-align: left;
+      }
+      .action-row:last-child {
+        border-bottom: 0;
+      }
+      button.action-row {
+        cursor: pointer;
+      }
+      button.action-row:hover {
+        background: var(--app-hover);
+      }
+      button.action-row:focus-visible {
+        outline: 2px solid var(--app-brand);
+        outline-offset: -2px;
+      }
+      .action-icon {
+        width: 32px;
+        height: 32px;
+        flex: 0 0 32px;
+        display: grid;
+        place-items: center;
+        color: var(--app-text-muted);
+      }
+      .action-label {
+        min-width: 0;
+        flex: 1 1 auto;
+        font-size: 14px;
+        line-height: 20px;
+      }
+      .action-chevron {
+        margin-left: auto;
+        color: var(--app-text-muted);
+      }
       .permission-copy {
         display: flex;
         flex: 1 1 auto;
@@ -233,6 +372,9 @@ import { PageHeaderComponent } from '../page-header/page-header.component';
         font-size: 14px;
         font-weight: var(--app-font-weight-regular, 400);
         line-height: 20px;
+      }
+      .block-card.on .permission-copy strong {
+        color: var(--app-danger);
       }
       .block-icon {
         width: 32px;
@@ -285,6 +427,8 @@ export class PeerProfileComponent {
   readonly blockedControl = signal(false);
   readonly blockedSaving = signal(false);
   readonly unfriendPending = signal(false);
+  readonly mutedSaving = signal(false);
+  readonly pinnedSaving = signal(false);
   readonly relationshipActionPending = computed(
     () => this.blockedSaving() || this.unfriendPending(),
   );
@@ -294,9 +438,9 @@ export class PeerProfileComponent {
   private readonly userService = inject(UserService);
   private readonly threadAdapter = inject(MESSAGE_THREAD_ADAPTER);
   private readonly route = inject(RouteService);
-  private readonly deletionLock = inject(ThreadDeletionLockService);
   private readonly toast = inject(ToastService);
   private readonly transloco = inject(TranslocoService);
+  private readonly contactCardShare = inject(ContactCardShareService);
 
   /** The panel is open over the currently-viewed chat — read its id + item from the shared list. */
   readonly threadId = this.convList.openThreadId;
@@ -319,7 +463,7 @@ export class PeerProfileComponent {
   /** The peer's domain when federated, else null. */
   readonly peerDomain = computed(() => {
     const p = this.peer();
-    return p && p.isForeigner ? p.domain : null;
+    return p?.domain && p.domain !== 'local' ? p.domain : null;
   });
 
   constructor() {
@@ -335,47 +479,92 @@ export class PeerProfileComponent {
     this.nav.closeAside();
   }
 
+  shareContact(): void {
+    const trd = this.userMsgTrd();
+    if (trd) this.contactCardShare.open(trd);
+  }
+
+  openSearch(): void {
+    this.nav.closeAside();
+    this.nav.openSearch();
+  }
+
+  setMuted(muted: boolean): void {
+    const trd = this.userMsgTrd();
+    if (!trd || this.mutedSaving()) return;
+    const previous = trd.muted;
+    this.convList.applyThreadMeta(trd.threadId, { muted });
+    this.mutedSaving.set(true);
+    this.threadAdapter
+      .setMuted({ threadId: trd.threadId, muted })
+      .pipe(finalize(() => this.mutedSaving.set(false)))
+      .subscribe({
+        next: (res) => {
+          if (res.code === 0) return;
+          this.convList.applyThreadMeta(trd.threadId, { muted: previous });
+          this.toast.warn(translateBizResult(res, this.transloco));
+        },
+        error: () => {
+          this.convList.applyThreadMeta(trd.threadId, { muted: previous });
+          this.toast.warn(this.transloco.translate('errors.networkError'));
+        },
+      });
+  }
+
+  setPinned(pinned: boolean): void {
+    const trd = this.userMsgTrd();
+    if (!trd || this.pinnedSaving()) return;
+    const previous = trd.pinned;
+    const previousPinnedAt = trd.pinnedAt;
+    this.convList.applyThreadMeta(trd.threadId, {
+      pinned,
+      pinnedAt: pinned ? Date.now() : null,
+    });
+    this.pinnedSaving.set(true);
+    this.threadAdapter
+      .setPinned({ threadId: trd.threadId, pinned })
+      .pipe(finalize(() => this.pinnedSaving.set(false)))
+      .subscribe({
+        next: (res) => {
+          if (res.code === 0) return;
+          this.convList.applyThreadMeta(trd.threadId, {
+            pinned: previous,
+            pinnedAt: previousPinnedAt,
+          });
+          this.toast.warn(translateBizResult(res, this.transloco));
+        },
+        error: () => {
+          this.convList.applyThreadMeta(trd.threadId, {
+            pinned: previous,
+            pinnedAt: previousPinnedAt,
+          });
+          this.toast.warn(this.transloco.translate('errors.networkError'));
+        },
+      });
+  }
+
   setBlocked(blocked: boolean): void {
     const trd = this.userMsgTrd();
     if (!trd || this.relationshipActionPending()) return;
     const previous = trd.blocked === true;
-    const apply = () => {
-      this.blockedControl.set(blocked);
-      this.blockedSaving.set(true);
-      this.threadAdapter
-        .setBlocked({ threadId: trd.threadId, blocked })
-        .pipe(finalize(() => this.blockedSaving.set(false)))
-        .subscribe({
-          next: (res) => {
-            if (res.code !== 0) {
-              this.blockedControl.set(previous);
-              return this.toast.warn(translateBizResult(res, this.transloco));
-            }
-            this.convList.applyThreadMeta(trd.threadId, { blocked });
-          },
-          error: () => {
+    this.blockedControl.set(blocked);
+    this.blockedSaving.set(true);
+    this.threadAdapter
+      .setBlocked({ threadId: trd.threadId, blocked })
+      .pipe(finalize(() => this.blockedSaving.set(false)))
+      .subscribe({
+        next: (res) => {
+          if (res.code !== 0) {
             this.blockedControl.set(previous);
-            this.toast.warn(this.transloco.translate('errors.networkError'));
-          },
-        });
-    };
-    if (!blocked) return apply();
-    this.blockedControl.set(previous);
-    this.route.popupDlg(
-      PopupType.CONFIRM,
-      {
-        titleKey: 'profile.block',
-        messageKey: 'profile.blockConfirm',
-        confirmKey: 'profile.block',
-        cancelKey: 'common.cancel',
-        danger: true,
-        messageParams: { name: this.peerDisplayName() },
-      },
-      (result) => {
-        if (result) apply();
-        else this.blockedControl.set(previous);
-      },
-    );
+            return this.toast.warn(translateBizResult(res, this.transloco));
+          }
+          this.convList.applyThreadMeta(trd.threadId, { blocked });
+        },
+        error: () => {
+          this.blockedControl.set(previous);
+          this.toast.warn(this.transloco.translate('errors.networkError'));
+        },
+      });
   }
 
   removeFriend(): void {
@@ -399,11 +588,8 @@ export class PeerProfileComponent {
     );
   }
 
-  private async finishRemoveFriend(
-    trd: ConversationItem,
-    peerId: number,
-  ) {
-    if (!this.deletionLock.begin(trd.threadId)) return;
+  private async finishRemoveFriend(trd: ConversationItem, peerId: number) {
+    if (this.unfriendPending()) return;
     this.unfriendPending.set(true);
     try {
       const res = await firstValueFrom(
@@ -420,7 +606,6 @@ export class PeerProfileComponent {
       this.toast.warn(this.transloco.translate('errors.networkError'));
     } finally {
       this.unfriendPending.set(false);
-      this.deletionLock.end(trd.threadId);
       this.convList.load();
     }
   }

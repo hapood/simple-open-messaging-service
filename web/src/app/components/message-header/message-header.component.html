@@ -81,9 +81,9 @@
         cdkOverlayOrigin
         #moreTrigger="cdkOverlayOrigin"
         (click)="toggleMenu()"
-        [class.active]="menuOpen()"
-        aria-haspopup="menu"
-        [attr.aria-expanded]="menuOpen()"
+        [class.active]="moreExpanded()"
+        [attr.aria-haspopup]="userMsgTrd()?.type === 'GROUP' ? 'menu' : null"
+        [attr.aria-expanded]="moreExpanded()"
         [attr.aria-label]="'nav.moreAria' | transloco"
       >
         <app-icon
@@ -94,13 +94,15 @@
           <span class="more-badge" aria-hidden="true"></span>
         }
       </button>
-      <app-chat-action-menu
-        [entries]="entries()"
-        [origin]="moreTrigger"
-        [open]="menuOpen()"
-        (select)="onSelect($event)"
-        (closed)="closeMenu()"
-      />
+      @if (userMsgTrd()?.type === 'GROUP') {
+        <app-chat-action-menu
+          [entries]="entries()"
+          [origin]="moreTrigger"
+          [open]="menuOpen()"
+          (select)="onSelect($event)"
+          (closed)="closeMenu()"
+        />
+      }
     </div>
   }
 </div>

@@ -67,7 +67,6 @@ export class AdminBootstrapService implements OnApplicationBootstrap {
         account: 'admin',
         hashPwd: hash,
         name: 'admin',
-        isForeigner: false,
         domain: 'local',
         updatedAt: new Date(),
       })

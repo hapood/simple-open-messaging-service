@@ -76,7 +76,6 @@ export class UserManageService {
   async listUsers(opts: { skip?: number; take?: number; search?: string }) {
     const where = and(
       eq(user.isGroup, false),
-      eq(user.isForeigner, false),
       eq(user.domain, 'local'),
       opts.search ? ilike(user.account, `%${opts.search}%`) : undefined,
     );
@@ -88,7 +87,6 @@ export class UserManageService {
           name: user.name,
           avatar: user.avatar,
           bio: user.bio,
-          isForeigner: user.isForeigner,
           isGroup: user.isGroup,
           domain: user.domain,
           createdAt: user.createdAt,
@@ -110,14 +108,12 @@ export class UserManageService {
         .where(where)
         .then(([row]) => row.value),
     ]);
-    const localIds = list
-      .filter((item) => !item.isForeigner)
-      .map((item) => item.id);
+    const localIds = list.map((item) => item.id);
     const quotaByUser = await this.userQuotaService.getSummaries(localIds);
     return {
       list: list.map((item) => ({
         ...item,
-        quota: item.isForeigner ? null : (quotaByUser.get(item.id) ?? null),
+        quota: quotaByUser.get(item.id) ?? null,
       })),
       total,
     };
@@ -229,7 +225,6 @@ export class UserManageService {
     const target = await this.database.db.query.user.findFirst({
       where: and(
         eq(user.id, id),
-        eq(user.isForeigner, false),
         eq(user.isGroup, false),
         eq(user.domain, 'local'),
       ),

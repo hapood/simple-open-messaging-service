@@ -56,14 +56,12 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
         {
           account: 'alice',
           name: 'Alice',
-          isForeigner: false,
           domain: 'local',
           updatedAt: now,
         },
         {
           account: 'bob',
           name: 'Bob',
-          isForeigner: true,
           domain: peerDomain,
           updatedAt: now,
         },

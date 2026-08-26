@@ -483,7 +483,6 @@ export class GroupService {
             .values({
               account,
               domain: 'local',
-              isForeigner: false,
               isGroup: true,
               hashPwd: '', // empty — !-group-users never log in (validateUser rejects isGroup before verify)
               name: params.name,
@@ -513,11 +512,10 @@ export class GroupService {
             localUserId: params.owner,
             threadId: thread.id,
           });
-          // Group-exclusive state: owner + roster revision (origin group: remoteRosterRev null).
+          // Group lifecycle state. Identity/profile fields live on groupUserId.
           await tx.insert(group).values({
             groupUserId: groupUser.id,
             ownerId: params.owner,
-            rosterRev: 0,
             updatedAt: new Date(),
           });
           const clientFeedUpdates: Array<{
@@ -590,8 +588,15 @@ export class GroupService {
       const [current] = await tx
         .select({
           role: threadParticipant.role,
+          groupUserId: messageThread.groupUserId,
+          groupDomain: user.domain,
         })
         .from(threadParticipant)
+        .innerJoin(
+          messageThread,
+          eq(messageThread.id, threadParticipant.threadId),
+        )
+        .innerJoin(user, eq(user.id, messageThread.groupUserId))
         .where(
           and(
             eq(threadParticipant.userId, params.userId),
@@ -602,22 +607,26 @@ export class GroupService {
         .limit(1);
       if (!current)
         throw new BusinessException(BusinessCode.NOT_FOUND, 'member not found');
-      const mutuallyAuthorized = await isThreadMutuallyAuthorized(
-        tx,
-        params.userId,
-        params.threadId,
-      );
-      if (mutuallyAuthorized && current.role === GroupRole.OWNER) {
+      if (current.groupUserId === null)
+        throw new BusinessException(BusinessCode.NOT_FOUND, 'group not found');
+      const outgoing = await tx.execute<{ status: string }>(sql`
+        SELECT status
+        FROM "RelationshipIntent"
+        WHERE "authorUserId" = ${params.userId}
+          AND "subjectUserId" = ${current.groupUserId}
+      `);
+      const transitioned = outgoing.rows[0]?.status !== 'REVOKED';
+      if (transitioned && current.role === GroupRole.OWNER) {
         throw new BusinessException(
           BusinessCode.GROUP_OWNER_MUST_TRANSFER,
           'transfer ownership or dissolve the group before leaving',
         );
       }
-      const localRecipientIds = mutuallyAuthorized
+      const localRecipientIds = transitioned
         ? await this.localAuthorizedRecipientIdsInTx(tx, params.threadId)
         : [];
       const systemMessage =
-        mutuallyAuthorized && this.messages
+        transitioned && this.messages
           ? (
               await this.messages.writeSystemMessageInTx(
                 tx,
@@ -646,7 +655,7 @@ export class GroupService {
             ),
           );
       }
-      if (mutuallyAuthorized) {
+      if (transitioned) {
         await tx.execute(sql`
           DELETE FROM "ThreadAudience" audience
           WHERE audience."targetDomain" = 'local'
@@ -670,7 +679,7 @@ export class GroupService {
             ),
           );
       }
-      if (mutuallyAuthorized) {
+      if (transitioned) {
         const [thread] = await tx
           .select({ groupUserId: messageThread.groupUserId })
           .from(messageThread)
@@ -680,13 +689,12 @@ export class GroupService {
           await tx
             .update(group)
             .set({
-              rosterRev: sql`${group.rosterRev} + 1`,
               updatedAt: now,
             })
             .where(eq(group.groupUserId, thread.groupUserId));
         }
       }
-      const requestState = mutuallyAuthorized
+      const requestState = transitioned
         ? await this.federation.writeMemberRelationshipIntentInTx(
             tx,
             params.threadId,
@@ -695,7 +703,23 @@ export class GroupService {
             clientFeedUpdates,
           )
         : new Map<string, bigint>();
-      const groupState = mutuallyAuthorized
+      if (transitioned && current.groupDomain === 'local') {
+        await this.federation.writeGroupRelationshipIntentInTx(
+          tx,
+          params.threadId,
+          params.userId,
+          '',
+          'REVOKED',
+          clientFeedUpdates,
+        );
+      }
+      await this.federation.reconcileGroupJoinRequestManagerInTx(
+        tx,
+        params.threadId,
+        params.userId,
+        clientFeedUpdates,
+      );
+      const groupState = transitioned
         ? await this.federation.writeGroupStateInTx(
             tx,
             params.threadId,
@@ -712,7 +736,7 @@ export class GroupService {
         ),
       );
       return {
-        transitioned: mutuallyAuthorized,
+        transitioned,
         remainingMemberIds: remaining
           .filter((_, index) => remainingAuthorization[index])
           .map((row) => row.userId),
@@ -761,7 +785,6 @@ export class GroupService {
         .update(group)
         .set({
           dissolvedAt: now,
-          rosterRev: sql`${group.rosterRev} + 1`,
           updatedAt: now,
         })
         .where(
@@ -967,7 +990,6 @@ export class GroupService {
         await tx
           .update(group)
           .set({
-            rosterRev: sql`${group.rosterRev} + 1`,
             updatedAt: now,
           })
           .where(eq(group.groupUserId, thread.groupUserId));
@@ -1052,7 +1074,7 @@ export class GroupService {
       const [target] = await tx
         .select({
           participant: threadParticipant,
-          isForeigner: user.isForeigner,
+          domain: user.domain,
         })
         .from(threadParticipant)
         .innerJoin(user, eq(user.id, threadParticipant.userId))
@@ -1078,7 +1100,7 @@ export class GroupService {
         );
       }
       // Ownership can't cross servers — the owner must stay on the origin (the roster authority).
-      if (target.isForeigner) {
+      if (target.domain !== 'local') {
         throw new BusinessException(
           BusinessCode.GROUP_FORBIDDEN,
           'cannot transfer ownership to a member on another server',
@@ -1114,7 +1136,6 @@ export class GroupService {
           .update(group)
           .set({
             ownerId: params.toUserId,
-            rosterRev: sql`${group.rosterRev} + 1`,
             updatedAt: now,
           })
           .where(eq(group.groupUserId, trd.groupUserId));
@@ -1195,7 +1216,7 @@ export class GroupService {
         eq(threadParticipant.userId, params.targetUserId),
         eq(threadParticipant.threadId, params.threadId),
       ),
-      with: { user: { columns: { isForeigner: true } } },
+      with: { user: { columns: { domain: true } } },
     });
     if (
       !target ||
@@ -1216,7 +1237,7 @@ export class GroupService {
         "cannot change the owner's role",
       );
     }
-    if (params.role === GroupRole.ADMIN && target.user.isForeigner) {
+    if (params.role === GroupRole.ADMIN && target.user.domain !== 'local') {
       throw new BusinessException(
         BusinessCode.GROUP_FORBIDDEN,
         'cannot grant administrator role to a member on another server',
@@ -1238,7 +1259,6 @@ export class GroupService {
         await tx
           .update(group)
           .set({
-            rosterRev: sql`${group.rosterRev} + 1`,
             updatedAt: new Date(),
           })
           .where(eq(group.groupUserId, trd.groupUserId));

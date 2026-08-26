@@ -323,7 +323,6 @@ describe('WebdbService', () => {
             avatar: '',
             bio: '',
             domain: 'peer.test',
-            isForeigner: true,
           },
         },
       };
@@ -348,7 +347,6 @@ describe('WebdbService', () => {
         avatar: '',
         bio: '',
         domain: 'local',
-        isForeigner: false,
       };
       const items: ClientStateFeedItem[] = [
         {
@@ -414,7 +412,6 @@ describe('WebdbService', () => {
         avatar: '',
         bio: '',
         domain: 'bravo.test',
-        isForeigner: true,
       };
       const event = (
         feedId: number,
@@ -486,7 +483,6 @@ describe('WebdbService', () => {
             avatar: '',
             bio: 'About Alice',
             domain: 'peer.test',
-            isForeigner: true,
           },
         },
       });
@@ -545,7 +541,6 @@ describe('WebdbService', () => {
             avatar: peer.avatar,
             bio: '',
             domain: 'peer.test',
-            isForeigner: true,
           },
         },
       });
@@ -604,7 +599,6 @@ describe('WebdbService', () => {
             avatar: 'avatar.webp',
             bio: 'About Alice',
             domain: 'peer.test',
-            isForeigner: true,
           },
         },
       };

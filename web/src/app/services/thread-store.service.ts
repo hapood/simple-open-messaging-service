@@ -18,7 +18,6 @@ import {
   ThreadReadState,
   User,
 } from './model';
-import { ThreadDeletionLockService } from './thread-deletion-lock.service';
 import { MsgService } from './message.service';
 import { MemberProfileRepository } from './member-profile-store.service';
 import { ToastService } from './toast.service';
@@ -61,7 +60,6 @@ export type ConversationLoadStatus =
  */
 @Injectable({ providedIn: 'root' })
 export class ThreadRepository {
-  private readonly deletionLock = inject(ThreadDeletionLockService);
   private readonly webdb = inject(WebdbService);
   private readonly userService = inject(UserService);
   private readonly ws = inject(WebsocketService);
@@ -201,13 +199,6 @@ export class ThreadRepository {
   constructor() {
     // ── thread-list DATA SSE events (the DB layer is the sole consumer) ──
     this.sseSub = this.ws.eventSubject.subscribe((m) => {
-      const eventThreadId = (m.data as { threadId?: number } | undefined)
-        ?.threadId;
-      if (
-        (eventThreadId !== undefined && this.deletionLock.has(eventThreadId)) ||
-        (m.event === 'STATE_FEED_UPDATED' && this.deletionLock.any)
-      )
-        return;
       switch (m.event) {
         case 'HELLO':
           void this.onHello(m.data as HelloPayload | undefined);
@@ -457,6 +448,8 @@ export class ThreadRepository {
     if (changed) {
       void this.persistThread(changed);
       this.writeGroupProfile(changed.group);
+      if (changed.role !== 'OWNER' && changed.role !== 'ADMIN')
+        this.userService.clearGroupJoinRequestHead(threadId);
     }
   }
 

@@ -45,14 +45,12 @@ describe('federation directed-state boundaries', () => {
           account: `boundary-local-${suffix}`,
           name: 'local',
           domain: 'local',
-          isForeigner: false,
           updatedAt: new Date(),
         },
         {
           account: `boundary-peer-${suffix}`,
           name: 'peer',
           domain: 'peer.test',
-          isForeigner: true,
           updatedAt: new Date(),
         },
       ])
@@ -471,7 +469,6 @@ describe('federation directed-state boundaries', () => {
         account: `!boundary-${suffix}`,
         name: 'boundary group',
         domain: 'local',
-        isForeigner: false,
         isGroup: true,
         hashPwd: '',
         updatedAt: new Date(),

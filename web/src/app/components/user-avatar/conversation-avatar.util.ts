@@ -25,7 +25,7 @@ export function conversationAvatarDomain(
   t: ConversationItem,
 ): string | undefined {
   if (t.type === 'P2P')
-    return t.peerUser.isForeigner ? t.peerUser.domain : undefined;
+    return t.peerUser.domain !== 'local' ? t.peerUser.domain : undefined;
   return t.group.domain ?? undefined;
 }
 

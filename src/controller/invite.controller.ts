@@ -156,18 +156,19 @@ export class InviteController {
     }
 
     // Mutual auto-accept is LOCAL-only (a federated target needs an S2S round-trip on accept).
-    const federatedOriginId = target.isForeigner ? mintUlid() : undefined;
+    const federatedOriginId =
+      target.domain !== 'local' ? mintUlid() : undefined;
     let statePeers = new Map<string, bigint>();
     const clientFeedUpdates: PendingClientStateFeedUpdate[] = [];
     const res = await this.inviteService.createFriendInvite(
       me,
       target.id,
       dto.note ?? '',
-      !target.isForeigner,
+      target.domain === 'local',
       federatedOriginId,
       async (tx, created) => {
         if (created) await this.userQuota.tick(me, 'requests', tx);
-        if (target.isForeigner) {
+        if (target.domain !== 'local') {
           statePeers = await this.federationService.writeFriendIntentInTx(
             tx,
             me,
@@ -316,9 +317,9 @@ export class InviteController {
       async (tx, fromUserId) => {
         const from = await tx.query.user.findFirst({
           where: eq(tables.user.id, fromUserId),
-          columns: { isForeigner: true },
+          columns: { domain: true },
         });
-        if (from?.isForeigner) {
+        if (from?.domain !== 'local') {
           friendStatePeers = await this.federationService.writeFriendIntentInTx(
             tx,
             req.user.userId,
@@ -406,9 +407,9 @@ export class InviteController {
       async (tx, toUserId) => {
         const to = await tx.query.user.findFirst({
           where: eq(tables.user.id, toUserId),
-          columns: { isForeigner: true },
+          columns: { domain: true },
         });
-        if (to?.isForeigner)
+        if (to?.domain !== 'local')
           statePeers = await this.federationService.writeFriendIntentInTx(
             tx,
             me,
@@ -449,9 +450,9 @@ export class InviteController {
       async (tx, fromUserId) => {
         const from = await tx.query.user.findFirst({
           where: eq(tables.user.id, fromUserId),
-          columns: { isForeigner: true },
+          columns: { domain: true },
         });
-        if (from?.isForeigner)
+        if (from?.domain !== 'local')
           statePeers = await this.federationService.writeFriendIntentInTx(
             tx,
             me,

@@ -37,7 +37,6 @@ import { apiPrefix } from '../../services/constants';
 import { finalize } from 'rxjs';
 import { translateBizResult } from '../../services/biz-code';
 import { ToastService } from '../../services/toast.service';
-import { ThreadDeletionLockService } from '../../services/thread-deletion-lock.service';
 import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter';
 import {
   MemberProfileRepository,
@@ -89,7 +88,6 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   private readonly userService = inject(UserService);
   private readonly convList = inject(ConversationListService);
   private readonly routeService = inject(RouteService);
-  private readonly deletionLock = inject(ThreadDeletionLockService);
   private readonly snackBar = inject(MatSnackBar);
   private readonly http = inject(HttpClient);
   private readonly transloco = inject(TranslocoService);
@@ -411,8 +409,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
 
   private async leave() {
     const id = this.groupId();
-    if (id === undefined || !this.canLeave()) return;
-    if (!this.deletionLock.begin(id)) return;
+    if (id === undefined || !this.canLeave() || this.busy()) return;
     this.busy.set(true);
     try {
       const res = await firstValueFrom(
@@ -425,7 +422,6 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       this.showNetworkError();
     } finally {
       this.busy.set(false);
-      this.deletionLock.end(id);
       this.convList.load();
     }
   }
@@ -449,8 +445,13 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
 
   private async dissolve() {
     const id = this.groupId();
-    if (id === undefined || !this.isOwner() || this.readOnly()) return;
-    if (!this.deletionLock.begin(id)) return;
+    if (
+      id === undefined ||
+      !this.isOwner() ||
+      this.readOnly() ||
+      this.busy()
+    )
+      return;
     this.busy.set(true);
     try {
       const res = await firstValueFrom(
@@ -464,7 +465,6 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       this.showNetworkError();
     } finally {
       this.busy.set(false);
-      this.deletionLock.end(id);
       this.convList.load();
     }
   }

@@ -461,7 +461,7 @@ export class ClientStateFeedService {
       SELECT member.id AS "userId", member.account, member.domain,
              COALESCE(participant.role, 'MEMBER') AS role,
              member.name AS "displayName", NULLIF(member.avatar, '') AS avatar,
-             CASE WHEN member."isForeigner" THEN COALESCE(member."remoteProfileRev", 0)
+             CASE WHEN member.domain <> 'local' THEN COALESCE(member."remoteProfileRev", 0)
                   ELSE member."profileRev" END AS "profileRev"
       FROM "ThreadParticipant" participant
       JOIN "User" member ON member.id = participant."userId"

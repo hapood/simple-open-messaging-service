@@ -12,7 +12,6 @@ export interface FriendRequestPeer {
   avatar: string;
   bio: string;
   domain: string;
-  isForeigner: boolean;
 }
 
 export interface RelationshipIntentFact {

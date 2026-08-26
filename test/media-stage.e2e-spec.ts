@@ -64,7 +64,6 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
         account: `st-${randomUUID().replace(/-/g, '').slice(0, 8)}`,
         hashPwd: 'x',
         name: 'stage',
-        isForeigner: false,
         updatedAt: now,
       })
       .returning({ id: user.id });
@@ -77,7 +76,6 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
             account: `st-target-${n}-${randomUUID().slice(0, 8)}`,
             hashPwd: 'x',
             name: `target ${n}`,
-            isForeigner: false,
             updatedAt: now,
           })),
         )

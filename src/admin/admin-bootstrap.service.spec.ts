@@ -90,7 +90,7 @@ describe('AdminBootstrapService', () => {
     expect(userInsert).toHaveBeenCalledTimes(1);
     const userCreate = userInsert.mock.calls[0][0] as Record<string, unknown>;
     expect(userCreate.account).toBe('admin');
-    expect(userCreate.isForeigner).toBe(false);
+    expect(userCreate.domain).toBe('local');
     expect(userCreate.hashPwd).not.toBe('s3cret-bootstrap-pw'); // stored hashed, not plaintext
     expect(typeof userCreate.hashPwd).toBe('string');
     expect(userCreate.hashPwd.length).toBeGreaterThan(0);

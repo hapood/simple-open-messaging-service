@@ -71,7 +71,6 @@ describe('thread catch-up + notification feed', () => {
         account: opts.name.toLowerCase(),
         hashPwd: 'x',
         name: opts.name,
-        isForeigner: false,
         updatedAt: now,
       })
       .returning({ id: user.id });

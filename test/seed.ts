@@ -66,7 +66,6 @@ export async function seedUser(
           ? null
           : await new PasswordHasher().hash(opts.password),
       mustChangePassword: false,
-      isForeigner: false,
       updatedAt: new Date(),
     })
     .returning({ id: user.id, account: user.account });

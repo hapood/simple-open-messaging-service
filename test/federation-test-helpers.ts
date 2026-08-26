@@ -117,7 +117,6 @@ export async function registerAndLogin(
       name,
       hashPwd: null,
       mustChangePassword: false,
-      isForeigner: false,
       updatedAt: new Date(),
     })
     .returning({ id: user.id });
@@ -312,7 +311,6 @@ export async function getAdminCookie(
       name: account,
       hashPwd: await new PasswordHasher().hash('Pass1234'),
       mustChangePassword: false,
-      isForeigner: false,
       updatedAt: new Date(),
     })
     .returning({ id: user.id });

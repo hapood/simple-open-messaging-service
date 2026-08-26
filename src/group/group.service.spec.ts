@@ -71,6 +71,8 @@ function createService(
     writeGroupStateInTx: vi.fn().mockResolvedValue(new Map()),
     writeMemberRelationshipIntentInTx: vi.fn().mockResolvedValue(new Map()),
     writeGroupRelationshipIntentInTx: vi.fn().mockResolvedValue(new Map()),
+    reconcileGroupJoinRequestManagerInTx: vi.fn().mockResolvedValue(undefined),
+    notifyGroupLeave: vi.fn().mockResolvedValue(undefined),
     pushStateFeedDomains: vi.fn().mockResolvedValue(undefined),
     ...federationOverrides,
   };
@@ -120,7 +122,16 @@ describe('GroupService membership lifecycle', () => {
 
   it('rejects an owner leaving while another active member remains', async () => {
     const tx = createTx({
-      selects: [[{ role: GroupRole.OWNER }], [{ value: 2 }]],
+      selects: [
+        [
+          {
+            role: GroupRole.OWNER,
+            groupUserId: 99,
+            groupDomain: 'local',
+          },
+        ],
+        [{ value: 2 }],
+      ],
     });
     const service = createService(tx, {});
 
@@ -135,6 +146,96 @@ describe('GroupService membership lifecycle', () => {
       bizCode: BusinessCode.GROUP_OWNER_MUST_TRANSFER,
     });
     expect(tx.update).not.toHaveBeenCalled();
+  });
+
+  it('immediately garbage-collects manager projections when an administrator leaves', async () => {
+    const tx = createTx({
+      selects: [
+        [
+          {
+            role: GroupRole.ADMIN,
+            groupUserId: 99,
+            groupDomain: 'local',
+          },
+        ],
+        [],
+        [{ groupUserId: 99 }],
+        [],
+      ],
+    });
+    tx.execute
+      .mockResolvedValueOnce({ rows: [{ authorized: true }] })
+      .mockResolvedValue({ rows: [{ authorized: false }] });
+    const reconcileGroupJoinRequestManagerInTx = vi
+      .fn()
+      .mockResolvedValue(undefined);
+    const service = createService(tx, {
+      reconcileGroupJoinRequestManagerInTx,
+    });
+
+    await service.leaveGroup({
+      userId: 2,
+      threadId: 10,
+      role: GroupRole.ADMIN,
+      deleteData: false,
+    });
+
+    expect(reconcileGroupJoinRequestManagerInTx).toHaveBeenCalledWith(
+      tx,
+      10,
+      2,
+      expect.any(Array),
+    );
+  });
+
+  it('revokes both directions when a member leaves a local group', async () => {
+    const tx = createTx({
+      selects: [
+        [
+          {
+            role: GroupRole.MEMBER,
+            groupUserId: 99,
+            groupDomain: 'local',
+          },
+        ],
+        [],
+        [{ groupUserId: 99 }],
+        [],
+      ],
+    });
+    const writeMemberRelationshipIntentInTx = vi
+      .fn()
+      .mockResolvedValue(new Map());
+    const writeGroupRelationshipIntentInTx = vi
+      .fn()
+      .mockResolvedValue(new Map());
+    const service = createService(tx, {
+      writeMemberRelationshipIntentInTx,
+      writeGroupRelationshipIntentInTx,
+    });
+
+    await service.leaveGroup({
+      userId: 2,
+      threadId: 10,
+      role: GroupRole.MEMBER,
+      deleteData: false,
+    });
+
+    expect(writeMemberRelationshipIntentInTx).toHaveBeenCalledWith(
+      tx,
+      10,
+      2,
+      'REVOKED',
+      expect.any(Array),
+    );
+    expect(writeGroupRelationshipIntentInTx).toHaveBeenCalledWith(
+      tx,
+      10,
+      2,
+      '',
+      'REVOKED',
+      expect.any(Array),
+    );
   });
 
   it('marks a group dissolved and revokes pending invites while retaining history membership', async () => {

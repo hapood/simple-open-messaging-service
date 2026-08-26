@@ -310,7 +310,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(resolved.event, JSON.stringify(resolved)).toBe('resolved');
     expect(resolved.data).toMatchObject({
       relationship: 'NONE',
-      user: { id: 0, isForeigner: true, domain: DOM_B },
+      user: { id: 0, domain: DOM_B },
     });
     expect(
       await appA.database.query.user.findFirst({
@@ -513,7 +513,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           account: betaAccount,
           name: 'Cross Beta',
           domain: DOM_B,
-          isForeigner: true,
           updatedAt: new Date(),
         })
         .returning({ id: user.id }),
@@ -523,7 +522,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           account: alphaAccount,
           name: 'Cross Alpha',
           domain: DOM_A,
-          isForeigner: true,
           updatedAt: new Date(),
         })
         .returning({ id: user.id }),

@@ -123,12 +123,12 @@ describe('Local-account UserQuotaService (DB-backed)', () => {
     quota = mod.get(UserQuotaService);
     database = mod.get(DatabaseService);
     const local = await database.pool.query<{ id: number }>(
-      'INSERT INTO "User" (account, name, "isForeigner", domain, "updatedAt") VALUES ($1, $2, false, $3, NOW()) RETURNING id',
+      'INSERT INTO "User" (account, name, domain, "updatedAt") VALUES ($1, $2, $3, NOW()) RETURNING id',
       ['quota-local', 'Quota Local', 'local'],
     );
     localUserId = local.rows[0].id;
     const foreign = await database.pool.query<{ id: number }>(
-      'INSERT INTO "User" (account, name, "isForeigner", domain, "updatedAt") VALUES ($1, $2, true, $3, NOW()) RETURNING id',
+      'INSERT INTO "User" (account, name, domain, "updatedAt") VALUES ($1, $2, $3, NOW()) RETURNING id',
       ['quota-foreign', 'Quota Foreign', 'peer.local'],
     );
     foreignUserId = foreign.rows[0].id;

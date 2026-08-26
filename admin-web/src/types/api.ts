@@ -78,7 +78,6 @@ export interface WebAuthnLoginBegin {
 export interface User {
   id: number;
   account: string;
-  isForeigner: boolean;
   domain: string | null;
   createdAt: number;
   updatedAt: number;
@@ -483,7 +482,6 @@ export interface UserDetailUser {
   avatar: string;
   bio: string;
   domain: string | null;
-  isForeigner: boolean;
   isGroup: boolean;
   isDeleted: boolean;
   tokenVersion: number;

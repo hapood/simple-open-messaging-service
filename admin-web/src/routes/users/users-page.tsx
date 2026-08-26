@@ -101,7 +101,7 @@ export function UsersPage() {
   }, [search, page]);
 
   const listIds = (data?.list ?? [])
-    .filter((u) => !u.isForeigner)
+    .filter((u) => u.domain === 'local')
     .map((u) => u.id);
   const allSelected =
     listIds.length > 0 && listIds.every((id) => selected.has(id));
@@ -234,7 +234,7 @@ export function UsersPage() {
                       aria-label={t('users.selectRow', { name: u.account })}
                       checked={selected.has(u.id)}
                       onChange={() => toggle(u.id)}
-                      disabled={u.isForeigner}
+                      disabled={u.domain !== 'local'}
                       className="size-4"
                     />
                   </TableCell>
@@ -250,7 +250,7 @@ export function UsersPage() {
                     {u.domain ?? '—'}
                   </TableCell>
                   <TableCell>
-                    {u.isForeigner ? t('common.yes') : t('common.no')}
+                    {u.domain !== 'local' ? t('common.yes') : t('common.no')}
                   </TableCell>
                   <TableCell>
                     {u.isDeleted ? (
@@ -297,7 +297,7 @@ export function UsersPage() {
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center justify-end gap-1">
-                      {canManage && !u.isForeigner ? (
+                      {canManage && u.domain === 'local' ? (
                         <Button
                           variant="outline"
                           size="sm"
@@ -319,7 +319,7 @@ export function UsersPage() {
                           <MoreHorizontal className="size-4" />
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          {!u.isForeigner && u.isDeleted ? (
+                          {u.domain === 'local' && u.isDeleted ? (
                             <DropdownMenuItem
                               onClick={() =>
                                 onAction(
@@ -331,7 +331,7 @@ export function UsersPage() {
                             >
                               {t('users.action.unban')}
                             </DropdownMenuItem>
-                          ) : !u.isForeigner ? (
+                          ) : u.domain === 'local' ? (
                             <DropdownMenuItem
                               variant="destructive"
                               onClick={() =>
@@ -341,7 +341,7 @@ export function UsersPage() {
                               {t('users.action.ban')}
                             </DropdownMenuItem>
                           ) : null}
-                          {!u.isForeigner ? (
+                          {u.domain === 'local' ? (
                             <DropdownMenuItem
                               onClick={() =>
                                 onAction(
@@ -357,7 +357,7 @@ export function UsersPage() {
                           <DropdownMenuItem onClick={() => setSessionsUser(u)}>
                             {t('users.action.viewSessions')}
                           </DropdownMenuItem>
-                          {canManage && !u.isForeigner ? (
+                          {canManage && u.domain === 'local' ? (
                             <>
                               <DropdownMenuItem
                                 onClick={() => setGenPwdUser(u)}

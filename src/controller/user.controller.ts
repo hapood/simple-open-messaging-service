@@ -618,7 +618,6 @@ export class UserController {
         ? `data:image/webp;base64,${profile.avatar.b64}`
         : '',
       bio: profile.bio,
-      isForeigner: true,
       isGroup: profile.account.startsWith('!'),
       domain: profile.domain,
       createdAt: now,

@@ -29,7 +29,6 @@ function mockUser(id: number, account: string): readonly [number, User] {
     {
       id,
       account,
-      isForeigner: false,
       createdAt: 0,
       updatedAt: 0,
       isDeleted: false,
@@ -44,7 +43,6 @@ const MOCK_USERS: ReadonlyMap<number, User> = new Map([
     {
       id: 1,
       account: 'Me',
-      isForeigner: false,
       createdAt: 0,
       updatedAt: 0,
       isDeleted: false,
@@ -55,7 +53,6 @@ const MOCK_USERS: ReadonlyMap<number, User> = new Map([
     {
       id: 2,
       account: 'Alice',
-      isForeigner: false,
       createdAt: 0,
       updatedAt: 0,
       isDeleted: false,

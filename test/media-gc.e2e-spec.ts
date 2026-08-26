@@ -301,7 +301,6 @@ describe('Media asset garbage collection', () => {
         domain: 'local',
         hashPwd: 'x',
         name: 'live',
-        isForeigner: false,
         avatar: liveUrl,
         updatedAt: new Date(),
       })
@@ -343,7 +342,6 @@ describe('Media asset garbage collection', () => {
         account: `gc-${randomUUID().replace(/-/g, '').slice(0, 8)}`,
         hashPwd: 'x',
         name: 'gc',
-        isForeigner: false,
         updatedAt: new Date(),
       })
       .returning();

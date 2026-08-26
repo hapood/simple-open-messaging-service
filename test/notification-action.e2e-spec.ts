@@ -60,7 +60,6 @@ describe('notifications/action (descriptor button round-trip)', () => {
         account: 'alice',
         hashPwd: 'x',
         name: 'Alice',
-        isForeigner: false,
         updatedAt: now,
       })
       .returning({ id: user.id });
@@ -180,7 +179,6 @@ describe('notifications/action (descriptor button round-trip)', () => {
         account: 'bob',
         hashPwd: 'x',
         name: 'Bob',
-        isForeigner: false,
         updatedAt: now,
       })
       .returning({ id: user.id });

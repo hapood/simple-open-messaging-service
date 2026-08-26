@@ -238,7 +238,6 @@ describe('UserAvatarComponent offline cold-start integration', () => {
       name: 'Cached Alice',
       avatar: '/uploads/avatars/self-512.webp',
       bio: '',
-      isForeigner: false,
       isGroup: false,
       domain: 'local',
       createdAt: 0,

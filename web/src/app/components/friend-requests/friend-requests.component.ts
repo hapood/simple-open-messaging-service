@@ -64,7 +64,6 @@ type PendingReq = {
   name?: string;
   avatar?: string;
   account?: string;
-  isForeigner?: boolean;
   domain?: string;
   reqMessage?: string;
   status: number; // 0 pending, 1 accepted, -1 invalid, -2 expired, -3 revoked, -4 rejected
@@ -628,7 +627,7 @@ export class FriendRequestsComponent implements OnDestroy {
     if (req.kind === 'GROUP' && req.account && req.domain)
       return { account: req.account, domain: req.domain };
     if (req.kind === 'GROUP' && req.account) return { inviteId: req.account };
-    return req.isForeigner && req.account && req.domain
+    return req.domain !== 'local' && req.account && req.domain
       ? { account: req.account, domain: req.domain }
       : { inviteId: req.id };
   }
@@ -644,7 +643,6 @@ export class FriendRequestsComponent implements OnDestroy {
         name: peer.name,
         avatar: peer.avatar,
         account: peer.account,
-        isForeigner: peer.isForeigner,
         domain: peer.domain,
         reqMessage: projection.note,
         status:
@@ -670,7 +668,6 @@ export class FriendRequestsComponent implements OnDestroy {
       avatar: group.avatar,
       account: group.account,
       domain: group.domain,
-      isForeigner: !group.isLocal,
       reqMessage: group.description,
       status:
         projection.status === 'ACCEPTED'
@@ -796,7 +793,7 @@ export class FriendRequestsComponent implements OnDestroy {
     const initialUser = this.initialUser();
     if (initialUser) {
       this.activeTab.set(0);
-      if (initialUser.isForeigner && initialUser.domain) {
+      if (initialUser.domain !== 'local' && initialUser.domain) {
         this.searchText.set(`${initialUser.account}@${initialUser.domain}`);
         this.searchUser();
       } else {

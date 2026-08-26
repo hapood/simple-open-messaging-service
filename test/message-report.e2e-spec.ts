@@ -63,21 +63,18 @@ describe('message report workflow', () => {
           account: 'reporter',
           name: 'Reporter',
           domain: 'local',
-          isForeigner: false,
           updatedAt: now,
         },
         {
           account: 'creator',
           name: 'Creator',
           domain: 'local',
-          isForeigner: false,
           updatedAt: now,
         },
         {
           account: 'moderator',
           name: 'Moderator',
           domain: 'local',
-          isForeigner: false,
           updatedAt: now,
         },
       ])

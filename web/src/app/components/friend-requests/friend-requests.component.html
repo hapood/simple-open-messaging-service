@@ -171,13 +171,13 @@
                         [identityId]="userIdentity(u)"
                         [account]="u.account"
                         [src]="u.avatar"
-                        [federatedDomain]="u.isForeigner ? u.domain : null"
+                        [federatedDomain]="u.domain !== 'local' ? u.domain : null"
                       ></app-user-avatar>
                     </div>
                     <div class="result-meta">
                       <app-user-identity-label
                         [name]="displayUserName(u)"
-                        [domain]="u.isForeigner ? u.domain : null"
+                        [domain]="u.domain !== 'local' ? u.domain : null"
                       />
                       <div class="user-account">
                         {{ u.bio || ('friend.noBio' | transloco) }}
@@ -335,14 +335,14 @@
           [account]="req.account"
           [src]="req.avatar"
           [federatedDomain]="
-            req.kind === 'GROUP' || req.isForeigner ? req.domain : null
+            req.kind === 'GROUP' || req.domain !== 'local' ? req.domain : null
           "
         />
         <div class="detail-profile-copy">
           <app-user-identity-label
             [name]="req.name ?? ('friend.invalidUser' | transloco)"
             [domain]="
-              req.kind === 'FRIEND' && req.isForeigner ? req.domain : null
+              req.kind === 'FRIEND' && req.domain !== 'local' ? req.domain : null
             "
           />
           @if (req.kind === 'GROUP') {

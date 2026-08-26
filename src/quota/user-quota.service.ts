@@ -590,11 +590,11 @@ export class UserQuotaService implements OnModuleInit {
   private async assertLocalAccount(userId: number): Promise<void> {
     const row = await this.database.db.query.user.findFirst({
       where: eq(user.id, userId),
-      columns: { isForeigner: true, isGroup: true },
+      columns: { domain: true, isGroup: true },
     });
     if (!row)
       throw new BusinessException(BusinessCode.NOT_FOUND, 'user not found');
-    if (row.isForeigner || row.isGroup) {
+    if (row.domain !== 'local' || row.isGroup) {
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
         'personal quota is available only for local user accounts',

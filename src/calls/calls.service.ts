@@ -226,9 +226,9 @@ export class CallsService implements OnModuleDestroy {
     // late incoming while its own outgoing screen is up).
     const callee = await this.database.db.query.user.findFirst({
       where: eq(user.id, dto.calleeUserId),
-      columns: { isForeigner: true, account: true, domain: true },
+      columns: { account: true, domain: true },
     });
-    const federated = !!callee?.isForeigner;
+    const federated = callee?.domain !== 'local';
 
     // New call: neither party may already be in an active call (one active call per user). The check + the
     // activeByUser.set below are SYNCHRONOUS (no await between) → atomic on the event loop → no glare race.

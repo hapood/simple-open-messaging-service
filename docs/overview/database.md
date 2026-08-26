@@ -56,7 +56,6 @@ SOMS uses PostgreSQL (+ TimescaleDB) through Drizzle ORM and `node-postgres`. Th
 | `hashPwd`                               | VarChar(127)? | argon2 hash; **null = OTP/QR-only account** (no password)                         |
 | `mustChangePassword`                    | Boolean       | true = admin-generated INITIAL password the user must rotate (one-time bootstrap) |
 | `name` / `avatar` / `bio`               | String        | display name / avatar path / bio — **folded in** from the former `UserExtra`      |
-| `isForeigner`                           | Boolean       | cross-domain (federated) user                                                     |
 | `isGroup`                               | Boolean       | true iff a `!`-sigil group-identity row (mirrors account grammar)                 |
 | `domain`                                | VarChar(63)   | `"local"` for users on THIS server; `<peer-domain>` for a federated stub          |
 | `profileRev` / `remoteProfileRev`       | Int / Int?    | profile revision (origin-authoritative) / mirror's last-localized revision        |
@@ -158,13 +157,15 @@ coordinate, retention policy, and API response shape.
 
 ### Group — Group-exclusive state
 
-Identity (name/avatar/bio) lives on the group's `!`-User row; this table holds owner + roster revision.
+Identity (name/avatar/bio) lives on the group's `!`-User row; this table holds group lifecycle and federation-consumer state.
 
-| Field                           | Type                  | Description                                                            |
-| ------------------------------- | --------------------- | ---------------------------------------------------------------------- |
-| `groupUserId`                   | Int (unique, FK→User) | the `!`-User identity row; 1:1 with the GROUP thread                   |
-| `ownerId`                       | Int                   | denormalized owner (fast lookup)                                       |
-| `rosterRev` / `remoteRosterRev` | Int / Int?            | origin roster revision (authoritative) / mirror's last-pulled revision |
+| Field                       | Type                  | Description                                                               |
+| --------------------------- | --------------------- | ------------------------------------------------------------------------- |
+| `groupUserId`               | Int (unique, FK→User) | the `!`-User identity row; 1:1 with the GROUP thread                      |
+| `ownerId`                   | Int                   | denormalized owner (fast lookup)                                          |
+| `remoteGroupMetaFeedId`     | BigInt?               | last consumed Group Meta Feed ID for a federated mirror                   |
+| `dissolvedAt`               | Timestamp?            | terminal dissolve marker; null while the group remains active             |
+| `createdAt` / `updatedAt`   | Timestamp             | lifecycle timestamps                                                       |
 
 ### ThreadRevision / ProfileStateRevision — Client state log
 

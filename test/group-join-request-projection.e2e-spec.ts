@@ -243,7 +243,7 @@ describe('group join request projection', () => {
     expect(history.body.data.data[0].status).toBe('REVOKED');
   });
 
-  it('backfills a promoted administrator and removes its projection/profile on demotion', async () => {
+  it('immediately collects manager projections on demotion and leave', async () => {
     const owner = await seedUserWithSession(app, 'join-role-owner');
     const admin = await seedUserWithSession(app, 'join-role-admin');
     const applicant = await seedUserWithSession(app, 'join-role-applicant');
@@ -343,5 +343,33 @@ describe('group join request projection', () => {
         ),
       }),
     ).toBeUndefined();
+
+    const promotedAgain = await request(app.getHttpServer())
+      .post('/api/v1/group/set-role')
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ groupId: threadId, userId: admin.id, role: 'ADMIN' });
+    expect(promotedAgain.body.code).toBe(BusinessCode.OK);
+    expect(
+      await database.db.query.groupRequestProjection.findMany({
+        where: and(
+          eq(groupRequestProjection.managerUserId, admin.id),
+          eq(groupRequestProjection.threadId, threadId),
+        ),
+      }),
+    ).toHaveLength(1);
+
+    const left = await request(app.getHttpServer())
+      .post('/api/v1/group/leave')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ groupId: threadId, deleteData: false });
+    expect(left.body.code, JSON.stringify(left.body)).toBe(BusinessCode.OK);
+    expect(
+      await database.db.query.groupRequestProjection.findMany({
+        where: and(
+          eq(groupRequestProjection.managerUserId, admin.id),
+          eq(groupRequestProjection.threadId, threadId),
+        ),
+      }),
+    ).toEqual([]);
   });
 });

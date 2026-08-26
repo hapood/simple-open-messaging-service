@@ -15,7 +15,7 @@
       [account]="request().account"
       [src]="request().avatar"
       [federatedDomain]="
-        request().kind === 'GROUP' || request().isForeigner
+        request().kind === 'GROUP' || request().domain !== 'local'
           ? request().domain
           : null
       "
@@ -26,7 +26,7 @@
       <app-user-identity-label
         [name]="request().name ?? ('friend.invalidUser' | transloco)"
         [domain]="
-          request().kind === 'FRIEND' && request().isForeigner
+          request().kind === 'FRIEND' && request().domain !== 'local'
             ? request().domain
             : null
         "

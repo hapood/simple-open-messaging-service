@@ -4038,7 +4038,6 @@ export interface components {
        * @description Whether an external user
        * @example false
        */
-      isForeigner: boolean;
       /**
        * @description Whether this identity is a group
        * @example false
@@ -4398,7 +4397,6 @@ export interface components {
       name: string;
       avatar: string;
       domain: string;
-      isForeigner: boolean;
     };
     InviteDto: {
       id: string;

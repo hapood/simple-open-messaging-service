@@ -66,10 +66,10 @@ Crossed requests and a valid peer acceptance upgrade a local `REQUESTED` to
 visibility, the publisher orders `ACCEPTED`, then `PROFILE`, then `GROUP_META`, then complete
 `MEMBER_PROFILE` snapshots for the roster visible to that peer. Unchanged member
 snapshots are not reindexed when the effective projection already carries the
-publisher's current `profileRev` or `rosterRev`. Only a missing or older
-dependency receives a new feed ID; the ordering requirement applies to newly
-allocated dependencies. Reusing a revision with different snapshot content is
-invalid.
+publisher's current `profileRev` or an equivalent current roster snapshot. Only
+a missing or older dependency receives a new feed ID; the ordering requirement
+applies to newly allocated dependencies. Reusing a revision with different
+snapshot content is invalid.
 
 When a member is neither a friend visible to the target peer nor a member of any
 shared group, the publisher removes `MEMBER_PROFILE` directly from the projection;

@@ -18,7 +18,6 @@ export interface FriendRequestCardModel {
   name?: string;
   avatar?: string;
   account?: string;
-  isForeigner?: boolean;
   domain?: string;
   reqMessage?: string;
   status: number;

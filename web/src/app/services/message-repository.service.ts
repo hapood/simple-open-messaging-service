@@ -11,7 +11,6 @@ import {
   MediaStatus,
   StandardResponse,
 } from './model';
-import { ThreadDeletionLockService } from './thread-deletion-lock.service';
 import { SingleFlight } from '../lib/single-flight';
 
 /** The read query shape — mirrors `MsgService.queryMessageLog` params (so the source swaps over 1:1). */
@@ -92,7 +91,6 @@ export function reduceMediaStatus(
  */
 @Injectable({ providedIn: 'root' })
 export class MessageRepository {
-  private readonly deletionLock = inject(ThreadDeletionLockService);
   private readonly webdb = inject(WebdbService);
   private readonly ws = inject(WebsocketService);
   private readonly msg = inject(MsgService);
@@ -156,8 +154,7 @@ export class MessageRepository {
           (m) =>
             m.event === 'NEW_MESSAGE' &&
             m.status === 0 &&
-            m.data !== undefined &&
-            !this.deletionLock.has((m.data as { threadId: number }).threadId),
+            m.data !== undefined,
         ),
       )
       .subscribe((m) =>
@@ -199,7 +196,6 @@ export class MessageRepository {
           status: 'ready' | 'failed';
           v: number;
         };
-        if (this.deletionLock.has(d.threadId)) return;
         if (
           typeof d?.threadId === 'number' &&
           typeof d?.seq === 'number' &&

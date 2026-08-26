@@ -65,7 +65,6 @@ describe('federated message deletion transaction ordering', () => {
         account: 'bob',
         name: 'Bob',
         domain: 'peer.test',
-        isForeigner: true,
         updatedAt: now,
       })
       .returning({ id: user.id });

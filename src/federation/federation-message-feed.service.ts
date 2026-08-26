@@ -543,14 +543,14 @@ export class FederationMessageFeedService {
                 JOIN "User" member ON member.id = participant."userId"
                 WHERE participant."threadId" = thread.id
                   AND member.account = ${selector.account}
-                  AND member."isForeigner" = false
+                  AND member.domain = 'local'
               )
               AND EXISTS (
                 SELECT 1 FROM "ThreadParticipant" participant
                 JOIN "User" member ON member.id = participant."userId"
                 WHERE participant."threadId" = thread.id
                   AND member.account = ${selector.peerAccount}
-                  AND member."isForeigner" = true
+                  AND member.domain <> 'local'
                   AND member.domain = ${peerDomain}
               )
             LIMIT 1

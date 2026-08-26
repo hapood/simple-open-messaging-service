@@ -18,33 +18,22 @@ import { MessageSearchComponent } from '../message-search/message-search.compone
 import { ConversationItem, displayUserName } from '../../services/model';
 import { LayoutService } from '../../services/layout.service';
 import { UserService } from '../../services/user.service';
-import { GroupService } from '../../services/group.service';
 import { ConversationListService } from '../../services/conversation-list.service';
-import { RouteService, PopupType } from '../../services/route.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
 import { CallAdapterService } from '../../services/call-adapter';
 import { CallEventService } from '../../services/call-event.service';
 import { uuid } from '../../lib/uuid';
-import { TranslocoService } from '@jsverse/transloco';
-import { translateBizResult } from '../../services/biz-code';
-import { ToastService } from '../../services/toast.service';
-import { ThreadDeletionLockService } from '../../services/thread-deletion-lock.service';
-import { firstValueFrom } from 'rxjs';
 import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter';
 import { ChatContextService } from '../message-thread/chat-context.service';
 
 /**
  * Chat surface header: back (mobile), the thread title (tap → peer-profile / group-info aside), and
- * the top-right MORE button, which opens a {@link ChatActionMenuComponent} anchored CDK overlay with
- * the full per-thread action set (view info, search, mute, pin; P2P: block,
- * delete; GROUP: leave). System settings is NOT here — it lives in the global nav
+ * the top-right MORE button. P2P opens the friend-info aside directly; GROUP keeps an anchored
+ * {@link ChatActionMenuComponent}. System settings is NOT here — it lives in the global nav
  * (icon-rail / nav-drawer), not a per-thread context menu.
  *
- * Destructive actions use a two-tap inline confirm driven by swapping the menu's entry list (no separate
- * confirm dialog). Mute / pin apply optimistically to the
- * conversation list (via applyThreadMeta) and the durable state delta re-confirms idempotently.
- * Actions that affect the shell (delete / leave → navigate away) or conversation state
- * (block → banner) are applied through their owning services.
+ * Mute / pin apply optimistically to the conversation list (via applyThreadMeta) and the durable state
+ * delta re-confirms idempotently. P2P relationship actions are owned exclusively by the friend panel.
  */
 @Component({
   selector: 'app-message-header',
@@ -72,17 +61,12 @@ export class MessageHeaderComponent {
   private readonly layout = inject(LayoutService);
   private readonly threadAdapter = inject(MESSAGE_THREAD_ADAPTER);
   private readonly userService = inject(UserService);
-  private readonly groupService = inject(GroupService);
   private readonly convList = inject(ConversationListService);
-  private readonly routeService = inject(RouteService);
   private readonly callAdapter = inject(CallAdapterService);
   private readonly callEvents = inject(CallEventService);
   readonly callActive = computed(
     () => this.callEvents.callState().phase !== 'idle',
   );
-  private readonly transloco = inject(TranslocoService);
-  private readonly toast = inject(ToastService);
-  private readonly deletionLock = inject(ThreadDeletionLockService);
   private readonly chatContext = inject(ChatContextService);
 
   /** Whether the call button shows: 1:1 calling is supported (Android native only — web/desktop calling is
@@ -113,7 +97,7 @@ export class MessageHeaderComponent {
       peer.name ?? '',
       peer.avatar ?? '',
       peer.account,
-      peer.isForeigner ? (peer.domain ?? '') : '',
+      peer.domain !== 'local' ? (peer.domain ?? '') : '',
     );
   }
 
@@ -179,6 +163,11 @@ export class MessageHeaderComponent {
 
   /** Whether the action menu overlay is open. */
   readonly menuOpen = signal(false);
+  readonly moreExpanded = computed(() =>
+    this.userMsgTrd()?.type === 'P2P'
+      ? this.nav.asideTop()?.panel === 'profile'
+      : this.menuOpen(),
+  );
   readonly hasUnreadJoinRequests = computed(() => {
     const trd = this.userMsgTrd();
     if (trd?.type !== 'GROUP' || !this.chatContext.canAdministerGroup())
@@ -186,28 +175,19 @@ export class MessageHeaderComponent {
     const head = this.userService.groupJoinRequestHeads().get(trd.threadId);
     return !!head && head.readFeedId < head.latestFeedId;
   });
-  /** The action awaiting a two-tap confirm (null = normal menu list). */
-  readonly confirmKey = signal<string | null>(null);
-
-  /** The menu entry list — the normal per-thread set, or the inline confirm pair when a destructive
-   *  action is staged. Computed so swapping confirmKey re-renders the overlay contents in place. */
-  readonly entries = computed<ChatMenuEntry[]>(() => {
-    const pending = this.confirmKey();
-    if (pending) return this.confirmEntries(pending);
-    return this.normalEntries();
-  });
+  /** Group action-menu entries. P2P bypasses this menu and opens friend info directly. */
+  readonly entries = computed<ChatMenuEntry[]>(() => this.normalEntries());
 
   private normalEntries(): ChatMenuEntry[] {
     const trd = this.userMsgTrd();
     if (!trd) return [];
-    const isP2P = trd.type === 'P2P';
     const list: ChatMenuEntry[] = [
       // Label mirrors the panel title it opens: "Contact info" for P2P, "Group Info" for groups — so
       // the menu item and the popup (aside panel) header read the same (chat.menuViewInfo / group.title).
       {
         kind: 'action',
         key: 'viewInfo',
-        labelKey: isP2P ? 'chat.menuViewInfo' : 'group.title',
+        labelKey: 'group.title',
         icon: AppIconType.EYE,
       },
       {
@@ -236,7 +216,7 @@ export class MessageHeaderComponent {
         icon: AppIconType.PIN,
       },
     ];
-    if (!isP2P && this.chatContext.canAdministerGroup())
+    if (this.chatContext.canAdministerGroup())
       list.splice(1, 0, {
         kind: 'action',
         key: 'joinRequests',
@@ -247,54 +227,20 @@ export class MessageHeaderComponent {
     return list;
   }
 
-  /** The inline confirm pair for a staged destructive action. */
-  private confirmEntries(pending: string): ChatMenuEntry[] {
-    const confirmLabel: Record<string, string> = {
-      block: 'chat.menuBlockConfirm',
-      deleteChat: 'chat.menuDeleteChatConfirm',
-      leaveGroup: 'chat.menuLeaveGroupConfirm',
-    };
-    return [
-      {
-        kind: 'action',
-        key: '__confirm__',
-        labelKey: confirmLabel[pending] ?? '',
-        danger: true,
-      },
-      { kind: 'divider' },
-      { kind: 'action', key: '__back__', labelKey: 'chat.menuCancel' },
-    ];
-  }
-
   toggleMenu(): void {
-    this.confirmKey.set(null);
+    if (this.userMsgTrd()?.type === 'P2P') {
+      this.showThreadInfo();
+      return;
+    }
     this.menuOpen.set(!this.menuOpen());
   }
 
   closeMenu(): void {
     this.menuOpen.set(false);
-    this.confirmKey.set(null);
   }
 
-  /** Route a menu selection: confirm-actions stage the two-tap, otherwise dispatch + close. */
+  /** Dispatch a group menu selection, then close the anchored menu. */
   onSelect(key: string): void {
-    if (key === '__back__') {
-      this.confirmKey.set(null);
-      return;
-    }
-    if (key === '__confirm__') {
-      const action = this.confirmKey();
-      this.confirmKey.set(null);
-      this.menuOpen.set(false);
-      if (action) void this.runAction(action);
-      return;
-    }
-    // Destructive actions stage the inline two-tap confirm first.
-    if (key === 'block') {
-      this.confirmKey.set(key);
-      return;
-    }
-    // Single-tap actions execute immediately and close.
     this.menuOpen.set(false);
     void this.runAction(key);
   }
@@ -321,15 +267,6 @@ export class MessageHeaderComponent {
         return;
       case 'pin':
         this.togglePin(threadId, trd.pinned);
-        return;
-      case 'block':
-        this.toggleBlock(trd, !trd.blocked);
-        return;
-      case 'deleteChat':
-        this.deleteChat(trd);
-        return;
-      case 'leaveGroup':
-        this.leaveGroup(trd);
         return;
     }
   }
@@ -358,95 +295,6 @@ export class MessageHeaderComponent {
           pinnedAt: pinned ? Date.now() : null,
         }),
     });
-  }
-
-  /** Block / unblock (P2P). The backend drops delivery + query-messages hides the blocked creator. The
-   *  banner + input swap are derived from the conv item's `blocked` field, so patching it here flips them. */
-  private toggleBlock(trd: ConversationItem, block: boolean): void {
-    this.threadAdapter
-      .setBlocked({ threadId: trd.threadId, blocked: block })
-      .subscribe((res) => {
-        if (res.code !== 0) return;
-        this.convList.applyThreadMeta(trd.threadId, { blocked: block });
-      });
-  }
-
-  /** Unfriend ends write capability but retains this conversation and its history. */
-  private deleteChat(trd: ConversationItem): void {
-    const peerId = trd.peerUser?.id;
-    if (peerId === undefined) return;
-    this.routeService.popupDlg(
-      PopupType.CONFIRM,
-      {
-        titleKey: 'chat.unfriendConfirmTitle',
-        messageKey: 'chat.unfriendConfirmBody',
-        confirmKey: 'chat.menuUnfriend',
-        cancelKey: 'common.cancel',
-        danger: true,
-      },
-      (result) => {
-        if (!result) return;
-        void this.runLockedDelete(
-          trd.threadId,
-          () =>
-            firstValueFrom(this.userService.deleteFriend({ userId: peerId })),
-          () =>
-            this.convList.applyThreadMeta(trd.threadId, {
-              friendshipActive: false,
-              conversationState: 'READ_ONLY',
-            }),
-        );
-      },
-    );
-  }
-
-  /** Leave group: reload the list (the row drops) and go home. */
-  private leaveGroup(trd: ConversationItem): void {
-    const groupId = trd.group?.id;
-    if (groupId === undefined) return;
-    this.routeService.popupDlg(
-      PopupType.CONFIRM,
-      {
-        titleKey: 'chat.leaveConfirmTitle',
-        messageKey: 'chat.menuLeaveGroupConfirm',
-        confirmKey: 'chat.menuLeaveGroup',
-        cancelKey: 'common.cancel',
-        danger: true,
-      },
-      (result) => {
-        if (!result) return;
-        void this.runLockedDelete(
-          trd.threadId,
-          () => firstValueFrom(this.groupService.leaveGroup({ groupId })),
-          () =>
-            this.convList.applyThreadMeta(trd.threadId, {
-              conversationState: 'READ_ONLY',
-            }),
-        );
-      },
-    );
-  }
-
-  private async runLockedDelete(
-    threadId: number,
-    request: () => Promise<{ code: number; message: string }>,
-    onRetain: () => void,
-    reloadAfter = true,
-  ): Promise<void> {
-    if (!this.deletionLock.begin(threadId)) return;
-    try {
-      const res = await request();
-      if (res.code !== 0) {
-        this.toast.warn(translateBizResult(res, this.transloco));
-        return;
-      }
-      onRetain();
-    } catch {
-      this.toast.warn(this.transloco.translate('errors.networkError'));
-    } finally {
-      this.deletionLock.end(threadId);
-      if (reloadAfter) this.convList.load();
-    }
   }
 
   /** Mobile back arrow: delegate to the nav stack's `back`, which peels layers in priority order

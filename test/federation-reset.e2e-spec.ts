@@ -203,7 +203,7 @@ describe('Federation destructive reset', () => {
         sql`
       SELECT
         (SELECT count(*)::int FROM "User"
-          WHERE domain = ${FED_DOMAIN_B} AND "isForeigner" = true) AS users,
+          WHERE domain = ${FED_DOMAIN_B} AND domain <> 'local') AS users,
         (SELECT count(*)::int FROM "ThreadParticipant"
           WHERE "threadId" = ${affectedThreadId}) AS participants,
         (SELECT count(*)::int FROM "Message"

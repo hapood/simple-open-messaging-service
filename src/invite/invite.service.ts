@@ -86,7 +86,6 @@ const USER_SELECT = {
   name: true,
   avatar: true,
   domain: true,
-  isForeigner: true,
 } as const;
 
 /**
@@ -163,7 +162,7 @@ export class InviteService {
         FROM "MessageThread" thread
         JOIN "User" group_user ON group_user.id = thread."groupUserId"
         WHERE thread.type = 'GROUP'
-          AND group_user."isForeigner" = true
+          AND group_user.domain <> 'local'
           AND NOT EXISTS (
             SELECT 1 FROM "Message" message WHERE message."threadId" = thread.id
           )
@@ -419,14 +418,14 @@ export class InviteService {
       }),
       tx.query.user.findFirst({
         where: eq(user.id, peerUserId),
-        columns: { isForeigner: true, domain: true },
+        columns: { domain: true },
       }),
     ]);
     // A federated pair is always locally total: the direction authored here is the requested grant,
     // while an as-yet-unseen peer-authored direction is represented as REVOKED. This cached reverse
     // fact is never published to the peer because this server is not its author; a later peer state
     // item replaces it through the normal inbound merge path.
-    if (wantsFriend && peer?.isForeigner && !opposite) {
+    if (wantsFriend && peer?.domain !== 'local' && !opposite) {
       await tx
         .insert(relationshipIntent)
         .values({
@@ -475,7 +474,7 @@ export class InviteService {
     // A purely local mutual request has no wire acknowledgement to wait for;
     // confirm the opposite direction inside this same transaction. Federated
     // pairs must receive the peer's explicit FRIEND state before activation.
-    if (desired === 'ACCEPTED' && peer && !peer.isForeigner) {
+    if (desired === 'ACCEPTED' && peer?.domain === 'local') {
       await tx.execute(sql`
         UPDATE "RelationshipIntent" SET status = 'ACCEPTED', "expiresAt" = NULL,
           "updatedAt" = CURRENT_TIMESTAMP
@@ -489,7 +488,7 @@ export class InviteService {
       actorUserId,
       peerUserId,
     );
-    if (peer?.isForeigner && pairEffect.threadId !== undefined) {
+    if (peer && peer.domain !== 'local' && pairEffect.threadId !== undefined) {
       if (desired === 'REQUESTED' || desired === 'ACCEPTED')
         await openFederatedAudienceInTx(tx, peer.domain, pairEffect.threadId);
       else
@@ -554,7 +553,7 @@ export class InviteService {
         expiresAt: direction.expiresAt?.getTime() ?? null,
       };
       for (const owner of [actor, subject]) {
-        if (owner.isForeigner || owner.isDeleted) continue;
+        if (owner.domain !== 'local' || owner.isDeleted) continue;
         const peer = owner.id === actor.id ? subject : actor;
         const projectedPeer = this.clientInviteUser(peer);
         if (peer.id === secondUserId && secondUserSnapshot) {
@@ -595,7 +594,6 @@ export class InviteService {
       avatar: value.avatar,
       bio: value.bio,
       domain: value.domain,
-      isForeigner: value.isForeigner,
     };
   }
 
@@ -932,10 +930,10 @@ export class InviteService {
           });
           const requester = await tx.query.user.findFirst({
             where: eq(user.id, friend.authorUserId),
-            columns: { isForeigner: true },
+            columns: { domain: true },
           });
           if (!pair?.active || pair.threadId === null) {
-            if (!requester?.isForeigner)
+            if (requester?.domain === 'local')
               throw new Error(
                 'local mutual friend requests did not activate the pair',
               );
@@ -1204,7 +1202,6 @@ export class InviteService {
         name: row.displayName ?? row.remoteAccount,
         avatar: row.avatar ?? '',
         domain: row.remoteDomain,
-        isForeigner: true,
       };
       return {
         // List identity only. Mutations select this request by the explicit peer Address.
@@ -1728,7 +1725,6 @@ export class InviteService {
         id: user.id,
         account: user.account,
         domain: user.domain,
-        isForeigner: user.isForeigner,
       })
       .from(user)
       .where(inArray(user.id, [userAId, userBId]));

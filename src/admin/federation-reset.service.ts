@@ -97,7 +97,7 @@ export class FederationResetService implements OnModuleInit {
 
       const result = await tx.execute<PreviewRow>(sql`
         WITH remote_users AS (
-          SELECT id FROM "User" WHERE domain = ${normalized} AND "isForeigner" = true
+          SELECT id FROM "User" WHERE domain = ${normalized} AND domain <> 'local'
         ), affected_threads AS (
           SELECT DISTINCT tp."threadId"
           FROM "ThreadParticipant" tp
@@ -170,7 +170,7 @@ export class FederationResetService implements OnModuleInit {
       WITH remote_users AS (
         SELECT id
         FROM "User"
-        WHERE domain = ${domain} AND "isForeigner" = true
+        WHERE domain = ${domain} AND domain <> 'local'
       ), affected_threads AS (
         SELECT tp."threadId"
         FROM "ThreadParticipant" tp
@@ -284,7 +284,7 @@ export class FederationResetService implements OnModuleInit {
       await tx.execute(sql`
         WITH remote_users AS (
           SELECT id FROM "User"
-          WHERE domain = ${domain} AND "isForeigner" = true
+          WHERE domain = ${domain} AND domain <> 'local'
         )
         DELETE FROM "RelationshipIntent"
         WHERE "authorUserId" IN (SELECT id FROM remote_users)
@@ -294,27 +294,27 @@ export class FederationResetService implements OnModuleInit {
         DELETE FROM "UploadSession"
         WHERE "creatorId" IN (
           SELECT id FROM "User"
-          WHERE domain = ${domain} AND "isForeigner" = true
+          WHERE domain = ${domain} AND domain <> 'local'
         )
       `);
       await tx.execute(sql`
         DELETE FROM "PushToken" WHERE "userId" IN (
-          SELECT id FROM "User" WHERE domain = ${domain} AND "isForeigner" = true
+          SELECT id FROM "User" WHERE domain = ${domain} AND domain <> 'local'
         )
       `);
       await tx.execute(sql`
         DELETE FROM "LoginCode" WHERE "userId" IN (
-          SELECT id FROM "User" WHERE domain = ${domain} AND "isForeigner" = true
+          SELECT id FROM "User" WHERE domain = ${domain} AND domain <> 'local'
         )
       `);
       await tx.execute(sql`
         DELETE FROM "SessionToken" WHERE "userId" IN (
-          SELECT id FROM "User" WHERE domain = ${domain} AND "isForeigner" = true
+          SELECT id FROM "User" WHERE domain = ${domain} AND domain <> 'local'
         )
       `);
       await tx.execute(sql`
         DELETE FROM "DiagnosticsReport" WHERE "reporterUserId" IN (
-          SELECT id FROM "User" WHERE domain = ${domain} AND "isForeigner" = true
+          SELECT id FROM "User" WHERE domain = ${domain} AND domain <> 'local'
         )
       `);
       await tx.execute(
@@ -334,7 +334,7 @@ export class FederationResetService implements OnModuleInit {
       );
       await tx.execute(sql`
         DELETE FROM "User"
-        WHERE domain = ${domain} AND "isForeigner" = true
+        WHERE domain = ${domain} AND domain <> 'local'
       `);
       await tx.execute(sql`
         INSERT INTO "FederatedPeerReset" (domain, "resetGeneration", "reinitPending", "resetAt")
@@ -428,7 +428,7 @@ export class FederationResetService implements OnModuleInit {
         WITH remote_users AS (
           SELECT id
           FROM "User"
-          WHERE domain = ${normalized} AND "isForeigner" = true
+          WHERE domain = ${normalized} AND domain <> 'local'
         ), affected_threads AS (
           SELECT tp."threadId"
           FROM "ThreadParticipant" tp
@@ -490,7 +490,7 @@ export class FederationResetService implements OnModuleInit {
       WITH remote_users AS (
         SELECT id
         FROM "User"
-        WHERE domain = ${domain} AND "isForeigner" = true
+        WHERE domain = ${domain} AND domain <> 'local'
       ), affected_threads AS (
         SELECT tp."threadId"
         FROM "ThreadParticipant" tp

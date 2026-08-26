@@ -68,7 +68,7 @@ describe('AdminBootstrapService (e2e — app self-seeds the bootstrap admin on b
       const rows = await database.db
         .select({
           account: user.account,
-          isForeigner: user.isForeigner,
+          domain: user.domain,
           role: admin.role,
           enabled: admin.enabled,
         })
@@ -77,7 +77,7 @@ describe('AdminBootstrapService (e2e — app self-seeds the bootstrap admin on b
         .where(and(eq(user.account, 'admin'), eq(user.domain, 'local')));
       expect(rows).toHaveLength(1);
       expect(rows[0].account).toBe('admin');
-      expect(rows[0].isForeigner).toBe(false);
+      expect(rows[0].domain).toBe('local');
       expect(rows[0].role).toBe(AdminRole.SUPER_ADMIN);
       expect(rows[0].enabled).toBe(true);
 

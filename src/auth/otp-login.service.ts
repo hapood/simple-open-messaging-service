@@ -111,7 +111,6 @@ export class OtpLoginService {
       where: and(
         eq(userTable.id, userId),
         eq(userTable.domain, 'local'),
-        eq(userTable.isForeigner, false),
         eq(userTable.isGroup, false),
       ),
       columns: { id: true },

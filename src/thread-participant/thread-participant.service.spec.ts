@@ -70,7 +70,7 @@ describe('ThreadParticipantService.endP2P transaction boundary', () => {
       2,
       { actorUserId: 1, markReadUserId: 1, recipientUserIds: [1, 2] },
     );
-    expect(tx.execute).toHaveBeenCalledTimes(7);
+    expect(tx.execute).toHaveBeenCalledTimes(8);
     // RelationshipPair is locked first, then MessageThread (the third execute), and
     // only afterwards may participant/audience mutation begin.
     expect(tx.execute.mock.invocationCallOrder[2]).toBeLessThan(
@@ -79,6 +79,64 @@ describe('ThreadParticipantService.endP2P transaction boundary', () => {
     expect(tx.update).toHaveBeenCalledTimes(3);
     expect(tx.delete).not.toHaveBeenCalled(); // history-only compatibility grants no longer exist
     expect(stateFeed.writeManyInTx).not.toHaveBeenCalled();
+  });
+
+  it('treats a revoked caller-authored direction as an idempotent success', async () => {
+    const identities = [
+      {
+        id: 1,
+        userId: 1,
+        account: 'alice',
+        domain: 'local',
+        relationshipRev: 1,
+      },
+      {
+        id: 2,
+        userId: 2,
+        account: 'bob',
+        domain: 'local',
+        relationshipRev: 1,
+      },
+    ];
+    const tx = {
+      execute: vi
+        .fn()
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ status: 'REVOKED' }] }),
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          innerJoin: vi.fn(() => ({
+            where: vi.fn().mockResolvedValue(identities),
+          })),
+        })),
+      })),
+      update: vi.fn(),
+    };
+    const database = {
+      db: {
+        transaction: vi.fn(async (fn: (client: typeof tx) => unknown) =>
+          fn(tx),
+        ),
+      },
+    };
+    const messages = { writeSystemMessageInTx: vi.fn() };
+    const service = new ThreadParticipantService(
+      database as never,
+      {} as never,
+      {} as never,
+      messages as never,
+    );
+
+    await expect(service.endP2P(10, 1, false)).resolves.toEqual({
+      transitioned: false,
+      statePeers: [],
+      systemMessage: null,
+      localRecipientIds: [1, 2],
+    });
+    expect(messages.writeSystemMessageInTx).not.toHaveBeenCalled();
+    expect(tx.update).not.toHaveBeenCalled();
   });
 });
 

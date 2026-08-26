@@ -212,6 +212,8 @@
   },
   "profile": {
     "title": "Friend info",
+    "share": "Share",
+    "shareCardAria": "Share contact card",
     "editTitle": "Edit profile",
     "name": "Name",
     "namePlaceholder": "Your name",

@@ -177,7 +177,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         name: conv.peerUser.name,
         account: conv.peerUser.account,
         avatar: conv.peerUser.avatar,
-        domain: conv.peerUser.isForeigner ? conv.peerUser.domain : 'local',
+        domain:
+          conv.peerUser.domain !== 'local' ? conv.peerUser.domain : 'local',
         isSelf: conv.peerUser.id === this.selfUserId,
       });
     this.pending = outbox.forThread(conv.threadId);
@@ -719,7 +720,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       avatar: p?.avatar ?? '',
       ...(m.creator === null ? {} : { avatarIdentityId: m.creator }),
       avatarAccount: p?.account ?? '',
-      avatarDomain: p?.domain ?? '',
+      avatarDomain: p?.domain ?? 'local',
       // Non-text cards keep their wire content in `text` as well. In particular, FORWARD content is
       // the JSON card descriptor consumed by parseForwardCard; dropping it here makes every valid
       // forwarded bundle render as "unavailable".
@@ -825,8 +826,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
               account: u.account,
               avatar: u.avatar ?? '',
               avatarIdentityId: u.id,
-              avatarDomain: u.isForeigner ? u.domain : '',
-              domain: u.domain ?? '',
+              avatarDomain: u.domain || 'local',
+              domain: u.domain || 'local',
               isSelf: u.id === this.selfUserId,
             };
             this.profiles.set(u.id, profile);

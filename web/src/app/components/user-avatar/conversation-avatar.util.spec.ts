@@ -21,7 +21,6 @@ describe('conversation-avatar util', () => {
       id: 7,
       account: 'alice',
       domain: 'local',
-      isForeigner: false,
       avatar: '/uploads/u7.png',
     },
     group: { id: 0, account: '!zero', avatar: '' },

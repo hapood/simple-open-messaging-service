@@ -5,6 +5,8 @@ import {
   input,
   signal,
   ChangeDetectionStrategy,
+  ElementRef,
+  viewChild,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { TranslocoPipe } from '@jsverse/transloco';
@@ -63,18 +65,19 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
         </span>
         <span class="alias-control">
           @if (editing()) {
-          <input
-            matInput
-            class="alias-input"
-            type="text"
-            maxlength="64"
-            [placeholder]="'chat.aliasAdd' | transloco"
-            [ngModel]="draft()"
-            (ngModelChange)="draft.set($event)"
-            (keyup.enter)="save()"
-            (keyup.escape)="cancel()"
-            (blur)="save()"
-          />
+            <input
+              matInput
+              class="alias-input"
+              #aliasInput
+              type="text"
+              maxlength="64"
+              [placeholder]="'chat.aliasAdd' | transloco"
+              [ngModel]="draft()"
+              (ngModelChange)="draft.set($event)"
+              (keyup.enter)="save()"
+              (keyup.escape)="cancel()"
+              (blur)="save()"
+            />
             <button
               class="edit-button done"
               type="button"
@@ -234,10 +237,13 @@ export class ThreadAliasEditorComponent {
 
   readonly editing = signal(false);
   readonly draft = signal('');
+  private readonly aliasInput =
+    viewChild<ElementRef<HTMLInputElement>>('aliasInput');
 
   start(): void {
     this.draft.set(this.currentAlias());
     this.editing.set(true);
+    requestAnimationFrame(() => this.aliasInput()?.nativeElement.focus());
   }
   cancel(): void {
     this.editing.set(false);

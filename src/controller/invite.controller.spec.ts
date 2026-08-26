@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { InviteController } from './invite.controller.js';
 
-function makeController(isForeigner: boolean) {
+function makeController(federated: boolean) {
   const tx = {
     query: {
       user: {
-        findFirst: vi.fn().mockResolvedValue({ isForeigner }),
+        findFirst: vi.fn().mockResolvedValue({
+          domain: federated ? 'peer.test' : 'local',
+        }),
       },
     },
   };

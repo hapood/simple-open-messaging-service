@@ -408,8 +408,8 @@ class FederationDownloadTerminatedError extends Error {
  * That temporary, self-healing inconsistency is the cost of sync; acceptable for Step 1's idempotent
  * friend ops.
  *
- * Identity model: local users have domain="local" (isForeigner=false); federated peers are foreign
- * User stubs (domain=<peer>, isForeigner=true, unusable random hashPwd). Federation addresses always
+ * Identity model: local users have domain="local"; federated peers are foreign User stubs
+ * (domain=<peer>, unusable random hashPwd). Federation addresses always
  * use the REAL config.domain for local users' wire addresses ({ account: <account>, domain: <config.domain> }), never "local".
  *
  * Avatar localization: foreign stubs carry the peer's avatar/name/bio/remoteUpdatedAt, localized from
@@ -547,7 +547,7 @@ export class FederationService {
           where: eq(tables.threadParticipant.threadId, threadId),
           with: {
             user: {
-              columns: { account: true, domain: true, isForeigner: true },
+              columns: { account: true, domain: true },
             },
           },
         }),
@@ -586,7 +586,7 @@ export class FederationService {
         // P2P (local-only or federated 1:1): signal each foreign peer participant EXCEPT the author + the
         // fetch source. A pulled P2P message's only foreign participant is the author → nobody to signal.
         for (const p of authorizedParticipants) {
-          if (p.userId === authorUserId || !p.user.isForeigner) continue;
+          if (p.userId === authorUserId || p.user.domain === 'local') continue;
           if (fetchedFromDomain && p.user.domain === fetchedFromDomain)
             continue;
           void this.offerAndPushMessage(
@@ -606,7 +606,7 @@ export class FederationService {
       const destDomains = new Set<string>();
       if (groupDomain === 'local') {
         for (const p of authorizedParticipants)
-          if (p.user.isForeigner) destDomains.add(p.user.domain);
+          if (p.user.domain !== 'local') destDomains.add(p.user.domain);
       } else {
         destDomains.add(groupDomain);
       }
@@ -685,7 +685,7 @@ export class FederationService {
         eq(tables.user.domain, 'local'),
       ),
     });
-    return u && !u.isForeigner && !u.isDeleted ? u.id : null;
+    return u && u.domain === 'local' && !u.isDeleted ? u.id : null;
   }
 
   /** Look up a local user id from a full address (must be account@<our domain>). */
@@ -707,7 +707,7 @@ export class FederationService {
     const u = await this.database.db.query.user.findFirst({
       where: eq(tables.user.id, userId),
     });
-    if (!u || u.isForeigner)
+    if (!u || u.domain !== 'local')
       throw new Error(`user ${userId} is not a local user`);
     return u;
   }
@@ -749,7 +749,7 @@ export class FederationService {
       })
       .from(tables.user)
       .where(
-        and(eq(tables.user.id, userId), eq(tables.user.isForeigner, false)),
+        and(eq(tables.user.id, userId), eq(tables.user.domain, 'local')),
       )
       .limit(1);
     if (!u) return new Map();
@@ -773,7 +773,7 @@ export class FederationService {
       JOIN "User" peer_user ON peer_user.id = peer_part."userId"
       WHERE mine."userId" = ${userId}
         AND ${mutuallyAuthorizedSql(userId, sql`peer_part."userId"`)}
-        AND peer_user."isForeigner" = true AND peer_user.domain <> 'local'
+        AND peer_user.domain <> 'local'
     `);
     const directProfiles = await this.stateFeed.writeManyInTx(
       tx,
@@ -842,7 +842,7 @@ export class FederationService {
       })
       .from(tables.user)
       .where(
-        and(eq(tables.user.id, userId), eq(tables.user.isForeigner, false)),
+        and(eq(tables.user.id, userId), eq(tables.user.domain, 'local')),
       )
       .limit(1);
     if (!u) throw new Error(`local user ${userId} not found`);
@@ -893,7 +893,7 @@ export class FederationService {
         END
         WHERE pair.active = true
           AND (${localUserId} = pair."userLowId" OR ${localUserId} = pair."userHighId")
-          AND other_user."isForeigner" = true
+          AND other_user.domain <> 'local'
           AND other_user.domain = ${peerDomain}
       ) AS visible
     `);
@@ -927,7 +927,7 @@ export class FederationService {
         END
         WHERE pair.active = true
           AND (${groupUserId} = pair."userLowId" OR ${groupUserId} = pair."userHighId")
-          AND member."isForeigner" = true
+          AND member.domain <> 'local'
           AND member.domain = ${peerDomain}
       ) AS visible
     `);
@@ -971,14 +971,14 @@ export class FederationService {
     const remote = await tx.query.user.findFirst({
       where: and(
         eq(tables.user.id, peerUserId),
-        eq(tables.user.isForeigner, true),
+        ne(tables.user.domain, 'local'),
       ),
       columns: { account: true, domain: true },
     });
     const local = await tx.query.user.findFirst({
       where: and(
         eq(tables.user.id, localUserId),
-        eq(tables.user.isForeigner, false),
+        eq(tables.user.domain, 'local'),
       ),
       columns: { account: true },
     });
@@ -1057,7 +1057,7 @@ export class FederationService {
     const local = await tx.query.user.findFirst({
       where: and(
         eq(tables.user.id, localUserId),
-        eq(tables.user.isForeigner, false),
+        eq(tables.user.domain, 'local'),
       ),
       columns: { account: true },
     });
@@ -1430,7 +1430,7 @@ export class FederationService {
       const local = await tx.query.user.findFirst({
         where: and(
           eq(tables.user.id, localUserId),
-          eq(tables.user.isForeigner, false),
+          eq(tables.user.domain, 'local'),
         ),
         columns: {
           id: true,
@@ -1438,7 +1438,6 @@ export class FederationService {
           name: true,
           avatar: true,
           domain: true,
-          isForeigner: true,
         },
       });
       if (!local) throw new Error('local friend requester disappeared');
@@ -1462,7 +1461,6 @@ export class FederationService {
             name: request.displayName ?? request.remoteAccount,
             avatar: request.avatar ?? '',
             domain: request.remoteDomain,
-            isForeigner: true,
           },
         },
       });
@@ -1519,7 +1517,7 @@ export class FederationService {
     if (!state?.groupUserId) throw new Error('group invite target is invalid');
     const member = await tx.query.user.findFirst({
       where: eq(tables.user.id, memberUserId),
-      columns: { account: true, domain: true, isForeigner: true },
+      columns: { account: true, domain: true },
     });
     if (!member) throw new Error('group invite identity is invalid');
     if (status !== 'REVOKED')
@@ -1568,11 +1566,10 @@ export class FederationService {
         await tx
           .update(tables.group)
           .set({
-            rosterRev: sql`${tables.group.rosterRev} + 1`,
             updatedAt: new Date(),
           })
           .where(eq(tables.group.groupUserId, state.groupUserId));
-      if (!member.isForeigner)
+      if (member.domain === 'local')
         await tx
           .insert(tables.threadAudience)
           .values({
@@ -1595,7 +1592,7 @@ export class FederationService {
           : 'INVITATION'),
       membership.request.status === 'REQUESTED',
     );
-    if (!member.isForeigner) {
+    if (member.domain === 'local') {
       const endpoints = clientGroupIntentEndpoints(
         state.groupAccount,
         member.account,
@@ -1704,10 +1701,10 @@ export class FederationService {
       }),
       tx.query.user.findFirst({
         where: eq(tables.user.id, memberUserId),
-        columns: { account: true, domain: true, isForeigner: true },
+        columns: { account: true, domain: true },
       }),
     ]);
-    if (!groupUser || !member || member.isForeigner)
+    if (!groupUser || !member || member.domain !== 'local')
       throw new Error('group join identities are invalid');
     const projectedGroup = applyFederatedPendingProfileSnapshot(
       { name: groupUser.name, avatar: groupUser.avatar },
@@ -1799,10 +1796,6 @@ export class FederationService {
         return new Map();
       }
       if (!pairActivated) return new Map();
-      await tx
-        .update(tables.group)
-        .set({ rosterRev: sql`${tables.group.rosterRev} + 1` })
-        .where(eq(tables.group.groupUserId, thread.groupUserId));
       const state = await this.writeGroupStateInTx(
         tx,
         threadId,
@@ -1930,7 +1923,6 @@ export class FederationService {
           avatar: true,
           bio: true,
           profileRev: true,
-          isForeigner: true,
         },
       }),
       tx
@@ -2034,7 +2026,10 @@ export class FederationService {
       }),
     ]);
     if (!thread?.groupUserId) return;
-    if (!manager) {
+    const isActiveManager =
+      manager !== undefined &&
+      (await isThreadMutuallyAuthorized(tx, managerUserId, threadId));
+    if (!isActiveManager) {
       const removed = await tx
         .delete(tables.groupRequestProjection)
         .where(
@@ -2343,7 +2338,6 @@ export class FederationService {
         bio: tables.user.bio,
         avatar: tables.user.avatar,
         profileRev: tables.user.profileRev,
-        rosterRev: tables.group.rosterRev,
         dissolvedAt: tables.group.dissolvedAt,
         ownerId: tables.group.ownerId,
       })
@@ -2369,7 +2363,6 @@ export class FederationService {
         userId: tables.user.id,
         name: tables.user.name,
         avatar: tables.user.avatar,
-        isForeigner: tables.user.isForeigner,
         profileRev: tables.user.profileRev,
         remoteProfileRev: tables.user.remoteProfileRev,
       })
@@ -2427,7 +2420,7 @@ export class FederationService {
               domain: normalizeDomain(member.domain),
               body: {
                 role: member.role ?? GroupRole.MEMBER,
-                profileRev: member.isForeigner
+                profileRev: member.domain !== 'local'
                   ? (member.remoteProfileRev ?? 0)
                   : member.profileRev,
                 displayName: member.name,
@@ -2500,7 +2493,7 @@ export class FederationService {
         eq(tables.user.domain, 'local'),
       ),
     });
-    if (!u || u.isForeigner) return null;
+    if (!u || u.domain !== 'local') return null;
     return this.toS2SProfile(u);
   }
 
@@ -2516,7 +2509,6 @@ export class FederationService {
       .values({
         account: acct,
         domain,
-        isForeigner: true,
         hashPwd: randomUUID(), // unusable — stubs never log in
         name: acct,
         avatar: '',
@@ -2557,7 +2549,6 @@ export class FederationService {
       .values({
         account: acct,
         domain,
-        isForeigner: true,
         hashPwd: randomUUID(),
         name: acct,
         avatar: '',
@@ -3342,7 +3333,7 @@ export class FederationService {
   private async resolveUserByWireAddress(
     account: string,
     fromDomain: string,
-  ): Promise<{ id: number; isForeigner: boolean } | null> {
+  ): Promise<{ id: number } | null> {
     const domain = fromDomain === this.config.domain ? 'local' : fromDomain;
     return (
       (await this.database.db.query.user.findFirst({
@@ -3350,7 +3341,7 @@ export class FederationService {
           eq(tables.user.account, normalizeAccount(account)),
           eq(tables.user.domain, domain),
         ),
-        columns: { id: true, isForeigner: true },
+        columns: { id: true },
       })) ?? null
     );
   }
@@ -3885,7 +3876,7 @@ export class FederationService {
         tx.query.user.findFirst({
           where: and(
             eq(tables.user.account, normalizeAccount(thread.peerAccount)),
-            eq(tables.user.isForeigner, false),
+            eq(tables.user.domain, 'local'),
           ),
           columns: { id: true },
         }),
@@ -3893,7 +3884,7 @@ export class FederationService {
           where: and(
             eq(tables.user.account, normalizeAccount(thread.account)),
             eq(tables.user.domain, domain),
-            eq(tables.user.isForeigner, true),
+            ne(tables.user.domain, 'local'),
           ),
           columns: { id: true },
         }),
@@ -4245,7 +4236,6 @@ export class FederationService {
       .values({
         account: normalized,
         domain,
-        isForeigner: true,
         isGroup: normalized.startsWith('!'),
         hashPwd: randomUUID(),
         name: profile?.displayName ?? normalized,
@@ -4303,7 +4293,6 @@ export class FederationService {
         .values({
           groupUserId,
           ownerId: groupUserId,
-          rosterRev: 0,
           updatedAt: new Date(),
         })
         .onConflictDoNothing({ target: tables.group.groupUserId });
@@ -4551,7 +4540,6 @@ export class FederationService {
                     name: body.displayName,
                     avatar: avatar ?? '',
                     domain: item.domain,
-                    isForeigner: true,
                   },
                 },
               });
@@ -4573,7 +4561,6 @@ export class FederationService {
                 name: body.displayName,
                 avatar: avatar ?? '',
                 bio: body.bio,
-                isForeigner: true,
                 isGroup: true,
                 domain: item.domain,
                 remoteProfileRev: revision,
@@ -4614,7 +4601,7 @@ export class FederationService {
           JOIN "ThreadParticipant" local_p ON local_p."threadId" = foreign_p."threadId"
           JOIN "User" local_u ON local_u.id = local_p."userId"
           WHERE foreign_p."userId" = ${stub.id}
-            AND local_u."isForeigner" = false
+            AND local_u.domain = 'local'
         `);
           const consumers = (
             await Promise.all(
@@ -4721,13 +4708,12 @@ export class FederationService {
               name: tables.user.name,
               avatar: tables.user.avatar,
               domain: tables.user.domain,
-              isForeigner: tables.user.isForeigner,
             })
             .from(tables.user)
             .where(
               and(
                 eq(tables.user.account, normalizeAccount(item.peerAccount)),
-                eq(tables.user.isForeigner, false),
+                eq(tables.user.domain, 'local'),
               ),
             )
             .limit(1);
@@ -4738,7 +4724,7 @@ export class FederationService {
               and(
                 eq(tables.user.account, normalizeAccount(item.account)),
                 eq(tables.user.domain, peerDomain),
-                eq(tables.user.isForeigner, true),
+                ne(tables.user.domain, 'local'),
               ),
             )
             .limit(1);
@@ -4812,7 +4798,6 @@ export class FederationService {
                     name: pendingName,
                     avatar: pendingAvatar ?? '',
                     domain: peerDomain,
-                    isForeigner: true,
                   },
                 },
               });
@@ -4924,7 +4909,6 @@ export class FederationService {
                       normalizeAccount(item.account),
                     avatar: revoked.rows[0].avatar ?? '',
                     domain: peerDomain,
-                    isForeigner: true,
                   },
                 },
               });
@@ -5209,7 +5193,7 @@ export class FederationService {
               .where(
                 and(
                   eq(tables.user.account, normalizeAccount(item.peerAccount)),
-                  eq(tables.user.isForeigner, false),
+                  eq(tables.user.domain, 'local'),
                   eq(tables.user.isGroup, false),
                 ),
               )
@@ -5316,7 +5300,7 @@ export class FederationService {
                 ),
                 inviteDirection
                   ? eq(tables.user.domain, peerDomain)
-                  : eq(tables.user.isForeigner, false),
+                  : eq(tables.user.domain, 'local'),
                 eq(tables.user.isGroup, true),
               ),
             )
@@ -5333,7 +5317,7 @@ export class FederationService {
                   ),
                 ),
                 inviteDirection
-                  ? eq(tables.user.isForeigner, false)
+                  ? eq(tables.user.domain, 'local')
                   : eq(tables.user.domain, peerDomain),
                 eq(tables.user.isGroup, false),
               ),
@@ -5541,10 +5525,6 @@ export class FederationService {
                 'REVOKED',
                 clientFeedUpdates,
               );
-              await tx
-                .update(tables.group)
-                .set({ rosterRev: sql`${tables.group.rosterRev} + 1` })
-                .where(eq(tables.group.groupUserId, groupUser.id));
               const groupState = await this.writeGroupStateInTx(
                 tx,
                 originThread.id,
@@ -5580,10 +5560,6 @@ export class FederationService {
               type: SystemMessageType.GROUP_JOINED,
               subjectUserId: member.id,
             });
-            await tx
-              .update(tables.group)
-              .set({ rosterRev: sql`${tables.group.rosterRev} + 1` })
-              .where(eq(tables.group.groupUserId, groupUser.id));
             const confirmation = await this.writeGroupRelationshipIntentInTx(
               tx,
               originThread.id,
@@ -5660,7 +5636,6 @@ export class FederationService {
             await tx
               .update(tables.group)
               .set({
-                rosterRev: sql`${tables.group.rosterRev} + 1`,
                 updatedAt: new Date(),
               })
               .where(eq(tables.group.groupUserId, groupUser.id));
@@ -5670,7 +5645,7 @@ export class FederationService {
             JOIN "User" member_u ON member_u.id = participant."userId"
             WHERE participant."threadId" = ${originThread.id}
               AND ${mutuallyAuthorizedSql(groupUser.id, sql`participant."userId"`)}
-              AND member_u."isForeigner" = true
+              AND member_u.domain <> 'local'
               AND member_u.domain = ${peerDomain}
           `);
             const hasPeerMembers = (peerMembers.rows[0]?.count ?? 0) > 0;
@@ -5863,10 +5838,6 @@ export class FederationService {
       .where(eq(tables.messageThread.id, threadId))
       .limit(1);
     if (!thread?.groupUserId) return new Map();
-    await tx
-      .update(tables.group)
-      .set({ rosterRev: sql`${tables.group.rosterRev} + 1` })
-      .where(eq(tables.group.groupUserId, thread.groupUserId));
     return this.writeGroupStateInTx(tx, threadId, clientFeedUpdates);
   }
 
@@ -6259,7 +6230,6 @@ export class FederationService {
           foreign.map((member) => ({
             account: member.account,
             domain: member.storedDomain,
-            isForeigner: true,
             hashPwd: randomUUID(),
             name: member.account,
             avatar: '',
@@ -6398,7 +6368,7 @@ export class FederationService {
       .where(
         and(
           eq(tables.relationshipIntent.subjectUserId, mirror.groupUserId),
-          eq(tables.user.isForeigner, false),
+          eq(tables.user.domain, 'local'),
         ),
       );
     const localRoster = await tx
@@ -7705,8 +7675,8 @@ export class FederationService {
   /** Effective wire domain of a participant's user: locals ("local" in DB) surface as our real
    *  config.domain; foreign stubs surface their stored peer domain. Used for roster-gate + author
    *  matching against wire `fromDomain`. */
-  private effectiveDomain(u: { isForeigner: boolean; domain: string }): string {
-    return u.isForeigner ? u.domain : this.config.domain;
+  private effectiveDomain(u: { domain: string }): string {
+    return u.domain === 'local' ? this.config.domain : u.domain;
   }
 
   /**
@@ -7739,7 +7709,7 @@ export class FederationService {
       await this.database.db.query.threadParticipant.findMany({
         where: eq(tables.threadParticipant.threadId, trd.id),
         with: {
-          user: { columns: { account: true, domain: true, isForeigner: true } },
+          user: { columns: { account: true, domain: true } },
         },
       });
     const participantAuthorization = await Promise.all(
@@ -7793,7 +7763,6 @@ export class FederationService {
         messageId: tables.message.id,
         threadId: tables.message.threadId,
         authorDomain: tables.user.domain,
-        authorIsForeigner: tables.user.isForeigner,
         threadType: tables.messageThread.type,
         groupUserId: tables.messageThread.groupUserId,
       })
@@ -7821,10 +7790,7 @@ export class FederationService {
     let sourceMessage: { id: bigint; threadId: number } | undefined;
     for (const candidate of candidates) {
       if (
-        this.effectiveDomain({
-          domain: candidate.authorDomain,
-          isForeigner: candidate.authorIsForeigner,
-        }) !== fromDomain
+        this.effectiveDomain({ domain: candidate.authorDomain }) !== fromDomain
       ) {
         continue;
       }
@@ -7910,7 +7876,7 @@ export class FederationService {
           eq(tables.threadParticipant.threadId, threadId),
           eq(tables.user.account, normalizeAccount(toAccount)),
           eq(tables.user.domain, signerDomain),
-          eq(tables.user.isForeigner, true),
+          ne(tables.user.domain, 'local'),
         ),
       )
       .limit(1);
@@ -8039,9 +8005,9 @@ export class FederationService {
         eq(tables.user.account, normalizeAccount(toAccount)),
         eq(tables.user.domain, signerDomain),
       ),
-      columns: { id: true, isForeigner: true },
+      columns: { id: true, domain: true },
     });
-    if (!toStub || !toStub.isForeigner) {
+    if (!toStub || toStub.domain === 'local') {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         `recipient ${toAccount} not found`,
@@ -8096,7 +8062,7 @@ export class FederationService {
       .where(
         and(
           eq(tables.threadParticipant.threadId, threadId),
-          eq(tables.user.isForeigner, false),
+          eq(tables.user.domain, 'local'),
         ),
       );
     const authorization = await Promise.all(
@@ -9559,7 +9525,7 @@ export class FederationService {
       throw new Error('user-authored media message has no creator');
     const creator = await this.database.db.query.user.findFirst({
       where: eq(tables.user.id, msg.creator),
-      columns: { account: true, domain: true, isForeigner: true },
+      columns: { account: true, domain: true },
     });
     if (!creator) {
       throw new BusinessException(
@@ -9704,7 +9670,7 @@ export class FederationService {
       throw new Error('user-authored forward message has no creator');
     const creator = await this.database.db.query.user.findFirst({
       where: eq(tables.user.id, msg.creator),
-      columns: { account: true, domain: true, isForeigner: true },
+      columns: { account: true, domain: true },
     });
     if (!creator) {
       throw new BusinessException(

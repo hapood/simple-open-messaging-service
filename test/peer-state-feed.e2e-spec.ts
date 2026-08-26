@@ -475,7 +475,6 @@ describe('per-peer state feed', () => {
         {
           account: `!rev-${suffix}`,
           name: 'revision group',
-          isForeigner: true,
           isGroup: true,
           domain: DOMAINS[0],
           updatedAt: new Date(),
@@ -483,7 +482,6 @@ describe('per-peer state feed', () => {
         {
           account: `rev-${suffix}`,
           name: 'revision member',
-          isForeigner: false,
           updatedAt: new Date(),
         },
       ])

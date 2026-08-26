@@ -59,7 +59,7 @@ describe('federated Address friend request shells', () => {
     expect(lookup.status).toBe(200);
     expect(lookup.text).toContain('event: resolved');
     expect(lookup.text).toContain(`\"id\":${aliceId}`);
-    expect(lookup.text).toContain('"isForeigner":false');
+    expect(lookup.text).toContain('"domain":"local"');
     expect(lookup.text).not.toContain('event: progress');
   });
 

@@ -234,7 +234,6 @@ export const user = pgTable(
     name: text().notNull(),
     avatar: text().default('').notNull(),
     bio: varchar({ length: 255 }).default('').notNull(),
-    isForeigner: boolean().notNull(),
     isGroup: boolean().default(false).notNull(),
     domain: varchar({ length: 63 }).default('local').notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -1269,8 +1268,6 @@ export const group = pgTable(
     id: serial().primaryKey().notNull(),
     groupUserId: integer().notNull(),
     ownerId: integer().notNull(),
-    rosterRev: integer().default(0).notNull(),
-    remoteRosterRev: integer(),
     remoteGroupMetaFeedId: bigint({ mode: 'bigint' }),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)

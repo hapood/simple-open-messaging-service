@@ -13,6 +13,7 @@ import { MsgService } from './message.service';
 import { WebsocketService } from './websocket.service';
 import {
   ConversationItem,
+  createGroupConversation,
   createP2PConversation,
   Message,
   P2PConversationItem,
@@ -58,6 +59,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   let applyFriendRequestStateRevisionSpy: Mock;
   let applyFriendIntentStateRevisionSpy: Mock;
   let applyGroupJoinRequestHeadSpy: Mock;
+  let clearGroupJoinRequestHeadSpy: Mock;
   let cursorSignal: ReturnType<typeof signal<number | undefined>>;
   let putProfileSpy: Mock;
   let toastWarn: Mock;
@@ -166,6 +168,9 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
               .fn()
               .mockName('applyGroupJoinRequestHead')
               .mockReturnValue(true)),
+            clearGroupJoinRequestHead: (clearGroupJoinRequestHeadSpy = vi
+              .fn()
+              .mockName('clearGroupJoinRequestHead')),
             queryReadDelta: (queryReadDeltaSpy = vi
               .fn()
               .mockName('queryReadDelta')
@@ -539,6 +544,21 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(repo.items()[0].unreadCount).toBe(0);
   });
 
+  it('garbage-collects manager attention when a member feed removes the local manager role', async () => {
+    await populate([
+      createGroupConversation(
+        7,
+        { id: 70, account: '!team', name: 'Team', ownerId: 1 },
+        { role: 'ADMIN' },
+      ),
+    ]);
+
+    repo.applyGroupUpdate(7, { role: 'MEMBER' });
+
+    expect(clearGroupJoinRequestHeadSpy).toHaveBeenCalledWith(7);
+    expect(repo.items()[0]).toMatchObject({ threadId: 7, role: 'MEMBER' });
+  });
+
   it('onNewMessage discards an out-of-order/redelivered seq (per-thread HWM guard)', async () => {
     await populate([p2p(1, 11, { lastMessageAt: 100 })]);
     // A newer seq advances lastMessageAt...
@@ -728,7 +748,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       avatar: '',
       bio: '',
       domain: 'peer.test',
-      isForeigner: true,
     };
     queryStateFeedSpy.mockReturnValue(
       of({
@@ -891,7 +910,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       avatar: '',
       bio: '',
       domain: 'local',
-      isForeigner: false,
     };
     const secondPage = new Subject<unknown>();
     queryStateFeedSpy

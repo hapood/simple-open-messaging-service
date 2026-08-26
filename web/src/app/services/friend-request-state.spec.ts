@@ -30,7 +30,6 @@ const friendInput: FriendIntentProjectionInput = {
     name: 'Bob',
     avatar: '',
     bio: '',
-    isForeigner: true,
   },
 };
 

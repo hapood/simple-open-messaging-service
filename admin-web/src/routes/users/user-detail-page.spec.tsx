@@ -30,7 +30,6 @@ vi.mock('@/hooks/use-user-detail', () => ({
         avatar: '',
         bio: '',
         domain: 'local',
-        isForeigner: false,
         isGroup: false,
         isDeleted: false,
         tokenVersion: 1,

@@ -51,7 +51,6 @@ export interface ClientIntentUser {
   avatar: string;
   bio: string;
   domain: string;
-  isForeigner: boolean;
 }
 
 interface ClientFriendIntentBase {
@@ -511,6 +510,26 @@ export class UserService {
       [...next].map(([id, value]) => [String(id), value.readFeedId]),
     );
     void this.webdb.putMeta('groupJoinRequestReadFeedIds', reads);
+  }
+
+  /** Drop manager-only join-request attention after member state removes this user's manager role. */
+  clearGroupJoinRequestHead(threadId: number): void {
+    if (!this.groupJoinRequestHeads().has(threadId)) return;
+    const next = new Map(this.groupJoinRequestHeads());
+    next.delete(threadId);
+    this.groupJoinRequestHeads.set(next);
+    void this.webdb.putMeta(
+      'groupJoinRequestHeads',
+      Object.fromEntries(
+        [...next].map(([id, value]) => [String(id), value.latestFeedId]),
+      ),
+    );
+    void this.webdb.putMeta(
+      'groupJoinRequestReadFeedIds',
+      Object.fromEntries(
+        [...next].map(([id, value]) => [String(id), value.readFeedId]),
+      ),
+    );
   }
 
   private nonNegativeIntegerRecord(value: unknown): Record<string, number> {

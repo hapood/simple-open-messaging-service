@@ -443,10 +443,10 @@ export class FederationMessageTombstoneFeedService {
               AND audience."localUserId" IS NULL
             WHERE thread.type = 'P2P'
               AND EXISTS (SELECT 1 FROM "ThreadParticipant" p JOIN "User" u ON u.id = p."userId"
-                WHERE p."threadId" = thread.id AND u.account = ${selector.account} AND u."isForeigner" = false)
+                WHERE p."threadId" = thread.id AND u.account = ${selector.account} AND u.domain = 'local')
               AND EXISTS (SELECT 1 FROM "ThreadParticipant" p JOIN "User" u ON u.id = p."userId"
                 WHERE p."threadId" = thread.id AND u.account = ${selector.peerAccount}
-                  AND u."isForeigner" = true AND u.domain = ${peerDomain})
+                  AND u.domain = ${peerDomain} AND u.domain <> 'local')
             LIMIT 1
           `);
     const authorized = rows.rows[0];

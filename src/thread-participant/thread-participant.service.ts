@@ -367,11 +367,18 @@ export class ThreadParticipantService {
       await tx.execute(sql`
         SELECT id FROM "MessageThread" WHERE id = ${threadId} FOR UPDATE
       `);
-      const transitioned = await isThreadMutuallyAuthorized(
-        tx,
-        callerUserId,
-        threadId,
-      );
+      const outgoing = peer
+        ? await tx.execute<{ status: string }>(sql`
+            SELECT status
+            FROM "RelationshipIntent"
+            WHERE "authorUserId" = ${callerUserId}
+              AND "subjectUserId" = ${peer.userId}
+          `)
+        : { rows: [] };
+      // Idempotency belongs to the direction authored by the caller. The reverse direction may already
+      // be revoked (and therefore make the pair mutually unauthorized) without this caller having
+      // performed its own terminal transition yet.
+      const transitioned = outgoing.rows[0]?.status !== 'REVOKED';
       const shouldDelete = deleteData;
       if (shouldDelete) {
         await tx
@@ -431,16 +438,32 @@ export class ThreadParticipantService {
         if (mine && peer) {
           const low = Math.min(callerUserId, peer.userId);
           const high = Math.max(callerUserId, peer.userId);
+          const localPair = peer.domain === 'local';
           const request = await tx.execute(sql`
             INSERT INTO "RelationshipIntent" (
-              "authorUserId", "subjectUserId", status, note, "updatedAt"
-            ) VALUES (${callerUserId}, ${peer.userId}, 'REVOKED', '', CURRENT_TIMESTAMP)
+              "authorUserId", "subjectUserId", status, note,
+              "requestedAt", "expiresAt", "updatedAt"
+            ) VALUES (${callerUserId}, ${peer.userId}, 'REVOKED', '', NULL, NULL,
+              CURRENT_TIMESTAMP)
             ON CONFLICT ("authorUserId", "subjectUserId") DO UPDATE SET
-              status = 'REVOKED', note = '',
+              status = 'REVOKED', note = '', "requestedAt" = NULL,
               "expiresAt" = NULL, "updatedAt" = CURRENT_TIMESTAMP
             WHERE "RelationshipIntent".status <> 'REVOKED'
             RETURNING 1
           `);
+          if (localPair) {
+            await tx.execute(sql`
+              INSERT INTO "RelationshipIntent" (
+                "authorUserId", "subjectUserId", status, note,
+                "requestedAt", "expiresAt", "updatedAt"
+              ) VALUES (${peer.userId}, ${callerUserId}, 'REVOKED', '', NULL, NULL,
+                CURRENT_TIMESTAMP)
+              ON CONFLICT ("authorUserId", "subjectUserId") DO UPDATE SET
+                status = 'REVOKED', note = '', "requestedAt" = NULL,
+                "expiresAt" = NULL, "updatedAt" = CURRENT_TIMESTAMP
+              WHERE "RelationshipIntent".status <> 'REVOKED'
+            `);
+          }
           const pair = await tx.execute<{ revision: number }>(sql`
             UPDATE "RelationshipPair" SET active = false, revision = revision + 1,
               "updatedAt" = CURRENT_TIMESTAMP
@@ -454,7 +477,11 @@ export class ThreadParticipantService {
               ...(relationshipRev === undefined ? {} : { relationshipRev }),
               updatedAt: now,
             })
-            .where(eq(threadParticipant.id, mine.id));
+            .where(
+              localPair
+                ? eq(threadParticipant.threadId, threadId)
+                : eq(threadParticipant.id, mine.id),
+            );
           if ((request.rowCount ?? 0) > 0 && peer.domain !== 'local') {
             const localDomain = process.env.SOMS_DOMAIN;
             if (!localDomain)

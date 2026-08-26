@@ -76,22 +76,13 @@
   background: var(--app-bg);
 }
 
-.forward-dialog__pane-title {
-  margin: 0;
-  padding: 10px 16px 0;
-  color: var(--app-text-faint);
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 18px;
-}
-
 .forward-dialog__preview {
   display: flex;
   flex: 1 1 auto;
   align-items: center;
   justify-content: center;
   min-height: 0;
-  padding: 12px 16px;
+  padding: 8px 16px;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior-y: contain;

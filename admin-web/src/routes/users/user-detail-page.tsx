@@ -111,7 +111,7 @@ export function UserDetailPage() {
               </span>
             </div>
             <div className="flex items-center gap-2">
-              {canManage && !u.isForeigner && !u.isGroup ? (
+              {canManage && u.domain === 'local' && !u.isGroup ? (
                 <>
                   {u.isDeleted ? (
                     <Button
@@ -175,7 +175,7 @@ export function UserDetailPage() {
               />
               <Field
                 label={t('userDetail.field.foreigner')}
-                value={u.isForeigner ? t('common.yes') : t('common.no')}
+                value={u.domain !== 'local' ? t('common.yes') : t('common.no')}
               />
               <Field
                 label={t('userDetail.field.tokenVer')}
@@ -198,7 +198,7 @@ export function UserDetailPage() {
             </CardContent>
           </Card>
 
-          {!u.isForeigner && !u.isGroup && userId !== null ? (
+          {u.domain === 'local' && !u.isGroup && userId !== null ? (
             <UserQuotaPanel userId={userId} canManage={canManage} />
           ) : null}
 
@@ -328,7 +328,7 @@ export function UserDetailPage() {
             </CardContent>
           </Card>
 
-          {!u.isForeigner && !u.isGroup && userId !== null ? (
+          {u.domain === 'local' && !u.isGroup && userId !== null ? (
             <LoginCodesSection userId={userId} />
           ) : null}
 

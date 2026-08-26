@@ -237,7 +237,6 @@ describe('First message after friend-add is delivered (single instance)', () => 
       .values({
         account: 'bob',
         name: 'Bob',
-        isForeigner: true,
         domain: 'peer.test',
         updatedAt: new Date(),
       })
@@ -296,7 +295,6 @@ describe('First message after friend-add is delivered (single instance)', () => 
       .values({
         account: 'strict-bob',
         name: 'Bob',
-        isForeigner: true,
         domain: 'strict-peer.test',
         updatedAt: new Date(),
       })

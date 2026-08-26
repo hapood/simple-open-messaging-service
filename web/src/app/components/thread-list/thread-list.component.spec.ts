@@ -20,6 +20,8 @@ import {
 } from '../../services/model';
 import { InlineTranslocoLoader } from '../../i18n/transloco.loader';
 import { provideHttpClient, withXhr } from '@angular/common/http';
+import { By } from '@angular/platform-browser';
+import { AppIconType, IconComponent } from '../icon/icon.component';
 
 /**
  * ThreadListComponent is a thin view over the shared ConversationListService. This spec covers the
@@ -42,12 +44,18 @@ describe('ThreadListComponent', () => {
   let loadSpy: Mock;
   let items: ReturnType<typeof signal<ConversationItem[]>>;
   let status: ReturnType<typeof signal<ConversationLoadStatus>>;
+  let groupJoinRequestHeads: ReturnType<
+    typeof signal<
+      ReadonlyMap<number, { readFeedId: string; latestFeedId: string }>
+    >
+  >;
 
   beforeEach(() => {
     popupSpy = vi.fn().mockName('popupDlg');
     loadSpy = vi.fn().mockName('load');
     items = signal<ConversationItem[]>([]);
     status = signal<ConversationLoadStatus>(ConversationLoadStatus.LOADING);
+    groupJoinRequestHeads = signal(new Map());
     TestBed.configureTestingModule({
       imports: [ThreadListComponent],
       providers: [
@@ -82,7 +90,13 @@ describe('ThreadListComponent', () => {
             },
           },
         },
-        { provide: UserService, useValue: { sessionProfile: () => undefined } },
+        {
+          provide: UserService,
+          useValue: {
+            sessionProfile: () => undefined,
+            groupJoinRequestHeads,
+          },
+        },
         { provide: RouteService, useValue: { popupDlg: popupSpy } },
       ],
     });
@@ -192,7 +206,6 @@ describe('ThreadListComponent', () => {
       peerUser: {
         ...p2p(1, 11).peerUser,
         name: 'A very long conversation name',
-        isForeigner: true,
         domain: 'remote.example',
       },
     };
@@ -288,5 +301,34 @@ describe('ThreadListComponent', () => {
     expect(row.getAttribute('aria-label')).toContain(
       TestBed.inject(TranslocoService).translate('threadList.mentionedYou'),
     );
+  });
+
+  it('shows unread group join requests as a secondary member-add badge', async () => {
+    const group = {
+      ...createGroupConversation(1, {
+        id: 21,
+        account: 'team',
+        name: 'Team',
+        ownerId: 11,
+      }),
+      role: 'OWNER' as const,
+    };
+    groupJoinRequestHeads.set(
+      new Map([[group.threadId, { readFeedId: '4', latestFeedId: '5' }]]),
+    );
+    items.set([group]);
+    status.set(ConversationLoadStatus.READY);
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    const badge = fixture.nativeElement.querySelector(
+      '.join-request-badge',
+    ) as HTMLElement;
+    expect(badge).not.toBeNull();
+    const icon = fixture.debugElement.query(
+      By.css('.join-request-badge app-icon'),
+    ).componentInstance as IconComponent;
+    expect(icon.type()).toBe(AppIconType.GROUP_JOIN_REQUESTS);
+    expect(badge.textContent?.trim()).toBe('');
   });
 });

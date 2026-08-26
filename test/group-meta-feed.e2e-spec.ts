@@ -43,14 +43,12 @@ describe('group-meta compacted feed', () => {
           account: accounts[1],
           domain: 'local',
           name: 'Owner',
-          isForeigner: false,
           updatedAt: new Date(),
         },
         {
           account: accounts[2],
           domain: peerDomain,
           name: 'Member',
-          isForeigner: true,
           updatedAt: new Date(),
         },
         {
@@ -58,7 +56,6 @@ describe('group-meta compacted feed', () => {
           domain: 'local',
           name: 'Group',
           isGroup: true,
-          isForeigner: false,
           hashPwd: '',
           updatedAt: new Date(),
         },

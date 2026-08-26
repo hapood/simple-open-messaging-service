@@ -172,7 +172,6 @@ export class ContactIdentityDialogComponent {
           avatar: identity.avatar ?? '',
           bio: identity.bio ?? '',
           domain: identity.domain === 'local' ? 'local' : identity.domain,
-          isForeigner: identity.domain !== 'local',
         } as User,
       },
     );
@@ -194,10 +193,9 @@ export class ContactIdentityDialogComponent {
       bio: identity.bio ?? '',
       domain: identity.domain,
       isGroup: true,
-      isForeigner: identity.domain !== 'local',
     } as User;
 
-    if (user.id > 0 || user.isForeigner) {
+    if (user.id > 0 || user.domain !== 'local') {
       open(user);
       return;
     }

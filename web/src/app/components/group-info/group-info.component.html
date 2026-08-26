@@ -375,7 +375,7 @@
                     [account]="friend.peerUser.account"
                     [src]="friend.peerUser.avatar"
                     [federatedDomain]="
-                      friend.peerUser.isForeigner
+                      friend.peerUser.domain !== 'local'
                         ? friend.peerUser.domain
                         : null
                     "

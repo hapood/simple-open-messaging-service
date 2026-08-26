@@ -212,6 +212,8 @@
   },
   "profile": {
     "title": "好友信息",
+    "share": "分享",
+    "shareCardAria": "分享好友名片",
     "editTitle": "编辑个人资料",
     "name": "昵称",
     "namePlaceholder": "你的昵称",

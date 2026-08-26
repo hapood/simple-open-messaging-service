@@ -84,7 +84,7 @@ export class UserAvatarComponent {
   /** Optional real avatar image URL. A server path (`/uploads/...`) is read from the DB by {@link identityId};
    *  a local preview (`blob:`/`data:`/absolute) passes through directly. Empty → initial-letter fallback. */
   readonly src = input<string | undefined | null>(undefined);
-  /** Identity home domain. Empty/`local` means local; a foreign domain renders the shared top-right globe marker. */
+  /** Identity home domain. `local` means local; a foreign domain renders the shared top-right globe marker. */
   readonly federatedDomain = input<string | undefined | null>(undefined);
   /** Stable identity of the user/group this avatar depicts — the IDB cache key (combined with {@link
    *  type}: GROUP → `g<id>`, else `u<id>`). Usually the numeric id; for a group known only by its
@@ -97,8 +97,7 @@ export class UserAvatarComponent {
   readonly loading = input(false);
   readonly UserAvatarType = UserAvatarType;
 
-  /** Normalized foreign domain used by the marker. Some API projections represent local identities with
-   *  the explicit `local` sentinel, so truthiness alone is not sufficient to identify federation. */
+  /** Normalized foreign domain used by the marker. */
   readonly federatedMarkerDomain = computed(() => {
     const domain = this.federatedDomain()?.trim();
     return domain && domain.toLowerCase() !== 'local' ? domain : null;

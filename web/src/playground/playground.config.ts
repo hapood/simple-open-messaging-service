@@ -90,7 +90,6 @@ const playgroundUserService = {
     name: 'Me',
     avatar: '',
     domain: 'local',
-    isForeigner: false,
   }),
   sendFriendInvite: () =>
     of({ code: 0, message: 'ok', data: { inviteId: 'playground-invite' } }),

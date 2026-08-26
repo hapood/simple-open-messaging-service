@@ -131,7 +131,6 @@ export function createP2PConversation(
     peerUser: {
       avatar: '',
       bio: '',
-      isForeigner: false,
       isGroup: false,
       domain: 'local',
       createdAt: 0,
@@ -227,11 +226,12 @@ export function displayUserName(u: { name?: string | null }): string {
  *  the server domain with `@` (account@domain). */
 export function displayUserAccount(u: {
   account?: string | null;
-  isForeigner?: boolean | null;
   domain?: string | null;
 }): string {
   const account = u.account ?? '';
-  return u.isForeigner && u.domain ? `${account}@${u.domain}` : account;
+  return u.domain && u.domain !== 'local'
+    ? `${account}@${u.domain}`
+    : account;
 }
 
 /** An invite row (friend-add / group-invite). Friend request lists are projected from the compacted

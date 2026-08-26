@@ -43,7 +43,6 @@ describe('sequential resumable uploads', () => {
         account: `resume-${randomUUID().slice(0, 8)}`,
         hashPwd: 'x',
         name: 'resume',
-        isForeigner: false,
         updatedAt: now,
       })
       .returning({ id: user.id });
@@ -54,7 +53,6 @@ describe('sequential resumable uploads', () => {
         account: `resume-peer-${randomUUID().slice(0, 8)}`,
         hashPwd: 'x',
         name: 'resume peer',
-        isForeigner: false,
         updatedAt: now,
       })
       .returning({ id: user.id });

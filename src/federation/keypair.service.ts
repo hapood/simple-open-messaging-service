@@ -240,7 +240,7 @@ export class KeypairService implements OnApplicationBootstrap {
     const result = await this.database.db.execute(sql`
       SELECT
         EXISTS (SELECT 1 FROM "FederatedPeer" LIMIT 1)
-        OR EXISTS (SELECT 1 FROM "User" WHERE "isForeigner" = true LIMIT 1)
+        OR EXISTS (SELECT 1 FROM "User" WHERE domain <> 'local' LIMIT 1)
         OR EXISTS (SELECT 1 FROM "FederatedPeerEvent" LIMIT 1)
         OR EXISTS (SELECT 1 FROM "S2SKeyCache" LIMIT 1)
         OR EXISTS (SELECT 1 FROM "FederationDeletedCursor" LIMIT 1)

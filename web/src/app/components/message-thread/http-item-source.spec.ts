@@ -132,7 +132,6 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         name: 'Me',
         avatar: '',
         bio: '',
-        isForeigner: false,
         domain: 'local',
         createdAt: 0,
         updatedAt: 0,
@@ -144,7 +143,6 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         name: 'Alice',
         avatar: '',
         bio: '',
-        isForeigner: false,
         domain: 'local',
         createdAt: 0,
         updatedAt: 0,
@@ -655,7 +653,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       name: 'Alice',
       avatar: '',
       avatarIdentityId: 2,
-      avatarDomain: '',
+      avatarDomain: 'local',
       isSelf: false,
     });
   });
