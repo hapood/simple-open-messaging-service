@@ -25,6 +25,7 @@ import type {
 } from '../../services/model';
 import type { MediaStatus } from '../message-cards/chat-item';
 import { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
+import { ProfileRepository } from '../../services/profile-store.service';
 
 /** A P2P ConversationItem fixture (only threadId is read by HttpItemSource). */
 function conv(threadId: number): ConversationItem {
@@ -37,6 +38,13 @@ function conv(threadId: number): ConversationItem {
     unreadCount: 0,
     lastMessagePreview: null,
     lastMessageAt: null,
+    peerUser: {
+      id: 2,
+      account: 'alice',
+      name: 'Alice',
+      domain: 'local',
+      avatar: '',
+    },
   } as unknown as ConversationItem;
 }
 
@@ -47,7 +55,10 @@ function row(seq: number, creator: number, clientMessageId?: string): Message {
     contentType: 'PURE_TEXT',
     content: JSON.stringify({ text: 'hi' }),
     threadId: 42,
-    creator,
+    creator:
+      creator === 1
+        ? { account: 'me', domain: 'local' }
+        : { account: 'alice', domain: 'local' },
     createdAt: 1700000000000,
     updatedAt: 1700000000000,
     isDeleted: false,
@@ -62,7 +73,7 @@ function pendingItem(cid: string, id = -1) {
     data: {
       type: 'msg',
       msgId: id,
-      creator: 1,
+      creator: 'local\u0000local\u0000me',
       isSelf: true,
       name: 'Me',
       text: 'hi',
@@ -160,14 +171,44 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       // The source resolves the self id LIVE from sessionUserId() at shape time (not a constructor arg), so
       // the stub must expose it — user 1 is "Me" in the fixtures above.
       sessionUserId: () => 1,
-      sessionProfile: () => ({ id: 1, account: 'me@example.com' }),
+      sessionProfile: () => ({ id: 1, account: 'me', domain: 'local' }),
     } as unknown as UserService;
+    const profileRepo = {
+      getUser: vi
+        .fn()
+        .mockName('getUser')
+        .mockImplementation(
+          async (account: string, domain: string, sourceDomain: string) => {
+            const user = users.find(
+              (candidate) =>
+                candidate.account.toLowerCase() === account &&
+                candidate.domain === domain,
+            );
+            return user
+              ? {
+                  identity: `${sourceDomain}\u0000${domain}\u0000${account}`,
+                  kind: 'user',
+                  sourceServer: sourceDomain,
+                  ...user,
+                  account,
+                }
+              : undefined;
+          },
+        ),
+    } as unknown as ProfileRepository;
     const profiles = vi.fn().mockName('onProfile');
     const newerAvailable = vi.fn().mockName('onNewerAvailable');
-    const src = new HttpItemSource(conv(tid), repo, userService, outbox, {
-      onProfile: profiles,
-      onNewerAvailable: newerAvailable,
-    });
+    const src = new HttpItemSource(
+      conv(tid),
+      repo,
+      userService,
+      outbox,
+      {
+        onProfile: profiles,
+        onNewerAvailable: newerAvailable,
+      },
+      profileRepo,
+    );
     return {
       src,
       repo,
@@ -573,7 +614,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       data: {
         type: 'msg',
         msgId: -1,
-        creator: 1,
+        creator: { account: 'me', domain: 'local' },
         isSelf: true,
         name: 'Me',
         text: 'hi',
@@ -617,45 +658,21 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     offline;
   });
 
-  it('online init does not wait for profile hydration and patches the shaped row later', async () => {
-    const profile$ = new Subject<StandardResponse<User[]>>();
+  it('resolves the author from the local User table before shaping the row', async () => {
     const { src, queryUserInfo, profiles } = setup({
       code: 0,
       message: 'ok',
       data: [row(100, 2)],
       hasMore: false,
     });
-    queryUserInfo.mockReturnValue(profile$);
 
     const items = await src.init(-1, 50, 0);
     src.finishLocalInit(undefined);
 
     expect(items.map((item) => item.id)).toEqual([100]);
-    expect(items[0].data.name).toBe('');
+    expect(items[0].data.name).toBe('Alice');
+    expect(queryUserInfo).not.toHaveBeenCalled();
     expect(profiles).not.toHaveBeenCalled();
-
-    profile$.next({
-      code: 0,
-      message: 'ok',
-      data: [
-        {
-          id: 2,
-          name: 'Alice',
-        } as User,
-      ],
-    });
-    profile$.complete();
-    await Promise.resolve();
-
-    expect(profiles).toHaveBeenCalledTimes(1);
-
-    expect(profiles).toHaveBeenCalledWith(100, {
-      name: 'Alice',
-      avatar: '',
-      avatarIdentityId: 2,
-      avatarDomain: 'local',
-      isSelf: false,
-    });
   });
 
   it('getNewer pulls newer messages from the DB past the "at newest" state (incoming reply mounts)', async () => {
@@ -905,6 +922,45 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     await expect(src.init(-1, 50, 0)).rejects.toThrowError(
       'invalid PURE_TEXT message envelope',
     );
+  });
+
+  it('logs and skips invalid CALL content while exposing parsed content for valid rows', async () => {
+    const invalid = {
+      ...row(101, 2),
+      contentType: 'CALL' as const,
+      content: '{invalid',
+    };
+    const valid = {
+      ...row(102, 2),
+      contentType: 'CALL' as const,
+      content: JSON.stringify({
+        type: 'CALL',
+        callType: 'AUDIO',
+        outcome: 'missed',
+        callerId: 2,
+        calleeId: 1,
+        endedAt: 1_700_000_000_000,
+      }),
+    };
+    const error = vi.spyOn(console, 'error').mockReturnValue(undefined);
+    const { src } = setup({
+      code: 0,
+      message: 'ok',
+      data: [invalid, valid] as Message[],
+      hasMore: false,
+    });
+
+    const items = await src.init(-1, 50, 0);
+
+    expect(items).toHaveLength(1);
+    expect(items[0].data.callContent).toMatchObject({
+      outcome: 'missed',
+      endedAt: 1_700_000_000_000,
+    });
+    expect(error).toHaveBeenCalledWith(
+      '[message-content] skipped invalid CALL content (threadId=42, seq=101)',
+    );
+    error.mockRestore();
   });
 
   it('keeps an unavailable quote jump target with an empty preview for localized fallback', async () => {

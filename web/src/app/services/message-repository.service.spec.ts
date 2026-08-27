@@ -28,7 +28,7 @@ function msg(threadId: number, seq: number, content = `m${seq}`): Message {
     contentType: 'PURE_TEXT',
     content,
     threadId,
-    creator: 1,
+    creator: { account: 'me', domain: 'local' },
     createdAt: seq * 1000,
     updatedAt: seq * 1000,
     isDeleted: false,
@@ -214,8 +214,10 @@ describe('MessageRepository', () => {
     expect((await db.get('messages', [42, 5]))?.sectionRight).toBe(1);
     expect((await db.get('messages', [42, 50]))?.sectionLeft).toBe(1);
     expect((await db.get('messages', [42, 60]))?.sectionRight).toBe(1);
-    expect((await db.get('messages', [42, 1]))?.content).toBe('m1');
-    expect((await db.get('messages', [42, 60]))?.content).toBe('m60');
+    const first = await db.get('messages', [42, 1]);
+    const last = await db.get('messages', [42, 60]);
+    expect(first && 'content' in first ? first.content : undefined).toBe('m1');
+    expect(last && 'content' in last ? last.content : undefined).toBe('m60');
   });
 
   it('inserts missing HTTP rows but refreshes only existing final boundary rows', async () => {
@@ -239,10 +241,14 @@ describe('MessageRepository', () => {
     );
 
     const db = await webdb.messageDb();
-    expect((await db.get('messages', [42, 10]))?.content).toBe('new-left');
-    expect((await db.get('messages', [42, 12]))?.content).toBe('new-insert');
-    expect((await db.get('messages', [42, 15]))?.content).toBe('old-middle');
-    expect((await db.get('messages', [42, 20]))?.content).toBe('new-right');
+    const contentAt = async (seq: number) => {
+      const value = await db.get('messages', [42, seq]);
+      return value && 'content' in value ? value.content : undefined;
+    };
+    expect(await contentAt(10)).toBe('new-left');
+    expect(await contentAt(12)).toBe('new-insert');
+    expect(await contentAt(15)).toBe('old-middle');
+    expect(await contentAt(20)).toBe('new-right');
   });
 
   it('does not resurrect a tombstone when an in-flight HTTP page arrives later', async () => {
@@ -253,9 +259,9 @@ describe('MessageRepository', () => {
           id: '9',
           threadId: 42,
           seq: 10,
-          type: 'WITHDRAW',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
+          type: 'USER_RETRACTION',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
         },
       ],
       '9',
@@ -272,7 +278,7 @@ describe('MessageRepository', () => {
     const db = await webdb.messageDb();
     const raw = await db.get('messages', [42, 10]);
     expect(raw?.isDeleted).toBe(true);
-    expect(raw?.content).toBe('');
+    expect(raw && 'content' in raw).toBe(false);
   });
 
   it('turns an existing cached message into a tombstone atomically with its HWM', async () => {
@@ -289,9 +295,9 @@ describe('MessageRepository', () => {
           id: '12',
           threadId: 42,
           seq: 10,
-          type: 'REPORT',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
+          type: 'MODERATION_REMOVAL',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
         },
       ],
       '12',
@@ -302,7 +308,9 @@ describe('MessageRepository', () => {
     const db = await webdb.messageDb();
     const raw = await db.get('messages', [42, 10]);
     expect(raw?.isDeleted).toBe(true);
-    expect(raw?.content).toBe('already-cached');
+    expect(raw && 'content' in raw ? raw.content : undefined).toBe(
+      'already-cached',
+    );
   });
 
   it('joins a left-adjacent coveredTail by resolving only the incoming left edge', async () => {

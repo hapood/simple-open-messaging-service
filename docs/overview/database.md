@@ -15,54 +15,39 @@ SOMS uses PostgreSQL (+ TimescaleDB) through Drizzle ORM and `node-postgres`. Th
 
 ## Relation Overview
 
-```
-   ┌─────────────────────────────────┐
-   │              User               │   identity (account/name/avatar/bio inline;
-   │  account · hashPwd · domain     │    isGroup flags "!"-sigil group-identity rows)
-   │  profileRev · threadRevision    │
-   └──┬───────┬───────┬────┬─────────┬──────────────────────┬──────────────┐
-      │ 1:N   │ 1:N   │1:N │1:N      │ 1:N                  │ 1:N          │ 1:1
-      ▼       ▼       ▼    ▼         ▼                      ▼              ▼
- SessionToken PushToken LoginCode ThreadParticipant  ClientStateFeed  RelationshipIntent
-                                  (user↔thread)       (state feed)     (directed facts)
-                                          │
-                                          ▼ N:1
-                                  ┌─────────────────┐  1:1   ┌────────┐
-                                  │  MessageThread  │◀──────▶│  Group │ (GROUP only — "!"-User identity)
-                                  │  P2P | GROUP    │        └────────┘
-                                  │  curSeq·pullUntil│
-                  ┌───────────────┤  lastMessage*    │
-                  │               └────┬─────────────┘
-                  │ 1:N                │ 1:N
-                  ▼                    ▼
-   ┌──────────────────────┐    ┌──────────────────┐
-   │ PendingMedia(staging)│    │     Message      │ seq·originSeq·clientMessageId
-   └──────────────────────┘    │ contentType incl │──────── MessageAsset ──▶ MediaAsset (sha256 CAS)
-                               │  CALL/LINK/AUDIO │
-                               └──────────────────┘
+```text
+Account 1─1 User                  Group 1─1 MessageThread
+   │          │                                ├─N Message
+   │          └─N ThreadMember N───────────────┤
+   └─N ThreadParticipant N─────────────────────┘
 
-   Standalone: UserBlock (one-way block) · Admin* · FederatedPeer(+Event) · S2S* · QuotaDailyUsage ·
-               SystemSetting · DiagnosticsReport
+RelationshipPair 1─N RelationshipIntent
+        └────────────── optional MessageThread
 ```
 
 ## Model Details
 
-### User — Identity (humans + group-identity rows)
+### Account — local authentication and control-plane state
 
-| Field                                   | Type          | Description                                                                       |
-| --------------------------------------- | ------------- | --------------------------------------------------------------------------------- |
-| `id`                                    | Int (PK)      |                                                                                   |
-| `account`                               | VarChar(31)   | normalized SOMFP user account or `!`+opaque group id                              |
-| `hashPwd`                               | VarChar(127)? | argon2 hash; **null = OTP/QR-only account** (no password)                         |
-| `mustChangePassword`                    | Boolean       | true = admin-generated INITIAL password the user must rotate (one-time bootstrap) |
-| `name` / `avatar` / `bio`               | String        | display name / avatar path / bio — **folded in** from the former `UserExtra`      |
-| `isGroup`                               | Boolean       | true iff a `!`-sigil group-identity row (mirrors account grammar)                 |
-| `domain`                                | VarChar(63)   | `"local"` for users on THIS server; `<peer-domain>` for a federated stub          |
-| `profileRev` / `remoteProfileRev`       | Int / Int?    | profile revision (origin-authoritative) / mirror's last-localized revision        |
-| `threadRevision`                        | Int           | internal backing value exposed to clients as the unified `stateRevision` cursor   |
-| `createdAt` / `updatedAt` / `isDeleted` |               |                                                                                   |
+Only identities created by this server have an `Account`. Its primary key is
+also a foreign key to the corresponding `User.id`. Password state, disablement,
+the client-state allocator, read revision, sessions, push tokens, login codes,
+admin linkage, and quotas reference `Account`. Federated identities never get
+an `Account` row.
 
-Composite unique: `@@unique([account, domain])` — account name unique within a domain (allows a foreign stub to share a local account name). One account namespace covers users **and** admins (an admin is a linked `User` row).
+### User — source-scoped person identity
+
+`User` stores only person identity and profile data. It never represents a
+group. The identity key is `(account, domain, sourceDomain)`: `domain` is the
+member's claimed home address, while `sourceDomain` is the feed publisher whose
+profile projection supplied this row. Only users created locally use
+`domain=local, sourceDomain=local`; inbound feed values are not normalized to
+`local` merely because the address belongs to this server.
+
+Fields include `id`, `account`, `domain`, `sourceDomain`, `name`, `avatar`,
+`bio`, `availability`, `profileRev`, and timestamps. `availability=REMOVED`
+marks a removed source projection. External users are valid `User` rows but
+cannot log in because they have no `Account`.
 
 The incoming-request badge is derived by each client from incoming
 `RELATIONSHIP_INTENT/REQUESTED` client-state entries.
@@ -101,47 +86,61 @@ One row per (device, user); `token` globally unique (FCM registration token for 
 
 ### MessageThread — Conversation
 
-| Field                                                     | Type                   | Description                                                                                             |
-| --------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------- |
-| `id`                                                      | Int (PK)               |                                                                                                         |
-| `type`                                                    | MessageThreadType      | `P2P` \| `GROUP`                                                                                        |
-| `curSeq`                                                  | Int                    | last-allocated `Message.seq` (0 = no message yet); atomic counter backing seq allocation                |
-| `pullUntil`                                               | Int                    | federation pull cursor (REMOTE thread seq pulled up to); initialized when the relationship materializes |
-| `lastMessageSeq` / `lastMessagePreview` / `lastMessageAt` |                        | denormalized "last message" cache for the conversation list (hot read)                                  |
-| `groupUserId`                                             | Int? (unique, FK→User) | the `!`-sigil group-User row (GROUP only); null for P2P                                                 |
-| `createdAt` / `updatedAt`                                 |                        |                                                                                                         |
+| Field                                                     | Type                    | Description                                                                                             |
+| --------------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------- |
+| `id`                                                      | Int (PK)                |                                                                                                         |
+| `type`                                                    | MessageThreadType       | `P2P` \| `GROUP`                                                                                        |
+| `curSeq`                                                  | Int                     | last-allocated `Message.seq` (0 = no message yet); atomic counter backing seq allocation                |
+| `pullUntil`                                               | Int                     | federation pull cursor (REMOTE thread seq pulled up to); initialized when the relationship materializes |
+| `lastMessageSeq` / `lastMessagePreview` / `lastMessageAt` |                         | denormalized "last message" cache for the conversation list (hot read)                                  |
+| `groupId`                                                 | Int? (unique, FK→Group) | independent group profile for GROUP; null for P2P                                                       |
+| `createdAt` / `updatedAt`                                 |                         |                                                                                                         |
 
-### ThreadParticipant — Membership (the single source of truth)
+### ThreadMember — roster and message identity
 
-One row per (user, thread); P2P and GROUP share this table (`role` null for P2P). Replaces the former `UserMessageThread` + `GroupMember`.
+One row per `(threadId, userId)`. Every P2P thread has exactly two member rows;
+group threads use the same table for their roster. `userId` points to the exact
+source-scoped `User` row supplied by the relevant feed. Rows observed before a
+departure are retained locally, but Group Meta does not backfill members who
+left before the mirror received the roster. These rows never grant permission.
 
-Request processing may materialize participant rows before mutual authorization
-exists. The rows provide stable thread linkage and retain per-user history state;
-they do not grant access. P2P and group membership authority is derived from the
-two directed relationship intents. Revocation leaves retained rows available for
-read-only history.
+| Field                     | Type       | Description                                           |
+| ------------------------- | ---------- | ----------------------------------------------------- |
+| `lastSentSeq`             | Int?       | latest authored seq tracked by a locally hosted group |
+| `left`                    | Boolean    | retained group projection is departed; false for P2P  |
+| `role`                    | GroupRole? | OWNER/ADMIN/MEMBER (GROUP only); null for P2P         |
+| `joinedAt`                | Timestamp  | start of the current observed membership interval     |
+| `createdAt` / `updatedAt` | Timestamp  | retained row creation and last update                 |
 
-| Field                                  | Type         | Description                                                       |
-| -------------------------------------- | ------------ | ----------------------------------------------------------------- |
-| `lastReadSeq`                          | Int?         | read watermark; unread = `count(Message where seq > lastReadSeq)` |
-| `role`                                 | GroupRole?   | OWNER/ADMIN/MEMBER (GROUP only); null for P2P                     |
-| `muted` / `pinned` / `pinnedAt`        |              | mute / pin / pin-order                                            |
-| `clearedSeq`                           | Int?         | per-user "clear history" sequence watermark                       |
-| `alias`                                | VarChar(64)? | per-user nickname for this thread                                 |
-| `joinedAt` / `createdAt` / `updatedAt` |              |                                                                   |
+The host updates `lastSentSeq`; mirrors leave it null. Group Meta does not use
+this field to disclose departed speakers. `joinedAt` is local lifecycle
+metadata: re-entry refreshes it, but it is not federated through GROUP_META and
+must not be interpreted as the origin's join time on a mirror.
 
-Unique: `@@unique([userId, threadId])`. Indexes: `[threadId]` (roster), `[userId, pinned]` (pinned-first list).
+### ThreadParticipant — local account conversation state
 
-### Directed relationship facts
+This is an independent fact keyed by `(accountId, threadId)`. It references a
+local `Account` and a `MessageThread`, never a `ThreadMember`. It stores the
+local role fact, `lastReadSeq`, `readRevision`, mute/block/pin state,
+`clearedSeq`, `messageVisibleBeforeSeq`, and alias. A thread may therefore have
+zero, one, or several participants: a cross-server P2P usually has one, a
+local-local P2P has two, and a group has one for each local account. Roster
+identity is resolved separately through `ThreadMember JOIN User`.
 
-- **Directed account intent** — one fact per ordered account pair, with its own
+### RelationshipPair and RelationshipIntent
+
+- **RelationshipIntent** — one authored direction (`authorSide=A|B`) per fixed
+  pair, with its own
   `note`, `requestedAt`, and absolute `expiresAt`. `REQUESTED` is displayable and
   acceptable only before expiry. Its publisher creates a placeholder thread and
   immediately grants the target peer query access; the reverse direction remains
   independent. User/user pairs use P2P threads and user/group pairs use group
   threads. A received one-sided federation request remains address-keyed and
   creates no local thread until the user accepts or independently initiates.
-- **ThreadAudience current projection** — the origin server's current authorization fact. Relationship
+- **RelationshipPair.active** — the materialized bilateral fact used by
+  permission checks. It is folded from the two intents under a row lock; roster
+  and participant presence are never permission inputs.
+- **ThreadAudience current projection** — the origin server's current federation delivery boundary. Relationship
   removal deletes the audience row and immediately revokes message and tombstone queries. Reactivation
   recreates the audience at the current thread tail and reuses the same thread/mirror. A group peer
   audience remains present while that peer has any active member. Messages from an interval with no
@@ -155,17 +154,15 @@ there is no JSON merge and no polymorphic `Invite` table.
 invitations waiting for the member. Both directions share one schema, status vocabulary, paging
 coordinate, retention policy, and API response shape.
 
-### Group — Group-exclusive state
+### Group — independent group identity
 
-Identity (name/avatar/bio) lives on the group's `!`-User row; this table holds group lifecycle and federation-consumer state.
-
-| Field                     | Type                  | Description                                                   |
-| ------------------------- | --------------------- | ------------------------------------------------------------- |
-| `groupUserId`             | Int (unique, FK→User) | the `!`-User identity row; 1:1 with the GROUP thread          |
-| `ownerId`                 | Int                   | denormalized owner (fast lookup)                              |
-| `remoteGroupMetaFeedId`   | BigInt?               | last consumed Group Meta Feed ID for a federated mirror       |
-| `dissolvedAt`             | Timestamp?            | terminal dissolve marker; null while the group remains active |
-| `createdAt` / `updatedAt` | Timestamp             | lifecycle timestamps                                          |
+| Field                                            | Type       | Description                                                    |
+| ------------------------------------------------ | ---------- | -------------------------------------------------------------- |
+| `id` / `account` / `domain`                      |            | group identity; `domain=local` only for locally created groups |
+| `name` / `avatar` / `description` / `profileRev` |            | group profile, independent of `User`                           |
+| `remoteGroupMetaFeedId`                          | BigInt?    | last consumed Group Meta Feed ID for a federated mirror        |
+| `dissolvedAt`                                    | Timestamp? | terminal dissolve marker; null while the group remains active  |
+| `createdAt` / `updatedAt`                        | Timestamp  | lifecycle timestamps                                           |
 
 ### ClientStateFeed — Client state feed
 
@@ -179,19 +176,22 @@ Independent of friendship (survives unfriend; applies to strangers too). `@@uniq
 
 ### Message — Message
 
-| Field                                   | Type                 | Description                                                                                                             |
-| --------------------------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `id`                                    | **BigInt** (PK)      | INTERNAL surrogate, never exposed (HTTP/SSE/federation carry `seq`)                                                     |
-| `seq`                                   | Int                  | per-thread monotonic seq (0-indexed), allocated atomically from `curSeq`; the EXTERNAL ordering key + frontend identity |
-| `contentType`                           | ContentType          | `PURE_TEXT \| INVITE \| IMAGE \| VIDEO \| FILE \| AUDIO \| LINK \| CALL \| FORWARD \| GALLERY \| SYSTEM`                |
-| `content`                               | String               | text / JSON / CAS-url meta (per type)                                                                                   |
-| `clientMessageId`                       | VarChar(36)?, unique | send-idempotency UUID (partial unique index — NULLs distinct)                                                           |
-| `originSeq`                             | Int?                 | the ORIGINATING server's per-thread seq — the cross-server value; federation dedup key + pull cursor                    |
-| `originServerTime`                      | DateTime?            | sender-server allocation time (audit only; never displayed)                                                             |
-| `threadId` / `creator`                  |                      | FKs                                                                                                                     |
-| `createdAt` / `updatedAt` / `isDeleted` |                      |                                                                                                                         |
+| Field                                   | Type                 | Description                                                                                                            |
+| --------------------------------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `id`                                    | **BigInt** (PK)      | INTERNAL surrogate, never exposed (HTTP/SSE/federation carry `seq`)                                                    |
+| `seq`                                   | Int                  | positive per-thread monotonic seq, allocated atomically from `curSeq`; the external ordering key and frontend identity |
+| `contentType`                           | ContentType          | `PURE_TEXT \| INVITE \| IMAGE \| VIDEO \| FILE \| AUDIO \| LINK \| CALL \| FORWARD \| GALLERY \| SYSTEM`               |
+| `content`                               | String               | text / JSON / CAS-url meta (per type)                                                                                  |
+| `clientMessageId`                       | VarChar(36)?, unique | send-idempotency UUID (partial unique index — NULLs distinct)                                                          |
+| `originSeq`                             | Int?                 | the ORIGINATING server's per-thread seq — the cross-server value; federation dedup key + pull cursor                   |
+| `originServerTime`                      | DateTime?            | sender-server allocation time (audit only; never displayed)                                                            |
+| `threadId`                              |                      | conversation FK                                                                                                        |
+| `creatorAccount` / `creatorDomain`      | Address snapshot     | author identity; null only for server-authored SYSTEM items                                                            |
+| `createdAt` / `updatedAt` / `isDeleted` |                      |                                                                                                                        |
 
-Unique: `@@unique([threadId, seq])` (seq identity + keyset cursor), `@@unique([threadId, creator, originSeq])` (sender seq-allocation race + receiver pull dedup).
+Unique: `(threadId, seq)` is the local timeline identity; `(threadId,
+creatorAccount, creatorDomain, originSeq)` deduplicates an author's federated
+sequence without coupling retained messages to a mutable `User` row.
 
 ### MediaAsset / MessageAsset / PendingMedia — Media
 
@@ -206,15 +206,15 @@ The normative identities and derivation rules are defined by
 [Federation v1 Resources](../../spec/v1/resources.md). SOMS maps them as follows; these database
 columns are implementation details and never replace the wire coordinates:
 
-| Wire identity or coordinate                      | SOMS local representation                                                                                                         |
-| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| `(thread, author, originSeq)`                    | `Message(threadId, creator, originSeq)` unique key; local `Message.seq` remains a separate display/order coordinate               |
-| `(source domain, thread, quoteTarget.targetSeq)` | Resolved through the source publisher's message/receipt coordinate mapping, then projected to receiver-local `Message.seq`        |
-| Direct-media `digest` bound to an outer message  | `MessageAsset(messageId, digest)` plus `MediaAsset(digest)` CAS state                                                             |
-| Remote media not yet localized                   | `PendingMedia(threadId, creatorId, originSeq, digest)` until digest and authorization checks succeed                              |
-| Outer FORWARD card root `bundleId`               | `ForwardMessage(messageId, bundleId)` → `ForwardBundle(id)`                                                                       |
-| Child bundle relation                            | `ForwardBundleDependency(parentBundleId, childBundleId)`; child IDs are never substituted for the outer root ID in media requests |
-| Asset within a verified root closure             | `ForwardBundleAsset(bundleId, digest, ...)`; authorization still starts from the outer message and root bundle mapping            |
+| Wire identity or coordinate                      | SOMS local representation                                                                                                                 |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `(thread, author, originSeq)`                    | `Message(threadId, creatorAccount, creatorDomain, originSeq)` unique key; local `Message.seq` remains a separate display/order coordinate |
+| `(source domain, thread, quoteTarget.targetSeq)` | Resolved through the source publisher's message/receipt coordinate mapping, then projected to receiver-local `Message.seq`                |
+| Direct-media `digest` bound to an outer message  | `MessageAsset(messageId, digest)` plus `MediaAsset(digest)` CAS state                                                                     |
+| Remote media not yet localized                   | `PendingMedia(threadId, creatorAccount, creatorDomain, originSeq, digest)` until digest and authorization checks succeed                  |
+| Outer FORWARD card root `bundleId`               | `ForwardMessage(messageId, bundleId)` → `ForwardBundle(id)`                                                                               |
+| Child bundle relation                            | `ForwardBundleDependency(parentBundleId, childBundleId)`; child IDs are never substituted for the outer root ID in media requests         |
+| Asset within a verified root closure             | `ForwardBundleAsset(bundleId, digest, ...)`; authorization still starts from the outer message and root bundle mapping                    |
 
 For inbound data, `sourceDomain/sourceBundleId` records the remote opaque bundle identity while the
 local `ForwardBundle.id` may use a local key. Retries must retain that mapping; shape or timestamp
@@ -222,7 +222,7 @@ similarity is not an identity substitute.
 
 ### Admin / AdminSession / AdminActionLog / 2FA / WebAuthn
 
-- **Admin** — linked profile (`userId → User`, 1:1); role `SUPER_ADMIN`/`ADMIN`/`VIEWER`, `enabled`, `lastLogin*`, TOTP (`twoFactorSecretCipher` AES-256-GCM under the auto-managed `./data/2fa.key`, `twoFactorLastUsedCounter` replay guard), WebAuthn hint.
+- **Admin** — linked local account (`userId → Account`, 1:1); role `SUPER_ADMIN`/`ADMIN`/`VIEWER`, `enabled`, `lastLogin*`, TOTP (`twoFactorSecretCipher` AES-256-GCM under the auto-managed `./data/2fa.key`, `twoFactorLastUsedCounter` replay guard), WebAuthn hint.
 - **AdminSession** — opaque admin session (`tokenHash` sha256; like the user SessionToken pattern, separate secret).
 - **WebAuthnCredential** — passkey credential (public `credentialId` + COSE `publicKey`, clone-detection `counter`, transports/deviceType/backed).
 - **AdminLoginChallenge** — single-use challenge tracker (closes the WebAuthn replay window for counter=0 authenticators).
@@ -266,11 +266,11 @@ CREATE TYPE "AdminRole" AS ENUM ('SUPER_ADMIN', 'ADMIN', 'VIEWER');
 
 ## Design Notes
 
-1. **One account namespace**: users and admins share `User`; an admin is a linked profile, so user/admin account names can never collide. A `!`-sigil `User` row (`isGroup`) is a group identity — `Group` holds only owner + roster revision.
-2. **Conversation linkage is `ThreadParticipant`**: P2P and GROUP share one participant table (`role` null for P2P). RelationshipIntent is the sole current authorization source; retained participant rows preserve per-user settings and read-only history after revocation.
+1. **Account and identity are separate**: `Account` is local login/control-plane state; `User` is a source-scoped person profile. Groups live only in `Group`.
+2. **Roster and local state are separate**: `ThreadMember` stores P2P/group roster facts and retained speakers. `ThreadParticipant` is an independent local-account conversation fact; neither table references the other.
 3. **Requests are directional facts**: friendship and group membership keep each author's direction,
    note and revision separately; canonical pair rows serialize crossed transactions.
 4. **Per-thread seq, internal id**: `Message.id` (BigInt) is an internal storage key never exposed; `seq` is the per-thread external ordering key, allocated atomically from `curSeq` (gapless). `originSeq` carries the originating server's seq for federation dedup.
 5. **Client state versioning**: thread membership and profile cache entries share one integer cursor (`stateRevision` on the wire); clients delta-replay rather than re-fetch the whole list.
-6. **Lifecycle is model-specific**: revoked relationship intents can leave retained participants for visible read-only history. Media-CAS blobs are reclaimed only after reachability checks.
+6. **Lifecycle is model-specific**: group departure marks `ThreadMember.left` and emits an ordered group-meta `DEPART`; it does not erase the retained member. Media-CAS blobs are reclaimed only after reachability checks.
 7. **BigInt serialization**: `Message.id` / `ThreadRevision.id` / `AdminActionLog.id` etc. use BigInt, uniformly serialized to strings by the global `SerializeInterceptor` (see [architecture.md → Unified Response Format](./architecture.md#unified-response-format)).

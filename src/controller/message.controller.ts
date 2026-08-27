@@ -20,7 +20,11 @@ import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { ApiResultResponse, envelope } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import { MessageResponseDto } from '../dto/response.dto.js';
+import {
+  MessageQueryPageDto,
+  MessageResponseDto,
+  MessageTombstoneQueryPageDto,
+} from '../dto/response.dto.js';
 import { UserIdDto } from '../dto/user.dto.js';
 import { UserService } from '../user/user.service.js';
 import { GroupService } from '../group/group.service.js';
@@ -109,15 +113,46 @@ export class MessageController {
   @HttpCode(HttpStatus.OK)
   @Post('deleted-messages/query')
   @ApiOperation({
-    summary: 'Query one conversation deletion log after its HWM',
+    summary: 'Query one conversation tombstone log by cursor',
   })
+  @ApiResultResponse(MessageTombstoneQueryPageDto)
   async queryDeletedMessages(@Body() dto: QueryDeletedMessagesDto) {
-    const rows = await this.deletedMessages.queryThread(
+    if ((dto.after === undefined) === (dto.before === undefined)) {
+      if (dto.after !== undefined)
+        throw new BusinessException(
+          BusinessCode.VALIDATION_FAILED,
+          'after and before are mutually exclusive',
+          HttpStatus.BAD_REQUEST,
+        );
+      if (dto.through !== undefined || dto.take !== undefined)
+        throw new BusinessException(
+          BusinessCode.VALIDATION_FAILED,
+          'take and through require after or before',
+          HttpStatus.BAD_REQUEST,
+        );
+    }
+    const after = dto.after === undefined ? undefined : BigInt(dto.after);
+    const before = dto.before === undefined ? undefined : BigInt(dto.before);
+    const through = dto.through === undefined ? undefined : BigInt(dto.through);
+    if (after !== undefined && through !== undefined && through < after)
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'through must be greater than or equal to after',
+        HttpStatus.BAD_REQUEST,
+      );
+    if (before !== undefined && through !== undefined && through > before)
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'through must be less than or equal to before',
+        HttpStatus.BAD_REQUEST,
+      );
+    return this.deletedMessages.queryThread(
       dto.threadId,
-      BigInt(dto.afterId),
-      dto.take,
+      after,
+      dto.take ?? 100,
+      through,
+      before,
     );
-    return envelope(rows, { hasMore: rows.length === dto.take });
   }
 
   @UseGuards(ThreadAccessGuard)
@@ -152,7 +187,7 @@ export class MessageController {
     // The existing federation hint is only a wake-up signal. Receivers always pull both the message
     // stream and the durable deletion stream, so reusing it keeps delivery lossy-safe without making
     // the push itself authoritative.
-    void this.federation.notifyOnSend(req.user.userId, dto.threadId, dto.seq);
+    void this.federation.notifyOnSend(deleted.creator, dto.threadId, dto.seq);
     void this.federation.signalDeletionOutbound(dto.threadId, dto.seq);
     return deleted;
   }
@@ -201,7 +236,10 @@ export class MessageController {
       );
       if (prior) {
         if (
-          prior.creator !== req.user.userId ||
+          !(await this.messageService.isAuthoredBy(
+            prior.creator,
+            req.user.userId,
+          )) ||
           prior.threadId !== dto.threadId
         ) {
           throw new BusinessException(
@@ -278,7 +316,7 @@ export class MessageController {
     }
     const quoteVisibility: {
       clearedThroughSeq?: number | null;
-      hideCreatorIds?: number[];
+      hideCreators?: Array<{ account: string; domain: string }>;
     } = { clearedThroughSeq: req.threadAccess.participant.clearedSeq };
     const hasQuote =
       contentType === ContentType.PURE_TEXT &&
@@ -293,7 +331,10 @@ export class MessageController {
         req.user.userId,
       );
       if (peers.length > 0)
-        quoteVisibility.hideCreatorIds = peers.map((peer) => peer.userId);
+        quoteVisibility.hideCreators = peers.map((peer) => ({
+          account: peer.account,
+          domain: peer.domain,
+        }));
     }
     await this.userQuota.assertCanSend(req.user.userId);
     const data = await this.messageService.writeMsgToThread(
@@ -336,7 +377,10 @@ export class MessageController {
     );
     if (prior) {
       if (
-        prior.creator !== req.user.userId ||
+        !(await this.messageService.isAuthoredBy(
+          prior.creator,
+          req.user.userId,
+        )) ||
         prior.threadId !== dto.threadId ||
         prior.contentType !== ContentType.CONTACT_CARD
       ) {
@@ -395,10 +439,12 @@ export class MessageController {
         : await this.groups.findGroupByThreadId(dto.targetGroupId);
     const target =
       dto.targetUserId === undefined
-        ? groupTarget?.groupUser
+        ? groupTarget?.group
+          ? { ...groupTarget.group, bio: groupTarget.group.description }
+          : undefined
         : await this.users.findUniqueUser({
             id: dto.targetUserId,
-            isDeleted: false,
+            availability: 'AVAILABLE',
           });
     if (!target) {
       throw new BusinessException(
@@ -581,35 +627,45 @@ export class MessageController {
       );
     }
 
-    const roster = await this.participantService.getRoster(
-      req.threadAccess.threadId,
+    const requestedMembers = new Map<
+      string,
+      { account: string; domain: string }
+    >();
+    for (const entity of entities) {
+      if (entity.entityType !== 'user') continue;
+      const separator = entity.entityId.lastIndexOf('@');
+      if (separator <= 0 || separator === entity.entityId.length - 1) {
+        throw new BusinessException(
+          BusinessCode.GROUP_TARGET_NOT_MEMBER,
+          `mention target must use an exact account@domain address: ${entity.entityId}`,
+        );
+      }
+      requestedMembers.set(entity.entityId, {
+        account: entity.entityId.slice(0, separator),
+        domain: entity.entityId.slice(separator + 1),
+      });
+    }
+    const resolvedMembers = new Map(
+      await Promise.all(
+        [...requestedMembers].map(
+          async ([entityId, identity]) =>
+            [
+              entityId,
+              await this.groups.resolveActiveMember(
+                req.threadAccess.threadId,
+                identity,
+              ),
+            ] as const,
+        ),
+      ),
     );
     return transformMessageEntities(content, (entity) => {
       if (entity.entityType === 'user') {
-        const separator = entity.entityId.lastIndexOf('@');
-        const requestedAccount =
-          separator < 0 ? entity.entityId : entity.entityId.slice(0, separator);
-        const requestedDomain =
-          separator < 0 ? null : entity.entityId.slice(separator + 1);
-        const matches = roster.filter(({ user }) => {
-          return (
-            user.account === requestedAccount &&
-            (requestedDomain === null ||
-              user.domain === requestedDomain ||
-              (user.domain === 'local' &&
-                requestedDomain === this.federation.ourDomain))
-          );
-        });
-        if (matches.length !== 1) {
-          throw new BusinessException(
-            BusinessCode.GROUP_TARGET_NOT_MEMBER,
-            `mention target is not a unique active member: ${entity.entityId}`,
-          );
-        }
-        const user = matches[0].user;
+        const member = resolvedMembers.get(entity.entityId);
+        if (!member) throw new Error('resolved mention member is missing');
         return serializeUserMention(
-          user.name,
-          `${user.account}@${user.domain}`,
+          member.name,
+          `${member.account}@${member.domain}`,
         );
       }
       if (entity.entityType === 'audience' && entity.entityId === 'all') {
@@ -706,48 +762,112 @@ export class MessageController {
   @ApiOperation({
     summary: 'Query conversation history messages (cursor pagination)',
   })
-  @ApiResultResponse(MessageResponseDto, true)
+  @ApiResultResponse(MessageQueryPageDto)
   async queryMessages(
     @Request() req: FastifyRequest,
     @Body() dto: QueryMessagesDto,
   ) {
-    if (dto.truncate && dto.truncateSeq === undefined) {
-      return envelope([], { hasMore: false, truncated: true });
-    }
+    if (dto.after !== undefined && dto.before !== undefined)
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'after and before are mutually exclusive',
+        HttpStatus.BAD_REQUEST,
+      );
     if (
-      dto.truncate &&
-      dto.truncateSeq !== undefined &&
-      dto.lastSeq !== undefined &&
-      ((dto.orderBy === 'asc' && dto.truncateSeq <= dto.lastSeq) ||
-        (dto.orderBy === 'desc' && dto.truncateSeq >= dto.lastSeq))
-    ) {
-      return envelope([], { hasMore: false, truncated: true });
-    }
-    // Membership is resolved by ThreadAccessGuard (THREAD_NOT_FOUND for non-participants) — the same
-    // IDOR fix as send, now declarative. The participant row is on req.threadAccess.participant.
-    // take+1 trick: fetch one extra row to decide hasMore, then truncate `data` back to `take` rows.
-    // This removes the edge case where a total count that is an exact multiple of `take` would make the
-    // client fire one speculative empty request (its `< take` heuristic would otherwise be ambiguous).
-    const newParams: MessageQueryParams = {
-      skip: dto.skip,
-      take: dto.take + 1,
-      orderBy: { seq: dto.orderBy },
+      dto.after === undefined &&
+      dto.before === undefined &&
+      (dto.through !== undefined || dto.take !== undefined)
+    )
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'take and through require after or before',
+        HttpStatus.BAD_REQUEST,
+      );
+    const parseCursor = (value: string, name: string): number => {
+      const parsed = Number(value);
+      if (!Number.isSafeInteger(parsed))
+        throw new BusinessException(
+          BusinessCode.VALIDATION_FAILED,
+          `${name} exceeds the safe integer range`,
+          HttpStatus.BAD_REQUEST,
+        );
+      return parsed;
     };
-    if (dto.lastSeq !== undefined) {
-      // seq is unique only within a thread, so the keyset cursor uses the compound (threadId, seq) unique.
-      newParams.cursor = {
-        threadId_seq: { threadId: dto.threadId, seq: Number(dto.lastSeq) },
-      };
-    }
-    if (dto.truncate && dto.truncateSeq !== undefined) {
-      newParams.truncateSeq = dto.truncateSeq;
-    }
+    const lower = Math.max(req.threadAccess.participant.clearedSeq ?? 0, 0);
+    const currentEnd = await this.messageService.readThreadEndSeq(dto.threadId);
+    const upper = Math.min(
+      currentEnd + 1,
+      req.threadAccess.participant.messageVisibleBeforeSeq ?? currentEnd + 1,
+    );
+    const cursorData = {
+      resumeAfter: lower.toString(),
+      resumeBefore: upper.toString(),
+    };
+    if (dto.after === undefined && dto.before === undefined)
+      throw new BusinessException(
+        BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
+        'after or before is required; initialize the message query cursor',
+        HttpStatus.OK,
+        cursorData,
+      );
+    const after =
+      dto.after === undefined ? undefined : parseCursor(dto.after, 'after');
+    const before =
+      dto.before === undefined ? undefined : parseCursor(dto.before, 'before');
+    const through =
+      dto.through === undefined
+        ? undefined
+        : parseCursor(dto.through, 'through');
+    if (
+      (after !== undefined && (after < lower || after >= upper)) ||
+      (before !== undefined && (before <= lower + 1 || before > upper))
+    )
+      throw new BusinessException(
+        BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
+        'message query cursor is outside the available coordinate space',
+        HttpStatus.OK,
+        cursorData,
+      );
+    if (after !== undefined && through !== undefined && through < after)
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'through must be greater than or equal to after',
+        HttpStatus.BAD_REQUEST,
+      );
+    if (before !== undefined && through !== undefined && through > before)
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'through must be less than or equal to before',
+        HttpStatus.BAD_REQUEST,
+      );
+    const forward = after !== undefined;
+    const take = dto.take ?? 20;
+    const queryEnd = forward ? Math.min(through ?? upper - 1, upper - 1) : 0;
+    const queryStart = forward ? 0 : (through ?? lower + 1);
+    if (!forward && queryStart < lower + 1)
+      throw new BusinessException(
+        BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
+        'message query boundary is outside the available coordinate space',
+        HttpStatus.OK,
+        cursorData,
+      );
+    const newParams: MessageQueryParams = {
+      skip: 1,
+      take: take + 1,
+      orderBy: { seq: forward ? 'asc' : 'desc' },
+      cursor: {
+        threadId_seq: {
+          threadId: dto.threadId,
+          seq: forward ? after : before!,
+        },
+      },
+      truncateSeq: forward ? queryEnd + 1 : queryStart - 1,
+    };
     // Blocking does not alter stored history. The client deliberately skips this request while a thread
     // is blocked and can query the retained history again after unblocking.
     const filters: {
       clearedThroughSeq?: number | null;
       visibleBeforeSeq?: number | null;
-      hideCreatorIds?: number[];
     } = {
       clearedThroughSeq: req.threadAccess.participant.clearedSeq,
       visibleBeforeSeq: req.threadAccess.participant.messageVisibleBeforeSeq,
@@ -757,12 +877,18 @@ export class MessageController {
       newParams,
       filters,
     );
-    const hasMore = rows.length > dto.take;
-    // The truncate row is deliberately EXCLUDED: it already exists locally. take+1 makes exhaustion of
-    // the bounded interval unambiguous, including the exact-multiple case.
-    const truncated = dto.truncate === true && !hasMore;
-    const data = hasMore ? rows.slice(0, dto.take) : rows;
-    return envelope(data, { hasMore, truncated });
+    const hasMore = rows.length > take;
+    const messages = hasMore ? rows.slice(0, take) : rows;
+    const scannedThrough = hasMore
+      ? messages.at(-1)!.seq
+      : forward
+        ? queryEnd
+        : queryStart;
+    return {
+      messages,
+      scannedThrough: scannedThrough.toString(),
+      hasMore,
+    };
   }
 
   @ApiBearerAuth()

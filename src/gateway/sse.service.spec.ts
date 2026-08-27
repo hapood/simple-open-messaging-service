@@ -13,15 +13,21 @@ describe('SseService', () => {
   function makeService() {
     const database = {
       db: {
-        query: {
-          user: {
-            findFirst: vi.fn().mockResolvedValue({
-              stateFeedAllocatedThrough: 4,
-              readRevision: 3,
-              profileRev: 2,
-            }),
-          },
-        },
+        select: vi.fn(() => {
+          const query = {
+            from: () => query,
+            innerJoin: () => query,
+            where: () => query,
+            limit: async () => [
+              {
+                stateFeedAllocatedThrough: 4,
+                readRevision: 3,
+                profileRev: 2,
+              },
+            ],
+          };
+          return query;
+        }),
       },
     };
     const callState = { get: vi.fn().mockReturnValue(null) };

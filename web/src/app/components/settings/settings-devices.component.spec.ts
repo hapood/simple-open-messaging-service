@@ -44,9 +44,9 @@ describe('SettingsDevicesComponent', () => {
       userAgent: null,
       ip: null,
       lastSeenIp: null,
-      createdAt: '2026-01-01T00:00:00Z',
-      lastSeenAt: '2026-01-02T00:00:00Z',
-      expiresAt: '2026-02-01T00:00:00Z',
+      createdAt: Date.UTC(2026, 0, 1),
+      lastSeenAt: Date.UTC(2026, 0, 2),
+      expiresAt: Date.UTC(2026, 1, 1),
       autoTerminateDays: 30,
       isCurrent: false,
       ...overrides,
@@ -147,7 +147,7 @@ describe('SettingsDevicesComponent', () => {
   it('expiresLabel(): null → "No expiry"; otherwise a formatted date', () => {
     expect(comp.expiresLabel(row(1, { expiresAt: null }))).toBe('No expiry');
     const labelled = comp.expiresLabel(
-      row(2, { expiresAt: '2026-02-01T00:00:00Z' }),
+      row(2, { expiresAt: Date.UTC(2026, 1, 1) }),
     );
     expect(labelled).toMatch(/2026-02-0/); // dayjs YYYY-MM-DD in the formatted string
   });

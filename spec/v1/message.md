@@ -53,7 +53,7 @@ See [Message Envelope, Section 4](./message/envelope.md#4-identity-and-immutabil
 ## 4. `ContentType`
 
 ```ts
-type CoreContentType =
+type ContentType =
   | 'PURE_TEXT'
   | 'IMAGE'
   | 'VIDEO'
@@ -64,8 +64,6 @@ type CoreContentType =
   | 'CALL'
   | 'FORWARD'
   | 'GALLERY';
-
-type ContentType = CoreContentType;
 ```
 
 These ten values are the complete v1 set. Any other `contentType` is malformed.

@@ -10,7 +10,7 @@ import { BusinessCode } from '../src/common/business-code.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
   message,
-  relationshipIntent,
+  threadMember,
   threadParticipant,
 } from '../src/database/schema.js';
 import { seedUserWithSession } from './seed.js';
@@ -43,18 +43,12 @@ describe('group membership re-entry and ownership transfer', () => {
     const sent = await request(app.getHttpServer())
       .post('/api/v1/invite/friend')
       .set('Authorization', `Bearer ${first.token}`)
-      .send({ toUserId: second.id });
+      .send({ account: second.account });
     expect(sent.body.code).toBe(BusinessCode.OK);
-    const intent = await database.db.query.relationshipIntent.findFirst({
-      where: and(
-        eq(relationshipIntent.authorUserId, first.id),
-        eq(relationshipIntent.subjectUserId, second.id),
-      ),
-    });
     const accepted = await request(app.getHttpServer())
       .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${second.token}`)
-      .send({ inviteId: intent!.id.toString() });
+      .send({ inviteId: sent.body.data.inviteId });
     expect(accepted.body.code).toBe(BusinessCode.OK);
   }
 
@@ -68,7 +62,9 @@ describe('group membership re-entry and ownership transfer', () => {
       .set('Authorization', `Bearer ${manager.token}`)
       .send({ groupId, userIds: [member.id] });
     expect(invited.body.code).toBe(BusinessCode.OK);
-    expect(invited.body.data.invited).toContain(member.id);
+    expect(invited.body.data.invited, JSON.stringify(invited.body)).toContain(
+      member.id,
+    );
     const joined = await request(app.getHttpServer())
       .post('/api/v1/group/join-request')
       .set('Authorization', `Bearer ${member.token}`)
@@ -90,25 +86,49 @@ describe('group membership re-entry and ownership transfer', () => {
     const kicked = await request(app.getHttpServer())
       .post('/api/v1/group/kick')
       .set('Authorization', `Bearer ${owner.token}`)
-      .send({ groupId, userId: member.id });
+      .send({ groupId, account: member.account, domain: 'local' });
     expect(kicked.body.code).toBe(BusinessCode.OK);
+    expect(
+      await database.db.query.threadMember.findFirst({
+        where: and(
+          eq(threadMember.threadId, groupId),
+          eq(threadMember.userId, member.id),
+        ),
+      }),
+    ).toMatchObject({ left: true });
     expect(
       await database.db.query.threadParticipant.findFirst({
         where: and(
           eq(threadParticipant.threadId, groupId),
-          eq(threadParticipant.userId, member.id),
+          eq(threadParticipant.accountId, member.id),
         ),
       }),
     ).toMatchObject({ messageVisibleBeforeSeq: expect.any(Number) });
+    await database.db
+      .update(threadMember)
+      .set({ joinedAt: new Date(0) })
+      .where(
+        and(
+          eq(threadMember.threadId, groupId),
+          eq(threadMember.userId, member.id),
+        ),
+      );
 
     await inviteAndJoin(groupId, owner, member);
+    const memberProjection = await database.db.query.threadMember.findFirst({
+      where: and(
+        eq(threadMember.threadId, groupId),
+        eq(threadMember.userId, member.id),
+      ),
+    });
     const participant = await database.db.query.threadParticipant.findFirst({
       where: and(
         eq(threadParticipant.threadId, groupId),
-        eq(threadParticipant.userId, member.id),
+        eq(threadParticipant.accountId, member.id),
       ),
     });
     expect(participant?.messageVisibleBeforeSeq).toBeNull();
+    expect(memberProjection?.joinedAt.getTime()).toBeGreaterThan(0);
 
     const sent = await request(app.getHttpServer())
       .post('/api/v1/send-message')
@@ -123,7 +143,8 @@ describe('group membership re-entry and ownership transfer', () => {
       await database.db.query.message.findFirst({
         where: and(
           eq(message.threadId, groupId),
-          eq(message.creator, member.id),
+          eq(message.creatorAccount, 'reentry-member'),
+          eq(message.creatorDomain, 'local'),
         ),
       }),
     ).toBeDefined();
@@ -143,31 +164,57 @@ describe('group membership re-entry and ownership transfer', () => {
     const transferred = await request(app.getHttpServer())
       .post('/api/v1/group/transfer')
       .set('Authorization', `Bearer ${oldOwner.token}`)
-      .send({ groupId, toUserId: newOwner.id });
+      .send({ groupId, account: newOwner.account, domain: 'local' });
     expect(transferred.body.code).toBe(BusinessCode.OK);
+    expect(
+      await database.db.query.threadMember.findFirst({
+        where: and(
+          eq(threadMember.threadId, groupId),
+          eq(threadMember.userId, oldOwner.id),
+        ),
+      }),
+    ).toMatchObject({ role: 'MEMBER' });
     expect(
       await database.db.query.threadParticipant.findFirst({
         where: and(
           eq(threadParticipant.threadId, groupId),
-          eq(threadParticipant.userId, oldOwner.id),
+          eq(threadParticipant.accountId, oldOwner.id),
         ),
       }),
     ).toMatchObject({ role: 'MEMBER' });
+    expect(
+      await database.db.query.threadParticipant.findFirst({
+        where: and(
+          eq(threadParticipant.threadId, groupId),
+          eq(threadParticipant.accountId, newOwner.id),
+        ),
+      }),
+    ).toMatchObject({ role: 'OWNER' });
 
     const kicked = await request(app.getHttpServer())
       .post('/api/v1/group/kick')
       .set('Authorization', `Bearer ${newOwner.token}`)
-      .send({ groupId, userId: oldOwner.id });
+      .send({ groupId, account: oldOwner.account, domain: 'local' });
     expect(kicked.body.code).toBe(BusinessCode.OK);
     expect(
-      await database.db.query.threadParticipant.findFirst({
+      await database.db.query.threadMember.findFirst({
         where: and(
-          eq(threadParticipant.threadId, groupId),
-          eq(threadParticipant.userId, oldOwner.id),
+          eq(threadMember.threadId, groupId),
+          eq(threadMember.userId, oldOwner.id),
         ),
       }),
     ).toMatchObject({
       role: 'MEMBER',
+      left: true,
+    });
+    expect(
+      await database.db.query.threadParticipant.findFirst({
+        where: and(
+          eq(threadParticipant.threadId, groupId),
+          eq(threadParticipant.accountId, oldOwner.id),
+        ),
+      }),
+    ).toMatchObject({
       messageVisibleBeforeSeq: expect.any(Number),
     });
   });

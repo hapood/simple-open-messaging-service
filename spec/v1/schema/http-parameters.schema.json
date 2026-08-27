@@ -124,7 +124,8 @@
     },
     "groupMetaQuery": {
       "type": "object",
-      "required": ["account", "mode", "after"],
+      "required": ["account", "mode"],
+      "dependentRequired": { "take": ["after"], "through": ["after"] },
       "properties": {
         "account": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },
         "mode": { "enum": ["full", "delta"] },

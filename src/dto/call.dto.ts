@@ -11,8 +11,8 @@ import {
 } from 'class-validator';
 import {
   CALL_SID_RE,
-  CALL_SIGNAL_KINDS,
-  type CallSignalKind,
+  CALL_SIGNAL_TYPES,
+  type CallSignalType,
 } from '../calls/federated-call-protocol.js';
 
 /** 1:1 WebRTC call request DTOs. The server is signaling coordinator + lifecycle owner only — it
@@ -139,11 +139,11 @@ export class SignalCallDto {
   toUserId!: number;
 
   @ApiProperty({
-    enum: CALL_SIGNAL_KINDS,
+    enum: CALL_SIGNAL_TYPES,
     description: 'Signaling frame kind.',
   })
-  @IsIn(CALL_SIGNAL_KINDS)
-  kind!: CallSignalKind;
+  @IsIn(CALL_SIGNAL_TYPES)
+  kind!: CallSignalType;
 
   @ApiProperty({
     description:

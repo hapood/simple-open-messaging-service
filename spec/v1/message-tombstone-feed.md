@@ -12,7 +12,7 @@ query `GET /s2s/v1/message-tombstones`. The feed contains only
 ## 1. Authoritative deletion facts
 
 ```ts
-type MessageTombstoneType = 'WITHDRAW' | 'REPORT';
+type MessageTombstoneType = 'USER_RETRACTION' | 'MODERATION_REMOVAL';
 
 interface MessageTombstone {
   deletionSeq: PositiveDecimalString;
@@ -23,9 +23,9 @@ interface MessageTombstone {
 }
 ```
 
-`WITHDRAW` is an author withdrawal. `REPORT` is a moderation deletion enacted
-by the thread authority. Both are irreversible terminal states in which the
-message is no longer visible.
+`USER_RETRACTION` is a retraction enacted by the message author.
+`MODERATION_REMOVAL` is a moderation deletion enacted by the thread authority.
+Both are irreversible terminal states in which the message is no longer visible.
 
 The stable target is `(publisher domain, thread, messageSeq)`. `messageSeq`
 MUST equal the `FederatedMessage.seq` with which the current tombstone
@@ -34,12 +34,12 @@ message query. It therefore uses that publisher's thread-message coordinate.
 It is neither a copy of the target message's nullable outer `originSeq` nor a
 globally stable coordinate across arbitrary publishers.
 
-For a P2P `WITHDRAW`, the authority is the target message author's domain. For
+For a P2P `USER_RETRACTION`, the authority is the target message author's domain. For
 a group message, the authoritative publisher is always the group origin. A
-third-party member home server MAY only submit a `WITHDRAW` for its local
+third-party member home server MAY only submit a `USER_RETRACTION` for its local
 author to the origin. The origin validates the submission, creates the
 authoritative group fact, and distributes it to mirrors. Only the group
-origin's moderation process MAY create a `REPORT`. A mirror MUST NOT relay a
+origin's moderation process MAY create a `MODERATION_REMOVAL`. A mirror MUST NOT relay a
 group tombstone further.
 
 `deletionSeq` is the tombstone's independent positive-integer identifier. It
@@ -55,7 +55,7 @@ friendship, or group re-entry.
 
 To apply a tombstone, a consumer locates its local target using the persistently
 stored source domain, thread, and source message `seq`. When a group member's
-home server submits a `WITHDRAW` to the group origin, it uses the `seq` with
+home server submits a `USER_RETRACTION` to the group origin, it uses the `seq` with
 which it exposed that message to the origin. When the origin publishes the
 resulting authoritative tombstone to a mirror, it instead uses the `seq` with
 which the origin exposed the target message to that mirror. A publisher MUST
@@ -138,10 +138,10 @@ prevent `scannedThrough` from advancing. Filtering does not delete the
 authoritative tombstone.
 
 There are exactly two valid directions for group tombstones: a member home
-server provides the group origin with a `WITHDRAW` submission for its local
+server provides the group origin with a `USER_RETRACTION` submission for its local
 author, and the group origin provides enacted authoritative tombstones to a
 peer holding a mirror of that group. A mirror MUST NOT return a group tombstone
-to a non-origin peer and MUST NOT create or relay a `REPORT`.
+to a non-origin peer and MUST NOT create or relay a `MODERATION_REMOVAL`.
 
 When both `after` and `before` are omitted, the source returns
 `FEDERATION_FEED_CURSOR_UNAVAILABLE { resumeAfter, resumeBefore }` instead of a

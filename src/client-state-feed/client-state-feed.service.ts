@@ -2,6 +2,7 @@ import { HttpStatus, Injectable } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
 import { and, asc, eq, gt, lte, sql } from 'drizzle-orm';
 import {
+  account,
   clientStateFeed,
   groupRequestProjection,
   user,
@@ -11,7 +12,6 @@ import { DatabaseService } from '../database/database.service.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { SseService } from '../gateway/sse.service.js';
-import { mutuallyAuthorizedSql } from '../invite/relationship-authorization.js';
 import { ClientGroupMetaFeedService } from './client-group-meta-feed.service.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
 
@@ -36,7 +36,7 @@ export interface PendingClientStateFeedUpdate {
   feedId: number;
 }
 
-/** Device-facing compacted state feed. User.stateFeedAllocatedThrough is the shared allocator. */
+/** Device-facing compacted state feed. Account.stateFeedAllocatedThrough is the shared allocator. */
 @Injectable()
 export class ClientStateFeedService {
   constructor(
@@ -64,8 +64,8 @@ export class ClientStateFeedService {
   }
 
   async readEndId(userId: number): Promise<number> {
-    const owner = await this.database.db.query.user.findFirst({
-      where: eq(user.id, userId),
+    const owner = await this.database.db.query.account.findFirst({
+      where: eq(account.id, userId),
       columns: { stateFeedAllocatedThrough: true },
     });
     if (!owner) throw new Error(`client state feed owner ${userId} is missing`);
@@ -105,13 +105,13 @@ export class ClientStateFeedService {
       .limit(1);
     if (current && isDeepStrictEqual(current.body, body)) return null;
     const [owner] = await tx
-      .update(user)
+      .update(account)
       .set({
-        stateFeedAllocatedThrough: sql`${user.stateFeedAllocatedThrough} + 1`,
+        stateFeedAllocatedThrough: sql`${account.stateFeedAllocatedThrough} + 1`,
         updatedAt: new Date(),
       })
-      .where(eq(user.id, write.userId))
-      .returning({ feedId: user.stateFeedAllocatedThrough });
+      .where(eq(account.id, write.userId))
+      .returning({ feedId: account.stateFeedAllocatedThrough });
     if (!owner) throw new Error('client state feed owner missing');
     await tx
       .insert(clientStateFeed)
@@ -253,13 +253,13 @@ export class ClientStateFeedService {
     )
       return null;
     const [owner] = await tx
-      .update(user)
+      .update(account)
       .set({
-        stateFeedAllocatedThrough: sql`${user.stateFeedAllocatedThrough} + 1`,
+        stateFeedAllocatedThrough: sql`${account.stateFeedAllocatedThrough} + 1`,
         updatedAt: new Date(),
       })
-      .where(eq(user.id, write.managerUserId))
-      .returning({ feedId: user.stateFeedAllocatedThrough });
+      .where(eq(account.id, write.managerUserId))
+      .returning({ feedId: account.stateFeedAllocatedThrough });
     if (!owner) throw new Error('group-request projection owner missing');
     await tx
       .insert(groupRequestProjection)
@@ -292,9 +292,9 @@ export class ClientStateFeedService {
     let pending: PendingClientStateFeedUpdate | undefined;
     const readThroughFeedId = await this.database.db.transaction(async (tx) => {
       const [owner] = await tx
-        .select({ allocatedThrough: user.stateFeedAllocatedThrough })
-        .from(user)
-        .where(eq(user.id, userId))
+        .select({ allocatedThrough: account.stateFeedAllocatedThrough })
+        .from(account)
+        .where(eq(account.id, userId))
         .for('update')
         .limit(1);
       if (!owner)
@@ -407,7 +407,7 @@ export class ClientStateFeedService {
               AND intent."subjectDomain" = ${domain}))
         UNION ALL
         SELECT 1 FROM "ClientGroupMetaMemberFeed" member
-        WHERE member."userId" = ${ownerUserId}
+        WHERE member."accountId" = ${ownerUserId}
           AND member."memberAccount" = ${subject.account}
           AND member."memberDomain" = ${domain}
           AND member.operation = 'UPSERT'
@@ -431,7 +431,7 @@ export class ClientStateFeedService {
     threadId: number,
   ): Promise<PendingClientStateFeedUpdate[]> {
     const groupRows = await tx.execute<{
-      groupUserId: number;
+      groupId: number;
       account: string;
       domain: string;
       displayName: string;
@@ -439,11 +439,11 @@ export class ClientStateFeedService {
       avatar: string;
       profileRev: number;
     }>(sql`
-      SELECT thread."groupUserId" AS "groupUserId", group_user.account, group_user.domain,
-             group_user.name AS "displayName", group_user.bio,
-             group_user.avatar, group_user."profileRev" AS "profileRev"
+      SELECT group_state.id AS "groupId", group_state.account, group_state.domain,
+             group_state.name AS "displayName", group_state.description AS bio,
+             group_state.avatar, group_state."profileRev" AS "profileRev"
       FROM "MessageThread" thread
-      JOIN "User" group_user ON group_user.id = thread."groupUserId"
+      JOIN "Group" group_state ON group_state.id = thread."groupId"
       WHERE thread.id = ${threadId} AND thread.type = 'GROUP'
       LIMIT 1
     `);
@@ -457,25 +457,35 @@ export class ClientStateFeedService {
       displayName: string;
       avatar: string | null;
       profileRev: number;
+      isLocalAccount: boolean;
+      isAuthorized: boolean;
     }>(sql`
       SELECT member.id AS "userId", member.account, member.domain,
-             COALESCE(participant.role, 'MEMBER') AS role,
+             COALESCE(membership.role, 'MEMBER') AS role,
              member.name AS "displayName", NULLIF(member.avatar, '') AS avatar,
-             CASE WHEN member.domain <> 'local' THEN COALESCE(member."remoteProfileRev", 0)
-                  ELSE member."profileRev" END AS "profileRev"
-      FROM "ThreadParticipant" participant
-      JOIN "User" member ON member.id = participant."userId"
-      JOIN "Group" group_state ON group_state."groupUserId" = ${group.groupUserId}
-      WHERE participant."threadId" = ${threadId}
-        AND (member.id = group_state."ownerId"
-          OR ${mutuallyAuthorizedSql(sql`member.id`, group.groupUserId)})
+             member."profileRev" AS "profileRev",
+             EXISTS (SELECT 1 FROM "Account" local_account WHERE local_account.id = member.id)
+               AS "isLocalAccount",
+             EXISTS (
+               SELECT 1 FROM "RelationshipPair" pair
+               WHERE pair."threadId" = ${threadId} AND pair.active = true
+                 AND ((pair."endpointAType" = 'USER'
+                       AND pair."endpointAAccount" = member.account
+                       AND pair."endpointADomain" = member.domain)
+                   OR (pair."endpointBType" = 'USER'
+                       AND pair."endpointBAccount" = member.account
+                       AND pair."endpointBDomain" = member.domain))
+             ) AS "isAuthorized"
+      FROM "ThreadMember" membership
+      JOIN "User" member ON member.id = membership."userId"
+      WHERE membership."threadId" = ${threadId}
+        AND membership."left" = false
       ORDER BY member.domain, member.account
     `);
     const memberProjection = members.rows.map((member) => ({
       account: member.account,
       domain: member.domain,
       body: {
-        userId: member.userId,
         role: member.role,
         profileRev: member.profileRev,
         displayName: member.displayName,
@@ -483,7 +493,7 @@ export class ClientStateFeedService {
       },
     }));
     const localConsumers = members.rows
-      .filter((member) => member.domain === 'local')
+      .filter((member) => member.isLocalAccount && member.isAuthorized)
       .map((member) => member.userId)
       .sort((a, b) => a - b);
     const pending: PendingClientStateFeedUpdate[] = [];
@@ -507,7 +517,7 @@ export class ClientStateFeedService {
       const groupMetaFeedEndId = await this.groupMetaFeed.reconcileInTx(
         tx,
         userId,
-        group.groupUserId,
+        group.groupId,
         memberProjection,
       );
       const feedId = await this.writeInTx(tx, {

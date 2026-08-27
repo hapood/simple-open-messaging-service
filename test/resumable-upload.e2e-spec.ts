@@ -6,12 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
-import {
-  message,
-  messageThread,
-  threadParticipant,
-  user,
-} from '../src/database/schema';
+import { message, messageThread, user } from '../src/database/schema';
 import { MessageService } from '../src/message/message.service';
 import { ResumableUploadService } from '../src/upload/resumable-upload.service';
 import { eq } from 'drizzle-orm';
@@ -61,11 +56,7 @@ describe('sequential resumable uploads', () => {
       .values({ type: 'P2P', updatedAt: now })
       .returning({ id: messageThread.id });
     threadId = createdThread.id;
-    await database.db.insert(threadParticipant).values([
-      { userId, threadId, updatedAt: now },
-      { userId: peer.id, threadId, updatedAt: now },
-    ]);
-    await seedAcceptedRelationship(database.db, userId, peer.id);
+    await seedAcceptedRelationship(database.db, userId, peer.id, threadId);
   });
 
   afterAll(async () => app.close());

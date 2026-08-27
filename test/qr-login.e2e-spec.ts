@@ -7,7 +7,11 @@ import { eq } from 'drizzle-orm';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
-import { sessionToken, user } from '../src/database/schema';
+import {
+  account as accountTable,
+  sessionToken,
+  user,
+} from '../src/database/schema';
 import { SessionTokenService } from '../src/auth/session-token.service';
 import { BusinessCode } from '../src/common/business-code';
 import { RateLimitModeService } from '../src/rate-limit/rate-limit-mode.service';
@@ -69,14 +73,12 @@ describe('QR login e2e', () => {
         account,
         domain: 'local',
         name: account,
-        hashPwd: null,
-        mustChangePassword: false,
         updatedAt: new Date(),
       })
       .returning({ id: user.id });
+    await database.db.insert(accountTable).values({ id: u.id });
     const token = await sessionTokens.issue(u.id, 'app', {
       ip: '127.0.0.1',
-      persistent: true,
     });
     return { userId: u.id, token };
   }

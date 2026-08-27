@@ -15,9 +15,8 @@ describe('SystemRowComponent', () => {
 
   const message = (text: string, name = 'Alice'): ChatMsgData =>
     ({
-      type: 'msg',
+      type: 'system',
       msgId: 1,
-      creator: 2,
       isSelf: false,
       name,
       text,
@@ -26,7 +25,7 @@ describe('SystemRowComponent', () => {
       images: null,
       file: null,
       createdAtMs: Date.now(),
-    }) as ChatMsgData;
+    });
 
   beforeEach(() => {
     TestBed.configureTestingModule({

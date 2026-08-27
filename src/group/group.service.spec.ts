@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GroupRole } from '../database/enums.js';
-import { group } from '../database/schema.js';
+import { group, threadMember } from '../database/schema.js';
 import { BusinessCode } from '../common/business-code.js';
 import { GroupService } from './group.service.js';
 
@@ -96,7 +96,7 @@ describe('GroupService membership lifecycle', () => {
     const database = {
       db: {
         query: {
-          threadParticipant: {
+          threadMember: {
             findFirst: vi.fn().mockResolvedValue({ role: GroupRole.ADMIN }),
           },
         },
@@ -126,7 +126,7 @@ describe('GroupService membership lifecycle', () => {
         [
           {
             role: GroupRole.OWNER,
-            groupUserId: 99,
+            groupId: 99,
             groupDomain: 'local',
           },
         ],
@@ -154,12 +154,12 @@ describe('GroupService membership lifecycle', () => {
         [
           {
             role: GroupRole.ADMIN,
-            groupUserId: 99,
+            groupId: 99,
             groupDomain: 'local',
           },
         ],
         [],
-        [{ groupUserId: 99 }],
+        [{ groupId: 99 }],
         [],
       ],
     });
@@ -194,12 +194,12 @@ describe('GroupService membership lifecycle', () => {
         [
           {
             role: GroupRole.MEMBER,
-            groupUserId: 99,
+            groupId: 99,
             groupDomain: 'local',
           },
         ],
         [],
-        [{ groupUserId: 99 }],
+        [{ groupId: 99 }],
         [],
       ],
     });
@@ -240,7 +240,7 @@ describe('GroupService membership lifecycle', () => {
 
   it('marks a group dissolved and revokes pending invites while retaining history membership', async () => {
     const tx = createTx({
-      selects: [[{ groupUserId: 99 }]],
+      selects: [[{ groupId: 99 }]],
       updateResults: [[{ id: 1 }], []],
     });
     const service = createService(tx, {});
@@ -248,17 +248,22 @@ describe('GroupService membership lifecycle', () => {
     await expect(service.dissolveGroup({ threadId: 10 })).resolves.toEqual({
       transitioned: true,
     });
-    expect(tx.update).toHaveBeenCalledTimes(2);
+    expect(tx.update).toHaveBeenCalledTimes(4);
     expect(tx.update).toHaveBeenNthCalledWith(1, group);
     expect(tx.sets[0]).toMatchObject({
       table: group,
       value: { dissolvedAt: expect.any(Date), updatedAt: expect.any(Date) },
     });
+    expect(tx.update).toHaveBeenNthCalledWith(2, threadMember);
+    expect(tx.sets[1]).toMatchObject({
+      table: threadMember,
+      value: { left: true, updatedAt: expect.any(Date) },
+    });
   });
 
   it('treats dissolving an already dissolved group as an idempotent success', async () => {
     const tx = createTx({
-      selects: [[{ groupUserId: 99 }]],
+      selects: [[{ groupId: 99 }]],
       updateResults: [[]],
     });
     const service = createService(tx, {});
@@ -271,7 +276,7 @@ describe('GroupService membership lifecycle', () => {
 
   it('writes one self-only removal notice per local member when dissolving', async () => {
     const tx = createTx({
-      selects: [[{ groupUserId: 99 }], [{ userId: 1 }, { userId: 2 }]],
+      selects: [[{ groupId: 99 }], [{ userId: 1 }, { userId: 2 }]],
       updateResults: [[{ id: 1 }], []],
     });
     const messages = {
@@ -356,7 +361,7 @@ describe('GroupService membership lifecycle', () => {
         ],
         [target],
         [{ userId: 1 }, { userId: 2 }],
-        [{ groupUserId: 99 }],
+        [{ groupId: 99 }],
         [
           {
             id: 7,
@@ -422,7 +427,7 @@ describe('GroupService membership lifecycle', () => {
           },
         ],
         [{ userId: 1 }, { userId: 2 }],
-        [{ groupUserId: 99 }],
+        [{ groupId: 99 }],
       ],
       updateResults: [[{ id: 8 }], []],
     });

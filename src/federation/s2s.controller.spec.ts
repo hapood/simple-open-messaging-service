@@ -220,6 +220,39 @@ describe('S2sController reverse thread queries', () => {
       status: 400,
     });
   });
+
+  it('passes includeSelf to the tombstone query implementation', async () => {
+    const { controller, tombstoneFeed } = target();
+    const req = {
+      query: {
+        account: 'alice',
+        peerAccount: 'bob',
+        after: '1',
+        includeSelf: 'false',
+      },
+      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+    } as unknown as FastifyRequest;
+
+    await controller.queryMessageTombstones(
+      req,
+      'alice',
+      'bob',
+      '1',
+      undefined,
+      undefined,
+      undefined,
+      'false',
+    );
+    expect(tombstoneFeed.query).toHaveBeenCalledWith(
+      'a.example',
+      { type: 'P2P', account: 'alice', peerAccount: 'bob' },
+      1n,
+      undefined,
+      undefined,
+      false,
+      undefined,
+    );
+  });
 });
 
 describe('S2sController state and tombstone feed bootstrap', () => {
@@ -296,9 +329,75 @@ describe('S2sController group-meta modes', () => {
       undefined,
     );
   });
+
+  it('routes an omitted cursor for recovery-window discovery', async () => {
+    const { controller, groupMetaFeed } = target();
+    const req = {
+      query: {
+        account: '!01arz3ndektsv4rrffq69g5fav',
+        mode: 'full',
+      },
+      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+    } as unknown as FastifyRequest;
+
+    await controller.getGroupMeta(req, '!01arz3ndektsv4rrffq69g5fav', 'full');
+    expect(groupMetaFeed.serve).toHaveBeenLastCalledWith(
+      'a.example',
+      '!01arz3ndektsv4rrffq69g5fav',
+      'full',
+      undefined,
+      undefined,
+      undefined,
+    );
+  });
+
+  it('rejects another page parameter when after is omitted', async () => {
+    const { controller, groupMetaFeed } = target();
+    const req = {
+      query: {
+        account: '!01arz3ndektsv4rrffq69g5fav',
+        mode: 'full',
+        take: '25',
+      },
+      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+    } as unknown as FastifyRequest;
+
+    await expect(
+      controller.getGroupMeta(
+        req,
+        '!01arz3ndektsv4rrffq69g5fav',
+        'full',
+        undefined,
+        '25',
+      ),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_MALFORMED,
+      status: 400,
+    });
+    expect(groupMetaFeed.serve).not.toHaveBeenCalled();
+  });
 });
 
 describe('S2sController feed-head recovery', () => {
+  it('rejects the removed origin field instead of ignoring it', async () => {
+    const { controller, peerStateFeedPull } = target();
+    const req = {
+      body: {
+        origin: 'a.example',
+        stateFeedEndId: '7',
+        messageFeedEndId: '8',
+        tombstoneFeedEndId: '9',
+      },
+      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+    } as unknown as FastifyRequest;
+
+    await expect(controller.postDiscoveryHwm(req)).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_MALFORMED,
+      status: 400,
+    });
+    expect(peerStateFeedPull.advertise).not.toHaveBeenCalled();
+  });
+
   it('drains in-flight work and rejects new scheduling during shutdown', async () => {
     const { controller, federation } = target();
     let release!: () => void;
@@ -310,7 +409,6 @@ describe('S2sController feed-head recovery', () => {
     );
     const req = {
       body: {
-        origin: 'a.example',
         stateFeedEndId: '7',
         messageFeedEndId: '8',
         tombstoneFeedEndId: '9',
@@ -346,7 +444,6 @@ describe('S2sController feed-head recovery', () => {
         .mockResolvedValueOnce(7n);
       const req = {
         body: {
-          origin: 'a.example',
           stateFeedEndId: '7',
           messageFeedEndId: '8',
           tombstoneFeedEndId: '9',

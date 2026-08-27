@@ -69,7 +69,7 @@ The author server validates that a mention applies to the thread before first pe
     "account": "alice",
     "peerAccount": "bob"
   },
-  "author": { "account": "alice", "domain": "a.example" },
+  "authorRef": "THREAD_ACCOUNT",
   "seq": 42,
   "originSeq": null,
   "originCreatedAt": null,
@@ -88,7 +88,7 @@ The author server validates that a mention applies to the thread before first pe
     "account": "alice",
     "peerAccount": "bob"
   },
-  "author": { "account": "bob", "domain": "b.example" },
+  "authorRef": "THREAD_PEER_ACCOUNT",
   "seq": 57,
   "originSeq": null,
   "originCreatedAt": null,

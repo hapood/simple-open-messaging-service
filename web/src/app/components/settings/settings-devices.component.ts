@@ -167,7 +167,7 @@ export class SettingsDevicesComponent implements OnInit {
   }
 
   /** Date/time formatted via dayjs in the app language locale (set globally by LanguageService). */
-  fmt(ts: string): string {
+  fmt(ts: number): string {
     this.language.lang();
     return dayjs(ts).format('YYYY-MM-DD HH:mm');
   }

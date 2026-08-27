@@ -11,7 +11,7 @@ export interface GroupRosterProjectionChange {
   afterRole: GroupRole | null;
 }
 
-/** Commits a validated remote roster revision without coupling roster triples to User rows. */
+/** Commits the validated remote roster revision after source-scoped User and ThreadMember changes. */
 @Injectable()
 export class FederationGroupRosterProjectionService {
   async applyInTx(
@@ -35,20 +35,19 @@ export class FederationGroupRosterProjectionService {
       throw new Error('invalid federated group owner');
     const [mirror] = await tx
       .select({
-        groupUserId: tables.group.groupUserId,
+        groupId: tables.group.id,
         threadId: tables.messageThread.id,
         remoteGroupMetaFeedId: tables.group.remoteGroupMetaFeedId,
       })
       .from(tables.group)
-      .innerJoin(tables.user, eq(tables.user.id, tables.group.groupUserId))
       .innerJoin(
         tables.messageThread,
-        eq(tables.messageThread.groupUserId, tables.group.groupUserId),
+        eq(tables.messageThread.groupId, tables.group.id),
       )
       .where(
         and(
-          eq(tables.user.account, params.groupAccount),
-          eq(tables.user.domain, params.peerDomain),
+          eq(tables.group.account, params.groupAccount),
+          eq(tables.group.domain, params.peerDomain),
         ),
       )
       .limit(1);
@@ -75,7 +74,7 @@ export class FederationGroupRosterProjectionService {
         dissolvedAt: params.dissolved ? new Date() : null,
         updatedAt: new Date(),
       })
-      .where(eq(tables.group.groupUserId, mirror.groupUserId));
+      .where(eq(tables.group.id, mirror.groupId));
 
     return {
       threadId: mirror.threadId,

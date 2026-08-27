@@ -10,7 +10,6 @@ import {
   clientGroupMetaFeedTarget,
   clientGroupMetaMemberFeed,
 } from '../database/schema.js';
-import { mutuallyAuthorizedSql } from '../invite/relationship-authorization.js';
 
 export interface ClientGroupMetaMemberWrite {
   account: string;
@@ -25,23 +24,29 @@ export class ClientGroupMetaFeedService {
   async resolveVisibleGroup(
     userId: number,
     selector: { threadId?: number; account?: string; domain?: string },
-  ): Promise<{ groupUserId: number; account: string }> {
+  ): Promise<{ groupId: number; account: string }> {
     const rows = await this.database.db.execute<{
-      groupUserId: number;
+      groupId: number;
       account: string;
     }>(sql`
-      SELECT thread."groupUserId" AS "groupUserId", group_user.account
+      SELECT group_state.id AS "groupId", group_state.account
       FROM "MessageThread" thread
-      JOIN "User" group_user ON group_user.id = thread."groupUserId"
-      JOIN "Group" group_state ON group_state."groupUserId" = thread."groupUserId"
-      JOIN "ThreadParticipant" mine
-        ON mine."threadId" = thread.id AND mine."userId" = ${userId}
+      JOIN "Group" group_state ON group_state.id = thread."groupId"
+      JOIN "User" local_user ON local_user.id = ${userId}
       WHERE thread.type = 'GROUP'
-        AND (${userId} = group_state."ownerId"
-          OR ${mutuallyAuthorizedSql(userId, sql`thread."groupUserId"`)})
+        AND EXISTS (
+          SELECT 1 FROM "RelationshipPair" pair
+          WHERE pair."threadId" = thread.id AND pair.active = true
+            AND ((pair."endpointAType" = 'USER'
+                  AND pair."endpointAAccount" = local_user.account
+                  AND pair."endpointADomain" = 'local')
+              OR (pair."endpointBType" = 'USER'
+                  AND pair."endpointBAccount" = local_user.account
+                  AND pair."endpointBDomain" = 'local'))
+        )
         AND (${selector.threadId ?? null}::integer IS NULL OR thread.id = ${selector.threadId ?? null})
-        AND (${selector.account ?? null}::text IS NULL OR group_user.account = ${selector.account ?? null})
-        AND (${selector.domain ?? null}::text IS NULL OR group_user.domain = ${selector.domain ?? null})
+        AND (${selector.account ?? null}::text IS NULL OR group_state.account = ${selector.account ?? null})
+        AND (${selector.domain ?? null}::text IS NULL OR group_state.domain = ${selector.domain ?? null})
       LIMIT 1
     `);
     const resolved = rows.rows[0];
@@ -57,23 +62,23 @@ export class ClientGroupMetaFeedService {
   async reconcileInTx(
     tx: DatabaseTransaction,
     userId: number,
-    groupUserId: number,
+    groupId: number,
     members: readonly ClientGroupMetaMemberWrite[],
   ): Promise<bigint> {
     await tx
       .insert(clientGroupMetaFeedTarget)
-      .values({ userId, groupUserId, active: true })
+      .values({ accountId: userId, groupId, active: true })
       .onConflictDoUpdate({
         target: [
-          clientGroupMetaFeedTarget.userId,
-          clientGroupMetaFeedTarget.groupUserId,
+          clientGroupMetaFeedTarget.accountId,
+          clientGroupMetaFeedTarget.groupId,
         ],
         set: { active: true, updatedAt: new Date() },
       });
     const locked = await tx.execute<{ allocatedThrough: bigint }>(sql`
       SELECT "allocatedThrough"
       FROM "ClientGroupMetaFeedTarget"
-      WHERE "userId" = ${userId} AND "groupUserId" = ${groupUserId}
+      WHERE "accountId" = ${userId} AND "groupId" = ${groupId}
       FOR UPDATE
     `);
     let allocatedThrough = BigInt(locked.rows[0]?.allocatedThrough ?? 0);
@@ -82,8 +87,8 @@ export class ClientGroupMetaFeedService {
       .from(clientGroupMetaMemberFeed)
       .where(
         and(
-          eq(clientGroupMetaMemberFeed.userId, userId),
-          eq(clientGroupMetaMemberFeed.groupUserId, groupUserId),
+          eq(clientGroupMetaMemberFeed.accountId, userId),
+          eq(clientGroupMetaMemberFeed.groupId, groupId),
         ),
       )
       .orderBy(asc(clientGroupMetaMemberFeed.feedId));
@@ -105,7 +110,7 @@ export class ClientGroupMetaFeedService {
     const changes: Array<{
       account: string;
       domain: string;
-      operation: 'UPSERT' | 'DELETE';
+      operation: 'UPSERT' | 'DEPART';
       body: Record<string, unknown>;
     }> = [];
     for (const [key, member] of desired) {
@@ -128,7 +133,7 @@ export class ClientGroupMetaFeedService {
       changes.push({
         account: previous.memberAccount,
         domain: previous.memberDomain,
-        operation: 'DELETE',
+        operation: 'DEPART',
         body: {},
       });
     }
@@ -139,8 +144,8 @@ export class ClientGroupMetaFeedService {
     if (changes.length) {
       await tx.insert(clientGroupMetaMemberFeed).values(
         changes.map((change) => ({
-          userId,
-          groupUserId,
+          accountId: userId,
+          groupId,
           feedId: ++allocatedThrough,
           memberAccount: change.account,
           memberDomain: change.domain,
@@ -153,8 +158,8 @@ export class ClientGroupMetaFeedService {
         .set({ allocatedThrough, updatedAt: new Date() })
         .where(
           and(
-            eq(clientGroupMetaFeedTarget.userId, userId),
-            eq(clientGroupMetaFeedTarget.groupUserId, groupUserId),
+            eq(clientGroupMetaFeedTarget.accountId, userId),
+            eq(clientGroupMetaFeedTarget.groupId, groupId),
           ),
         );
     }
@@ -163,7 +168,7 @@ export class ClientGroupMetaFeedService {
 
   async serve(
     userId: number,
-    groupUserId: number,
+    groupId: number,
     account: string,
     mode: 'full' | 'delta',
     after: bigint,
@@ -173,8 +178,8 @@ export class ClientGroupMetaFeedService {
     const target =
       await this.database.db.query.clientGroupMetaFeedTarget.findFirst({
         where: and(
-          eq(clientGroupMetaFeedTarget.userId, userId),
-          eq(clientGroupMetaFeedTarget.groupUserId, groupUserId),
+          eq(clientGroupMetaFeedTarget.accountId, userId),
+          eq(clientGroupMetaFeedTarget.groupId, groupId),
           eq(clientGroupMetaFeedTarget.active, true),
         ),
       });
@@ -216,8 +221,8 @@ export class ClientGroupMetaFeedService {
             .from(clientGroupMetaMemberFeed)
             .where(
               and(
-                eq(clientGroupMetaMemberFeed.userId, userId),
-                eq(clientGroupMetaMemberFeed.groupUserId, groupUserId),
+                eq(clientGroupMetaMemberFeed.accountId, userId),
+                eq(clientGroupMetaMemberFeed.groupId, groupId),
                 sql`${clientGroupMetaMemberFeed.feedId} > ${after}`,
                 lte(clientGroupMetaMemberFeed.feedId, scanEnd),
               ),
@@ -229,14 +234,14 @@ export class ClientGroupMetaFeedService {
               feedId: bigint;
               memberAccount: string;
               memberDomain: string;
-              operation: 'UPSERT' | 'DELETE';
+              operation: 'UPSERT' | 'DEPART';
               body: unknown;
             }>(sql`
               SELECT latest.* FROM (
                 SELECT DISTINCT ON ("memberDomain", "memberAccount")
                   "feedId", "memberAccount", "memberDomain", operation, body
                 FROM "ClientGroupMetaMemberFeed"
-                WHERE "userId" = ${userId} AND "groupUserId" = ${groupUserId}
+                WHERE "accountId" = ${userId} AND "groupId" = ${groupId}
                   AND "feedId" <= ${scanEnd}
                 ORDER BY "memberDomain", "memberAccount", "feedId" DESC
               ) latest

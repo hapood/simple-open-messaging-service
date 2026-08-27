@@ -91,9 +91,7 @@ export class ChatboxStickyOverlaysComponent implements OnDestroy {
         '.msg-has-avatar > .msg-avatar:not(.msg-avatar-tail)',
       );
       const tailAvatar = host.querySelector<HTMLElement>('.msg-avatar-tail');
-      const identityRaw = host.dataset['messageAvatarIdentity'];
-      const identity =
-        identityRaw === undefined ? undefined : Number(identityRaw);
+      const identity = host.dataset['messageAvatarIdentity'];
       if (host.dataset['messageCreator'] !== undefined) {
         const naturalOffset = Number(
           host.dataset['messageNaturalAvatarOffset'] ?? '0',
@@ -110,10 +108,7 @@ export class ChatboxStickyOverlaysComponent implements OnDestroy {
           name: host.dataset['messageAvatarName'] ?? '',
           src: host.dataset['messageAvatarSrc'] ?? '',
           account: host.dataset['messageAvatarAccount'] || undefined,
-          identityId:
-            identity !== undefined && Number.isFinite(identity)
-              ? identity
-              : undefined,
+          identityId: identity,
           domain: host.dataset['messageAvatarDomain'] || undefined,
         });
       }

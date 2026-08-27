@@ -48,6 +48,7 @@ import {
   type AlbumImage,
   type ChatItemData,
   type ChatMsgData,
+  type AuthoredContentType,
   type FileInfo,
   type MediaStatus,
 } from '../message-cards/chat-item';
@@ -94,6 +95,8 @@ import { NavStateMachineService } from '../../services/nav-state.service';
 import {
   displayThreadName,
   displayUserAccount,
+  messageCreatorKey,
+  parseUserIdentityKey,
   type ConversationItem,
   type StandardResponse,
 } from '../../services/model';
@@ -802,6 +805,7 @@ export class MessageThreadComponent implements OnDestroy {
       return next;
     });
     this.scroller?.mutateItem(seq, (item) => {
+      if (item.data.type !== 'msg') return null;
       const images = item.data.images;
       if (!images || images.length < 2) return null;
       const remaining = images.filter((image) => image.msgId !== seq);
@@ -1133,7 +1137,7 @@ export class MessageThreadComponent implements OnDestroy {
         profile: {
           name: string;
           avatar: string;
-          avatarIdentityId: number;
+          avatarIdentityId: string;
           avatarAccount: string;
           avatarDomain: string;
           isSelf: boolean;
@@ -1471,19 +1475,28 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private async openSenderProfile(
-    userId: number,
+    identityKey: string,
     _anchor: DOMRect,
   ): Promise<void> {
+    const identity = parseUserIdentityKey(identityKey);
+    if (!identity) return;
     const conversation = this.userMsgTrd();
     if (conversation?.type === 'P2P') {
-      if (conversation.peerUser?.id !== userId) return;
+      if (
+        conversation.peerUser.account !== identity.account ||
+        (conversation.peerUser.domain || 'local') !== identity.domain
+      )
+        return;
       this.dismissContextMenu();
       this.nav.openAside('profile');
       return;
     }
     const threadId = this.threadId();
     if (threadId === undefined) return;
-    const profile = await this.memberProfiles.get(threadId, userId);
+    const profile = await this.memberProfiles.getByIdentity(
+      threadId,
+      identityKey,
+    );
     if (!profile) return;
     this.dismissContextMenu();
     const friendThreadId = this.convList
@@ -1491,14 +1504,14 @@ export class MessageThreadComponent implements OnDestroy {
       .find(
         (item) =>
           item.type === 'P2P' &&
-          item.peerUser?.id === userId &&
+          item.peerUser.account === profile.account &&
+          (item.peerUser.domain || 'local') === profile.domain &&
           item.friendshipActive !== false,
       )?.threadId;
     this.route.popupDlg(
       PopupType.CONTACT_IDENTITY,
       {
         identity: {
-          userId: profile.userId,
           account: profile.account,
           name: profile.name,
           avatar: profile.avatar,
@@ -1506,7 +1519,9 @@ export class MessageThreadComponent implements OnDestroy {
           domain: profile.domain || 'local',
           friendThreadId,
           relationship:
-            profile.userId === this.userService.sessionProfile()?.id
+            profile.account === this.userService.sessionProfile()?.account &&
+            profile.domain === 'local' &&
+            profile.profileSourceDomain === 'local'
               ? 'SELF'
               : friendThreadId === undefined
                 ? 'NONE'
@@ -3475,11 +3490,12 @@ export class MessageThreadComponent implements OnDestroy {
   private makeOptimisticItem(
     clientMessageId: string,
     text: string,
-    contentType: ChatMsgData['contentType'],
+    contentType: AuthoredContentType,
     images: AlbumImage[] | null,
     file: FileInfo | null,
   ): CbItem<ChatItemData> {
     const profile = this.userService.sessionProfile();
+    if (!profile) throw new Error('session profile is required to send');
     const now = new Date();
     const placeholderId = this.sendOutbox.allocatePlaceholderId();
     const stampedImages =
@@ -3487,10 +3503,13 @@ export class MessageThreadComponent implements OnDestroy {
     const data: ChatMsgData = {
       type: 'msg',
       msgId: placeholderId,
-      creator: profile?.id ?? 0,
+      creator: messageCreatorKey(
+        { account: profile.account, domain: 'local' },
+        'local',
+      ),
       isSelf: true,
       isGroupConversation: this.userMsgTrd()?.type === 'GROUP',
-      name: profile?.name ?? 'Me',
+      name: profile.name,
       text,
       time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
       contentType,

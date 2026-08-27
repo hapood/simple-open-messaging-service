@@ -47,7 +47,7 @@ export interface ThreadCatchUpItem {
     seq: number;
     contentType: string;
     content: string;
-    creator: number | null;
+    creator: { account: string; domain: string } | null;
     createdAt: Date;
     mediaStatus: 'ready' | 'failed';
     sv: number;
@@ -228,7 +228,10 @@ export class NotificationQueryService {
           ? {
               messages: (previews.get(it.threadId) ?? []).map((message) => ({
                 seq: message.seq,
-                senderId: message.creator,
+                sender: {
+                  account: message.creatorAccount,
+                  domain: message.creatorDomain,
+                },
                 senderName: message.senderName,
                 text: derivePreview(message.contentType, message.content),
                 timestamp: message.createdAt.getTime(),
@@ -360,7 +363,10 @@ export class NotificationQueryService {
     const peerUsers =
       p2pThreadIds.length > 0
         ? await this.userService.queryUsers({
-            where: { id: { in: peers.map((p) => p.userId) }, isDeleted: false },
+            where: {
+              id: { in: peers.map((p) => p.userId) },
+              availability: 'AVAILABLE',
+            },
           })
         : [];
     const peerByThread = new Map<
@@ -382,7 +388,7 @@ export class NotificationQueryService {
       .filter((p) => p.thread.type === 'GROUP')
       .map((p) => p.threadId);
     const groupByThread =
-      await this.groupService.resolveGroupUsersByThreadIds(groupThreadIds);
+      await this.groupService.resolveGroupsByThreadIds(groupThreadIds);
 
     return rows.map((p) => {
       const m = attachedByThread.get(p.threadId);
@@ -438,7 +444,7 @@ type AttachedMessage = {
   seq: number;
   contentType: string;
   content: string;
-  creator: number | null;
+  creator: { account: string; domain: string } | null;
   createdAt: Date;
   mediaStatus: 'ready' | 'failed';
   sv: number;

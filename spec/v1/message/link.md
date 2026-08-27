@@ -38,7 +38,7 @@ This is a closed schema. `url`, `title`, and `description` are always required. 
     "account": "alice",
     "peerAccount": "bob"
   },
-  "author": { "account": "alice", "domain": "a.example" },
+  "authorRef": "THREAD_ACCOUNT",
   "seq": 61,
   "originSeq": null,
   "originCreatedAt": null,

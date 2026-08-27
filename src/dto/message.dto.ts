@@ -130,18 +130,40 @@ export class QueryDeletedMessagesDto {
   @Min(1)
   threadId!: number;
 
-  @ApiProperty({ example: '0', description: 'Exclusive deleted-log cursor' })
+  @ApiPropertyOptional({
+    example: '0',
+    description: 'Exclusive forward tombstone cursor.',
+  })
+  @IsOptional()
   @IsString()
-  @Matches(/^\d+$/)
-  afterId!: string;
+  @Matches(/^(0|[1-9]\d*)$/)
+  after?: string;
 
-  @ApiProperty({ required: false, default: 100, maximum: 200 })
+  @ApiPropertyOptional({
+    example: '101',
+    description: 'Exclusive reverse tombstone cursor.',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(/^(0|[1-9]\d*)$/)
+  before?: string;
+
+  @ApiPropertyOptional({
+    example: '20',
+    description: 'Inclusive boundary at the opposite end of the query.',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(/^(0|[1-9]\d*)$/)
+  through?: string;
+
+  @ApiPropertyOptional({ default: 100, maximum: 200 })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(200)
-  take = 100;
+  take?: number;
 }
 
 export class WithdrawMessageDto {
@@ -259,62 +281,46 @@ export class QueryMessagesDto {
   @Min(1)
   threadId!: number;
 
-  @ApiProperty({
-    example: 1,
-    description:
-      'Cursor-row flag, NOT offset. 0 includes the lastId row; 1 excludes it (standard keyset idiom). Capped at 1 — arbitrary offset-on-top-of-cursor is not supported.',
+  @ApiPropertyOptional({
+    example: '42',
+    description: 'Exclusive forward message-sequence cursor.',
   })
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  @Max(1)
-  skip!: number;
+  @IsOptional()
+  @IsString()
+  @Matches(/^(0|[1-9]\d*)$/)
+  after?: string;
 
-  @ApiProperty({ example: 20, description: 'Number of records to take (1-50)' })
+  @ApiPropertyOptional({
+    example: '101',
+    description: 'Exclusive reverse message-sequence cursor.',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(/^(0|[1-9]\d*)$/)
+  before?: string;
+
+  @ApiPropertyOptional({
+    example: '80',
+    description:
+      'Inclusive fixed boundary at the opposite end of the selected direction.',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(/^(0|[1-9]\d*)$/)
+  through?: string;
+
+  @ApiPropertyOptional({
+    type: Number,
+    example: 20,
+    default: 20,
+    description: 'Suggested page size (1-50).',
+  })
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(50, { message: 'take must be at most 50' })
-  take!: number;
-
-  @ApiProperty({
-    required: false,
-    example: 42,
-    description:
-      'Cursor row seq (keyset pagination, optional). Omit for the first page.',
-  })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  lastSeq?: number;
-
-  @ApiPropertyOptional({
-    description:
-      'Whether to stop this page before truncateSeq. The cached boundary row itself is excluded.',
-  })
-  @IsOptional()
-  @IsBoolean()
-  truncate?: boolean;
-
-  @ApiProperty({
-    required: false,
-    example: 80,
-    description:
-      'Exclusive seq boundary when truncate=true. asc returns seq < truncateSeq; desc returns seq > truncateSeq.',
-  })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  truncateSeq?: number;
-
-  @ApiProperty({
-    enum: ['desc', 'asc'],
-    example: 'desc',
-    description: 'Sort direction',
-  })
-  @IsIn(['desc', 'asc'])
-  orderBy!: 'desc' | 'asc';
+  take?: number;
 }
 
 /** Commit the viewport-dwelled local read HWM. The server merges it monotonically with its cursor. */

@@ -1,11 +1,12 @@
 import { forwardRef, Inject, Injectable, Optional } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
-import { and, desc, eq, gt, inArray, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, or, sql } from 'drizzle-orm';
 import {
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
 import {
+  account as accountTable,
   group,
   relationshipPair,
   federatedFriendRequest,
@@ -13,6 +14,7 @@ import {
   groupAuditLog,
   messageThread,
   threadAudience,
+  threadMember,
   threadParticipant,
   user,
 } from '../database/schema.js';
@@ -32,7 +34,6 @@ import {
   openFederatedAudienceInTx,
 } from '../federation/federation-audience.js';
 import { RelationshipIntentService } from './relationship-intent.service.js';
-import { mutuallyAuthorizedSql } from './relationship-authorization.js';
 
 /** Friend + group invite TTL: 7 days. Validated at accept time; the background sweep/GC is deferred
  *  (a row stays PENDING past expiry until then — the client renders an "expired" prompt from
@@ -108,12 +109,11 @@ export class InviteService {
     private readonly database: DatabaseService,
     private readonly participantService: ThreadParticipantService,
     private readonly clientStateFeed: ClientStateFeedService,
+    private readonly relationshipIntents: RelationshipIntentService,
     @Optional() private readonly messages?: MessageService,
     @Optional()
     @Inject(forwardRef(() => MessageFanoutService))
     private readonly messageFanout?: Pick<MessageFanoutService, 'dispatch'>,
-    @Optional()
-    private readonly relationshipIntents?: RelationshipIntentService,
   ) {}
 
   /** Reap never-activated request shells after every authored request has expired. The transaction
@@ -125,9 +125,8 @@ export class InviteService {
         SELECT pair."threadId"
         FROM "RelationshipPair" pair
         JOIN "MessageThread" thread ON thread.id = pair."threadId"
-        JOIN "User" low_user ON low_user.id = pair."userLowId"
-        JOIN "User" high_user ON high_user.id = pair."userHighId"
         WHERE pair.active = false
+          AND pair.kind = 'P2P'
           AND pair."threadId" IS NOT NULL
           AND thread.type = 'P2P'
           AND NOT EXISTS (
@@ -136,8 +135,7 @@ export class InviteService {
           )
           AND NOT EXISTS (
             SELECT 1 FROM "RelationshipIntent" request
-            WHERE ((request."authorUserId" = pair."userLowId" AND request."subjectUserId" = pair."userHighId")
-                OR (request."authorUserId" = pair."userHighId" AND request."subjectUserId" = pair."userLowId"))
+            WHERE request."pairId" = pair.id
               AND (request.status = 'ACCEPTED'
                 OR (request.status = 'REQUESTED' AND request."expiresAt" > CURRENT_TIMESTAMP))
           )
@@ -146,43 +144,30 @@ export class InviteService {
             WHERE request.status IN ('REQUESTED', 'ACCEPTED')
               AND (request.status = 'ACCEPTED' OR request."expiresAt" > CURRENT_TIMESTAMP)
               AND (
-                (request."localUserId" = pair."userLowId"
-                  AND request."remoteAccount" = high_user.account
-                  AND request."remoteDomain" = high_user.domain)
-                OR
-                (request."localUserId" = pair."userHighId"
-                  AND request."remoteAccount" = low_user.account
-                  AND request."remoteDomain" = low_user.domain)
+                EXISTS (
+                  SELECT 1 FROM "User" local_identity
+                  WHERE local_identity.id = request."localUserId"
+                    AND ((local_identity.account = pair."endpointAAccount"
+                      AND local_identity.domain = pair."endpointADomain"
+                      AND request."remoteAccount" = pair."endpointBAccount"
+                      AND request."remoteDomain" = pair."endpointBDomain")
+                    OR (local_identity.account = pair."endpointBAccount"
+                      AND local_identity.domain = pair."endpointBDomain"
+                      AND request."remoteAccount" = pair."endpointAAccount"
+                      AND request."remoteDomain" = pair."endpointADomain"))
+                )
               )
           )
         FOR UPDATE OF pair, thread SKIP LOCKED
       `);
-      const groupCandidates = await tx.execute<{ threadId: number }>(sql`
-        SELECT thread.id AS "threadId"
-        FROM "MessageThread" thread
-        JOIN "User" group_user ON group_user.id = thread."groupUserId"
-        WHERE thread.type = 'GROUP'
-          AND group_user.domain <> 'local'
-          AND NOT EXISTS (
-            SELECT 1 FROM "Message" message WHERE message."threadId" = thread.id
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM "RelationshipIntent" request
-            WHERE (request."authorUserId" = thread."groupUserId"
-                OR request."subjectUserId" = thread."groupUserId")
-              AND (request.status = 'ACCEPTED'
-                OR (request.status = 'REQUESTED' AND request."expiresAt" > CURRENT_TIMESTAMP))
-          )
-        FOR UPDATE OF thread SKIP LOCKED
-      `);
-      const ids = [
-        ...candidates.rows.map((row) => row.threadId),
-        ...groupCandidates.rows.map((row) => row.threadId),
-      ];
+      const ids = candidates.rows.map((row) => row.threadId);
       if (ids.length > 0) {
         await tx
           .delete(threadParticipant)
           .where(inArray(threadParticipant.threadId, ids));
+        await tx
+          .delete(threadMember)
+          .where(inArray(threadMember.threadId, ids));
         await tx.delete(messageThread).where(inArray(messageThread.id, ids));
       }
       await tx.execute(sql`
@@ -201,24 +186,31 @@ export class InviteService {
   ): Promise<void> {
     const [state] = await tx
       .select({
-        groupUserId: messageThread.groupUserId,
-        account: user.account,
-        domain: user.domain,
-        name: user.name,
-        avatar: user.avatar,
-        description: user.bio,
-        profileRev: user.profileRev,
+        groupId: messageThread.groupId,
+        account: group.account,
+        domain: group.domain,
+        name: group.name,
+        avatar: group.avatar,
+        description: group.description,
+        profileRev: group.profileRev,
       })
       .from(messageThread)
-      .innerJoin(user, eq(user.id, messageThread.groupUserId))
+      .innerJoin(group, eq(group.id, messageThread.groupId))
       .where(eq(messageThread.id, threadId))
       .limit(1);
-    if (!state?.groupUserId || state.domain !== 'local') return;
+    if (!state?.groupId || state.domain !== 'local') return;
     const [request, member] = await Promise.all([
       tx.query.relationshipIntent.findFirst({
         where: and(
-          eq(relationshipIntent.authorUserId, state.groupUserId),
-          eq(relationshipIntent.subjectUserId, memberUserId),
+          eq(relationshipIntent.authorSide, 'A'),
+          sql`EXISTS (
+            SELECT 1 FROM "RelationshipPair" pair
+            JOIN "User" identity ON identity.id = ${memberUserId}
+            WHERE pair.id = ${relationshipIntent.pairId}
+              AND pair."threadId" = ${threadId}
+              AND pair."endpointBAccount" = identity.account
+              AND pair."endpointBDomain" = identity.domain
+          )`,
         ),
       }),
       tx.query.user.findFirst({
@@ -405,73 +397,32 @@ export class InviteService {
     note = '',
     peerSnapshot?: FederatedPendingProfileSnapshot,
   ): Promise<Array<{ userId: number; feedId: number }>> {
-    await this.lockFriendPairInTx(tx, actorUserId, peerUserId);
-    if (wantsFriend)
-      await this.ensureP2PThreadShellInTx(tx, actorUserId, peerUserId);
-    const [opposite, peer] = await Promise.all([
-      tx.query.relationshipIntent.findFirst({
-        where: and(
-          eq(relationshipIntent.authorUserId, peerUserId),
-          eq(relationshipIntent.subjectUserId, actorUserId),
-        ),
-        columns: { status: true, expiresAt: true },
-      }),
-      tx.query.user.findFirst({
-        where: eq(user.id, peerUserId),
-        columns: { domain: true },
-      }),
-    ]);
-    const oppositeEffective =
-      opposite?.status === 'ACCEPTED' ||
-      (opposite?.status === 'REQUESTED' &&
-        opposite.expiresAt !== null &&
-        opposite.expiresAt > new Date());
-    const desired = wantsFriend
-      ? oppositeEffective
-        ? 'ACCEPTED'
-        : 'REQUESTED'
-      : 'REVOKED';
-    const requestedAt = wantsFriend ? new Date() : null;
-    const expiresAt =
-      desired === 'REQUESTED' && requestedAt
-        ? new Date(requestedAt.getTime() + INVITE_TTL_MS)
-        : null;
-    await tx.execute(sql`
-      INSERT INTO "RelationshipIntent" (
-        "authorUserId", "subjectUserId", status, note,
-        "requestedAt", "expiresAt", "updatedAt"
-      ) VALUES (${actorUserId}, ${peerUserId}, ${desired}::"RelationshipIntentStatus",
-        ${note.slice(0, 255)},
-        ${requestedAt}, ${expiresAt}, CURRENT_TIMESTAMP)
-      ON CONFLICT ("authorUserId", "subjectUserId") DO UPDATE SET
-        status = EXCLUDED.status, note = EXCLUDED.note,
-        "requestedAt" = CASE WHEN EXCLUDED.status IN ('REQUESTED', 'ACCEPTED') THEN EXCLUDED."requestedAt"
-                             ELSE "RelationshipIntent"."requestedAt" END,
-        "expiresAt" = EXCLUDED."expiresAt",
-        "updatedAt" = CURRENT_TIMESTAMP
-      WHERE "RelationshipIntent".status IS DISTINCT FROM EXCLUDED.status
-         OR "RelationshipIntent".note IS DISTINCT FROM EXCLUDED.note
-         OR (EXCLUDED.status = 'REQUESTED'
-             AND "RelationshipIntent"."expiresAt" <= CURRENT_TIMESTAMP)
-    `);
-    // Both identities are managed by this server, so accepting the crossed request may confirm the
-    // peer-authored local direction in the same transaction.
-    if (desired === 'ACCEPTED' && peer?.domain === 'local') {
-      await tx.execute(sql`
-        UPDATE "RelationshipIntent" SET status = 'ACCEPTED', "expiresAt" = NULL,
-          "updatedAt" = CURRENT_TIMESTAMP
-        WHERE "authorUserId" = ${peerUserId}
-          AND "subjectUserId" = ${actorUserId}
-          AND status = 'REQUESTED' AND "expiresAt" > CURRENT_TIMESTAMP
-      `);
-    }
+    const threadId = wantsFriend
+      ? await this.ensureP2PThreadShellInTx(tx, actorUserId, peerUserId)
+      : null;
+    const peer = await tx.query.user.findFirst({
+      where: eq(user.id, peerUserId),
+      columns: { domain: true },
+    });
+    const written = await this.relationshipIntents.writeP2PAuthoredIntentInTx(
+      tx,
+      {
+        authorUserId: actorUserId,
+        subjectUserId: peerUserId,
+        threadId,
+        status: wantsFriend ? 'REQUESTED' : 'REVOKED',
+        note,
+        confirmReverseRequested: peer?.domain === 'local',
+      },
+    );
     const pairEffect = await this.reconcileFriendPairInTx(
       tx,
       actorUserId,
       peerUserId,
+      written.shouldBeActive,
     );
     if (peer && peer.domain !== 'local' && pairEffect.threadId !== undefined) {
-      if (desired === 'REQUESTED' || desired === 'ACCEPTED')
+      if (wantsFriend)
         await openFederatedAudienceInTx(tx, peer.domain, pairEffect.threadId);
       else
         await closeFederatedAudienceInTx(tx, peer.domain, pairEffect.threadId);
@@ -490,28 +441,14 @@ export class InviteService {
     secondUserId: number,
     secondUserSnapshot?: FederatedPendingProfileSnapshot,
   ): Promise<Array<{ userId: number; feedId: number }>> {
-    const [first, second, directions, pair] = await Promise.all([
+    const [first, second, relationship] = await Promise.all([
       tx.query.user.findFirst({ where: eq(user.id, firstUserId) }),
       tx.query.user.findFirst({ where: eq(user.id, secondUserId) }),
-      tx.query.relationshipIntent.findMany({
-        where: or(
-          and(
-            eq(relationshipIntent.authorUserId, firstUserId),
-            eq(relationshipIntent.subjectUserId, secondUserId),
-          ),
-          and(
-            eq(relationshipIntent.authorUserId, secondUserId),
-            eq(relationshipIntent.subjectUserId, firstUserId),
-          ),
-        ),
-      }),
-      tx.query.relationshipPair.findFirst({
-        where: and(
-          eq(relationshipPair.userLowId, Math.min(firstUserId, secondUserId)),
-          eq(relationshipPair.userHighId, Math.max(firstUserId, secondUserId)),
-        ),
-        columns: { threadId: true },
-      }),
+      this.relationshipIntents.readP2PRelationshipInTx(
+        tx,
+        firstUserId,
+        secondUserId,
+      ),
     ]);
     if (!first || !second) throw new Error('client friend intent user missing');
     const users = new Map([
@@ -519,6 +456,18 @@ export class InviteService {
       [second.id, second],
     ]);
     const pending: Array<{ userId: number; feedId: number }> = [];
+    const directions = [
+      relationship.firstIntent && {
+        ...relationship.firstIntent,
+        authorUserId: firstUserId,
+        subjectUserId: secondUserId,
+      },
+      relationship.secondIntent && {
+        ...relationship.secondIntent,
+        authorUserId: secondUserId,
+        subjectUserId: firstUserId,
+      },
+    ].filter((value) => value !== undefined);
     for (const direction of directions) {
       const actor = users.get(direction.authorUserId)!;
       const subject = users.get(direction.subjectUserId)!;
@@ -531,11 +480,18 @@ export class InviteService {
               ? 'REVOKED'
               : 'REQUESTED',
         note: direction.note,
-        requestedAt: direction.requestedAt?.getTime() ?? null,
-        expiresAt: direction.expiresAt?.getTime() ?? null,
+        requestedAt:
+          direction.requestedAt === null
+            ? null
+            : new Date(direction.requestedAt).getTime(),
+        expiresAt:
+          direction.expiresAt === null
+            ? null
+            : new Date(direction.expiresAt).getTime(),
       };
       for (const owner of [actor, subject]) {
-        if (owner.domain !== 'local' || owner.isDeleted) continue;
+        if (owner.domain !== 'local' || owner.availability !== 'AVAILABLE')
+          continue;
         const peer = owner.id === actor.id ? subject : actor;
         const projectedPeer = this.clientInviteUser(peer);
         if (peer.id === secondUserId && secondUserSnapshot) {
@@ -550,7 +506,7 @@ export class InviteService {
         const body = {
           ...commonBody,
           direction: owner.id === actor.id ? 'OUTGOING' : 'INCOMING',
-          localThreadId: pair?.threadId ?? null,
+          localThreadId: relationship.pair.threadId,
           peer: projectedPeer,
         };
         const feedId = await this.clientStateFeed.writeInTx(tx, {
@@ -608,42 +564,48 @@ export class InviteService {
     const userIds = [...new Set(requestedUserIds)].filter((id) => id !== me);
     if (userIds.length === 0) return [];
 
-    const [friendIds, requests] = await Promise.all([
+    const [friendIds, requestRows] = await Promise.all([
       this.participantService.getActiveP2PPeerUserIds(me),
-      this.database.db
-        .select({
-          id: relationshipIntent.id,
-          fromUserId: relationshipIntent.authorUserId,
-          toUserId: relationshipIntent.subjectUserId,
-        })
-        .from(relationshipIntent)
-        .where(
-          and(
-            eq(relationshipIntent.status, 'REQUESTED'),
-            gt(relationshipIntent.expiresAt, new Date()),
-            or(
-              and(
-                eq(relationshipIntent.authorUserId, me),
-                inArray(relationshipIntent.subjectUserId, userIds),
-              ),
-              and(
-                eq(relationshipIntent.subjectUserId, me),
-                inArray(relationshipIntent.authorUserId, userIds),
-              ),
-            ),
-          ),
-        ),
+      this.database.db.execute<{
+        id: bigint;
+        peerUserId: number;
+        direction: 'INCOMING' | 'OUTGOING';
+      }>(sql`
+        SELECT intent.id, peer.id AS "peerUserId",
+          CASE
+            WHEN (intent."authorSide" = 'A'
+              AND pair."endpointAAccount" = self.account
+              AND pair."endpointADomain" = self.domain)
+              OR (intent."authorSide" = 'B'
+                AND pair."endpointBAccount" = self.account
+                AND pair."endpointBDomain" = self.domain)
+            THEN 'OUTGOING' ELSE 'INCOMING'
+          END AS direction
+        FROM "RelationshipIntent" intent
+        JOIN "RelationshipPair" pair ON pair.id = intent."pairId"
+        JOIN "User" self ON self.id = ${me}
+        JOIN "User" peer ON peer.id = ANY(${userIds}::int[])
+         AND ((peer.account = pair."endpointAAccount" AND peer.domain = pair."endpointADomain")
+           OR (peer.account = pair."endpointBAccount" AND peer.domain = pair."endpointBDomain"))
+        WHERE pair.kind = 'P2P'
+          AND intent.status = 'REQUESTED'
+          AND intent."expiresAt" > CURRENT_TIMESTAMP
+          AND ((self.account = pair."endpointAAccount" AND self.domain = pair."endpointADomain")
+            OR (self.account = pair."endpointBAccount" AND self.domain = pair."endpointBDomain"))
+          AND peer.id <> self.id
+      `),
     ]);
+    const requests = requestRows.rows;
     const friends = new Set(friendIds);
     const outgoing = new Map(
       requests
-        .filter((request) => request.fromUserId === me)
-        .map((request) => [request.toUserId, request.id.toString()]),
+        .filter((request) => request.direction === 'OUTGOING')
+        .map((request) => [request.peerUserId, request.id.toString()]),
     );
     const incoming = new Map(
       requests
-        .filter((request) => request.toUserId === me)
-        .map((request) => [request.fromUserId, request.id.toString()]),
+        .filter((request) => request.direction === 'INCOMING')
+        .map((request) => [request.peerUserId, request.id.toString()]),
     );
 
     return userIds.map((userId) => {
@@ -681,13 +643,13 @@ export class InviteService {
       async (tx) => {
         void allowAutoAccept;
         void originIdOverride;
-        const before = await tx.query.relationshipIntent.findFirst({
-          where: and(
-            eq(relationshipIntent.authorUserId, fromUserId),
-            eq(relationshipIntent.subjectUserId, toUserId),
-          ),
-          columns: { status: true, note: true, expiresAt: true },
-        });
+        const before = (
+          await this.relationshipIntents.readP2PRelationshipInTx(
+            tx,
+            fromUserId,
+            toUserId,
+          )
+        ).firstIntent;
         const created =
           !before ||
           before.status === 'REVOKED' ||
@@ -703,23 +665,15 @@ export class InviteService {
               trimmed,
             )),
           );
-        const request = await tx.query.relationshipIntent.findFirst({
-          where: and(
-            eq(relationshipIntent.authorUserId, fromUserId),
-            eq(relationshipIntent.subjectUserId, toUserId),
-          ),
-          columns: { id: true, status: true },
-        });
+        const relationship =
+          await this.relationshipIntents.readP2PRelationshipInTx(
+            tx,
+            fromUserId,
+            toUserId,
+          );
+        const request = relationship.firstIntent;
         if (!request) throw new Error('friend request write disappeared');
-        const low = Math.min(fromUserId, toUserId);
-        const high = Math.max(fromUserId, toUserId);
-        const pair = await tx.query.relationshipPair.findFirst({
-          where: and(
-            eq(relationshipPair.userLowId, low),
-            eq(relationshipPair.userHighId, high),
-          ),
-          columns: { active: true, threadId: true },
-        });
+        const pair = relationship.pair;
         if (pair?.active && pair.threadId !== null) {
           return { status: 'auto-accepted', threadId: pair.threadId };
         }
@@ -754,36 +708,34 @@ export class InviteService {
     afterWrite?: (tx: DatabaseTransaction) => Promise<void>,
   ): Promise<string> {
     const trimmed = (note ?? '').slice(0, 255);
-    const expiresAt = new Date(Date.now() + INVITE_TTL_MS);
     void originOverride;
     return this.database.db.transaction(async (tx) => {
       const target = await tx.query.messageThread.findFirst({
         where: eq(messageThread.id, threadId),
-        columns: { groupUserId: true },
+        columns: { groupId: true },
       });
-      if (!target?.groupUserId)
-        throw new Error('group invite target is invalid');
+      if (!target?.groupId) throw new Error('group invite target is invalid');
       if (afterWrite) await afterWrite(tx);
-      else {
-        await tx.execute(sql`
-          INSERT INTO "RelationshipIntent" (
-            "authorUserId", "subjectUserId", status, note,
-            "requestedAt", "expiresAt", "updatedAt"
-          ) VALUES (${target.groupUserId}, ${toUserId}, 'REQUESTED',
-            ${trimmed}, CURRENT_TIMESTAMP, ${expiresAt}, CURRENT_TIMESTAMP)
-          ON CONFLICT ("authorUserId", "subjectUserId") DO UPDATE SET
-            status = 'REQUESTED', note = EXCLUDED.note,
-            "requestedAt" = CURRENT_TIMESTAMP, "expiresAt" = EXCLUDED."expiresAt",
-            "updatedAt" = CURRENT_TIMESTAMP
-          WHERE "RelationshipIntent".status IS DISTINCT FROM 'REQUESTED'
-             OR "RelationshipIntent".note IS DISTINCT FROM EXCLUDED.note
-             OR "RelationshipIntent"."expiresAt" <= CURRENT_TIMESTAMP
-        `);
-      }
+      else
+        await this.relationshipIntents.writeGroupAuthoredIntentInTx(tx, {
+          groupId: target.groupId,
+          memberUserId: toUserId,
+          threadId,
+          author: 'GROUP',
+          status: 'REQUESTED',
+          note: trimmed,
+        });
       const request = await tx.query.relationshipIntent.findFirst({
         where: and(
-          eq(relationshipIntent.authorUserId, target.groupUserId),
-          eq(relationshipIntent.subjectUserId, toUserId),
+          eq(relationshipIntent.authorSide, 'A'),
+          sql`EXISTS (
+            SELECT 1 FROM "RelationshipPair" pair
+            JOIN "User" member_identity ON member_identity.id = ${toUserId}
+            WHERE pair.id = ${relationshipIntent.pairId}
+              AND pair."threadId" = ${threadId}
+              AND pair."endpointBAccount" = member_identity.account
+              AND pair."endpointBDomain" = member_identity.domain
+          )`,
         ),
         columns: {
           id: true,
@@ -793,8 +745,8 @@ export class InviteService {
       });
       if (!request) throw new Error('group request write disappeared');
       const [groupIdentity, memberIdentity, actorIdentity] = await Promise.all([
-        tx.query.user.findFirst({
-          where: eq(user.id, target.groupUserId),
+        tx.query.group.findFirst({
+          where: eq(group.id, target.groupId),
           columns: { account: true, domain: true },
         }),
         tx.query.user.findFirst({
@@ -824,7 +776,7 @@ export class InviteService {
         .insert(groupAuditLog)
         .values({
           eventKey: `invite:${groupDomain}:${groupIdentity.account}:${memberDomain}:${memberIdentity.account}:${request.requestedAt?.getTime() ?? 0}:requested`,
-          groupUserId: target.groupUserId,
+          groupId: target.groupId,
           groupAccount: groupIdentity.account,
           groupDomain,
           actorType: 'USER',
@@ -871,103 +823,112 @@ export class InviteService {
     const pendingFeedUpdates: Array<{ userId: number; feedId: number }> = [];
     const result = await this.database.db.transaction(
       async (tx): Promise<AcceptInviteResult> => {
-        const friend = await tx.query.relationshipIntent.findFirst({
-          where: eq(relationshipIntent.id, id),
-        });
-        if (friend) {
-          if (friend.status !== 'REQUESTED')
-            throw new BusinessException(
-              BusinessCode.INVITE_ALREADY_HANDLED,
-              'friend request already handled',
-            );
-          if (friend.subjectUserId !== byUserId)
-            throw new BusinessException(
-              BusinessCode.INVITE_NOT_YOURS,
-              'this request is not yours to accept',
-            );
-          if (friend.expiresAt && friend.expiresAt.getTime() <= Date.now())
-            throw new BusinessException(
-              BusinessCode.INVITE_EXPIRED,
-              'request expired',
-            );
-          const low = Math.min(friend.authorUserId, byUserId);
-          const high = Math.max(friend.authorUserId, byUserId);
-          if (afterFriendAccept)
-            await afterFriendAccept(tx, friend.authorUserId);
-          else
-            pendingFeedUpdates.push(
-              ...(await this.writeLocalFriendIntentInTx(
-                tx,
-                byUserId,
-                friend.authorUserId,
-                true,
-              )),
-            );
-          const pair = await tx.query.relationshipPair.findFirst({
-            where: and(
-              eq(relationshipPair.userLowId, low),
-              eq(relationshipPair.userHighId, high),
-            ),
-            columns: { active: true, threadId: true },
-          });
-          const requester = await tx.query.user.findFirst({
-            where: eq(user.id, friend.authorUserId),
-            columns: { domain: true },
-          });
-          if (!pair?.active || pair.threadId === null) {
-            if (requester?.domain === 'local')
-              throw new Error(
-                'local mutual friend requests did not activate the pair',
-              );
-            // Federation is a two-phase acknowledgement. Accepting writes our
-            // FRIEND direction, while thread creation waits for the peer's
-            // subsequent FRIEND state to return through its state feed.
-            return {
-              kind: 'FRIEND',
-              fromUserId: friend.authorUserId,
-            };
-          }
-          return {
-            kind: 'FRIEND',
-            threadId: pair.threadId,
-            fromUserId: friend.authorUserId,
-          };
-        }
-
-        const membership = await tx.query.relationshipIntent.findFirst({
-          where: eq(relationshipIntent.id, id),
-        });
-        if (!membership)
+        const [invite] = await tx
+          .select({ intent: relationshipIntent, pair: relationshipPair })
+          .from(relationshipIntent)
+          .innerJoin(
+            relationshipPair,
+            eq(relationshipPair.id, relationshipIntent.pairId),
+          )
+          .where(eq(relationshipIntent.id, id))
+          .limit(1);
+        if (!invite)
           throw new BusinessException(
             BusinessCode.INVITE_NOT_FOUND,
             'request not found',
           );
-        if (
-          membership.authorUserId === byUserId ||
-          membership.status !== 'REQUESTED'
-        )
+        if (invite.intent.status !== 'REQUESTED')
           throw new BusinessException(
             BusinessCode.INVITE_ALREADY_HANDLED,
-            'group request already handled',
-          );
-        if (membership.subjectUserId !== byUserId)
-          throw new BusinessException(
-            BusinessCode.INVITE_NOT_YOURS,
-            'this request is not yours to accept',
+            'request already handled',
           );
         if (
-          membership.expiresAt &&
-          membership.expiresAt.getTime() <= Date.now()
+          invite.intent.expiresAt &&
+          invite.intent.expiresAt.getTime() <= Date.now()
         )
           throw new BusinessException(
             BusinessCode.INVITE_EXPIRED,
             'request expired',
           );
-        const threadRow = await tx.query.messageThread.findFirst({
-          where: eq(messageThread.groupUserId, membership.authorUserId),
-          columns: { id: true },
+        const recipient = await tx.query.user.findFirst({
+          where: eq(user.id, byUserId),
+          columns: { account: true, domain: true },
         });
-        if (!threadRow)
+        if (!recipient)
+          throw new BusinessException(
+            BusinessCode.INVITE_NOT_YOURS,
+            'request recipient missing',
+          );
+        const recipientSide =
+          invite.pair.endpointAType === 'USER' &&
+          invite.pair.endpointAAccount === recipient.account &&
+          invite.pair.endpointADomain === recipient.domain
+            ? 'A'
+            : invite.pair.endpointBType === 'USER' &&
+                invite.pair.endpointBAccount === recipient.account &&
+                invite.pair.endpointBDomain === recipient.domain
+              ? 'B'
+              : null;
+        if (!recipientSide || invite.intent.authorSide === recipientSide)
+          throw new BusinessException(
+            BusinessCode.INVITE_NOT_YOURS,
+            'this request is not yours to accept',
+          );
+
+        if (invite.pair.kind === 'P2P') {
+          const requesterAddress =
+            invite.intent.authorSide === 'A'
+              ? {
+                  account: invite.pair.endpointAAccount,
+                  domain: invite.pair.endpointADomain,
+                }
+              : {
+                  account: invite.pair.endpointBAccount,
+                  domain: invite.pair.endpointBDomain,
+                };
+          const requester = await tx.query.user.findFirst({
+            where: and(
+              eq(user.account, requesterAddress.account),
+              eq(user.domain, requesterAddress.domain),
+              eq(user.sourceDomain, requesterAddress.domain),
+            ),
+          });
+          if (!requester)
+            throw new BusinessException(
+              BusinessCode.INVITE_NOT_FOUND,
+              'requester profile missing',
+            );
+          if (afterFriendAccept) await afterFriendAccept(tx, requester.id);
+          else
+            pendingFeedUpdates.push(
+              ...(await this.writeLocalFriendIntentInTx(
+                tx,
+                byUserId,
+                requester.id,
+                true,
+              )),
+            );
+          const state = await this.relationshipIntents.readP2PRelationshipInTx(
+            tx,
+            byUserId,
+            requester.id,
+          );
+          if (!state.pair.active || state.pair.threadId === null) {
+            if (requester.domain === 'local')
+              throw new Error(
+                'local mutual friend requests did not activate the pair',
+              );
+            return { kind: 'FRIEND', fromUserId: requester.id };
+          }
+          return {
+            kind: 'FRIEND',
+            threadId: state.pair.threadId,
+            fromUserId: requester.id,
+          };
+        }
+
+        const threadId = invite.pair.threadId;
+        if (invite.pair.kind !== 'GROUP_MEMBER' || threadId === null)
           throw new BusinessException(
             BusinessCode.INVITE_NOT_FOUND,
             'group mirror missing',
@@ -975,13 +936,12 @@ export class InviteService {
         const [groupState] = await tx
           .select({
             dissolvedAt: group.dissolvedAt,
-            account: user.account,
-            domain: user.domain,
+            account: group.account,
+            domain: group.domain,
           })
           .from(messageThread)
-          .leftJoin(group, eq(group.groupUserId, messageThread.groupUserId))
-          .leftJoin(user, eq(user.id, messageThread.groupUserId))
-          .where(eq(messageThread.id, threadRow.id))
+          .innerJoin(group, eq(group.id, messageThread.groupId))
+          .where(eq(messageThread.id, threadId))
           .limit(1);
         if (groupState?.dissolvedAt != null)
           throw new BusinessException(
@@ -990,25 +950,25 @@ export class InviteService {
           );
         const isMirror = !!groupState?.domain && groupState.domain !== 'local';
         if (!isMirror) {
-          await assertServerGroupCapacityInTx(tx, threadRow.id, byUserId);
+          await assertServerGroupCapacityInTx(tx, threadId, byUserId);
         }
-        if (afterGroupJoin) await afterGroupJoin(tx, threadRow.id);
+        if (afterGroupJoin) await afterGroupJoin(tx, threadId);
         await tx
           .insert(threadAudience)
           .values({
             targetDomain: 'local',
             localUserId: byUserId,
-            threadId: threadRow.id,
+            threadId,
           })
           .onConflictDoNothing();
         const groupAccount = groupState?.account ?? null;
         const groupDomain = groupState?.domain ?? null;
         if (groupDomain && groupDomain !== 'local') {
-          await openFederatedAudienceInTx(tx, groupDomain, threadRow.id);
+          await openFederatedAudienceInTx(tx, groupDomain, threadId);
         }
         return {
           kind: 'GROUP',
-          threadId: threadRow.id,
+          threadId,
           fedGroupAccount: groupAccount, // the group `!account` (S2S 'to'); non-null for any group
           originDomain:
             groupDomain && groupDomain !== 'local' ? groupDomain : null, // non-null = federated mirror
@@ -1053,9 +1013,8 @@ export class InviteService {
     const id = this.parseInviteId(inviteId);
     const pendingFeedUpdates: Array<{ userId: number; feedId: number }> = [];
     await this.database.db.transaction(async (tx) => {
-      const request = await tx.query.relationshipIntent.findFirst({
-        where: eq(relationshipIntent.id, id),
-      });
+      const relationship = await this.loadP2PIntentPartiesInTx(tx, id);
+      const request = relationship?.intent;
       if (!request || request.status !== 'REQUESTED') {
         throw new BusinessException(
           !request
@@ -1064,19 +1023,19 @@ export class InviteService {
           !request ? 'request not found' : 'request already handled',
         );
       }
-      if (request.authorUserId !== byUserId) {
+      if (relationship.authorUserId !== byUserId) {
         throw new BusinessException(
           BusinessCode.INVITE_NOT_YOURS,
           'this request is not yours to revoke',
         );
       }
-      if (afterRevoke) await afterRevoke(tx, request.subjectUserId);
+      if (afterRevoke) await afterRevoke(tx, relationship.subjectUserId);
       else
         pendingFeedUpdates.push(
           ...(await this.writeLocalFriendIntentInTx(
             tx,
             byUserId,
-            request.subjectUserId,
+            relationship.subjectUserId,
             false,
           )),
         );
@@ -1092,9 +1051,8 @@ export class InviteService {
   ): Promise<void> {
     const id = this.parseInviteId(inviteId);
     await this.database.db.transaction(async (tx) => {
-      const request = await tx.query.relationshipIntent.findFirst({
-        where: eq(relationshipIntent.id, id),
-      });
+      const relationship = await this.loadP2PIntentPartiesInTx(tx, id);
+      const request = relationship?.intent;
       if (!request || request.status !== 'REQUESTED')
         throw new BusinessException(
           !request
@@ -1102,12 +1060,12 @@ export class InviteService {
             : BusinessCode.INVITE_ALREADY_HANDLED,
           !request ? 'request not found' : 'request already handled',
         );
-      if (request.subjectUserId !== byUserId)
+      if (relationship.subjectUserId !== byUserId)
         throw new BusinessException(
           BusinessCode.INVITE_NOT_YOURS,
           'this request is not yours to reject',
         );
-      await afterReject(tx, request.authorUserId);
+      await afterReject(tx, relationship.authorUserId);
     });
   }
 
@@ -1118,12 +1076,7 @@ export class InviteService {
   async listIncoming(userId: number) {
     const since = new Date(Date.now() - INVITE_TTL_MS);
     const [local, federated] = await Promise.all([
-      this.listFriendInvites(
-        and(
-          eq(relationshipIntent.subjectUserId, userId),
-          gt(relationshipIntent.requestedAt, since),
-        ),
-      ),
+      this.listFriendInvites(userId, 'INCOMING', since),
       this.listFederatedFriendInvites(userId, 'INCOMING'),
     ]);
     return [...local, ...federated]
@@ -1135,12 +1088,7 @@ export class InviteService {
   async listOutgoing(userId: number) {
     const since = new Date(Date.now() - INVITE_TTL_MS);
     const [local, federated] = await Promise.all([
-      this.listFriendInvites(
-        and(
-          eq(relationshipIntent.authorUserId, userId),
-          gt(relationshipIntent.requestedAt, since),
-        ),
-      ),
+      this.listFriendInvites(userId, 'OUTGOING', since),
       this.listFederatedFriendInvites(userId, 'OUTGOING'),
     ]);
     return [...local, ...federated]
@@ -1196,34 +1144,83 @@ export class InviteService {
     });
   }
 
-  private async listFriendInvites(extra: SQL | undefined) {
-    const rows = await this.database.db.query.relationshipIntent.findMany({
-      where: and(
-        eq(relationshipIntent.status, 'REQUESTED'),
-        gt(relationshipIntent.expiresAt, new Date()),
-        extra,
-      ),
-      orderBy: desc(relationshipIntent.requestedAt),
-      limit: LIST_LIMIT,
-      with: {
-        author: { columns: USER_SELECT },
-        subject: { columns: USER_SELECT },
-      },
+  private async listFriendInvites(
+    userId: number,
+    direction: 'INCOMING' | 'OUTGOING',
+    since: Date,
+  ) {
+    const result = await this.database.db.execute<{
+      id: bigint;
+      note: string;
+      requestedAt: Date;
+      expiresAt: Date;
+      updatedAt: Date;
+      peerId: number;
+      peerAccount: string;
+      peerName: string;
+      peerAvatar: string;
+      peerDomain: string;
+      selfAccount: string;
+      selfName: string;
+      selfAvatar: string;
+      selfDomain: string;
+      actualDirection: 'INCOMING' | 'OUTGOING';
+    }>(sql`
+      SELECT intent.id, intent.note, intent."requestedAt", intent."expiresAt",
+        intent."updatedAt", peer.id AS "peerId", peer.account AS "peerAccount",
+        peer.name AS "peerName", peer.avatar AS "peerAvatar", peer.domain AS "peerDomain",
+        self.account AS "selfAccount", self.name AS "selfName",
+        self.avatar AS "selfAvatar", self.domain AS "selfDomain",
+        CASE WHEN (intent."authorSide" = 'A' AND pair."endpointAAccount" = self.account
+              AND pair."endpointADomain" = self.domain)
+            OR (intent."authorSide" = 'B' AND pair."endpointBAccount" = self.account
+              AND pair."endpointBDomain" = self.domain)
+          THEN 'OUTGOING' ELSE 'INCOMING' END AS "actualDirection"
+      FROM "RelationshipIntent" intent
+      JOIN "RelationshipPair" pair ON pair.id = intent."pairId"
+      JOIN "User" self ON self.id = ${userId}
+      JOIN "User" peer ON peer.id <> self.id
+        AND peer."sourceDomain" = peer.domain
+        AND (((self.account = pair."endpointAAccount" AND self.domain = pair."endpointADomain")
+          AND peer.account = pair."endpointBAccount" AND peer.domain = pair."endpointBDomain")
+        OR ((self.account = pair."endpointBAccount" AND self.domain = pair."endpointBDomain")
+          AND peer.account = pair."endpointAAccount" AND peer.domain = pair."endpointADomain"))
+      WHERE pair.kind = 'P2P' AND intent.status = 'REQUESTED'
+        AND intent."expiresAt" > CURRENT_TIMESTAMP
+        AND intent."requestedAt" > ${since}
+      ORDER BY intent."requestedAt" DESC
+      LIMIT ${LIST_LIMIT}
+    `);
+    const self = await this.database.db.query.user.findFirst({
+      where: eq(user.id, userId),
+      columns: USER_SELECT,
     });
-    return rows.map(({ author, subject, ...row }) => ({
-      id: row.id,
-      kind: 'FRIEND' as const,
-      fromUserId: row.authorUserId,
-      toUserId: row.subjectUserId,
-      threadId: null,
-      note: row.note,
-      status: 'PENDING' as const,
-      expiresAt: row.expiresAt ?? new Date(0),
-      createdAt: row.requestedAt ?? row.updatedAt,
-      updatedAt: row.updatedAt,
-      fromUser: author,
-      toUser: subject,
-    }));
+    if (!self) return [];
+    return result.rows
+      .filter((row) => row.actualDirection === direction)
+      .map((row) => {
+        const peer = {
+          id: row.peerId,
+          account: row.peerAccount,
+          name: row.peerName,
+          avatar: row.peerAvatar,
+          domain: row.peerDomain,
+        };
+        return {
+          id: row.id.toString(),
+          kind: 'FRIEND' as const,
+          fromUserId: direction === 'INCOMING' ? peer.id : self.id,
+          toUserId: direction === 'INCOMING' ? self.id : peer.id,
+          threadId: null,
+          note: row.note,
+          status: 'PENDING' as const,
+          expiresAt: row.expiresAt,
+          createdAt: row.requestedAt,
+          updatedAt: row.updatedAt,
+          fromUser: direction === 'INCOMING' ? peer : self,
+          toUser: direction === 'INCOMING' ? self : peer,
+        };
+      });
   }
 
   /** Revision-gated remote intent application. This runs inside the state-feed page transaction;
@@ -1248,110 +1245,41 @@ export class InviteService {
     added?: boolean;
     removed?: boolean;
   }> {
-    await this.lockFriendPairInTx(tx, params.localUserId, params.peerUserId);
-    const desired = params.status;
-    if (desired === 'ACCEPTED') {
-      const [localDirection, peerDirection] = await Promise.all([
-        tx.query.relationshipIntent.findFirst({
-          where: and(
-            eq(relationshipIntent.authorUserId, params.localUserId),
-            eq(relationshipIntent.subjectUserId, params.peerUserId),
-          ),
-          columns: { status: true, expiresAt: true },
-        }),
-        tx.query.relationshipIntent.findFirst({
-          where: and(
-            eq(relationshipIntent.authorUserId, params.peerUserId),
-            eq(relationshipIntent.subjectUserId, params.localUserId),
-          ),
-          columns: { status: true, expiresAt: true },
-        }),
-      ]);
-      const now = new Date();
-      const confirmsLocalRequest =
-        localDirection?.status === 'REQUESTED' &&
-        localDirection.expiresAt !== null &&
-        localDirection.expiresAt > now;
-      const completesAcceptedPeerRequest =
-        localDirection?.status === 'ACCEPTED' &&
-        peerDirection?.status === 'REQUESTED' &&
-        peerDirection.expiresAt !== null &&
-        peerDirection.expiresAt > now;
-      if (!confirmsLocalRequest && !completesAcceptedPeerRequest)
-        return { changed: false, requestCreated: false, clientFeedUpdates: [] };
-    }
-    const previous = await tx.query.relationshipIntent.findFirst({
-      where: and(
-        eq(relationshipIntent.authorUserId, params.peerUserId),
-        eq(relationshipIntent.subjectUserId, params.localUserId),
-      ),
-      columns: { status: true, expiresAt: true },
-    });
-    const applied = await tx.execute(sql`
-      INSERT INTO "RelationshipIntent" (
-        "authorUserId", "subjectUserId", status, note,
-        "requestedAt", "expiresAt", "updatedAt"
-      ) VALUES (${params.peerUserId}, ${params.localUserId},
-        ${desired}::"RelationshipIntentStatus", ${params.note.slice(0, 255)},
-        ${desired === 'REVOKED' ? null : params.requestedAt},
-        ${desired === 'REQUESTED' ? params.expiresAt : null}, CURRENT_TIMESTAMP)
-      ON CONFLICT ("authorUserId", "subjectUserId") DO UPDATE SET
-        status = EXCLUDED.status, note = EXCLUDED.note,
-        "requestedAt" = EXCLUDED."requestedAt", "expiresAt" = EXCLUDED."expiresAt",
-        "updatedAt" = CURRENT_TIMESTAMP
-      WHERE "RelationshipIntent".status IS DISTINCT FROM EXCLUDED.status
-         OR "RelationshipIntent".note IS DISTINCT FROM EXCLUDED.note
-         OR "RelationshipIntent"."requestedAt" IS DISTINCT FROM EXCLUDED."requestedAt"
-         OR "RelationshipIntent"."expiresAt" IS DISTINCT FROM EXCLUDED."expiresAt"
-      RETURNING 1
-    `);
-    if (!applied.rows[0])
+    const before = await this.relationshipIntents.readP2PRelationshipInTx(
+      tx,
+      params.peerUserId,
+      params.localUserId,
+    );
+    const previous = before.firstIntent;
+    const applied = await this.relationshipIntents.applyRemoteP2PIntentInTx(
+      tx,
+      {
+        authorUserId: params.peerUserId,
+        subjectUserId: params.localUserId,
+        threadId: before.pair.threadId,
+        status: params.status,
+        note: params.note,
+        requestedAt: params.status === 'REVOKED' ? null : params.requestedAt,
+        expiresAt: params.status === 'REQUESTED' ? params.expiresAt : null,
+      },
+    );
+    if (!applied.changed)
       return { changed: false, requestCreated: false, clientFeedUpdates: [] };
-    let localStateRevision: number | undefined;
-    if (desired === 'REVOKED') {
-      const closed = await tx.execute(sql`
-        UPDATE "RelationshipIntent" SET status = 'REVOKED', note = '',
-          "expiresAt" = NULL, "updatedAt" = CURRENT_TIMESTAMP
-        WHERE "authorUserId" = ${params.localUserId}
-          AND "subjectUserId" = ${params.peerUserId}
-          AND status <> 'REVOKED'
-        RETURNING 1
-      `);
-      localStateRevision = closed.rows[0] ? 1 : undefined;
-    } else {
-      const confirmed = await tx.execute(sql`
-        UPDATE "RelationshipIntent" SET status = 'ACCEPTED', "expiresAt" = NULL,
-          "updatedAt" = CURRENT_TIMESTAMP
-        WHERE "authorUserId" = ${params.localUserId}
-          AND "subjectUserId" = ${params.peerUserId}
-          AND status = 'REQUESTED' AND "expiresAt" > CURRENT_TIMESTAMP
-        RETURNING 1
-      `);
-      localStateRevision = confirmed.rows[0] ? 1 : undefined;
-      if (desired === 'REQUESTED' && localStateRevision === undefined) {
-        const accepted = await tx.query.relationshipIntent.findFirst({
-          where: and(
-            eq(relationshipIntent.authorUserId, params.localUserId),
-            eq(relationshipIntent.subjectUserId, params.peerUserId),
-            eq(relationshipIntent.status, 'ACCEPTED'),
-          ),
-          columns: { authorUserId: true },
-        });
-        if (accepted) localStateRevision = 1;
-      }
-    }
+    const localStateRevision =
+      applied.publishAccepted || applied.reverseChanged ? 1 : undefined;
     const pairEffect = await this.reconcileFriendPairInTx(
       tx,
       params.localUserId,
       params.peerUserId,
+      applied.shouldBeActive,
     );
-    const localDirection = await tx.query.relationshipIntent.findFirst({
-      where: and(
-        eq(relationshipIntent.authorUserId, params.localUserId),
-        eq(relationshipIntent.subjectUserId, params.peerUserId),
-      ),
-      columns: { status: true, expiresAt: true },
-    });
+    const localDirection = (
+      await this.relationshipIntents.readP2PRelationshipInTx(
+        tx,
+        params.localUserId,
+        params.peerUserId,
+      )
+    ).firstIntent;
     if (pairEffect.threadId !== undefined) {
       const locallyAuthorized =
         localDirection?.status === 'ACCEPTED' ||
@@ -1382,7 +1310,7 @@ export class InviteService {
         added: pairEffect.transitioned,
       };
     }
-    if (desired === 'REQUESTED') {
+    if (params.status === 'REQUESTED') {
       return {
         changed: true,
         ...(localStateRevision === undefined ? {} : { localStateRevision }),
@@ -1411,49 +1339,19 @@ export class InviteService {
 
   // ─── internals ────────────────────────────────────────────────────────────────
 
-  private async lockFriendPairInTx(
-    tx: DatabaseTransaction,
-    userAId: number,
-    userBId: number,
-  ): Promise<void> {
-    if (this.relationshipIntents) {
-      await this.relationshipIntents.lockPairInTx(tx, userAId, userBId);
-      return;
-    }
-    const low = Math.min(userAId, userBId);
-    const high = Math.max(userAId, userBId);
-    if (low === high) throw new Error('friend pair requires two users');
-    await tx.execute(sql`
-      INSERT INTO "RelationshipPair" ("userLowId", "userHighId")
-      VALUES (${low}, ${high}) ON CONFLICT DO NOTHING
-    `);
-    await tx.execute(sql`
-      SELECT 1 FROM "RelationshipPair"
-      WHERE "userLowId" = ${low} AND "userHighId" = ${high}
-      FOR UPDATE
-    `);
-  }
-
   private async reconcileFriendPairInTx(
     tx: DatabaseTransaction,
     userAId: number,
     userBId: number,
+    desiredActive: boolean,
   ): Promise<{ active: boolean; transitioned: boolean; threadId?: number }> {
-    const low = Math.min(userAId, userBId);
-    const high = Math.max(userAId, userBId);
-    const derived = await tx.execute<{ active: boolean }>(sql`
-      SELECT ${mutuallyAuthorizedSql(userAId, userBId)} AS active
-    `);
-    const desiredActive = derived.rows[0]?.active ?? false;
-    const pair = await tx.execute<{
-      active: boolean;
-      threadId: number | null;
-    }>(sql`
-      SELECT active, "threadId" FROM "RelationshipPair"
-      WHERE "userLowId" = ${low} AND "userHighId" = ${high}
-    `);
-    const current = pair.rows[0];
-    if (!current) throw new Error('friend pair lock disappeared');
+    const current = (
+      await this.relationshipIntents.readP2PRelationshipInTx(
+        tx,
+        userAId,
+        userBId,
+      )
+    ).pair;
     if (desiredActive && !current.active) {
       const threadId =
         current.threadId === null
@@ -1464,11 +1362,12 @@ export class InviteService {
               userAId,
               userBId,
             );
-      await tx.execute(sql`
-        UPDATE "RelationshipPair" SET active = true, "threadId" = ${threadId},
-          revision = revision + 1, "updatedAt" = CURRENT_TIMESTAMP
-        WHERE "userLowId" = ${low} AND "userHighId" = ${high}
-      `);
+      await this.relationshipIntents.setPairActiveInTx(
+        tx,
+        userAId,
+        userBId,
+        true,
+      );
       return { active: true, transitioned: true, threadId };
     }
     if (!desiredActive && current.active) {
@@ -1483,11 +1382,12 @@ export class InviteService {
           .limit(1);
         await this.closeP2PAudiencesInTx(tx, current.threadId);
       }
-      await tx.execute(sql`
-        UPDATE "RelationshipPair" SET active = false, revision = revision + 1,
-          "updatedAt" = CURRENT_TIMESTAMP
-        WHERE "userLowId" = ${low} AND "userHighId" = ${high}
-      `);
+      await this.relationshipIntents.setPairActiveInTx(
+        tx,
+        userAId,
+        userBId,
+        false,
+      );
       return {
         active: false,
         transitioned: true,
@@ -1508,19 +1408,11 @@ export class InviteService {
     userAId: number,
     userBId: number,
   ): Promise<number> {
-    const low = Math.min(userAId, userBId);
-    const high = Math.max(userAId, userBId);
-    const [pair] = await tx
-      .select({ threadId: relationshipPair.threadId })
-      .from(relationshipPair)
-      .where(
-        and(
-          eq(relationshipPair.userLowId, low),
-          eq(relationshipPair.userHighId, high),
-        ),
-      )
-      .limit(1);
-    if (!pair) throw new Error('friend pair shell lock missing');
+    const pair = await this.relationshipIntents.lockPairInTx(
+      tx,
+      userAId,
+      userBId,
+    );
     let threadId = pair.threadId;
     if (threadId === null) {
       const [thread] = await tx
@@ -1531,26 +1423,49 @@ export class InviteService {
       await tx
         .update(relationshipPair)
         .set({ threadId, updatedAt: new Date() })
-        .where(
-          and(
-            eq(relationshipPair.userLowId, low),
-            eq(relationshipPair.userHighId, high),
-          ),
-        );
+        .where(eq(relationshipPair.id, pair.id));
     }
-    const shellParticipants: Array<typeof threadParticipant.$inferInsert> = [
-      userAId,
-      userBId,
-    ].map((userId) => ({
-      userId,
-      threadId,
-      relationshipRev: 1,
-      updatedAt: new Date(),
-    }));
-    await tx
-      .insert(threadParticipant)
-      .values(shellParticipants)
-      .onConflictDoNothing();
+    const members = await tx
+      .insert(threadMember)
+      .values(
+        [userAId, userBId].map((userId) => ({
+          userId,
+          threadId,
+          updatedAt: new Date(),
+        })),
+      )
+      .onConflictDoUpdate({
+        target: [threadMember.threadId, threadMember.userId],
+        set: {
+          left: false,
+          updatedAt: new Date(),
+        },
+      })
+      .returning({ id: threadMember.id, userId: threadMember.userId });
+    const localAccounts = await tx
+      .select({ id: accountTable.id })
+      .from(accountTable)
+      .where(inArray(accountTable.id, [userAId, userBId]));
+    const localIds = new Set(localAccounts.map((row) => row.id));
+    const participantRows = members
+      .filter((member) => localIds.has(member.userId))
+      .map((member) => ({ accountId: member.userId, threadId }));
+    if (participantRows.length > 0)
+      await tx
+        .insert(threadParticipant)
+        .values(
+          participantRows as [
+            typeof threadParticipant.$inferInsert,
+            ...(typeof threadParticipant.$inferInsert)[],
+          ],
+        )
+        .onConflictDoUpdate({
+          target: [threadParticipant.accountId, threadParticipant.threadId],
+          set: {
+            messageVisibleBeforeSeq: null,
+            updatedAt: new Date(),
+          },
+        });
     return threadId;
   }
 
@@ -1591,40 +1506,13 @@ export class InviteService {
       .where(eq(messageThread.id, threadId))
       .limit(1);
     if (!locked) throw new Error('retained P2P thread disappeared');
-    const restored = await tx
-      .update(threadParticipant)
-      .set({
-        relationshipRev: sql`${threadParticipant.relationshipRev} + 1`,
-        messageVisibleBeforeSeq: null,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(threadParticipant.threadId, threadId),
-          inArray(threadParticipant.userId, [userAId, userBId]),
-        ),
-      )
-      .returning({ id: threadParticipant.id });
-    if (restored.length < 2) {
-      const existing = await tx
-        .select({ userId: threadParticipant.userId })
-        .from(threadParticipant)
-        .where(eq(threadParticipant.threadId, threadId));
-      const existingIds = new Set(existing.map((row) => row.userId));
-      const missing: Array<typeof threadParticipant.$inferInsert> = [
-        userAId,
-        userBId,
-      ]
-        .filter((userId) => !existingIds.has(userId))
-        .map((userId) => ({
-          userId,
-          threadId,
-          relationshipRev: 1,
-          updatedAt: new Date(),
-        }));
-      if (missing.length > 0)
-        await tx.insert(threadParticipant).values(missing);
-    }
+    const restoredThreadId = await this.ensureP2PThreadShellInTx(
+      tx,
+      userAId,
+      userBId,
+    );
+    if (restoredThreadId !== threadId)
+      throw new Error('retained P2P pair changed thread while locked');
     const participants = await tx
       .select({
         id: user.id,
@@ -1656,43 +1544,13 @@ export class InviteService {
     return threadId;
   }
 
-  /** Create the P2P MessageThread + both active participants and durable discovery audiences. A fresh threadId means brand-new
-   *  participant rows even when re-friending (the old soft-left thread stays, filtered out by
-   *  findP2PThreadBetween's active-participant check). Since the thread is empty and cannot contain an old
-   *  relationship's history, so each remote scan starts at the empty thread's current seq. */
+  /** Create the P2P thread, its two roster members, local participant state, and audiences. */
   private async createP2PFriendshipInTx(
     tx: DatabaseTransaction,
     userAId: number,
     userBId: number,
   ): Promise<number> {
-    const previous = await tx.execute<{ userId: number; revision: number }>(sql`
-      SELECT p."userId", COALESCE(MAX(p."relationshipRev"), 0)::integer AS revision
-      FROM "ThreadParticipant" p
-      JOIN "MessageThread" t ON t.id = p."threadId" AND t.type = 'P2P'
-      WHERE p."userId" IN (${userAId}, ${userBId})
-      GROUP BY p."userId"
-    `);
-    const previousByUser = new Map(
-      previous.rows.map((row) => [row.userId, row.revision]),
-    );
-    const [thread] = await tx
-      .insert(messageThread)
-      .values({ type: MessageThreadType.P2P, updatedAt: new Date() })
-      .returning({ id: messageThread.id });
-    await tx.insert(threadParticipant).values([
-      {
-        userId: userAId,
-        threadId: thread.id,
-        relationshipRev: (previousByUser.get(userAId) ?? 0) + 1,
-        updatedAt: new Date(),
-      },
-      {
-        userId: userBId,
-        threadId: thread.id,
-        relationshipRev: (previousByUser.get(userBId) ?? 0) + 1,
-        updatedAt: new Date(),
-      },
-    ]);
+    const threadId = await this.ensureP2PThreadShellInTx(tx, userAId, userBId);
     const participants = await tx
       .select({
         id: user.id,
@@ -1710,7 +1568,7 @@ export class InviteService {
       .map((participant) => ({
         targetDomain: 'local',
         localUserId: participant.id,
-        threadId: thread.id,
+        threadId,
       }));
     const peerDomains = [
       ...new Set(
@@ -1720,10 +1578,69 @@ export class InviteService {
       ),
     ];
     if (localAudience.length > 0)
-      await tx.insert(threadAudience).values(localAudience);
+      await tx
+        .insert(threadAudience)
+        .values(localAudience)
+        .onConflictDoNothing();
     for (const peerDomain of peerDomains)
-      await openFederatedAudienceInTx(tx, peerDomain, thread.id);
-    return thread.id;
+      await openFederatedAudienceInTx(tx, peerDomain, threadId);
+    return threadId;
+  }
+
+  private async loadP2PIntentPartiesInTx(tx: DatabaseTransaction, id: bigint) {
+    const [row] = await tx
+      .select({ intent: relationshipIntent, pair: relationshipPair })
+      .from(relationshipIntent)
+      .innerJoin(
+        relationshipPair,
+        eq(relationshipPair.id, relationshipIntent.pairId),
+      )
+      .where(
+        and(eq(relationshipIntent.id, id), eq(relationshipPair.kind, 'P2P')),
+      )
+      .limit(1);
+    if (!row) return null;
+    const identities = await tx
+      .select({
+        id: user.id,
+        account: user.account,
+        domain: user.domain,
+      })
+      .from(user)
+      .where(
+        and(
+          eq(user.sourceDomain, user.domain),
+          or(
+            and(
+              eq(user.account, row.pair.endpointAAccount),
+              eq(user.domain, row.pair.endpointADomain),
+            ),
+            and(
+              eq(user.account, row.pair.endpointBAccount),
+              eq(user.domain, row.pair.endpointBDomain),
+            ),
+          ),
+        ),
+      );
+    const endpointA = identities.find(
+      (identity) =>
+        identity.account === row.pair.endpointAAccount &&
+        identity.domain === row.pair.endpointADomain,
+    );
+    const endpointB = identities.find(
+      (identity) =>
+        identity.account === row.pair.endpointBAccount &&
+        identity.domain === row.pair.endpointBDomain,
+    );
+    if (!endpointA || !endpointB)
+      throw new Error('relationship endpoint profile missing');
+    return {
+      intent: row.intent,
+      pair: row.pair,
+      authorUserId: row.intent.authorSide === 'A' ? endpointA.id : endpointB.id,
+      subjectUserId:
+        row.intent.authorSide === 'A' ? endpointB.id : endpointA.id,
+    };
   }
 
   private parseInviteId(s: string): bigint {
@@ -1748,14 +1665,26 @@ export class InviteService {
     const [row] = await this.database.db
       .select({ id: relationshipIntent.id })
       .from(relationshipIntent)
-      .innerJoin(user, eq(user.id, relationshipIntent.authorUserId))
+      .innerJoin(
+        relationshipPair,
+        eq(relationshipPair.id, relationshipIntent.pairId),
+      )
+      .innerJoin(
+        group,
+        and(
+          eq(group.account, relationshipPair.endpointAAccount),
+          eq(group.domain, relationshipPair.endpointADomain),
+        ),
+      )
+      .innerJoin(user, eq(user.id, callerId))
       .where(
         and(
-          eq(relationshipIntent.subjectUserId, callerId),
-          eq(relationshipIntent.authorUserId, relationshipIntent.authorUserId),
+          eq(relationshipPair.kind, 'GROUP_MEMBER'),
+          eq(relationshipIntent.authorSide, 'A'),
+          eq(relationshipPair.endpointBAccount, user.account),
+          eq(relationshipPair.endpointBDomain, user.domain),
           pendingOnly ? eq(relationshipIntent.status, 'REQUESTED') : undefined,
-          eq(user.account, normalizeAccount(groupAccount)),
-          eq(user.isGroup, true),
+          eq(group.account, normalizeAccount(groupAccount)),
         ),
       )
       .orderBy(desc(relationshipIntent.requestedAt))

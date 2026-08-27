@@ -3,7 +3,11 @@ import { randomInt } from 'node:crypto';
 import argon2 from 'argon2';
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { loginCode, user as userTable } from '../database/schema.js';
+import {
+  account as accountTable,
+  loginCode,
+  user as userTable,
+} from '../database/schema.js';
 import { SessionTokenService } from './session-token.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 import {
@@ -107,14 +111,12 @@ export class OtpLoginService {
    *  validity window is the admin-configured OTP TTL (SettingsService, default 10 min). Returns the plaintext
    *  ONCE (reveal-once) + the audit view. */
   async issueCode(adminId: number, userId: number): Promise<IssuedLoginCode> {
-    const target = await this.database.db.query.user.findFirst({
-      where: and(
-        eq(userTable.id, userId),
-        eq(userTable.domain, 'local'),
-        eq(userTable.isGroup, false),
-      ),
-      columns: { id: true },
-    });
+    const [target] = await this.database.db
+      .select({ id: accountTable.id })
+      .from(accountTable)
+      .innerJoin(userTable, eq(userTable.id, accountTable.id))
+      .where(and(eq(accountTable.id, userId), eq(userTable.domain, 'local')))
+      .limit(1);
     if (!target) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
@@ -187,19 +189,25 @@ export class OtpLoginService {
         { bannedUntil: ban },
       );
     }
-    const user = await this.database.db.query.user.findFirst({
-      where: and(eq(userTable.account, acct), eq(userTable.domain, 'local')),
-      columns: {
-        id: true,
-        isGroup: true,
-        isDeleted: true,
-        mustChangePassword: true,
-      },
-    });
+    const [user] = await this.database.db
+      .select({
+        id: userTable.id,
+        availability: userTable.availability,
+        disabledAt: accountTable.disabledAt,
+        mustChangePassword: accountTable.mustChangePassword,
+      })
+      .from(userTable)
+      .innerJoin(accountTable, eq(accountTable.id, userTable.id))
+      .where(and(eq(userTable.account, acct), eq(userTable.domain, 'local')))
+      .limit(1);
     // Non-revealing: a non-existent / group / disabled account is indistinguishable from a wrong code. NOT
     // counted toward the lock — there is no real account to protect, and counting arbitrary input strings
     // would let an attacker fill the failure map.
-    if (!user || user.isGroup || user.isDeleted) {
+    if (
+      !user ||
+      user.availability === 'REMOVED' ||
+      user.disabledAt !== null
+    ) {
       throw new BusinessException(
         BusinessCode.OTP_INVALID,
         'invalid one-time code',

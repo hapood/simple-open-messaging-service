@@ -19,7 +19,7 @@ import {
 } from './federation-test-helpers.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { MessageThreadType } from '../src/database/enums.js';
-import { message, threadParticipant, user } from '../src/database/schema.js';
+import { message, threadMember, user } from '../src/database/schema.js';
 
 /**
  * Federated 1:1 call e2e — a SELF-CONTAINED two-server suite (own bootFederationPair + own DBs + a
@@ -72,11 +72,11 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
     await vi.waitFor(
       async () => {
         const [activeOnA, activeOnB] = await Promise.all([
-          appA.database.query.threadParticipant.findFirst({
-            where: and(eq(threadParticipant.userId, frankStubIdOnA)),
+          appA.database.query.threadMember.findFirst({
+            where: and(eq(threadMember.userId, frankStubIdOnA)),
           }),
-          appB.database.query.threadParticipant.findFirst({
-            where: and(eq(threadParticipant.userId, erinStubIdOnB)),
+          appB.database.query.threadMember.findFirst({
+            where: and(eq(threadMember.userId, erinStubIdOnB)),
           }),
         ]);
         expect(activeOnA).toBeDefined();
@@ -218,7 +218,7 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
       );
       expect(onA.contentType).toBe('CALL');
       const content = JSON.parse(onA.content);
-      expect(content.status).toBe('completed');
+      expect(content.outcome).toBe('completed');
       expect(content.callType).toBe('VIDEO');
       expect(content.startedAt).toBeTypeOf('number'); // connected stamped a real connect time
     } finally {
@@ -294,22 +294,22 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
         }),
       );
       expect(onA.contentType).toBe('CALL');
-      expect(JSON.parse(onA.content).status).toBe('declined');
+      expect(JSON.parse(onA.content).outcome).toBe('declined');
 
       // The bubble pulls to appB — find frank's P2P thread with erin's stub, then the CALL row by originSeq.
-      const frankThreadB =
-        await appB.database.query.threadParticipant.findFirst({
-          where: and(
-            eq(threadParticipant.userId, erinStubIdOnB),
-            sql`exists (select 1 from "MessageThread" mt where mt.id = "threadParticipant"."threadId" and mt.type = ${MessageThreadType.P2P})`,
-          ),
-          columns: { threadId: true },
-        });
+      const frankThreadB = await appB.database.query.threadMember.findFirst({
+        where: and(
+          eq(threadMember.userId, erinStubIdOnB),
+          sql`exists (select 1 from "MessageThread" mt where mt.id = "threadMember"."threadId" and mt.type = ${MessageThreadType.P2P})`,
+        ),
+        columns: { threadId: true },
+      });
       const onB = await pollFor(() =>
         appB.database.query.message.findFirst({
           where: and(
             eq(message.threadId, frankThreadB!.threadId),
-            eq(message.creator, erinStubIdOnB),
+            eq(message.creatorAccount, 'erin'),
+            eq(message.creatorDomain, DOM_A),
             // A local source keeps originSeq null until its delivery receipt returns; its wire source
             // coordinate is the local seq in that interval.
             eq(message.originSeq, onA.originSeq ?? onA.seq),
@@ -317,7 +317,7 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
           ),
         }),
       );
-      expect(JSON.parse(onB.content).status).toBe('declined');
+      expect(JSON.parse(onB.content).outcome).toBe('declined');
     } finally {
       await frankSse.cancel();
     }

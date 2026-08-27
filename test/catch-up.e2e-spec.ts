@@ -84,11 +84,12 @@ describe('thread catch-up + notification feed', () => {
         updatedAt: now,
       })
       .returning({ id: messageThread.id });
-    await database.db.insert(threadParticipant).values([
-      { userId: recipientId, threadId: thread.id, updatedAt: now },
-      { userId: peer.id, threadId: thread.id, updatedAt: now },
-    ]);
-    await seedAcceptedRelationship(database.db, recipientId, peer.id);
+    await seedAcceptedRelationship(
+      database.db,
+      recipientId,
+      peer.id,
+      thread.id,
+    );
     await database.db.insert(message).values(
       Array.from({ length: 3 }, (_, index) => ({
         threadId: thread.id,
@@ -96,7 +97,8 @@ describe('thread catch-up + notification feed', () => {
         originSeq: index + 1,
         contentType: ContentType.PURE_TEXT,
         content: JSON.stringify({ text: `${opts.name}-${index}` }),
-        creator: peer.id,
+        creatorAccount: opts.name.toLowerCase(),
+        creatorDomain: 'local',
         createdAt: new Date(base + index),
         updatedAt: now,
       })),
@@ -175,7 +177,8 @@ describe('thread catch-up + notification feed', () => {
         originSeq: 4,
         contentType: ContentType.PURE_TEXT,
         content: JSON.stringify({ text: 'self-only' }),
-        creator: recipientId,
+        creatorAccount: 'recip',
+        creatorDomain: 'local',
         createdAt: now,
         updatedAt: now,
       });
@@ -198,7 +201,7 @@ describe('thread catch-up + notification feed', () => {
       latestMessage: {
         seq: 4,
         content: JSON.stringify({ text: 'self-only' }),
-        creator: recipientId,
+        creator: { account: 'recip', domain: 'local' },
       },
     });
     expect(advanced.body.data.messageFeedEndId).toBe(4);
@@ -294,15 +297,18 @@ describe('thread catch-up + notification feed', () => {
 
   it('missed: a blocked sender is excluded from the aggregation', async () => {
     // Block Carol's peer → her 3 messages drop out: Alice 1,2 + Bob 0,1,2 = 5, 2 senders.
+    const participant = await database.db.query.threadParticipant.findFirst({
+      where: and(
+        eq(threadParticipant.accountId, recipientId),
+        eq(threadParticipant.threadId, tCarol),
+      ),
+      columns: { id: true },
+    });
+    if (!participant) throw new Error('recipient thread participant is missing');
     await database.db
       .update(threadParticipant)
       .set({ blocked: true, updatedAt: new Date() })
-      .where(
-        and(
-          eq(threadParticipant.userId, recipientId),
-          eq(threadParticipant.threadId, tCarol),
-        ),
-      );
+      .where(eq(threadParticipant.id, participant.id));
     const res = await postMissed(
       { after: 0, threadHwms: { [tAlice]: 1 } },
       { 'Accept-Language': 'en' },
@@ -316,15 +322,18 @@ describe('thread catch-up + notification feed', () => {
 
   it('missed: a muted thread is excluded from the aggregation', async () => {
     // Mute Bob's thread → Bob's 3 messages drop out: Alice 1,2 + Carol 0,1,2 = 5, 2 senders.
+    const participant = await database.db.query.threadParticipant.findFirst({
+      where: and(
+        eq(threadParticipant.accountId, recipientId),
+        eq(threadParticipant.threadId, tBob),
+      ),
+      columns: { id: true },
+    });
+    if (!participant) throw new Error('recipient thread participant is missing');
     await database.db
       .update(threadParticipant)
       .set({ muted: true })
-      .where(
-        and(
-          eq(threadParticipant.userId, recipientId),
-          eq(threadParticipant.threadId, tBob),
-        ),
-      );
+      .where(eq(threadParticipant.id, participant.id));
     const res = await postMissed(
       { after: 0, threadHwms: { [tAlice]: 1 } },
       { 'Accept-Language': 'en' },

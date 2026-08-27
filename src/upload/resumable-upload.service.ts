@@ -53,12 +53,16 @@ export class ResumableUploadService {
     dto: InitResumableUploadDto,
   ): Promise<UploadSessionView> {
     const stage = await this.database.db.query.pendingMedia.findFirst({
-      where: and(
-        eq(pendingMedia.clientMessageId, dto.clientMessageId),
-        eq(pendingMedia.creatorId, userId),
-      ),
+      where: eq(pendingMedia.clientMessageId, dto.clientMessageId),
     });
-    if (!stage || stage.status !== 'pending') {
+    if (
+      !stage ||
+      stage.status !== 'pending' ||
+      !(await this.messages.isAuthoredBy(
+        { account: stage.creatorAccount, domain: stage.creatorDomain },
+        userId,
+      ))
+    ) {
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
         'media send is not pending',

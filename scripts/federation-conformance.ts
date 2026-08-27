@@ -316,7 +316,7 @@ async function validateManifest(ajv: Ajv2020Instance): Promise<void> {
   const expected = new Set([
     'GET /.well-known/somfp',
     'POST /s2s/v1/recognize',
-    'POST /s2s/v1/healthy',
+    'GET /s2s/v1/health',
     'POST /s2s/v1/feed-heads',
     'GET /s2s/v1/state-feed',
     'GET /s2s/v1/message-feed',

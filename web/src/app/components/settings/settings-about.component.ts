@@ -332,7 +332,7 @@ export class SettingsAboutComponent {
     return Math.min(100, Math.round((item.count / item.limit) * 100));
   }
 
-  formatResetAt(value: string): string {
+  formatResetAt(value: number): string {
     return new Intl.DateTimeFormat(this.transloco.getActiveLang(), {
       dateStyle: 'short',
       timeStyle: 'short',

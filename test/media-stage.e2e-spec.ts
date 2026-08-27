@@ -3,17 +3,17 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import { randomUUID } from 'crypto';
-import { and, count, eq, inArray } from 'drizzle-orm';
+import { and, count, eq, inArray, or } from 'drizzle-orm';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
 import {
+  account as accountTable,
   messageAsset,
   message,
   messageThread,
-  relationshipIntent,
+  relationshipPair,
   pendingMedia,
-  threadParticipant,
   user,
 } from '../src/database/schema';
 import { ContentType } from '../src/database/enums';
@@ -42,6 +42,7 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
 
   let threadId: number;
   let userId: number;
+  let userAccount: string;
   let inviteTargetIds: number[];
 
   beforeAll(async () => {
@@ -62,42 +63,46 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
       .insert(user)
       .values({
         account: `st-${randomUUID().replace(/-/g, '').slice(0, 8)}`,
-        hashPwd: 'x',
         name: 'stage',
         updatedAt: now,
       })
-      .returning({ id: user.id });
+      .returning({ id: user.id, account: user.account });
     userId = createdUser.id;
+    userAccount = createdUser.account;
     inviteTargetIds = (
       await database.db
         .insert(user)
         .values(
           [1, 2, 3].map((n) => ({
             account: `st-target-${n}-${randomUUID().slice(0, 8)}`,
-            hashPwd: 'x',
             name: `target ${n}`,
             updatedAt: now,
           })),
         )
         .returning({ id: user.id })
     ).map((row) => row.id);
+    await database.db
+      .insert(accountTable)
+      .values([userId, ...inviteTargetIds].map((id) => ({ id, hashPwd: 'x' })));
     const [thread] = await database.db
       .insert(messageThread)
       .values({ type: 'P2P', updatedAt: now })
       .returning({ id: messageThread.id });
     threadId = thread.id;
-    await database.db.insert(threadParticipant).values([
-      { userId, threadId, updatedAt: now },
-      { userId: inviteTargetIds[2], threadId, updatedAt: now },
-    ]);
-    await seedAcceptedRelationship(database.db, userId, inviteTargetIds[2]);
+    await seedAcceptedRelationship(
+      database.db,
+      userId,
+      inviteTargetIds[2],
+      threadId,
+    );
   });
 
   afterAll(async () => {
     await database.pool
-      .query('DELETE FROM "ThreadParticipant" WHERE "threadId" = $1', [
-        threadId,
-      ])
+      .query(
+        'DELETE FROM "ThreadParticipant" WHERE "threadId" = $1',
+        [threadId],
+      )
       .catch(() => {});
     await database.pool
       .query('DELETE FROM "MessageThread" WHERE id = $1', [threadId])
@@ -192,11 +197,30 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
       ),
     ).rejects.toMatchObject({ bizCode: BusinessCode.QUOTA_EXCEEDED });
 
+    const target = await database.db.query.user.findFirst({
+      where: eq(user.id, inviteTargetIds[1]),
+      columns: { account: true, domain: true },
+    });
+    if (!target) throw new Error('invite target is missing');
     expect(
-      await database.db.query.relationshipIntent.findFirst({
-        where: and(
-          eq(relationshipIntent.authorUserId, userId),
-          eq(relationshipIntent.subjectUserId, inviteTargetIds[1]),
+      await database.db.query.relationshipPair.findFirst({
+        where: or(
+          and(
+            eq(relationshipPair.endpointAType, 'USER'),
+            eq(relationshipPair.endpointAAccount, userAccount),
+            eq(relationshipPair.endpointADomain, 'local'),
+            eq(relationshipPair.endpointBType, 'USER'),
+            eq(relationshipPair.endpointBAccount, target.account),
+            eq(relationshipPair.endpointBDomain, target.domain),
+          ),
+          and(
+            eq(relationshipPair.endpointAType, 'USER'),
+            eq(relationshipPair.endpointAAccount, target.account),
+            eq(relationshipPair.endpointADomain, target.domain),
+            eq(relationshipPair.endpointBType, 'USER'),
+            eq(relationshipPair.endpointBAccount, userAccount),
+            eq(relationshipPair.endpointBDomain, 'local'),
+          ),
         ),
       }),
     ).toBeUndefined();
@@ -305,7 +329,13 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
     const [msg] = await database.db
       .select()
       .from(message)
-      .where(and(eq(message.threadId, threadId), eq(message.creator, userId)))
+      .where(
+        and(
+          eq(message.threadId, threadId),
+          eq(message.creatorAccount, userAccount),
+          eq(message.creatorDomain, 'local'),
+        ),
+      )
       .limit(1);
     expect(msg).toBeDefined();
     const [mediaMsg] = await database.db
@@ -330,7 +360,13 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
     const [{ value }] = await database.db
       .select({ value: count() })
       .from(message)
-      .where(and(eq(message.threadId, threadId), eq(message.creator, userId)));
+      .where(
+        and(
+          eq(message.threadId, threadId),
+          eq(message.creatorAccount, userAccount),
+          eq(message.creatorDomain, 'local'),
+        ),
+      );
     expect(value).toBe(1);
   });
 
@@ -397,7 +433,8 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
       .where(
         and(
           eq(message.threadId, threadId),
-          eq(message.creator, userId),
+          eq(message.creatorAccount, userAccount),
+          eq(message.creatorDomain, 'local'),
           eq(message.contentType, 'GALLERY'),
         ),
       );

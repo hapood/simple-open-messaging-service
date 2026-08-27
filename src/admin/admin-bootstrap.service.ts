@@ -1,7 +1,11 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { and, eq } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { admin, user as userTable } from '../database/schema.js';
+import {
+  account as accountTable,
+  admin,
+  user as userTable,
+} from '../database/schema.js';
 import { PasswordHasher } from '../auth/password-hasher.service.js';
 
 /**
@@ -42,11 +46,14 @@ export class AdminBootstrapService implements OnApplicationBootstrap {
   }
 
   private async ensureBootstrapAdmin(): Promise<void> {
-    const existing = await this.database.db.query.user.findFirst({
-      where: and(eq(userTable.account, 'admin'), eq(userTable.domain, 'local')),
-      columns: { id: true },
-    });
-    if (existing) return; // already manageable — idempotent no-op on every boot after the first
+    const [existing] = await this.database.db
+      .select({ id: accountTable.id })
+      .from(userTable)
+      .innerJoin(accountTable, eq(accountTable.id, userTable.id))
+      .innerJoin(admin, eq(admin.userId, accountTable.id))
+      .where(and(eq(userTable.account, 'admin'), eq(userTable.domain, 'local')))
+      .limit(1);
+    if (existing) return;
 
     const pwd = process.env.ADMIN_BOOTSTRAP_PASSWORD;
     if (!pwd) {
@@ -65,12 +72,18 @@ export class AdminBootstrapService implements OnApplicationBootstrap {
       .insert(userTable)
       .values({
         account: 'admin',
-        hashPwd: hash,
         name: 'admin',
         domain: 'local',
+        sourceDomain: 'local',
         updatedAt: new Date(),
       })
-      .onConflictDoNothing({ target: [userTable.account, userTable.domain] })
+      .onConflictDoNothing({
+        target: [
+          userTable.account,
+          userTable.domain,
+          userTable.sourceDomain,
+        ],
+      })
       .returning({ id: userTable.id });
     const userId =
       createdUser[0]?.id ??
@@ -85,6 +98,10 @@ export class AdminBootstrapService implements OnApplicationBootstrap {
       )?.id;
     if (userId === undefined)
       throw new Error('bootstrap admin user was not created');
+    await this.database.db
+      .insert(accountTable)
+      .values({ id: userId, hashPwd: hash })
+      .onConflictDoNothing({ target: accountTable.id });
     await this.database.db
       .insert(admin)
       .values({

@@ -1,13 +1,16 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
+import { MessageThreadType } from '../src/database/enums.js';
 import {
   federatedFriendRequest,
   federatedPeer,
-  federatedProfile,
+  group,
+  messageThread,
   relationshipIntent,
+  relationshipPair,
   peerStateFeed,
   peerStateFeedTarget,
   user,
@@ -121,7 +124,6 @@ describe('per-peer state feed', () => {
         hasMore: boolean;
         items: Array<{
           account: string;
-          domain: string;
           eventType: 'PROFILE';
           feedId: string;
           body: {
@@ -142,7 +144,6 @@ describe('per-peer state feed', () => {
         items: [
           {
             account,
-            domain: peerDomain,
             eventType: 'PROFILE',
             feedId: '1',
             body: {
@@ -156,14 +157,6 @@ describe('per-peer state feed', () => {
       }),
     );
 
-    expect(
-      await database.db.query.federatedProfile.findFirst({
-        where: and(
-          eq(federatedProfile.domain, peerDomain),
-          eq(federatedProfile.account, account),
-        ),
-      }),
-    ).toBeUndefined();
     expect(
       await database.db.query.federatedFriendRequest.findFirst({
         where: and(
@@ -220,7 +213,6 @@ describe('per-peer state feed', () => {
       expect(page.items).toEqual([
         {
           account: 'alice',
-          domain: 'local.test',
           eventType: 'RELATIONSHIP_INTENT',
           peerAccount: 'bob',
           feedId: '2',
@@ -469,48 +461,63 @@ describe('per-peer state feed', () => {
 
   it('applies a later received group direction snapshot', async () => {
     const suffix = Date.now().toString(36);
-    const [groupUser, memberUser] = await database.db
+    const [groupState] = await database.db
+      .insert(group)
+      .values({
+        account: `!rev-${suffix}`,
+        name: 'revision group',
+        domain: DOMAINS[0],
+        updatedAt: new Date(),
+      })
+      .returning({ id: group.id });
+    const [thread] = await database.db
+      .insert(messageThread)
+      .values({
+        type: MessageThreadType.GROUP,
+        groupId: groupState.id,
+        updatedAt: new Date(),
+      })
+      .returning({ id: messageThread.id });
+    const [memberUser] = await database.db
       .insert(user)
-      .values([
-        {
-          account: `!rev-${suffix}`,
-          name: 'revision group',
-          isGroup: true,
-          domain: DOMAINS[0],
-          updatedAt: new Date(),
-        },
-        {
-          account: `rev-${suffix}`,
-          name: 'revision member',
-          updatedAt: new Date(),
-        },
-      ])
+      .values({
+        account: `rev-${suffix}`,
+        name: 'revision member',
+        domain: 'local',
+        sourceDomain: 'local',
+        updatedAt: new Date(),
+      })
       .returning({ id: user.id });
 
     try {
       await database.db.transaction((tx) =>
-        membership.applyRemoteIntentInTx(tx, {
-          groupUserId: groupUser.id,
+        membership.applyRemoteGroupIntentInTx(tx, {
+          groupId: groupState.id,
           memberUserId: memberUser.id,
-          authorUserId: groupUser.id,
+          threadId: thread.id,
+          author: 'GROUP',
           status: 'REQUESTED',
           note: 'first',
           requestedAt: new Date('2026-01-01T00:00:00Z'),
           expiresAt: new Date('2026-01-08T00:00:00Z'),
         }),
       );
+      const pair = await database.db.query.relationshipPair.findFirst({
+        where: eq(relationshipPair.threadId, thread.id),
+      });
       const before = await database.db.query.relationshipIntent.findFirst({
         where: and(
-          eq(relationshipIntent.authorUserId, groupUser.id),
-          eq(relationshipIntent.subjectUserId, memberUser.id),
+          eq(relationshipIntent.pairId, pair!.id),
+          eq(relationshipIntent.authorSide, 'A'),
         ),
       });
 
       const replay = await database.db.transaction((tx) =>
-        membership.applyRemoteIntentInTx(tx, {
-          groupUserId: groupUser.id,
+        membership.applyRemoteGroupIntentInTx(tx, {
+          groupId: groupState.id,
           memberUserId: memberUser.id,
-          authorUserId: groupUser.id,
+          threadId: thread.id,
+          author: 'GROUP',
           status: 'REVOKED',
           note: 'must not overwrite',
           requestedAt: null,
@@ -519,8 +526,8 @@ describe('per-peer state feed', () => {
       );
       const after = await database.db.query.relationshipIntent.findFirst({
         where: and(
-          eq(relationshipIntent.authorUserId, groupUser.id),
-          eq(relationshipIntent.subjectUserId, memberUser.id),
+          eq(relationshipIntent.pairId, pair!.id),
+          eq(relationshipIntent.authorSide, 'A'),
         ),
       });
 
@@ -528,9 +535,8 @@ describe('per-peer state feed', () => {
       expect(after).not.toEqual(before);
       expect(after?.status).toBe('REVOKED');
     } finally {
-      await database.db
-        .delete(user)
-        .where(inArray(user.id, [groupUser.id, memberUser.id]));
+      await database.db.delete(group).where(eq(group.id, groupState.id));
+      await database.db.delete(user).where(eq(user.id, memberUser.id));
     }
   });
 });

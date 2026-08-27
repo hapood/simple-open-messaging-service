@@ -59,13 +59,10 @@ export interface FileInfo {
  * time against the previous message (classifyGroupFlags), so appending a new message never
  * changes the old tail item's height (zero reflow).
  */
-export interface ChatMsgData {
-  type: 'msg';
+interface ChatMessageBase {
   /** = Message.id (virtual-scroll track key + WS/pagination dedup). */
   msgId: number;
-  /** Sender userId (classifyGroupFlags keys group-start off this). */
-  creator: number | null;
-  /** = creator === current user's userId. */
+  /** Whether creator matches the current user's address. */
   isSelf: boolean;
   /** Sender labels are useful in group chats but redundant beside avatars in a direct conversation. */
   isGroupConversation?: boolean;
@@ -73,13 +70,16 @@ export interface ChatMsgData {
   name: string;
   /** Cached sender profile data used by message-card avatars, including offline opens. */
   avatar?: string;
-  avatarIdentityId?: number;
+  /** Full user identity key (`sourceDomain\0domain\0account`) for avatar caching. */
+  avatarIdentityId?: string;
   /** Stable sender account used with avatarDomain for deterministic fallback colors. */
   avatarAccount?: string;
   /** Sender home domain; non-empty for federated identities and drives the avatar globe marker. */
   avatarDomain?: string;
   /** PURE_TEXT body / fallback text for unsupported types. */
   text: string;
+  /** Parsed CALL content. Present exactly when contentType is CALL. */
+  callContent?: CallMessageContent;
   /** Canonical inline-entity storage string for an optimistic PURE_TEXT send. The bubble renders `text`;
    *  HTTP/retry sends this value. Real queried messages need no copy because their wire body is durable. */
   wireText?: string;
@@ -106,18 +106,6 @@ export interface ChatMsgData {
   rich?: boolean;
   /** HH:mm (the date context is handled by the date separator row). */
   time: string;
-  contentType:
-    | 'PURE_TEXT'
-    | 'IMAGE'
-    | 'VIDEO'
-    | 'FILE'
-    | 'AUDIO'
-    | 'GALLERY'
-    | 'LINK'
-    | 'CONTACT_CARD'
-    | 'CALL'
-    | 'FORWARD'
-    | 'SYSTEM';
   /** IMAGE/VIDEO/AUDIO: media cells (consecutive same-creator IMAGE/VIDEO merged into one album). null = non-media. */
   images: AlbumMedia[] | null;
   /** FILE: attachment metadata (url/name/size/mimeType). null = non-file. */
@@ -139,6 +127,33 @@ export interface ChatMsgData {
   kind?: 'pending' | 'fake';
 }
 
+export type AuthoredContentType =
+  | 'PURE_TEXT'
+  | 'IMAGE'
+  | 'VIDEO'
+  | 'FILE'
+  | 'AUDIO'
+  | 'GALLERY'
+  | 'LINK'
+  | 'CONTACT_CARD'
+  | 'CALL'
+  | 'FORWARD';
+
+/** A user-authored message always carries a fully resolved User identity key. */
+export interface AuthoredMessageItem extends ChatMessageBase {
+  type: 'msg';
+  creator: string;
+  contentType: AuthoredContentType;
+}
+
+/** Server-authored timeline notice. It has no creator field. */
+export interface SystemMessageItem extends ChatMessageBase {
+  type: 'system';
+  contentType: 'SYSTEM';
+}
+
+export type ChatMsgData = AuthoredMessageItem | SystemMessageItem;
+
 export type ChatTextSegment =
   | { kind: 'text'; text: string }
   | {
@@ -154,3 +169,4 @@ export type ChatTextSegment =
  * between adjacent messages (see date-format.ts). The ChatItemData alias is kept for interface stability.
  */
 export type ChatItemData = ChatMsgData;
+import type { CallMessageContent } from '../../../../../shared/call-message-content';

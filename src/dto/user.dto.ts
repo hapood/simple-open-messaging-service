@@ -8,6 +8,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  ValidateNested,
   MaxLength,
   Min,
   MinLength,
@@ -28,7 +29,21 @@ export class UserIdDto {
   userId!: number;
 }
 
-export class DeleteFriendDto extends UserIdDto {
+export class DeleteFriendDto {
+  @ApiProperty({ example: 'alice', description: 'Friend account' })
+  @IsString()
+  @IsNotEmpty()
+  account!: string;
+
+  @ApiPropertyOptional({
+    example: 'peer.example',
+    description: 'Friend home domain. Omit for a local account.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(63)
+  domain?: string;
+
   @ApiPropertyOptional({
     default: false,
     description: 'Also delete this chat for the caller',
@@ -137,17 +152,32 @@ export class UpdateProfileDto {
   bio?: string;
 }
 
+export class UserAddressDto {
+  @ApiProperty({ example: 'alice' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(31)
+  account!: string;
+
+  @ApiProperty({ example: 'local' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(63)
+  domain!: string;
+}
+
 export class QueryUsersDto {
   @ApiProperty({
-    type: Number,
+    type: UserAddressDto,
     isArray: true,
-    example: [1, 2, 3],
-    description: 'List of user ids (≤100 per query)',
+    example: [{ account: 'alice', domain: 'local' }],
+    description: 'List of user addresses (≤100 per query)',
   })
   @IsArray()
-  @ArrayMaxSize(100, { message: 'must less than 100 userIds per query' })
-  @IsInt({ each: true })
-  userIds!: number[];
+  @ArrayMaxSize(100, { message: 'must contain at most 100 addresses' })
+  @ValidateNested({ each: true })
+  @Type(() => UserAddressDto)
+  addresses!: UserAddressDto[];
 }
 
 /** Pull compacted client-state feed items in (afterFeedId, targetFeedId]. */

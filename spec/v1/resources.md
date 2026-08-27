@@ -4,7 +4,7 @@ Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
 This document is entirely normative.
 
-This document defines three Federation v1 read operations: public user cards,
+This document defines three Federation v1 read operations: public user profiles,
 media resources, and forward bundles. Implementations MUST also follow the
 shared types and JSON rules in [Core Protocol Section 6](./protocol.md#6-common-protocol-rules),
 the response and error envelopes in [Core Protocol Section 7](./protocol.md#7-responses-errors-and-caller-actions),
@@ -19,19 +19,19 @@ and the resource-specific authorization defined here.
 
 ## 1. Common request rules
 
-| Property | Requirement |
-| --- | --- |
-| Method | `GET` |
-| Request body | Exactly zero bytes |
-| `Content-Type` | MUST NOT be sent |
-| `Content-Length` | May be omitted or sent as `0`; not signed in v1 |
-| `Date` | Required; represents the same whole UTC second as `Signature-Input.created` |
-| `Content-Digest` | Required literal `sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:` |
-| `Signature-Input` / `Signature` | Required; the single `sig1` profile from Transport and Security Section 3.4 |
-| Signed components | `"@method" "@path" "@query" "@authority" "date" "content-digest"`, in that order |
-| Authentication | `recognized signed` |
-| JSON response | `application/json` success or error envelope |
-| Successful media response | `application/octet-stream`, without a JSON envelope |
+| Property                        | Requirement                                                                      |
+| ------------------------------- | -------------------------------------------------------------------------------- |
+| Method                          | `GET`                                                                            |
+| Request body                    | Exactly zero bytes                                                               |
+| `Content-Type`                  | MUST NOT be sent                                                                 |
+| `Content-Length`                | May be omitted or sent as `0`; not signed in v1                                  |
+| `Date`                          | Required; represents the same whole UTC second as `Signature-Input.created`      |
+| `Content-Digest`                | Required literal `sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:`        |
+| `Signature-Input` / `Signature` | Required; the single `sig1` profile from Transport and Security Section 3.4      |
+| Signed components               | `"@method" "@path" "@query" "@authority" "date" "content-digest"`, in that order |
+| Authentication                  | `recognized signed`                                                              |
+| JSON response                   | `application/json` success or error envelope                                     |
+| Successful media response       | `application/octet-stream`, without a JSON envelope                              |
 
 An encoded JSON object, `null`, `{}`, a newline, or any other byte is not an
 empty GET body. A non-empty body, `Content-Type` on a GET, an incorrect empty
@@ -58,16 +58,16 @@ resource response.
 GET /s2s/v1/users/:account
 ```
 
-| Property | Requirement |
-| --- | --- |
-| Path variable | `account: UserAccount` |
-| Query | None |
-| Success | HTTP `200` success envelope with Section 2.2 data |
+| Property       | Requirement                                                    |
+| -------------- | -------------------------------------------------------------- |
+| Path variable  | `account: UserAccount`                                         |
+| Query          | None                                                           |
+| Success        | HTTP `200` success envelope with Section 2.2 data              |
 | Business error | HTTP `200 NOT_FOUND` or `200 FEDERATION_PROFILE_NOT_DISCLOSED` |
 
 `account` MUST be a `UserAccount`, not a `GroupAccount`. The operation resolves
 only a user local to the publisher's own domain; a path, query, or header MUST
-NOT select another domain. Any `recognized signed` peer MAY query this public card,
+NOT select another domain. Any `recognized signed` peer MAY query this public profile,
 but the query grants no P2P, group, message, or media permission.
 
 ### 2.2 Successful response
@@ -75,40 +75,35 @@ but the query grants no P2P, group, message, or media permission.
 The success `data` is this closed object:
 
 ```ts
-interface PublicUserCard {
+interface PublicUserProfile {
   account: UserAccount;
   domain: Domain;
   displayName: string;
-  avatar: null | {
-    b64: string;
-    w: PositiveSafeInteger;
-    h: PositiveSafeInteger;
-  };
+  bio: string;
+  avatar: InlineProfileAvatar | null;
   profileRev: SafeInteger;
 }
 ```
 
 Lengths below count Unicode code points, not UTF-8 bytes or UTF-16 code units.
 
-| Field | Requirement |
-| --- | --- |
-| `account` | Equal to the normalized path `account` |
-| `domain` | Equal to the responding server's canonical logical authority |
-| `displayName` | 1–30 code points, without unpaired surrogates |
-| `avatar` | `null` or the closed avatar object above |
-| `avatar.b64` | 4–1,048,576 characters of strict RFC 4648 padded Base64, decoding to a non-empty image |
-| `avatar.w/h` | Actual decoded pixel dimensions; each positive and `w * h <= 16000000` |
-| `profileRev` | Monotonically non-decreasing `SafeInteger` for this user |
+| Field         | Requirement                                                  |
+| ------------- | ------------------------------------------------------------ |
+| `account`     | Equal to the normalized path `account`                       |
+| `domain`      | Equal to the responding server's canonical logical authority |
+| `displayName` | 1–30 code points, without unpaired surrogates                |
+| `bio`         | 0–120 code points, without unpaired surrogates               |
+| `avatar`      | `null` or a shared `InlineProfileAvatar`                     |
+| `profileRev`  | Monotonically non-decreasing `SafeInteger` for this user     |
 
-`avatar.b64` has no `data:` prefix or whitespace. A consumer MUST decode it and
-verify its real dimensions; the declared dimensions are not trusted allocation
-metadata. `avatar: null` explicitly means no avatar. A response with an equal
+The shared inline-avatar validation rules apply. `avatar: null` explicitly
+means no avatar. A response with an equal
 or lower `profileRev` MUST NOT replace a newer committed profile for the same
 `account/domain`. Unknown data fields MUST be rejected.
 
-This is the minimum public identity card for exact-account lookup. It MUST NOT
-contain a biography, relationship directions, group membership, presence,
-contact information, deletion reasons, or another peer's visibility state.
+This is the public user profile for exact-account lookup. It MUST NOT contain
+relationship directions, group membership, presence, contact information,
+deletion reasons, or another peer's visibility state.
 Full friend and member display profiles are published through the state feed
 only when the corresponding visibility exists. v1 defines no fuzzy user search
 or account-enumeration operation.
@@ -146,7 +141,7 @@ is `?`.
 HTTP/1.1 200 OK
 Content-Type: application/json
 
-{"code":0,"message":"successful","data":{"account":"alice","domain":"b.example","displayName":"Alice","avatar":null,"profileRev":7}}
+{"code":0,"message":"successful","data":{"account":"alice","domain":"b.example","displayName":"Alice","bio":"","avatar":null,"profileRev":7}}
 ```
 
 ## 3. Media resources
@@ -157,21 +152,21 @@ Content-Type: application/json
 GET /s2s/v1/media/:digest?fromAccount=:fromAccount&fromDomain=:fromDomain&toAccount=:toAccount&seq=:seq
 ```
 
-| Property | Requirement |
-| --- | --- |
-| Path variable | `digest: Sha256Hex` |
-| Query | The four required fields below, in the listed order |
-| Additional request header | At most one `Range` as defined in Section 3.2 |
-| Success | HTTP `200` full raw bytes or HTTP `206` single-range raw bytes |
-| Error | JSON error envelope according to Section 3.3 |
+| Property                  | Requirement                                                    |
+| ------------------------- | -------------------------------------------------------------- |
+| Path variable             | `digest: Sha256Hex`                                            |
+| Query                     | The four required fields below, in the listed order            |
+| Additional request header | At most one `Range` as defined in Section 3.2                  |
+| Success                   | HTTP `200` full raw bytes or HTTP `206` single-range raw bytes |
+| Error                     | JSON error envelope according to Section 3.3                   |
 
-| Parameter | Location | Meaning |
-| --- | --- | --- |
-| `digest` | Path | `Sha256Hex` of the complete resource bytes |
-| `fromAccount` | Query | Exact message author's `UserAccount` |
-| `fromDomain` | Query | Exact message author's `Domain` |
-| `toAccount` | Query | Signer-hosted recipient for P2P, or the `GroupAccount` for a group |
-| `seq` | Query | Exact outer message `seq`, encoded as a `PositiveDecimalString` no greater than `SafeInteger - 1` |
+| Parameter     | Location | Meaning                                                                                           |
+| ------------- | -------- | ------------------------------------------------------------------------------------------------- |
+| `digest`      | Path     | `Sha256Hex` of the complete resource bytes                                                        |
+| `fromAccount` | Query    | Exact message author's `UserAccount`                                                              |
+| `fromDomain`  | Query    | Exact message author's `Domain`                                                                   |
+| `toAccount`   | Query    | Signer-hosted recipient for P2P, or the `GroupAccount` for a group                                |
+| `seq`         | Query    | Exact outer message `seq`, encoded as a `PositiveDecimalString` no greater than `SafeInteger - 1` |
 
 The query order is fixed as `fromAccount`, `fromDomain`, `toAccount`, `seq`.
 The signer domain comes only from the verified HTTP Message Signature and is
@@ -238,17 +233,17 @@ silently degrade to a full `200`.
 
 The publisher MUST classify an error before sending any resource byte:
 
-| Condition | HTTP / code | Consumer action |
-| --- | --- | --- |
-| Malformed path, query, encoding, or Range; duplicate, unknown, or out-of-order query | `400 FEDERATION_MALFORMED` | Correct the request; do not retry unchanged or alter peer lifecycle. |
-| Failed pinned identity, recognition, or signature | Registered `401` code | Reject response data and follow the registry. |
-| No authorized message/audience proof for the coordinate | `200 FORBIDDEN` | Treat as a permanent business refusal; do not guess another coordinate or degrade the peer. |
-| Authorized message exists but the digest is not bound to it | `200 NOT_FOUND` | Retry only after relevant message/resource state changes or manual action. |
-| A forward root or its complete closure does not bind the digest | `200 NOT_FOUND` | Do not substitute child IDs, inner authors, or another publisher. |
-| Binding exists but the complete blob is deleted, missing, or unreadable as a complete resource | `200 NOT_FOUND` | Keep the message and mark only the asset unavailable under local policy. |
-| Media-operation quota is exhausted | `200 FEDERATION_QUOTA_EXCEEDED` | Accept no bytes; wait at least `data.retryAfter`; do not alter peer lifecycle. |
-| Valid single range is outside the resource | `416 FEDERATION_RANGE_NOT_SATISFIABLE` | Validate `Content-Range` and stop that offset; do not infer absence. |
-| The publisher is temporarily unable to read storage and cannot establish absence | `503 INTERNAL` | Retain the coordinate and cursor; retry with bounded backoff according to the registry. |
+| Condition                                                                                      | HTTP / code                            | Consumer action                                                                             |
+| ---------------------------------------------------------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Malformed path, query, encoding, or Range; duplicate, unknown, or out-of-order query           | `400 FEDERATION_MALFORMED`             | Correct the request; do not retry unchanged or alter peer lifecycle.                        |
+| Failed pinned identity, recognition, or signature                                              | Registered `401` code                  | Reject response data and follow the registry.                                               |
+| No authorized message/audience proof for the coordinate                                        | `200 FORBIDDEN`                        | Treat as a permanent business refusal; do not guess another coordinate or degrade the peer. |
+| Authorized message exists but the digest is not bound to it                                    | `200 NOT_FOUND`                        | Retry only after relevant message/resource state changes or manual action.                  |
+| A forward root or its complete closure does not bind the digest                                | `200 NOT_FOUND`                        | Do not substitute child IDs, inner authors, or another publisher.                           |
+| Binding exists but the complete blob is deleted, missing, or unreadable as a complete resource | `200 NOT_FOUND`                        | Keep the message and mark only the asset unavailable under local policy.                    |
+| Media-operation quota is exhausted                                                             | `200 FEDERATION_QUOTA_EXCEEDED`        | Accept no bytes; wait at least `data.retryAfter`; do not alter peer lifecycle.              |
+| Valid single range is outside the resource                                                     | `416 FEDERATION_RANGE_NOT_SATISFIABLE` | Validate `Content-Range` and stop that offset; do not infer absence.                        |
+| The publisher is temporarily unable to read storage and cannot establish absence               | `503 INTERNAL`                         | Retain the coordinate and cursor; retry with bounded backoff according to the registry.     |
 
 `NOT_FOUND` means only that this publisher cannot provide this digest under the
 authorized coordinate. It does not prove global absence. Lack of audience
@@ -299,12 +294,12 @@ bytes; the path digest covers the complete resource.
 GET /s2s/v1/forward-bundles/:bundleId
 ```
 
-| Property | Requirement |
-| --- | --- |
-| Path variable | Bounded opaque `bundleId` |
-| Query | None |
-| Success | HTTP `200` success envelope containing a complete `ForwardWireBundle` |
-| Business error | HTTP `200 NOT_FOUND` |
+| Property       | Requirement                                                           |
+| -------------- | --------------------------------------------------------------------- |
+| Path variable  | Bounded opaque `bundleId`                                             |
+| Query          | None                                                                  |
+| Success        | HTTP `200` success envelope containing a complete `ForwardWireBundle` |
+| Business error | HTTP `200 NOT_FOUND`                                                  |
 
 `bundleId` MUST be a non-empty, case-sensitive opaque string of at most 26
 characters and at most 26 UTF-8 bytes after path decoding. It MUST NOT contain
@@ -346,13 +341,13 @@ of the outer FORWARD message.
 The bundle operation returns only JSON. After validating the complete closure,
 the consumer derives a media request for a needed asset as follows:
 
-| Media parameter | Sole source |
-| --- | --- |
-| `digest` | `BlobDescriptor.digest` in the root bundle's `assets` union |
-| `fromAccount` | `FederatedMessage.author.account` |
-| `fromDomain` | `FederatedMessage.author.domain` |
-| `toAccount` | Signer-hosted participant for P2P; `thread.account` for GROUP |
-| `seq` | Outer `FederatedMessage.seq` encoded as `PositiveDecimalString` |
+| Media parameter | Sole source                                                     |
+| --------------- | --------------------------------------------------------------- |
+| `digest`        | `BlobDescriptor.digest` in the root bundle's `assets` union     |
+| `fromAccount`   | `FederatedMessage.author.account`                               |
+| `fromDomain`    | `FederatedMessage.author.domain`                                |
+| `toAccount`     | Signer-hosted participant for P2P; `thread.account` for GROUP   |
+| `seq`           | Outer `FederatedMessage.seq` encoded as `PositiveDecimalString` |
 
 The request MUST NOT contain a bundle ID. An inner author, child ID, local
 bundle message ID, and `quoteTargetId` are not authorization coordinates. The

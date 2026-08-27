@@ -3,8 +3,8 @@
 ## Invariants
 
 - A withdrawn message is a deleted message. `Message.isDeleted=true` is authoritative for reads; clients do not render the deleted message as a placeholder. A separate structured system event records the visible timeline notice.
-- An effective moderation report uses the same deletion log with type `REPORT`. A report that only changes the reporter's local visibility is not a federated deletion.
-- Federation propagation depends on whether the remote node is entitled to replicate the conversation, not on whether the reason is `WITHDRAW` or `REPORT`.
+- An effective moderation action uses the same deletion log with type `MODERATION_REMOVAL`. A report that only changes the reporter's local visibility is not a federated deletion.
+- Federation propagation depends on whether the remote node is entitled to replicate the conversation, not on whether the reason is `USER_RETRACTION` or `MODERATION_REMOVAL`.
 - P2P withdrawal authority is the creator's home server. A group origin is the authority for its accepted group timeline: a foreign author submits a withdrawal, and the origin validates and directly publishes the resulting group deletion.
 - The stable federated target is `(thread, creator account, creator domain, originSeq)`. A receiver's local `Message.seq` is never sent or persisted in the federated tombstone.
 
@@ -30,7 +30,7 @@ Federation v1 propagates withdrawals and effective moderation deletions through 
 [Message Tombstone Feed](../../spec/v1/message-tombstone-feed.md). The ordinary message feed keeps
 authored message bodies immutable and does not encode deletion through `updatedAt` or a special content type.
 
-Both `WITHDRAW` and `REPORT` remove the target at the receiver. A report that only changes the reporter's
+Both `USER_RETRACTION` and `MODERATION_REMOVAL` remove the target at the receiver. A report that only changes the reporter's
 local visibility is not federated. P2P uses the author's home server; a group uses its origin as timeline
 authority after validating a foreign author's withdrawal submission. Mirrors never republish either fact.
 The stable target is `(thread, creator, originSeq)`, and tombstone authorization uses an exact durable

@@ -31,8 +31,8 @@ const answerParams = () => ({
   callSid: '550e8400-e29b-41d4-a716-446655440000',
   op: 'signal' as const,
   callType: 'AUDIO' as const,
-  kind: 'answer' as const,
-  payload: 'v=0',
+  signalType: 'answer' as const,
+  data: 'v=0',
   signalId: 'c0a80101-0000-4000-8000-000000000001',
 });
 
@@ -96,9 +96,9 @@ describe('Federation call lifecycle ordering', () => {
     });
     const order: string[] = [];
     const { service } = serviceWithPost(async (frame) => {
-      const typed = frame as { op: string; kind?: string };
-      order.push(typed.kind ?? typed.op);
-      if (typed.kind === 'answer') await answerGate;
+      const typed = frame as { op: string; signalType?: string };
+      order.push(typed.signalType ?? typed.op);
+      if (typed.signalType === 'answer') await answerGate;
     });
 
     const answer = service.sendCallFrame(answerParams(), 'b.example');

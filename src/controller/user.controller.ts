@@ -132,7 +132,7 @@ export class UserController {
     return {
       usage: state.usage,
       breaker: state.breaker,
-      resetAt: nextUtcMidnight().toISOString(),
+      resetAt: nextUtcMidnight().getTime(),
     };
   }
 
@@ -368,7 +368,7 @@ export class UserController {
     );
     return this.clientGroupMetaFeed.serve(
       req.user.userId,
-      target.groupUserId,
+      target.groupId,
       target.account,
       mode,
       parseCursor(afterParam, 'after'),
@@ -388,7 +388,23 @@ export class UserController {
     @Body() dto: DeleteFriendDto,
   ) {
     const me = req.user.userId;
-    if (me === dto.userId) {
+    const account = normalizeAccount(dto.account);
+    const requestedDomain = dto.domain?.trim().toLowerCase();
+    const domain =
+      !requestedDomain || requestedDomain === this.federationService.ourDomain
+        ? 'local'
+        : requestedDomain;
+    const target = await this.userService.findUniqueUser({
+      account_domain: { account, domain },
+      sourceDomain: domain,
+    });
+    if (!target) {
+      throw new BusinessException(
+        BusinessCode.FRIEND_NOT_FOUND,
+        `not friends with [${account}@${domain}]`,
+      );
+    }
+    if (me === target.id) {
       throw new BusinessException(
         BusinessCode.FRIEND_SELF,
         'can not unfriend self',
@@ -398,18 +414,15 @@ export class UserController {
     // successful and may still apply the caller's `deleteData` choice.
     const activeThreadId = await this.participantService.findP2PThreadBetween(
       me,
-      dto.userId,
+      target.id,
     );
     const threadId =
       activeThreadId ??
-      (await this.participantService.findLatestP2PThreadBetween(
-        me,
-        dto.userId,
-      ));
+      (await this.participantService.findLatestP2PThreadBetween(me, target.id));
     if (threadId === null) {
       throw new BusinessException(
         BusinessCode.FRIEND_NOT_FOUND,
-        `not friends with [${dto.userId}]`,
+        `not friends with [${account}@${domain}]`,
       );
     }
     // End the friendship but retain both participant rows + the thread as a readable history item.
@@ -435,11 +448,13 @@ export class UserController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/query')
-  @ApiOperation({ summary: 'Look up users by userId in batch (≤100)' })
+  @ApiOperation({
+    summary: 'Look up users by account and domain in batch (≤100)',
+  })
   @ApiResultResponse(UserResponseDto, true)
   async queryUserBase(@Body() dto: QueryUsersDto) {
     return this.userService.queryUsers({
-      where: { id: { in: dto.userIds }, isDeleted: false },
+      where: { addresses: dto.addresses, availability: 'AVAILABLE' },
     });
   }
 
@@ -482,7 +497,7 @@ export class UserController {
     // No domain, or our own domain, is a local account lookup.
     const user = await this.userService.findUniqueUser({
       account_domain: { account: account, domain: 'local' },
-      isDeleted: false,
+      availability: 'AVAILABLE',
     });
     if (user !== null) {
       return user;
@@ -526,17 +541,16 @@ export class UserController {
     if (domain === this.federationService.ourDomain) {
       const localUser = await this.userService.findUniqueUser({
         account_domain: { account, domain: 'local' },
-        isDeleted: false,
+        availability: 'AVAILABLE',
       });
       if (!localUser) {
         finish('failed', { reason: 'NOT_FOUND' });
         return;
       }
-      const [relationship] = localUser.isGroup
-        ? []
-        : await this.inviteService.friendRelationshipStatuses(req.user.userId, [
-            localUser.id,
-          ]);
+      const [relationship] =
+        await this.inviteService.friendRelationshipStatuses(req.user.userId, [
+          localUser.id,
+        ]);
       finish('resolved', {
         user: localUser,
         relationship: relationship?.status ?? 'NONE',
@@ -615,7 +629,7 @@ export class UserController {
       account: profile.account,
       name: profile.displayName,
       avatar: profile.avatar
-        ? `data:image/webp;base64,${profile.avatar.b64}`
+        ? `data:${profile.avatar.mimeType};base64,${profile.avatar.base64}`
         : '',
       bio: profile.bio,
       isGroup: profile.account.startsWith('!'),

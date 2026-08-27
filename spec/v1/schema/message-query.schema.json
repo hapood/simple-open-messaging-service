@@ -18,7 +18,6 @@
       "type": "object",
       "required": [
         "thread",
-        "author",
         "seq",
         "originSeq",
         "originCreatedAt",
@@ -32,6 +31,9 @@
           "$ref": "urn:somfp:v1:message-feed#/$defs/thread"
         },
         "author": { "$ref": "urn:somfp:v1:common#/$defs/address" },
+        "authorRef": {
+          "enum": ["THREAD_ACCOUNT", "THREAD_PEER_ACCOUNT"]
+        },
         "seq": {
           "$ref": "urn:somfp:v1:common#/$defs/positiveThreadSequence"
         },
@@ -58,6 +60,9 @@
         "createdAt": {
           "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
         },
+        "clientMessageId": {
+          "$ref": "urn:somfp:v1:common#/$defs/canonicalUuid"
+        },
         "quoteTarget": {
           "type": "object",
           "required": ["targetSeq"],
@@ -70,6 +75,62 @@
         },
         "assets": { "type": "array", "items": { "$ref": "#/$defs/asset" } }
       },
+      "oneOf": [
+        {
+          "required": ["authorRef"],
+          "properties": {
+            "thread": {
+              "type": "object",
+              "required": ["account", "peerAccount"],
+              "properties": {
+                "account": {
+                  "$ref": "urn:somfp:v1:common#/$defs/userAccount"
+                },
+                "peerAccount": {
+                  "$ref": "urn:somfp:v1:common#/$defs/userAccount"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "not": { "required": ["author"] }
+        },
+        {
+          "required": ["author"],
+          "properties": {
+            "thread": {
+              "type": "object",
+              "required": ["account"],
+              "properties": {
+                "account": {
+                  "$ref": "urn:somfp:v1:common#/$defs/groupAccount"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "not": { "required": ["authorRef"] }
+        }
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "contentType": { "const": "CALL" } },
+            "required": ["contentType"]
+          },
+          "then": {
+            "required": ["clientMessageId"],
+            "properties": {
+              "clientMessageId": {
+                "$ref": "urn:somfp:v1:common#/$defs/canonicalUuid"
+              }
+            }
+          },
+          "else": {
+            "not": { "required": ["clientMessageId"] }
+          }
+        }
+      ],
       "additionalProperties": false
     }
   },

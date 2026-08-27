@@ -73,8 +73,15 @@ export class NotificationController {
     @Query('through') throughParam?: string,
   ) {
     const userId = req.user.userId as number;
-    if (afterParam === undefined)
+    if (afterParam === undefined) {
+      if (takeParam !== undefined || throughParam !== undefined)
+        throw new BusinessException(
+          BusinessCode.VALIDATION_FAILED,
+          'take and through require after',
+          HttpStatus.BAD_REQUEST,
+        );
       return this.threadListSync.rejectMissingAfter(userId, 'message');
+    }
     const after = this.parseFeedCursor(afterParam, 'after');
     const take = this.parseFeedTake(takeParam);
     const through = this.parseFeedThrough(throughParam, after);
@@ -97,8 +104,15 @@ export class NotificationController {
     @Query('through') throughParam?: string,
   ) {
     const userId = req.user.userId as number;
-    if (afterParam === undefined)
+    if (afterParam === undefined) {
+      if (takeParam !== undefined || throughParam !== undefined)
+        throw new BusinessException(
+          BusinessCode.VALIDATION_FAILED,
+          'take and through require after',
+          HttpStatus.BAD_REQUEST,
+        );
       return this.threadListSync.rejectMissingAfter(userId, 'tombstone');
+    }
     const after = this.parseFeedCursor(afterParam, 'after');
     const take = this.parseFeedTake(takeParam);
     const through = this.parseFeedThrough(throughParam, after);

@@ -20,10 +20,14 @@ export async function assertServerGroupCapacityInTx(
   threadId: number,
   memberUserId: number,
 ): Promise<void> {
-  const locked = await tx.execute<{ groupUserId: number }>(sql`
-    SELECT g."groupUserId"
+  const locked = await tx.execute<{
+    groupId: number;
+    account: string;
+    domain: string;
+  }>(sql`
+    SELECT g.id AS "groupId", g.account, g.domain
     FROM "Group" g
-    JOIN "MessageThread" thread ON thread."groupUserId" = g."groupUserId"
+    JOIN "MessageThread" thread ON thread."groupId" = g.id
     WHERE thread.id = ${threadId}
     FOR UPDATE OF g
   `);
@@ -38,10 +42,17 @@ export async function assertServerGroupCapacityInTx(
     SELECT
       COUNT(*) AS "authorizedCount",
       COALESCE(BOOL_OR(
-        intent."subjectUserId" = ${memberUserId}
+        (pair."endpointBAccount", pair."endpointBDomain") =
+        (SELECT member.account, member.domain FROM "User" member WHERE member.id = ${memberUserId})
       ), false) AS "alreadyAuthorized"
-    FROM "RelationshipIntent" intent
-    WHERE intent."authorUserId" = ${locked.rows[0].groupUserId}
+    FROM "RelationshipPair" pair
+    JOIN "RelationshipIntent" intent
+      ON intent."pairId" = pair.id AND intent."authorSide" = 'A'
+    WHERE pair.kind = 'GROUP_MEMBER'
+      AND pair."endpointAType" = 'GROUP'
+      AND pair."endpointAAccount" = ${locked.rows[0].account}
+      AND pair."endpointADomain" = ${locked.rows[0].domain}
+      AND pair."endpointBType" = 'USER'
       AND (intent.status = 'ACCEPTED'
         OR (intent.status = 'REQUESTED'
           AND intent."expiresAt" > CURRENT_TIMESTAMP))

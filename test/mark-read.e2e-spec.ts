@@ -8,13 +8,13 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
 import {
+  account as accountTable,
   message,
   messageThread,
   threadParticipant,
-  user,
 } from '../src/database/schema';
 import { ContentType } from '../src/database/enums.js';
-import { seedSession, seedUser } from './seed';
+import { seedAcceptedRelationship, seedSession, seedUser } from './seed';
 
 describe('POST /thread/mark-read authoritative state', () => {
   let app: INestApplication;
@@ -23,6 +23,7 @@ describe('POST /thread/mark-read authoritative state', () => {
   let viewerId: number;
   let peerId: number;
   let threadId: number;
+  let viewerParticipantId: number;
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -56,10 +57,18 @@ describe('POST /thread/mark-read authoritative state', () => {
       })
       .returning({ id: messageThread.id });
     threadId = thread.id;
-    await database.db.insert(threadParticipant).values([
-      { userId: viewerId, threadId, updatedAt: now },
-      { userId: peerId, threadId, updatedAt: now },
-    ]);
+    await seedAcceptedRelationship(database.db, viewerId, peerId, threadId);
+    const viewerParticipant =
+      await database.db.query.threadParticipant.findFirst({
+      where: and(
+        eq(threadParticipant.threadId, threadId),
+        eq(threadParticipant.accountId, viewerId),
+      ),
+      columns: { id: true },
+    });
+    if (!viewerParticipant)
+      throw new Error('viewer thread participant is missing');
+    viewerParticipantId = viewerParticipant.id;
     await database.db.insert(message).values(
       Array.from({ length: 1005 }, (_, index) => {
         const seq = index + 1;
@@ -76,7 +85,8 @@ describe('POST /thread/mark-read authoritative state', () => {
                   : `message-${seq}`,
           }),
           // The viewer's own seq=1 message must never contribute to unreadCount.
-          creator: seq === 1 ? viewerId : peerId,
+          creatorAccount: seq === 1 ? 'reader' : 'peer',
+          creatorDomain: 'local',
           updatedAt: now,
         };
       }),
@@ -117,12 +127,7 @@ describe('POST /thread/mark-read authoritative state', () => {
     await database.db
       .update(threadParticipant)
       .set({ lastReadSeq: 3 })
-      .where(
-        and(
-          eq(threadParticipant.userId, viewerId),
-          eq(threadParticipant.threadId, threadId),
-        ),
-      );
+      .where(eq(threadParticipant.id, viewerParticipantId));
     const monotonic = await commit(1);
     expect(monotonic.body.data).toBeUndefined();
     const secondDelta = await readDelta(1, 2);
@@ -144,12 +149,11 @@ describe('POST /thread/mark-read authoritative state', () => {
     });
 
     const [viewer, participant] = await Promise.all([
-      database.db.query.user.findFirst({ where: eq(user.id, viewerId) }),
+      database.db.query.account.findFirst({
+        where: eq(accountTable.id, viewerId),
+      }),
       database.db.query.threadParticipant.findFirst({
-        where: and(
-          eq(threadParticipant.userId, viewerId),
-          eq(threadParticipant.threadId, threadId),
-        ),
+        where: eq(threadParticipant.id, viewerParticipantId),
       }),
     ]);
     expect(viewer?.readRevision).toBe(3);

@@ -2,16 +2,13 @@ export type RelationshipIntentStatus = 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
 
 export interface RelationshipIntentSnapshot {
   status: RelationshipIntentStatus;
-  expiresAt: Date | string | null;
+  expiresAt: Date | null;
 }
 
 export interface RelationshipIntentTransition {
   state: 'CONFIRMED' | 'UNCONFIRMED';
   promoteLocalRequest: boolean;
 }
-
-const timestamp = (value: Date | string): number =>
-  value instanceof Date ? value.getTime() : new Date(value).getTime();
 
 /** Whether one authored direction is currently a positive relationship fact. */
 export function isEffectiveRelationshipIntent(
@@ -21,7 +18,7 @@ export function isEffectiveRelationshipIntent(
   if (!intent || intent.status === 'REVOKED') return false;
   if (intent.status === 'ACCEPTED') return true;
   return (
-    intent.expiresAt !== null && timestamp(intent.expiresAt) > now.getTime()
+    intent.expiresAt !== null && intent.expiresAt.getTime() > now.getTime()
   );
 }
 

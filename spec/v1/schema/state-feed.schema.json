@@ -3,18 +3,6 @@
   "$id": "urn:somfp:v1:state-feed",
   "title": "GET /s2s/v1/state-feed response data",
   "$defs": {
-    "avatar": {
-      "type": "object",
-      "required": ["digest", "mimeType", "base64", "width", "height"],
-      "properties": {
-        "digest": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" },
-        "mimeType": { "type": "string", "minLength": 1 },
-        "base64": { "type": "string", "minLength": 4, "maxLength": 1048576 },
-        "width": { "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger" },
-        "height": { "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger" }
-      },
-      "additionalProperties": false
-    },
     "profileBody": {
       "type": "object",
       "required": ["profileRev", "displayName", "bio", "avatar"],
@@ -25,39 +13,12 @@
         "displayName": { "type": "string", "minLength": 1, "maxLength": 30 },
         "bio": { "type": "string", "maxLength": 120 },
         "avatar": {
-          "oneOf": [{ "$ref": "#/$defs/avatar" }, { "type": "null" }]
+          "oneOf": [
+            { "$ref": "urn:somfp:v1:common#/$defs/inlineProfileAvatar" },
+            { "type": "null" }
+          ]
         }
       },
-      "allOf": [
-        {
-          "if": { "properties": { "status": { "const": "REQUESTED" } } },
-          "then": {
-            "properties": {
-              "requestedAt": {
-                "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
-              },
-              "expiresAt": {
-                "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
-              }
-            }
-          }
-        },
-        {
-          "if": { "properties": { "status": { "const": "ACCEPTED" } } },
-          "then": {
-            "properties": {
-              "requestedAt": {
-                "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
-              },
-              "expiresAt": { "type": "null" }
-            }
-          }
-        },
-        {
-          "if": { "properties": { "status": { "const": "REVOKED" } } },
-          "then": { "properties": { "expiresAt": { "type": "null" } } }
-        }
-      ],
       "additionalProperties": false
     },
     "relationshipIntentBody": {
@@ -79,6 +40,45 @@
           ]
         }
       },
+      "allOf": [
+        {
+          "if": {
+            "required": ["status"],
+            "properties": { "status": { "const": "REQUESTED" } }
+          },
+          "then": {
+            "properties": {
+              "requestedAt": {
+                "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
+              },
+              "expiresAt": {
+                "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["status"],
+            "properties": { "status": { "const": "ACCEPTED" } }
+          },
+          "then": {
+            "properties": {
+              "requestedAt": {
+                "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
+              },
+              "expiresAt": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["status"],
+            "properties": { "status": { "const": "REVOKED" } }
+          },
+          "then": { "properties": { "expiresAt": { "type": "null" } } }
+        }
+      ],
       "additionalProperties": false
     },
     "groupMetaFeedHeadBody": {
@@ -93,10 +93,9 @@
     },
     "itemBase": {
       "type": "object",
-      "required": ["account", "domain", "eventType", "feedId", "body"],
+      "required": ["account", "eventType", "feedId", "body"],
       "properties": {
         "account": { "$ref": "urn:somfp:v1:common#/$defs/account" },
-        "domain": { "$ref": "urn:somfp:v1:common#/$defs/domain" },
         "eventType": { "type": "string" },
         "feedId": {
           "$ref": "urn:somfp:v1:common#/$defs/positiveDecimalString"

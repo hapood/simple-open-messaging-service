@@ -24,13 +24,11 @@
       "responseSchema": "urn:somfp:v1:identity#/$defs/recognizeOk"
     },
     {
-      "id": "healthy",
-      "method": "POST",
-      "path": "/s2s/v1/healthy",
+      "id": "health",
+      "method": "GET",
+      "path": "/s2s/v1/health",
       "authentication": "status-http-message-signature",
       "successStatus": [200],
-      "requestMediaType": "application/json",
-      "requestSchema": "urn:somfp:v1:identity#/$defs/recognizeRequest",
       "responseSchema": "urn:somfp:v1:identity#/$defs/healthResult"
     },
     {

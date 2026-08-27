@@ -83,6 +83,9 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
     if (this.sendError()) return { code: -1, message: 'Mock send failed' };
 
     const source = request.source as MockItemSource;
+    if (request.optimistic.data.type !== 'msg') {
+      throw new Error('Only authored messages can be sent optimistically');
+    }
     const isGroupConversation = this.groupSources.has(request.source);
     const sentId = source.allocateMsgId();
     const sent: CbItem<ChatItemData> = {
@@ -91,7 +94,7 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
       data: {
         ...request.optimistic.data,
         msgId: sentId,
-        creator: 1,
+        creator: 'mock.local\u0000mock.local\u0000user-1',
         isSelf: true,
         name: 'Me',
         // The real production source carries `sent` when the push echo wins the HTTP-response race.
@@ -131,7 +134,7 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
             ...(optimistic?.data as ChatMsgData | undefined),
             type: 'msg' as const,
             msgId: sentId,
-            creator: 1,
+            creator: 'mock.local\u0000mock.local\u0000user-1',
             isSelf: true,
             name: 'Me',
             text: optimistic?.data.text ?? '',
@@ -248,7 +251,7 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
       const data: ChatMsgData = {
         type: 'msg',
         msgId: id,
-        creator: 2 + senderOffset,
+        creator: `mock.local\u0000mock.local\u0000user-${2 + senderOffset}`,
         isSelf: false,
         isGroupConversation,
         name: ['Alice', 'Maya', 'Noah', 'Olivia'][senderOffset],

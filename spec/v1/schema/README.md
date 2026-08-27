@@ -10,7 +10,7 @@ This directory ships with the v1 normative text as a non-normative validation re
 
 - `common.schema.json`: shared Federation types for identity, time, cursors, digests, and addresses.
 - `discovery.schema.json`: cross-version bootstrap and key discovery at `/.well-known/somfp`.
-- `identity.schema.json`: closed JSON shapes for Recognize, Healthy, and feed-head hints.
+- `identity.schema.json`: closed JSON shapes for Recognize, Health, and feed-head hints.
 - `state-feed.schema.json`: complete pages and the profile, relationship, and Group Meta feed-head event bodies.
 - `group-meta.schema.json`: full and delta group-member projections, including roles and source-scoped profiles.
 - `message-feed.schema.json`: message index feed pages and `thread + messageEndSeq` items.

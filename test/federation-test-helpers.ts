@@ -8,6 +8,7 @@ import request from 'supertest';
 import { and, eq } from 'drizzle-orm';
 import type { Database } from '../src/database/database.service.js';
 import {
+  account as accountTable,
   admin,
   relationshipPair,
   mediaAsset,
@@ -109,17 +110,24 @@ export async function registerAndLogin(
   account: string,
   name: string,
 ): Promise<{ id: number; token: string }> {
-  const [u] = await app.database
-    .insert(user)
-    .values({
-      account,
-      domain: 'local',
-      name,
+  const u = await app.database.transaction(async (tx) => {
+    const [created] = await tx
+      .insert(user)
+      .values({
+        account,
+        domain: 'local',
+        sourceDomain: 'local',
+        name,
+        updatedAt: new Date(),
+      })
+      .returning({ id: user.id });
+    await tx.insert(accountTable).values({
+      id: created.id,
       hashPwd: null,
       mustChangePassword: false,
-      updatedAt: new Date(),
-    })
-    .returning({ id: user.id });
+    });
+    return created;
+  });
   const token = await seedSessionToken(app.database, u.id, 'app');
   return { id: u.id, token };
 }
@@ -253,30 +261,43 @@ export async function establishFederatedFriendship(params: {
       }),
     ]);
     if (remoteStub && localStub) {
+      const canonicalUserPair = (
+        first: { account: string; domain: string },
+        second: { account: string; domain: string },
+      ) =>
+        [first, second].sort((left, right) =>
+          `USER\u0000${left.domain}\u0000${left.account}`.localeCompare(
+            `USER\u0000${right.domain}\u0000${right.account}`,
+          ),
+        );
+      const [localA, localB] = canonicalUserPair(
+        { account: params.localAccount, domain: 'local' },
+        { account: params.remoteAccount, domain: params.remoteDomain },
+      );
+      const [remoteA, remoteB] = canonicalUserPair(
+        { account: params.remoteAccount, domain: 'local' },
+        { account: params.localAccount, domain: params.localDomain },
+      );
       const [localPair, remotePair] = await Promise.all([
         params.local.database.query.relationshipPair.findFirst({
           where: and(
-            eq(
-              relationshipPair.userLowId,
-              Math.min(params.localUserId, remoteStub.id),
-            ),
-            eq(
-              relationshipPair.userHighId,
-              Math.max(params.localUserId, remoteStub.id),
-            ),
+            eq(relationshipPair.endpointAType, 'USER'),
+            eq(relationshipPair.endpointAAccount, localA.account),
+            eq(relationshipPair.endpointADomain, localA.domain),
+            eq(relationshipPair.endpointBType, 'USER'),
+            eq(relationshipPair.endpointBAccount, localB.account),
+            eq(relationshipPair.endpointBDomain, localB.domain),
             eq(relationshipPair.active, true),
           ),
         }),
         params.remote.database.query.relationshipPair.findFirst({
           where: and(
-            eq(
-              relationshipPair.userLowId,
-              Math.min(params.remoteUserId, localStub.id),
-            ),
-            eq(
-              relationshipPair.userHighId,
-              Math.max(params.remoteUserId, localStub.id),
-            ),
+            eq(relationshipPair.endpointAType, 'USER'),
+            eq(relationshipPair.endpointAAccount, remoteA.account),
+            eq(relationshipPair.endpointADomain, remoteA.domain),
+            eq(relationshipPair.endpointBType, 'USER'),
+            eq(relationshipPair.endpointBAccount, remoteB.account),
+            eq(relationshipPair.endpointBDomain, remoteB.domain),
             eq(relationshipPair.active, true),
           ),
         }),
@@ -303,17 +324,25 @@ export async function getAdminCookie(
   app: AppLike,
   account = 'admin',
 ): Promise<string> {
-  const [u] = await app.database
-    .insert(user)
-    .values({
-      account,
-      domain: 'local',
-      name: account,
-      hashPwd: await new PasswordHasher().hash('Pass1234'),
+  const passwordHash = await new PasswordHasher().hash('Pass1234');
+  const u = await app.database.transaction(async (tx) => {
+    const [created] = await tx
+      .insert(user)
+      .values({
+        account,
+        domain: 'local',
+        sourceDomain: 'local',
+        name: account,
+        updatedAt: new Date(),
+      })
+      .returning({ id: user.id });
+    await tx.insert(accountTable).values({
+      id: created.id,
+      hashPwd: passwordHash,
       mustChangePassword: false,
-      updatedAt: new Date(),
-    })
-    .returning({ id: user.id });
+    });
+    return created;
+  });
   await app.database.insert(admin).values({
     userId: u.id,
     role: 'SUPER_ADMIN',

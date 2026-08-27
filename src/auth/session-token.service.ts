@@ -6,7 +6,7 @@ import {
 import { createHash, randomBytes } from 'crypto';
 import { and, eq, isNull, lte, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { sessionToken, user, userPreference } from '../database/schema.js';
+import { account, sessionToken, userPreference } from '../database/schema.js';
 import { KvStoreService } from '../kv-store/kv-store.service.js';
 import {
   AUTO_TERMINATE_PREFERENCE_KEY,
@@ -80,9 +80,9 @@ export class SessionTokenService {
     const tokenHash = hashToken(plaintext);
     const [principal, preference] = await Promise.all([
       this.database.db
-        .select({ mustChangePassword: user.mustChangePassword })
-        .from(user)
-        .where(eq(user.id, userId))
+        .select({ mustChangePassword: account.mustChangePassword })
+        .from(account)
+        .where(eq(account.id, userId))
         .limit(1)
         .then((rows) => rows[0]),
       this.database.db
@@ -180,10 +180,10 @@ export class SessionTokenService {
         revokedAt: sessionToken.revokedAt,
         lastSeenAt: sessionToken.lastSeenAt,
         autoTerminateDays: sessionToken.autoTerminateDays,
-        mustChangePassword: user.mustChangePassword,
+        mustChangePassword: account.mustChangePassword,
       })
       .from(sessionToken)
-      .innerJoin(user, eq(user.id, sessionToken.userId))
+      .innerJoin(account, eq(account.id, sessionToken.userId))
       .where(eq(sessionToken.tokenHash, h))
       .limit(1)
       .then((rows) => rows[0]);

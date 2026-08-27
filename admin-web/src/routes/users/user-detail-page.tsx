@@ -228,8 +228,8 @@ export function UserDetailPage() {
                     {data.groups.map((g) => (
                       <TableRow key={g.threadId}>
                         <TableCell className="font-medium">
-                          {g.thread.groupUser?.name ??
-                            g.thread.groupUser?.account ??
+                          {g.thread.group?.name ??
+                            g.thread.group?.account ??
                             `#${g.threadId}`}
                         </TableCell>
                         <TableCell>

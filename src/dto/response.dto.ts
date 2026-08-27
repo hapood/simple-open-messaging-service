@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { ContentType } from '../database/enums.js';
+import { ContentType, MessageDeleteType } from '../database/enums.js';
 import { MEDIA_STATUS, MediaStatus } from '../common/media-status.js';
 
 /**
@@ -102,6 +102,14 @@ export class ThreadReadStateDto {
   mentionUnread!: Array<'all' | 'me'>;
 }
 
+export class MessageAuthorAddressResponseDto {
+  @ApiProperty({ example: 'alice' })
+  account!: string;
+
+  @ApiProperty({ example: 'local' })
+  domain!: string;
+}
+
 export class MessageResponseDto {
   @ApiProperty({
     example: 42,
@@ -121,11 +129,13 @@ export class MessageResponseDto {
   threadId!: number;
 
   @ApiProperty({
-    example: 1,
+    type: MessageAuthorAddressResponseDto,
+    example: { account: 'alice', domain: 'local' },
     nullable: true,
-    description: 'Sender userId; null for server-authored SYSTEM messages',
+    description:
+      'Sender address snapshot; null for server-authored SYSTEM messages',
   })
-  creator!: number | null;
+  creator!: MessageAuthorAddressResponseDto | null;
 
   @ApiProperty({ example: 1_700_000_000_000 })
   createdAt!: number;
@@ -167,65 +177,46 @@ export class MessageResponseDto {
   sv?: number;
 }
 
-export class GroupResponseDto {
-  @ApiProperty({ example: 12 })
-  id!: number;
+export class MessageQueryPageDto {
+  @ApiProperty({ type: [MessageResponseDto] })
+  messages!: MessageResponseDto[];
 
-  @ApiProperty({
-    example: '!01JABCDEFGHJKMNPQRSTVWXYZ',
-    description:
-      'Globally stable group account used to identify the group across servers',
-  })
-  account!: string;
+  @ApiProperty({ example: '42', description: 'Direction-relative scan cursor' })
+  scannedThrough!: string;
 
-  @ApiProperty({ example: 'dev-team', description: 'Group name' })
-  name!: string;
+  @ApiProperty({ example: false })
+  hasMore!: boolean;
+}
 
-  @ApiProperty({ example: 1, description: 'Owner userId' })
-  ownerId!: number;
+export class MessageTombstoneResponseDto {
+  @ApiProperty({ example: '42', description: 'Tombstone log coordinate' })
+  id!: string;
 
-  @ApiProperty({
-    type: Number,
-    nullable: true,
-    example: null,
-    description: 'Terminal dissolution timestamp; history remains readable',
-  })
-  dissolvedAt!: number | null;
-
-  @ApiProperty({
-    example: 'https://.../g.png',
-    description: 'Group avatar URL',
-  })
-  avatar!: string;
-
-  @ApiProperty({
-    example: 7,
-    description: 'Monotonic group identity revision (name/avatar/description).',
-  })
-  profileRev!: number;
-
-  @ApiProperty({
-    example: 'Frontend team sync',
-    description: 'Group description / intro',
-  })
-  description!: string;
-
-  @ApiProperty({
-    example: 'soms.io',
-    description:
-      "The group's home (origin) domain. Empty for a locally-originated group (this server is the " +
-      'origin); a peer domain for a federated mirror.',
-  })
-  domain!: string;
-
-  @ApiProperty({ example: 12, description: 'Group message thread id' })
+  @ApiProperty({ example: 12, description: 'Owning conversation id' })
   threadId!: number;
+
+  @ApiProperty({ example: 31, description: 'Deleted message sequence' })
+  seq!: number;
+
+  @ApiProperty({ enum: MessageDeleteType })
+  type!: MessageDeleteType;
 
   @ApiProperty({ example: 1_700_000_000_000 })
   createdAt!: number;
 
   @ApiProperty({ example: 1_700_000_000_000 })
   updatedAt!: number;
+}
+
+export class MessageTombstoneQueryPageDto {
+  @ApiProperty({ type: [MessageTombstoneResponseDto] })
+  tombstones!: MessageTombstoneResponseDto[];
+
+  @ApiProperty({ example: '42', description: 'Direction-relative scan cursor' })
+  scannedThrough!: string;
+
+  @ApiProperty({ example: false })
+  hasMore!: boolean;
 }
 
 /**

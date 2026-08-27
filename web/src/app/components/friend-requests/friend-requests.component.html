@@ -190,8 +190,9 @@
                         {{ 'friend.selfStatus' | transloco }}
                       </span>
                     } @else if (
-                      relationshipStates().get(u.id) === 'NONE' ||
-                      relationshipStates().get(u.id) === 'INCOMING_PENDING'
+                      relationshipStates().get(userIdentity(u)) === 'NONE' ||
+                      relationshipStates().get(userIdentity(u)) ===
+                        'INCOMING_PENDING'
                     ) {
                       <button
                         mat-button
@@ -199,11 +200,11 @@
                         type="button"
                         (click)="$event.stopPropagation(); activateResult(u)"
                       >
-                        {{ relationshipLabel(u.id) | transloco }}
+                        {{ relationshipLabel(u) | transloco }}
                       </button>
                     } @else {
                       <span class="result-status">
-                        {{ relationshipLabel(u.id) | transloco }}
+                        {{ relationshipLabel(u) | transloco }}
                       </span>
                     }
                   </div>

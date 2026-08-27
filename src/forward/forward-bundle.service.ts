@@ -19,7 +19,10 @@ import {
   mediaAsset,
   messageAsset,
   message,
+  messageThread,
+  threadMember,
   threadParticipant,
+  user,
 } from '../database/schema.js';
 import { ContentType } from '../database/enums.js';
 import { isThreadMutuallyAuthorized } from '../invite/relationship-authorization.js';
@@ -250,18 +253,24 @@ export class ForwardBundleService {
       }
     }
     const uniqueThreads = [...new Set(sources.map((s) => s.threadId))];
-    const memberships = await this.database.db.query.threadParticipant.findMany(
-      {
-        where: and(
-          eq(threadParticipant.userId, userId),
+    const memberships = await this.database.db
+      .select({
+        threadId: threadParticipant.threadId,
+        clearedSeq: threadParticipant.clearedSeq,
+        blocked: threadParticipant.blocked,
+        messageThread,
+      })
+      .from(threadParticipant)
+      .innerJoin(
+        messageThread,
+        eq(messageThread.id, threadParticipant.threadId),
+      )
+      .where(
+        and(
+          eq(threadParticipant.accountId, userId),
           inArray(threadParticipant.threadId, uniqueThreads),
         ),
-        columns: { threadId: true, clearedSeq: true, blocked: true },
-        with: {
-          messageThread: { columns: { type: true } },
-        },
-      },
-    );
+      );
     const authorizedMemberships = (
       await Promise.all(
         memberships.map(async (membership) => ({
@@ -291,34 +300,45 @@ export class ForwardBundleService {
               eq(message.seq, source.seq),
             ),
             with: {
-              user: {
-                columns: {
-                  account: true,
-                  domain: true,
-                  name: true,
-                  avatar: true,
-                },
-              },
               forwardMessages: {
                 with: { forwardBundle: true },
                 limit: 1,
               },
             },
           })
-          .then((row) =>
-            row
-              ? {
-                  ...row,
-                  creatorItem: row.user,
-                  forwardMessage: row.forwardMessages[0]
-                    ? {
-                        ...row.forwardMessages[0],
-                        bundle: row.forwardMessages[0].forwardBundle,
-                      }
-                    : null,
-                }
-              : null,
-          ),
+          .then(async (row) => {
+            if (!row) return null;
+            const creatorItem =
+              row.creatorAccount === null || row.creatorDomain === null
+                ? null
+                : ((await this.database.db.query.user.findFirst({
+                    where: and(
+                      eq(user.account, row.creatorAccount),
+                      eq(user.domain, row.creatorDomain),
+                    ),
+                    columns: {
+                      account: true,
+                      domain: true,
+                      name: true,
+                      avatar: true,
+                    },
+                  })) ?? {
+                    account: row.creatorAccount,
+                    domain: row.creatorDomain,
+                    name: row.creatorAccount,
+                    avatar: '',
+                  });
+            return {
+              ...row,
+              creatorItem,
+              forwardMessage: row.forwardMessages[0]
+                ? {
+                    ...row.forwardMessages[0],
+                    bundle: row.forwardMessages[0].forwardBundle,
+                  }
+                : null,
+            };
+          }),
       ),
     );
     if (sourceRows.some((row) => row === null || row.isDeleted)) {
@@ -512,7 +532,7 @@ export class ForwardBundleService {
         threadParticipant,
         and(
           eq(threadParticipant.threadId, message.threadId),
-          eq(threadParticipant.userId, userId),
+          eq(threadParticipant.accountId, userId),
         ),
       )
       .where(

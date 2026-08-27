@@ -11,7 +11,11 @@ import {
   type ImageDownloadTask,
 } from '../../../services/image-download.service';
 import { MediaSizeThresholdService } from '../../../services/media-size-threshold.service';
-import type { AlbumImage, ChatMsgData } from '../chat-item';
+import type {
+  AlbumImage,
+  AuthoredContentType,
+  AuthoredMessageItem,
+} from '../chat-item';
 import { MediaRowComponent } from './media-row.component';
 
 describe('MediaRowComponent — deferred image loading', () => {
@@ -210,7 +214,7 @@ describe('MediaRowComponent — deferred image loading', () => {
 
   async function render(
     images: AlbumImage[],
-    contentType: ChatMsgData['contentType'] = 'IMAGE',
+    contentType: AuthoredContentType = 'IMAGE',
   ) {
     const fixture = TestBed.createComponent(MediaRowComponent);
     fixture.componentRef.setInput('data', message(images, contentType));
@@ -307,12 +311,12 @@ function task(
 
 function message(
   images: AlbumImage[],
-  contentType: ChatMsgData['contentType'] = 'IMAGE',
-): ChatMsgData {
+  contentType: AuthoredContentType = 'IMAGE',
+): AuthoredMessageItem {
   return {
     type: 'msg',
     msgId: images[0]?.msgId ?? 1,
-    creator: 2,
+    creator: 'peer.test\u0000peer.test\u0000alice',
     isSelf: false,
     name: 'Alice',
     text: '',

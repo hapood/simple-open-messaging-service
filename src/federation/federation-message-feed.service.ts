@@ -20,10 +20,12 @@ import { DatabaseService } from '../database/database.service.js';
 import {
   federationMessageFeedIndex,
   federationServeCursor,
+  group,
   mediaAsset,
   message,
   messageAsset,
   messageThread,
+  threadMember,
   threadParticipant,
   user,
 } from '../database/schema.js';
@@ -32,6 +34,7 @@ import {
   buildFederatedCallContent,
   parseCallContent,
 } from '../calls/call-content.js';
+import { CALL_SID_RE } from '../calls/federated-call-protocol.js';
 import {
   federatedContentDigests,
   toFederatedMessageContent,
@@ -60,20 +63,28 @@ export type FederationThreadQuery =
 
 export type FederationMessageFeedAsset = FederationByteDescriptor;
 
-export interface FederationMessageFeedMessage
+interface FederationMessageFeedMessageBase
   extends FederatedMessagePayload<string> {
-  thread: FederationThreadAddress;
-  author: FederationAddress;
   seq: number;
   originSeq: number | null;
   originCreatedAt: number | null;
   createdAt: number;
-  clientMessageId: string | null;
+  clientMessageId?: string;
   quoteTarget?: {
     targetSeq: number;
   };
   assets: FederationMessageFeedAsset[];
 }
+
+export type FederationMessageFeedMessage =
+  | (FederationMessageFeedMessageBase & {
+      thread: { account: string; peerAccount: string };
+      authorRef: 'THREAD_ACCOUNT' | 'THREAD_PEER_ACCOUNT';
+    })
+  | (FederationMessageFeedMessageBase & {
+      thread: { account: string };
+      author: FederationAddress;
+    });
 
 export interface FederationMessageFeedPage {
   items: Array<{
@@ -275,13 +286,12 @@ export class FederationMessageFeedService {
               createdAt: message.createdAt,
               clientMessageId: message.clientMessageId,
               threadType: messageThread.type,
-              groupUserId: messageThread.groupUserId,
-              authorAccount: user.account,
-              authorDomain: user.domain,
+              groupId: messageThread.groupId,
+              authorAccount: sql<string>`${message.creatorAccount}`,
+              authorDomain: sql<string>`${message.creatorDomain}`,
             })
             .from(message)
             .innerJoin(messageThread, eq(messageThread.id, message.threadId))
-            .innerJoin(user, eq(user.id, message.creator))
             .where(
               and(
                 eq(message.threadId, threadId),
@@ -293,7 +303,7 @@ export class FederationMessageFeedService {
                   : lt(message.seq, queryBefore),
                 eq(message.isDeleted, false),
                 ne(message.contentType, ContentType.SYSTEM),
-                includeSelf ? undefined : ne(user.domain, peerDomain),
+                includeSelf ? undefined : ne(message.creatorDomain, peerDomain),
               ),
             )
             .orderBy(forward ? asc(message.seq) : desc(message.seq))
@@ -349,7 +359,7 @@ export class FederationMessageFeedService {
       createdAt: Date;
       clientMessageId: string | null;
       threadType: 'P2P' | 'GROUP';
-      groupUserId: number | null;
+      groupId: number | null;
       authorAccount: string;
       authorDomain: string;
     }>,
@@ -362,20 +372,20 @@ export class FederationMessageFeedService {
       [...new Set(rows.map((row) => row.threadId))],
       peerDomain,
     );
-    const groupUserIds = rows.flatMap((row) =>
-      row.groupUserId === null ? [] : [row.groupUserId],
+    const groupIds = rows.flatMap((row) =>
+      row.groupId === null ? [] : [row.groupId],
     );
-    const groupUsers =
-      groupUserIds.length === 0
+    const groupStates =
+      groupIds.length === 0
         ? []
         : await tx
-            .select({ id: user.id, domain: user.domain })
-            .from(user)
-            .where(inArray(user.id, groupUserIds));
-    const groupOriginByUserId = new Map(
-      groupUsers.map((groupUser) => [
-        groupUser.id,
-        this.wireDomain(groupUser.domain),
+            .select({ id: group.id, domain: group.domain })
+            .from(group)
+            .where(inArray(group.id, groupIds));
+    const groupOriginById = new Map(
+      groupStates.map((groupState) => [
+        groupState.id,
+        this.wireDomain(groupState.domain),
       ]),
     );
     const assetRows = await tx
@@ -410,11 +420,10 @@ export class FederationMessageFeedService {
               threadId: message.threadId,
               seq: message.seq,
               originSeq: message.originSeq,
-              account: user.account,
-              domain: user.domain,
+              account: message.creatorAccount,
+              domain: message.creatorDomain,
             })
             .from(message)
-            .innerJoin(user, eq(user.id, message.creator))
             .where(
               sql`(${message.threadId}, ${message.seq}) IN (${sql.join(
                 quoteRefs.map((ref) => sql`(${ref.threadId}, ${ref.seq})`),
@@ -447,6 +456,7 @@ export class FederationMessageFeedService {
           : quoteTargets.get(JSON.stringify([row.threadId, quoteSeq]));
       let content: string;
       let contentDigests: Set<string>;
+      let callClientMessageId: string | undefined;
       try {
         content = toFederatedMessageContent(
           row.contentType,
@@ -457,6 +467,15 @@ export class FederationMessageFeedService {
           const local = parseCallContent(row.content);
           if (!local || row.threadType !== 'P2P')
             throw new Error('invalid federated CALL projection');
+          if (
+            row.clientMessageId === null ||
+            !CALL_SID_RE.test(row.clientMessageId)
+          ) {
+            throw new Error(
+              'federated CALL is missing a valid clientMessageId',
+            );
+          }
+          callClientMessageId = row.clientMessageId;
           content = buildFederatedCallContent(local);
         }
         contentDigests = new Set(
@@ -483,10 +502,8 @@ export class FederationMessageFeedService {
         row.originSeq !== null &&
         (row.threadType === 'P2P'
           ? author.domain === peerDomain
-          : groupOriginByUserId.get(row.groupUserId!) === peerDomain);
-      const item: FederationMessageFeedMessage = {
-        thread,
-        author,
+          : groupOriginById.get(row.groupId!) === peerDomain);
+      const envelope = {
         seq: row.seq,
         originSeq: isProcessingReceipt ? row.originSeq : null,
         originCreatedAt: isProcessingReceipt
@@ -495,12 +512,34 @@ export class FederationMessageFeedService {
         contentType: row.contentType,
         content,
         createdAt: row.createdAt.getTime(),
-        clientMessageId: row.clientMessageId,
+        ...(callClientMessageId
+          ? { clientMessageId: callClientMessageId }
+          : {}),
         ...(quoteTarget ? { quoteTarget } : {}),
         // MessageAsset also authorizes receiver-local presentation assets, notably LINK artwork.
         // Only descriptors referenced by the URL-free wire content belong in the federation payload.
         assets: projectedAssets,
       };
+      let item: FederationMessageFeedMessage;
+      if ('peerAccount' in thread) {
+        const sourceAuthored =
+          author.domain === this.localDomain &&
+          author.account === thread.account;
+        const peerAuthored =
+          author.domain === peerDomain && author.account === thread.peerAccount;
+        if (!sourceAuthored && !peerAuthored) {
+          throw new Error(
+            `P2P message author is not one of the addressed participants (thread ${row.threadId}, seq ${row.seq})`,
+          );
+        }
+        item = {
+          ...envelope,
+          thread,
+          authorRef: peerAuthored ? 'THREAD_PEER_ACCOUNT' : 'THREAD_ACCOUNT',
+        };
+      } else {
+        item = { ...envelope, thread, author };
+      }
       result.push(item);
     }
     return result;
@@ -519,7 +558,7 @@ export class FederationMessageFeedService {
             SELECT thread.id AS "threadId",
               audience."messageAccessAfterSeq" AS "messageAccessAfterSeq"
             FROM "MessageThread" thread
-            JOIN "User" group_user ON group_user.id = thread."groupUserId"
+            JOIN "Group" group_user ON group_user.id = thread."groupId"
             JOIN "ThreadAudience" audience ON audience."threadId" = thread.id
               AND audience."targetDomain" = ${peerDomain}
               AND audience."localUserId" IS NULL
@@ -539,16 +578,18 @@ export class FederationMessageFeedService {
               AND audience."localUserId" IS NULL
             WHERE thread.type = 'P2P'
               AND EXISTS (
-                SELECT 1 FROM "ThreadParticipant" participant
-                JOIN "User" member ON member.id = participant."userId"
-                WHERE participant."threadId" = thread.id
+                SELECT 1 FROM "ThreadMember" member_link
+                JOIN "User" member ON member.id = member_link."userId"
+                WHERE member_link."threadId" = thread.id
+                  AND member_link."left" = false
                   AND member.account = ${selector.account}
                   AND member.domain = 'local'
               )
               AND EXISTS (
-                SELECT 1 FROM "ThreadParticipant" participant
-                JOIN "User" member ON member.id = participant."userId"
-                WHERE participant."threadId" = thread.id
+                SELECT 1 FROM "ThreadMember" member_link
+                JOIN "User" member ON member.id = member_link."userId"
+                WHERE member_link."threadId" = thread.id
+                  AND member_link."left" = false
                   AND member.account = ${selector.peerAccount}
                   AND member.domain <> 'local'
                   AND member.domain = ${peerDomain}
@@ -576,38 +617,42 @@ export class FederationMessageFeedService {
       .select({
         id: messageThread.id,
         type: messageThread.type,
-        groupUserId: messageThread.groupUserId,
+        groupId: messageThread.groupId,
       })
       .from(messageThread)
       .where(inArray(messageThread.id, threadIds));
     const participants = await tx
       .select({
-        threadId: threadParticipant.threadId,
+        threadId: threadMember.threadId,
         account: user.account,
         domain: user.domain,
       })
-      .from(threadParticipant)
-      .innerJoin(user, eq(user.id, threadParticipant.userId))
-      .where(inArray(threadParticipant.threadId, threadIds));
+      .from(threadMember)
+      .innerJoin(user, eq(user.id, threadMember.userId))
+      .where(inArray(threadMember.threadId, threadIds));
     const groupIds = threads.flatMap((row) =>
-      row.groupUserId === null ? [] : [row.groupUserId],
+      row.groupId === null ? [] : [row.groupId],
     );
     const groups =
       groupIds.length === 0
         ? []
         : await tx
-            .select({ id: user.id, account: user.account, domain: user.domain })
-            .from(user)
-            .where(inArray(user.id, groupIds));
+            .select({
+              id: group.id,
+              account: group.account,
+              domain: group.domain,
+            })
+            .from(group)
+            .where(inArray(group.id, groupIds));
     const groupById = new Map(groups.map((row) => [row.id, row]));
     const result = new Map<number, FederationThreadAddress>();
     for (const thread of threads) {
       if (thread.type === 'GROUP') {
-        const group = groupById.get(thread.groupUserId!);
-        if (!group)
+        const groupState = groupById.get(thread.groupId!);
+        if (!groupState)
           throw new Error(`group identity missing for thread ${thread.id}`);
         result.set(thread.id, {
-          account: group.account,
+          account: groupState.account,
         });
       } else {
         const members = participants.filter(

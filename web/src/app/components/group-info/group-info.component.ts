@@ -132,6 +132,9 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly pendingAvatar = signal<string | undefined>(undefined);
 
   readonly myUserId = computed(() => this.userService.sessionProfile()?.id);
+  readonly sessionAccount = computed(
+    () => this.userService.sessionProfile()?.account,
+  );
   /** Caller's role comes from the chatbox context initialized when this chat was opened. */
   readonly myRole = this.chatContext.groupRole;
   readonly isOwner = computed(() => this.myRole() === 'OWNER');
@@ -222,7 +225,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     this.loadingMore.set(true);
     try {
       const page = await this.memberProfiles.queryPage(threadId, {
-        afterUserId: current.at(-1)!.userId,
+        afterIdentity: current.at(-1)!.identityKey,
         take: 50,
         search: this.memberQuery(),
       });
@@ -241,8 +244,13 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
 
   /** Whether the caller has any action available on this member row. */
   canActOn(m: ResolvedMemberProfile): boolean {
-    const me = this.myUserId();
-    if (m.userId === me) return false; // never on self
+    const me = this.userService.sessionProfile();
+    if (
+      me !== undefined &&
+      m.account === me.account &&
+      m.domain === (me.domain || 'local')
+    )
+      return false; // never on self
     const role = this.myRole();
     if (role === 'OWNER') return m.role !== 'OWNER'; // owner acts on every non-owner
     if (role === 'ADMIN') return m.role === 'MEMBER'; // admin only on members
@@ -285,7 +293,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     if (id === undefined) return;
     this.busy.set(true);
     this.groupService
-      .setRole({ groupId: id, userId: m.userId, role })
+      .setRole({ groupId: id, account: m.account, domain: m.domain, role })
       .pipe(finalize(() => this.busy.set(false)))
       .subscribe({
         next: (res) => {
@@ -334,7 +342,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     if (id === undefined) return;
     this.busy.set(true);
     this.groupService
-      .kickMember({ groupId: id, userId: m.userId })
+      .kickMember({ groupId: id, account: m.account, domain: m.domain })
       .pipe(finalize(() => this.busy.set(false)))
       .subscribe({
         next: (res) => {
@@ -350,7 +358,11 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     if (id === undefined) return;
     this.busy.set(true);
     this.groupService
-      .transferOwnership({ groupId: id, toUserId: m.userId })
+      .transferOwnership({
+        groupId: id,
+        account: m.account,
+        domain: m.domain,
+      })
       .pipe(finalize(() => this.busy.set(false)))
       .subscribe({
         next: (res) => {

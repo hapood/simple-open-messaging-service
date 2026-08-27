@@ -11,7 +11,6 @@ import {
   messageAsset,
   messageThread,
   threadAudience,
-  threadParticipant,
   user,
 } from '../src/database/schema.js';
 import { FederationCursorService } from '../src/federation/federation-cursor.service.js';
@@ -21,6 +20,7 @@ import {
   closeFederatedAudienceInTx,
   openFederatedAudienceInTx,
 } from '../src/federation/federation-audience.js';
+import { seedAcceptedRelationship } from './seed.js';
 
 describe('FederationMessageFeedService compacted feed', () => {
   let mod: TestingModule;
@@ -70,6 +70,7 @@ describe('FederationMessageFeedService compacted feed', () => {
           account: 'bob',
           name: 'Bob',
           domain: peerDomain,
+          sourceDomain: peerDomain,
           updatedAt: now,
         },
       ])
@@ -78,10 +79,7 @@ describe('FederationMessageFeedService compacted feed', () => {
       .insert(messageThread)
       .values({ type: 'P2P', curSeq: 0, updatedAt: now })
       .returning();
-    await database.db.insert(threadParticipant).values([
-      { userId: alice.id, threadId: thread.id, joinedAt: now, updatedAt: now },
-      { userId: bob.id, threadId: thread.id, joinedAt: now, updatedAt: now },
-    ]);
+    await seedAcceptedRelationship(database.db, alice.id, bob.id, thread.id);
     await database.db.insert(threadAudience).values({
       targetDomain: peerDomain,
       threadId: thread.id,
@@ -91,14 +89,19 @@ describe('FederationMessageFeedService compacted feed', () => {
     return { alice, thread };
   }
 
-  async function append(threadId: number, creator: number, seq: number) {
+  async function append(
+    threadId: number,
+    creator: { account: string; domain: string },
+    seq: number,
+  ) {
     const now = new Date();
     await database.db.insert(message).values({
       seq,
       contentType: 'PURE_TEXT',
       content: JSON.stringify({ text: `message-${seq}` }),
       threadId,
-      creator,
+      creatorAccount: creator.account,
+      creatorDomain: creator.domain,
       updatedAt: now,
     });
     await database.db
@@ -130,7 +133,7 @@ describe('FederationMessageFeedService compacted feed', () => {
 
   it('serves only a compacted thread/end index and queries seq 1 separately', async () => {
     const { alice, thread } = await seed();
-    await append(thread.id, alice.id, 1);
+    await append(thread.id, alice, 1);
 
     const feed = await service.serve(peerDomain, 0n);
     expect(feed).toMatchObject({
@@ -157,8 +160,8 @@ describe('FederationMessageFeedService compacted feed', () => {
 
   it('replaces the per-thread index while keeping feed IDs increasing', async () => {
     const { alice, thread } = await seed();
-    await append(thread.id, alice.id, 1);
-    await append(thread.id, alice.id, 2);
+    await append(thread.id, alice, 1);
+    await append(thread.id, alice, 2);
 
     const page = await service.serve(peerDomain, 0n);
     expect(page.items).toMatchObject([{ feedId: '2', messageEndSeq: '2' }]);
@@ -173,8 +176,8 @@ describe('FederationMessageFeedService compacted feed', () => {
 
   it('queries retained messages backwards with an exclusive before cursor', async () => {
     const { alice, thread } = await seed();
-    await append(thread.id, alice.id, 1);
-    await append(thread.id, alice.id, 2);
+    await append(thread.id, alice, 1);
+    await append(thread.id, alice, 2);
 
     const first = await service.query(
       peerDomain,
@@ -222,7 +225,8 @@ describe('FederationMessageFeedService compacted feed', () => {
           image: `/uploads/msg-assets/aa/aa/${digest}`,
         }),
         threadId: thread.id,
-        creator: alice.id,
+        creatorAccount: alice.account,
+        creatorDomain: alice.domain,
         updatedAt: new Date(),
       })
       .returning();
@@ -262,7 +266,7 @@ describe('FederationMessageFeedService compacted feed', () => {
 
   it('revokes history access when the current audience closes', async () => {
     const { alice, thread } = await seed();
-    await append(thread.id, alice.id, 1);
+    await append(thread.id, alice, 1);
     await database.db
       .delete(threadAudience)
       .where(eq(threadAudience.targetDomain, peerDomain));
@@ -280,7 +284,7 @@ describe('FederationMessageFeedService compacted feed', () => {
 
   it('reauthorizes the stable thread above its prior history and returns a correcting cursor', async () => {
     const { alice, thread } = await seed();
-    await append(thread.id, alice.id, 1);
+    await append(thread.id, alice, 1);
     await database.db.transaction(async (tx) => {
       await closeFederatedAudienceInTx(tx, peerDomain, thread.id);
       await openFederatedAudienceInTx(tx, peerDomain, thread.id);
@@ -297,7 +301,7 @@ describe('FederationMessageFeedService compacted feed', () => {
       data: { resumeAfter: '1', resumeBefore: '2' },
     });
 
-    await append(thread.id, alice.id, 2);
+    await append(thread.id, alice, 2);
     const page = await service.query(
       peerDomain,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },

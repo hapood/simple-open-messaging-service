@@ -24,7 +24,7 @@ export interface StickyAvatarPlacement {
 export interface StickyAvatarView {
   readonly name: string;
   readonly src: string;
-  readonly identityId?: number;
+  readonly identityId?: string;
   readonly account?: string;
   readonly domain?: string;
   readonly side: 'self' | 'other';
@@ -34,7 +34,7 @@ export interface StickyAvatarView {
 export interface StickyAvatarIdentity {
   readonly name: string;
   readonly src?: string;
-  readonly identityId?: number;
+  readonly identityId?: string;
   readonly account?: string;
   readonly domain?: string;
 }
@@ -42,7 +42,7 @@ export interface StickyAvatarIdentity {
 export interface StickyAvatarMeasuredRow extends StickyAvatarRow {
   readonly name: string;
   readonly src: string;
-  readonly identityId?: number;
+  readonly identityId?: string;
   readonly account?: string;
   readonly domain?: string;
   readonly naturalAvatar?: HTMLElement;

@@ -11,7 +11,7 @@ export interface DiagnosticsManifest {
   readonly server: string;
   readonly platform: 'android' | 'desktop' | 'web';
   readonly origin: string;
-  readonly at: string;
+  readonly at: number;
 }
 
 /** Shared native diagnostic-bundle uploader used by Settings and the live log panel. */
@@ -26,7 +26,7 @@ export class DiagnosticsReportService {
     return tauriInvoke<number>('report_diagnostics', { manifest });
   }
 
-  buildManifest(at = new Date().toISOString()): DiagnosticsManifest {
+  buildManifest(at = Date.now()): DiagnosticsManifest {
     const update = this.shellUpdate.updateStatus();
     return {
       app: appVersion,

@@ -33,14 +33,13 @@ describe('InviteService.friendRelationshipStatuses', () => {
   const getActiveP2PPeerUserIds = vi.fn();
   const database = {
     db: {
-      select: vi.fn(() => ({
-        from: vi.fn(() => ({ where: vi.fn(() => findMany()) })),
-      })),
+      execute: vi.fn(async () => ({ rows: await findMany() })),
     },
   };
   const service = new InviteService(
     database as never,
     { getActiveP2PPeerUserIds } as never,
+    {} as never,
     {} as never,
   );
 
@@ -51,10 +50,10 @@ describe('InviteService.friendRelationshipStatuses', () => {
   it('returns an authoritative state for every unique requested peer', async () => {
     getActiveP2PPeerUserIds.mockResolvedValue([2]);
     findMany.mockResolvedValue([
-      { id: 31n, fromUserId: 1, toUserId: 3 },
-      { id: 41n, fromUserId: 4, toUserId: 1 },
+      { id: 31n, peerUserId: 3, direction: 'OUTGOING' },
+      { id: 41n, peerUserId: 4, direction: 'INCOMING' },
       // A stale pending row cannot override an active friendship.
-      { id: 21n, fromUserId: 1, toUserId: 2 },
+      { id: 21n, peerUserId: 2, direction: 'OUTGOING' },
     ]);
 
     await expect(
@@ -83,6 +82,7 @@ describe('InviteService local friend client-state projection', () => {
       id: 1,
       account: 'alice',
       domain: 'local',
+      availability: 'AVAILABLE',
       isDeleted: false,
       name: 'Alice',
       avatar: '',
@@ -92,6 +92,7 @@ describe('InviteService local friend client-state projection', () => {
       id: 2,
       account: 'bob',
       domain: 'local',
+      availability: 'AVAILABLE',
       isDeleted: false,
       name: 'Bob',
       avatar: '',
@@ -124,6 +125,13 @@ describe('InviteService local friend client-state projection', () => {
       {} as never,
       {} as never,
       { writeInTx } as never,
+      {
+        readP2PRelationshipInTx: vi.fn().mockResolvedValue({
+          firstIntent: directions[0],
+          secondIntent: directions[1],
+          pair: { threadId: 7 },
+        }),
+      } as never,
     );
     const tx = {
       query: {
@@ -195,6 +203,7 @@ describe('InviteService local friend client-state projection', () => {
       id: 1,
       account: 'alice',
       domain: 'local',
+      availability: 'AVAILABLE',
       isDeleted: false,
       name: 'Alice',
       avatar: '',
@@ -204,6 +213,7 @@ describe('InviteService local friend client-state projection', () => {
       id: 2,
       account: 'bob',
       domain: 'peer.test',
+      availability: 'AVAILABLE',
       isDeleted: false,
       name: 'Bob',
       avatar: '',
@@ -214,6 +224,19 @@ describe('InviteService local friend client-state projection', () => {
       {} as never,
       {} as never,
       { writeInTx } as never,
+      {
+        readP2PRelationshipInTx: vi.fn().mockResolvedValue({
+          firstIntent: undefined,
+          secondIntent: {
+            id: 12n,
+            status: 'REQUESTED',
+            note: '',
+            requestedAt: new Date(1),
+            expiresAt: new Date(Date.now() + 60_000),
+          },
+          pair: { threadId: null },
+        }),
+      } as never,
     );
     const tx = {
       query: {

@@ -3,7 +3,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { UserService } from '../user/user.service.js';
 import { and, count, desc, eq, gt, isNull, like, or } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { sessionToken, user as userTable } from '../database/schema.js';
+import { account, sessionToken, user as userTable } from '../database/schema.js';
 import { normalizeAccount } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -32,9 +32,7 @@ export class AuthService {
     const user = await this.userService.findUniqueUserForAuth({
       account_domain: { account: normalizeAccount(account), domain: 'local' },
     });
-    if (user === null || user.isGroup) {
-      // A `!`-group-User is not a login principal: reject as invalid credentials (non-leaking — same
-      // outcome as a wrong password, and skips argon2.verify on its unusable empty hashPwd).
+    if (user === null || user.disabledAt !== null) {
       return undefined;
     }
     if (user.hashPwd === null) {
@@ -77,8 +75,8 @@ export class AuthService {
     oldPassword: string,
     newPassword: string,
   ): Promise<{ ok: true } | { ok: false; reason: 'wrong_password' }> {
-    const user = await this.database.db.query.user.findFirst({
-      where: eq(userTable.id, userId),
+    const user = await this.database.db.query.account.findFirst({
+      where: eq(account.id, userId),
       columns: { hashPwd: true },
     });
     if (
@@ -91,13 +89,13 @@ export class AuthService {
       return { ok: false, reason: 'wrong_password' };
     }
     await this.database.db
-      .update(userTable)
+      .update(account)
       .set({
         hashPwd: await this.passwordHasher.hash(newPassword),
         mustChangePassword: false,
         updatedAt: new Date(),
       })
-      .where(eq(userTable.id, userId));
+      .where(eq(account.id, userId));
     await this.invalidateAllSessions(userId, 'password_change');
     return { ok: true };
   }
@@ -117,8 +115,8 @@ export class AuthService {
     newPassword: string,
     sessionId?: number,
   ): Promise<void> {
-    const user = await this.database.db.query.user.findFirst({
-      where: eq(userTable.id, userId),
+    const user = await this.database.db.query.account.findFirst({
+      where: eq(account.id, userId),
       columns: { hashPwd: true, mustChangePassword: true },
     });
     if (!user) {
@@ -131,13 +129,13 @@ export class AuthService {
       );
     }
     await this.database.db
-      .update(userTable)
+      .update(account)
       .set({
         hashPwd: await this.passwordHasher.hash(newPassword),
         mustChangePassword: false,
         updatedAt: new Date(),
       })
-      .where(eq(userTable.id, userId));
+      .where(eq(account.id, userId));
     if (sessionId !== undefined) {
       await this.sessionTokens.bustCacheBySessionId(sessionId);
     }

@@ -5,6 +5,7 @@ import { BruteForceService } from './brute-force.service.js';
 import { BusinessCode } from '../common/business-code.js';
 import type { SessionTokenService } from './session-token.service.js';
 import type { SettingsService } from '../settings/settings.service.js';
+import { loginCode } from '../database/schema.js';
 
 // Service-unit tests exercise OTP selection, expiry, single-use and throttling semantics. Real Argon2
 // interoperability is covered by the password hasher and PostgreSQL-backed OTP E2E suites; running many
@@ -64,13 +65,33 @@ describe('OtpLoginService', () => {
           })),
         })),
         select: vi.fn(() => ({
-          from: vi.fn(() => ({
-            where: vi.fn(() => ({
-              orderBy: vi.fn(() => ({
-                limit: vi.fn(() => store.loginCode.findMany()),
-              })),
-            })),
-          })),
+          from: vi.fn((table: unknown) => {
+            const query = {
+              innerJoin: () => query,
+              where: () => query,
+              orderBy: () => query,
+              limit: async () =>
+                table === loginCode
+                  ? store.loginCode.findMany()
+                  : await store.user.findUnique().then((row) =>
+                      row
+                        ? [
+                            {
+                              availability: 'ACTIVE',
+                              disabledAt: null,
+                              mustChangePassword: false,
+                              ...row,
+                            },
+                          ]
+                        : [],
+                    ),
+              then: (
+                resolve: (value: unknown) => unknown,
+                reject: (reason: unknown) => unknown,
+              ) => store.loginCode.findMany().then(resolve, reject),
+            };
+            return query;
+          }),
         })),
         update: vi.fn(() => ({
           set: vi.fn((data: Record<string, unknown>) => ({
@@ -113,7 +134,12 @@ describe('OtpLoginService', () => {
     sessionTokens.idOfToken.mockReset();
     settings.getOtpTtlMinutes.mockReset();
     settings.getOtpTtlMinutes.mockResolvedValue(10); // 10-minute validity window
-    store.user.findUnique.mockResolvedValue({ id: 42 });
+    store.user.findUnique.mockResolvedValue({
+      id: 42,
+      availability: 'ACTIVE',
+      disabledAt: null,
+      mustChangePassword: false,
+    });
     vi.mocked(argon2.hash).mockClear();
     // Default Promise returns — the service chains .catch() on the fire-and-forget producedSessionId
     // update, so the mocks must yield Promises (vi.fn() defaults to undefined → .catch on undefined throws).

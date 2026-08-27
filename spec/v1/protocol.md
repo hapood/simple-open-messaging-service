@@ -65,8 +65,8 @@ The following table is the complete v1 surface. Its synchronization surface cont
 | Method | Absolute path                       | Authentication context | Request                   | Success     | Response                 |
 | ------ | ----------------------------------- | ---------------------- | ------------------------- | ----------- | ------------------------ |
 | `GET`  | `/.well-known/somfp`                | public TLS             | no query or body          | `200`       | bare discovery object    |
-| `POST` | `/s2s/v1/recognize`                 | bootstrap signed       | JSON signer domain        | `200`       | bare Recognize OK        |
-| `POST` | `/s2s/v1/healthy`                   | status signed          | JSON signer domain        | `200`       | bare privacy-safe status |
+| `POST` | `/s2s/v1/recognize`                 | bootstrap signed       | empty JSON object         | `200`       | bare Recognize OK        |
+| `GET`  | `/s2s/v1/health`                    | status signed          | no query or body          | `200`       | bare privacy-safe status |
 | `POST` | `/s2s/v1/feed-heads`                | lightweight signed     | JSON feed-head hint       | `200`       | success ACK envelope     |
 | `GET`  | `/s2s/v1/state-feed`                | recognized signed      | feed query                | `200`       | success data envelope    |
 | `GET`  | `/s2s/v1/group-meta`                | recognized signed      | group/meta mode query     | `200`       | success data envelope    |
@@ -82,7 +82,7 @@ The following table is the complete v1 surface. Its synchronization surface cont
 All four signed contexts use the same HTTP Message Signature profile but have different authorization boundaries:
 
 - **bootstrap signed** applies only to `recognize`. The receiver obtains the root key and a valid signing-key certificate from the signer domain's current well-known document, validates the HTTP signature and domain binding, and only then commits the directional recognition fact in one transaction. One request MUST NOT be interpreted as bidirectional recognition.
-- **status signed** applies only to `healthy`. The receiver attempts validation using only an existing pinned/recognition identity. A recognized but not-yet-converged peer MAY receive `degraded`. Unknown, unrecognized, or unauthorized requesters uniformly receive privacy-safe `unavailable`; the query MUST NOT trigger first recognition.
+- **status signed** applies only to `health`. The receiver attempts validation using only an existing pinned/recognition identity. A recognized but not-yet-converged peer MAY receive `degraded`. Unknown, unrecognized, or unauthorized requesters uniformly receive privacy-safe `unavailable`; the query MUST NOT trigger first recognition.
 - **lightweight signed** applies only to `feed-heads`. Before returning Recognize `OK` to a signer, the receiver MUST atomically open this directional gate. The signer MAY send this operation only after receiving `OK`. This context does not require full `available` state and cannot authorize another data-plane operation.
 - **recognized signed** requires a pinned root, complete bidirectional recognition facts, a currently valid signing-key certificate, and the operation's own business authorization. A receiver MUST NOT reject a request merely because its cached availability view is `degraded`. A successfully validated and processed request/response round trip MAY clear transport-only degradation as defined by recognition.md. `halted` remains a hard protocol or policy gate whose specific cause is retained outside the lifecycle. calls.md further defines safe termination of an existing active call binding.
 
@@ -90,9 +90,9 @@ A hard gate MUST preserve the specific wire result that caused `halted` and MUST
 
 [Resources](./resources.md) completely defines the path/query, response, authorization, Range, closure, and error contracts of the three resource operations. Neither this summary nor the surface table overrides its field-level requirements.
 
-A path absent from this complete surface is not part of Federation v1. [Peer Recognition](./recognition.md) defines the fields, bidirectional state, pinning, retry, and privacy rules for `recognize` and `healthy`.
+A path absent from this complete surface is not part of Federation v1. [Peer Recognition](./recognition.md) defines the fields, bidirectional state, pinning, retry, and privacy rules for `recognize` and `health`.
 
-The local peer lifecycle is the closed enum `unrecognized`, `establishing`, `available`, `degraded`, or `halted`. It is distinct from the privacy projection `available | degraded | unavailable` returned by Healthy:
+The local peer lifecycle is the closed enum `unrecognized`, `establishing`, `available`, `degraded`, or `halted`. It is distinct from the privacy projection `available | degraded | unavailable` returned by Health:
 
 - `unrecognized` means there is no usable pinned/recognition identity.
 - `establishing` means the root is pinned but bidirectional Recognize or service-readiness facts have not converged. An initiator MUST enter this state before sending its first Recognize HTTP request.
@@ -102,7 +102,7 @@ The local peer lifecycle is the closed enum `unrecognized`, `establishing`, `ava
 
 `available` and `degraded` are local availability and scheduling information and do not independently authorize an ordinary operation. An operation gate MUST be calculated from pinned identity, directional confirmation facts, version, policy, and business authorization. recognition.md defines the complete states and transitions.
 
-Before returning Recognize `OK`, a receiver MUST atomically open its directional receive gate for `feed-heads`. A server sending reverse Recognize MUST complete local service preparation before sending the HTTP request so that the peer's later Healthy query returns at least `degraded`, rather than `unavailable`. recognition.md defines the exact commit boundaries and race timing.
+Before returning Recognize `OK`, a receiver MUST atomically open its directional receive gate for `feed-heads`. A server sending reverse Recognize MUST complete local service preparation before sending the HTTP request so that the peer's later Health query returns at least `degraded`, rather than `unavailable`. recognition.md defines the exact commit boundaries and race timing.
 
 ## 4. Well-known discovery and keys
 
@@ -143,6 +143,26 @@ When an operation references a type in this table, it MUST follow the listed for
 | `Base64Ed25519Signature` | RFC 4648 padded base64 decoding to exactly 64 bytes.                                                                                                                                                                                                                                                        |
 | `KeyId`                  | `Domain "/" KeyName`, where `KeyName` matches `^[A-Za-z0-9._-]{1,64}$`; the complete string before the first `/` is the signer domain.                                                                                                                                                                      |
 | `CanonicalUuid`          | Lower-case RFC 4122 text form with version nibble `1..8` and variant nibble `8`, `9`, `a`, or `b`.                                                                                                                                                                                                          |
+| `InlineProfileAvatar`    | The closed inline profile-avatar object defined below.                                                                                                                                                                                                                                                      |
+
+```ts
+interface InlineProfileAvatar {
+  digest: Sha256Hex;
+  mimeType: string;
+  base64: string;
+  width: PositiveSafeInteger;
+  height: PositiveSafeInteger;
+}
+```
+
+`InlineProfileAvatar.base64` MUST contain 4–1,048,576 characters of strict RFC
+4648 padded Base64 without whitespace or a `data:` prefix. It MUST decode to a
+non-empty image of at most 786,432 bytes. `digest` MUST equal the SHA-256 of the
+decoded bytes, and `mimeType` MUST be a non-empty media type matching the
+decoded image. `width` and `height` MUST equal the decoded image's actual pixel
+dimensions, and `width * height` MUST NOT exceed 16,000,000. A consumer MUST
+verify the decoded bytes, digest, media type, and dimensions; declared metadata
+is not trusted allocation metadata. Unknown fields are forbidden.
 
 v1 accepts only normalized `Domain` and `Account` values on the wire. A sender MUST send both as lower-case ASCII. The RFC 6762 special-use `.local` namespace is not a globally stable server identity, so `local` and any `Domain` ending in `.local` MUST NOT appear on the SOMFP wire. An implementation may use `local` as an internal storage marker, but it MUST convert that marker to the server's real `Domain` at the federation boundary and MUST NOT expose it to a peer.
 
@@ -167,7 +187,7 @@ A consumer observing later profile or group state for the same `Address` MUST th
 
 ### 7.1 Media types and response kinds
 
-Successful `well-known`, `recognize`, and `healthy` responses are the bare JSON objects defined by their operation specifications. Every other successful JSON operation uses an envelope from this section. A JSON response MUST use `Content-Type: application/json`; HTTP `204` MUST NOT be used.
+Successful `well-known`, `recognize`, and `health` responses are the bare JSON objects defined by their operation specifications. Every other successful JSON operation uses an envelope from this section. A JSON response MUST use `Content-Type: application/json`; HTTP `204` MUST NOT be used.
 
 `media/:digest` is the only raw binary response. A complete response uses `200`, a satisfiable single Range uses `206`, and an unsatisfiable Range uses `416`. An error occurring before any bytes are sent uses the JSON error envelope and retains the error HTTP status. After successful headers or body bytes have been sent, a mid-stream read failure MUST terminate the connection and MUST NOT append JSON to the binary body.
 
@@ -200,7 +220,7 @@ In v1, `feed-heads` is an acknowledgement operation. Another operation MUST NOT 
 
 Every JSON error response MUST use the `FederationError` envelope defined by the [Federation v1 Stable Error Registry](./errors.md). That registry is the sole authority for stable codes, exact HTTP status, structured `data`, unknown fields and codes, status/code conflicts, and caller actions. An operation document MUST NOT redefine the common envelope.
 
-Healthy's fixed `unavailable` value is a successfully parsed status result, not an error envelope. The success and mid-stream failure boundary for raw media remains governed by Section 7.1.
+Health's fixed `unavailable` value is a successfully parsed status result, not an error envelope. The success and mid-stream failure boundary for raw media remains governed by Section 7.1.
 
 ### 7.4 Retry and commit boundaries
 
@@ -210,7 +230,7 @@ An accepted cursor position represents every accepted item through that position
 
 ## 8. Durable state and lifecycle
 
-`state-feed` carries home-owned `PROFILE`, one account-generic `RELATIONSHIP_INTENT`, and `GROUP_META_FEED_HEAD` hints. The group-meta feed is the sole source of group members, roles, and source-scoped member profiles. Its first read is `full`; later reads use `delta`, with `DELETE` records for departed members. User/user and user/group query authorization is directional: an effective `REQUESTED` or valid `ACCEPTED` authored by the source grants the target peer identical access to that source's relationship data. Group/group relationships are invalid.
+`state-feed` carries home-owned `PROFILE`, one account-generic `RELATIONSHIP_INTENT`, and `GROUP_META_FEED_HEAD` hints. The group-meta feed is the sole source of group members, roles, and source-scoped member profiles. Its first read is `full`; later reads use `delta`, with `DEPART` records for departed members. User/user and user/group query authorization is directional: an effective `REQUESTED` or valid `ACCEPTED` authored by the source grants the target peer identical access to that source's relationship data. Group/group relationships are invalid.
 
 [Federation v1 State Feed](./state-feed.md) defines complete pages, its three event bodies, field constraints, and merge semantics. [Group Meta Feed](./group-meta.md) defines per-peer group-member projection. [Federation v1 Message Feed](./message-feed.md) defines the compacted `thread + messageEndSeq` index and `/messages` query. [Message](./message.md) defines the ten core message contents and their media and forward bodies. [Federation v1 Message Tombstone Feed](./message-tombstone-feed.md) defines the compacted tombstone index and authoritative deletion query. Those documents and this one jointly form the v1 normative text; this summary cannot override their field-level requirements.
 
@@ -234,7 +254,7 @@ The required closure is:
 | Operation                                   | Required state-derived rule                                                                                                                                                  |
 | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `state-feed`                                | Publishes only relationship facts authored for the peer and profile/feed-head projections visible through those durable facts.                                               |
-| `group-meta`                                | Publishes only the target peer's projection derived from effective group-member relationships. It cannot add a member not justified by that origin's durable state.          |
+| `group-meta`                                | Publishes only the origin-authoritative current roster. It does not provide a historical roster or guarantee profiles for departed message authors.                          |
 | `message-feed` and `message-tombstone-feed` | Allocate or retain discovery entries only for thread audiences justified by the durable state and the operation's historical rules. An index entry grants no content access. |
 | `/messages` and `/message-tombstones`       | Recompute current relationship, group audience, and historical allocation authorization on every request; stale index state returns no authority.                            |
 | Media and forward bundles                   | Recompute the exact authorized message/thread binding independently of every feed cursor or hint.                                                                            |
@@ -244,7 +264,7 @@ feed to invent a relationship or member absent from the applicable state
 closure. Publishers MUST return `FORBIDDEN` when the current closure does not
 authorize an operation. When a peer's last effective group member leaves, the
 origin-authored `RELATIONSHIP_INTENT` becomes `REVOKED` and group-meta access
-ends; no terminal group-meta exception exists. Member `DELETE` records remain
+ends; no terminal group-meta exception exists. Member `DEPART` records remain
 available only to other peers whose origin-authored `ACCEPTED` relationship
 still authorizes group-meta access.
 
@@ -295,9 +315,9 @@ Every feed-ID window is open on the left and closed on the right. `after=A&throu
 
 Applying a page and adopting its cursor position MUST be atomic from the protocol's perspective. A repeated page MUST be idempotent. An empty page may still advance through `scannedThrough`. The source does not validate whether `after` equals the preceding page; the consumer ensures its local cursor never moves backward. Feed IDs need only strictly increase, not remain contiguous. `scannedThrough` and the next item ID MAY cross arbitrarily large deleted or unallocated gaps.
 
-Feed retention is operation-specific. State feed MUST retain every current non-deletion stable-key projection needed to rebuild from its advertised oldest boundary. Group-meta MUST retain every current `UPSERT`, but MAY prune old member `DELETE` records under capacity pressure; an affected delta cursor is explicitly unavailable and recovers through `full`. Message feed MAY prune older discovery-index projections under capacity pressure and advance its advertised lower boundary. A source MUST never disguise a pruned interval as a successful empty page. Message-feed pruning does not delete message entities; message query has its independent serviceable window. Tombstone facts remain permanent even when loss of authorization removes their current discovery-index projection.
+Feed retention is operation-specific. State feed MUST retain every current non-deletion stable-key projection needed to rebuild from its advertised oldest boundary. Group Meta MUST retain the latest `UPSERT` needed for every current roster member and enough newer mutation history to serve its advertised delta window; a completed full snapshot infers departure from absence. Message feed MAY prune older discovery-index projections under capacity pressure and advance its advertised lower boundary. A source MUST never disguise a pruned interval as a successful empty page. Message-feed pruning does not delete message entities; message query has its independent serviceable window. Tombstone facts remain permanent even when loss of authorization removes their current discovery-index projection.
 
-The closed `feed-heads` fields are `origin`, `stateFeedEndId`, `messageFeedEndId`, and `tombstoneFeedEndId`. The three ends are independent inclusive scan bounds for compacted feeds, used only for wake-up and bounded draining. They are not ACKs, business revisions, or query sequences. A publisher MUST derive every dependent data-feed item from already-written business state and its state-feed projection. This is a serial dependency, not three independent writes: if committed separately, the complete state transaction MUST commit first; if committed atomically, the data item MUST NOT be observable without the complete state closure. A hint may be lost, duplicated, or reordered and MUST NOT be the sole recovery mechanism.
+The closed `feed-heads` fields are `stateFeedEndId`, `messageFeedEndId`, and `tombstoneFeedEndId`. The authenticated signer domain identifies the feed source and is not repeated in the body. The three ends are independent inclusive scan bounds for compacted feeds, used only for wake-up and bounded draining. They are not ACKs, business revisions, or query sequences. A publisher MUST derive every dependent data-feed item from already-written business state and its state-feed projection. This is a serial dependency, not three independent writes: if committed separately, the complete state transaction MUST commit first; if committed atomically, the data item MUST NOT be observable without the complete state closure. A hint may be lost, duplicated, or reordered and MUST NOT be the sole recovery mechanism.
 
 After receiving hint `(S, M, D)`, a consumer MUST use each feed's committed local cursor and drain in this bounded order:
 
@@ -319,7 +339,7 @@ Media content carries only explicit digests, not publisher display or download U
 
 ## 10. Identity continuity and reset requirements
 
-This section defines the security baseline that Recognize and subsequent identity continuity MUST NOT cross. [Federation v1 Peer Recognition](./recognition.md) defines the `recognize` domain body, bidirectional confirmation, failure retries, privacy-safe Healthy status, and atomic transitions.
+This section defines the security baseline that Recognize and subsequent identity continuity MUST NOT cross. [Federation v1 Peer Recognition](./recognition.md) defines the empty Recognize body, bidirectional confirmation, failure retries, privacy-safe Health status, and atomic transitions.
 
 The first bidirectional Recognize separately confirms “A recognizes B” and “B recognizes A” and pins both root public keys. It does not exchange cursors or initialize business mirrors. The root identity is the long-lived continuity anchor; a signing key is only a request-signing key authorized by that root and rotatable online under Section 4. Ordinary transport degradation MUST preserve identity pins, bidirectional confirmation facts, and synchronization state. It MUST NOT automatically repeat recognition or rewrite the initial confirmation time.
 

@@ -37,6 +37,13 @@ export type FederatedResolveFailure =
   | 'UNREACHABLE'
   | 'UNKNOWN';
 
+type SendFriendInviteResponse = StandardResponse<{
+  inviteId?: string;
+  threadId?: number;
+  account?: string;
+  domain?: string;
+}>;
+
 export class FederatedResolveError extends Error {
   constructor(readonly reason: FederatedResolveFailure) {
     super(reason);
@@ -217,10 +224,9 @@ export interface ClientGroupMetaFeedPage {
     feedId: string;
     account: string;
     domain: string;
-    operation: 'UPSERT' | 'DELETE';
+    operation: 'UPSERT' | 'DEPART';
     body:
       | {
-          userId: number;
           role: 'OWNER' | 'ADMIN' | 'MEMBER';
           profileRev: number;
           displayName: string;
@@ -907,18 +913,27 @@ export class UserService {
     );
   }
 
-  /** Send a friend invite. Federated targets are delivered via S2S automatically. On auto-accept (the
-   *  target already invited me back, local-only) data carries threadId instead of inviteId. */
-  sendFriendInvite(params: {
+  /** Send a friend invite to a local account. On mutual auto-accept data carries threadId instead of
+   * inviteId. */
+  sendFriendInvite(params: { account: string; note?: string }) {
+    return this.http.post<SendFriendInviteResponse>(
+      `${apiPrefix()}/invite/friend`,
+      params,
+    );
+  }
+
+  /** Send a friend invite to an external Address through federation. */
+  sendFederatedFriendInvite(params: {
     account: string;
     domain: string;
     displayName: string;
     avatar?: string;
     note?: string;
   }) {
-    return this.http.post<
-      StandardResponse<{ inviteId?: string; threadId?: number }>
-    >(`${apiPrefix()}/invite/friend`, params);
+    return this.http.post<SendFriendInviteResponse>(
+      `${apiPrefix()}/invite/federated-friend`,
+      params,
+    );
   }
 
   /** Relationship state from synchronized local projections: an active P2P thread owns FRIEND, while
@@ -1027,7 +1042,11 @@ export class UserService {
    * Unfriend an approved P2P relationship. The established thread remains visible as read-only
    * history unless the caller explicitly requests local data deletion.
    */
-  deleteFriend(params: { userId: number; deleteData?: boolean }) {
+  deleteFriend(params: {
+    account: string;
+    domain?: string;
+    deleteData?: boolean;
+  }) {
     return this.http.post<StandardResponse>(
       `${apiPrefix()}/user/delete-friend`,
       params,

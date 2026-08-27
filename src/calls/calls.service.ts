@@ -20,7 +20,7 @@ import {
 } from '../federation/federation.service.js';
 import type {
   S2SCallFrame,
-  S2SCallOp,
+  S2SCallOperation,
   S2SAddress,
 } from '../federation/federation.service.js';
 import { QuotaService } from '../quota/quota.service.js';
@@ -32,7 +32,7 @@ import {
   type CallMediaType,
   type CallOutcome,
 } from './call-content.js';
-import type { CallSignalKind } from './federated-call-protocol.js';
+import type { CallSignalType } from './federated-call-protocol.js';
 import {
   decideCallTransition,
   decideVideoUpgrade,
@@ -54,7 +54,11 @@ const CONNECT_TIMEOUT_MS = 45_000;
 const FED_SAFETY_NET_MS = 60_000;
 const FED_CONNECT_SAFETY_NET_MS = 60_000;
 const CALL_TOMBSTONE_MAX_MS = 300_000;
-type TerminalCallOp = 'declined' | 'cancelled' | 'missed' | 'ended';
+type TerminalCallOperation = 'declined' | 'cancelled' | 'missed' | 'ended';
+type RelayedLifecycleOperation = Exclude<
+  S2SCallOperation,
+  'incoming' | 'signal'
+>;
 interface StagedCallSignal {
   id: string;
   payload: string;
@@ -76,7 +80,7 @@ interface LiveCall {
   initialCallType: CallMediaType;
   state: 'ringing' | 'accepted' | 'connected';
   /** Set synchronously before a terminal DB write so racing inbound frames cannot revive the call. */
-  terminal?: { op: TerminalCallOp; endReason: string | null };
+  terminal?: { op: TerminalCallOperation; endReason: string | null };
   /** Connect epoch-ms (set when the media leg connects — NOT on accept). Null until connected. */
   startedAt: number | null;
   /** True once the callee side has acked that it is alerting the user. Set by the LOCAL {@link ringing}
@@ -592,7 +596,7 @@ export class CallsService implements OnModuleDestroy {
         : endReason === 'timeout'
           ? 'timeout'
           : 'failed';
-    const status: CallOutcome = CallsService.endStatus(normalizedEndReason);
+    const outcome: CallOutcome = CallsService.endOutcome(normalizedEndReason);
     call.terminal = { op: 'ended', endReason: normalizedEndReason };
     this.notifyBoth(call, 'ended', { endReason: normalizedEndReason });
     await this.saveTombstone(
@@ -602,21 +606,21 @@ export class CallsService implements OnModuleDestroy {
       Math.floor(Date.now() / 1000) + 300,
     );
     this.release(call);
-    await this.persistTerminal(call, status);
+    await this.persistTerminal(call, outcome);
   }
 
   // ── signaling relay ───────────────────────────────────────────────────────────
 
   /** Relay one WebRTC frame to the peer. Authorize the sender is a participant, the target is the
    *  OTHER participant, and the call is live — then forward inline over SSE (local call) or via an S2S
-   *  `signal` frame (federated call). The payload is opaque to the server: never inspected/stored. */
+   *  `signal` frame (federated call). Signal metadata is validated; only the data string is opaque. */
   async signal(
     fromUserId: number,
     dto: {
       id: string;
       callSid: string;
       toUserId: number;
-      kind: CallSignalKind;
+      kind: CallSignalType;
       payload: string;
     },
   ): Promise<void> {
@@ -666,8 +670,8 @@ export class CallsService implements OnModuleDestroy {
             callSid: call.callSid,
             op: 'signal',
             callType: call.callType,
-            kind: dto.kind,
-            payload: dto.payload,
+            signalType: dto.kind,
+            data: dto.payload,
             signalId: dto.id,
           },
           call.peerDomain,
@@ -709,7 +713,10 @@ export class CallsService implements OnModuleDestroy {
         this.resolveTerminatingFrame(active, frame);
         return;
       }
-      if (frame.op === 'signal' && active.seenSignalIds.has(frame.payload.id)) {
+      if (
+        frame.op === 'signal' &&
+        active.seenSignalIds.has(frame.payload.signalId)
+      ) {
         return; // first accepted ID wins before comparing a retried signal body
       }
       this.assertInboundActiveBinding(active, peerDomain, frame);
@@ -798,8 +805,9 @@ export class CallsService implements OnModuleDestroy {
       (!calleeToCallerOnly || call.localRole === 'caller') &&
       (!callerToCalleeOnly || call.localRole === 'callee') &&
       (frame.op !== 'signal' ||
-        (frame.payload.kind !== 'offer' && frame.payload.kind !== 'answer') ||
-        (frame.payload.kind === 'offer'
+        (frame.payload.signalType !== 'offer' &&
+          frame.payload.signalType !== 'answer') ||
+        (frame.payload.signalType === 'offer'
           ? call.localRole === 'callee'
           : call.localRole === 'caller'));
 
@@ -987,42 +995,42 @@ export class CallsService implements OnModuleDestroy {
     });
   }
 
-  /** Inbound `signal`: relay one WebRTC frame from the peer to the local participant. No authorization
-   *  beyond the active call's existence (the S2S frame is already signature + trust bound). */
+  /** Inbound `signal`: relay one WebRTC frame from the peer to the local participant. The signal type
+   *  participates in direction and lifecycle validation; the data string remains opaque. */
   private async onInboundSignal(
     frame: Extract<S2SCallFrame, { op: 'signal' }>,
   ): Promise<void> {
     const call = this.activeCalls.get(frame.callSid);
     if (!call) return;
-    if (call.seenSignalIds.has(frame.payload.id)) return;
-    const kind = frame.payload.kind;
+    if (call.seenSignalIds.has(frame.payload.signalId)) return;
+    const signalType = frame.payload.signalType;
     const senderRole =
       call.localRole === 'callee' ? ('caller' as const) : ('callee' as const);
-    if (!isSignalAllowed(call.state, senderRole, kind)) {
+    if (!isSignalAllowed(call.state, senderRole, signalType)) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        `${kind} is not valid from ${senderRole} while ${call.state}`,
+        `${signalType} is not valid from ${senderRole} while ${call.state}`,
         HttpStatus.BAD_REQUEST,
       );
     }
     await this.quota.tick(call.peerDomain!, 'signals');
-    call.seenSignalIds.add(frame.payload.id);
+    call.seenSignalIds.add(frame.payload.signalId);
     const localUserId = this.localUserId(call);
     const peerStubId =
       call.localRole === 'caller' ? call.calleeId : call.callerId;
     this.stage(
       call,
       peerStubId,
-      frame.payload.id,
-      frame.payload.kind,
+      frame.payload.signalId,
+      frame.payload.signalType,
       frame.payload.data,
     );
     this.sse.onCallSignal(localUserId, {
       event: 'CALL_SIGNAL',
-      id: frame.payload.id,
+      id: frame.payload.signalId,
       callSid: frame.callSid,
       fromUserId: peerStubId,
-      kind: frame.payload.kind,
+      kind: frame.payload.signalType,
       payload: frame.payload.data,
     });
   }
@@ -1032,7 +1040,7 @@ export class CallsService implements OnModuleDestroy {
    *  if the active call is already gone (the local path / a prior frame resolved it) → no-op, avoiding a
    *  double bubble + double fanout. */
   private async onInboundTerminal(
-    frame: Extract<S2SCallFrame, { op: TerminalCallOp }>,
+    frame: Extract<S2SCallFrame, { op: TerminalCallOperation }>,
     signatureExpiresAtSec: number,
   ): Promise<void> {
     const call = this.activeCalls.get(frame.callSid);
@@ -1070,11 +1078,11 @@ export class CallsService implements OnModuleDestroy {
     this.emit(this.localUserId(call), frame.op, { callSid: call.callSid });
     this.release(call);
     if (call.localRole === 'caller') {
-      const status: CallOutcome =
+      const outcome: CallOutcome =
         frame.op === 'ended'
-          ? CallsService.endStatus(frame.payload.endReason)
+          ? CallsService.endOutcome(frame.payload.endReason)
           : (frame.op as CallOutcome);
-      await this.persistTerminal(call, status);
+      await this.persistTerminal(call, outcome);
     }
   }
 
@@ -1098,9 +1106,10 @@ export class CallsService implements OnModuleDestroy {
     }
     if (
       (['declined', 'cancelled', 'missed', 'ended'] as const).includes(
-        frame.op as TerminalCallOp,
+        frame.op as TerminalCallOperation,
       ) ||
-      (frame.op === 'signal' && tombstone.signalIds.includes(frame.payload.id))
+      (frame.op === 'signal' &&
+        tombstone.signalIds.includes(frame.payload.signalId))
     ) {
       return;
     }
@@ -1118,9 +1127,10 @@ export class CallsService implements OnModuleDestroy {
   private resolveTerminatingFrame(call: LiveCall, frame: S2SCallFrame): void {
     if (
       (['declined', 'cancelled', 'missed', 'ended'] as const).includes(
-        frame.op as TerminalCallOp,
+        frame.op as TerminalCallOperation,
       ) ||
-      (frame.op === 'signal' && call.seenSignalIds.has(frame.payload.id))
+      (frame.op === 'signal' &&
+        call.seenSignalIds.has(frame.payload.signalId))
     ) {
       return;
     }
@@ -1138,7 +1148,7 @@ export class CallsService implements OnModuleDestroy {
 
   private async saveTombstone(
     call: LiveCall,
-    terminalOp: TerminalCallOp,
+    terminalOp: TerminalCallOperation,
     endReason: string | null,
     signatureExpiresAtSec: number,
   ): Promise<void> {
@@ -1175,7 +1185,7 @@ export class CallsService implements OnModuleDestroy {
    *  is idempotent. `startedAt`/`durationMs` are included only when the call connected. */
   private async persistTerminal(
     call: LiveCall,
-    status: CallOutcome,
+    outcome: CallOutcome,
   ): Promise<void> {
     if (call.localRole !== 'caller') return;
     const endedAt = Date.now();
@@ -1183,7 +1193,7 @@ export class CallsService implements OnModuleDestroy {
       call.startedAt !== null
         ? {
             callType: call.callType,
-            status,
+            outcome,
             callerId: call.callerId,
             calleeId: call.calleeId,
             startedAt: call.startedAt,
@@ -1192,7 +1202,7 @@ export class CallsService implements OnModuleDestroy {
           }
         : {
             callType: call.callType,
-            status,
+            outcome,
             callerId: call.callerId,
             calleeId: call.calleeId,
             endedAt,
@@ -1214,7 +1224,7 @@ export class CallsService implements OnModuleDestroy {
       // The in-memory call is already released; a persist failure forfeits this one record (the
       // CDR-at-end trade-off). Log and swallow — never leave an unhandled rejection.
       this.logger.error(
-        `failed to persist terminal call record (callSid=${call.callSid}, status=${status}): ${(e as Error).message}`,
+        `failed to persist terminal call record (callSid=${call.callSid}, outcome=${outcome}): ${(e as Error).message}`,
       );
     }
   }
@@ -1342,7 +1352,7 @@ export class CallsService implements OnModuleDestroy {
    *  local participant. `op` doubles as the CALL_EVENT type and the S2S frame op. */
   private notifyBoth(
     call: LiveCall,
-    op: string,
+    op: RelayedLifecycleOperation,
     extra: Record<string, unknown> = {},
   ): void {
     if (call.peerDomain) {
@@ -1350,7 +1360,7 @@ export class CallsService implements OnModuleDestroy {
         callSid: call.callSid,
         ...extra,
       });
-      void this.sendFrame(call, op as S2SCallOp, extra);
+      void this.sendFrame(call, op, extra);
     } else {
       this.emit(call.callerId, op, { callSid: call.callSid, ...extra });
       this.emit(call.calleeId, op, { callSid: call.callSid, ...extra });
@@ -1361,29 +1371,36 @@ export class CallsService implements OnModuleDestroy {
    *  a failed delivery is logged and the peer's timeout remains the final cleanup backstop. */
   private sendFrame(
     call: LiveCall,
-    op: S2SCallOp,
+    op: RelayedLifecycleOperation,
     extra: Record<string, unknown>,
   ): void {
-    const endReason = extra.endReason;
+    const common = {
+      fromLocalUserId: this.localUserId(call),
+      to: this.peerAddress(call),
+      callSid: call.callSid,
+      callType: call.callType,
+    };
+    let params: Parameters<FederationService['sendCallFrame']>[0];
+    if (op === 'connected') {
+      if (typeof extra.startedAt !== 'number') {
+        throw new Error('connected call frame requires startedAt');
+      }
+      params = { ...common, op, startedAt: extra.startedAt };
+    } else if (op === 'ended') {
+      const endReason = extra.endReason;
+      if (
+        endReason !== 'completed' &&
+        endReason !== 'timeout' &&
+        endReason !== 'failed'
+      ) {
+        throw new Error('ended call frame requires a valid endReason');
+      }
+      params = { ...common, op, endReason };
+    } else {
+      params = { ...common, op };
+    }
     void this.federation
-      .sendCallFrame(
-        {
-          fromLocalUserId: this.localUserId(call),
-          to: this.peerAddress(call),
-          callSid: call.callSid,
-          op,
-          callType: call.callType,
-          ...(endReason === 'completed' ||
-          endReason === 'timeout' ||
-          endReason === 'failed'
-            ? { endReason }
-            : {}),
-          ...(typeof extra.startedAt === 'number'
-            ? { startedAt: extra.startedAt }
-            : {}),
-        },
-        call.peerDomain!,
-      )
+      .sendCallFrame(params, call.peerDomain!)
       .catch((e) => {
         if (this.convergePeerTerminal(call, e)) return;
         this.logger.warn(
@@ -1423,7 +1440,7 @@ export class CallsService implements OnModuleDestroy {
   }
 
   /** Map the advisory endReason to the persisted terminal outcome. */
-  private static endStatus(endReason?: string): CallOutcome {
+  private static endOutcome(endReason?: string): CallOutcome {
     return endReason === 'failed' || endReason === 'timeout'
       ? 'failed'
       : 'completed';
@@ -1467,12 +1484,13 @@ export class CallsService implements OnModuleDestroy {
   private async timeoutMissed(callSid: string): Promise<void> {
     const call = this.activeCalls.get(callSid);
     if (!call || call.state === 'connected') return; // gone, or connected (timer was cleared — defensive)
-    const status: CallOutcome = call.state === 'ringing' ? 'missed' : 'failed';
+    const outcome: CallOutcome =
+      call.state === 'ringing' ? 'missed' : 'failed';
     const timeout = timeoutLifecycle(call.state);
     const eventExtra =
       timeout.endReason === null ? {} : { endReason: timeout.endReason };
     if (call.peerDomain) {
-      const terminalOp: TerminalCallOp =
+      const terminalOp: TerminalCallOperation =
         timeout.operation === 'missed' && call.localRole === 'caller'
           ? 'cancelled'
           : timeout.operation;
@@ -1490,7 +1508,7 @@ export class CallsService implements OnModuleDestroy {
       );
       this.release(call);
       this.sendFrame(call, terminalOp, endReason ? { endReason } : {});
-      if (call.localRole === 'caller') await this.persistTerminal(call, status);
+      if (call.localRole === 'caller') await this.persistTerminal(call, outcome);
     } else {
       call.terminal = {
         op: timeout.operation,
@@ -1498,7 +1516,7 @@ export class CallsService implements OnModuleDestroy {
       };
       this.notifyBoth(call, timeout.operation, eventExtra);
       this.release(call);
-      await this.persistTerminal(call, status);
+      await this.persistTerminal(call, outcome);
     }
   }
 

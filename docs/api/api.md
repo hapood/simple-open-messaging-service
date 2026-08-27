@@ -144,7 +144,8 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 
 ### POST `/user/delete-friend`
 
-- **Body**: `{ userId }`. Ends the active P2P relationship and its participant rows (`20002` if not friends).
+- **Body**: `{ account, domain?, deleteData? }`. `domain` is omitted for a local account. Ends the active
+  P2P relationship while retaining its conversation history (`20002` if not friends).
 
 ### POST `/user/peer-trust-status`
 
@@ -167,7 +168,8 @@ the complete transition, pair-folding, and projection-side-effect rules.
 
 ### POST `/invite/friend` — Send friend invite
 
-- **Body**: `{ toUserId: number, note?: string(≤255) }`. Upserts the caller's directed request. A new
+- **Body**: `{ account, note?: string(≤255) }`. The route resolves the local account internally; database
+  user ids are not part of the client identity contract. It upserts the caller's directed request. A new
   request expires after seven days; an explicit resend after expiry renews the
   absolute expiry. `20001` friending self · `20004` invalid target.
 
@@ -181,6 +183,13 @@ the complete transition, pair-folding, and projection-side-effect rules.
   author's verified home-owned `PROFILE` immediately after `RELATIONSHIP_INTENT`; the receiver uses
   it to fill the address-keyed request projection before acceptance.
 - The response echoes `{ account, domain }`; no federated request id or foreign User stub is exposed.
+- This route accepts user accounts only. Group accounts use `/group/federated-join-request`.
+
+### POST `/group/federated-join-request` — Apply to a federated group
+
+- **Body**: `{ account, domain, note?, displayName, avatar? }`, where `account` starts with `!`.
+- The route publishes a member-authored group relationship request. It does not pass through a friend
+  endpoint or materialize the group as a User.
 
 ### POST `/invite/accept` · `/invite/reject` · `/invite/revoke`
 
@@ -223,7 +232,20 @@ the complete transition, pair-folding, and projection-side-effect rules.
 
 ### POST `/query-messages` — Paginated history
 
-- **Body**: `{ threadId, skip, take, lastId?, orderBy? }` — keyset cursor pagination over `(threadId, seq)`.
+- **Body**: `{ threadId, after?, before?, through?, take? }`. `after` and `before` are mutually exclusive
+  decimal-string cursors. Forward pages cover `(after, through]` in ascending order; reverse pages cover
+  `[through, before)` in descending order. `through` is an inclusive fixed boundary.
+- Omitting both direction cursors bootstraps the query with business result `30006` and
+  `{ resumeAfter, resumeBefore }`; a forward query adopts `resumeAfter`, while a reverse query adopts
+  `resumeBefore`. A successful page returns `{ messages, scannedThrough, hasMore }`.
+
+### POST `/deleted-messages/query` — Paginated tombstones
+
+- Uses the same `{ threadId, after?, before?, through?, take? }` directional cursor contract as
+  `/query-messages`, in the conversation's deletion-coordinate space.
+- Omitting both cursors returns `30006 { resumeAfter, resumeBefore }`. A successful page returns
+  `{ tombstones, scannedThrough, hasMore }`; each public tombstone contains
+  `{ id, threadId, seq, type, createdAt, updatedAt }`.
 
 ### POST `/thread/{by-user-id, mark-read, set-muted, set-pinned, clear-history, set-alias}`
 
@@ -267,12 +289,6 @@ the complete transition, pair-folding, and projection-side-effect rules.
 - `POST /group/invitation/revoke` cancels a still-live group-authored invitation.
 - These lists are backend projections written after the corresponding intent fact and relationship
   fold commit. They are not membership authority.
-
-### POST `/group/info`
-
-- `info` (`{ groupId }`): complete group profile plus authoritative membership/role facts. Conversation ADD
-  snapshots carry the same roster facts; member display metadata arrives as PROFILE/MEMBER_PROFILE state and
-  is read from the client's local database. There is no separate roster-fetch or client-triggered sync endpoint.
 
 ### POST `/group/{leave, kick, transfer, set-role, update}`
 

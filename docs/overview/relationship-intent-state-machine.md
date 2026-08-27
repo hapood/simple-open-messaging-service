@@ -60,8 +60,10 @@ REV + *   = UNCONFIRMED
 ```
 
 Runtime authorization requires two effective directions and at least one persisted `ACK`.
-`RelationshipPair.active` materializes this folded result. `ThreadParticipant` only retains thread
-linkage, settings, history visibility, and group role; its presence does not grant access.
+`RelationshipPair.active` materializes this folded result and is the fact read by
+runtime permission checks. `ThreadMember` retains roster linkage, role, and
+history visibility; `ThreadParticipant` retains local account settings. Neither
+table grants access.
 
 For a group/member pair, direction supplies the business meaning without another state machine:
 
@@ -78,7 +80,8 @@ For a group/member pair, direction supplies the business meaning without another
 
 ## Projections are side effects
 
-Relationship projections are not state machines and do not fold intent pairs. They are disposable,
+Relationship projections do not define additional state machines. The pair row is the locked,
+materialized bilateral fact used for authorization; other projections are disposable,
 query-oriented records written as side effects after an authored intent has passed the authoritative
 state machine and committed. The committed directional facts remain the sole inputs to pair folding
 and authorization.
@@ -95,7 +98,7 @@ Repeated delivery of the same committed fact has the same result as applying it 
 | Group application projection | Server        | Render member-authored join applications in group management               |
 | Group invitation projection  | Server        | Render group-authored invitations waiting for members in group management  |
 
-Every projection is non-authoritative. Losing or rebuilding one cannot change a relationship.
+Rebuilding a projection from the same directed intents cannot change the folded relationship.
 
 ## User-view request projection
 

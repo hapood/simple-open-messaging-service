@@ -8,7 +8,6 @@ import { FederationService } from './federation.service.js';
 import { FederationGroupMembershipService } from './federation-group-membership.service.js';
 import { FederationGroupRequestProjectionService } from './federation-group-request-projection.service.js';
 import { FederationGroupRelationshipService } from './federation-group-relationship.service.js';
-import { FederatedMemberProfileGcService } from './federated-member-profile-gc.service.js';
 import { FederationGroupRosterProjectionService } from './federation-group-roster-projection.service.js';
 import { FederationReconnectService } from './federation-reconnect.service.js';
 import { S2sController } from './s2s.controller.js';
@@ -46,7 +45,7 @@ import { GroupMetaFeedService } from './group-meta-feed.service.js';
  * is provided globally by DatabaseModule.
  *
  * Two S2S controllers share the `s2s/v1` prefix: S2sController (unified invite + roster + signed GETs,
- * allow-list-gated via S2sSignatureGuard) and S2sRecognitionController (bidirectional Recognize + Healthy).
+ * allow-list-gated via S2sSignatureGuard) and S2sRecognitionController (bidirectional Recognize + Health).
  */
 @Global()
 @Module({
@@ -73,7 +72,6 @@ import { GroupMetaFeedService } from './group-meta-feed.service.js';
     FederationGroupMembershipService,
     FederationGroupRequestProjectionService,
     FederationGroupRelationshipService,
-    FederatedMemberProfileGcService,
     FederationGroupRosterProjectionService,
     FederationReconnectService,
     FederationCursorService,

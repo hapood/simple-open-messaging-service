@@ -1,11 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { peerStateEventType } from '../database/schema.js';
+import {
+  messageDeleteType,
+  peerStateEventType,
+} from '../database/schema.js';
 import { FEDERATED_MESSAGE_CONTENT_TYPES } from './federation-message-feed.service.js';
 import {
-  CALL_SIGNAL_KINDS,
-  S2S_CALL_OPS,
+  CALL_SIGNAL_TYPES,
+  S2S_CALL_OPERATIONS,
 } from '../calls/federated-call-protocol.js';
 import {
   FEDERATION_API_PREFIX,
@@ -37,15 +40,24 @@ describe('Federation v1 protocol documentation', () => {
   });
 
   it('lists every message content type exactly once', () => {
-    expect(documentedUnion(readSpec('message.md'), 'CoreContentType')).toEqual(
+    expect(documentedUnion(readSpec('message.md'), 'ContentType')).toEqual(
       FEDERATED_MESSAGE_CONTENT_TYPES,
     );
   });
 
+  it('lists every message tombstone type exactly once', () => {
+    expect(
+      documentedUnion(
+        readSpec('message-tombstone-feed.md'),
+        'MessageTombstoneType',
+      ),
+    ).toEqual(messageDeleteType.enumValues);
+  });
+
   it('lists every call operation and signaling kind exactly once', () => {
     const spec = readSpec('calls.md');
-    expect(documentedUnion(spec, 'CallOp')).toEqual(S2S_CALL_OPS);
-    expect(documentedUnion(spec, 'CallSignalKind')).toEqual(CALL_SIGNAL_KINDS);
+    expect(documentedUnion(spec, 'CallOperation')).toEqual(S2S_CALL_OPERATIONS);
+    expect(documentedUnion(spec, 'CallSignalType')).toEqual(CALL_SIGNAL_TYPES);
   });
 
   it('keeps the machine-readable enums aligned with the implementation', () => {
@@ -62,13 +74,16 @@ describe('Federation v1 protocol documentation', () => {
       };
     }>('common.schema.json');
     const call = readSchema<{
-      $defs: { signalKind: { enum: string[] } };
+      $defs: { signalType: { enum: string[] } };
       oneOf: Array<{
         allOf: Array<{
-          properties?: { op: { enum?: string[]; const?: string } };
+          properties?: { operation: { enum?: string[]; const?: string } };
         }>;
       }>;
     }>('call.schema.json');
+    const tombstone = readSchema<{
+      $defs: { tombstone: { properties: { type: { enum: string[] } } } };
+    }>('message-tombstone-query.schema.json');
 
     expect(
       state.$defs.item.oneOf
@@ -78,17 +93,23 @@ describe('Federation v1 protocol documentation', () => {
     expect(common.$defs.contentType.enum).toEqual(
       FEDERATED_MESSAGE_CONTENT_TYPES,
     );
-    expect(call.$defs.signalKind.enum).toEqual(CALL_SIGNAL_KINDS);
+    expect(call.$defs.signalType.enum).toEqual(CALL_SIGNAL_TYPES);
+    expect(tombstone.$defs.tombstone.properties.type.enum).toEqual(
+      messageDeleteType.enumValues,
+    );
     expect(
       call.oneOf
         .flatMap((branch) => {
-          const op = branch.allOf.find((part) => part.properties)?.properties
-            ?.op;
-          if (!op) return [];
-          return op.enum ?? (op.const === undefined ? [] : [op.const]);
+          const operation = branch.allOf.find((part) => part.properties)
+            ?.properties?.operation;
+          if (!operation) return [];
+          return (
+            operation.enum ??
+            (operation.const === undefined ? [] : [operation.const])
+          );
         })
         .sort(),
-    ).toEqual([...S2S_CALL_OPS].sort());
+    ).toEqual([...S2S_CALL_OPERATIONS].sort());
   });
 
   it('keeps the HTTP manifest aligned with the versioned route surface', () => {
@@ -106,7 +127,7 @@ describe('Federation v1 protocol documentation', () => {
     ).toEqual([
       'GET /.well-known/somfp',
       'POST /s2s/v1/recognize',
-      'POST /s2s/v1/healthy',
+      'GET /s2s/v1/health',
       'POST /s2s/v1/feed-heads',
       'GET /s2s/v1/state-feed',
       'GET /s2s/v1/message-feed',

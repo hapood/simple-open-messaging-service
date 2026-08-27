@@ -18,30 +18,29 @@ export class FederationGroupRelationshipService {
     tx: DatabaseTransaction,
     params: {
       threadId: number;
-      groupUserId: number;
+      groupId: number;
       memberUserId: number;
-      authorUserId: number;
+      author: 'GROUP' | 'MEMBER';
       hostedLocally: boolean;
       status: RelationshipIntentStatus;
       note?: string;
       expiresAt?: Date | null;
     },
   ) {
-    const membership = await this.relationshipIntents.writeAuthoredIntentInTx(
-      tx,
-      {
-        groupUserId: params.groupUserId,
+    const membership =
+      await this.relationshipIntents.writeGroupAuthoredIntentInTx(tx, {
+        groupId: params.groupId,
         memberUserId: params.memberUserId,
-        authorUserId: params.authorUserId,
+        threadId: params.threadId,
+        author: params.author,
         status: params.status,
         note: params.note,
         expiresAt: params.expiresAt,
-      },
-    );
+      });
     const active = params.status !== 'REVOKED' && membership.shouldBeActive;
     const pairChanged = await this.syncActiveInTx(tx, {
       threadId: params.threadId,
-      groupUserId: params.groupUserId,
+      groupId: params.groupId,
       memberUserId: params.memberUserId,
       active,
       hostedLocally: params.hostedLocally,
@@ -53,24 +52,27 @@ export class FederationGroupRelationshipService {
     tx: DatabaseTransaction,
     params: {
       threadId: number;
-      groupUserId: number;
+      groupId: number;
       memberUserId: number;
       active: boolean;
       hostedLocally: boolean;
     },
   ): Promise<boolean> {
-    const pairChanged = await this.relationshipIntents.setPairActiveInTx(
+    const pairChanged = await this.relationshipIntents.setGroupPairActiveInTx(
       tx,
-      params.groupUserId,
-      params.memberUserId,
-      params.active,
-    );
-    if (params.hostedLocally)
-      await this.groupMembership.syncFromActiveInTx(tx, {
-        threadId: params.threadId,
+      {
+        groupId: params.groupId,
         memberUserId: params.memberUserId,
+        threadId: params.threadId,
         active: params.active,
-      });
+      },
+    );
+    await this.groupMembership.syncFromActiveInTx(tx, {
+      threadId: params.threadId,
+      memberUserId: params.memberUserId,
+      active: params.active,
+      hostedLocally: params.hostedLocally,
+    });
     return pairChanged;
   }
 
@@ -78,26 +80,29 @@ export class FederationGroupRelationshipService {
     tx: DatabaseTransaction,
     params: {
       threadId: number;
-      groupUserId: number;
+      groupId: number;
       memberUserId: number;
       hostedLocally: boolean;
       afterPairDeactivated: () => Promise<T>;
     },
   ): Promise<{ pairChanged: boolean; effect?: T }> {
-    const pairChanged = await this.relationshipIntents.setPairActiveInTx(
+    const pairChanged = await this.relationshipIntents.setGroupPairActiveInTx(
       tx,
-      params.groupUserId,
-      params.memberUserId,
-      false,
+      {
+        groupId: params.groupId,
+        memberUserId: params.memberUserId,
+        threadId: params.threadId,
+        active: false,
+      },
     );
     if (!pairChanged) return { pairChanged: false };
     const effect = await params.afterPairDeactivated();
-    if (params.hostedLocally)
-      await this.groupMembership.syncFromActiveInTx(tx, {
-        threadId: params.threadId,
-        memberUserId: params.memberUserId,
-        active: false,
-      });
+    await this.groupMembership.syncFromActiveInTx(tx, {
+      threadId: params.threadId,
+      memberUserId: params.memberUserId,
+      active: false,
+      hostedLocally: params.hostedLocally,
+    });
     return { pairChanged: true, effect };
   }
 }

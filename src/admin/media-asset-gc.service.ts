@@ -32,9 +32,8 @@ import {
   forwardBundleAsset,
   forwardBundleDependency,
   fileSyncProgress,
-  federatedProfile,
-  federatedMemberProfile,
   federatedMessageTombstone,
+  group,
   mediaAsset,
   message,
   messageThread,
@@ -84,8 +83,8 @@ export interface MediaGcProgress {
   scannedBytes: string;
   deletedFiles: number;
   deletedBytes: string;
-  startedAt: string;
-  finishedAt: string | null;
+  startedAt: number;
+  finishedAt: number | null;
   result?: GcResult | ReconcileResult;
   error?: string;
 }
@@ -174,7 +173,7 @@ export class MediaAssetGcService {
       scannedBytes: '0',
       deletedFiles: 0,
       deletedBytes: '0',
-      startedAt: new Date().toISOString(),
+      startedAt: Date.now(),
       finishedAt: null,
     };
     this.currentTask = task;
@@ -262,7 +261,7 @@ export class MediaAssetGcService {
         error,
       );
     } finally {
-      task.finishedAt = new Date().toISOString();
+      task.finishedAt = Date.now();
       this.gcRunning = false;
       this.emitProgress(task, true);
       this.closeProgressClientsLater(task.id);
@@ -349,7 +348,7 @@ export class MediaAssetGcService {
     batches: Array<{
       batchId: string;
       threadId: number;
-      creatorId: number;
+      creator: { account: string; domain: string };
       originSeq: number | null;
       contentType: string;
       fileCnt: number;
@@ -390,7 +389,10 @@ export class MediaAssetGcService {
       batches: batches.map((b) => ({
         batchId: b.batchId,
         threadId: b.threadId,
-        creatorId: b.creatorId,
+        creator: {
+          account: b.creatorAccount,
+          domain: b.creatorDomain,
+        },
         originSeq: b.originSeq,
         contentType: b.contentType,
         fileCnt: b.fileCnt,
@@ -415,8 +417,7 @@ export class MediaAssetGcService {
    * its message. matchedMessage is deliberately returned as a diagnostic: once projection cleanup is
    * implemented, matched rows should be removed transactionally and therefore normally stay absent. */
   async listPendingFederatedDeletions(skip: number, take: number) {
-    const creator = alias(user, 'pending_deletion_creator');
-    const groupIdentity = alias(user, 'pending_deletion_group');
+    const groupIdentity = alias(group, 'pending_deletion_group');
     const predicate = and(
       eq(message.threadId, federatedMessageTombstone.threadId),
       eq(
@@ -436,9 +437,8 @@ export class MediaAssetGcService {
           threadType: messageThread.type,
           groupAccount: groupIdentity.account,
           groupDomain: groupIdentity.domain,
-          creatorId: message.creator,
-          creatorAccount: creator.account,
-          creatorDomain: creator.domain,
+          creatorAccount: message.creatorAccount,
+          creatorDomain: message.creatorDomain,
           originSeq: federatedMessageTombstone.messageSeq,
           authorityDomain: federatedMessageTombstone.authorityDomain,
           sourceDomain: federatedMessageTombstone.sourceDomain,
@@ -456,10 +456,9 @@ export class MediaAssetGcService {
           eq(messageThread.id, federatedMessageTombstone.threadId),
         )
         .leftJoin(message, predicate)
-        .leftJoin(creator, eq(creator.id, message.creator))
         .leftJoin(
           groupIdentity,
-          eq(groupIdentity.id, messageThread.groupUserId),
+          eq(groupIdentity.id, messageThread.groupId),
         )
         .orderBy(
           desc(federatedMessageTombstone.createdAt),
@@ -480,7 +479,6 @@ export class MediaAssetGcService {
             : {}),
         },
         creator: {
-          id: row.creatorId,
           account: row.creatorAccount,
           domain: row.creatorDomain,
         },
@@ -1168,24 +1166,18 @@ export class MediaAssetGcService {
    * is gcOrphanedAssets' domain).
    */
   async gcOrphanedAvatars(): Promise<{ sweptFiles: number }> {
-    // Live `<base>` set from the two avatar columns. parseAvatarBase strips the size + path, so all 5
+    // Live `<base>` set from person and group profiles. parseAvatarBase strips the size + path, so all 5
     // sizes of one logical avatar collapse to one key.
-    // Group avatars live on the `!`-User rows now (Group table abolished), so this single User query
-    // covers both people and group avatars.
     const users = await this.database.db
       .select({ avatar: user.avatar })
       .from(user)
       .where(ne(user.avatar, ''));
-    const memberProfiles = await this.database.db
-      .select({ avatar: federatedMemberProfile.avatar })
-      .from(federatedMemberProfile)
-      .where(ne(federatedMemberProfile.avatar, ''));
-    const homeProfiles = await this.database.db
-      .select({ avatar: federatedProfile.avatar })
-      .from(federatedProfile)
-      .where(ne(federatedProfile.avatar, ''));
+    const groups = await this.database.db
+      .select({ avatar: group.avatar })
+      .from(group)
+      .where(ne(group.avatar, ''));
     const live = new Set<string>();
-    for (const r of [...users, ...memberProfiles, ...homeProfiles]) {
+    for (const r of [...users, ...groups]) {
       if (!r.avatar) continue;
       const base = parseAvatarBase(r.avatar);
       if (base) live.add(base);

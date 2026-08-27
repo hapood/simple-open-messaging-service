@@ -7,7 +7,7 @@ This document defines the persisted terminal call record in a P2P timeline. It i
 ## 1. Content schema
 
 ```ts
-type CallMediaType = 'AUDIO' | 'VIDEO';
+type MediaType = 'AUDIO' | 'VIDEO';
 
 type CallOutcome =
   | 'completed'
@@ -18,16 +18,14 @@ type CallOutcome =
   | 'unreachable';
 
 interface UnconnectedCallRecordContent {
-  callSid: CanonicalUuid;
-  callType: CallMediaType;
-  status: CallOutcome;
+  mediaType: MediaType;
+  outcome: CallOutcome;
   endedAt: EpochMilliseconds;
 }
 
 interface ConnectedCallRecordContent {
-  callSid: CanonicalUuid;
-  callType: CallMediaType;
-  status: 'completed' | 'failed';
+  mediaType: MediaType;
+  outcome: 'completed' | 'failed';
   startedAt: EpochMilliseconds;
   endedAt: EpochMilliseconds;
 }
@@ -41,7 +39,7 @@ Both branches are closed schemas. `startedAt` is conditionally required: it is r
 
 ## 2. Outcome and field matrix
 
-| `status`      | Not connected | Connected | Meaning                                                                  |
+| `outcome`     | Not connected | Connected | Meaning                                                                  |
 | ------------- | ------------- | --------- | ------------------------------------------------------------------------ |
 | `completed`   | Allowed       | Allowed   | May end normally after acceptance, either before or after media connects |
 | `failed`      | Allowed       | Allowed   | Failure before or after connection                                       |
@@ -64,9 +62,11 @@ Application times are asserted by the publisher that generates the terminal reco
 ## 3. Outer message constraints
 
 - The thread MUST be P2P and contain exactly two distinct addresses: caller and callee.
-- The outer message `author` is the caller; the other participant is the callee.
+- The P2P `authorRef` MUST identify the caller; the other participant is the
+  callee.
 - Content MUST NOT repeat the caller, callee, or any local user ID.
-- Content `callSid` MUST be the same `CanonicalUuid` as the real-time call operation.
+- The outer `clientMessageId` MUST be the same `CanonicalUuid` as the real-time
+  call's `callId`.
 - `assets` MUST be empty.
 
 Real-time call operations map to terminal records as follows:
@@ -84,13 +84,14 @@ Real-time call operations map to terminal records as follows:
     "account": "alice",
     "peerAccount": "bob"
   },
-  "author": { "account": "alice", "domain": "a.example" },
+  "authorRef": "THREAD_ACCOUNT",
   "seq": 81,
   "originSeq": null,
   "originCreatedAt": null,
   "createdAt": 1770000061000,
+  "clientMessageId": "018f0f4e-7b2a-7c3d-8e9f-0123456789ab",
   "contentType": "CALL",
-  "content": "{\"callSid\":\"018f0f4e-7b2a-7c3d-8e9f-0123456789ab\",\"callType\":\"VIDEO\",\"status\":\"completed\",\"startedAt\":1770000000000,\"endedAt\":1770000060000}",
+  "content": "{\"mediaType\":\"VIDEO\",\"outcome\":\"completed\",\"startedAt\":1770000000000,\"endedAt\":1770000060000}",
   "assets": []
 }
 ```
@@ -103,13 +104,14 @@ Real-time call operations map to terminal records as follows:
     "account": "alice",
     "peerAccount": "bob"
   },
-  "author": { "account": "alice", "domain": "a.example" },
+  "authorRef": "THREAD_ACCOUNT",
   "seq": 82,
   "originSeq": null,
   "originCreatedAt": null,
   "createdAt": 1770000100000,
+  "clientMessageId": "018f0f4e-7b2a-7c3d-8e9f-1123456789ab",
   "contentType": "CALL",
-  "content": "{\"callSid\":\"018f0f4e-7b2a-7c3d-8e9f-1123456789ab\",\"callType\":\"AUDIO\",\"status\":\"declined\",\"endedAt\":1770000099000}",
+  "content": "{\"mediaType\":\"AUDIO\",\"outcome\":\"declined\",\"endedAt\":1770000099000}",
   "assets": []
 }
 ```
@@ -119,7 +121,9 @@ Real-time call operations map to terminal records as follows:
 A consumer MUST reject at least the following cases:
 
 - CALL is in a GROUP thread.
-- `callSid`, `callType`, `status`, or `endedAt` is absent or invalid.
+- `mediaType`, `outcome`, or `endedAt` is absent or invalid.
+- Content repeats the call identifier instead of using the outer
+  `clientMessageId`.
 - `endedAt < startedAt`.
 - Content carries the derived field `durationMs`.
 - `cancelled`, `declined`, `missed`, or `unreachable` carries a connected-only field.

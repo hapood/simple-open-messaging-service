@@ -5,13 +5,9 @@ import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { desc, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
-import {
-  relationshipIntent,
-  messageAsset,
-  message,
-} from '../src/database/schema';
+import { messageAsset, message } from '../src/database/schema';
 import { LinkPreviewService } from '../src/link-preview/link-preview.service.js';
 import { registerAndLogin } from './federation-test-helpers';
 
@@ -82,25 +78,15 @@ describe('LINK message send (single instance)', () => {
     const bob = await registerAndLogin(appLike, 'bob', 'Bob');
 
     // Alice befriends Bob → both get the P2P thread.
-    await request(baseUrl)
+    const invite = await request(baseUrl)
       .post('/api/v1/invite/friend')
       .set('Authorization', `Bearer ${alice.token}`)
-      .send({ toUserId: bob.id })
-      .expect((res) => expect(res.body.code).toBe(0));
-    const [pendingInvite] = await database.db
-      .select()
-      .from(relationshipIntent)
-      .where(
-        and(
-          eq(relationshipIntent.authorUserId, alice.id),
-          eq(relationshipIntent.subjectUserId, bob.id),
-        ),
-      )
-      .limit(1);
+      .send({ account: 'bob' });
+    expect(invite.body.code).toBe(0);
     const accept = await request(baseUrl)
       .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${bob.token}`)
-      .send({ inviteId: pendingInvite.id.toString() });
+      .send({ inviteId: invite.body.data.inviteId });
     const threadId: number = accept.body.data.threadId;
 
     // Alice sends a LINK message — only the bare URL on the wire.
@@ -143,25 +129,15 @@ describe('LINK message send (single instance)', () => {
     const appLike = { baseUrl, database: database.db };
     const alice = await registerAndLogin(appLike, 'alice2', 'Alice2');
     const bob = await registerAndLogin(appLike, 'bob2', 'Bob2');
-    await request(baseUrl)
+    const invite = await request(baseUrl)
       .post('/api/v1/invite/friend')
       .set('Authorization', `Bearer ${alice.token}`)
-      .send({ toUserId: bob.id })
+      .send({ account: 'bob2' })
       .expect((res) => expect(res.body.code).toBe(0));
-    const [pendingInvite] = await database.db
-      .select()
-      .from(relationshipIntent)
-      .where(
-        and(
-          eq(relationshipIntent.authorUserId, alice.id),
-          eq(relationshipIntent.subjectUserId, bob.id),
-        ),
-      )
-      .limit(1);
     const accept = await request(baseUrl)
       .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${bob.token}`)
-      .send({ inviteId: pendingInvite.id.toString() });
+      .send({ inviteId: invite.body.data.inviteId });
     const threadId: number = accept.body.data.threadId;
 
     const send = await request(baseUrl)

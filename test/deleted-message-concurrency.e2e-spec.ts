@@ -83,7 +83,7 @@ describe('federated message deletion transaction ordering', () => {
       authorityDomain: 'peer.test',
       sourceDomain: 'peer.test',
       remoteDeletedId,
-      type: MessageDeleteType.WITHDRAW,
+      type: MessageDeleteType.USER_RETRACTION,
       cursor,
       expectedFederationVersion: 0,
     });
@@ -122,7 +122,8 @@ describe('federated message deletion transaction ordering', () => {
         .insert(message)
         .values({
           threadId,
-          creator: creatorId,
+          creatorAccount: 'bob',
+          creatorDomain: 'peer.test',
           originSeq: 7,
           federationSourceDomain: 'peer.test',
           seq,
@@ -163,7 +164,8 @@ describe('federated message deletion transaction ordering', () => {
     const stored = await database.db.query.message.findFirst({
       where: and(
         eq(message.threadId, threadId),
-        eq(message.creator, creatorId),
+        eq(message.creatorAccount, 'bob'),
+        eq(message.creatorDomain, 'peer.test'),
         eq(message.originSeq, 7),
       ),
       columns: { seq: true, isDeleted: true },
@@ -235,7 +237,8 @@ describe('federated message deletion transaction ordering', () => {
       .insert(pendingMedia)
       .values({
         threadId,
-        creatorId,
+        creatorAccount: 'bob',
+        creatorDomain: 'peer.test',
         contentType: 'IMAGE',
         content: JSON.stringify({ digest: 'a'.repeat(64) }),
         originSeq: 7,

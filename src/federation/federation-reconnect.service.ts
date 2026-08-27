@@ -17,7 +17,7 @@ const REQUEST_EXPIRY_SWEEP_MS = 60 * 60_000;
  * sweep makes availability recovery active and bounded.
  *
  * Each tick retries missing idempotent recognition facts or probes an established pinned relationship
- * with Healthy. Recovery then exchanges ephemeral feed revisions and drains state before messages.
+ * with Health. Recovery then exchanges ephemeral feed revisions and drains state before messages.
  *
  * ±jitter staggers recoveries so a fleet-wide outage doesn't hammer every peer on the same tick; the
  * inFlight guard dedupes recoveries for one domain within a sweep.

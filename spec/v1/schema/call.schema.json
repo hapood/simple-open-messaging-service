@@ -5,22 +5,24 @@
   "$defs": {
     "base": {
       "type": "object",
-      "required": ["callSid", "op", "callType"],
+      "required": ["callId", "operation", "mediaType"],
       "properties": {
-        "callSid": { "$ref": "urn:somfp:v1:common#/$defs/callSid" },
-        "op": { "type": "string" },
-        "callType": { "enum": ["AUDIO", "VIDEO"] }
+        "callId": { "$ref": "urn:somfp:v1:common#/$defs/callId" },
+        "operation": { "type": "string" },
+        "mediaType": { "enum": ["AUDIO", "VIDEO"] }
       }
     },
-    "signalKind": {
+    "signalType": {
       "enum": ["offer", "answer", "ice", "video-state"]
     },
     "signalPayload": {
       "type": "object",
-      "required": ["id", "kind", "data"],
+      "required": ["signalId", "signalType", "data"],
       "properties": {
-        "id": { "$ref": "urn:somfp:v1:common#/$defs/canonicalUuid" },
-        "kind": { "$ref": "#/$defs/signalKind" },
+        "signalId": {
+          "$ref": "urn:somfp:v1:common#/$defs/canonicalUuid"
+        },
+        "signalType": { "$ref": "#/$defs/signalType" },
         "data": { "type": "string", "minLength": 1, "maxLength": 32768 }
       },
       "additionalProperties": false
@@ -36,15 +38,15 @@
         {
           "required": ["payload"],
           "properties": {
-            "op": { "const": "incoming" },
+            "operation": { "const": "incoming" },
             "payload": {
               "type": "object",
-              "required": ["fromAccount", "toAccount"],
+              "required": ["callerAccount", "calleeAccount"],
               "properties": {
-                "fromAccount": {
+                "callerAccount": {
                   "$ref": "urn:somfp:v1:common#/$defs/account"
                 },
-                "toAccount": {
+                "calleeAccount": {
                   "$ref": "urn:somfp:v1:common#/$defs/account"
                 }
               },
@@ -60,7 +62,7 @@
         { "$ref": "#/$defs/base" },
         {
           "properties": {
-            "op": {
+            "operation": {
               "enum": ["accepted", "ringing", "declined", "cancelled", "missed"]
             }
           }
@@ -74,7 +76,7 @@
         {
           "required": ["payload"],
           "properties": {
-            "op": { "const": "signal" },
+            "operation": { "const": "signal" },
             "payload": { "$ref": "#/$defs/signalPayload" }
           }
         }
@@ -87,7 +89,7 @@
         {
           "required": ["payload"],
           "properties": {
-            "op": { "const": "connected" },
+            "operation": { "const": "connected" },
             "payload": {
               "type": "object",
               "required": ["startedAt"],
@@ -108,8 +110,8 @@
         { "$ref": "#/$defs/base" },
         {
           "properties": {
-            "op": { "const": "video-upgraded" },
-            "callType": { "const": "VIDEO" }
+            "operation": { "const": "video-upgraded" },
+            "mediaType": { "const": "VIDEO" }
           }
         }
       ],
@@ -121,7 +123,7 @@
         {
           "required": ["payload"],
           "properties": {
-            "op": { "const": "ended" },
+            "operation": { "const": "ended" },
             "payload": {
               "type": "object",
               "required": ["endReason"],

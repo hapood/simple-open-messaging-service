@@ -67,7 +67,11 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   beforeEach(async () => {
     eventSubject = new Subject();
     sessionUserId = signal<number | null>(null);
-    sessionProfile = signal<User | undefined>({ id: 1 } as User);
+    sessionProfile = signal<User | undefined>({
+      id: 1,
+      account: 'me',
+      domain: 'local',
+    } as User);
     cursorSignal = signal<number | undefined>(undefined);
 
     TestBed.configureTestingModule({
@@ -235,7 +239,10 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     threadId: number,
     seq: number,
     content = `${threadId}:${seq}`,
-    creator = threadId * 11,
+    creator: Message['creator'] = {
+      account: `u${threadId * 11}`,
+      domain: 'local',
+    },
   ): Promise<void> {
     const db = await webdb.messageDb();
     const tx = db.transaction('messages', 'readwrite');
@@ -339,12 +346,17 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   // sender are derived from the local message.
   it('load() re-derives the list preview from the newest cached local message (local-first)', async () => {
     await seedCachedThread(p2p(1, 77));
-    await seedMessage(1, 5, 'hello world', 77);
+    await seedMessage(1, 5, 'hello world', {
+      account: 'u77',
+      domain: 'local',
+    });
     repo.load();
     await flush(20);
     const items = repo.items();
     expect(items[0].lastMessagePreview).toBe('hello world');
-    expect(items[0].lastMessageSenderId).toBe(77);
+    expect(items[0].lastMessageSenderId).toBe(
+      'local\u0000local\u0000u77',
+    );
   });
 
   // ── HELLO (the network-refresh half: delta-replay + missed-summary walk) ───────────────────────
@@ -370,7 +382,10 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       catchUp: Mock;
     };
     await seedCachedThread(p2p(1, 77));
-    await seedMessage(1, 5, 'hello world', 77);
+    await seedMessage(1, 5, 'hello world', {
+      account: 'u77',
+      domain: 'local',
+    });
     missed.catchUp.mockResolvedValue({
       items: [
         {
@@ -386,7 +401,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
             seq: 5,
             contentType: 'PURE_TEXT',
             content: JSON.stringify({ text: 'hello world' }),
-            creator: 77,
+            creator: { account: 'alice', domain: 'local' },
             createdAt: 1000,
             mediaStatus: 'ready',
             sv: 5,
@@ -1165,7 +1180,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
             seq: 12,
             contentType: 'PURE_TEXT',
             content: JSON.stringify({ text: 'sent from the open thread' }),
-            creator: 1,
+            creator: { account: 'me', domain: 'local' },
             createdAt: 1000,
             mediaStatus: 'ready',
             sv: 0,
@@ -1196,7 +1211,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(repo.items()[0]).toEqual(
       expect.objectContaining({
         lastMessagePreview: 'sent from the open thread',
-        lastMessageSenderId: 1,
+        lastMessageSenderId: 'local\u0000local\u0000me',
         lastReadSeq: 12,
         unreadCount: 2,
       }),

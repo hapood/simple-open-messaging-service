@@ -77,26 +77,20 @@ export function computeRowFlags(
     // A SYSTEM row is timeline chrome, not part of a sender's message run. Treat it as a hard grouping
     // boundary so the first real message after a fresh-chat notice renders its avatar and sender name,
     // even when the system event happens to carry the same creator id.
-    const prevMsg =
-      prev?.data.type === 'msg' && prev.data.contentType !== 'SYSTEM'
-        ? prev.data
-        : null;
-    const curCtx: GroupCtx = { creator: msg.creator ?? 'system' };
+    const prevMsg = prev?.data.type === 'msg' ? prev.data : null;
+    const curCtx: GroupCtx = { creator: msg.creator };
     const prevCtx: GroupCtx | null =
       prevMsg &&
       participatesInSenderGroup(prevMsg) &&
       participatesInSenderGroup(msg)
-      ? { creator: prevMsg.creator ?? 'system' }
+      ? { creator: prevMsg.creator }
       : null;
-    const nextMsg =
-      next?.data.type === 'msg' && next.data.contentType !== 'SYSTEM'
-        ? next.data
-        : null;
+    const nextMsg = next?.data.type === 'msg' ? next.data : null;
     const nextCtx: GroupCtx | null =
       nextMsg &&
       participatesInSenderGroup(msg) &&
       participatesInSenderGroup(nextMsg)
-      ? { creator: nextMsg.creator ?? 'system' }
+      ? { creator: nextMsg.creator }
       : null;
     const groupFlags = classifyGroupFlags(prevCtx, curCtx, nextCtx);
     isShowHead = groupFlags.isShowHead;
@@ -138,10 +132,8 @@ function groupPositionFrom(
 ): 'single' | 'head' | 'body' | 'tail' {
   const nextIsSameSender =
     item.data.type === 'msg' &&
-    item.data.contentType !== 'SYSTEM' &&
     participatesInSenderGroup(item.data) &&
     next?.data.type === 'msg' &&
-    next.data.contentType !== 'SYSTEM' &&
     participatesInSenderGroup(next.data) &&
     next.data.creator === item.data.creator;
   return isShowHead
@@ -190,12 +182,12 @@ export function createMsgCbElement(
   ) => void,
   onOpenForward?: (bundleId: string) => void,
   onQuoteJump?: (seq: number) => void,
-  onOpenMemberProfile?: (userId: number, anchor: DOMRect) => void,
+  onOpenMemberProfile?: (identityKey: string, anchor: DOMRect) => void,
 ): CbElement<ChatItemData> {
   const data = item.data as ChatMsgData; // source returns only messages; date is derived at the render layer
 
   const comp: Type<RowComponent> =
-    data.contentType === 'SYSTEM'
+    data.type === 'system'
       ? SystemRowComponent
       : data.contentType === 'IMAGE' ||
           data.contentType === 'VIDEO' ||
@@ -371,7 +363,7 @@ export function createMsgCbElement(
         '.msg-avatar:not(.msg-avatar-tail)',
       );
       const current = interactionItem.data as ChatMsgData;
-      if (!avatar || current.creator === null) return;
+      if (!avatar || current.type !== 'msg') return;
       event.preventDefault();
       event.stopPropagation();
       onOpenMemberProfile(current.creator, avatar.getBoundingClientRect());

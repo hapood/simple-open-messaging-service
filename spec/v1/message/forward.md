@@ -28,7 +28,7 @@ This is a closed schema with no optional fields.
     "account": "alice",
     "peerAccount": "bob"
   },
-  "author": { "account": "alice", "domain": "a.example" },
+  "authorRef": "THREAD_ACCOUNT",
   "seq": 91,
   "originSeq": null,
   "originCreatedAt": null,

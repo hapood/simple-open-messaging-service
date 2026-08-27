@@ -17,7 +17,11 @@ import {
   ConversationLoadStatus,
 } from '../../services/conversation-list.service';
 import { UserService } from '../../services/user.service';
-import { ConversationItem, displayThreadName } from '../../services/model';
+import {
+  ConversationItem,
+  displayThreadName,
+  messageCreatorKey,
+} from '../../services/model';
 import {
   UserAvatarComponent,
   UserAvatarType,
@@ -179,7 +183,12 @@ export class ThreadListComponent implements OnInit {
       this.transloco.translate('common.noMessagesYet') ??
       '';
     if (t.lastMessageSenderId == null) return base;
-    if (t.lastMessageSenderId === this.userService.sessionProfile()?.id)
+    const self = this.userService.sessionProfile();
+    if (
+      self &&
+      t.lastMessageSenderId ===
+        messageCreatorKey({ account: self.account, domain: 'local' }, 'local')
+    )
       return this.transloco.translate('chat.youPrefix', { text: base }) ?? '';
     return base;
   }

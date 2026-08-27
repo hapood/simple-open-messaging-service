@@ -14,6 +14,7 @@ import { displayUserName } from '../../services/model';
 import { User, UserService } from '../../services/user.service';
 import { RouteService } from '../../services/route.service';
 import { AvatarRepository } from '../../services/avatar-cache.service';
+import { GroupService } from '../../services/group.service';
 import { DialogActionFooterComponent } from '../dialog-action-footer/dialog-action-footer.component';
 import {
   UserAvatarComponent,
@@ -37,12 +38,14 @@ export class FriendInviteDialogComponent {
   private readonly transloco = inject(TranslocoService);
   private readonly route = inject(RouteService);
   private readonly avatarRepo = inject(AvatarRepository);
+  private readonly groupService = inject(GroupService);
 
   readonly user = input.required<User>();
   /** Direct popup mode; embedded uses continue to delegate completion to their parent. */
   readonly standalone = input(false);
   readonly completed = output<{
-    userId: number;
+    account: string;
+    domain: string;
     status: 'OUTGOING_PENDING' | 'FRIEND';
   }>();
   readonly cancelled = output<void>();
@@ -53,9 +56,7 @@ export class FriendInviteDialogComponent {
   readonly displayUserName = displayUserName;
   readonly avatarIdentity = computed(() => {
     const user = this.user();
-    return user.id > 0
-      ? user.id
-      : `${user.domain ?? 'local'}\u0000${user.account}`;
+    return `${user.domain ?? 'local'}\u0000${user.account}`;
   });
 
   cancel(): void {
@@ -72,18 +73,30 @@ export class FriendInviteDialogComponent {
     const avatar = user.avatar
       ? await this.avatarRepo.getCachedDataUrl(avatarIdentity, user.avatar)
       : undefined;
-    const request = this.userService.sendFriendInvite({
-      account: user.account,
-      domain: user.domain || 'local',
-      displayName: user.name,
-      avatar,
-      note: this.note().trim().slice(0, 255),
-    });
+    const note = this.note().trim().slice(0, 255);
+    const request = user.isGroup
+      ? this.groupService.requestFederatedJoin({
+          account: user.account,
+          domain: user.domain,
+          displayName: user.name,
+          avatar,
+          note,
+        })
+      : (user.domain || 'local') === 'local'
+        ? this.userService.sendFriendInvite({ account: user.account, note })
+        : this.userService.sendFederatedFriendInvite({
+            account: user.account,
+            domain: user.domain,
+            displayName: user.name,
+            avatar,
+            note,
+          });
     request.subscribe({
       next: (res) => {
         if (res.code === 0) {
           const result = {
-            userId: this.user().id,
+            account: this.user().account,
+            domain: this.user().domain || 'local',
             status:
               res.data?.threadId ||
               res.messageKey === 'friend.msg.alreadyFriends'

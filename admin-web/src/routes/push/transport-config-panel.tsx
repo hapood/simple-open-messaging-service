@@ -190,7 +190,7 @@ function KeyRow({
         )}
         {item.createdAt && (
           <span>
-            Created: <Timestamp value={Date.parse(item.createdAt)} />
+            Created: <Timestamp value={item.createdAt} />
           </span>
         )}
         {item.reason && <span>{item.reason}</span>}

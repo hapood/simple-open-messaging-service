@@ -11,51 +11,16 @@ import {
   ValidateIf,
 } from 'class-validator';
 
-/** Send a friend or group request by stable Address. Local identities use domain `local`; foreign
- * identities use their home domain. The display snapshot never establishes identity. */
+/** Send a friend request to a local identity by its public account name. Database ids are not part of
+ * the client-facing identity contract. */
 export class SendFriendInviteDto {
   @ApiProperty({
-    required: false,
-    description: 'Legacy local/existing-stub target id',
-  })
-  @ValidateIf((value: SendFriendInviteDto) => !value.account)
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  toUserId?: number;
-
-  @ApiProperty({
     example: 'alice',
-    description: 'Target account',
+    description: 'Local target account',
   })
-  @ValidateIf((value: SendFriendInviteDto) => value.toUserId === undefined)
   @IsString()
   @IsNotEmpty()
   account!: string;
-
-  @ApiProperty({ example: 'local', description: 'Target home domain' })
-  @ValidateIf((value: SendFriendInviteDto) => value.toUserId === undefined)
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(63)
-  domain!: string;
-
-  @ApiProperty({ description: 'Pending-card display-name snapshot.' })
-  @ValidateIf((value: SendFriendInviteDto) => value.toUserId === undefined)
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(30)
-  displayName!: string;
-
-  @ApiProperty({
-    required: false,
-    description: 'Pending-card avatar Base64 data URL.',
-  })
-  @IsOptional()
-  @IsString()
-  @IsDataURI()
-  @MaxLength(1_500_000)
-  avatar?: string;
 
   @ApiProperty({
     required: false,
@@ -68,13 +33,12 @@ export class SendFriendInviteDto {
   note?: string;
 }
 
-/** Backward-compatible federated route DTO. Address is the routing identity; displayName/avatar are an
- * untrusted card snapshot and never establish identity or relationship. */
+/** Send a friend request to a federated identity. Address is the routing identity; displayName/avatar
+ * are an untrusted card snapshot and never establish identity or relationship. */
 export class SendFederatedFriendInviteDto extends SendFriendInviteDto {
   @ApiProperty({
     example: 'alice',
-    description:
-      'Federated target account. Used with domain instead of toUserId.',
+    description: 'Federated target account',
   })
   @IsString()
   @IsNotEmpty()
@@ -82,8 +46,7 @@ export class SendFederatedFriendInviteDto extends SendFriendInviteDto {
 
   @ApiProperty({
     example: 'peer.example',
-    description:
-      'Federated target home domain. Used with account instead of toUserId.',
+    description: 'Federated target home domain',
   })
   @IsString()
   @IsNotEmpty()

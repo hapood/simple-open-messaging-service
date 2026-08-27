@@ -16,8 +16,10 @@ import {
   group,
   groupRequestProjection,
   relationshipIntent,
+  relationshipPair,
   messageThread,
   threadAudience,
+  threadMember,
   threadParticipant,
   user,
 } from '../database/schema.js';
@@ -54,14 +56,13 @@ function outranks(operator: GroupRole, target: GroupRole | null): boolean {
  * Group lifecycle: creation, invite-token mint/verify, joining, and the membership/role mutations
  * (leave/kick/transfer/set-role/update).
  *
- * A group IS a `!`-sigil User row (account="!"+ULID, isGroup=true) carrying name/avatar/bio; the Group
- * table is abolished. The group↔thread link is MessageThread.groupUserId, and
- * the owner is derived from ThreadParticipant.role=OWNER (no ownerId column). All group-management
+ * Group identity is stored independently from User and linked by MessageThread.groupId. The owner is
+ * derived from the active ThreadMember with role=OWNER. All group-management
  * operations now key on threadId (the stable handle, also used for messaging); the wire still calls it
  * `groupId` for frontend compatibility, but the value IS the threadId.
  *
- * Membership is stored on ThreadParticipant (single source of truth). createNewGroup/joinGroup write
- * ThreadParticipant rows (OWNER for the creator, MEMBER for joiners). Authorization is split:
+ * Roster membership is stored on ThreadMember; ThreadParticipant contains only local per-user state.
+ * Authorization is split:
  * ThreadAccessGuard + RolesGuard decide the OPERATOR's membership and role (throwing BusinessException →
  * HTTP 200 + domain code); the methods below validate TARGET-specific invariants and mutate.
  */
@@ -79,6 +80,45 @@ export class GroupService {
       'dispatch' | 'dispatchToUsers'
     >,
   ) {}
+
+  /** Resolve one active roster member by its exact wire-level address. */
+  async resolveActiveMember(
+    threadId: number,
+    identity: { account: string; domain: string },
+  ): Promise<{
+    userId: number;
+    account: string;
+    domain: string;
+    name: string;
+  }> {
+    const [member] = await this.database.db
+      .select({
+        userId: user.id,
+        account: user.account,
+        domain: user.domain,
+        name: user.name,
+      })
+      .from(threadMember)
+      .innerJoin(user, eq(user.id, threadMember.userId))
+      .innerJoin(messageThread, eq(messageThread.id, threadMember.threadId))
+      .innerJoin(group, eq(group.id, messageThread.groupId))
+      .where(
+        and(
+          eq(threadMember.threadId, threadId),
+          eq(threadMember.left, false),
+          eq(user.account, identity.account),
+          eq(user.domain, identity.domain),
+          eq(user.sourceDomain, group.domain),
+        ),
+      )
+      .limit(1);
+    if (!member)
+      throw new BusinessException(
+        BusinessCode.GROUP_TARGET_NOT_MEMBER,
+        'target is not an active group member',
+      );
+    return member;
+  }
 
   /**
    * Build the invitation picker from server state. The client cannot infer this page from its cached
@@ -112,16 +152,16 @@ export class GroupService {
           ELSE 'AVAILABLE'
         END AS state
       FROM "User" friend
-      LEFT JOIN "ThreadParticipant" member
+      LEFT JOIN "ThreadMember" member
         ON member."threadId" = ${threadId} AND member."userId" = friend.id
+       AND member.left = false
       LEFT JOIN "GroupRequestProjection" invitation
         ON invitation."managerUserId" = ${managerUserId}
        AND invitation."threadId" = ${threadId}
        AND invitation."memberUserId" = friend.id
        AND invitation.direction = 'INVITATION'
       WHERE friend.id <> ${managerUserId}
-        AND friend."isGroup" = false
-        AND friend."isDeleted" = false
+        AND friend.availability = 'AVAILABLE'
         AND ${mutuallyAuthorizedSql(managerUserId, sql`friend.id`)}
         ${afterUserId === undefined ? sql.empty() : sql`AND friend.id > ${afterUserId}`}
         ${normalizedSearch === '' ? sql.empty() : sql`AND (friend.name ILIKE ${pattern} ESCAPE '\\' OR friend.account ILIKE ${pattern} ESCAPE '\\' OR (friend.account || '@' || COALESCE(NULLIF(friend.domain, ''), 'local')) ILIKE ${pattern} ESCAPE '\\')`}
@@ -208,14 +248,8 @@ export class GroupService {
     return {
       data: page.map((row) => ({
         ...row,
-        requestedAt:
-          row.requestedAt === null
-            ? null
-            : new Date(Number(row.requestedAt)).toISOString(),
-        expiresAt:
-          row.expiresAt === null
-            ? null
-            : new Date(Number(row.expiresAt)).toISOString(),
+        requestedAt: row.requestedAt === null ? null : Number(row.requestedAt),
+        expiresAt: row.expiresAt === null ? null : Number(row.expiresAt),
       })),
       hasMore: rows.rows.length > take,
       before: page.at(-1)?.feedId ?? null,
@@ -235,9 +269,10 @@ export class GroupService {
         SELECT projection."managerUserId", projection."threadId",
           MAX(projection."feedId")::integer AS "latestFeedId"
         FROM "GroupRequestProjection" projection
-        LEFT JOIN "ThreadParticipant" manager
+        LEFT JOIN "ThreadMember" manager
           ON manager."userId" = projection."managerUserId"
          AND manager."threadId" = projection."threadId"
+         AND manager.left = false
          AND manager.role IN ('OWNER', 'ADMIN')
         WHERE projection."expiresAt" <= CURRENT_TIMESTAMP
            OR manager."userId" IS NULL
@@ -252,9 +287,10 @@ export class GroupService {
               eq(groupRequestProjection.managerUserId, candidate.managerUserId),
               eq(groupRequestProjection.threadId, candidate.threadId),
               sql`(${groupRequestProjection.expiresAt} <= CURRENT_TIMESTAMP OR NOT EXISTS (
-                SELECT 1 FROM "ThreadParticipant" manager
+                SELECT 1 FROM "ThreadMember" manager
                 WHERE manager."userId" = ${candidate.managerUserId}
                   AND manager."threadId" = ${candidate.threadId}
+                  AND manager.left = false
                   AND manager.role IN ('OWNER', 'ADMIN')
               ))`,
             ),
@@ -321,17 +357,20 @@ export class GroupService {
           note: string;
         }>(
           sql`
-        SELECT intent."authorUserId" AS "memberUserId", intent.note
+        SELECT member.id AS "memberUserId", intent.note
         FROM "RelationshipIntent" intent
-        JOIN "MessageThread" thread
-          ON thread."groupUserId" = intent."subjectUserId"
+        JOIN "RelationshipPair" pair ON pair.id = intent."pairId"
+        JOIN "User" member
+          ON member.account = pair."endpointBAccount"
+         AND member.domain = pair."endpointBDomain"
+         AND member."sourceDomain" = pair."endpointBDomain"
         LEFT JOIN "RelationshipIntent" prior
-          ON prior."authorUserId" = intent."subjectUserId"
-         AND prior."subjectUserId" = intent."authorUserId"
-        WHERE thread.id = ${threadId} AND intent.id = ${requestId}
+          ON prior."pairId" = pair.id AND prior."authorSide" = 'A'
+        WHERE pair."threadId" = ${threadId} AND intent.id = ${requestId}
+          AND pair.kind = 'GROUP_MEMBER' AND intent."authorSide" = 'B'
           AND intent.status = 'REQUESTED'
           AND intent."expiresAt" > CURRENT_TIMESTAMP
-          AND (prior."authorUserId" IS NULL OR prior.status = 'REQUESTED'
+          AND (prior.id IS NULL OR prior.status = 'REQUESTED'
             OR (prior.status = 'REVOKED' AND prior."updatedAt" < intent."requestedAt"))
         FOR UPDATE OF intent
       `,
@@ -363,11 +402,15 @@ export class GroupService {
       const [request] = await tx
         .execute<{ memberUserId: number }>(
           sql`
-          SELECT intent."subjectUserId" AS "memberUserId"
+          SELECT member.id AS "memberUserId"
           FROM "RelationshipIntent" intent
-          JOIN "MessageThread" thread
-            ON thread."groupUserId" = intent."authorUserId"
-          WHERE thread.id = ${threadId} AND intent.id = ${requestId}
+          JOIN "RelationshipPair" pair ON pair.id = intent."pairId"
+          JOIN "User" member
+            ON member.account = pair."endpointBAccount"
+           AND member.domain = pair."endpointBDomain"
+           AND member."sourceDomain" = pair."endpointBDomain"
+          WHERE pair."threadId" = ${threadId} AND intent.id = ${requestId}
+            AND pair.kind = 'GROUP_MEMBER' AND intent."authorSide" = 'A'
             AND intent.status = 'REQUESTED'
             AND intent."expiresAt" > CURRENT_TIMESTAMP
           FOR UPDATE OF intent
@@ -401,9 +444,9 @@ export class GroupService {
     let pending: { userId: number; feedId: number } | undefined;
     await this.database.db.transaction(async (tx) => {
       const [identity] = await tx
-        .select({ account: user.account })
+        .select({ account: group.account })
         .from(messageThread)
-        .innerJoin(user, eq(user.id, messageThread.groupUserId))
+        .innerJoin(group, eq(group.id, messageThread.groupId))
         .where(eq(messageThread.id, threadId))
         .limit(1);
       if (!identity)
@@ -435,21 +478,37 @@ export class GroupService {
     if (pending) this.clientStateFeed.notifyFeedUpdated(pending);
   }
 
-  /** Load a GROUP thread + its `!`-User (name/avatar/bio) by threadId. Returns null if missing. The read
-   *  path replacing the old queryGroups/findUniqeGroup (which hit the Group table). */
-  findGroupByThreadId(threadId: number) {
-    return this.database.db.query.messageThread
-      .findFirst({
-        where: eq(messageThread.id, threadId),
-        with: { user: { with: { group: true } } },
-      })
-      .then((row) => (row ? { ...row, groupUser: row.user } : null));
+  /** Load a group thread with its independent profile. */
+  async findGroupByThreadId(threadId: number) {
+    const [row] = await this.database.db
+      .select({ thread: messageThread, group })
+      .from(messageThread)
+      .innerJoin(group, eq(group.id, messageThread.groupId))
+      .where(eq(messageThread.id, threadId))
+      .limit(1);
+    if (!row) return null;
+    const [owner] = await this.database.db
+      .select({ userId: threadMember.userId })
+      .from(threadMember)
+      .where(
+        and(
+          eq(threadMember.threadId, threadId),
+          eq(threadMember.role, GroupRole.OWNER),
+          eq(threadMember.left, false),
+        ),
+      )
+      .limit(1);
+    return {
+      ...row.thread,
+      group: {
+        ...row.group,
+        ownerId: owner?.userId ?? 0,
+      },
+    };
   }
 
-  /** Batch-load the `!`-User (name/avatar/bio) for each of the given GROUP threads, keyed by threadId.
-   *  Replaces the old queryGroups hydration that hit the Group table. Threads with no groupUser (P2P,
-   *  or malformed) are omitted. Returns Map<threadId, {id,name,avatar,bio}>. */
-  async resolveGroupUsersByThreadIds(threadIds: number[]): Promise<
+  /** Batch-load independent group profiles by thread id. */
+  async resolveGroupsByThreadIds(threadIds: number[]): Promise<
     Map<
       number,
       {
@@ -460,43 +519,30 @@ export class GroupService {
         bio: string;
         domain: string;
         profileRev: number;
-        group: {
-          ownerId: number;
-          dissolvedAt: Date | null;
-          createdAt: Date;
-          updatedAt: Date;
-        } | null;
+        ownerId: number;
+        dissolvedAt: Date | null;
       }
     >
   > {
     if (threadIds.length === 0) return new Map();
-    const threads = await this.database.db.query.messageThread.findMany({
-      where: inArray(messageThread.id, threadIds),
-      columns: { id: true },
-      with: {
-        user: {
-          columns: {
-            id: true,
-            account: true,
-            name: true,
-            avatar: true,
-            bio: true,
-            domain: true,
-            profileRev: true,
-          },
-          with: {
-            group: {
-              columns: {
-                ownerId: true,
-                dissolvedAt: true,
-                createdAt: true,
-                updatedAt: true,
-              },
-            },
-          },
-        },
-      },
-    });
+    const threads = await this.database.db
+      .select({ threadId: messageThread.id, group })
+      .from(messageThread)
+      .innerJoin(group, eq(group.id, messageThread.groupId))
+      .where(inArray(messageThread.id, threadIds));
+    const owners = await this.database.db
+      .select({ threadId: threadMember.threadId, userId: threadMember.userId })
+      .from(threadMember)
+      .where(
+        and(
+          inArray(threadMember.threadId, threadIds),
+          eq(threadMember.role, GroupRole.OWNER),
+          eq(threadMember.left, false),
+        ),
+      );
+    const ownerByThread = new Map(
+      owners.map((row) => [row.threadId, row.userId]),
+    );
     const m = new Map<
       number,
       {
@@ -507,23 +553,28 @@ export class GroupService {
         bio: string;
         domain: string;
         profileRev: number;
-        group: {
-          ownerId: number;
-          dissolvedAt: Date | null;
-          createdAt: Date;
-          updatedAt: Date;
-        } | null;
+        ownerId: number;
+        dissolvedAt: Date | null;
       }
     >();
-    for (const t of threads) {
-      if (t.user) m.set(t.id, t.user);
-    }
+    for (const row of threads)
+      m.set(row.threadId, {
+        id: row.group.id,
+        account: row.group.account,
+        name: row.group.name,
+        avatar: row.group.avatar,
+        bio: row.group.description,
+        domain: row.group.domain,
+        profileRev: row.group.profileRev,
+        ownerId: ownerByThread.get(row.threadId) ?? 0,
+        dissolvedAt: row.group.dissolvedAt,
+      });
     return m;
   }
 
   /**
    * Create a group: mint the `!`-User identity (name/avatar/bio) + the GROUP thread linked via
-   * groupUserId + the owner as an OWNER participant. No other members are created here; invitations
+   * Group.id + the owner as an OWNER ThreadMember. No other members are created here; invitations
    * are represented by membership state. Wrapped in a
    * regenerate-on-P2002 loop: a same-ms ULID collision at the
    * account-domain unique index is probabilistically impossible, but the loop is a real safety net.
@@ -538,16 +589,14 @@ export class GroupService {
       const account = mintGroupAccount();
       try {
         const result = await this.database.db.transaction(async (tx) => {
-          const groupUser = await tx
-            .insert(user)
+          const groupState = await tx
+            .insert(group)
             .values({
               account,
               domain: 'local',
-              isGroup: true,
-              hashPwd: '', // empty — !-group-users never log in (validateUser rejects isGroup before verify)
               name: params.name,
               avatar: params.avatar ?? '',
-              bio: params.description ?? '',
+              description: params.description ?? '',
               updatedAt: new Date(),
             })
             .returning()
@@ -556,27 +605,30 @@ export class GroupService {
             .insert(messageThread)
             .values({
               type: MessageThreadType.GROUP,
-              groupUserId: groupUser.id,
+              groupId: groupState.id,
               updatedAt: new Date(),
             })
             .returning()
             .then(([row]) => row);
+          const [ownerMember] = await tx
+            .insert(threadMember)
+            .values({
+              userId: params.owner,
+              threadId: thread.id,
+              role: GroupRole.OWNER,
+              updatedAt: new Date(),
+            })
+            .returning({ id: threadMember.id });
+          if (!ownerMember) throw new Error('group owner member insert failed');
           await tx.insert(threadParticipant).values({
-            userId: params.owner,
+            accountId: params.owner,
             threadId: thread.id,
             role: GroupRole.OWNER,
-            updatedAt: new Date(),
           });
           await tx.insert(threadAudience).values({
             targetDomain: 'local',
             localUserId: params.owner,
             threadId: thread.id,
-          });
-          // Group lifecycle state. Identity/profile fields live on groupUserId.
-          await tx.insert(group).values({
-            groupUserId: groupUser.id,
-            ownerId: params.owner,
-            updatedAt: new Date(),
           });
           const clientFeedUpdates: Array<{
             userId: number;
@@ -609,11 +661,11 @@ export class GroupService {
             ...(await this.clientStateFeed.recordGroupStateInTx(tx, thread.id)),
           );
           return {
-            id: groupUser.id,
+            id: groupState.id,
             threadId: thread.id,
-            name: groupUser.name,
-            avatar: groupUser.avatar,
-            bio: groupUser.bio,
+            name: groupState.name,
+            avatar: groupState.avatar,
+            bio: groupState.description,
             clientFeedUpdates,
           };
         });
@@ -647,21 +699,27 @@ export class GroupService {
       const shouldDelete = params.deleteData;
       const [thread] = await tx
         .select({
-          groupUserId: messageThread.groupUserId,
-          groupDomain: user.domain,
+          groupId: messageThread.groupId,
+          groupDomain: group.domain,
         })
         .from(messageThread)
-        .innerJoin(user, eq(user.id, messageThread.groupUserId))
+        .innerJoin(group, eq(group.id, messageThread.groupId))
         .where(eq(messageThread.id, params.threadId))
         .for('update')
         .limit(1);
-      if (!thread?.groupUserId)
+      if (!thread?.groupId)
         throw new BusinessException(BusinessCode.NOT_FOUND, 'group not found');
       const outgoing = await tx.execute<{ status: string }>(sql`
-        SELECT status
-        FROM "RelationshipIntent"
-        WHERE "authorUserId" = ${params.userId}
-          AND "subjectUserId" = ${thread.groupUserId}
+        SELECT intent.status
+        FROM "RelationshipPair" pair
+        JOIN "User" identity ON identity.id = ${params.userId}
+        LEFT JOIN "RelationshipIntent" intent
+          ON intent."pairId" = pair.id AND intent."authorSide" = 'B'
+        WHERE pair."threadId" = ${params.threadId}
+          AND pair.kind = 'GROUP_MEMBER'
+          AND pair."endpointBType" = 'USER'
+          AND pair."endpointBAccount" = identity.account
+          AND pair."endpointBDomain" = identity.domain
       `);
       if (params.role === null && outgoing.rows.length === 0)
         throw new BusinessException(BusinessCode.NOT_FOUND, 'member not found');
@@ -704,7 +762,7 @@ export class GroupService {
           })
           .where(
             and(
-              eq(threadParticipant.userId, params.userId),
+              eq(threadParticipant.accountId, params.userId),
               eq(threadParticipant.threadId, params.threadId),
             ),
           );
@@ -728,25 +786,16 @@ export class GroupService {
           })
           .where(
             and(
-              eq(threadParticipant.userId, params.userId),
+              eq(threadParticipant.accountId, params.userId),
               eq(threadParticipant.threadId, params.threadId),
             ),
           );
       }
       if (transitioned) {
-        const [thread] = await tx
-          .select({ groupUserId: messageThread.groupUserId })
-          .from(messageThread)
-          .where(eq(messageThread.id, params.threadId))
-          .limit(1);
-        if (thread?.groupUserId != null) {
-          await tx
-            .update(group)
-            .set({
-              updatedAt: now,
-            })
-            .where(eq(group.groupUserId, thread.groupUserId));
-        }
+        await tx
+          .update(group)
+          .set({ updatedAt: now })
+          .where(eq(group.id, thread.groupId));
       }
       const requestState = transitioned
         ? await this.federation.writeMemberRelationshipIntentInTx(
@@ -781,9 +830,14 @@ export class GroupService {
           )
         : new Map<string, bigint>();
       const remaining = await tx
-        .select({ userId: threadParticipant.userId })
-        .from(threadParticipant)
-        .where(eq(threadParticipant.threadId, params.threadId));
+        .select({ userId: threadMember.userId })
+        .from(threadMember)
+        .where(
+          and(
+            eq(threadMember.threadId, params.threadId),
+            eq(threadMember.left, false),
+          ),
+        );
       const remainingAuthorization = await Promise.all(
         remaining.map((row) =>
           isThreadMutuallyAuthorized(tx, row.userId, params.threadId),
@@ -828,44 +882,60 @@ export class GroupService {
       const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
       const shouldDelete = params.deleteForUserId !== undefined;
       const [thread] = await tx
-        .select({ groupUserId: messageThread.groupUserId })
+        .select({ groupId: messageThread.groupId })
         .from(messageThread)
         .where(eq(messageThread.id, params.threadId))
         .limit(1);
-      if (thread?.groupUserId == null) {
+      if (thread?.groupId == null) {
         throw new BusinessException(BusinessCode.NOT_FOUND, 'group not found');
       }
+      const recipientsBeforeDissolve = this.messages
+        ? await this.localAuthorizedRecipientIdsInTx(tx, params.threadId)
+        : [];
       const dissolved = await tx
         .update(group)
         .set({
           dissolvedAt: now,
           updatedAt: now,
         })
-        .where(
-          and(
-            eq(group.groupUserId, thread.groupUserId),
-            isNull(group.dissolvedAt),
-          ),
-        )
+        .where(and(eq(group.id, thread.groupId), isNull(group.dissolvedAt)))
         .returning({ id: group.id });
       if (dissolved.length > 0) {
+        await tx
+          .update(threadMember)
+          .set({ left: true, updatedAt: now })
+          .where(eq(threadMember.threadId, params.threadId));
         await tx
           .update(relationshipIntent)
           .set({
             status: 'REVOKED',
+            expiresAt: null,
             updatedAt: now,
           })
           .where(
             and(
-              eq(relationshipIntent.authorUserId, thread.groupUserId),
+              eq(relationshipIntent.authorSide, 'A'),
               eq(relationshipIntent.status, 'REQUESTED'),
+              sql`EXISTS (SELECT 1 FROM "RelationshipPair" pair WHERE pair.id = ${relationshipIntent.pairId} AND pair."threadId" = ${params.threadId})`,
+            ),
+          );
+        await tx
+          .update(relationshipPair)
+          .set({
+            active: false,
+            revision: sql`${relationshipPair.revision} + 1`,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(relationshipPair.threadId, params.threadId),
+              eq(relationshipPair.kind, 'GROUP_MEMBER'),
+              eq(relationshipPair.active, true),
             ),
           );
       }
       const localRecipientIds =
-        dissolved.length > 0 && this.messages
-          ? await this.localAuthorizedRecipientIdsInTx(tx, params.threadId)
-          : [];
+        dissolved.length > 0 && this.messages ? recipientsBeforeDissolve : [];
       const systemMessages: Array<{
         message: Awaited<
           ReturnType<MessageService['writeSystemMessageInTx']>
@@ -903,7 +973,7 @@ export class GroupService {
           })
           .where(
             and(
-              eq(threadParticipant.userId, params.deleteForUserId),
+              eq(threadParticipant.accountId, params.deleteForUserId),
               eq(threadParticipant.threadId, params.threadId),
             ),
           );
@@ -947,22 +1017,24 @@ export class GroupService {
       const [operator, target] = await Promise.all([
         tx
           .select()
-          .from(threadParticipant)
+          .from(threadMember)
           .where(
             and(
-              eq(threadParticipant.userId, params.operatorUserId),
-              eq(threadParticipant.threadId, params.threadId),
+              eq(threadMember.userId, params.operatorUserId),
+              eq(threadMember.threadId, params.threadId),
+              eq(threadMember.left, false),
             ),
           )
           .limit(1)
           .then(([row]) => row),
         tx
           .select()
-          .from(threadParticipant)
+          .from(threadMember)
           .where(
             and(
-              eq(threadParticipant.userId, params.targetUserId),
-              eq(threadParticipant.threadId, params.threadId),
+              eq(threadMember.userId, params.targetUserId),
+              eq(threadMember.threadId, params.threadId),
+              eq(threadMember.left, false),
             ),
           )
           .limit(1)
@@ -1030,23 +1102,23 @@ export class GroupService {
           })
           .where(
             and(
-              eq(threadParticipant.userId, params.targetUserId),
+              eq(threadParticipant.accountId, params.targetUserId),
               eq(threadParticipant.threadId, params.threadId),
             ),
           );
       }
       const [thread] = await tx
-        .select({ groupUserId: messageThread.groupUserId })
+        .select({ groupId: messageThread.groupId })
         .from(messageThread)
         .where(eq(messageThread.id, params.threadId))
         .limit(1);
-      if (thread?.groupUserId != null) {
+      if (thread?.groupId != null) {
         await tx
           .update(group)
           .set({
             updatedAt: now,
           })
-          .where(eq(group.groupUserId, thread.groupUserId));
+          .where(eq(group.id, thread.groupId));
       }
       const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
       const requestState =
@@ -1083,8 +1155,8 @@ export class GroupService {
 
   /**
    * Transfer ownership to an active member: demote the caller to MEMBER, promote the target to
-   * OWNER — all in one transaction so no ownerless state is visible. Group.ownerId is updated in
-   * the same transaction, then advances every local member's group-meta feed.
+   * OWNER — all in one transaction so no ownerless state is visible, then advances every local
+   * member's group-meta feed.
    */
   async transferOwnership(params: {
     threadId: number;
@@ -1102,12 +1174,13 @@ export class GroupService {
       // Serialize every transfer through the current OWNER row. The partial unique index prevents
       // multiple active owners; the service invariants prevent the sole owner from leaving/demotion.
       const [currentOwner] = await tx
-        .select({ id: threadParticipant.id, role: threadParticipant.role })
-        .from(threadParticipant)
+        .select({ id: threadMember.id, role: threadMember.role })
+        .from(threadMember)
         .where(
           and(
-            eq(threadParticipant.userId, params.fromUserId),
-            eq(threadParticipant.threadId, params.threadId),
+            eq(threadMember.userId, params.fromUserId),
+            eq(threadMember.threadId, params.threadId),
+            eq(threadMember.left, false),
           ),
         )
         .for('update')
@@ -1127,15 +1200,16 @@ export class GroupService {
       }
       const [target] = await tx
         .select({
-          participant: threadParticipant,
+          member: threadMember,
           domain: user.domain,
         })
-        .from(threadParticipant)
-        .innerJoin(user, eq(user.id, threadParticipant.userId))
+        .from(threadMember)
+        .innerJoin(user, eq(user.id, threadMember.userId))
         .where(
           and(
-            eq(threadParticipant.userId, params.toUserId),
-            eq(threadParticipant.threadId, params.threadId),
+            eq(threadMember.userId, params.toUserId),
+            eq(threadMember.threadId, params.threadId),
+            eq(threadMember.left, false),
           ),
         )
         .for('update')
@@ -1160,7 +1234,7 @@ export class GroupService {
           'cannot transfer ownership to a member on another server',
         );
       }
-      if (target.participant.role === GroupRole.OWNER) {
+      if (target.member.role === GroupRole.OWNER) {
         throw new BusinessException(
           BusinessCode.GROUP_FORBIDDEN,
           'target is already the owner',
@@ -1168,32 +1242,42 @@ export class GroupService {
       }
       const now = new Date();
       await tx
+        .update(threadMember)
+        .set({ role: GroupRole.MEMBER, updatedAt: now })
+        .where(
+          and(
+            eq(threadMember.userId, params.fromUserId),
+            eq(threadMember.threadId, params.threadId),
+          ),
+        );
+      await tx
+        .update(threadMember)
+        .set({ role: GroupRole.OWNER, updatedAt: now })
+        .where(eq(threadMember.id, target.member.id));
+      await tx
         .update(threadParticipant)
         .set({ role: GroupRole.MEMBER, updatedAt: now })
         .where(
           and(
-            eq(threadParticipant.userId, params.fromUserId),
+            eq(threadParticipant.accountId, params.fromUserId),
             eq(threadParticipant.threadId, params.threadId),
           ),
         );
       await tx
         .update(threadParticipant)
         .set({ role: GroupRole.OWNER, updatedAt: now })
-        .where(eq(threadParticipant.id, target.participant.id));
-      const [trd] = await tx
-        .select({ groupUserId: messageThread.groupUserId })
-        .from(messageThread)
-        .where(eq(messageThread.id, params.threadId))
-        .limit(1);
-      if (trd?.groupUserId != null) {
-        await tx
-          .update(group)
-          .set({
-            ownerId: params.toUserId,
-            updatedAt: now,
-          })
-          .where(eq(group.groupUserId, trd.groupUserId));
-      }
+        .where(
+          and(
+            eq(threadParticipant.accountId, params.toUserId),
+            eq(threadParticipant.threadId, params.threadId),
+          ),
+        );
+      await tx
+        .update(group)
+        .set({ updatedAt: now })
+        .where(
+          sql`${group.id} = (SELECT "groupId" FROM "MessageThread" WHERE id = ${params.threadId})`,
+        );
       const state = await this.federation.writeGroupStateInTx(
         tx,
         params.threadId,
@@ -1233,10 +1317,11 @@ export class GroupService {
     role: GroupRole;
     operatorUserId: number;
   }): Promise<void> {
-    const operator = await this.database.db.query.threadParticipant.findFirst({
+    const operator = await this.database.db.query.threadMember.findFirst({
       where: and(
-        eq(threadParticipant.userId, params.operatorUserId),
-        eq(threadParticipant.threadId, params.threadId),
+        eq(threadMember.userId, params.operatorUserId),
+        eq(threadMember.threadId, params.threadId),
+        eq(threadMember.left, false),
       ),
       columns: { role: true },
     });
@@ -1265,10 +1350,11 @@ export class GroupService {
         'cannot change your own role',
       );
     }
-    const target = await this.database.db.query.threadParticipant.findFirst({
+    const target = await this.database.db.query.threadMember.findFirst({
       where: and(
-        eq(threadParticipant.userId, params.targetUserId),
-        eq(threadParticipant.threadId, params.threadId),
+        eq(threadMember.userId, params.targetUserId),
+        eq(threadMember.threadId, params.threadId),
+        eq(threadMember.left, false),
       ),
       with: { user: { columns: { domain: true } } },
     });
@@ -1301,21 +1387,30 @@ export class GroupService {
     const result = await this.database.db.transaction(async (tx) => {
       const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
       await tx
+        .update(threadMember)
+        .set({ role: params.role, updatedAt: new Date() })
+        .where(eq(threadMember.id, target.id));
+      await tx
         .update(threadParticipant)
         .set({ role: params.role, updatedAt: new Date() })
-        .where(eq(threadParticipant.id, target.id));
+        .where(
+          and(
+            eq(threadParticipant.accountId, params.targetUserId),
+            eq(threadParticipant.threadId, params.threadId),
+          ),
+        );
       const [trd] = await tx
-        .select({ groupUserId: messageThread.groupUserId })
+        .select({ groupId: messageThread.groupId })
         .from(messageThread)
         .where(eq(messageThread.id, params.threadId))
         .limit(1);
-      if (trd?.groupUserId != null)
+      if (trd?.groupId != null)
         await tx
           .update(group)
           .set({
             updatedAt: new Date(),
           })
-          .where(eq(group.groupUserId, trd.groupUserId));
+          .where(eq(group.id, trd.groupId));
       const state = await this.federation.writeGroupStateInTx(
         tx,
         params.threadId,
@@ -1363,14 +1458,15 @@ export class GroupService {
     threadId: number,
   ): Promise<number[]> {
     const rows = await tx
-      .select({ userId: threadParticipant.userId })
-      .from(threadParticipant)
-      .innerJoin(user, eq(user.id, threadParticipant.userId))
+      .select({ userId: threadMember.userId })
+      .from(threadMember)
+      .innerJoin(user, eq(user.id, threadMember.userId))
       .where(
         and(
-          eq(threadParticipant.threadId, threadId),
+          eq(threadMember.threadId, threadId),
+          eq(threadMember.left, false),
           eq(user.domain, 'local'),
-          eq(user.isDeleted, false),
+          eq(user.availability, 'AVAILABLE'),
         ),
       );
     const authorized = await Promise.all(
@@ -1381,8 +1477,7 @@ export class GroupService {
       .map((row) => row.userId);
   }
 
-  /** Update a group's name / description / avatar on the `!`-User row (only provided fields are written).
-   *  description maps to User.bio. */
+  /** Update a group's independent profile. */
   async updateGroup(params: {
     threadId: number;
     name?: string;
@@ -1391,29 +1486,29 @@ export class GroupService {
   }) {
     const trd = await this.database.db.query.messageThread.findFirst({
       where: eq(messageThread.id, params.threadId),
-      columns: { groupUserId: true },
+      columns: { groupId: true },
     });
-    if (!trd || !trd.groupUserId) {
+    if (!trd || !trd.groupId) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         'group thread not found',
         HttpStatus.NOT_FOUND,
       );
     }
-    const data: Partial<typeof user.$inferInsert> = {};
+    const data: Partial<typeof group.$inferInsert> = {};
     if (params.name !== undefined) data.name = params.name;
-    if (params.description !== undefined) data.bio = params.description;
+    if (params.description !== undefined) data.description = params.description;
     if (params.avatar !== undefined) data.avatar = params.avatar;
     const result = await this.database.db.transaction(async (tx) => {
       const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
       const [row] = await tx
-        .update(user)
+        .update(group)
         .set({
           ...data,
-          profileRev: sql`${user.profileRev} + 1`,
+          profileRev: sql`${group.profileRev} + 1`,
           updatedAt: new Date(),
         })
-        .where(eq(user.id, trd.groupUserId!))
+        .where(eq(group.id, trd.groupId!))
         .returning();
       const stateItems = await this.federation.writeGroupStateInTx(
         tx,

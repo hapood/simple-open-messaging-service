@@ -104,7 +104,7 @@ export class FederationRecognitionService {
         localServiceAvailable: true,
       },
     });
-    // Healthy is an availability probe, not a bootstrap operation. A peer may legitimately answer
+    // Health is an availability probe, not a bootstrap operation. A peer may legitimately answer
     // `degraded` while this side has no post-reset recognition row at all; treating that response as
     // sufficient would let ensurePeerTrusted return before the local authorization facts exist.
     if (
@@ -123,21 +123,20 @@ export class FederationRecognitionService {
   async checkHealth(peerDomain: string): Promise<FederationHealthStatus> {
     const domain = this.normalizeDomain(peerDomain);
     const base = await this.discovery.resolveBase(domain);
-    const url = new URL(`${base}/s2s/v1/healthy`);
-    const body = JSON.stringify({ domain: this.config.domain });
+    const url = new URL(`${base}/s2s/v1/health`);
+    const body = '';
     const release = await this.discovery.acquireRequestSlot(domain);
     try {
       const headers = await this.signature.signOutbound({
-        method: 'POST',
+        method: 'GET',
         url,
         body,
       });
       let response: Response;
       try {
         response = await this.discovery.request(url, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', ...headers },
-          body,
+          method: 'GET',
+          headers,
           signal: AbortSignal.timeout(
             this.transportConfig.get().callTimeoutSec * 1000,
           ),
@@ -145,15 +144,15 @@ export class FederationRecognitionService {
       } catch (error) {
         await this.markTransportDegraded(
           domain,
-          `Healthy network/timeout: ${(error as Error).message}`,
+          `Health network/timeout: ${(error as Error).message}`,
         );
         throw error;
       }
       if (response.status !== 200) {
         if (response.status === HttpStatus.SERVICE_UNAVAILABLE) {
-          await this.markTransportDegraded(domain, 'Healthy HTTP 503');
+          await this.markTransportDegraded(domain, 'Health HTTP 503');
         }
-        throw new Error(`Healthy ${domain} returned HTTP ${response.status}`);
+        throw new Error(`Health ${domain} returned HTTP ${response.status}`);
       }
       let value: unknown;
       try {
@@ -176,8 +175,8 @@ export class FederationRecognitionService {
         !Array.isArray(result) &&
         Object.keys(result).length === 1;
       if (!status || !healthShapeValid) {
-        await this.markTransportDegraded(domain, 'Healthy malformed response');
-        throw new Error(`Healthy ${domain} returned malformed response`);
+        await this.markTransportDegraded(domain, 'Health malformed response');
+        throw new Error(`Health ${domain} returned malformed response`);
       }
       await this.applyHealthResult(domain, status);
       return status;
@@ -304,7 +303,7 @@ export class FederationRecognitionService {
   ): Promise<void> {
     const normalized = this.normalizeDomain(domain);
     if (result === 'unavailable') {
-      await this.markTransportDegraded(normalized, 'Healthy unavailable');
+      await this.markTransportDegraded(normalized, 'Health unavailable');
       return;
     }
     await this.database.db.transaction(async (tx) => {
@@ -425,7 +424,7 @@ export class FederationRecognitionService {
     await this.discovery.cacheDocument(domain, doc);
     const base = await this.discovery.resolveBase(domain);
     const url = new URL(`${base}/s2s/v1/recognize`);
-    const body = JSON.stringify({ domain: this.config.domain });
+    const body = '{}';
     const release = await this.discovery.acquireRequestSlot(domain);
     try {
       const headers = await this.signature.signOutbound({
@@ -546,7 +545,7 @@ export class FederationRecognitionService {
       await new Promise<void>((resolve) => setTimeout(resolve, 25));
     }
     throw new Error(
-      `bidirectional Recognize with ${domain} did not converge (Healthy=${lastStatus})`,
+      `bidirectional Recognize with ${domain} did not converge (Health=${lastStatus})`,
     );
   }
 

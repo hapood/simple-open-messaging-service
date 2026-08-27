@@ -160,20 +160,30 @@ describe('WebdbService native SQLite routing', () => {
   it('queries a paginated group roster through native SQLite', async () => {
     const member = {
       threadId: 9,
-      userId: 8,
-      memberAccount: 'alice',
-      memberDomain: 'home.example',
+      account: 'alice',
+      domain: 'home.example',
+      sourceDomain: 'local',
       role: 'MEMBER',
-      displayName: 'Alice',
-      avatar: '/a.webp',
-      profileRev: 6,
+      left: false,
+      user: {
+        account: 'alice',
+        domain: 'home.example',
+        sourceDomain: 'local',
+        name: 'Alice',
+        avatar: '/a.webp',
+        bio: '',
+        availability: 'AVAILABLE',
+        profileRev: 6,
+        createdAt: 0,
+        updatedAt: 0,
+      },
     };
     responses.set('native_db_query_group_members', [member]);
 
     expect(
       await service.queryGroupMembers({
         threadId: 9,
-        afterUserId: 4,
+        afterIdentity: 'local\u0000home.example\u0000aaron',
         take: 20,
         search: 'ali',
       }),
@@ -184,7 +194,7 @@ describe('WebdbService native SQLite routing', () => {
         args: {
           userId: 42,
           threadId: 9,
-          afterUserId: 4,
+          afterIdentity: 'local\u0000home.example\u0000aaron',
           take: 20,
           search: 'ali',
         },
@@ -228,7 +238,7 @@ describe('WebdbService native SQLite routing', () => {
       seq: 3,
       createdAt: 100,
       updatedAt: 100,
-      creator: 42,
+      creator: { account: 'alice', domain: 'local' },
       isDeleted: false,
       content: 'hello',
       contentType: 'PURE_TEXT',

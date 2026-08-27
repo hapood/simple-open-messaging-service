@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { AdminBootstrapService } from './admin-bootstrap.service.js';
 import { AdminRole } from '../database/enums.js';
 import { PasswordHasher } from '../auth/password-hasher.service.js';
-import { admin, user } from '../database/schema.js';
+import { account, admin, user } from '../database/schema.js';
 
 /**
  * AdminBootstrapService self-seeds the first admin on every app start. These specs lock the operational
@@ -18,6 +18,7 @@ function makeService(opts: {
   findUniqueError?: Error;
 }) {
   const userInsert = vi.fn();
+  const accountInsert = vi.fn();
   const adminInsert = vi.fn();
   const findUnique = opts.findUniqueError
     ? vi.fn(async () => {
@@ -27,9 +28,27 @@ function makeService(opts: {
   const database = {
     db: {
       query: { user: { findFirst: findUnique } },
+      select: vi.fn(() => {
+        const query = {
+          from: () => query,
+          innerJoin: () => query,
+          where: () => query,
+          limit: async () => {
+            const existing = await findUnique();
+            return existing ? [existing] : [];
+          },
+        };
+        return query;
+      }),
       insert: vi.fn((table: unknown) => ({
         values:
-          table === user ? userInsert : table === admin ? adminInsert : vi.fn(),
+          table === user
+            ? userInsert
+            : table === account
+              ? accountInsert
+              : table === admin
+                ? adminInsert
+                : vi.fn(),
       })),
     },
   };
@@ -41,11 +60,14 @@ function makeService(opts: {
   adminInsert.mockImplementation(() => ({
     onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
   }));
+  accountInsert.mockImplementation(() => ({
+    onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
+  }));
   const svc = new AdminBootstrapService(
     database as never,
     new PasswordHasher(),
   );
-  return { svc, findUnique, userInsert, adminInsert };
+  return { svc, findUnique, userInsert, accountInsert, adminInsert };
 }
 
 describe('AdminBootstrapService', () => {
@@ -57,17 +79,18 @@ describe('AdminBootstrapService', () => {
 
   it('is a no-op when the bootstrap admin already exists (idempotent; no password needed)', async () => {
     delete process.env.ADMIN_BOOTSTRAP_PASSWORD;
-    const { svc, userInsert, adminInsert } = makeService({
+    const { svc, userInsert, accountInsert, adminInsert } = makeService({
       existingUser: { id: 42 },
     });
     await expect(svc.onApplicationBootstrap()).resolves.toBeUndefined();
     expect(userInsert).not.toHaveBeenCalled();
+    expect(accountInsert).not.toHaveBeenCalled();
     expect(adminInsert).not.toHaveBeenCalled();
   });
 
   it('warns and continues without creating when ADMIN_BOOTSTRAP_PASSWORD is unset', async () => {
     delete process.env.ADMIN_BOOTSTRAP_PASSWORD;
-    const { svc, userInsert, adminInsert } = makeService({
+    const { svc, userInsert, accountInsert, adminInsert } = makeService({
       existingUser: null,
     });
     const warn = vi.spyOn(
@@ -76,13 +99,14 @@ describe('AdminBootstrapService', () => {
     );
     await expect(svc.onApplicationBootstrap()).resolves.toBeUndefined();
     expect(userInsert).not.toHaveBeenCalled();
+    expect(accountInsert).not.toHaveBeenCalled();
     expect(adminInsert).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalled();
   });
 
   it('creates the User + SUPER_ADMIN profile with a hashed password when the password is set', async () => {
     process.env.ADMIN_BOOTSTRAP_PASSWORD = 's3cret-bootstrap-pw';
-    const { svc, userInsert, adminInsert } = makeService({
+    const { svc, userInsert, accountInsert, adminInsert } = makeService({
       existingUser: null,
     });
     await svc.onApplicationBootstrap();
@@ -91,9 +115,14 @@ describe('AdminBootstrapService', () => {
     const userCreate = userInsert.mock.calls[0][0] as Record<string, unknown>;
     expect(userCreate.account).toBe('admin');
     expect(userCreate.domain).toBe('local');
-    expect(userCreate.hashPwd).not.toBe('s3cret-bootstrap-pw'); // stored hashed, not plaintext
-    expect(typeof userCreate.hashPwd).toBe('string');
-    expect(userCreate.hashPwd.length).toBeGreaterThan(0);
+    expect(userCreate.sourceDomain).toBe('local');
+
+    expect(accountInsert).toHaveBeenCalledTimes(1);
+    const accountCreate = accountInsert.mock.calls[0][0] as Record<string, unknown>;
+    expect(accountCreate.id).toBe(42);
+    expect(accountCreate.hashPwd).not.toBe('s3cret-bootstrap-pw');
+    expect(typeof accountCreate.hashPwd).toBe('string');
+    expect((accountCreate.hashPwd as string).length).toBeGreaterThan(0);
 
     expect(adminInsert).toHaveBeenCalledTimes(1);
     const adminCreate = adminInsert.mock.calls[0][0] as Record<string, unknown>;

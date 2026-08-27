@@ -22,7 +22,6 @@ import {
   message,
   messageReport,
   messageThread,
-  threadParticipant,
 } from '../src/database/schema.js';
 import { seedAcceptedRelationship, seedSession, seedUser } from './seed.js';
 
@@ -83,16 +82,18 @@ describe('message report HTTP workflow', () => {
         updatedAt: now,
       })
       .returning({ id: messageThread.id });
-    await database.db.insert(threadParticipant).values([
-      { userId: reporter.id, threadId: thread.id, updatedAt: now },
-      { userId: creator.id, threadId: thread.id, updatedAt: now },
-    ]);
-    await seedAcceptedRelationship(database.db, reporter.id, creator.id);
+    await seedAcceptedRelationship(
+      database.db,
+      reporter.id,
+      creator.id,
+      thread.id,
+    );
     await database.db.insert(message).values([
       {
         seq: 1,
         threadId: thread.id,
-        creator: creator.id,
+        creatorAccount: creator.account,
+        creatorDomain: 'local',
         originSeq: 1,
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'first' }),
@@ -101,7 +102,8 @@ describe('message report HTTP workflow', () => {
       {
         seq: 2,
         threadId: thread.id,
-        creator: creator.id,
+        creatorAccount: creator.account,
+        creatorDomain: 'local',
         originSeq: 2,
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'second' }),
@@ -199,13 +201,12 @@ describe('message report HTTP workflow', () => {
       'query-messages',
       {
         threadId: conversation.threadId,
-        skip: 0,
+        after: '0',
         take: 20,
-        orderBy: 'desc',
       },
     );
     expect(visible.body.code).toBe(BusinessCode.OK);
-    expect(visible.body.data).toEqual([
+    expect(visible.body.data.messages).toEqual([
       expect.objectContaining({
         seq: 3,
         contentType: 'SYSTEM',
@@ -216,13 +217,19 @@ describe('message report HTTP workflow', () => {
     const durable = await consumerPost(
       conversation.reporterToken,
       'deleted-messages/query',
-      { threadId: conversation.threadId, afterId: '0', take: 20 },
+      { threadId: conversation.threadId, after: '0', take: 20 },
     );
     expect(durable.body.code).toBe(BusinessCode.OK);
-    expect(durable.body.data).toEqual(
+    expect(durable.body.data.tombstones).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ seq: 1, type: MessageDeleteType.REPORT }),
-        expect.objectContaining({ seq: 2, type: MessageDeleteType.REPORT }),
+        expect.objectContaining({
+          seq: 1,
+          type: MessageDeleteType.MODERATION_REMOVAL,
+        }),
+        expect.objectContaining({
+          seq: 2,
+          type: MessageDeleteType.MODERATION_REMOVAL,
+        }),
       ]),
     );
 

@@ -34,7 +34,6 @@ export interface PeerStateFeedWrite {
 export interface PeerStateFeedPage {
   items: Array<{
     account: string;
-    domain: string;
     eventType: PeerStateEventType;
     peerAccount?: string;
     feedId: string;
@@ -309,7 +308,6 @@ export class PeerStateFeedService {
       for (const row of rows) {
         const item: PeerStateFeedPage['items'][number] = {
           account: row.account,
-          domain: row.domain,
           eventType: row.eventType,
           feedId: row.feedId.toString(),
           body: row.body,

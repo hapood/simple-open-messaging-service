@@ -569,9 +569,8 @@ export class PeerProfileComponent {
 
   removeFriend(): void {
     const trd = this.userMsgTrd();
-    const peerId = trd?.peerUser?.id;
-    if (!trd || peerId === undefined || this.relationshipActionPending())
-      return;
+    const peer = trd?.peerUser;
+    if (!trd || !peer || this.relationshipActionPending()) return;
     this.route.popupDlg(
       PopupType.CONFIRM,
       {
@@ -583,17 +582,21 @@ export class PeerProfileComponent {
       },
       (result) => {
         if (!result) return;
-        void this.finishRemoveFriend(trd, peerId);
+        void this.finishRemoveFriend(trd, peer.account, peer.domain);
       },
     );
   }
 
-  private async finishRemoveFriend(trd: ConversationItem, peerId: number) {
+  private async finishRemoveFriend(
+    trd: ConversationItem,
+    account: string,
+    domain?: string,
+  ) {
     if (this.unfriendPending()) return;
     this.unfriendPending.set(true);
     try {
       const res = await firstValueFrom(
-        this.userService.deleteFriend({ userId: peerId }),
+        this.userService.deleteFriend({ account, domain }),
       );
       if (res.code !== 0)
         return this.toast.warn(translateBizResult(res, this.transloco));

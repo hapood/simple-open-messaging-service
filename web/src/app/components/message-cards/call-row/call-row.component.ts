@@ -12,24 +12,6 @@ import {
   UserAvatarType,
 } from '../../user-avatar/user-avatar.component';
 
-/** Authoritative terminal call record stored as JSON in Message.content. */
-interface CallContent {
-  type: 'CALL';
-  callType: 'AUDIO' | 'VIDEO';
-  status:
-    | 'completed'
-    | 'cancelled'
-    | 'declined'
-    | 'missed'
-    | 'failed'
-    | 'unreachable';
-  callerId: number;
-  calleeId: number;
-  startedAt?: number;
-  endedAt?: number;
-  durationMs?: number;
-}
-
 /**
  * Terminal 1:1 call record. It follows the same row/group/avatar contract as the other message cards, while
  * the inset icon tile and two-level typography make calls easy to scan in a busy conversation.
@@ -59,20 +41,17 @@ export class CallRowComponent {
       !this.data().isSelf,
   );
 
-  private readonly content = computed<CallContent | null>(() => {
-    try {
-      const value = JSON.parse(this.data().text) as Partial<CallContent>;
-      return value.type === 'CALL' ? (value as CallContent) : null;
-    } catch {
-      return null;
-    }
+  private readonly content = computed(() => {
+    const content = this.data().callContent;
+    if (!content) throw new Error('CALL row requires parsed callContent');
+    return content;
   });
 
-  readonly isVideo = computed(() => this.content()?.callType === 'VIDEO');
+  readonly isVideo = computed(() => this.content().callType === 'VIDEO');
   readonly isAlert = computed(() => {
-    const status = this.content()?.status;
+    const outcome = this.content().outcome;
     return (
-      status === 'missed' || status === 'failed' || status === 'unreachable'
+      outcome === 'missed' || outcome === 'failed' || outcome === 'unreachable'
     );
   });
 
@@ -82,9 +61,9 @@ export class CallRowComponent {
 
   /** Direction- and result-aware primary label. */
   readonly statusKey = computed(() => {
-    const status = this.content()?.status;
+    const outcome = this.content().outcome;
     const self = this.data().isSelf;
-    switch (status) {
+    switch (outcome) {
       case 'missed':
         return self ? 'call.record.cancelled' : 'call.record.missed';
       case 'failed':
@@ -104,7 +83,7 @@ export class CallRowComponent {
 
   /** Connected duration as m:ss or h:mm:ss; absent for calls that never connected. */
   readonly duration = computed(() => {
-    const ms = this.content()?.durationMs;
+    const ms = this.content().durationMs;
     if (!ms || ms < 1000) return '';
     const totalSeconds = Math.floor(ms / 1000);
     const seconds = String(totalSeconds % 60).padStart(2, '0');

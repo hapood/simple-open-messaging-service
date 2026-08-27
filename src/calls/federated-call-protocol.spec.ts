@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   assertS2SCallFrame,
+  parseS2SCallWireFrame,
   type S2SCallFrame,
+  toS2SCallWireFrame,
 } from './federated-call-protocol.js';
 
 const signalId = 'c0a80101-0000-4000-8000-000000000001';
@@ -19,13 +21,67 @@ const validFrame = (patch: Partial<S2SCallFrame> = {}): unknown => {
 };
 
 describe('Federation v1 call frame validation', () => {
+  it('maps operation at the wire boundary and rejects the legacy op field', () => {
+    const internal = validFrame() as S2SCallFrame;
+    const wire = toS2SCallWireFrame(internal);
+
+    expect(wire).toEqual({
+      callId: '550e8400-e29b-41d4-a716-446655440000',
+      operation: 'incoming',
+      mediaType: 'AUDIO',
+      payload: { callerAccount: 'alice', calleeAccount: 'bob' },
+    });
+    expect(parseS2SCallWireFrame(wire)).toEqual(internal);
+    expect(() => parseS2SCallWireFrame(internal)).toThrow();
+    expect(() =>
+      parseS2SCallWireFrame({ ...wire, callSid: wire.callId }),
+    ).toThrow();
+    expect(() =>
+      parseS2SCallWireFrame({ ...wire, callType: wire.mediaType }),
+    ).toThrow();
+    expect(() =>
+      parseS2SCallWireFrame({
+        ...wire,
+        payload: { fromAccount: 'alice', toAccount: 'bob' },
+      }),
+    ).toThrow();
+  });
+
+  it('maps signal identifiers and types at the wire boundary', () => {
+    const internal = validFrame({
+      op: 'signal',
+      payload: { signalId, signalType: 'offer', data: 'v=0' },
+    }) as S2SCallFrame;
+    const wire = toS2SCallWireFrame(internal);
+
+    expect(wire).toEqual({
+      callId: '550e8400-e29b-41d4-a716-446655440000',
+      operation: 'signal',
+      mediaType: 'AUDIO',
+      payload: { signalId, signalType: 'offer', data: 'v=0' },
+    });
+    expect(parseS2SCallWireFrame(wire)).toEqual(internal);
+    expect(() =>
+      parseS2SCallWireFrame({
+        ...wire,
+        payload: { id: signalId, signalType: 'offer', data: 'v=0' },
+      }),
+    ).toThrow();
+    expect(() =>
+      parseS2SCallWireFrame({
+        ...wire,
+        payload: { signalId, kind: 'offer', data: 'v=0' },
+      }),
+    ).toThrow();
+  });
+
   it('accepts lifecycle, signal, connected and video upgrade shapes', () => {
     expect(() => assertS2SCallFrame(validFrame())).not.toThrow();
     expect(() =>
       assertS2SCallFrame(
         validFrame({
           op: 'signal',
-          payload: { id: signalId, kind: 'offer', data: 'v=0' },
+          payload: { signalId, signalType: 'offer', data: 'v=0' },
         }),
       ),
     ).not.toThrow();
@@ -53,8 +109,8 @@ describe('Federation v1 call frame validation', () => {
         validFrame({
           op: 'signal',
           payload: {
-            id: signalId,
-            kind: 'renegotiate' as never,
+            signalId,
+            signalType: 'renegotiate' as never,
             data: 'v=0',
           },
         }),
@@ -106,7 +162,11 @@ describe('Federation v1 call frame validation', () => {
       assertS2SCallFrame(
         validFrame({
           op: 'signal',
-          payload: { id: signalId, kind: 'offer', data: '😀'.repeat(32768) },
+          payload: {
+            signalId,
+            signalType: 'offer',
+            data: '😀'.repeat(32768),
+          },
         }),
       ),
     ).not.toThrow();
@@ -114,7 +174,11 @@ describe('Federation v1 call frame validation', () => {
       assertS2SCallFrame(
         validFrame({
           op: 'signal',
-          payload: { id: signalId, kind: 'offer', data: '😀'.repeat(32769) },
+          payload: {
+            signalId,
+            signalType: 'offer',
+            data: '😀'.repeat(32769),
+          },
         }),
       ),
     ).toThrow();

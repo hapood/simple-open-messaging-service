@@ -192,8 +192,8 @@ describe('FederationResetService', () => {
     await service.truncateThread(12);
 
     expect(database.db.transaction).toHaveBeenCalledOnce();
-    expect(finalExecute).toHaveBeenCalledTimes(2);
-    expect(execute).toHaveBeenCalledTimes(10);
+    expect(finalExecute).toHaveBeenCalledTimes(4);
+    expect(execute).toHaveBeenCalledTimes(9);
   });
 
   it('finalizes the domain only after no related thread remains pending', async () => {
@@ -230,7 +230,7 @@ describe('FederationResetService', () => {
     await service.finalizeDomainReset('peer.example');
 
     expect(database.db.transaction).toHaveBeenCalledOnce();
-    expect(execute).toHaveBeenCalledTimes(18);
+    expect(execute).toHaveBeenCalledTimes(13);
   });
 
   it('resumes from the first non-truncated thread after a service restart', async () => {

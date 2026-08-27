@@ -103,10 +103,10 @@ decreasing `seq` order. An invalid combination or relation returns
 account grammar determines the thread kind; no separate type or mode parameter
 is sent:
 
-| Account kind   | Fields                   | Binding                                                                                           |
-| -------------- | ------------------------ | ------------------------------------------------------------------------------------------------- |
-| `UserAccount`  | `account`, `peerAccount` | `account` is hosted by the source domain; `peerAccount` is hosted by the verified signer domain.  |
-| `GroupAccount` | `account`                | The globally unique `!` account identifies the origin thread or an authorized mirror.             |
+| Account kind   | Fields                   | Binding                                                                                          |
+| -------------- | ------------------------ | ------------------------------------------------------------------------------------------------ |
+| `UserAccount`  | `account`, `peerAccount` | `account` is hosted by the source domain; `peerAccount` is hosted by the verified signer domain. |
+| `GroupAccount` | `account`                | The globally unique `!` account identifies the origin thread or an authorized mirror.            |
 
 For a `UserAccount` selector, `peerAccount` MUST be present and MUST be a
 `UserAccount`. For a `GroupAccount` selector, `peerAccount` MUST be absent.
@@ -123,7 +123,7 @@ and a group query continues the coordinate space for the same group-address and
 verified-peer pair, regardless of which users on that peer currently belong to
 the group.
 
-`includeSelf` is optional. Its wire value is lowercase `true` or `false`, and omission defaults to `true`. With `includeSelf=false`, the source omits messages whose `message.author.domain` equals the verified signer domain. This comparison uses only canonical Domain and MUST NOT be inferred from a local user ID, publisher-local `seq`, or `originSeq`. A filtered sequence is a scannable hole and does not prevent `scannedThrough` from advancing in the selected direction. The parameter affects only this page projection and does not delete a processing receipt, allocation proof, or message. The fixed query-key order is `account`, optional `peerAccount`, `after`, `before`, `through`, `take`, then `includeSelf`; omitted optional fields leave no placeholder.
+`includeSelf` is optional. Its wire value is lowercase `true` or `false`, and omission defaults to `true`. With `includeSelf=false`, the source omits messages whose reconstructed author domain equals the verified signer domain. For P2P this is exactly `authorRef=THREAD_PEER_ACCOUNT`; for GROUP it is `message.author.domain` after canonical Domain validation. This comparison MUST NOT be inferred from a local user ID, publisher-local `seq`, or `originSeq`. A filtered sequence is a scannable hole and does not prevent `scannedThrough` from advancing in the selected direction. The parameter affects only this page projection and does not delete a processing receipt, allocation proof, or message. The fixed query-key order is `account`, optional `peerAccount`, `after`, `before`, `through`, `take`, then `includeSelf`; omitted optional fields leave no placeholder.
 
 GROUP message query has exactly three valid directions:
 

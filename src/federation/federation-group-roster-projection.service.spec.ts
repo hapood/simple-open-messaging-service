@@ -5,16 +5,14 @@ describe('FederationGroupRosterProjectionService', () => {
   it('commits roster metadata without resolving triples to User rows', async () => {
     const limit = vi.fn().mockResolvedValue([
       {
-        groupUserId: 5,
+        groupId: 5,
         threadId: 3,
         remoteGroupMetaFeedId: 4n,
       },
     ]);
     const select = vi.fn(() => ({
       from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({ where: () => ({ limit }) }),
-        }),
+        innerJoin: () => ({ where: () => ({ limit }) }),
       }),
     }));
     const where = vi.fn().mockResolvedValue(undefined);

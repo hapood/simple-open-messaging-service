@@ -625,7 +625,7 @@ export type SessionClient = 'app' | 'web' | 'desktop';
 export type AutoTerminateDays = 7 | 30 | 90 | 180 | 365;
 
 /** One row of GET /auth/sessions — the active-session credential behind the "Devices" settings page.
- *  Dates arrive as ISO strings (DB DateTime over the wire); `expiresAt` is null for trusted (permanent)
+ *  Dates arrive as epoch milliseconds; `expiresAt` is null for trusted (permanent)
  *  devices. `trusted` flags a device whose token lives in OS secure storage. `isCurrent` is server-stamped
  *  against the requesting session token. */
 export interface SessionInfo {
@@ -635,9 +635,9 @@ export interface SessionInfo {
   userAgent: string | null;
   ip: string | null;
   lastSeenIp: string | null;
-  createdAt: string;
-  lastSeenAt: string;
-  expiresAt: string | null;
+  createdAt: number;
+  lastSeenAt: number;
+  expiresAt: number | null;
   autoTerminateDays: AutoTerminateDays;
   isCurrent: boolean;
 }

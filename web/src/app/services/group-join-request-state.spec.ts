@@ -19,8 +19,8 @@ function request(
     name: `User ${feedId}`,
     avatar: '',
     note: '',
-    requestedAt: new Date(0).toISOString(),
-    expiresAt: new Date(1).toISOString(),
+    requestedAt: 0,
+    expiresAt: 1,
   };
 }
 

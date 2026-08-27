@@ -7,8 +7,17 @@
 // user but don't care HOW they authenticated. For the process-boundary federation e2e, see
 // federation-test-helpers.ts, which uses its own Drizzle client.
 import type { INestApplication } from '@nestjs/common';
+import { and, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
-import { relationshipIntent, user } from '../src/database/schema';
+import {
+  account as accountTable,
+  group,
+  relationshipIntent,
+  relationshipPair,
+  threadMember,
+  threadParticipant,
+  user,
+} from '../src/database/schema';
 import type { Database } from '../src/database/database.service';
 import {
   SessionTokenService,
@@ -21,29 +30,185 @@ export interface SeededUser {
   account: string;
 }
 
+/** Resolve the fixed GROUP(A) -> USER(B) relationship pair used by roster assertions. */
+export async function findGroupRelationship(
+  database: Database,
+  groupId: number,
+  memberUserId: number,
+) {
+  const [groupIdentity, memberIdentity] = await Promise.all([
+    database.query.group.findFirst({
+      where: eq(group.id, groupId),
+      columns: { account: true, domain: true },
+    }),
+    database.query.user.findFirst({
+      where: eq(user.id, memberUserId),
+      columns: { account: true, domain: true },
+    }),
+  ]);
+  if (!groupIdentity || !memberIdentity)
+    throw new Error('group relationship endpoint missing');
+  const pair = await database.query.relationshipPair.findFirst({
+    where: and(
+      eq(relationshipPair.kind, 'GROUP_MEMBER'),
+      eq(relationshipPair.endpointAType, 'GROUP'),
+      eq(relationshipPair.endpointAAccount, groupIdentity.account),
+      eq(relationshipPair.endpointADomain, groupIdentity.domain),
+      eq(relationshipPair.endpointBType, 'USER'),
+      eq(relationshipPair.endpointBAccount, memberIdentity.account),
+      eq(relationshipPair.endpointBDomain, memberIdentity.domain),
+    ),
+  });
+  return { pair, groupSide: 'A' as const, memberSide: 'B' as const };
+}
+
+/** Resolve the canonical address pair and authored sides used by relationship assertions. */
+export async function findP2PRelationship(
+  database: Database,
+  firstUserId: number,
+  secondUserId: number,
+) {
+  const identities = await database
+    .select({ id: user.id, account: user.account, domain: user.domain })
+    .from(user)
+    .where(sql`${user.id} IN (${firstUserId}, ${secondUserId})`);
+  const first = identities.find((identity) => identity.id === firstUserId);
+  const second = identities.find((identity) => identity.id === secondUserId);
+  if (!first || !second || first.id === second.id)
+    throw new Error('relationship lookup user missing');
+  const endpoints = [first, second].sort((left, right) =>
+    `USER\u0000${left.domain}\u0000${left.account}`.localeCompare(
+      `USER\u0000${right.domain}\u0000${right.account}`,
+    ),
+  );
+  const pair = await database.query.relationshipPair.findFirst({
+    where: and(
+      eq(relationshipPair.endpointAType, 'USER'),
+      eq(relationshipPair.endpointAAccount, endpoints[0].account),
+      eq(relationshipPair.endpointADomain, endpoints[0].domain),
+      eq(relationshipPair.endpointBType, 'USER'),
+      eq(relationshipPair.endpointBAccount, endpoints[1].account),
+      eq(relationshipPair.endpointBDomain, endpoints[1].domain),
+    ),
+  });
+  return {
+    pair,
+    firstSide:
+      endpoints[0].id === firstUserId ? ('A' as const) : ('B' as const),
+    secondSide:
+      endpoints[0].id === secondUserId ? ('A' as const) : ('B' as const),
+  };
+}
+
 /** Seed the two directed facts required for an active P2P relationship. */
 export async function seedAcceptedRelationship(
   database: Database,
   firstUserId: number,
   secondUserId: number,
+  threadId: number,
 ): Promise<void> {
   const updatedAt = new Date();
-  await database.insert(relationshipIntent).values([
-    {
-      authorUserId: firstUserId,
-      subjectUserId: secondUserId,
-      status: 'ACCEPTED',
-      requestedAt: updatedAt,
-      updatedAt,
-    },
-    {
-      authorUserId: secondUserId,
-      subjectUserId: firstUserId,
-      status: 'ACCEPTED',
-      requestedAt: updatedAt,
-      updatedAt,
-    },
-  ]);
+  await database.transaction(async (tx) => {
+    const identities = await tx
+      .select({ id: user.id, account: user.account, domain: user.domain })
+      .from(user)
+      .where(sql`${user.id} IN (${firstUserId}, ${secondUserId})`);
+    const first = identities.find((identity) => identity.id === firstUserId);
+    const second = identities.find((identity) => identity.id === secondUserId);
+    if (!first || !second) throw new Error('relationship seed user missing');
+    const localAccountIds = identities
+      .filter((identity) => identity.domain === 'local')
+      .map((identity) => ({ id: identity.id }));
+    if (localAccountIds.length > 0)
+      await tx
+        .insert(accountTable)
+        .values(localAccountIds)
+        .onConflictDoNothing({ target: accountTable.id });
+    const endpoints = [first, second].sort((left, right) =>
+      `USER\u0000${left.domain}\u0000${left.account}`.localeCompare(
+        `USER\u0000${right.domain}\u0000${right.account}`,
+      ),
+    );
+    const [pair] = await tx
+      .insert(relationshipPair)
+      .values({
+        kind: 'P2P',
+        endpointAType: 'USER',
+        endpointAAccount: endpoints[0].account,
+        endpointADomain: endpoints[0].domain,
+        endpointBType: 'USER',
+        endpointBAccount: endpoints[1].account,
+        endpointBDomain: endpoints[1].domain,
+        threadId,
+        active: true,
+        revision: 1,
+        updatedAt,
+      })
+      .onConflictDoUpdate({
+        target: [
+          relationshipPair.endpointAType,
+          relationshipPair.endpointAAccount,
+          relationshipPair.endpointADomain,
+          relationshipPair.endpointBType,
+          relationshipPair.endpointBAccount,
+          relationshipPair.endpointBDomain,
+        ],
+        set: { threadId, active: true, revision: 1, updatedAt },
+      })
+      .returning({ id: relationshipPair.id });
+    await tx
+      .insert(relationshipIntent)
+      .values([
+        {
+          pairId: pair.id,
+          authorSide: 'A',
+          status: 'ACCEPTED',
+          requestedAt: updatedAt,
+          updatedAt,
+        },
+        {
+          pairId: pair.id,
+          authorSide: 'B',
+          status: 'ACCEPTED',
+          requestedAt: updatedAt,
+          updatedAt,
+        },
+      ])
+      .onConflictDoUpdate({
+        target: [relationshipIntent.pairId, relationshipIntent.authorSide],
+        set: {
+          status: 'ACCEPTED',
+          requestedAt: updatedAt,
+          expiresAt: null,
+          updatedAt,
+        },
+      });
+    const members = await tx
+      .insert(threadMember)
+      .values([
+        { threadId, userId: firstUserId },
+        { threadId, userId: secondUserId },
+      ])
+      .onConflictDoUpdate({
+        target: [threadMember.threadId, threadMember.userId],
+        set: { left: false, updatedAt },
+      })
+      .returning({ id: threadMember.id, userId: threadMember.userId });
+    const localIds = new Set(localAccountIds.map((row) => row.id));
+    const participantRows = members
+      .filter((member) => localIds.has(member.userId))
+      .map((member) => ({
+        accountId: member.userId,
+        threadId,
+      }));
+    if (participantRows.length > 0)
+      await tx
+        .insert(threadParticipant)
+        .values(participantRows)
+        .onConflictDoNothing({
+          target: [threadParticipant.accountId, threadParticipant.threadId],
+        });
+  });
 }
 
 /** Insert a local user directly. `password` (optional) is hashed via the app's PasswordHasher
@@ -55,20 +220,28 @@ export async function seedUser(
   opts: { name?: string; password?: string } = {},
 ): Promise<SeededUser> {
   const database = app.get(DatabaseService);
-  const [u] = await database.db
-    .insert(user)
-    .values({
-      account,
-      domain: 'local',
-      name: opts.name ?? account,
-      hashPwd:
-        opts.password === undefined
-          ? null
-          : await new PasswordHasher().hash(opts.password),
+  const passwordHash =
+    opts.password === undefined
+      ? null
+      : await new PasswordHasher().hash(opts.password);
+  const u = await database.db.transaction(async (tx) => {
+    const [created] = await tx
+      .insert(user)
+      .values({
+        account,
+        domain: 'local',
+        sourceDomain: 'local',
+        name: opts.name ?? account,
+        updatedAt: new Date(),
+      })
+      .returning({ id: user.id, account: user.account });
+    await tx.insert(accountTable).values({
+      id: created.id,
+      hashPwd: passwordHash,
       mustChangePassword: false,
-      updatedAt: new Date(),
-    })
-    .returning({ id: user.id, account: user.account });
+    });
+    return created;
+  });
   return u;
 }
 
@@ -83,7 +256,6 @@ export function seedSession(
   return app.get(SessionTokenService).issue(userId, client, {
     device: opts.device,
     ip: '127.0.0.1',
-    persistent: true,
   });
 }
 

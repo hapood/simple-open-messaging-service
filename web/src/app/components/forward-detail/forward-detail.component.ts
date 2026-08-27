@@ -17,6 +17,7 @@ import { MatButtonModule } from '@angular/material/button';
 import dayjs from 'dayjs';
 import { firstValueFrom } from 'rxjs';
 import { MsgService } from '../../services/message.service';
+import { messageCreatorKey } from '../../services/model';
 import { RouteService } from '../../services/route.service';
 import {
   ChatBoxScroller,
@@ -262,14 +263,29 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
       ? (message.contentType as ChatMsgData['contentType'])
       : 'PURE_TEXT';
     const media = parseMedia(snapshotMessage, id, this.snapshotMediaUrl);
-    const creator = stableIdentityId(
-      `${message.author.account}@${message.author.domain}`,
+    const creator = messageCreatorKey(
+      { account: message.author.account, domain: message.author.domain },
+      message.author.domain,
     );
     const quoteTarget = message.quoteTargetId
       ? bundle.messages.find(
           (candidate) => candidate.id === message.quoteTargetId,
         )
       : undefined;
+    if (contentType === 'SYSTEM') {
+      return {
+        type: 'system',
+        msgId: id,
+        isSelf: false,
+        name: '',
+        text: snapshotContent(snapshotMessage),
+        time: dayjs(message.sentAt).format('HH:mm'),
+        contentType: 'SYSTEM',
+        images: null,
+        file: null,
+        createdAtMs: message.sentAt,
+      };
+    }
     return {
       type: 'msg',
       msgId: id,
@@ -405,12 +421,4 @@ function bindSnapshotCasUrls(
     /\/uploads\/(?:cas|msg-assets)\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}(?:\?threadId=[0-9]+&seq=[0-9]+)?/g,
     (url) => `${url.split('?')[0]}?threadId=${threadId}&seq=${seq}`,
   );
-}
-
-function stableIdentityId(identity: string): number {
-  let hash = 0;
-  for (let index = 0; index < identity.length; index += 1) {
-    hash = (Math.imul(hash, 31) + identity.charCodeAt(index)) | 0;
-  }
-  return Math.abs(hash) || 1;
 }

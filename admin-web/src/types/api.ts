@@ -494,7 +494,7 @@ export interface UserDetailGroup {
   role: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
   joinedAt: number;
   leftAt: number | null;
-  thread: { groupUser: { account: string; name: string } | null };
+  thread: { group: { account: string; name: string } | null };
 }
 
 export interface UserDetailPushToken {
@@ -633,8 +633,8 @@ export interface GroupRow {
   lastMessagePreview: string | null;
   originDomain: string | null;
   fedGroupAccount: string | null;
-  groupUser: { account: string; name: string } | null;
-  _count: { ThreadParticipant: number };
+  group: { account: string; name: string } | null;
+  _count: { ThreadMember: number };
 }
 
 export interface GroupListResult {
@@ -668,7 +668,7 @@ export interface ServerKeyStatus {
   publicKey?: string;
   fingerprint?: string;
   keyId?: string;
-  createdAt?: string;
+  createdAt?: number;
   permissionsSecure?: boolean;
   projectId?: string;
   clientEmail?: string;

@@ -17,11 +17,7 @@ import type { FastifyRequest, FastifyReply } from 'fastify';
 import { createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { S2sSignatureGuard } from './s2s-signature.guard.js';
-import {
-  FederationService,
-  type S2SCallFrame,
-  type S2SAddress,
-} from './federation.service.js';
+import { FederationService, type S2SAddress } from './federation.service.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { FederationMessageFeedService } from './federation-message-feed.service.js';
@@ -112,13 +108,19 @@ export class S2sController implements OnModuleDestroy {
         'group-meta account must be a group account',
         HttpStatus.BAD_REQUEST,
       );
-    if (afterParam === undefined)
+    if (
+      afterParam === undefined &&
+      (takeParam !== undefined || throughParam !== undefined)
+    )
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'group-meta requires after',
+        'group-meta take and through require after',
         HttpStatus.BAD_REQUEST,
       );
-    const after = this.parseCursorBigInt(afterParam, 'after');
+    const after =
+      afterParam === undefined
+        ? undefined
+        : this.parseCursorBigInt(afterParam, 'after');
     const take =
       takeParam === undefined
         ? undefined
@@ -143,19 +145,15 @@ export class S2sController implements OnModuleDestroy {
   async postDiscoveryHwm(@Req() req: FastifyRequest): Promise<void> {
     const signer = this.signerDomain(req);
     const body = req.body as {
-      origin?: unknown;
       stateFeedEndId?: unknown;
       messageFeedEndId?: unknown;
       tombstoneFeedEndId?: unknown;
-    };
-    if (body.origin !== signer) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_BINDING_VIOLATION,
-        `origin (${String(body.origin)}) != signer (${signer})`,
-        HttpStatus.UNAUTHORIZED,
-      );
-    }
+    } | null;
     if (
+      !body ||
+      typeof body !== 'object' ||
+      Array.isArray(body) ||
+      Object.keys(body).length !== 3 ||
       typeof body.stateFeedEndId !== 'string' ||
       !/^(0|[1-9]\d*)$/.test(body.stateFeedEndId) ||
       typeof body.messageFeedEndId !== 'string' ||
@@ -296,6 +294,7 @@ export class S2sController implements OnModuleDestroy {
     @Query('before') beforeParam?: string,
     @Query('take') takeParam?: string,
     @Query('through') throughParam?: string,
+    @Query('includeSelf') includeSelfParam?: string,
   ) {
     this.assertQueryShape(req, [
       'account',
@@ -304,9 +303,21 @@ export class S2sController implements OnModuleDestroy {
       'before',
       'take',
       'through',
+      'includeSelf',
     ]);
     const selector = this.parseThreadQuery(account, peerAccount);
     const peerDomain = this.signerDomain(req);
+    if (
+      includeSelfParam !== undefined &&
+      includeSelfParam !== 'true' &&
+      includeSelfParam !== 'false'
+    )
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'includeSelf must be true or false',
+        HttpStatus.BAD_REQUEST,
+      );
+    const includeSelf = includeSelfParam !== 'false';
     if (afterParam !== undefined && beforeParam !== undefined) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
@@ -346,6 +357,7 @@ export class S2sController implements OnModuleDestroy {
       after,
       take,
       through,
+      includeSelf,
       before,
     );
   }
@@ -495,7 +507,7 @@ export class S2sController implements OnModuleDestroy {
     // so the 200 serializes behind the callee-side mirror setup (the caller's first `offer` cannot
     // win the race against the mirror it addresses).
     await this.federation.handleCallFrame(
-      req.body as S2SCallFrame,
+      req.body,
       this.signerDomain(req),
       req.peer!.signatureExpiresAtSec,
     );

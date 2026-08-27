@@ -27,33 +27,25 @@ describe('SendMessageDto', () => {
   );
 });
 
-describe('QueryMessagesDto truncation', () => {
-  it('accepts a non-negative truncateSeq with the trigger flag', async () => {
+describe('QueryMessagesDto cursors', () => {
+  it('accepts canonical decimal range cursors', async () => {
     const value = Object.assign(new QueryMessagesDto(), {
       threadId: 1,
-      skip: 1,
       take: 20,
-      lastSeq: 10,
-      orderBy: 'asc',
-      truncate: true,
-      truncateSeq: 30,
+      after: '10',
+      through: '30',
     });
     expect(await validate(value)).toHaveLength(0);
   });
 
-  it('rejects a negative truncateSeq', async () => {
+  it('rejects a negative cursor', async () => {
     const value = Object.assign(new QueryMessagesDto(), {
       threadId: 1,
-      skip: 1,
       take: 20,
-      orderBy: 'desc',
-      truncate: true,
-      truncateSeq: -1,
+      before: '-1',
     });
     expect(await validate(value)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ property: 'truncateSeq' }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ property: 'before' })]),
     );
   });
 });

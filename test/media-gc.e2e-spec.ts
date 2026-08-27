@@ -85,7 +85,7 @@ describe('Media asset garbage collection', () => {
         authorityDomain: 'origin.test',
         sourceDomain: 'origin.test',
         remoteDeletedId: 42n,
-        type: 'WITHDRAW',
+        type: 'USER_RETRACTION',
       })
       .returning();
 
@@ -123,12 +123,13 @@ describe('Media asset garbage collection', () => {
 
   it('keeps an asset protected by active staging', async () => {
     const { digest, absPath } = await seedAsset('gc-live');
-    const { threadId, userId } = await seedThreadAndUser();
+    const { threadId, userId, account, domain } = await seedThreadAndUser();
     const [stage] = await database.db
       .insert(pendingMedia)
       .values({
         threadId,
-        creatorId: userId,
+        creatorAccount: account,
+        creatorDomain: domain,
         contentType: 'FILE',
         content: '{}',
         digest,
@@ -183,14 +184,15 @@ describe('Media asset garbage collection', () => {
   it('keeps assets referenced by pending and failed staging for administrator review', async () => {
     const fresh = await seedAsset('gc-pending');
     const failed = await seedAsset('gc-failed');
-    const { threadId, userId } = await seedThreadAndUser();
+    const { threadId, userId, account, domain } = await seedThreadAndUser();
     const now = new Date();
     const stages = await database.db
       .insert(pendingMedia)
       .values([
         {
           threadId,
-          creatorId: userId,
+          creatorAccount: account,
+          creatorDomain: domain,
           contentType: 'FILE',
           content: '{}',
           digest: fresh.digest,
@@ -200,7 +202,8 @@ describe('Media asset garbage collection', () => {
         },
         {
           threadId,
-          creatorId: userId,
+          creatorAccount: account,
+          creatorDomain: domain,
           contentType: 'FILE',
           content: '{}',
           digest: failed.digest,
@@ -299,13 +302,13 @@ describe('Media asset garbage collection', () => {
       .values({
         account: 'avatar-gc-live',
         domain: 'local',
-        hashPwd: 'x',
+        sourceDomain: 'local',
         name: 'live',
         avatar: liveUrl,
         updatedAt: new Date(),
       })
       .onConflictDoUpdate({
-        target: [user.account, user.domain],
+        target: [user.account, user.domain, user.sourceDomain],
         set: { avatar: liveUrl, updatedAt: new Date() },
       });
     const livePath = join(upload.uploadDir, liveUrl.slice('/uploads/'.length));
@@ -335,6 +338,8 @@ describe('Media asset garbage collection', () => {
   async function seedThreadAndUser(): Promise<{
     threadId: number;
     userId: number;
+    account: string;
+    domain: string;
   }> {
     const [createdUser] = await database.db
       .insert(user)
@@ -349,19 +354,25 @@ describe('Media asset garbage collection', () => {
       .insert(messageThread)
       .values({ type: 'P2P', updatedAt: new Date() })
       .returning();
-    return { threadId: thread.id, userId: createdUser.id };
+    return {
+      threadId: thread.id,
+      userId: createdUser.id,
+      account: createdUser.account,
+      domain: createdUser.domain,
+    };
   }
 
   it('gcStalePending removes staging but leaves space reclamation to manual GC', async () => {
     const { digest, absPath } = await seedAsset('stale-pending'); // file on disk + MediaAsset refs=1
     expect(existsSync(absPath)).toBe(true);
-    const { threadId, userId } = await seedThreadAndUser();
+    const { threadId, userId, account, domain } = await seedThreadAndUser();
     // Staged send that never promoted: PendingMedia(pending, digest) and NO MediaMessage.
     const [stage] = await database.db
       .insert(pendingMedia)
       .values({
         threadId,
-        creatorId: userId,
+        creatorAccount: account,
+        creatorDomain: domain,
         contentType: 'FILE',
         content: '{}',
         digest,
@@ -400,14 +411,15 @@ describe('Media asset garbage collection', () => {
   });
 
   it('cleanInboxBatch recursively deletes quotes waiting on the abandoned target', async () => {
-    const { threadId, userId } = await seedThreadAndUser();
+    const { threadId, userId, account, domain } = await seedThreadAndUser();
     const originDomain = 'quote-gc.example';
     const [target, quote, nestedQuote] = await database.db
       .insert(pendingMedia)
       .values([
         {
           threadId,
-          creatorId: userId,
+          creatorAccount: account,
+          creatorDomain: domain,
           contentType: 'FILE' as const,
           content: '{}',
           originSeq: 10,
@@ -417,7 +429,8 @@ describe('Media asset garbage collection', () => {
         },
         {
           threadId,
-          creatorId: userId,
+          creatorAccount: account,
+          creatorDomain: domain,
           contentType: 'PURE_TEXT' as const,
           content: JSON.stringify({ text: 'quote' }),
           originSeq: 11,
@@ -429,7 +442,8 @@ describe('Media asset garbage collection', () => {
         },
         {
           threadId,
-          creatorId: userId,
+          creatorAccount: account,
+          creatorDomain: domain,
           contentType: 'PURE_TEXT' as const,
           content: JSON.stringify({ text: 'nested quote' }),
           originSeq: 12,
@@ -462,12 +476,13 @@ describe('Media asset garbage collection', () => {
 
   it('gcStalePending keeps the file when a committed MediaMessage references the digest', async () => {
     const { digest, absPath } = await seedAsset('stale-live');
-    const { threadId, userId } = await seedThreadAndUser();
+    const { threadId, userId, account, domain } = await seedThreadAndUser();
     const [stage] = await database.db
       .insert(pendingMedia)
       .values({
         threadId,
-        creatorId: userId,
+        creatorAccount: account,
+        creatorDomain: domain,
         contentType: 'FILE',
         content: '{}',
         digest,
@@ -480,7 +495,8 @@ describe('Media asset garbage collection', () => {
       .insert(message)
       .values({
         threadId,
-        creator: userId,
+        creatorAccount: account,
+        creatorDomain: domain,
         seq: 1,
         originSeq: 1,
         contentType: 'FILE',
@@ -538,13 +554,14 @@ describe('Media asset garbage collection', () => {
 
   it('gcStalePending leaves fresh (in-flight) staged sends untouched', async () => {
     const { digest, absPath } = await seedAsset('stale-fresh');
-    const { threadId, userId } = await seedThreadAndUser();
+    const { threadId, userId, account, domain } = await seedThreadAndUser();
     // Just-created stage (createdAt = now) — within TTL → must not be reaped.
     const [stage] = await database.db
       .insert(pendingMedia)
       .values({
         threadId,
-        creatorId: userId,
+        creatorAccount: account,
+        creatorDomain: domain,
         contentType: 'FILE',
         content: '{}',
         digest,
@@ -583,12 +600,13 @@ describe('Media asset garbage collection', () => {
   });
 
   it('gcStalePending retains recent failed stages for recovery and eventually reaps them', async () => {
-    const { threadId, userId } = await seedThreadAndUser();
+    const { threadId, userId, account, domain } = await seedThreadAndUser();
     const [stage] = await database.db
       .insert(pendingMedia)
       .values({
         threadId,
-        creatorId: userId,
+        creatorAccount: account,
+        creatorDomain: domain,
         contentType: 'FILE',
         content: '{}',
         clientMessageId: randomUUID(),

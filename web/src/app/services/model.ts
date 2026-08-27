@@ -32,22 +32,48 @@ export type Message = Omit<S['MessageResponseDto'], 'contentType'> & {
   /** Monotonic status version — the anti-regression key for the client's reduceMediaStatus. */
   sv?: number;
 };
-export interface GroupMemberRef {
-  userId: number;
-  account: string;
-  domain: string;
-  profileSourceDomain: string;
-  role: 'OWNER' | 'ADMIN' | 'MEMBER';
-  joinedAt: number;
-  isOwner: boolean;
+export type MessageCreator = NonNullable<Message['creator']>;
+
+export function messageCreatorKey(
+  creator: MessageCreator,
+  sourceDomain: string,
+): string;
+export function messageCreatorKey(creator: null, sourceDomain: string): null;
+export function messageCreatorKey(
+  creator: MessageCreator | null,
+  sourceDomain: string,
+): string | null {
+  return creator === null
+    ? null
+    : `${sourceDomain}\u0000${creator.domain}\u0000${creator.account}`;
 }
 
-export type Group = S['GroupResponseDto'] & {
+export function parseUserIdentityKey(key: string): {
+  account: string;
+  domain: string;
+  sourceDomain: string;
+} | null {
+  const [sourceDomain, domain, account, ...rest] = key.split('\u0000');
+  return sourceDomain && domain && account && rest.length === 0
+    ? { account, domain, sourceDomain }
+    : null;
+}
+export interface Group {
+  id: number;
+  account: string;
+  name: string;
+  ownerId: number;
+  avatar: string;
   profileRev: number;
+  description: string;
+  domain: string;
+  threadId: number;
+  createdAt: number;
+  updatedAt: number;
   dissolvedAt?: number | null;
   memberCount: number;
   groupMetaFeedId: string;
-};
+}
 
 type ConversationItemBase = {
   threadId: number;
@@ -72,7 +98,7 @@ type ConversationItemBase = {
   // up on the next catch-up pull. lastMessageSenderId drives the "You:" prefix for the sender's own
   // messages; the bare preview otherwise.
   lastMessagePreview?: string | null;
-  lastMessageSenderId?: number | null;
+  lastMessageSenderId?: string | null;
   /** Distinct mention kinds among the server's bounded unread sample. */
   mentionUnread: Array<'all' | 'me'>;
   /** Latest group-join application activity; local/client-state metadata used only for list recency. */
@@ -229,9 +255,7 @@ export function displayUserAccount(u: {
   domain?: string | null;
 }): string {
   const account = u.account ?? '';
-  return u.domain && u.domain !== 'local'
-    ? `${account}@${u.domain}`
-    : account;
+  return u.domain && u.domain !== 'local' ? `${account}@${u.domain}` : account;
 }
 
 /** An invite row (friend-add / group-invite). Friend request lists are projected from the compacted
@@ -253,10 +277,20 @@ export interface PersonalQuotaBreaker {
 export interface PersonalQuotaState {
   usage: Record<PersonalQuotaCategory, { count: number; limit: number }>;
   breaker: PersonalQuotaBreaker;
-  resetAt: string;
+  resetAt: number;
 }
 
-export type QueryMessageLogParams = S['QueryMessagesDto'];
+/** Local timeline query used by the message repository. MsgService maps it to the HTTP
+ * after/before/through coordinate contract at the transport boundary. */
+export interface QueryMessageLogParams {
+  threadId: number;
+  skip: number;
+  take: number;
+  lastSeq?: number;
+  orderBy: 'asc' | 'desc';
+  truncate?: boolean;
+  truncateSeq?: number;
+}
 export type MessageThreadType = ConversationItem['type'];
 
 // Envelope generic (the generated ApiResult.data is unknown and cannot replace this)
@@ -280,7 +314,7 @@ export interface DeletedMessageItem {
   id: string;
   threadId: number;
   seq: number;
-  type: 'WITHDRAW' | 'REPORT';
-  createdAt: string;
-  updatedAt: string;
+  type: 'USER_RETRACTION' | 'MODERATION_REMOVAL';
+  createdAt: number;
+  updatedAt: number;
 }

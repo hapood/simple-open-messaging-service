@@ -5,9 +5,8 @@ import { MessageModule } from '../message/message.module.js';
 import { RelationshipIntentService } from './relationship-intent.service.js';
 
 /**
- * Invite domain module. InviteService owns invite DB state + the friend-request badge; it delegates
- * group-member upsert to ThreadParticipantService (the shared raw roster mutator) so accept-group and
- * the federation roster fanout share ONE implementation. Declared in AppModule alongside the controller.
+ * Invite domain module. InviteService owns invite state and relationship transitions. Local conversation
+ * state is handled through ThreadParticipantService; source-scoped roster projection remains independent.
  */
 @Module({
   imports: [ThreadParticipantModule, MessageModule],

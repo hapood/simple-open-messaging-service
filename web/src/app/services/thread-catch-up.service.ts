@@ -29,7 +29,7 @@ export interface ThreadCatchUpItem {
     seq: number;
     contentType: string;
     content: string;
-    creator: number | null;
+    creator: { account: string; domain: string } | null;
     createdAt: number;
     mediaStatus: 'ready' | 'failed';
     sv: number;

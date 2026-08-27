@@ -43,7 +43,7 @@ export interface NotificationDescriptor {
   actions: NotifAction[];
   messages?: Array<{
     seq: number;
-    senderId: number;
+    sender: { account: string; domain: string };
     senderName: string;
     text: string;
     timestamp: number;

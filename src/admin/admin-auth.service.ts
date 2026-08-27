@@ -5,6 +5,7 @@ import { and, count, desc, eq, gt, isNull, like } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import {
   admin,
+  account as accountTable,
   adminSession,
   systemSetting,
   user,
@@ -161,14 +162,17 @@ export class AdminAuthService implements OnModuleInit {
         { bannedUntil: ban },
       );
     }
-    const userRow = await this.database.db.query.user.findFirst({
-      where: and(eq(user.account, acct), eq(user.domain, 'local')),
-    });
+    const [userRow] = await this.database.db
+      .select({ id: user.id, hashPwd: accountTable.hashPwd })
+      .from(user)
+      .innerJoin(accountTable, eq(accountTable.id, user.id))
+      .where(and(eq(user.account, acct), eq(user.domain, 'local')))
+      .limit(1);
     // Non-revealing: a missing / deleted / group identity, no admin profile, a disabled admin, a no-password
     // account, or a wrong password are all indistinguishable from the caller's view (INVALID_CREDENTIALS).
     // NOT counted when there is no real enabled admin to protect (avoids filling the failure map with noise).
     const adminProfile =
-      userRow && !userRow.isDeleted && !userRow.isGroup
+      userRow
         ? await this.database.db.query.admin.findFirst({
             where: eq(admin.userId, userRow.id),
           })
@@ -374,7 +378,10 @@ export class AdminAuthService implements OnModuleInit {
         twoFactorSecretCipher: true,
         twoFactorLastUsedCounter: true,
       },
-      with: { user: { columns: { account: true, hashPwd: true } } },
+      with: {
+        user: { columns: { account: true } },
+        account: { columns: { hashPwd: true } },
+      },
     });
     if (!adminRow)
       throw new BusinessException(
@@ -391,8 +398,8 @@ export class AdminAuthService implements OnModuleInit {
     }
     const acct = adminRow.user.account;
     if (
-      !adminRow.user.hashPwd ||
-      !(await this.passwordHasher.verify(adminRow.user.hashPwd, password))
+      !adminRow.account.hashPwd ||
+      !(await this.passwordHasher.verify(adminRow.account.hashPwd, password))
     ) {
       throw new BusinessException(
         BusinessCode.INVALID_CREDENTIALS,
@@ -625,7 +632,8 @@ export class AdminAuthService implements OnModuleInit {
       where: eq(admin.id, adminId),
       columns: { id: true },
       with: {
-        user: { columns: { account: true, name: true, hashPwd: true } },
+        user: { columns: { account: true, name: true } },
+        account: { columns: { hashPwd: true } },
       },
     });
     if (!adminRow)
@@ -635,8 +643,8 @@ export class AdminAuthService implements OnModuleInit {
         HttpStatus.OK,
       );
     if (
-      !adminRow.user.hashPwd ||
-      !(await this.passwordHasher.verify(adminRow.user.hashPwd, password))
+      !adminRow.account.hashPwd ||
+      !(await this.passwordHasher.verify(adminRow.account.hashPwd, password))
     ) {
       throw new BusinessException(
         BusinessCode.INVALID_CREDENTIALS,

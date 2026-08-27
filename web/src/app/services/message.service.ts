@@ -6,7 +6,16 @@ import {
   HttpHeaders,
   HttpResponse,
 } from '@angular/common/http';
-import { defer, filter, firstValueFrom, map, tap, type Observable } from 'rxjs';
+import {
+  defer,
+  filter,
+  firstValueFrom,
+  map,
+  of,
+  switchMap,
+  tap,
+  type Observable,
+} from 'rxjs';
 import { Message, QueryMessageLogParams, StandardResponse } from './model';
 import { apiPrefix } from './constants';
 import { isTauri, listenEvent, tauriInvoke } from './runtime';
@@ -31,6 +40,23 @@ interface ResumableUploadState {
   chunkSize: number;
   status: 'UPLOADING' | 'COMPLETING' | 'COMPLETED' | 'ABORTED';
   result?: Record<string, unknown>;
+}
+
+interface MessageQueryPage {
+  messages: Message[];
+  scannedThrough: string;
+  hasMore: boolean;
+}
+
+interface MessageQueryCursorData {
+  resumeAfter: string;
+  resumeBefore: string;
+}
+
+interface MessageTombstoneQueryPage {
+  tombstones: import('./model').DeletedMessageItem[];
+  scannedThrough: string;
+  hasMore: boolean;
 }
 
 @Injectable({
@@ -60,7 +86,7 @@ export class MsgService {
     clientMessageId?: string;
     retainLinkGeneration?: boolean;
   }) {
-    return this.http.post<StandardResponse<{ id: string; createAt: string }>>(
+    return this.http.post<StandardResponse<{ id: string; createdAt: number }>>(
       `${apiPrefix()}/send-message`,
       params,
       params.clientMessageId
@@ -138,8 +164,8 @@ export class MsgService {
           content: string;
           status: 'pending' | 'failed';
           failReason: string | null;
-          createdAt: string;
-          updatedAt: string;
+          createdAt: number;
+          updatedAt: number;
         }>
       >
     >(`${apiPrefix()}/query-media-stages`, { threadId });
@@ -348,9 +374,119 @@ export class MsgService {
   }
 
   queryMessageLog(params: QueryMessageLogParams) {
-    return this.http.post<StandardResponse<Message[]>>(
-      `${apiPrefix()}/query-messages`,
-      params,
+    if (params.truncate && params.truncateSeq === undefined) {
+      return of({
+        code: 0,
+        message: 'success',
+        data: [],
+        hasMore: false,
+        truncated: true,
+      } satisfies StandardResponse<Message[]>);
+    }
+    const request = (body: Record<string, unknown>) =>
+      this.http.post<StandardResponse<MessageQueryPage>>(
+        `${apiPrefix()}/query-messages`,
+        body,
+      );
+    const body = this.messageQueryBody(params);
+    return request(body).pipe(
+      switchMap((response) => {
+        if (
+          response.code !== 30006 ||
+          params.lastSeq !== undefined ||
+          !this.isMessageCursorData(response.data)
+        )
+          return of(response);
+        const resumeAfter = Number(response.data.resumeAfter);
+        const resumeBefore = Number(response.data.resumeBefore);
+        if (
+          !Number.isSafeInteger(resumeAfter) ||
+          !Number.isSafeInteger(resumeBefore) ||
+          resumeBefore <= resumeAfter + 1
+        )
+          return of({
+            code: 0,
+            message: 'success',
+            data: {
+              messages: [],
+              scannedThrough: String(
+                params.orderBy === 'asc' ? resumeAfter : resumeBefore,
+              ),
+              hasMore: false,
+            },
+          } satisfies StandardResponse<MessageQueryPage>);
+        return request(
+          this.messageQueryBody(
+            params,
+            params.orderBy === 'asc' ? resumeAfter : resumeBefore,
+          ),
+        );
+      }),
+      map((response): StandardResponse<Message[]> => {
+        if (response.code !== 0 || !response.data)
+          return {
+            code: response.code,
+            message: response.message,
+          };
+        return {
+          code: response.code,
+          message: response.message,
+          data: response.data.messages,
+          hasMore: response.data.hasMore,
+          truncated:
+            params.truncate === true ? !response.data.hasMore : undefined,
+        };
+      }),
+    );
+  }
+
+  private messageQueryBody(
+    params: QueryMessageLogParams,
+    bootstrapCursor?: number,
+  ): Record<string, unknown> {
+    const ascending = params.orderBy === 'asc';
+    const body: Record<string, unknown> = {
+      threadId: params.threadId,
+    };
+    const cursor = params.lastSeq ?? bootstrapCursor;
+    if (cursor !== undefined) {
+      body['take'] = params.take;
+      if (ascending) {
+        body['after'] = String(
+          params.lastSeq !== undefined && params.skip === 0
+            ? Math.max(0, cursor - 1)
+            : cursor,
+        );
+      } else {
+        body['before'] = String(
+          params.lastSeq !== undefined && params.skip === 0
+            ? cursor + 1
+            : cursor,
+        );
+      }
+    }
+    if (
+      cursor !== undefined &&
+      params.truncate &&
+      params.truncateSeq !== undefined
+    ) {
+      body['through'] = String(
+        ascending
+          ? Math.max(0, params.truncateSeq - 1)
+          : params.truncateSeq + 1,
+      );
+    }
+    return body;
+  }
+
+  private isMessageCursorData(value: unknown): value is MessageQueryCursorData {
+    if (!value || typeof value !== 'object') return false;
+    const data = value as Partial<MessageQueryCursorData>;
+    return (
+      typeof data.resumeAfter === 'string' &&
+      /^(0|[1-9]\d*)$/.test(data.resumeAfter) &&
+      typeof data.resumeBefore === 'string' &&
+      /^(0|[1-9]\d*)$/.test(data.resumeBefore)
     );
   }
 
@@ -359,9 +495,30 @@ export class MsgService {
     afterId: string;
     take?: number;
   }) {
-    return this.http.post<
-      StandardResponse<import('./model').DeletedMessageItem[]>
-    >(`${apiPrefix()}/deleted-messages/query`, params);
+    return this.http
+      .post<StandardResponse<MessageTombstoneQueryPage>>(
+        `${apiPrefix()}/deleted-messages/query`,
+        {
+          threadId: params.threadId,
+          after: params.afterId,
+          ...(params.take === undefined ? {} : { take: params.take }),
+        },
+      )
+      .pipe(
+        map(
+          (
+            response,
+          ): StandardResponse<import('./model').DeletedMessageItem[]> =>
+            response.code === 0 && response.data
+              ? {
+                  code: response.code,
+                  message: response.message,
+                  data: response.data.tombstones,
+                  hasMore: response.data.hasMore,
+                }
+              : { code: response.code, message: response.message },
+        ),
+      );
   }
 
   withdrawMessage(params: { threadId: number; seq: number }) {

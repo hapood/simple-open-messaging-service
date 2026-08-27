@@ -10,6 +10,7 @@ import {
   isNull,
   lt,
   lte,
+  ne,
   sql,
 } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
@@ -23,6 +24,7 @@ import {
   federationTombstoneServeCursor,
   message,
   threadAudience,
+  threadMember,
   threadParticipant,
   user,
 } from '../database/schema.js';
@@ -258,6 +260,7 @@ export class FederationMessageTombstoneFeedService {
     after: bigint | undefined,
     requestedTake?: number,
     through?: bigint,
+    includeSelf = true,
     before?: bigint,
   ): Promise<FederationMessageTombstoneQueryPage> {
     const take = this.pageSize(requestedTake);
@@ -334,6 +337,7 @@ export class FederationMessageTombstoneFeedService {
             eq(deletedMessage.threadId, threadId),
             gt(message.seq, messageAccessAfterSeq),
             isNull(deletedMessage.federationSourceDomain),
+            includeSelf ? undefined : ne(message.creatorDomain, peerDomain),
             forward
               ? gt(deletedMessage.id, after!)
               : gte(deletedMessage.id, queryStart),
@@ -424,7 +428,7 @@ export class FederationMessageTombstoneFeedService {
             SELECT thread.id AS "threadId",
               audience."messageAccessAfterSeq" AS "messageAccessAfterSeq"
             FROM "MessageThread" thread
-            JOIN "User" group_user ON group_user.id = thread."groupUserId"
+            JOIN "Group" group_user ON group_user.id = thread."groupId"
             JOIN "ThreadAudience" audience ON audience."threadId" = thread.id
               AND audience."targetDomain" = ${peerDomain}
               AND audience."localUserId" IS NULL
@@ -442,9 +446,9 @@ export class FederationMessageTombstoneFeedService {
               AND audience."targetDomain" = ${peerDomain}
               AND audience."localUserId" IS NULL
             WHERE thread.type = 'P2P'
-              AND EXISTS (SELECT 1 FROM "ThreadParticipant" p JOIN "User" u ON u.id = p."userId"
+              AND EXISTS (SELECT 1 FROM "ThreadMember" p JOIN "User" u ON u.id = p."userId"
                 WHERE p."threadId" = thread.id AND u.account = ${selector.account} AND u.domain = 'local')
-              AND EXISTS (SELECT 1 FROM "ThreadParticipant" p JOIN "User" u ON u.id = p."userId"
+              AND EXISTS (SELECT 1 FROM "ThreadMember" p JOIN "User" u ON u.id = p."userId"
                 WHERE p."threadId" = thread.id AND u.account = ${selector.peerAccount}
                   AND u.domain = ${peerDomain} AND u.domain <> 'local')
             LIMIT 1
@@ -475,7 +479,7 @@ export class FederationMessageTombstoneFeedService {
       SELECT thread.id AS "threadId", thread.type,
              group_user.account AS "groupAccount", group_user.domain AS "groupDomain"
       FROM "MessageThread" thread
-      LEFT JOIN "User" group_user ON group_user.id = thread."groupUserId"
+      LEFT JOIN "Group" group_user ON group_user.id = thread."groupId"
       WHERE thread.id IN (${sql.join(
         threadIds.map((id) => sql`${id}`),
         sql`, `,
@@ -483,13 +487,13 @@ export class FederationMessageTombstoneFeedService {
     `);
     const participants = await tx
       .select({
-        threadId: threadParticipant.threadId,
+        threadId: threadMember.threadId,
         account: user.account,
         domain: user.domain,
       })
-      .from(threadParticipant)
-      .innerJoin(user, eq(user.id, threadParticipant.userId))
-      .where(inArray(threadParticipant.threadId, threadIds));
+      .from(threadMember)
+      .innerJoin(user, eq(user.id, threadMember.userId))
+      .where(inArray(threadMember.threadId, threadIds));
     return new Map(
       rows.rows.map((row) => [
         row.threadId,

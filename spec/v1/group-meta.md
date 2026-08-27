@@ -8,6 +8,10 @@ source-scoped member display profiles. Receivers derive group membership and
 the owner from this feed. No group settings, owner field, active flag,
 dissolution flag, or complete roster is carried by `state-feed`.
 
+For each target peer, the feed covers the current roster only. It does not
+provide a historical roster or guarantee a member/profile projection for every
+author in retained message history.
+
 ## 1. Request
 
 The closed query contains the Group Meta-specific `account` and `mode` fields
@@ -19,11 +23,17 @@ type GroupMetaMode = 'full' | 'delta';
 
 - `account` MUST be an origin-owned `GroupAccount`.
 - `mode` MUST be `full` or `delta`.
-- `after` MUST be an exclusive non-negative `DecimalString` feed cursor.
+- `after` is an optional exclusive non-negative `DecimalString` feed cursor.
 - `take` is an optional positive safe-integer suggestion.
 - `through` is an optional inclusive `DecimalString` upper bound and MUST be at
   least `after`.
 - Unknown, duplicate, or invalid parameters return `400 FEDERATION_MALFORMED`.
+
+When `after` is omitted, `take` and `through` MUST also be omitted. The source
+returns HTTP `200 FEDERATION_FEED_CURSOR_UNAVAILABLE` with `resumeAfter=0` and
+`resumeBefore=groupMetaFeedEndId+1`. The consumer uses that window for the
+initial full drain. An unavailable delta cursor returns the same full-recovery
+window.
 
 Both modes use the common feed paging contract. A bounded drain fixes `through`
 on its first page and MUST reuse that value on every later page. Initial full
@@ -36,13 +46,13 @@ For this operation, that projection exists only while an origin-authored
 the core protocol's more general `REQUESTED` query grant does not by itself
 authorize Group Meta. Otherwise the source returns `FORBIDDEN`. A departing
 peer converges the leave through `RELATIONSHIP_INTENT/REVOKED`; it has no
-terminal Group Meta access. Member `DELETE` records remain visible to other
+terminal Group Meta access. Member `DEPART` records remain visible to other
 peers that are still authorized.
 
 ## 2. Page and coordinates
 
 ```ts
-interface GroupMetaPage {
+interface GroupMetaFeedPage {
   account: GroupAccount;
   mode: GroupMetaMode;
   items: GroupMetaItem[];
@@ -51,19 +61,29 @@ interface GroupMetaPage {
   hasMore: boolean;
 }
 
-interface GroupMetaItem {
+interface GroupMetaItemBase {
   feedId: PositiveDecimalString;
   account: UserAccount;
   domain: Domain;
-  operation: 'UPSERT' | 'DELETE';
-  body: GroupMetaMemberBody | Record<string, never>;
 }
+
+interface GroupMetaUpsertItem extends GroupMetaItemBase {
+  operation: 'UPSERT';
+  body: GroupMetaMemberBody;
+}
+
+interface GroupMetaDepartItem extends GroupMetaItemBase {
+  operation: 'DEPART';
+  body: Record<string, never>;
+}
+
+type GroupMetaItem = GroupMetaUpsertItem | GroupMetaDepartItem;
 
 interface GroupMetaMemberBody {
   role: 'OWNER' | 'ADMIN' | 'MEMBER';
-  profileRev: SafeNonNegativeInteger;
+  profileRev: SafeInteger;
   displayName: string;
-  avatar: ProfileAvatar | null;
+  avatar: InlineProfileAvatar | null;
 }
 ```
 
@@ -99,30 +119,40 @@ receiver derives the owner from that role and derives its local active state by
 whether one of its own users remains in the roster. Non-member-derived settings
 are local policy and are not federated facts.
 
+An `UPSERT` supplies the member information. In delta mode, a later `DEPART`
+marks that member as departed; it does not authorize the receiver to erase a
+retained member or profile projection. A later `UPSERT` for the same stable key
+marks the member current again and replaces its role/profile fields. The shared
+`InlineProfileAvatar` rules apply to every non-null `avatar`.
+
 ## 3. Full mode
 
-Full mode scans the latest record for every stable member key as of the fixed
-`through`. It returns current `UPSERT` records and filters current `DELETE`
-records. Completing the bounded drain is sufficient to reconstruct membership
-from no prior state. The consumer MUST stage all full pages and atomically
-replace its roster only after the drain completes; a partial full drain has no
-roster effect.
+Full mode is an authoritative snapshot of the current roster at the fixed
+`through`. It returns exactly one `UPSERT` for each member whose latest
+operation at or below `through` is `UPSERT`, using that operation's `feedId`.
+It MUST NOT return `DEPART` items or members whose latest operation at that
+boundary is `DEPART`.
 
-The source MUST retain enough stable-key history to reproduce the full
-projection for an active bounded drain. It MUST retain every current `UPSERT`
-for as long as the target projection exists. Compaction or a concurrent update
-MUST NOT make a member that was current at the fixed `through` disappear from
-that full reconstruction.
+The consumer accumulates the bounded full drain and applies it atomically. On
+successful completion it marks every previously materialized member absent
+from the snapshot as departed, without deleting the retained member or profile
+projection. A failed or incomplete full drain MUST NOT alter the committed
+roster or cursor.
+
+The source MUST retain the latest `UPSERT` needed to reproduce every current
+member for an active bounded full drain. It has no Group Meta retention or
+disclosure obligation for departed members or historical message authors.
 
 ## 4. Delta mode
 
-Delta mode returns retained `UPSERT` and `DELETE` changes in feed order. A
+Delta mode returns retained `UPSERT` and `DEPART` changes in feed order. A
 consumer applies each item by stable member key and commits its page cursor in
-the same transaction. Items at or below the committed feed cursor are already
-applied and MUST NOT be replayed.
+the same transaction. `DEPART` marks the retained projection departed instead
+of removing it. Items at or below the committed feed cursor are already applied
+and MUST NOT be replayed.
 
-The source MAY compact obsolete history when service capacity is insufficient,
-but MUST retain the newest stable-key record needed for full reconstruction. If
+The source MAY compact history that is not needed for a current member or a
+speaker in the target peer's visible interval. If
 `after` is below the delta retention floor, the source MUST return
 `FEDERATION_FEED_CURSOR_UNAVAILABLE` with the common exclusive
 `resumeAfter/resumeBefore` boundaries. The consumer restarts with

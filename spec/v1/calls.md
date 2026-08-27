@@ -46,10 +46,10 @@ being inferred from SDP, ICE, or WebRTC transport state.
 - The **callee server** receives `incoming` and maintains the ephemeral peer
   signaling state.
 - An **endpoint** produces or consumes WebRTC signaling and media.
-- `callSid` is the canonical UUID correlation key for one call. The caller
+- `callId` is the canonical UUID correlation key for one call. The caller
   server MUST NOT reuse it for another call and MUST preserve it when retrying
   the same call.
-- `signal.payload.id` is the canonical UUID idempotency key for one logical
+- `signal.payload.signalId` is the canonical UUID idempotency key for one logical
   signal. A sending server MUST use a distinct value for each logical signal
   in a call and preserve it across retries of that signal.
 
@@ -60,27 +60,27 @@ wire ID regardless of whether an endpoint or server generated it.
 
 Only `incoming` carries accounts:
 
-- `payload.fromAccount` is hosted by the verified signer domain.
-- `payload.toAccount` is hosted by the receiving authority domain.
+- `payload.callerAccount` is hosted by the verified signer domain.
+- `payload.calleeAccount` is hosted by the receiving authority domain.
 - Domains are derived from the signature and request authority and are not
   repeated in the frame.
 
 After accepting `incoming`, the receiver MUST bind
-`(signer domain, callSid)` to both accounts, their roles, and the initial
-`callType`. Later frames use only that binding and do not repeat accounts.
+`(signer domain, callId)` to both accounts, their roles, and the initial
+`mediaType`. Later frames use only that binding and do not repeat accounts.
 
 ## 3. HTTP operation
 
-| Property | Requirement |
-| --- | --- |
-| Method | `POST` |
-| Path | `/s2s/v1/call` |
-| Query | None |
-| Request media type | UTF-8 `application/json` |
-| Authentication | Federation v1 HTTP Message Signature using the `recognized signed` context |
-| Request body | One closed Call Frame from Section 4 |
-| Success | HTTP `200` JSON success envelope |
-| Error | Section 11 and the stable error registry |
+| Property           | Requirement                                                                |
+| ------------------ | -------------------------------------------------------------------------- |
+| Method             | `POST`                                                                     |
+| Path               | `/s2s/v1/call`                                                             |
+| Query              | None                                                                       |
+| Request media type | UTF-8 `application/json`                                                   |
+| Authentication     | Federation v1 HTTP Message Signature using the `recognized signed` context |
+| Request body       | One closed Call Frame from Section 4                                       |
+| Success            | HTTP `200` JSON success envelope                                           |
+| Error              | Section 11 and the stable error registry                                   |
 
 The request MUST contain `Content-Type`, `Date`, `Content-Digest`,
 `Signature-Input`, and `Signature`. Their exact syntax, signed-component order,
@@ -114,11 +114,11 @@ business code in HTTP `200` is not success.
 ## 4. Call Frame
 
 Every body is a closed JSON object. An unknown or missing field, wrong type,
-invalid enum, or field not permitted for that `op` returns
+invalid enum, or field not permitted for that `operation` returns
 `FEDERATION_MALFORMED`.
 
 ```ts
-type CallOp =
+type CallOperation =
   | 'incoming'
   | 'accepted'
   | 'ringing'
@@ -130,10 +130,9 @@ type CallOp =
   | 'connected'
   | 'video-upgraded';
 
-type CallType = 'AUDIO' | 'VIDEO';
-type CallSignalKind = 'offer' | 'answer' | 'ice' | 'video-state';
-type EndReason = 'completed' | 'timeout' | 'failed';
-type CanonicalUuid = string;
+type MediaType = 'AUDIO' | 'VIDEO';
+type CallSignalType = 'offer' | 'answer' | 'ice' | 'video-state';
+type CallEndReason = 'completed' | 'timeout' | 'failed';
 type SdpText = string;
 type JsonText<T> = string;
 
@@ -148,49 +147,61 @@ interface VideoState {
   enabled: boolean;
 }
 
-type UnixEpochMilliseconds = number;
-
 interface CallFrameBase {
-  callSid: CanonicalUuid;
-  op: CallOp;
-  callType: CallType;
+  callId: CanonicalUuid;
+  operation: CallOperation;
+  mediaType: MediaType;
 }
 
 type CallSignalPayload =
-  | { id: CanonicalUuid; kind: 'offer' | 'answer'; data: SdpText }
-  | { id: CanonicalUuid; kind: 'ice'; data: JsonText<RTCIceCandidateInit> }
-  | { id: CanonicalUuid; kind: 'video-state'; data: JsonText<VideoState> };
+  | {
+      signalId: CanonicalUuid;
+      signalType: 'offer' | 'answer';
+      data: SdpText;
+    }
+  | {
+      signalId: CanonicalUuid;
+      signalType: 'ice';
+      data: JsonText<RTCIceCandidateInit>;
+    }
+  | {
+      signalId: CanonicalUuid;
+      signalType: 'video-state';
+      data: JsonText<VideoState>;
+    };
 
 type CallFrame =
   | (CallFrameBase & {
-      op: 'incoming';
-      payload: { fromAccount: UserAccount; toAccount: UserAccount };
+      operation: 'incoming';
+      payload: { callerAccount: UserAccount; calleeAccount: UserAccount };
     })
   | (CallFrameBase & {
-      op: 'ringing' | 'accepted' | 'declined' | 'cancelled' | 'missed';
+      operation: 'ringing' | 'accepted' | 'declined' | 'cancelled' | 'missed';
     })
-  | (CallFrameBase & { op: 'signal'; payload: CallSignalPayload })
+  | (CallFrameBase & { operation: 'signal'; payload: CallSignalPayload })
   | (CallFrameBase & {
-      op: 'connected';
-      payload: { startedAt: UnixEpochMilliseconds };
+      operation: 'connected';
+      payload: { startedAt: EpochMilliseconds };
     })
-  | (CallFrameBase & { op: 'video-upgraded'; callType: 'VIDEO' })
+  | (CallFrameBase & { operation: 'video-upgraded'; mediaType: 'VIDEO' })
   | (CallFrameBase & {
-      op: 'ended';
-      payload: { endReason: EndReason };
+      operation: 'ended';
+      payload: { endReason: CallEndReason };
     });
 ```
 
-`callSid`, `op`, and `callType` are required in every frame. Except for
-`video-upgraded`, `callType` MUST equal the receiver's current stored type.
+`callId`, `operation`, and `mediaType` are required in every frame. Except for
+`video-upgraded`, `mediaType` MUST equal the receiver's current stored type.
 During upgrade negotiation it remains `AUDIO`; it becomes `VIDEO` only when
 `video-upgraded` is accepted. v1 does not permit downgrade to AUDIO.
 
 `payload` is an operation-specific closed object. It is required only for
 `incoming`, `signal`, `connected`, and `ended`, and forbidden for every other
 operation. The optional members of `RTCIceCandidateInit` retain the defaults
-and semantics defined by WebRTC 1.0; they are not protocol-level optional
-metadata and cannot be made universally required by this profile.
+and semantics defined by the
+[WebRTC 1.0 `RTCIceCandidateInit` dictionary](https://www.w3.org/TR/webrtc/#dom-rtcicecandidateinit);
+they are not protocol-level optional metadata and cannot be made universally
+required by this profile.
 
 ## 5. Lifecycle state machine
 
@@ -200,13 +211,13 @@ participate. The wire lifecycle has four stages: `ringing`, `accepted`,
 `connected`, and `terminal`. Internal pending states do not alter the observable
 rules below.
 
-| Stage | Entry | Meaning |
-| --- | --- | --- |
-| `none` | No accepted `incoming` | No active binding; another op cannot create one. |
-| `ringing` | Accepted `incoming` | Binding exists and awaits acceptance; endpoint alerting is not implied. |
-| `accepted` | Accepted `accepted` | The callee accepted; SDP/ICE negotiation may continue. |
-| `connected` | Accepted callee `connected(startedAt)` | The authoritative media connection was established. |
-| `terminal` | First valid terminal frame or authoritative local termination | Irreversible; only the bounded tombstone remains. |
+| Stage       | Entry                                                         | Meaning                                                                 |
+| ----------- | ------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `none`      | No accepted `incoming`                                        | No active binding; another op cannot create one.                        |
+| `ringing`   | Accepted `incoming`                                           | Binding exists and awaits acceptance; endpoint alerting is not implied. |
+| `accepted`  | Accepted `accepted`                                           | The callee accepted; SDP/ICE negotiation may continue.                  |
+| `connected` | Accepted callee `connected(startedAt)`                        | The authoritative media connection was established.                     |
+| `terminal`  | First valid terminal frame or authoritative local termination | Irreversible; only the bounded tombstone remains.                       |
 
 The `ringing` operation is an advisory acknowledgement that the callee
 endpoint actually began alerting the user. It does not change the `ringing`
@@ -222,18 +233,18 @@ connected/AUDIO --video-upgraded--> connected/VIDEO
 ringing(op), signal: no stage change
 ```
 
-| `op` | Direction | First effective stage | Result | Successful no-op |
-| --- | --- | --- | --- | --- |
-| `incoming` | caller → callee | `none` | Create `ringing` | Identical binding in an active stage |
-| `ringing` | callee → caller | `ringing` | Record advisory fact | Already recorded, accepted, or connected |
-| `accepted` | callee → caller | `ringing` | Enter `accepted` | Already accepted or connected |
-| `connected` | callee → caller | `accepted` | Enter `connected` | Already connected; preserve first `startedAt` |
-| `video-upgraded` | caller → callee | Connected and currently AUDIO | Change type to VIDEO | Initially AUDIO and already upgraded |
-| `declined` | callee → caller | `ringing` | Enter `terminal` | Already terminal |
-| `missed` | callee → caller | `ringing` | Enter `terminal` | Already terminal |
-| `cancelled` | caller → callee | `ringing` or `accepted` | Enter `terminal` | Already terminal |
-| `ended` | Either direction | `accepted` or `connected` | Enter `terminal` | Already terminal |
-| `signal` | Section 8 | Section 8 | Relay without stage change | Signal ID already processed |
+| `operation`      | Direction        | First effective stage         | Result                     | Successful no-op                              |
+| ---------------- | ---------------- | ----------------------------- | -------------------------- | --------------------------------------------- |
+| `incoming`       | caller → callee  | `none`                        | Create `ringing`           | Identical binding in an active stage          |
+| `ringing`        | callee → caller  | `ringing`                     | Record advisory fact       | Already recorded, accepted, or connected      |
+| `accepted`       | callee → caller  | `ringing`                     | Enter `accepted`           | Already accepted or connected                 |
+| `connected`      | callee → caller  | `accepted`                    | Enter `connected`          | Already connected; preserve first `startedAt` |
+| `video-upgraded` | caller → callee  | Connected and currently AUDIO | Change type to VIDEO       | Initially AUDIO and already upgraded          |
+| `declined`       | callee → caller  | `ringing`                     | Enter `terminal`           | Already terminal                              |
+| `missed`         | callee → caller  | `ringing`                     | Enter `terminal`           | Already terminal                              |
+| `cancelled`      | caller → callee  | `ringing` or `accepted`       | Enter `terminal`           | Already terminal                              |
+| `ended`          | Either direction | `accepted` or `connected`     | Enter `terminal`           | Already terminal                              |
+| `signal`         | Section 8        | Section 8                     | Relay without stage change | Signal ID already processed                   |
 
 The callee server MUST send `ringing` only after local confirmation that the
 callee endpoint began alerting. Failure of this advisory frame MUST NOT block
@@ -249,18 +260,18 @@ media connection, expressed as an integer in `0..9007199254740991`. Only the
 callee server sends `connected`; a caller endpoint does not create a second
 federation timestamp.
 
-| `endReason` | Permitted stage | Meaning |
-| --- | --- | --- |
+| `endReason` | Permitted stage           | Meaning                                                                       |
+| ----------- | ------------------------- | ----------------------------------------------------------------------------- |
 | `completed` | `accepted` or `connected` | Normal hang-up after acceptance, with or without a completed media connection |
-| `timeout` | `accepted` | Media did not connect within the local post-acceptance deadline |
-| `failed` | `accepted` or `connected` | Non-timeout technical failure or unrecoverable connected-media failure |
+| `timeout`   | `accepted`                | Media did not connect within the local post-acceptance deadline               |
+| `failed`    | `accepted` or `connected` | Non-timeout technical failure or unrecoverable connected-media failure        |
 
 ## 6. Commit, ordering, and races
 
 ### 6.1 Per-sender ordering
 
 A sender MUST serialize state-changing frames for the same
-`(peer domain, callSid)` in creation order and await the previous HTTP response
+`(peer domain, callId)` in creation order and await the previous HTTP response
 before sending a dependent state. On failure it retries the identical frame or
 terminates according to the caller action; it MUST NOT skip forward. A signal
 waits for any lifecycle change on which it depends, although independent
@@ -325,7 +336,7 @@ A competing branch not on that path remains invalid—for example, `declined`
 or `missed` after acceptance.
 
 - A repeated active `incoming` is a retry only if signer, both accounts,
-  `callSid`, and initial `callType` are identical. Otherwise it is a callSid
+  `callId`, and initial `mediaType` are identical. Otherwise it is a callId
   collision and returns `FEDERATION_MALFORMED`. Once accepted, an identical
   retry remains successful even if local admission policy later changes.
 - The first accepted `connected.startedAt` is authoritative. A duplicate is a
@@ -348,21 +359,21 @@ the specified inner structure, and the consuming side validates it before use.
 Invalid inner content may terminate or be ignored by local negotiation but does
 not retroactively change server-level signal idempotency.
 
-| `kind` | Direction | Permitted stage | `data` |
-| --- | --- | --- | --- |
-| `offer` | caller → callee | `ringing`, `accepted`, `connected` | RFC 8866 SDP text |
-| `answer` | callee → caller | `accepted`, `connected` | RFC 8866 SDP text |
-| `ice` | Either | `ringing`, `accepted`, `connected` | JSON text for `RTCIceCandidateInit` |
-| `video-state` | Either | `connected` | JSON text for closed `{ "enabled": boolean }` |
+| `signalType`  | Direction       | Permitted stage                    | `data`                                                                                                                              |
+| ------------- | --------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `offer`       | caller → callee | `ringing`, `accepted`, `connected` | SDP offer produced under [JSEP](https://www.rfc-editor.org/rfc/rfc8829.html) and [SDP](https://www.rfc-editor.org/rfc/rfc8866.html) |
+| `answer`      | callee → caller | `accepted`, `connected`            | SDP answer produced under JSEP and SDP                                                                                              |
+| `ice`         | Either          | `ringing`, `accepted`, `connected` | JSON text whose decoded value conforms to WebRTC 1.0 `RTCIceCandidateInit`                                                          |
+| `video-state` | Either          | `connected`                        | JSON text whose decoded value conforms to the closed `VideoState` interface above                                                   |
 
 At most one negotiation for a call may be incomplete at a time. The caller may
 create another offer only after the previous answer was successfully applied
 and endpoint signaling returned to `stable`. The callee produces at most one
 answer for each valid offer.
 
-The sender MUST use an unused `payload.id` for each new logical signal. A retry
-MUST preserve both the ID and the complete original signal body. For
-`(signer domain, callSid, payload.id)`, the receiver accepts only the first
+The sender MUST use an unused `payload.signalId` for each new logical signal. A
+retry MUST preserve both the ID and the complete original signal body. For
+`(signer domain, callId, payload.signalId)`, the receiver accepts only the first
 signal. A repeated ID returns `200/code=0` without another application effect.
 It does not rewrite or invalidate the accepted signal based on a later body.
 The receiver retains this deduplication information for the Section 10
@@ -383,14 +394,14 @@ restriction imposed by RFC 3264.
 When the callee requests an upgrade, it first sends
 `video-state {"enabled":true}` and the caller creates the new offer. A caller
 request also results in a caller-generated offer. Offer, answer, and ICE frames
-remain `callType: "AUDIO"` during negotiation. Only after the caller endpoint
+remain `mediaType: "AUDIO"` during negotiation. Only after the caller endpoint
 successfully applies the corresponding answer does the caller server send:
 
 ```json
 {
-  "callSid": "550e8400-e29b-41d4-a716-446655440000",
-  "op": "video-upgraded",
-  "callType": "VIDEO"
+  "callId": "550e8400-e29b-41d4-a716-446655440000",
+  "operation": "video-upgraded",
+  "mediaType": "VIDEO"
 }
 ```
 
@@ -426,7 +437,7 @@ The tombstone retains enough information for Sections 7 and 8. While present:
 - no frame recreates or restores the call.
 
 After learning or committing a terminal result, a sender MUST atomically stop
-all non-terminal work and retries for that `callSid`. It MUST NOT renew a
+all non-terminal work and retries for that `callId`. It MUST NOT renew a
 signature to replay an old `incoming` or signal. Tombstones absorb in-flight
 replays within the signed request window; they are not a permanent call-ID
 registry. A restart may lose active media state but MUST retain unexpired
@@ -451,10 +462,10 @@ delivery or an active call. Once either side commits a terminal result, the
 late-frame and tombstone rules apply and no delayed lifecycle or signal frame
 may revive the call.
 
-| Timeout | Sender | Required frame |
-| --- | --- | --- |
-| Callee unanswered timeout | callee server | `missed` |
-| Caller unanswered timeout | caller server | `cancelled` |
+| Timeout                                   | Sender        | Required frame   |
+| ----------------------------------------- | ------------- | ---------------- |
+| Callee unanswered timeout                 | callee server | `missed`         |
+| Caller unanswered timeout                 | caller server | `cancelled`      |
 | Callee post-acceptance connection timeout | callee server | `ended(timeout)` |
 | Caller post-acceptance connection timeout | caller server | `ended(timeout)` |
 
@@ -467,14 +478,14 @@ The receiver processes a frame in this order:
 1. Validate the `recognized signed` context, signature, time fields, digest,
    media type, and body limit. A local `degraded` cache is not a rejection.
 2. Validate the closed frame shape and shared federation types.
-3. Look up an active binding or tombstone by `(signer domain, callSid)`.
+3. Look up an active binding or tombstone by `(signer domain, callId)`.
 4. For a tombstone, accept terminal retries and recorded signal IDs as no-ops;
    return `CALL_CANCELLED` or `CALL_TERMINATED` for other frames.
 5. For an active binding, handle a repeated `incoming` or recorded signal ID
    according to Section 7 or 8 before new-transition checks.
 6. Only for a new `incoming`, validate account/domain binding and local call
    admission before creating the active binding.
-7. For another new frame, validate direction, stage, `callType`, and
+7. For another new frame, validate direction, stage, `mediaType`, and
    operation-specific constraints; accept already traversed lifecycle events as
    no-ops.
 
@@ -494,14 +505,14 @@ An unknown non-`incoming` call with no tombstone returns
 or user-call permission change does not block valid frames needed for safe
 termination and convergence unless the federation peer enters the hard gate.
 
-| Condition | HTTP / code | Action |
-| --- | --- | --- |
-| Invalid shape, field, ID, active binding, direction, or transition | `400 FEDERATION_MALFORMED` | Correct before retrying. |
-| Signer does not bind the `incoming` caller | `401 FEDERATION_BINDING_VIOLATION` | Do not retry unchanged. |
-| Unknown call or privacy-collapsed admission failure | `200 CALL_NOT_ALLOWED` | End this call; do not degrade the peer. |
-| Late non-retry frame for a cancelled call | `200 CALL_CANCELLED` | Converge to cancelled and stop dependent work. |
-| Late non-retry frame for another terminal call | `200 CALL_TERMINATED` | Converge to terminal and stop dependent work. |
-| Callee is already in another active call | `200 CALL_BUSY` | End this attempt or later create a new `callSid`. |
+| Condition                                                          | HTTP / code                        | Action                                           |
+| ------------------------------------------------------------------ | ---------------------------------- | ------------------------------------------------ |
+| Invalid shape, field, ID, active binding, direction, or transition | `400 FEDERATION_MALFORMED`         | Correct before retrying.                         |
+| Signer does not bind the `incoming` caller                         | `401 FEDERATION_BINDING_VIOLATION` | Do not retry unchanged.                          |
+| Unknown call or privacy-collapsed admission failure                | `200 CALL_NOT_ALLOWED`             | End this call; do not degrade the peer.          |
+| Late non-retry frame for a cancelled call                          | `200 CALL_CANCELLED`               | Converge to cancelled and stop dependent work.   |
+| Late non-retry frame for another terminal call                     | `200 CALL_TERMINATED`              | Converge to terminal and stop dependent work.    |
+| Callee is already in another active call                           | `200 CALL_BUSY`                    | End this attempt or later create a new `callId`. |
 
 Network failure and HTTP `503` MAY retry the identical frame with bounded
 backoff. An HTTP `200` response still requires envelope parsing: only `code=0`
@@ -512,22 +523,22 @@ is success. Implementations MUST NOT branch on human-readable `message` text.
 ### 12.1 Lifecycle frames
 
 ```jsonl
-{"callSid":"550e8400-e29b-41d4-a716-446655440000","op":"incoming","callType":"AUDIO","payload":{"fromAccount":"alice","toAccount":"bob"}}
-{"callSid":"550e8400-e29b-41d4-a716-446655440000","op":"ringing","callType":"AUDIO"}
-{"callSid":"550e8400-e29b-41d4-a716-446655440000","op":"accepted","callType":"AUDIO"}
-{"callSid":"550e8400-e29b-41d4-a716-446655440000","op":"connected","callType":"AUDIO","payload":{"startedAt":1700000000100}}
-{"callSid":"550e8400-e29b-41d4-a716-446655440000","op":"ended","callType":"AUDIO","payload":{"endReason":"completed"}}
+{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"incoming","mediaType":"AUDIO","payload":{"callerAccount":"alice","calleeAccount":"bob"}}
+{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"ringing","mediaType":"AUDIO"}
+{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"accepted","mediaType":"AUDIO"}
+{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"connected","mediaType":"AUDIO","payload":{"startedAt":1700000000100}}
+{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"ended","mediaType":"AUDIO","payload":{"endReason":"completed"}}
 ```
 
-The common `callSid` illustrates alternative frames; it does not imply that
+The common `callId` illustrates alternative frames; it does not imply that
 one call traverses mutually exclusive terminal paths.
 
 ### 12.2 Signal frames
 
 ```jsonl
-{"callSid":"550e8400-e29b-41d4-a716-446655440000","op":"signal","callType":"AUDIO","payload":{"id":"c0a80101-0000-4000-8000-000000000001","kind":"offer","data":"v=0\r\no=- 46117317 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n"}}
-{"callSid":"550e8400-e29b-41d4-a716-446655440000","op":"signal","callType":"AUDIO","payload":{"id":"c0a80101-0000-4000-8000-000000000003","kind":"ice","data":"{\"candidate\":\"candidate:1 1 UDP 2122260223 192.0.2.10 54321 typ host\",\"sdpMid\":\"0\",\"sdpMLineIndex\":0}"}}
-{"callSid":"550e8400-e29b-41d4-a716-446655440000","op":"signal","callType":"VIDEO","payload":{"id":"c0a80101-0000-4000-8000-000000000004","kind":"video-state","data":"{\"enabled\":true}"}}
+{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"signal","mediaType":"AUDIO","payload":{"signalId":"c0a80101-0000-4000-8000-000000000001","signalType":"offer","data":"v=0\r\no=- 46117317 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n"}}
+{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"signal","mediaType":"AUDIO","payload":{"signalId":"c0a80101-0000-4000-8000-000000000003","signalType":"ice","data":"{\"candidate\":\"candidate:1 1 UDP 2122260223 192.0.2.10 54321 typ host\",\"sdpMid\":\"0\",\"sdpMLineIndex\":0}"}}
+{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"signal","mediaType":"VIDEO","payload":{"signalId":"c0a80101-0000-4000-8000-000000000004","signalType":"video-state","data":"{\"enabled\":true}"}}
 ```
 
 ### 12.3 HTTP Message Signature
@@ -541,7 +552,7 @@ Content-Digest: sha-256=:<base64 digest of the exact body below>:
 Signature-Input: sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=1700000000;expires=1700000300;keyid="a.example/key-1";alg="ed25519"
 Signature: sig1=:<Ed25519 signature>:
 
-{"callSid":"550e8400-e29b-41d4-a716-446655440000","op":"incoming","callType":"AUDIO","payload":{"fromAccount":"alice","toAccount":"bob"}}
+{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"incoming","mediaType":"AUDIO","payload":{"callerAccount":"alice","calleeAccount":"bob"}}
 ```
 
 Deterministic values are provided in

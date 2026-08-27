@@ -323,7 +323,7 @@ export class FederationSelfCheckService {
 
   private async checkKeyAge(): Promise<CheckBody> {
     try {
-      const created = new Date(this.keypair.getCreatedAt()).getTime();
+      const created = this.keypair.getCreatedAt();
       const ageDays = Math.floor((Date.now() - created) / 86_400_000);
       if (ageDays < FederationSelfCheckService.KEY_AGE_WARN_DAYS) {
         return {

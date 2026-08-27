@@ -7,12 +7,7 @@ import { asc, eq } from 'drizzle-orm';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
-import {
-  message,
-  messageThread,
-  threadParticipant,
-  user,
-} from '../src/database/schema';
+import { message, messageThread, user } from '../src/database/schema';
 import { ContentType } from '../src/database/enums.js';
 import { ClientMessageFeedWriter } from '../src/message/client-message-feed.service.js';
 import { seedAcceptedRelationship, seedUser, seedSession } from './seed';
@@ -75,11 +70,7 @@ describe('notifications/action (descriptor button round-trip)', () => {
       })
       .returning({ id: messageThread.id });
     threadId = thread.id;
-    await database.db.insert(threadParticipant).values([
-      { userId: recipientId, threadId, updatedAt: now },
-      { userId: peerId, threadId, updatedAt: now },
-    ]);
-    await seedAcceptedRelationship(database.db, recipientId, peerId);
+    await seedAcceptedRelationship(database.db, recipientId, peerId, threadId);
     // seq 1 = the recipient's own outgoing message (the high-water mark before backgrounding); seq 2 =
     // Alice's reply that arrives while away and advances the recipient's message feed.
     await database.db.insert(message).values([
@@ -89,7 +80,8 @@ describe('notifications/action (descriptor button round-trip)', () => {
         originSeq: 1,
         contentType: ContentType.PURE_TEXT,
         content: JSON.stringify({ text: 'yo' }),
-        creator: recipientId,
+        creatorAccount: 'recip',
+        creatorDomain: 'local',
         createdAt: new Date(Date.now() - 1000),
         updatedAt: now,
       },
@@ -99,7 +91,8 @@ describe('notifications/action (descriptor button round-trip)', () => {
         originSeq: 2,
         contentType: ContentType.PURE_TEXT,
         content: JSON.stringify({ text: 'hi' }),
-        creator: peerId,
+        creatorAccount: 'alice',
+        creatorDomain: 'local',
         createdAt: now,
         updatedAt: now,
       },
@@ -125,7 +118,7 @@ describe('notifications/action (descriptor button round-trip)', () => {
     expect(d.messages).toEqual([
       expect.objectContaining({
         seq: 2,
-        senderId: peerId,
+        sender: { account: 'alice', domain: 'local' },
         senderName: 'Alice',
         text: 'hi',
       }),
@@ -158,7 +151,8 @@ describe('notifications/action (descriptor button round-trip)', () => {
       .orderBy(asc(message.seq));
     expect(msgs.map((m) => m.seq)).toEqual([1, 2, 3]);
     const reply = msgs.find((m) => m.seq === 3)!;
-    expect(reply.creator).toBe(recipientId);
+    expect(reply.creatorAccount).toBe('recip');
+    expect(reply.creatorDomain).toBe('local');
     expect(reply.contentType).toBe(ContentType.PURE_TEXT);
     expect(JSON.parse(reply.content)).toEqual({ text: 'thanks' }); // trimmed
     // The thread's lastMessageSeq advanced (the send pipeline allocated seq 3).
@@ -186,10 +180,12 @@ describe('notifications/action (descriptor button round-trip)', () => {
       .insert(messageThread)
       .values({ type: 'P2P', curSeq: 0, lastMessageSeq: null, updatedAt: now })
       .returning({ id: messageThread.id });
-    await database.db.insert(threadParticipant).values([
-      { userId: other.id, threadId: otherThread.id, updatedAt: now },
-      { userId: peerId, threadId: otherThread.id, updatedAt: now },
-    ]);
+    await seedAcceptedRelationship(
+      database.db,
+      other.id,
+      peerId,
+      otherThread.id,
+    );
 
     const act = await request(app.getHttpServer())
       .post('/api/v1/notifications/action')

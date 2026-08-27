@@ -159,10 +159,18 @@ export interface PopupInput {
 // per-popup result contracts — what a dialog passes back to its opener via closeDlg()
 export interface PopupResult {
   [PopupType.FRIEND_REQUESTS]:
-    | { userId: number; status: 'OUTGOING_PENDING' | 'FRIEND' }
+    | {
+        account: string;
+        domain: string;
+        status: 'OUTGOING_PENDING' | 'FRIEND';
+      }
     | undefined;
   [PopupType.FRIEND_INVITE]:
-    | { userId: number; status: 'OUTGOING_PENDING' | 'FRIEND' }
+    | {
+        account: string;
+        domain: string;
+        status: 'OUTGOING_PENDING' | 'FRIEND';
+      }
     | undefined;
   [PopupType.NEW_GROUP]: { groupId: number };
   [PopupType.EDIT_PROFILE]: boolean;

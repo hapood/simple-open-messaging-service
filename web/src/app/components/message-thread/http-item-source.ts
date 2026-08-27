@@ -33,7 +33,12 @@ import { MessageRepository } from '../../services/message-repository.service';
 import { UserService } from '../../services/user.service';
 import { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
 import { ProfileRepository } from '../../services/profile-store.service';
-import type { Message, ConversationItem } from '../../services/model';
+import {
+  messageCreatorKey,
+  parseUserIdentityKey,
+  type Message,
+  type ConversationItem,
+} from '../../services/model';
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
 import type {
   CbDemand,
@@ -60,6 +65,10 @@ import {
   toRenderMessageEntities,
 } from '../../lib/message-entity';
 import { requireTextMessageContent } from '../../../../../shared/text-message-content';
+import {
+  parseCallMessageContent,
+  type CallMessageContent,
+} from '../../../../../shared/call-message-content';
 
 /**
  * Backend QueryMessagesDto enforces @Max(50) per request — the source owns this ceiling so the kernel's
@@ -89,7 +98,7 @@ export interface HttpItemSourceLiveOpts {
     profile: {
       name: string;
       avatar: string;
-      avatarIdentityId: number;
+      avatarIdentityId: string;
       avatarAccount: string;
       avatarDomain: string;
       isSelf: boolean;
@@ -106,13 +115,14 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   private noNewer = true; // anchor is the latest; always true (SSE pushes one way only)
 
   private readonly profiles = new Map<
-    number,
+    string,
     {
       name: string;
       account: string;
       avatar: string;
       domain: string;
       isSelf: boolean;
+      avatarIdentityId?: string;
     }
   >();
   /** In-flight optimistic sends, held separately from the reloadable sequence (mirrors MockItemSource.pending).
@@ -130,16 +140,15 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     profile: {
       name: string;
       avatar: string;
-      avatarIdentityId: number;
+      avatarIdentityId: string;
       avatarAccount: string;
       avatarDomain: string;
       isSelf: boolean;
     },
   ) => void;
   private readonly onNewerAvailable: (seq: number) => void;
-  private readonly seqsByCreator = new Map<number, Set<number>>();
-  private readonly profilesInFlight = new Set<number>();
-  private readonly profileBacklog: Message[] = [];
+  private readonly seqsByCreator = new Map<string, Set<number>>();
+  private readonly profilesInFlight = new Map<string, Promise<void>>();
   private initializingDb = true;
   private loadedSeq = -1;
   /** Newer-edge demands are long-lived: at the current newest they remain pending until a real item exists. */
@@ -163,24 +172,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       this.conv.threadId,
       this.conv.lastMessageSeq ?? undefined,
     );
-    const self = userService.sessionProfile?.();
-    if (self)
-      this.profiles.set(self.id, {
-        name: self.name,
-        account: self.account,
-        avatar: self.avatar,
-        domain: 'local',
-        isSelf: true,
-      });
-    if (conv.type === 'P2P' && conv.peerUser)
-      this.profiles.set(conv.peerUser.id, {
-        name: conv.peerUser.name,
-        account: conv.peerUser.account,
-        avatar: conv.peerUser.avatar,
-        domain:
-          conv.peerUser.domain !== 'local' ? conv.peerUser.domain : 'local',
-        isSelf: conv.peerUser.id === this.selfUserId,
-      });
     this.pending = outbox.forThread(conv.threadId);
     this.onMediaStatus = live.onMediaStatus ?? (() => {});
     this.onProfile = live.onProfile ?? (() => {});
@@ -241,8 +232,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       const list = [...data].reverse(); // desc → ascending (old → new)
       this.noOlder = !hasMore;
       this.noNewer = true; // anchor is the latest
-      this.profileBacklog.push(...list);
-      const items = this.rawToItems(list);
+      const items = await this.rawToItems(list);
       if (items.length > 0) {
         // anchor=-1 → the last item is always the global newest; noOlder means it also reached the oldest. A length-1
         // batch spanning both edges is a sole item → 'both' (the boundary field is single-valued; otherwise items[0]='oldest'
@@ -288,8 +278,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     const list = [...older, ...newer];
     this.noOlder = !olderPage.hasMore;
     this.noNewer = !newerPage.hasMore;
-    this.profileBacklog.push(...list);
-    const items = this.rawToItems(list);
+    const items = await this.rawToItems(list);
     if (items.length > 0) {
       // Bidirectional fetch: noOlder/noNewer reflect each direction's hasMore. A length-1 batch spanning both edges → 'both'.
       if (this.noOlder && this.noNewer && items.length === 1)
@@ -348,8 +337,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     }
     const list = [...data].reverse(); // desc → ascending
     if (!hasMore) this.noOlder = true; // authoritative backend result, or cache reached minimum seq 1
-    this.profileBacklog.push(...list);
-    const items = this.rawToItems(list);
+    const items = await this.rawToItems(list);
     if (items.length === 0) return [];
     if (this.noOlder) items[0] = { ...items[0], boundary: 'oldest' };
     this.oldestMsgId = firstMsgId(items) ?? this.oldestMsgId;
@@ -385,8 +373,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     }
     const list = [...data]; // already ascending (old → new)
     if (!hasMore) this.noNewer = true; // hasMore is authoritative (backend take+1 method, or the cache reached maxSeenSeq)
-    this.profileBacklog.push(...list);
-    const items = this.rawToItems(list);
+    const items = await this.rawToItems(list);
     if (items.length === 0) return [];
     if (this.noNewer)
       items[items.length - 1] = {
@@ -589,7 +576,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     persistedLatestSeq?: number | null,
   ): void {
     this.initializingDb = false;
-    this.hydrateProfiles(this.profileBacklog.splice(0));
     const targetSeq = Math.max(liveLatestSeq ?? -1, persistedLatestSeq ?? -1);
     if (targetSeq > this.loadedSeq) {
       this.repo.retainNewestSeq(this.conv.threadId, targetSeq);
@@ -600,18 +586,29 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 
   // ---------- rawToItems (shape every queried message + per-msg parsing; no album merging — that is the kernel's mergeItems job) ----------
 
-  private rawToItems(msgs: Message[]): CbItem<ChatItemData>[] {
+  private async rawToItems(msgs: Message[]): Promise<CbItem<ChatItemData>[]> {
+    await this.ensureProfiles(msgs);
     const out: CbItem<ChatItemData>[] = [];
     for (const m of msgs) {
       const id = m.seq;
       if (id > this.loadedSeq) this.loadedSeq = id;
-      const creatorKey = m.creator ?? 0;
-      let creatorSeqs = this.seqsByCreator.get(creatorKey);
-      if (!creatorSeqs) {
-        creatorSeqs = new Set<number>();
-        this.seqsByCreator.set(creatorKey, creatorSeqs);
+      const callContent =
+        m.contentType === 'CALL' ? parseCallMessageContent(m.content) : null;
+      if (m.contentType === 'CALL' && !callContent) {
+        console.error(
+          `[message-content] skipped invalid CALL content (threadId=${this.conv.threadId}, seq=${m.seq})`,
+        );
+        continue;
       }
-      creatorSeqs.add(id);
+      const creatorKey = this.creatorKey(m.creator);
+      if (creatorKey !== null) {
+        let creatorSeqs = this.seqsByCreator.get(creatorKey);
+        if (!creatorSeqs) {
+          creatorSeqs = new Set<number>();
+          this.seqsByCreator.set(creatorKey, creatorSeqs);
+        }
+        creatorSeqs.add(id);
+      }
       // Each IMAGE/VIDEO/AUDIO message → a single-element media array (carrying its own msgId); consecutive
       // same-creator IMAGE/VIDEO are merged into an album by the kernel's mergeItems (AUDIO stays standalone).
       let images: AlbumImage[] | null = null;
@@ -641,7 +638,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       // bubbles. Backend serializeBody ships clientMessageId on the wire (no DTO whitelisting).
       const item: CbItem<ChatItemData> = {
         id,
-        data: this.toMsgData(m, images, file),
+        data: this.toMsgData(m, images, file, callContent),
       };
       if (m.clientMessageId) {
         item.clientMessageId = m.clientMessageId;
@@ -659,28 +656,29 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     return out;
   }
 
-  /** The authenticated user's id, resolved LIVE at message-shape time — NOT snapshotted at construction.
-   *  `establishSession` sets `sessionUserId` synchronously on the HELLO handshake (BEFORE the async self-
-   *  profile fetch), so reading it here yields the correct id the instant HELLO lands. Snapshotting the id
-   *  at construction instead froze a pre-HELLO `0`, which made `creator === 0` false for EVERY message and
-   *  rendered both sides' messages on the peer's side (the "reconnect attribution" bug). Falls back to the
-   *  profile id, then `0` only when the session is genuinely unknown (shaped before any HELLO). */
-  private get selfUserId(): number {
-    return (
-      this.userService.sessionUserId() ??
-      this.userService.sessionProfile()?.id ??
-      0
-    );
+  private isSelfAddress(account: string, domain: string): boolean {
+    const self = this.userService.sessionProfile();
+    return self !== undefined && self.account === account && domain === 'local';
+  }
+
+  private creatorKey(creator: Message['creator']): string | null {
+    if (creator === null) return null;
+    const sourceDomain = this.isSelfAddress(creator.account, creator.domain)
+      ? 'local'
+      : this.conv.type === 'GROUP'
+        ? this.conv.group.domain
+        : this.conv.peerUser.domain || 'local';
+    return messageCreatorKey(creator, sourceDomain);
   }
 
   private toMsgData(
     m: Message,
     images: AlbumImage[] | null,
     file: FileInfo | null,
+    callContent: CallMessageContent | null,
   ): ChatMsgData {
-    const p = m.creator === null ? undefined : this.profiles.get(m.creator);
-    let systemActorIsSelf = false;
     if (m.contentType === 'SYSTEM') {
+      let systemActorIsSelf = false;
       try {
         const actor = (
           JSON.parse(m.content) as {
@@ -696,7 +694,24 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       } catch {
         // The system row owns malformed-content fallback rendering.
       }
+      return {
+        type: 'system',
+        msgId: m.seq,
+        isSelf: systemActorIsSelf,
+        isGroupConversation: this.conv.type === 'GROUP',
+        name: '',
+        text: m.content,
+        time: dayjs(m.createdAt).format('HH:mm'),
+        contentType: 'SYSTEM',
+        images: null,
+        file: null,
+        createdAtMs: m.createdAt,
+      };
     }
+    if (m.creator === null) throw new Error('authored message has no creator');
+    const creatorKey = this.creatorKey(m.creator)!;
+    const p = this.profiles.get(creatorKey);
+    if (!p) throw new Error('message User was not resolved');
     const textContent =
       m.contentType === 'PURE_TEXT'
         ? requireTextMessageContent(m.content)
@@ -710,21 +725,21 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     return {
       type: 'msg',
       msgId: m.seq,
-      creator: m.creator,
-      isSelf:
-        m.contentType === 'SYSTEM'
-          ? systemActorIsSelf
-          : (p?.isSelf ?? m.creator === this.selfUserId),
+      creator: creatorKey,
+      isSelf: p.isSelf,
       isGroupConversation: this.conv.type === 'GROUP',
-      name: p?.name ?? '',
-      avatar: p?.avatar ?? '',
-      ...(m.creator === null ? {} : { avatarIdentityId: m.creator }),
-      avatarAccount: p?.account ?? '',
-      avatarDomain: p?.domain ?? 'local',
+      name: p.name,
+      avatar: p.avatar,
+      ...(p.avatarIdentityId === undefined
+        ? {}
+        : { avatarIdentityId: p.avatarIdentityId }),
+      avatarAccount: p.account,
+      avatarDomain: p.domain,
       // Non-text cards keep their wire content in `text` as well. In particular, FORWARD content is
       // the JSON card descriptor consumed by parseForwardCard; dropping it here makes every valid
       // forwarded bundle render as "unavailable".
       text: textContent ? toDisplayText(textContent.text) : m.content,
+      ...(callContent ? { callContent } : {}),
       textSegments: renderedText?.segments,
       mentionState: renderedText?.mentionState,
       time: dayjs(m.createdAt).format('HH:mm'),
@@ -768,94 +783,46 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     };
   }
 
-  /** Start profile hydration without joining the message-page critical path. Message bodies can therefore
-   *  mount and emit `ready` even when the network is offline, half-open, retrying, or simply slow. */
-  private hydrateProfiles(msgs: Message[]): void {
-    const missing = new Set<number>();
-    for (const m of msgs)
-      if (
-        m.creator !== null &&
-        !this.profiles.has(m.creator) &&
-        !this.profilesInFlight.has(m.creator)
-      )
-        missing.add(m.creator);
+  /** Resolve every authored row from the local source-scoped User table before constructing UI items. */
+  private async ensureProfiles(msgs: Message[]): Promise<void> {
+    const missing = new Set<string>();
+    for (const m of msgs) {
+      if (m.creator === null) continue;
+      const key = this.creatorKey(m.creator)!;
+      if (!this.profiles.has(key)) missing.add(key);
+    }
     if (missing.size === 0) return;
-    for (const id of missing) this.profilesInFlight.add(id);
-    void (async () => {
-      try {
-        if (this.profileRepo) {
-          for (const id of [...missing]) {
-            const cached = await this.profileRepo.getProfile(`u${id}`);
-            if (!cached) continue;
-            const profile = {
-              name: cached.name,
-              account: cached.account,
-              avatar: cached.avatar,
-              avatarIdentityId: id,
-              avatarDomain: cached.domain || 'local',
-              domain: cached.domain || 'local',
-              isSelf: id === this.selfUserId,
-            };
-            this.profiles.set(id, profile);
-            missing.delete(id);
-            for (const seq of this.seqsByCreator.get(id) ?? [])
-              this.onProfile(seq, {
-                name: profile.name,
-                avatar: profile.avatar,
-                avatarIdentityId: profile.avatarIdentityId,
-                avatarAccount: profile.account,
-                avatarDomain: profile.avatarDomain,
-                isSelf: profile.isSelf,
-              });
-          }
-        }
-        if (
-          missing.size === 0 ||
-          (typeof navigator !== 'undefined' && !navigator.onLine)
-        )
-          return;
-        const res = await firstValueFrom(
-          this.userService.queryUserInfo({ userIds: [...missing] }),
-        );
-        if (res.code === 0 && res.data) {
-          for (const u of res.data) {
-            const profile = {
-              name: u.name,
-              account: u.account,
-              avatar: u.avatar ?? '',
-              avatarIdentityId: u.id,
-              avatarDomain: u.domain || 'local',
-              domain: u.domain || 'local',
-              isSelf: u.id === this.selfUserId,
-            };
-            this.profiles.set(u.id, profile);
-            void this.profileRepo?.putProfile(`u${u.id}`, 'user', {
-              id: u.id,
-              name: u.name,
-              account: u.account,
-              avatar: u.avatar ?? '',
-              bio: u.bio,
-              domain: u.domain,
-              sourceServer: u.domain,
-              profileRev: u.profileRev ?? 0,
-            });
-            for (const seq of this.seqsByCreator.get(u.id) ?? [])
-              this.onProfile(seq, {
-                name: profile.name,
-                avatar: profile.avatar,
-                avatarIdentityId: profile.avatarIdentityId,
-                avatarAccount: profile.account,
-                avatarDomain: profile.avatarDomain,
-                isSelf: profile.isSelf,
-              });
-          }
-        }
-      } catch {
-        // Profile metadata is enrichment, not a prerequisite for rendering cached message bodies.
-      } finally {
-        for (const id of missing) this.profilesInFlight.delete(id);
-      }
-    })();
+    if (!this.profileRepo)
+      throw new Error('source-scoped User repository is unavailable');
+    await Promise.all(
+      [...missing].map((key) => {
+        const active = this.profilesInFlight.get(key);
+        if (active) return active;
+        const load = (async () => {
+          const identity = parseUserIdentityKey(key);
+          if (!identity) throw new Error('invalid User identity key');
+          const cached = await this.profileRepo!.getUser(
+            identity.account,
+            identity.domain,
+            identity.sourceDomain,
+          );
+          if (!cached)
+            throw new Error(
+              `source-scoped User is missing: ${identity.account}@${identity.domain} via ${identity.sourceDomain}`,
+            );
+          this.profiles.set(key, {
+            name: cached.name,
+            account: cached.account,
+            avatar: cached.avatar,
+            avatarIdentityId: key,
+            domain: cached.domain,
+            isSelf: this.isSelfAddress(cached.account, cached.domain),
+          });
+        })().finally(() => this.profilesInFlight.delete(key));
+        this.profilesInFlight.set(key, load);
+        return load;
+      }),
+    );
   }
 }
 

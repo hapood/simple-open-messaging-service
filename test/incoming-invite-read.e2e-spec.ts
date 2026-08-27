@@ -8,7 +8,7 @@ import { AppModule } from '../src/app.module.js';
 import { configureApp } from '../src/bootstrap.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
 import { DatabaseService } from '../src/database/database.service.js';
-import { clientStateFeed, user } from '../src/database/schema.js';
+import { account, clientStateFeed } from '../src/database/schema.js';
 import { seedUserWithSession } from './seed.js';
 
 describe('incoming invitation read watermark', () => {
@@ -88,8 +88,8 @@ describe('incoming invitation read watermark', () => {
       .send({ readThroughFeedId: 0 })
       .expect(200);
     expect(replay.body.data).toEqual({ readThroughFeedId: 1 });
-    const owner = await database.db.query.user.findFirst({
-      where: eq(user.id, seeded.id),
+    const owner = await database.db.query.account.findFirst({
+      where: eq(account.id, seeded.id),
       columns: { stateFeedAllocatedThrough: true },
     });
     expect(owner?.stateFeedAllocatedThrough).toBe(2);

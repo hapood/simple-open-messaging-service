@@ -364,7 +364,7 @@ describe('CallsService terminal bubble persistence', () => {
     expect(lastBubbleContent(m)).toMatchObject({
       type: 'CALL',
       callType: 'AUDIO',
-      status: 'declined',
+      outcome: 'declined',
       callerId: 1,
       calleeId: 2,
     });
@@ -384,7 +384,7 @@ describe('CallsService terminal bubble persistence', () => {
       callType: 'AUDIO',
     });
     await svc.cancel(1, 'cs1');
-    expect(lastBubbleContent(m)?.status).toBe('cancelled');
+    expect(lastBubbleContent(m)?.outcome).toBe('cancelled');
   });
 
   it('connected (media up) stamps startedAt; end → completed bubble WITH duration', async () => {
@@ -399,7 +399,7 @@ describe('CallsService terminal bubble persistence', () => {
     await svc.end(1, 'cs1', 'completed');
     const c = lastBubbleContent(m)!;
     expect(c).toMatchObject({
-      status: 'completed',
+      outcome: 'completed',
       callType: 'VIDEO',
       callerId: 1,
       calleeId: 2,
@@ -419,7 +419,7 @@ describe('CallsService terminal bubble persistence', () => {
     await svc.accept(2, 'cs1'); // answered, media never came up
     await svc.end(2, 'cs1');
     const c = lastBubbleContent(m)!;
-    expect(c.status).toBe('failed'); // a connection failure
+    expect(c.outcome).toBe('failed'); // a connection failure
     expect(c.startedAt).toBeUndefined(); // never really connected
     expect(c.durationMs).toBeUndefined();
     expect(m.sse.onCallEvent).toHaveBeenCalledWith(
@@ -439,7 +439,7 @@ describe('CallsService terminal bubble persistence', () => {
     await svc.connected(2, 'cs1'); // connected
     await svc.end(2, 'cs1', 'failed');
     const c = lastBubbleContent(m)!;
-    expect(c.status).toBe('failed');
+    expect(c.outcome).toBe('failed');
     expect(c.startedAt).toBeTypeOf('number'); // it HAD connected
   });
 
@@ -585,7 +585,7 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
     await svc.end(1, 'cs1');
     expect(lastBubbleContent(m)).toMatchObject({
       callType: 'VIDEO',
-      status: 'completed',
+      outcome: 'completed',
     });
     expect(m.sse.onCallEvent).toHaveBeenCalledWith(
       1,
@@ -731,7 +731,7 @@ describe('CallsService ringing timeout', () => {
     expect(m.sse.onCallEvent.mock.calls[0][1]).toMatchObject({
       type: 'missed',
     });
-    expect(lastBubbleContent(m)?.status).toBe('missed');
+    expect(lastBubbleContent(m)?.outcome).toBe('missed');
     // Slots released → caller can place a new call.
     await expect(
       svc.initiate(1, { callSid: 'cs2', calleeUserId: 2, callType: 'AUDIO' }),
@@ -771,7 +771,7 @@ describe('CallsService ringing timeout', () => {
     for (const [, event] of m.sse.onCallEvent.mock.calls) {
       expect(event).toMatchObject({ type: 'ended', endReason: 'timeout' });
     }
-    expect(lastBubbleContent(m)?.status).toBe('failed');
+    expect(lastBubbleContent(m)?.outcome).toBe('failed');
   });
 
   it('an answered-but-never-connected call times out → failed (a connection failure, NOT missed)', async () => {
@@ -787,7 +787,7 @@ describe('CallsService ringing timeout', () => {
     await vi.advanceTimersByTimeAsync(45_000);
 
     // `accepted` at timeout → `failed` (the callee DID answer, so it is not `missed`).
-    expect(lastBubbleContent(m)?.status).toBe('failed');
+    expect(lastBubbleContent(m)?.outcome).toBe('failed');
   });
 });
 
@@ -811,7 +811,7 @@ function mkFrame(p: Partial<S2SCallFrame> = {}): S2SCallFrame {
         }
       : {}),
     ...(op === 'signal' && suppliedPayload
-      ? { payload: { id: 'signal-1', ...suppliedPayload } }
+      ? { payload: { signalId: 'signal-1', ...suppliedPayload } }
       : {}),
   } as S2SCallFrame;
 }
@@ -886,7 +886,7 @@ describe('CallsService federated initiate (outbound)', () => {
     ).rejects.toSatisfy(
       (e: unknown) => bizCode(e) === BusinessCode.CALL_PEER_UNREACHABLE,
     );
-    expect(lastBubbleContent(m)?.status).toBe('unreachable');
+    expect(lastBubbleContent(m)?.outcome).toBe('unreachable');
     // Slots released → a fresh call can start.
     m.federation.sendCallFrame.mockResolvedValue(undefined);
     await expect(
@@ -917,7 +917,7 @@ describe('CallsService federated initiate (outbound)', () => {
         expect.objectContaining({ op: 'cancelled', callSid: 'cs1' }),
         'bbb.local',
       );
-      expect(lastBubbleContent(m)?.status).toBe('missed');
+      expect(lastBubbleContent(m)?.outcome).toBe('missed');
     } finally {
       vi.useRealTimers();
     }
@@ -1081,7 +1081,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
         peerDomain: 'other.local',
         frame: mkFrame({
           op: 'signal',
-          payload: { kind: 'ice', data: '{}' },
+          payload: { signalType: 'ice', data: '{}' },
         }),
       }),
     ).rejects.toSatisfy(
@@ -1171,7 +1171,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
       peerStubId: 2,
       frame: mkFrame({ op: 'ended', payload: { endReason: 'completed' } }),
     });
-    expect(lastBubbleContent(m)?.status).toBe('completed');
+    expect(lastBubbleContent(m)?.outcome).toBe('completed');
     expect(lastBubbleContent(m)?.startedAt).toBe(1000); // from the `connected` frame, not `accepted`
   });
 
@@ -1277,7 +1277,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
       peerStubId: 5,
       frame: mkFrame({
         op: 'signal',
-        payload: { kind: 'ice', data: '{"cand":1}' },
+        payload: { signalType: 'ice', data: '{"cand":1}' },
       }),
     });
     expect(m.sse.onCallSignal).toHaveBeenCalledWith(
@@ -1299,7 +1299,11 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
       peerStubId: 5,
       frame: mkFrame({
         op: 'signal',
-        payload: { id: 'offer-1', kind: 'offer', data: 'OFFER_SDP' },
+        payload: {
+          signalId: 'offer-1',
+          signalType: 'offer',
+          data: 'OFFER_SDP',
+        },
       }),
     });
     await inbound(svc, {
@@ -1307,7 +1311,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
       peerStubId: 5,
       frame: mkFrame({
         op: 'signal',
-        payload: { id: 'ice-1', kind: 'ice', data: 'ICE_1' },
+        payload: { signalId: 'ice-1', signalType: 'ice', data: 'ICE_1' },
       }),
     });
     // The local callee fetches the staged offer and caller ICE.
@@ -1328,7 +1332,11 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
       peerStubId: 5,
       frame: mkFrame({
         op: 'signal',
-        payload: { id: 'same-id', kind: 'offer', data: 'FIRST' },
+        payload: {
+          signalId: 'same-id',
+          signalType: 'offer',
+          data: 'FIRST',
+        },
       }),
     });
     await inbound(svc, {
@@ -1336,7 +1344,11 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
       peerStubId: 5,
       frame: mkFrame({
         op: 'signal',
-        payload: { id: 'same-id', kind: 'answer', data: 'DIFFERENT' },
+        payload: {
+          signalId: 'same-id',
+          signalType: 'answer',
+          data: 'DIFFERENT',
+        },
       }),
     });
 
@@ -1739,7 +1751,7 @@ describe('CallsService active-call registry (HELLO activeCall)', () => {
 });
 
 describe('CallsService — unused CallOutcome alias keeps the import live', () => {
-  it('the terminal status union is exported', () => {
+  it('the terminal outcome union is exported', () => {
     const ok: CallOutcome[] = [
       'completed',
       'cancelled',

@@ -31,17 +31,17 @@ The interface above is the view that MUST be validated after selecting v1; it do
 
 `keys` MUST be a non-empty array and may contain old, current, and not-yet-active signing-key certificates simultaneously. `keyId` values MUST NOT repeat within one document, and at least one certificate MUST be valid when the response is generated. Root keys and HTTP signing keys have distinct roles; equality of their public-key values MUST NOT be a protocol requirement.
 
-| JSON key | Required | Role and example |
-| --- | --- | --- |
-| `software` | No | Untrusted diagnostic text such as `example-server/1.4.2`; never used for protocol decisions. |
-| `protocolVersions` | Yes | The complete set of fully supported majors, such as `[1, 2]`. |
-| `rootKey` | Yes | The long-lived server-identity anchor object; a container rather than a standalone public-key value. |
-| `rootKey.ed25519` | Yes | The Ed25519 root public key, such as `A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=`; it does not directly sign ordinary HTTP requests. |
-| `keys` | Yes | Root-authorized signing-key certificates, permitting rotation overlap. |
-| `keys[].keyId` | Yes | A domain-bound certificate name such as `a.example/key-1`; neither a public key nor a secret. |
-| `keys[].ed25519` | Yes | The online HTTP/claim signing public key, such as `Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=`. |
-| `keys[].notBefore` / `notAfter` | Yes | The half-open validity interval `[notBefore, notAfter)` in Unix epoch milliseconds. |
-| `keys[].authorizationSignature` | Yes | An Ed25519 signature by the root private key over the Section 1.3 certificate statement. See [Peer Recognition, Section 10](./recognition.md#10-complete-http-construction-examples) for a complete verifiable example. |
+| JSON key                        | Required | Role and example                                                                                                                                                                                                        |
+| ------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `software`                      | No       | Untrusted diagnostic text such as `example-server/1.4.2`; never used for protocol decisions.                                                                                                                            |
+| `protocolVersions`              | Yes      | The complete set of fully supported majors, such as `[1, 2]`.                                                                                                                                                           |
+| `rootKey`                       | Yes      | The long-lived server-identity anchor object; a container rather than a standalone public-key value.                                                                                                                    |
+| `rootKey.ed25519`               | Yes      | The Ed25519 root public key, such as `A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=`; it does not directly sign ordinary HTTP requests.                                                                                  |
+| `keys`                          | Yes      | Root-authorized signing-key certificates, permitting rotation overlap.                                                                                                                                                  |
+| `keys[].keyId`                  | Yes      | A domain-bound certificate name such as `a.example/key-1`; neither a public key nor a secret.                                                                                                                           |
+| `keys[].ed25519`                | Yes      | The online HTTP/claim signing public key, such as `Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=`.                                                                                                                       |
+| `keys[].notBefore` / `notAfter` | Yes      | The half-open validity interval `[notBefore, notAfter)` in Unix epoch milliseconds.                                                                                                                                     |
+| `keys[].authorizationSignature` | Yes      | An Ed25519 signature by the root private key over the Section 1.3 certificate statement. See [Peer Recognition, Section 10](./recognition.md#10-complete-http-construction-examples) for a complete verifiable example. |
 
 A consumer selecting v1 MUST ignore well-known fields undefined by v1 and MUST NOT create v1 surface, authorization, or security branches from them. v1 does not publish runtime limits through well-known. Each operation's deterministic responses govern page, body, media, quota, group-capacity, and retention limits.
 
@@ -166,31 +166,31 @@ An operation with a body MUST first produce its final UTF-8 bytes according to [
 
 ### 3.3 Signed request headers
 
-Except for public well-known discovery, every v1 request, including `recognize` and `healthy`, MUST use this fixed HTTP Message Signature profile. The authentication contexts in [Core Protocol, Section 3](./protocol.md) change only key resolution and recognition or authorization gates, not this wire format.
+Except for public well-known discovery, every v1 request, including `recognize` and `health`, MUST use this fixed HTTP Message Signature profile. The authentication contexts in [Core Protocol, Section 3](./protocol.md) change only key resolution and recognition or authorization gates, not this wire format.
 
-| Header | Requirement |
-| --- | --- |
-| `Content-Type` | MUST be `application/json` with a JSON body; MUST NOT be sent without a body. |
-| `Accept` | MAY be sent as `application/json`; not signed and does not change the v1 response shape. |
-| `Date` | MUST be sent as IMF-fixdate representing the same whole second as `created`. |
-| `Content-Digest` | MUST be sent; calculated over final body bytes under Section 3.2, or over the empty byte string without a body. |
-| `Signature-Input` | MUST be sent with exactly one label, `sig1`. |
-| `Signature` | MUST be sent with exactly one label, `sig1`. |
-| `Range` | MAY be sent only by the media operation; a single bytes range, not covered by the v1 request signature. |
+| Header            | Requirement                                                                                                     |
+| ----------------- | --------------------------------------------------------------------------------------------------------------- |
+| `Content-Type`    | MUST be `application/json` with a JSON body; MUST NOT be sent without a body.                                   |
+| `Accept`          | MAY be sent as `application/json`; not signed and does not change the v1 response shape.                        |
+| `Date`            | MUST be sent as IMF-fixdate representing the same whole second as `created`.                                    |
+| `Content-Digest`  | MUST be sent; calculated over final body bytes under Section 3.2, or over the empty byte string without a body. |
+| `Signature-Input` | MUST be sent with exactly one label, `sig1`.                                                                    |
+| `Signature`       | MUST be sent with exactly one label, `sig1`.                                                                    |
+| `Range`           | MAY be sent only by the media operation; a single bytes range, not covered by the v1 request signature.         |
 
 Header names are case-insensitive, but signature component names use the lower-case forms in the table. A receiver MUST reject a request if `Date`, `Content-Digest`, `Signature-Input`, or `Signature` appears in multiple field lines, has multiple dictionary members, or has a combined value that cannot be parsed unambiguously. `Content-Length`, `User-Agent`, and hop-by-hop headers are not covered by the v1 signature.
 
 ### 3.4 HTTP Message Signature construction
 
-| Item | Federation v1 fixed value or rule |
-| --- | --- |
-| Signature standard | RFC 9421 wire format with the single label `sig1`. |
-| Algorithm | `ed25519`. |
-| Covered components | `"@method" "@path" "@query" "@authority" "date" "content-digest"` in this fixed order. |
-| `keyid` | A signing-key ID published by the signer in well-known and valid for the authentication context; the substring before the first `/` is the canonical signer domain. |
-| `created` | A safe integer in Unix epoch seconds. |
-| `expires` | A safe integer in Unix epoch seconds satisfying `created <= expires <= created + 300`. |
-| `alg` | Fixed to `"ed25519"`. |
+| Item               | Federation v1 fixed value or rule                                                                                                                                   |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Signature standard | RFC 9421 wire format with the single label `sig1`.                                                                                                                  |
+| Algorithm          | `ed25519`.                                                                                                                                                          |
+| Covered components | `"@method" "@path" "@query" "@authority" "date" "content-digest"` in this fixed order.                                                                              |
+| `keyid`            | A signing-key ID published by the signer in well-known and valid for the authentication context; the substring before the first `/` is the canonical signer domain. |
+| `created`          | A safe integer in Unix epoch seconds.                                                                                                                               |
+| `expires`          | A safe integer in Unix epoch seconds satisfying `created <= expires <= created + 300`.                                                                              |
+| `alg`              | Fixed to `"ed25519"`.                                                                                                                                               |
 
 After completing the request target, body bytes, and `Content-Digest` under Sections 3.1 and 3.2, the sender MUST construct time fields and the signature in this order:
 
@@ -230,11 +230,14 @@ A receiver MUST validate a signed request according to these security boundaries
 7. Parse JSON and validate the operation shape, shared Federation types, signer/body/resource binding, and business authorization.
 8. Perform operation side effects only after every preceding check succeeds.
 
-If an operation body contains `origin` or a `from` of the form `{ account, domain }`, that domain MUST equal the signer domain. An operation without those fields uses the signer domain directly as the sending server identity.
+The authenticated signer domain comes exclusively from the validated `keyid`.
+An operation body MUST NOT repeat it as a generic source, origin, or sender
+field. Operation-specific addresses remain subject to their own author and
+resource-binding rules.
 
 A header or profile parsing error, digest mismatch, or signature mismatch MUST NOT be downgraded to a business rejection. The Stable Error Registry defines the exact HTTP status, stable code, and caller action.
 
-`healthy` is a status-query operation. An unparseable request line, JSON value, or signature structure MAY receive a generic malformed error. Once the structure is parseable, an unknown peer, an identity that cannot be verified through an existing pin, a binding or permission failure, or local state that cannot safely be disclosed is a normal query result. Under recognition.md, it MUST return HTTP `200` with `unavailable` and MUST NOT cause a side effect.
+`health` is a status-query operation. An unparseable request line or signature structure MAY receive a generic malformed error. Once the structure is parseable, an unknown peer, an identity that cannot be verified through an existing pin, a permission failure, or local state that cannot safely be disclosed is a normal query result. Under recognition.md, it MUST return HTTP `200` with `unavailable` and MUST NOT cause a side effect.
 
 Federation v1 does not add an HTTP Message Signature to an ordinary JSON response; hostname-validated TLS provides response origin and integrity. This does not alter response-digest rules separately defined by the media operation.
 
@@ -247,11 +250,11 @@ POST /s2s/v1/feed-heads HTTP/1.1
 Host: b.example
 Content-Type: application/json
 Date: Tue, 14 Nov 2023 22:13:20 GMT
-Content-Digest: sha-256=:jyei18yIj1UN70jxngwvAzEHm+S2VRlxbpRtAv4Wp3k=:
+Content-Digest: sha-256=:5IZ8gaj/brmz/2nnvsyh7h5RK8vujKNm/Ja5uAG7Oy4=:
 Signature-Input: sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=1700000000;expires=1700000300;keyid="a.example/key-1";alg="ed25519"
-Signature: sig1=:YB4YJhZ8Gx8fq4WI2wOszIppKsOZzrmiFMTcPoQqcS0Y9A/x0jPmwO4JrO+gAf17L01xosGsj4ppscoHdHPRAw==:
+Signature: sig1=:Rq0Zqp2oS4lobqDctVVp5UmYJbJUSuxnluAjMOowvF+COrxXhS/ryAAb5SQY5TIqOCLLvjmsOJfO9wFJ/ijFDQ==:
 
-{"origin":"a.example","stateFeedEndId":"12","messageFeedEndId":"34","tombstoneFeedEndId":"9"}
+{"stateFeedEndId":"12","messageFeedEndId":"34","tombstoneFeedEndId":"9"}
 ```
 
-The exact UTF-8 bytes of the final body line are used for both `Content-Digest` and the signature; the trailing newline shown by formatting is not part of the body. `Host` produces signature component `"@authority": b.example`. The request has no query, so its signature component is `"@query": ?`. The complete signature base and non-secret private test key are in [`schema/vectors/http-message-signature.json`](./schema/vectors/http-message-signature.json). [Federation v1 Peer Recognition, Section 10](./recognition.md#10-complete-http-construction-examples) contains complete certificates, requests, responses, and signature bases for Recognize and Healthy.
+The exact UTF-8 bytes of the final body line are used for both `Content-Digest` and the signature; the trailing newline shown by formatting is not part of the body. `Host` produces signature component `"@authority": b.example`. The request has no query, so its signature component is `"@query": ?`. The complete signature base and non-secret private test key are in [`schema/vectors/http-message-signature.json`](./schema/vectors/http-message-signature.json). [Federation v1 Peer Recognition, Section 10](./recognition.md#10-complete-http-construction-examples) contains complete certificates, requests, responses, and signature bases for Recognize and Health.

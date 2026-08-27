@@ -26,6 +26,7 @@ function databaseMock(queries: {
   message?: ReturnType<typeof vi.fn>;
   mediaMessage?: ReturnType<typeof vi.fn>;
   mediaAsset?: ReturnType<typeof vi.fn>;
+  user?: ReturnType<typeof vi.fn>;
   execute?: ReturnType<typeof vi.fn>;
 }) {
   return {
@@ -34,6 +35,15 @@ function databaseMock(queries: {
         message: { findMany: queries.message ?? vi.fn() },
         messageAsset: { findMany: queries.mediaMessage ?? vi.fn() },
         mediaAsset: { findMany: queries.mediaAsset ?? vi.fn() },
+        user: {
+          findMany:
+            queries.user ??
+            vi
+              .fn()
+              .mockResolvedValue([
+                { account: 'alice', domain: 'local', name: 'Alice' },
+              ]),
+        },
       },
       execute: queries.execute ?? vi.fn(),
     },
@@ -46,7 +56,8 @@ function mk(
 ): Message {
   return {
     threadId: 1,
-    creator: 1,
+    creatorAccount: 'alice',
+    creatorDomain: 'local',
     contentType: 'IMAGE' as ContentType,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -420,6 +431,7 @@ describe('MessageService.queryMessages quote previews', () => {
         id: 4n,
         seq: 4,
         contentType: 'CONTACT_CARD',
+        creatorAccount: 'bob',
         content: JSON.stringify({
           account: 'alice',
           domain: 'remote.example',
@@ -430,7 +442,14 @@ describe('MessageService.queryMessages quote previews', () => {
       user: { name: 'Bob' },
     };
     const svc = new MessageService(
-      databaseMock({ message: vi.fn().mockResolvedValue([target]) }) as never,
+      databaseMock({
+        message: vi.fn().mockResolvedValue([target]),
+        user: vi
+          .fn()
+          .mockResolvedValue([
+            { account: 'bob', domain: 'local', name: 'Bob' },
+          ]),
+      }) as never,
       {} as never,
     );
 

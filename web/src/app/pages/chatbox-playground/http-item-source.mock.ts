@@ -18,10 +18,16 @@ import type {
 } from '../../lib/chat-box/cb-source';
 import type {
   AlbumImage,
+  AuthoredContentType,
   ChatItemData,
   ChatMsgData,
 } from '../../components/message-cards/chat-item';
 import type { StandardResponse, User } from '../../services/model';
+
+const mockCreatorKey = (id: number): string =>
+  `mock.local\u0000mock.local\u0000user-${id}`;
+const mockCreatorId = (key: string): number =>
+  Number(key.slice(key.lastIndexOf('user-') + 5));
 
 function mockUser(id: number, account: string): readonly [number, User] {
   return [
@@ -126,7 +132,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
   private readonly isGroupConversation: boolean;
   /** User-info cache (creator → name/isSelf), filled by ensureProfiles looking up creators on userService — mirrors HttpItemSource.profiles. */
   private readonly profiles = new Map<
-    number,
+    string,
     { name: string; isSelf: boolean }
   >();
   private readonly newerWaiters = new Set<{
@@ -484,8 +490,9 @@ export class MockItemSource implements CbSource<ChatItemData> {
   private async ensureProfiles(items: CbItem<ChatItemData>[]): Promise<void> {
     const missing = new Set<number>();
     for (const it of items) {
+      if (it.data.type !== 'msg') continue;
       const creator = it.data.creator;
-      if (creator !== null && !this.profiles.has(creator)) missing.add(creator);
+      if (!this.profiles.has(creator)) missing.add(mockCreatorId(creator));
     }
     if (missing.size === 0) return;
     const res = await firstValueFrom(
@@ -493,7 +500,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
     );
     if (res.code === 0 && res.data) {
       for (const u of res.data)
-        this.profiles.set(u.id, {
+        this.profiles.set(mockCreatorKey(u.id), {
           name: u.name || u.account,
           isSelf: u.id === this.userId,
         });
@@ -504,14 +511,16 @@ export class MockItemSource implements CbSource<ChatItemData> {
    *  fallback 'Unknown' / creator===userId). Preserves clientMessageId (the optimistic↔real reconcile key) so a confirmed
    *  real returned by getNewer still carries it — shape must not strip the correlation key the kernel pairs on. */
   private shape(it: CbItem<ChatItemData>): CbItem<ChatItemData> {
+    if (it.data.type !== 'msg') return it;
     const creator = it.data.creator;
-    const p = creator === null ? undefined : this.profiles.get(creator);
+    const creatorId = mockCreatorId(creator);
+    const p = this.profiles.get(creator);
     const data: ChatMsgData = {
       ...it.data,
       name: p?.name ?? 'Unknown',
-      isSelf: p?.isSelf ?? creator === this.userId,
-      avatarIdentityId: creator ?? undefined,
-      avatarAccount: it.data.name || (creator === null ? '' : String(creator)),
+      isSelf: p?.isSelf ?? creatorId === this.userId,
+      avatarIdentityId: creator,
+      avatarAccount: it.data.name || String(creatorId),
       isGroupConversation: this.isGroupConversation,
     };
     return it.clientMessageId !== undefined
@@ -711,7 +720,7 @@ function buildItems(
 function makeSeedMsg(
   creator: number,
   text: string,
-  contentType: ChatMsgData['contentType'],
+  contentType: AuthoredContentType,
   images: AlbumImage[] | null,
   date: Date,
   id: number,
@@ -720,7 +729,7 @@ function makeSeedMsg(
   return {
     type: 'msg',
     msgId: id,
-    creator,
+    creator: mockCreatorKey(creator),
     isSelf: false,
     name: '',
     text,

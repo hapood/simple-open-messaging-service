@@ -41,7 +41,7 @@ export type NotificationKind = 'thread-message' | 'clear' | (string & {});
 
 export interface NotificationMessage {
   seq: number;
-  senderId: number;
+  sender: { account: string; domain: string };
   senderName: string;
   text: string;
   timestamp: number;

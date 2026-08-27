@@ -36,7 +36,7 @@ export class MessageReportService {
       const participant = await tx.query.threadParticipant.findFirst({
         where: and(
           eq(threadParticipant.threadId, dto.threadId),
-          eq(threadParticipant.userId, userId),
+          eq(threadParticipant.accountId, userId),
         ),
         columns: { id: true },
       });
@@ -54,7 +54,8 @@ export class MessageReportService {
         .select({
           id: message.id,
           seq: message.seq,
-          creator: message.creator,
+          creatorAccount: message.creatorAccount,
+          creatorDomain: message.creatorDomain,
           contentType: message.contentType,
           isDeleted: message.isDeleted,
         })
@@ -62,11 +63,17 @@ export class MessageReportService {
         .where(
           and(eq(message.threadId, dto.threadId), inArray(message.seq, seqs)),
         );
+      const reporter = await tx.query.user.findFirst({
+        where: eq(user.id, userId),
+        columns: { account: true, domain: true },
+      });
+      if (!reporter) throw new Error('reporter does not exist');
       if (
         targets.length !== seqs.length ||
         targets.some(
           (target) =>
-            target.creator === userId ||
+            (target.creatorAccount === reporter.account &&
+              target.creatorDomain === reporter.domain) ||
             target.isDeleted ||
             target.contentType === 'SYSTEM' ||
             target.contentType === 'CALL',
@@ -137,10 +144,9 @@ export class MessageReportService {
             name: reporter.name,
           },
           creator: {
-            id: creator.id,
-            account: creator.account,
-            name: creator.name,
-            domain: creator.domain,
+            account: message.creatorAccount,
+            name: sql<string>`COALESCE(${creator.name}, ${message.creatorAccount})`,
+            domain: message.creatorDomain,
           },
           message: {
             id: message.id,
@@ -156,7 +162,13 @@ export class MessageReportService {
         .innerJoin(message, eq(message.id, messageReport.messageId))
         .innerJoin(messageThread, eq(messageThread.id, messageReport.threadId))
         .innerJoin(reporter, eq(reporter.id, messageReport.reporterId))
-        .innerJoin(creator, eq(creator.id, message.creator))
+        .leftJoin(
+          creator,
+          and(
+            eq(creator.account, message.creatorAccount),
+            eq(creator.domain, message.creatorDomain),
+          ),
+        )
         .where(where)
         .orderBy(desc(messageReport.createdAt))
         .offset(dto.skip)
@@ -185,7 +197,7 @@ export class MessageReportService {
     deletions: {
       threadId: number;
       seq: number;
-      creator: number;
+      creator: { account: string; domain: string };
       originSeq: number;
       deletedId: string;
     }[];
@@ -238,7 +250,7 @@ export class MessageReportService {
       const deletions: {
         threadId: number;
         seq: number;
-        creator: number;
+        creator: { account: string; domain: string };
         originSeq: number;
         deletedId: string;
       }[] = [];
@@ -250,7 +262,8 @@ export class MessageReportService {
           .select({
             threadId: message.threadId,
             seq: message.seq,
-            creator: message.creator,
+            creatorAccount: message.creatorAccount,
+            creatorDomain: message.creatorDomain,
             originSeq: message.originSeq,
           })
           .from(message)
@@ -264,7 +277,7 @@ export class MessageReportService {
           targets.map((target) => [`${target.threadId}:${target.seq}`, target]),
         );
         for (const target of uniqueTargets.values()) {
-          if (target.creator === null)
+          if (target.creatorAccount === null || target.creatorDomain === null)
             throw new Error('SYSTEM messages cannot be moderated');
           const deletedId = await this.deletedMessages.deleteByReportInTx(
             tx,
@@ -273,7 +286,10 @@ export class MessageReportService {
           );
           deletions.push({
             ...target,
-            creator: target.creator,
+            creator: {
+              account: target.creatorAccount,
+              domain: target.creatorDomain,
+            },
             originSeq: target.originSeq ?? target.seq,
             deletedId,
           });

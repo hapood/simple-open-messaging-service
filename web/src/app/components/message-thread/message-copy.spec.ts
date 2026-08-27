@@ -1,4 +1,4 @@
-import type { ChatMsgData } from '../message-cards/chat-item';
+import type { AuthoredMessageItem } from '../message-cards/chat-item';
 import {
   canCopyMessage,
   messageCopyBody,
@@ -15,11 +15,13 @@ const labels = {
   forward: '[聊天记录]',
 };
 
-function message(overrides: Partial<ChatMsgData> = {}): ChatMsgData {
+function message(
+  overrides: Partial<AuthoredMessageItem> = {},
+): AuthoredMessageItem {
   return {
     type: 'msg',
     msgId: 1,
-    creator: 1,
+    creator: 'local\u0000local\u0000me',
     isSelf: false,
     name: '张三',
     text: '你好',

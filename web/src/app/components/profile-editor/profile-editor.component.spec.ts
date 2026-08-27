@@ -16,7 +16,7 @@ function state(values: Array<[number, number]>): PersonalQuotaState {
       file: { count: files[0], limit: files[1] },
       fileBytes: { bytes: '0', limit: 0 },
     },
-    resetAt: '2026-08-04T00:00:00.000Z',
+    resetAt: Date.UTC(2026, 7, 4),
   };
 }
 

@@ -32,9 +32,7 @@ interface EncodedMessageContent {
   content: JsonObjectString;
 }
 
-interface FederatedMessage extends EncodedMessageContent {
-  thread: ThreadAddress;
-  author: Address;
+interface FederatedMessageBase extends EncodedMessageContent {
   seq: ThreadSequence;
   originSeq: ThreadSequence | null;
   originCreatedAt: EpochMilliseconds | null;
@@ -42,6 +40,28 @@ interface FederatedMessage extends EncodedMessageContent {
   quoteTarget?: QuoteTarget;
   assets: BlobDescriptor[];
 }
+
+type FederatedMessageContent =
+  | (FederatedMessageBase & {
+      contentType: 'CALL';
+      clientMessageId: CanonicalUuid;
+    })
+  | (FederatedMessageBase & {
+      contentType: Exclude<ContentType, 'CALL'>;
+      clientMessageId?: never;
+    });
+
+type FederatedMessage = FederatedMessageContent &
+  (
+    | {
+        thread: { account: UserAccount; peerAccount: UserAccount };
+        authorRef: 'THREAD_ACCOUNT' | 'THREAD_PEER_ACCOUNT';
+      }
+    | {
+        thread: { account: GroupAccount };
+        author: Address;
+      }
+  );
 ```
 
 `JsonObjectString` is a string encoding of a UTF-8 JSON object, not arbitrary text. A consumer MUST validate the outer `FederatedMessage` before processing `content` according to `contentType`. It MUST parse the string once as JSON and strictly validate the corresponding closed schema. It MUST reject a result that is not an object, contains fields unknown to that type, uses an unknown content type, or otherwise violates the type.
@@ -57,9 +77,14 @@ interface FederatedMessage extends EncodedMessageContent {
 - When `thread.account` is a `GroupAccount`, the thread is GROUP and
   `peerAccount` MUST be absent. Group delivery is scoped to the target peer,
   not to an individual member hosted on that peer.
-- The message author remains the explicit `author` address. It MUST NOT be
-  inferred from `thread.account`; in particular, a group publisher may relay a
-  message authored on another member domain.
+- A P2P message MUST contain `authorRef` and MUST NOT contain `author`.
+  `THREAD_ACCOUNT` identifies the source-hosted `thread.account`;
+  `THREAD_PEER_ACCOUNT` identifies the target-hosted `thread.peerAccount`. The two authenticated
+  exchange domains and this discriminator uniquely reconstruct the author
+  address without carrying a second, potentially conflicting identity.
+- A GROUP message MUST contain the explicit `author` address and MUST NOT
+  contain `authorRef`. A group publisher may relay a message authored on
+  another member domain, so direction alone cannot identify its author.
 
 ## 3. Ordering and origin time
 
@@ -78,6 +103,13 @@ An application time inside content, such as CALL `startedAt/endedAt`, cannot rep
 
 ## 4. Identity and immutability
 
+Only a CALL record carries `clientMessageId`. It MUST be the same
+`CanonicalUuid` as the real-time call's `callId`, allowing the persisted record
+to retain the call's idempotency identity without repeating it inside content.
+Every other message type MUST omit `clientMessageId`; its federation identity
+and idempotency coordinate is the direct-origin coordinate below, not a
+publisher-internal client key.
+
 The direct-origin identity of an incoming message is:
 
 ```text
@@ -89,10 +121,11 @@ A consumer MUST durably store the mapping from this coordinate to its local copy
 All of the following fields are immutable at a given origin coordinate:
 
 - `thread`
-- `author`
+- `authorRef` for P2P, or `author` for GROUP
 - `seq`
 - `originSeq/originCreatedAt`
 - `createdAt`
+- `clientMessageId` for CALL
 - `contentType`
 - parsed `content`
 - `quoteTarget`
@@ -104,9 +137,10 @@ A conflict in any field makes the item invalid. It MUST NOT be overwritten using
 
 `?` in a field declaration means the field is omitted in certain valid states; it does not give the publisher an arbitrary choice:
 
-| Field         | Required when                           | Omitted when                                                      |
-| ------------- | --------------------------------------- | ----------------------------------------------------------------- |
-| `quoteTarget` | A `PURE_TEXT` message is a quoted reply | The message is not a quoted reply, or its type is not `PURE_TEXT` |
+| Field             | Required value when                       | Other valid value                                                 |
+| ----------------- | ----------------------------------------- | ----------------------------------------------------------------- |
+| `clientMessageId` | A CALL record: the corresponding `callId` | Omitted for every other message type                              |
+| `quoteTarget`     | A `PURE_TEXT` message is a quoted reply   | Omitted when the message is not a quoted reply or not `PURE_TEXT` |
 
 The corresponding content document defines type-specific conditional fields.
 
@@ -118,7 +152,7 @@ The corresponding content document defines type-specific conditional fields.
 | --------------------------------- | --------------------------------------------------- |
 | `PURE_TEXT`, `CALL`, `FORWARD`    | Reference no digest directly; MUST be empty         |
 | `LINK`                            | The optional `icon` and `favicon` digests           |
-| `CONTACT_CARD`                    | The optional `avatarDigest`                          |
+| `CONTACT_CARD`                    | The optional `avatarDigest`                         |
 | `IMAGE`, `VIDEO`, `AUDIO`, `FILE` | Exactly one digest and a descriptor for that digest |
 | `GALLERY`                         | The complete deduplicated set of item digests       |
 
@@ -139,7 +173,9 @@ After successfully persisting an incoming message, a consumer SHOULD make the no
 
 When reading a receipt, the publisher:
 
-- Uses `(thread, author, originSeq)` to associate a message it previously published.
+- Reconstructs the author from `authorRef` for P2P, or reads `author` for
+  GROUP, then uses `(thread, author, originSeq)` to associate a message it
+  previously published.
 - Uses the receipt's `seq/createdAt` only as the peer-copy coordinate and diagnostic time.
 - MUST NOT create a timeline message, modify the original message, produce another receipt, or distribute it further.
 - MUST NOT write the receipt's origin pair back to the original message.
@@ -148,7 +184,8 @@ The absence of an observed receipt does not prove processing failure and cannot 
 
 ## 9. Common receive order
 
-1. Validate the thread, author, query sequence, and every outer field.
+1. Validate the thread, its matching author selector, query sequence, and every
+   outer field.
 2. Parse and validate `content` according to `contentType`.
 3. Validate that `assets` exactly matches the set of content digests.
 4. Receive idempotently using the direct-origin identity and record the coordinate mapping.

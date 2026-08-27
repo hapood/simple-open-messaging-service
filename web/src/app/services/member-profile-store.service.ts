@@ -1,9 +1,15 @@
 import { inject, Injectable } from '@angular/core';
 import { Subject } from 'rxjs';
 import { WebdbService } from './webdb.service';
-import type { GroupMemberRef } from './model';
+import { messageCreatorKey, parseUserIdentityKey } from './model';
 
-export interface ResolvedMemberProfile extends GroupMemberRef {
+export interface ResolvedMemberProfile {
+  identityKey: string;
+  account: string;
+  domain: string;
+  profileSourceDomain: string;
+  role: 'OWNER' | 'ADMIN' | 'MEMBER';
+  isOwner: boolean;
   name: string;
   avatar: string;
 }
@@ -20,30 +26,46 @@ export class MemberProfileRepository {
 
   async queryPage(
     threadId: number,
-    params: { afterUserId?: number; take: number; search?: string },
+    params: { afterIdentity?: string; take: number; search?: string },
   ): Promise<ResolvedMemberProfile[]> {
     const members = await this.webdb.queryGroupMembers({ threadId, ...params });
     return members.map((member) => ({
-      userId: member.userId,
-      account: member.memberAccount,
-      domain: member.memberDomain,
-      profileSourceDomain: member.profileSourceServer,
+      identityKey: messageCreatorKey(
+        { account: member.account, domain: member.domain },
+        member.sourceDomain,
+      ),
+      account: member.account,
+      domain: member.domain,
+      profileSourceDomain: member.sourceDomain,
       role: member.role,
-      joinedAt: 0,
       isOwner: member.role === 'OWNER',
-      name: member.displayName,
-      avatar: member.avatar,
+      name: member.user.name,
+      avatar: member.user.avatar,
     }));
   }
 
-  async get(
+  async getByIdentity(
     threadId: number,
-    userId: number,
+    identityKey: string,
   ): Promise<ResolvedMemberProfile | undefined> {
-    const [member] = await this.queryPage(threadId, {
-      afterUserId: userId - 1,
-      take: 1,
-    });
-    return member?.userId === userId ? member : undefined;
+    const identity = parseUserIdentityKey(identityKey);
+    if (!identity) return undefined;
+    const member = await this.webdb.getGroupMember(
+      threadId,
+      identity.account,
+      identity.domain,
+      identity.sourceDomain,
+    );
+    if (!member) return undefined;
+    return {
+      identityKey,
+      account: member.account,
+      domain: member.domain,
+      profileSourceDomain: member.sourceDomain,
+      role: member.role,
+      isOwner: member.role === 'OWNER',
+      name: member.user.name,
+      avatar: member.user.avatar,
+    };
   }
 }

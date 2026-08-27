@@ -45,10 +45,10 @@ describe('relationship intent state machine', () => {
     }
   }
 
-  it('treats an ISO timestamp at the exact expiry boundary as ineffective', () => {
+  it('treats the exact expiry boundary as ineffective', () => {
     expect(
       isEffectiveRelationshipIntent(
-        { status: 'REQUESTED', expiresAt: now.toISOString() },
+        { status: 'REQUESTED', expiresAt: now },
         now,
       ),
     ).toBe(false);

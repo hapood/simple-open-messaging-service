@@ -40,8 +40,8 @@ export type MessageThreadType =
   (typeof MessageThreadType)[keyof typeof MessageThreadType];
 
 export const MessageDeleteType = {
-  WITHDRAW: 'WITHDRAW',
-  REPORT: 'REPORT',
+  USER_RETRACTION: 'USER_RETRACTION',
+  MODERATION_REMOVAL: 'MODERATION_REMOVAL',
 } as const;
 export type MessageDeleteType =
   (typeof MessageDeleteType)[keyof typeof MessageDeleteType];

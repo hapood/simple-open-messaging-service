@@ -6,38 +6,57 @@ import type {
 
 type QueryExecutor = Database | DatabaseTransaction;
 
-/** One direction grants authorization while accepted or while its request TTL is still live. */
+const endpointMatchesUserSql = (
+  pairAlias: SQLWrapper,
+  side: 'A' | 'B',
+  identityAlias: SQLWrapper,
+) => {
+  const prefix = side === 'A' ? 'endpointA' : 'endpointB';
+  return sql`${pairAlias}.${sql.identifier(`${prefix}Type`)} = 'USER'
+    AND ${pairAlias}.${sql.identifier(`${prefix}Account`)} = ${identityAlias}.account
+    AND ${pairAlias}.${sql.identifier(`${prefix}Domain`)} = ${identityAlias}.domain`;
+};
+
+/** One directed intent for a fixed Pair endpoint. This is request/one-way authority only. */
 export const effectiveRelationshipIntentSql = (
   authorUserId: SQLWrapper | number,
   subjectUserId: SQLWrapper | number,
 ) => sql`EXISTS (
-  SELECT 1 FROM "RelationshipIntent" intent
-  WHERE intent."authorUserId" = ${authorUserId}
-    AND intent."subjectUserId" = ${subjectUserId}
+  SELECT 1
+  FROM "RelationshipPair" pair
+  JOIN "User" author_identity ON author_identity.id = ${authorUserId}
+  JOIN "User" subject_identity ON subject_identity.id = ${subjectUserId}
+  JOIN "RelationshipIntent" intent ON intent."pairId" = pair.id
+  WHERE (
+      (${endpointMatchesUserSql(sql`pair`, 'A', sql`author_identity`)}
+       AND ${endpointMatchesUserSql(sql`pair`, 'B', sql`subject_identity`)}
+       AND intent."authorSide" = 'A')
+      OR
+      (${endpointMatchesUserSql(sql`pair`, 'B', sql`author_identity`)}
+       AND ${endpointMatchesUserSql(sql`pair`, 'A', sql`subject_identity`)}
+       AND intent."authorSide" = 'B')
+    )
     AND (intent.status = 'ACCEPTED'
-      OR (intent.status = 'REQUESTED'
-        AND intent."expiresAt" > CURRENT_TIMESTAMP))
+      OR (intent.status = 'REQUESTED' AND intent."expiresAt" > CURRENT_TIMESTAMP))
 )`;
 
-/**
- * Current write/member authority requires two live directions and a durably
- * committed acknowledgement. Crossed requests are promoted before this
- * predicate becomes observable outside their relationship transaction.
- */
+/** Mutual authorization is a materialized Pair fact, never inferred from Participant or Intent. */
 export const mutuallyAuthorizedSql = (
   firstUserId: SQLWrapper | number,
   secondUserId: SQLWrapper | number,
-) => sql`(
-  ${effectiveRelationshipIntentSql(firstUserId, secondUserId)}
-  AND ${effectiveRelationshipIntentSql(secondUserId, firstUserId)}
-  AND EXISTS (
-    SELECT 1 FROM "RelationshipIntent" confirmation
-    WHERE confirmation.status = 'ACCEPTED'
-      AND ((confirmation."authorUserId" = ${firstUserId}
-            AND confirmation."subjectUserId" = ${secondUserId})
-        OR (confirmation."authorUserId" = ${secondUserId}
-            AND confirmation."subjectUserId" = ${firstUserId}))
-  )
+) => sql`EXISTS (
+  SELECT 1
+  FROM "RelationshipPair" pair
+  JOIN "User" first_identity ON first_identity.id = ${firstUserId}
+  JOIN "User" second_identity ON second_identity.id = ${secondUserId}
+  WHERE pair.active = true
+    AND ((
+      ${endpointMatchesUserSql(sql`pair`, 'A', sql`first_identity`)}
+      AND ${endpointMatchesUserSql(sql`pair`, 'B', sql`second_identity`)}
+    ) OR (
+      ${endpointMatchesUserSql(sql`pair`, 'B', sql`first_identity`)}
+      AND ${endpointMatchesUserSql(sql`pair`, 'A', sql`second_identity`)}
+    ))
 )`;
 
 export async function isPairMutuallyAuthorized(
@@ -51,29 +70,23 @@ export async function isPairMutuallyAuthorized(
   return result.rows[0]?.authorized ?? false;
 }
 
-/** Resolve the relationship pair represented by a participant row and evaluate both directions. */
 export async function isThreadMutuallyAuthorized(
   db: QueryExecutor,
   userId: number,
   threadId: number,
 ): Promise<boolean> {
   const result = await db.execute<{ authorized: boolean }>(sql`
-    SELECT CASE thread.type
-      WHEN 'P2P' THEN EXISTS (
-        SELECT 1
-        FROM "ThreadParticipant" peer
-        WHERE peer."threadId" = thread.id
-          AND peer."userId" <> ${userId}
-          AND ${mutuallyAuthorizedSql(userId, sql`peer."userId"`)}
-      )
-      WHEN 'GROUP' THEN thread."groupUserId" IS NOT NULL
-        AND ${mutuallyAuthorizedSql(userId, sql`thread."groupUserId"`)}
-      ELSE false
-    END AS authorized
-    FROM "MessageThread" thread
-    JOIN "ThreadParticipant" mine
-      ON mine."threadId" = thread.id AND mine."userId" = ${userId}
-    WHERE thread.id = ${threadId}
+    SELECT EXISTS (
+      SELECT 1
+      FROM "RelationshipPair" pair
+      JOIN "User" identity ON identity.id = ${userId}
+      WHERE pair."threadId" = ${threadId}
+        AND pair.active = true
+        AND (
+          (${endpointMatchesUserSql(sql`pair`, 'A', sql`identity`)})
+          OR (${endpointMatchesUserSql(sql`pair`, 'B', sql`identity`)})
+        )
+    ) AS authorized
   `);
   return result.rows[0]?.authorized ?? false;
 }

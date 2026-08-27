@@ -30,7 +30,7 @@ This is a closed schema. `account`, `domain`, and `displayName` are required.
   grammar is the discriminator and no additional type field is carried.
 - `displayName` MUST contain 1–30 Unicode code points and MUST NOT contain an
   unpaired surrogate.
-- `bio` MUST contain at most 255 Unicode code points and MUST NOT
+- `bio` MUST contain at most 120 Unicode code points and MUST NOT
   contain an unpaired surrogate.
 - `displayName`, `bio`, and `avatarDigest` are an immutable display snapshot selected by
   the publisher when it created its copy of the message. They are not a live
@@ -59,7 +59,8 @@ This is a closed schema. `account`, `domain`, and `displayName` are required.
   2.2](../resources.md#22-successful-response). Because a card transports the
   decoded resource instead of padded Base64, its `BlobDescriptor.bytes` MUST be
   in the inclusive range 1–786,432. A consumer MUST verify the actual byte
-  count, digest, image decoding, real dimensions, and `w * h <= 16000000`
+  count, digest, image decoding, real dimensions, and
+  `width * height <= 16000000`
   before displaying it.
 - A consumer MUST NOT fetch a user profile merely because `avatarDigest` is
   absent or the corresponding resource cannot be downloaded.
@@ -72,7 +73,7 @@ This is a closed schema. `account`, `domain`, and `displayName` are required.
     "account": "alice",
     "peerAccount": "bob"
   },
-  "author": { "account": "alice", "domain": "a.example" },
+  "authorRef": "THREAD_ACCOUNT",
   "seq": 72,
   "originSeq": null,
   "originCreatedAt": null,
@@ -103,7 +104,7 @@ A consumer MUST reject at least the following cases:
 - `domain` is absent or invalid.
 - `displayName` is absent, empty, longer than 30 Unicode code points, or contains
   an unpaired surrogate.
-- `bio` is absent, is not a string, is longer than 255 Unicode code points,
+- `bio` is absent, is not a string, is longer than 120 Unicode code points,
   or contains an unpaired surrogate.
 - `avatarDigest` is present but is not a `Sha256Hex`.
 - The avatar-digest set differs from `assets`.

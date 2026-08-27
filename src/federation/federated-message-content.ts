@@ -107,18 +107,19 @@ function validateContactCard(
   }
   if (
     typeof value['bio'] !== 'string' ||
-    unicodeCodePointLength(value['bio']) > 255 ||
+    unicodeCodePointLength(value['bio']) > 120 ||
     hasUnpairedSurrogate(value['bio'])
   )
     throw new Error('invalid contact card');
 }
 
 function validateSingleFields(value: JsonObject, extra: string[]): void {
-  assertSafeInteger(value['size']);
   if (extra.includes('name')) assertNonEmptyString(value['name']);
   if (extra.includes('mimeType')) assertNonEmptyString(value['mimeType']);
   if (extra.includes('w')) assertSafeInteger(value['w'], true);
   if (extra.includes('h')) assertSafeInteger(value['h'], true);
+  if (extra.includes('width')) assertSafeInteger(value['width'], true);
+  if (extra.includes('height')) assertSafeInteger(value['height'], true);
   if (extra.includes('duration')) assertPositiveFinite(value['duration']);
 }
 
@@ -196,8 +197,16 @@ function localCasUrl(digest: string): string {
 
 function projectSingleToWire(value: JsonObject, extra: string[]): JsonObject {
   assertKeys(value, ['url', 'size', ...extra]);
+  assertSafeInteger(value['size']);
   validateSingleFields(value, extra);
-  return { ...value, digest: digestFromUrl(value['url']), url: undefined };
+  return {
+    ...value,
+    digest: digestFromUrl(value['url']),
+    url: undefined,
+    size: undefined,
+    ...(extra.includes('w') ? { width: value['w'], w: undefined } : {}),
+    ...(extra.includes('h') ? { height: value['h'], h: undefined } : {}),
+  };
 }
 
 function withoutUndefined(value: JsonObject): JsonObject {
@@ -353,17 +362,27 @@ export function fromFederatedMessageContent(
   contentType: ContentType,
   content: string,
   localDomain: string,
+  assetBytes: ReadonlyMap<string, number> = new Map(),
 ): string {
   const value = parseObject(content);
   const single = (extra: string[]): string => {
-    assertKeys(value, ['digest', 'size', ...extra]);
+    assertKeys(value, ['digest', ...extra]);
     assertDigest(value['digest']);
     validateSingleFields(value, extra);
+    const size = assetBytes.get(value['digest']);
+    assertSafeInteger(size);
     return JSON.stringify(
       withoutUndefined({
         ...value,
         url: localCasUrl(value['digest']),
         digest: undefined,
+        size,
+        ...(extra.includes('width')
+          ? { w: value['width'], width: undefined }
+          : {}),
+        ...(extra.includes('height')
+          ? { h: value['height'], height: undefined }
+          : {}),
       }),
     );
   };
@@ -373,11 +392,11 @@ export function fromFederatedMessageContent(
         projectTextContent(value, true, { from: localDomain, to: 'local' }),
       );
     case ContentType.IMAGE:
-      return single(['w', 'h']);
+      return single(['width', 'height']);
     case ContentType.FILE:
       return single(['name', 'mimeType']);
     case ContentType.VIDEO:
-      return single(['name', 'mimeType', 'w', 'h', 'duration']);
+      return single(['name', 'mimeType', 'width', 'height', 'duration']);
     case ContentType.AUDIO:
       return single(['name', 'mimeType', 'duration']);
     case ContentType.GALLERY: {
@@ -393,22 +412,31 @@ export function fromFederatedMessageContent(
         const kind = record['kind'];
         const fields =
           kind === 'IMAGE'
-            ? ['w', 'h']
+            ? ['width', 'height']
             : kind === 'VIDEO'
-              ? ['name', 'mimeType', 'w', 'h', 'duration']
+              ? ['name', 'mimeType', 'width', 'height', 'duration']
               : kind === 'AUDIO'
                 ? ['name', 'mimeType', 'duration']
                 : kind === 'FILE'
                   ? ['name', 'mimeType']
                   : null;
         if (!fields) throw new Error('invalid gallery kind');
-        assertKeys(record, ['kind', 'digest', 'size', ...fields]);
+        assertKeys(record, ['kind', 'digest', ...fields]);
         assertDigest(record['digest']);
         validateSingleFields(record, fields);
+        const size = assetBytes.get(record['digest']);
+        assertSafeInteger(size);
         return withoutUndefined({
           ...record,
           url: localCasUrl(record['digest']),
           digest: undefined,
+          size,
+          ...(fields.includes('width')
+            ? { w: record['width'], width: undefined }
+            : {}),
+          ...(fields.includes('height')
+            ? { h: record['height'], height: undefined }
+            : {}),
         });
       });
       return JSON.stringify({ items });

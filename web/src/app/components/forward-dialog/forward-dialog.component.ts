@@ -10,7 +10,11 @@ import {
 } from '@angular/core';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { ConversationListService } from '../../services/conversation-list.service';
-import { displayThreadName, type ConversationItem } from '../../services/model';
+import {
+  displayThreadName,
+  messageCreatorKey,
+  type ConversationItem,
+} from '../../services/model';
 import { RouteService } from '../../services/route.service';
 import { UserService } from '../../services/user.service';
 import {
@@ -164,14 +168,22 @@ export class ForwardDialogComponent {
   readonly directPreviewMessage = computed<ChatMsgData | null>(() => {
     const original = this.messages()[0]?.original;
     if (!original) return null;
+    if (original.type === 'system') return original;
     const self = this.user.sessionProfile();
+    if (!self) return null;
     return {
       ...original,
-      creator: self?.id ?? original.creator,
+      creator: messageCreatorKey(
+        { account: self.account, domain: 'local' },
+        'local',
+      ),
       isSelf: true,
       name: self?.name || self?.account || original.name,
       avatar: self?.avatar || undefined,
-      avatarIdentityId: self?.id,
+      avatarIdentityId: messageCreatorKey(
+        { account: self.account, domain: 'local' },
+        'local',
+      ),
       avatarAccount: self?.account,
       avatarDomain: self?.domain,
       quote: undefined,
@@ -272,7 +284,7 @@ export class ForwardDialogComponent {
     return {
       type: 'msg',
       msgId: 0,
-      creator: this.user.sessionProfile()?.id ?? 0,
+      creator: this.selfCreatorKey(),
       isSelf: true,
       name: this.user.sessionProfile()?.account ?? '',
       text: JSON.stringify(content),
@@ -282,6 +294,15 @@ export class ForwardDialogComponent {
       file: null,
       createdAtMs: Date.now(),
     };
+  }
+
+  private selfCreatorKey(): string {
+    const self = this.user.sessionProfile();
+    if (!self) throw new Error('session profile is required to forward');
+    return messageCreatorKey(
+      { account: self.account, domain: 'local' },
+      'local',
+    );
   }
 
   private readRecentThreadIds(): number[] {

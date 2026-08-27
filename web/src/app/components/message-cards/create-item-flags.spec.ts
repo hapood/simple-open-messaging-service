@@ -7,15 +7,31 @@ function message(
   creator: number,
   contentType: ChatMsgData['contentType'] = 'PURE_TEXT',
 ): CbItem<ChatItemData> {
+  if (contentType === 'SYSTEM')
+    return {
+      id: msgId,
+      data: {
+        type: 'system',
+        msgId,
+        isSelf: false,
+        name: '',
+        text: '{}',
+        time: '12:00',
+        contentType: 'SYSTEM',
+        images: null,
+        file: null,
+        createdAtMs: 1700000000000 + msgId,
+      },
+    };
   return {
     id: msgId,
     data: {
       type: 'msg',
       msgId,
-      creator,
+      creator: `local\u0000local\u0000user-${creator}`,
       isSelf: false,
       name: 'Alice',
-      text: contentType === 'SYSTEM' ? '{}' : 'hello',
+      text: 'hello',
       time: '12:00',
       contentType,
       images: null,

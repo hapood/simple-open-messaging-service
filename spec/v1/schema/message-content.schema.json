@@ -14,13 +14,13 @@
     },
     "image": {
       "type": "object",
-      "required": ["digest", "w", "h"],
+      "required": ["digest", "width", "height"],
       "properties": {
         "digest": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" },
-        "w": {
+        "width": {
           "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
         },
-        "h": {
+        "height": {
           "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
         }
       },
@@ -38,15 +38,15 @@
     },
     "video": {
       "type": "object",
-      "required": ["digest", "name", "mimeType", "w", "h", "duration"],
+      "required": ["digest", "name", "mimeType", "width", "height", "duration"],
       "properties": {
         "digest": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" },
         "name": { "type": "string", "minLength": 1 },
         "mimeType": { "type": "string", "minLength": 1 },
-        "w": {
+        "width": {
           "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
         },
-        "h": {
+        "height": {
           "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
         },
         "duration": { "$ref": "#/$defs/positiveNumber" }
@@ -68,16 +68,16 @@
       "oneOf": [
         {
           "type": "object",
-          "required": ["kind", "digest", "w", "h"],
+          "required": ["kind", "digest", "width", "height"],
           "properties": {
             "kind": { "const": "IMAGE" },
             "digest": {
               "$ref": "urn:somfp:v1:common#/$defs/sha256Hex"
             },
-            "w": {
+            "width": {
               "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
             },
-            "h": {
+            "height": {
               "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
             }
           },
@@ -90,8 +90,8 @@
             "digest",
             "name",
             "mimeType",
-            "w",
-            "h",
+            "width",
+            "height",
             "duration"
           ],
           "properties": {
@@ -101,10 +101,10 @@
             },
             "name": { "type": "string", "minLength": 1 },
             "mimeType": { "type": "string", "minLength": 1 },
-            "w": {
+            "width": {
               "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
             },
-            "h": {
+            "height": {
               "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
             },
             "duration": { "$ref": "#/$defs/positiveNumber" }
@@ -180,7 +180,7 @@
         },
         "bio": {
           "type": "string",
-          "maxLength": 255
+          "maxLength": 120
         },
         "avatarDigest": {
           "$ref": "urn:somfp:v1:common#/$defs/sha256Hex"
@@ -190,13 +190,10 @@
     },
     "call": {
       "type": "object",
-      "required": ["callSid", "callType", "status", "endedAt"],
+      "required": ["mediaType", "outcome", "endedAt"],
       "properties": {
-        "callSid": {
-          "$ref": "urn:somfp:v1:common#/$defs/canonicalUuid"
-        },
-        "callType": { "enum": ["AUDIO", "VIDEO"] },
-        "status": {
+        "mediaType": { "enum": ["AUDIO", "VIDEO"] },
+        "outcome": {
           "enum": [
             "completed",
             "cancelled",
@@ -217,11 +214,11 @@
         {
           "if": {
             "properties": {
-              "status": {
+              "outcome": {
                 "enum": ["cancelled", "declined", "missed", "unreachable"]
               }
             },
-            "required": ["status"]
+            "required": ["outcome"]
           },
           "then": {
             "not": { "required": ["startedAt"] }

@@ -18,9 +18,6 @@ import { GroupService } from '../group/group.service.js';
 import { InviteService } from '../invite/invite.service.js';
 import { FederationService } from '../federation/federation.service.js';
 import { UserService } from '../user/user.service.js';
-import { eq } from 'drizzle-orm';
-import { DatabaseService } from '../database/database.service.js';
-import { user } from '../database/schema.js';
 import { ThreadAccessGuard } from '../thread-participant/thread-access.guard.js';
 import { ResourceId } from '../common/resource-id.decorator.js';
 import { RolesGuard } from '../group/roles.guard.js';
@@ -43,11 +40,12 @@ import {
   QueryGroupInviteCandidatesDto,
   HandleGroupJoinRequestDto,
   ReadGroupJoinRequestsDto,
+  FederatedGroupJoinRequestDto,
 } from '../dto/group.dto.js';
-import {
-  CreateGroupResponseDto,
-  GroupResponseDto,
-} from '../dto/response.dto.js';
+import { CreateGroupResponseDto } from '../dto/response.dto.js';
+import { UserQuotaService } from '../quota/user-quota.service.js';
+import { DatabaseService } from '../database/database.service.js';
+import { envelope } from '../common/api-result.js';
 
 @ApiTags('group')
 @Controller()
@@ -58,8 +56,9 @@ export class GroupController {
     private readonly inviteService: InviteService,
     private readonly federationService: FederationService,
     private readonly userService: UserService,
-    private readonly database: DatabaseService,
     private readonly clientStateFeed: ClientStateFeedService,
+    private readonly userQuota: UserQuotaService,
+    private readonly database: DatabaseService,
   ) {}
 
   @UseGuards(ThrottleGuard)
@@ -82,7 +81,7 @@ export class GroupController {
       avatar: dto.avatar,
       owner,
     });
-    // groupId === threadId now (Group.id is gone; the wire keeps the `groupId` name for frontend compat).
+    // Client routes identify a group conversation by its thread id.
     return { threadId: grp.threadId, groupId: grp.threadId };
   }
 
@@ -94,7 +93,7 @@ export class GroupController {
     inviter: number,
     group: {
       threadId: number;
-      groupUserId: number;
+      account: string;
       name: string;
       avatar: string;
       profileRev: number;
@@ -107,14 +106,7 @@ export class GroupController {
     const deduped = Array.from(new Set(userIds));
     const invited: number[] = [];
     const skipped: { userId: number; reason: string }[] = [];
-    // The group's `!account` — the federated-stable identity on the card (== fedGroupAccount once the
-    // first federated invite mints it; for a purely-local group it is just the groupUser account). Both
-    // resolve the invite cross-server via the @@unique-backed (toUser, thread) lookup.
-    const groupUserRow = await this.database.db.query.user.findFirst({
-      where: eq(user.id, group.groupUserId),
-      columns: { account: true },
-    });
-    const groupAccount = groupUserRow?.account;
+    const groupAccount = group.account;
     if (!groupAccount) {
       // Should not happen (inviter + group exist) — fail every target loudly rather than silent skip.
       return {
@@ -194,9 +186,8 @@ export class GroupController {
   ) {
     const threadId = req.threadAccess!.threadId;
     const inviter = req.user.userId;
-    // Load the group's `!`-User for name/avatar to embed in the invite cards.
     const trd = await this.groupService.findGroupByThreadId(threadId);
-    const gu = trd?.groupUser;
+    const group = trd?.group;
     const role = req.threadAccess!.participant.role;
     if (role !== GroupRole.OWNER && role !== GroupRole.ADMIN) {
       throw new BusinessException(
@@ -208,10 +199,10 @@ export class GroupController {
       inviter,
       {
         threadId,
-        groupUserId: gu?.id ?? 0,
-        name: gu?.name ?? '',
-        avatar: gu?.avatar ?? '',
-        profileRev: gu?.profileRev ?? 0,
+        account: group?.account ?? '',
+        name: group?.name ?? '',
+        avatar: group?.avatar ?? '',
+        profileRev: group?.profileRev ?? 0,
       },
       dto.userIds,
     );
@@ -238,47 +229,6 @@ export class GroupController {
       dto.search,
       dto.take ?? 20,
     );
-  }
-
-  @UseGuards(ThreadAccessGuard)
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @ResourceId<GroupIdDto>('groupId')
-  @Post('group/info')
-  @ApiOperation({ summary: 'Group info (members only)' })
-  @ApiResultResponse(GroupResponseDto)
-  async getGroupInfo(@Request() req: FastifyRequest) {
-    // Membership is already enforced by ThreadAccessGuard. The response is a complete group snapshot:
-    // identity metadata plus authoritative membership and role facts.
-    const threadId = req.threadAccess!.threadId;
-    const trd = await this.groupService.findGroupByThreadId(threadId);
-    const gu = trd?.groupUser;
-    if (!trd || !gu) {
-      throw new BusinessException(BusinessCode.NOT_FOUND, 'group not found');
-    }
-    const roster = await this.participantService.getRoster(threadId);
-    return {
-      id: threadId,
-      account: gu.account,
-      name: gu.name,
-      ownerId: gu.group?.ownerId ?? 0,
-      avatar: gu.avatar,
-      profileRev: gu.profileRev,
-      description: gu.bio,
-      domain: gu.domain || 'local',
-      threadId,
-      createdAt: trd.createdAt,
-      updatedAt: gu.group?.updatedAt ?? trd.updatedAt,
-      members: roster.map((member) => ({
-        userId: member.userId,
-        account: member.user.account,
-        domain: member.user.domain || 'local',
-        profileSourceDomain: gu.domain || 'local',
-        role: member.role,
-        joinedAt: member.joinedAt,
-        isOwner: member.role === GroupRole.OWNER,
-      })),
-    };
   }
 
   @UseGuards(ThreadAccessGuard, RolesGuard)
@@ -413,6 +363,47 @@ export class GroupController {
     );
   }
 
+  @UseGuards(ThrottleGuard)
+  @Throttle('group.join-request')
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('group/federated-join-request')
+  @ApiOperation({ summary: 'Apply to a federated group by Address' })
+  async requestFederatedGroupJoin(
+    @Request() req: FastifyRequest,
+    @Body() dto: FederatedGroupJoinRequestDto,
+  ) {
+    const account = dto.account.trim().toLowerCase();
+    const domain = dto.domain.trim().toLowerCase();
+    if (!account.startsWith('!'))
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'group account must start with !',
+      );
+    if (domain === 'local' || domain === this.federationService.ourDomain)
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'local groups do not use the federated join route',
+      );
+    await this.federationService.ensurePeerTrusted(domain);
+    await this.database.db.transaction((tx) =>
+      this.userQuota.tick(req.user.userId, 'requests', tx),
+    );
+    await this.federationService.requestFederatedGroupJoin(
+      req.user.userId,
+      { account, domain },
+      dto.note ?? '',
+      { displayName: dto.displayName, avatar: dto.avatar },
+    );
+    return envelope(
+      { account, domain },
+      {
+        message: 'group join request sent',
+        messageKey: 'group.msg.joinRequestSent',
+      },
+    );
+  }
+
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @Throttle('group.leave')
   @ApiBearerAuth()
@@ -477,10 +468,11 @@ export class GroupController {
     @Body() dto: KickGroupDto,
   ): Promise<void> {
     const threadId = req.threadAccess!.threadId;
+    const target = await this.groupService.resolveActiveMember(threadId, dto);
     await this.groupService.kickMember({
       threadId,
       operatorUserId: req.user.userId,
-      targetUserId: dto.userId,
+      targetUserId: target.userId,
     });
   }
 
@@ -497,10 +489,11 @@ export class GroupController {
     @Body() dto: TransferGroupDto,
   ): Promise<void> {
     const threadId = req.threadAccess!.threadId;
+    const target = await this.groupService.resolveActiveMember(threadId, dto);
     await this.groupService.transferOwnership({
       threadId,
       fromUserId: req.user.userId,
-      toUserId: dto.toUserId,
+      toUserId: target.userId,
     });
   }
 
@@ -517,9 +510,10 @@ export class GroupController {
     @Body() dto: SetRoleGroupDto,
   ): Promise<void> {
     const threadId = req.threadAccess!.threadId;
+    const target = await this.groupService.resolveActiveMember(threadId, dto);
     await this.groupService.setRole({
       threadId,
-      targetUserId: dto.userId,
+      targetUserId: target.userId,
       role: dto.role,
       operatorUserId: req.user.userId,
     });

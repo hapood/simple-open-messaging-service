@@ -14,7 +14,8 @@ function sourceRow(childDepth: number) {
     id: 1n,
     seq: 7,
     threadId: 4,
-    creator: 9,
+    creatorAccount: 'alice',
+    creatorDomain: 'local',
     contentType: ContentType.FORWARD,
     content: JSON.stringify({ version: 1, bundleId: 'child' }),
     createdAt: new Date('2026-07-31T00:00:00Z'),
@@ -70,21 +71,39 @@ function textQueryRow(seq: number, content: string, name: string) {
 }
 
 function databaseFake(childDepth: number, tx?: unknown) {
+  const findMemberships = vi.fn().mockResolvedValue([
+    {
+      threadId: 4,
+      clearedSeq: null,
+      blocked: false,
+      messageThread: { type: 'P2P' },
+    },
+  ]);
   return {
     db: {
       execute: vi.fn().mockResolvedValue({ rows: [{ authorized: true }] }),
+      select: vi.fn(() => {
+        const query = {
+          from: () => query,
+          innerJoin: () => query,
+          where: () => findMemberships(),
+        };
+        return query;
+      }),
       query: {
         threadParticipant: {
-          findMany: vi.fn().mockResolvedValue([
-            {
-              threadId: 4,
-              clearedSeq: null,
-              messageThread: { type: 'P2P' },
-            },
-          ]),
+          findMany: findMemberships,
         },
         message: {
           findFirst: vi.fn().mockResolvedValue(sourceQueryRow(childDepth)),
+        },
+        user: {
+          findFirst: vi.fn().mockResolvedValue({
+            account: 'alice',
+            domain: 'local',
+            name: 'Alice',
+            avatar: '',
+          }),
         },
         mediaAsset: {
           findFirst: vi.fn().mockResolvedValue({
@@ -196,7 +215,7 @@ describe('ForwardBundleService', () => {
       JSON.stringify({ items: [{ kind: 'IMAGE' }, { kind: 'VIDEO' }] }),
       '[File set · 2]',
     ],
-    [ContentType.CALL, JSON.stringify({ status: 'missed' }), '[Missed call]'],
+    [ContentType.CALL, JSON.stringify({ outcome: 'missed' }), '[Missed call]'],
   ])(
     'uses the shared %s message preview in forward-card summaries',
     (contentType, content, expected) => {

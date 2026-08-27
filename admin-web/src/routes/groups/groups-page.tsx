@@ -68,12 +68,12 @@ export function GroupsPage() {
               {data?.list.map((g) => (
                 <TableRow key={g.id}>
                   <TableCell>
-                    <div className="font-medium">{g.groupUser?.name ?? '—'}</div>
+                    <div className="font-medium">{g.group?.name ?? '—'}</div>
                     <div className="font-mono text-xs text-muted-foreground">
-                      {g.groupUser?.account ?? `#${g.id}`}
+                      {g.group?.account ?? `#${g.id}`}
                     </div>
                   </TableCell>
-                  <TableCell className="tabular-nums">{g._count.ThreadParticipant}</TableCell>
+                  <TableCell className="tabular-nums">{g._count.ThreadMember}</TableCell>
                   <TableCell>
                     {g.originDomain ? (
                       <span className="inline-flex items-center gap-1 font-mono text-xs text-muted-foreground">

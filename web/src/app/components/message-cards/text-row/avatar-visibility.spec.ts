@@ -14,7 +14,7 @@ import {
 import { CspSafeIcuTranspiler } from '../../../i18n/csp-safe-icu.transpiler';
 import { InlineTranslocoLoader } from '../../../i18n/transloco.loader';
 import { UserAvatarComponent } from '../../user-avatar/user-avatar.component';
-import type { ChatMsgData } from '../chat-item';
+import type { AuthoredMessageItem, ChatMsgData } from '../chat-item';
 import { TextRowComponent } from './text-row.component';
 import { LinkCardService } from '../../../services/link-card.service';
 import { ImageDownloadService } from '../../../services/image-download.service';
@@ -47,11 +47,13 @@ class StubUserAvatarComponent {
   readonly src = input<string | undefined | null>(undefined);
 }
 
-function buildMsg(overrides: Partial<ChatMsgData>): ChatMsgData {
+function buildMsg(
+  overrides: Partial<AuthoredMessageItem>,
+): AuthoredMessageItem {
   return {
     type: 'msg',
     msgId: 1,
-    creator: 1,
+    creator: 'local\u0000local\u0000me',
     isSelf: false,
     name: 'Alice',
     text: 'hi',
@@ -150,7 +152,11 @@ describe('TextRowComponent — avatar visibility vs data-show-self-avatar', () =
   }
 
   it('keeps the OTHER party avatar visible regardless of the preference (the reported bug guard)', () => {
-    const other = buildMsg({ isSelf: false, creator: 2, name: 'Alice' });
+    const other = buildMsg({
+      isSelf: false,
+      creator: 'peer.test\u0000peer.test\u0000alice',
+      name: 'Alice',
+    });
     // Turning "show my avatar" OFF must hide only SELF avatars — never the other party's.
     expect(avatarDisplayFor(other, 'false')).not.toBe('none');
     expect(avatarDisplayFor(other, 'true')).not.toBe('none');
@@ -159,7 +165,11 @@ describe('TextRowComponent — avatar visibility vs data-show-self-avatar', () =
   });
 
   it('hides the SELF avatar when the preference is off and shows it when on', () => {
-    const self = buildMsg({ isSelf: true, creator: 1, name: 'Me' });
+    const self = buildMsg({
+      isSelf: true,
+      creator: 'local\u0000local\u0000me',
+      name: 'Me',
+    });
     expect(avatarDisplayFor(self, 'false')).toBe('none');
     expect(avatarDisplayFor(self, 'unset')).toBe('none');
     expect(avatarDisplayFor(self, 'true')).toBe('block');

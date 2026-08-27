@@ -5,9 +5,10 @@ import { S2sRecognitionController } from './s2s-recognition.controller.js';
 
 process.env.SOMS_DOMAIN ??= 'local.example';
 
-describe('S2sRecognitionController Healthy privacy projection', () => {
-  it('returns unavailable when a recognized peer key cannot be fetched', async () => {
+describe('S2sRecognitionController Health privacy projection', () => {
+  function target() {
     const discovery = {
+      fetchWellKnown: vi.fn(),
       getPublicKey: vi.fn().mockRejectedValue(new Error('well-known offline')),
     };
     const verify = {
@@ -29,9 +30,18 @@ describe('S2sRecognitionController Healthy privacy projection', () => {
       discovery as never,
       recognition as never,
     );
+    return { controller, discovery, verify, recognition };
+  }
+
+  it('returns unavailable when a recognized peer key cannot be fetched', async () => {
+    const { controller, discovery, verify, recognition } = target();
 
     await expect(
-      controller.healthy({} as never, { domain: 'peer.example' }),
+      controller.health({
+        url: '/s2s/v1/health',
+        rawBody: Buffer.alloc(0),
+        headers: {},
+      } as never),
     ).resolves.toEqual({ status: 'unavailable' });
     expect(discovery.getPublicKey).toHaveBeenCalledWith(
       'peer.example',
@@ -39,6 +49,47 @@ describe('S2sRecognitionController Healthy privacy projection', () => {
     );
     expect(verify.verifyWithPublicKey).not.toHaveBeenCalled();
     expect(recognition.queryHealth).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      url: '/s2s/v1/health?domain=peer.example',
+      rawBody: Buffer.alloc(0),
+      headers: {},
+    },
+    {
+      url: '/s2s/v1/health',
+      rawBody: Buffer.from('{}'),
+      headers: {},
+    },
+    {
+      url: '/s2s/v1/health',
+      rawBody: Buffer.alloc(0),
+      headers: { 'content-type': 'application/json' },
+    },
+  ])(
+    'rejects GET metadata left over from the former POST shape',
+    async (req) => {
+      const { controller, verify } = target();
+
+      await expect(controller.health(req as never)).rejects.toMatchObject({
+        bizCode: BusinessCode.FEDERATION_MALFORMED,
+        status: 400,
+      });
+      expect(verify.extractHeaders).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects the removed recognize domain field', async () => {
+    const { controller, discovery } = target();
+
+    await expect(
+      controller.recognize({} as never, { domain: 'peer.example' }),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_MALFORMED,
+      status: 400,
+    });
+    expect(discovery.fetchWellKnown).not.toHaveBeenCalled();
   });
 });
 
@@ -70,7 +121,7 @@ describe('FederationRecognitionService health transitions', () => {
     unsubscribeSecond();
   });
 
-  it('degrades local availability when Healthy returns unavailable', async () => {
+  it('degrades local availability when Health returns unavailable', async () => {
     const service = new FederationRecognitionService(
       {} as never,
       {} as never,
@@ -87,7 +138,7 @@ describe('FederationRecognitionService health transitions', () => {
 
     expect(degrade).toHaveBeenCalledExactlyOnceWith(
       'peer.example',
-      'Healthy unavailable',
+      'Health unavailable',
     );
   });
 });

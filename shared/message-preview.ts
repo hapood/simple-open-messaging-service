@@ -111,7 +111,7 @@ function forwardPreview(content: string): string {
 
 function callPreview(content: string): string {
   try {
-    switch ((JSON.parse(content) as { status?: unknown }).status) {
+    switch ((JSON.parse(content) as { outcome?: unknown }).outcome) {
       case 'missed':
         return '[Missed call]';
       case 'failed':

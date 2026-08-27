@@ -7,7 +7,11 @@ import { and, eq } from 'drizzle-orm';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
-import { sessionToken, user } from '../src/database/schema';
+import {
+  account as accountTable,
+  sessionToken,
+  user,
+} from '../src/database/schema';
 import { OtpLoginService } from '../src/auth/otp-login.service';
 import { BusinessCode } from '../src/common/business-code';
 import { RateLimitModeService } from '../src/rate-limit/rate-limit-mode.service';
@@ -70,11 +74,10 @@ describe('OTP login e2e', () => {
         account,
         domain: 'local',
         name: account,
-        hashPwd: null,
-        mustChangePassword: false,
         updatedAt: new Date(),
       })
       .returning({ id: user.id });
+    await database.db.insert(accountTable).values({ id: u.id });
     return u.id;
   }
 

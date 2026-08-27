@@ -57,39 +57,56 @@ type StateEventType =
   | 'RELATIONSHIP_INTENT'
   | 'GROUP_META_FEED_HEAD';
 
-interface StateFeedItem {
+interface StateFeedItemBase {
   account: Account;
-  domain: Domain;
   eventType: StateEventType;
   feedId: PositiveDecimalString;
-  body: ProfileBody | RelationshipIntentBody | GroupMetaFeedHeadBody;
 }
 
-interface RelationshipIntentItem extends StateFeedItem {
+interface ProfileItem extends StateFeedItemBase {
+  eventType: 'PROFILE';
+  body: ProfileBody;
+}
+
+interface RelationshipIntentItem extends StateFeedItemBase {
   eventType: 'RELATIONSHIP_INTENT';
   peerAccount: Account;
+  body: RelationshipIntentBody;
 }
+
+interface GroupMetaFeedHeadItem extends StateFeedItemBase {
+  account: GroupAccount;
+  eventType: 'GROUP_META_FEED_HEAD';
+  body: GroupMetaFeedHeadBody;
+}
+
+type StateFeedItem =
+  | ProfileItem
+  | RelationshipIntentItem
+  | GroupMetaFeedHeadItem;
 ```
 
-Stable keys are `(domain, account, eventType)` and, for a relationship,
-`(domain, account, RELATIONSHIP_INTENT, peerAccount)`. Only relationship
-items carry `peerAccount`. Unknown event types or fields are malformed.
+Within one authenticated source feed, stable keys are `(account, eventType)`
+and, for a relationship, `(account, RELATIONSHIP_INTENT, peerAccount)`. The
+source domain is the authenticated publisher and is not repeated in an item.
+Only relationship items carry `peerAccount`. Unknown event types or fields are
+malformed.
 
 ## 4. PROFILE
 
 ```ts
 interface ProfileBody {
-  profileRev: SafeNonNegativeInteger;
+  profileRev: SafeInteger;
   displayName: string;
   bio: string;
-  avatar: ProfileAvatar | null;
+  avatar: InlineProfileAvatar | null;
 }
 ```
 
-A `PROFILE` is a complete home-authored user or group identity profile.
-Its `domain` MUST equal the signer domain. `displayName` contains 1–30
-Unicode code points and `bio` contains 0–120. The avatar rules from the core
-profile type apply. Profile data grants no relationship, membership, message,
+A `PROFILE` is a complete home-authored user or group identity profile. Its
+address domain is the authenticated source domain. `displayName` contains 1–30
+Unicode code points and `bio` contains 0–120. The shared
+`InlineProfileAvatar` rules apply. Profile data grants no relationship, membership, message,
 or resource permission.
 
 The source publishes a profile only while the target peer has the corresponding
@@ -113,8 +130,8 @@ interface RelationshipIntentBody {
 ```
 
 This item is one source-authored user/user or user/group direction.
-`account/domain` is the signer-hosted end and `peerAccount` is hosted by
-the receiver. Group/group relationships are invalid. Each direction is
+`account` is hosted by the authenticated source domain and `peerAccount` is
+hosted by the receiver. Group/group relationships are invalid. Each direction is
 controlled exclusively by its author; a receiver MUST NOT invent or publish a
 transition on the author's behalf. `ACCEPTED` is a durable acknowledgement of a
 request flow, not a second request and not a transport acknowledgement.
@@ -125,7 +142,7 @@ A `RELATIONSHIP_INTENT` is a single directed state machine from its author to
 its peer:
 
 ```text
-account@domain -> peerAccount@receiver-domain
+account@source-domain -> peerAccount@receiver-domain
 ```
 
 The reverse direction is a separate `RELATIONSHIP_INTENT`, independently
@@ -206,8 +223,8 @@ interface GroupMetaFeedHeadBody {
 }
 ```
 
-The item account MUST be an origin-owned group and its domain MUST equal the
-signer. `groupMetaFeedEndId` is the latest `feedId` in that target peer and
+The item account MUST be a group owned by the authenticated source domain.
+`groupMetaFeedEndId` is the latest `feedId` in that target peer and
 group's Group Meta feed. It MUST NOT contain a roster, member profile, owner, active flag,
 dissolution flag, group setting, or other meta fact.
 

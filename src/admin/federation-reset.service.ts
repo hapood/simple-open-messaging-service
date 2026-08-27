@@ -97,20 +97,21 @@ export class FederationResetService implements OnModuleInit {
 
       const result = await tx.execute<PreviewRow>(sql`
         WITH remote_users AS (
-          SELECT id FROM "User" WHERE domain = ${normalized} AND domain <> 'local'
+          SELECT id FROM "User" WHERE "sourceDomain" = ${normalized}
         ), affected_threads AS (
-          SELECT DISTINCT tp."threadId"
-          FROM "ThreadParticipant" tp
-          JOIN remote_users ru ON ru.id = tp."userId"
+          SELECT DISTINCT member."threadId"
+          FROM "ThreadMember" member
+          JOIN remote_users ru ON ru.id = member."userId"
         )
         SELECT
           (SELECT count(*)::int FROM remote_users) AS "foreignUserCount",
-          (SELECT count(*)::int FROM "ThreadParticipant" tp JOIN remote_users ru ON ru.id = tp."userId") AS "participantCount",
+          (SELECT count(*)::int FROM "ThreadMember" member JOIN remote_users ru ON ru.id = member."userId") AS "participantCount",
           (SELECT count(*)::int FROM affected_threads) AS "affectedThreadCount",
-          (SELECT count(*)::int FROM "Message" m JOIN remote_users ru ON ru.id = m.creator) AS "authoredMessageCount",
-          (SELECT count(*)::int FROM "RelationshipIntent" r
-             WHERE r."authorUserId" IN (SELECT id FROM remote_users)
-                OR r."subjectUserId" IN (SELECT id FROM remote_users)) AS "inviteCount",
+          (SELECT count(*)::int FROM "Message" m WHERE m."creatorDomain" = ${normalized}) AS "authoredMessageCount",
+          (SELECT count(*)::int FROM "RelationshipIntent" intent
+             JOIN "RelationshipPair" pair ON pair.id = intent."pairId"
+             WHERE pair."endpointADomain" = ${normalized}
+                OR pair."endpointBDomain" = ${normalized}) AS "inviteCount",
           (SELECT count(*)::int FROM "FederationDeletedCursor" WHERE "peerDomain" = ${normalized}) AS "deletionCursorCount",
           (SELECT count(*)::int FROM "S2SKeyCache" WHERE domain = ${normalized}) AS "keyCacheCount",
           0::int AS "friendOperationCount"
@@ -170,19 +171,20 @@ export class FederationResetService implements OnModuleInit {
       WITH remote_users AS (
         SELECT id
         FROM "User"
-        WHERE domain = ${domain} AND domain <> 'local'
+        WHERE "sourceDomain" = ${domain}
       ), affected_threads AS (
-        SELECT tp."threadId"
-        FROM "ThreadParticipant" tp
-        JOIN remote_users ru ON ru.id = tp."userId"
+        SELECT member."threadId"
+        FROM "ThreadMember" member
+        JOIN remote_users ru ON ru.id = member."userId"
         UNION
         SELECT m."threadId"
         FROM "Message" m
-        JOIN remote_users ru ON ru.id = m.creator
+        WHERE m."creatorDomain" = ${domain}
         UNION
         SELECT mt.id
         FROM "MessageThread" mt
-        JOIN remote_users ru ON ru.id = mt."groupUserId"
+        JOIN "Group" group_profile ON group_profile.id = mt."groupId"
+        WHERE group_profile.domain = ${domain}
       )
       SELECT mt.id AS "threadId"
       FROM "MessageThread" mt
@@ -222,26 +224,21 @@ export class FederationResetService implements OnModuleInit {
     await this.database.db.execute(
       sql`DELETE FROM "PendingMedia" WHERE "threadId" = ${threadId}`,
     );
-    await this.database.db.execute(sql`
-      DELETE FROM "RelationshipIntent"
-      WHERE "authorUserId" = (
-        SELECT "groupUserId" FROM "MessageThread" WHERE id = ${threadId}
-      )
-         OR "subjectUserId" = (
-        SELECT "groupUserId" FROM "MessageThread" WHERE id = ${threadId}
-      )
-    `);
+    await this.database.db.execute(
+      sql`DELETE FROM "RelationshipPair" WHERE "threadId" = ${threadId}`,
+    );
     await this.database.db.execute(
       sql`DELETE FROM "Message" WHERE "threadId" = ${threadId}`,
     );
-    await this.database.db.execute(sql`
-      DELETE FROM "Group" g
-      USING "MessageThread" mt
-      WHERE mt.id = ${threadId} AND g."groupUserId" = mt."groupUserId"
-    `);
     await this.database.db.transaction(async (tx) => {
+      const group = await tx.execute<{ groupId: number | null }>(sql`
+        SELECT "groupId" FROM "MessageThread" WHERE id = ${threadId} FOR UPDATE
+      `);
       await tx.execute(
         sql`DELETE FROM "ThreadParticipant" WHERE "threadId" = ${threadId}`,
+      );
+      await tx.execute(
+        sql`DELETE FROM "ThreadMember" WHERE "threadId" = ${threadId}`,
       );
       await tx.execute(sql`
         UPDATE "MessageThread"
@@ -252,10 +249,15 @@ export class FederationResetService implements OnModuleInit {
             "lastMessageSeq" = NULL,
             "lastMessagePreview" = NULL,
             "lastMessageAt" = NULL,
-            "groupUserId" = NULL,
+            "groupId" = NULL,
             "updatedAt" = CURRENT_TIMESTAMP
         WHERE id = ${threadId} AND "federationTruncated" = false
       `);
+      if (group.rows[0]?.groupId != null) {
+        await tx.execute(
+          sql`DELETE FROM "Group" WHERE id = ${group.rows[0].groupId}`,
+        );
+      }
     });
   }
 
@@ -282,40 +284,8 @@ export class FederationResetService implements OnModuleInit {
       if (pending !== 0) return;
       const generation = peer.resetGeneration + 1;
       await tx.execute(sql`
-        WITH remote_users AS (
-          SELECT id FROM "User"
-          WHERE domain = ${domain} AND domain <> 'local'
-        )
-        DELETE FROM "RelationshipIntent"
-        WHERE "authorUserId" IN (SELECT id FROM remote_users)
-           OR "subjectUserId" IN (SELECT id FROM remote_users)
-      `);
-      await tx.execute(sql`
-        DELETE FROM "UploadSession"
-        WHERE "creatorId" IN (
-          SELECT id FROM "User"
-          WHERE domain = ${domain} AND domain <> 'local'
-        )
-      `);
-      await tx.execute(sql`
-        DELETE FROM "PushToken" WHERE "userId" IN (
-          SELECT id FROM "User" WHERE domain = ${domain} AND domain <> 'local'
-        )
-      `);
-      await tx.execute(sql`
-        DELETE FROM "LoginCode" WHERE "userId" IN (
-          SELECT id FROM "User" WHERE domain = ${domain} AND domain <> 'local'
-        )
-      `);
-      await tx.execute(sql`
-        DELETE FROM "SessionToken" WHERE "userId" IN (
-          SELECT id FROM "User" WHERE domain = ${domain} AND domain <> 'local'
-        )
-      `);
-      await tx.execute(sql`
-        DELETE FROM "DiagnosticsReport" WHERE "reporterUserId" IN (
-          SELECT id FROM "User" WHERE domain = ${domain} AND domain <> 'local'
-        )
+        DELETE FROM "RelationshipPair"
+        WHERE "endpointADomain" = ${domain} OR "endpointBDomain" = ${domain}
       `);
       await tx.execute(
         sql`DELETE FROM "FederatedMessageTombstone" WHERE "sourceDomain" = ${domain} OR "authorityDomain" = ${domain}`,
@@ -334,7 +304,7 @@ export class FederationResetService implements OnModuleInit {
       );
       await tx.execute(sql`
         DELETE FROM "User"
-        WHERE domain = ${domain} AND domain <> 'local'
+        WHERE "sourceDomain" = ${domain}
       `);
       await tx.execute(sql`
         INSERT INTO "FederatedPeerReset" (domain, "resetGeneration", "reinitPending", "resetAt")
@@ -428,19 +398,20 @@ export class FederationResetService implements OnModuleInit {
         WITH remote_users AS (
           SELECT id
           FROM "User"
-          WHERE domain = ${normalized} AND domain <> 'local'
+          WHERE "sourceDomain" = ${normalized}
         ), affected_threads AS (
-          SELECT tp."threadId"
-          FROM "ThreadParticipant" tp
-          JOIN remote_users ru ON ru.id = tp."userId"
+          SELECT member."threadId"
+          FROM "ThreadMember" member
+          JOIN remote_users ru ON ru.id = member."userId"
           UNION
           SELECT m."threadId"
           FROM "Message" m
-          JOIN remote_users ru ON ru.id = m.creator
+          WHERE m."creatorDomain" = ${normalized}
           UNION
           SELECT mt.id
           FROM "MessageThread" mt
-          JOIN remote_users ru ON ru.id = mt."groupUserId"
+          JOIN "Group" group_profile ON group_profile.id = mt."groupId"
+          WHERE group_profile.domain = ${normalized}
         )
         UPDATE "MessageThread" mt
         SET "federationTruncated" = false,
@@ -490,19 +461,20 @@ export class FederationResetService implements OnModuleInit {
       WITH remote_users AS (
         SELECT id
         FROM "User"
-        WHERE domain = ${domain} AND domain <> 'local'
+        WHERE "sourceDomain" = ${domain}
       ), affected_threads AS (
-        SELECT tp."threadId"
-        FROM "ThreadParticipant" tp
-        JOIN remote_users ru ON ru.id = tp."userId"
+        SELECT member."threadId"
+        FROM "ThreadMember" member
+        JOIN remote_users ru ON ru.id = member."userId"
         UNION
         SELECT m."threadId"
         FROM "Message" m
-        JOIN remote_users ru ON ru.id = m.creator
+        WHERE m."creatorDomain" = ${domain}
         UNION
         SELECT mt.id
         FROM "MessageThread" mt
-        JOIN remote_users ru ON ru.id = mt."groupUserId"
+        JOIN "Group" group_profile ON group_profile.id = mt."groupId"
+        WHERE group_profile.domain = ${domain}
       )
       SELECT count(*)::int AS count
       FROM "MessageThread" mt

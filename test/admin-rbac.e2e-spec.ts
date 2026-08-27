@@ -7,7 +7,12 @@ import { and, eq } from 'drizzle-orm';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
-import { admin, adminActionLog, user } from '../src/database/schema';
+import {
+  account as accountTable,
+  admin,
+  adminActionLog,
+  user,
+} from '../src/database/schema';
 import { AdminAuthService } from '../src/admin/admin-auth.service';
 import { ADMIN_SESSION_COOKIE } from '../src/admin/admin-session';
 import { BusinessCode } from '../src/common/business-code';
@@ -74,11 +79,15 @@ describe('Admin RBAC + revocation + audit', () => {
       .values({
         account,
         domain: 'local',
-        hashPwd: 'x',
         name: account,
         updatedAt: now,
       })
       .returning({ id: user.id });
+    await database.db.insert(accountTable).values({
+      id: createdUser.id,
+      hashPwd: 'x',
+      updatedAt: now,
+    });
     const [createdAdmin] = await database.db
       .insert(admin)
       .values({ userId: createdUser.id, role, enabled: true, updatedAt: now })
@@ -97,11 +106,14 @@ describe('Admin RBAC + revocation + audit', () => {
       .values({
         account,
         domain: 'local',
-        hashPwd: 'x',
         name: account,
         updatedAt: new Date(),
       })
       .returning({ id: user.id });
+    await database.db.insert(accountTable).values({
+      id: created.id,
+      hashPwd: 'x',
+    });
     return created;
   };
 

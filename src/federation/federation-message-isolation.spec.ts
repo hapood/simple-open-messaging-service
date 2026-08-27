@@ -12,14 +12,13 @@ const item = (
     account: 'alice',
     peerAccount: 'bob',
   },
-  author: { account: 'alice', domain: 'local.test' },
+  authorRef: 'THREAD_PEER_ACCOUNT',
   seq: Number(sequence),
   originSeq: Number(sequence),
   contentType: 'PURE_TEXT',
   content: JSON.stringify({ text: `message ${sequence}` }),
   createdAt: 1_700_000_001_000,
   originCreatedAt: 1_700_000_000_000,
-  clientMessageId: null,
   assets: [],
 });
 
@@ -194,7 +193,7 @@ describe('federation message context isolation', () => {
     malformed.content = JSON.stringify({
       text: 'secret-message-body-that-must-not-be-logged',
     });
-    malformed.author.account = 'attacker\nforged-log-line';
+    malformed.authorRef = 'attacker\nforged-log-line' as 'THREAD_ACCOUNT';
     const tx = { execute: vi.fn().mockResolvedValue({ rows: [] }) };
 
     await expect(

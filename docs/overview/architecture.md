@@ -52,7 +52,7 @@ feature modules and controllers. Modules marked `@Global()` are shared app-wide.
 | **GatewayModule**                    | [src/gateway/](../../src/gateway/)                                         | SSE downlink (`EventsController` + `SseService`): connection registry, heartbeat, `HELLO`, durable-feed and message/media wake-ups, ephemeral call coordination, and `FORCE_LOGOUT`; `CallStateRegistry` mirrors active-call state for `HELLO`                            |
 | **MessageModule**                    | [src/message/](../../src/message/)                                         | `MessageService` — message write (per-thread atomic `seq`) + paginated query primitives; `MessageFanoutService` (global) does unified `NEW_MESSAGE` fan-out                                                                                                               |
 | **GroupModule**                      | [src/group/](../../src/group/)                                             | `GroupService` + `RolesGuard` — group create/invite/members/leave/kick/transfer/role/update                                                                                                                                                                               |
-| **ThreadParticipantModule**          | [src/thread-participant/](../../src/thread-participant/)                   | `ThreadParticipantService` (raw thread-roster mutator) + `ThreadAccessGuard` (membership guard reused by message/group routes)                                                                                                                                            |
+| **ThreadParticipantModule**          | [src/thread-participant/](../../src/thread-participant/)                   | `ThreadParticipantService` (ThreadMember roster plus local ThreadParticipant state) + `ThreadAccessGuard`                                                                                                                                                                  |
 | **InviteModule**                     | [src/invite/](../../src/invite/)                                           | `InviteService` — directed friend/group request facts, pair reconciliation and friend-request badge; delegates roster writes to ThreadParticipantService                                                                                                                  |
 | **UserBlockModule**                  | [src/user-block/](../../src/user-block/)                                   | `UserBlockService` — block/unblock state consumed by message fan-out + user queries                                                                                                                                                                                       |
 | **ThreadRevisionModule** (`@Global`) | [src/thread-revision/](../../src/thread-revision/)                         | maintains the per-user state cursor and compact thread/profile delta entries                                                                                                                                                                                              |
@@ -201,7 +201,13 @@ The SSE stream does not replay history (no `Last-Event-ID`). After a reconnect, 
 
 ### Threads, Participants, and Invites
 
-All conversations are `MessageThread` rows (`type` `P2P` or `GROUP`). **`ThreadParticipant`** stores one retained row per (user, thread), including per-user read and presentation settings. It is not an authorization source: current friendship and membership authority comes from the two directed `RelationshipIntent` facts. Participant rows may remain after revocation to preserve visible read-only history. There is no polymorphic `UserMessageThread` or separate `GroupMember` table.
+All conversations are `MessageThread` rows (`type` `P2P` or `GROUP`).
+**`ThreadMember`** stores the source-correct roster and retains observed departures;
+P2P threads have exactly two rows. **`ThreadParticipant`** is the optional
+independent fact containing one local account's role, read, and presentation
+state. Both tables reference the thread but never each other. Neither table grants access. Permission checks read the materialized
+`RelationshipPair.active` fact; `RelationshipIntent` remains the directed input
+to the existing relationship state machine.
 
 Friend and group requests use the same pair of directed account facts. User/user
 pairs become P2P relationships; user/group pairs become memberships; group/group
@@ -211,7 +217,7 @@ a new thread; it does not authorize the reverse direction. Initiating or
 accepting creates the local placeholder and thread. Crossed requests and a valid
 peer `ACCEPTED` both upgrade a matching local `REQUESTED` to `ACCEPTED`; an
 already accepted direction creates no echo.
-For a P2P request shell, both participant rows can be materialized immediately;
+For a P2P request shell, both member rows can be materialized immediately;
 their presence grants no permission. Sending and P2P friendship require both
 directions to be effective (`ACCEPTED`, or `REQUESTED` before expiry). Group
 membership uses the same mutual rule between the member and group identity.
@@ -237,7 +243,7 @@ and notification descriptors use their own catch-up resources.
 
 `POST /send-message` (`{ threadId, content, contentType?, clientMessageId? }`) → `MessageService.writeMsgToThread()`:
 
-1. `ThreadAccessGuard` resolves the retained participant and derives current mutual authorization from the two directed relationship intents. The send transaction checks the same authority again under its transaction boundary.
+1. `ThreadAccessGuard` resolves the retained member/local participant and reads current authorization from `RelationshipPair.active`. The send transaction checks the same fact again under its transaction boundary.
 2. Allocates a per-thread `seq` atomically (`UPDATE curSeq = curSeq + 1 RETURNING`) inside the create tx — gapless, no retry loop.
 
 ### Read HWM and unread badges

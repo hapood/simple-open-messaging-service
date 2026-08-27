@@ -73,4 +73,25 @@ export class ProfileRepository {
       return undefined;
     }
   }
+
+  async getUser(
+    account: string,
+    domain: string,
+    sourceDomain: string,
+  ): Promise<ProfileRecord | undefined> {
+    const record = await this.webdb.getUser(account, domain, sourceDomain);
+    if (!record) return undefined;
+    return {
+      identity: `${sourceDomain}\u0000${domain}\u0000${account}`,
+      id: record.id ?? 0,
+      kind: 'user',
+      name: record.name,
+      account: record.account,
+      avatar: record.avatar,
+      bio: record.bio,
+      domain: record.domain,
+      sourceServer: record.sourceDomain,
+      profileRev: record.profileRev,
+    };
+  }
 }

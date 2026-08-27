@@ -1,4 +1,4 @@
-import type { CallSignalKind } from './federated-call-protocol.js';
+import type { CallSignalType } from './federated-call-protocol.js';
 
 export type CallLifecycleState = 'ringing' | 'accepted' | 'connected';
 export type CallParticipantRole = 'caller' | 'callee';
@@ -60,9 +60,9 @@ export function decideCallTransition(
 export function isSignalAllowed(
   state: CallLifecycleState,
   senderRole: CallParticipantRole,
-  kind: CallSignalKind,
+  signalType: CallSignalType,
 ): boolean {
-  switch (kind) {
+  switch (signalType) {
     case 'offer':
       return senderRole === 'caller';
     case 'answer':

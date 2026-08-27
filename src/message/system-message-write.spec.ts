@@ -10,7 +10,8 @@ describe('MessageService local system messages', () => {
     const stored = {
       id: 10n,
       threadId: 7,
-      creator: null,
+      creatorAccount: null,
+      creatorDomain: null,
       seq: 4,
       contentType: ContentType.SYSTEM,
       content: JSON.stringify({
@@ -71,9 +72,10 @@ describe('MessageService local system messages', () => {
     expect(insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
         contentType: ContentType.SYSTEM,
-        creator: null,
       }),
     );
+    expect(insertValues.mock.calls[0][0]).not.toHaveProperty('creatorAccount');
+    expect(insertValues.mock.calls[0][0]).not.toHaveProperty('creatorDomain');
     expect(threadUpdate).toBe(1);
   });
 
@@ -102,7 +104,8 @@ describe('MessageService local system messages', () => {
     const stored = {
       id: 11n,
       threadId: 7,
-      creator: null,
+      creatorAccount: null,
+      creatorDomain: null,
       seq: 5,
       contentType: ContentType.SYSTEM,
       content: JSON.stringify({

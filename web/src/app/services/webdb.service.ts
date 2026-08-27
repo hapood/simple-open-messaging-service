@@ -1,4 +1,10 @@
-import { Injectable, OnDestroy, signal } from '@angular/core';
+import {
+  Inject,
+  Injectable,
+  InjectionToken,
+  OnDestroy,
+  signal,
+} from '@angular/core';
 import {
   openDB,
   deleteDB,
@@ -66,7 +72,50 @@ export interface AvatarRecord {
   lastRender: number;
 }
 
-/** Profile record. Keyed by identity string so user-ids and group-ids never collide in one store. */
+/** Source-scoped person profile. Its logical primary key mirrors backend User exactly. */
+export interface UserRecord {
+  id?: number;
+  name: string;
+  account: string;
+  avatar: string;
+  bio: string;
+  domain: string;
+  sourceDomain: string;
+  availability: 'AVAILABLE' | 'REMOVED';
+  createdAt: number;
+  updatedAt: number;
+  profileRev: number;
+}
+
+/** Group profile. Groups have one authoritative address and are not represented as User rows. */
+export interface GroupRecord {
+  id?: number;
+  name: string;
+  account: string;
+  avatar: string;
+  description: string;
+  domain: string;
+  profileRev: number;
+  createdAt: number;
+  updatedAt: number;
+  dissolvedAt?: number | null;
+}
+
+/** One materialized roster member pointing to a source-scoped User logical key. */
+export interface MemberRecord {
+  threadId: number;
+  account: string;
+  domain: string;
+  sourceDomain: string;
+  role: 'OWNER' | 'ADMIN' | 'MEMBER';
+  left: boolean;
+}
+
+export interface ResolvedMemberRecord extends MemberRecord {
+  user: UserRecord;
+}
+
+/** Compatibility shape for UI repositories while callers move from numeric cache aliases to logical keys. */
 export interface ProfileRecord {
   identity: string;
   id: number;
@@ -76,23 +125,7 @@ export interface ProfileRecord {
   avatar: string;
   bio: string;
   domain: string;
-  /** Server that supplied this profile. Local profiles use the canonical literal `local`. */
   sourceServer: string;
-  profileRev: number;
-  source?: 'OUTGOING_FRIEND_REQUEST' | 'GROUP_INVITE';
-  expiresAt?: number;
-}
-
-/** One materialized group roster member. */
-export interface ThreadParticipantRecord {
-  threadId: number;
-  userId: number;
-  memberAccount: string;
-  memberDomain: string;
-  profileSourceServer: string;
-  role: 'OWNER' | 'ADMIN' | 'MEMBER';
-  displayName: string;
-  avatar: string;
   profileRev: number;
 }
 
@@ -120,11 +153,26 @@ export interface MetaRecord {
   value: unknown;
 }
 
-export type CachedMessage = Message & {
+type CachedMessageBody = Message & {
   /** Sparse local-only completeness markers; absent on non-edge rows. */
   sectionLeft?: 1;
   sectionRight?: 1;
 };
+
+/** A deletion learned before its message body. It deliberately has no synthetic content or creator. */
+export interface CachedMessageTombstone {
+  threadId: number;
+  seq: number;
+  isDeleted: true;
+  sectionLeft?: 1;
+  sectionRight?: 1;
+}
+
+export type CachedMessage = CachedMessageBody | CachedMessageTombstone;
+
+function isCachedMessageBody(value: CachedMessage): value is CachedMessageBody {
+  return !value.isDeleted && 'content' in value;
+}
 
 export interface MessageSection {
   left: number;
@@ -199,14 +247,23 @@ function messageCoverageKey(threadId: number): string {
 /** Core cache schema. High-volume message data intentionally lives in MessageDbSchema. */
 export interface WebdbSchema extends DBSchema {
   avatars: { key: string; value: AvatarRecord };
-  profiles: {
-    key: string;
-    value: ProfileRecord;
+  users: {
+    key: [string, string, string];
+    value: UserRecord;
+    indexes: { address: [string, string]; id: number };
   };
-  threadParticipants: {
-    key: [number, number];
-    value: ThreadParticipantRecord;
-    indexes: { identity: [number, string, string] };
+  groups: {
+    key: [string, string];
+    value: GroupRecord;
+    indexes: { id: number };
+  };
+  members: {
+    key: [number, string, string, string];
+    value: MemberRecord;
+    indexes: {
+      thread: number;
+      address: [number, string, string];
+    };
   };
   /** One record per conversation, keyed by `threadId` (the field is the keyPath). */
   threads: { key: number; value: ConversationItem };
@@ -235,7 +292,7 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-export const CACHE_SCHEMA_VERSION = 7;
+export const CACHE_SCHEMA_VERSION = 8;
 export const MESSAGE_CACHE_SCHEMA_VERSION = 1;
 const IDB_FORMAT_VERSION = 1;
 
@@ -264,6 +321,22 @@ function messageDbName(userId: string): string {
 function idbAvailable(): boolean {
   return typeof indexedDB !== 'undefined';
 }
+
+export type StateFeedWorkerFactory = () => Worker | null;
+
+const createBrowserStateFeedWorker: StateFeedWorkerFactory = () => {
+  if (typeof window === 'undefined' || typeof Worker === 'undefined')
+    return null;
+  return new Worker(new URL('./state-feed-db.worker', import.meta.url), {
+    type: 'module',
+  });
+};
+
+export const STATE_FEED_WORKER_FACTORY =
+  new InjectionToken<StateFeedWorkerFactory>('STATE_FEED_WORKER_FACTORY', {
+    providedIn: 'root',
+    factory: () => createBrowserStateFeedWorker,
+  });
 
 @Injectable({ providedIn: 'root' })
 export class WebdbService implements OnDestroy {
@@ -307,6 +380,11 @@ export class WebdbService implements OnDestroy {
 
   /** True once the current user's database is open and ready for reads/writes. */
   readonly ready = signal(false);
+
+  constructor(
+    @Inject(STATE_FEED_WORKER_FACTORY)
+    private readonly stateFeedWorkerFactory: StateFeedWorkerFactory = createBrowserStateFeedWorker,
+  ) {}
 
   /**
    * Open (or reuse) the per-user database. Safe to call repeatedly; returns the live handle promise
@@ -520,8 +598,9 @@ export class WebdbService implements OnDestroy {
   ): Promise<boolean> {
     const required = [
       'avatars',
-      'profiles',
-      'threadParticipants',
+      'users',
+      'groups',
+      'members',
       'threads',
       'friendRequests',
       'relationshipIntents',
@@ -534,9 +613,9 @@ export class WebdbService implements OnDestroy {
       const version = await db.get('settings', 'schemaVersion');
       return (
         version?.value === CACHE_SCHEMA_VERSION &&
-        db
-          .transaction('threadParticipants')
-          .store.indexNames.contains('identity')
+        db.transaction('users').store.indexNames.contains('address') &&
+        db.transaction('members').store.indexNames.contains('thread') &&
+        db.transaction('members').store.indexNames.contains('address')
       );
     } catch {
       return false;
@@ -551,17 +630,20 @@ export class WebdbService implements OnDestroy {
         if (oldVersion !== 0)
           throw new Error('cache recreation expected an empty IndexedDB');
         db.createObjectStore('avatars', { keyPath: 'identity' });
-        db.createObjectStore('profiles', {
-          keyPath: 'identity',
+        const users = db.createObjectStore('users', {
+          keyPath: ['account', 'domain', 'sourceDomain'],
         });
-        const threadParticipants = db.createObjectStore('threadParticipants', {
-          keyPath: ['threadId', 'userId'],
+        users.createIndex('address', ['account', 'domain']);
+        users.createIndex('id', 'id', { unique: true });
+        const groups = db.createObjectStore('groups', {
+          keyPath: ['account', 'domain'],
         });
-        threadParticipants.createIndex('identity', [
-          'threadId',
-          'memberDomain',
-          'memberAccount',
-        ]);
+        groups.createIndex('id', 'id', { unique: true });
+        const members = db.createObjectStore('members', {
+          keyPath: ['threadId', 'account', 'domain', 'sourceDomain'],
+        });
+        members.createIndex('thread', 'threadId');
+        members.createIndex('address', ['threadId', 'account', 'domain']);
         db.createObjectStore('threads', { keyPath: 'threadId' });
         const friendRequests = db.createObjectStore('friendRequests', {
           keyPath: 'key',
@@ -1088,19 +1170,10 @@ export class WebdbService implements OnDestroy {
         return;
       }
       const db = await this.db();
-      const tx = db.transaction(['friendRequests', 'profiles'], 'readwrite');
+      const tx = db.transaction('friendRequests', 'readwrite');
       for (const item of await tx.objectStore('friendRequests').getAll()) {
         if (!projectionIsExpired(item, now)) continue;
         await tx.objectStore('friendRequests').delete(item.key);
-      }
-      for (const profile of await tx.objectStore('profiles').getAll()) {
-        if (
-          (profile.source === 'OUTGOING_FRIEND_REQUEST' ||
-            profile.source === 'GROUP_INVITE') &&
-          profile.expiresAt !== undefined &&
-          profile.expiresAt <= now
-        )
-          await tx.objectStore('profiles').delete(profile.identity);
       }
       await tx.done;
     });
@@ -1174,20 +1247,18 @@ export class WebdbService implements OnDestroy {
     resetProjection = false,
   ): Promise<void> {
     return this.runAccountOperation(async () => {
-      if (
-        !isTauri() &&
-        typeof window !== 'undefined' &&
-        typeof Worker !== 'undefined' &&
-        this.currentUserId !== null
-      ) {
-        await this.applyStateFeedPageInWorker(
+      if (!isTauri() && this.currentUserId !== null) {
+        const workerApply = this.applyStateFeedPageInWorker(
           this.currentUserId,
           items,
           feedId,
           groupMeta,
           resetProjection,
         );
-        return;
+        if (workerApply) {
+          await workerApply;
+          return;
+        }
       }
       await this.applyStateFeedPageInternal(
         items,
@@ -1204,12 +1275,10 @@ export class WebdbService implements OnDestroy {
     feedId: number,
     groupMeta: readonly ClientGroupMetaApply[],
     resetProjection: boolean,
-  ): Promise<void> {
+  ): Promise<void> | null {
     if (!this.stateFeedWorker) {
-      this.stateFeedWorker = new Worker(
-        new URL('./state-feed-db.worker', import.meta.url),
-        { type: 'module' },
-      );
+      this.stateFeedWorker = this.stateFeedWorkerFactory();
+      if (!this.stateFeedWorker) return null;
       this.stateFeedWorker.onmessage = (
         event: MessageEvent<{ id: number; ok: boolean; error?: string }>,
       ) => {
@@ -1276,8 +1345,9 @@ export class WebdbService implements OnDestroy {
     const tx = db.transaction(
       [
         'threads',
-        'profiles',
-        'threadParticipants',
+        'users',
+        'groups',
+        'members',
         'friendRequests',
         'relationshipIntents',
         'settings',
@@ -1287,15 +1357,7 @@ export class WebdbService implements OnDestroy {
     if (resetProjection) {
       await tx.objectStore('friendRequests').clear();
       await tx.objectStore('relationshipIntents').clear();
-      const profiles = tx.objectStore('profiles');
-      await tx.objectStore('threadParticipants').clear();
-      for (const profile of await profiles.getAll()) {
-        if (
-          profile.source === 'OUTGOING_FRIEND_REQUEST' ||
-          profile.source === 'GROUP_INVITE'
-        )
-          await profiles.delete(profile.identity);
-      }
+      await tx.objectStore('members').clear();
       const threads = tx.objectStore('threads');
       for (const thread of await threads.getAll()) {
         await threads.put({
@@ -1341,25 +1403,6 @@ export class WebdbService implements OnDestroy {
           Date.now(),
         );
         if (transition.record) await store.put(transition.record);
-        const identity = `pending-group:${groupDomain}\u0000${groupAccount}`;
-        if (
-          transition.record?.status === 'REQUESTED' &&
-          projectionRequestExpiresAt(transition.record) !== null
-        )
-          await tx.objectStore('profiles').put({
-            identity,
-            id: 0,
-            kind: 'group',
-            name: body.group.name,
-            account: body.group.account,
-            avatar: body.group.avatar,
-            bio: body.group.description,
-            domain: body.group.domain,
-            sourceServer: groupDomain,
-            profileRev: body.group.profileRev,
-            source: 'GROUP_INVITE',
-            expiresAt: projectionRequestExpiresAt(transition.record)!,
-          });
         if (transition.becameActionable)
           await tx.objectStore('settings').put({
             key: 'friendRequestStateRevision',
@@ -1394,28 +1437,6 @@ export class WebdbService implements OnDestroy {
         Date.now(),
       );
       if (transition.record) await store.put(transition.record);
-      if (
-        body.status === 'REQUESTED' &&
-        transition.record !== null &&
-        projectionRequestExpiresAt(transition.record) !== null &&
-        body.direction === 'OUTGOING'
-      ) {
-        const peer = body.peer;
-        await tx.objectStore('profiles').put({
-          identity: `pending:${peer.domain}\u0000${peer.account}`,
-          id: 0,
-          kind: 'user',
-          name: peer.name || peer.account,
-          account: peer.account,
-          avatar: peer.avatar,
-          bio: peer.bio ?? '',
-          domain: peer.domain,
-          sourceServer: peer.domain,
-          profileRev: 0,
-          source: 'OUTGOING_FRIEND_REQUEST',
-          expiresAt: projectionRequestExpiresAt(transition.record)!,
-        });
-      }
       if (transition.becameActionable)
         await tx.objectStore('settings').put({
           key: 'friendRequestStateRevision',
@@ -1466,19 +1487,18 @@ export class WebdbService implements OnDestroy {
               ),
             );
           if (!active && existing?.type === 'GROUP') {
-            const participants = tx.objectStore('threadParticipants');
-            let member = await participants.openCursor(
-              IDBKeyRange.bound(
-                [threadId, Number.MIN_SAFE_INTEGER],
-                [threadId, Number.MAX_SAFE_INTEGER],
-              ),
-            );
+            const members = tx.objectStore('members');
+            let member = await members
+              .index('thread')
+              .openCursor(IDBKeyRange.only(threadId));
             while (member) {
               await member.delete();
               member = await member.continue();
             }
             await threads.delete(threadId);
-            await tx.objectStore('profiles').delete(`g${threadId}`);
+            await tx
+              .objectStore('groups')
+              .delete([existing.group.account, existing.group.domain]);
           }
         } else {
           const friendBody = body as Omit<
@@ -1508,68 +1528,69 @@ export class WebdbService implements OnDestroy {
         throw new Error(
           'group-meta sourceServer must be canonical and non-empty',
         );
-      const participants = tx.objectStore('threadParticipants');
+      const members = tx.objectStore('members');
       const currentThread = await tx
         .objectStore('threads')
         .get(update.threadId);
       if (currentThread?.type !== 'GROUP') continue;
-      let memberCount = 0;
-      if (update.page.mode === 'full') {
-        let cursor = await participants.openCursor(
-          IDBKeyRange.bound(
-            [update.threadId, Number.MIN_SAFE_INTEGER],
-            [update.threadId, Number.MAX_SAFE_INTEGER],
-          ),
-        );
-        while (cursor) {
-          await cursor.delete();
-          cursor = await cursor.continue();
-        }
-      } else {
-        const thread = await tx.objectStore('threads').get(update.threadId);
-        memberCount =
-          thread?.type === 'GROUP' ? (thread.group.memberCount ?? 0) : 0;
-      }
       for (const item of update.page.items) {
-        const previous = await participants
-          .index('identity')
-          .get([update.threadId, item.domain, item.account]);
-        if (item.operation === 'DELETE') {
-          if (previous) {
-            await participants.delete([update.threadId, previous.userId]);
-            memberCount--;
-          }
+        const sourceDomain = update.sourceServer;
+        const previous = await members
+          .index('address')
+          .get([update.threadId, item.account, item.domain]);
+        if (item.operation === 'DEPART') {
+          if (previous) await members.put({ ...previous, left: true });
           continue;
         }
         const body = item.body as {
-          userId: number;
           role: 'OWNER' | 'ADMIN' | 'MEMBER';
           profileRev: number;
           displayName: string;
           avatar: string | null;
         };
-        if (!Number.isSafeInteger(body.userId) || body.userId < 1)
-          throw new Error('group-meta UPSERT has no valid userId');
-        await participants.put({
+        const existingUser = await tx
+          .objectStore('users')
+          .get([item.account, item.domain, sourceDomain]);
+        if (!existingUser || body.profileRev >= existingUser.profileRev)
+          await tx.objectStore('users').put({
+            ...(existingUser?.id === undefined ? {} : { id: existingUser.id }),
+            account: item.account,
+            domain: item.domain,
+            sourceDomain,
+            name: body.displayName,
+            avatar: body.avatar ?? '',
+            bio: existingUser?.bio ?? '',
+            availability: 'AVAILABLE',
+            profileRev: body.profileRev,
+            createdAt: existingUser?.createdAt ?? Date.now(),
+            updatedAt: Date.now(),
+          });
+        await members.put({
           threadId: update.threadId,
-          userId: body.userId,
-          memberAccount: item.account,
-          memberDomain: item.domain,
-          profileSourceServer: update.sourceServer,
+          account: item.account,
+          domain: item.domain,
+          sourceDomain,
           role: body.role,
-          displayName: body.displayName,
-          avatar: body.avatar ?? '',
-          profileRev: body.profileRev,
+          left: false,
         });
-        if (!previous) memberCount++;
       }
+      const currentMembers = await members
+        .index('thread')
+        .getAll(update.threadId);
+      const activeMembers = currentMembers.filter((member) => !member.left);
       const thread = await tx.objectStore('threads').get(update.threadId);
       if (thread?.type === 'GROUP') {
         const selfUserId = Number(this.currentUserId);
-        const self =
-          this.currentUserId !== null && Number.isSafeInteger(selfUserId)
-            ? await participants.get([update.threadId, selfUserId])
-            : undefined;
+        const [selfUser] = await tx
+          .objectStore('users')
+          .index('id')
+          .getAll(selfUserId, 1);
+        const self = activeMembers.find(
+          (member) =>
+            selfUser !== undefined &&
+            member.account === selfUser.account &&
+            member.domain === selfUser.domain,
+        );
         const { members: _members, ...group } =
           thread.group as typeof thread.group & {
             members?: unknown;
@@ -1579,7 +1600,7 @@ export class WebdbService implements OnDestroy {
           role: self?.role ?? null,
           group: {
             ...group,
-            memberCount,
+            memberCount: activeMembers.length,
             groupMetaFeedId: update.page.scannedThrough,
           },
         });
@@ -1588,23 +1609,49 @@ export class WebdbService implements OnDestroy {
     for (const op of items) {
       if (op.eventType === 'RELATIONSHIP_INTENT') continue;
       if (op.eventType === 'PROFILE') {
-        const profiles = tx.objectStore('profiles');
         const body = op.body;
-        for (const profile of await profiles.getAll()) {
-          if (
-            profile.account !== op.account ||
-            profile.domain !== op.domain ||
-            profile.sourceServer !== op.domain ||
-            body.profileRev < profile.profileRev
-          )
-            continue;
-          await profiles.put({
-            ...profile,
-            name: body.displayName,
-            avatar: body.avatar ?? '',
-            bio: body.bio,
-            profileRev: body.profileRev,
-          });
+        const now = Date.now();
+        if (op.account.startsWith('!')) {
+          const groups = tx.objectStore('groups');
+          const previous = await groups.get([op.account, op.domain]);
+          if (!previous || body.profileRev >= previous.profileRev)
+            await groups.put({
+              id: previous?.id,
+              account: op.account,
+              domain: op.domain,
+              name: body.displayName,
+              avatar: body.avatar ?? '',
+              description: body.bio,
+              profileRev: body.profileRev,
+              dissolvedAt: previous?.dissolvedAt ?? null,
+              createdAt: previous?.createdAt ?? now,
+              updatedAt: now,
+            });
+        } else {
+          const sourceDomain =
+            'sourceDomain' in body && typeof body.sourceDomain === 'string'
+              ? body.sourceDomain
+              : op.domain;
+          const users = tx.objectStore('users');
+          const previous = await users.get([
+            op.account,
+            op.domain,
+            sourceDomain,
+          ]);
+          if (!previous || body.profileRev >= previous.profileRev)
+            await users.put({
+              id: previous?.id,
+              account: op.account,
+              domain: op.domain,
+              sourceDomain,
+              availability: 'AVAILABLE',
+              createdAt: previous?.createdAt ?? now,
+              updatedAt: now,
+              name: body.displayName,
+              avatar: body.avatar ?? '',
+              bio: body.bio,
+              profileRev: body.profileRev,
+            });
         }
         const friendRequests = tx.objectStore('friendRequests');
         for (const request of await friendRequests.getAll()) {
@@ -1748,46 +1795,110 @@ export class WebdbService implements OnDestroy {
     return this.runAccountOperation(() => this.getProfileInternal(identity));
   }
 
-  async queryGroupMembers(params: {
-    threadId: number;
-    afterUserId?: number;
-    take: number;
-    search?: string;
-  }): Promise<ThreadParticipantRecord[]> {
+  async getUser(
+    account: string,
+    domain: string,
+    sourceDomain: string,
+  ): Promise<UserRecord | undefined> {
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId != null)
-        return tauriInvoke<ThreadParticipantRecord[]>(
+        return (
+          (await tauriInvoke<UserRecord | null>('native_db_get_user', {
+            userId: Number(this.currentUserId),
+            account,
+            domain,
+            sourceDomain,
+          })) ?? undefined
+        );
+      return (await this.db()).get('users', [account, domain, sourceDomain]);
+    });
+  }
+
+  async queryGroupMembers(params: {
+    threadId: number;
+    afterIdentity?: string;
+    take: number;
+    search?: string;
+  }): Promise<ResolvedMemberRecord[]> {
+    return this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId != null)
+        return tauriInvoke<ResolvedMemberRecord[]>(
           'native_db_query_group_members',
           {
             userId: Number(this.currentUserId),
             threadId: params.threadId,
-            afterUserId: params.afterUserId ?? 0,
+            afterIdentity: params.afterIdentity ?? '',
             take: params.take,
             search: params.search?.trim() ?? '',
           },
         );
       const db = await this.db();
-      const result: ThreadParticipantRecord[] = [];
+      const result: ResolvedMemberRecord[] = [];
       const search = params.search?.trim().toLocaleLowerCase() ?? '';
-      let cursor = await db
-        .transaction('threadParticipants')
-        .store.openCursor(
-          IDBKeyRange.bound(
-            [params.threadId, (params.afterUserId ?? 0) + 1],
-            [params.threadId, Number.MAX_SAFE_INTEGER],
+      const members = (
+        await db
+          .transaction('members')
+          .store.index('thread')
+          .getAll(params.threadId)
+      )
+        .filter((member) => {
+          const identity = `${member.sourceDomain}\u0000${member.domain}\u0000${member.account}`;
+          return !member.left && identity > (params.afterIdentity ?? '');
+        })
+        .sort((a, b) =>
+          `${a.sourceDomain}\u0000${a.domain}\u0000${a.account}`.localeCompare(
+            `${b.sourceDomain}\u0000${b.domain}\u0000${b.account}`,
           ),
         );
-      while (cursor && result.length < params.take) {
-        const member = cursor.value;
+      for (const member of members) {
+        if (result.length >= params.take) break;
+        const user = await db.get('users', [
+          member.account,
+          member.domain,
+          member.sourceDomain,
+        ]);
+        if (!user) continue;
         if (
           !search ||
-          member.displayName.toLocaleLowerCase().includes(search) ||
-          member.memberAccount.toLocaleLowerCase().includes(search)
+          user.name.toLocaleLowerCase().includes(search) ||
+          user.account.toLocaleLowerCase().includes(search)
         )
-          result.push(member);
-        cursor = await cursor.continue();
+          result.push({ ...member, user });
       }
       return result;
+    });
+  }
+
+  async getGroupMember(
+    threadId: number,
+    account: string,
+    domain: string,
+    sourceDomain: string,
+  ): Promise<ResolvedMemberRecord | undefined> {
+    return this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId != null)
+        return (
+          (await tauriInvoke<ResolvedMemberRecord | null>(
+            'native_db_get_group_member',
+            {
+              userId: Number(this.currentUserId),
+              threadId,
+              account,
+              domain,
+              sourceDomain,
+            },
+          )) ?? undefined
+        );
+      const db = await this.db();
+      const member = await db.get('members', [
+        threadId,
+        account,
+        domain,
+        sourceDomain,
+      ]);
+      if (!member || member.left) return undefined;
+      const user = await db.get('users', [account, domain, sourceDomain]);
+      return user ? { ...member, user } : undefined;
     });
   }
 
@@ -1802,7 +1913,26 @@ export class WebdbService implements OnDestroy {
         })) ?? undefined
       );
     }
-    return (await this.db()).get('profiles', identity);
+    const db = await this.db();
+    if (identity.startsWith('a:')) {
+      const [domain, account] = identity.slice(2).split('\u0000');
+      if (!domain || !account) return undefined;
+      const matches = await db.getAllFromIndex('users', 'address', [
+        account,
+        domain,
+      ]);
+      const record = matches.find((user) => user.sourceDomain === domain);
+      return record ? this.userAsProfile(identity, record) : undefined;
+    }
+    const match = /^([ug])(\d+)$/.exec(identity);
+    if (!match) return undefined;
+    const id = Number(match[2]);
+    if (match[1] === 'u') {
+      const record = await db.getFromIndex('users', 'id', id);
+      return record ? this.userAsProfile(identity, record) : undefined;
+    }
+    const record = await db.getFromIndex('groups', 'id', id);
+    return record ? this.groupAsProfile(identity, record) : undefined;
   }
 
   async putProfile(record: ProfileRecord): Promise<boolean> {
@@ -1819,10 +1949,75 @@ export class WebdbService implements OnDestroy {
       });
     }
     const db = await this.db();
-    const previous = await db.get('profiles', record.identity);
-    if (previous && previous.profileRev > record.profileRev) return false;
-    await db.put('profiles', record);
+    if (record.kind === 'user') {
+      const key: [string, string, string] = [
+        record.account,
+        record.domain,
+        record.sourceServer,
+      ];
+      const previous = await db.get('users', key);
+      if (previous && previous.profileRev > record.profileRev) return false;
+      await db.put('users', {
+        id: record.id || previous?.id,
+        account: record.account,
+        domain: record.domain,
+        sourceDomain: record.sourceServer,
+        name: record.name,
+        avatar: record.avatar,
+        bio: record.bio,
+        availability: 'AVAILABLE',
+        profileRev: record.profileRev,
+        createdAt: previous?.createdAt ?? Date.now(),
+        updatedAt: Date.now(),
+      });
+    } else {
+      const key: [string, string] = [record.account, record.domain];
+      const previous = await db.get('groups', key);
+      if (previous && previous.profileRev > record.profileRev) return false;
+      await db.put('groups', {
+        id: record.id || previous?.id,
+        account: record.account,
+        domain: record.domain,
+        name: record.name,
+        avatar: record.avatar,
+        description: record.bio,
+        profileRev: record.profileRev,
+        dissolvedAt: previous?.dissolvedAt ?? null,
+        createdAt: previous?.createdAt ?? Date.now(),
+        updatedAt: Date.now(),
+      });
+    }
     return true;
+  }
+
+  private userAsProfile(identity: string, record: UserRecord): ProfileRecord {
+    return {
+      identity,
+      id: record.id ?? 0,
+      kind: 'user',
+      name: record.name,
+      account: record.account,
+      avatar: record.avatar,
+      bio: record.bio,
+      domain: record.domain,
+      sourceServer: record.sourceDomain,
+      profileRev: record.profileRev,
+    };
+  }
+
+  private groupAsProfile(identity: string, record: GroupRecord): ProfileRecord {
+    return {
+      identity,
+      id: record.id ?? 0,
+      kind: 'group',
+      name: record.name,
+      account: record.account,
+      avatar: record.avatar,
+      bio: record.description,
+      domain: record.domain,
+      sourceServer: record.domain,
+      profileRev: record.profileRev,
+    };
   }
 
   // ---- message store -----------------------------------------------------------------------
@@ -1871,7 +2066,7 @@ export class WebdbService implements OnDestroy {
       orderBy === 'desc' ? 'prev' : 'next',
     );
     while (cursor && out.length < take) {
-      if (!cursor.value.isDeleted) out.push(cursor.value);
+      if (isCachedMessageBody(cursor.value)) out.push(cursor.value);
       cursor = await cursor.continue();
     }
     await tx.done;
@@ -2294,12 +2489,7 @@ export class WebdbService implements OnDestroy {
             threadId,
             seq: item.seq,
             isDeleted: true,
-            content: '',
-            contentType: 'PURE_TEXT',
-            creator: 0,
-            createdAt: 0,
-            updatedAt: 0,
-          } as CachedMessage);
+          });
         }
       }
       await tx.objectStore('settings').put({
@@ -2326,7 +2516,7 @@ export class WebdbService implements OnDestroy {
     const value = await (
       await this.messageDb()
     ).get('messages', [threadId, seq]);
-    return value?.isDeleted ? undefined : value;
+    return value && isCachedMessageBody(value) ? value : undefined;
   }
 
   async getNewestMessages(threadIds: number[]): Promise<Message[]> {

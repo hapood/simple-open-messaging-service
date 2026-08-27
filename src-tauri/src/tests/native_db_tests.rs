@@ -121,11 +121,6 @@ fn request_connection() -> Connection {
            user_id INTEGER NOT NULL, stable_key TEXT NOT NULL, payload_json TEXT NOT NULL,
            PRIMARY KEY(user_id, stable_key)
          );
-         CREATE TABLE profiles(
-           user_id INTEGER NOT NULL, identity TEXT NOT NULL, payload_json TEXT NOT NULL,
-           profile_rev INTEGER NOT NULL DEFAULT 0,
-           PRIMARY KEY(user_id, identity)
-         );
          CREATE TABLE relationship_intents(
            user_id INTEGER NOT NULL, stable_key TEXT NOT NULL, reverse_key TEXT NOT NULL,
            payload_json TEXT NOT NULL, PRIMARY KEY(user_id, stable_key)
@@ -246,7 +241,7 @@ fn native_projection_persists_a_local_accept_side_effect() {
 }
 
 #[test]
-fn native_cleanup_removes_expired_projection_and_temporary_profile() {
+fn native_cleanup_removes_expired_request_projections_after_retention() {
     let conn = request_connection();
     conn.execute(
         "INSERT INTO friend_requests VALUES(1,'friend:test',?1)",
@@ -270,20 +265,6 @@ fn native_cleanup_removes_expired_projection_and_temporary_profile() {
         .to_string()],
     )
     .unwrap();
-    conn.execute(
-        "INSERT INTO profiles VALUES(1,'pending:peer.test',?1,0)",
-        [serde_json::json!({
-            "source": "OUTGOING_FRIEND_REQUEST", "expiresAt": 10
-        })
-        .to_string()],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO profiles VALUES(1,'pending-group:test',?1,0)",
-        [serde_json::json!({"source": "GROUP_INVITE", "expiresAt": 10}).to_string()],
-    )
-    .unwrap();
-
     cleanup_friend_requests(&conn, 1, 10).unwrap();
 
     assert_eq!(
@@ -293,14 +274,6 @@ fn native_cleanup_removes_expired_projection_and_temporary_profile() {
         .unwrap(),
         2
     );
-    assert_eq!(
-        conn.query_row("SELECT COUNT(*) FROM profiles", [], |row| {
-            row.get::<_, i64>(0)
-        })
-        .unwrap(),
-        0
-    );
-
     cleanup_friend_requests(&conn, 1, 604_800_000).unwrap();
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM friend_requests", [], |row| {

@@ -21,6 +21,7 @@ import {
   federatedPeerReset,
   message,
   messageThread,
+  threadMember,
   threadParticipant,
 } from '../src/database/schema.js';
 
@@ -76,24 +77,21 @@ describe('Federation destructive reset', () => {
         });
       affectedThreadId = thread.id;
       affectedThreadVersion = thread.federationVersion;
-      await tx.insert(threadParticipant).values([
-        {
-          userId: aliceId,
-          threadId: thread.id,
-          updatedAt: new Date(),
-        },
-        {
-          userId: oldBobStubId,
-          threadId: thread.id,
-          updatedAt: new Date(),
-        },
+      await tx.insert(threadMember).values([
+        { userId: aliceId, threadId: thread.id },
+        { userId: oldBobStubId, threadId: thread.id },
       ]);
+      await tx.insert(threadParticipant).values({
+        accountId: aliceId,
+        threadId: thread.id,
+      });
       await tx.insert(message).values({
         seq: 1,
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'removed by federation reset' }),
         threadId: thread.id,
-        creator: oldBobStubId,
+        creatorAccount: 'reset-bob',
+        creatorDomain: FED_DOMAIN_B,
         updatedAt: new Date(),
         originSeq: 1,
       });
@@ -189,7 +187,7 @@ describe('Federation destructive reset', () => {
     expect(shell).toMatchObject({
       federationTruncated: true,
       federationVersion: affectedThreadVersion + 1,
-      groupUserId: null,
+      groupId: null,
     });
 
     const [remaining] = await appA.database
@@ -204,8 +202,9 @@ describe('Federation destructive reset', () => {
       SELECT
         (SELECT count(*)::int FROM "User"
           WHERE domain = ${FED_DOMAIN_B} AND domain <> 'local') AS users,
-        (SELECT count(*)::int FROM "ThreadParticipant"
-          WHERE "threadId" = ${affectedThreadId}) AS participants,
+        (SELECT count(*)::int FROM "ThreadParticipant" participant
+          JOIN "ThreadMember" member ON member.id = participant.id
+          WHERE member."threadId" = ${affectedThreadId}) AS participants,
         (SELECT count(*)::int FROM "Message"
           WHERE "threadId" = ${affectedThreadId}) AS messages,
         (SELECT count(*)::int FROM "ThreadAudience"
@@ -250,12 +249,12 @@ describe('Federation destructive reset', () => {
     expect(consumedReset?.reinitPending).toBe(false);
 
     const inheritedParticipants = await appA.database
-      .select({ threadId: threadParticipant.threadId })
-      .from(threadParticipant)
+      .select({ threadId: threadMember.threadId })
+      .from(threadMember)
       .where(
         and(
-          eq(threadParticipant.userId, rejoin.remoteStubIdOnLocal),
-          inArray(threadParticipant.threadId, [affectedThreadId]),
+          eq(threadMember.userId, rejoin.remoteStubIdOnLocal),
+          inArray(threadMember.threadId, [affectedThreadId]),
         ),
       );
     expect(inheritedParticipants).toHaveLength(0);

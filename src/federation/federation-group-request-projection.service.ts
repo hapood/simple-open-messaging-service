@@ -21,7 +21,7 @@ export class FederationGroupRequestProjectionService {
   async writeEffectsInTx(
     tx: DatabaseTransaction,
     threadId: number,
-    groupUserId: number,
+    groupId: number,
     memberUserId: number,
     clientFeedUpdates?: PendingClientStateFeedUpdate[],
     status: GroupRequestStatus = 'REQUESTED',
@@ -31,30 +31,39 @@ export class FederationGroupRequestProjectionService {
   ): Promise<void> {
     if (!clientFeedUpdates) return;
     const [groupIdentity, request, member, managers] = await Promise.all([
-      tx.query.user.findFirst({
-        where: eq(tables.user.id, groupUserId),
+      tx.query.group.findFirst({
+        where: eq(tables.group.id, groupId),
         columns: { account: true, domain: true },
       }),
-      tx.query.relationshipIntent.findFirst({
-        where: and(
-          eq(
-            tables.relationshipIntent.authorUserId,
-            direction === 'APPLICATION' ? memberUserId : groupUserId,
+      tx
+        .select({
+          id: tables.relationshipIntent.id,
+          status: tables.relationshipIntent.status,
+          note: tables.relationshipIntent.note,
+          requestedAt: tables.relationshipIntent.requestedAt,
+          expiresAt: tables.relationshipIntent.expiresAt,
+        })
+        .from(tables.relationshipPair)
+        .innerJoin(
+          tables.relationshipIntent,
+          eq(tables.relationshipIntent.pairId, tables.relationshipPair.id),
+        )
+        .innerJoin(tables.user, eq(tables.user.id, memberUserId))
+        .where(
+          and(
+            eq(tables.relationshipPair.threadId, threadId),
+            eq(tables.relationshipPair.kind, 'GROUP_MEMBER'),
+            eq(tables.relationshipPair.endpointBType, 'USER'),
+            eq(tables.relationshipPair.endpointBAccount, tables.user.account),
+            eq(tables.relationshipPair.endpointBDomain, tables.user.domain),
+            eq(
+              tables.relationshipIntent.authorSide,
+              direction === 'APPLICATION' ? 'B' : 'A',
+            ),
           ),
-          eq(
-            tables.relationshipIntent.subjectUserId,
-            direction === 'APPLICATION' ? groupUserId : memberUserId,
-          ),
-        ),
-        columns: {
-          id: true,
-          status: true,
-          note: true,
-          requestedAt: true,
-          expiresAt: true,
-          updatedAt: true,
-        },
-      }),
+        )
+        .limit(1)
+        .then(([request]) => request),
       tx.query.user.findFirst({
         where: eq(tables.user.id, memberUserId),
         columns: {
@@ -68,23 +77,34 @@ export class FederationGroupRequestProjectionService {
         },
       }),
       tx
-        .select({ userId: tables.threadParticipant.userId })
-        .from(tables.threadParticipant)
+        .select({ userId: tables.threadMember.userId })
+        .from(tables.threadMember)
         .innerJoin(
-          tables.user,
-          eq(tables.user.id, tables.threadParticipant.userId),
+          tables.threadParticipant,
+          and(
+            eq(
+              tables.threadParticipant.threadId,
+              tables.threadMember.threadId,
+            ),
+            eq(
+              tables.threadParticipant.accountId,
+              tables.threadMember.userId,
+            ),
+          ),
         )
+        .innerJoin(tables.user, eq(tables.user.id, tables.threadMember.userId))
         .where(
           and(
-            eq(tables.threadParticipant.threadId, threadId),
-            inArray(tables.threadParticipant.role, [
+            eq(tables.threadMember.threadId, threadId),
+            eq(tables.threadMember.left, false),
+            inArray(tables.threadMember.role, [
               GroupRole.OWNER,
               GroupRole.ADMIN,
             ]),
             eq(tables.user.domain, 'local'),
             managerUserId === undefined
               ? undefined
-              : eq(tables.threadParticipant.userId, managerUserId),
+              : eq(tables.threadMember.userId, managerUserId),
           ),
         ),
     ]);
@@ -149,23 +169,21 @@ export class FederationGroupRequestProjectionService {
     clientFeedUpdates: PendingClientStateFeedUpdate[],
   ): Promise<void> {
     const [manager, thread] = await Promise.all([
-      tx.query.threadParticipant.findFirst({
+      tx.query.threadMember.findFirst({
         where: and(
-          eq(tables.threadParticipant.threadId, threadId),
-          eq(tables.threadParticipant.userId, managerUserId),
-          inArray(tables.threadParticipant.role, [
-            GroupRole.OWNER,
-            GroupRole.ADMIN,
-          ]),
+          eq(tables.threadMember.threadId, threadId),
+          eq(tables.threadMember.userId, managerUserId),
+          eq(tables.threadMember.left, false),
+          inArray(tables.threadMember.role, [GroupRole.OWNER, GroupRole.ADMIN]),
         ),
         columns: { id: true },
       }),
       tx.query.messageThread.findFirst({
         where: eq(tables.messageThread.id, threadId),
-        columns: { groupUserId: true },
+        columns: { groupId: true },
       }),
     ]);
-    if (!thread?.groupUserId) return;
+    if (!thread?.groupId) return;
     const isActiveManager =
       manager !== undefined &&
       (await isThreadMutuallyAuthorized(tx, managerUserId, threadId));
@@ -217,7 +235,7 @@ export class FederationGroupRequestProjectionService {
       await this.writeEffectsInTx(
         tx,
         threadId,
-        thread.groupUserId,
+        thread.groupId,
         request.memberUserId,
         clientFeedUpdates,
         request.status as GroupRequestStatus,

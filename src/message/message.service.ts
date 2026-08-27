@@ -9,7 +9,6 @@ import {
   gte,
   lt,
   lte,
-  notInArray,
   or,
   sql,
   type SQL,
@@ -20,6 +19,7 @@ import {
 } from '../database/database.service.js';
 import { ContentType, MessageThreadType } from '../database/enums.js';
 import {
+  account,
   forwardMessage,
   mediaAsset,
   messageAsset,
@@ -27,6 +27,7 @@ import {
   messageThread,
   pendingMedia,
   fileSyncProgress,
+  group,
   threadParticipant,
   user,
 } from '../database/schema.js';
@@ -63,6 +64,7 @@ import {
 } from './system-message.js';
 import { loadFederationConfig } from '../federation/federation.config.js';
 import { ClientMessageFeedWriter } from './client-message-feed.service.js';
+import { recordHostedGroupLastSentSeq } from './hosted-group-last-sent.js';
 
 interface ReplyPreview {
   author: string;
@@ -77,6 +79,16 @@ interface ReplyPreview {
 
 export type UnreadMentionState = Array<'all' | 'me'>;
 export type Message = typeof message.$inferSelect;
+export interface MessageAuthorAddress {
+  account: string;
+  domain: string;
+}
+export type PublicMessage<T extends Message = Message> = Omit<
+  T,
+  'id' | 'creatorAccount' | 'creatorDomain'
+> & {
+  creator: MessageAuthorAddress | null;
+};
 export interface MessageQueryParams {
   skip?: number;
   take?: number;
@@ -102,7 +114,8 @@ export interface AwayThreadAttentionState extends ThreadAttentionState {
 export interface AwayNotificationMessage {
   threadId: number;
   seq: number;
-  creator: number;
+  creatorAccount: string;
+  creatorDomain: string;
   senderName: string;
   contentType: ContentType;
   content: string;
@@ -116,11 +129,25 @@ export interface AwayNotificationMessage {
  * create path needs `id` for the MediaMessage FK, so the row is created in full and the id stripped only
  * on the way out — hence a post-hoc strip rather than a query-level omit on the create.)
  */
-export function stripMessageId<T extends { id: bigint }>(
+export function stripMessageId<
+  T extends {
+    id: bigint;
+    creatorAccount: string | null;
+    creatorDomain: string | null;
+  },
+>(
   msg: T,
-): Omit<T, 'id'> {
-  const { id, ...rest } = msg;
-  return rest;
+): Omit<T, 'id' | 'creatorAccount' | 'creatorDomain'> & {
+  creator: MessageAuthorAddress | null;
+} {
+  const { id, creatorAccount, creatorDomain, ...rest } = msg;
+  return {
+    ...rest,
+    creator:
+      creatorAccount === null || creatorDomain === null
+        ? null
+        : { account: creatorAccount, domain: creatorDomain },
+  };
 }
 
 /**
@@ -160,6 +187,29 @@ export class MessageService {
     return sql.join(
       values.map((value) => sql`${value}`),
       sql`, `,
+    );
+  }
+
+  private async localAuthor(userId: number): Promise<{
+    account: string;
+    domain: string;
+  }> {
+    const author = await this.database.db.query.user.findFirst({
+      where: eq(user.id, userId),
+      columns: { account: true, domain: true },
+    });
+    if (!author) throw new Error('message author does not exist');
+    return author;
+  }
+
+  async isAuthoredBy(
+    creator: MessageAuthorAddress | null,
+    userId: number,
+  ): Promise<boolean> {
+    if (creator === null) return false;
+    const author = await this.localAuthor(userId);
+    return (
+      creator.account === author.account && creator.domain === author.domain
     );
   }
 
@@ -203,9 +253,9 @@ export class MessageService {
     beforeMessageCreate?: (tx: DatabaseTransaction) => Promise<void>,
     quoteVisibility?: {
       clearedThroughSeq?: number | null;
-      hideCreatorIds?: number[];
+      hideCreators?: MessageAuthorAddress[];
     },
-  ): Promise<Omit<Message, 'id'>> {
+  ): Promise<PublicMessage> {
     if (clientMessageId !== undefined) {
       const existing = await this.findByClientMessageId(clientMessageId);
       if (existing !== null) return existing; // retry → return the original message (already dispatched)
@@ -229,15 +279,18 @@ export class MessageService {
         const [writeAccess] = await tx
           .select({
             type: messageThread.type,
+            creatorAccount: user.account,
+            creatorDomain: user.domain,
           })
           .from(messageThread)
           .innerJoin(
             threadParticipant,
             and(
               eq(threadParticipant.threadId, messageThread.id),
-              eq(threadParticipant.userId, userId),
+              eq(threadParticipant.accountId, userId),
             ),
           )
+          .innerJoin(user, eq(user.id, userId))
           .where(eq(messageThread.id, threadId))
           .limit(1);
         if (
@@ -300,11 +353,18 @@ export class MessageService {
                     eq(message.threadId, threadId),
                     eq(message.seq, quoteSeq),
                   ),
-                  with: { user: { columns: { name: true } } },
                 })
-                .then((row) =>
-                  row ? { ...row, creatorItem: row.user } : null,
-                );
+                .then(async (row) => {
+                  if (!row || row.creatorAccount === null) return row;
+                  const creatorItem = await tx.query.user.findFirst({
+                    where: and(
+                      eq(user.account, row.creatorAccount),
+                      eq(user.domain, row.creatorDomain!),
+                    ),
+                    columns: { name: true },
+                  });
+                  return { ...row, creatorItem };
+                });
         if (quoteSeq !== undefined && !quoteTarget) {
           throw new BusinessException(
             BusinessCode.NOT_FOUND,
@@ -318,8 +378,12 @@ export class MessageService {
             (quoteVisibility?.clearedThroughSeq !== null &&
               quoteVisibility?.clearedThroughSeq !== undefined &&
               quoteTarget.seq <= quoteVisibility.clearedThroughSeq) ||
-            (quoteTarget.creator !== null &&
-              quoteVisibility?.hideCreatorIds?.includes(quoteTarget.creator)))
+            (quoteTarget.creatorAccount !== null &&
+              quoteVisibility?.hideCreators?.some(
+                (creator) =>
+                  creator.account === quoteTarget.creatorAccount &&
+                  creator.domain === quoteTarget.creatorDomain,
+              )))
         ) {
           throw new BusinessException(
             BusinessCode.NOT_FOUND,
@@ -340,7 +404,8 @@ export class MessageService {
             content: storedContent,
             contentType: type,
             threadId,
-            creator: userId,
+            creatorAccount: writeAccess.creatorAccount,
+            creatorDomain: writeAccess.creatorDomain,
             clientMessageId,
             seq,
             updatedAt: new Date(),
@@ -370,10 +435,19 @@ export class MessageService {
           .set({ lastReadSeq: seq, updatedAt: new Date() })
           .where(
             and(
-              eq(threadParticipant.userId, userId),
+              eq(threadParticipant.accountId, userId),
               eq(threadParticipant.threadId, threadId),
             ),
           );
+        await recordHostedGroupLastSentSeq(
+          tx,
+          threadId,
+          {
+            account: writeAccess.creatorAccount,
+            domain: writeAccess.creatorDomain,
+          },
+          seq,
+        );
         await ClientMessageFeedWriter.publishMessage(tx, threadId, seq);
         // Per-object media authz: record the CAS digest this message references so the /uploads/cas/*
         // gate can authorize readers against thread membership (one indexed row). One message carries
@@ -426,33 +500,44 @@ export class MessageService {
     options?: {
       count?: number;
       actorUserId?: number;
+      subjectAddress?: MessageAuthorAddress;
+      actorAddress?: MessageAuthorAddress;
       recipientUserIds?: readonly number[];
       markReadUserId?: number;
     },
-  ): Promise<{ message: Omit<Message, 'id'>; messageId: bigint }> {
+  ): Promise<{ message: PublicMessage; messageId: bigint }> {
     const subjectRequired =
       type !== SystemMessageType.FRIEND_ADDED &&
       type !== SystemMessageType.MESSAGES_MODERATED;
-    if (subjectRequired && subjectUserId === undefined)
+    if (
+      subjectRequired &&
+      subjectUserId === undefined &&
+      options?.subjectAddress === undefined
+    )
       throw new Error('system message subject is required');
-    if (!subjectRequired && subjectUserId !== undefined)
+    if (
+      !subjectRequired &&
+      (subjectUserId !== undefined || options?.subjectAddress !== undefined)
+    )
       throw new Error(`${type} does not accept a subject`);
     const subject =
-      subjectUserId === undefined
+      options?.subjectAddress ??
+      (subjectUserId === undefined
         ? undefined
         : await tx.query.user.findFirst({
             where: eq(user.id, subjectUserId),
             columns: { account: true, domain: true },
-          });
+          }));
     if (subjectUserId !== undefined && !subject)
       throw new Error('system message subject does not exist');
     const actor =
-      options?.actorUserId === undefined
+      options?.actorAddress ??
+      (options?.actorUserId === undefined
         ? undefined
         : await tx.query.user.findFirst({
             where: eq(user.id, options.actorUserId),
             columns: { account: true, domain: true },
-          });
+          }));
     if (options?.actorUserId !== undefined && !actor)
       throw new Error('system message actor does not exist');
     const toAddress = (identity: { account: string; domain: string }) => ({
@@ -479,7 +564,6 @@ export class MessageService {
         content,
         contentType: ContentType.SYSTEM,
         threadId,
-        creator: null,
         seq,
         updatedAt: new Date(),
       })
@@ -499,7 +583,7 @@ export class MessageService {
         .set({ lastReadSeq: seq, updatedAt: new Date() })
         .where(
           and(
-            eq(threadParticipant.userId, options.markReadUserId),
+            eq(threadParticipant.accountId, options.markReadUserId),
             eq(threadParticipant.threadId, threadId),
           ),
         );
@@ -524,10 +608,12 @@ export class MessageService {
     options?: {
       count?: number;
       actorUserId?: number;
+      subjectAddress?: MessageAuthorAddress;
+      actorAddress?: MessageAuthorAddress;
       recipientUserIds?: readonly number[];
       markReadUserId?: number;
     },
-  ): Promise<Omit<Message, 'id'>> {
+  ): Promise<PublicMessage> {
     const result = await this.database.db.transaction((tx) =>
       this.writeSystemMessageInTx(tx, threadId, type, subjectUserId, options),
     );
@@ -543,10 +629,12 @@ export class MessageService {
     options?: {
       count?: number;
       actorUserId?: number;
+      subjectAddress?: MessageAuthorAddress;
+      actorAddress?: MessageAuthorAddress;
       recipientUserIds?: readonly number[];
       markReadUserId?: number;
     },
-  ): Promise<Omit<Message, 'id'> | null> {
+  ): Promise<PublicMessage | null> {
     try {
       return await this.writeSystemMessage(
         threadId,
@@ -589,12 +677,16 @@ export class MessageService {
     fileCnt = 1,
     retry = false,
   ): Promise<{ clientMessageId: string }> {
+    const author = await this.localAuthor(userId);
     const committed = await this.database.db.query.message.findFirst({
       where: eq(message.clientMessageId, clientMessageId),
-      columns: { creator: true },
+      columns: { creatorAccount: true, creatorDomain: true },
     });
     if (committed) {
-      if (committed.creator !== userId) {
+      if (
+        committed.creatorAccount !== author.account ||
+        committed.creatorDomain !== author.domain
+      ) {
         throw new BusinessException(
           BusinessCode.VALIDATION_FAILED,
           'invalid clientMessageId',
@@ -610,7 +702,8 @@ export class MessageService {
         await this.database.db.transaction(async (tx) => {
           await tx.insert(pendingMedia).values({
             threadId,
-            creatorId: userId,
+            creatorAccount: author.account,
+            creatorDomain: author.domain,
             contentType,
             content: '{}',
             clientMessageId,
@@ -626,7 +719,8 @@ export class MessageService {
         });
         if (
           !winner ||
-          winner.creatorId !== userId ||
+          winner.creatorAccount !== author.account ||
+          winner.creatorDomain !== author.domain ||
           winner.threadId !== threadId ||
           winner.contentType !== contentType
         ) {
@@ -639,7 +733,8 @@ export class MessageService {
       }
     }
     if (
-      existing.creatorId !== userId ||
+      existing.creatorAccount !== author.account ||
+      existing.creatorDomain !== author.domain ||
       existing.threadId !== threadId ||
       existing.contentType !== contentType
     ) {
@@ -676,6 +771,7 @@ export class MessageService {
     clientMessageId: string,
     reason: string,
   ): Promise<void> {
+    const author = await this.localAuthor(userId);
     await this.database.db
       .update(pendingMedia)
       .set({
@@ -687,7 +783,8 @@ export class MessageService {
       .where(
         and(
           eq(pendingMedia.clientMessageId, clientMessageId),
-          eq(pendingMedia.creatorId, userId),
+          eq(pendingMedia.creatorAccount, author.account),
+          eq(pendingMedia.creatorDomain, author.domain),
           eq(pendingMedia.status, 'pending'),
         ),
       );
@@ -695,10 +792,12 @@ export class MessageService {
 
   /** Recoverable server-side state for refresh/cross-device reconciliation. */
   async queryMediaStages(userId: number, threadId: number) {
+    const author = await this.localAuthor(userId);
     return this.database.db.query.pendingMedia.findMany({
       where: and(
         eq(pendingMedia.threadId, threadId),
-        eq(pendingMedia.creatorId, userId),
+        eq(pendingMedia.creatorAccount, author.account),
+        eq(pendingMedia.creatorDomain, author.domain),
         isNotNull(pendingMedia.clientMessageId),
       ),
       columns: {
@@ -738,13 +837,15 @@ export class MessageService {
     userId: number,
     overrideContentType?: ContentType,
   ): Promise<{
-    message: Omit<Message, 'id'>;
+    message: PublicMessage;
     newlyPromoted: boolean;
   } | null> {
+    const author = await this.localAuthor(userId);
     const stage = await this.database.db.query.pendingMedia.findFirst({
       where: and(
         eq(pendingMedia.clientMessageId, clientMessageId),
-        eq(pendingMedia.creatorId, userId),
+        eq(pendingMedia.creatorAccount, author.account),
+        eq(pendingMedia.creatorDomain, author.domain),
       ),
       columns: {
         id: true,
@@ -807,10 +908,12 @@ export class MessageService {
     clientMessageId: string,
     userId: number,
   ): Promise<ContentType | null> {
+    const author = await this.localAuthor(userId);
     const stage = await this.database.db.query.pendingMedia.findFirst({
       where: and(
         eq(pendingMedia.clientMessageId, clientMessageId),
-        eq(pendingMedia.creatorId, userId),
+        eq(pendingMedia.creatorAccount, author.account),
+        eq(pendingMedia.creatorDomain, author.domain),
       ),
       columns: { contentType: true, status: true },
     });
@@ -835,7 +938,7 @@ export class MessageService {
     clientMessageId: string,
     userId?: number,
   ): Promise<{
-    message: Omit<Message, 'id'>;
+    message: PublicMessage;
     newlyPromoted: boolean;
   } | null> {
     const committed = await this.findByClientMessageId(clientMessageId);
@@ -846,7 +949,12 @@ export class MessageService {
     if (
       !stage ||
       stage.status !== 'pending' ||
-      (userId !== undefined && stage.creatorId !== userId)
+      (userId !== undefined &&
+        !(await this.localAuthor(userId).then(
+          (author) =>
+            author.account === stage.creatorAccount &&
+            author.domain === stage.creatorDomain,
+        )))
     ) {
       return null;
     }
@@ -877,7 +985,7 @@ export class MessageService {
       .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
       .map((f) => f.payload as unknown as OutboundFilePayload);
     const unboundContent = assembleOutboundContent(stage.contentType, payloads);
-    let created: Omit<Message, 'id'> | null = null;
+    let created: PublicMessage | null = null;
     try {
       created = await this.database.db.transaction(async (tx) => {
         // Win-guard: only the caller that deletes the still-pending stage promotes. A concurrent winner
@@ -892,39 +1000,42 @@ export class MessageService {
           )
           .returning({ id: pendingMedia.id });
         if (!winner) return null;
-        const participant = await tx.query.threadParticipant.findFirst({
+        const creator = await tx.query.user.findFirst({
           where: and(
-            eq(threadParticipant.userId, stage.creatorId),
-            eq(threadParticipant.threadId, stage.threadId),
+            eq(user.account, stage.creatorAccount),
+            eq(user.domain, stage.creatorDomain),
           ),
-          with: {
-            messageThread: {
-              columns: { type: true },
-              with: {
-                user: {
-                  columns: {},
-                  with: { group: { columns: { dissolvedAt: true } } },
-                },
-              },
-            },
-          },
+          columns: { id: true },
         });
+        if (!creator) throw new Error('local staged message author is missing');
+        const creatorUserId = creator.id;
+        const [participant] = await tx
+          .select({ type: messageThread.type, dissolvedAt: group.dissolvedAt })
+          .from(threadParticipant)
+          .innerJoin(
+            messageThread,
+            eq(messageThread.id, threadParticipant.threadId),
+          )
+          .leftJoin(group, eq(group.id, messageThread.groupId))
+          .where(
+            and(
+              eq(threadParticipant.accountId, creatorUserId),
+              eq(threadParticipant.threadId, stage.threadId),
+            ),
+          )
+          .limit(1);
         if (
           !participant ||
-          !(await isThreadMutuallyAuthorized(
-            tx,
-            stage.creatorId,
-            stage.threadId,
-          ))
+          !(await isThreadMutuallyAuthorized(tx, creatorUserId, stage.threadId))
         ) {
           throw new BusinessException(
-            participant?.messageThread.type === MessageThreadType.P2P
+            participant?.type === MessageThreadType.P2P
               ? BusinessCode.FRIEND_NOT_FOUND
               : BusinessCode.GROUP_FORBIDDEN,
             'conversation is read-only',
           );
         }
-        if (participant.messageThread.user?.group?.dissolvedAt != null) {
+        if (participant.dissolvedAt != null) {
           throw new BusinessException(
             BusinessCode.GROUP_DISSOLVED,
             'group has been dissolved',
@@ -936,14 +1047,10 @@ export class MessageService {
           .where(eq(messageThread.id, stage.threadId))
           .returning({ curSeq: messageThread.curSeq });
         if (
-          !(await isThreadMutuallyAuthorized(
-            tx,
-            stage.creatorId,
-            stage.threadId,
-          ))
+          !(await isThreadMutuallyAuthorized(tx, creatorUserId, stage.threadId))
         ) {
           throw new BusinessException(
-            participant.messageThread.type === MessageThreadType.P2P
+            participant.type === MessageThreadType.P2P
               ? BusinessCode.FRIEND_NOT_FOUND
               : BusinessCode.GROUP_FORBIDDEN,
             'conversation is read-only',
@@ -960,7 +1067,8 @@ export class MessageService {
             content,
             contentType: stage.contentType,
             threadId: stage.threadId,
-            creator: stage.creatorId,
+            creatorAccount: stage.creatorAccount,
+            creatorDomain: stage.creatorDomain,
             clientMessageId,
             seq,
             updatedAt: new Date(),
@@ -980,10 +1088,19 @@ export class MessageService {
           .set({ lastReadSeq: seq, updatedAt: new Date() })
           .where(
             and(
-              eq(threadParticipant.userId, stage.creatorId),
+              eq(threadParticipant.accountId, creatorUserId),
               eq(threadParticipant.threadId, stage.threadId),
             ),
           );
+        await recordHostedGroupLastSentSeq(
+          tx,
+          stage.threadId,
+          {
+            account: stage.creatorAccount,
+            domain: stage.creatorDomain,
+          },
+          seq,
+        );
         await ClientMessageFeedWriter.publishMessage(tx, stage.threadId, seq);
         // Insert EVERY referenced digest (1 for single-file, N for GALLERY) — the old promoteStaged
         // path only inserted the first, which silently dropped authz rows for multi-digest content.
@@ -1020,12 +1137,12 @@ export class MessageService {
     filters?: {
       clearedThroughSeq?: number | null;
       visibleBeforeSeq?: number | null;
-      hideCreatorIds?: number[];
+      hideCreators?: MessageAuthorAddress[];
     },
   ) {
     // The viewer's per-thread filters, layered on top of the membership-resolved threadId:
     //  - clearedThroughSeq: per-user "clear history" watermark — hide rows through it for THIS user only.
-    //  - hideCreatorIds: P2P block — the blocker never sees a blocked creator's messages. Scoped to P2P
+    //  - hideCreators: P2P block — the blocker never sees a blocked creator's messages. Scoped to P2P
     //    by the controller (group threads leave blocked members visible).
     const conditions: SQL[] = [
       eq(message.threadId, threadId),
@@ -1041,8 +1158,17 @@ export class MessageService {
       filters?.visibleBeforeSeq !== undefined
     )
       conditions.push(lt(message.seq, filters.visibleBeforeSeq));
-    if (filters?.hideCreatorIds?.length)
-      conditions.push(notInArray(message.creator, filters.hideCreatorIds));
+    if (filters?.hideCreators?.length)
+      conditions.push(
+        sql`NOT (${or(
+          ...filters.hideCreators.map((creator) =>
+            and(
+              eq(message.creatorAccount, creator.account),
+              eq(message.creatorDomain, creator.domain),
+            ),
+          ),
+        )})`,
+      );
     const cursorSeq = params.cursor?.threadId_seq.seq;
     if (cursorSeq !== undefined) {
       conditions.push(
@@ -1077,6 +1203,15 @@ export class MessageService {
     return this.attachMediaStatus(
       await this.attachQuotePreviews(rows, filters),
     );
+  }
+
+  async readThreadEndSeq(threadId: number): Promise<number> {
+    const row = await this.database.db.query.messageThread.findFirst({
+      where: eq(messageThread.id, threadId),
+      columns: { curSeq: true },
+    });
+    if (!row) throw new Error(`message thread ${threadId} is missing`);
+    return row.curSeq;
   }
 
   private deriveReplyText(
@@ -1157,10 +1292,16 @@ export class MessageService {
   async attachQuotePreviews<T extends Message>(
     msgs: T[],
     filters?:
-      | { clearedThroughSeq?: number | null; hideCreatorIds?: number[] }
+      | {
+          clearedThroughSeq?: number | null;
+          hideCreators?: MessageAuthorAddress[];
+        }
       | Map<
           number,
-          { clearedThroughSeq?: number | null; hideCreatorIds?: number[] }
+          {
+            clearedThroughSeq?: number | null;
+            hideCreators?: MessageAuthorAddress[];
+          }
         >,
   ): Promise<T[]> {
     const refs = new Map<number, Set<number>>();
@@ -1184,8 +1325,32 @@ export class MessageService {
     ];
     const targets = await this.database.db.query.message.findMany({
       where: and(...targetConditions),
-      with: { user: { columns: { name: true } } },
     });
+    const authorAddresses = targets.flatMap((target) =>
+      target.creatorAccount === null || target.creatorDomain === null
+        ? []
+        : [{ account: target.creatorAccount, domain: target.creatorDomain }],
+    );
+    const authors =
+      authorAddresses.length === 0
+        ? []
+        : await this.database.db.query.user.findMany({
+            where: or(
+              ...authorAddresses.map((author) =>
+                and(
+                  eq(user.account, author.account),
+                  eq(user.domain, author.domain),
+                ),
+              ),
+            ),
+            columns: { account: true, domain: true, name: true },
+          });
+    const authorNames = new Map(
+      authors.map((author) => [
+        `${author.account}\u0000${author.domain}`,
+        author.name,
+      ]),
+    );
     const visibleTargets = targets.filter((target) => {
       const viewerFilters =
         filters instanceof Map ? filters.get(target.threadId) : filters;
@@ -1193,14 +1358,22 @@ export class MessageService {
         (viewerFilters?.clearedThroughSeq !== null &&
           viewerFilters?.clearedThroughSeq !== undefined &&
           target.seq <= viewerFilters.clearedThroughSeq) ||
-        (target.creator !== null &&
-          viewerFilters?.hideCreatorIds?.includes(target.creator))
+        (target.creatorAccount !== null &&
+          viewerFilters?.hideCreators?.some(
+            (creator) =>
+              creator.account === target.creatorAccount &&
+              creator.domain === target.creatorDomain,
+          ))
       );
     });
     const previews = await Promise.all(
       visibleTargets.map(async (target): Promise<[string, ReplyPreview]> => {
         const text = this.deriveReplyText(
-          target.user?.name ?? 'System',
+          target.creatorAccount === null
+            ? 'System'
+            : (authorNames.get(
+                `${target.creatorAccount}\u0000${target.creatorDomain}`,
+              ) ?? target.creatorAccount),
           target.contentType,
           target.content,
         );
@@ -1244,7 +1417,7 @@ export class MessageService {
   async attachMediaStatus<T extends Message>(
     msgs: T[],
   ): Promise<
-    (Omit<T, 'id'> & { mediaStatus: 'ready' | 'failed'; sv: number })[]
+    (PublicMessage<T> & { mediaStatus: 'ready' | 'failed'; sv: number })[]
   > {
     if (msgs.length === 0) return [];
     const byMsg = new Map<bigint, string[]>();
@@ -1280,13 +1453,12 @@ export class MessageService {
       assetRows.filter((a) => !a.isDeleted).map((a) => a.digest),
     );
     return msgs.map((m) => {
-      const { id: _drop, ...rest } = m;
       const ds = byMsg.get(m.id) ?? [];
       const ready =
         ds.length === 0 ||
         ds.every((d) => auth.has(`${m.id}:${d}`) && present.has(d));
       return {
-        ...rest,
+        ...stripMessageId(m),
         mediaStatus: ready ? MEDIA_STATUS.READY : MEDIA_STATUS.FAILED,
         sv: m.seq,
       };
@@ -1448,12 +1620,17 @@ export class MessageService {
         FROM "Message" msg
         WHERE msg."threadId" = tp."threadId"
           AND msg.seq > COALESCE(tp."lastReadSeq", 0)
-          AND msg.creator <> ${userId}
+          AND NOT EXISTS (
+            SELECT 1 FROM "User" self
+            WHERE self.id = ${userId}
+              AND self.account = msg."creatorAccount"
+              AND self.domain = msg."creatorDomain"
+          )
           AND msg."isDeleted" = false
         ORDER BY msg.seq ASC
         LIMIT 1000
       ) m ON TRUE
-      WHERE tp."userId" = ${userId}
+      WHERE tp."accountId" = ${userId}
         AND tp."threadId" IN (${this.joinSql(threadIds)})
       GROUP BY tp."threadId"
     `;
@@ -1484,7 +1661,7 @@ export class MessageService {
       }>
     >`
       WITH bumped AS (
-        UPDATE "User"
+        UPDATE "Account"
         SET "readRevision" = "readRevision" + 1,
             "updatedAt" = CURRENT_TIMESTAMP
         WHERE id = ${userId}
@@ -1495,7 +1672,7 @@ export class MessageService {
             "readRevision" = bumped."readRevision",
             "updatedAt" = CURRENT_TIMESTAMP
         FROM bumped
-        WHERE participant."userId" = ${userId}
+        WHERE participant."accountId" = ${userId}
           AND participant."threadId" = ${threadId}
         RETURNING participant."lastReadSeq", participant."readRevision"
       ), sample AS (
@@ -1503,7 +1680,12 @@ export class MessageService {
         FROM "Message" m, advanced a
         WHERE m."threadId" = ${threadId}
           AND m.seq > a."lastReadSeq"
-          AND m.creator <> ${userId}
+          AND NOT EXISTS (
+            SELECT 1 FROM "User" self
+            WHERE self.id = ${userId}
+              AND self.account = m."creatorAccount"
+              AND self.domain = m."creatorDomain"
+          )
           AND m."isDeleted" = false
         ORDER BY m.seq ASC
         LIMIT 1000
@@ -1545,15 +1727,21 @@ export class MessageService {
     toRevision: number,
   ) {
     const participants =
-      await this.database.db.query.threadParticipant.findMany({
-        where: and(
-          eq(threadParticipant.userId, userId),
-          gt(threadParticipant.readRevision, fromRevision),
-          lte(threadParticipant.readRevision, toRevision),
-        ),
-        columns: { threadId: true, lastReadSeq: true, readRevision: true },
-        orderBy: asc(threadParticipant.readRevision),
-      });
+      await this.database.db
+        .select({
+          threadId: threadParticipant.threadId,
+          lastReadSeq: threadParticipant.lastReadSeq,
+          readRevision: threadParticipant.readRevision,
+        })
+        .from(threadParticipant)
+        .where(
+          and(
+            eq(threadParticipant.accountId, userId),
+            gt(threadParticipant.readRevision, fromRevision),
+            lte(threadParticipant.readRevision, toRevision),
+          ),
+        )
+        .orderBy(asc(threadParticipant.readRevision));
     if (participants.length === 0) return [];
     const self = await this.database.db.query.user.findFirst({
       where: eq(user.id, userId),
@@ -1576,8 +1764,8 @@ export class MessageService {
   }
 
   async currentReadRevision(userId: number): Promise<number> {
-    const row = await this.database.db.query.user.findFirst({
-      where: eq(user.id, userId),
+    const row = await this.database.db.query.account.findFirst({
+      where: eq(account.id, userId),
       columns: { readRevision: true },
     });
     return row?.readRevision ?? 0;
@@ -1598,7 +1786,12 @@ export class MessageService {
     globalSinceId?: bigint,
   ): Promise<Map<number, AwayThreadAttentionState>> {
     const hiddenClause = hideCreatorIds.length
-      ? sql`AND m."creator" NOT IN (${this.joinSql(hideCreatorIds)})`
+      ? sql`AND NOT EXISTS (
+          SELECT 1 FROM "User" hidden_author
+          WHERE hidden_author.id IN (${this.joinSql(hideCreatorIds)})
+            AND hidden_author.account = m."creatorAccount"
+            AND hidden_author.domain = m."creatorDomain"
+        )`
       : sql.empty();
     const globalClause =
       globalSinceId === undefined
@@ -1631,13 +1824,18 @@ export class MessageService {
         FROM "Message" m
         JOIN "ThreadParticipant" tp
           ON tp."threadId" = m."threadId"
-         AND tp."userId" = ${userId}
+         AND tp."accountId" = ${userId}
          AND tp.muted = false
         LEFT JOIN thread_hwm h ON h.tid = m."threadId"
         WHERE m.seq > GREATEST(COALESCE(h.since_seq, 0), COALESCE(tp."lastReadSeq", 0))
           ${globalClause}
           ${threadClause}
-          AND m.creator <> ${userId}
+          AND NOT EXISTS (
+            SELECT 1 FROM "User" self
+            WHERE self.id = ${userId}
+              AND self.account = m."creatorAccount"
+              AND self.domain = m."creatorDomain"
+          )
           AND m."isDeleted" = false
           ${hiddenClause}
         ORDER BY m.id DESC
@@ -1685,7 +1883,12 @@ export class MessageService {
   ): Promise<Map<number, AwayNotificationMessage[]>> {
     if (threadIds.length === 0) return new Map();
     const hiddenClause = hideCreatorIds.length
-      ? sql`AND m.creator NOT IN (${this.joinSql(hideCreatorIds)})`
+      ? sql`AND NOT EXISTS (
+          SELECT 1 FROM "User" hidden_author
+          WHERE hidden_author.id IN (${this.joinSql(hideCreatorIds)})
+            AND hidden_author.account = m."creatorAccount"
+            AND hidden_author.domain = m."creatorDomain"
+        )`
       : sql.empty();
     const globalClause =
       globalSinceId === undefined
@@ -1706,20 +1909,30 @@ export class MessageService {
     >`
       WITH thread_hwm AS (${hwmCte}),
       ranked AS (
-        SELECT m."threadId", m.seq, m.creator, u.name AS "senderName",
+        SELECT m."threadId", m.seq,
+               m."creatorAccount", m."creatorDomain",
+               COALESCE(u.name, m."creatorAccount") AS "senderName",
                m."contentType", m.content, m."createdAt",
                ROW_NUMBER() OVER (PARTITION BY m."threadId" ORDER BY m.seq DESC) AS rn
         FROM "Message" m
-        JOIN "User" u ON u.id = m.creator AND u."isDeleted" = false
+        LEFT JOIN "User" u
+          ON u.account = m."creatorAccount"
+         AND u.domain = m."creatorDomain"
+         AND u.availability = 'AVAILABLE'
         JOIN "ThreadParticipant" tp
           ON tp."threadId" = m."threadId"
-         AND tp."userId" = ${userId}
+         AND tp."accountId" = ${userId}
          AND tp.muted = false
         LEFT JOIN thread_hwm h ON h.tid = m."threadId"
         WHERE m."threadId" IN (${this.joinSql(threadIds)})
           ${globalClause}
           AND m.seq > GREATEST(COALESCE(h.since_seq, 0), COALESCE(tp."lastReadSeq", 0))
-          AND m.creator <> ${userId}
+          AND NOT EXISTS (
+            SELECT 1 FROM "User" self
+            WHERE self.id = ${userId}
+              AND self.account = m."creatorAccount"
+              AND self.domain = m."creatorDomain"
+          )
           AND m."isDeleted" = false
           ${hiddenClause}
       )
@@ -1789,8 +2002,13 @@ export class MessageService {
       JOIN "Message" m
         ON m."threadId" = tp."threadId"
        AND m.seq > COALESCE(tp."lastReadSeq", 0)
-       AND m.creator <> ${userId}
-      WHERE tp."userId" = ${userId}
+       AND NOT EXISTS (
+         SELECT 1 FROM "User" self
+         WHERE self.id = ${userId}
+           AND self.account = m."creatorAccount"
+           AND self.domain = m."creatorDomain"
+       )
+      WHERE tp."accountId" = ${userId}
         AND tp."threadId" IN (${this.joinSql(threadIds)})
         AND m."contentType" = 'PURE_TEXT'
         AND (
@@ -1825,7 +2043,12 @@ export class MessageService {
       ? sql`AND m."threadId" IN (${this.joinSql(threadIds)})`
       : sql.empty();
     const hiddenClause = hideCreatorIds.length
-      ? sql`AND m.creator NOT IN (${this.joinSql(hideCreatorIds)})`
+      ? sql`AND NOT EXISTS (
+          SELECT 1 FROM "User" hidden_author
+          WHERE hidden_author.id IN (${this.joinSql(hideCreatorIds)})
+            AND hidden_author.account = m."creatorAccount"
+            AND hidden_author.domain = m."creatorDomain"
+        )`
       : sql.empty();
     const rows = await this.queryRaw<
       Array<{ threadId: number; content: string }>
@@ -1834,10 +2057,15 @@ export class MessageService {
       FROM "Message" m
       JOIN "ThreadParticipant" tp
         ON tp."threadId" = m."threadId"
-       AND tp."userId" = ${userId}
+       AND tp."accountId" = ${userId}
        AND tp.muted = false
       WHERE m.id > ${sinceId}
-        AND m.creator <> ${userId}
+        AND NOT EXISTS (
+          SELECT 1 FROM "User" self
+          WHERE self.id = ${userId}
+            AND self.account = m."creatorAccount"
+            AND self.domain = m."creatorDomain"
+        )
         ${hiddenClause}
         AND m."contentType" = 'PURE_TEXT'
         ${threadClause}

@@ -8,8 +8,6 @@ import { configureApp } from '../src/bootstrap';
 import { and, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
 import {
-  relationshipPair,
-  relationshipIntent,
   message,
   clientMessageFeed,
   threadParticipant,
@@ -22,6 +20,7 @@ import {
   openSse,
   waitForSseEvent,
 } from './federation-test-helpers';
+import { findP2PRelationship } from './seed';
 
 /**
  * Regression contract test for the "first message after friend-add not delivered" bug.
@@ -74,32 +73,19 @@ describe('First message after friend-add is delivered (single instance)', () => 
     const bob = await registerAndLogin(appLike, 'bob', 'Bob');
 
     // 1. Alice sends the friend invite to Bob; Bob accepts → both sides get the new P2P thread.
-    await request(baseUrl)
+    const invite = await request(baseUrl)
       .post('/api/v1/invite/friend')
       .set('Authorization', `Bearer ${alice.token}`)
-      .send({ toUserId: bob.id })
+      .send({ account: 'bob' })
       .expect((res) => {
         expect(res.status).toBe(200);
         expect(res.body.code).toBe(0);
       });
 
-    const [pendingInvite] = await database.db
-      .select()
-      .from(relationshipIntent)
-      .where(
-        and(
-          eq(relationshipIntent.status, 'REQUESTED'),
-          eq(relationshipIntent.authorUserId, alice.id),
-          eq(relationshipIntent.subjectUserId, bob.id),
-        ),
-      )
-      .limit(1);
-    expect(pendingInvite).toBeDefined();
-
     const accept = await request(baseUrl)
       .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${bob.token}`)
-      .send({ inviteId: pendingInvite.id.toString() });
+      .send({ inviteId: invite.body.data.inviteId });
     expect(accept.status).toBe(200);
     expect(accept.body.code).toBe(0);
     const threadId: number = accept.body.data.threadId;
@@ -183,7 +169,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
       await request(baseUrl)
         .post('/api/v1/user/delete-friend')
         .set('Authorization', `Bearer ${alice.token}`)
-        .send({ userId: bob.id })
+        .send({ account: 'bob' })
         .expect((res) => {
           expect(res.status).toBe(200);
           expect(res.body.code).toBe(0);
@@ -203,7 +189,10 @@ describe('First message after friend-add is delivered (single instance)', () => 
           eq(message.contentType, 'SYSTEM'),
         ),
       });
-      expect(boundary).toMatchObject({ creator: null });
+      expect(boundary).toMatchObject({
+        creatorAccount: null,
+        creatorDomain: null,
+      });
       const participants = await database.db.query.threadParticipant.findMany({
         where: eq(threadParticipant.threadId, threadId),
       });
@@ -238,6 +227,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
         account: 'bob',
         name: 'Bob',
         domain: 'peer.test',
+        sourceDomain: 'peer.test',
         updatedAt: new Date(),
       })
       .returning({ id: user.id });
@@ -257,12 +247,9 @@ describe('First message after friend-add is delivered (single instance)', () => 
         true,
       );
     });
-    const friendship = await database.db.query.relationshipPair.findFirst({
-      where: and(
-        eq(relationshipPair.userLowId, Math.min(alice.id, foreignBob.id)),
-        eq(relationshipPair.userHighId, Math.max(alice.id, foreignBob.id)),
-      ),
-    });
+    const friendship = (
+      await findP2PRelationship(database.db, alice.id, foreignBob.id)
+    ).pair;
     expect(friendship?.threadId).not.toBeNull();
     const audiences = await database.db
       .select({
@@ -296,15 +283,11 @@ describe('First message after friend-add is delivered (single instance)', () => 
         account: 'strict-bob',
         name: 'Bob',
         domain: 'strict-peer.test',
+        sourceDomain: 'strict-peer.test',
         updatedAt: new Date(),
       })
       .returning({ id: user.id });
     const inviteService = app.get(InviteService);
-    const pairWhere = and(
-      eq(relationshipPair.userLowId, Math.min(alice.id, foreignBob.id)),
-      eq(relationshipPair.userHighId, Math.max(alice.id, foreignBob.id)),
-    );
-
     await database.db.transaction((tx) =>
       inviteService.writeLocalFriendIntentInTx(
         tx,
@@ -325,10 +308,9 @@ describe('First message after friend-add is delivered (single instance)', () => 
       }),
     );
 
-    const afterCrossedRequest =
-      await database.db.query.relationshipPair.findFirst({
-        where: pairWhere,
-      });
+    const afterCrossedRequest = (
+      await findP2PRelationship(database.db, alice.id, foreignBob.id)
+    ).pair;
     expect(afterCrossedRequest?.active).toBe(true);
     expect(afterCrossedRequest?.threadId).not.toBeNull();
 
@@ -344,10 +326,9 @@ describe('First message after friend-add is delivered (single instance)', () => 
       }),
     );
 
-    const afterConfirmation =
-      await database.db.query.relationshipPair.findFirst({
-        where: pairWhere,
-      });
+    const afterConfirmation = (
+      await findP2PRelationship(database.db, alice.id, foreignBob.id)
+    ).pair;
     expect(afterConfirmation?.active).toBe(true);
     expect(afterConfirmation?.threadId).not.toBeNull();
   });

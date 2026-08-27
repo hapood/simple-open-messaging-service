@@ -37,8 +37,8 @@ export interface MediaGcTask {
   scannedBytes: string;
   deletedFiles: number;
   deletedBytes: string;
-  startedAt: string;
-  finishedAt: string | null;
+  startedAt: number;
+  finishedAt: number | null;
   result?: GcResult | ReconcileResult;
   error?: string;
 }
@@ -58,7 +58,7 @@ export interface ReconcileResult {
 export interface PendingAsset {
   digest: string;
   bytes: string;
-  stateChangedAt: string;
+  stateChangedAt: number;
   pendingMediaCount: number;
 }
 
@@ -73,7 +73,7 @@ export interface ResumableUploadSession {
   offset: number;
   chunkSize: number;
   status: 'UPLOADING' | 'COMPLETING';
-  updatedAt: string;
+  updatedAt: number;
 }
 
 export interface PendingFederatedDeletion {
@@ -88,7 +88,7 @@ export interface PendingFederatedDeletion {
   authorityDomain: string;
   sourceDomain: string;
   remoteFeedId: string;
-  type: 'WITHDRAW' | 'REPORT';
+  type: 'USER_RETRACTION' | 'MODERATION_REMOVAL';
   deletedAt: number;
   receivedAt: number;
   updatedAt: number;

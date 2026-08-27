@@ -23,7 +23,6 @@ import {
   InviteDto,
   ReadIncomingInvitesDto,
 } from '../dto/invite.dto.js';
-import { mintUlid } from '../common/account.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
 import { eq } from 'drizzle-orm';
 import * as tables from '../database/schema.js';
@@ -31,7 +30,6 @@ import {
   ClientStateFeedService,
   type PendingClientStateFeedUpdate,
 } from '../client-state-feed/client-state-feed.service.js';
-import { DatabaseService } from '../database/database.service.js';
 
 /**
  * Invite endpoints — the single API for friend-add (and, when wired, group-invite). The service owns
@@ -52,7 +50,6 @@ export class InviteController {
     private readonly federationService: FederationService,
     private readonly userQuota: UserQuotaService,
     private readonly clientStateFeed: ClientStateFeedService,
-    private readonly database: DatabaseService,
   ) {}
 
   @ApiBearerAuth()
@@ -77,28 +74,17 @@ export class InviteController {
   @HttpCode(HttpStatus.OK)
   @Post('invite/friend')
   @ApiOperation({
-    summary:
-      'Send a friend invite (federated targets delivered via S2S automatically)',
+    summary: 'Send a friend invite to a local account',
   })
   async sendFriendInvite(
     @Request() req: FastifyRequest,
     @Body() dto: SendFriendInviteDto,
   ) {
     const me = req.user.userId;
-    const account = dto.account?.trim().toLowerCase();
-    const domain = dto.domain?.trim().toLowerCase();
-    if (
-      dto.toUserId === undefined &&
-      domain !== 'local' &&
-      domain !== this.federationService.ourDomain
-    )
-      return this.sendFederatedFriendInvite(req, dto);
-    const target =
-      dto.toUserId !== undefined
-        ? await this.userService.findUniqueUser({ id: dto.toUserId })
-        : await this.userService.findUniqueUser({
-            account_domain: { account: account!, domain: 'local' },
-          });
+    const account = dto.account.trim().toLowerCase();
+    const target = await this.userService.findUniqueUser({
+      account_domain: { account, domain: 'local' },
+    });
     if (target && me === target.id) {
       throw new BusinessException(
         BusinessCode.FRIEND_SELF,
@@ -113,41 +99,6 @@ export class InviteController {
         'user does not exist',
       );
     }
-    if (target.isGroup) {
-      const thread = await this.database.db.query.messageThread.findFirst({
-        where: eq(tables.messageThread.groupUserId, target.id),
-        columns: { id: true },
-        with: { user: { with: { group: { columns: { dissolvedAt: true } } } } },
-      });
-      if (!thread)
-        throw new BusinessException(BusinessCode.NOT_FOUND, 'group not found');
-      if (thread.user?.group?.dissolvedAt)
-        throw new BusinessException(
-          BusinessCode.GROUP_DISSOLVED,
-          'group has been dissolved',
-        );
-      const clientFeedUpdates: PendingClientStateFeedUpdate[] = [];
-      const statePeers = await this.database.db.transaction(async (tx) => {
-        await this.userQuota.tick(me, 'requests', tx);
-        return this.federationService.writeMemberRelationshipIntentInTx(
-          tx,
-          thread.id,
-          me,
-          'REQUESTED',
-          clientFeedUpdates,
-          dto.note ?? '',
-          dto.displayName
-            ? { displayName: dto.displayName, avatar: dto.avatar }
-            : undefined,
-        );
-      });
-      await this.federationService.pushStateFeedDomains(statePeers.keys());
-      this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
-      return envelope(undefined, {
-        message: 'group join request sent',
-        messageKey: 'group.msg.joinRequestSent',
-      });
-    }
     if (await this.participantService.areFriends(me, target.id)) {
       return envelope(undefined, {
         message: 'you are already friends',
@@ -155,44 +106,26 @@ export class InviteController {
       });
     }
 
-    // Mutual auto-accept is LOCAL-only (a federated target needs an S2S round-trip on accept).
-    const federatedOriginId =
-      target.domain !== 'local' ? mintUlid() : undefined;
-    let statePeers = new Map<string, bigint>();
     const clientFeedUpdates: PendingClientStateFeedUpdate[] = [];
     const res = await this.inviteService.createFriendInvite(
       me,
       target.id,
       dto.note ?? '',
-      target.domain === 'local',
-      federatedOriginId,
+      true,
+      undefined,
       async (tx, created) => {
         if (created) await this.userQuota.tick(me, 'requests', tx);
-        if (target.domain !== 'local') {
-          statePeers = await this.federationService.writeFriendIntentInTx(
+        clientFeedUpdates.push(
+          ...(await this.inviteService.writeLocalFriendIntentInTx(
             tx,
             me,
             target.id,
             true,
             dto.note ?? '',
-            clientFeedUpdates,
-          );
-        } else
-          clientFeedUpdates.push(
-            ...(await this.inviteService.writeLocalFriendIntentInTx(
-              tx,
-              me,
-              target.id,
-              true,
-              dto.note ?? '',
-              dto.displayName
-                ? { displayName: dto.displayName, avatar: dto.avatar }
-                : undefined,
-            )),
-          );
+          )),
+        );
       },
     );
-    await this.federationService.pushStateFeedDomains(statePeers.keys());
     this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
 
     if (res.status === 'auto-accepted') {
@@ -231,30 +164,17 @@ export class InviteController {
   ) {
     const account = dto.account.trim().toLowerCase();
     const domain = dto.domain.trim().toLowerCase();
-    if (domain === this.federationService.ourDomain)
+    if (domain === 'local' || domain === this.federationService.ourDomain)
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
-        'local friend requests require toUserId',
+        'local friend requests use /invite/friend',
       );
     await this.federationService.ensurePeerTrusted(domain);
-    if (account.startsWith('!')) {
-      await this.database.db.transaction((tx) =>
-        this.userQuota.tick(req.user.userId, 'requests', tx),
+    if (account.startsWith('!'))
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'group requests use /group/federated-join-request',
       );
-      await this.federationService.requestFederatedGroupJoin(
-        req.user.userId,
-        { account, domain },
-        dto.note ?? '',
-        { displayName: dto.displayName, avatar: dto.avatar },
-      );
-      return envelope(
-        { account, domain },
-        {
-          message: 'group join request sent',
-          messageKey: 'group.msg.joinRequestSent',
-        },
-      );
-    }
     let statePeers = new Map<string, bigint>();
     const clientFeedUpdates: PendingClientStateFeedUpdate[] = [];
     const result = await this.inviteService.createFederatedFriendInvite(

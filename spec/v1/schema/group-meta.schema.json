@@ -3,18 +3,6 @@
   "$id": "urn:somfp:v1:group-meta",
   "title": "GET /s2s/v1/group-meta response data",
   "$defs": {
-    "avatar": {
-      "type": "object",
-      "required": ["digest", "mimeType", "base64", "width", "height"],
-      "properties": {
-        "digest": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" },
-        "mimeType": { "type": "string", "minLength": 1 },
-        "base64": { "type": "string", "minLength": 4, "maxLength": 1048576 },
-        "width": { "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger" },
-        "height": { "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger" }
-      },
-      "additionalProperties": false
-    },
     "upsertBody": {
       "type": "object",
       "required": ["role", "profileRev", "displayName", "avatar"],
@@ -25,7 +13,10 @@
         },
         "displayName": { "type": "string", "minLength": 1, "maxLength": 30 },
         "avatar": {
-          "oneOf": [{ "$ref": "#/$defs/avatar" }, { "type": "null" }]
+          "oneOf": [
+            { "$ref": "urn:somfp:v1:common#/$defs/inlineProfileAvatar" },
+            { "type": "null" }
+          ]
         }
       },
       "additionalProperties": false
@@ -56,7 +47,7 @@
         {
           "$ref": "#/$defs/itemBase",
           "properties": {
-            "operation": { "const": "DELETE" },
+            "operation": { "const": "DEPART" },
             "body": { "type": "object", "maxProperties": 0 }
           },
           "unevaluatedProperties": false

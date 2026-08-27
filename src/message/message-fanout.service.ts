@@ -1,5 +1,5 @@
 import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
-import type { Message } from './message.service.js';
+import type { PublicMessage } from './message.service.js';
 import { SseService } from '../gateway/sse.service.js';
 import { PushService } from '../push/push.service.js';
 import { FederationService } from '../federation/federation.service.js';
@@ -42,7 +42,7 @@ export class MessageFanoutService {
     private readonly participantService: ThreadParticipantService,
   ) {}
 
-  async dispatch(message: Omit<Message, 'id'>): Promise<void> {
+  async dispatch(message: PublicMessage): Promise<void> {
     try {
       await this.fanout(message);
     } catch (e) {
@@ -56,7 +56,7 @@ export class MessageFanoutService {
 
   /** Wake an explicit local recipient snapshot captured by the source transaction. */
   async dispatchToUsers(
-    message: Omit<Message, 'id'>,
+    message: PublicMessage,
     recipientUserIds: readonly number[],
   ): Promise<void> {
     try {
@@ -66,7 +66,12 @@ export class MessageFanoutService {
           recipientUserIds,
         );
       const ts = message.createdAt.getTime();
-      const plan = planLiveDelivery(participants, message.creator);
+      const sender = participants.find(
+        (participant) =>
+          participant.account === message.creator?.account &&
+          participant.domain === message.creator?.domain,
+      );
+      const plan = planLiveDelivery(participants, sender?.userId ?? null);
       for (const userId of plan.sseUserIds)
         this.sseService.onNewMessage(userId, message.threadId, message.seq, ts);
       void this.pushService.dispatchForMessage(
@@ -81,8 +86,8 @@ export class MessageFanoutService {
     }
   }
 
-  private async fanout(message: Omit<Message, 'id'>): Promise<void> {
-    const senderUserId = message.creator;
+  private async fanout(message: PublicMessage): Promise<void> {
+    const senderAddress = message.creator;
     const threadId = message.threadId;
     // Identity-only signal — every signal (SSE + push) carries only {threadId, seq, ts}; the body is
     // pulled by the client via the message feed + /query-messages (single data source).
@@ -92,7 +97,12 @@ export class MessageFanoutService {
       await this.participantService.getActiveParticipantUserIds(threadId);
     // BLOCK: a recipient who blocks the sender must not receive the message AT ALL (no SSE, no push —
     // the blocked user is invisible to the blocker's message stream).
-    const plan = planLiveDelivery(participants, senderUserId);
+    const senderUserId = participants.find(
+      (participant) =>
+        participant.account === senderAddress?.account &&
+        participant.domain === senderAddress?.domain,
+    )?.userId;
+    const plan = planLiveDelivery(participants, senderUserId ?? null);
     plan.sseUserIds.forEach((userId) => {
       this.sseService.onNewMessage(userId, threadId, message.seq, ts);
     });
@@ -107,7 +117,7 @@ export class MessageFanoutService {
     // the peer-global /message-feed; this notification is ephemeral and safe to lose.
     // This service handles locally-authored rows. Their local seq is the wire originSeq until the
     // self-authored delivery receipt returns and fills the nullable receipt columns.
-    if (message.contentType !== ContentType.SYSTEM && senderUserId !== null)
-      void this.federation.notifyOnSend(senderUserId, threadId, message.seq);
+    if (message.contentType !== ContentType.SYSTEM && senderAddress !== null)
+      void this.federation.notifyOnSend(senderAddress, threadId, message.seq);
   }
 }

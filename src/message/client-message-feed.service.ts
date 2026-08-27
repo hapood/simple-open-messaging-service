@@ -6,6 +6,7 @@ import {
   clientMessageFeedTarget,
   clientMessageTombstoneFeed,
   threadParticipant,
+  threadMember,
   user,
 } from '../database/schema.js';
 import { planFeedRecipientIds } from './message-delivery-plan.js';
@@ -133,17 +134,17 @@ export class ClientMessageFeedWriter {
     threadId: number,
   ): Promise<number[]> {
     const rows = await tx
-      .select({ userId: threadParticipant.userId })
+      .select({ userId: threadParticipant.accountId })
       .from(threadParticipant)
-      .innerJoin(user, eq(user.id, threadParticipant.userId))
+      .innerJoin(user, eq(user.id, threadParticipant.accountId))
       .where(
         and(
           eq(threadParticipant.threadId, threadId),
           eq(user.domain, 'local'),
-          eq(user.isDeleted, false),
+          eq(user.availability, 'AVAILABLE'),
         ),
       )
-      .orderBy(asc(threadParticipant.userId));
+      .orderBy(asc(threadParticipant.accountId));
     const authorized = await Promise.all(
       rows.map((row) => isThreadMutuallyAuthorized(tx, row.userId, threadId)),
     );

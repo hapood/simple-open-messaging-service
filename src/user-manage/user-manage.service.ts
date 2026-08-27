@@ -1,10 +1,12 @@
 import { Injectable } from '@nestjs/common';
-import { and, count, desc, eq, ilike, inArray } from 'drizzle-orm';
+import { and, count, desc, eq, ilike, inArray, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import {
+  account,
+  group,
   messageThread,
   pushToken,
-  threadParticipant,
+  threadMember,
   user,
 } from '../database/schema.js';
 import { AuthService } from '../auth/auth.service.js';
@@ -25,34 +27,33 @@ export class UserManageService {
   /** 360° view of one user: profile + group memberships + active sessions + push devices.
    *  One round-trip via Promise.all. Returns null when the user does not exist. */
   async getUserDetail(id: number) {
+    const localAccount = await this.database.db.query.account.findFirst({
+      where: eq(account.id, id),
+      columns: { id: true },
+    });
+    if (!localAccount) return null;
     const profile = await this.userService.findUniqueUser({ id });
     if (!profile) return null;
     const [groups, sessions, pushTokens] = await Promise.all([
       this.database.db
         .select({
-          threadId: threadParticipant.threadId,
-          role: threadParticipant.role,
-          joinedAt: threadParticipant.joinedAt,
-          groupAccount: user.account,
-          groupName: user.name,
+          threadId: threadMember.threadId,
+          role: threadMember.role,
+          joinedAt: threadMember.joinedAt,
+          groupAccount: group.account,
+          groupName: group.name,
         })
-        .from(threadParticipant)
-        .innerJoin(
-          messageThread,
-          eq(messageThread.id, threadParticipant.threadId),
-        )
-        .innerJoin(user, eq(user.id, messageThread.groupUserId))
+        .from(threadMember)
+        .innerJoin(messageThread, eq(messageThread.id, threadMember.threadId))
+        .innerJoin(group, eq(group.id, messageThread.groupId))
         .where(
-          and(
-            eq(threadParticipant.userId, id),
-            eq(messageThread.type, 'GROUP'),
-          ),
+          and(eq(threadMember.userId, id), eq(messageThread.type, 'GROUP')),
         )
-        .orderBy(desc(threadParticipant.joinedAt))
+        .orderBy(desc(threadMember.joinedAt))
         .then((rows) =>
           rows.map(({ groupAccount, groupName, ...row }) => ({
             ...row,
-            thread: { groupUser: { account: groupAccount, name: groupName } },
+            thread: { group: { account: groupAccount, name: groupName } },
           })),
         ),
       this.auth.listActiveSessions(id, null),
@@ -75,8 +76,8 @@ export class UserManageService {
    *  respective administration surfaces and must never receive local-account actions. Omits hashPwd. */
   async listUsers(opts: { skip?: number; take?: number; search?: string }) {
     const where = and(
-      eq(user.isGroup, false),
       eq(user.domain, 'local'),
+      eq(user.sourceDomain, 'local'),
       opts.search ? ilike(user.account, `%${opts.search}%`) : undefined,
     );
     const [list, total] = await Promise.all([
@@ -87,17 +88,16 @@ export class UserManageService {
           name: user.name,
           avatar: user.avatar,
           bio: user.bio,
-          isGroup: user.isGroup,
           domain: user.domain,
           createdAt: user.createdAt,
           updatedAt: user.updatedAt,
-          isDeleted: user.isDeleted,
+          isDeleted: sql<boolean>`${account.disabledAt} IS NOT NULL`,
           profileRev: user.profileRev,
-          remoteProfileRev: user.remoteProfileRev,
-          stateFeedAllocatedThrough: user.stateFeedAllocatedThrough,
-          mustChangePassword: user.mustChangePassword,
+          stateFeedAllocatedThrough: account.stateFeedAllocatedThrough,
+          mustChangePassword: account.mustChangePassword,
         })
         .from(user)
+        .innerJoin(account, eq(account.id, user.id))
         .where(where)
         .orderBy(desc(user.createdAt))
         .offset(opts.skip ?? 0)
@@ -105,6 +105,7 @@ export class UserManageService {
       this.database.db
         .select({ value: count() })
         .from(user)
+        .innerJoin(account, eq(account.id, user.id))
         .where(where)
         .then(([row]) => row.value),
     ]);
@@ -122,13 +123,13 @@ export class UserManageService {
   /** Soft-delete + revoke every session token (invalidateAllSessions revokes all SessionToken rows + emits FORCE_LOGOUT). */
   async disableUser(id: number): Promise<void> {
     await this.assertLocalPerson(id);
-    await this.updateUserOrThrow(id, { isDeleted: true });
+    await this.updateAccountOrThrow(id, { disabledAt: new Date() });
     await this.auth.invalidateAllSessions(id, 'admin_disabled');
   }
 
   async enableUser(id: number): Promise<void> {
     await this.assertLocalPerson(id);
-    await this.updateUserOrThrow(id, { isDeleted: false });
+    await this.updateAccountOrThrow(id, { disabledAt: null });
   }
 
   /** Force logout every device without changing the account (disable = soft-delete; this does not). */
@@ -146,7 +147,7 @@ export class UserManageService {
     await this.assertLocalPerson(id);
     const password = randomInitialPassword();
     const hash = await this.auth.hashPassword(password);
-    await this.updateUserOrThrow(id, {
+    await this.updateAccountOrThrow(id, {
       hashPwd: hash,
       mustChangePassword: true,
     });
@@ -207,30 +208,34 @@ export class UserManageService {
     return new Map(users.map((u) => [u.id, u.account]));
   }
 
-  private async updateUserOrThrow(
+  private async updateAccountOrThrow(
     id: number,
-    data: Partial<typeof user.$inferInsert>,
+    data: Partial<typeof account.$inferInsert>,
   ): Promise<void> {
     const rows = await this.database.db
-      .update(user)
+      .update(account)
       .set({ ...data, updatedAt: new Date() })
-      .where(eq(user.id, id))
-      .returning({ id: user.id });
+      .where(eq(account.id, id))
+      .returning({ id: account.id });
     if (rows.length === 0) {
       throw new BusinessException(BusinessCode.NOT_FOUND, 'user not found');
     }
   }
 
   private async assertLocalPerson(id: number): Promise<void> {
-    const target = await this.database.db.query.user.findFirst({
-      where: and(
-        eq(user.id, id),
-        eq(user.isGroup, false),
-        eq(user.domain, 'local'),
-      ),
-      columns: { id: true },
-    });
-    if (!target) {
+    const target = await this.database.db
+      .select({ id: account.id })
+      .from(account)
+      .innerJoin(user, eq(user.id, account.id))
+      .where(
+        and(
+          eq(user.id, id),
+          eq(user.domain, 'local'),
+          eq(user.sourceDomain, 'local'),
+        ),
+      )
+      .limit(1);
+    if (target.length === 0) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         'local user not found',

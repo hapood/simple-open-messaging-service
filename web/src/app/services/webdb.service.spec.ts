@@ -10,6 +10,7 @@ import {
   LocalCacheVersionMismatchError,
   MESSAGE_CACHE_SCHEMA_VERSION,
   mergeCoveredTail,
+  STATE_FEED_WORKER_FACTORY,
   WebdbService,
 } from './webdb.service';
 
@@ -65,7 +66,11 @@ describe('WebdbService', () => {
 
     beforeEach(() => {
       TestBed.configureTestingModule({
-        providers: [provideZonelessChangeDetection(), WebdbService],
+        providers: [
+          provideZonelessChangeDetection(),
+          WebdbService,
+          { provide: STATE_FEED_WORKER_FACTORY, useValue: () => null },
+        ],
       });
       webdb = TestBed.inject(WebdbService);
     });
@@ -85,11 +90,12 @@ describe('WebdbService', () => {
       expect([...db!.objectStoreNames].sort()).toEqual([
         'avatars',
         'friendRequests',
-        'profiles',
+        'groups',
+        'members',
         'relationshipIntents',
         'settings',
-        'threadParticipants',
         'threads',
+        'users',
       ]);
       const messageDb = await webdb.messageDb();
       expect(messageDb.name).toBe('soms-msgdb-u1');
@@ -614,7 +620,7 @@ describe('WebdbService', () => {
       expect(await webdb.getMeta('stateFeedId')).toBe(31);
     });
 
-    it('garbage-collects an expired request projection and its temporary profile', async () => {
+    it('garbage-collects an expired request projection without creating a User row', async () => {
       const db = await webdb.openForUser('1');
       const expiresAt = Date.now() + 1_000;
       const request: ClientStateFeedItem = {
@@ -644,25 +650,18 @@ describe('WebdbService', () => {
 
       await webdb.applyStateFeedPage([request], 20);
       expect(await db!.getAll('friendRequests')).toHaveLength(1);
-      expect(
-        await webdb.getProfile('pending:peer.test\u0000alice'),
-      ).toMatchObject({
-        name: 'Alice',
-        bio: 'About Alice',
-      });
+      expect(await db!.getAll('users')).toEqual([]);
 
       await webdb.cleanupFriendRequests(expiresAt);
 
       expect(await db!.getAll('friendRequests')).toHaveLength(1);
-      expect(
-        await webdb.getProfile('pending:peer.test\u0000alice'),
-      ).toBeUndefined();
+      expect(await db!.getAll('users')).toEqual([]);
 
       await webdb.cleanupFriendRequests(expiresAt + FRIEND_INTENT_RETENTION_MS);
       expect(await db!.getAll('friendRequests')).toEqual([]);
     });
 
-    it('garbage-collects an expired group-invite projection and its temporary profile', async () => {
+    it('garbage-collects an expired group invite without creating a Group row', async () => {
       const db = await webdb.openForUser('1');
       const requestedAt = Date.now();
       const expiresAt = requestedAt + 1_000;
@@ -694,16 +693,12 @@ describe('WebdbService', () => {
 
       await webdb.applyStateFeedPage([invite], 21);
       expect(await db!.getAll('friendRequests')).toHaveLength(1);
-      expect(
-        await webdb.getProfile('pending-group:groups.test\u0000!group'),
-      ).toMatchObject({ source: 'GROUP_INVITE', bio: 'About group' });
+      expect(await db!.getAll('groups')).toEqual([]);
 
       await webdb.cleanupFriendRequests(expiresAt);
 
       expect(await db!.getAll('friendRequests')).toHaveLength(1);
-      expect(
-        await webdb.getProfile('pending-group:groups.test\u0000!group'),
-      ).toBeUndefined();
+      expect(await db!.getAll('groups')).toEqual([]);
 
       await webdb.cleanupFriendRequests(expiresAt + FRIEND_INTENT_RETENTION_MS);
       expect(await db!.getAll('friendRequests')).toEqual([]);
@@ -826,21 +821,18 @@ describe('WebdbService', () => {
         blocked: true,
         group: { memberCount: 1, groupMetaFeedId: '1' },
       } as never);
-      await db!.put('threadParticipants', {
+      await db!.put('members', {
         threadId: 9,
-        userId: 8,
-        memberAccount: 'alice',
-        memberDomain: '',
-        profileSourceServer: 'local',
+        account: 'alice',
+        domain: 'local',
+        sourceDomain: 'local',
         role: 'MEMBER',
-        displayName: 'Alice',
-        avatar: '',
-        profileRev: 1,
+        left: false,
       });
 
       await webdb.applyStateFeedPage([], 3, [], true);
 
-      expect(await db!.getAll('threadParticipants')).toEqual([]);
+      expect(await db!.getAll('members')).toEqual([]);
       expect(await webdb.getThreads()).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -853,20 +845,17 @@ describe('WebdbService', () => {
         ]),
       );
 
-      await db!.put('threadParticipants', {
+      await db!.put('members', {
         threadId: 9,
-        userId: 10,
-        memberAccount: 'bob',
-        memberDomain: '',
-        profileSourceServer: 'local',
+        account: 'bob',
+        domain: 'local',
+        sourceDomain: 'local',
         role: 'MEMBER',
-        displayName: 'Bob',
-        avatar: '',
-        profileRev: 1,
+        left: false,
       });
       await webdb.applyStateFeedPage([], 4);
 
-      expect(await db!.getAll('threadParticipants')).toHaveLength(1);
+      expect(await db!.getAll('members')).toHaveLength(1);
       expect(await webdb.getMeta('stateFeedId')).toBe(4);
     });
 
@@ -917,6 +906,18 @@ describe('WebdbService', () => {
         sourceServer: 'local',
         profileRev: 6,
       });
+      await webdb.putProfile({
+        identity: 'u1',
+        id: 1,
+        kind: 'user',
+        name: 'Self',
+        account: 'self',
+        avatar: '',
+        bio: '',
+        domain: 'local',
+        sourceServer: 'local',
+        profileRev: 1,
+      });
 
       await webdb.applyStateFeedPage([], 3, [
         {
@@ -932,7 +933,6 @@ describe('WebdbService', () => {
                 account: 'self',
                 domain: 'local',
                 body: {
-                  userId: 1,
                   role: 'OWNER',
                   profileRev: 1,
                   displayName: 'Self',
@@ -945,7 +945,6 @@ describe('WebdbService', () => {
                 account: 'alice',
                 domain: 'home.example',
                 body: {
-                  userId: 8,
                   role: 'ADMIN',
                   profileRev: 6,
                   displayName: 'Alice',
@@ -966,7 +965,14 @@ describe('WebdbService', () => {
           take: 20,
           search: 'ali',
         }),
-      ).toEqual([expect.objectContaining({ userId: 8, displayName: 'Alice' })]);
+      ).toEqual([
+        expect.objectContaining({
+          account: 'alice',
+          domain: 'home.example',
+          sourceDomain: 'local',
+          user: expect.objectContaining({ name: 'Alice' }),
+        }),
+      ]);
       expect(
         (await webdb.getThreads()).find((item) => item.threadId === 9),
       ).toMatchObject({
@@ -988,7 +994,6 @@ describe('WebdbService', () => {
                 account: 'self',
                 domain: 'local',
                 body: {
-                  userId: 1,
                   role: 'ADMIN',
                   profileRev: 1,
                   displayName: 'Self',
@@ -1016,7 +1021,7 @@ describe('WebdbService', () => {
             items: [
               {
                 feedId: '4',
-                operation: 'DELETE',
+                operation: 'DEPART',
                 account: 'self',
                 domain: 'local',
                 body: {},
@@ -1042,7 +1047,7 @@ describe('WebdbService', () => {
             items: [
               {
                 feedId: '5',
-                operation: 'DELETE',
+                operation: 'DEPART',
                 account: 'alice',
                 domain: 'home.example',
                 body: {},
@@ -1138,7 +1143,6 @@ describe('WebdbService', () => {
                 account: 'alice',
                 domain: 'local.test',
                 body: {
-                  userId: 1,
                   role: 'OWNER',
                   profileRev: 1,
                   displayName: 'Alice',
@@ -1151,7 +1155,6 @@ describe('WebdbService', () => {
                 account: 'bob',
                 domain: 'remote.test',
                 body: {
-                  userId: 8,
                   role: 'MEMBER',
                   profileRev: 1,
                   displayName: 'Bob',

@@ -7,7 +7,7 @@ import { serializeBody } from '../common/serialize.interceptor.js';
 import {
   groupMetaFeedTarget,
   groupMetaMemberFeed,
-  user,
+  group,
 } from '../database/schema.js';
 import {
   DatabaseService,
@@ -20,13 +20,17 @@ export interface GroupMetaMemberWrite {
   body: Record<string, unknown>;
 }
 
-export interface GroupMetaFeedItem {
+interface GroupMetaFeedItemBase {
   feedId: string;
   account: string;
   domain: string;
-  operation: 'UPSERT' | 'DELETE';
-  body: unknown;
 }
+
+export type GroupMetaFeedItem = GroupMetaFeedItemBase &
+  (
+    | { operation: 'UPSERT'; body: Record<string, unknown> }
+    | { operation: 'DEPART'; body: Record<string, never> }
+  );
 
 export interface GroupMetaFeedPage {
   account: string;
@@ -47,7 +51,7 @@ export class GroupMetaFeedService {
   async deactivateTargetInTx(
     tx: DatabaseTransaction,
     targetPeerDomain: string,
-    groupUserId: number,
+    groupId: number,
   ): Promise<void> {
     await tx
       .update(groupMetaFeedTarget)
@@ -55,7 +59,7 @@ export class GroupMetaFeedService {
       .where(
         and(
           eq(groupMetaFeedTarget.targetPeerDomain, targetPeerDomain),
-          eq(groupMetaFeedTarget.groupUserId, groupUserId),
+          eq(groupMetaFeedTarget.groupId, groupId),
         ),
       );
   }
@@ -63,16 +67,16 @@ export class GroupMetaFeedService {
   async reconcileInTx(
     tx: DatabaseTransaction,
     targetPeerDomain: string,
-    groupUserId: number,
+    groupId: number,
     members: readonly GroupMetaMemberWrite[],
   ): Promise<bigint> {
     await tx
       .insert(groupMetaFeedTarget)
-      .values({ targetPeerDomain, groupUserId, active: true })
+      .values({ targetPeerDomain, groupId, active: true })
       .onConflictDoUpdate({
         target: [
           groupMetaFeedTarget.targetPeerDomain,
-          groupMetaFeedTarget.groupUserId,
+          groupMetaFeedTarget.groupId,
         ],
         set: { active: true, updatedAt: new Date() },
       });
@@ -80,7 +84,7 @@ export class GroupMetaFeedService {
       SELECT "allocatedThrough"
       FROM "GroupMetaFeedTarget"
       WHERE "targetPeerDomain" = ${targetPeerDomain}
-        AND "groupUserId" = ${groupUserId}
+        AND "groupId" = ${groupId}
       FOR UPDATE
     `);
     let allocatedThrough = BigInt(locked.rows[0]?.allocatedThrough ?? 0);
@@ -95,7 +99,7 @@ export class GroupMetaFeedService {
       .where(
         and(
           eq(groupMetaMemberFeed.targetPeerDomain, targetPeerDomain),
-          eq(groupMetaMemberFeed.groupUserId, groupUserId),
+          eq(groupMetaMemberFeed.groupId, groupId),
         ),
       )
       .orderBy(asc(groupMetaMemberFeed.feedId));
@@ -114,7 +118,7 @@ export class GroupMetaFeedService {
     const changes: Array<{
       account: string;
       domain: string;
-      operation: 'UPSERT' | 'DELETE';
+      operation: 'UPSERT' | 'DEPART';
       body: Record<string, unknown>;
     }> = [];
     for (const [key, member] of desired) {
@@ -137,7 +141,7 @@ export class GroupMetaFeedService {
       changes.push({
         account: previous.account,
         domain: previous.domain,
-        operation: 'DELETE',
+        operation: 'DEPART',
         body: {},
       });
     }
@@ -150,7 +154,7 @@ export class GroupMetaFeedService {
       await tx.insert(groupMetaMemberFeed).values(
         changes.map((change) => ({
           targetPeerDomain,
-          groupUserId,
+          groupId,
           feedId: ++allocatedThrough,
           memberAccount: change.account,
           memberDomain: change.domain,
@@ -165,7 +169,7 @@ export class GroupMetaFeedService {
         .where(
           and(
             eq(groupMetaFeedTarget.targetPeerDomain, targetPeerDomain),
-            eq(groupMetaFeedTarget.groupUserId, groupUserId),
+            eq(groupMetaFeedTarget.groupId, groupId),
           ),
         );
     }
@@ -176,28 +180,28 @@ export class GroupMetaFeedService {
     peerDomain: string,
     account: string,
     mode: 'full' | 'delta',
-    after: bigint,
+    after: bigint | undefined,
     take = DEFAULT_TAKE,
     through?: bigint,
   ): Promise<GroupMetaFeedPage> {
     const [source] = await this.database.db
       .select({
-        groupUserId: user.id,
+        groupId: group.id,
         allocatedThrough: groupMetaFeedTarget.allocatedThrough,
         oldestAvailableAfter: groupMetaFeedTarget.oldestAvailableAfter,
       })
-      .from(user)
+      .from(group)
       .innerJoin(
         groupMetaFeedTarget,
         and(
-          eq(groupMetaFeedTarget.groupUserId, user.id),
+          eq(groupMetaFeedTarget.groupId, group.id),
           eq(groupMetaFeedTarget.targetPeerDomain, peerDomain),
         ),
       )
       .where(
         and(
-          eq(user.account, account),
-          eq(user.domain, 'local'),
+          eq(group.account, account),
+          eq(group.domain, 'local'),
           eq(groupMetaFeedTarget.active, true),
         ),
       )
@@ -209,6 +213,17 @@ export class GroupMetaFeedService {
         HttpStatus.FORBIDDEN,
       );
     const end = source.allocatedThrough;
+    const cursorData = {
+      resumeAfter: '0',
+      resumeBefore: (end + 1n).toString(),
+    };
+    if (after === undefined)
+      throw new BusinessException(
+        BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
+        'after is required; initialize the group-meta feed cursor',
+        HttpStatus.OK,
+        cursorData,
+      );
     if (
       after < 0n ||
       (through !== undefined && through < after) ||
@@ -229,65 +244,67 @@ export class GroupMetaFeedService {
         BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
         'group meta cursor is outside the available coordinate space',
         HttpStatus.OK,
-        {
-          resumeAfter: '0',
-          resumeBefore: (end + 1n).toString(),
-        },
+        cursorData,
       );
     const scanEnd = through === undefined || through > end ? end : through;
     const limit = take + 1;
-    const result =
-      mode === 'delta'
-        ? await this.database.db
-            .select()
-            .from(groupMetaMemberFeed)
-            .where(
-              and(
-                eq(groupMetaMemberFeed.targetPeerDomain, peerDomain),
-                eq(groupMetaMemberFeed.groupUserId, source.groupUserId),
-                sql`${groupMetaMemberFeed.feedId} > ${after}`,
-                lte(groupMetaMemberFeed.feedId, scanEnd),
-              ),
-            )
-            .orderBy(asc(groupMetaMemberFeed.feedId))
-            .limit(limit)
-        : (
-            await this.database.db.execute<{
-              feedId: bigint;
-              memberAccount: string;
-              memberDomain: string;
-              operation: 'UPSERT' | 'DELETE';
-              body: unknown;
-            }>(sql`
-              SELECT latest.*
-              FROM (
-                SELECT DISTINCT ON ("memberDomain", "memberAccount")
-                  "feedId", "memberAccount", "memberDomain", "operation", "body"
-                FROM "GroupMetaMemberFeed"
-                WHERE "targetPeerDomain" = ${peerDomain}
-                  AND "groupUserId" = ${source.groupUserId}
-                  AND "feedId" <= ${scanEnd}
-                ORDER BY "memberDomain", "memberAccount", "feedId" DESC
-              ) latest
-              WHERE latest."operation" = 'UPSERT'
-                AND latest."feedId" > ${after}
-              ORDER BY latest."feedId"
-              LIMIT ${limit}
-            `)
-          ).rows;
+    // Full mode is an authoritative roster snapshot at scanEnd: select only the last operation for
+    // each stable member key and emit it only when that operation is UPSERT. Delta mode preserves the
+    // ordered mutation log, including DEPART. A bounded full drain therefore remains stable even when
+    // newer roster changes are allocated concurrently above scanEnd.
+    const modeFilter =
+      mode === 'full'
+        ? and(
+            eq(groupMetaMemberFeed.operation, 'UPSERT'),
+            sql`${groupMetaMemberFeed.feedId} = (
+              SELECT MAX(latest."feedId")
+              FROM "GroupMetaMemberFeed" latest
+              WHERE latest."targetPeerDomain" = ${peerDomain}
+                AND latest."groupId" = ${source.groupId}
+                AND latest."memberDomain" = ${groupMetaMemberFeed.memberDomain}
+                AND latest."memberAccount" = ${groupMetaMemberFeed.memberAccount}
+                AND latest."feedId" <= ${scanEnd}
+            )`,
+          )
+        : undefined;
+    const result = await this.database.db
+      .select()
+      .from(groupMetaMemberFeed)
+      .where(
+        and(
+          eq(groupMetaMemberFeed.targetPeerDomain, peerDomain),
+          eq(groupMetaMemberFeed.groupId, source.groupId),
+          sql`${groupMetaMemberFeed.feedId} > ${after}`,
+          lte(groupMetaMemberFeed.feedId, scanEnd),
+          modeFilter,
+        ),
+      )
+      .orderBy(asc(groupMetaMemberFeed.feedId))
+      .limit(limit);
     const hasMore = result.length > take;
     const pageRows = hasMore ? result.slice(0, take) : result;
     const scannedThrough = hasMore ? BigInt(pageRows.at(-1)!.feedId) : scanEnd;
     return {
       account,
       mode,
-      items: pageRows.map((row) => ({
-        feedId: row.feedId.toString(),
-        account: row.memberAccount,
-        domain: row.memberDomain,
-        operation: row.operation,
-        body: row.body,
-      })),
+      items: pageRows.map((row): GroupMetaFeedItem => {
+        const item = {
+          feedId: row.feedId.toString(),
+          account: row.memberAccount,
+          domain: row.memberDomain,
+        };
+        return row.operation === 'UPSERT'
+          ? {
+              ...item,
+              operation: 'UPSERT',
+              body: row.body as Record<string, unknown>,
+            }
+          : {
+              ...item,
+              operation: 'DEPART',
+              body: row.body as Record<string, never>,
+            };
+      }),
       scannedThrough: scannedThrough.toString(),
       groupMetaFeedEndId: end.toString(),
       hasMore,

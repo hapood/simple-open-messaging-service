@@ -35,7 +35,7 @@ interface StoredIdentityKey {
   keyId: string;
   publicKey: string;
   privateKey: string;
-  createdAt: string;
+  createdAt: number;
 }
 
 interface StoredSigningKey extends StoredIdentityKey {
@@ -195,7 +195,7 @@ export class KeypairService implements OnApplicationBootstrap {
   getSigningKeyCertificates(): SigningKeyCertificate[] {
     this.assertAvailable();
     return this.keyFile!.signingKeys.map((key) => {
-      const notBefore = Date.parse(key.createdAt);
+      const notBefore = key.createdAt;
       const unsigned = {
         keyId: key.keyId,
         ed25519: key.publicKey,
@@ -214,7 +214,7 @@ export class KeypairService implements OnApplicationBootstrap {
     });
   }
 
-  getCreatedAt(): string {
+  getCreatedAt(): number {
     return this.activeKey().createdAt;
   }
 
@@ -254,7 +254,7 @@ export class KeypairService implements OnApplicationBootstrap {
     const rootPublicKey = ed25519.getPublicKey(rootPrivateKey);
     const signingPrivateKey = ed25519.utils.randomSecretKey();
     const signingPublicKey = ed25519.getPublicKey(signingPrivateKey);
-    const createdAt = new Date().toISOString();
+    const createdAt = Date.now();
     const domain = normalizeDomain(this.config.domain);
     const rootKey: StoredIdentityKey = {
       keyId: `${domain}/root-1`,
@@ -308,7 +308,7 @@ export class KeypairService implements OnApplicationBootstrap {
           keyId: `${domain}/key-${sequence}`,
           publicKey: b64(ed25519.getPublicKey(privateKey)),
           privateKey: b64(privateKey),
-          createdAt: new Date().toISOString(),
+          createdAt: Date.now(),
           status: 'active',
         },
       ],
@@ -335,7 +335,26 @@ export class KeypairService implements OnApplicationBootstrap {
     const candidate = value as Partial<StoredKeyFileV1>;
     if (candidate.version !== 1)
       throw new Error('unsupported key file version');
-    return candidate as StoredKeyFileV1;
+    const keyFile = candidate as StoredKeyFileV1;
+    if (!keyFile.rootKey || !Array.isArray(keyFile.signingKeys)) return keyFile;
+    return {
+      ...keyFile,
+      rootKey: this.normalizeStoredKeyTimestamp(keyFile.rootKey),
+      signingKeys: keyFile.signingKeys.map((key) =>
+        this.normalizeStoredKeyTimestamp(key),
+      ),
+    };
+  }
+
+  /** v1 key files originally stored ISO timestamps. Normalize them at the persistence boundary so
+   * all runtime and newly written metadata uses epoch milliseconds without rotating key material. */
+  private normalizeStoredKeyTimestamp<T extends StoredIdentityKey>(key: T): T {
+    const raw = (key as { createdAt?: unknown }).createdAt;
+    const createdAt =
+      typeof raw === 'string' && Number.isFinite(Date.parse(raw))
+        ? Date.parse(raw)
+        : raw;
+    return { ...key, createdAt } as T;
   }
 
   private validateKeyFile(keyFile: StoredKeyFileV1): void {
@@ -365,8 +384,8 @@ export class KeypairService implements OnApplicationBootstrap {
   private validateKey(key: StoredIdentityKey, label: string): void {
     if (
       typeof key.keyId !== 'string' ||
-      typeof key.createdAt !== 'string' ||
-      !Number.isFinite(Date.parse(key.createdAt))
+      !Number.isSafeInteger(key.createdAt) ||
+      key.createdAt < 0
     ) {
       throw new Error(`invalid ${label} key metadata`);
     }

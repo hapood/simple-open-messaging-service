@@ -87,18 +87,21 @@ export class AdminManageService {
   async create(dto: AdminCreateDto) {
     const candidate = await this.database.db.query.user.findFirst({
       where: eq(user.id, dto.userId),
-      columns: { isGroup: true, isDeleted: true },
-      with: { admins: { columns: { id: true } } },
+      columns: { availability: true },
+      with: {
+        account: { columns: { id: true } },
+        admins: { columns: { id: true } },
+      },
     });
     if (!candidate)
       throw new BusinessException(BusinessCode.NOT_FOUND, 'user not found');
-    if (candidate.isGroup) {
+    if (!candidate.account) {
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
-        'a group account cannot become an admin',
+        'an external identity cannot become an admin',
       );
     }
-    if (candidate.isDeleted) {
+    if (candidate.availability === 'REMOVED') {
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
         'a deleted user cannot become an admin',

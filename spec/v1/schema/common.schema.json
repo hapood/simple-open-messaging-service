@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:somfp:v1:common",
-  "title": "Simple Open Messaging Federation Protocol v1 common wire scalars",
+  "title": "Simple Open Messaging Federation Protocol v1 common wire types",
   "$defs": {
     "contentType": {
       "enum": [
@@ -72,6 +72,23 @@
       "type": "string",
       "pattern": "^[a-f0-9]{64}$"
     },
+    "inlineProfileAvatar": {
+      "type": "object",
+      "required": ["digest", "mimeType", "base64", "width", "height"],
+      "properties": {
+        "digest": { "$ref": "#/$defs/sha256Hex" },
+        "mimeType": { "type": "string", "minLength": 1 },
+        "base64": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 1048576,
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+        },
+        "width": { "$ref": "#/$defs/positiveSafeInteger" },
+        "height": { "$ref": "#/$defs/positiveSafeInteger" }
+      },
+      "additionalProperties": false
+    },
     "base64Ed25519Key": {
       "type": "string",
       "pattern": "^[A-Za-z0-9+/]{43}=$"
@@ -96,7 +113,7 @@
       "type": "string",
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
     },
-    "callSid": {
+    "callId": {
       "$ref": "#/$defs/canonicalUuid"
     },
     "address": {

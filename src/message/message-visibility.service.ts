@@ -30,7 +30,7 @@ export class MessageVisibilityService {
         threadParticipant,
         and(
           eq(threadParticipant.threadId, message.threadId),
-          eq(threadParticipant.userId, userId),
+          eq(threadParticipant.accountId, userId),
         ),
       )
       .innerJoin(messageThread, eq(messageThread.id, message.threadId))

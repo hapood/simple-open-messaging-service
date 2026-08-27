@@ -60,13 +60,18 @@ export function mergeAlbumItems(items: CbItem<ChatItemData>[]): CbItem<ChatItemD
   while (i < items.length) {
     const it = items[i];
     const msg = it.data;
-    if (isAlbumMedia(msg.contentType) && msg.images) {
+    if (msg.type === 'msg' && isAlbumMedia(msg.contentType) && msg.images) {
       const imgs = [...msg.images];
       let boundary = it.boundary; // head's boundary wins
       let j = i + 1;
       while (j < items.length) {
         const nj = items[j].data;
-        if (!isAlbumMedia(nj.contentType) || nj.creator !== msg.creator) break; // break: not album media, or sender changed
+        if (
+          nj.type !== 'msg' ||
+          !isAlbumMedia(nj.contentType) ||
+          nj.creator !== msg.creator
+        )
+          break; // break: not album media, or sender changed
         const nextImgs = nj.images ?? [];
         if (imgs.length + nextImgs.length > ALBUM_MAX) break; // cap: absorbing would exceed it -> remaining same-creator
         // images start a fresh album (the outer loop resumes from j).
@@ -120,7 +125,12 @@ export function mergeAlbumItemsAtBoundary(
  */
 export function absorbAlbumTail(target: CbItem<ChatItemData>, incoming: CbItem<ChatItemData>): CbItem<ChatItemData> | null {
   const t = target.data, ic = incoming.data;
-  if (!isAlbumMedia(t.contentType) || !isAlbumMedia(ic.contentType)) {
+  if (
+    t.type !== 'msg' ||
+    ic.type !== 'msg' ||
+    !isAlbumMedia(t.contentType) ||
+    !isAlbumMedia(ic.contentType)
+  ) {
     return null;
   }
   if (t.creator !== ic.creator) {

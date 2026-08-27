@@ -14,6 +14,8 @@ import { deriveMessagePreview } from '../../../../shared/message-preview';
 import {
   ConversationItem,
   GroupConversationItem,
+  Message,
+  messageCreatorKey,
   P2PConversationItem,
   ThreadReadState,
   User,
@@ -178,8 +180,6 @@ export class ThreadRepository {
     if (buffered) this.onNewMessage(buffered);
   }
 
-  /** Previous sessionUserId seen by the session-end effect (null = no logged-in user). */
-  private prevSessionId: number | null = null;
   /** Account-scoped first thread initialization barrier. It is independent of HELLO payload state;
    * both the list mount and a fast-arriving HELLO await this same single-flight operation. */
   /** Durable consumer cursor for the compacted per-user message feed. */
@@ -231,8 +231,6 @@ export class ThreadRepository {
     // re-enters the loading state until the fresh HELLO lands.
     effect(() => {
       const id = this.userService.sessionUserId();
-      if (id === this.prevSessionId) return;
-      this.prevSessionId = id;
       if (id === null) this.reset();
     });
   }
@@ -510,7 +508,7 @@ export class ThreadRepository {
     const serverMentions = new Map<number, Array<'all' | 'me'>>();
     const previews = new Map<
       number,
-      { text: string; creator: number | null }
+      { text: string; creator: Message['creator'] }
     >();
     for (const i of items) {
       serverLrs.set(i.threadId, i.lastReadSeq);
@@ -544,7 +542,10 @@ export class ThreadRepository {
         ...(previews.has(it.threadId)
           ? {
               lastMessagePreview: previews.get(it.threadId)!.text,
-              lastMessageSenderId: previews.get(it.threadId)!.creator,
+              lastMessageSenderId: this.creatorKeyForThread(
+                previews.get(it.threadId)!.creator,
+                it,
+              ),
             }
           : {}),
       };
@@ -1539,14 +1540,14 @@ export class ThreadRepository {
     if (newest.size === 0) return; // nothing cached locally yet — leave the items' previews as-is
     const byThread = new Map<
       number,
-      { lastMessagePreview: string; lastMessageSenderId: number | null }
+      { lastMessagePreview: string; lastMessageSenderId: string | null }
     >();
     for (const it of items) {
       const m = newest.get(it.threadId);
       if (!m) continue;
       byThread.set(it.threadId, {
         lastMessagePreview: rawPreview(m.contentType, m.content),
-        lastMessageSenderId: m.creator,
+        lastMessageSenderId: this.creatorKeyForThread(m.creator, it),
       });
     }
     if (byThread.size === 0) return;
@@ -1569,6 +1570,21 @@ export class ThreadRepository {
     this._items.set(hydrated);
     // Persist so the next boot's cached paint already carries the derived preview (no "暂无消息" flash).
     void this.persistThreads(hydrated);
+  }
+
+  private creatorKeyForThread(
+    creator: Message['creator'],
+    thread: ConversationItem,
+  ): string | null {
+    if (creator === null) return null;
+    const self = this.userService.sessionProfile();
+    const sourceDomain =
+      self && creator.account === self.account && creator.domain === 'local'
+        ? 'local'
+        : thread.type === 'GROUP'
+          ? thread.group.domain
+          : thread.peerUser.domain || 'local';
+    return messageCreatorKey(creator, sourceDomain);
   }
 
   // ── IDB persistence helpers (best-effort; IDB unavailable → graceful no-op) ────────────────

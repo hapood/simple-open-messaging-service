@@ -1,7 +1,7 @@
 import { Injectable, HttpStatus } from '@nestjs/common';
 import { and, count, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { user } from '../database/schema.js';
+import { account as accountTable, user } from '../database/schema.js';
 import { isValidUserAccount, normalizeAccount } from '../common/account.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -31,11 +31,13 @@ export class UserService {
 
   /** Login path only: keeps hashPwd (argon2.verify needs it). Auth-only. */
   findUniqueUserForAuth(where: UserLookup) {
-    return this.database.db.query.user
-      .findFirst({
-        where: userLookupCondition(where),
-      })
-      .then((row) => row ?? null);
+    return this.database.db
+      .select({ ...publicUserColumns, ...accountColumns })
+      .from(user)
+      .innerJoin(accountTable, eq(accountTable.id, user.id))
+      .where(userLookupCondition(where))
+      .limit(1)
+      .then(([row]) => row ?? null);
   }
 
   /** Self-profile only: omits hashPwd. Client state is synchronized through the unified state revision;
@@ -96,12 +98,12 @@ export class UserService {
       }>(sql`
         SELECT ${userId}::integer AS "userId", NULL::integer AS "threadId"
         UNION ALL
-        SELECT DISTINCT peer."userId", mine."threadId"
+        SELECT DISTINCT peer."accountId" AS "userId", mine."threadId"
         FROM "ThreadParticipant" mine
-        JOIN "ThreadParticipant" peer ON peer."threadId" = mine."threadId"
-        JOIN "User" consumer ON consumer.id = peer."userId"
-        WHERE mine."userId" = ${userId}
-          AND consumer.domain = 'local'
+        JOIN "ThreadParticipant" peer
+          ON peer."threadId" = mine."threadId"
+         AND peer."accountId" <> mine."accountId"
+        WHERE mine."accountId" = ${userId}
       `);
       const consumers = (
         await Promise.all(
@@ -137,7 +139,11 @@ export class UserService {
   }
 
   queryUsers(params: {
-    where?: { id?: { in: number[] }; isDeleted?: boolean };
+    where?: {
+      id?: { in: number[] };
+      addresses?: Array<{ account: string; domain: string }>;
+      availability?: 'AVAILABLE' | 'REMOVED';
+    };
   }) {
     // Default-omit sensitive columns; callers that need them must use an explicit internal query.
     return this.database.db
@@ -146,9 +152,19 @@ export class UserService {
       .where(
         and(
           params.where?.id ? inArray(user.id, params.where.id.in) : undefined,
-          params.where?.isDeleted === undefined
+          params.where?.addresses?.length
+            ? or(
+                ...params.where.addresses.map((address) =>
+                  and(
+                    eq(user.account, normalizeAccount(address.account)),
+                    eq(user.domain, address.domain),
+                  ),
+                ),
+              )
+            : undefined,
+          params.where?.availability === undefined
             ? undefined
-            : eq(user.isDeleted, params.where.isDeleted),
+            : eq(user.availability, params.where.availability),
         ),
       );
   }
@@ -164,8 +180,9 @@ export class UserService {
     total: number;
   }> {
     const where = and(
-      eq(user.isDeleted, false),
+      eq(user.availability, 'AVAILABLE'),
       eq(user.domain, 'local'),
+      eq(user.sourceDomain, 'local'),
       or(ilike(user.account, `%${q}%`), ilike(user.name, `%${q}%`)),
     );
     const [list, total] = await Promise.all([
@@ -203,15 +220,20 @@ export class UserService {
         .insert(user)
         .values({
           account,
-          hashPwd: params.hashPwd ?? null, // null for OTP/QR-only accounts (no password)
           // Display name is now a required registration input (no longer defaulted to account).
           name: params.name,
           avatar: '',
           updatedAt: new Date(),
         })
-        .onConflictDoNothing({ target: [user.account, user.domain] })
+        .onConflictDoNothing({
+          target: [user.account, user.domain, user.sourceDomain],
+        })
         .returning({ id: user.id, account: user.account });
       if (!newUser) return { status: 2 };
+      await tx.insert(accountTable).values({
+        id: newUser.id,
+        hashPwd: params.hashPwd ?? null,
+      });
       return {
         status: 0,
         data: { id: newUser.id, account: newUser.account },
@@ -223,7 +245,8 @@ export class UserService {
 export type UserLookup = {
   id?: number;
   account_domain?: { account: string; domain: string };
-  isDeleted?: boolean;
+  sourceDomain?: string;
+  availability?: 'AVAILABLE' | 'REMOVED';
 };
 
 const publicUserColumns = {
@@ -232,14 +255,18 @@ const publicUserColumns = {
   name: user.name,
   avatar: user.avatar,
   bio: user.bio,
-  isGroup: user.isGroup,
   domain: user.domain,
+  sourceDomain: user.sourceDomain,
   createdAt: user.createdAt,
   updatedAt: user.updatedAt,
-  isDeleted: user.isDeleted,
+  availability: user.availability,
   profileRev: user.profileRev,
-  remoteProfileRev: user.remoteProfileRev,
-  mustChangePassword: user.mustChangePassword,
+};
+
+const accountColumns = {
+  hashPwd: accountTable.hashPwd,
+  mustChangePassword: accountTable.mustChangePassword,
+  disabledAt: accountTable.disabledAt,
 };
 
 export type PublicUser = Pick<
@@ -254,13 +281,14 @@ function userLookupCondition(where: UserLookup) {
       ? and(
           eq(user.account, where.account_domain.account),
           eq(user.domain, where.account_domain.domain),
+          eq(user.sourceDomain, where.sourceDomain ?? 'local'),
         )
       : undefined;
   if (!unique) throw new Error('user lookup requires id or account_domain');
   return and(
     unique,
-    where.isDeleted === undefined
+    where.availability === undefined
       ? undefined
-      : eq(user.isDeleted, where.isDeleted),
+      : eq(user.availability, where.availability),
   );
 }

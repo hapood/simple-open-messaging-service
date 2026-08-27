@@ -9,18 +9,18 @@ import {
   MessageReportStatus,
 } from '../src/database/enums.js';
 import {
+  account as accountTable,
   admin,
   deletedMessage,
   message,
   messageReport,
   messageThread,
-  relationshipIntent,
-  threadParticipant,
   user,
 } from '../src/database/schema.js';
 import { DeletedMessageService } from '../src/message/deleted-message.service.js';
 import { MessageReportService } from '../src/message/message-report.service.js';
 import { MessageService } from '../src/message/message.service.js';
+import { seedAcceptedRelationship } from './seed.js';
 
 describe('message report workflow', () => {
   let mod: TestingModule;
@@ -84,6 +84,10 @@ describe('message report workflow', () => {
     const moderatorId = users.find(
       (entry) => entry.account === 'moderator',
     )!.id;
+    await database.db
+      .insert(accountTable)
+      .values(users.map((entry) => ({ id: entry.id })))
+      .onConflictDoNothing({ target: accountTable.id });
     const [adminRow] = await database.db
       .insert(admin)
       .values({ userId: moderatorId, updatedAt: now })
@@ -101,35 +105,18 @@ describe('message report workflow', () => {
       })
       .returning({ id: messageThread.id });
     threadId = threadRow.id;
-    await database.db.insert(threadParticipant).values([
-      { userId: reporterId, threadId, updatedAt: now },
-      { userId: creatorId, threadId, updatedAt: now },
-    ]);
-    await database.db.insert(relationshipIntent).values([
-      {
-        authorUserId: reporterId,
-        subjectUserId: creatorId,
-        status: 'ACCEPTED',
-        note: '',
-        requestedAt: now,
-        expiresAt: null,
-        updatedAt: now,
-      },
-      {
-        authorUserId: creatorId,
-        subjectUserId: reporterId,
-        status: 'ACCEPTED',
-        note: '',
-        requestedAt: now,
-        expiresAt: null,
-        updatedAt: now,
-      },
-    ]);
+    await seedAcceptedRelationship(
+      database.db,
+      reporterId,
+      creatorId,
+      threadId,
+    );
     await database.db.insert(message).values([
       {
         seq: 1,
         threadId,
-        creator: creatorId,
+        creatorAccount: 'creator',
+        creatorDomain: 'local',
         originSeq: 1,
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'first' }),
@@ -138,7 +125,8 @@ describe('message report workflow', () => {
       {
         seq: 2,
         threadId,
-        creator: creatorId,
+        creatorAccount: 'creator',
+        creatorDomain: 'local',
         originSeq: 2,
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'second' }),
@@ -201,7 +189,7 @@ describe('message report workflow', () => {
       reviewedByAdminId: adminId,
     });
     expect(storedMessage?.isDeleted).toBe(true);
-    expect(deletion?.type).toBe(MessageDeleteType.REPORT);
+    expect(deletion?.type).toBe(MessageDeleteType.MODERATION_REMOVAL);
     expect(storedThread).toMatchObject({
       lastMessageSeq: 2,
       lastMessagePreview: 'second',

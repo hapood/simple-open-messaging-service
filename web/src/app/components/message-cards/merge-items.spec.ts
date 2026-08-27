@@ -7,6 +7,9 @@ import {
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
 import type { AlbumImage, ChatItemData } from './chat-item';
 
+const creatorKey = (creator: number): string =>
+  `local\u0000local\u0000user-${creator}`;
+
 /**
  * mergeAlbumItems unit tests: album-merge semantics + preservation of kernel correlation fields.
  *
@@ -41,7 +44,7 @@ describe('mergeAlbumItems', () => {
     data: {
       type: 'msg',
       msgId: id,
-      creator,
+      creator: creatorKey(creator),
       isSelf: creator === 1,
       name: 'Me',
       text: '',
@@ -76,7 +79,7 @@ describe('mergeAlbumItems', () => {
       data: {
         type: 'msg',
         msgId: 2000,
-        creator: 1,
+        creator: creatorKey(1),
         isSelf: true,
         name: 'Me',
         text: 'hi',
@@ -143,7 +146,7 @@ describe('mergeAlbumItems', () => {
       data: {
         type: 'msg',
         msgId: 2000,
-        creator: 1,
+        creator: creatorKey(1),
         isSelf: true,
         name: 'Me',
         text: 'x',
@@ -208,7 +211,7 @@ describe('absorbAlbumTail (cross-batch absorb hook)', () => {
     data: {
       type: 'msg',
       msgId: id,
-      creator,
+      creator: creatorKey(creator),
       isSelf: creator === 1,
       name: 'Me',
       text: '',
@@ -224,7 +227,7 @@ describe('absorbAlbumTail (cross-batch absorb hook)', () => {
     data: {
       type: 'msg',
       msgId: id,
-      creator,
+      creator: creatorKey(creator),
       isSelf: creator === 1,
       name: 'Me',
       text: 'hi',

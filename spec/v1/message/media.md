@@ -11,7 +11,9 @@ Media content carries no publisher display URL. Each resource is associated by `
 - `digest` MUST be `Sha256Hex`.
 - Every content digest MUST have exactly one `BlobDescriptor` with the same digest in the outer message `assets`.
 - A consumer may enforce local size and quota limits using `BlobDescriptor.bytes` before download. After download, it MUST still verify that the actual byte count equals `bytes` and that the SHA-256 of the actual bytes equals `digest`.
-- `w/h` are `PositiveSafeInteger` pixel dimensions.
+- Media content MUST NOT repeat the resource length as `size`, `bytes`, or any
+  other field; the matching outer `BlobDescriptor.bytes` is authoritative.
+- `width/height` are `PositiveSafeInteger` pixel dimensions.
 - `duration` is a positive finite number of seconds.
 - `name/mimeType` are non-empty, untrusted display strings. They MUST NOT be used as paths, security assertions, or instructions to execute active content.
 - Every object is a closed schema; fields unrelated to its media kind MUST be omitted.
@@ -21,8 +23,8 @@ Media content carries no publisher display URL. Each resource is associated by `
 ```ts
 interface ImageContent {
   digest: Sha256Hex;
-  w: PositiveSafeInteger;
-  h: PositiveSafeInteger;
+  width: PositiveSafeInteger;
+  height: PositiveSafeInteger;
 }
 
 interface NamedMediaContent {
@@ -34,8 +36,8 @@ interface NamedMediaContent {
 interface FileContent extends NamedMediaContent {}
 
 interface VideoContent extends NamedMediaContent {
-  w: PositiveSafeInteger;
-  h: PositiveSafeInteger;
+  width: PositiveSafeInteger;
+  height: PositiveSafeInteger;
   duration: PositiveFiniteNumber;
 }
 
@@ -55,8 +57,8 @@ Each object below is the result of parsing the outer message `content` once as J
 ```json
 {
   "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-  "w": 1600,
-  "h": 900
+  "width": 1600,
+  "height": 900
 }
 ```
 
@@ -65,7 +67,7 @@ Corresponding outer message fields:
 ```json
 {
   "contentType": "IMAGE",
-  "content": "{\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"w\":1600,\"h\":900}",
+  "content": "{\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"width\":1600,\"height\":900}",
   "assets": [
     {
       "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -82,8 +84,8 @@ Corresponding outer message fields:
   "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "name": "demo.mp4",
   "mimeType": "video/mp4",
-  "w": 1920,
-  "h": 1080,
+  "width": 1920,
+  "height": 1080,
   "duration": 12.5
 }
 ```
@@ -120,16 +122,16 @@ interface GalleryItemBase {
 
 interface GalleryImageItem extends GalleryItemBase {
   kind: 'IMAGE';
-  w: PositiveSafeInteger;
-  h: PositiveSafeInteger;
+  width: PositiveSafeInteger;
+  height: PositiveSafeInteger;
 }
 
 interface GalleryVideoItem extends GalleryItemBase {
   kind: 'VIDEO';
   name: string;
   mimeType: string;
-  w: PositiveSafeInteger;
-  h: PositiveSafeInteger;
+  width: PositiveSafeInteger;
+  height: PositiveSafeInteger;
   duration: PositiveFiniteNumber;
 }
 
@@ -167,16 +169,16 @@ interface GalleryContent {
     {
       "kind": "IMAGE",
       "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "w": 1600,
-      "h": 900
+      "width": 1600,
+      "height": 900
     },
     {
       "kind": "VIDEO",
       "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "name": "demo.mp4",
       "mimeType": "video/mp4",
-      "w": 1920,
-      "h": 1080,
+      "width": 1920,
+      "height": 1080,
       "duration": 12.5
     },
     {
@@ -204,7 +206,8 @@ A consumer MUST reject at least the following cases:
 
 - A single-resource type has other than one digest or descriptor.
 - The content-digest set differs from the `assets` digest set.
-- A digest, descriptor `bytes`, `w`, `h`, or `duration` violates its required type.
+- A digest, descriptor `bytes`, `width`, `height`, or `duration` violates its required type.
+- Media content repeats the resource length instead of using only the outer descriptor.
 - `name/mimeType` is absent or empty.
 - GALLERY `items` is empty.
 - An item lacks a field required by its kind.

@@ -1,7 +1,7 @@
 import { inject, Injectable } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { TranslocoService } from '@jsverse/transloco';
-import { ConversationItem } from './model';
+import { ConversationItem, messageCreatorKey } from './model';
 import { MsgService } from './message.service';
 import { UserService } from './user.service';
 import { PopupType, RouteService } from './route.service';
@@ -20,6 +20,8 @@ export class ContactCardShareService {
   private readonly transloco = inject(TranslocoService);
 
   open(chat: ConversationItem): void {
+    const self = this.users.sessionProfile();
+    if (!self) return;
     const isGroup = chat.type === 'GROUP';
     const target = isGroup ? chat.group : chat.peerUser;
     const bio = isGroup ? chat.group.description : chat.peerUser.bio;
@@ -33,9 +35,12 @@ export class ContactCardShareService {
     const preview: ChatMsgData = {
       type: 'msg',
       msgId: -1,
-      creator: this.users.sessionProfile()?.id ?? null,
+      creator: messageCreatorKey(
+        { account: self.account, domain: 'local' },
+        'local',
+      ),
       isSelf: true,
-      name: this.users.sessionProfile()?.name ?? '',
+      name: self.name,
       text: content,
       time: '',
       contentType: 'CONTACT_CARD',

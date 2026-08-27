@@ -18,8 +18,9 @@ import { RESOURCE_ID_KEY } from '../common/resource-id.decorator.js';
  * carries no hard-coded field name: a DTO rename is a compile error at the use site, not a silent
  * drift. This mirrors the codebase's existing `RolesGuard` + `@Roles()` authorization convention.
  *
- * Resolves a retained ThreadParticipant. Current write/member authority is attached separately from
- * the two directed RelationshipIntent facts, so a revoked conversation can remain visible read-only.
+ * Resolves a retained ThreadParticipant. Current write/member authority comes from the folded
+ * RelationshipPair.active fact, so a revoked conversation can remain visible read-only while the
+ * directed RelationshipIntent rows remain state-machine inputs rather than authorization facts.
  *
  * Both "thread does not exist" and "exists but caller is not an active member" collapse to the same
  * THREAD_NOT_FOUND outcome — deliberately non-leaking (a non-member cannot tell the thread exists).
@@ -78,7 +79,7 @@ export class ThreadAccessGuard implements CanActivate {
       participant,
       friendshipActive: participant.thread.type !== 'P2P' || mutuallyAuthorized,
       membershipActive: mutuallyAuthorized,
-      groupDissolved: participant.thread.groupUser?.group?.dissolvedAt != null,
+      groupDissolved: participant.thread.group?.dissolvedAt != null,
     };
     return true;
   }

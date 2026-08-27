@@ -3,11 +3,18 @@ import type { FastifyRequest } from 'fastify';
 import { MessageController } from './message.controller.js';
 import type { QueryMessagesDto } from '../dto/message.dto.js';
 import { ContentType } from '../database/enums.js';
+import { BusinessCode } from '../common/business-code.js';
 
 function setup(rows: Array<{ seq: number }> = []) {
   const queryMessages = vi.fn().mockResolvedValue(rows);
+  const readThreadEndSeq = vi.fn().mockResolvedValue(20);
+  const queryTombstones = vi.fn().mockResolvedValue({
+    tombstones: [],
+    scannedThrough: '1',
+    hasMore: false,
+  });
   const controller = new MessageController(
-    { queryMessages } as never,
+    { queryMessages, readThreadEndSeq } as never,
     {} as never,
     {} as never,
     { blockedByMe: vi.fn().mockResolvedValue(new Set<number>()) } as never,
@@ -15,7 +22,7 @@ function setup(rows: Array<{ seq: number }> = []) {
     {} as never,
     {} as never,
     {} as never,
-    {} as never,
+    { queryThread: queryTombstones } as never,
     { queryThread: vi.fn().mockResolvedValue([]) } as never,
     {} as never,
     {} as never,
@@ -27,51 +34,31 @@ function setup(rows: Array<{ seq: number }> = []) {
       participant: { clearedSeq: null },
     },
   } as unknown as FastifyRequest;
-  return { controller, queryMessages, req };
+  return {
+    controller,
+    queryMessages,
+    queryTombstones,
+    readThreadEndSeq,
+    req,
+  };
 }
 
 function dto(overrides: Partial<QueryMessagesDto> = {}): QueryMessagesDto {
   return {
     threadId: 42,
-    skip: 1,
     take: 3,
-    lastSeq: 10,
-    orderBy: 'asc',
+    after: '10',
     ...overrides,
   };
 }
 
-describe('MessageController.queryMessages truncation', () => {
-  it.each([
-    ['asc', 10, 10],
-    ['asc', 10, 9],
-    ['desc', 10, 10],
-    ['desc', 10, 11],
-  ] as const)(
-    'returns an empty truncated page without DB query for invalid %s interval',
-    async (orderBy, lastSeq, truncateSeq) => {
-      const { controller, queryMessages, req } = setup();
-      const result = await controller.queryMessages(
-        req,
-        dto({ orderBy, lastSeq, truncate: true, truncateSeq }),
-      );
-
-      expect(result.data).toEqual([]);
-      expect(result.hasMore).toBe(false);
-      expect(result.truncated).toBe(true);
-      expect(queryMessages).not.toHaveBeenCalled();
-    },
-  );
-
-  it('passes an exclusive asc cutoff and reports reached only when the bounded page is exhausted', async () => {
+describe('MessageController.queryMessages cursor contract', () => {
+  it('maps a bounded forward interval and returns a direction-relative cursor', async () => {
     const { controller, queryMessages, req } = setup([
       { seq: 11 },
       { seq: 12 },
     ]);
-    const result = await controller.queryMessages(
-      req,
-      dto({ truncate: true, truncateSeq: 15 }),
-    );
+    const result = await controller.queryMessages(req, dto({ through: '15' }));
 
     expect(queryMessages).toHaveBeenCalledWith(
       42,
@@ -80,38 +67,133 @@ describe('MessageController.queryMessages truncation', () => {
         take: 4,
         orderBy: { seq: 'asc' },
         cursor: { threadId_seq: { threadId: 42, seq: 10 } },
-        truncateSeq: 15,
+        truncateSeq: 16,
       },
       { clearedThroughSeq: null },
     );
-    expect(result.data.map((row) => row.seq)).toEqual([11, 12]);
+    expect(result.messages.map((row) => row.seq)).toEqual([11, 12]);
+    expect(result.scannedThrough).toBe('15');
     expect(result.hasMore).toBe(false);
-    expect(result.truncated).toBe(true);
   });
 
-  it('does not report reached when take+1 proves more rows remain before the cutoff', async () => {
+  it('maps a bounded reverse interval and continues from the smallest returned seq', async () => {
     const { controller, req } = setup([
-      { seq: 11 },
-      { seq: 12 },
-      { seq: 13 },
-      { seq: 14 },
+      { seq: 9 },
+      { seq: 8 },
+      { seq: 7 },
+      { seq: 6 },
     ]);
     const result = await controller.queryMessages(
       req,
-      dto({ truncate: true, truncateSeq: 20 }),
+      dto({ after: undefined, before: '10', through: '2' }),
     );
 
-    expect(result.data.map((row) => row.seq)).toEqual([11, 12, 13]);
+    expect(result.messages.map((row) => row.seq)).toEqual([9, 8, 7]);
+    expect(result.scannedThrough).toBe('7');
     expect(result.hasMore).toBe(true);
-    expect(result.truncated).toBe(false);
   });
 
-  it('accepts lastSeq=0 as the pre-first bootstrap cursor', async () => {
-    const { controller, queryMessages, req } = setup([{ seq: 1 }]);
-    await controller.queryMessages(req, dto({ lastSeq: 0 }));
-    expect(queryMessages.mock.calls[0][1].cursor).toEqual({
-      threadId_seq: { threadId: 42, seq: 0 },
+  it('returns both exclusive start cursors when the direction is omitted', async () => {
+    const { controller, queryMessages, req } = setup();
+    await expect(
+      controller.queryMessages(req, dto({ after: undefined, take: undefined })),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
+      status: 200,
+      data: { resumeAfter: '0', resumeBefore: '21' },
     });
+    expect(queryMessages).not.toHaveBeenCalled();
+  });
+});
+
+describe('MessageController.queryDeletedMessages cursor contract', () => {
+  it('passes an exclusive reverse cursor and inclusive through boundary', async () => {
+    const { controller, queryTombstones } = setup();
+    await controller.queryDeletedMessages({
+      threadId: 42,
+      before: '10',
+      through: '2',
+      take: 20,
+    });
+    expect(queryTombstones).toHaveBeenCalledWith(42, undefined, 20, 2n, 10n);
+  });
+
+  it('rejects supplying both tombstone cursors', async () => {
+    const { controller, queryTombstones } = setup();
+    await expect(
+      controller.queryDeletedMessages({
+        threadId: 42,
+        after: '1',
+        before: '10',
+        take: 20,
+      }),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.VALIDATION_FAILED,
+      status: 400,
+    });
+    expect(queryTombstones).not.toHaveBeenCalled();
+  });
+});
+
+describe('MessageController group mention resolution', () => {
+  function setupMentionResolver() {
+    const resolveActiveMember = vi.fn().mockResolvedValue({
+      userId: 8,
+      account: 'alice',
+      domain: 'local',
+      name: 'Alice',
+    });
+    const controller = new MessageController(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      { resolveActiveMember } as never,
+    );
+    const req = {
+      threadAccess: {
+        threadId: 42,
+        threadType: 'GROUP',
+        participant: { role: 'MEMBER' },
+      },
+    } as unknown as FastifyRequest;
+    const canonicalize = (
+      controller as unknown as {
+        canonicalizeMentions(
+          request: FastifyRequest,
+          content: string,
+        ): Promise<string>;
+      }
+    ).canonicalizeMentions.bind(controller);
+    return { canonicalize, req, resolveActiveMember };
+  }
+
+  it('resolves an exact local address through the shared group member resolver', async () => {
+    const { canonicalize, req, resolveActiveMember } = setupMentionResolver();
+
+    await expect(
+      canonicalize(req, 'hello [@Old](somfp://user/alice%40local)'),
+    ).resolves.toBe('hello [@Alice](somfp://user/alice%40local)');
+    expect(resolveActiveMember).toHaveBeenCalledWith(42, {
+      account: 'alice',
+      domain: 'local',
+    });
+  });
+
+  it('rejects a user mention without a domain', async () => {
+    const { canonicalize, req, resolveActiveMember } = setupMentionResolver();
+
+    await expect(
+      canonicalize(req, 'hello [@Alice](somfp://user/alice)'),
+    ).rejects.toMatchObject({ bizCode: BusinessCode.GROUP_TARGET_NOT_MEMBER });
+    expect(resolveActiveMember).not.toHaveBeenCalled();
   });
 });
 

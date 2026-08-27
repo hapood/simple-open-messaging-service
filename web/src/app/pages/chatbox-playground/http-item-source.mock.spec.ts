@@ -17,7 +17,9 @@ function msg(msgId: number, isSelf = true): CbItem<ChatItemData> {
   const data: ChatMsgData = {
     type: 'msg',
     msgId,
-    creator: isSelf ? 1 : 2,
+    creator: isSelf
+      ? 'mock.local\u0000mock.local\u0000user-1'
+      : 'mock.local\u0000mock.local\u0000user-2',
     isSelf,
     name: isSelf ? 'Me' : 'Alice',
     text: 'x',
@@ -173,14 +175,26 @@ describe('MockItemSource (cursor contract)', () => {
   it('ensureProfiles fills name/isSelf by creator via MockUserService (mirrors production ensureProfiles→queryUserInfo)', async () => {
     const s = new MockItemSource(500, 0, new MockUserService(), 1);
     const items = await s.init(-1, 100, 0);
-    const self = items.find((i) => i.data.creator === 1)!;
-    const other = items.find((i) => i.data.creator === 2)!;
+    const self = items.find(
+      (i) =>
+        i.data.type === 'msg' &&
+        i.data.creator === 'mock.local\u0000mock.local\u0000user-1',
+    )!;
+    const other = items.find(
+      (i) =>
+        i.data.type === 'msg' &&
+        i.data.creator === 'mock.local\u0000mock.local\u0000user-2',
+    )!;
     expect(self.data.name).toBe('Me'); // ensureProfiles from MockUserService (buildItems raw msg name placeholder '')
     expect(self.data.isSelf).toBe(true); // isSelf = creator === userId(1)
-    expect(self.data.avatarIdentityId).toBe(1);
+    expect(self.data.avatarIdentityId).toBe(
+      'mock.local\u0000mock.local\u0000user-1',
+    );
     expect(other.data.name).toBe('Alice');
     expect(other.data.isSelf).toBe(false);
-    expect(other.data.avatarIdentityId).toBe(2);
+    expect(other.data.avatarIdentityId).toBe(
+      'mock.local\u0000mock.local\u0000user-2',
+    );
   });
 
   // failPending / retryPending: a failed send stays the SAME entity (stable clientMessageId) and sinks to the tail of

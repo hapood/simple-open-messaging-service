@@ -1,12 +1,14 @@
 import { relations } from 'drizzle-orm/relations';
 import {
   admin,
+  account,
   adminSession,
   forwardBundle,
   forwardMessage,
   message,
   messageThread,
   threadParticipant,
+  threadMember,
   user,
   userPreference,
   messageAsset,
@@ -27,6 +29,7 @@ import {
   peerStateFeedTarget,
   peerStateFeedPullCursor,
   relationshipIntent,
+  relationshipPair,
 } from './schema.js';
 
 export const federatedPeerRelations = relations(
@@ -78,6 +81,10 @@ export const adminRelations = relations(admin, ({ one, many }) => ({
     fields: [admin.userId],
     references: [user.id],
   }),
+  account: one(account, {
+    fields: [admin.userId],
+    references: [account.id],
+  }),
   adminActionLogs: many(adminActionLog),
   twoFactorBackupCodes: many(twoFactorBackupCode),
   webAuthnCredentials: many(webAuthnCredential),
@@ -109,10 +116,6 @@ export const forwardBundleRelations = relations(forwardBundle, ({ many }) => ({
 export const messageRelations = relations(message, ({ one, many }) => ({
   forwardMessages: many(forwardMessage),
   messageAssets: many(messageAsset),
-  user: one(user, {
-    fields: [message.creator],
-    references: [user.id],
-  }),
   messageThread: one(messageThread, {
     fields: [message.threadId],
     references: [messageThread.id],
@@ -122,24 +125,36 @@ export const messageRelations = relations(message, ({ one, many }) => ({
 export const threadParticipantRelations = relations(
   threadParticipant,
   ({ one }) => ({
+    account: one(account, {
+      fields: [threadParticipant.accountId],
+      references: [account.id],
+    }),
     messageThread: one(messageThread, {
       fields: [threadParticipant.threadId],
       references: [messageThread.id],
     }),
-    user: one(user, {
-      fields: [threadParticipant.userId],
-      references: [user.id],
-    }),
   }),
 );
+
+export const threadMemberRelations = relations(threadMember, ({ one }) => ({
+  messageThread: one(messageThread, {
+    fields: [threadMember.threadId],
+    references: [messageThread.id],
+  }),
+  user: one(user, {
+    fields: [threadMember.userId],
+    references: [user.id],
+  }),
+}));
 
 export const messageThreadRelations = relations(
   messageThread,
   ({ one, many }) => ({
+    threadMembers: many(threadMember),
     threadParticipants: many(threadParticipant),
-    user: one(user, {
-      fields: [messageThread.groupUserId],
-      references: [user.id],
+    group: one(group, {
+      fields: [messageThread.groupId],
+      references: [group.id],
     }),
     messageAssets: many(messageAsset),
     messages: many(message),
@@ -148,21 +163,18 @@ export const messageThreadRelations = relations(
 );
 
 export const userRelations = relations(user, ({ one, many }) => ({
-  threadParticipants: many(threadParticipant),
-  messageThreads: many(messageThread),
-  messages: many(message),
+  account: one(account),
+  admins: many(admin),
+  threadMembers: many(threadMember),
+}));
+
+export const accountRelations = relations(account, ({ one, many }) => ({
+  user: one(user, {
+    fields: [account.id],
+    references: [user.id],
+  }),
   admins: many(admin),
   pushTokens: many(pushToken),
-  authoredRelationshipIntents: many(relationshipIntent, {
-    relationName: 'relationshipIntent_author',
-  }),
-  subjectRelationshipIntents: many(relationshipIntent, {
-    relationName: 'relationshipIntent_subject',
-  }),
-  group: one(group, {
-    fields: [user.id],
-    references: [group.groupUserId],
-  }),
   loginCodes: many(loginCode),
   sessionTokens: many(sessionToken),
   diagnosticsReports: many(diagnosticsReport),
@@ -170,9 +182,9 @@ export const userRelations = relations(user, ({ one, many }) => ({
 }));
 
 export const userPreferenceRelations = relations(userPreference, ({ one }) => ({
-  user: one(user, {
+  account: one(account, {
     fields: [userPreference.userId],
-    references: [user.id],
+    references: [account.id],
   }),
 }));
 
@@ -188,24 +200,18 @@ export const messageAssetRelations = relations(messageAsset, ({ one }) => ({
 }));
 
 export const pushTokenRelations = relations(pushToken, ({ one }) => ({
-  user: one(user, {
+  account: one(account, {
     fields: [pushToken.userId],
-    references: [user.id],
+    references: [account.id],
   }),
 }));
 
 export const relationshipIntentRelations = relations(
   relationshipIntent,
   ({ one }) => ({
-    author: one(user, {
-      fields: [relationshipIntent.authorUserId],
-      references: [user.id],
-      relationName: 'relationshipIntent_author',
-    }),
-    subject: one(user, {
-      fields: [relationshipIntent.subjectUserId],
-      references: [user.id],
-      relationName: 'relationshipIntent_subject',
+    pair: one(relationshipPair, {
+      fields: [relationshipIntent.pairId],
+      references: [relationshipPair.id],
     }),
   }),
 );
@@ -225,23 +231,20 @@ export const pendingMediaRelations = relations(pendingMedia, ({ one }) => ({
 }));
 
 export const groupRelations = relations(group, ({ one }) => ({
-  user: one(user, {
-    fields: [group.groupUserId],
-    references: [user.id],
-  }),
+  messageThread: one(messageThread),
 }));
 
 export const loginCodeRelations = relations(loginCode, ({ one }) => ({
-  user: one(user, {
+  account: one(account, {
     fields: [loginCode.userId],
-    references: [user.id],
+    references: [account.id],
   }),
 }));
 
 export const sessionTokenRelations = relations(sessionToken, ({ one }) => ({
-  user: one(user, {
+  account: one(account, {
     fields: [sessionToken.userId],
-    references: [user.id],
+    references: [account.id],
   }),
 }));
 
@@ -278,9 +281,9 @@ export const adminLoginChallengeRelations = relations(
 export const diagnosticsReportRelations = relations(
   diagnosticsReport,
   ({ one }) => ({
-    user: one(user, {
+    account: one(account, {
       fields: [diagnosticsReport.reporterUserId],
-      references: [user.id],
+      references: [account.id],
     }),
   }),
 );

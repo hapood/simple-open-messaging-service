@@ -128,6 +128,18 @@ async function setup(o: Overrides = {}) {
         ),
       },
     },
+    select: vi.fn(() => {
+      const query = {
+        from: () => query,
+        innerJoin: () => query,
+        where: () => query,
+        limit: async () =>
+          o.adminPresent === false
+            ? []
+            : [{ id: user.id, hashPwd: user.hashPwd }],
+      };
+      return query;
+    }),
     insert: vi.fn((table: unknown) => ({
       values: async (data: Record<string, unknown>) => {
         if (table === adminSession) return store.adminSession.create({ data });

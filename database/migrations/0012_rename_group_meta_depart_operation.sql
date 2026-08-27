@@ -1,0 +1,1 @@
+ALTER TYPE "GroupMetaMemberOperation" RENAME VALUE 'DELETE' TO 'DEPART';

@@ -23,12 +23,10 @@
     {
       "name": "recognize request",
       "schema": "urn:somfp:v1:identity#/$defs/recognizeRequest",
-      "value": {
-        "domain": "a.example"
-      }
+      "value": {}
     },
     {
-      "name": "healthy result",
+      "name": "health result",
       "schema": "urn:somfp:v1:identity#/$defs/healthResult",
       "values": [
         { "status": "available" },
@@ -40,7 +38,6 @@
       "name": "feed head wake-up",
       "schema": "urn:somfp:v1:identity#/$defs/feedHeadHint",
       "value": {
-        "origin": "a.example",
         "stateFeedEndId": "12",
         "messageFeedEndId": "34",
         "tombstoneFeedEndId": "9"
@@ -53,7 +50,6 @@
         "items": [
           {
             "account": "alice",
-            "domain": "a.example",
             "eventType": "RELATIONSHIP_INTENT",
             "peerAccount": "bob",
             "feedId": "1",
@@ -66,7 +62,6 @@
           },
           {
             "account": "alice",
-            "domain": "a.example",
             "eventType": "PROFILE",
             "feedId": "2",
             "body": {
@@ -78,7 +73,6 @@
           },
           {
             "account": "!01arz3ndektsv4rrffq69g5fav",
-            "domain": "a.example",
             "eventType": "RELATIONSHIP_INTENT",
             "peerAccount": "bob",
             "feedId": "3",
@@ -91,7 +85,6 @@
           },
           {
             "account": "!01arz3ndektsv4rrffq69g5fav",
-            "domain": "a.example",
             "eventType": "PROFILE",
             "feedId": "4",
             "body": {
@@ -103,7 +96,6 @@
           },
           {
             "account": "!01arz3ndektsv4rrffq69g5fav",
-            "domain": "a.example",
             "eventType": "GROUP_META_FEED_HEAD",
             "feedId": "5",
             "body": {
@@ -124,7 +116,6 @@
           "items": [
             {
               "account": "alice",
-              "domain": "a.example",
               "eventType": "RELATIONSHIP_INTENT",
               "peerAccount": "bob",
               "feedId": "1",
@@ -144,7 +135,6 @@
           "items": [
             {
               "account": "alice",
-              "domain": "a.example",
               "eventType": "RELATIONSHIP_INTENT",
               "peerAccount": "bob",
               "feedId": "1",
@@ -164,7 +154,6 @@
           "items": [
             {
               "account": "alice",
-              "domain": "a.example",
               "eventType": "RELATIONSHIP_INTENT",
               "peerAccount": "bob",
               "feedId": "1",
@@ -200,10 +189,22 @@
               "displayName": "Alice",
               "avatar": null
             }
+          },
+          {
+            "feedId": "8",
+            "account": "bob",
+            "domain": "b.example",
+            "operation": "UPSERT",
+            "body": {
+              "role": "MEMBER",
+              "profileRev": 1,
+              "displayName": "Bob",
+              "avatar": null
+            }
           }
         ],
-        "scannedThrough": "7",
-        "groupMetaFeedEndId": "7",
+        "scannedThrough": "9",
+        "groupMetaFeedEndId": "9",
         "hasMore": false
       }
     },
@@ -236,7 +237,7 @@
               "account": "alice",
               "peerAccount": "bob"
             },
-            "author": { "account": "alice", "domain": "a.example" },
+            "authorRef": "THREAD_ACCOUNT",
             "seq": 1,
             "originSeq": null,
             "contentType": "PURE_TEXT",
@@ -247,6 +248,49 @@
           }
         ],
         "scannedThrough": "1",
+        "hasMore": false
+      }
+    },
+    {
+      "name": "group message query page carries an explicit author",
+      "schema": "urn:somfp:v1:message-query",
+      "value": {
+        "messages": [
+          {
+            "thread": { "account": "!team" },
+            "author": { "account": "alice", "domain": "a.example" },
+            "seq": 2,
+            "originSeq": null,
+            "contentType": "PURE_TEXT",
+            "content": "{\"text\":\"hello group\"}",
+            "createdAt": 1700000000001,
+            "originCreatedAt": null,
+            "assets": []
+          }
+        ],
+        "scannedThrough": "2",
+        "hasMore": false
+      }
+    },
+    {
+      "name": "CALL message query carries its callId as clientMessageId",
+      "schema": "urn:somfp:v1:message-query",
+      "value": {
+        "messages": [
+          {
+            "thread": { "account": "alice", "peerAccount": "bob" },
+            "authorRef": "THREAD_ACCOUNT",
+            "seq": 3,
+            "originSeq": null,
+            "contentType": "CALL",
+            "content": "{\"mediaType\":\"AUDIO\",\"outcome\":\"completed\",\"startedAt\":1700000000000,\"endedAt\":1700000001000}",
+            "createdAt": 1700000001001,
+            "originCreatedAt": null,
+            "clientMessageId": "550e8400-e29b-41d4-a716-446655440000",
+            "assets": []
+          }
+        ],
+        "scannedThrough": "3",
         "hasMore": false
       }
     },
@@ -264,8 +308,8 @@
           "contentType": "IMAGE",
           "content": {
             "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
-            "w": 1,
-            "h": 1
+            "width": 1,
+            "height": 1
           }
         },
         {
@@ -274,8 +318,8 @@
             "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
             "name": "v",
             "mimeType": "video/webm",
-            "w": 1,
-            "h": 1,
+            "width": 1,
+            "height": 1,
             "duration": 1
           }
         },
@@ -327,9 +371,8 @@
         {
           "contentType": "CALL",
           "content": {
-            "callSid": "550e8400-e29b-41d4-a716-446655440000",
-            "callType": "AUDIO",
-            "status": "completed",
+            "mediaType": "AUDIO",
+            "outcome": "completed",
             "startedAt": 1700000000000,
             "endedAt": 1700000001000
           }
@@ -347,8 +390,8 @@
               {
                 "kind": "IMAGE",
                 "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
-                "w": 1,
-                "h": 1
+                "width": 1,
+                "height": 1
               }
             ]
           }
@@ -360,91 +403,91 @@
       "schema": "urn:somfp:v1:call",
       "values": [
         {
-          "callSid": "550e8400-e29b-41d4-a716-446655440000",
-          "op": "incoming",
-          "callType": "AUDIO",
-          "payload": { "fromAccount": "alice", "toAccount": "bob" }
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "incoming",
+          "mediaType": "AUDIO",
+          "payload": { "callerAccount": "alice", "calleeAccount": "bob" }
         },
         {
-          "callSid": "550e8400-e29b-41d4-a716-446655440000",
-          "op": "ringing",
-          "callType": "AUDIO"
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "ringing",
+          "mediaType": "AUDIO"
         },
         {
-          "callSid": "550e8400-e29b-41d4-a716-446655440000",
-          "op": "accepted",
-          "callType": "AUDIO"
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "accepted",
+          "mediaType": "AUDIO"
         },
         {
-          "callSid": "550e8400-e29b-41d4-a716-446655440000",
-          "op": "signal",
-          "callType": "AUDIO",
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "signal",
+          "mediaType": "AUDIO",
           "payload": {
-            "id": "c0a80101-0000-4000-8000-000000000001",
-            "kind": "offer",
+            "signalId": "c0a80101-0000-4000-8000-000000000001",
+            "signalType": "offer",
             "data": "v=0"
           }
         },
         {
-          "callSid": "550e8400-e29b-41d4-a716-446655440000",
-          "op": "signal",
-          "callType": "AUDIO",
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "signal",
+          "mediaType": "AUDIO",
           "payload": {
-            "id": "c0a80101-0000-4000-8000-000000000002",
-            "kind": "answer",
+            "signalId": "c0a80101-0000-4000-8000-000000000002",
+            "signalType": "answer",
             "data": "v=0"
           }
         },
         {
-          "callSid": "550e8400-e29b-41d4-a716-446655440000",
-          "op": "signal",
-          "callType": "AUDIO",
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "signal",
+          "mediaType": "AUDIO",
           "payload": {
-            "id": "c0a80101-0000-4000-8000-000000000003",
-            "kind": "ice",
+            "signalId": "c0a80101-0000-4000-8000-000000000003",
+            "signalType": "ice",
             "data": "{\"candidate\":\"candidate:1 1 UDP 2122260223 192.0.2.10 54321 typ host\",\"sdpMid\":\"0\",\"sdpMLineIndex\":0}"
           }
         },
         {
-          "callSid": "550e8400-e29b-41d4-a716-446655440000",
-          "op": "signal",
-          "callType": "VIDEO",
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "signal",
+          "mediaType": "VIDEO",
           "payload": {
-            "id": "c0a80101-0000-4000-8000-000000000004",
-            "kind": "video-state",
+            "signalId": "c0a80101-0000-4000-8000-000000000004",
+            "signalType": "video-state",
             "data": "{\"enabled\":true}"
           }
         },
         {
-          "callSid": "550e8400-e29b-41d4-a716-446655440000",
-          "op": "connected",
-          "callType": "AUDIO",
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "connected",
+          "mediaType": "AUDIO",
           "payload": { "startedAt": 1700000000100 }
         },
         {
-          "callSid": "550e8400-e29b-41d4-a716-446655440000",
-          "op": "video-upgraded",
-          "callType": "VIDEO"
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "video-upgraded",
+          "mediaType": "VIDEO"
         },
         {
-          "callSid": "550e8400-e29b-41d4-a716-446655440000",
-          "op": "declined",
-          "callType": "AUDIO"
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "declined",
+          "mediaType": "AUDIO"
         },
         {
-          "callSid": "550e8400-e29b-41d4-a716-446655440000",
-          "op": "cancelled",
-          "callType": "AUDIO"
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "cancelled",
+          "mediaType": "AUDIO"
         },
         {
-          "callSid": "550e8400-e29b-41d4-a716-446655440000",
-          "op": "missed",
-          "callType": "AUDIO"
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "missed",
+          "mediaType": "AUDIO"
         },
         {
-          "callSid": "550e8400-e29b-41d4-a716-446655440000",
-          "op": "ended",
-          "callType": "VIDEO",
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "ended",
+          "mediaType": "VIDEO",
           "payload": { "endReason": "completed" }
         }
       ]
@@ -456,7 +499,14 @@
         "account": "alice",
         "domain": "a.example",
         "displayName": "Alice",
-        "avatar": null,
+        "bio": "",
+        "avatar": {
+          "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
+          "mimeType": "image/webp",
+          "base64": "AA==",
+          "width": 1,
+          "height": 1
+        },
         "profileRev": 1
       }
     },
@@ -539,7 +589,7 @@
               "account": "!group"
             },
             "messageSeq": 7,
-            "type": "WITHDRAW",
+            "type": "USER_RETRACTION",
             "deletedAt": 1700000000000
           }
         ],

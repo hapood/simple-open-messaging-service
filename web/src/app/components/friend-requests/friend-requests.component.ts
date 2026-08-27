@@ -59,8 +59,8 @@ type PendingReq = {
   id: string;
   projectionKey: string;
   direction: 'INCOMING' | 'OUTGOING';
-  /** Existing stub id, or an Address key while no stub exists. */
-  peerId?: number | string;
+  /** Stable Address key used by the avatar and selection projections. */
+  peerId?: string;
   name?: string;
   avatar?: string;
   account?: string;
@@ -127,7 +127,7 @@ export class FriendRequestsComponent implements OnDestroy {
   readonly inviteUser = signal<User | null>(null);
   readonly errMsg = signal('');
   readonly addTabStatus = signal<AddTabStatus>(AddTabStatus.INIT);
-  readonly relationshipStates = signal<ReadonlyMap<number, RelationshipState>>(
+  readonly relationshipStates = signal<ReadonlyMap<string, RelationshipState>>(
     new Map(),
   );
   readonly curSearchText = signal('');
@@ -335,7 +335,9 @@ export class FriendRequestsComponent implements OnDestroy {
             .subscribe({
               next: ({ user, relationship }) => {
                 this.connectingDomain.set(null);
-                this.relationshipStates.set(new Map([[user.id, relationship]]));
+                this.relationshipStates.set(
+                  new Map([[this.userIdentity(user), relationship]]),
+                );
                 this.localResults.set([user]);
                 this.addTabStatus.set(AddTabStatus.SUCCESS);
               },
@@ -428,7 +430,10 @@ export class FriendRequestsComponent implements OnDestroy {
     const states = await Promise.all(
       users.map(
         async (user) =>
-          [user.id, await this.userService.localRelationship(user)] as const,
+          [
+            this.userIdentity(user),
+            await this.userService.localRelationship(user),
+          ] as const,
       ),
     );
     this.relationshipStates.set(new Map(states));
@@ -438,7 +443,8 @@ export class FriendRequestsComponent implements OnDestroy {
 
   activateResult(user: User) {
     if (this.isSelf(user)) return;
-    const status = this.relationshipStates().get(user.id) ?? 'NONE';
+    const status =
+      this.relationshipStates().get(this.userIdentity(user)) ?? 'NONE';
     if (status === 'INCOMING_PENDING') {
       this.setTab(1);
       return;
@@ -451,12 +457,18 @@ export class FriendRequestsComponent implements OnDestroy {
     this.inviteUser.set(user);
   }
 
-  isSelf(user: Pick<User, 'id'>): boolean {
-    return user.id === this.userService.sessionProfile()?.id;
+  isSelf(user: Pick<User, 'account' | 'domain'>): boolean {
+    const self = this.userService.sessionProfile();
+    return (
+      !!self &&
+      self.account === user.account &&
+      (self.domain || 'local') === (user.domain || 'local')
+    );
   }
 
   completeInvite(result: {
-    userId: number;
+    account: string;
+    domain: string;
     status: 'OUTGOING_PENDING' | 'FRIEND';
   }) {
     if (this.initialUser()) {
@@ -464,13 +476,16 @@ export class FriendRequestsComponent implements OnDestroy {
       return;
     }
     this.relationshipStates.update((states) =>
-      new Map(states).set(result.userId, result.status),
+      new Map(states).set(
+        this.addressIdentity(result.account, result.domain),
+        result.status,
+      ),
     );
     this.inviteUser.set(null);
   }
 
-  relationshipLabel(userId: number): string {
-    switch (this.relationshipStates().get(userId)) {
+  relationshipLabel(user: Pick<User, 'account' | 'domain'>): string {
+    switch (this.relationshipStates().get(this.userIdentity(user))) {
       case 'OUTGOING_PENDING':
         return 'friend.sentStatus';
       case 'INCOMING_PENDING':
@@ -685,10 +700,12 @@ export class FriendRequestsComponent implements OnDestroy {
     };
   }
 
-  userIdentity(peer: Pick<User, 'id' | 'account' | 'domain'>): number | string {
-    return peer.id > 0
-      ? peer.id
-      : `${peer.domain ?? 'local'}\u0000${peer.account}`;
+  userIdentity(peer: Pick<User, 'account' | 'domain'>): string {
+    return this.addressIdentity(peer.account, peer.domain ?? 'local');
+  }
+
+  private addressIdentity(account: string, domain: string): string {
+    return `${domain || 'local'}\u0000${account}`;
   }
 
   relativeDate(timestamp: number): string {

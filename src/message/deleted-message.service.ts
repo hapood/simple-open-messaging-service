@@ -1,5 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { and, asc, eq, gt, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, lt, lte, sql } from 'drizzle-orm';
 import {
   DatabaseService,
   type DatabaseTransaction,
@@ -18,7 +18,11 @@ import {
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { ClientMessageFeedWriter } from './client-message-feed.service.js';
-import { MessageService, type Message } from './message.service.js';
+import {
+  MessageService,
+  type Message,
+  type PublicMessage,
+} from './message.service.js';
 import { SystemMessageType } from './system-message.js';
 
 @Injectable()
@@ -62,16 +66,79 @@ export class DeletedMessageService {
     }
   }
 
-  async queryThread(threadId: number, afterId: bigint, take: number) {
+  async queryThread(
+    threadId: number,
+    after: bigint | undefined,
+    take: number,
+    through?: bigint,
+    before?: bigint,
+  ) {
+    const [tail] = await this.database.db
+      .select({ end: sql<bigint>`COALESCE(MAX(${deletedMessage.id}), 0)` })
+      .from(deletedMessage)
+      .where(eq(deletedMessage.threadId, threadId));
+    const end = tail?.end ?? 0n;
+    const cursorData = {
+      resumeAfter: '0',
+      resumeBefore: (end + 1n).toString(),
+    };
+    if (after === undefined && before === undefined)
+      throw new BusinessException(
+        BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
+        'after or before is required; initialize the tombstone query cursor',
+        HttpStatus.OK,
+        cursorData,
+      );
+    if (
+      (after !== undefined && (after < 0n || after > end)) ||
+      (before !== undefined && (before <= 1n || before > end + 1n))
+    )
+      throw new BusinessException(
+        BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
+        'tombstone query cursor is outside the available coordinate space',
+        HttpStatus.OK,
+        cursorData,
+      );
+    const forward = after !== undefined;
+    const queryEnd = forward
+      ? through === undefined || through > end
+        ? end
+        : through
+      : 0n;
+    const queryStart = forward ? 0n : (through ?? 1n);
+    const queryBefore = forward ? 0n : before! < end + 1n ? before! : end + 1n;
     const rows = await this.database.db.query.deletedMessage.findMany({
       where: and(
         eq(deletedMessage.threadId, threadId),
-        gt(deletedMessage.id, afterId),
+        forward
+          ? gt(deletedMessage.id, after!)
+          : gte(deletedMessage.id, queryStart),
+        forward
+          ? lte(deletedMessage.id, queryEnd)
+          : lt(deletedMessage.id, queryBefore),
       ),
-      orderBy: asc(deletedMessage.id),
-      limit: take,
+      orderBy: forward ? asc(deletedMessage.id) : desc(deletedMessage.id),
+      limit: take + 1,
     });
-    return rows.map((row) => ({ ...row, id: row.id.toString() }));
+    const selected = rows.slice(0, take);
+    const scannedThrough =
+      rows.length > take
+        ? selected.at(-1)!.id
+        : forward
+          ? queryEnd
+          : queryStart;
+    return {
+      tombstones: selected.map((row) => ({
+        id: row.id.toString(),
+        threadId: row.threadId,
+        seq: row.seq,
+        type: row.type,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      })),
+      scannedThrough: scannedThrough.toString(),
+      hasMore: rows.length > take,
+    };
   }
 
   async withdraw(
@@ -82,22 +149,28 @@ export class DeletedMessageService {
   ) {
     return this.database.db.transaction(async (tx) => {
       const locked = await tx.execute(sql`
-        SELECT id, creator, "contentType", "isDeleted"
-        FROM "Message"
-        WHERE "threadId" = ${threadId} AND seq = ${seq}
+        SELECT message.id, message."creatorAccount", message."creatorDomain",
+               message."contentType", message."isDeleted"
+        FROM "Message" message
+        JOIN "User" author
+          ON author.account = message."creatorAccount"
+         AND author.domain = message."creatorDomain"
+        WHERE message."threadId" = ${threadId}
+          AND message.seq = ${seq}
+          AND author.id = ${userId}
         FOR UPDATE
       `);
       const target = locked.rows[0] as
         | {
             id: string;
-            creator: number;
+            creatorAccount: string;
+            creatorDomain: string;
             contentType: string;
             isDeleted: boolean;
           }
         | undefined;
       if (
         !target ||
-        target.creator !== userId ||
         target.contentType === 'SYSTEM' ||
         target.contentType === 'CALL'
       ) {
@@ -117,7 +190,7 @@ export class DeletedMessageService {
         .values({
           threadId,
           seq,
-          type: MessageDeleteType.WITHDRAW,
+          type: MessageDeleteType.USER_RETRACTION,
           updatedAt: now,
         })
         .onConflictDoNothing({
@@ -154,7 +227,16 @@ export class DeletedMessageService {
           ).message
         : null;
 
-      return { id: deletionId.toString(), threadId, seq, systemMessage };
+      return {
+        id: deletionId.toString(),
+        threadId,
+        seq,
+        creator: {
+          account: target.creatorAccount,
+          domain: target.creatorDomain,
+        },
+        systemMessage,
+      };
     });
   }
 
@@ -188,7 +270,7 @@ export class DeletedMessageService {
       .values({
         threadId,
         seq,
-        type: MessageDeleteType.REPORT,
+        type: MessageDeleteType.MODERATION_REMOVAL,
         updatedAt: now,
       })
       .onConflictDoNothing({
@@ -327,7 +409,8 @@ export class DeletedMessageService {
       ),
       columns: {
         seq: true,
-        creator: true,
+        creatorAccount: true,
+        creatorDomain: true,
         contentType: true,
         isDeleted: true,
       },
@@ -381,9 +464,13 @@ export class DeletedMessageService {
           .onConflictDoNothing();
     }
     let localDeletedId: bigint | null = null;
-    let systemMessage: Omit<Message, 'id'> | null = null;
+    let systemMessage: PublicMessage | null = null;
     if (target) {
-      if (target.contentType === ContentType.SYSTEM || target.creator === null)
+      if (
+        target.contentType === ContentType.SYSTEM ||
+        target.creatorAccount === null ||
+        target.creatorDomain === null
+      )
         throw new Error('SYSTEM messages cannot enter deletion processing');
       const now = new Date();
       await tx
@@ -424,15 +511,22 @@ export class DeletedMessageService {
           await this.messages.writeSystemMessageInTx(
             tx,
             params.threadId,
-            params.type === MessageDeleteType.WITHDRAW
+            params.type === MessageDeleteType.USER_RETRACTION
               ? SystemMessageType.MESSAGE_WITHDRAWN
               : SystemMessageType.MESSAGES_MODERATED,
-            params.type === MessageDeleteType.WITHDRAW
-              ? target.creator
-              : undefined,
-            params.type === MessageDeleteType.REPORT
+            undefined,
+            params.type === MessageDeleteType.MODERATION_REMOVAL
               ? { count: 1 }
-              : { actorUserId: target.creator ?? undefined },
+              : {
+                  subjectAddress: {
+                    account: target.creatorAccount,
+                    domain: target.creatorDomain,
+                  },
+                  actorAddress: {
+                    account: target.creatorAccount,
+                    domain: target.creatorDomain,
+                  },
+                },
           )
         ).message;
       } else {

@@ -5,7 +5,7 @@ Normative scope: this document defines S2S HTTP failure classes, HTTP `200` appl
 
 ## Error envelope
 
-Except for the privacy-preserving `healthy` status result and raw media responses, every non-zero result from an S2S JSON operation MUST use:
+Except for the privacy-preserving `health` status result and raw media responses, every non-zero result from an S2S JSON operation MUST use:
 
 ```ts
 interface FederationError<T = null> {
@@ -30,7 +30,7 @@ Federation v1 JSON endpoints define only these non-success HTTP statuses:
 | `409` | The authenticated federation relationship has a registered non-automatically-recoverable conflict | Enter `halted` only with a valid fatal code                                       |
 | `503` | The target peer is temporarily unable to provide federation service                               | An established peer enters `degraded`; a peer in handshake remains `establishing` |
 
-Normal success and all ordinary application results use HTTP `200`. Application results include resource absence, permission denial, quota exhaustion, operation payload limits, cursor conflicts, and concurrency conflicts. These results MUST NOT change peer lifecycle. Network failure, timeout, and Healthy `200 unavailable` have the same availability-degradation effect as HTTP `503`.
+Normal success and all ordinary application results use HTTP `200`. Application results include resource absence, permission denial, quota exhaustion, operation payload limits, cursor conflicts, and concurrency conflicts. These results MUST NOT change peer lifecycle. Network failure, timeout, and Health `200 unavailable` have the same availability-degradation effect as HTTP `503`.
 
 Raw media response statuses `206` and `416`, with their associated headers, belong to HTTP Range semantics and are explicit exceptions to the JSON status set above.
 
@@ -56,7 +56,7 @@ A peer-lifecycle action MUST be determined jointly by response provenance, HTTP 
 | Class                          | Wire characteristics                                                                                                 | Peer lifecycle action                                                                            |
 | ------------------------------ | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | Hard stop                      | A hostname-verified target peer or authority returns HTTP `409` with a fatal code explicitly listed in this registry | Record the exact code and evidence, enter `halted`, and stop automatic communication             |
-| Retryable availability failure | Timeout, disconnect, HTTP `503`, or valid Healthy `unavailable`                                                      | An established peer enters `degraded`; an incomplete handshake remains `establishing`            |
+| Retryable availability failure | Timeout, disconnect, HTTP `503`, or valid Health `unavailable`                                                       | An established peer enters `degraded`; an incomplete handshake remains `establishing`            |
 | Current-request failure        | HTTP `400`, `401`, or a non-zero application code in HTTP `200`                                                      | Correct or handle the current operation according to code; do not directly change peer lifecycle |
 
 HTTP `409` alone is insufficient to trigger `halted`. Only HTTP `409` combined with `FEDERATION_PEER_BLOCKED`, `FEDERATION_IDENTITY_MISMATCH`, or `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED` is a hard stop for the peer relationship. A status/code conflict, unknown code, or response not provably originating from the target peer MUST NOT trigger `halted`.
@@ -85,8 +85,8 @@ HTTP `409` alone is insufficient to trigger `halted`. Only HTTP `409` combined w
 | 50023 | `FEDERATION_PROFILE_NOT_DISCLOSED`                 |  200 | The user chose not to disclose a public profile to this peer; stop unchanged retries. A publisher may use `NOT_FOUND` instead to conceal whether the account exists.                                    |
 | 50024 | `FEDERATION_MESSAGE_QUERY_RATE_LIMITED`            |  200 | The message query rate is too high. Do not advance its cursor; wait at least `data.retryAfter` seconds and retry with jitter without changing peer lifecycle.                                           |
 | 50025 | `FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE` |  200 | The message query temporarily cannot produce a consistent page. Do not advance its cursor; wait at least `data.retryAfter` seconds and retry with jitter without changing peer lifecycle.               |
-| 70001 | `CALL_NOT_ALLOWED`                                 |  200 | Unknown callSid or privacy-collapsed account, relationship, block, tenant, or call-admission failure. Terminate this call and MUST NOT degrade the peer.                                                |
-| 70004 | `CALL_BUSY`                                        |  200 | The remote participant is busy. Terminate, or initiate later with a new `callSid`; MUST NOT replay the same incoming frame.                                                                             |
+| 70001 | `CALL_NOT_ALLOWED`                                 |  200 | Unknown callId or privacy-collapsed account, relationship, block, tenant, or call-admission failure. Terminate this call and MUST NOT degrade the peer.                                                 |
+| 70004 | `CALL_BUSY`                                        |  200 | The remote participant is busy. Terminate, or initiate later with a new `callId`; MUST NOT replay the same incoming frame.                                                                              |
 | 70007 | `CALL_CANCELLED`                                   |  200 | The caller cancelled the call. Converge locally to cancelled and stop media, timers, and dependent frames; MUST NOT degrade the peer.                                                                   |
 | 70008 | `CALL_TERMINATED`                                  |  200 | Another terminal outcome ended the call. Converge locally to terminal and stop media, timers, and dependent frames; MUST NOT degrade the peer.                                                          |
 
@@ -200,4 +200,4 @@ How a mirror displays, retains, or marks a message whose resource returned `NOT_
 
 Unlisted local client application codes are not part of the Federation v1 wire registry. An S2S publisher MUST NOT send them as protocol errors. Adding a stable error semantic is an additive v1 revision; changing an existing code's meaning, retryability, or identity action is incompatible.
 
-`POST /s2s/v1/healthy` is a status-query operation. For a parseable request involving an unknown peer, a peer not recognized locally, insufficient authorization, binding failure, or failure to verify an existing identity, `unavailable` is the normal query result defined by recognition.md and is not an error in this registry. Generic malformed HTTP or JSON uses `400 FEDERATION_MALFORMED`. Temporary rate limiting and server failure independent of peer existence uniformly use HTTP `503`, with `RATE_LIMITED` or `INTERNAL`, respectively, for diagnostic classification.
+`GET /s2s/v1/health` is a status-query operation. For a parseable request involving an unknown peer, a peer not recognized locally, insufficient authorization, or failure to verify an existing identity, `unavailable` is the normal query result defined by recognition.md and is not an error in this registry. Generic malformed HTTP or signature structure uses `400 FEDERATION_MALFORMED`. Temporary rate limiting and server failure independent of peer existence uniformly use HTTP `503`, with `RATE_LIMITED` or `INTERNAL`, respectively, for diagnostic classification.

@@ -17,7 +17,6 @@ import {
   messageAsset,
   message,
   messageThread,
-  threadParticipant,
   user,
 } from '../src/database/schema';
 import { BusinessCode } from '../src/common/business-code';
@@ -58,11 +57,7 @@ async function createThread(database: Database, userId: number) {
     .insert(messageThread)
     .values({ type: 'P2P', updatedAt: now })
     .returning({ id: messageThread.id });
-  await database.insert(threadParticipant).values([
-    { userId, threadId: thread.id, updatedAt: now },
-    { userId: peer.id, threadId: thread.id, updatedAt: now },
-  ]);
-  await seedAcceptedRelationship(database, userId, peer.id);
+  await seedAcceptedRelationship(database, userId, peer.id, thread.id);
   return thread;
 }
 
@@ -75,13 +70,7 @@ async function authorizeDigest(
   digest: string,
 ): Promise<{ threadId: number; seq: number }> {
   const now = new Date();
-  const [thread] = await database
-    .insert(messageThread)
-    .values({ type: 'P2P', updatedAt: now })
-    .returning({ id: messageThread.id });
-  await database
-    .insert(threadParticipant)
-    .values({ userId, threadId: thread.id, updatedAt: now });
+  const thread = await createThread(database, userId);
   // Allocate the per-thread seq the same way writeMsgToThread does (curSeq atomic increment), so the
   // direct create mirrors a real send. Locally-authored messages have no
   // federation origin sequence.
@@ -91,13 +80,19 @@ async function authorizeDigest(
     .where(eq(messageThread.id, thread.id))
     .returning({ curSeq: messageThread.curSeq });
   const seq = advanced.curSeq;
+  const author = await database.query.user.findFirst({
+    where: eq(user.id, userId),
+    columns: { account: true, domain: true },
+  });
+  if (!author) throw new Error('test message author is missing');
   const [msg] = await database
     .insert(message)
     .values({
       contentType: 'IMAGE',
       content: JSON.stringify({}),
       threadId: thread.id,
-      creator: userId,
+      creatorAccount: author.account,
+      creatorDomain: author.domain,
       seq,
       updatedAt: now,
     })

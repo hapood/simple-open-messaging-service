@@ -10,12 +10,12 @@ describe('FederationGroupRelationshipService', () => {
       expiresAt: null,
     };
     const relationshipIntents = {
-      writeAuthoredIntentInTx: vi.fn().mockResolvedValue({
+      writeGroupAuthoredIntentInTx: vi.fn().mockResolvedValue({
         request,
         shouldBeActive: true,
         changed: true,
       }),
-      setPairActiveInTx: vi.fn().mockResolvedValue(true),
+      setGroupPairActiveInTx: vi.fn().mockResolvedValue(true),
     };
     const groupMembership = { syncFromActiveInTx: vi.fn() };
     const service = new FederationGroupRelationshipService(
@@ -25,22 +25,20 @@ describe('FederationGroupRelationshipService', () => {
 
     const result = await service.writeAuthoredIntentInTx({} as never, {
       threadId: 3,
-      groupUserId: 5,
+      groupId: 5,
       memberUserId: 7,
-      authorUserId: 7,
+      author: 'MEMBER',
       hostedLocally: true,
       status: 'ACCEPTED',
     });
 
-    expect(relationshipIntents.setPairActiveInTx).toHaveBeenCalledWith(
+    expect(relationshipIntents.setGroupPairActiveInTx).toHaveBeenCalledWith(
       expect.anything(),
-      5,
-      7,
-      true,
+      { groupId: 5, memberUserId: 7, threadId: 3, active: true },
     );
     expect(groupMembership.syncFromActiveInTx).toHaveBeenCalledWith(
       expect.anything(),
-      { threadId: 3, memberUserId: 7, active: true },
+      { threadId: 3, memberUserId: 7, active: true, hostedLocally: true },
     );
     expect(result).toEqual(
       expect.objectContaining({ active: true, pairChanged: true }),
@@ -49,7 +47,7 @@ describe('FederationGroupRelationshipService', () => {
 
   it('forces a revoked authored intent inactive before deleting its member projection', async () => {
     const relationshipIntents = {
-      writeAuthoredIntentInTx: vi.fn().mockResolvedValue({
+      writeGroupAuthoredIntentInTx: vi.fn().mockResolvedValue({
         request: {
           status: 'REVOKED',
           note: '',
@@ -59,7 +57,7 @@ describe('FederationGroupRelationshipService', () => {
         shouldBeActive: true,
         changed: true,
       }),
-      setPairActiveInTx: vi.fn().mockResolvedValue(true),
+      setGroupPairActiveInTx: vi.fn().mockResolvedValue(true),
     };
     const groupMembership = { syncFromActiveInTx: vi.fn() };
     const service = new FederationGroupRelationshipService(
@@ -69,28 +67,26 @@ describe('FederationGroupRelationshipService', () => {
 
     await service.writeAuthoredIntentInTx({} as never, {
       threadId: 3,
-      groupUserId: 5,
+      groupId: 5,
       memberUserId: 7,
-      authorUserId: 5,
+      author: 'GROUP',
       hostedLocally: true,
       status: 'REVOKED',
     });
 
-    expect(relationshipIntents.setPairActiveInTx).toHaveBeenCalledWith(
+    expect(relationshipIntents.setGroupPairActiveInTx).toHaveBeenCalledWith(
       expect.anything(),
-      5,
-      7,
-      false,
+      { groupId: 5, memberUserId: 7, threadId: 3, active: false },
     );
     expect(groupMembership.syncFromActiveInTx).toHaveBeenCalledWith(
       expect.anything(),
-      { threadId: 3, memberUserId: 7, active: false },
+      { threadId: 3, memberUserId: 7, active: false, hostedLocally: true },
     );
   });
 
   it('runs the departure boundary effect after pair deactivation and before member removal', async () => {
     const relationshipIntents = {
-      setPairActiveInTx: vi.fn().mockResolvedValue(true),
+      setGroupPairActiveInTx: vi.fn().mockResolvedValue(true),
     };
     const groupMembership = {
       syncFromActiveInTx: vi.fn().mockResolvedValue(undefined),
@@ -103,7 +99,7 @@ describe('FederationGroupRelationshipService', () => {
 
     const result = await service.deactivateAfterInTx({} as never, {
       threadId: 3,
-      groupUserId: 5,
+      groupId: 5,
       memberUserId: 7,
       hostedLocally: true,
       afterPairDeactivated,
@@ -111,7 +107,7 @@ describe('FederationGroupRelationshipService', () => {
 
     expect(result).toEqual({ pairChanged: true, effect: 'boundary' });
     expect(
-      relationshipIntents.setPairActiveInTx.mock.invocationCallOrder[0],
+      relationshipIntents.setGroupPairActiveInTx.mock.invocationCallOrder[0],
     ).toBeLessThan(afterPairDeactivated.mock.invocationCallOrder[0]);
     expect(afterPairDeactivated.mock.invocationCallOrder[0]).toBeLessThan(
       groupMembership.syncFromActiveInTx.mock.invocationCallOrder[0],
@@ -120,7 +116,7 @@ describe('FederationGroupRelationshipService', () => {
 
   it('does not derive a member for a group hosted by another server', async () => {
     const relationshipIntents = {
-      setPairActiveInTx: vi.fn().mockResolvedValue(true),
+      setGroupPairActiveInTx: vi.fn().mockResolvedValue(true),
     };
     const groupMembership = { syncFromActiveInTx: vi.fn() };
     const service = new FederationGroupRelationshipService(
@@ -130,13 +126,21 @@ describe('FederationGroupRelationshipService', () => {
 
     await service.syncActiveInTx({} as never, {
       threadId: 3,
-      groupUserId: 5,
+      groupId: 5,
       memberUserId: 7,
       active: true,
       hostedLocally: false,
     });
 
-    expect(relationshipIntents.setPairActiveInTx).toHaveBeenCalledOnce();
-    expect(groupMembership.syncFromActiveInTx).not.toHaveBeenCalled();
+    expect(relationshipIntents.setGroupPairActiveInTx).toHaveBeenCalledOnce();
+    expect(groupMembership.syncFromActiveInTx).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        threadId: 3,
+        memberUserId: 7,
+        active: true,
+        hostedLocally: false,
+      },
+    );
   });
 });

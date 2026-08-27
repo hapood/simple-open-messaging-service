@@ -15,7 +15,7 @@ import {
   messageAsset,
   pendingMedia,
   quotaDailyUsage,
-  threadParticipant,
+  threadMember,
   user,
 } from '../src/database/schema.js';
 import {
@@ -79,15 +79,13 @@ describe('federation durable missed transport (two nodes)', () => {
     aliceStubIdB = friendship.localStubIdOnRemote;
     await vi.waitFor(
       async () => {
-        const active = await appB.database.query.threadParticipant.findFirst({
-          where: and(eq(threadParticipant.userId, aliceStubIdB)),
+        const active = await appB.database.query.threadMember.findFirst({
+          where: and(eq(threadMember.userId, aliceStubIdB)),
         });
         expect(active).toBeDefined();
-        const activeOnA = await appA.database.query.threadParticipant.findFirst(
-          {
-            where: and(eq(threadParticipant.userId, bobStubIdA)),
-          },
-        );
+        const activeOnA = await appA.database.query.threadMember.findFirst({
+          where: and(eq(threadMember.userId, bobStubIdA)),
+        });
         expect(activeOnA).toBeDefined();
       },
       { timeout: 5000, interval: 100 },
@@ -101,8 +99,8 @@ describe('federation durable missed transport (two nodes)', () => {
   });
 
   it('delivers through the HWM + /message-feed pipeline', async () => {
-    const bobThread = await appB.database.query.threadParticipant.findFirst({
-      where: and(eq(threadParticipant.userId, aliceStubIdB)),
+    const bobThread = await appB.database.query.threadMember.findFirst({
+      where: and(eq(threadMember.userId, aliceStubIdB)),
     });
     expect(bobThread).toBeDefined();
 
@@ -167,8 +165,8 @@ describe('federation durable missed transport (two nodes)', () => {
       where: and(eq(user.account, 'missedbob'), eq(user.domain, FED_DOMAIN_B)),
     });
     expect(bobStub).toBeDefined();
-    const aliceThread = await appA.database.query.threadParticipant.findFirst({
-      where: and(eq(threadParticipant.userId, bobStub!.id)),
+    const aliceThread = await appA.database.query.threadMember.findFirst({
+      where: and(eq(threadMember.userId, bobStub!.id)),
     });
     expect(aliceThread).toBeDefined();
 
@@ -223,7 +221,7 @@ describe('federation durable missed transport (two nodes)', () => {
             (entry) =>
               entry.method === 'GET' &&
               entry.path.startsWith('/s2s/v1/') &&
-              !entry.path.startsWith('/s2s/v1/healthy'),
+              !entry.path.startsWith('/s2s/v1/health'),
           );
         expect(signedGets[0]).toMatchObject({
           path: expect.stringMatching(/^\/s2s\/v1\/state-feed\?/),
@@ -302,7 +300,8 @@ describe('federation durable missed transport (two nodes)', () => {
           expect(authorization).toBeDefined();
           const received = await appB.database.query.message.findFirst({
             where: and(
-              eq(message.creator, aliceStubIdB),
+              eq(message.creatorAccount, 'missedalice'),
+              eq(message.creatorDomain, FED_DOMAIN_A),
               eq(message.contentType, 'IMAGE'),
             ),
             orderBy: (row, { desc }) => [desc(row.id)],
@@ -339,8 +338,8 @@ describe('federation durable missed transport (two nodes)', () => {
       where: and(eq(user.account, 'missedbob'), eq(user.domain, FED_DOMAIN_B)),
     });
     expect(bobStub).toBeDefined();
-    const aliceThread = await appA.database.query.threadParticipant.findFirst({
-      where: and(eq(threadParticipant.userId, bobStub!.id)),
+    const aliceThread = await appA.database.query.threadMember.findFirst({
+      where: and(eq(threadMember.userId, bobStub!.id)),
     });
     expect(aliceThread).toBeDefined();
 
@@ -447,7 +446,8 @@ describe('federation durable missed transport (two nodes)', () => {
           ).toBeDefined();
           const received = await appB.database.query.message.findFirst({
             where: and(
-              eq(message.creator, aliceStubIdB),
+              eq(message.creatorAccount, 'missedalice'),
+              eq(message.creatorDomain, FED_DOMAIN_A),
               eq(message.contentType, 'IMAGE'),
             ),
             orderBy: (row, { desc }) => [desc(row.id)],

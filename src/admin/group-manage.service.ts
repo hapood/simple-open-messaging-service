@@ -1,11 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { and, count, desc, eq, ilike, or, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { messageThread, user } from '../database/schema.js';
+import { group, messageThread } from '../database/schema.js';
 import type { AdminGroupsListDto } from './admin.dto.js';
 
 /**
- * Read-only group/thread observability. Lists GROUP threads with their carrying "!"-User identity,
+ * Read-only group/thread observability. Lists GROUP threads with their independent group profile,
  * active member count, and federation origin (originDomain / fedGroupAccount) — especially useful
  * now that Step 3 lands cross-server groups. Extracted from the controller so the controller is a
  * pure HTTP adapter and the query is unit-testable (mirrors DashboardService). Destructive group ops
@@ -20,17 +20,14 @@ export class GroupManageService {
   async list(dto: AdminGroupsListDto) {
     const search = dto.search
       ? or(
-          ilike(user.account, `%${dto.search}%`),
-          ilike(user.name, `%${dto.search}%`),
+          ilike(group.account, `%${dto.search}%`),
+          ilike(group.name, `%${dto.search}%`),
         )
       : undefined;
     const where = and(eq(messageThread.type, 'GROUP'), search);
     const activeParticipants = sql<number>`(
-      select count(*)::int from "RelationshipIntent" intent
-      where intent."authorUserId" = ${messageThread.groupUserId}
-        and (intent.status = 'ACCEPTED'
-          or (intent.status = 'REQUESTED'
-            and intent."expiresAt" > CURRENT_TIMESTAMP))
+      SELECT count(*)::int FROM "ThreadMember" member
+      WHERE member."threadId" = ${messageThread.id} AND member.left = false
     )`;
     const base = this.database.db
       .select({
@@ -38,13 +35,13 @@ export class GroupManageService {
         createdAt: messageThread.createdAt,
         lastMessageAt: messageThread.lastMessageAt,
         lastMessagePreview: messageThread.lastMessagePreview,
-        groupAccount: user.account,
-        groupName: user.name,
-        groupDomain: user.domain,
+        groupAccount: group.account,
+        groupName: group.name,
+        groupDomain: group.domain,
         activeParticipants,
       })
       .from(messageThread)
-      .innerJoin(user, eq(user.id, messageThread.groupUserId))
+      .innerJoin(group, eq(group.id, messageThread.groupId))
       .where(where);
     const [rows, totalRow] = await Promise.all([
       base
@@ -54,7 +51,7 @@ export class GroupManageService {
       this.database.db
         .select({ value: count() })
         .from(messageThread)
-        .innerJoin(user, eq(user.id, messageThread.groupUserId))
+        .innerJoin(group, eq(group.id, messageThread.groupId))
         .where(where)
         .then(([row]) => row),
     ]);
@@ -63,12 +60,12 @@ export class GroupManageService {
       createdAt: row.createdAt,
       lastMessageAt: row.lastMessageAt,
       lastMessagePreview: row.lastMessagePreview,
-      groupUser: {
+      group: {
         account: row.groupAccount,
         name: row.groupName,
         domain: row.groupDomain,
       },
-      _count: { ThreadParticipant: row.activeParticipants },
+      _count: { ThreadMember: row.activeParticipants },
     }));
     const total = totalRow.value;
     return { list, total };

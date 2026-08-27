@@ -1,6 +1,8 @@
 import {
   Body,
   Controller,
+  Get,
+  Header,
   HttpCode,
   HttpStatus,
   Post,
@@ -34,7 +36,7 @@ export class S2sRecognitionController {
     this.keypair.assertAvailable();
     const headers = this.verify.extractHeaders(req);
     const { keyId, domain } = this.verify.parseSigner(headers);
-    this.assertDomainBody(body, domain);
+    this.assertEmptyObject(body);
     const doc = await this.discovery.fetchWellKnown(domain);
     const certificate = doc.keys.find(
       (key) =>
@@ -60,25 +62,20 @@ export class S2sRecognitionController {
     return { ok: true } as const;
   }
 
-  @Post('healthy')
+  @Get('health')
   @HttpCode(HttpStatus.OK)
-  async healthy(@Req() req: FastifyRequest, @Body() body: unknown) {
+  @Header('Cache-Control', 'no-store')
+  async health(@Req() req: FastifyRequest) {
+    this.assertEmptyGet(req);
     const headers = this.verify.extractHeaders(req);
-    let signer: { keyId: string; domain: string };
-    try {
-      signer = this.verify.parseSigner(headers);
-    } catch (error) {
-      throw error;
-    }
-    if (!this.isDomainBody(body, signer.domain))
-      return this.unavailableHealth();
+    const signer = this.verify.parseSigner(headers);
     if (!(await this.recognition.hasPinnedIdentity(signer.domain))) {
       return this.unavailableHealth();
     }
     let publicKey: Uint8Array | null;
     try {
       // A recognized peer may legitimately rotate to a newly published key. Refresh on a cache miss,
-      // but collapse every fetch/authorization outcome into Healthy's privacy-safe result.
+      // but collapse every fetch/authorization outcome into Health's privacy-safe result.
       publicKey = await this.discovery.getPublicKey(
         signer.domain,
         signer.keyId,
@@ -105,23 +102,32 @@ export class S2sRecognitionController {
     return { status: 'unavailable' } as const;
   }
 
-  private assertDomainBody(value: unknown, signerDomain: string): void {
-    if (!this.isDomainBody(value, signerDomain)) {
+  private assertEmptyObject(value: unknown): void {
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      Array.isArray(value) ||
+      Object.keys(value).length !== 0
+    ) {
       throw new BusinessException(
-        BusinessCode.FEDERATION_BINDING_VIOLATION,
-        'recognize domain does not match signer',
-        HttpStatus.UNAUTHORIZED,
+        BusinessCode.FEDERATION_MALFORMED,
+        'recognize body must be an empty object',
+        HttpStatus.BAD_REQUEST,
       );
     }
   }
 
-  private isDomainBody(value: unknown, signerDomain: string): boolean {
-    return (
-      !!value &&
-      typeof value === 'object' &&
-      !Array.isArray(value) &&
-      Object.keys(value).length === 1 &&
-      (value as { domain?: unknown }).domain === signerDomain
-    );
+  private assertEmptyGet(req: FastifyRequest): void {
+    if (
+      req.url.includes('?') ||
+      (req.rawBody?.length ?? 0) !== 0 ||
+      req.headers['content-type'] !== undefined
+    ) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'health request must not contain a query, body, or Content-Type',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
   }
 }

@@ -86,7 +86,6 @@ describe('PeerStateFeedPullService atomic page application', () => {
           items: [
             {
               account: 'a',
-              domain: 'peer.test',
               eventType: 'PROFILE',
               feedId: '2',
               body: {},

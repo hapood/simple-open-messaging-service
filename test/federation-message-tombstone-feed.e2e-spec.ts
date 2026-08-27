@@ -12,10 +12,10 @@ import {
   message,
   messageThread,
   threadAudience,
-  threadParticipant,
   user,
 } from '../src/database/schema.js';
 import { FederationMessageTombstoneFeedService } from '../src/federation/federation-message-tombstone-feed.service.js';
+import { seedAcceptedRelationship } from './seed.js';
 
 describe('FederationMessageTombstoneFeedService compacted feed', () => {
   let mod: TestingModule;
@@ -32,14 +32,14 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
 
   beforeEach(async () => {
     await database.pool.query(
-      'TRUNCATE TABLE "User", "FederatedPeer" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "User", "Account", "FederatedPeer" RESTART IDENTITY CASCADE',
     );
     service = new FederationMessageTombstoneFeedService(database);
   });
 
   afterAll(async () => {
     await database.pool.query(
-      'TRUNCATE TABLE "User", "FederatedPeer" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "User", "Account", "FederatedPeer" RESTART IDENTITY CASCADE',
     );
     await mod.close();
   });
@@ -63,6 +63,7 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
           account: 'bob',
           name: 'Bob',
           domain: peerDomain,
+          sourceDomain: peerDomain,
           updatedAt: now,
         },
       ])
@@ -71,10 +72,7 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
       .insert(messageThread)
       .values({ type: 'P2P', curSeq: 0, updatedAt: now })
       .returning();
-    await database.db.insert(threadParticipant).values([
-      { userId: alice.id, threadId: thread.id, joinedAt: now, updatedAt: now },
-      { userId: bob.id, threadId: thread.id, joinedAt: now, updatedAt: now },
-    ]);
+    await seedAcceptedRelationship(database.db, alice.id, bob.id, thread.id);
     await database.db.insert(threadAudience).values({
       targetDomain: peerDomain,
       threadId: thread.id,
@@ -87,7 +85,8 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'deleted' }),
         threadId: thread.id,
-        creator: alice.id,
+        creatorAccount: alice.account,
+        creatorDomain: alice.domain,
         isDeleted: true,
         createdAt: now,
         updatedAt: now,
@@ -98,7 +97,7 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
       .values({
         threadId: thread.id,
         seq: 1,
-        type: MessageDeleteType.WITHDRAW,
+        type: MessageDeleteType.USER_RETRACTION,
         createdAt: now,
         updatedAt: now,
       })
@@ -139,7 +138,7 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
       tombstones: [
         {
           deletionSeq: deletion.id.toString(),
-          type: MessageDeleteType.WITHDRAW,
+          type: MessageDeleteType.USER_RETRACTION,
           messageSeq: 1,
         },
       ],
@@ -163,10 +162,42 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
       undefined,
       1,
       undefined,
+      true,
       deletion.id + 1n,
     );
     expect(page).toMatchObject({
       tombstones: [{ deletionSeq: deletion.id.toString() }],
+      scannedThrough: '1',
+      hasMore: false,
+    });
+  });
+
+  it('omits requester-authored tombstones when includeSelf is false', async () => {
+    const { deletion } = await seedDeletion();
+    const page = await service.query(
+      peerDomain,
+      { type: 'P2P', account: 'alice', peerAccount: 'bob' },
+      0n,
+      undefined,
+      deletion.id,
+      false,
+    );
+    expect(page.tombstones).toHaveLength(1);
+
+    await database.db
+      .update(message)
+      .set({ creatorDomain: peerDomain })
+      .where(eq(message.seq, 1));
+    const filtered = await service.query(
+      peerDomain,
+      { type: 'P2P', account: 'alice', peerAccount: 'bob' },
+      0n,
+      undefined,
+      deletion.id,
+      false,
+    );
+    expect(filtered).toMatchObject({
+      tombstones: [],
       scannedThrough: deletion.id.toString(),
       hasMore: false,
     });

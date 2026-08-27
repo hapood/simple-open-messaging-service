@@ -5,7 +5,7 @@ import {
   clientStateFeed,
   federatedFriendRequest,
   message,
-  relationshipPair,
+  threadMember,
   threadParticipant,
   user,
 } from '../src/database/schema.js';
@@ -20,6 +20,7 @@ import {
   type S2sProxy,
 } from './federation-harness.js';
 import { registerAndLogin } from './federation-test-helpers.js';
+import { findP2PRelationship } from './seed.js';
 
 describe('federated Address friend request shells', () => {
   let appA: FedApp;
@@ -105,10 +106,11 @@ describe('federated Address friend request shells', () => {
       ),
     });
     expect(requesterStub).toBeDefined();
-    const requesterShell =
-      await appA.database.query.threadParticipant.findFirst({
-        where: and(eq(threadParticipant.userId, aliceId)),
-      });
+    const [requesterShell] = await appA.database
+      .select({ id: threadParticipant.id })
+      .from(threadParticipant)
+      .where(eq(threadParticipant.accountId, aliceId))
+      .limit(1);
     expect(requesterShell).toBeDefined();
 
     const incoming = await vi.waitFor(
@@ -137,7 +139,7 @@ describe('federated Address friend request shells', () => {
           eq(user.domain, FED_DOMAIN_A),
         ),
       }),
-    ).toBeUndefined();
+    ).toMatchObject({ sourceDomain: FED_DOMAIN_A });
 
     const pendingClientIntent =
       await appB.database.query.clientStateFeed.findFirst({
@@ -183,30 +185,16 @@ describe('federated Address friend request shells', () => {
         ]);
         expect(bobStubOnA).toBeDefined();
         expect(aliceStubOnB).toBeDefined();
-        const [pairA, pairB] = await Promise.all([
-          appA.database.query.relationshipPair.findFirst({
-            where: and(
-              eq(relationshipPair.userLowId, Math.min(aliceId, bobStubOnA!.id)),
-              eq(
-                relationshipPair.userHighId,
-                Math.max(aliceId, bobStubOnA!.id),
-              ),
-              eq(relationshipPair.active, true),
-            ),
-          }),
-          appB.database.query.relationshipPair.findFirst({
-            where: and(
-              eq(relationshipPair.userLowId, Math.min(bobId, aliceStubOnB!.id)),
-              eq(
-                relationshipPair.userHighId,
-                Math.max(bobId, aliceStubOnB!.id),
-              ),
-              eq(relationshipPair.active, true),
-            ),
-          }),
+        const [relationshipA, relationshipB] = await Promise.all([
+          findP2PRelationship(appA.database, aliceId, bobStubOnA!.id),
+          findP2PRelationship(appB.database, bobId, aliceStubOnB!.id),
         ]);
+        const pairA = relationshipA.pair;
+        const pairB = relationshipB.pair;
         expect(pairA).toBeDefined();
         expect(pairB).toBeDefined();
+        expect(pairA?.active).toBe(true);
+        expect(pairB?.active).toBe(true);
 
         const acceptingSideNotice = await appB.database.query.message.findFirst(
           {

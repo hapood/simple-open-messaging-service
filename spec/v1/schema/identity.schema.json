@@ -5,10 +5,7 @@
   "$defs": {
     "recognizeRequest": {
       "type": "object",
-      "required": ["domain"],
-      "properties": {
-        "domain": { "$ref": "urn:somfp:v1:common#/$defs/domain" }
-      },
+      "maxProperties": 0,
       "additionalProperties": false
     },
     "recognizeOk": {
@@ -27,14 +24,8 @@
     },
     "feedHeadHint": {
       "type": "object",
-      "required": [
-        "origin",
-        "stateFeedEndId",
-        "messageFeedEndId",
-        "tombstoneFeedEndId"
-      ],
+      "required": ["stateFeedEndId", "messageFeedEndId", "tombstoneFeedEndId"],
       "properties": {
-        "origin": { "$ref": "urn:somfp:v1:common#/$defs/domain" },
         "stateFeedEndId": {
           "$ref": "urn:somfp:v1:common#/$defs/decimalString"
         },

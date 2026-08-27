@@ -38,26 +38,18 @@
       }
     },
     {
-      "name": "recognize rejects unknown nonce fields",
+      "name": "recognize rejects repeated signer domain",
       "schema": "urn:somfp:v1:identity#/$defs/recognizeRequest",
       "value": {
-        "domain": "a.example",
-        "nonce": "abcdefghijklmnopqrstuv"
+        "domain": "a.example"
       }
     },
     {
-      "name": "healthy rejects legacy selected protocol version",
+      "name": "health rejects legacy selected protocol version",
       "schema": "urn:somfp:v1:identity#/$defs/healthResult",
       "value": {
         "status": "available",
         "selectedProtocolVersion": 1
-      }
-    },
-    {
-      "name": "recognize rejects RFC 6762 local domain",
-      "schema": "urn:somfp:v1:identity#/$defs/recognizeRequest",
-      "value": {
-        "domain": "node.local"
       }
     },
     {
@@ -67,7 +59,6 @@
         "items": [
           {
             "account": "alice",
-            "domain": "a.example",
             "eventType": "PROFILE",
             "peerAccount": "bob",
             "feedId": "1",
@@ -90,7 +81,6 @@
         "items": [
           {
             "account": "alice",
-            "domain": "a.example",
             "eventType": "PROFILE",
             "feedId": "1",
             "body": {
@@ -112,7 +102,6 @@
         "items": [
           {
             "account": "alice",
-            "domain": "a.example",
             "eventType": "PROFILE",
             "feedId": "1",
             "body": {
@@ -135,7 +124,6 @@
           "items": [
             {
               "account": "alice",
-              "domain": "a.example",
               "eventType": "RELATIONSHIP_INTENT",
               "peerAccount": "bob",
               "feedId": "1",
@@ -155,7 +143,6 @@
           "items": [
             {
               "account": "alice",
-              "domain": "a.example",
               "eventType": "RELATIONSHIP_INTENT",
               "peerAccount": "bob",
               "feedId": "1",
@@ -175,7 +162,6 @@
           "items": [
             {
               "account": "alice",
-              "domain": "a.example",
               "eventType": "RELATIONSHIP_INTENT",
               "peerAccount": "bob",
               "feedId": "1",
@@ -201,7 +187,6 @@
           "items": [
             {
               "account": "alice",
-              "domain": "a.example",
               "eventType": "RELATIONSHIP_INTENT",
               "peerAccount": "bob",
               "feedId": "1",
@@ -221,7 +206,6 @@
           "items": [
             {
               "account": "alice",
-              "domain": "a.example",
               "eventType": "RELATIONSHIP_INTENT",
               "peerAccount": "bob",
               "feedId": "1",
@@ -241,7 +225,6 @@
           "items": [
             {
               "account": "alice",
-              "domain": "a.example",
               "eventType": "RELATIONSHIP_INTENT",
               "peerAccount": "bob",
               "feedId": "1",
@@ -266,7 +249,6 @@
         "items": [
           {
             "account": "alice",
-            "domain": "a.example",
             "eventType": "RELATIONSHIP_INTENT",
             "peerAccount": "bob",
             "feedId": "1",
@@ -293,7 +275,45 @@
       "schema": "urn:somfp:v1:message-content",
       "value": {
         "contentType": "IMAGE",
-        "content": { "url": "/asset/0", "w": 1, "h": 1 }
+        "content": { "url": "/asset/0", "width": 1, "height": 1 }
+      }
+    },
+    {
+      "name": "media content rejects legacy dimension abbreviations",
+      "schema": "urn:somfp:v1:message-content",
+      "value": {
+        "contentType": "IMAGE",
+        "content": {
+          "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
+          "w": 1,
+          "h": 1
+        }
+      }
+    },
+    {
+      "name": "media content rejects redundant size",
+      "schema": "urn:somfp:v1:message-content",
+      "value": {
+        "contentType": "IMAGE",
+        "content": {
+          "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
+          "width": 1,
+          "height": 1,
+          "size": 1
+        }
+      }
+    },
+    {
+      "name": "contact card bio exceeds 120 code points",
+      "schema": "urn:somfp:v1:message-content",
+      "value": {
+        "contentType": "CONTACT_CARD",
+        "content": {
+          "account": "alice",
+          "domain": "a.example",
+          "displayName": "Alice",
+          "bio": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
       }
     },
     {
@@ -312,15 +332,51 @@
       }
     },
     {
+      "name": "call content rejects legacy callType field",
+      "schema": "urn:somfp:v1:message-content",
+      "value": {
+        "contentType": "CALL",
+        "content": {
+          "callType": "AUDIO",
+          "outcome": "completed",
+          "endedAt": 1700000001000
+        }
+      }
+    },
+    {
+      "name": "call content rejects retired status field",
+      "schema": "urn:somfp:v1:message-content",
+      "value": {
+        "contentType": "CALL",
+        "content": {
+          "mediaType": "AUDIO",
+          "status": "completed",
+          "endedAt": 1700000001000
+        }
+      }
+    },
+    {
+      "name": "call content rejects a repeated legacy callSid",
+      "schema": "urn:somfp:v1:message-content",
+      "value": {
+        "contentType": "CALL",
+        "content": {
+          "callSid": "550e8400-e29b-41d4-a716-446655440000",
+          "mediaType": "AUDIO",
+          "outcome": "completed",
+          "endedAt": 1700000001000
+        }
+      }
+    },
+    {
       "name": "terminal call content requires endedAt",
       "schema": "urn:somfp:v1:message-content",
       "value": {
         "contentType": "CALL",
         "content": {
           "type": "CALL",
-          "callSid": "550e8400-e29b-41d4-a716-446655440000",
-          "callType": "AUDIO",
-          "status": "completed",
+          "mediaType": "AUDIO",
+          "outcome": "completed",
           "caller": { "account": "alice", "domain": "a.example" },
           "callee": { "account": "bob", "domain": "b.example" }
         }
@@ -333,9 +389,8 @@
         "contentType": "CALL",
         "content": {
           "type": "CALL",
-          "callSid": "550e8400-e29b-41d4-a716-446655440000",
-          "callType": "AUDIO",
-          "status": "cancelled",
+          "mediaType": "AUDIO",
+          "outcome": "cancelled",
           "caller": { "account": "alice", "domain": "a.example" },
           "callee": { "account": "bob", "domain": "b.example" },
           "startedAt": 1,
@@ -356,31 +411,71 @@
       }
     },
     {
-      "name": "connected call requires startedAt",
+      "name": "call frame rejects legacy callType field",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "incoming",
+        "callType": "AUDIO",
+        "payload": { "callerAccount": "alice", "calleeAccount": "bob" }
+      }
+    },
+    {
+      "name": "incoming call rejects legacy fromAccount and toAccount fields",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "incoming",
+        "mediaType": "AUDIO",
+        "payload": { "fromAccount": "alice", "toAccount": "bob" }
+      }
+    },
+    {
+      "name": "call frame rejects legacy op field",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "op": "incoming",
+        "mediaType": "AUDIO",
+        "payload": { "callerAccount": "alice", "calleeAccount": "bob" }
+      }
+    },
+    {
+      "name": "call frame rejects legacy callSid field",
       "schema": "urn:somfp:v1:call",
       "value": {
         "callSid": "550e8400-e29b-41d4-a716-446655440000",
-        "op": "connected",
-        "callType": "AUDIO"
+        "operation": "incoming",
+        "mediaType": "AUDIO",
+        "payload": { "callerAccount": "alice", "calleeAccount": "bob" }
+      }
+    },
+    {
+      "name": "connected call requires startedAt",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "connected",
+        "mediaType": "AUDIO"
       }
     },
     {
       "name": "video upgrade must carry VIDEO type",
       "schema": "urn:somfp:v1:call",
       "value": {
-        "callSid": "550e8400-e29b-41d4-a716-446655440000",
-        "op": "video-upgraded",
-        "callType": "AUDIO"
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "video-upgraded",
+        "mediaType": "AUDIO"
       }
     },
     {
       "name": "call frame rejects unknown fields",
       "schema": "urn:somfp:v1:call",
       "value": {
-        "callSid": "550e8400-e29b-41d4-a716-446655440000",
-        "op": "incoming",
-        "callType": "AUDIO",
-        "payload": { "fromAccount": "alice", "toAccount": "bob" },
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "incoming",
+        "mediaType": "AUDIO",
+        "payload": { "callerAccount": "alice", "calleeAccount": "bob" },
         "extra": true
       }
     },
@@ -388,22 +483,50 @@
       "name": "incoming call rejects ended-only field",
       "schema": "urn:somfp:v1:call",
       "value": {
-        "callSid": "550e8400-e29b-41d4-a716-446655440000",
-        "op": "incoming",
-        "callType": "AUDIO",
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "incoming",
+        "mediaType": "AUDIO",
         "payload": { "endReason": "completed" }
+      }
+    },
+    {
+      "name": "signal call rejects legacy payload id field",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "signal",
+        "mediaType": "AUDIO",
+        "payload": {
+          "id": "c0a80101-0000-4000-8000-000000000001",
+          "signalType": "offer",
+          "data": "v=0"
+        }
+      }
+    },
+    {
+      "name": "signal call rejects legacy payload kind field",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "signal",
+        "mediaType": "AUDIO",
+        "payload": {
+          "signalId": "c0a80101-0000-4000-8000-000000000001",
+          "kind": "offer",
+          "data": "v=0"
+        }
       }
     },
     {
       "name": "signal call rejects connected-only field",
       "schema": "urn:somfp:v1:call",
       "value": {
-        "callSid": "550e8400-e29b-41d4-a716-446655440000",
-        "op": "signal",
-        "callType": "AUDIO",
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "signal",
+        "mediaType": "AUDIO",
         "payload": {
-          "id": "c0a80101-0000-4000-8000-000000000001",
-          "kind": "offer",
+          "signalId": "c0a80101-0000-4000-8000-000000000001",
+          "signalType": "offer",
           "data": "v=0"
         },
         "startedAt": 1700000000100
@@ -413,39 +536,39 @@
       "name": "ended call rejects signal-only fields",
       "schema": "urn:somfp:v1:call",
       "value": {
-        "callSid": "550e8400-e29b-41d4-a716-446655440000",
-        "op": "ended",
-        "callType": "AUDIO",
-        "payload": { "kind": "ice", "data": "{}" }
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "ended",
+        "mediaType": "AUDIO",
+        "payload": { "signalType": "ice", "data": "{}" }
       }
     },
     {
       "name": "ended call requires an explicit end reason",
       "schema": "urn:somfp:v1:call",
       "value": {
-        "callSid": "550e8400-e29b-41d4-a716-446655440000",
-        "op": "ended",
-        "callType": "AUDIO"
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "ended",
+        "mediaType": "AUDIO"
       }
     },
     {
-      "name": "callSid rejects ULID",
+      "name": "callId rejects ULID",
       "schema": "urn:somfp:v1:call",
       "value": {
-        "callSid": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-        "op": "incoming",
-        "callType": "AUDIO",
-        "payload": { "fromAccount": "alice", "toAccount": "bob" }
+        "callId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "operation": "incoming",
+        "mediaType": "AUDIO",
+        "payload": { "callerAccount": "alice", "calleeAccount": "bob" }
       }
     },
     {
-      "name": "callSid rejects UUID version zero",
+      "name": "callId rejects UUID version zero",
       "schema": "urn:somfp:v1:call",
       "value": {
-        "callSid": "550e8400-e29b-01d4-a716-446655440000",
-        "op": "incoming",
-        "callType": "AUDIO",
-        "payload": { "fromAccount": "alice", "toAccount": "bob" }
+        "callId": "550e8400-e29b-01d4-a716-446655440000",
+        "operation": "incoming",
+        "mediaType": "AUDIO",
+        "payload": { "callerAccount": "alice", "calleeAccount": "bob" }
       }
     },
     {
@@ -485,7 +608,7 @@
       }
     },
     {
-      "name": "group-meta full page rejects deletion records",
+      "name": "group-meta rejects the retired DELETE operation",
       "schema": "urn:somfp:v1:group-meta",
       "value": {
         "account": "!group",
@@ -548,6 +671,93 @@
         "code": 50024,
         "message": "message query rate limited",
         "data": {}
+      }
+    },
+    {
+      "name": "CALL message query rejects null clientMessageId",
+      "schema": "urn:somfp:v1:message-query",
+      "value": {
+        "messages": [
+          {
+            "thread": { "account": "alice", "peerAccount": "bob" },
+            "authorRef": "THREAD_ACCOUNT",
+            "seq": 3,
+            "originSeq": null,
+            "contentType": "CALL",
+            "content": "{\"mediaType\":\"AUDIO\",\"outcome\":\"completed\",\"startedAt\":1700000000000,\"endedAt\":1700000001000}",
+            "createdAt": 1700000001001,
+            "originCreatedAt": null,
+            "clientMessageId": null,
+            "assets": []
+          }
+        ],
+        "scannedThrough": "3",
+        "hasMore": false
+      }
+    },
+    {
+      "name": "non-CALL message query rejects clientMessageId",
+      "schema": "urn:somfp:v1:message-query",
+      "value": {
+        "messages": [
+          {
+            "thread": { "account": "alice", "peerAccount": "bob" },
+            "authorRef": "THREAD_ACCOUNT",
+            "seq": 1,
+            "originSeq": null,
+            "contentType": "PURE_TEXT",
+            "content": "{\"text\":\"hello\"}",
+            "createdAt": 1700000000000,
+            "originCreatedAt": null,
+            "clientMessageId": "550e8400-e29b-41d4-a716-446655440000",
+            "assets": []
+          }
+        ],
+        "scannedThrough": "1",
+        "hasMore": false
+      }
+    },
+    {
+      "name": "P2P message query result carries both author selectors",
+      "schema": "urn:somfp:v1:message-query",
+      "value": {
+        "messages": [
+          {
+            "thread": { "account": "alice", "peerAccount": "bob" },
+            "authorRef": "THREAD_ACCOUNT",
+            "author": { "account": "alice", "domain": "a.example" },
+            "seq": 1,
+            "originSeq": null,
+            "contentType": "PURE_TEXT",
+            "content": "{\"text\":\"hello\"}",
+            "createdAt": 1700000000000,
+            "originCreatedAt": null,
+            "assets": []
+          }
+        ],
+        "scannedThrough": "1",
+        "hasMore": false
+      }
+    },
+    {
+      "name": "GROUP message query result uses authorRef",
+      "schema": "urn:somfp:v1:message-query",
+      "value": {
+        "messages": [
+          {
+            "thread": { "account": "!team" },
+            "authorRef": "THREAD_ACCOUNT",
+            "seq": 1,
+            "originSeq": null,
+            "contentType": "PURE_TEXT",
+            "content": "{\"text\":\"hello\"}",
+            "createdAt": 1700000000000,
+            "originCreatedAt": null,
+            "assets": []
+          }
+        ],
+        "scannedThrough": "1",
+        "hasMore": false
       }
     }
   ]

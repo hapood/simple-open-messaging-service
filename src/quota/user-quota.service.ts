@@ -7,6 +7,7 @@ import {
   type DatabaseTransaction,
 } from '../database/database.service.js';
 import {
+  account,
   user,
   userQuotaDailyAllowance,
   userQuotaDailyUsage,
@@ -588,13 +589,15 @@ export class UserQuotaService implements OnModuleInit {
   }
 
   private async assertLocalAccount(userId: number): Promise<void> {
-    const row = await this.database.db.query.user.findFirst({
-      where: eq(user.id, userId),
-      columns: { domain: true, isGroup: true },
-    });
+    const [row] = await this.database.db
+      .select({ domain: user.domain })
+      .from(user)
+      .innerJoin(account, eq(account.id, user.id))
+      .where(eq(user.id, userId))
+      .limit(1);
     if (!row)
       throw new BusinessException(BusinessCode.NOT_FOUND, 'user not found');
-    if (row.domain !== 'local' || row.isGroup) {
+    if (row.domain !== 'local') {
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
         'personal quota is available only for local user accounts',

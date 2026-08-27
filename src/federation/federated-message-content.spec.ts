@@ -16,12 +16,12 @@ describe('federated message content projection', () => {
     [
       ContentType.IMAGE,
       { url: `${cas(digestA)}?threadId=4&seq=7`, w: 10, h: 20, size: 30 },
-      { digest: digestA, w: 10, h: 20, size: 30 },
+      { digest: digestA, width: 10, height: 20 },
     ],
     [
       ContentType.FILE,
       { url: cas(digestA), name: 'a.txt', size: 30, mimeType: 'text/plain' },
-      { digest: digestA, name: 'a.txt', size: 30, mimeType: 'text/plain' },
+      { digest: digestA, name: 'a.txt', mimeType: 'text/plain' },
     ],
     [
       ContentType.VIDEO,
@@ -37,10 +37,9 @@ describe('federated message content projection', () => {
       {
         digest: digestA,
         name: 'a.mp4',
-        size: 30,
         mimeType: 'video/mp4',
-        w: 10,
-        h: 20,
+        width: 10,
+        height: 20,
         duration: 1.5,
       },
     ],
@@ -56,7 +55,6 @@ describe('federated message content projection', () => {
       {
         digest: digestA,
         name: 'a.mp3',
-        size: 30,
         mimeType: 'audio/mpeg',
         duration: 1.5,
       },
@@ -77,6 +75,7 @@ describe('federated message content projection', () => {
           contentType,
           JSON.stringify(wire),
           'local.test',
+          new Map([[digestA, 30]]),
         ),
       ),
     ).toEqual({ ...local, url: cas(digestA) });
@@ -107,10 +106,28 @@ describe('federated message content projection', () => {
       digestA,
       digestB,
     ]);
+    expect(wire.items[0]).toMatchObject({ width: 2, height: 3 });
+    expect(wire.items[0]).not.toHaveProperty('w');
+    expect(wire.items[0]).not.toHaveProperty('h');
+    expect(wire.items[0]).not.toHaveProperty('size');
+    expect(wire.items[1]).not.toHaveProperty('size');
     expect(JSON.stringify(wire)).not.toContain('/uploads/');
     expect(
       federatedContentDigests(ContentType.GALLERY, JSON.stringify(wire)),
     ).toEqual([digestA, digestB]);
+    expect(
+      JSON.parse(
+        fromFederatedMessageContent(
+          ContentType.GALLERY,
+          JSON.stringify(wire),
+          'local.test',
+          new Map([
+            [digestA, 1],
+            [digestB, 4],
+          ]),
+        ),
+      ),
+    ).toEqual(local);
   });
 
   it('federates optional LINK artwork as digests and restores local URLs', () => {
@@ -243,7 +260,7 @@ describe('federated message content projection', () => {
           account: 'carol',
           domain: 'c.example',
           displayName: 'Carol',
-          bio: 'x'.repeat(256),
+          bio: 'x'.repeat(121),
         }),
         'local.test',
       ),

@@ -16,7 +16,9 @@
         "messageSeq": {
           "$ref": "urn:somfp:v1:common#/$defs/positiveThreadSequence"
         },
-        "type": { "enum": ["WITHDRAW", "REPORT"] },
+        "type": {
+          "enum": ["USER_RETRACTION", "MODERATION_REMOVAL"]
+        },
         "deletedAt": {
           "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
         }

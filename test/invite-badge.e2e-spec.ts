@@ -7,13 +7,9 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
 import { InviteService } from '../src/invite/invite.service';
-import {
-  relationshipPair,
-  relationshipIntent,
-  user,
-} from '../src/database/schema';
+import { account, relationshipIntent } from '../src/database/schema';
 import { and, eq } from 'drizzle-orm';
-import { seedUserWithSession } from './seed';
+import { findP2PRelationship, seedUserWithSession } from './seed';
 
 /**
  * Friend-request badge — the BACKEND half of the data contract.
@@ -69,8 +65,8 @@ describe('Friend-request client state e2e', () => {
       await request(http).post('/api/v1/user/my-profile').set(authB)
     ).body.data.id;
 
-    const before = await database.db.query.user.findFirst({
-      where: eq(user.id, inviteeId),
+    const before = await database.db.query.account.findFirst({
+      where: eq(account.id, inviteeId),
       columns: { stateFeedAllocatedThrough: true },
     });
     expect(before).toBeDefined();
@@ -79,11 +75,11 @@ describe('Friend-request client state e2e', () => {
     const invite = await request(http)
       .post('/api/v1/invite/friend')
       .set(authA)
-      .send({ toUserId: inviteeId });
+      .send({ account: 'invitee' });
     expect(invite.body.code).toBe(0);
 
-    const after = await database.db.query.user.findFirst({
-      where: eq(user.id, inviteeId),
+    const after = await database.db.query.account.findFirst({
+      where: eq(account.id, inviteeId),
       columns: { stateFeedAllocatedThrough: true },
     });
     // The compacted client intent itself drives the device-local notification watermark.
@@ -118,8 +114,8 @@ describe('Friend-request client state e2e', () => {
       .set(authB)
       .send({ inviteId: invite.body.data.inviteId });
     expect(accepted.body.code).toBe(0);
-    const acceptedHead = await database.db.query.user.findFirst({
-      where: eq(user.id, inviteeId),
+    const acceptedHead = await database.db.query.account.findFirst({
+      where: eq(account.id, inviteeId),
       columns: { stateFeedAllocatedThrough: true },
     });
     const handledDelta = await request(http)
@@ -144,17 +140,22 @@ describe('Friend-request client state e2e', () => {
     const a = await seedUserWithSession(app, 'expired-a', { name: 'A' });
     const b = await seedUserWithSession(app, 'expired-b', { name: 'B' });
     const pastRequestedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
-    const pastExpiresAt = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const pastExpiresAt = new Date(
+      pastRequestedAt.getTime() + 6 * 24 * 60 * 60 * 1000,
+    );
 
+    await database.db.transaction((tx) =>
+      invites.writeLocalFriendIntentInTx(tx, a.id, b.id, true),
+    );
+    const relationship = await findP2PRelationship(database.db, a.id, b.id);
     await database.db.transaction(async (tx) => {
-      await invites.writeLocalFriendIntentInTx(tx, a.id, b.id, true);
       await tx
         .update(relationshipIntent)
         .set({ requestedAt: pastRequestedAt, expiresAt: pastExpiresAt })
         .where(
           and(
-            eq(relationshipIntent.authorUserId, a.id),
-            eq(relationshipIntent.subjectUserId, b.id),
+            eq(relationshipIntent.pairId, relationship.pair!.id),
+            eq(relationshipIntent.authorSide, relationship.firstSide),
           ),
         );
       await invites.applyRemoteFriendIntentInTx(tx, {
@@ -168,12 +169,7 @@ describe('Friend-request client state e2e', () => {
       });
     });
 
-    let pair = await database.db.query.relationshipPair.findFirst({
-      where: and(
-        eq(relationshipPair.userLowId, Math.min(a.id, b.id)),
-        eq(relationshipPair.userHighId, Math.max(a.id, b.id)),
-      ),
-    });
+    let pair = (await findP2PRelationship(database.db, a.id, b.id)).pair;
     expect(pair?.active).toBe(false);
     expect(pair?.threadId).not.toBeNull();
 
@@ -184,18 +180,13 @@ describe('Friend-request client state e2e', () => {
     });
     const renewedLocal = await database.db.query.relationshipIntent.findFirst({
       where: and(
-        eq(relationshipIntent.authorUserId, a.id),
-        eq(relationshipIntent.subjectUserId, b.id),
+        eq(relationshipIntent.pairId, relationship.pair!.id),
+        eq(relationshipIntent.authorSide, relationship.firstSide),
       ),
     });
     expect(renewedLocal?.expiresAt?.getTime()).toBeGreaterThan(Date.now());
 
-    pair = await database.db.query.relationshipPair.findFirst({
-      where: and(
-        eq(relationshipPair.userLowId, Math.min(a.id, b.id)),
-        eq(relationshipPair.userHighId, Math.max(a.id, b.id)),
-      ),
-    });
+    pair = (await findP2PRelationship(database.db, a.id, b.id)).pair;
     expect(pair?.active).toBe(false);
 
     await database.db.transaction(async (tx) => {
@@ -211,12 +202,7 @@ describe('Friend-request client state e2e', () => {
       });
     });
 
-    pair = await database.db.query.relationshipPair.findFirst({
-      where: and(
-        eq(relationshipPair.userLowId, Math.min(a.id, b.id)),
-        eq(relationshipPair.userHighId, Math.max(a.id, b.id)),
-      ),
-    });
+    pair = (await findP2PRelationship(database.db, a.id, b.id)).pair;
     // Applying the peer-owned renewed request promotes only the effective local request. Crossed
     // requests are already confirmed while the peer-owned direction remains REQUESTED.
     expect(pair?.active).toBe(true);
@@ -233,12 +219,7 @@ describe('Friend-request client state e2e', () => {
         origin: 'peer.test',
       }),
     );
-    pair = await database.db.query.relationshipPair.findFirst({
-      where: and(
-        eq(relationshipPair.userLowId, Math.min(a.id, b.id)),
-        eq(relationshipPair.userHighId, Math.max(a.id, b.id)),
-      ),
-    });
+    pair = (await findP2PRelationship(database.db, a.id, b.id)).pair;
     expect(pair?.active).toBe(true);
     expect(pair?.threadId).not.toBeNull();
   });
@@ -256,9 +237,10 @@ describe('Friend-request client state e2e', () => {
     const old = await request(app.getHttpServer())
       .post('/api/v1/invite/friend')
       .set(authA)
-      .send({ toUserId: b.id, note: 'old A to B' });
+      .send({ account: b.account, note: 'old A to B' });
     expect(old.body.code).toBe(0);
     const expiredAt = Date.now();
+    const relationship = await findP2PRelationship(database.db, a.id, b.id);
     await database.db
       .update(relationshipIntent)
       .set({
@@ -267,22 +249,17 @@ describe('Friend-request client state e2e', () => {
       })
       .where(
         and(
-          eq(relationshipIntent.authorUserId, a.id),
-          eq(relationshipIntent.subjectUserId, b.id),
+          eq(relationshipIntent.pairId, relationship.pair!.id),
+          eq(relationshipIntent.authorSide, relationship.firstSide),
         ),
       );
 
     const reverse = await request(app.getHttpServer())
       .post('/api/v1/invite/friend')
       .set(authB)
-      .send({ toUserId: a.id, note: 'new B to A' });
+      .send({ account: a.account, note: 'new B to A' });
     expect(reverse.body.code).toBe(0);
-    let pair = await database.db.query.relationshipPair.findFirst({
-      where: and(
-        eq(relationshipPair.userLowId, Math.min(a.id, b.id)),
-        eq(relationshipPair.userHighId, Math.max(a.id, b.id)),
-      ),
-    });
+    let pair = (await findP2PRelationship(database.db, a.id, b.id)).pair;
     expect(pair?.active).toBe(false);
 
     const incoming = await request(app.getHttpServer())
@@ -306,18 +283,12 @@ describe('Friend-request client state e2e', () => {
 
     const directions = await database.db.query.relationshipIntent.findMany({
       where: and(
-        // This pair is isolated in the test, so either direction is sufficient here.
-        eq(relationshipIntent.authorUserId, a.id),
-        eq(relationshipIntent.subjectUserId, b.id),
+        eq(relationshipIntent.pairId, relationship.pair!.id),
+        eq(relationshipIntent.authorSide, relationship.firstSide),
       ),
     });
     expect(directions[0]?.status).toBe('ACCEPTED');
-    pair = await database.db.query.relationshipPair.findFirst({
-      where: and(
-        eq(relationshipPair.userLowId, Math.min(a.id, b.id)),
-        eq(relationshipPair.userHighId, Math.max(a.id, b.id)),
-      ),
-    });
+    pair = (await findP2PRelationship(database.db, a.id, b.id)).pair;
     expect(pair?.active).toBe(true);
     expect(pair?.threadId).toBe(accepted.body.data.threadId);
   });

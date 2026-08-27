@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 
 // loadFederationConfig() reads SOMS_DOMAIN via requireEnv at construction (field initializer), so it
 // must be set before `new FederationService(...)`. Module-top runs before any test body.
@@ -12,6 +13,7 @@ import {
 import { BusinessCode } from '../common/business-code.js';
 import { ContentType } from '../database/enums.js';
 import { UploadService } from '../upload/upload.service.js';
+import { messageThread, threadMember } from '../database/schema.js';
 
 describe('federated contact-card avatar limits', () => {
   const digest = 'a'.repeat(64);
@@ -65,7 +67,7 @@ describe('client group intent compaction identity', () => {
 describe('federated profile resource path', () => {
   it('canonically percent-encodes a group account', async () => {
     const { svc } = makeStubs();
-    const getSigned = vi.fn().mockResolvedValue({});
+    const getSigned = vi.fn().mockResolvedValue({ profileRev: 0 });
     const target = svc as unknown as {
       getSigned: typeof getSigned;
       fetchRemoteUser(address: {
@@ -82,6 +84,121 @@ describe('federated profile resource path', () => {
       'peer.test',
     );
   });
+
+  it('rejects a negative public profile revision', async () => {
+    const { svc } = makeStubs();
+    const getSigned = vi.fn().mockResolvedValue({ profileRev: -1 });
+    const target = svc as unknown as {
+      getSigned: typeof getSigned;
+      fetchRemoteUser(address: {
+        account: string;
+        domain: string;
+      }): Promise<unknown>;
+    };
+    target.getSigned = getSigned;
+
+    await expect(
+      target.fetchRemoteUser({ account: 'alice', domain: 'peer.test' }),
+    ).rejects.toMatchObject({
+      code: BusinessCode.FEDERATION_MALFORMED,
+      status: 200,
+    });
+  });
+
+  it('projects the public profile with the canonical inline avatar shape', async () => {
+    const { svc } = makeStubs();
+    const bytes = Buffer.from('avatar');
+    const readAvatarAsWire = vi.fn().mockResolvedValue({
+      b64: bytes.toString('base64'),
+      w: 32,
+      h: 24,
+    });
+    const target = svc as unknown as {
+      upload: { readAvatarAsWire: typeof readAvatarAsWire };
+      toS2SProfile(user: {
+        account: string;
+        name: string;
+        avatar: string;
+        bio: string;
+        profileRev: number;
+      }): Promise<unknown>;
+    };
+    target.upload = { readAvatarAsWire };
+
+    await expect(
+      target.toS2SProfile({
+        account: 'alice',
+        name: 'Alice',
+        avatar: '/uploads/avatars/alice.webp',
+        bio: '',
+        profileRev: 7,
+      }),
+    ).resolves.toEqual({
+      account: 'alice',
+      domain: 'soms.io',
+      displayName: 'Alice',
+      bio: '',
+      avatar: {
+        digest: createHash('sha256').update(bytes).digest('hex'),
+        mimeType: 'image/webp',
+        base64: bytes.toString('base64'),
+        width: 32,
+        height: 24,
+      },
+      profileRev: 7,
+    });
+  });
+
+  it('maps a validated public avatar into the internal avatar pipeline', async () => {
+    const { svc } = makeStubs();
+    const bytes = Buffer.from('avatar');
+    const saveAvatarFromWire = vi.fn().mockResolvedValue('/avatar.webp');
+    const target = svc as unknown as {
+      upload: { saveAvatarFromWire: typeof saveAvatarFromWire };
+      prepareForeignProfileData(profile: {
+        account: string;
+        domain: string;
+        displayName: string;
+        bio: string;
+        avatar: {
+          digest: string;
+          mimeType: string;
+          base64: string;
+          width: number;
+          height: number;
+        };
+        profileRev: number;
+      }): Promise<unknown>;
+    };
+    target.upload = { saveAvatarFromWire };
+
+    await expect(
+      target.prepareForeignProfileData({
+        account: 'alice',
+        domain: 'peer.test',
+        displayName: 'Alice',
+        bio: '',
+        avatar: {
+          digest: createHash('sha256').update(bytes).digest('hex'),
+          mimeType: 'image/webp',
+          base64: bytes.toString('base64'),
+          width: 32,
+          height: 24,
+        },
+        profileRev: 7,
+      }),
+    ).resolves.toEqual({
+      name: 'Alice',
+      bio: '',
+      avatar: '/avatar.webp',
+      profileRev: 7,
+    });
+    expect(saveAvatarFromWire).toHaveBeenCalledExactlyOnceWith({
+      b64: bytes.toString('base64'),
+      w: 32,
+      h: 24,
+    });
+  });
 });
 
 describe('federated group join request', () => {
@@ -89,7 +206,7 @@ describe('federated group join request', () => {
     const { svc, database } = makeStubs();
     const fetchRemoteUser = vi.fn();
     const ensureShell = vi.fn().mockResolvedValue({
-      groupUserId: 17,
+      groupId: 17,
       threadId: 23,
     });
     const writeIntent = vi.fn().mockResolvedValue(new Map([['peer.test', 5n]]));
@@ -169,6 +286,40 @@ function makeStubs() {
   const database = {
     db: {
       execute: vi.fn().mockResolvedValue({ rows: [{ authorized: true }] }),
+      select: vi.fn(() => {
+        let source: unknown;
+        const resolve = async () => {
+          if (source === messageThread) {
+            const row = await store.messageThread.findUnique();
+            return row
+              ? [
+                  {
+                    type: row.groupUser ? 'GROUP' : 'P2P',
+                    groupDomain: row.groupUser?.domain ?? null,
+                  },
+                ]
+              : [];
+          }
+          if (source === threadMember)
+            return store.threadParticipant.findMany();
+          return [];
+        };
+        const query = {
+          from: (table: unknown) => {
+            source = table;
+            return query;
+          },
+          leftJoin: () => query,
+          innerJoin: () => query,
+          where: () => query,
+          limit: () => query,
+          then: (
+            resolveResult: (rows: unknown[]) => unknown,
+            reject: (reason: unknown) => unknown,
+          ) => resolve().then(resolveResult, reject),
+        };
+        return query;
+      }),
       query: {
         messageThread: {
           findFirst: async (...args: unknown[]) => {
@@ -233,7 +384,6 @@ function makeStubs() {
     {} as never, // relationshipIntents
     {} as never, // groupRequestProjection
     {} as never, // groupRelationships
-    {} as never, // memberProfileGc
     {} as never, // groupRosterProjection
   );
   return {
@@ -252,17 +402,28 @@ describe('FederationService inbound call preflight', () => {
     const { svc, eventEmitter } = makeStubs();
     eventEmitter.emitAsync.mockResolvedValueOnce([true]);
     const frame = {
-      callSid: '550e8400-e29b-41d4-a716-446655440000',
-      op: 'incoming' as const,
-      callType: 'AUDIO' as const,
-      payload: { fromAccount: 'alice', toAccount: 'bob' },
+      callId: '550e8400-e29b-41d4-a716-446655440000',
+      operation: 'incoming' as const,
+      mediaType: 'AUDIO' as const,
+      payload: { callerAccount: 'alice', calleeAccount: 'bob' },
     };
 
     await svc.handleCallFrame(frame, 'peer.example', 1_700_000_300);
 
     expect(eventEmitter.emitAsync).toHaveBeenCalledExactlyOnceWith(
       'call.frame.incoming.preflight',
-      { peerDomain: 'peer.example', frame },
+      {
+        peerDomain: 'peer.example',
+        frame: {
+          callSid: frame.callId,
+          callType: frame.mediaType,
+          payload: {
+            fromAccount: frame.payload.callerAccount,
+            toAccount: frame.payload.calleeAccount,
+          },
+          op: frame.operation,
+        },
+      },
     );
   });
 });
@@ -679,6 +840,52 @@ describe('FederationService global missed transport', () => {
       expect(target.capturePeerResponseToken).not.toHaveBeenCalled();
     },
   );
+
+  it('resolves a remote message author as an address without creating a per-message User', async () => {
+    const { svc } = makeStubs();
+    const findUser = vi.fn();
+    const insert = vi.fn();
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce({
+        rows: [{ threadId: 10, federationVersion: 3, toAccount: 'alice' }],
+      })
+      .mockResolvedValueOnce({ rows: [{ userId: 1 }] });
+    const tx = {
+      execute,
+      insert,
+      query: { user: { findFirst: findUser } },
+    };
+    const resolveMissedThread = (
+      svc as unknown as {
+        resolveMissedThreadInTransaction: (
+          tx: unknown,
+          item: unknown,
+          sourceDomain: string,
+        ) => Promise<unknown>;
+      }
+    ).resolveMissedThreadInTransaction.bind(svc);
+
+    await expect(
+      resolveMissedThread(
+        tx,
+        {
+          thread: { account: 'bob', peerAccount: 'alice' },
+          authorRef: 'THREAD_ACCOUNT',
+        },
+        'peer.test',
+      ),
+    ).resolves.toEqual({
+      threadId: 10,
+      federationVersion: 3,
+      toAccount: 'alice',
+      creatorAccount: 'bob',
+      creatorDomain: 'peer.test',
+      recipients: [1],
+    });
+    expect(findUser).not.toHaveBeenCalled();
+    expect(insert).not.toHaveBeenCalled();
+  });
 });
 
 describe('FederationService thread-query revocation fallback', () => {
@@ -969,7 +1176,12 @@ describe('FederationService.signalOutbound — fixed-topology routing', () => {
       foreignUser(3, 'carol', 'c.com'),
     ]);
 
-    await svc.signalOutbound(10, 1, 5, undefined);
+    await svc.signalOutbound(
+      10,
+      { account: 'alice', domain: 'local' },
+      5,
+      undefined,
+    );
 
     expect(push.mock.calls).toEqual([
       ['b.com', 10, 5],
@@ -991,7 +1203,12 @@ describe('FederationService.signalOutbound — fixed-topology routing', () => {
       foreignUser(3, 'carol', 'c.com'),
     ]);
 
-    await svc.signalOutbound(10, 1, 5, 'b.com');
+    await svc.signalOutbound(
+      10,
+      { account: 'alice', domain: 'local' },
+      5,
+      'b.com',
+    );
 
     expect(push.mock.calls).toEqual([
       ['b.com', 10, 5],
@@ -1015,7 +1232,12 @@ describe('FederationService.signalOutbound — fixed-topology routing', () => {
       foreignUser(3, 'carol', 'c.com'),
     ]);
 
-    await svc.signalOutbound(10, 1, 7, undefined);
+    await svc.signalOutbound(
+      10,
+      { account: 'alice', domain: 'local' },
+      7,
+      undefined,
+    );
 
     expect(push.mock.calls).toEqual([
       ['b.com', 10, 7],
@@ -1024,7 +1246,12 @@ describe('FederationService.signalOutbound — fixed-topology routing', () => {
 
     // The source receives the acceptance copy as its receipt; other mirrors receive normal distribution.
     push.mockClear();
-    await svc.signalOutbound(10, 1, 7, 'b.com');
+    await svc.signalOutbound(
+      10,
+      { account: 'alice', domain: 'local' },
+      7,
+      'b.com',
+    );
     expect(push.mock.calls).toEqual([
       ['b.com', 10, 7],
       ['c.com', 10, 7],
@@ -1042,12 +1269,22 @@ describe('FederationService.signalOutbound — fixed-topology routing', () => {
     store.threadParticipant.findMany.mockResolvedValue([localUser(1, 'alice')]);
 
     // A mirror's sole destination is the origin (the hub it pulls from).
-    await svc.signalOutbound(10, 1, 7, undefined);
+    await svc.signalOutbound(
+      10,
+      { account: 'alice', domain: 'local' },
+      7,
+      undefined,
+    );
     expect(push).toHaveBeenCalledExactlyOnceWith('origin.com', 10, 7);
 
     // A copy pulled from the origin is queryable by that origin as a processing receipt.
     push.mockClear();
-    await svc.signalOutbound(10, 1, 7, 'origin.com');
+    await svc.signalOutbound(
+      10,
+      { account: 'alice', domain: 'local' },
+      7,
+      'origin.com',
+    );
     expect(push).toHaveBeenCalledExactlyOnceWith('origin.com', 10, 7);
   });
 
@@ -1059,7 +1296,12 @@ describe('FederationService.signalOutbound — fixed-topology routing', () => {
 
     store.messageThread.findUnique.mockResolvedValue(null);
     store.threadParticipant.findMany.mockResolvedValue([]);
-    await svc.signalOutbound(10, 1, 5, undefined);
+    await svc.signalOutbound(
+      10,
+      { account: 'alice', domain: 'local' },
+      5,
+      undefined,
+    );
     expect(push).not.toHaveBeenCalled();
 
     store.messageThread.findUnique.mockResolvedValue({
@@ -1068,7 +1310,12 @@ describe('FederationService.signalOutbound — fixed-topology routing', () => {
     store.threadParticipant.findMany.mockResolvedValue([
       foreignUser(99, 'x', 'b.com'),
     ]);
-    await svc.signalOutbound(10, 1, 5, undefined); // author 1 is not in the roster
+    await svc.signalOutbound(
+      10,
+      { account: 'alice', domain: 'local' },
+      5,
+      undefined,
+    ); // alice@local is not in the roster
     expect(push).not.toHaveBeenCalled();
   });
 });

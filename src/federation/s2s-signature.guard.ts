@@ -18,7 +18,7 @@ import { FederationRecognitionService } from './federation-recognition.service.j
  * Inbound S2S signature guard for the friend-op + signed GET endpoints — Gate 1 (server allow-list +
  * valid signature). Verifies the request was signed by a recognized peer's authorized key and that the
  * asserted sender's domain matches the signer's domain (binding rule — each server vouches only for
- * its own users). Recognize and Healthy have distinct bootstrap/status verification in
+ * its own users). Recognize and Health have distinct bootstrap/status verification in
  * S2sRecognitionController and do not use this ordinary data-plane guard.
  *
  * Verification (keyId parse + .well-known key fetch + sig verify) is delegated to S2sVerifyService,

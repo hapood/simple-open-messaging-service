@@ -114,7 +114,6 @@ describe('Local-account UserQuotaService (DB-backed)', () => {
   let database: DatabaseService;
   let mod: TestingModule;
   let localUserId: number;
-  let foreignUserId: number;
 
   beforeAll(async () => {
     mod = await Test.createTestingModule({
@@ -127,11 +126,9 @@ describe('Local-account UserQuotaService (DB-backed)', () => {
       ['quota-local', 'Quota Local', 'local'],
     );
     localUserId = local.rows[0].id;
-    const foreign = await database.pool.query<{ id: number }>(
-      'INSERT INTO "User" (account, name, domain, "updatedAt") VALUES ($1, $2, $3, NOW()) RETURNING id',
-      ['quota-foreign', 'Quota Foreign', 'peer.local'],
-    );
-    foreignUserId = foreign.rows[0].id;
+    await database.pool.query('INSERT INTO "Account" (id) VALUES ($1)', [
+      localUserId,
+    ]);
   });
 
   beforeEach(async () => {
@@ -141,8 +138,8 @@ describe('Local-account UserQuotaService (DB-backed)', () => {
   });
 
   afterAll(async () => {
-    await database.pool.query('DELETE FROM "User" WHERE id = ANY($1)', [
-      [localUserId, foreignUserId],
+    await database.pool.query('DELETE FROM "User" WHERE id = $1', [
+      localUserId,
     ]);
     await mod.close();
   });
@@ -170,11 +167,5 @@ describe('Local-account UserQuotaService (DB-backed)', () => {
     await expect(
       quota.preCheckFile(localUserId, 0, 4n),
     ).resolves.toBeUndefined();
-  });
-
-  it('does not expose personal quota for a federated user stub', async () => {
-    await expect(quota.getState(foreignUserId)).rejects.toMatchObject({
-      bizCode: BusinessCode.VALIDATION_FAILED,
-    });
   });
 });

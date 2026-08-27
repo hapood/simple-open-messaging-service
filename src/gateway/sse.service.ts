@@ -4,7 +4,7 @@ import type { ServerResponse } from 'http';
 import { initSseResponse, formatSseFrame } from '../common/sse-stream.js';
 import { eq } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { user as userTable } from '../database/schema.js';
+import { account, user as userTable } from '../database/schema.js';
 import { CallStateRegistry } from './call-state.registry.js';
 
 /** One held SSE connection: the raw response, its heartbeat timer, the establishment time, and the
@@ -77,14 +77,16 @@ export class SseService implements OnModuleDestroy {
    *  DB failure is swallowed (never throws on the connect path). */
   private async sendHello(userId: number, entry: SseClient): Promise<void> {
     try {
-      const user = await this.database.db.query.user.findFirst({
-        where: eq(userTable.id, userId),
-        columns: {
-          stateFeedAllocatedThrough: true,
-          readRevision: true,
-          profileRev: true,
-        },
-      });
+      const [user] = await this.database.db
+        .select({
+          stateFeedAllocatedThrough: account.stateFeedAllocatedThrough,
+          readRevision: account.readRevision,
+          profileRev: userTable.profileRev,
+        })
+        .from(account)
+        .innerJoin(userTable, eq(userTable.id, account.id))
+        .where(eq(account.id, userId))
+        .limit(1);
       const frame = formatSseFrame('HELLO', {
         // The caller's userId. The session token is OPAQUE (server-side lookup only), so the client cannot
         // learn its userId without an authenticated response — HELLO is it. The client opens its per-user

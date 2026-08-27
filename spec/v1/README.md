@@ -16,7 +16,7 @@ See [CONFORMANCE](./CONFORMANCE.md) for the complete conformance scope and modul
 
 1. [Core Protocol](./protocol.md): roles, versioning, HTTP surface, shared types, responses, durable state, and evolution rules.
 2. [Transport and Security](./transport-security.md): well-known discovery, root and signing keys, SRV, TLS, logical authority, digests, and HTTP Message Signatures.
-3. [Peer Recognition](./recognition.md): bidirectional Recognize, root public-key pinning, Healthy availability queries, degraded state, timing, and failure handling.
+3. [Peer Recognition](./recognition.md): bidirectional Recognize, root public-key pinning, Health availability queries, degraded state, timing, and failure handling.
 4. [State Feed](./state-feed.md): compacted relationship, profile, and Group Meta feed-head snapshots.
 5. [Group Meta Feed](./group-meta.md): per-peer full and delta group-member projections, roles, and source-scoped profiles.
 6. [Message Feed and Query](./message-feed.md): index-based compacted feed and thread-content query.

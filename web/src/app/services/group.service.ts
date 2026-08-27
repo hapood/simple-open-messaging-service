@@ -18,8 +18,8 @@ export interface GroupJoinRequest {
   name: string;
   avatar: string;
   note: string;
-  requestedAt: string | null;
-  expiresAt: string | null;
+  requestedAt: number | null;
+  expiresAt: number | null;
 }
 
 export interface GroupInviteCandidate {
@@ -44,6 +44,23 @@ export class GroupService {
       `${apiPrefix()}/group/create`,
       params,
     );
+  }
+
+  requestFederatedJoin(params: {
+    account: string;
+    domain: string;
+    displayName: string;
+    avatar?: string;
+    note?: string;
+  }) {
+    return this.http.post<
+      StandardResponse<{
+        inviteId?: string;
+        threadId?: number;
+        account?: string;
+        domain?: string;
+      }>
+    >(`${apiPrefix()}/group/federated-join-request`, params);
   }
 
   /** Batch invite: each friend receives an INVITE in the inviter↔invitee P2P thread. The server
@@ -86,14 +103,18 @@ export class GroupService {
     );
   }
 
-  kickMember(params: { groupId: number; userId: number }) {
+  kickMember(params: { groupId: number; account: string; domain: string }) {
     return this.http.post<StandardResponse>(
       `${apiPrefix()}/group/kick`,
       params,
     );
   }
 
-  transferOwnership(params: { groupId: number; toUserId: number }) {
+  transferOwnership(params: {
+    groupId: number;
+    account: string;
+    domain: string;
+  }) {
     return this.http.post<StandardResponse>(
       `${apiPrefix()}/group/transfer`,
       params,
@@ -103,7 +124,8 @@ export class GroupService {
   /** role is ADMIN or MEMBER; ownership changes use transferOwnership. */
   setRole(params: {
     groupId: number;
-    userId: number;
+    account: string;
+    domain: string;
     role: 'ADMIN' | 'MEMBER';
   }) {
     return this.http.post<StandardResponse>(

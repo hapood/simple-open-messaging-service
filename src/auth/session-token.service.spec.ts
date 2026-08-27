@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SessionTokenService } from './session-token.service.js';
-import { sessionToken, user } from '../database/schema.js';
+import { account, sessionToken, userPreference } from '../database/schema.js';
 import type { KvStoreService } from '../kv-store/kv-store.service.js';
 
 /**
@@ -33,13 +33,14 @@ describe('SessionTokenService', () => {
     void selection;
     let table: unknown;
     const resolve = async () => {
-      if (table === user) {
+      if (table === account) {
         const created = store.sessionToken.create.mock.results.at(-1)?.value;
         const row = created
           ? await created
           : { user: { mustChangePassword: false } };
         return [{ mustChangePassword: row.user?.mustChangePassword ?? false }];
       }
+      if (table === userPreference) return [];
       const rows = await store.sessionToken.findMany();
       if (rows.length > 0) return rows;
       const row =

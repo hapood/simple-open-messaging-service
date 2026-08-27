@@ -43,7 +43,7 @@ export interface ManagedSecretStatus {
   configured: boolean;
   valid: boolean;
   fingerprint?: string;
-  createdAt?: string;
+  createdAt?: number;
   permissionsSecure?: boolean;
 }
 
@@ -61,7 +61,7 @@ export function getManagedSecretStatus(filename: string): ManagedSecretStatus {
         .update(material)
         .digest('hex')
         .slice(0, 16),
-      createdAt: stat.birthtime.toISOString(),
+      createdAt: stat.birthtimeMs,
       permissionsSecure: (stat.mode & 0o077) === 0,
     };
   } catch {

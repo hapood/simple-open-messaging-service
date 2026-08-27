@@ -4,8 +4,10 @@ import {
   ArrayMinSize,
   IsArray,
   IsBoolean,
+  IsDataURI,
   IsEnum,
   IsInt,
+  IsNotEmpty,
   IsOptional,
   IsString,
   Matches,
@@ -72,13 +74,47 @@ export class InviteGroupDto {
   groupId!: number;
 }
 
-/** Shared by group/info and group/leave — any group route keyed only by groupId. */
+/** Shared by group routes keyed only by groupId. */
 export class GroupIdDto {
   @ApiProperty({ example: 12, description: 'Group id' })
   @Type(() => Number)
   @IsInt()
   @Min(1)
   groupId!: number;
+}
+
+/** Apply to a federated group by its public Address. The profile fields are an untrusted display
+ * snapshot and never establish the group's identity. */
+export class FederatedGroupJoinRequestDto {
+  @ApiProperty({ example: '!engineering', description: 'Group account' })
+  @IsString()
+  @IsNotEmpty()
+  account!: string;
+
+  @ApiProperty({ example: 'peer.example', description: 'Group home domain' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(63)
+  domain!: string;
+
+  @ApiProperty({ description: 'Untrusted pending-card display snapshot' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(31)
+  displayName!: string;
+
+  @ApiPropertyOptional({ description: 'Untrusted pending-card avatar' })
+  @IsOptional()
+  @IsString()
+  @IsDataURI()
+  @MaxLength(1_500_000)
+  avatar?: string;
+
+  @ApiPropertyOptional({ description: 'Join-request note (≤255 chars)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  note?: string;
 }
 
 /** Server-authoritative friend page for the group invitation picker. */
@@ -166,47 +202,31 @@ export class GroupTerminalActionDto extends GroupIdDto {
   deleteData?: boolean;
 }
 
-export class KickGroupDto {
+class GroupMemberTargetDto {
   @ApiProperty({ example: 12, description: 'Group id' })
   @Type(() => Number)
   @IsInt()
   @Min(1)
   groupId!: number;
 
-  @ApiProperty({ example: 7, description: 'Member to remove' })
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  userId!: number;
+  @ApiProperty({ example: 'alice', description: 'Member account' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(31)
+  account!: string;
+
+  @ApiProperty({ example: 'example.com', description: 'Member home domain' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(63)
+  domain!: string;
 }
 
-export class TransferGroupDto {
-  @ApiProperty({ example: 12, description: 'Group id' })
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  groupId!: number;
+export class KickGroupDto extends GroupMemberTargetDto {}
 
-  @ApiProperty({ example: 7, description: 'Active member to promote to owner' })
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  toUserId!: number;
-}
+export class TransferGroupDto extends GroupMemberTargetDto {}
 
-export class SetRoleGroupDto {
-  @ApiProperty({ example: 12, description: 'Group id' })
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  groupId!: number;
-
-  @ApiProperty({ example: 7, description: 'Member whose role is changed' })
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  userId!: number;
-
+export class SetRoleGroupDto extends GroupMemberTargetDto {
   /** ADMIN or MEMBER only — ownership changes go through group/transfer. OWNER is rejected. */
   @ApiProperty({
     enum: GroupRole,

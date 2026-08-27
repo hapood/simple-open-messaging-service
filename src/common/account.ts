@@ -7,12 +7,11 @@ import { isUniqueViolation } from '../database/database-error.js';
  * counterpart: every site that creates, validates, normalizes, or mints an account string goes through
  * here. The spec is authoritative; if code and spec disagree, fix the code.
  *
- * Two account classes share the `User.account` column, told apart by a grammar-enforced sigil:
+ * Person and group addresses use distinct tables and grammar classes:
  *   - USER : SOMFP UserAccount (`[a-z0-9][a-z0-9._-]{0,29}`), normalized to lowercase on local input.
  *     The `!` group sigil stays un-spoofable because it is outside that alphabet.
  *   - GROUP: a leading `!` + an opaque id (the `!` can never appear in a user account, so the sigil is
- *            an un-spoofable discriminator — no separate type flag is needed for correctness; the
- *            `User.isGroup` boolean mirrors it only as a query-time denormalization).
+ *            an un-spoofable discriminator stored only in Group.account).
  */
 
 /** SOMFP UserAccount: 1–30 ASCII chars; first char is alphanumeric, remaining chars may additionally
@@ -75,8 +74,7 @@ export function isValidAccount(account: string): boolean {
   return isValidUserAccount(account) || isValidGroupAccount(account);
 }
 
-/** String-context discriminator (when you have the account but not the loaded row). For DB queries prefer
- *  `where: { isGroup: ... }`. Grammar guarantees this agrees with `User.isGroup` (CHECK constraint). */
+/** String-context discriminator for wire addresses. Database queries use the User or Group table. */
 export function isGroupAccount(account: string): boolean {
   return account.startsWith('!');
 }

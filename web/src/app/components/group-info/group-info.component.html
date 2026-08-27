@@ -126,11 +126,11 @@
           "
         >
           <span class="avatar-stack" aria-hidden="true">
-            @for (m of overviewMembers(); track m.userId) {
+            @for (m of overviewMembers(); track m.identityKey) {
               <app-user-avatar
                 [type]="UserAvatarType.OTHER"
                 [name]="m.name"
-                [identityId]="m.userId"
+                [identityId]="m.identityKey"
                 [account]="m.account"
                 [federatedDomain]="m.domain || null"
                 [src]="m.avatar"
@@ -341,13 +341,13 @@
             'group.allMembers' | transloco: { count: group()?.memberCount ?? 0 }
           }}
         </div>
-        @for (m of filteredRoster(); track m.userId) {
+        @for (m of filteredRoster(); track m.identityKey) {
           <div class="member">
             <div class="member-main">
               <app-user-avatar
                 [type]="UserAvatarType.OTHER"
                 [name]="m.name"
-                [identityId]="m.userId"
+                [identityId]="m.identityKey"
                 [account]="m.account"
                 [federatedDomain]="m.domain || null"
                 [src]="m.avatar"
@@ -355,7 +355,7 @@
               <div class="member-info">
                 <span class="member-name"
                   >{{ m.name }}
-                  @if (m.userId === myUserId()) {
+                  @if (m.account === sessionAccount() && m.domain === 'local') {
                     {{ 'common.you' | transloco }}
                   }
                 </span>
