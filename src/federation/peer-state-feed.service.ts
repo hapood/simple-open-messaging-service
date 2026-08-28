@@ -14,6 +14,7 @@ import {
 } from '../database/database.service.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
 import { STATE_FEED_PAGE_MAX_BYTES } from '../common/feed-page.js';
+import { FEDERATION_THREAD_SEQUENCE_MAX } from './federation-thread-round.constants.js';
 
 export type PeerStateEventType = (typeof peerStateEventType.enumValues)[number];
 /** The `/s2s/v1` route is the schema version; bodies contain business state only. */
@@ -56,6 +57,18 @@ const snapshotRevision = (
       /^(0|[1-9]\d*)$/.test(body.groupMetaFeedEndId)
       ? body.groupMetaFeedEndId
       : undefined;
+  if (eventType === 'THREAD_CONTENT_HEAD') {
+    const messageEndSeq = body.messageEndSeq;
+    const tombstoneEndSeq = body.tombstoneEndSeq;
+    return Number.isSafeInteger(messageEndSeq) &&
+      Number(messageEndSeq) > 0 &&
+      Number(messageEndSeq) <= FEDERATION_THREAD_SEQUENCE_MAX &&
+      Number.isSafeInteger(tombstoneEndSeq) &&
+      Number(tombstoneEndSeq) >= 0 &&
+      Number(tombstoneEndSeq) <= FEDERATION_THREAD_SEQUENCE_MAX
+      ? `${Number(messageEndSeq)}:${Number(tombstoneEndSeq)}`
+      : undefined;
+  }
   const value = eventType === 'PROFILE' ? body.profileRev : undefined;
   return Number.isSafeInteger(value) && Number(value) >= 0
     ? Number(value)
@@ -118,11 +131,16 @@ export class PeerStateFeedService {
       }
       const subjectAccount = write.subjectAccount;
       const subjectDomain = write.subjectDomain;
-      const directional = write.eventType === 'RELATIONSHIP_INTENT';
+      const directionalRelationship = write.eventType === 'RELATIONSHIP_INTENT';
+      const p2pThreadContent =
+        write.eventType === 'THREAD_CONTENT_HEAD' &&
+        !write.account.startsWith('!');
       if (
         !write.domain ||
-        (directional
-          ? subjectAccount === '' || subjectDomain === ''
+        (directionalRelationship || p2pThreadContent
+          ? subjectAccount === '' ||
+            subjectDomain === '' ||
+            (p2pThreadContent && subjectDomain !== write.peerDomain)
           : subjectAccount !== '' || subjectDomain !== 'local')
       ) {
         throw new Error(
@@ -213,6 +231,33 @@ export class PeerStateFeedService {
           },
         });
       result.set(write.peerDomain, allocated.feedId);
+      if (write.eventType !== 'THREAD_CONTENT_HEAD') {
+        const dependents = await tx
+          .select()
+          .from(peerStateFeed)
+          .where(
+            and(
+              eq(peerStateFeed.peerDomain, write.peerDomain),
+              eq(peerStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
+            ),
+          );
+        if (dependents.length > 0) {
+          const moved = await this.writeManyInTx(
+            tx,
+            dependents.map((dependent) => ({
+              peerDomain: dependent.peerDomain,
+              account: dependent.account,
+              domain: dependent.domain,
+              eventType: 'THREAD_CONTENT_HEAD' as const,
+              subjectAccount: dependent.subjectAccount,
+              subjectDomain: dependent.subjectDomain,
+              body: dependent.body as PeerStateBody,
+              forceReindex: true,
+            })),
+          );
+          for (const entry of moved) result.set(...entry);
+        }
+      }
     }
     return result;
   }
@@ -311,7 +356,8 @@ export class PeerStateFeedService {
           eventType: row.eventType,
           feedId: row.feedId.toString(),
           body: row.body,
-          ...(row.eventType === 'RELATIONSHIP_INTENT'
+          ...(row.eventType === 'RELATIONSHIP_INTENT' ||
+          (row.eventType === 'THREAD_CONTENT_HEAD' && row.subjectAccount !== '')
             ? {
                 peerAccount: row.subjectAccount,
               }

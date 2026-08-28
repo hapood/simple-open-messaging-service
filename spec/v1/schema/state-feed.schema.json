@@ -91,6 +91,19 @@
       },
       "additionalProperties": false
     },
+    "threadContentHeadBody": {
+      "type": "object",
+      "required": ["messageEndSeq", "tombstoneEndSeq"],
+      "properties": {
+        "messageEndSeq": {
+          "$ref": "urn:somfp:v1:common#/$defs/positiveThreadSequence"
+        },
+        "tombstoneEndSeq": {
+          "$ref": "urn:somfp:v1:common#/$defs/threadSequence"
+        }
+      },
+      "additionalProperties": false
+    },
     "itemBase": {
       "type": "object",
       "required": ["account", "eventType", "feedId", "body"],
@@ -129,6 +142,28 @@
             "account": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },
             "eventType": { "const": "GROUP_META_FEED_HEAD" },
             "body": { "$ref": "#/$defs/groupMetaFeedHeadBody" }
+          },
+          "unevaluatedProperties": false
+        },
+        {
+          "$ref": "#/$defs/itemBase",
+          "properties": {
+            "account": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
+            "eventType": { "const": "THREAD_CONTENT_HEAD" },
+            "peerAccount": {
+              "$ref": "urn:somfp:v1:common#/$defs/userAccount"
+            },
+            "body": { "$ref": "#/$defs/threadContentHeadBody" }
+          },
+          "required": ["peerAccount"],
+          "unevaluatedProperties": false
+        },
+        {
+          "$ref": "#/$defs/itemBase",
+          "properties": {
+            "account": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },
+            "eventType": { "const": "THREAD_CONTENT_HEAD" },
+            "body": { "$ref": "#/$defs/threadContentHeadBody" }
           },
           "unevaluatedProperties": false
         }

@@ -138,7 +138,7 @@ export class ThreadListSyncService {
     items: Array<{
       feedId: number;
       threadId: number;
-      tombstoneEndSeq: string;
+      tombstoneEndSeq: number;
     }>;
     scannedThrough: number;
     tombstoneFeedEndId: number;
@@ -177,11 +177,7 @@ export class ThreadListSyncService {
       const scannedThrough =
         rows.length > opts.take ? selected.at(-1)!.feedId : requestEnd;
       return {
-        items: selected.map((row) => ({
-          feedId: row.feedId,
-          threadId: row.threadId,
-          tombstoneEndSeq: row.tombstoneEndSeq.toString(),
-        })),
+        items: selected,
         scannedThrough,
         tombstoneFeedEndId: end,
         hasMore: scannedThrough < requestEnd,

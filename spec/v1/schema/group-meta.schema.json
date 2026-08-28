@@ -48,7 +48,7 @@
           "$ref": "#/$defs/itemBase",
           "properties": {
             "operation": { "const": "DEPART" },
-            "body": { "type": "object", "maxProperties": 0 }
+            "body": { "$ref": "#/$defs/upsertBody" }
           },
           "unevaluatedProperties": false
         }

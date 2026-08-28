@@ -178,7 +178,7 @@ describe('message report workflow', () => {
     const deletion = await database.db.query.deletedMessage.findFirst({
       where: and(
         eq(deletedMessage.threadId, threadId),
-        eq(deletedMessage.seq, 1),
+        eq(deletedMessage.messageSeq, 1),
       ),
     });
     const storedThread = await database.db.query.messageThread.findFirst({
@@ -211,7 +211,9 @@ describe('message report workflow', () => {
         reportIds: [reportId],
         status: MessageReportStatus.UPHELD,
       }),
-    ).resolves.toMatchObject({ deletions: [{ seq: 1 }] });
+    ).resolves.toMatchObject({
+      deletions: [{ deletionSeq: 1, messageSeq: 1 }],
+    });
     await expect(
       reports.resolve(adminId, {
         reportIds: [reportId],

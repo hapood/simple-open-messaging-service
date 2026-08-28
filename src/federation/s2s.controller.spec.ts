@@ -19,7 +19,7 @@ function target() {
   const messageFeed = {
     query: vi
       .fn()
-      .mockResolvedValue({ messages: [], scannedThrough: '1', hasMore: false }),
+      .mockResolvedValue({ messages: [], scannedThrough: 1, hasMore: false }),
     rejectMissingAfter: vi.fn().mockRejectedValue(
       Object.assign(new Error('after is required'), {
         bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
@@ -49,16 +49,22 @@ function target() {
     ),
   };
   const groupMetaFeed = { serve: vi.fn().mockResolvedValue({}) };
+  const departedMemberProfiles = {
+    query: vi.fn().mockResolvedValue({
+      members: [],
+      scannedThrough: 1,
+      hasMore: false,
+    }),
+  };
   const controller = new S2sController(
     federation as never,
     messageFeed as never,
-    messageFeedPull as never,
     tombstoneFeed as never,
-    tombstonePull as never,
     {} as never,
     peerStateFeed as never,
     peerStateFeedPull as never,
     groupMetaFeed as never,
+    departedMemberProfiles as never,
   );
   return {
     controller,
@@ -70,6 +76,7 @@ function target() {
     tombstonePull,
     peerStateFeedPull,
     groupMetaFeed,
+    departedMemberProfiles,
   };
 }
 
@@ -149,38 +156,6 @@ describe('S2sController federation media errors', () => {
   });
 });
 
-describe('S2sController message-feed bootstrap', () => {
-  it('returns the cursor business result when after is omitted', async () => {
-    const { controller, messageFeed } = target();
-    const req = {
-      query: {},
-      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
-    } as unknown as FastifyRequest;
-
-    await expect(controller.getMissed(req)).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
-      status: 200,
-    });
-    expect(messageFeed.rejectMissingAfter).toHaveBeenCalledWith('a.example');
-  });
-
-  it('rejects pagination controls without after', async () => {
-    const { controller, messageFeed } = target();
-    const req = {
-      query: { take: '100' },
-      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
-    } as unknown as FastifyRequest;
-
-    await expect(
-      controller.getMissed(req, undefined, '100'),
-    ).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_MALFORMED,
-      status: 400,
-    });
-    expect(messageFeed.rejectMissingAfter).not.toHaveBeenCalled();
-  });
-});
-
 describe('S2sController reverse thread queries', () => {
   it('passes before as the exclusive reverse message cursor', async () => {
     const { controller, messageFeed } = target();
@@ -199,6 +174,56 @@ describe('S2sController reverse thread queries', () => {
       true,
       3,
     );
+  });
+
+  it('accepts only the one-past-maximum sentinel for an exclusive before cursor', async () => {
+    const { controller, messageFeed } = target();
+    const accepted = {
+      query: {
+        account: 'alice',
+        peerAccount: 'bob',
+        before: '9007199254740991',
+      },
+      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+    } as unknown as FastifyRequest;
+
+    await controller.queryMessages(
+      accepted,
+      'alice',
+      'bob',
+      undefined,
+      '9007199254740991',
+    );
+    expect(messageFeed.query).toHaveBeenLastCalledWith(
+      'a.example',
+      { type: 'P2P', account: 'alice', peerAccount: 'bob' },
+      undefined,
+      undefined,
+      undefined,
+      true,
+      Number.MAX_SAFE_INTEGER,
+    );
+
+    const rejected = {
+      query: {
+        account: 'alice',
+        peerAccount: 'bob',
+        before: '9007199254740992',
+      },
+      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+    } as unknown as FastifyRequest;
+    await expect(
+      controller.queryMessages(
+        rejected,
+        'alice',
+        'bob',
+        undefined,
+        '9007199254740992',
+      ),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_MALFORMED,
+      status: 400,
+    });
   });
 
   it('rejects supplying after and before together', async () => {
@@ -240,39 +265,66 @@ describe('S2sController reverse thread queries', () => {
       '1',
       undefined,
       undefined,
-      undefined,
       'false',
     );
     expect(tombstoneFeed.query).toHaveBeenCalledWith(
       'a.example',
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
-      1n,
+      1,
       undefined,
       undefined,
       false,
       undefined,
     );
   });
-});
 
-describe('S2sController state and tombstone feed bootstrap', () => {
-  it('uses the same no-after positioning contract for both feeds', async () => {
-    const { controller, tombstoneFeed, peerStateFeed } = target();
+  it('passes maxMessageSeq and rejects the removed reverse direction', async () => {
+    const { controller, tombstoneFeed } = target();
     const req = {
-      query: {},
+      query: {
+        account: 'alice',
+        peerAccount: 'bob',
+        after: '1',
+        maxMessageSeq: '42',
+      },
       peer: { domain: 'a.example', keyId: 'a.example/key-1' },
     } as unknown as FastifyRequest;
 
-    await expect(controller.getMessageTombstones(req)).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
-      status: 200,
+    await controller.queryMessageTombstones(
+      req,
+      'alice',
+      'bob',
+      '1',
+      undefined,
+      undefined,
+      undefined,
+      '42',
+    );
+    expect(tombstoneFeed.query).toHaveBeenCalledWith(
+      'a.example',
+      { type: 'P2P', account: 'alice', peerAccount: 'bob' },
+      1,
+      undefined,
+      undefined,
+      true,
+      42,
+    );
+
+    const reverse = {
+      query: {
+        account: 'alice',
+        peerAccount: 'bob',
+        before: '3',
+        maxMessageSeq: '2',
+      },
+      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+    } as unknown as FastifyRequest;
+    await expect(
+      controller.queryMessageTombstones(reverse, 'alice', 'bob'),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_MALFORMED,
+      status: 400,
     });
-    await expect(controller.getStateFeed(req)).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
-      status: 200,
-    });
-    expect(tombstoneFeed.rejectMissingAfter).toHaveBeenCalledWith('a.example');
-    expect(peerStateFeed.rejectMissingAfter).toHaveBeenCalledWith('a.example');
   });
 });
 
@@ -378,6 +430,58 @@ describe('S2sController group-meta modes', () => {
   });
 });
 
+describe('S2sController departed-member profile query', () => {
+  it('routes a reverse group sequence window', async () => {
+    const { controller, departedMemberProfiles } = target();
+    const req = {
+      query: {
+        account: '!group',
+        before: '41',
+        through: '20',
+        take: '25',
+      },
+      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+    } as unknown as FastifyRequest;
+
+    await controller.getDepartedMemberProfiles(req, '!group', '41', '20', '25');
+
+    expect(departedMemberProfiles.query).toHaveBeenCalledWith(
+      'a.example',
+      '!group',
+      41,
+      25,
+      20,
+    );
+  });
+
+  it('routes bootstrap and rejects an arbitrary mixed direction', async () => {
+    const { controller, departedMemberProfiles } = target();
+    const bootstrap = {
+      query: { account: '!group' },
+      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+    } as unknown as FastifyRequest;
+    await controller.getDepartedMemberProfiles(bootstrap, '!group');
+    expect(departedMemberProfiles.query).toHaveBeenLastCalledWith(
+      'a.example',
+      '!group',
+      undefined,
+      undefined,
+      undefined,
+    );
+
+    const invalid = {
+      query: { account: '!group', after: '1' },
+      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+    } as unknown as FastifyRequest;
+    await expect(
+      controller.getDepartedMemberProfiles(invalid, '!group'),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_MALFORMED,
+      status: 400,
+    });
+  });
+});
+
 describe('S2sController feed-head recovery', () => {
   it('rejects the removed origin field instead of ignoring it', async () => {
     const { controller, peerStateFeedPull } = target();
@@ -385,8 +489,6 @@ describe('S2sController feed-head recovery', () => {
       body: {
         origin: 'a.example',
         stateFeedEndId: '7',
-        messageFeedEndId: '8',
-        tombstoneFeedEndId: '9',
       },
       peer: { domain: 'a.example', keyId: 'a.example/key-1' },
     } as unknown as FastifyRequest;
@@ -410,8 +512,6 @@ describe('S2sController feed-head recovery', () => {
     const req = {
       body: {
         stateFeedEndId: '7',
-        messageFeedEndId: '8',
-        tombstoneFeedEndId: '9',
       },
       peer: { domain: 'a.example', keyId: 'a.example/key-1' },
     } as unknown as FastifyRequest;
@@ -431,8 +531,6 @@ describe('S2sController feed-head recovery', () => {
     expect(federation.pullStateFromPeer).toHaveBeenCalledOnce();
     release();
     await shutdown;
-    expect(federation.pullTombstonesFromPeer).toHaveBeenCalledOnce();
-    expect(federation.pullMissedFromPeer).toHaveBeenCalledOnce();
   });
 
   it('backs off and merges lightweight heads before retrying', async () => {
@@ -445,8 +543,6 @@ describe('S2sController feed-head recovery', () => {
       const req = {
         body: {
           stateFeedEndId: '7',
-          messageFeedEndId: '8',
-          tombstoneFeedEndId: '9',
         },
         peer: { domain: 'a.example', keyId: 'a.example/key-1' },
       } as unknown as FastifyRequest;
@@ -469,19 +565,13 @@ describe('S2sController feed-head recovery', () => {
         body: {
           ...req.body,
           stateFeedEndId: '11',
-          messageFeedEndId: '12',
-          tombstoneFeedEndId: '13',
         },
       });
       await vi.advanceTimersByTimeAsync(1_000);
       await vi.waitFor(() =>
-        expect(federation.pullMissedFromPeer).toHaveBeenCalledOnce(),
+        expect(federation.pullStateFromPeer).toHaveBeenCalledTimes(2),
       );
       expect(federation.pullStateFromPeer).toHaveBeenLastCalledWith(
-        'a.example',
-        11n,
-      );
-      expect(federation.pullTombstonesFromPeer).toHaveBeenCalledWith(
         'a.example',
         11n,
       );

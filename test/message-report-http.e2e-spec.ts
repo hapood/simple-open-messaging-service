@@ -217,17 +217,19 @@ describe('message report HTTP workflow', () => {
     const durable = await consumerPost(
       conversation.reporterToken,
       'deleted-messages/query',
-      { threadId: conversation.threadId, after: '0', take: 20 },
+      { threadId: conversation.threadId, after: 0, take: 20 },
     );
     expect(durable.body.code).toBe(BusinessCode.OK);
     expect(durable.body.data.tombstones).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          seq: 1,
+          deletionSeq: 1,
+          messageSeq: 1,
           type: MessageDeleteType.MODERATION_REMOVAL,
         }),
         expect.objectContaining({
-          seq: 2,
+          deletionSeq: 2,
+          messageSeq: 2,
           type: MessageDeleteType.MODERATION_REMOVAL,
         }),
       ]),

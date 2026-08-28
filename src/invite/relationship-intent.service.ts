@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import {
-  group,
+  messageThread,
   relationshipIntent,
   relationshipPair,
   user,
@@ -11,6 +11,11 @@ import {
   isEffectiveRelationshipIntent,
   type RelationshipIntentStatus,
 } from './relationship-intent-state.js';
+import {
+  groupBusinessScopeKey,
+  lockBusinessScopeInTx,
+  userPairBusinessScopeKey,
+} from './business-scope-lock.js';
 
 export type { RelationshipIntentStatus } from './relationship-intent-state.js';
 
@@ -66,7 +71,7 @@ export class RelationshipIntentService {
       confirmReverseRequested?: boolean;
     },
   ) {
-    const pair = await this.lockP2PPairInTx(
+    const pair = await this.lockUserPairMutationInTx(
       tx,
       params.authorUserId,
       params.subjectUserId,
@@ -113,7 +118,7 @@ export class RelationshipIntentService {
       expiresAt: Date | null;
     },
   ) {
-    const pair = await this.lockP2PPairInTx(
+    const pair = await this.lockUserPairMutationInTx(
       tx,
       params.authorUserId,
       params.subjectUserId,
@@ -155,7 +160,7 @@ export class RelationshipIntentService {
     authorUserId: number,
     subjectUserId: number,
   ): Promise<boolean> {
-    const pair = await this.lockP2PPairInTx(
+    const pair = await this.lockUserPairMutationInTx(
       tx,
       authorUserId,
       subjectUserId,
@@ -175,7 +180,7 @@ export class RelationshipIntentService {
       author: 'GROUP' | 'MEMBER';
     },
   ): Promise<boolean> {
-    const pair = await this.lockGroupPairInTx(tx, params);
+    const pair = await this.lockGroupMutationInTx(tx, params);
     const intent = await this.readIntentInTx(
       tx,
       pair.id,
@@ -200,7 +205,7 @@ export class RelationshipIntentService {
     shouldBeActive: boolean;
     changed: boolean;
   }> {
-    const pair = await this.lockGroupPairInTx(tx, params);
+    const pair = await this.lockGroupMutationInTx(tx, params);
     return this.writeAuthoredIntentOnPairInTx(tx, {
       pair,
       authorSide: params.author === 'GROUP' ? 'A' : 'B',
@@ -227,7 +232,7 @@ export class RelationshipIntentService {
     shouldBeActive: boolean;
     publishAccepted: boolean;
   }> {
-    const pair = await this.lockGroupPairInTx(tx, params);
+    const pair = await this.lockGroupMutationInTx(tx, params);
     const authorSide = params.author === 'GROUP' ? 'A' : 'B';
     return this.applyRemoteIntentOnPairInTx(tx, {
       pair,
@@ -246,7 +251,12 @@ export class RelationshipIntentService {
     secondUserId: number,
     threadId: number | null = null,
   ): Promise<LockedPair> {
-    return this.lockP2PPairInTx(tx, firstUserId, secondUserId, threadId);
+    return this.lockUserPairMutationInTx(
+      tx,
+      firstUserId,
+      secondUserId,
+      threadId,
+    );
   }
 
   async readP2PRelationshipInTx(
@@ -254,7 +264,7 @@ export class RelationshipIntentService {
     firstUserId: number,
     secondUserId: number,
   ) {
-    const pair = await this.lockP2PPairInTx(
+    const pair = await this.lockUserPairMutationInTx(
       tx,
       firstUserId,
       secondUserId,
@@ -278,7 +288,7 @@ export class RelationshipIntentService {
     secondUserId: number,
     active: boolean,
   ): Promise<boolean> {
-    const pair = await this.lockP2PPairInTx(
+    const pair = await this.lockUserPairMutationInTx(
       tx,
       firstUserId,
       secondUserId,
@@ -296,8 +306,119 @@ export class RelationshipIntentService {
       active: boolean;
     },
   ): Promise<boolean> {
-    const pair = await this.lockGroupPairInTx(tx, params);
-    return this.setLockedPairActiveInTx(tx, pair.id, params.active);
+    const pair = await this.lockGroupMutationInTx(tx, params);
+    const changed = await this.setLockedPairActiveInTx(
+      tx,
+      pair.id,
+      params.active,
+    );
+    await this.refreshGroupFederationAuthorizationInTx(tx, params.groupId);
+    return changed;
+  }
+
+  /** Acquires the canonical lock set for every local or federated group-relationship mutation. */
+  async lockGroupMutationInTx(
+    tx: DatabaseTransaction,
+    params: {
+      groupId: number;
+      memberUserId: number;
+      threadId: number;
+      projectionUserIds?: readonly number[];
+    },
+  ): Promise<LockedPair> {
+    const located = await tx.execute<{
+      groupAccount: string;
+      groupDomain: string;
+      memberAccount: string;
+      memberDomain: string;
+    }>(sql`
+      SELECT group_profile.account AS "groupAccount",
+        group_profile.domain AS "groupDomain",
+        member.account AS "memberAccount",
+        member.domain AS "memberDomain"
+      FROM "Group" group_profile
+      CROSS JOIN "User" member
+      WHERE group_profile.id = ${params.groupId}
+        AND member.id = ${params.memberUserId}
+    `);
+    const location = located.rows[0];
+    if (!location)
+      throw new Error('group relationship endpoint does not exist');
+    await this.lockGroupBusinessScopeInTx(tx, {
+      account: location.groupAccount,
+      domain: location.groupDomain,
+    });
+
+    const endpoint = await tx.execute<{
+      groupAccount: string;
+      groupDomain: string;
+      memberAccount: string;
+      memberDomain: string;
+    }>(sql`
+      SELECT group_profile.account AS "groupAccount",
+        group_profile.domain AS "groupDomain",
+        member.account AS "memberAccount",
+        member.domain AS "memberDomain"
+      FROM "Group" group_profile
+      CROSS JOIN "User" member
+      WHERE group_profile.id = ${params.groupId}
+        AND member.id = ${params.memberUserId}
+      FOR UPDATE OF group_profile
+    `);
+    const row = endpoint.rows[0];
+    if (!row) throw new Error('group relationship endpoint does not exist');
+
+    const thread = await tx.execute<{ id: number }>(sql`
+      SELECT id FROM "MessageThread"
+      WHERE id = ${params.threadId} AND "groupId" = ${params.groupId}
+      FOR UPDATE
+    `);
+    if (!thread.rows[0])
+      throw new Error('group relationship thread does not exist');
+
+    const pair = await this.lockCanonicalPairInTx(tx, {
+      kind: 'GROUP_MEMBER',
+      endpointA: {
+        type: 'GROUP',
+        account: row.groupAccount,
+        domain: row.groupDomain,
+      },
+      endpointB: {
+        type: 'USER',
+        account: row.memberAccount,
+        domain: row.memberDomain,
+      },
+      threadId: params.threadId,
+    });
+    await this.lockIntentRowsInTx(tx, pair.id);
+
+    const projectionUserIds = [
+      ...new Set([params.memberUserId, ...(params.projectionUserIds ?? [])]),
+    ].sort((left, right) => left - right);
+    const userIds = sql.join(
+      projectionUserIds.map((userId) => sql`${userId}`),
+      sql`, `,
+    );
+    await tx.execute(sql`
+      SELECT id FROM "ThreadMember"
+      WHERE "threadId" = ${params.threadId} AND "userId" IN (${userIds})
+      ORDER BY "userId"
+      FOR UPDATE
+    `);
+    await tx.execute(sql`
+      SELECT id FROM "ThreadParticipant"
+      WHERE "threadId" = ${params.threadId} AND "accountId" IN (${userIds})
+      ORDER BY "accountId"
+      FOR UPDATE
+    `);
+    return pair;
+  }
+
+  async lockGroupBusinessScopeInTx(
+    tx: DatabaseTransaction,
+    address: { account: string; domain: string },
+  ): Promise<void> {
+    await lockBusinessScopeInTx(tx, groupBusinessScopeKey(address));
   }
 
   private async writeAuthoredIntentOnPairInTx(
@@ -433,7 +554,7 @@ export class RelationshipIntentService {
     };
   }
 
-  private async lockP2PPairInTx(
+  private async lockUserPairMutationInTx(
     tx: DatabaseTransaction,
     firstUserId: number,
     secondUserId: number,
@@ -451,44 +572,27 @@ export class RelationshipIntentService {
       { type: 'USER' as const, account: first.account, domain: first.domain },
       { type: 'USER' as const, account: second.account, domain: second.domain },
     ].sort((left, right) => this.compareEndpoints(left, right));
-    return this.lockCanonicalPairInTx(tx, {
+    await lockBusinessScopeInTx(
+      tx,
+      userPairBusinessScopeKey([endpoints[0]!, endpoints[1]!]),
+    );
+    const pair = await this.lockCanonicalPairInTx(tx, {
       kind: 'P2P',
       endpointA: endpoints[0]!,
       endpointB: endpoints[1]!,
       threadId,
     });
-  }
-
-  private async lockGroupPairInTx(
-    tx: DatabaseTransaction,
-    params: { groupId: number; memberUserId: number; threadId: number },
-  ): Promise<LockedPair> {
-    const [row] = await tx
-      .select({
-        groupAccount: group.account,
-        groupDomain: group.domain,
-        memberAccount: user.account,
-        memberDomain: user.domain,
-      })
-      .from(group)
-      .innerJoin(user, eq(user.id, params.memberUserId))
-      .where(eq(group.id, params.groupId))
-      .limit(1);
-    if (!row) throw new Error('group relationship endpoint does not exist');
-    return this.lockCanonicalPairInTx(tx, {
-      kind: 'GROUP_MEMBER',
-      endpointA: {
-        type: 'GROUP',
-        account: row.groupAccount,
-        domain: row.groupDomain,
-      },
-      endpointB: {
-        type: 'USER',
-        account: row.memberAccount,
-        domain: row.memberDomain,
-      },
-      threadId: params.threadId,
-    });
+    if (pair.threadId !== null) {
+      const thread = await tx
+        .select({ id: messageThread.id })
+        .from(messageThread)
+        .where(eq(messageThread.id, pair.threadId))
+        .for('update')
+        .limit(1);
+      if (!thread[0]) throw new Error('P2P relationship thread does not exist');
+    }
+    await this.lockIntentRowsInTx(tx, pair.id);
+    return pair;
   }
 
   private async lockCanonicalPairInTx(
@@ -559,6 +663,58 @@ export class RelationshipIntentService {
       RETURNING revision
     `);
     return (changed.rowCount ?? 0) > 0;
+  }
+
+  private async lockIntentRowsInTx(
+    tx: DatabaseTransaction,
+    pairId: bigint,
+  ): Promise<void> {
+    await tx
+      .select({ id: relationshipIntent.id })
+      .from(relationshipIntent)
+      .where(eq(relationshipIntent.pairId, pairId))
+      .orderBy(relationshipIntent.authorSide)
+      .for('update');
+  }
+
+  /** Rebuilds the remote-group authorization projection after a serialized member-pair change. */
+  private async refreshGroupFederationAuthorizationInTx(
+    tx: DatabaseTransaction,
+    groupId: number,
+  ): Promise<void> {
+    await tx.execute(sql`
+      WITH authorization AS (
+        SELECT group_profile.id,
+          group_profile.domain <> 'local'
+          AND EXISTS (
+            SELECT 1
+            FROM "RelationshipPair" pair
+            WHERE pair.kind = 'GROUP_MEMBER'
+              AND pair.active = true
+              AND (
+                (pair."endpointAType" = 'GROUP'
+                  AND pair."endpointAAccount" = group_profile.account
+                  AND pair."endpointADomain" = group_profile.domain
+                  AND pair."endpointBType" = 'USER'
+                  AND pair."endpointBDomain" = 'local')
+                OR
+                (pair."endpointBType" = 'GROUP'
+                  AND pair."endpointBAccount" = group_profile.account
+                  AND pair."endpointBDomain" = group_profile.domain
+                  AND pair."endpointAType" = 'USER'
+                  AND pair."endpointADomain" = 'local')
+              )
+          ) AS value
+        FROM "Group" group_profile
+        WHERE group_profile.id = ${groupId}
+      )
+      UPDATE "Group" group_profile
+      SET "federationAuthorized" = authorization.value,
+        "updatedAt" = CURRENT_TIMESTAMP
+      FROM authorization
+      WHERE group_profile.id = authorization.id
+        AND group_profile."federationAuthorized" IS DISTINCT FROM authorization.value
+    `);
   }
 
   private async readIntentInTx(

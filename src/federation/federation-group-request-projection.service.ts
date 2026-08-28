@@ -82,14 +82,8 @@ export class FederationGroupRequestProjectionService {
         .innerJoin(
           tables.threadParticipant,
           and(
-            eq(
-              tables.threadParticipant.threadId,
-              tables.threadMember.threadId,
-            ),
-            eq(
-              tables.threadParticipant.accountId,
-              tables.threadMember.userId,
-            ),
+            eq(tables.threadParticipant.threadId, tables.threadMember.threadId),
+            eq(tables.threadParticipant.accountId, tables.threadMember.userId),
           ),
         )
         .innerJoin(tables.user, eq(tables.user.id, tables.threadMember.userId))

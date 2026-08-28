@@ -1,90 +1,17 @@
-# Simple Open Messaging Federation Protocol v1 Message Feed and Query
+# Simple Open Messaging Federation Protocol v1 Message Query
 
 Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 Normative scope: this entire document is normative.
 
-This document defines the compacted message-index feed `GET /s2s/v1/message-feed` and the per-thread message-content query `GET /s2s/v1/messages`. The feed answers only which thread's queryable upper bound advanced; authorization, message return, and content-retention policy are applied by the query operation. See [Message](./message.md) for message schemas and [Protocol](./protocol.md) for common rules.
+This document defines the per-thread message-content query
+`GET /s2s/v1/messages`. The compacted `thread + messageEndSeq +
+tombstoneEndSeq` discovery projection is a `THREAD_CONTENT_HEAD` item in
+[State Feed](./state-feed.md#7-thread_content_head). Authorization, message
+return, and content-retention policy are applied by the query operation. See
+[Message](./message.md) for message schemas and [Protocol](./protocol.md) for
+common rules.
 
-## 1. Message feed
-
-### 1.1 Request
-
-The query is a closed parameter set:
-
-| Field     | Type                               | Rule                                                                                                                                |
-| --------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `after`   | `DecimalString`                    | Optional exclusive scan position. When omitted, query only the starting position and return no page.                                |
-| `take`    | `PositiveSafeInteger` query string | Optional suggested maximum number of items on this page. The source MAY return fewer but MUST NOT return more.                      |
-| `through` | `DecimalString`                    | Optional inclusive upper bound. MUST be greater than or equal to `after` and remain unchanged across continuous bounded pagination. |
-
-`take` and `through` may appear only when `after` is present. An unknown, duplicate, or malformed parameter returns `400 FEDERATION_MALFORMED`. `after`, `through`, and every feed coordinate are canonical non-negative decimal strings; feed item IDs are positive integers. `0` is the exclusive cursor before the first item, not an item ID.
-
-`take` does not guarantee that the response reaches that count and does not relax the source's local page-byte limit. The source MUST ensure that its endpoint can return any individually allocated feed item in full. Every `take` satisfying `PositiveSafeInteger` MUST be accepted. The source MAY return fewer items under a finite local limit and MUST NOT return `FEDERATION_MALFORMED` merely because the requested value exceeds its local page size.
-
-When `after` is omitted, the source MUST return HTTP `200 FEDERATION_FEED_CURSOR_UNAVAILABLE` with both exclusive boundaries: `resumeAfter` is the available starting position and `resumeBefore` is `messageFeedEndId + 1`. The consumer stores the window atomically and begins forward draining with `after=resumeAfter`. Re-establishing a friendship, rejoining a group, or changing the relationship epoch for the same account MUST NOT move a saved feed cursor backward, substitute another cursor, or reset it.
-
-The source stores no ACK for the consumer and does not enforce cursor monotonicity. It MAY establish a retained lower boundary when service capacity is insufficient and MAY remove message-index projections below that boundary. Any `after` within the advertised available window remains valid. An omitted cursor, a cursor below `resumeAfter`, or a cursor beyond the current end returns `FEDERATION_FEED_CURSOR_UNAVAILABLE` with the current `resumeAfter` and `resumeBefore`. The source MUST NOT return a successful empty page that conceals a pruned interval.
-
-### 1.2 Page
-
-```ts
-interface MessageFeedPage {
-  items: MessageFeedItem[];
-  scannedThrough: DecimalString;
-  messageFeedEndId: DecimalString;
-  hasMore: boolean;
-}
-
-interface MessageFeedItem {
-  feedId: PositiveDecimalString;
-  thread: ThreadAddress;
-  messageEndSeq: DecimalString;
-}
-```
-
-The stable key is `(target peer, thread)`. For P2P, `thread.account` is the
-source-hosted user and `thread.peerAccount` is the target-peer-hosted user; the
-two domains come from the authenticated exchange. For a group, `thread.account`
-is the globally unique group account and `peerAccount` is absent; the target
-peer is not keyed separately by each member hosted on that peer.
-Relationship status, expiry, re-request, re-acceptance, friendship restoration,
-group leave, and group rejoin do not create a new stable key.
-
-`messageEndSeq` is the inclusive thread-sequence upper bound currently committed
-by the source and queryable through message query; it is not a feed cursor. For
-the same stable key, every `messageEndSeq` exposed to the target peer MUST be
-greater than or equal to every value previously exposed for that key. A source
-MUST NOT reset, decrease, replace, or reuse that sequence-coordinate space
-across relationship-state transitions. When the upper bound strictly increases,
-the source MUST allocate a new `feedId` for that stable key that is greater than
-every ID previously allocated in the feed, and replace the old item with the new
-item. An equal or smaller `messageEndSeq` is a no-op.
-
-`messageEndSeq` and outer message `seq` MUST be at most `SafeInteger - 1`.
-Message-query `after`, `before`, `through`, and `scannedThrough` MUST be at most
-`SafeInteger`. The query coordinates and `messageEndSeq` use decimal strings on
-the wire; message `seq` uses a JSON integer.
-
-The message feed is a durable compacted discovery index: the source may delete an old item superseded by an update. When service capacity is insufficient it MAY also prune older current stable-key projections and advance `resumeAfter`. Such pruning affects discovery only; it does not itself delete message entities or change thread-query retention. A consumer whose cursor falls behind the new boundary receives an explicit cursor-unavailable result and adopts the advertised window. Within that window, retained projections MUST remain discoverable from every valid `after`.
-
-After a P2P friendship ends, the source MAY delete the current message-feed projection for that peer and thread. Deletion allocates no new `feedId` and does not move `messageFeedEndId` backward. The stable-key sets of message feed and tombstone feed are independent: a thread that has never produced a tombstone may exist only in message feed, and a consumer MUST NOT require both feeds to contain the same thread set or aligned end sequences. If the same relationship is re-established, the source MUST rebuild the projection with a new, larger `feedId`, even when the current `messageEndSeq` equals its value before deletion, so a consumer that passed the old item can discover it again.
-
-Each page is computed from one consistent source snapshot:
-
-```text
-requestEnd = through is present ? min(through, messageFeedEndId) : messageFeedEndId
-candidates = current items with feedId in (after, requestEnd], ordered by feedId
-```
-
-The source returns a prefix no larger than its page limit. If candidates remain, `scannedThrough` equals the last item `feedId` on the page and `hasMore: true`; otherwise, `scannedThrough=requestEnd` and `hasMore: false`. An empty page may advance directly to `requestEnd`. Every item lies in `(after, scannedThrough]` and is strictly increasing.
-
-When compaction occurs between pages, a new item can receive only a larger `feedId`. It may exceed the frozen `through`, but MUST appear in a later feed head or reconciliation. It MUST NOT be rewritten in place with an ID less than or equal to the consumer's `after`, which would hide the change.
-
-The consumer MUST validate the page, atomically merge the maximum `messageEndSeq` for each thread, and update its local feed cursor to `scannedThrough`. A feed page carries no message content and grants no read authorization. Relationship termination therefore does not carry a message-feed end ID in `RELATIONSHIP_INTENT/REVOKED`; current authorization is enforced by the thread query.
-
-## 2. Message query
-
-### 2.1 Thread-query union
+## 1. Thread-query union
 
 `GET /s2s/v1/messages` uses a closed query. Common fields are `after`,
 `before`, `through`, `take`, and `includeSelf`. `after` and `before` are optional
@@ -111,13 +38,14 @@ is sent:
 For a `UserAccount` selector, `peerAccount` MUST be present and MUST be a
 `UserAccount`. For a `GroupAccount` selector, `peerAccount` MUST be absent.
 
-After normalization, the requested thread MUST exactly equal the feed item's
-`ThreadAddress`. The source does not accept any domain parameter declared by the
+After normalization, the requested thread MUST exactly equal the committed
+`THREAD_CONTENT_HEAD` item's Thread Address. The source does not accept any
+domain parameter declared by the
 requester. The peer domain comes only from the validated HTTP Message Signature,
 and the selector MUST NOT address an identity belonging to an unrelated third
 domain.
 
-These query shapes use the same stable-key rule as the index feed. A P2P query
+These query shapes use the same stable-key rule as `THREAD_CONTENT_HEAD`. A P2P query
 therefore continues the coordinate space for the same canonical user/user pair,
 and a group query continues the coordinate space for the same group-address and
 verified-peer pair, regardless of which users on that peer currently belong to
@@ -131,7 +59,7 @@ GROUP message query has exactly three valid directions:
 - The group origin MAY return an accepted authoritative timeline only to a peer that holds a mirror of the group.
 - After a mirror durably persists an authoritative message pulled directly from the group origin, it SHOULD return its local durable copy to that origin as a processing receipt. If returned, it MUST be returned only to that origin. The copy's `originSeq/originCreatedAt` equals the origin item's `seq/createdAt`, allowing the origin to associate its earlier authoritative publication.
 
-A mirror MUST NOT return a group message to a peer other than that message's direct publisher. A member home server likewise MUST NOT return a message authored outside its domain in a submission. Before generating a page, the source MUST distinguish the three directions using signer domain, group origin, author domain, durable group-membership facts, and the copy's direct origin. On receiving a processing receipt, the origin associates `(thread, author, originSeq)` with local `(thread, author, seq)`; it creates no message or new message-feed item and MUST NOT write back to the original message. The v1 group-message topology ends here: there is no protocol step for a mirror to relay to another peer or redistribute a receipt.
+A mirror MUST NOT return a group message to a peer other than that message's direct publisher. A member home server likewise MUST NOT return a message authored outside its domain in a submission. Before generating a page, the source MUST distinguish the three directions using signer domain, group origin, author domain, durable group-membership facts, and the copy's direct origin. On receiving a processing receipt, the origin associates `(thread, author, originSeq)` with local `(thread, author, seq)`; it creates no message or new thread-content item and MUST NOT write back to the original message. The v1 group-message topology ends here: there is no protocol step for a mirror to relay to another peer or redistribute a receipt.
 
 Omitting both `after` and `before` bootstraps this thread query. The source
 returns `FEDERATION_FEED_CURSOR_UNAVAILABLE { resumeAfter, resumeBefore }` and no
@@ -146,12 +74,12 @@ query-coordinate space. `0` is the exclusive cursor before the first valid
 message sequence. The minimum message sequence is `1`, but the source MAY begin
 allocation at a larger value and need not allocate contiguously.
 
-### 2.2 Query page
+## 2. Query page
 
 ```ts
 interface MessageQueryPage {
   messages: FederatedMessage[];
-  scannedThrough: DecimalString;
+  scannedThrough: SafeInteger;
   hasMore: boolean;
 }
 ```
@@ -208,26 +136,52 @@ If `after >= resumeBefore`, `before > resumeBefore`, or the fixed `through`
 falls outside the selected direction's serviceable window, the source MAY
 return the same result to correct the query to the current window. Both resume
 fields MUST come from one consistent snapshot. These rules MUST NOT be used to
-skip message feed.
+skip State Feed discovery. A forward consumer applies the common start and gap-recovery
+rules in [Protocol Section 9.1](./protocol.md#91-feed-coordinate-vocabulary).
 
-### 2.3 Consumer fast-forward
+## 3. Consumer fast-forward and tail initialization
 
-When starting or restarting a forward message-query drain, a consumer MAY
-advance its local `after` cursor to a greater position because of finite local
-storage or processing capacity. The selected position MUST be within the
-source-advertised serviceable window and MUST NOT move a committed cursor
-backward. The consumer MUST atomically persist the new cursor and treat every
-skipped coordinate through that position as intentionally discarded.
+A consumer MAY enter skip mode either during initial synchronization to retain
+only recent history, or later when finite local storage or processing capacity
+makes its saved forward backlog impractical to drain. It MUST first converge
+current state, complete a current Group Meta full drain for a GROUP thread, and
+commit a current `THREAD_CONTENT_HEAD` item for the thread. Let that item's inclusive
+`messageEndSeq` be `E`. The consumer adopts `E` as its new forward position and
+MAY reconstruct only the history it chooses to retain. Its first reverse
+message query uses the exclusive cursor `before=E+1`; this is the conversion of
+the committed inclusive feed boundary, not an arbitrarily selected
+intermediate cursor. If that cursor is no longer in the source's serviceable
+window, the consumer applies the cursor-unavailable recovery rules and creates
+new work from a newly reconciled thread-content boundary. A thread with no
+`THREAD_CONTENT_HEAD` projection has no advertised message tail to reconstruct.
 
-A consumer that fast-forwards MUST NOT represent the skipped interval as
+A skip-mode consumer MUST atomically adopt `E` as its committed forward query
+position and treat every skipped coordinate through that position as
+intentionally discarded. It MUST NOT represent the skipped interval as
 completely replicated or processed, generate a processing receipt for a skipped
-message, or infer any source-side deletion or acknowledgement. This is a local
-replication decision and does not alter source data, authorization, allocation
-proofs, or query coordinates.
+message, or infer any source-side deletion or acknowledgement. This choice does
+not alter source data, authorization, allocation proofs, or query coordinates.
 
-### 2.4 Authorization and state reconciliation
+For a GROUP reverse reconstruction, message and departed-member profile windows
+MUST both start with the exclusive boundary `E+1` derived from the same
+committed `messageEndSeq=E`. Each actual reverse message batch ends at the
+message response's direction-relative `scannedThrough`, including when the page
+contains no message. The corresponding departed-member profile drain MUST cover
+that same source-sequence window. Later pages continue only from successfully
+committed `scannedThrough` values. A consumer MUST NOT bootstrap either query
+at an unrelated intermediate `before`. After reconstruction, ordinary forward
+processing continues from the latest position adopted before the reverse drain;
+reverse progress does not move that position backward.
 
-On every query, the source MUST recompute access from its durable authored relationship direction, group audience, block, thread authority, historical allocation proof, and local policy. The presence of a feed item is not authorization proof. For both user/user and user/group relationships, an unexpired source-authored `REQUESTED` or valid `ACCEPTED` grants the target peer query access without requiring the reverse direction. Before publishing either state, the source MUST have established every thread, audience, and authorization fact needed to serve that query. A newly requested thread with no allocated messages returns a successful empty page.
+A reverse message batch is not reconciled until the consumer has applied the
+required Group Meta state, the corresponding departed-member profile pages, and
+every authoritative tombstone it has already discovered for that batch. An
+unresolved message dependency prevents reconciliation until the message can be
+accepted or an authoritative tombstone terminates it.
+
+## 4. Authorization and state reconciliation
+
+On every query, the source MUST recompute access from its durable authored relationship direction, group audience, block, thread authority, historical allocation proof, and local policy. The presence of a `THREAD_CONTENT_HEAD` item is not authorization proof. For both user/user and user/group relationships, an unexpired source-authored `REQUESTED` or valid `ACCEPTED` grants the target peer query access without requiring the reverse direction. Before publishing either state, the source MUST have established every thread, audience, and authorization fact needed to serve that query. A newly requested thread with no allocated messages returns a successful empty page.
 
 For the same stable key, `REQUESTED` and `ACCEPTED` grant identical message-query
 permission. Receiving the reverse `ACCEPTED`, or otherwise transitioning from
@@ -242,13 +196,13 @@ Sequences not allocated during an absence are holes and MUST NOT be backfilled
 on rejoin. Content-retention policy may still skip a purged prefix through
 `resumeAfter` under Section 2.2.
 
-After receiving relationship-termination state from state-feed, the consumer MUST invalidate the current message-feed target for that peer and thread and stop retrying its query. If state notification is delayed, lost, or not yet locally converged, P2P message-query `FORBIDDEN` is the fast-convergence fallback signal: the consumer MUST stop that thread query and invalidate its current pending end. If both retained authored directions are still `REQUESTED` or `ACCEPTED`, the consumer MUST publish `REVOKED` for its own direction. It MUST NOT manufacture or rewrite the peer-authored direction, and it MUST NOT publish another transition if either retained direction is already `REVOKED` or absent. The consumer then prioritizes the resulting state convergence. This handling does not move the global message-feed cursor backward or delete idempotently committed messages or historical query cursors. A GROUP query has no unique consumer-authored member direction at the peer boundary, so its `FORBIDDEN` stops the query and prioritizes state drain without authoring a relationship transition.
+After receiving relationship-termination state from State Feed, the consumer MUST invalidate the current message target for that peer and thread and stop retrying its query. If state notification is delayed, lost, or not yet locally converged, P2P message-query `FORBIDDEN` is the fast-convergence fallback signal: the consumer MUST stop that thread query and invalidate its current pending end. If both retained authored directions are still `REQUESTED` or `ACCEPTED`, the consumer MUST publish `REVOKED` for its own direction. It MUST NOT manufacture or rewrite the peer-authored direction, and it MUST NOT publish another transition if either retained direction is already `REVOKED` or absent. The consumer then prioritizes the resulting state convergence. This handling does not move the State Feed cursor backward, delete idempotently committed messages, or discard already established query progress. A GROUP query has no unique consumer-authored member direction at the peer boundary, so its `FORBIDDEN` stops the query and prioritizes state drain without authoring a relationship transition.
 
-Authorization calculation MAY materialize immediately derivable state from existing durable facts in the same local transaction, such as request expiration, friendship validity, or group-audience validity. This reconciliation MUST be idempotent and MUST NOT create an invitation, accept a friendship, join a group, or expand the current request's authorization merely because the peer issued a GET.
+Authorization calculation MAY atomically derive immediately available state from existing authoritative facts, such as request expiration, friendship validity, or group-audience validity. This reconciliation MUST be idempotent and MUST NOT create an invitation, accept a friendship, join a group, or expand the current request's authorization merely because the peer issued a GET.
 
-The consumer receives messages idempotently by `(source domain, thread, seq)`. Before inserting or displaying any message, it MUST first apply queried authoritative tombstones to prevent a late message from being resurrected. Media and forward bundles continue to use the exact message binding in [Resources](./resources.md).
+The consumer receives messages idempotently by `(source domain, thread, seq)`. A forward consumer MAY fetch a bounded message interval concurrently with its bounded authoritative tombstone drain, but it does not complete reconciliation of that interval until both results have been applied. For an ordinary forward GROUP interval, it SHOULD first commit the required Group Meta head, including complete profile-bearing `DEPART` items, and MUST NOT query the reverse-only [Departed Member Profile Feed](./departed-member-profile-query.md). If Group Meta has not converged, the stable author Address remains valid, the consumer MUST continue the Group Meta drain, and it MUST NOT infer a role or current-membership state from the absent profile projection. Reverse reconstruction MUST apply its corresponding departed-member profile page before completing reconciliation of the reconstructed window. Concurrent forward fetching does not permit a required reverse profile page to be bypassed. Media and forward bundles continue to use the exact message binding in [Resources](./resources.md).
 
-### 2.4 Query-specific deferral results
+## 5. Query-specific deferral results
 
 When the request is correctly authenticated and peer lifecycle can continue, message query may use these HTTP `200` application results:
 

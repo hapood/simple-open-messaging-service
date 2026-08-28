@@ -51,16 +51,6 @@
       "responseEnvelope": true
     },
     {
-      "id": "messageFeed",
-      "method": "GET",
-      "path": "/s2s/v1/message-feed",
-      "authentication": "recognized-http-message-signature",
-      "successStatus": [200],
-      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/messageFeedQuery",
-      "responseSchema": "urn:somfp:v1:message-feed",
-      "responseEnvelope": true
-    },
-    {
       "id": "groupMeta",
       "method": "GET",
       "path": "/s2s/v1/group-meta",
@@ -71,13 +61,13 @@
       "responseEnvelope": true
     },
     {
-      "id": "messageTombstoneFeed",
+      "id": "departedMemberProfileQuery",
       "method": "GET",
-      "path": "/s2s/v1/message-tombstone-feed",
+      "path": "/s2s/v1/departed-member-profiles",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
-      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/tombstoneFeedQuery",
-      "responseSchema": "urn:somfp:v1:message-tombstone-feed",
+      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/departedMemberProfileQuery",
+      "responseSchema": "urn:somfp:v1:departed-member-profile-query",
       "responseEnvelope": true
     },
     {
@@ -97,7 +87,7 @@
       "path": "/s2s/v1/message-tombstones",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
-      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/threadDataQuery",
+      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/messageTombstoneQuery",
       "responseSchema": "urn:somfp:v1:message-tombstone-query",
       "responseEnvelope": true
     },

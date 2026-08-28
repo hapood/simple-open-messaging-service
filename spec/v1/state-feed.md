@@ -3,9 +3,13 @@
 Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
 This document is entirely normative. `GET /s2s/v1/state-feed` is the
-per-peer compacted feed for relationship facts, home-authored profiles, and
-group-meta feed-head hints. Group members, roles, and source-scoped member
-profiles are available only from [Group Meta Feed](./group-meta.md).
+per-peer compacted feed for relationship facts, home-authored profiles,
+group-meta feed-head hints, and per-thread message and deletion query heads.
+Group members, roles, and source-scoped member
+profiles for current members are available only from
+[Group Meta Feed](./group-meta.md). Source-scoped profiles for departed group-
+message authors are available from the
+[Departed Member Profile Feed](./departed-member-profile-query.md).
 
 ## 1. Request and bootstrap
 
@@ -55,7 +59,8 @@ Reading is not acknowledgement and the source stores no consumer cursor.
 type StateEventType =
   | 'PROFILE'
   | 'RELATIONSHIP_INTENT'
-  | 'GROUP_META_FEED_HEAD';
+  | 'GROUP_META_FEED_HEAD'
+  | 'THREAD_CONTENT_HEAD';
 
 interface StateFeedItemBase {
   account: Account;
@@ -80,17 +85,35 @@ interface GroupMetaFeedHeadItem extends StateFeedItemBase {
   body: GroupMetaFeedHeadBody;
 }
 
+interface P2PThreadContentHeadItem extends StateFeedItemBase {
+  account: UserAccount;
+  peerAccount: UserAccount;
+  eventType: 'THREAD_CONTENT_HEAD';
+  body: ThreadContentHeadBody;
+}
+
+interface GroupThreadContentHeadItem extends StateFeedItemBase {
+  account: GroupAccount;
+  eventType: 'THREAD_CONTENT_HEAD';
+  body: ThreadContentHeadBody;
+}
+
 type StateFeedItem =
   | ProfileItem
   | RelationshipIntentItem
-  | GroupMetaFeedHeadItem;
+  | GroupMetaFeedHeadItem
+  | P2PThreadContentHeadItem
+  | GroupThreadContentHeadItem;
 ```
 
-Within one authenticated source feed, stable keys are `(account, eventType)`
-and, for a relationship, `(account, RELATIONSHIP_INTENT, peerAccount)`. The
+`eventType` discriminates the item union; it is not part of an event's business
+stable key. Within one authenticated source feed, each event type defines its
+own stable key: `PROFILE` uses `account`, `RELATIONSHIP_INTENT` uses the directed
+pair `(account, peerAccount)`, `GROUP_META_FEED_HEAD` uses the group `account`,
+and `THREAD_CONTENT_HEAD` uses the Thread Address defined in Section 7. The
 source domain is the authenticated publisher and is not repeated in an item.
-Only relationship items carry `peerAccount`. Unknown event types or fields are
-malformed.
+Only relationship and P2P thread-content items carry `peerAccount`. Unknown
+event types or fields are malformed.
 
 ## 4. PROFILE
 
@@ -240,12 +263,59 @@ The group owner is derived from the member carrying role `OWNER`; membership
 and active local participation are derived from current member keys.
 Non-member-derived settings are not federated.
 
-## 7. Ordering, recovery, and authorization
+## 7. THREAD_CONTENT_HEAD
+
+```ts
+interface ThreadContentHeadBody {
+  messageEndSeq: PositiveThreadSequence;
+  tombstoneEndSeq: ThreadSequence;
+}
+```
+
+This item is the compacted discovery projection for one thread. A P2P item uses
+the stable key `(account, peerAccount)`: `account` is the source-hosted user and
+`peerAccount` is the receiver-hosted user. A group item uses its globally unique
+group `account`, and `peerAccount` MUST be absent. The authenticated exchange
+supplies both domains, so neither is repeated in the body.
+
+`messageEndSeq` is the inclusive upper bound currently committed and queryable
+through `/messages`. It is a positive JSON integer no greater than
+`SafeInteger - 1`. `tombstoneEndSeq` is the inclusive upper bound currently
+queryable through `/message-tombstones`. It is a non-negative JSON integer no
+greater than `SafeInteger - 1`; zero means that no tombstone has yet been
+allocated for this thread and receiver.
+
+For one stable thread key, neither coordinate may decrease or be reused across
+relationship transitions. An increase of either coordinate is a semantic
+change to the same compacted item and MUST allocate a greater State Feed
+`feedId`. The unchanged coordinate MUST carry its current value in the new
+complete body. The item contains no message or tombstone content, grants no
+authorization, and is not an acknowledgement. The corresponding query
+operations recompute authorization from durable state.
+
+A thread-content projection exists only after at least one message coordinate
+is queryable to that receiver. Because a tombstone targets an earlier message,
+a publisher never creates this item from a tombstone alone. Relationship
+closure MAY remove the current projection without allocating a deletion item.
+If access is later restored, the publisher MUST allocate a new, greater
+`feedId`, even when both query coordinates equal values previously exposed for
+the stable key.
+
+## 8. Ordering, recovery, and authorization
 
 A source commits a relationship direction before dependent `PROFILE` or
-`GROUP_META_FEED_HEAD` items become visible. The consumer applies relationship
-and identity dependencies before materializing group-meta effects, regardless
-of their relative placement within one fetched page.
+`GROUP_META_FEED_HEAD` items become visible. It MUST allocate every
+`THREAD_CONTENT_HEAD` after the current State Feed projections required to
+identify and authorize that thread. For a newly invited P2P participant, this
+places the required `PROFILE` before the first thread-content item. For a group,
+the required `GROUP_META_FEED_HEAD` precedes the thread-content item.
+
+State Feed compaction MUST preserve this dependency order for a complete
+rebuild. If a required current projection moves to a greater `feedId`, the
+publisher MUST reindex each dependent thread-content item at a still greater
+`feedId`, even when its two sequence coordinates are unchanged. The consumer
+applies relationship and identity dependencies before accepting their
+thread-content targets, regardless of placement within one fetched page.
 
 A malformed item is isolated according to the common permanent-item rules. A
 failed group-meta fetch or page transaction does not advance the state cursor.

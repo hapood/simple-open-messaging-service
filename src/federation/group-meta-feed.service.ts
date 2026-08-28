@@ -29,7 +29,7 @@ interface GroupMetaFeedItemBase {
 export type GroupMetaFeedItem = GroupMetaFeedItemBase &
   (
     | { operation: 'UPSERT'; body: Record<string, unknown> }
-    | { operation: 'DEPART'; body: Record<string, never> }
+    | { operation: 'DEPART'; body: Record<string, unknown> }
   );
 
 export interface GroupMetaFeedPage {
@@ -142,7 +142,7 @@ export class GroupMetaFeedService {
         account: previous.account,
         domain: previous.domain,
         operation: 'DEPART',
-        body: {},
+        body: previous.body,
       });
     }
     changes.sort(
@@ -302,7 +302,7 @@ export class GroupMetaFeedService {
           : {
               ...item,
               operation: 'DEPART',
-              body: row.body as Record<string, never>,
+              body: row.body as Record<string, unknown>,
             };
       }),
       scannedThrough: scannedThrough.toString(),

@@ -7,16 +7,16 @@
     "path": "/s2s/v1/feed-heads",
     "query": "?",
     "authority": "b.example",
-    "body": "{\"stateFeedEndId\":\"12\",\"messageFeedEndId\":\"34\",\"tombstoneFeedEndId\":\"9\"}"
+    "body": "{\"stateFeedEndId\":\"12\"}"
   },
   "created": 1700000000,
   "expires": 1700000300,
   "keyId": "a.example/key-1",
   "headers": {
     "date": "Tue, 14 Nov 2023 22:13:20 GMT",
-    "content-digest": "sha-256=:5IZ8gaj/brmz/2nnvsyh7h5RK8vujKNm/Ja5uAG7Oy4=:",
+    "content-digest": "sha-256=:1PlgabQfly2RS/C2AGhC7B/ZTrngs3xYEKEZBKkZ+Ss=:",
     "signature-input": "sig1=(\"@method\" \"@path\" \"@query\" \"@authority\" \"date\" \"content-digest\");created=1700000000;expires=1700000300;keyid=\"a.example/key-1\";alg=\"ed25519\"",
-    "signature": "sig1=:Rq0Zqp2oS4lobqDctVVp5UmYJbJUSuxnluAjMOowvF+COrxXhS/ryAAb5SQY5TIqOCLLvjmsOJfO9wFJ/ijFDQ==:"
+    "signature": "sig1=:05UdTARdIDdlu0pJcRyPQUV4hSgGS6pHq8IljjxFDdNbpimHH8KOdYDDqCqrkakT7E98IA2CFzRCMcgxaBYUAw==:"
   },
-  "signatureBase": "\"@method\": POST\n\"@path\": /s2s/v1/feed-heads\n\"@query\": ?\n\"@authority\": b.example\n\"date\": Tue, 14 Nov 2023 22:13:20 GMT\n\"content-digest\": sha-256=:5IZ8gaj/brmz/2nnvsyh7h5RK8vujKNm/Ja5uAG7Oy4=:\n\"@signature-params\": (\"@method\" \"@path\" \"@query\" \"@authority\" \"date\" \"content-digest\");created=1700000000;expires=1700000300;keyid=\"a.example/key-1\";alg=\"ed25519\""
+  "signatureBase": "\"@method\": POST\n\"@path\": /s2s/v1/feed-heads\n\"@query\": ?\n\"@authority\": b.example\n\"date\": Tue, 14 Nov 2023 22:13:20 GMT\n\"content-digest\": sha-256=:1PlgabQfly2RS/C2AGhC7B/ZTrngs3xYEKEZBKkZ+Ss=:\n\"@signature-params\": (\"@method\" \"@path\" \"@query\" \"@authority\" \"date\" \"content-digest\");created=1700000000;expires=1700000300;keyid=\"a.example/key-1\";alg=\"ed25519\""
 }

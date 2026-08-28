@@ -1,10 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import {
-  messageDeleteType,
-  peerStateEventType,
-} from '../database/schema.js';
+import { messageDeleteType, peerStateEventType } from '../database/schema.js';
 import { FEDERATED_MESSAGE_CONTENT_TYPES } from './federation-message-feed.service.js';
 import {
   CALL_SIGNAL_TYPES,
@@ -86,9 +83,11 @@ describe('Federation v1 protocol documentation', () => {
     }>('message-tombstone-query.schema.json');
 
     expect(
-      state.$defs.item.oneOf
-        .map((item) => item.properties.eventType.const)
-        .sort(),
+      [
+        ...new Set(
+          state.$defs.item.oneOf.map((item) => item.properties.eventType.const),
+        ),
+      ].sort(),
     ).toEqual([...peerStateEventType.enumValues].sort());
     expect(common.$defs.contentType.enum).toEqual(
       FEDERATED_MESSAGE_CONTENT_TYPES,
@@ -130,9 +129,8 @@ describe('Federation v1 protocol documentation', () => {
       'GET /s2s/v1/health',
       'POST /s2s/v1/feed-heads',
       'GET /s2s/v1/state-feed',
-      'GET /s2s/v1/message-feed',
       'GET /s2s/v1/group-meta',
-      'GET /s2s/v1/message-tombstone-feed',
+      'GET /s2s/v1/departed-member-profiles',
       'GET /s2s/v1/messages',
       'GET /s2s/v1/message-tombstones',
       'POST /s2s/v1/call',

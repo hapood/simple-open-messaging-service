@@ -68,6 +68,7 @@ export const peerStateEventType = pgEnum('PeerStateEventType', [
   'PROFILE',
   'RELATIONSHIP_INTENT',
   'GROUP_META_FEED_HEAD',
+  'THREAD_CONTENT_HEAD',
 ]);
 export const groupMetaMemberOperation = pgEnum('GroupMetaMemberOperation', [
   'UPSERT',
@@ -333,6 +334,8 @@ export const threadMember = pgTable(
     userId: integer().notNull(),
     role: groupRole(),
     left: boolean().default(false).notNull(),
+    /** Earliest authored sequence tracked by a group hosted on this server. */
+    firstSentSeq: integer(),
     /** Latest authored sequence tracked by a locally hosted group. */
     lastSentSeq: integer(),
     joinedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -356,6 +359,11 @@ export const threadMember = pgTable(
       table.left,
       table.lastSentSeq,
     ),
+    index('ThreadMember_threadId_left_firstSentSeq_idx').on(
+      table.threadId,
+      table.left,
+      table.firstSentSeq,
+    ),
     uniqueIndex('ThreadMember_one_current_owner_key')
       .on(table.threadId)
       .where(sql`${table.role} = 'OWNER' AND ${table.left} = false`),
@@ -372,6 +380,10 @@ export const threadMember = pgTable(
     check(
       'ThreadMember_lastSentSeq_check',
       sql`${table.lastSentSeq} IS NULL OR ${table.lastSentSeq} > 0`,
+    ),
+    check(
+      'ThreadMember_firstSentSeq_check',
+      sql`${table.firstSentSeq} IS NULL OR ${table.firstSentSeq} > 0`,
     ),
   ],
 );
@@ -455,6 +467,7 @@ export const messageThread = pgTable(
       mode: 'date',
     }).notNull(),
     curSeq: integer().default(0).notNull(),
+    deletionSeqAllocatedThrough: integer().default(0).notNull(),
     lastMessageSeq: integer(),
     lastMessagePreview: varchar({ length: 255 }),
     lastMessageAt: timestamp({
@@ -488,6 +501,10 @@ export const messageThread = pgTable(
     check(
       'MessageThread_federationVersion_check',
       sql`${table.federationVersion} >= 0`,
+    ),
+    check(
+      'MessageThread_deletionSeqAllocatedThrough_check',
+      sql`${table.deletionSeqAllocatedThrough} >= 0`,
     ),
   ],
 );
@@ -763,9 +780,9 @@ export const federationMessageReceipt = pgTable(
 export const deletedMessage = pgTable(
   'DeletedMessage',
   {
-    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
     threadId: integer().notNull(),
-    seq: integer().notNull(),
+    deletionSeq: integer().notNull(),
+    messageSeq: integer().notNull(),
     type: messageDeleteType().notNull(),
     /** Non-null only when this local projection consumed a remote authority fact. Such a row must
      * never be published again; group-origin acceptance of a member submission remains null. */
@@ -778,16 +795,16 @@ export const deletedMessage = pgTable(
       .notNull(),
   },
   (table) => [
-    check('DeletedMessage_seq_check', sql`${table.seq} > 0`),
-    uniqueIndex('DeletedMessage_threadId_seq_key').using(
+    primaryKey({
+      columns: [table.threadId, table.deletionSeq],
+      name: 'DeletedMessage_pkey',
+    }),
+    check('DeletedMessage_deletionSeq_check', sql`${table.deletionSeq} > 0`),
+    check('DeletedMessage_messageSeq_check', sql`${table.messageSeq} > 0`),
+    uniqueIndex('DeletedMessage_threadId_messageSeq_key').using(
       'btree',
       table.threadId.asc().nullsLast().op('int4_ops'),
-      table.seq.asc().nullsLast().op('int4_ops'),
-    ),
-    index('DeletedMessage_threadId_id_idx').using(
-      'btree',
-      table.threadId.asc().nullsLast().op('int4_ops'),
-      table.id.asc().nullsLast().op('int8_ops'),
+      table.messageSeq.asc().nullsLast().op('int4_ops'),
     ),
     foreignKey({
       columns: [table.threadId],
@@ -809,7 +826,7 @@ export const federatedMessageTombstone = pgTable(
     messageSeq: integer().notNull(),
     authorityDomain: varchar({ length: 255 }).notNull(),
     sourceDomain: varchar({ length: 255 }).notNull(),
-    remoteDeletedId: bigint({ mode: 'bigint' }).notNull(),
+    remoteDeletionSeq: integer().notNull(),
     type: messageDeleteType().notNull(),
     authorityDeletedAt: timestamp({
       precision: 3,
@@ -830,6 +847,10 @@ export const federatedMessageTombstone = pgTable(
       'FederatedMessageTombstone_message_seq_check',
       sql`${table.messageSeq} > 0`,
     ),
+    check(
+      'FederatedMessageTombstone_remoteDeletionSeq_check',
+      sql`${table.remoteDeletionSeq} > 0`,
+    ),
     uniqueIndex('FederatedMessageTombstone_target_key').using(
       'btree',
       table.threadId.asc().nullsLast().op('int4_ops'),
@@ -839,7 +860,8 @@ export const federatedMessageTombstone = pgTable(
     uniqueIndex('FederatedMessageTombstone_source_event_key').using(
       'btree',
       table.sourceDomain.asc().nullsLast().op('text_ops'),
-      table.remoteDeletedId.asc().nullsLast().op('int8_ops'),
+      table.threadId.asc().nullsLast().op('int4_ops'),
+      table.remoteDeletionSeq.asc().nullsLast().op('int4_ops'),
     ),
     foreignKey({
       columns: [table.threadId],
@@ -861,7 +883,7 @@ export const federationDeletedCursor = pgTable(
     peerDomain: varchar({ length: 255 }).notNull(),
     streamAccount: varchar({ length: 255 }).default('').notNull(),
     streamKind: varchar({ length: 32 }).notNull(),
-    deletedHwm: bigint({ mode: 'bigint' }).default(0n).notNull(),
+    committedThrough: integer().default(0).notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -870,6 +892,10 @@ export const federationDeletedCursor = pgTable(
       .notNull(),
   },
   (table) => [
+    check(
+      'FederationDeletedCursor_committedThrough_check',
+      sql`${table.committedThrough} >= 0`,
+    ),
     uniqueIndex('FederationDeletedCursor_stream_key').using(
       'btree',
       table.threadId.asc().nullsLast().op('int4_ops'),
@@ -1122,6 +1148,8 @@ export const pendingMedia = pgTable(
     }),
     /** Direct publisher whose thread-local seq is stored in originSeq. */
     federationSourceDomain: varchar({ length: 255 }),
+    /** Promote this inbound row with Message.seq=originSeq instead of allocating a new local seq. */
+    useOriginSeqAsMessageSeq: boolean().default(false).notNull(),
     status: varchar({ length: 12 }).default('pending').notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
@@ -1154,6 +1182,14 @@ export const pendingMedia = pgTable(
       'PendingMedia_depends_on_origin_seq_check',
       sql`${table.dependsOnOriginSeq} IS NULL OR ${table.dependsOnOriginSeq} > 0`,
     ),
+    check(
+      'PendingMedia_origin_seq_policy_check',
+      sql`${table.useOriginSeqAsMessageSeq} = false
+        OR (
+          ${table.direction} = 'INBOUND'
+          AND ${table.originSeq} IS NOT NULL
+        )`,
+    ),
     index('PendingMedia_batchId_idx').on(table.batchId),
     uniqueIndex('PendingMedia_clientMessageId_key').using(
       'btree',
@@ -1171,6 +1207,9 @@ export const pendingMedia = pgTable(
       table.creatorDomain.asc().nullsLast().op('text_ops'),
       table.originSeq.asc().nullsLast().op('int4_ops'),
     ),
+    uniqueIndex('PendingMedia_threadId_preserved_originSeq_key')
+      .on(table.threadId, table.originSeq)
+      .where(sql`${table.useOriginSeqAsMessageSeq} = true`),
     index('PendingMedia_threadId_idx').using(
       'btree',
       table.threadId.asc().nullsLast().op('int4_ops'),
@@ -1330,6 +1369,9 @@ export const group = pgTable(
     avatar: text().default('').notNull(),
     description: varchar({ length: 255 }).default('').notNull(),
     profileRev: integer().default(0).notNull(),
+    /** Whether this remote group currently has federation authorization through at least one
+     * active local member relationship. Local groups always retain false. */
+    federationAuthorized: boolean().default(false).notNull(),
     remoteGroupMetaFeedId: bigint({ mode: 'bigint' }),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
@@ -1345,6 +1387,10 @@ export const group = pgTable(
     uniqueIndex('Group_account_domain_key').on(table.account, table.domain),
     check('Group_account_sigil_check', sql`${table.account} LIKE '!%'`),
     check('Group_profileRev_check', sql`${table.profileRev} >= 0`),
+    check(
+      'Group_local_federationAuthorized_check',
+      sql`${table.domain} <> 'local' OR ${table.federationAuthorized} = false`,
+    ),
   ],
 );
 
@@ -1549,7 +1595,7 @@ export const clientMessageTombstoneFeed = pgTable(
     userId: integer().notNull(),
     threadId: integer().notNull(),
     feedId: integer().notNull(),
-    tombstoneEndSeq: bigint({ mode: 'bigint' }).notNull(),
+    tombstoneEndSeq: integer().notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -1718,7 +1764,9 @@ export const peerStateFeed = pgTable(
     check('PeerStateFeed_feedId_check', sql`${table.feedId} > 0`),
     check(
       'PeerStateFeed_subject_check',
-      sql`(${table.eventType} = 'RELATIONSHIP_INTENT' AND ${table.subjectAccount} <> '' AND ${table.subjectDomain} <> '') OR (${table.eventType} <> 'RELATIONSHIP_INTENT' AND ${table.subjectAccount} = '' AND ${table.subjectDomain} = 'local')`,
+      sql`(${table.eventType} = 'RELATIONSHIP_INTENT' AND ${table.subjectAccount} <> '' AND ${table.subjectDomain} <> '')
+        OR (${table.eventType} = 'THREAD_CONTENT_HEAD' AND ((${table.account} LIKE '!%' AND ${table.subjectAccount} = '' AND ${table.subjectDomain} = 'local') OR (${table.account} NOT LIKE '!%' AND ${table.subjectAccount} <> '' AND ${table.subjectDomain} = ${table.peerDomain})))
+        OR (${table.eventType} NOT IN ('RELATIONSHIP_INTENT', 'THREAD_CONTENT_HEAD') AND ${table.subjectAccount} = '' AND ${table.subjectDomain} = 'local')`,
     ),
   ],
 );
@@ -1755,7 +1803,7 @@ export const groupMetaMemberFeed = pgTable(
     memberAccount: varchar({ length: 31 }).notNull(),
     memberDomain: varchar({ length: 63 }).notNull(),
     operation: groupMetaMemberOperation().notNull(),
-    body: jsonb().notNull(),
+    body: jsonb().$type<Record<string, unknown>>().notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -1786,10 +1834,7 @@ export const groupMetaMemberFeed = pgTable(
       name: 'GroupMetaMemberFeed_groupId_fkey',
     }).onDelete('cascade'),
     check('GroupMetaMemberFeed_feedId_check', sql`${table.feedId} > 0`),
-    check(
-      'GroupMetaMemberFeed_body_check',
-      sql`(${table.operation} = 'UPSERT' AND ${table.body} <> '{}'::jsonb) OR (${table.operation} = 'DEPART' AND ${table.body} = '{}'::jsonb)`,
-    ),
+    check('GroupMetaMemberFeed_body_check', sql`${table.body} <> '{}'::jsonb`),
   ],
 );
 
@@ -2011,45 +2056,6 @@ export const peerStateFeedPullCursor = pgTable(
   ],
 );
 
-/** Current compacted message-feed projection. Relationship closure may remove the stable key. */
-export const federationMessageFeedIndex = pgTable(
-  'FederationMessageFeedIndex',
-  {
-    peerDomain: varchar({ length: 63 }).notNull(),
-    threadId: integer().notNull(),
-    feedId: bigint({ mode: 'bigint' }).notNull(),
-    messageEndSeq: integer().notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.peerDomain, table.threadId],
-      name: 'FederationMessageFeedIndex_pkey',
-    }),
-    uniqueIndex('FederationMessageFeedIndex_peerDomain_feedId_key').on(
-      table.peerDomain,
-      table.feedId,
-    ),
-    foreignKey({
-      columns: [table.peerDomain],
-      foreignColumns: [federatedPeer.domain],
-      name: 'FederationMessageFeedIndex_peerDomain_fkey',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.threadId],
-      foreignColumns: [messageThread.id],
-      name: 'FederationMessageFeedIndex_threadId_fkey',
-    }).onDelete('restrict'),
-    check('FederationMessageFeedIndex_feedId_check', sql`${table.feedId} > 0`),
-    check(
-      'FederationMessageFeedIndex_messageEndSeq_check',
-      sql`${table.messageEndSeq} > 0`,
-    ),
-  ],
-);
-
 /** One authoritative directed request. A and B may each retain an independent row and note. */
 export const relationshipIntent = pgTable(
   'RelationshipIntent',
@@ -2180,199 +2186,65 @@ export const groupAuditLog = pgTable(
   ],
 );
 
-/** Receiver-side cursor for one remote server's durable discovery feed. committedThrough advances
- * only after a missed page is fully applied in a local transaction; wake-up hints remain process-local. */
-export const federationPullCursor = pgTable(
-  'FederationPullCursor',
+/** Durable synchronization facts for one publisher's coordinate space within a local thread. */
+export const federationThreadSyncState = pgTable(
+  'FederationThreadSyncState',
   {
-    peerDomain: varchar({ length: 63 }).primaryKey().notNull(),
-    initialized: boolean().default(false).notNull(),
-    /** Retained-history floor, initialized by handshake and raised only by a valid remote reset. */
-    retainedAfter: bigint({ mode: 'bigint' }).default(0n).notNull(),
-    committedThrough: bigint({ mode: 'bigint' }).default(0n).notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    foreignKey({
-      columns: [table.peerDomain],
-      foreignColumns: [federatedPeer.domain],
-      name: 'FederationPullCursor_peerDomain_fkey',
-    }).onDelete('cascade'),
-    check(
-      'FederationPullCursor_committedThrough_check',
-      sql`${table.committedThrough} >= ${table.retainedAfter}`,
-    ),
-    check(
-      'FederationPullCursor_retainedAfter_check',
-      sql`${table.retainedAfter} >= 0`,
-    ),
-  ],
-);
-
-export const federationTombstonePullCursor = pgTable(
-  'FederationTombstonePullCursor',
-  {
-    peerDomain: varchar({ length: 63 }).primaryKey().notNull(),
-    initialized: boolean().default(false).notNull(),
-    committedThrough: bigint({ mode: 'bigint' }).default(0n).notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    foreignKey({
-      columns: [table.peerDomain],
-      foreignColumns: [federatedPeer.domain],
-      name: 'FederationTombstonePullCursor_peerDomain_fkey',
-    }).onDelete('cascade'),
-    check(
-      'FederationTombstonePullCursor_committedThrough_check',
-      sql`${table.committedThrough} >= 0`,
-    ),
-  ],
-);
-
-export const federationMessageQueryCursor = pgTable(
-  'FederationMessageQueryCursor',
-  {
-    peerDomain: varchar({ length: 63 }).notNull(),
-    threadKey: varchar({ length: 255 }).notNull(),
-    committedThrough: integer().notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.peerDomain, table.threadKey],
-      name: 'FederationMessageQueryCursor_pkey',
-    }),
-    foreignKey({
-      columns: [table.peerDomain],
-      foreignColumns: [federatedPeer.domain],
-      name: 'FederationMessageQueryCursor_peerDomain_fkey',
-    }).onDelete('cascade'),
-    check(
-      'FederationMessageQueryCursor_committedThrough_check',
-      sql`${table.committedThrough} >= 0`,
-    ),
-  ],
-);
-
-export const federationTombstoneQueryCursor = pgTable(
-  'FederationTombstoneQueryCursor',
-  {
-    peerDomain: varchar({ length: 63 }).notNull(),
-    threadKey: varchar({ length: 255 }).notNull(),
-    committedThrough: bigint({ mode: 'bigint' }).notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.peerDomain, table.threadKey],
-      name: 'FederationTombstoneQueryCursor_pkey',
-    }),
-    foreignKey({
-      columns: [table.peerDomain],
-      foreignColumns: [federatedPeer.domain],
-      name: 'FederationTombstoneQueryCursor_peerDomain_fkey',
-    }).onDelete('cascade'),
-    check(
-      'FederationTombstoneQueryCursor_committedThrough_check',
-      sql`${table.committedThrough} >= 0`,
-    ),
-  ],
-);
-
-/** Source-side monotonic message-feed ID allocator. */
-export const federationServeCursor = pgTable(
-  'FederationServeCursor',
-  {
-    peerDomain: varchar({ length: 63 }).primaryKey().notNull(),
-    allocatedThrough: bigint({ mode: 'bigint' }).default(0n).notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    foreignKey({
-      columns: [table.peerDomain],
-      foreignColumns: [federatedPeer.domain],
-      name: 'FederationServeCursor_peerDomain_fkey',
-    }).onDelete('cascade'),
-    check(
-      'FederationServeCursor_allocatedThrough_check',
-      sql`${table.allocatedThrough} >= 0`,
-    ),
-  ],
-);
-
-/** Tombstone feed source state. Its allocator and cursor are independent from message feed. */
-export const federationTombstoneServeCursor = pgTable(
-  'FederationTombstoneServeCursor',
-  {
-    peerDomain: varchar({ length: 63 }).primaryKey().notNull(),
-    allocatedThrough: bigint({ mode: 'bigint' }).default(0n).notNull(),
-    sourceScannedThrough: bigint({ mode: 'bigint' }).default(0n).notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    foreignKey({
-      columns: [table.peerDomain],
-      foreignColumns: [federatedPeer.domain],
-      name: 'FederationTombstoneServeCursor_peerDomain_fkey',
-    }).onDelete('cascade'),
-    check(
-      'FederationTombstoneServeCursor_order_check',
-      sql`${table.sourceScannedThrough} >= 0 AND ${table.allocatedThrough} >= 0`,
-    ),
-  ],
-);
-
-/** Current compacted tombstone-feed projection, keyed by target peer and thread. */
-export const federationTombstoneFeedIndex = pgTable(
-  'FederationTombstoneFeedIndex',
-  {
-    peerDomain: varchar({ length: 63 }).notNull(),
     threadId: integer().notNull(),
-    feedId: bigint({ mode: 'bigint' }).notNull(),
-    tombstoneEndSeq: bigint({ mode: 'bigint' }).notNull(),
+    peerDomain: varchar({ length: 63 }).notNull(),
+    /** Greatest message-query target merged from committed State Feed items. */
+    messageTargetSeq: integer().default(0).notNull(),
+    /** Greatest deletion-query target merged from committed State Feed items. */
+    deletionTargetSeq: integer().default(0).notNull(),
+    /** Greatest source message seq durably scanned by forward message queries. */
+    messageProcessedThroughSeq: integer().default(0).notNull(),
+    /** Greatest source deletion seq durably scanned by forward tombstone queries. */
+    deletionProcessedThroughSeq: integer().default(0).notNull(),
+    /** Exclusive source cursor passed as before to the next reverse message query. */
+    reverseNextBeforeSeq: integer().default(0).notNull(),
+    /** Existing source message coordinate whose rescan closes reverse reconstruction. */
+    reverseClosureOriginSeq: integer(),
+    historyBoundaryReached: boolean().default(false).notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
   (table) => [
     primaryKey({
-      columns: [table.peerDomain, table.threadId],
-      name: 'FederationTombstoneFeedIndex_pkey',
+      columns: [table.threadId, table.peerDomain],
+      name: 'FederationThreadSyncState_pkey',
     }),
-    uniqueIndex('FederationTombstoneFeedIndex_peerDomain_feedId_key').on(
-      table.peerDomain,
-      table.feedId,
-    ),
-    foreignKey({
-      columns: [table.peerDomain],
-      foreignColumns: [federatedPeer.domain],
-      name: 'FederationTombstoneFeedIndex_peerDomain_fkey',
-    }).onDelete('cascade'),
     foreignKey({
       columns: [table.threadId],
       foreignColumns: [messageThread.id],
-      name: 'FederationTombstoneFeedIndex_threadId_fkey',
-    }).onDelete('restrict'),
+      name: 'FederationThreadSyncState_threadId_fkey',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.peerDomain],
+      foreignColumns: [federatedPeer.domain],
+      name: 'FederationThreadSyncState_peerDomain_fkey',
+    }).onDelete('cascade'),
     check(
-      'FederationTombstoneFeedIndex_feedId_check',
-      sql`${table.feedId} > 0`,
+      'FederationThreadSyncState_messageSeqs_check',
+      sql`${table.messageTargetSeq} >= 0
+        AND ${table.deletionTargetSeq} >= 0
+        AND ${table.messageProcessedThroughSeq} >= 0
+        AND ${table.deletionProcessedThroughSeq} >= 0
+        AND ${table.messageProcessedThroughSeq} <= ${table.messageTargetSeq}
+        AND ${table.deletionProcessedThroughSeq} <= ${table.deletionTargetSeq}
+        AND ${table.reverseNextBeforeSeq} >= 0
+        AND (
+          ${table.reverseNextBeforeSeq} <= ${table.messageTargetSeq}
+          OR ${table.reverseNextBeforeSeq} - 1 = ${table.messageTargetSeq}
+        )`,
     ),
     check(
-      'FederationTombstoneFeedIndex_tombstoneEndSeq_check',
-      sql`${table.tombstoneEndSeq} > 0`,
+      'FederationThreadSyncState_reverseClosureOriginSeq_check',
+      sql`${table.reverseClosureOriginSeq} IS NULL
+        OR (
+          ${table.reverseClosureOriginSeq} > 0
+          AND ${table.reverseClosureOriginSeq} < ${table.reverseNextBeforeSeq}
+        )`,
     ),
   ],
 );

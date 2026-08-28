@@ -12,7 +12,7 @@ The key words `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, and `MAY` are to be in
 
 ## 0. Normative documents and precedence
 
-Federation v1 requirements are jointly defined by this document and the explicitly referenced [Transport and Security](./transport-security.md), [Peer Recognition](./recognition.md), [State Feed](./state-feed.md), [Group Meta Feed](./group-meta.md), [Message Feed](./message-feed.md), [Message Tombstone Feed](./message-tombstone-feed.md), [Resources](./resources.md), [Calls](./calls.md), and [Stable Error Registry](./errors.md). This document owns the shared protocol contract. An operation document MAY tighten fields, states, and authorization for its operation without weakening this document's security baseline. Conflicting requirements for the same externally observable behavior are a specification defect. An implementation MUST fail closed and MUST NOT choose the less restrictive interpretation.
+Federation v1 requirements are jointly defined by this document and the explicitly referenced [Transport and Security](./transport-security.md), [Peer Recognition](./recognition.md), [State Feed](./state-feed.md), [Group Meta Feed](./group-meta.md), [Departed Member Profile Feed](./departed-member-profile-query.md), [Message Query](./message-feed.md), [Message Tombstone Query](./message-tombstone-feed.md), [Resources](./resources.md), [Calls](./calls.md), and [Stable Error Registry](./errors.md). This document owns the shared protocol contract. An operation document MAY tighten fields, states, and authorization for its operation without weakening this document's security baseline. Conflicting requirements for the same externally observable behavior are a specification defect. An implementation MUST fail closed and MUST NOT choose the less restrictive interpretation.
 
 JSON Schema, the HTTP manifest, and vectors under `schema/` are validation artifacts and cannot override normative text. They MUST remain aligned field by field with the text, with conformance checks preventing drift.
 
@@ -70,8 +70,7 @@ The following table is the complete v1 surface. Its synchronization surface cont
 | `POST` | `/s2s/v1/feed-heads`                | lightweight signed     | JSON feed-head hint       | `200`       | success ACK envelope     |
 | `GET`  | `/s2s/v1/state-feed`                | recognized signed      | feed query                | `200`       | success data envelope    |
 | `GET`  | `/s2s/v1/group-meta`                | recognized signed      | group/meta mode query     | `200`       | success data envelope    |
-| `GET`  | `/s2s/v1/message-feed`              | recognized signed      | feed query                | `200`       | success data envelope    |
-| `GET`  | `/s2s/v1/message-tombstone-feed`    | recognized signed      | feed query                | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/departed-member-profiles`  | recognized signed      | group sequence query      | `200`       | success data envelope    |
 | `GET`  | `/s2s/v1/messages`                  | recognized signed      | thread data query         | `200`       | success data envelope    |
 | `GET`  | `/s2s/v1/message-tombstones`        | recognized signed      | thread data query         | `200`       | success data envelope    |
 | `POST` | `/s2s/v1/call`                      | recognized signed      | JSON call frame           | `200`       | success data envelope    |
@@ -230,15 +229,15 @@ An accepted cursor position represents every accepted item through that position
 
 ## 8. Durable state and lifecycle
 
-`state-feed` carries home-owned `PROFILE`, one account-generic `RELATIONSHIP_INTENT`, and `GROUP_META_FEED_HEAD` hints. The group-meta feed is the sole source of group members, roles, and source-scoped member profiles. Its first read is `full`; later reads use `delta`, with `DEPART` records for departed members. User/user and user/group query authorization is directional: an effective `REQUESTED` or valid `ACCEPTED` authored by the source grants the target peer identical access to that source's relationship data. Group/group relationships are invalid.
+`state-feed` carries home-owned `PROFILE`, one account-generic `RELATIONSHIP_INTENT`, `GROUP_META_FEED_HEAD` hints, and combined `THREAD_CONTENT_HEAD` message/deletion query bounds. The group-meta feed is the sole source of the current group roster and roles. Its `UPSERT` and `DEPART` items carry the same complete source-scoped member body, preserving author projections associated with retained messages. The reverse-only departed-member profile feed supplies source-scoped profiles needed by skip-mode reverse reconstruction. Group Meta's first read is `full`; later reads use `delta`. User/user and user/group query authorization is directional: an effective `REQUESTED` or valid `ACCEPTED` authored by the source grants the target peer identical access to that source's relationship data. Group/group relationships are invalid.
 
-[Federation v1 State Feed](./state-feed.md) defines complete pages, its three event bodies, field constraints, and merge semantics. [Group Meta Feed](./group-meta.md) defines per-peer group-member projection. [Federation v1 Message Feed](./message-feed.md) defines the compacted `thread + messageEndSeq` index and `/messages` query. [Message](./message.md) defines the ten core message contents and their media and forward bodies. [Federation v1 Message Tombstone Feed](./message-tombstone-feed.md) defines the compacted tombstone index and authoritative deletion query. Those documents and this one jointly form the v1 normative text; this summary cannot override their field-level requirements.
+[Federation v1 State Feed](./state-feed.md) defines complete pages, its four event bodies, field constraints, compacted thread-content heads, and merge semantics. [Group Meta Feed](./group-meta.md) defines per-peer group-member projection. [Departed Member Profile Feed](./departed-member-profile-query.md) defines the reverse sequence-window projection for departed group-message authors. [Federation v1 Message Query](./message-feed.md) defines `/messages`. [Message](./message.md) defines the ten core message contents and their media and forward bodies. [Federation v1 Message Tombstone Query](./message-tombstone-feed.md) defines authoritative deletion facts and `/message-tombstones`. Those documents and this one jointly form the v1 normative text; this summary cannot override their field-level requirements.
 
 One-to-one real-time calls use WebRTC media/JSEP and signed `/s2s/v1/call` frames for federation signaling. [Federation v1 Audio and Video Calls](./calls.md) defines the complete HTTP operation, frame, lifecycle, failure semantics, and one-way AUDIO-to-VIDEO upgrade on the same connection. Real-time frames do not enter a feed; terminal history is an ordinary `CALL` message.
 
 Relationship revocation, leaving, removal, dissolution, and profile or roster updates MUST converge through durable state and cannot depend on a feed-head hint or ordinary message payload.
 
-Authorization revocation stops subsequent allocation but does not delete historical proof already allocated to a peer. Historical reads and media authorization validate their respective thread audiences; message-feed allocation cannot replace resource authorization for media or a forward bundle. A server's local group capacity, quota, and retention policy are not protocol constants.
+Authorization revocation stops subsequent allocation but does not delete historical proof already allocated to a peer. Historical reads and media authorization validate their respective thread audiences; a thread-content projection cannot replace resource authorization for media or a forward bundle. A server's local group capacity, quota, and retention policy are not protocol constants.
 
 ### 8.1 State-derived authorization closure
 
@@ -253,10 +252,10 @@ The required closure is:
 
 | Operation                                   | Required state-derived rule                                                                                                                                                  |
 | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `state-feed`                                | Publishes only relationship facts authored for the peer and profile/feed-head projections visible through those durable facts.                                               |
-| `group-meta`                                | Publishes only the origin-authoritative current roster. It does not provide a historical roster or guarantee profiles for departed message authors.                          |
-| `message-feed` and `message-tombstone-feed` | Allocate or retain discovery entries only for thread audiences justified by the durable state and the operation's historical rules. An index entry grants no content access. |
-| `/messages` and `/message-tombstones`       | Recompute current relationship, group audience, and historical allocation authorization on every request; stale index state returns no authority.                            |
+| `state-feed`                                | Publishes only relationship facts, profiles, group-meta heads, and thread-content heads visible through durable authorization facts.                                      |
+| `group-meta`                                | Publishes only the origin-authoritative current roster; it does not provide a historical roster.                                                                             |
+| `/departed-member-profiles`                 | Publishes a reverse-only compressed projection of source-scoped profiles for departed authors selected from an authorized group interval.                                    |
+| `/messages` and `/message-tombstones`       | Recompute current relationship, group audience, and historical allocation authorization on every request; a stale thread-content head grants no authority.                  |
 | Media and forward bundles                   | Recompute the exact authorized message/thread binding independently of every feed cursor or hint.                                                                            |
 
 Consumers MUST drain state first and MUST NOT use data learned from another
@@ -275,67 +274,144 @@ The following publication, recovery, and loop-prevention rules form part of the 
 - A feed consists of durable changes allocated for a target peer. A change references or carries its visible durable fact; it is not an author-filtered view that excludes content originating with the requester.
 - `state-feed` MAY return a directional fact first proposed by the requester and later persisted, confirmed, rejected, or revised by the publisher. A consumer MUST apply it by compacted key in `feedId` order and MUST NOT discard a fact merely because the consumer originally authored it.
 - A message item's `seq/createdAt` is the current publisher's local-copy coordinate and persistence time. A message published by the current publisher as timeline authority MUST have `originSeq/originCreatedAt` equal to `null/null`. A non-authoritative copy formed by pulling MUST store the direct publisher's `seq/createdAt` as its own `originSeq/originCreatedAt`.
-- After consumer B pulls and durably stores a message from publisher A, B SHOULD make its stored copy readable by A through message query as a processing receipt. B allocates the copy back to A, advances that thread's `messageEndSeq` toward A, and notifies A with a new message-feed index item. A then reads the copy through B's `/messages` query. `(thread, author, originSeq)` identifies which message previously published by A was durably processed by B. B's publisher-local `seq/createdAt` gives B's copy coordinate and time, while `originSeq/originCreatedAt` equals the original A item’s `seq/createdAt`. The processing acknowledgement therefore comes from the queried message, not the message-feed item.
-- A MUST correlate the receipt's `(thread, author, originSeq)` with its previously published `(thread, author, seq)`. It MUST NOT create a duplicate message, rewrite the original, or allocate a new message-feed item for it. A processing receipt is visible only to the direct publisher of that copy; the fixed v1 topology has no further receipt-distribution step. A receipt is a recommended diagnostic facility, not a reliable ACK. Its absence means only that A has not observed a durably stored copy; it cannot prove that B did not receive it, discarded it, or isolated it for a particular reason.
+- After consumer B pulls and durably stores a message from publisher A, B SHOULD make its stored copy readable by A through message query as a processing receipt. B allocates the copy back to A, advances that thread's `messageEndSeq` toward A, and publishes a new `THREAD_CONTENT_HEAD` item. A then reads the copy through B's `/messages` query. `(thread, author, originSeq)` identifies which message previously published by A was durably processed by B. B's publisher-local `seq/createdAt` gives B's copy coordinate and time, while `originSeq/originCreatedAt` equals the original A item’s `seq/createdAt`. The processing acknowledgement therefore comes from the queried message, not the State Feed item.
+- A MUST correlate the receipt's `(thread, author, originSeq)` with its previously published `(thread, author, seq)`. It MUST NOT create a duplicate message, rewrite the original, or allocate another thread-content item for the receipt itself. A processing receipt is visible only to the direct publisher of that copy; the fixed v1 topology has no further receipt-distribution step. A receipt is a recommended diagnostic facility, not a reliable ACK. Its absence means only that A has not observed a durably stored copy; it cannot prove that B did not receive it, discarded it, or isolated it for a particular reason.
 - After a group origin receives a third-party-authored submission from a member's home server, it MUST validate the author, membership, and content and durably accept the submission before distribution. Only the origin may then distribute it authoritatively to mirrors. A mirror accepts only the known group origin as the group's distribution source and MUST NOT republish the fact to another peer. v1 carries no end-to-end message signature from the author's server. A mirror trusts the authenticated group origin's authoritative assertion about its accepted timeline, not an arbitrary thread participant's retelling.
-- A v1 item at `(source domain, thread, seq)` is immutable. A repeated item's authored content, resources, and coordinate fields MUST be semantically identical. The v1 message wire does not carry publisher-local `updatedAt` and does not use it to express edits, withdrawals, or deletion. Withdrawals and effective moderation deletions use the separate `message-tombstone-feed`.
+- A v1 item at `(source domain, thread, seq)` is immutable. A repeated item's authored content, resources, and coordinate fields MUST be semantically identical. The v1 message wire does not carry publisher-local `updatedAt` and does not use it to express edits, withdrawals, or deletion. Withdrawals and effective moderation deletions use `/message-tombstones`.
 
 ### 9.1 Feed-coordinate vocabulary
 
 This specification uses the following feed-coordinate terms consistently. An unqualified `HWM` MUST NOT refer to more than one of them:
 
-- `feedId`: a positive item ID allocated by the source in one feed-coordinate space. State, message, and tombstone feeds use three independent per-peer spaces. IDs strictly increase and are never reused but need not be contiguous.
+- `feedId`: a positive item ID allocated by the source in a feed-coordinate space. State Feed has one per-peer space; Group Meta and departed-member profile feeds use their operation-specific spaces. IDs strictly increase and are never reused but need not be contiguous.
 - `after`: the exclusive scan position supplied by the consumer. The source does not treat it as an ACK or validate monotonicity.
 - `through`: the inclusive upper bound of a bounded drain. It is not an acknowledgement.
 - `scannedThrough`: the direction-relative boundary through which a page has scanned continuously. It becomes the next `after` for a forward query or the next `before` for a reverse thread query after successful commit.
 - `resumeAfter` and `resumeBefore`: the source's exclusive lower and upper serviceable boundaries for feed and thread-query recovery. A forward query adopts `resumeAfter`, while a reverse thread query adopts `resumeBefore`. Group Meta delta recovery changes to Full mode as defined by [Group Meta Feed](./group-meta.md).
-- `stateFeedEndId`, `messageFeedEndId`, and `tombstoneFeedEndId`: the three independent inclusive drain bounds published by `feed-heads`. They are drain targets, not consumer cursors, business revisions, thread-authorization boundaries, or relationship-terminal positions, and MUST NOT appear in a `RELATIONSHIP_INTENT` body.
-- `messageEndSeq` and `tombstoneEndSeq`: inclusive upper bounds for queryable content in a thread. They belong to two thread-local coordinate spaces and are not feed IDs.
+- `stateFeedEndId`: the sole inclusive State Feed drain bound published by `feed-heads`. It is a drain target, not a consumer cursor, business revision, thread-authorization boundary, or relationship-terminal position.
+- `messageEndSeq` and `tombstoneEndSeq`: inclusive upper bounds carried together by `THREAD_CONTENT_HEAD`. They belong to two thread-local coordinate spaces and are not feed IDs. `messageEndSeq` is a JSON `PositiveThreadSequence`; `tombstoneEndSeq` is a JSON `ThreadSequence` and may be zero when no deletion exists.
 - The stable federation-thread key is the canonical source-user/target-peer-user
   pair for P2P, or the group-address/target-peer-domain pair for a group. Within
   each key, exposed message and tombstone sequence bounds never decrease or
   reset across relationship-state transitions.
 
-Feed and thread-query cursors and ends use non-negative decimal strings. Item IDs and business sequences use positive integers. `0` is the exclusive cursor before the first valid ID or sequence and is not itself an item ID or business sequence. An implementation MAY begin allocation above `1` and MAY leave gaps, provided allocated values strictly increase, are never reused, and the open bootstrap window `(resumeAfter, resumeBefore)` contains every currently serviceable coordinate. Resume boundaries do not promise that either adjacent coordinate contains an item.
+Feed IDs use non-negative decimal strings. Thread message and deletion
+sequences, their per-thread ends, and thread-query response boundaries use JSON
+safe integers; HTTP query parameters carry their canonical decimal text.
+Business sequences are positive integers. `0` is the exclusive cursor before
+the first valid ID or sequence and is not itself an item ID or business
+sequence. An implementation MAY begin allocation above `1` and MAY leave gaps,
+provided allocated values strictly increase, are never reused, and the open
+bootstrap window `(resumeAfter, resumeBefore)` contains every currently
+serviceable coordinate. Resume boundaries do not promise that either adjacent
+coordinate contains an item.
 
 Thread queries use mutually exclusive exclusive cursors. `after=A` scans toward
 greater sequence values, while `before=B` scans toward smaller values. The
 optional `through` is inclusive and fixed at the other end of the bounded
-query. Every thread-query cursor MUST be at most `SafeInteger`. To preserve an
+query. The departed-member profile feed uses only the reverse message-sequence
+coordinate space and does not itself return messages. Every thread-query cursor MUST be at most `SafeInteger`. To preserve an
 exclusive upper cursor for reverse queries, publishers MUST NOT allocate a
 message `seq` or tombstone `deletionSeq` greater than `SafeInteger - 1`.
 
+When starting or recovering a forward thread query, a consumer MUST use the
+numerically greater of the source-advertised `resumeAfter` and its last
+continuously committed cursor for that query. If `resumeAfter` is greater, the
+consumer MUST atomically discard the gap between its prior cursor and
+`resumeAfter`, treat that gap as absent from its local replicated history, and
+continue only after the new start. It MUST NOT retain the gap as pending work or
+interpret the local absence as a source-side deletion or acknowledgement. An
+operation MAY impose stricter bootstrap or cross-query ordering but MUST NOT
+weaken this recovery rule. This source-imposed recovery rule does not authorize
+an elective capacity skip; Message Query Section 3 defines that separate
+operation.
+
 ### 9.2 Common feed rules
 
-Each of the three cross-thread feeds permits omitting `after` to query its current available window. The source then returns `FEDERATION_FEED_CURSOR_UNAVAILABLE` with both `resumeAfter` and `resumeBefore` and no page. A request omitting `after` MUST NOT carry another page parameter. `resumeAfter` is the feed's forward bootstrap base and `resumeBefore` is one greater than the current feed end. State feed MUST reconstruct its complete current projection from that base. Message feed reconstructs the retained discovery window allowed by its capacity policy. A source MUST NOT skip an item that its operation requires to remain in the advertised window.
+State Feed permits omitting `after` to query its current available window. The source then returns `FEDERATION_FEED_CURSOR_UNAVAILABLE` with both `resumeAfter` and `resumeBefore` and no page. A request omitting `after` MUST NOT carry another page parameter. `resumeAfter` is the feed's forward bootstrap base and `resumeBefore` is one greater than `stateFeedEndId`. Draining from that base MUST reconstruct the complete current projection, including every current `THREAD_CONTENT_HEAD`.
 
-Each feed permits optional `take` and the inclusive feed-ID upper bound `through`. `take` is only the consumer's suggested scan count; the source SHOULD consider it but MAY choose another page size according to service capacity. The operation defines exact rules for each feed. Consecutive pagination with `through` MUST keep the value unchanged. It limits only the read window and is not an acknowledgement, deletion, or historical-degradation operation. Each feed has an independent per-peer allocator and consumer-local cursor; the source does not retain a consumer ACK or cursor. A page returns `scannedThrough`, its feed end, and `hasMore`.
+State Feed permits optional `take` and the inclusive feed-ID upper bound `through`. `take` is only the consumer's suggested scan count; the source SHOULD consider it but MAY choose another page size according to service capacity. Consecutive pagination with `through` MUST keep the value unchanged. It limits only the read window and is not an acknowledgement, deletion, or historical-degradation operation. The source does not retain a consumer ACK or cursor. A page returns `scannedThrough`, `stateFeedEndId`, and `hasMore`.
 
 Every feed-ID window is open on the left and closed on the right. `after=A&through=T` means `(A, T]`: `A` has already been committed by the consumer and is excluded, while `T` is included as the drain bound. A page actually completes `(after, scannedThrough]`, so `feedId === scannedThrough` is included and `feedId === after` MUST NOT be applied again. Omitting `through` means only that the request uses the source's frozen current `*FeedEndId`; it does not change the interval rule. HTTP byte ranges, time intervals, and other non-feed coordinates are outside this convention.
 
 Applying a page and adopting its cursor position MUST be atomic from the protocol's perspective. A repeated page MUST be idempotent. An empty page may still advance through `scannedThrough`. The source does not validate whether `after` equals the preceding page; the consumer ensures its local cursor never moves backward. Feed IDs need only strictly increase, not remain contiguous. `scannedThrough` and the next item ID MAY cross arbitrarily large deleted or unallocated gaps.
 
-Feed retention is operation-specific. State feed MUST retain every current non-deletion stable-key projection needed to rebuild from its advertised oldest boundary. Group Meta MUST retain the latest `UPSERT` needed for every current roster member and enough newer mutation history to serve its advertised delta window; a completed full snapshot infers departure from absence. Message feed MAY prune older discovery-index projections under capacity pressure and advance its advertised lower boundary. A source MUST never disguise a pruned interval as a successful empty page. Message-feed pruning does not delete message entities; message query has its independent serviceable window. Tombstone facts remain permanent even when loss of authorization removes their current discovery-index projection.
+Feed retention is operation-specific. State Feed MUST retain every current non-deletion stable-key projection needed to rebuild from its advertised oldest boundary. Group Meta MUST retain the latest `UPSERT` needed for every current roster member and every complete `DEPART` needed to associate an author projection with a still-serviceable ordinary forward message interval allocated to that peer; its delta retention floor cannot cross either dependency. A completed full snapshot infers departure from absence but does not replace a required historical member projection. Message query has an independent serviceable window. Tombstone facts remain permanent even when loss of authorization removes their current thread-content projection.
 
-The closed `feed-heads` fields are `stateFeedEndId`, `messageFeedEndId`, and `tombstoneFeedEndId`. The authenticated signer domain identifies the feed source and is not repeated in the body. The three ends are independent inclusive scan bounds for compacted feeds, used only for wake-up and bounded draining. They are not ACKs, business revisions, or query sequences. A publisher MUST derive every dependent data-feed item from already-written business state and its state-feed projection. This is a serial dependency, not three independent writes: if committed separately, the complete state transaction MUST commit first; if committed atomically, the data item MUST NOT be observable without the complete state closure. A hint may be lost, duplicated, or reordered and MUST NOT be the sole recovery mechanism.
+The closed `feed-heads` body contains only `stateFeedEndId`. The authenticated signer domain identifies the feed source and is not repeated in the body. The value is an inclusive State Feed scan bound used only for wake-up and bounded draining; it is not an ACK, business revision, or query sequence. A hint may be lost, duplicated, or reordered and MUST NOT be the sole recovery mechanism.
 
-After receiving hint `(S, M, D)`, a consumer MUST use each feed's committed local cursor and drain in this bounded order:
+After receiving hint `S`, a consumer drains State Feed from its committed cursor:
 
 ```text
-state-feed?after=<localStateCursor>&through=S
-message-tombstone-feed?after=<localTombstoneFeedCursor>&through=D
-message-feed?after=<localMessageFeedCursor>&through=M
+state-feed?after=<committedStateCursor>&through=S
 ```
 
-The state cursor MUST be completely committed through `S` before either index feed is requested for this drain. The three feeds MUST NOT be pulled in parallel. An index item merges only a thread end sequence; `/messages` and `/message-tombstones` provide actual content. For the same thread, tombstone query drains before message query. Compaction may move an item to a greater feed ID during a drain; a later hint or periodic reconciliation MUST discover it again. A consumer may independently take the numeric maximum of each coordinate across duplicate or reordered hints.
+The consumer commits the applicable relationship, profile, and Group Meta dependencies before accepting a `THREAD_CONTENT_HEAD` target. The item supplies both thread end sequences; `/messages` and `/message-tombstones` provide actual content. For a normal forward group-message interval, the consumer SHOULD first commit the required Group Meta head, including complete profile-bearing `DEPART` items. When that profile projection is temporarily unavailable, the stable author Address remains valid, the consumer MUST continue Group Meta convergence, and it MUST NOT infer a role or current-membership state from the absent projection. It MUST NOT query the reverse-only departed-member profile feed. For the same forward thread interval, the bounded tombstone and message queries MAY execute concurrently. The interval is not reconciled until both required query drains have committed; the tombstone drain uses its fixed `maxMessageSeq` even if the message drain commits first. Compaction may move an item to a greater feed ID during a drain; a later hint or periodic reconciliation MUST discover it again.
 
-Absence of a thread projection from an index feed is not a deletion notice. A consumer MUST NOT infer state by comparing the thread sets of message and tombstone feeds. State feed is the primary path for relationship termination. If a consumer retains an old P2P end, message query returns `FORBIDDEN`, and both retained authored directions are still `REQUESTED` or `ACCEPTED`, the consumer MUST invalidate the thread's current pending query target and publish `REVOKED` for its own direction without rewriting the peer-authored fact. It publishes no transition if either direction is already `REVOKED` or absent. A GROUP denial only invalidates the query target and prioritizes state drain because the peer-level query address does not identify one consumer-authored member direction. Neither path moves a global feed cursor or committed thread-local cursor backward.
+Absence of a `THREAD_CONTENT_HEAD` from the current State Feed projection is not a deletion notice. State Feed relationship facts remain the primary path for relationship termination. If a consumer retains an old P2P end, message query returns `FORBIDDEN`, and both retained authored directions are still `REQUESTED` or `ACCEPTED`, the consumer MUST invalidate the thread's current pending query target and publish `REVOKED` for its own direction without rewriting the peer-authored fact. It publishes no transition if either direction is already `REVOKED` or absent. A GROUP denial only invalidates the query target and prioritizes State Feed convergence because the peer-level query address does not identify one consumer-authored member direction. Neither path moves a feed cursor or committed thread-local cursor backward.
 
-At startup and during periodic reconciliation, even without a hint, a consumer MUST first read and drain state feed from its local state cursor, followed by tombstone and message feeds. For each feed, the end returned by the first successful page without `through` may be fixed as that drain's target. That first page participates in the drain, and later pages use the target as `through`. The three ends need not come from an atomic cross-feed snapshot.
+At startup and during periodic reconciliation, even without a hint, a consumer MUST read and drain State Feed from its committed cursor. The `stateFeedEndId` returned by the first successful page without `through` may be fixed as that drain's target. That first page participates in the drain, and later pages use the target as `through`.
 
-If an index page references a thread unknown locally, the consumer SHOULD drain the state feed before retrying the unchanged request. The publisher's state-before-data allocation order supports convergence when the required state is merely delayed. After process recovery, the consumer confirms the cached peer root identity and a usable signing certificate before draining.
+### 9.3 Forward reconciliation and reverse reconstruction rounds
 
-Media content carries only explicit digests, not publisher display or download URLs. A media message may first commit as durable pending work, after which the consumer constructs `media/:digest` Range requests from the outer message's authorization coordinates. Download authorization MUST join the signer's current thread audience and validate the digest binding to the exact message or its forward closure. It MUST NOT depend on a message-feed change that may have been collected. A download failure or quota pause MUST NOT roll back a committed feed cursor; durable state MUST make the work recoverable. A forward bundle is a bounded, immutable, digest-validated closure.
+A **forward reconciliation round** is one bounded attempt to incorporate a
+lightweight hint or a periodic reconciliation observation. The consumer first
+drains State Feed to one fixed inclusive `through` target. A larger hint received
+during that drain creates subsequent work and MUST NOT enlarge the active page
+sequence. Every retry retains the original `through`; each response's
+`scannedThrough` is progress toward that fixed target, not a replacement target.
+
+The round is a coordination and retry scope, not an atomic transaction and not
+a source-side session. A transport failure MUST NOT roll back an already
+committed State Feed page or thread-query page. After recovery, a consumer
+derives bounded work from committed coordinates and newly observed heads.
+
+After the State Feed barrier is committed, the consumer selects nondecreasing
+per-thread targets from each `THREAD_CONTENT_HEAD` item's `messageEndSeq` and
+`tombstoneEndSeq`. It freezes the targets it will process before issuing content
+queries. It MAY drain `/messages` and `/message-tombstones` concurrently, but
+does not complete reconciliation of the message interval until both bounded
+results have been applied. A forward tombstone drain SHOULD include a fixed
+`maxMessageSeq` equal to the frozen message target for the same forward thread
+round. For a tombstone-only round, it is the greatest publisher message
+coordinate the consumer had already covered when the round began. The value
+remains unchanged across all pages and cursor-recovery retries. A later message
+target belongs to a later tombstone drain. No wire-level round ID or source-side
+round state exists; the fixed boundaries and consumer's durable cursors define
+the round.
+
+A **reverse reconstruction round** is consumer-local history recovery. It is
+initialized when the consumer first commits an authoritative thread-content
+head and is not created by `feed-heads` alone. Its initial exclusive `before` is one
+greater than the inclusive `messageEndSeq` from the committed `THREAD_CONTENT_HEAD`
+that selected the thread tail. It retains an inclusive lower `through` target.
+Each reverse page moves its direction-relative `scannedThrough` downward, and
+the next page uses that value as `before` while retaining the original
+`through`. `hasMore=true` continues that bounded page sequence;
+`hasMore=false` completes only its frozen target. A cursor-unavailable result
+abandons the invalid sequence and causes recovery from newly reconciled durable
+State Feed projection and the returned serviceable window. A later
+`THREAD_CONTENT_HEAD` observation creates later work and MUST NOT enlarge an
+active bounded sequence.
+
+Before completing reconstruction of a message window, a consumer SHOULD apply
+its currently discovered forward tombstone work;
+`/message-tombstones` has no reverse direction. A GROUP consumer also applies
+the departed-member profile drain corresponding to the actual window ending at
+the message page's `scannedThrough`. An unresolved message dependency blocks
+completion until the message can be accepted or an authoritative tombstone
+terminates it. Reverse progress MUST NOT move a forward cursor backward or
+alter an active forward round. A later deletion is incorporated by the
+forward tombstone query target carried by a later `THREAD_CONTENT_HEAD`.
+
+Typical uses are initial synchronization that chooses recent history and later
+recovery when finite capacity makes the saved forward backlog impractical. Both
+use the skip-mode entry and safety rules in
+[Message Query Section 3](./message-feed.md#3-consumer-fast-forward-and-tail-initialization).
+
+If a `THREAD_CONTENT_HEAD` references a thread whose required state has not yet converged, the consumer SHOULD continue the State Feed drain before accepting its targets. The publisher's dependency ordering supports convergence when the required state is merely delayed. After process recovery, the consumer confirms the cached peer root identity and a usable signing certificate before draining.
+
+Media content carries only explicit digests, not publisher display or download URLs. The consumer constructs `media/:digest` Range requests from the outer message's authorization coordinates. Download authorization MUST join the signer's current thread audience and validate the digest binding to the exact message or its forward closure. It MUST NOT depend on a collected thread-content head. A download failure or quota pause MUST NOT roll back a committed feed cursor; retrying must preserve the exact message and resource binding. A forward bundle is a bounded, immutable, digest-validated closure.
 
 ## 10. Identity continuity and reset requirements
 

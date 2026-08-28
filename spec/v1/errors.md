@@ -100,11 +100,17 @@ interface FederationQuotaExceededData {
   retryAfter: SafeInteger;
 }
 
-interface FederationFeedCursorUnavailableData {
-  // Exclusive lower and upper boundaries of the serviceable window.
-  resumeAfter: DecimalString;
-  resumeBefore: DecimalString;
-}
+type FederationCursorUnavailableData =
+  | {
+      // Feed-ID coordinate space.
+      resumeAfter: DecimalString;
+      resumeBefore: DecimalString;
+    }
+  | {
+      // Thread message- or deletion-sequence coordinate space.
+      resumeAfter: SafeInteger;
+      resumeBefore: SafeInteger;
+    };
 
 interface FederationQueryRetryData {
   // Non-negative integer seconds, measured from complete receipt.
@@ -115,11 +121,13 @@ interface FederationQueryRetryData {
 `FEDERATION_QUOTA_EXCEEDED` MUST carry `FederationQuotaExceededData` with `retryAfter >= 0`. The operation itself identifies the limited application category; the response MUST NOT carry a category, limit, unit, window, or server-policy parameter. An implementation may place a specific quota reason in diagnostic-only `message`; a consumer MUST NOT parse that text to determine behavior.
 
 `FEDERATION_FEED_CURSOR_UNAVAILABLE` MUST carry both fields of
-`FederationFeedCursorUnavailableData`. Together they describe the current open
+`FederationCursorUnavailableData`. Together they describe the current open
 serviceable window `(resumeAfter, resumeBefore)`: `resumeAfter` is the exclusive
 lower boundary and `resumeBefore` is the exclusive upper boundary. Both values
-MUST be non-negative exact decimal strings and `resumeBefore` MUST be greater
-than `resumeAfter`.
+MUST use the same representation and `resumeBefore` MUST be greater than
+`resumeAfter`. Feed operations return non-negative exact decimal strings.
+Message, tombstone, and departed-member profile queries return JSON
+`SafeInteger` values.
 
 A forward query resumes with `after=resumeAfter`; a reverse thread query resumes
 with `before=resumeBefore`. The response always contains both fields regardless
@@ -141,7 +149,7 @@ potentially serviceable positive coordinate is `N`, then
 protocol does not guarantee that items exist at `N` or `M`, because the relevant
 coordinate space may contain unallocated, filtered, or unauthorized holes.
 
-`FEDERATION_MESSAGE_QUERY_RATE_LIMITED` and `FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE` MUST carry `FederationQueryRetryData` and may be used only by `GET /s2s/v1/messages`. Both are application deferrals after HTTP and identity authentication. They MUST NOT conceal signature, binding, authorization, or malformed errors, and MUST NOT be used by tombstone query, any of the three feeds, or for federation-wide service unavailability. They do not use the HTTP `Retry-After` header.
+`FEDERATION_MESSAGE_QUERY_RATE_LIMITED` and `FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE` MUST carry `FederationQueryRetryData` and may be used only by `GET /s2s/v1/messages`. Both are application deferrals after HTTP and identity authentication. They MUST NOT conceal signature, binding, authorization, or malformed errors, and MUST NOT be used by tombstone query, State Feed, Group Meta Feed, Departed Member Profile Feed, or for federation-wide service unavailability. They do not use the HTTP `Retry-After` header.
 
 Complete wire example:
 
@@ -158,7 +166,7 @@ This application result promises only that the current operation may be retried 
 {
   "code": 50019,
   "message": "requested message history is no longer retained",
-  "data": { "resumeAfter": "120", "resumeBefore": "501" }
+  "data": { "resumeAfter": 120, "resumeBefore": 501 }
 }
 ```
 
@@ -168,7 +176,7 @@ The example above is a valid content-retention-floor response. The following is 
 {
   "code": 50019,
   "message": "requested message history is no longer retained",
-  "data": { "resumeAfter": "100", "resumeBefore": "501" }
+  "data": { "resumeAfter": 100, "resumeBefore": 501 }
 }
 ```
 

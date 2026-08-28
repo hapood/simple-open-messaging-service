@@ -4,7 +4,7 @@ Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
 This document is the entry point for the federation message specification. See [Message Envelope](./message/envelope.md) for the outer message shape, origin coordinates, idempotency, resource descriptors, and processing receipts. The table below links to the sole detailed definition of each content type.
 
-See [Message Feed and Query](./message-feed.md) for feed and query pagination semantics and [Resources](./resources.md) for resource HTTP operations.
+See [Message Query](./message-feed.md) for query pagination semantics and [Resources](./resources.md) for resource HTTP operations.
 
 ## 1. Type and processing overview
 

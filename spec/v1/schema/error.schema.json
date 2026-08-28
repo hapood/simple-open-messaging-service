@@ -27,7 +27,7 @@
     {
       "properties": {
         "code": { "const": 50019 },
-        "data": { "$ref": "#/$defs/feedCursorUnavailableData" }
+        "data": { "$ref": "#/$defs/cursorUnavailableData" }
       },
       "required": ["data"]
     },
@@ -48,6 +48,12 @@
     }
   ],
   "$defs": {
+    "cursorUnavailableData": {
+      "oneOf": [
+        { "$ref": "#/$defs/feedCursorUnavailableData" },
+        { "$ref": "#/$defs/threadCursorUnavailableData" }
+      ]
+    },
     "quotaExceededData": {
       "type": "object",
       "required": ["retryAfter"],
@@ -69,6 +75,19 @@
         },
         "resumeBefore": {
           "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "threadCursorUnavailableData": {
+      "type": "object",
+      "required": ["resumeAfter", "resumeBefore"],
+      "properties": {
+        "resumeAfter": {
+          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+        },
+        "resumeBefore": {
+          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
         }
       },
       "additionalProperties": false

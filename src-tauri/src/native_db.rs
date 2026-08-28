@@ -1991,12 +1991,31 @@ pub(crate) async fn native_db_put_messages(
     .map_err(|e| format!("join message write: {e}"))?
 }
 
+fn decode_deleted_hwm(value_json: &str) -> Result<(i64, bool), String> {
+    let value: Value =
+        serde_json::from_str(value_json).map_err(|e| format!("parse deleted hwm: {e}"))?;
+    let (hwm, legacy_string) = match value {
+        Value::Number(value) => (value.as_i64(), false),
+        Value::String(value)
+            if value == "0"
+                || (!value.starts_with('0') && value.chars().all(|ch| ch.is_ascii_digit())) =>
+        {
+            (value.parse::<i64>().ok(), true)
+        }
+        _ => (None, false),
+    };
+    match hwm {
+        Some(hwm) if hwm >= 0 => Ok((hwm, legacy_string)),
+        _ => Err("deleted hwm must be a non-negative integer".to_string()),
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn native_db_get_deleted_hwm(
     app: tauri::AppHandle,
     user_id: i64,
     thread_id: i64,
-) -> Result<String, String> {
+) -> Result<i64, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open(&app)?;
         let key = format!("deletedHwm:{thread_id}");
@@ -2009,9 +2028,18 @@ pub(crate) async fn native_db_get_deleted_hwm(
             .optional()
             .map_err(|e| format!("get deleted hwm: {e}"))?;
         match value {
-            Some(value) => serde_json::from_str::<String>(&value)
-                .map_err(|e| format!("parse deleted hwm: {e}")),
-            None => Ok("0".to_string()),
+            Some(value) => {
+                let (hwm, legacy_string) = decode_deleted_hwm(&value)?;
+                if legacy_string {
+                    conn.execute(
+                        "UPDATE sync_state SET value_json=?3 WHERE user_id=?1 AND key=?2",
+                        params![user_id, key, hwm.to_string()],
+                    )
+                    .map_err(|e| format!("normalize deleted hwm: {e}"))?;
+                }
+                Ok(hwm)
+            }
+            None => Ok(0),
         }
     })
     .await
@@ -2024,21 +2052,39 @@ pub(crate) async fn native_db_apply_deleted_messages(
     user_id: i64,
     thread_id: i64,
     items: Vec<Value>,
-    hwm: String,
+    hwm: i64,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
+        if hwm < 0 {
+            return Err("deleted hwm must be a non-negative integer".to_string());
+        }
         let mut conn = open(&app)?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| format!("begin deleted-message write: {e}"))?;
         for item in items {
-            let seq = item
-                .get("seq")
+            let item_thread_id = item
+                .get("threadId")
                 .and_then(Value::as_i64)
-                .ok_or_else(|| "deleted message has no numeric seq".to_string())?;
+                .ok_or_else(|| "deleted message has no numeric threadId".to_string())?;
+            let deletion_seq = item
+                .get("deletionSeq")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| "deleted message has no numeric deletionSeq".to_string())?;
+            let message_seq = item
+                .get("messageSeq")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| "deleted message has no numeric messageSeq".to_string())?;
+            if item_thread_id != thread_id
+                || deletion_seq < 1
+                || deletion_seq > hwm
+                || message_seq < 1
+            {
+                return Err("deleted message has invalid coordinates".to_string());
+            }
             let placeholder = serde_json::json!({
                 "threadId": thread_id,
-                "seq": seq,
+                "seq": message_seq,
                 "isDeleted": true,
                 "content": "",
                 "contentType": "PURE_TEXT",
@@ -2051,18 +2097,14 @@ pub(crate) async fn native_db_apply_deleted_messages(
                  VALUES(?1,?2,?3,0,?4)
                  ON CONFLICT(user_id,thread_id,seq) DO UPDATE SET
                    payload_json=json_set(messages.payload_json,'$.isDeleted',json('true'))",
-                params![user_id, thread_id, seq, json_text(&placeholder)?],
+                params![user_id, thread_id, message_seq, json_text(&placeholder)?],
             )
             .map_err(|e| format!("apply deleted message: {e}"))?;
         }
         tx.execute(
             "INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,?2,?3)
              ON CONFLICT(user_id,key) DO UPDATE SET value_json=excluded.value_json",
-            params![
-                user_id,
-                format!("deletedHwm:{thread_id}"),
-                serde_json::to_string(&hwm).map_err(|e| format!("encode deleted hwm: {e}"))?
-            ],
+            params![user_id, format!("deletedHwm:{thread_id}"), hwm.to_string()],
         )
         .map_err(|e| format!("advance deleted hwm: {e}"))?;
         tx.commit()

@@ -3,37 +3,23 @@
   "description": "Non-wire state-machine vectors. Cursor values are exclusive committed positions.",
   "cases": [
     {
-      "name": "state is committed before data feeds",
-      "initialCursors": {
-        "state": "4",
-        "tombstoneFeed": "7",
-        "messageFeed": "9"
-      },
-      "hint": { "state": "6", "tombstoneFeed": "8", "messageFeed": "10" },
+      "name": "state dependencies precede the combined thread head",
+      "initialCursors": { "state": "4" },
+      "hint": { "state": "6" },
       "steps": [
         {
           "request": "state-feed",
           "after": "4",
           "through": "6",
+          "responseItems": ["PROFILE@5", "THREAD_CONTENT_HEAD@6"],
           "responseScannedThrough": "6",
-          "commit": true
-        },
-        {
-          "request": "message-tombstone-feed",
-          "after": "7",
-          "through": "8",
-          "responseScannedThrough": "8",
-          "commit": true
-        },
-        {
-          "request": "message-feed",
-          "after": "9",
-          "through": "10",
-          "responseScannedThrough": "10",
           "commit": true
         }
       ],
-      "assertions": ["no data-feed request occurs before state cursor equals 6"]
+      "assertions": [
+        "profile is applied before the thread targets",
+        "message and deletion targets come from one item"
+      ]
     },
     {
       "name": "first page fixes drain target and later pages preserve through",
@@ -128,37 +114,129 @@
       ]
     },
     {
-      "name": "unknown thread gets one state recovery then stops",
-      "initialCursors": { "state": "6", "messageFeed": "9" },
+      "name": "a compacted dependency move reindexes its thread head",
+      "initialCursors": { "state": "6" },
       "steps": [
-        {
-          "request": "message-feed",
-          "after": "9",
-          "responseScannedThrough": "10",
-          "threadKnown": false,
-          "commit": false
-        },
         {
           "request": "state-feed",
           "after": "6",
+          "responseItems": ["PROFILE@7", "THREAD_CONTENT_HEAD@8"],
           "responseScannedThrough": "8",
           "hasMore": false,
           "commit": true
-        },
-        {
-          "request": "message-feed",
-          "after": "9",
-          "responseScannedThrough": "10",
-          "samePage": true,
-          "threadKnown": false,
-          "commit": false
         }
       ],
       "assertions": [
-        "message feed cursor remains 9",
-        "automatic data-feed drain stops",
-        "protocol conflict is audited",
-        "the item is not skipped"
+        "the newer profile remains before its dependent thread head",
+        "unchanged thread coordinates may be force-reindexed"
+      ]
+    },
+    {
+      "name": "forward thread recovery uses the latest permitted start",
+      "initialCursors": {
+        "messageQuery": "20"
+      },
+      "source": { "resumeAfter": 35, "resumeBefore": 61 },
+      "steps": [
+        {
+          "action": "adopt-forward-start",
+          "start": "35",
+          "discardedLocalGap": ["21", "35"]
+        },
+        { "action": "commit-required-group-meta-head" },
+        {
+          "request": "messages",
+          "after": "35",
+          "through": "60",
+          "responseScannedThrough": 60,
+          "commit": true
+        }
+      ],
+      "assertions": [
+        "forward start equals max of local cursor and resumeAfter",
+        "the discarded gap is absent rather than pending",
+        "the discarded gap does not imply source-side deletion",
+        "complete group-meta departures commit before messages become visible",
+        "the reverse-only departed-member profile feed is not queried"
+      ]
+    },
+    {
+      "name": "skip-mode reverse starts at latest and remains continuous",
+      "initialCursors": {
+        "messageQuery": 60,
+        "departedMemberProfileQuery": 60
+      },
+      "source": { "resumeAfter": 10, "resumeBefore": 61 },
+      "steps": [
+        { "action": "commit-latest-state" },
+        { "action": "commit-group-meta-full" },
+        {
+          "request": "departed-member-profiles",
+          "mode": "skip-reverse",
+          "before": "61",
+          "through": "10",
+          "responseScannedThrough": 40,
+          "commit": true
+        },
+        {
+          "request": "departed-member-profiles",
+          "before": "40",
+          "through": "10",
+          "responseScannedThrough": 10,
+          "commit": true
+        },
+        {
+          "request": "messages",
+          "before": "61",
+          "through": "10",
+          "responseScannedThrough": 10,
+          "commit": true
+        }
+      ],
+      "assertions": [
+        "neither reverse query starts at an intermediate sequence",
+        "every later reverse page uses the preceding scannedThrough",
+        "reverse progress does not move the forward cursor backward"
+      ]
+    },
+    {
+      "name": "forward and reverse rejoin races converge through group meta",
+      "modes": ["forward", "skip-reverse"],
+      "steps": [
+        {
+          "request": "group-meta",
+          "mode": "delta",
+          "departedMembers": ["bob@b.example"],
+          "completeMemberBody": true,
+          "commit": true
+        },
+        {
+          "request": "departed-member-profiles",
+          "mode": "skip-reverse",
+          "before": "61",
+          "through": "40",
+          "rejoinedAuthorsOmitted": ["alice@a.example"],
+          "commit": true
+        },
+        {
+          "request": "messages",
+          "before": "61",
+          "through": "40",
+          "placeholderAuthors": ["alice@a.example"],
+          "commit": true
+        },
+        {
+          "request": "group-meta",
+          "mode": "delta",
+          "upsertedMembers": ["alice@a.example"],
+          "commit": true
+        }
+      ],
+      "assertions": [
+        "a rejoined current member may temporarily use a placeholder in either direction",
+        "group meta replaces the placeholder",
+        "a pending reverse departed-member profile page cannot be bypassed",
+        "forward processing uses complete profile-bearing group-meta departures instead of this feed"
       ]
     }
   ]

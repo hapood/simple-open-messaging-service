@@ -24,7 +24,10 @@ Ordinary text omits the outer message `quoteTarget`. A quoted reply MUST satisfy
 - `quoteTarget` identifies a target message from the current authoritative publisher in the same thread.
 - The outer message `assets` is empty.
 
-A quote carries no author, body, or content-type preview. The consumer generates a summary from the local target message and displays an unavailable placeholder when the target is missing. This leaves the quote with one authoritative coordinate and prevents conflicts between a preview and target content.
+A quote carries no author, body, or content-type preview. Its sole content
+binding is the authoritative `quoteTarget`; the protocol defines no secondary
+preview that could conflict with the target and does not prescribe presentation
+when that target is unavailable.
 
 ## 3. Inline entities
 

@@ -11,8 +11,9 @@ An implementation may claim `SOMFP v1 conformant` and publish `1` in discovery `
 | Peer Recognition                 | Core, Transport               | Mandatory                                  |
 | State Feed                       | Core, Recognition             | Mandatory                                  |
 | Group Meta Feed                  | Core, Recognition, State Feed | Mandatory                                  |
-| Message Feed and Query           | Core, Recognition             | Mandatory                                  |
-| Message Tombstone Feed and Query | Core, Message                 | Mandatory                                  |
+| Departed Member Profile Feed     | Core, Group Meta, Message     | Mandatory reverse reconstruction component |
+| Message Query                    | Core, Recognition             | Mandatory                                  |
+| Message Tombstone Query          | Core, Message                 | Mandatory                                  |
 | Message                          | Core                          | Mandatory, including every v1 content type |
 | Resources                        | Core, Message                 | Mandatory                                  |
 | Call Signaling                   | Core, Transport, Message      | Mandatory                                  |

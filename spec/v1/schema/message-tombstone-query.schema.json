@@ -8,10 +8,10 @@
       "required": ["deletionSeq", "thread", "messageSeq", "type", "deletedAt"],
       "properties": {
         "deletionSeq": {
-          "$ref": "urn:somfp:v1:common#/$defs/positiveDecimalString"
+          "$ref": "urn:somfp:v1:common#/$defs/positiveThreadSequence"
         },
         "thread": {
-          "$ref": "urn:somfp:v1:message-feed#/$defs/thread"
+          "$ref": "urn:somfp:v1:common#/$defs/threadAddress"
         },
         "messageSeq": {
           "$ref": "urn:somfp:v1:common#/$defs/positiveThreadSequence"
@@ -31,7 +31,7 @@
   "properties": {
     "tombstones": { "type": "array", "items": { "$ref": "#/$defs/tombstone" } },
     "scannedThrough": {
-      "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+      "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
     },
     "hasMore": { "type": "boolean" }
   },

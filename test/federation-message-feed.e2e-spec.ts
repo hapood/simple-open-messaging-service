@@ -127,7 +127,7 @@ describe('FederationMessageFeedService compacted feed', () => {
     ).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
       status: 200,
-      data: { resumeAfter: '0', resumeBefore: '1' },
+      data: { resumeAfter: 0, resumeBefore: 1 },
     });
   });
 
@@ -140,7 +140,7 @@ describe('FederationMessageFeedService compacted feed', () => {
       scannedThrough: '1',
       messageFeedEndId: '1',
       hasMore: false,
-      items: [{ feedId: '1', messageEndSeq: '1' }],
+      items: [{ feedId: '1', messageEndSeq: 1 }],
     });
     expect(feed).not.toHaveProperty('messages');
 
@@ -152,7 +152,7 @@ describe('FederationMessageFeedService compacted feed', () => {
       1,
     );
     expect(page).toMatchObject({
-      scannedThrough: '1',
+      scannedThrough: 1,
       hasMore: false,
       messages: [{ seq: 1, content: JSON.stringify({ text: 'message-1' }) }],
     });
@@ -164,7 +164,7 @@ describe('FederationMessageFeedService compacted feed', () => {
     await append(thread.id, alice, 2);
 
     const page = await service.serve(peerDomain, 0n);
-    expect(page.items).toMatchObject([{ feedId: '2', messageEndSeq: '2' }]);
+    expect(page.items).toMatchObject([{ feedId: '2', messageEndSeq: 2 }]);
     expect(page.scannedThrough).toBe('2');
     expect(page.messageFeedEndId).toBe('2');
 
@@ -190,7 +190,7 @@ describe('FederationMessageFeedService compacted feed', () => {
     );
     expect(first).toMatchObject({
       messages: [{ seq: 2 }],
-      scannedThrough: '2',
+      scannedThrough: 2,
       hasMore: true,
     });
 
@@ -205,7 +205,7 @@ describe('FederationMessageFeedService compacted feed', () => {
     );
     expect(second).toMatchObject({
       messages: [{ seq: 1 }],
-      scannedThrough: '1',
+      scannedThrough: 1,
       hasMore: false,
     });
   });
@@ -298,7 +298,7 @@ describe('FederationMessageFeedService compacted feed', () => {
       ),
     ).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
-      data: { resumeAfter: '1', resumeBefore: '2' },
+      data: { resumeAfter: 1, resumeBefore: 2 },
     });
 
     await append(thread.id, alice, 2);
@@ -309,7 +309,7 @@ describe('FederationMessageFeedService compacted feed', () => {
     );
     expect(page).toMatchObject({
       messages: [{ seq: 2 }],
-      scannedThrough: '2',
+      scannedThrough: 2,
       hasMore: false,
     });
   });

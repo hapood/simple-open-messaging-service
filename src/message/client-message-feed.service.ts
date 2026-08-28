@@ -83,7 +83,7 @@ export class ClientMessageFeedWriter {
   static async publishTombstone(
     tx: DatabaseTransaction,
     threadId: number,
-    tombstoneEndSeq: bigint,
+    tombstoneEndSeq: number,
   ): Promise<void> {
     const userIds = await this.activeUserIds(tx, threadId);
     for (const userId of userIds) {

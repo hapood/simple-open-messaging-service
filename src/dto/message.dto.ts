@@ -131,31 +131,37 @@ export class QueryDeletedMessagesDto {
   threadId!: number;
 
   @ApiPropertyOptional({
-    example: '0',
+    example: 0,
     description: 'Exclusive forward tombstone cursor.',
   })
   @IsOptional()
-  @IsString()
-  @Matches(/^(0|[1-9]\d*)$/)
-  after?: string;
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  after?: number;
 
   @ApiPropertyOptional({
-    example: '101',
+    example: 101,
     description: 'Exclusive reverse tombstone cursor.',
   })
   @IsOptional()
-  @IsString()
-  @Matches(/^(0|[1-9]\d*)$/)
-  before?: string;
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  before?: number;
 
   @ApiPropertyOptional({
-    example: '20',
+    example: 20,
     description: 'Inclusive boundary at the opposite end of the query.',
   })
   @IsOptional()
-  @IsString()
-  @Matches(/^(0|[1-9]\d*)$/)
-  through?: string;
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  through?: number;
 
   @ApiPropertyOptional({ default: 100, maximum: 200 })
   @IsOptional()
@@ -282,32 +288,38 @@ export class QueryMessagesDto {
   threadId!: number;
 
   @ApiPropertyOptional({
-    example: '42',
+    example: 42,
     description: 'Exclusive forward message-sequence cursor.',
   })
   @IsOptional()
-  @IsString()
-  @Matches(/^(0|[1-9]\d*)$/)
-  after?: string;
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  after?: number;
 
   @ApiPropertyOptional({
-    example: '101',
+    example: 101,
     description: 'Exclusive reverse message-sequence cursor.',
   })
   @IsOptional()
-  @IsString()
-  @Matches(/^(0|[1-9]\d*)$/)
-  before?: string;
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  before?: number;
 
   @ApiPropertyOptional({
-    example: '80',
+    example: 80,
     description:
       'Inclusive fixed boundary at the opposite end of the selected direction.',
   })
   @IsOptional()
-  @IsString()
-  @Matches(/^(0|[1-9]\d*)$/)
-  through?: string;
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  through?: number;
 
   @ApiPropertyOptional({
     type: Number,

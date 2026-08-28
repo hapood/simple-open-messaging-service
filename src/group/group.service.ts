@@ -351,12 +351,13 @@ export class GroupService {
     let statePeers = new Map<string, bigint>();
     const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
     await this.database.db.transaction(async (tx) => {
-      const [request] = await tx
-        .execute<{
-          memberUserId: number;
-          note: string;
-        }>(
-          sql`
+      const readRequest = () =>
+        tx
+          .execute<{
+            memberUserId: number;
+            note: string;
+          }>(
+            sql`
         SELECT member.id AS "memberUserId", intent.note
         FROM "RelationshipIntent" intent
         JOIN "RelationshipPair" pair ON pair.id = intent."pairId"
@@ -372,10 +373,21 @@ export class GroupService {
           AND intent."expiresAt" > CURRENT_TIMESTAMP
           AND (prior.id IS NULL OR prior.status = 'REQUESTED'
             OR (prior.status = 'REVOKED' AND prior."updatedAt" < intent."requestedAt"))
-        FOR UPDATE OF intent
       `,
-        )
-        .then((result) => result.rows);
+          )
+          .then((result) => result.rows);
+      const [candidate] = await readRequest();
+      if (!candidate)
+        throw new BusinessException(
+          BusinessCode.NOT_FOUND,
+          'join request not found',
+        );
+      await this.federation.lockGroupMutationInTx(
+        tx,
+        threadId,
+        candidate.memberUserId,
+      );
+      const [request] = await readRequest();
       if (!request)
         throw new BusinessException(
           BusinessCode.NOT_FOUND,
@@ -399,9 +411,10 @@ export class GroupService {
     let statePeers = new Map<string, bigint>();
     const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
     await this.database.db.transaction(async (tx) => {
-      const [request] = await tx
-        .execute<{ memberUserId: number }>(
-          sql`
+      const readRequest = () =>
+        tx
+          .execute<{ memberUserId: number }>(
+            sql`
           SELECT member.id AS "memberUserId"
           FROM "RelationshipIntent" intent
           JOIN "RelationshipPair" pair ON pair.id = intent."pairId"
@@ -413,10 +426,21 @@ export class GroupService {
             AND pair.kind = 'GROUP_MEMBER' AND intent."authorSide" = 'A'
             AND intent.status = 'REQUESTED'
             AND intent."expiresAt" > CURRENT_TIMESTAMP
-          FOR UPDATE OF intent
         `,
-        )
-        .then((result) => result.rows);
+          )
+          .then((result) => result.rows);
+      const [candidate] = await readRequest();
+      if (!candidate)
+        throw new BusinessException(
+          BusinessCode.NOT_FOUND,
+          'group invitation not found',
+        );
+      await this.federation.lockGroupMutationInTx(
+        tx,
+        threadId,
+        candidate.memberUserId,
+      );
+      const [request] = await readRequest();
       if (!request)
         throw new BusinessException(
           BusinessCode.NOT_FOUND,
@@ -697,6 +721,11 @@ export class GroupService {
     const result = await this.database.db.transaction(async (tx) => {
       const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
       const shouldDelete = params.deleteData;
+      await this.federation.lockGroupMutationInTx(
+        tx,
+        params.threadId,
+        params.userId,
+      );
       const [thread] = await tx
         .select({
           groupId: messageThread.groupId,
@@ -705,7 +734,6 @@ export class GroupService {
         .from(messageThread)
         .innerJoin(group, eq(group.id, messageThread.groupId))
         .where(eq(messageThread.id, params.threadId))
-        .for('update')
         .limit(1);
       if (!thread?.groupId)
         throw new BusinessException(BusinessCode.NOT_FOUND, 'group not found');
@@ -882,8 +910,12 @@ export class GroupService {
       const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
       const shouldDelete = params.deleteForUserId !== undefined;
       const [thread] = await tx
-        .select({ groupId: messageThread.groupId })
+        .select({
+          groupId: messageThread.groupId,
+          groupDomain: group.domain,
+        })
         .from(messageThread)
+        .innerJoin(group, eq(group.id, messageThread.groupId))
         .where(eq(messageThread.id, params.threadId))
         .limit(1);
       if (thread?.groupId == null) {
@@ -1014,6 +1046,12 @@ export class GroupService {
     reason?: string;
   }): Promise<{ transitioned: boolean }> {
     const result = await this.database.db.transaction(async (tx) => {
+      await this.federation.lockGroupMutationInTx(
+        tx,
+        params.threadId,
+        params.targetUserId,
+        [params.operatorUserId],
+      );
       const [operator, target] = await Promise.all([
         tx
           .select()
@@ -1028,8 +1066,9 @@ export class GroupService {
           .limit(1)
           .then(([row]) => row),
         tx
-          .select()
+          .select({ member: threadMember, domain: user.domain })
           .from(threadMember)
+          .innerJoin(user, eq(user.id, threadMember.userId))
           .where(
             and(
               eq(threadMember.userId, params.targetUserId),
@@ -1065,8 +1104,8 @@ export class GroupService {
         !operator ||
         !operatorAuthorized ||
         operator.role === null ||
-        target.role === GroupRole.OWNER ||
-        !outranks(operator.role, target.role)
+        target.member.role === GroupRole.OWNER ||
+        !outranks(operator.role, target.member.role)
       ) {
         throw new BusinessException(
           BusinessCode.GROUP_FORBIDDEN,
@@ -1108,8 +1147,12 @@ export class GroupService {
           );
       }
       const [thread] = await tx
-        .select({ groupId: messageThread.groupId })
+        .select({
+          groupId: messageThread.groupId,
+          groupDomain: group.domain,
+        })
         .from(messageThread)
+        .innerJoin(group, eq(group.id, messageThread.groupId))
         .where(eq(messageThread.id, params.threadId))
         .limit(1);
       if (thread?.groupId != null) {
@@ -1130,6 +1173,18 @@ export class GroupService {
           'REVOKED',
           clientFeedUpdates,
         );
+      if (thread?.groupDomain === 'local' && target.domain === 'local') {
+        const reverseState =
+          await this.federation.writeMemberRelationshipIntentInTx(
+            tx,
+            params.threadId,
+            params.targetUserId,
+            'REVOKED',
+            clientFeedUpdates,
+          );
+        for (const [domain, feedId] of reverseState)
+          requestState.set(domain, feedId);
+      }
       const groupState = await this.federation.writeGroupStateInTx(
         tx,
         params.threadId,

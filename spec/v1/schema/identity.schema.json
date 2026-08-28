@@ -24,15 +24,9 @@
     },
     "feedHeadHint": {
       "type": "object",
-      "required": ["stateFeedEndId", "messageFeedEndId", "tombstoneFeedEndId"],
+      "required": ["stateFeedEndId"],
       "properties": {
         "stateFeedEndId": {
-          "$ref": "urn:somfp:v1:common#/$defs/decimalString"
-        },
-        "messageFeedEndId": {
-          "$ref": "urn:somfp:v1:common#/$defs/decimalString"
-        },
-        "tombstoneFeedEndId": {
           "$ref": "urn:somfp:v1:common#/$defs/decimalString"
         }
       },

@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { recordHostedGroupLastSentSeq } from './hosted-group-last-sent.js';
+import { recordHostedGroupSentBoundaries } from './hosted-group-sent-boundaries.js';
 
-describe('recordHostedGroupLastSentSeq', () => {
-  it('executes the hosted-group-scoped sequence update', async () => {
+describe('recordHostedGroupSentBoundaries', () => {
+  it('executes the hosted-group-scoped boundary update', async () => {
     const execute = vi.fn().mockResolvedValue(undefined);
 
-    await recordHostedGroupLastSentSeq(
+    await recordHostedGroupSentBoundaries(
       { execute } as never,
       42,
       { account: 'alice', domain: 'local' },

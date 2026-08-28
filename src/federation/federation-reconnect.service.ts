@@ -1,7 +1,6 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { FederationService } from './federation.service.js';
-import { FederationMessageFeedPullService } from './federation-message-feed-pull.service.js';
 
 /** 60s reconnect sweep cadence (§4.3). Module-scope so @Interval can read it at decoration time. */
 const SWEEP_MS = 60_000;
@@ -27,10 +26,7 @@ export class FederationReconnectService implements OnApplicationBootstrap {
   private readonly logger = new Logger(FederationReconnectService.name);
   private readonly inFlight = new Set<string>();
 
-  constructor(
-    private readonly federation: FederationService,
-    private readonly missedPull: FederationMessageFeedPullService,
-  ) {}
+  constructor(private readonly federation: FederationService) {}
 
   onApplicationBootstrap(): void {
     void this.reconcileTrustedPeers().catch((error) =>
@@ -82,13 +78,8 @@ export class FederationReconnectService implements OnApplicationBootstrap {
   }
 
   private async reconcile(domain: string): Promise<void> {
-    const stateFeedId = await this.federation.pullStateFromPeer(domain);
-    await this.federation.pullTombstonesFromPeer(domain, stateFeedId);
-    await this.federation.pullMissedFromPeer(
-      this.missedPull,
-      domain,
-      stateFeedId,
-    );
+    await this.federation.rebuildAndPushDiscoveryHwm(domain);
+    await this.federation.pullStateFromPeer(domain);
   }
 
   private async sweep(): Promise<void> {
@@ -112,13 +103,7 @@ export class FederationReconnectService implements OnApplicationBootstrap {
    *  throws on failure (peer still down) → the caller logs and the next sweep retries. */
   private async recover(domain: string): Promise<void> {
     await this.federation.recoverPeerTrust(domain);
-    await this.federation.pushDiscoveryHwm(domain);
-    const stateFeedId = await this.federation.pullStateFromPeer(domain);
-    await this.federation.pullTombstonesFromPeer(domain, stateFeedId);
-    await this.federation.pullMissedFromPeer(
-      this.missedPull,
-      domain,
-      stateFeedId,
-    );
+    await this.federation.rebuildAndPushDiscoveryHwm(domain);
+    await this.federation.pullStateFromPeer(domain);
   }
 }

@@ -715,6 +715,12 @@ export class InviteService {
         columns: { groupId: true },
       });
       if (!target?.groupId) throw new Error('group invite target is invalid');
+      await this.relationshipIntents.lockGroupMutationInTx(tx, {
+        groupId: target.groupId,
+        memberUserId: toUserId,
+        threadId,
+        projectionUserIds: [fromUserId],
+      });
       if (afterWrite) await afterWrite(tx);
       else
         await this.relationshipIntents.writeGroupAuthoredIntentInTx(tx, {
@@ -898,6 +904,12 @@ export class InviteService {
               BusinessCode.INVITE_NOT_FOUND,
               'requester profile missing',
             );
+          const locked = await this.relationshipIntents.readP2PRelationshipInTx(
+            tx,
+            byUserId,
+            requester.id,
+          );
+          await this.requireCurrentPendingIntentInTx(tx, id, locked.pair.id);
           if (afterFriendAccept) await afterFriendAccept(tx, requester.id);
           else
             pendingFeedUpdates.push(
@@ -933,6 +945,24 @@ export class InviteService {
             BusinessCode.INVITE_NOT_FOUND,
             'group mirror missing',
           );
+        const threadIdentity = await tx.query.messageThread.findFirst({
+          where: eq(messageThread.id, threadId),
+          columns: { groupId: true },
+        });
+        if (!threadIdentity?.groupId)
+          throw new BusinessException(
+            BusinessCode.INVITE_NOT_FOUND,
+            'group mirror missing',
+          );
+        const locked = await this.relationshipIntents.lockGroupMutationInTx(
+          tx,
+          {
+            groupId: threadIdentity.groupId,
+            memberUserId: byUserId,
+            threadId,
+          },
+        );
+        await this.requireCurrentPendingIntentInTx(tx, id, locked.id);
         const [groupState] = await tx
           .select({
             dissolvedAt: group.dissolvedAt,
@@ -1013,14 +1043,24 @@ export class InviteService {
     const id = this.parseInviteId(inviteId);
     const pendingFeedUpdates: Array<{ userId: number; feedId: number }> = [];
     await this.database.db.transaction(async (tx) => {
-      const relationship = await this.loadP2PIntentPartiesInTx(tx, id);
-      const request = relationship?.intent;
-      if (!request || request.status !== 'REQUESTED') {
+      let relationship = await this.loadP2PIntentPartiesInTx(tx, id);
+      if (relationship)
+        await this.relationshipIntents.readP2PRelationshipInTx(
+          tx,
+          relationship.authorUserId,
+          relationship.subjectUserId,
+        );
+      relationship = await this.loadP2PIntentPartiesInTx(tx, id);
+      if (!relationship)
         throw new BusinessException(
-          !request
-            ? BusinessCode.INVITE_NOT_FOUND
-            : BusinessCode.INVITE_ALREADY_HANDLED,
-          !request ? 'request not found' : 'request already handled',
+          BusinessCode.INVITE_NOT_FOUND,
+          'request not found',
+        );
+      const request = relationship.intent;
+      if (request.status !== 'REQUESTED') {
+        throw new BusinessException(
+          BusinessCode.INVITE_ALREADY_HANDLED,
+          'request already handled',
         );
       }
       if (relationship.authorUserId !== byUserId) {
@@ -1051,14 +1091,24 @@ export class InviteService {
   ): Promise<void> {
     const id = this.parseInviteId(inviteId);
     await this.database.db.transaction(async (tx) => {
-      const relationship = await this.loadP2PIntentPartiesInTx(tx, id);
-      const request = relationship?.intent;
-      if (!request || request.status !== 'REQUESTED')
+      let relationship = await this.loadP2PIntentPartiesInTx(tx, id);
+      if (relationship)
+        await this.relationshipIntents.readP2PRelationshipInTx(
+          tx,
+          relationship.authorUserId,
+          relationship.subjectUserId,
+        );
+      relationship = await this.loadP2PIntentPartiesInTx(tx, id);
+      if (!relationship)
         throw new BusinessException(
-          !request
-            ? BusinessCode.INVITE_NOT_FOUND
-            : BusinessCode.INVITE_ALREADY_HANDLED,
-          !request ? 'request not found' : 'request already handled',
+          BusinessCode.INVITE_NOT_FOUND,
+          'request not found',
+        );
+      const request = relationship.intent;
+      if (request.status !== 'REQUESTED')
+        throw new BusinessException(
+          BusinessCode.INVITE_ALREADY_HANDLED,
+          'request already handled',
         );
       if (relationship.subjectUserId !== byUserId)
         throw new BusinessException(
@@ -1641,6 +1691,35 @@ export class InviteService {
       subjectUserId:
         row.intent.authorSide === 'A' ? endpointB.id : endpointA.id,
     };
+  }
+
+  private async requireCurrentPendingIntentInTx(
+    tx: DatabaseTransaction,
+    id: bigint,
+    pairId: bigint,
+  ): Promise<void> {
+    const current = await tx.query.relationshipIntent.findFirst({
+      where: and(
+        eq(relationshipIntent.id, id),
+        eq(relationshipIntent.pairId, pairId),
+      ),
+      columns: { status: true, expiresAt: true },
+    });
+    if (!current)
+      throw new BusinessException(
+        BusinessCode.INVITE_NOT_FOUND,
+        'request not found',
+      );
+    if (current.status !== 'REQUESTED')
+      throw new BusinessException(
+        BusinessCode.INVITE_ALREADY_HANDLED,
+        'request already handled',
+      );
+    if (current.expiresAt === null || current.expiresAt <= new Date())
+      throw new BusinessException(
+        BusinessCode.INVITE_EXPIRED,
+        'request expired',
+      );
   }
 
   private parseInviteId(s: string): bigint {

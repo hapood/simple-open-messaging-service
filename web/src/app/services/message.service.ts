@@ -44,18 +44,18 @@ interface ResumableUploadState {
 
 interface MessageQueryPage {
   messages: Message[];
-  scannedThrough: string;
+  scannedThrough: number;
   hasMore: boolean;
 }
 
 interface MessageQueryCursorData {
-  resumeAfter: string;
-  resumeBefore: string;
+  resumeAfter: number;
+  resumeBefore: number;
 }
 
 interface MessageTombstoneQueryPage {
   tombstones: import('./model').DeletedMessageItem[];
-  scannedThrough: string;
+  scannedThrough: number;
   hasMore: boolean;
 }
 
@@ -397,8 +397,7 @@ export class MsgService {
           !this.isMessageCursorData(response.data)
         )
           return of(response);
-        const resumeAfter = Number(response.data.resumeAfter);
-        const resumeBefore = Number(response.data.resumeBefore);
+        const { resumeAfter, resumeBefore } = response.data;
         if (
           !Number.isSafeInteger(resumeAfter) ||
           !Number.isSafeInteger(resumeBefore) ||
@@ -409,9 +408,8 @@ export class MsgService {
             message: 'success',
             data: {
               messages: [],
-              scannedThrough: String(
+              scannedThrough:
                 params.orderBy === 'asc' ? resumeAfter : resumeBefore,
-              ),
               hasMore: false,
             },
           } satisfies StandardResponse<MessageQueryPage>);
@@ -452,17 +450,15 @@ export class MsgService {
     if (cursor !== undefined) {
       body['take'] = params.take;
       if (ascending) {
-        body['after'] = String(
+        body['after'] =
           params.lastSeq !== undefined && params.skip === 0
             ? Math.max(0, cursor - 1)
-            : cursor,
-        );
+            : cursor;
       } else {
-        body['before'] = String(
+        body['before'] =
           params.lastSeq !== undefined && params.skip === 0
             ? cursor + 1
-            : cursor,
-        );
+            : cursor;
       }
     }
     if (
@@ -470,11 +466,9 @@ export class MsgService {
       params.truncate &&
       params.truncateSeq !== undefined
     ) {
-      body['through'] = String(
-        ascending
-          ? Math.max(0, params.truncateSeq - 1)
-          : params.truncateSeq + 1,
-      );
+      body['through'] = ascending
+        ? Math.max(0, params.truncateSeq - 1)
+        : params.truncateSeq + 1;
     }
     return body;
   }
@@ -483,47 +477,35 @@ export class MsgService {
     if (!value || typeof value !== 'object') return false;
     const data = value as Partial<MessageQueryCursorData>;
     return (
-      typeof data.resumeAfter === 'string' &&
-      /^(0|[1-9]\d*)$/.test(data.resumeAfter) &&
-      typeof data.resumeBefore === 'string' &&
-      /^(0|[1-9]\d*)$/.test(data.resumeBefore)
+      Number.isSafeInteger(data.resumeAfter) &&
+      data.resumeAfter! >= 0 &&
+      Number.isSafeInteger(data.resumeBefore) &&
+      data.resumeBefore! > data.resumeAfter!
     );
   }
 
   queryDeletedMessages(params: {
     threadId: number;
-    afterId: string;
+    after: number;
     take?: number;
   }) {
-    return this.http
-      .post<StandardResponse<MessageTombstoneQueryPage>>(
-        `${apiPrefix()}/deleted-messages/query`,
-        {
-          threadId: params.threadId,
-          after: params.afterId,
-          ...(params.take === undefined ? {} : { take: params.take }),
-        },
-      )
-      .pipe(
-        map(
-          (
-            response,
-          ): StandardResponse<import('./model').DeletedMessageItem[]> =>
-            response.code === 0 && response.data
-              ? {
-                  code: response.code,
-                  message: response.message,
-                  data: response.data.tombstones,
-                  hasMore: response.data.hasMore,
-                }
-              : { code: response.code, message: response.message },
-        ),
-      );
+    return this.http.post<StandardResponse<MessageTombstoneQueryPage>>(
+      `${apiPrefix()}/deleted-messages/query`,
+      {
+        threadId: params.threadId,
+        after: params.after,
+        ...(params.take === undefined ? {} : { take: params.take }),
+      },
+    );
   }
 
   withdrawMessage(params: { threadId: number; seq: number }) {
     return this.http.post<
-      StandardResponse<{ id: string; threadId: number; seq: number }>
+      StandardResponse<{
+        deletionSeq: number;
+        threadId: number;
+        messageSeq: number;
+      }>
     >(`${apiPrefix()}/withdraw-message`, params);
   }
 

@@ -98,11 +98,9 @@ describe('FederationRecognitionService health transitions', () => {
     const service = new FederationRecognitionService(
       {} as never,
       {} as never,
-      { get: () => ({ callTimeoutSec: 12 }) } as never,
       {} as never,
       {} as never,
       { get: () => ({ callTimeoutSec: 12 }) } as never,
-      {} as never,
     );
     const first = vi.fn();
     const second = vi.fn();
@@ -125,7 +123,6 @@ describe('FederationRecognitionService health transitions', () => {
     const service = new FederationRecognitionService(
       {} as never,
       {} as never,
-      { get: () => ({ callTimeoutSec: 12 }) } as never,
       {} as never,
       {} as never,
       {} as never,

@@ -159,31 +159,9 @@ function semanticValid(schema: string, value: unknown): boolean {
       return true;
     });
   }
-  if (schema === 'urn:somfp:v1:message-feed') {
-    const page = value as {
-      scannedThrough?: string;
-      messageFeedEndId?: string;
-      items?: Array<{
-        feedId: string;
-        messageEndSeq: string;
-      }>;
-    };
-    if (
-      page.scannedThrough === undefined ||
-      page.messageFeedEndId === undefined
-    )
-      return false;
-    let previous: bigint | undefined;
-    return (page.items ?? []).every((item) => {
-      const feedId = BigInt(item.feedId);
-      const ordered = previous === undefined || feedId > previous;
-      previous = feedId;
-      return ordered && feedId <= BigInt(page.scannedThrough!);
-    });
-  }
   if (schema === 'urn:somfp:v1:message-query') {
     const page = value as {
-      scannedThrough?: string;
+      scannedThrough?: number;
       messages?: Array<{
         seq: number;
         createdAt: number;
@@ -200,7 +178,7 @@ function semanticValid(schema: string, value: unknown): boolean {
       previous = message.seq;
       return (
         ordered &&
-        BigInt(message.seq) <= BigInt(page.scannedThrough!) &&
+        message.seq <= page.scannedThrough! &&
         ((message.originSeq === null && message.originCreatedAt === null) ||
           (Number.isSafeInteger(message.originSeq) &&
             message.originSeq! > 0 &&
@@ -208,6 +186,20 @@ function semanticValid(schema: string, value: unknown): boolean {
             message.originCreatedAt! >= 0)) &&
         parsedContent(message.contentType, message.content) !== null
       );
+    });
+  }
+  if (schema === 'urn:somfp:v1:message-tombstone-query') {
+    const page = value as {
+      scannedThrough?: number;
+      tombstones?: Array<{ deletionSeq: number }>;
+    };
+    if (page.scannedThrough === undefined) return false;
+    let previous: number | undefined;
+    return (page.tombstones ?? []).every((tombstone) => {
+      const ordered =
+        previous === undefined || tombstone.deletionSeq > previous;
+      previous = tombstone.deletionSeq;
+      return ordered && tombstone.deletionSeq <= page.scannedThrough!;
     });
   }
   if (schema === 'urn:somfp:v1:group-meta') {
@@ -239,15 +231,45 @@ function semanticValid(schema: string, value: unknown): boolean {
     }
     return true;
   }
+  if (schema === 'urn:somfp:v1:departed-member-profile-query') {
+    const page = value as {
+      scannedThrough?: number;
+      members?: Array<{
+        account: string;
+        domain: string;
+        lastSentSeq: number;
+      }>;
+    };
+    if (page.scannedThrough === undefined) return false;
+    const members = new Set<string>();
+    let previousLastSentSeq: number | undefined;
+    for (const member of page.members ?? []) {
+      const lastSentSeq = member.lastSentSeq;
+      const memberKey = `${member.domain}@${member.account}`;
+      if (
+        lastSentSeq < page.scannedThrough ||
+        members.has(memberKey) ||
+        (previousLastSentSeq !== undefined && lastSentSeq > previousLastSentSeq)
+      )
+        return false;
+      members.add(memberKey);
+      previousLastSentSeq = lastSentSeq;
+    }
+    return true;
+  }
   if (schema === 'urn:somfp:v1:error') {
     const error = value as {
       code?: number;
-      data?: { resumeAfter?: string; resumeBefore?: string };
+      data?: {
+        resumeAfter?: string | number;
+        resumeBefore?: string | number;
+      };
     };
     if (error.code !== 50019) return true;
     return (
       error.data?.resumeAfter !== undefined &&
       error.data.resumeBefore !== undefined &&
+      typeof error.data.resumeAfter === typeof error.data.resumeBefore &&
       BigInt(error.data.resumeBefore) > BigInt(error.data.resumeAfter)
     );
   }
@@ -319,10 +341,9 @@ async function validateManifest(ajv: Ajv2020Instance): Promise<void> {
     'GET /s2s/v1/health',
     'POST /s2s/v1/feed-heads',
     'GET /s2s/v1/state-feed',
-    'GET /s2s/v1/message-feed',
     'GET /s2s/v1/group-meta',
+    'GET /s2s/v1/departed-member-profiles',
     'GET /s2s/v1/messages',
-    'GET /s2s/v1/message-tombstone-feed',
     'GET /s2s/v1/message-tombstones',
     'POST /s2s/v1/call',
     'GET /s2s/v1/users/:account',

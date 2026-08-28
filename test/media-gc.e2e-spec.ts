@@ -84,7 +84,7 @@ describe('Media asset garbage collection', () => {
         messageSeq: 7,
         authorityDomain: 'origin.test',
         sourceDomain: 'origin.test',
-        remoteDeletedId: 42n,
+        remoteDeletionSeq: 42,
         type: 'USER_RETRACTION',
       })
       .returning();
@@ -97,7 +97,7 @@ describe('Media asset garbage collection', () => {
         originSeq: 7,
         authorityDomain: 'origin.test',
         sourceDomain: 'origin.test',
-        remoteFeedId: '42',
+        remoteDeletionSeq: 42,
         matchedMessage: null,
       }),
     );

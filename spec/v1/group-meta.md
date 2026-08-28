@@ -8,9 +8,11 @@ source-scoped member display profiles. Receivers derive group membership and
 the owner from this feed. No group settings, owner field, active flag,
 dissolution flag, or complete roster is carried by `state-feed`.
 
-For each target peer, the feed covers the current roster only. It does not
-provide a historical roster or guarantee a member/profile projection for every
-author in retained message history.
+Full mode covers the current roster. Delta `DEPART` items retain the departing
+member's final role and source-scoped profile for ordinary forward message
+consumption, but do not form a historical roster. Skip-mode reverse history
+obtains other departed-author profiles from the reverse-only
+[Departed Member Profile Feed](./departed-member-profile-query.md).
 
 ## 1. Request
 
@@ -74,7 +76,7 @@ interface GroupMetaUpsertItem extends GroupMetaItemBase {
 
 interface GroupMetaDepartItem extends GroupMetaItemBase {
   operation: 'DEPART';
-  body: Record<string, never>;
+  body: GroupMetaMemberBody;
 }
 
 type GroupMetaItem = GroupMetaUpsertItem | GroupMetaDepartItem;
@@ -119,9 +121,11 @@ receiver derives the owner from that role and derives its local active state by
 whether one of its own users remains in the roster. Non-member-derived settings
 are local policy and are not federated facts.
 
-An `UPSERT` supplies the member information. In delta mode, a later `DEPART`
-marks that member as departed; it does not authorize the receiver to erase a
-retained member or profile projection. A later `UPSERT` for the same stable key
+Both `UPSERT` and `DEPART` carry the same member body. A `DEPART` preserves the
+complete historical member projection: stable Address, final role, and
+source-scoped profile. The consumer commits that projection and marks the
+member departed instead of deleting it, preserving the author projection for
+retained messages. A later `UPSERT` for the same stable key
 marks the member current again and replaces its role/profile fields. The shared
 `InlineProfileAvatar` rules apply to every non-null `avatar`.
 
@@ -140,19 +144,25 @@ projection. A failed or incomplete full drain MUST NOT alter the committed
 roster or cursor.
 
 The source MUST retain the latest `UPSERT` needed to reproduce every current
-member for an active bounded full drain. It has no Group Meta retention or
-disclosure obligation for departed members or historical message authors.
+member for an active bounded full drain. Full Group Meta has no disclosure
+obligation for departed members or historical message authors; delta `DEPART`
+covers ordinary forward processing and the separate reverse-only Departed
+Member Profile Feed defines skip-mode history.
 
 ## 4. Delta mode
 
-Delta mode returns retained `UPSERT` and `DEPART` changes in feed order. A
-consumer applies each item by stable member key and commits its page cursor in
-the same transaction. `DEPART` marks the retained projection departed instead
+Delta mode returns retained `UPSERT` and profile-bearing `DEPART` changes in
+feed order. A consumer applies each item by stable member key and adopts its
+page cursor atomically. `DEPART` marks the retained projection departed instead
 of removing it. Items at or below the committed feed cursor are already applied
 and MUST NOT be replayed.
 
-The source MAY compact history that is not needed for a current member or a
-speaker in the target peer's visible interval. If
+For each target peer, the source MUST retain every profile-bearing `DEPART`
+needed to associate an author projection with any still-serviceable ordinary
+forward message interval allocated to that peer. It MAY compact an older
+departure only after that dependency is no longer serviceable; the delta
+retention floor MUST NOT cross a required departure. The reverse-only Departed
+Member Profile Feed has its own historical selection obligation. If
 `after` is below the delta retention floor, the source MUST return
 `FEDERATION_FEED_CURSOR_UNAVAILABLE` with the common exclusive
 `resumeAfter/resumeBefore` boundaries. The consumer restarts with
@@ -169,3 +179,11 @@ receiver first commits relationship and group identity dependencies, drains
 Group Meta until its committed cursor is at least `groupMetaFeedEndId`, and only then
 commits that state-feed item. The hint is not roster data and cannot itself add
 or remove a member.
+
+Before an origin makes a newly accepted group message queryable or publishes
+its `THREAD_CONTENT_HEAD`, every member projection required to identify that
+message's author MUST already be committed in Group Meta. The corresponding
+`GROUP_META_FEED_HEAD` MUST precede the thread-content item in State Feed. A
+later lightweight `feed-heads` hint advertises a `stateFeedEndId` covering both
+items. The consumer drains that state and Group Meta dependency while
+reconciling the corresponding message interval.

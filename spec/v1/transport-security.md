@@ -254,7 +254,7 @@ Content-Digest: sha-256=:5IZ8gaj/brmz/2nnvsyh7h5RK8vujKNm/Ja5uAG7Oy4=:
 Signature-Input: sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=1700000000;expires=1700000300;keyid="a.example/key-1";alg="ed25519"
 Signature: sig1=:Rq0Zqp2oS4lobqDctVVp5UmYJbJUSuxnluAjMOowvF+COrxXhS/ryAAb5SQY5TIqOCLLvjmsOJfO9wFJ/ijFDQ==:
 
-{"stateFeedEndId":"12","messageFeedEndId":"34","tombstoneFeedEndId":"9"}
+{"stateFeedEndId":"12"}
 ```
 
 The exact UTF-8 bytes of the final body line are used for both `Content-Digest` and the signature; the trailing newline shown by formatting is not part of the body. `Host` produces signature component `"@authority": b.example`. The request has no query, so its signature component is `"@query": ?`. The complete signature base and non-secret private test key are in [`schema/vectors/http-message-signature.json`](./schema/vectors/http-message-signature.json). [Federation v1 Peer Recognition, Section 10](./recognition.md#10-complete-http-construction-examples) contains complete certificates, requests, responses, and signature bases for Recognize and Health.

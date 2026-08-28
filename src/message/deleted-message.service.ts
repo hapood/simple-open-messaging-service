@@ -32,6 +32,54 @@ export class DeletedMessageService {
     private readonly messages: MessageService,
   ) {}
 
+  /** Allocate one thread-local deletion coordinate and persist the immutable fact. The thread row is
+   * the serialization point for both allocation and target idempotency, so retries consume no sequence. */
+  static async ensureFactInTx(
+    tx: DatabaseTransaction,
+    params: {
+      threadId: number;
+      messageSeq: number;
+      type: MessageDeleteType;
+      federationSourceDomain?: string | null;
+      updatedAt?: Date;
+    },
+  ): Promise<{ deletionSeq: number; created: boolean }> {
+    const [thread] = await tx
+      .select({ id: messageThread.id })
+      .from(messageThread)
+      .where(eq(messageThread.id, params.threadId))
+      .for('update')
+      .limit(1);
+    if (!thread) throw new Error(`thread ${params.threadId} does not exist`);
+    const existing = await tx.query.deletedMessage.findFirst({
+      where: and(
+        eq(deletedMessage.threadId, params.threadId),
+        eq(deletedMessage.messageSeq, params.messageSeq),
+      ),
+      columns: { deletionSeq: true },
+    });
+    if (existing) return { deletionSeq: existing.deletionSeq, created: false };
+    const [allocated] = await tx
+      .update(messageThread)
+      .set({
+        deletionSeqAllocatedThrough: sql`${messageThread.deletionSeqAllocatedThrough} + 1`,
+      })
+      .where(eq(messageThread.id, params.threadId))
+      .returning({
+        deletionSeq: messageThread.deletionSeqAllocatedThrough,
+      });
+    if (!allocated) throw new Error('deletion sequence allocation failed');
+    await tx.insert(deletedMessage).values({
+      threadId: params.threadId,
+      deletionSeq: allocated.deletionSeq,
+      messageSeq: params.messageSeq,
+      type: params.type,
+      federationSourceDomain: params.federationSourceDomain ?? null,
+      updatedAt: params.updatedAt ?? new Date(),
+    });
+    return { deletionSeq: allocated.deletionSeq, created: true };
+  }
+
   private async assertFederatedResponseWritable(
     tx: DatabaseTransaction,
     threadId: number,
@@ -68,19 +116,19 @@ export class DeletedMessageService {
 
   async queryThread(
     threadId: number,
-    after: bigint | undefined,
+    after: number | undefined,
     take: number,
-    through?: bigint,
-    before?: bigint,
+    through?: number,
+    before?: number,
   ) {
-    const [tail] = await this.database.db
-      .select({ end: sql<bigint>`COALESCE(MAX(${deletedMessage.id}), 0)` })
-      .from(deletedMessage)
-      .where(eq(deletedMessage.threadId, threadId));
-    const end = tail?.end ?? 0n;
+    const tail = await this.database.db.query.messageThread.findFirst({
+      where: eq(messageThread.id, threadId),
+      columns: { deletionSeqAllocatedThrough: true },
+    });
+    const end = tail?.deletionSeqAllocatedThrough ?? 0;
     const cursorData = {
-      resumeAfter: '0',
-      resumeBefore: (end + 1n).toString(),
+      resumeAfter: 0,
+      resumeBefore: end + 1,
     };
     if (after === undefined && before === undefined)
       throw new BusinessException(
@@ -90,8 +138,8 @@ export class DeletedMessageService {
         cursorData,
       );
     if (
-      (after !== undefined && (after < 0n || after > end)) ||
-      (before !== undefined && (before <= 1n || before > end + 1n))
+      (after !== undefined && (after < 0 || after > end)) ||
+      (before !== undefined && (before <= 1 || before > end + 1))
     )
       throw new BusinessException(
         BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
@@ -104,39 +152,41 @@ export class DeletedMessageService {
       ? through === undefined || through > end
         ? end
         : through
-      : 0n;
-    const queryStart = forward ? 0n : (through ?? 1n);
-    const queryBefore = forward ? 0n : before! < end + 1n ? before! : end + 1n;
+      : 0;
+    const queryStart = forward ? 0 : (through ?? 1);
+    const queryBefore = forward ? 0 : before! < end + 1 ? before! : end + 1;
     const rows = await this.database.db.query.deletedMessage.findMany({
       where: and(
         eq(deletedMessage.threadId, threadId),
         forward
-          ? gt(deletedMessage.id, after!)
-          : gte(deletedMessage.id, queryStart),
+          ? gt(deletedMessage.deletionSeq, after!)
+          : gte(deletedMessage.deletionSeq, queryStart),
         forward
-          ? lte(deletedMessage.id, queryEnd)
-          : lt(deletedMessage.id, queryBefore),
+          ? lte(deletedMessage.deletionSeq, queryEnd)
+          : lt(deletedMessage.deletionSeq, queryBefore),
       ),
-      orderBy: forward ? asc(deletedMessage.id) : desc(deletedMessage.id),
+      orderBy: forward
+        ? asc(deletedMessage.deletionSeq)
+        : desc(deletedMessage.deletionSeq),
       limit: take + 1,
     });
     const selected = rows.slice(0, take);
     const scannedThrough =
       rows.length > take
-        ? selected.at(-1)!.id
+        ? selected.at(-1)!.deletionSeq
         : forward
           ? queryEnd
           : queryStart;
     return {
       tombstones: selected.map((row) => ({
-        id: row.id.toString(),
+        deletionSeq: row.deletionSeq,
         threadId: row.threadId,
-        seq: row.seq,
+        messageSeq: row.messageSeq,
         type: row.type,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
       })),
-      scannedThrough: scannedThrough.toString(),
+      scannedThrough,
       hasMore: rows.length > take,
     };
   }
@@ -185,37 +235,22 @@ export class DeletedMessageService {
         .update(message)
         .set({ isDeleted: true, updatedAt: now })
         .where(and(eq(message.threadId, threadId), eq(message.seq, seq)));
-      const [inserted] = await tx
-        .insert(deletedMessage)
-        .values({
-          threadId,
-          seq,
-          type: MessageDeleteType.USER_RETRACTION,
-          updatedAt: now,
-        })
-        .onConflictDoNothing({
-          target: [deletedMessage.threadId, deletedMessage.seq],
-        })
-        .returning({ id: deletedMessage.id });
+      const deletion = await DeletedMessageService.ensureFactInTx(tx, {
+        threadId,
+        messageSeq: seq,
+        type: MessageDeleteType.USER_RETRACTION,
+        updatedAt: now,
+      });
       // A withdrawal is a message-quota event, but retries are idempotent: only the transaction that
       // creates the durable deletion fact may charge it. Keeping the callback in this transaction also
       // rolls the deletion back if its quota gate rejects the operation.
-      if (inserted && onFirstWithdraw) await onFirstWithdraw(tx);
-      const deletionId =
-        inserted?.id ??
-        (
-          await tx.query.deletedMessage.findFirst({
-            where: and(
-              eq(deletedMessage.threadId, threadId),
-              eq(deletedMessage.seq, seq),
-            ),
-            columns: { id: true },
-          })
-        )?.id;
-      if (deletionId === undefined)
-        throw new Error('deleted message log was not persisted');
-      await ClientMessageFeedWriter.publishTombstone(tx, threadId, deletionId);
-      const systemMessage = inserted
+      if (deletion.created && onFirstWithdraw) await onFirstWithdraw(tx);
+      await ClientMessageFeedWriter.publishTombstone(
+        tx,
+        threadId,
+        deletion.deletionSeq,
+      );
+      const systemMessage = deletion.created
         ? (
             await this.messages.writeSystemMessageInTx(
               tx,
@@ -228,9 +263,9 @@ export class DeletedMessageService {
         : null;
 
       return {
-        id: deletionId.toString(),
+        deletionSeq: deletion.deletionSeq,
         threadId,
-        seq,
+        messageSeq: seq,
         creator: {
           account: target.creatorAccount,
           domain: target.creatorDomain,
@@ -246,7 +281,7 @@ export class DeletedMessageService {
     tx: DatabaseTransaction,
     threadId: number,
     seq: number,
-  ): Promise<string> {
+  ): Promise<number> {
     const locked = await tx.execute(sql`
       SELECT id, "isDeleted"
       FROM "Message"
@@ -265,34 +300,19 @@ export class DeletedMessageService {
       .update(message)
       .set({ isDeleted: true, updatedAt: now })
       .where(and(eq(message.threadId, threadId), eq(message.seq, seq)));
-    const [inserted] = await tx
-      .insert(deletedMessage)
-      .values({
-        threadId,
-        seq,
-        type: MessageDeleteType.MODERATION_REMOVAL,
-        updatedAt: now,
-      })
-      .onConflictDoNothing({
-        target: [deletedMessage.threadId, deletedMessage.seq],
-      })
-      .returning({ id: deletedMessage.id });
-    const deletionId =
-      inserted?.id ??
-      (
-        await tx.query.deletedMessage.findFirst({
-          where: and(
-            eq(deletedMessage.threadId, threadId),
-            eq(deletedMessage.seq, seq),
-          ),
-          columns: { id: true },
-        })
-      )?.id;
-    if (deletionId === undefined)
-      throw new Error('deleted message log was not persisted');
-    await ClientMessageFeedWriter.publishTombstone(tx, threadId, deletionId);
+    const deletion = await DeletedMessageService.ensureFactInTx(tx, {
+      threadId,
+      messageSeq: seq,
+      type: MessageDeleteType.MODERATION_REMOVAL,
+      updatedAt: now,
+    });
+    await ClientMessageFeedWriter.publishTombstone(
+      tx,
+      threadId,
+      deletion.deletionSeq,
+    );
 
-    return deletionId.toString();
+    return deletion.deletionSeq;
   }
 
   /** Both deletion arrival and federated message insertion take this exact lock. There need not be a
@@ -313,7 +333,7 @@ export class DeletedMessageService {
    * relaying this server's own-author tombstone back to it). This never touches Message state. */
   async advanceFederatedCursor(params: {
     threadId: number;
-    remoteDeletedId: bigint;
+    remoteDeletionSeq: number;
     cursor: { peerDomain: string; streamAccount: string; streamKind: string };
     expectedFederationVersion: number;
   }): Promise<void> {
@@ -331,7 +351,7 @@ export class DeletedMessageService {
           peerDomain: params.cursor.peerDomain,
           streamAccount: params.cursor.streamAccount,
           streamKind: params.cursor.streamKind,
-          deletedHwm: params.remoteDeletedId,
+          committedThrough: params.remoteDeletionSeq,
           updatedAt: new Date(),
         })
         .onConflictDoUpdate({
@@ -342,7 +362,7 @@ export class DeletedMessageService {
             federationDeletedCursor.streamKind,
           ],
           set: {
-            deletedHwm: sql`GREATEST(${federationDeletedCursor.deletedHwm}, ${params.remoteDeletedId})`,
+            committedThrough: sql`GREATEST(${federationDeletedCursor.committedThrough}, ${params.remoteDeletionSeq})`,
             updatedAt: new Date(),
           },
         });
@@ -354,7 +374,7 @@ export class DeletedMessageService {
     messageSeq: number;
     authorityDomain: string;
     sourceDomain: string;
-    remoteDeletedId: bigint;
+    remoteDeletionSeq: number;
     type: MessageDeleteType;
     authorityDeletedAt?: Date;
     allowPending?: boolean;
@@ -374,7 +394,7 @@ export class DeletedMessageService {
       messageSeq: number;
       authorityDomain: string;
       sourceDomain: string;
-      remoteDeletedId: bigint;
+      remoteDeletionSeq: number;
       type: MessageDeleteType;
       authorityDeletedAt?: Date;
       /** Group origins reject unmatched member submissions instead of treating them as facts. */
@@ -456,14 +476,14 @@ export class DeletedMessageService {
             messageSeq: params.messageSeq,
             authorityDomain: params.authorityDomain,
             sourceDomain: params.sourceDomain,
-            remoteDeletedId: params.remoteDeletedId,
+            remoteDeletionSeq: params.remoteDeletionSeq,
             type: params.type,
             authorityDeletedAt: params.authorityDeletedAt ?? new Date(),
             updatedAt: new Date(),
           })
           .onConflictDoNothing();
     }
-    let localDeletedId: bigint | null = null;
+    let localDeletionSeq: number | null = null;
     let systemMessage: PublicMessage | null = null;
     if (target) {
       if (
@@ -483,30 +503,26 @@ export class DeletedMessageService {
             eq(message.originSeq, params.messageSeq),
           ),
         );
-      const [created] = await tx
-        .insert(deletedMessage)
-        .values({
-          threadId: params.threadId,
-          seq: target.seq,
-          type: params.type,
-          federationSourceDomain:
-            params.federationSourceDomain === undefined
-              ? params.sourceDomain
-              : params.federationSourceDomain,
-          updatedAt: now,
-        })
-        .onConflictDoNothing({
-          target: [deletedMessage.threadId, deletedMessage.seq],
-        })
-        .returning({ id: deletedMessage.id });
-      localDeletedId = created?.id ?? null;
-      if (localDeletedId !== null)
+      const localDeletion = await DeletedMessageService.ensureFactInTx(tx, {
+        threadId: params.threadId,
+        messageSeq: target.seq,
+        type: params.type,
+        federationSourceDomain:
+          params.federationSourceDomain === undefined
+            ? params.sourceDomain
+            : params.federationSourceDomain,
+        updatedAt: now,
+      });
+      localDeletionSeq = localDeletion.created
+        ? localDeletion.deletionSeq
+        : null;
+      if (localDeletion.created)
         await ClientMessageFeedWriter.publishTombstone(
           tx,
           params.threadId,
-          localDeletedId,
+          localDeletion.deletionSeq,
         );
-      if (localDeletedId !== null) {
+      if (localDeletion.created) {
         systemMessage = (
           await this.messages.writeSystemMessageInTx(
             tx,
@@ -625,7 +641,7 @@ export class DeletedMessageService {
           peerDomain: params.cursor.peerDomain,
           streamAccount: params.cursor.streamAccount,
           streamKind: params.cursor.streamKind,
-          deletedHwm: params.remoteDeletedId,
+          committedThrough: params.remoteDeletionSeq,
           updatedAt: new Date(),
         })
         .onConflictDoUpdate({
@@ -636,15 +652,15 @@ export class DeletedMessageService {
             federationDeletedCursor.streamKind,
           ],
           set: {
-            deletedHwm: sql`GREATEST(${federationDeletedCursor.deletedHwm}, ${params.remoteDeletedId})`,
+            committedThrough: sql`GREATEST(${federationDeletedCursor.committedThrough}, ${params.remoteDeletionSeq})`,
             updatedAt: new Date(),
           },
         });
     }
-    return target && localDeletedId !== null
+    return target && localDeletionSeq !== null
       ? {
-          id: localDeletedId.toString(),
-          seq: target.seq,
+          deletionSeq: localDeletionSeq,
+          messageSeq: target.seq,
           systemMessage: systemMessage!,
         }
       : null;

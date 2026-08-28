@@ -64,6 +64,33 @@
       "maximum": 9007199254740990,
       "description": "Positive thread message or deletion sequence; SafeInteger is reserved as the maximum exclusive reverse cursor"
     },
+    "threadSequence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740990,
+      "description": "Non-negative thread message or deletion boundary; SafeInteger is reserved as the maximum exclusive reverse cursor"
+    },
+    "threadAddress": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["account"],
+          "properties": {
+            "account": { "$ref": "#/$defs/groupAccount" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["account", "peerAccount"],
+          "properties": {
+            "account": { "$ref": "#/$defs/userAccount" },
+            "peerAccount": { "$ref": "#/$defs/userAccount" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
     "epochMilliseconds": {
       "$ref": "#/$defs/safeNonNegativeInteger",
       "description": "Unix epoch milliseconds encoded as a non-negative JSON safe integer"

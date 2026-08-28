@@ -76,13 +76,13 @@ describe('federated message deletion transaction ordering', () => {
     threadId = thread.id;
   });
 
-  async function apply(remoteDeletedId: bigint) {
+  async function apply(remoteDeletionSeq: number) {
     return deletions.applyFederated({
       threadId,
       messageSeq: 7,
       authorityDomain: 'peer.test',
       sourceDomain: 'peer.test',
-      remoteDeletedId,
+      remoteDeletionSeq,
       type: MessageDeleteType.USER_RETRACTION,
       cursor,
       expectedFederationVersion: 0,
@@ -134,18 +134,13 @@ describe('federated message deletion transaction ordering', () => {
         })
         .returning({ seq: message.seq, isDeleted: message.isDeleted });
       if (tombstone) {
-        await tx
-          .insert(deletedMessage)
-          .values({
-            threadId,
-            seq,
-            type: tombstone.type,
-            federationSourceDomain: tombstone.sourceDomain,
-            updatedAt: new Date(),
-          })
-          .onConflictDoNothing({
-            target: [deletedMessage.threadId, deletedMessage.seq],
-          });
+        await DeletedMessageService.ensureFactInTx(tx, {
+          threadId,
+          messageSeq: seq,
+          type: tombstone.type,
+          federationSourceDomain: tombstone.sourceDomain,
+          updatedAt: new Date(),
+        });
         await tx
           .delete(federatedMessageTombstone)
           .where(
@@ -181,21 +176,71 @@ describe('federated message deletion transaction ordering', () => {
     const storedCursor =
       await database.db.query.federationDeletedCursor.findFirst({
         where: eq(federationDeletedCursor.threadId, threadId),
-        columns: { deletedHwm: true },
+        columns: { committedThrough: true },
       });
     return { stored, tombstones, logs, cursor: storedCursor };
   }
 
+  it('allocates deletion coordinates per thread without gaps on concurrent retries', async () => {
+    const allocate = (targetMessageSeq: number) =>
+      database.db.transaction((tx) =>
+        DeletedMessageService.ensureFactInTx(tx, {
+          threadId,
+          messageSeq: targetMessageSeq,
+          type: MessageDeleteType.USER_RETRACTION,
+        }),
+      );
+
+    const retryResults = await Promise.all([allocate(7), allocate(7)]);
+    expect(retryResults.map((result) => result.deletionSeq)).toEqual([1, 1]);
+    expect(retryResults.map((result) => result.created).sort()).toEqual([
+      false,
+      true,
+    ]);
+    await expect(allocate(9)).resolves.toEqual({
+      deletionSeq: 2,
+      created: true,
+    });
+
+    const [otherThread] = await database.db
+      .insert(messageThread)
+      .values({ type: 'P2P', updatedAt: new Date() })
+      .returning({ id: messageThread.id });
+    await expect(
+      database.db.transaction((tx) =>
+        DeletedMessageService.ensureFactInTx(tx, {
+          threadId: otherThread.id,
+          messageSeq: 4,
+          type: MessageDeleteType.MODERATION_REMOVAL,
+        }),
+      ),
+    ).resolves.toEqual({ deletionSeq: 1, created: true });
+
+    const [firstAllocator, secondAllocator] = await Promise.all([
+      database.db.query.messageThread.findFirst({
+        where: eq(messageThread.id, threadId),
+        columns: { deletionSeqAllocatedThrough: true },
+      }),
+      database.db.query.messageThread.findFirst({
+        where: eq(messageThread.id, otherThread.id),
+        columns: { deletionSeqAllocatedThrough: true },
+      }),
+    ]);
+    expect(firstAllocator?.deletionSeqAllocatedThrough).toBe(2);
+    expect(secondAllocator?.deletionSeqAllocatedThrough).toBe(1);
+  });
+
   it('keeps a later-arriving message deleted when the tombstone committed first', async () => {
-    expect(await apply(10n)).toBeNull();
+    expect(await apply(10)).toBeNull();
     expect(await insertIncoming()).toMatchObject({ isDeleted: true });
 
     const state = await persistedState();
     expect(state.stored?.isDeleted).toBe(true);
     expect(state.tombstones).toHaveLength(0);
     expect(state.logs).toHaveLength(1);
-    expect(state.logs[0]?.seq).toBe(state.stored?.seq);
-    expect(state.cursor?.deletedHwm).toBe(10n);
+    expect(state.logs[0]?.messageSeq).toBe(state.stored?.seq);
+    expect(state.logs[0]?.deletionSeq).toBe(1);
+    expect(state.cursor?.committedThrough).toBe(10);
   });
 
   it('serializes a deletion behind an in-progress message insert and converges to deleted', async () => {
@@ -206,30 +251,34 @@ describe('federated message deletion transaction ordering', () => {
 
     const inserting = insertIncoming({ locked: announceLocked, release });
     await locked;
-    const deleting = apply(11n);
+    const deleting = apply(11);
     // The delete is now allowed to contend for the same advisory lock; releasing the holder establishes
     // the message-before-delete order without relying on a sleep or scheduler timing.
     releaseInsert();
     await expect(inserting).resolves.toMatchObject({ isDeleted: false });
-    await expect(deleting).resolves.toMatchObject({ seq: 1 });
+    await expect(deleting).resolves.toMatchObject({
+      deletionSeq: 1,
+      messageSeq: 1,
+    });
 
     const state = await persistedState();
     expect(state.stored?.isDeleted).toBe(true);
     expect(state.tombstones).toHaveLength(0);
     expect(state.logs).toHaveLength(1);
-    expect(state.cursor?.deletedHwm).toBe(11n);
+    expect(state.cursor?.committedThrough).toBe(11);
   });
 
   it('is idempotent and never regresses the remote deletion HWM', async () => {
     await insertIncoming();
-    await apply(12n);
-    await apply(11n);
+    await apply(12);
+    await apply(11);
 
     const state = await persistedState();
     expect(state.stored?.isDeleted).toBe(true);
     expect(state.tombstones).toHaveLength(0);
     expect(state.logs).toHaveLength(1);
-    expect(state.cursor?.deletedHwm).toBe(12n);
+    expect(state.logs[0]?.deletionSeq).toBe(1);
+    expect(state.cursor?.committedThrough).toBe(12);
   });
 
   it('terminates but retains an inbound pending download and its resumable progress', async () => {
@@ -261,7 +310,7 @@ describe('federated message deletion transaction ordering', () => {
       originDomain: 'peer.test',
     });
 
-    await apply(13n);
+    await apply(13);
 
     const retained = await database.db.query.pendingMedia.findFirst({
       where: eq(pendingMedia.batchId, pending.batchId),

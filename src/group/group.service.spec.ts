@@ -68,6 +68,7 @@ function createService(
     },
   };
   const federation = {
+    lockGroupMutationInTx: vi.fn().mockResolvedValue(undefined),
     writeGroupStateInTx: vi.fn().mockResolvedValue(new Map()),
     writeMemberRelationshipIntentInTx: vi.fn().mockResolvedValue(new Map()),
     writeGroupRelationshipIntentInTx: vi.fn().mockResolvedValue(new Map()),
@@ -330,7 +331,12 @@ describe('GroupService membership lifecycle', () => {
       const tx = createTx({
         selects: [
           [{ id: 7, role: GroupRole.ADMIN }],
-          [{ id: 8, role: targetRole }],
+          [
+            {
+              member: { id: 8, role: targetRole },
+              domain: 'local',
+            },
+          ],
         ],
       });
       const service = createService(tx, {});
@@ -359,7 +365,7 @@ describe('GroupService membership lifecycle', () => {
             role: GroupRole.OWNER,
           },
         ],
-        [target],
+        [{ member: target, domain: 'local' }],
         [{ userId: 1 }, { userId: 2 }],
         [{ groupId: 99 }],
         [
@@ -422,8 +428,11 @@ describe('GroupService membership lifecycle', () => {
         ],
         [
           {
-            id: 8,
-            role: GroupRole.MEMBER,
+            member: {
+              id: 8,
+              role: GroupRole.MEMBER,
+            },
+            domain: 'local',
           },
         ],
         [{ userId: 1 }, { userId: 2 }],

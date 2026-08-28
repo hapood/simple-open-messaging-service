@@ -10,9 +10,33 @@
 
 ## Local flow
 
-`DeletedMessage` is an append-only per-server log. Each row contains its local `threadId`, local `seq`, deletion type, `createdAt`, and `updatedAt`. Message queries exclude `isDeleted=true` rows.
+`DeletedMessage` is an append-only per-thread log. Each row contains
+`threadId`, thread-local `deletionSeq`, target `messageSeq`, deletion type,
+`createdAt`, and `updatedAt`. Its primary key is `(threadId, deletionSeq)`, and
+`(threadId, messageSeq)` is unique because a message reaches only one terminal
+deletion fact. `MessageThread.deletionSeqAllocatedThrough` allocates the next
+deletion sequence atomically and starts at `0` before the first deletion. There
+is no global `DeletedMessage.id`; database identity, local queries, client
+hints, and federation publication all use the explicit thread coordinate.
 
-On the account's first thread-list initialization, the app stores the current global deletion HWM before consuming thread data. That value is only a baseline: when a thread is first opened it becomes that thread's HWM, and subsequent pulls advance the per-thread value. Entering a thread performs a non-blocking deletion pull. `DELETED_MESSAGE_UPDATED` SSE is only a wake-up signal for the same pull.
+No new table is required. `MessageThread` owns the allocator and
+`DeletedMessage` owns the facts. The former global tombstone-source
+`sourceScannedThrough` tied to `DeletedMessage.id` is removed with that ID;
+projection maintenance compares or publishes each thread's explicit deletion
+end instead.
+
+The compact client tombstone feed retains its outer feed IDs. Federation
+publishes each thread's deletion end together with its message end in the
+compacted State Feed `THREAD_CONTENT_HEAD`; the thread-level deletion query
+uses `DeletedMessage.deletionSeq` directly. A federation pending fact is deduplicated by
+`(sourceDomain, thread, remoteDeletionSeq)`, because a source may reuse the same
+thread-local deletion sequence in different threads.
+
+On thread-list initialization, the app consumes the compact tombstone feed and
+stores each thread's advertised `tombstoneEndSeq`. Opening a thread performs a
+non-blocking forward deletion pull from its persisted thread-local committed
+position. `DELETED_MESSAGE_UPDATED` SSE is only a wake-up signal for the same
+pull; it does not introduce another cursor.
 
 The browser and native clients persist tombstones in their ordinary message store. Applying a deletion page and advancing its HWM is one transaction. A later or concurrent message-page write cannot replace a tombstone. Mounted messages are removed; a deleted member of a merged media album rebuilds the row from the remaining members with viewport-anchor compensation. Message-scoped viewers and menus close when their target is deleted.
 
@@ -25,9 +49,10 @@ receiving server creates its corresponding local notice when it first applies th
 
 ## Federation flow
 
-Federation v1 propagates withdrawals and effective moderation deletions through the durable
-`GET /s2s/v1/message-tombstone-feed`; see the normative
-[Message Tombstone Feed](../../spec/v1/message-tombstone-feed.md). The ordinary message feed keeps
+Federation v1 discovers withdrawals and effective moderation deletions through
+`THREAD_CONTENT_HEAD.tombstoneEndSeq`, then reads them through
+`GET /s2s/v1/message-tombstones`; see the normative
+[Message Tombstone Query](../../spec/v1/message-tombstone-feed.md). The ordinary message query keeps
 authored message bodies immutable and does not encode deletion through `updatedAt` or a special content type.
 
 Both `USER_RETRACTION` and `MODERATION_REMOVAL` remove the target at the receiver. A report that only changes the reporter's
@@ -36,7 +61,17 @@ authority after validating a foreign author's withdrawal submission. Mirrors nev
 The stable target is `(thread, creator, originSeq)`, and tombstone authorization uses an exact durable
 `(peer, message)` delivery proof, so leave/rejoin gaps do not expose targets a peer never received.
 
-The message and tombstone feeds use independent per-peer feed-ID spaces, allocators, ACKs, retention floors
-and pull cursors. Recovery drains state, then
-tombstones, then messages. Message insertion and tombstone application serialize on the same stable identity,
+Message and tombstone targets share one compacted State Feed item but retain
+independent thread-local sequence spaces and processed positions. A forward
+round may fetch tombstones and messages concurrently. Message insertion and tombstone application serialize on the same stable identity,
 so message-first and tombstone-first delivery both converge without resurrection.
+
+## Migration
+
+An existing installation backfills `deletionSeq` from the former global row ID
+after proving every value fits the supported integer range. This intentionally
+leaves cross-thread gaps and initially unique values; neither property changes
+the thread-local meaning. Per-thread allocators are initialized to each
+thread's maximum backfilled value before the old ID and its sequence are
+removed. Existing published ends and durable consumer cursors therefore do not
+move backward or change identity during the migration.

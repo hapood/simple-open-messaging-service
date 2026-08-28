@@ -131,9 +131,9 @@ export class MessageController {
           HttpStatus.BAD_REQUEST,
         );
     }
-    const after = dto.after === undefined ? undefined : BigInt(dto.after);
-    const before = dto.before === undefined ? undefined : BigInt(dto.before);
-    const through = dto.through === undefined ? undefined : BigInt(dto.through);
+    const after = dto.after;
+    const before = dto.before;
+    const through = dto.through;
     if (after !== undefined && through !== undefined && through < after)
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
@@ -180,7 +180,7 @@ export class MessageController {
       this.sseService.onDeletedMessageUpdated(
         participant.userId,
         dto.threadId,
-        deleted.id,
+        deleted.deletionSeq,
       );
     }
     if (deleted.systemMessage) void this.fanout.dispatch(deleted.systemMessage);
@@ -783,16 +783,6 @@ export class MessageController {
         'take and through require after or before',
         HttpStatus.BAD_REQUEST,
       );
-    const parseCursor = (value: string, name: string): number => {
-      const parsed = Number(value);
-      if (!Number.isSafeInteger(parsed))
-        throw new BusinessException(
-          BusinessCode.VALIDATION_FAILED,
-          `${name} exceeds the safe integer range`,
-          HttpStatus.BAD_REQUEST,
-        );
-      return parsed;
-    };
     const lower = Math.max(req.threadAccess.participant.clearedSeq ?? 0, 0);
     const currentEnd = await this.messageService.readThreadEndSeq(dto.threadId);
     const upper = Math.min(
@@ -800,8 +790,8 @@ export class MessageController {
       req.threadAccess.participant.messageVisibleBeforeSeq ?? currentEnd + 1,
     );
     const cursorData = {
-      resumeAfter: lower.toString(),
-      resumeBefore: upper.toString(),
+      resumeAfter: lower,
+      resumeBefore: upper,
     };
     if (dto.after === undefined && dto.before === undefined)
       throw new BusinessException(
@@ -810,14 +800,7 @@ export class MessageController {
         HttpStatus.OK,
         cursorData,
       );
-    const after =
-      dto.after === undefined ? undefined : parseCursor(dto.after, 'after');
-    const before =
-      dto.before === undefined ? undefined : parseCursor(dto.before, 'before');
-    const through =
-      dto.through === undefined
-        ? undefined
-        : parseCursor(dto.through, 'through');
+    const { after, before, through } = dto;
     if (
       (after !== undefined && (after < lower || after >= upper)) ||
       (before !== undefined && (before <= lower + 1 || before > upper))
@@ -886,7 +869,7 @@ export class MessageController {
         : queryStart;
     return {
       messages,
-      scannedThrough: scannedThrough.toString(),
+      scannedThrough,
       hasMore,
     };
   }

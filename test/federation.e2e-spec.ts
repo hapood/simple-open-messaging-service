@@ -1122,8 +1122,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       },
       { timeout: 5000 },
     );
+    const source = await appA.database.query.user.findFirst({
+      where: eq(user.id, aliceId),
+    });
     expect(after.avatar).toMatch(/^\/uploads\/.+-512\.webp$/);
-    expect(after.profileRev).toBeGreaterThanOrEqual(before!.profileRev);
+    expect(after.profileRev).toBe(source!.profileRev);
   });
 
   it('removes the legacy client peer-profile sync endpoint', async () => {
@@ -1810,13 +1813,12 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           ),
         });
         expect(daveOnMirror).not.toBeNull();
-        const staleMember =
-          await appB.database.query.threadMember.findFirst({
-            where: and(
-              eq(threadMember.threadId, firstMirrorBId),
-              eq(threadMember.userId, staleIdentity.id),
-            ),
-          });
+        const staleMember = await appB.database.query.threadMember.findFirst({
+          where: and(
+            eq(threadMember.threadId, firstMirrorBId),
+            eq(threadMember.userId, staleIdentity.id),
+          ),
+        });
         expect(
           staleMember,
           'full group-meta rebuild must mark a receiver-only member as departed',
@@ -2638,14 +2640,14 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           peerDomain: DOM_B,
           threadId: oldThreadA!.threadId,
           feedId: head!.feedId,
-          tombstoneEndSeq: 1n,
+          tombstoneEndSeq: 1,
         })
         .onConflictDoUpdate({
           target: [
             federationTombstoneFeedIndex.peerDomain,
             federationTombstoneFeedIndex.threadId,
           ],
-          set: { feedId: head!.feedId, tombstoneEndSeq: 1n },
+          set: { feedId: head!.feedId, tombstoneEndSeq: 1 },
         });
     });
 
@@ -2830,11 +2832,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         });
         const participant =
           await appB.database.query.threadParticipant.findFirst({
-          where: and(
-            eq(threadParticipant.threadId, threadB!.threadId),
-            eq(threadParticipant.accountId, bobLocalIdB),
-          ),
-        });
+            where: and(
+              eq(threadParticipant.threadId, threadB!.threadId),
+              eq(threadParticipant.accountId, bobLocalIdB),
+            ),
+          });
         expect(participant?.messageVisibleBeforeSeq).toBe(boundary!.seq + 1);
         expect(
           await appB.database.query.clientMessageFeed.findFirst({

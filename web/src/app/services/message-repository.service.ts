@@ -152,9 +152,7 @@ export class MessageRepository {
       .pipe(
         filter(
           (m) =>
-            m.event === 'NEW_MESSAGE' &&
-            m.status === 0 &&
-            m.data !== undefined,
+            m.event === 'NEW_MESSAGE' && m.status === 0 && m.data !== undefined,
         ),
       )
       .subscribe((m) =>
@@ -308,20 +306,27 @@ export class MessageRepository {
     let hwm = await this.webdb.getDeletedHwm(threadId);
     for (;;) {
       const res = await firstValueFrom(
-        this.msg.queryDeletedMessages({ threadId, afterId: hwm, take: 100 }),
+        this.msg.queryDeletedMessages({ threadId, after: hwm, take: 100 }),
       );
       if (res.code !== 0 || !res.data) return;
-      const items = res.data;
-      const next = items.at(-1)?.id ?? hwm;
+      const { tombstones: items, scannedThrough: next, hasMore } = res.data;
+      if (
+        !Array.isArray(items) ||
+        !Number.isSafeInteger(next) ||
+        next < hwm ||
+        typeof hasMore !== 'boolean' ||
+        (next === hwm && hasMore)
+      )
+        throw new Error('deleted-message query returned an invalid boundary');
       await this.webdb.applyDeletedMessages(threadId, items, next);
       if (items.length) {
         this.deletedSignal$.next({
           threadId,
-          seqs: items.map((item) => item.seq),
+          seqs: items.map((item) => item.messageSeq),
         });
       }
       hwm = next;
-      if (!res.hasMore || items.length === 0) return;
+      if (!hasMore) return;
     }
   }
 

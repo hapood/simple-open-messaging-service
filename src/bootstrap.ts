@@ -230,11 +230,7 @@ export async function configureApp(
         method: RequestMethod.GET,
       },
       {
-        path: `${FEDERATION_API_PREFIX}/message-feed`,
-        method: RequestMethod.GET,
-      },
-      {
-        path: `${FEDERATION_API_PREFIX}/message-tombstone-feed`,
+        path: `${FEDERATION_API_PREFIX}/departed-member-profiles`,
         method: RequestMethod.GET,
       },
       {

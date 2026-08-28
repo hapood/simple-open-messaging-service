@@ -1,8 +1,8 @@
 import { sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../database/database.service.js';
 
-/** Track the latest authored sequence only for a group hosted by this server. */
-export async function recordHostedGroupLastSentSeq(
+/** Track the earliest and latest authored sequences only for a group hosted by this server. */
+export async function recordHostedGroupSentBoundaries(
   tx: DatabaseTransaction,
   threadId: number,
   author: { account: string; domain: string },
@@ -10,7 +10,9 @@ export async function recordHostedGroupLastSentSeq(
 ): Promise<void> {
   await tx.execute(sql`
     UPDATE "ThreadMember" member
-    SET "lastSentSeq" = ${seq}, "updatedAt" = CURRENT_TIMESTAMP
+    SET "firstSentSeq" = LEAST(COALESCE("firstSentSeq", ${seq}), ${seq}),
+        "lastSentSeq" = GREATEST(COALESCE("lastSentSeq", ${seq}), ${seq}),
+        "updatedAt" = CURRENT_TIMESTAMP
     FROM "User" author
     WHERE member."threadId" = ${threadId}
       AND member."userId" = author.id

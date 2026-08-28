@@ -190,8 +190,15 @@ export class SseService implements OnModuleDestroy {
   }
 
   /** Hint only: the client pulls the durable log using its thread-level deletion HWM. */
-  onDeletedMessageUpdated(userId: number, threadId: number, deletedId: string) {
-    this.pushToUser(userId, 'DELETED_MESSAGE_UPDATED', { threadId, deletedId });
+  onDeletedMessageUpdated(
+    userId: number,
+    threadId: number,
+    deletionSeq: number,
+  ) {
+    this.pushToUser(userId, 'DELETED_MESSAGE_UPDATED', {
+      threadId,
+      deletionSeq,
+    });
   }
 
   /** 1:1 WebRTC call LIFECYCLE notification — incoming ring / accepted / declined / cancelled / ended /

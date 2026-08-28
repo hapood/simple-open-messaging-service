@@ -27,34 +27,6 @@
       },
       "additionalProperties": false
     },
-    "tombstoneFeedQuery": {
-      "type": "object",
-      "dependentRequired": { "take": ["after"], "through": ["after"] },
-      "properties": {
-        "after": {
-          "$ref": "urn:somfp:v1:common#/$defs/decimalString"
-        },
-        "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" },
-        "through": {
-          "$ref": "urn:somfp:v1:common#/$defs/decimalString"
-        }
-      },
-      "additionalProperties": false
-    },
-    "messageFeedQuery": {
-      "type": "object",
-      "dependentRequired": { "take": ["after"], "through": ["after"] },
-      "properties": {
-        "after": {
-          "$ref": "urn:somfp:v1:common#/$defs/decimalString"
-        },
-        "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" },
-        "through": {
-          "$ref": "urn:somfp:v1:common#/$defs/decimalString"
-        }
-      },
-      "additionalProperties": false
-    },
     "threadDataQuery": {
       "oneOf": [
         {
@@ -122,6 +94,51 @@
         }
       ]
     },
+    "messageTombstoneQuery": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["account", "peerAccount"],
+          "dependentRequired": {
+            "take": ["after"],
+            "through": ["after"],
+            "maxMessageSeq": ["after"]
+          },
+          "properties": {
+            "account": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
+            "peerAccount": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
+            "after": { "$ref": "urn:somfp:v1:common#/$defs/decimalString" },
+            "through": { "$ref": "urn:somfp:v1:common#/$defs/decimalString" },
+            "maxMessageSeq": {
+              "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+            },
+            "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" },
+            "includeSelf": { "enum": ["true", "false"] }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["account"],
+          "dependentRequired": {
+            "take": ["after"],
+            "through": ["after"],
+            "maxMessageSeq": ["after"]
+          },
+          "properties": {
+            "account": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },
+            "after": { "$ref": "urn:somfp:v1:common#/$defs/decimalString" },
+            "through": { "$ref": "urn:somfp:v1:common#/$defs/decimalString" },
+            "maxMessageSeq": {
+              "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+            },
+            "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" },
+            "includeSelf": { "enum": ["true", "false"] }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
     "groupMetaQuery": {
       "type": "object",
       "required": ["account", "mode"],
@@ -132,6 +149,18 @@
         "after": { "$ref": "urn:somfp:v1:common#/$defs/decimalString" },
         "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" },
         "through": { "$ref": "urn:somfp:v1:common#/$defs/decimalString" }
+      },
+      "additionalProperties": false
+    },
+    "departedMemberProfileQuery": {
+      "type": "object",
+      "required": ["account"],
+      "dependentRequired": { "take": ["before"], "through": ["before"] },
+      "properties": {
+        "account": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },
+        "before": { "$ref": "urn:somfp:v1:common#/$defs/decimalString" },
+        "through": { "$ref": "urn:somfp:v1:common#/$defs/decimalString" },
+        "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" }
       },
       "additionalProperties": false
     },

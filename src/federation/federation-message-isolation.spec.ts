@@ -3,11 +3,9 @@ import {
   FederationService,
   FederationMessageContextError,
 } from './federation.service.js';
-import type { FederationMessageFeedPage } from './federation-message-feed.service.js';
+import type { FederationMessageFeedMessage } from './federation-message-feed.service.js';
 
-const item = (
-  sequence: string,
-): FederationMessageFeedPage['messages'][number] => ({
+const item = (sequence: string): FederationMessageFeedMessage => ({
   thread: {
     account: 'alice',
     peerAccount: 'bob',
@@ -23,6 +21,47 @@ const item = (
 });
 
 describe('federation message context isolation', () => {
+  it('does not publish realtime effects for a committed historical message', async () => {
+    const service = Object.create(
+      FederationService.prototype,
+    ) as FederationService & Record<string, unknown>;
+    const onNewMessage = vi.fn();
+    const onDeletedMessageUpdated = vi.fn();
+    const signalOutbound = vi.fn();
+    const signalDeletionOutbound = vi.fn();
+    Object.assign(service, {
+      sse: { onNewMessage, onDeletedMessageUpdated },
+      forwardBundles: { rebuildLinkCards: vi.fn() },
+      signalOutbound,
+      signalDeletionOutbound,
+      unblockedRecipients: vi.fn(),
+    });
+
+    await service.publishMessageQueryEffects('origin.test', [
+      {
+        kind: 'message',
+        historical: true,
+        threadId: 9,
+        originSeq: 70,
+        recipients: [7],
+        toAccount: 'alice',
+        author: { account: 'bob', domain: 'origin.test' },
+        message: {
+          seq: 70,
+          creatorAccount: 'bob',
+          creatorDomain: 'origin.test',
+          createdAt: new Date(),
+          isDeleted: false,
+        },
+      },
+    ] as never);
+
+    expect(onNewMessage).not.toHaveBeenCalled();
+    expect(onDeletedMessageUpdated).not.toHaveBeenCalled();
+    expect(signalOutbound).not.toHaveBeenCalled();
+    expect(signalDeletionOutbound).not.toHaveBeenCalled();
+  });
+
   it('records a self-authored feed item as a delivery receipt without inserting a duplicate', async () => {
     const service = Object.create(
       FederationService.prototype,
@@ -59,16 +98,10 @@ describe('federation message context isolation', () => {
     };
 
     await expect(
-      service.applyMissedPageInTransaction(
+      service.applyMessageQueryItemsInTransaction(
         tx as never,
         'group-origin.test',
-        {
-          items: [],
-          scannedThrough: '1',
-          messageFeedEndId: '1',
-          hasMore: false,
-          messages: [item('1')],
-        },
+        [item('1')],
         {} as never,
       ),
     ).resolves.toEqual([]);
@@ -80,6 +113,106 @@ describe('federation message context isolation', () => {
       peerSeq: 1,
       messageId: 1n,
     });
+  });
+
+  it('backfills the publisher coordinate for a self-authored reverse item', async () => {
+    const service = Object.create(
+      FederationService.prototype,
+    ) as FederationService & Record<string, unknown>;
+    const where = vi.fn().mockResolvedValue(undefined);
+    const set = vi.fn().mockReturnValue({ where });
+    const update = vi.fn().mockReturnValue({ set });
+    const receiptValues = vi.fn().mockResolvedValue(undefined);
+    Object.assign(service, {
+      config: { domain: 'local.test' },
+      logger: { error: vi.fn() },
+      assertPeerResponseWritable: vi.fn(),
+      resolveMissedThreadInTransaction: vi.fn().mockResolvedValue({
+        threadId: 9,
+        creatorId: 7,
+        federationVersion: 0,
+        recipients: [7],
+        toAccount: 'alice',
+      }),
+    });
+    const tx = {
+      execute: vi.fn().mockResolvedValue({ rows: [] }),
+      query: {
+        message: {
+          findFirst: vi.fn().mockResolvedValue({
+            id: 1n,
+            createdAt: new Date(1_700_000_000_000),
+            originSeq: null,
+            federationSourceDomain: null,
+          }),
+        },
+        federationMessageReceipt: {
+          findFirst: vi.fn().mockResolvedValue(undefined),
+        },
+      },
+      insert: vi.fn().mockReturnValue({ values: receiptValues }),
+      update,
+    };
+
+    const reverseItem = item('70');
+    await expect(
+      service.applyMessageQueryItemsInTransaction(
+        tx as never,
+        'group-origin.test',
+        [reverseItem],
+        {} as never,
+        {
+          sequencePolicy: {
+            kind: 'PRESERVE_ORIGIN',
+            beforeSeq: 100,
+            throughSeq: 40,
+          },
+        },
+      ),
+    ).resolves.toEqual([]);
+
+    expect(set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        originSeq: 70,
+        federationSourceDomain: 'group-origin.test',
+        updatedAt: expect.any(Date),
+      }),
+    );
+    expect(receiptValues).toHaveBeenCalledWith({
+      peerDomain: 'group-origin.test',
+      threadId: 9,
+      peerSeq: 70,
+      messageId: 1n,
+    });
+  });
+
+  it('rejects a reverse page item below its persisted closure target before applying it', async () => {
+    const service = Object.create(
+      FederationService.prototype,
+    ) as FederationService & Record<string, unknown>;
+    Object.assign(service, {
+      assertPeerResponseWritable: vi.fn(),
+    });
+    const tx = { execute: vi.fn() };
+
+    await expect(
+      service.applyMessageQueryItemsInTransaction(
+        tx as never,
+        'group-origin.test',
+        [item('39')],
+        {} as never,
+        {
+          sequencePolicy: {
+            kind: 'PRESERVE_ORIGIN',
+            beforeSeq: 100,
+            throughSeq: 40,
+          },
+        },
+      ),
+    ).rejects.toThrow(
+      'federated message origin seq must not precede the reverse through cursor',
+    );
+    expect(tx.execute).not.toHaveBeenCalled();
   });
 
   it('rolls back a page that references an unknown thread', async () => {
@@ -120,19 +253,11 @@ describe('federation message context isolation', () => {
         set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
       })),
     };
-    const page: FederationMessageFeedPage = {
-      items: [],
-      scannedThrough: '2',
-      messageFeedEndId: '2',
-      hasMore: false,
-      messages: [item('1'), item('2')],
-    };
-
     await expect(
-      service.applyMissedPageInTransaction(
+      service.applyMessageQueryItemsInTransaction(
         tx as never,
         'peer.test',
-        page,
+        [item('1'), item('2')],
         {} as never,
       ),
     ).rejects.toThrow('friend/thread is absent');
@@ -158,19 +283,12 @@ describe('federation message context isolation', () => {
     const tx = { execute: vi.fn().mockResolvedValue({ rows: [] }) };
 
     await expect(
-      service.applyMissedPageInTransaction(
+      service.applyMessageQueryItemsInTransaction(
         tx as never,
         'peer.test',
-        {
-          items: [],
-          scannedThrough: '1',
-          messageFeedEndId: '1',
-          hasMore: false,
-          messages: [item('1')],
-        },
+        [item('1')],
         {} as never,
-        new Map(),
-        true,
+        { isolateMissingContext: true },
       ),
     ).resolves.toEqual([]);
     expect(logger.error).toHaveBeenCalledWith(
@@ -197,16 +315,10 @@ describe('federation message context isolation', () => {
     const tx = { execute: vi.fn().mockResolvedValue({ rows: [] }) };
 
     await expect(
-      service.applyMissedPageInTransaction(
+      service.applyMessageQueryItemsInTransaction(
         tx as never,
         'peer.test',
-        {
-          items: [],
-          scannedThrough: '1',
-          messageFeedEndId: '1',
-          hasMore: false,
-          messages: [malformed],
-        },
+        [malformed],
         {} as never,
       ),
     ).resolves.toEqual([]);
@@ -237,16 +349,10 @@ describe('federation message context isolation', () => {
       const tx = { execute: vi.fn().mockResolvedValue({ rows: [] }) };
 
       await expect(
-        service.applyMissedPageInTransaction(
+        service.applyMessageQueryItemsInTransaction(
           tx as never,
           'peer.test',
-          {
-            items: [],
-            scannedThrough: '1',
-            messageFeedEndId: '1',
-            hasMore: false,
-            messages: [unknown],
-          },
+          [unknown],
           {} as never,
         ),
       ).resolves.toEqual([]);

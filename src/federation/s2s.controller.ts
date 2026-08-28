@@ -21,14 +21,14 @@ import { FederationService, type S2SAddress } from './federation.service.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { FederationMessageFeedService } from './federation-message-feed.service.js';
-import { FederationMessageFeedPullService } from './federation-message-feed-pull.service.js';
 import { FederationMessageTombstoneFeedService } from './federation-message-tombstone-feed.service.js';
-import { FederationMessageTombstonePullService } from './federation-message-tombstone-pull.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
 import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
 import { GroupMetaFeedService } from './group-meta-feed.service.js';
+import { DepartedMemberProfileQueryService } from './departed-member-profile-query.service.js';
 import { FEDERATION_API_PREFIX } from './federation-protocol.js';
+import { FEDERATION_THREAD_SEQUENCE_MAX } from './federation-thread-round.constants.js';
 import {
   parseFederationResourceRequest,
   parseFederationRange,
@@ -46,8 +46,7 @@ import {
  *
  * - POST /s2s/v1/call — a federated 1:1 WebRTC call frame (ring / lifecycle / SDP-ICE relay); FederationService.handleCallFrame.
  * - GET  /s2s/v1/state-feed — compacted profile/relationship/group state for the signed peer.
- * - GET  /s2s/v1/message-feed — durable message-discovery changes for the signed peer.
- * - POST /s2s/v1/feed-heads — ephemeral state/message/tombstone feed-head wake-up hint.
+ * - POST /s2s/v1/feed-heads — an ephemeral state-feed wake-up hint.
  *
  * Response shape: success bodies are enveloped by the global SerializeInterceptor as
  * { code: 0, message, data } (the peer's getSigned unwraps `data` and throws on a non-zero code). Business
@@ -76,13 +75,12 @@ export class S2sController implements OnModuleDestroy {
   constructor(
     private readonly federation: FederationService,
     private readonly messageFeed: FederationMessageFeedService,
-    private readonly messageFeedPull: FederationMessageFeedPullService,
     private readonly tombstoneFeed: FederationMessageTombstoneFeedService,
-    private readonly tombstonePull: FederationMessageTombstonePullService,
     private readonly settings: SettingsService,
     private readonly peerStateFeed: PeerStateFeedService,
     private readonly peerStateFeedPull: PeerStateFeedPullService,
     private readonly groupMetaFeed: GroupMetaFeedService,
+    private readonly departedMemberProfiles: DepartedMemberProfileQueryService,
   ) {}
 
   @Get('group-meta')
@@ -139,27 +137,73 @@ export class S2sController implements OnModuleDestroy {
     );
   }
 
-  /** Receive ephemeral state/message/tombstone feed heads; actual data remains pull-only. */
+  @Get('departed-member-profiles')
+  async getDepartedMemberProfiles(
+    @Req() req: FastifyRequest,
+    @Query('account') account?: string,
+    @Query('before') beforeParam?: string,
+    @Query('through') throughParam?: string,
+    @Query('take') takeParam?: string,
+  ) {
+    this.assertQueryShape(req, ['account', 'before', 'through', 'take']);
+    if (typeof account !== 'string')
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'departed-member profile query requires a group account',
+        HttpStatus.BAD_REQUEST,
+      );
+    const normalizedAccount = requireAccount(account, 'account');
+    if (!normalizedAccount.startsWith('!'))
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'departed-member profile query account must be a group account',
+        HttpStatus.BAD_REQUEST,
+      );
+    if (
+      beforeParam === undefined &&
+      (takeParam !== undefined || throughParam !== undefined)
+    )
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'take and through require before',
+        HttpStatus.BAD_REQUEST,
+      );
+    const before =
+      beforeParam === undefined
+        ? undefined
+        : this.parseThreadSequence(beforeParam, 'before', true);
+    const through =
+      throughParam === undefined
+        ? undefined
+        : this.parseThreadSequence(throughParam, 'through');
+    const take =
+      takeParam === undefined
+        ? undefined
+        : this.parsePositiveSafeIntegerQuery(takeParam, 'take');
+    return this.departedMemberProfiles.query(
+      this.signerDomain(req),
+      normalizedAccount,
+      before,
+      take,
+      through,
+    );
+  }
+
+  /** Receive an ephemeral state-feed head; actual data remains pull-only. */
   @Post('feed-heads')
   @HttpCode(HttpStatus.OK)
   async postDiscoveryHwm(@Req() req: FastifyRequest): Promise<void> {
     const signer = this.signerDomain(req);
     const body = req.body as {
       stateFeedEndId?: unknown;
-      messageFeedEndId?: unknown;
-      tombstoneFeedEndId?: unknown;
     } | null;
     if (
       !body ||
       typeof body !== 'object' ||
       Array.isArray(body) ||
-      Object.keys(body).length !== 3 ||
+      Object.keys(body).length !== 1 ||
       typeof body.stateFeedEndId !== 'string' ||
-      !/^(0|[1-9]\d*)$/.test(body.stateFeedEndId) ||
-      typeof body.messageFeedEndId !== 'string' ||
-      !/^(0|[1-9]\d*)$/.test(body.messageFeedEndId) ||
-      typeof body.tombstoneFeedEndId !== 'string' ||
-      !/^(0|[1-9]\d*)$/.test(body.tombstoneFeedEndId)
+      !/^(0|[1-9]\d*)$/.test(body.stateFeedEndId)
     ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
@@ -168,11 +212,7 @@ export class S2sController implements OnModuleDestroy {
       );
     }
     const stateFeedEndId = BigInt(body.stateFeedEndId);
-    const messageFeedEndId = BigInt(body.messageFeedEndId);
-    const tombstoneFeedEndId = BigInt(body.tombstoneFeedEndId);
     this.peerStateFeedPull.advertise(signer, stateFeedEndId);
-    this.messageFeedPull.advertise(signer, messageFeedEndId, stateFeedEndId);
-    this.tombstonePull.advertise(signer, tombstoneFeedEndId, stateFeedEndId);
     // Wake-up is intentionally fire-and-forget: the durable cursor/page transaction owns recovery,
     // while this lightweight push returns promptly even when the peer has a large backlog. A transient
     // pull failure is retried locally: the HWM notification is only a hint and the sender is not required
@@ -205,12 +245,6 @@ export class S2sController implements OnModuleDestroy {
         this.feedDrainPending.delete(domain);
         const requiredState = this.feedDrainRequiredState.get(domain) ?? 0n;
         await this.federation.pullStateFromPeer(domain, requiredState);
-        await this.federation.pullTombstonesFromPeer(domain, requiredState);
-        await this.federation.pullMissedFromPeer(
-          this.messageFeedPull,
-          domain,
-          requiredState,
-        );
       } while (this.feedDrainPending.has(domain));
       this.feedDrainRetryAttempts.delete(domain);
     } catch (error) {
@@ -254,56 +288,25 @@ export class S2sController implements OnModuleDestroy {
     await Promise.allSettled([...this.feedDrainTasks]);
   }
 
-  @Get('message-tombstone-feed')
-  async getMessageTombstones(
-    @Req() req: FastifyRequest,
-    @Query('after') afterParam?: string,
-    @Query('take') takeParam?: string,
-    @Query('through') throughParam?: string,
-  ) {
-    this.assertQueryShape(req, ['after', 'take', 'through']);
-    const peerDomain = this.signerDomain(req);
-    if (afterParam === undefined) {
-      if (takeParam !== undefined || throughParam !== undefined) {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_MALFORMED,
-          'take and through require after',
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-      return this.tombstoneFeed.rejectMissingAfter(peerDomain);
-    }
-    const after = this.parseCursorBigInt(afterParam, 'after');
-    const take =
-      takeParam === undefined
-        ? undefined
-        : this.parsePositiveSafeIntegerQuery(takeParam, 'take');
-    const through =
-      throughParam === undefined
-        ? undefined
-        : this.parseCursorBigInt(throughParam, 'through');
-    return this.tombstoneFeed.serve(peerDomain, after, take, through);
-  }
-
   @Get('message-tombstones')
   async queryMessageTombstones(
     @Req() req: FastifyRequest,
     @Query('account') account?: string,
     @Query('peerAccount') peerAccount?: string,
     @Query('after') afterParam?: string,
-    @Query('before') beforeParam?: string,
     @Query('take') takeParam?: string,
     @Query('through') throughParam?: string,
     @Query('includeSelf') includeSelfParam?: string,
+    @Query('maxMessageSeq') maxMessageSeqParam?: string,
   ) {
     this.assertQueryShape(req, [
       'account',
       'peerAccount',
       'after',
-      'before',
       'take',
       'through',
       'includeSelf',
+      'maxMessageSeq',
     ]);
     const selector = this.parseThreadQuery(account, peerAccount);
     const peerDomain = this.signerDomain(req);
@@ -318,31 +321,21 @@ export class S2sController implements OnModuleDestroy {
         HttpStatus.BAD_REQUEST,
       );
     const includeSelf = includeSelfParam !== 'false';
-    if (afterParam !== undefined && beforeParam !== undefined) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'after and before are mutually exclusive',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    if (afterParam === undefined && beforeParam === undefined) {
-      if (takeParam !== undefined || throughParam !== undefined) {
+    if (afterParam === undefined) {
+      if (
+        takeParam !== undefined ||
+        throughParam !== undefined ||
+        maxMessageSeqParam !== undefined
+      ) {
         throw new BusinessException(
           BusinessCode.FEDERATION_MALFORMED,
-          'take and through require after or before',
+          'page parameters require after',
           HttpStatus.BAD_REQUEST,
         );
       }
       return this.tombstoneFeed.rejectMissingQueryAfter(peerDomain, selector);
     }
-    const after =
-      afterParam === undefined
-        ? undefined
-        : this.parseCursorBigInt(afterParam, 'after');
-    const before =
-      beforeParam === undefined
-        ? undefined
-        : this.parseCursorBigInt(beforeParam, 'before');
+    const after = this.parseThreadSequence(afterParam, 'after');
     const take =
       takeParam === undefined
         ? undefined
@@ -350,7 +343,18 @@ export class S2sController implements OnModuleDestroy {
     const through =
       throughParam === undefined
         ? undefined
-        : this.parseCursorBigInt(throughParam, 'through');
+        : this.parseThreadSequence(throughParam, 'through');
+    const maxMessageSeq =
+      maxMessageSeqParam === undefined
+        ? undefined
+        : this.parseThreadSequence(maxMessageSeqParam, 'maxMessageSeq');
+    if (maxMessageSeq === Number.MAX_SAFE_INTEGER) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'maxMessageSeq must not exceed the maximum message sequence',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
     return this.tombstoneFeed.query(
       peerDomain,
       selector,
@@ -358,40 +362,8 @@ export class S2sController implements OnModuleDestroy {
       take,
       through,
       includeSelf,
-      before,
+      maxMessageSeq,
     );
-  }
-
-  /** Durable cross-thread feed. feedId values stay decimal strings on the JSON wire. */
-  @Get('message-feed')
-  async getMissed(
-    @Req() req: FastifyRequest,
-    @Query('after') afterParam?: string,
-    @Query('take') takeParam?: string,
-    @Query('through') throughParam?: string,
-  ) {
-    this.assertQueryShape(req, ['after', 'take', 'through']);
-    const peerDomain = this.signerDomain(req);
-    if (afterParam === undefined) {
-      if (takeParam !== undefined || throughParam !== undefined) {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_MALFORMED,
-          'take and through require after',
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-      return this.messageFeed.rejectMissingAfter(peerDomain);
-    }
-    const after = this.parseCursorBigInt(afterParam, 'after');
-    const take =
-      takeParam === undefined
-        ? undefined
-        : this.parsePositiveSafeIntegerQuery(takeParam, 'take');
-    const through =
-      throughParam === undefined
-        ? undefined
-        : this.parseCursorBigInt(throughParam, 'through');
-    return this.messageFeed.serve(peerDomain, after, take, through);
   }
 
   @Get('messages')
@@ -604,13 +576,13 @@ export class S2sController implements OnModuleDestroy {
       );
     }
     const parsed = Number(value);
-    if (
-      !Number.isSafeInteger(parsed) &&
-      !(allowUpperSentinel && parsed === Number.MAX_SAFE_INTEGER + 1)
-    ) {
+    const maximum = allowUpperSentinel
+      ? FEDERATION_THREAD_SEQUENCE_MAX + 1
+      : FEDERATION_THREAD_SEQUENCE_MAX;
+    if (!Number.isSafeInteger(parsed) || parsed > maximum) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        `${name} must be a safe integer`,
+        `${name} must be an integer between 0 and ${maximum}`,
         HttpStatus.BAD_REQUEST,
       );
     }

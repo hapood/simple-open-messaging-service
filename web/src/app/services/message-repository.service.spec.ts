@@ -45,6 +45,7 @@ describe('MessageRepository', () => {
   }>;
   let reconnect$: Subject<void>;
   let queryMessageLogSpy: Mock;
+  let queryDeletedMessagesSpy: Mock;
   /** The sessionProfile signal the repo's session-end effect watches (logout = set undefined). */
   let sessionProfile: ReturnType<
     typeof signal<
@@ -76,12 +77,20 @@ describe('MessageRepository', () => {
             queryMessageLog: (queryMessageLogSpy = vi
               .fn()
               .mockName('queryMessageLog')),
-            queryDeletedMessages: vi
+            queryDeletedMessages: (queryDeletedMessagesSpy = vi
               .fn()
               .mockName('queryDeletedMessages')
               .mockReturnValue(
-                of({ code: 0, message: '', data: [], hasMore: false }),
-              ),
+                of({
+                  code: 0,
+                  message: '',
+                  data: {
+                    tombstones: [],
+                    scannedThrough: 0,
+                    hasMore: false,
+                  },
+                }),
+              )),
           },
         },
         { provide: UserService, useValue: { sessionProfile } },
@@ -256,15 +265,15 @@ describe('MessageRepository', () => {
       42,
       [
         {
-          id: '9',
+          deletionSeq: 9,
           threadId: 42,
-          seq: 10,
+          messageSeq: 10,
           type: 'USER_RETRACTION',
           createdAt: Date.now(),
           updatedAt: Date.now(),
         },
       ],
-      '9',
+      9,
     );
 
     await webdb.putMessages([msg(42, 10, 'late-http-body')], {
@@ -274,7 +283,7 @@ describe('MessageRepository', () => {
     });
 
     expect(await webdb.getMessage(42, 10)).toBeUndefined();
-    expect(await webdb.getDeletedHwm(42)).toBe('9');
+    expect(await webdb.getDeletedHwm(42)).toBe(9);
     const db = await webdb.messageDb();
     const raw = await db.get('messages', [42, 10]);
     expect(raw?.isDeleted).toBe(true);
@@ -292,25 +301,52 @@ describe('MessageRepository', () => {
       42,
       [
         {
-          id: '12',
+          deletionSeq: 12,
           threadId: 42,
-          seq: 10,
+          messageSeq: 10,
           type: 'MODERATION_REMOVAL',
           createdAt: Date.now(),
           updatedAt: Date.now(),
         },
       ],
-      '12',
+      12,
     );
 
     expect(await webdb.getMessage(42, 10)).toBeUndefined();
-    expect(await webdb.getDeletedHwm(42)).toBe('12');
+    expect(await webdb.getDeletedHwm(42)).toBe(12);
     const db = await webdb.messageDb();
     const raw = await db.get('messages', [42, 10]);
     expect(raw?.isDeleted).toBe(true);
     expect(raw && 'content' in raw ? raw.content : undefined).toBe(
       'already-cached',
     );
+  });
+
+  it('advances the deletion cursor through an empty scanned interval', async () => {
+    queryDeletedMessagesSpy.mockReturnValueOnce(
+      of({
+        code: 0,
+        message: '',
+        data: { tombstones: [], scannedThrough: 9, hasMore: false },
+      }),
+    );
+
+    await repo.syncDeleted(42);
+
+    expect(queryDeletedMessagesSpy).toHaveBeenCalledWith({
+      threadId: 42,
+      after: 0,
+      take: 100,
+    });
+    expect(await webdb.getDeletedHwm(42)).toBe(9);
+  });
+
+  it('normalizes a legacy string deletion cursor when it is read', async () => {
+    const db = await webdb.messageDb();
+    await db.put('settings', { key: 'deletedHwm:42', value: '7' });
+
+    expect(await webdb.getDeletedHwm(42)).toBe(7);
+    expect((await db.get('settings', 'deletedHwm:42'))?.value).toBe(7);
   });
 
   it('joins a left-adjacent coveredTail by resolving only the incoming left edge', async () => {
@@ -1255,9 +1291,7 @@ describe('MessageRepository', () => {
     });
 
     expect(res.data.map((m) => m.seq)).toEqual([20, 19, 18, 17, 16, 15, 14]);
-    expect(
-      vi.mocked(queryMessageLogSpy).mock.calls[0][0].truncateSeq,
-    ).toBe(15);
+    expect(vi.mocked(queryMessageLogSpy).mock.calls[0][0].truncateSeq).toBe(15);
     expect(await dbCount(42)).toBe(8);
   });
 

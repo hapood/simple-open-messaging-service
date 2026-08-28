@@ -1,9 +1,6 @@
 import { Injectable, Optional } from '@nestjs/common';
 import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm';
-import {
-  DatabaseService,
-  type DatabaseTransaction,
-} from '../database/database.service.js';
+import { DatabaseService } from '../database/database.service.js';
 import {
   group,
   messageThread,
@@ -23,6 +20,10 @@ import {
   type PublicMessage,
 } from '../message/message.service.js';
 import { SystemMessageType } from '../message/system-message.js';
+import {
+  lockBusinessScopeInTx,
+  userPairBusinessScopeKey,
+} from '../invite/business-scope-lock.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 /** ThreadMember is the source-scoped roster projection. ThreadParticipant independently owns local
  * Account conversation state and role facts; neither table is an authorization source. */
@@ -288,21 +289,28 @@ export class ThreadParticipantService {
   }> {
     const now = new Date();
     return this.database.db.transaction(async (tx) => {
-      const identities = await tx
-        .select({
-          memberId: threadMember.id,
-          userId: user.id,
-          account: user.account,
-          domain: user.domain,
-        })
-        .from(threadMember)
-        .innerJoin(user, eq(user.id, threadMember.userId))
-        .where(eq(threadMember.threadId, threadId));
-      const mine = identities.find((row) => row.userId === callerUserId);
-      const peer = identities.find((row) => row.userId !== callerUserId);
+      const readIdentities = () =>
+        tx
+          .select({
+            memberId: threadMember.id,
+            userId: user.id,
+            account: user.account,
+            domain: user.domain,
+          })
+          .from(threadMember)
+          .innerJoin(user, eq(user.id, threadMember.userId))
+          .where(eq(threadMember.threadId, threadId));
+      let identities = await readIdentities();
+      let mine = identities.find((row) => row.userId === callerUserId);
+      let peer = identities.find((row) => row.userId !== callerUserId);
+      if (!mine || !peer) throw new Error('P2P endpoints are missing');
+      await lockBusinessScopeInTx(tx, userPairBusinessScopeKey([mine, peer]));
+      identities = await readIdentities();
+      mine = identities.find((row) => row.userId === callerUserId);
+      peer = identities.find((row) => row.userId !== callerUserId);
       if (!mine || !peer) throw new Error('P2P endpoints are missing');
 
-      const endpointKey = (row: typeof mine) =>
+      const endpointKey = (row: (typeof identities)[number]) =>
         `USER\u0000${row.domain}\u0000${row.account}`;
       const callerSide = endpointKey(mine) < endpointKey(peer) ? 'A' : 'B';
       const peerSide = callerSide === 'A' ? 'B' : 'A';
@@ -316,6 +324,18 @@ export class ThreadParticipantService {
       await tx.execute(
         sql`SELECT id FROM "MessageThread" WHERE id = ${threadId} FOR UPDATE`,
       );
+      await tx.execute(sql`
+        SELECT id FROM "RelationshipIntent"
+        WHERE "pairId" = ${pairId}
+        ORDER BY "authorSide"
+        FOR UPDATE
+      `);
+      await tx.execute(sql`
+        SELECT id FROM "ThreadParticipant"
+        WHERE "threadId" = ${threadId}
+        ORDER BY "accountId"
+        FOR UPDATE
+      `);
       const outgoing = await tx.execute<{ status: string }>(sql`
         SELECT status FROM "RelationshipIntent"
         WHERE "pairId" = ${pairId} AND "authorSide" = ${callerSide}

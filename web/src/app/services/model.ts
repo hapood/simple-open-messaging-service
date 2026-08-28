@@ -311,9 +311,9 @@ export interface StandardResponse<T = unknown> {
 }
 
 export interface DeletedMessageItem {
-  id: string;
+  deletionSeq: number;
   threadId: number;
-  seq: number;
+  messageSeq: number;
   type: 'USER_RETRACTION' | 'MODERATION_REMOVAL';
   createdAt: number;
   updatedAt: number;

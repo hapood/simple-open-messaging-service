@@ -20,22 +20,28 @@ import { UploadModule } from '../upload/upload.module.js';
 import { MessageModule } from '../message/message.module.js';
 import { LinkPreviewModule } from '../link-preview/link-preview.module.js';
 import { ForwardBundleModule } from '../forward/forward-bundle.module.js';
-import { FederationCursorService } from './federation-cursor.service.js';
 import { FederationRecognitionService } from './federation-recognition.service.js';
 import { FederationMessageFeedService } from './federation-message-feed.service.js';
-import { FederationMessageFeedPullService } from './federation-message-feed-pull.service.js';
 import { FederationDownloadScheduler } from './federation-download-scheduler.js';
 import { FederationDownloadRecoveryService } from './federation-download-recovery.service.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
 import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
-import { FederationMessageFeedIndexerService } from './federation-message-feed-indexer.service.js';
-import { FederationFeedFulfiller } from './federation-feed-fulfiller.service.js';
 import { S2sSignatureGuard } from './s2s-signature.guard.js';
 import { FederationMessageTombstoneFeedService } from './federation-message-tombstone-feed.service.js';
-import { FederationMessageTombstonePullService } from './federation-message-tombstone-pull.service.js';
 import { FederationHttpScheduler } from './federation-http-scheduler.js';
 import { FederationTransportConfigService } from './federation-transport-config.service.js';
 import { GroupMetaFeedService } from './group-meta-feed.service.js';
+import { DepartedMemberProfileQueryService } from './departed-member-profile-query.service.js';
+import { FederationThreadSyncStateService } from './federation-thread-sync-state.service.js';
+import { FederationThreadForwardRoundService } from './federation-thread-forward-round.service.js';
+import { FederationThreadReverseRoundService } from './federation-thread-reverse-round.service.js';
+import { FederationThreadReverseRoundExecutorService } from './federation-thread-reverse-round-executor.service.js';
+import { FederationDepartedMemberProfileConsumerService } from './federation-departed-member-profile-consumer.service.js';
+import { FederationThreadSourceService } from './federation-thread-source.service.js';
+import { FederationThreadForwardRoundExecutorService } from './federation-thread-forward-round-executor.service.js';
+import { FederationThreadRoundSchedulerService } from './federation-thread-round-scheduler.service.js';
+import { FederationThreadContentHeadService } from './federation-thread-content-head.service.js';
+import { FederationProfileStatePublisher } from './federation-profile-state-publisher.service.js';
 
 /**
  * Federation (S2S). @Global so its services inject across modules (UserController, AdminController).
@@ -74,14 +80,9 @@ import { GroupMetaFeedService } from './group-meta-feed.service.js';
     FederationGroupRelationshipService,
     FederationGroupRosterProjectionService,
     FederationReconnectService,
-    FederationCursorService,
     FederationRecognitionService,
     FederationMessageFeedService,
-    FederationMessageFeedPullService,
     FederationMessageTombstoneFeedService,
-    FederationMessageTombstonePullService,
-    FederationMessageFeedIndexerService,
-    FederationFeedFulfiller,
     FederationDownloadScheduler,
     FederationHttpScheduler,
     FederationTransportConfigService,
@@ -89,20 +90,26 @@ import { GroupMetaFeedService } from './group-meta-feed.service.js';
     PeerStateFeedService,
     PeerStateFeedPullService,
     GroupMetaFeedService,
+    DepartedMemberProfileQueryService,
+    FederationThreadSyncStateService,
+    FederationThreadForwardRoundService,
+    FederationThreadReverseRoundService,
+    FederationThreadSourceService,
+    FederationThreadForwardRoundExecutorService,
+    FederationDepartedMemberProfileConsumerService,
+    FederationThreadReverseRoundExecutorService,
+    FederationThreadRoundSchedulerService,
+    FederationThreadContentHeadService,
+    FederationProfileStatePublisher,
   ],
   exports: [
     KeypairService,
     SignatureService,
     DiscoveryService,
     FederationService,
-    FederationCursorService,
     FederationRecognitionService,
     FederationMessageFeedService,
-    FederationMessageFeedPullService,
     FederationMessageTombstoneFeedService,
-    FederationMessageTombstonePullService,
-    FederationMessageFeedIndexerService,
-    FederationFeedFulfiller,
     FederationDownloadScheduler,
     FederationHttpScheduler,
     FederationTransportConfigService,
@@ -110,6 +117,17 @@ import { GroupMetaFeedService } from './group-meta-feed.service.js';
     PeerStateFeedService,
     PeerStateFeedPullService,
     GroupMetaFeedService,
+    DepartedMemberProfileQueryService,
+    FederationThreadSyncStateService,
+    FederationThreadForwardRoundService,
+    FederationThreadReverseRoundService,
+    FederationThreadSourceService,
+    FederationThreadForwardRoundExecutorService,
+    FederationDepartedMemberProfileConsumerService,
+    FederationThreadReverseRoundExecutorService,
+    FederationThreadRoundSchedulerService,
+    FederationThreadContentHeadService,
+    FederationProfileStatePublisher,
   ],
 })
 export class FederationModule {}

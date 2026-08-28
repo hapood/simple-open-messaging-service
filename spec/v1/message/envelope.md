@@ -2,7 +2,7 @@
 
 Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
-This document defines the outer wire shape, origin coordinates, idempotency rules, and processing receipts shared by every message in a federation message query. See the [Message overview](../message.md#4-contenttype) and its topic documents for each parsed `contentType` shape, and [Message Feed and Query](../message-feed.md) for pagination semantics.
+This document defines the outer wire shape, origin coordinates, idempotency rules, and processing receipts shared by every message in a federation message query. See the [Message overview](../message.md#4-contenttype) and its topic documents for each parsed `contentType` shape, and [Message Query](../message-feed.md) for pagination semantics.
 
 ## 1. Wire types
 
@@ -90,7 +90,9 @@ type FederatedMessage = FederatedMessageContent &
 
 The message wire has no client-authoritative `date` field:
 
-- `seq` is the thread-local sequence assigned when the current publisher writes this copy into its local thread. A consumer assigns its own local `seq` on persistence and MUST NOT force reuse of the wire `seq`.
+- `seq` is scoped to the server and thread serving the current message copy. It
+  is not a globally stable coordinate and is distinct from `originSeq` and any
+  receiver-local sequence.
 - `seq`, non-null `originSeq`, and `quoteTarget.targetSeq` MUST NOT exceed
   `SafeInteger - 1`; `SafeInteger` is reserved as the maximum exclusive reverse
   query cursor.
@@ -131,7 +133,7 @@ All of the following fields are immutable at a given origin coordinate:
 - `quoteTarget`
 - `assets`
 
-A conflict in any field makes the item invalid. It MUST NOT be overwritten using a newer time, larger sequence, or receive order. v1 does not define message editing; [Message Tombstone Feed](../message-tombstone-feed.md) expresses retraction and governance deletion.
+A conflict in any field makes the item invalid. It MUST NOT be overwritten using a newer time, larger sequence, or receive order. v1 does not define message editing; [Message Tombstone Query](../message-tombstone-feed.md) expresses retraction and governance deletion.
 
 ## 5. Conditional fields
 
@@ -165,7 +167,9 @@ The corresponding content document defines type-specific conditional fields.
 
 Only a `PURE_TEXT` reply may carry `quoteTarget`. `quoteTarget.targetSeq` identifies the target `seq` assigned by the current authoritative publisher in the same thread.
 
-The consumer locates the target copy using `(source domain, thread, targetSeq)`, then projects it to a local sequence. A quote carries no remote preview. If the target is unavailable, the consumer still stores the reply and displays a local unavailable placeholder.
+The consumer resolves the target using `(source domain, thread, targetSeq)`. A
+quote carries no remote preview, and the protocol does not prescribe a local
+coordinate projection or presentation when the target is unavailable.
 
 ## 8. Processing receipts
 
@@ -188,8 +192,11 @@ The absence of an observed receipt does not prove processing failure and cannot 
    outer field.
 2. Parse and validate `content` according to `contentType`.
 3. Validate that `assets` exactly matches the set of content digests.
-4. Receive idempotently using the direct-origin identity and record the coordinate mapping.
-5. Store unfetched resources as durable pending work.
-6. Apply accepted items under local policy.
+4. Receive idempotently using the direct-origin identity and preserve the
+   coordinate association.
+5. Resolve referenced resources using the exact message authorization and
+   digest binding; resource completion may occur after message-coordinate
+   acceptance.
+6. Apply accepted items without fabricating resource availability or authority.
 
 One invalid message or a later resource failure MUST NOT permanently block other messages on the same page or the cursor, and MUST NOT leave a partial write that could be treated as a valid message, resource-authorization proof, or other application fact.

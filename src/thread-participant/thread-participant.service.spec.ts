@@ -70,10 +70,10 @@ describe('ThreadParticipantService.endP2P transaction boundary', () => {
       2,
       { actorUserId: 1, markReadUserId: 1, recipientUserIds: [1, 2] },
     );
-    expect(tx.execute).toHaveBeenCalledTimes(7);
-    // RelationshipPair is locked first, then MessageThread, and
-    // only afterwards may participant/audience mutation begin.
-    expect(tx.execute.mock.invocationCallOrder[1]).toBeLessThan(
+    expect(tx.execute).toHaveBeenCalledTimes(10);
+    // The canonical P2P advisory scope is locked first, followed by
+    // RelationshipPair, MessageThread, intents, and participant rows.
+    expect(tx.execute.mock.invocationCallOrder[4]).toBeLessThan(
       tx.update.mock.invocationCallOrder[0],
     );
     expect(tx.update).toHaveBeenCalledTimes(2);
@@ -101,7 +101,10 @@ describe('ThreadParticipantService.endP2P transaction boundary', () => {
     const tx = {
       execute: vi
         .fn()
+        .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [{ id: 8n }] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [{ status: 'REVOKED' }] }),
       select: vi.fn(() => ({

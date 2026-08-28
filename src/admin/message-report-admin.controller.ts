@@ -73,7 +73,7 @@ export class MessageReportAdminController {
         this.sse.onDeletedMessageUpdated(
           participant.userId,
           deletion.threadId,
-          deletion.deletedId,
+          deletion.deletionSeq,
         );
       }
       void this.federation.notifyOnSend(
@@ -83,7 +83,7 @@ export class MessageReportAdminController {
       );
       void this.federation.signalDeletionOutbound(
         deletion.threadId,
-        deletion.seq,
+        deletion.messageSeq,
       );
     }
     for (const systemMessage of result.systemMessages)

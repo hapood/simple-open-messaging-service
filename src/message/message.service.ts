@@ -64,7 +64,7 @@ import {
 } from './system-message.js';
 import { loadFederationConfig } from '../federation/federation.config.js';
 import { ClientMessageFeedWriter } from './client-message-feed.service.js';
-import { recordHostedGroupLastSentSeq } from './hosted-group-last-sent.js';
+import { recordHostedGroupSentBoundaries } from './hosted-group-sent-boundaries.js';
 
 interface ReplyPreview {
   author: string;
@@ -439,7 +439,7 @@ export class MessageService {
               eq(threadParticipant.threadId, threadId),
             ),
           );
-        await recordHostedGroupLastSentSeq(
+        await recordHostedGroupSentBoundaries(
           tx,
           threadId,
           {
@@ -1092,7 +1092,7 @@ export class MessageService {
               eq(threadParticipant.threadId, stage.threadId),
             ),
           );
-        await recordHostedGroupLastSentSeq(
+        await recordHostedGroupSentBoundaries(
           tx,
           stage.threadId,
           {

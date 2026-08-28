@@ -18,15 +18,13 @@ import { ContentType } from '../database/enums.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import { DatabaseService } from '../database/database.service.js';
 import {
-  federationMessageFeedIndex,
-  federationServeCursor,
   group,
   mediaAsset,
   message,
   messageAsset,
   messageThread,
+  peerStateFeed,
   threadMember,
-  threadParticipant,
   user,
 } from '../database/schema.js';
 import { parseTextMessageContent } from '../../shared/text-message-content.js';
@@ -40,7 +38,6 @@ import {
   toFederatedMessageContent,
 } from './federated-message-content.js';
 import { loadFederationConfig } from './federation.config.js';
-import { FederationMessageFeedIndexerService } from './federation-message-feed-indexer.service.js';
 import type {
   FederationAddress,
   FederationByteDescriptor,
@@ -86,23 +83,9 @@ export type FederationMessageFeedMessage =
       author: FederationAddress;
     });
 
-export interface FederationMessageFeedPage {
-  items: Array<{
-    feedId: string;
-    thread: FederationThreadAddress;
-    messageEndSeq: string;
-  }>;
-  scannedThrough: string;
-  messageFeedEndId: string;
-  hasMore: boolean;
-  /** Consumer-only materialization; never serialized by the source endpoint. */
-  messages?: FederationMessageFeedMessage[];
-  queryCursors?: Array<{ threadKey: string; committedThrough: number }>;
-}
-
 export interface FederationMessageQueryPage {
   messages: FederationMessageFeedMessage[];
-  scannedThrough: string;
+  scannedThrough: number;
   hasMore: boolean;
 }
 
@@ -112,107 +95,29 @@ export class FederationMessageFeedService {
 
   private readonly localDomain = loadFederationConfig().domain;
 
-  constructor(
-    private readonly database: DatabaseService,
-    private readonly indexer: FederationMessageFeedIndexerService,
-  ) {}
-
-  async rejectMissingAfter(peerDomain: string): Promise<never> {
-    await this.requireTarget(peerDomain);
-    await this.indexer.fill(peerDomain);
-    const end = await this.database.db.transaction((tx) =>
-      this.readEndInTx(tx, peerDomain),
-    );
-    throw new BusinessException(
-      BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
-      'after is required; initialize the message feed cursor',
-      HttpStatus.OK,
-      { resumeAfter: '0', resumeBefore: (end + 1n).toString() },
-    );
-  }
-
-  async serve(
-    peerDomain: string,
-    after: bigint,
-    requestedTake?: number,
-    through?: bigint,
-  ): Promise<FederationMessageFeedPage> {
-    const take = this.pageSize(requestedTake);
-    if (through !== undefined && through < after) this.invalidThrough();
-    await this.indexer.fill(peerDomain);
-    return this.database.db.transaction(async (tx) => {
-      const end = await this.readEndInTx(tx, peerDomain);
-      if (after < 0n || after > end) {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
-          'message feed cursor is outside the available coordinate space',
-          HttpStatus.OK,
-          { resumeAfter: '0', resumeBefore: (end + 1n).toString() },
-        );
-      }
-      const requestEnd = through === undefined || through > end ? end : through;
-      const rows = await tx
-        .select({
-          threadId: federationMessageFeedIndex.threadId,
-          feedId: federationMessageFeedIndex.feedId,
-          messageEndSeq: federationMessageFeedIndex.messageEndSeq,
-        })
-        .from(federationMessageFeedIndex)
-        .where(
-          and(
-            eq(federationMessageFeedIndex.peerDomain, peerDomain),
-            gt(federationMessageFeedIndex.feedId, after),
-            lte(federationMessageFeedIndex.feedId, requestEnd),
-          ),
-        )
-        .orderBy(asc(federationMessageFeedIndex.feedId))
-        .limit(take + 1);
-      const selected = rows.slice(0, take);
-      const addresses = await this.threadAddressesInTx(
-        tx,
-        selected.map((row) => row.threadId),
-        peerDomain,
-      );
-      const items = selected.map((row) => ({
-        feedId: row.feedId.toString(),
-        thread: this.requiredAddress(addresses, row.threadId),
-        messageEndSeq: row.messageEndSeq.toString(),
-      }));
-      const scannedThrough =
-        rows.length > take ? selected.at(-1)!.feedId : requestEnd;
-      return {
-        items,
-        scannedThrough: scannedThrough.toString(),
-        messageFeedEndId: end.toString(),
-        hasMore: scannedThrough < requestEnd,
-      };
-    });
-  }
+  constructor(private readonly database: DatabaseService) {}
 
   async rejectMissingQueryAfter(
     peerDomain: string,
     selector: FederationThreadQuery,
   ): Promise<never> {
-    const { threadId, messageAccessAfterSeq } =
-      await this.resolveAuthorizedThread(peerDomain, selector);
-    const [projection] = await this.database.db
-      .select({ end: federationMessageFeedIndex.messageEndSeq })
-      .from(federationMessageFeedIndex)
-      .where(
-        and(
-          eq(federationMessageFeedIndex.peerDomain, peerDomain),
-          eq(federationMessageFeedIndex.threadId, threadId),
-        ),
-      )
-      .limit(1);
-    const currentEnd = Math.max(projection?.end ?? 0, messageAccessAfterSeq);
+    const { messageAccessAfterSeq } = await this.resolveAuthorizedThread(
+      peerDomain,
+      selector,
+    );
+    const currentEnd = Math.max(
+      await this.database.db.transaction((tx) =>
+        this.readAdvertisedMessageEnd(tx, peerDomain, selector),
+      ),
+      messageAccessAfterSeq,
+    );
     throw new BusinessException(
       BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
       'after is required; initialize the message query cursor',
       HttpStatus.OK,
       {
-        resumeAfter: messageAccessAfterSeq.toString(),
-        resumeBefore: (currentEnd + 1).toString(),
+        resumeAfter: messageAccessAfterSeq,
+        resumeBefore: currentEnd + 1,
       },
     );
   }
@@ -237,17 +142,10 @@ export class FederationMessageFeedService {
     const { threadId, messageAccessAfterSeq } =
       await this.resolveAuthorizedThread(peerDomain, selector);
     return this.database.db.transaction(async (tx) => {
-      const [projection] = await tx
-        .select({ end: federationMessageFeedIndex.messageEndSeq })
-        .from(federationMessageFeedIndex)
-        .where(
-          and(
-            eq(federationMessageFeedIndex.peerDomain, peerDomain),
-            eq(federationMessageFeedIndex.threadId, threadId),
-          ),
-        )
-        .limit(1);
-      const currentEnd = Math.max(projection?.end ?? 0, messageAccessAfterSeq);
+      const currentEnd = Math.max(
+        await this.readAdvertisedMessageEnd(tx, peerDomain, selector),
+        messageAccessAfterSeq,
+      );
       const resumeAfter = messageAccessAfterSeq;
       const resumeBefore = currentEnd + 1;
       if (
@@ -261,8 +159,8 @@ export class FederationMessageFeedService {
           'message query cursor is beyond the current thread end',
           HttpStatus.OK,
           {
-            resumeAfter: resumeAfter.toString(),
-            resumeBefore: resumeBefore.toString(),
+            resumeAfter,
+            resumeBefore,
           },
         );
       }
@@ -322,7 +220,7 @@ export class FederationMessageFeedService {
             : queryStart;
       return {
         messages,
-        scannedThrough: scannedThrough.toString(),
+        scannedThrough,
         hasMore: forward
           ? scannedThrough < queryEnd
           : scannedThrough > queryStart,
@@ -545,7 +443,7 @@ export class FederationMessageFeedService {
     return result;
   }
 
-  private async resolveAuthorizedThread(
+  async resolveAuthorizedThread(
     peerDomain: string,
     selector: FederationThreadQuery,
   ): Promise<{ threadId: number; messageAccessAfterSeq: number }> {
@@ -686,26 +584,35 @@ export class FederationMessageFeedService {
     return address;
   }
 
-  private async requireTarget(peerDomain: string): Promise<void> {
-    const [row] = await this.database.db
-      .select({ peerDomain: federationServeCursor.peerDomain })
-      .from(federationServeCursor)
-      .where(eq(federationServeCursor.peerDomain, peerDomain))
-      .limit(1);
-    if (!row) throw new Error(`peer ${peerDomain} has no message feed target`);
-  }
-
-  private async readEndInTx(
+  private async readAdvertisedMessageEnd(
     tx: DatabaseTransaction,
     peerDomain: string,
-  ): Promise<bigint> {
+    selector: FederationThreadQuery,
+  ): Promise<number> {
     const [row] = await tx
-      .select({ end: federationServeCursor.allocatedThrough })
-      .from(federationServeCursor)
-      .where(eq(federationServeCursor.peerDomain, peerDomain))
+      .select({ body: peerStateFeed.body })
+      .from(peerStateFeed)
+      .where(
+        and(
+          eq(peerStateFeed.peerDomain, peerDomain),
+          eq(peerStateFeed.account, selector.account),
+          eq(peerStateFeed.domain, this.localDomain),
+          eq(peerStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
+          selector.type === 'P2P'
+            ? and(
+                eq(peerStateFeed.subjectAccount, selector.peerAccount),
+                eq(peerStateFeed.subjectDomain, peerDomain),
+              )
+            : and(
+                eq(peerStateFeed.subjectAccount, ''),
+                eq(peerStateFeed.subjectDomain, 'local'),
+              ),
+        ),
+      )
       .limit(1);
-    if (!row) throw new Error(`peer ${peerDomain} has no message feed target`);
-    return row.end;
+    const value = (row?.body as { messageEndSeq?: unknown } | undefined)
+      ?.messageEndSeq;
+    return Number.isSafeInteger(value) && Number(value) > 0 ? Number(value) : 0;
   }
 
   private pageSize(value?: number): number {

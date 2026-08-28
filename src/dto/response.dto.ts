@@ -181,22 +181,22 @@ export class MessageQueryPageDto {
   @ApiProperty({ type: [MessageResponseDto] })
   messages!: MessageResponseDto[];
 
-  @ApiProperty({ example: '42', description: 'Direction-relative scan cursor' })
-  scannedThrough!: string;
+  @ApiProperty({ example: 42, description: 'Direction-relative scan cursor' })
+  scannedThrough!: number;
 
   @ApiProperty({ example: false })
   hasMore!: boolean;
 }
 
 export class MessageTombstoneResponseDto {
-  @ApiProperty({ example: '42', description: 'Tombstone log coordinate' })
-  id!: string;
+  @ApiProperty({ example: 42, description: 'Thread-local deletion coordinate' })
+  deletionSeq!: number;
 
   @ApiProperty({ example: 12, description: 'Owning conversation id' })
   threadId!: number;
 
   @ApiProperty({ example: 31, description: 'Deleted message sequence' })
-  seq!: number;
+  messageSeq!: number;
 
   @ApiProperty({ enum: MessageDeleteType })
   type!: MessageDeleteType;
@@ -212,8 +212,8 @@ export class MessageTombstoneQueryPageDto {
   @ApiProperty({ type: [MessageTombstoneResponseDto] })
   tombstones!: MessageTombstoneResponseDto[];
 
-  @ApiProperty({ example: '42', description: 'Direction-relative scan cursor' })
-  scannedThrough!: string;
+  @ApiProperty({ example: 42, description: 'Direction-relative scan cursor' })
+  scannedThrough!: number;
 
   @ApiProperty({ example: false })
   hasMore!: boolean;

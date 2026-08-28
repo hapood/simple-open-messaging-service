@@ -174,6 +174,20 @@ function isCachedMessageBody(value: CachedMessage): value is CachedMessageBody {
   return !value.isDeleted && 'content' in value;
 }
 
+function readDeletedHwm(value: unknown): {
+  hwm: number;
+  legacyString: boolean;
+} {
+  if (Number.isSafeInteger(value) && (value as number) >= 0)
+    return { hwm: value as number, legacyString: false };
+  if (typeof value === 'string' && /^(?:0|[1-9]\d*)$/.test(value)) {
+    const parsed = Number(value);
+    if (Number.isSafeInteger(parsed))
+      return { hwm: parsed, legacyString: true };
+  }
+  return { hwm: 0, legacyString: false };
+}
+
 export interface MessageSection {
   left: number;
   right: number;
@@ -2442,29 +2456,46 @@ export class WebdbService implements OnDestroy {
     );
   }
 
-  async getDeletedHwm(threadId: number): Promise<string> {
+  async getDeletedHwm(threadId: number): Promise<number> {
     return this.runMessageOperation(async () => {
       if (isTauri() && this.currentUserId != null) {
-        const hwm = await tauriInvoke<string>('native_db_get_deleted_hwm', {
+        const hwm = await tauriInvoke<number>('native_db_get_deleted_hwm', {
           userId: Number(this.currentUserId),
           threadId,
         });
         return hwm;
       }
-      const row = await (
-        await this.messageDb()
-      ).get('settings', `deletedHwm:${threadId}`);
-      if (typeof row?.value === 'string') return row.value;
-      return '0';
+      const tx = (await this.messageDb()).transaction('settings', 'readwrite');
+      const key = `deletedHwm:${threadId}`;
+      const row = await tx.objectStore('settings').get(key);
+      const parsed = readDeletedHwm(row?.value);
+      if (parsed.legacyString)
+        await tx.objectStore('settings').put({ key, value: parsed.hwm });
+      await tx.done;
+      return parsed.hwm;
     });
   }
 
   async applyDeletedMessages(
     threadId: number,
     items: DeletedMessageItem[],
-    hwm: string,
+    hwm: number,
   ): Promise<void> {
     return this.runMessageOperation(async () => {
+      if (!Number.isSafeInteger(hwm) || hwm < 0)
+        throw new Error('deleted-message HWM must be a non-negative integer');
+      if (
+        items.some(
+          (item) =>
+            item.threadId !== threadId ||
+            !Number.isSafeInteger(item.deletionSeq) ||
+            item.deletionSeq < 1 ||
+            item.deletionSeq > hwm ||
+            !Number.isSafeInteger(item.messageSeq) ||
+            item.messageSeq < 1,
+        )
+      )
+        throw new Error('deleted-message page contains invalid coordinates');
       if (isTauri() && this.currentUserId != null) {
         await tauriInvoke('native_db_apply_deleted_messages', {
           userId: Number(this.currentUserId),
@@ -2481,13 +2512,13 @@ export class WebdbService implements OnDestroy {
       for (const item of items) {
         const current = await tx
           .objectStore('messages')
-          .get([threadId, item.seq]);
+          .get([threadId, item.messageSeq]);
         if (current) {
           await tx.objectStore('messages').put({ ...current, isDeleted: true });
         } else {
           await tx.objectStore('messages').put({
             threadId,
-            seq: item.seq,
+            seq: item.messageSeq,
             isDeleted: true,
           });
         }

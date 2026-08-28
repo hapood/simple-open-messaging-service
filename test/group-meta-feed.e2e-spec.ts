@@ -179,7 +179,7 @@ describe('group-meta compacted feed', () => {
         feedId: '3',
         account: accounts[2],
         operation: 'DEPART',
-        body: {},
+        body: member.body,
       },
     ]);
 
@@ -275,7 +275,12 @@ describe('group-meta compacted feed', () => {
     ]);
     const delta = await feed.serve(peerDomain, groupAccount, 'delta', 4n);
     expect(delta.items).toMatchObject([
-      { feedId: '5', account: accounts[2], operation: 'DEPART' },
+      {
+        feedId: '5',
+        account: accounts[2],
+        operation: 'DEPART',
+        body: member.body,
+      },
     ]);
 
     await database.db

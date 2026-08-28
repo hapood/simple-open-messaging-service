@@ -196,10 +196,10 @@ export class MessageReportService {
     reports: { id: string; status: MessageReportStatus }[];
     deletions: {
       threadId: number;
-      seq: number;
+      messageSeq: number;
       creator: { account: string; domain: string };
       originSeq: number;
-      deletedId: string;
+      deletionSeq: number;
     }[];
     systemMessages: Array<
       Awaited<ReturnType<MessageService['writeSystemMessageInTx']>>['message']
@@ -249,10 +249,10 @@ export class MessageReportService {
 
       const deletions: {
         threadId: number;
-        seq: number;
+        messageSeq: number;
         creator: { account: string; domain: string };
         originSeq: number;
-        deletedId: string;
+        deletionSeq: number;
       }[] = [];
       const systemMessages: Array<
         Awaited<ReturnType<MessageService['writeSystemMessageInTx']>>['message']
@@ -261,7 +261,7 @@ export class MessageReportService {
         const targets = await tx
           .select({
             threadId: message.threadId,
-            seq: message.seq,
+            messageSeq: message.seq,
             creatorAccount: message.creatorAccount,
             creatorDomain: message.creatorDomain,
             originSeq: message.originSeq,
@@ -274,15 +274,18 @@ export class MessageReportService {
             ),
           );
         const uniqueTargets = new Map(
-          targets.map((target) => [`${target.threadId}:${target.seq}`, target]),
+          targets.map((target) => [
+            `${target.threadId}:${target.messageSeq}`,
+            target,
+          ]),
         );
         for (const target of uniqueTargets.values()) {
           if (target.creatorAccount === null || target.creatorDomain === null)
             throw new Error('SYSTEM messages cannot be moderated');
-          const deletedId = await this.deletedMessages.deleteByReportInTx(
+          const deletionSeq = await this.deletedMessages.deleteByReportInTx(
             tx,
             target.threadId,
-            target.seq,
+            target.messageSeq,
           );
           deletions.push({
             ...target,
@@ -290,8 +293,8 @@ export class MessageReportService {
               account: target.creatorAccount,
               domain: target.creatorDomain,
             },
-            originSeq: target.originSeq ?? target.seq,
-            deletedId,
+            originSeq: target.originSeq ?? target.messageSeq,
+            deletionSeq,
           });
         }
         const byThread = new Map<number, { count: number }>();

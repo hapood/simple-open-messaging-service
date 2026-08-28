@@ -1,14 +1,23 @@
 use super::{
     apply_friend_request_effect, apply_group_request_effect, apply_relationship_intent_fact,
-    cleanup_friend_requests, materialize_group_thread_from_fact, merge_covered_tail,
-    merge_message_section, update_live_request_projection, update_message_coverage,
-    CoveredInterval, MessageSection,
+    cleanup_friend_requests, decode_deleted_hwm, materialize_group_thread_from_fact,
+    merge_covered_tail, merge_message_section, update_live_request_projection,
+    update_message_coverage, CoveredInterval, MessageSection,
 };
 use rusqlite::{params, Connection};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn interval(left: i64, right: i64) -> Option<CoveredInterval> {
     Some(CoveredInterval { left, right })
+}
+
+#[test]
+fn deleted_hwm_accepts_numbers_and_identifies_legacy_strings() {
+    assert_eq!(decode_deleted_hwm("12").unwrap(), (12, false));
+    assert_eq!(decode_deleted_hwm("\"12\"").unwrap(), (12, true));
+    assert_eq!(decode_deleted_hwm("\"0\"").unwrap(), (0, true));
+    assert!(decode_deleted_hwm("\"012\"").is_err());
+    assert!(decode_deleted_hwm("-1").is_err());
 }
 
 #[test]

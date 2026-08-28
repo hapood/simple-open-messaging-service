@@ -38,9 +38,7 @@
       "name": "feed head wake-up",
       "schema": "urn:somfp:v1:identity#/$defs/feedHeadHint",
       "value": {
-        "stateFeedEndId": "12",
-        "messageFeedEndId": "34",
-        "tombstoneFeedEndId": "9"
+        "stateFeedEndId": "12"
       }
     },
     {
@@ -101,10 +99,19 @@
             "body": {
               "groupMetaFeedEndId": "1"
             }
+          },
+          {
+            "account": "!01arz3ndektsv4rrffq69g5fav",
+            "eventType": "THREAD_CONTENT_HEAD",
+            "feedId": "6",
+            "body": {
+              "messageEndSeq": 8,
+              "tombstoneEndSeq": 2
+            }
           }
         ],
-        "scannedThrough": "5",
-        "stateFeedEndId": "5",
+        "scannedThrough": "6",
+        "stateFeedEndId": "6",
         "hasMore": false
       }
     },
@@ -209,21 +216,27 @@
       }
     },
     {
-      "name": "message compacted feed page",
-      "schema": "urn:somfp:v1:message-feed",
+      "name": "group meta departure retains complete historical member",
+      "schema": "urn:somfp:v1:group-meta",
       "value": {
+        "account": "!01arz3ndektsv4rrffq69g5fav",
+        "mode": "delta",
         "items": [
           {
-            "feedId": "1",
-            "thread": {
-              "account": "alice",
-              "peerAccount": "bob"
-            },
-            "messageEndSeq": "8"
+            "feedId": "10",
+            "account": "bob",
+            "domain": "b.example",
+            "operation": "DEPART",
+            "body": {
+              "role": "MEMBER",
+              "profileRev": 2,
+              "displayName": "Bob",
+              "avatar": null
+            }
           }
         ],
-        "scannedThrough": "1",
-        "messageFeedEndId": "1",
+        "scannedThrough": "10",
+        "groupMetaFeedEndId": "10",
         "hasMore": false
       }
     },
@@ -247,7 +260,7 @@
             "assets": []
           }
         ],
-        "scannedThrough": "1",
+        "scannedThrough": 1,
         "hasMore": false
       }
     },
@@ -268,7 +281,7 @@
             "assets": []
           }
         ],
-        "scannedThrough": "2",
+        "scannedThrough": 2,
         "hasMore": false
       }
     },
@@ -290,7 +303,7 @@
             "assets": []
           }
         ],
-        "scannedThrough": "3",
+        "scannedThrough": 3,
         "hasMore": false
       }
     },
@@ -493,6 +506,52 @@
       ]
     },
     {
+      "name": "departed-member profile page",
+      "schema": "urn:somfp:v1:departed-member-profile-query",
+      "values": [
+        {
+          "members": [
+            {
+              "account": "zed",
+              "domain": "a.example",
+              "lastSentSeq": 40,
+              "profileRev": 1,
+              "displayName": "Zed",
+              "avatar": null
+            },
+            {
+              "account": "alice",
+              "domain": "a.example",
+              "lastSentSeq": 40,
+              "profileRev": 3,
+              "displayName": "Alice",
+              "avatar": null
+            }
+          ],
+          "scannedThrough": 40,
+          "hasMore": true
+        },
+        {
+          "members": [],
+          "scannedThrough": 10,
+          "hasMore": false
+        }
+      ]
+    },
+    {
+      "name": "departed-member profile feed parameters",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/departedMemberProfileQuery",
+      "values": [
+        { "account": "!group" },
+        {
+          "account": "!group",
+          "before": "41",
+          "through": "10",
+          "take": "20"
+        }
+      ]
+    },
+    {
       "name": "profile response",
       "schema": "urn:somfp:v1:profile",
       "value": {
@@ -550,6 +609,18 @@
       }
     },
     {
+      "name": "forward tombstone query fixes a message projection boundary",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/messageTombstoneQuery",
+      "value": {
+        "account": "alice",
+        "peerAccount": "bob",
+        "after": "4",
+        "through": "9",
+        "maxMessageSeq": "27",
+        "take": "100"
+      }
+    },
+    {
       "name": "media authorization parameters",
       "schema": "urn:somfp:v1:http-parameters#/$defs/mediaParameters",
       "value": {
@@ -561,30 +632,12 @@
       }
     },
     {
-      "name": "tombstone compacted feed page",
-      "schema": "urn:somfp:v1:message-tombstone-feed",
-      "value": {
-        "items": [
-          {
-            "feedId": "2",
-            "thread": {
-              "account": "!group"
-            },
-            "tombstoneEndSeq": "4"
-          }
-        ],
-        "scannedThrough": "2",
-        "tombstoneFeedEndId": "2",
-        "hasMore": false
-      }
-    },
-    {
       "name": "tombstone query page",
       "schema": "urn:somfp:v1:message-tombstone-query",
       "value": {
         "tombstones": [
           {
-            "deletionSeq": "4",
+            "deletionSeq": 4,
             "thread": {
               "account": "!group"
             },
@@ -593,7 +646,7 @@
             "deletedAt": 1700000000000
           }
         ],
-        "scannedThrough": "4",
+        "scannedThrough": 4,
         "hasMore": false
       }
     },
@@ -617,7 +670,16 @@
       "value": {
         "code": 50019,
         "message": "requested message history is no longer retained",
-        "data": { "resumeAfter": "120", "resumeBefore": "501" }
+        "data": { "resumeAfter": 120, "resumeBefore": 501 }
+      }
+    },
+    {
+      "name": "tombstone-query cursor correction envelope",
+      "schema": "urn:somfp:v1:error",
+      "value": {
+        "code": 50019,
+        "message": "requested tombstone cursor is unavailable",
+        "data": { "resumeAfter": 4, "resumeBefore": 10 }
       }
     },
     {

@@ -8,7 +8,6 @@ import {
   type DatabaseTransaction,
 } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
-import { FederationCursorService } from './federation-cursor.service.js';
 import { DiscoveryService, type WellKnownDoc } from './discovery.service.js';
 import { loadFederationConfig } from './federation.config.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
@@ -39,7 +38,6 @@ export class FederationRecognitionService {
     private readonly database: DatabaseService,
     private readonly discovery: DiscoveryService,
     private readonly signature: SignatureService,
-    private readonly cursor: FederationCursorService,
     private readonly stateFeed: PeerStateFeedService,
     private readonly transportConfig: FederationTransportConfigService,
   ) {}
@@ -615,15 +613,6 @@ export class FederationRecognitionService {
     tx: DatabaseTransaction,
     domain: string,
   ): Promise<void> {
-    await this.cursor.initializePeerInTx(tx, domain, 0n);
-    await tx
-      .insert(tables.federationTombstoneServeCursor)
-      .values({ peerDomain: domain })
-      .onConflictDoNothing();
-    await tx
-      .insert(tables.federationTombstonePullCursor)
-      .values({ peerDomain: domain })
-      .onConflictDoNothing();
     await this.stateFeed.initializePeerInTx(tx, domain);
     await tx
       .insert(tables.peerStateFeedPullCursor)

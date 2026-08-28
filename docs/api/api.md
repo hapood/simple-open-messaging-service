@@ -233,11 +233,12 @@ the complete transition, pair-folding, and projection-side-effect rules.
 ### POST `/query-messages` — Paginated history
 
 - **Body**: `{ threadId, after?, before?, through?, take? }`. `after` and `before` are mutually exclusive
-  decimal-string cursors. Forward pages cover `(after, through]` in ascending order; reverse pages cover
+  non-negative integer cursors. Forward pages cover `(after, through]` in ascending order; reverse pages cover
   `[through, before)` in descending order. `through` is an inclusive fixed boundary.
 - Omitting both direction cursors bootstraps the query with business result `30006` and
   `{ resumeAfter, resumeBefore }`; a forward query adopts `resumeAfter`, while a reverse query adopts
-  `resumeBefore`. A successful page returns `{ messages, scannedThrough, hasMore }`.
+  `resumeBefore`. The resume fields and successful-page `scannedThrough` are
+  integer message-sequence boundaries.
 
 ### POST `/deleted-messages/query` — Paginated tombstones
 
@@ -245,7 +246,9 @@ the complete transition, pair-folding, and projection-side-effect rules.
   `/query-messages`, in the conversation's deletion-coordinate space.
 - Omitting both cursors returns `30006 { resumeAfter, resumeBefore }`. A successful page returns
   `{ tombstones, scannedThrough, hasMore }`; each public tombstone contains
-  `{ id, threadId, seq, type, createdAt, updatedAt }`.
+  `{ deletionSeq, threadId, messageSeq, type, createdAt, updatedAt }`. The
+  direction cursors, `scannedThrough`, and `deletionSeq` are JSON integers in
+  the conversation's thread-local deletion-coordinate space.
 
 ### POST `/thread/{by-user-id, mark-read, set-muted, set-pinned, clear-history, set-alias}`
 

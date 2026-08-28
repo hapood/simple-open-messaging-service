@@ -10,7 +10,7 @@ function setup(rows: Array<{ seq: number }> = []) {
   const readThreadEndSeq = vi.fn().mockResolvedValue(20);
   const queryTombstones = vi.fn().mockResolvedValue({
     tombstones: [],
-    scannedThrough: '1',
+    scannedThrough: 1,
     hasMore: false,
   });
   const controller = new MessageController(
@@ -47,7 +47,7 @@ function dto(overrides: Partial<QueryMessagesDto> = {}): QueryMessagesDto {
   return {
     threadId: 42,
     take: 3,
-    after: '10',
+    after: 10,
     ...overrides,
   };
 }
@@ -58,7 +58,7 @@ describe('MessageController.queryMessages cursor contract', () => {
       { seq: 11 },
       { seq: 12 },
     ]);
-    const result = await controller.queryMessages(req, dto({ through: '15' }));
+    const result = await controller.queryMessages(req, dto({ through: 15 }));
 
     expect(queryMessages).toHaveBeenCalledWith(
       42,
@@ -69,10 +69,10 @@ describe('MessageController.queryMessages cursor contract', () => {
         cursor: { threadId_seq: { threadId: 42, seq: 10 } },
         truncateSeq: 16,
       },
-      { clearedThroughSeq: null },
+      { clearedThroughSeq: null, visibleBeforeSeq: undefined },
     );
     expect(result.messages.map((row) => row.seq)).toEqual([11, 12]);
-    expect(result.scannedThrough).toBe('15');
+    expect(result.scannedThrough).toBe(15);
     expect(result.hasMore).toBe(false);
   });
 
@@ -85,11 +85,11 @@ describe('MessageController.queryMessages cursor contract', () => {
     ]);
     const result = await controller.queryMessages(
       req,
-      dto({ after: undefined, before: '10', through: '2' }),
+      dto({ after: undefined, before: 10, through: 2 }),
     );
 
     expect(result.messages.map((row) => row.seq)).toEqual([9, 8, 7]);
-    expect(result.scannedThrough).toBe('7');
+    expect(result.scannedThrough).toBe(7);
     expect(result.hasMore).toBe(true);
   });
 
@@ -100,7 +100,7 @@ describe('MessageController.queryMessages cursor contract', () => {
     ).rejects.toMatchObject({
       bizCode: BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
       status: 200,
-      data: { resumeAfter: '0', resumeBefore: '21' },
+      data: { resumeAfter: 0, resumeBefore: 21 },
     });
     expect(queryMessages).not.toHaveBeenCalled();
   });
@@ -111,11 +111,11 @@ describe('MessageController.queryDeletedMessages cursor contract', () => {
     const { controller, queryTombstones } = setup();
     await controller.queryDeletedMessages({
       threadId: 42,
-      before: '10',
-      through: '2',
+      before: 10,
+      through: 2,
       take: 20,
     });
-    expect(queryTombstones).toHaveBeenCalledWith(42, undefined, 20, 2n, 10n);
+    expect(queryTombstones).toHaveBeenCalledWith(42, undefined, 20, 2, 10);
   });
 
   it('rejects supplying both tombstone cursors', async () => {
@@ -123,8 +123,8 @@ describe('MessageController.queryDeletedMessages cursor contract', () => {
     await expect(
       controller.queryDeletedMessages({
         threadId: 42,
-        after: '1',
-        before: '10',
+        after: 1,
+        before: 10,
         take: 20,
       }),
     ).rejects.toMatchObject({

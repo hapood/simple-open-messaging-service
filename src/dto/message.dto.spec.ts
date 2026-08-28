@@ -28,12 +28,12 @@ describe('SendMessageDto', () => {
 });
 
 describe('QueryMessagesDto cursors', () => {
-  it('accepts canonical decimal range cursors', async () => {
+  it('accepts safe integer range cursors', async () => {
     const value = Object.assign(new QueryMessagesDto(), {
       threadId: 1,
       take: 20,
-      after: '10',
-      through: '30',
+      after: 10,
+      through: 30,
     });
     expect(await validate(value)).toHaveLength(0);
   });
@@ -42,7 +42,7 @@ describe('QueryMessagesDto cursors', () => {
     const value = Object.assign(new QueryMessagesDto(), {
       threadId: 1,
       take: 20,
-      before: '-1',
+      before: -1,
     });
     expect(await validate(value)).toEqual(
       expect.arrayContaining([expect.objectContaining({ property: 'before' })]),

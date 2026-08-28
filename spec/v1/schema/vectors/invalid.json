@@ -401,7 +401,7 @@
     },
     {
       "name": "message page rejects retired page fields",
-      "schema": "urn:somfp:v1:message-feed",
+      "schema": "urn:somfp:v1:message-query",
       "value": {
         "messages": [],
         "scannedThrough": "0",
@@ -579,23 +579,142 @@
       }
     },
     {
-      "name": "message feed rejects legacy typed thread address",
-      "schema": "urn:somfp:v1:message-feed",
-      "value": {
-        "items": [
-          {
-            "feedId": "1",
-            "thread": {
-              "type": "GROUP",
+      "name": "departed-member profile feed rejects invalid parameter shapes",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/departedMemberProfileQuery",
+      "values": [
+        { "account": "alice", "after": "0" },
+        { "account": "!group", "after": "0" },
+        { "account": "!group", "after": "0", "before": "2" },
+        { "account": "!group", "take": "10" },
+        { "account": "!group", "through": "10" },
+        { "account": "!group", "after": "01" },
+        { "account": "!group", "after": "0", "unknown": "1" }
+      ]
+    },
+    {
+      "name": "departed-member profile page rejects invalid members",
+      "schema": "urn:somfp:v1:departed-member-profile-query",
+      "values": [
+        {
+          "members": [
+            {
               "account": "!group",
-              "domain": "a.example"
+              "domain": "a.example",
+              "lastSentSeq": 1,
+              "profileRev": 1,
+              "displayName": "Group",
+              "avatar": null
+            }
+          ],
+          "scannedThrough": 1,
+          "hasMore": false
+        },
+        {
+          "members": [
+            {
+              "account": "alice",
+              "domain": "A.example",
+              "lastSentSeq": 1,
+              "profileRev": 1,
+              "displayName": "Alice",
+              "avatar": null
+            }
+          ],
+          "scannedThrough": 1,
+          "hasMore": false
+        },
+        {
+          "members": [],
+          "scannedThrough": 1,
+          "hasMore": false,
+          "unknown": true
+        },
+        {
+          "members": [
+            {
+              "account": "alice",
+              "domain": "a.example",
+              "profileRev": 1,
+              "displayName": "Alice",
+              "avatar": null
+            }
+          ],
+          "scannedThrough": 1,
+          "hasMore": false
+        },
+        {
+          "members": [
+            {
+              "account": "alice",
+              "domain": "a.example",
+              "lastSentSeq": 0,
+              "profileRev": 1,
+              "displayName": "Alice",
+              "avatar": null
+            }
+          ],
+          "scannedThrough": 0,
+          "hasMore": false
+        },
+        {
+          "members": [
+            {
+              "account": "alice",
+              "domain": "a.example",
+              "lastSentSeq": 9007199254740991,
+              "profileRev": 1,
+              "displayName": "Alice",
+              "avatar": null
+            }
+          ],
+          "scannedThrough": 1,
+          "hasMore": false
+        },
+        {
+          "members": [
+            {
+              "account": "alice",
+              "domain": "a.example",
+              "lastSentSeq": 39,
+              "profileRev": 1,
+              "displayName": "Alice",
+              "avatar": null
+            }
+          ],
+          "scannedThrough": 40,
+          "hasMore": true
+        },
+        {
+          "members": [
+            {
+              "account": "alice",
+              "domain": "a.example",
+              "lastSentSeq": 39,
+              "profileRev": 1,
+              "displayName": "Alice",
+              "avatar": null
             },
-            "messageEndSeq": "1"
-          }
-        ],
-        "scannedThrough": "1",
-        "messageFeedEndId": "1",
-        "hasMore": false
+            {
+              "account": "bob",
+              "domain": "a.example",
+              "lastSentSeq": 40,
+              "profileRev": 1,
+              "displayName": "Bob",
+              "avatar": null
+            }
+          ],
+          "scannedThrough": 39,
+          "hasMore": true
+        }
+      ]
+    },
+    {
+      "name": "thread address rejects legacy type and domain fields",
+      "schema": "urn:somfp:v1:common#/$defs/threadAddress",
+      "value": {
+        "type": "GROUP",
+        "account": "!group",
+        "domain": "a.example"
       }
     },
     {
@@ -605,6 +724,76 @@
         "account": "!group",
         "peerAccount": "bob",
         "after": "0"
+      }
+    },
+    {
+      "name": "tombstone query rejects the removed reverse direction",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/messageTombstoneQuery",
+      "value": {
+        "account": "alice",
+        "peerAccount": "bob",
+        "before": "10"
+      }
+    },
+    {
+      "name": "thread-content head rejects a string deletion end",
+      "schema": "urn:somfp:v1:state-feed",
+      "value": {
+        "items": [
+          {
+            "feedId": "1",
+            "account": "!group",
+            "eventType": "THREAD_CONTENT_HEAD",
+            "body": {
+              "messageEndSeq": 7,
+              "tombstoneEndSeq": "4"
+            }
+          }
+        ],
+        "scannedThrough": "1",
+        "stateFeedEndId": "1",
+        "hasMore": false
+      }
+    },
+    {
+      "name": "tombstone query rejects string deletion coordinates",
+      "schema": "urn:somfp:v1:message-tombstone-query",
+      "value": {
+        "tombstones": [
+          {
+            "deletionSeq": "4",
+            "thread": { "account": "!group" },
+            "messageSeq": 7,
+            "type": "USER_RETRACTION",
+            "deletedAt": 1700000000000
+          }
+        ],
+        "scannedThrough": "4",
+        "hasMore": false
+      }
+    },
+    {
+      "name": "tombstone query rejects unordered deletion sequences",
+      "schema": "urn:somfp:v1:message-tombstone-query",
+      "value": {
+        "tombstones": [
+          {
+            "deletionSeq": 5,
+            "thread": { "account": "!group" },
+            "messageSeq": 8,
+            "type": "USER_RETRACTION",
+            "deletedAt": 1700000000001
+          },
+          {
+            "deletionSeq": 4,
+            "thread": { "account": "!group" },
+            "messageSeq": 7,
+            "type": "USER_RETRACTION",
+            "deletedAt": 1700000000000
+          }
+        ],
+        "scannedThrough": 5,
+        "hasMore": false
       }
     },
     {
@@ -631,6 +820,26 @@
       "name": "success is not an error envelope",
       "schema": "urn:somfp:v1:error",
       "value": { "code": 0, "message": "ok" }
+    },
+    {
+      "name": "group-meta departure rejects an empty historical member body",
+      "schema": "urn:somfp:v1:group-meta",
+      "value": {
+        "account": "!group",
+        "mode": "delta",
+        "items": [
+          {
+            "feedId": "2",
+            "account": "alice",
+            "domain": "a.example",
+            "operation": "DEPART",
+            "body": {}
+          }
+        ],
+        "scannedThrough": "2",
+        "groupMetaFeedEndId": "2",
+        "hasMore": false
+      }
     },
     {
       "name": "quota error omits its structured data",
@@ -691,7 +900,7 @@
             "assets": []
           }
         ],
-        "scannedThrough": "3",
+        "scannedThrough": 3,
         "hasMore": false
       }
     },
@@ -713,7 +922,7 @@
             "assets": []
           }
         ],
-        "scannedThrough": "1",
+        "scannedThrough": 1,
         "hasMore": false
       }
     },
@@ -735,7 +944,7 @@
             "assets": []
           }
         ],
-        "scannedThrough": "1",
+        "scannedThrough": 1,
         "hasMore": false
       }
     },
@@ -756,7 +965,7 @@
             "assets": []
           }
         ],
-        "scannedThrough": "1",
+        "scannedThrough": 1,
         "hasMore": false
       }
     }

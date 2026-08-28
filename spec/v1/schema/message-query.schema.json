@@ -28,7 +28,7 @@
       ],
       "properties": {
         "thread": {
-          "$ref": "urn:somfp:v1:message-feed#/$defs/thread"
+          "$ref": "urn:somfp:v1:common#/$defs/threadAddress"
         },
         "author": { "$ref": "urn:somfp:v1:common#/$defs/address" },
         "authorRef": {
@@ -139,7 +139,7 @@
   "properties": {
     "messages": { "type": "array", "items": { "$ref": "#/$defs/message" } },
     "scannedThrough": {
-      "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+      "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
     },
     "hasMore": { "type": "boolean" }
   },

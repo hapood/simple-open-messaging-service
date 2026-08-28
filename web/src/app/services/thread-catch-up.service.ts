@@ -48,7 +48,7 @@ export interface TombstoneCatchUpResult {
   items: Array<{
     feedId: number;
     threadId: number;
-    tombstoneEndSeq: string;
+    tombstoneEndSeq: number;
   }>;
   hasMore: boolean;
   scannedThrough: number;

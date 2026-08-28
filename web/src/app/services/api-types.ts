@@ -3812,10 +3812,10 @@ export interface components {
         };
         MessageTombstoneResponseDto: {
             /**
-             * @description Tombstone log coordinate
+             * @description Thread-local deletion coordinate
              * @example 42
              */
-            id: string;
+            deletionSeq: number;
             /**
              * @description Owning conversation id
              * @example 12
@@ -3825,7 +3825,7 @@ export interface components {
              * @description Deleted message sequence
              * @example 31
              */
-            seq: number;
+            messageSeq: number;
             /** @enum {string} */
             type: "USER_RETRACTION" | "MODERATION_REMOVAL";
             /** @example 1700000000000 */
@@ -3839,7 +3839,7 @@ export interface components {
              * @description Direction-relative scan cursor
              * @example 42
              */
-            scannedThrough: string;
+            scannedThrough: number;
             /** @example false */
             hasMore: boolean;
         };
@@ -3853,17 +3853,17 @@ export interface components {
              * @description Exclusive forward tombstone cursor.
              * @example 0
              */
-            after?: string;
+            after?: number;
             /**
              * @description Exclusive reverse tombstone cursor.
              * @example 101
              */
-            before?: string;
+            before?: number;
             /**
              * @description Inclusive boundary at the opposite end of the query.
              * @example 20
              */
-            through?: string;
+            through?: number;
             /** @default 100 */
             take: number;
         };
@@ -4044,7 +4044,7 @@ export interface components {
              * @description Direction-relative scan cursor
              * @example 42
              */
-            scannedThrough: string;
+            scannedThrough: number;
             /** @example false */
             hasMore: boolean;
         };
@@ -4058,17 +4058,17 @@ export interface components {
              * @description Exclusive forward message-sequence cursor.
              * @example 42
              */
-            after?: string;
+            after?: number;
             /**
              * @description Exclusive reverse message-sequence cursor.
              * @example 101
              */
-            before?: string;
+            before?: number;
             /**
              * @description Inclusive fixed boundary at the opposite end of the selected direction.
              * @example 80
              */
-            through?: string;
+            through?: number;
             /**
              * @description Suggested page size (1-50).
              * @default 20

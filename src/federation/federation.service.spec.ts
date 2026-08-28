@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 
 // loadFederationConfig() reads SOMS_DOMAIN via requireEnv at construction (field initializer), so it
 // must be set before `new FederationService(...)`. Module-top runs before any test body.
-process.env.SOMS_DOMAIN ??= 'soms.io';
+process.env.SOMS_DOMAIN ??= 'chat.example';
 
 import {
   clientGroupIntentEndpoints,
@@ -135,7 +135,7 @@ describe('federated profile resource path', () => {
       }),
     ).resolves.toEqual({
       account: 'alice',
-      domain: 'soms.io',
+      domain: 'chat.example',
       displayName: 'Alice',
       bio: '',
       avatar: {
@@ -366,7 +366,6 @@ function makeStubs() {
     deletedMessages as never,
     eventEmitter as never,
     recognition as never,
-    { readAllocatedThrough: vi.fn().mockResolvedValue(0n) } as never, // federationCursor
     {} as never, // downloadScheduler
     {
       get: () => ({
@@ -385,6 +384,7 @@ function makeStubs() {
     {} as never, // groupRequestProjection
     {} as never, // groupRelationships
     {} as never, // groupRosterProjection
+    {} as never, // threadContentHeads
   );
   return {
     svc,
@@ -764,83 +764,6 @@ describe('FederationService thread-bound S2S preflight', () => {
 });
 
 describe('FederationService global missed transport', () => {
-  it('captures the peer generation before issuing the signed page request', async () => {
-    const { svc } = makeStubs();
-    const token = {
-      domain: 'peer.test',
-      resetGeneration: 3,
-      rootKeyFingerprint: 'sha256:test',
-    };
-    const page = {
-      items: [],
-      scannedThrough: '9',
-      messageFeedEndId: '9',
-      hasMore: false,
-    };
-    const order: string[] = [];
-    const target = svc as unknown as {
-      capturePeerResponseToken: (domain: string) => Promise<typeof token>;
-      withTrustedPeer: <T>(
-        domain: string,
-        action: () => Promise<T>,
-      ) => Promise<T>;
-      getSigned: <T>(
-        path: string,
-        domain: string,
-        maxResponseBytes?: number,
-      ) => Promise<T>;
-      pullMissedPage: (
-        domain: string,
-        after: bigint,
-        take?: number,
-      ) => Promise<{ page: typeof page; token: typeof token }>;
-    };
-    target.capturePeerResponseToken = vi.fn(async () => {
-      order.push('token');
-      return token;
-    });
-    target.withTrustedPeer = vi.fn(async (_domain, action) => action());
-    target.getSigned = vi.fn(async () => {
-      order.push('request');
-      return page;
-    });
-
-    await expect(target.pullMissedPage('peer.test', 7n, 100)).resolves.toEqual({
-      page,
-      token,
-    });
-    expect(order).toEqual(['token', 'request']);
-    expect(target.getSigned).toHaveBeenCalledWith(
-      '/s2s/v1/message-feed?after=7&take=100',
-      'peer.test',
-      16 * 1024 * 1024,
-    );
-  });
-
-  it.each([
-    [0n, 0],
-    [0n, 1.5],
-    [0n, Number.MAX_SAFE_INTEGER + 1],
-  ])(
-    'rejects invalid cursor/page input before network I/O',
-    async (after, take) => {
-      const { svc } = makeStubs();
-      const target = svc as unknown as {
-        capturePeerResponseToken: ReturnType<typeof vi.fn>;
-        pullMissedPage: (
-          domain: string,
-          after: bigint,
-          take?: number,
-        ) => Promise<unknown>;
-      };
-      target.capturePeerResponseToken = vi.fn();
-      await expect(
-        target.pullMissedPage('peer.test', after, take),
-      ).rejects.toThrow();
-      expect(target.capturePeerResponseToken).not.toHaveBeenCalled();
-    },
-  );
-
   it('resolves a remote message author as an address without creating a per-message User', async () => {
     const { svc } = makeStubs();
     const findUser = vi.fn();
@@ -885,63 +808,6 @@ describe('FederationService global missed transport', () => {
     });
     expect(findUser).not.toHaveBeenCalled();
     expect(insert).not.toHaveBeenCalled();
-  });
-});
-
-describe('FederationService thread-query revocation fallback', () => {
-  it('revokes the local P2P direction on an authenticated message-query denial', async () => {
-    const { svc } = makeStubs();
-    const target = svc as unknown as {
-      handleThreadQueryForbidden: (
-        error: Error,
-        domain: string,
-        thread: { account: string; peerAccount: string },
-      ) => Promise<void>;
-      revokeLocalFriendAfterMessageQueryForbidden: ReturnType<typeof vi.fn>;
-    };
-    target.revokeLocalFriendAfterMessageQueryForbidden = vi
-      .fn()
-      .mockResolvedValue(undefined);
-
-    await expect(
-      target.handleThreadQueryForbidden(
-        new S2sResponseError('revoked', 200, BusinessCode.FORBIDDEN),
-        'peer.test',
-        { account: 'peer', peerAccount: 'me' },
-      ),
-    ).rejects.toThrow(/thread query access was revoked/);
-    expect(
-      target.revokeLocalFriendAfterMessageQueryForbidden,
-    ).toHaveBeenCalledWith('peer.test', {
-      account: 'peer',
-      peerAccount: 'me',
-    });
-  });
-
-  it('does not revoke for retryable or non-message-query failures', async () => {
-    const { svc } = makeStubs();
-    const target = svc as unknown as {
-      handleThreadQueryForbidden: (
-        error: Error,
-        domain: string,
-        thread: { account: string; peerAccount: string },
-      ) => Promise<void>;
-      revokeLocalFriendAfterMessageQueryForbidden: ReturnType<typeof vi.fn>;
-    };
-    target.revokeLocalFriendAfterMessageQueryForbidden = vi.fn();
-
-    await target.handleThreadQueryForbidden(
-      new S2sResponseError(
-        'busy',
-        200,
-        BusinessCode.FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE,
-      ),
-      'peer.test',
-      { account: 'peer', peerAccount: 'me' },
-    );
-    expect(
-      target.revokeLocalFriendAfterMessageQueryForbidden,
-    ).not.toHaveBeenCalled();
   });
 });
 

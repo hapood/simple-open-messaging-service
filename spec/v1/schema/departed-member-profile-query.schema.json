@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:somfp:v1:departed-member-profile-query",
+  "title": "GET /s2s/v1/departed-member-profiles response data",
+  "$defs": {
+    "member": {
+      "type": "object",
+      "required": [
+        "account",
+        "domain",
+        "lastSentSeq",
+        "profileRev",
+        "displayName",
+        "avatar"
+      ],
+      "properties": {
+        "account": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
+        "domain": { "$ref": "urn:somfp:v1:common#/$defs/domain" },
+        "lastSentSeq": {
+          "$ref": "urn:somfp:v1:common#/$defs/positiveThreadSequence"
+        },
+        "profileRev": {
+          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+        },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 30 },
+        "avatar": {
+          "oneOf": [
+            { "$ref": "urn:somfp:v1:common#/$defs/inlineProfileAvatar" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "type": "object",
+  "required": ["members", "scannedThrough", "hasMore"],
+  "properties": {
+    "members": { "type": "array", "items": { "$ref": "#/$defs/member" } },
+    "scannedThrough": {
+      "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+    },
+    "hasMore": { "type": "boolean" }
+  },
+  "additionalProperties": false
+}

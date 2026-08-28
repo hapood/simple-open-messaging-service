@@ -1,18 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
-import { FederationService } from './federation.service.js';
+import { FederationCallDelivery } from './federation-call-delivery.js';
 
 function serviceWithPost(post: (...args: unknown[]) => Promise<void>) {
-  const raw = Object.create(FederationService.prototype) as Record<
-    string,
-    unknown
-  >;
-  raw.callLifecycleTails = new Map();
-  raw.callAnswerDeliveries = new Map();
-  raw.callLifecycleFailures = new Map();
-  raw.postCallFrame = vi.fn(post);
+  const delivery = new FederationCallDelivery();
+  const postFrame = vi.fn(post);
   return {
-    service: raw as unknown as FederationService,
-    post: raw.postCallFrame as ReturnType<typeof vi.fn>,
+    sendCallFrame: (
+      params: Parameters<FederationCallDelivery['send']>[0],
+      peerDomain: string,
+    ) => delivery.send(params, peerDomain, postFrame),
+    post: postFrame,
   };
 }
 
@@ -44,7 +41,7 @@ describe('Federation call lifecycle ordering', () => {
     });
     let failRinging = false;
     const order: string[] = [];
-    const { service } = serviceWithPost(async (frame) => {
+    const { sendCallFrame } = serviceWithPost(async (frame) => {
       const op = (frame as { op: string }).op;
       order.push(op);
       if (op === 'ringing') {
@@ -53,10 +50,10 @@ describe('Federation call lifecycle ordering', () => {
       }
     });
 
-    const ringing = service.sendCallFrame(params('ringing'), 'b.example');
+    const ringing = sendCallFrame(params('ringing'), 'b.example');
     await vi.waitFor(() => expect(order).toEqual(['ringing']));
     await expect(
-      service.sendCallFrame(params('accepted'), 'b.example'),
+      sendCallFrame(params('accepted'), 'b.example'),
     ).resolves.toBeUndefined();
     expect(order).toEqual(['ringing', 'accepted']);
 
@@ -64,7 +61,7 @@ describe('Federation call lifecycle ordering', () => {
     releaseRinging();
     await expect(ringing).rejects.toThrow('ringing delivery failed');
     await expect(
-      service.sendCallFrame(params('accepted'), 'b.example'),
+      sendCallFrame(params('accepted'), 'b.example'),
     ).resolves.toBeUndefined();
   });
 
@@ -74,14 +71,14 @@ describe('Federation call lifecycle ordering', () => {
       releaseAccepted = resolve;
     });
     const order: string[] = [];
-    const { service } = serviceWithPost(async (frame) => {
+    const { sendCallFrame } = serviceWithPost(async (frame) => {
       const op = (frame as { op: string }).op;
       order.push(op);
       if (op === 'accepted') await acceptedGate;
     });
 
-    const accepted = service.sendCallFrame(params('accepted'), 'b.example');
-    const connected = service.sendCallFrame(params('connected'), 'b.example');
+    const accepted = sendCallFrame(params('accepted'), 'b.example');
+    const connected = sendCallFrame(params('connected'), 'b.example');
     await vi.waitFor(() => expect(order).toEqual(['accepted']));
 
     releaseAccepted();
@@ -95,15 +92,15 @@ describe('Federation call lifecycle ordering', () => {
       releaseAnswer = resolve;
     });
     const order: string[] = [];
-    const { service } = serviceWithPost(async (frame) => {
+    const { sendCallFrame } = serviceWithPost(async (frame) => {
       const typed = frame as { op: string; signalType?: string };
       order.push(typed.signalType ?? typed.op);
       if (typed.signalType === 'answer') await answerGate;
     });
 
-    const answer = service.sendCallFrame(answerParams(), 'b.example');
+    const answer = sendCallFrame(answerParams(), 'b.example');
     await vi.waitFor(() => expect(order).toEqual(['answer']));
-    const connected = service.sendCallFrame(params('connected'), 'b.example');
+    const connected = sendCallFrame(params('connected'), 'b.example');
     await Promise.resolve();
     expect(order).toEqual(['answer']);
 
@@ -114,26 +111,26 @@ describe('Federation call lifecycle ordering', () => {
 
   it('blocks a dependent op after failure but permits retrying the failed op', async () => {
     let failAccepted = true;
-    const { service, post } = serviceWithPost(async (frame) => {
+    const { sendCallFrame, post } = serviceWithPost(async (frame) => {
       if ((frame as { op: string }).op === 'accepted' && failAccepted) {
         throw new Error('peer did not accept the frame');
       }
     });
 
     await expect(
-      service.sendCallFrame(params('accepted'), 'b.example'),
+      sendCallFrame(params('accepted'), 'b.example'),
     ).rejects.toThrow('peer did not accept the frame');
     await expect(
-      service.sendCallFrame(params('connected'), 'b.example'),
+      sendCallFrame(params('connected'), 'b.example'),
     ).rejects.toThrow('peer did not accept the frame');
     expect(post).toHaveBeenCalledTimes(1);
 
     failAccepted = false;
     await expect(
-      service.sendCallFrame(params('accepted'), 'b.example'),
+      sendCallFrame(params('accepted'), 'b.example'),
     ).resolves.toBeUndefined();
     await expect(
-      service.sendCallFrame(params('connected'), 'b.example'),
+      sendCallFrame(params('connected'), 'b.example'),
     ).resolves.toBeUndefined();
     expect(post).toHaveBeenCalledTimes(3);
   });

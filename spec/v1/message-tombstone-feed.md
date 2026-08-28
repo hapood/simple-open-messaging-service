@@ -1,13 +1,13 @@
-# Simple Open Messaging Federation Protocol v1 Message Tombstone Feed and Query
+# Simple Open Messaging Federation Protocol v1 Message Tombstone Query
 
 Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
 This document is entirely normative.
 
-This document defines the compact tombstone index feed
-`GET /s2s/v1/message-tombstone-feed` and the per-thread authoritative deletion
-query `GET /s2s/v1/message-tombstones`. The feed contains only
-`thread + tombstoneEndSeq`; it does not contain tombstones.
+This document defines the per-thread authoritative deletion query
+`GET /s2s/v1/message-tombstones`. The compacted `thread + messageEndSeq +
+tombstoneEndSeq` discovery projection is a `THREAD_CONTENT_HEAD` item in
+[State Feed](./state-feed.md#7-thread_content_head).
 
 ## 1. Authoritative deletion facts
 
@@ -15,7 +15,7 @@ query `GET /s2s/v1/message-tombstones`. The feed contains only
 type MessageTombstoneType = 'USER_RETRACTION' | 'MODERATION_REMOVAL';
 
 interface MessageTombstone {
-  deletionSeq: PositiveDecimalString;
+  deletionSeq: PositiveThreadSequence;
   thread: ThreadAddress;
   messageSeq: ThreadSequence;
   type: MessageTombstoneType;
@@ -42,13 +42,14 @@ authoritative group fact, and distributes it to mirrors. Only the group
 origin's moderation process MAY create a `MODERATION_REMOVAL`. A mirror MUST NOT relay a
 group tombstone further.
 
-`deletionSeq` is the tombstone's independent positive-integer identifier. It
+`deletionSeq` is the tombstone's independent positive thread-local identifier. It
 MUST strictly increase without reuse within a thread. The protocol requires
 neither contiguous values nor a separate allocator for every thread. It is
 independent of message `seq`, `messageSeq`, and feed IDs. A publisher MUST NOT
 allocate `deletionSeq` greater than `SafeInteger - 1`; `messageSeq` has the
 same limit because it references a message `seq`. `tombstoneEndSeq` MUST also
-be at most `SafeInteger - 1`. A publisher MUST retain authoritative tombstones
+be a JSON `PositiveThreadSequence`. Tombstone-query response boundaries are
+JSON `SafeInteger` values. A publisher MUST retain authoritative tombstones
 permanently and MUST NOT discard them or
 reset their sequence because of capacity, age, peer acknowledgement, renewed
 friendship, or group re-entry.
@@ -61,73 +62,26 @@ resulting authoritative tombstone to a mirror, it instead uses the `seq` with
 which the origin exposed the target message to that mirror. A publisher MUST
 NOT forward the previous hop's `messageSeq` without translating coordinates.
 
-## 2. Tombstone feed
-
-The optional feed parameters are `after`, `take`, and `through`. Their shapes,
-bootstrap behavior, half-open/half-closed window, page calculation, lack of
-source-side acknowledgements, and absence of consumer-cursor monotonicity
-checks are identical to [Message Feed Section 1](./message-feed.md#1-message-feed).
-When `after` is omitted, the source returns
-`FEDERATION_FEED_CURSOR_UNAVAILABLE { resumeAfter, resumeBefore }` instead of a
-page, with `resumeBefore=tombstoneFeedEndId+1`.
-
-```ts
-interface MessageTombstoneFeedPage {
-  items: MessageTombstoneFeedItem[];
-  scannedThrough: DecimalString;
-  tombstoneFeedEndId: DecimalString;
-  hasMore: boolean;
-}
-
-interface MessageTombstoneFeedItem {
-  feedId: PositiveDecimalString;
-  thread: ThreadAddress;
-  tombstoneEndSeq: DecimalString;
-}
-```
-
-The stable key is `(target peer, thread)` and has the same identity as Message
-Feed Section 1.2: a P2P thread uses the canonical source-user/target-peer-user
-pair, while a group thread uses the group address and verified target peer
-domain rather than an individual member on that peer. Relationship-state
-transitions do not create a new stable key. For that key, every
-`tombstoneEndSeq` exposed to the target peer MUST be greater than or equal to
-every value previously exposed for the key. The source MUST NOT reset, decrease,
-replace, or reuse this deletion-sequence coordinate space. Whenever the
-`tombstoneEndSeq` visible to that peer strictly increases, the source MUST allocate a new
-`feedId` greater than every earlier ID in that feed and replace the previous
-item with the new item. An equal or lower end is a no-op.
-
-The tombstone feed is a durable compact index. The source may remove an older
-index item superseded by a newer item. For a thread that still has a current
-audience or remains queryable, the source MUST NOT remove the current
-projection because of compaction, history cleanup, or restart, and MUST NOT
-require the consumer to advance `after`. An update MUST use a greater
-`feedId`; it MUST NOT rewrite an ID that a consumer may already have passed.
-
-After a P2P friendship ends, the source MAY independently remove that
-peer/thread's current tombstone-feed projection. Removal neither allocates a
-new `feedId` nor decreases `tombstoneFeedEndId`. The message and tombstone feeds
-need not contain the same set of threads: a thread with no withdrawals has no
-tombstone stable key. If the relationship is later restored and the projection
-must be recreated, the source MUST allocate a new, greater `feedId` even when
-`tombstoneEndSeq` has not changed.
-
-A feed item is only a query-discovery index, not a deletion fact, and cannot by
-itself cause a local message deletion. The consumer atomically merges the
-greatest `tombstoneEndSeq` for each thread with feed `scannedThrough`, then uses
-the query to retrieve the corresponding facts.
-
-## 3. Tombstone query
+## 2. Tombstone query
 
 `GET /s2s/v1/message-tombstones` uses the same account-grammar-discriminated
-thread selector, P2P `peerAccount`, exclusive `after`/`before`
-choice, fixed inclusive `through`, and directional ordering as the message
-query. Here, all three coordinates belong to the
-thread-local `deletionSeq` space, not the tombstone-feed ID space. A forward
-window is `(after, through]` in increasing order; a reverse window is
-`[through, before)` in decreasing order. Invalid combinations or bounds return
-`400 FEDERATION_MALFORMED`.
+thread selector and P2P `peerAccount` as the message query, but it is
+forward-only. `after` is the exclusive cursor and `through` is the fixed
+inclusive upper bound. Both belong to the thread-local `deletionSeq` space,
+not the State Feed ID or message-sequence space. The selected window is
+`(after, through]` in increasing order. `before` is not a valid parameter.
+Invalid combinations or bounds return `400 FEDERATION_MALFORMED`.
+`after` and `through` are canonical decimal HTTP query strings whose parsed
+values MUST be at most `SafeInteger`; they are not JSON string representations
+of the response coordinates.
+
+A query MAY also carry `maxMessageSeq`, a non-negative canonical decimal string
+no greater than `SafeInteger - 1`. It is an inclusive upper bound in the
+publisher's exposed `MessageTombstone.messageSeq` coordinate, not in the
+deletion coordinate. Omission retains the unfiltered behavior for compatibility.
+A consumer that supplies it MUST freeze the value for the complete bounded
+query drain, including retries and cursor recovery; increasing it creates
+later-round work rather than enlarging the active drain.
 
 The wire representation, default, and pagination behavior of `includeSelf`
 are identical to the message query. With `includeSelf=false`, the source uses
@@ -137,38 +91,47 @@ tombstone wire field. A filtered `deletionSeq` is a scannable gap and does not
 prevent `scannedThrough` from advancing. Filtering does not delete the
 authoritative tombstone.
 
-There are exactly two valid directions for group tombstones: a member home
-server provides the group origin with a `USER_RETRACTION` submission for its local
-author, and the group origin provides enacted authoritative tombstones to a
-peer holding a mirror of that group. A mirror MUST NOT return a group tombstone
-to a non-origin peer and MUST NOT create or relay a `MODERATION_REMOVAL`.
+There are exactly two valid publication paths for group tombstones: a member
+home server provides the group origin with a `USER_RETRACTION` submission for
+its local author, and the group origin provides enacted authoritative
+tombstones to a peer holding a mirror of that group. A mirror MUST NOT return a
+group tombstone to a non-origin peer and MUST NOT create or relay a
+`MODERATION_REMOVAL`.
 
-When both `after` and `before` are omitted, the source returns
+When `after` is omitted, the source returns
 `FEDERATION_FEED_CURSOR_UNAVAILABLE { resumeAfter, resumeBefore }` instead of a
-page. The two fields describe the open authorized deletion-sequence window. A
-forward query starts with `after=resumeAfter`; a reverse query starts with
-`before=resumeBefore`. Because tombstones are retained permanently, cleanup
-MUST NOT increase `resumeAfter`. A cursor outside the current open window may
-receive the same two-boundary correction.
+page. The two fields describe the open authorized deletion-sequence window, and
+the query starts with `after=resumeAfter`. `resumeBefore` remains the exclusive
+upper boundary of the common cursor-recovery shape; it does not enable reverse
+tombstone querying. Because tombstones are retained permanently, cleanup MUST
+NOT increase `resumeAfter`. A cursor outside the current open window may receive
+the same two-boundary correction.
 
 ```ts
 interface MessageTombstoneQueryPage {
   tombstones: MessageTombstone[];
-  scannedThrough: DecimalString;
+  scannedThrough: SafeInteger;
   hasMore: boolean;
 }
 ```
 
-The forward query window is
-`(after, min(through, currentTombstoneEndSeq)]`; the reverse query window is
-`[queryStart, min(before, currentTombstoneEndSeq + 1))`, where `queryStart` is
-the supplied `through` or `resumeAfter + 1` when `through` is omitted.
-`candidates` consists of
-all authoritative tombstones in the selected window that this peer may learn.
-Ordering, direction-relative `scannedThrough`, `hasMore`, gaps, next-page cursor,
-and fixed-`through` calculations are identical to Message Query Section 2.2. An
-empty page may advance to the selected bound but MUST NOT skip an authoritative
-fact in the interval that this peer may learn.
+The query window is `(after, min(through, currentTombstoneEndSeq)]`.
+`candidates` consists of all authoritative tombstones in the selected window
+that this peer may learn and, when `maxMessageSeq` is present, whose exposed
+`messageSeq` is at most that bound.
+Increasing ordering, `scannedThrough`, `hasMore`, gaps, next-page cursor, and
+fixed-`through` calculations are identical to the forward rules in Message
+Query Section 2.2. An empty page may advance to the selected bound but MUST NOT
+skip an authoritative fact in the interval that this peer may learn.
+
+A tombstone excluded only by `maxMessageSeq` is a scannable gap. The source
+MUST still advance `scannedThrough` according to the deletion window and MUST
+NOT alter or discard the authoritative fact. This is safe for an ordinary
+forward round because the consumer chooses the bound from message coordinates
+it has already durably covered, while the source's message query omits messages
+that were already tombstoned. A deletion committed after a message page was
+served is discovered by a later `THREAD_CONTENT_HEAD` update, when the consumer's
+durable message boundary includes that message.
 
 When starting or restarting a forward tombstone-query drain, a consumer MAY
 advance its local `after` cursor to a greater position because of finite local
@@ -194,17 +157,17 @@ every thread, audience, and authorization fact needed to serve that query.
 `REQUESTED` and `ACCEPTED` grant identical tombstone-query permission for the
 same stable key; reverse confirmation MUST NOT expand, reset, shrink, or replace
 that peer's deletion-sequence coordinate space solely because of confirmation.
-A feed item is not proof of authorization. Authorization evaluation MAY
+A `THREAD_CONTENT_HEAD` item is not proof of authorization. Authorization evaluation MAY
 idempotently materialize immediate friendship or group state derived from
 existing durable facts, but the GET request itself MUST NOT create or broaden
 authorization.
 
 After receiving relationship termination through the state feed, a consumer
-MUST invalidate that peer/thread's current tombstone-feed target. If a
+MUST invalidate that peer/thread's current deletion target. If a
 tombstone query first returns `FORBIDDEN` because the current relationship is
 invalid, the consumer MUST stop querying that thread, invalidate its pending
 end, and prioritize draining the state feed again. It MUST NOT decrease the
-global tombstone-feed cursor or undo an applied authoritative tombstone.
+State Feed cursor or undo an applied authoritative tombstone.
 
 When the source cannot serve the query because its quota is exhausted, it MAY
 return HTTP `200 FEDERATION_QUOTA_EXCEEDED` with the sole structured data
@@ -217,21 +180,21 @@ protocol and MUST NOT be returned as structured fields.
 
 The consumer MUST validate the authority binding: a P2P source MUST be the
 target message author's domain, and a group tombstone source MUST be the known
-group origin. If a tombstone arrives before its target message, the consumer
-retains a pending fact keyed by `(source domain, thread, messageSeq)` and
-completes author-binding validation when the message arrives. A mismatch leaves
-the message invisible and has no other protocol effect. A member's withdrawal
+group origin. If a tombstone arrives before its target message, the accepted
+fact remains effective for `(source domain, thread, messageSeq)` and the
+consumer completes author-binding validation when the message arrives. A
+mismatch rejects the target message and has no other protocol effect. A member's withdrawal
 submission to the origin is not an authoritative query item that a mirror can
 apply.
 
-A query page and the local thread deletion cursor MUST commit atomically. A
+A query page and its thread deletion cursor MUST be accepted atomically. A
 consumer MUST fail closed for the affected target whenever it can identify an
-invalid tombstone safely. Each accepted tombstone is applied idempotently to its
-stable target:
+invalid tombstone safely. Each accepted tombstone is applied idempotently to
+its stable target:
 
 - If the message exists, it enters the irreversible invisible state. Any
   derived local views MUST reflect that state.
-- If the message has not arrived, a pending tombstone prevents a later or
+- If the message has not arrived, the accepted tombstone prevents a later or
   replayed copy from reviving it.
 - The consumer stops unfinished localization of the target message's media or
   bundle and grants no new resource access for it.
@@ -246,22 +209,15 @@ the query cursor.
 
 ## 5. Relationship to lightweight push
 
-The three core drain targets in `feed-heads` remain `stateFeedEndId`,
-`messageFeedEndId`, and `tombstoneFeedEndId`. The consumer first drains the
-state feed, then the tombstone
-and message index feeds, merges their per-thread end sequences, and finally
-invokes both per-thread queries. Hints may be lost, duplicated, or reordered,
-so startup and periodic reconciliation MUST read all three feeds directly.
+`feed-heads` carries only `stateFeedEndId`. The consumer drains State Feed,
+merges both coordinates from each `THREAD_CONTENT_HEAD`, and then invokes the
+per-thread queries. Hints may be lost, duplicated, or reordered, so startup and
+periodic reconciliation MUST also drain State Feed without relying on a hint.
 
-Deletion SHOULD be applied before message content. For a thread discovered in
-the same reconciliation pass, the consumer SHOULD drain the tombstone query to
-`tombstoneEndSeq` before draining the message query to `messageEndSeq`. If they
-arrive in the opposite order, the pending mechanism in Section 4 MUST still
-ensure convergence.
+For a thread discovered in the same reconciliation pass, the consumer MAY drain
+the tombstone query to `tombstoneEndSeq` concurrently with the message query to
+`messageEndSeq`. The stable-target convergence rules in Section 4 MUST ensure
+the same result regardless of arrival order.
 
-The same ordering applies to reverse history reads. Before accepting a reverse
-message-query window, the consumer SHOULD query and apply the corresponding
-reverse tombstone window. If the two sequence spaces have different resume
-windows, each uses its own returned `(resumeAfter, resumeBefore)` boundaries;
-the consumer MUST NOT copy a message cursor into the deletion-sequence space or
-vice versa.
+Reverse message reconstruction uses only this forward tombstone drain; its
+ordering is defined by Protocol Section 9.3.
