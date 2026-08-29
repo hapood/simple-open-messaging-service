@@ -43,6 +43,7 @@ describe('FederationProfileStatePublisher', () => {
       upload as never,
       stateFeed as never,
       {} as never,
+      {} as never,
       undefined,
     );
 
@@ -105,10 +106,14 @@ describe('FederationProfileStatePublisher', () => {
     const groupMetaFeed = {
       reconcileInTx: vi.fn().mockResolvedValue(10n),
     };
+    const threadContentHeads = {
+      refreshInTx: vi.fn().mockResolvedValue(undefined),
+    };
     const publisher = new FederationProfileStatePublisher(
       { readAvatarAsWire: vi.fn() } as never,
       stateFeed as never,
       clientStateFeed as never,
+      threadContentHeads as never,
       groupMetaFeed as never,
     );
 
@@ -135,5 +140,13 @@ describe('FederationProfileStatePublisher', () => {
         body: { groupMetaFeedEndId: '10' },
       }),
     ]);
+    expect(threadContentHeads.refreshInTx).toHaveBeenCalledWith(
+      tx,
+      'peer.test',
+      5,
+    );
+    expect(stateFeed.writeManyInTx.mock.invocationCallOrder[0]).toBeLessThan(
+      threadContentHeads.refreshInTx.mock.invocationCallOrder[0],
+    );
   });
 });

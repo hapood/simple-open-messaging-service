@@ -86,8 +86,9 @@ later-round work rather than enlarging the active drain.
 The wire representation, default, and pagination behavior of `includeSelf`
 are identical to the message query. With `includeSelf=false`, the source uses
 its authoritative target-message record to omit tombstones whose author domain
-equals the verified signer domain. The author does not thereby become a
-tombstone wire field. A filtered `deletionSeq` is a scannable gap and does not
+equals the verified signer domain. For GROUP this covers every member identity
+hosted by that peer, not one selected member. The author does not thereby become
+a tombstone wire field. A filtered `deletionSeq` is a scannable gap and does not
 prevent `scannedThrough` from advancing. Filtering does not delete the
 authoritative tombstone.
 

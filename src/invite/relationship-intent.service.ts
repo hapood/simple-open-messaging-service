@@ -294,7 +294,10 @@ export class RelationshipIntentService {
       secondUserId,
       null,
     );
-    return this.setLockedPairActiveInTx(tx, pair.id, active);
+    const changed = await this.setLockedPairActiveInTx(tx, pair.id, active);
+    if (changed && !active && pair.threadId !== null)
+      await this.incrementThreadAuthorizationEpochInTx(tx, pair.threadId);
+    return changed;
   }
 
   async setGroupPairActiveInTx(
@@ -313,6 +316,20 @@ export class RelationshipIntentService {
       params.active,
     );
     await this.refreshGroupFederationAuthorizationInTx(tx, params.groupId);
+    if (changed && !params.active)
+      await tx.execute(sql`
+        UPDATE "MessageThread" thread
+        SET "authorizationEpoch" = thread."authorizationEpoch" + 1,
+          "updatedAt" = CURRENT_TIMESTAMP
+        FROM "Group" group_profile, "User" member
+        WHERE thread.id = ${params.threadId}
+          AND thread."groupId" = group_profile.id
+          AND group_profile.id = ${params.groupId}
+          AND group_profile.domain <> 'local'
+          AND group_profile."federationAuthorized" = false
+          AND member.id = ${params.memberUserId}
+          AND member.domain = 'local'
+      `);
     return changed;
   }
 
@@ -665,6 +682,21 @@ export class RelationshipIntentService {
     return (changed.rowCount ?? 0) > 0;
   }
 
+  private async incrementThreadAuthorizationEpochInTx(
+    tx: DatabaseTransaction,
+    threadId: number,
+  ): Promise<void> {
+    const incremented = await tx.execute(sql`
+      UPDATE "MessageThread"
+      SET "authorizationEpoch" = "authorizationEpoch" + 1,
+        "updatedAt" = CURRENT_TIMESTAMP
+      WHERE id = ${threadId}
+      RETURNING id
+    `);
+    if ((incremented.rowCount ?? 0) !== 1)
+      throw new Error('relationship thread disappeared during deactivation');
+  }
+
   private async lockIntentRowsInTx(
     tx: DatabaseTransaction,
     pairId: bigint,
@@ -683,7 +715,7 @@ export class RelationshipIntentService {
     groupId: number,
   ): Promise<void> {
     await tx.execute(sql`
-      WITH authorization AS (
+      WITH authorization_projection AS (
         SELECT group_profile.id,
           group_profile.domain <> 'local'
           AND EXISTS (
@@ -709,11 +741,11 @@ export class RelationshipIntentService {
         WHERE group_profile.id = ${groupId}
       )
       UPDATE "Group" group_profile
-      SET "federationAuthorized" = authorization.value,
+      SET "federationAuthorized" = authorization_projection.value,
         "updatedAt" = CURRENT_TIMESTAMP
-      FROM authorization
-      WHERE group_profile.id = authorization.id
-        AND group_profile."federationAuthorized" IS DISTINCT FROM authorization.value
+      FROM authorization_projection
+      WHERE group_profile.id = authorization_projection.id
+        AND group_profile."federationAuthorized" IS DISTINCT FROM authorization_projection.value
     `);
   }
 

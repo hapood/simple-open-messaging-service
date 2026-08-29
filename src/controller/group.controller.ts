@@ -17,6 +17,7 @@ import { BusinessException } from '../common/business.exception.js';
 import { GroupService } from '../group/group.service.js';
 import { InviteService } from '../invite/invite.service.js';
 import { FederationService } from '../federation/federation.service.js';
+import { FederationRelationshipCommandService } from '../federation/federation-relationship-command.service.js';
 import { UserService } from '../user/user.service.js';
 import { ThreadAccessGuard } from '../thread-participant/thread-access.guard.js';
 import { ResourceId } from '../common/resource-id.decorator.js';
@@ -55,6 +56,7 @@ export class GroupController {
     private readonly participantService: ThreadParticipantService,
     private readonly inviteService: InviteService,
     private readonly federationService: FederationService,
+    private readonly relationshipCommands: FederationRelationshipCommandService,
     private readonly userService: UserService,
     private readonly clientStateFeed: ClientStateFeedService,
     private readonly userQuota: UserQuotaService,
@@ -147,7 +149,7 @@ export class GroupController {
           undefined,
           async (tx) => {
             statePeers =
-              await this.federationService.writeGroupRelationshipIntentInTx(
+              await this.relationshipCommands.writeGroupRelationshipIntentInTx(
                 tx,
                 group.threadId,
                 userId,

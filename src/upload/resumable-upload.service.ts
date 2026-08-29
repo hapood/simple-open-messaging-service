@@ -9,6 +9,7 @@ import { pendingMedia, uploadSession } from '../database/schema.js';
 import type { InitResumableUploadDto } from '../dto/resumable-upload.dto.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { MessageService } from '../message/message.service.js';
+import { requireOutboundPendingMedia } from '../message/pending-media-row.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
 import {
   MAX_FILE_NAME_LEN,
@@ -52,9 +53,12 @@ export class ResumableUploadService {
     userId: number,
     dto: InitResumableUploadDto,
   ): Promise<UploadSessionView> {
-    const stage = await this.database.db.query.pendingMedia.findFirst({
+    const stageRow = await this.database.db.query.pendingMedia.findFirst({
       where: eq(pendingMedia.clientMessageId, dto.clientMessageId),
     });
+    const stage = stageRow
+      ? requireOutboundPendingMedia(stageRow)
+      : undefined;
     if (
       !stage ||
       stage.status !== 'pending' ||

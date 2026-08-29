@@ -1,15 +1,22 @@
 import { randomUUID } from 'node:crypto';
 import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import request from 'supertest';
 import { and, eq } from 'drizzle-orm';
 import { BusinessCode } from '../src/common/business-code.js';
 import {
   fileSyncProgress,
   federatedPeer,
-  federationPullCursor,
-  federationServeCursor,
+  federationThreadSyncState,
   mediaAsset,
   message,
   messageAsset,
@@ -30,10 +37,8 @@ import {
 import {
   establishFederatedFriendship,
   getAdminCookie,
-  openSse,
   registerAndLogin,
   uploadAvatar,
-  waitForSseEvent,
 } from './federation-test-helpers.js';
 
 describe('federation durable missed transport (two nodes)', () => {
@@ -98,66 +103,54 @@ describe('federation durable missed transport (two nodes)', () => {
     await proxy?.close();
   });
 
-  it('delivers through the HWM + /message-feed pipeline', async () => {
+  afterEach(() => {
+    proxy?.blockGetFile(false);
+  });
+
+  it('delivers through the state-feed and forward thread-round pipeline', async () => {
     const bobThread = await appB.database.query.threadMember.findFirst({
       where: and(eq(threadMember.userId, aliceStubIdB)),
     });
     expect(bobThread).toBeDefined();
 
-    const reader = await openSse(appA.baseUrl, tokenA);
-    try {
-      const sent = await request(appB.baseUrl)
-        .post('/api/v1/send-message')
-        .set('Authorization', `Bearer ${tokenB}`)
-        .send({
-          threadId: bobThread!.threadId,
-          content: 'durable missed only',
-          contentType: 'PURE_TEXT',
-          clientMessageId: randomUUID(),
-        });
-      expect(sent.body.code).toBe(BusinessCode.OK);
+    const sent = await request(appB.baseUrl)
+      .post('/api/v1/send-message')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send({
+        threadId: bobThread!.threadId,
+        content: 'durable missed only',
+        contentType: 'PURE_TEXT',
+        clientMessageId: randomUUID(),
+      });
+    expect(sent.body.code).toBe(BusinessCode.OK);
 
-      let localThreadId = 0;
-      let localSeq = -1;
-      await vi.waitFor(
-        async () => {
-          const received = await appA.database.query.message.findFirst({
-            where: eq(
-              message.content,
-              JSON.stringify({ text: 'durable missed only' }),
+    await vi.waitFor(
+      async () => {
+        const received = await appA.database.query.message.findFirst({
+          where: eq(
+            message.content,
+            JSON.stringify({ text: 'durable missed only' }),
+          ),
+        });
+        expect(received).toBeDefined();
+        expect(received!.localState).toBe('READY');
+
+        const syncState =
+          await appA.database.query.federationThreadSyncState.findFirst({
+            where: and(
+              eq(federationThreadSyncState.threadId, received!.threadId),
+              eq(federationThreadSyncState.peerDomain, FED_DOMAIN_B),
             ),
           });
-          expect(received).toBeDefined();
-          localThreadId = received!.threadId;
-          localSeq = received!.seq;
+        expect(syncState?.messageTargetSeq).toBe(received!.originSeq);
+        expect(syncState?.messageProcessedThroughSeq).toBe(
+          syncState?.messageTargetSeq,
+        );
+      },
+      { timeout: 5000 },
+    );
 
-          const source =
-            await appB.database.query.federationServeCursor.findFirst({
-              where: eq(federationServeCursor.peerDomain, FED_DOMAIN_A),
-            });
-          const pulled =
-            await appA.database.query.federationPullCursor.findFirst({
-              where: eq(federationPullCursor.peerDomain, FED_DOMAIN_B),
-            });
-          expect(source?.allocatedThrough).toBeGreaterThan(0n);
-          expect(pulled?.committedThrough).toBe(source?.allocatedThrough);
-        },
-        { timeout: 5000 },
-      );
-
-      await waitForSseEvent(
-        reader,
-        (event, data) =>
-          event === 'NEW_MESSAGE' &&
-          typeof data === 'object' &&
-          data !== null &&
-          (data as { threadId?: number }).threadId === localThreadId &&
-          (data as { seq?: number }).seq === localSeq,
-      );
-      expect(aliceIdA).toBeGreaterThan(0);
-    } finally {
-      await reader.cancel();
-    }
+    expect(aliceIdA).toBeGreaterThan(0);
   });
 
   it('recovers a persisted inbound media download after the receiver process restarts', async () => {
@@ -235,7 +228,7 @@ describe('federation durable missed transport (two nodes)', () => {
         expect(
           dataGets.some(
             (entry) =>
-              entry.path.startsWith('/s2s/v1/message-feed?') &&
+              entry.path.startsWith('/s2s/v1/messages?') &&
               entry.status === 200,
           ),
         ).toBe(true);
@@ -256,6 +249,20 @@ describe('federation durable missed transport (two nodes)', () => {
         });
         expect(pending).toBeDefined();
         batchId = pending!.batchId;
+        const stagedMessage = await appB.database.query.message.findFirst({
+          where: eq(message.id, pending!.messageId!),
+        });
+        expect(stagedMessage?.localState).toBe('STUB');
+        const syncState =
+          await appB.database.query.federationThreadSyncState.findFirst({
+            where: and(
+              eq(federationThreadSyncState.threadId, stagedMessage!.threadId),
+              eq(federationThreadSyncState.peerDomain, FED_DOMAIN_A),
+            ),
+          });
+        expect(syncState?.messageProcessedThroughSeq).toBeGreaterThanOrEqual(
+          stagedMessage!.originSeq!,
+        );
         const progress = await appB.database.query.fileSyncProgress.findFirst({
           where: eq(fileSyncProgress.batchId, batchId),
         });
@@ -279,11 +286,8 @@ describe('federation durable missed transport (two nodes)', () => {
       { timeout: 5000 },
     );
 
-    const reader = await openSse(appB.baseUrl, tokenB);
     try {
       proxy.blockGetFile(false);
-      let receivedThreadId = 0;
-      let receivedSeq = -1;
       await vi.waitFor(
         async () => {
           const asset = await appB.database.query.mediaAsset.findFirst({
@@ -307,8 +311,7 @@ describe('federation durable missed transport (two nodes)', () => {
             orderBy: (row, { desc }) => [desc(row.id)],
           });
           expect(received).toBeDefined();
-          receivedThreadId = received!.threadId;
-          receivedSeq = received!.seq;
+          expect(received!.localState).toBe('READY');
           expect(
             await appB.database.query.pendingMedia.findFirst({
               where: eq(pendingMedia.batchId, batchId),
@@ -317,19 +320,9 @@ describe('federation durable missed transport (two nodes)', () => {
         },
         { timeout: 5000 },
       );
-      await waitForSseEvent(
-        reader,
-        (event, data) =>
-          event === 'NEW_MESSAGE' &&
-          typeof data === 'object' &&
-          data !== null &&
-          (data as { threadId?: number }).threadId === receivedThreadId &&
-          (data as { seq?: number }).seq === receivedSeq,
-      );
     } finally {
       proxy.blockGetFile(false);
       proxy.setGetFileFixture(digest, null);
-      await reader.cancel();
     }
   }, 60_000);
 
@@ -404,6 +397,20 @@ describe('federation durable missed transport (two nodes)', () => {
         });
         expect(pending).toBeDefined();
         batchId = pending!.batchId;
+        const stagedMessage = await appB.database.query.message.findFirst({
+          where: eq(message.id, pending!.messageId!),
+        });
+        expect(stagedMessage?.localState).toBe('STUB');
+        const syncState =
+          await appB.database.query.federationThreadSyncState.findFirst({
+            where: and(
+              eq(federationThreadSyncState.threadId, stagedMessage!.threadId),
+              eq(federationThreadSyncState.peerDomain, FED_DOMAIN_A),
+            ),
+          });
+        expect(syncState?.messageProcessedThroughSeq).toBeGreaterThanOrEqual(
+          stagedMessage!.originSeq!,
+        );
         const progress = await appB.database.query.fileSyncProgress.findFirst({
           where: eq(fileSyncProgress.batchId, batchId),
         });
@@ -418,63 +425,46 @@ describe('federation durable missed transport (two nodes)', () => {
       { timeout: 5000 },
     );
 
-    const reader = await openSse(appB.baseUrl, tokenB);
-    try {
-      const continued = await request(appB.baseUrl)
-        .post(`/api/v1/admin/quota/nodes/${FED_DOMAIN_A}/continue`)
-        .set('Cookie', adminCookie)
-        .send({ addFile: 1 });
-      expect(continued.body.code).toBe(BusinessCode.OK);
-      expect(continued.body.data.tripped).toBe(false);
+    const continued = await request(appB.baseUrl)
+      .post(`/api/v1/admin/quota/nodes/${FED_DOMAIN_A}/continue`)
+      .set('Cookie', adminCookie)
+      .send({ addFile: 1 });
+    expect(continued.body.code).toBe(BusinessCode.OK);
+    expect(continued.body.data.tripped).toBe(false);
 
-      let receivedThreadId = 0;
-      let receivedSeq = -1;
-      await vi.waitFor(
-        async () => {
-          expect(
-            await appB.database.query.mediaAsset.findFirst({
-              where: and(
-                eq(mediaAsset.digest, digest),
-                eq(mediaAsset.isDeleted, false),
-              ),
-            }),
-          ).toBeDefined();
-          expect(
-            await appB.database.query.messageAsset.findFirst({
-              where: eq(messageAsset.digest, digest),
-            }),
-          ).toBeDefined();
-          const received = await appB.database.query.message.findFirst({
+    await vi.waitFor(
+      async () => {
+        expect(
+          await appB.database.query.mediaAsset.findFirst({
             where: and(
-              eq(message.creatorAccount, 'missedalice'),
-              eq(message.creatorDomain, FED_DOMAIN_A),
-              eq(message.contentType, 'IMAGE'),
+              eq(mediaAsset.digest, digest),
+              eq(mediaAsset.isDeleted, false),
             ),
-            orderBy: (row, { desc }) => [desc(row.id)],
-          });
-          expect(received).toBeDefined();
-          receivedThreadId = received!.threadId;
-          receivedSeq = received!.seq;
-          expect(
-            await appB.database.query.pendingMedia.findFirst({
-              where: eq(pendingMedia.batchId, batchId),
-            }),
-          ).toBeUndefined();
-        },
-        { timeout: 5000 },
-      );
-      await waitForSseEvent(
-        reader,
-        (event, data) =>
-          event === 'NEW_MESSAGE' &&
-          typeof data === 'object' &&
-          data !== null &&
-          (data as { threadId?: number }).threadId === receivedThreadId &&
-          (data as { seq?: number }).seq === receivedSeq,
-      );
-    } finally {
-      proxy.setGetFileFixture(digest, null);
-      await reader.cancel();
-    }
+          }),
+        ).toBeDefined();
+        expect(
+          await appB.database.query.messageAsset.findFirst({
+            where: eq(messageAsset.digest, digest),
+          }),
+        ).toBeDefined();
+        const received = await appB.database.query.message.findFirst({
+          where: and(
+            eq(message.creatorAccount, 'missedalice'),
+            eq(message.creatorDomain, FED_DOMAIN_A),
+            eq(message.contentType, 'IMAGE'),
+          ),
+          orderBy: (row, { desc }) => [desc(row.id)],
+        });
+        expect(received).toBeDefined();
+        expect(received!.localState).toBe('READY');
+        expect(
+          await appB.database.query.pendingMedia.findFirst({
+            where: eq(pendingMedia.batchId, batchId),
+          }),
+        ).toBeUndefined();
+      },
+      { timeout: 5000 },
+    );
+    proxy.setGetFileFixture(digest, null);
   }, 60_000);
 });

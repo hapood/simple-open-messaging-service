@@ -1,0 +1,359 @@
+# Federation Atomic Rounds and Recoverable History Gaps
+
+## 1. Scope
+
+This document defines the local consumer design for authorization epochs,
+durable message staging, atomic per-stream page commits, and recoverable
+reverse-history gaps. It does not change the federation wire protocol. Wire
+messages, message and tombstone cursors, State Feed items, and departed-member
+profile queries retain their protocol meanings.
+
+The design makes one bounded scheduler batch the atomic commit unit. A logical
+round ends once every message inspected by that batch has a durable Message row
+at its final timeline position and the matching synchronization progress is
+committed. A Message may still be a STUB at that point; downloading and other
+local content materialization are not synchronization-round dependencies.
+
+## 2. Durable model
+
+### 2.1 Thread authorization epoch
+
+`MessageThread.authorizationEpoch` is a non-negative integer initialized to
+zero. It belongs to MessageThread rather than Group because both P2P and GROUP
+threads use the same federation round machinery.
+
+Every effective `active -> inactive` relationship transition increments the
+epoch in the caller-owned relationship transaction. Repeated inactive writes do
+not increment it. The transaction acquires the canonical USER_PAIR or GROUP
+business lock first and then locks MessageThread before changing the epoch.
+
+A State Feed target application or content round captures the current epoch.
+Its commit transaction performs an atomic compare-and-set against MessageThread.
+The compare-and-set is a no-op update conditioned on the captured epoch, so a
+successful statement also holds the row lock until transaction commit. A
+mismatch invalidates the complete operation. The result must not insert the
+round's placeholders, apply tombstones or profiles, or advance thread
+synchronization state.
+
+`FederationThreadSyncState` also stores the authorization epoch for which its
+current targets and committed progress were initialized. A process scheduler
+must not run a state row whose epoch differs from MessageThread. A later valid
+`THREAD_CONTENT_HEAD` reconciles the old segment and reinitializes that row for
+the active thread epoch.
+
+The process-local State Feed single-flight and the pull worker's peer-level
+single-flight prevent concurrent drains for one peer. They do not replace the
+authorization-epoch check: a relationship transaction can overlap the network
+request even when only one State Feed drain exists.
+
+### 2.2 Local message state
+
+Message gains a local-only state:
+
+```text
+Message.localState = STUB | FAILED | READY
+```
+
+`READY` is the default for existing and locally authored messages. `STUB` means
+that the row owns its final timeline position and immutable message identity
+while local materialization is still in progress. `FAILED` means that local
+materialization failed and may be retried. All three states are visible in
+ordinary client history at their final timeline position. STUB and FAILED are
+local placeholder projections rather than federation message types.
+
+`contentType` always contains the real message type. A STUB is not a protocol
+content type. `content` contains the normalized final metadata received from the
+wire, including file names and content digests. It must not contain a fabricated
+placeholder payload.
+
+For an ordinary remote item, a STUB stores:
+
+| Field                    | Value                                                       |
+| ------------------------ | ----------------------------------------------------------- |
+| `threadId`               | Resolved local thread                                       |
+| `seq`                    | Final local timeline position                               |
+| `contentType`            | Real wire content type                                      |
+| `content`                | Final wire-to-local converted metadata                      |
+| `creatorAccount/domain`  | Final author snapshot; the database may use `local` locally |
+| `originSeq`              | Direct publisher's `item.seq`                               |
+| `originServerTime`       | Wire `createdAt`                                            |
+| `federationSourceDomain` | Authenticated direct publisher                              |
+| `clientMessageId`        | Wire value when present                                     |
+| `isDeleted`              | False unless a durable tombstone already proves deletion    |
+| `localState`             | `STUB`                                                      |
+
+Reverse staging preserves the direct publisher order and uses the publisher
+sequence as the local Message sequence. Forward staging allocates local
+sequences in ascending response order. Every fetched message in a logical round,
+not only media messages, is staged. Staging only media messages would allocate
+their positions ahead of earlier in-memory non-media messages and reorder the
+local timeline.
+
+Creating a reverse gap reserves MessageThread's local allocator through that
+gap's upper boundary. Consequently, the newest advertised item left to the
+forward path is allocated after the reserved interval instead of occupying a
+publisher sequence that reverse reconstruction still owns.
+
+A returned item with non-null `originSeq` whose reconstructed author domain is
+the consumer's real domain is a processing receipt. It creates no STUB. The
+consumer looks up `(threadId, Message.seq = item.originSeq)` and backfills that
+row with `originSeq = item.seq` and
+`federationSourceDomain = authenticatedPeerDomain`. A missing row is warned and
+skipped.
+
+Normal client history returns STUB, FAILED, and READY messages together with
+their local state. Search, unread calculation, previews, federation publication,
+forwarding, notifications, and SSE consume only READY messages. A STUB written
+by the round's final transaction proves that its publisher coordinate was
+committed and therefore advances synchronization progress. It does not prove
+that the message content is locally usable.
+
+### 2.3 Download jobs
+
+PendingMedia continues to serve both existing outbound upload staging and
+inbound federation downloads. Outbound behavior is unchanged: an OUTBOUND row
+exists before its Message and therefore has no `messageId`. An INBOUND row
+references its staged `messageId`; the Message owns the authoritative identity,
+content type, author, content, and final sequence. FileSyncProgress remains the
+per-file transfer state.
+
+A tombstone that is already available for a staged media item makes the Message
+deleted and cancels unnecessary downloads. Otherwise PendingMedia and
+FileSyncProgress continue independently after the synchronization round commits.
+Download completion changes that Message from STUB to READY in its own
+transaction and publishes the READY-only local projections. A terminal download
+failure changes STUB to FAILED. Neither outcome moves federation synchronization
+progress or wakes a content round.
+
+## 3. Recoverable reverse-history gaps
+
+`FederationThreadHistoryGap` records an inclusive publisher-sequence interval
+that has not completed its local logical commit. Its coordinates do not depend
+on Message rows already existing. A thread has only one reverse authority in
+the current topology, so `threadId` identifies the source context and the table
+does not repeat `peerDomain`.
+
+The row contains:
+
+```text
+id
+threadId
+startSeq
+endSeq
+recoverable
+createdAt
+updatedAt
+```
+
+`startSeq` and `endSeq` are inclusive publisher coordinates and satisfy
+`1 <= startSeq <= endSeq`. A reverse request for the interval uses:
+
+```text
+before = endSeq + 1
+through = startSeq
+```
+
+Committed STUB, FAILED, and READY rows may already exist inside an interval
+after an interrupted scheduler process. They do not define or infer its bounds.
+Each successful reverse batch atomically shrinks the durable interval by the
+coordinates it inspected. The row is removed after its remaining interval is
+empty, or retained with `recoverable=false` after the publisher proves it
+unavailable.
+
+An effective inactive transition only increments
+MessageThread.authorizationEpoch inside the canonical relationship transaction.
+It does not depend on scheduler memory and does not construct a gap.
+
+A later valid THREAD_CONTENT_HEAD compares MessageThread.authorizationEpoch
+with the epoch retained by FederationThreadSyncState. For an origin capable of
+reverse history, the newest advertised message always remains forward work. If
+`C` is the old committed forward coordinate and `E` is the new advertised tail,
+the new reverse interval is `[C + 1, E - 1]`. An empty interval creates no gap.
+Recoverable gaps that overlap or touch this interval are merged; a committed
+forward island between intervals keeps them separate. No Message row or
+in-memory reverse page cursor participates in this derivation.
+
+This is sound because each forward stream advances its own processed-through
+value only in the transaction that applies that stream's page, and each such
+transaction compare-and-sets MessageThread.authorizationEpoch. A failed or
+partially fetched page cannot move its committed endpoint.
+
+## 4. State Feed application and initialization
+
+State Feed transport remains paginated, but application is item-by-item in
+strictly increasing feedId order. Each item and its inclusive committed cursor
+are committed in one database transaction. After all returned items are
+committed, a cursor-only transaction may advance across compacted or trailing
+holes to the page's `scannedThrough`. The next request passes the inclusive
+committed cursor as `after`; it does not derive the request cursor by adding one.
+
+RELATIONSHIP_INTENT application invokes the canonical relationship transaction
+and advances the item cursor only when that transaction succeeds.
+
+THREAD_CONTENT_HEAD application resolves the local thread, verifies that its
+relationship is active, and locks MessageThread. The same transaction loads
+FederationThreadSyncState and branches on its stored epoch:
+
+- a missing row leaves the newest advertised message to the forward query and,
+  when at least one older coordinate exists, creates `[1, messageTargetSeq - 1]`
+  as its initial active gap;
+- a matching epoch only merges the monotonic forward targets;
+- a mismatching epoch creates or merges `[oldCommitted + 1, newTail - 1]`,
+  selects the newest recoverable gap as `activeGapId`, leaves `newTail` to the
+  forward query, and reinitializes the state for the locked thread epoch.
+
+The transaction then advances the State Feed cursor through the current item.
+
+The synchronization-state key remains `(threadId, peerDomain)`. A missing row is
+created idempotently. The committed transaction is the only source of a thread
+scheduler notification; the notification is emitted after commit.
+
+If the relationship is no longer active when the thread row is locked, the item
+is stale. The transaction writes no thread synchronization state or gap
+selection, still advances the State Feed cursor through that item, and emits no
+thread notification. A transient database or network failure does not advance
+the item cursor.
+
+For a missing synchronization row with advertised tail `E`:
+
+- `E=0` creates no message work;
+- `E=1` creates only forward `(0, 1]` work;
+- `E>1` creates forward `(E-1, E]` work and reverse `[1, E-1]` work.
+
+For a retained row whose epoch is older than MessageThread, the head starts a
+new authorization segment:
+
+- forward message work starts at the newly advertised tail only;
+- forward tombstone work starts after the prior durably committed deletion
+  cursor;
+- skipped older coordinates become an inclusive durable gap;
+- adjacent unfinished gaps merge, while READY forward islands keep gaps
+  separate;
+- the synchronization row adopts the current thread epoch.
+
+Targets received while a round is active remain monotonic dirty work and do not
+enlarge that round's frozen bounds.
+
+FederationThreadSyncState does not persist a reverse page cursor. The scheduler
+keeps the current page's exact `before` value in memory. On restart it loads
+`activeGapId`, reconstructs `before=endSeq+1` and `through=startSeq`, and replays
+idempotently from that durable upper bound. It never infers a network cursor
+from Message or STUB rows.
+
+## 5. Logical rounds and scheduler quanta
+
+The scheduler's `take=50` is both a fairness bound and the maximum input batch
+for one logical round. Forward message, forward tombstone, and reverse work use
+independent queues and single-flights. A later page is a new round. Targets
+published while one round is running are coalesced for a later round in that
+same stream.
+
+The in-memory context contains at least:
+
+```text
+threadId and direction
+authorizationEpoch
+frozen message target, tombstone target and message cutoff, or reverse boundaries
+fetched message, tombstone, or departed-profile facts
+dirty flag
+```
+
+Losing the context on restart is safe. FederationThreadSyncState has not moved,
+the active gap boundaries remain durable, and no uncommitted in-memory fact is
+treated as copied. A committed STUB has already advanced the same transaction's
+durable progress and is idempotent if a response is replayed.
+
+### 5.1 Forward commit condition
+
+A forward message or tombstone round becomes committable when its one bounded
+request has completed and the thread authorization epoch still matches. Each
+final transaction compare-and-sets MessageThread against the round's captured
+epoch, applies that stream's buffered facts, and advances only that stream's
+processed-through cursor. Messages are inserted at least as STUBs; content
+which is already complete may be READY in the same transaction. Pending content
+remains STUB and is completed independently.
+
+The State Feed wake initially pairs both streams. A tombstone round freezes the
+pair's message coordinate as `maxMessageSeq`; the first pair after an epoch
+change instead uses the message coordinate committed before the change. A newer
+pair received during an active tombstone round is process-local dirty work for
+the next round and does not alter the active cutoff.
+
+### 5.2 Reverse commit condition
+
+A reverse logical round becomes committable when:
+
+- one bounded reverse message batch has completed;
+- the matching departed-member profile query has completed for the same message
+  interval when the thread is a group;
+- the thread authorization epoch still matches.
+
+The final transaction first atomically compare-and-sets MessageThread against
+the round's captured epoch. It then inserts the fetched messages at least as
+STUBs, applies the profiles and tombstones, and shrinks the active gap through
+the response's `scannedThrough` boundary. If the current interval closes, the
+same transaction removes that completed gap and selects the next recoverable
+gap. It derives `before=endSeq+1` and `through=startSeq` directly from the next
+gap and stores the selected row as `activeGapId`.
+`historyBoundaryReached` becomes true only when the current segment is closed and
+no recoverable gap remains.
+
+Reverse history insertion does not publish `ClientMessageFeed` and does not
+emit SSE: it fills older coordinates rather than advancing the conversation
+tail. Ordinary client history reads the newly committed STUB rows directly.
+Forward STUB insertion does publish the compacted client message head in its
+commit transaction, but federation materialization still emits no SSE.
+
+## 6. Failures
+
+### 6.1 Authorization failure
+
+An authorization failure stops both continuation and retry for every direction
+of the affected thread-source key. Before authoring a P2P revoke, the failure
+handler locks the USER_PAIR business scope and MessageThread and compares the
+captured epoch:
+
+- a changed epoch means another relationship transaction already invalidated
+  the round, so no second revoke is written;
+- an unchanged active P2P pair enters the normal command that revokes only the
+  locally authored direction;
+- the scheduler removes the affected thread work after either outcome.
+
+A GROUP denial cannot identify a unique locally authored member direction. It
+therefore writes no relationship command, stops the thread-source key, and
+prioritizes State Feed convergence.
+
+No buffered fact or synchronization cursor from the failed round commits.
+
+### 6.2 Reverse cursor unavailable
+
+When the publisher can no longer serve a reverse interval, the corresponding
+gap remains durable with `recoverable=false`. The scheduler then selects the next
+recoverable gap. An unrecoverable gap is retained for local history diagnostics
+but does not prevent `historyBoundaryReached=true` after all recoverable work is
+closed.
+
+## 7. Lock order
+
+Relationship commands retain the established order:
+
+1. canonical USER_PAIR or GROUP advisory lock;
+2. relationship/group rows;
+3. MessageThread row;
+4. synchronization state, gap, Message, and projection rows.
+
+Content-round commits do not acquire a relationship business scope after
+locking MessageThread. They lock MessageThread first, compare the captured epoch,
+and write only thread-local synchronization facts. This avoids reversing the
+relationship-command lock order. A relationship transaction that commits first
+causes an epoch mismatch; a round transaction that commits first was authorized
+for its complete database commit and the following relationship transaction
+then increments the epoch.
+
+## 8. Client placeholder projection
+
+Ordinary client history exposes STUB and FAILED rows at their final local
+sequence positions. STUB represents in-progress local materialization; FAILED
+represents a retryable failure. Other client and federation projections continue
+to require READY. This local projection does not alter the federation message
+representation.

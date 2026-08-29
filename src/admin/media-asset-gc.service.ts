@@ -367,10 +367,23 @@ export class MediaAssetGcService {
       }>;
     }>;
   }> {
-    const batches = await this.database.db.query.pendingMedia.findMany({
-      where: eq(pendingMedia.direction, 'INBOUND'),
-      orderBy: [desc(pendingMedia.updatedAt)],
-    });
+    const batches = await this.database.db
+      .select({
+        batchId: pendingMedia.batchId,
+        threadId: message.threadId,
+        creatorAccount: message.creatorAccount,
+        creatorDomain: message.creatorDomain,
+        originSeq: message.originSeq,
+        contentType: message.contentType,
+        fileCnt: pendingMedia.fileCnt,
+        anyFailed: pendingMedia.anyFailed,
+        originDomain: pendingMedia.originDomain,
+        updatedAt: pendingMedia.updatedAt,
+      })
+      .from(pendingMedia)
+      .innerJoin(message, eq(message.id, pendingMedia.messageId))
+      .where(eq(pendingMedia.direction, 'INBOUND'))
+      .orderBy(desc(pendingMedia.updatedAt));
     if (batches.length === 0) return { batches: [] };
     const files = await this.database.db.query.fileSyncProgress.findMany({
       where: inArray(
@@ -386,30 +399,35 @@ export class MediaAssetGcService {
       filesByBatch.set(f.batchId, arr);
     }
     return {
-      batches: batches.map((b) => ({
-        batchId: b.batchId,
-        threadId: b.threadId,
-        creator: {
-          account: b.creatorAccount,
-          domain: b.creatorDomain,
-        },
-        originSeq: b.originSeq,
-        contentType: b.contentType,
-        fileCnt: b.fileCnt,
-        anyFailed: b.anyFailed,
-        originDomain: b.originDomain,
-        updatedAt: b.updatedAt,
-        files: (filesByBatch.get(b.batchId) ?? []).map((f) => ({
-          id: f.id.toString(),
-          digest: f.digest,
-          kind: f.kind,
-          status: f.status,
-          bytesTotal: f.bytesTotal.toString(),
-          bytesReceived: f.bytesReceived.toString(),
-          errorKind: f.errorKind,
-          updatedAt: f.updatedAt,
-        })),
-      })),
+      batches: batches.map((b) => {
+        if (b.creatorAccount === null || b.creatorDomain === null) {
+          throw new Error(`inbound media batch ${b.batchId} has no author`);
+        }
+        return {
+          batchId: b.batchId,
+          threadId: b.threadId,
+          creator: {
+            account: b.creatorAccount,
+            domain: b.creatorDomain,
+          },
+          originSeq: b.originSeq,
+          contentType: b.contentType,
+          fileCnt: b.fileCnt,
+          anyFailed: b.anyFailed,
+          originDomain: b.originDomain,
+          updatedAt: b.updatedAt,
+          files: (filesByBatch.get(b.batchId) ?? []).map((f) => ({
+            id: f.id.toString(),
+            digest: f.digest,
+            kind: f.kind,
+            status: f.status,
+            bytesTotal: f.bytesTotal.toString(),
+            bytesReceived: f.bytesReceived.toString(),
+            errorKind: f.errorKind,
+            updatedAt: f.updatedAt,
+          })),
+        };
+      }),
     };
   }
 
@@ -536,14 +554,18 @@ export class MediaAssetGcService {
   ): Promise<string[]> {
     const result = await tx.execute<{ batchId: string }>(sql`
       WITH RECURSIVE doomed AS (
-        SELECT "batchId", "threadId", "originDomain", "originSeq"
-          FROM "PendingMedia"
-         WHERE "batchId" = ${rootBatchId}
+        SELECT pending."batchId", staged."threadId", pending."originDomain",
+               staged."originSeq"
+          FROM "PendingMedia" pending
+          JOIN "Message" staged ON staged.id = pending."messageId"
+         WHERE pending."batchId" = ${rootBatchId}
         UNION
-        SELECT child."batchId", child."threadId", child."originDomain", child."originSeq"
+        SELECT child."batchId", child_message."threadId", child."originDomain",
+               child_message."originSeq"
           FROM "PendingMedia" child
+          JOIN "Message" child_message ON child_message.id = child."messageId"
           JOIN doomed parent
-            ON child."threadId" = parent."threadId"
+            ON child_message."threadId" = parent."threadId"
            AND child."originDomain" = parent."originDomain"
            AND child."dependsOnOriginSeq" = parent."originSeq"
       )

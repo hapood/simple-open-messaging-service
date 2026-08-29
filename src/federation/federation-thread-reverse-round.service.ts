@@ -1,20 +1,33 @@
 import { Injectable } from '@nestjs/common';
+import { normalizeAccount } from '../common/account.js';
+import type { DepartedMemberProfile } from './departed-member-profile-query.service.js';
 import {
   FEDERATION_THREAD_SEQUENCE_MAX,
   resolveFederationThreadRoundTake,
 } from './federation-thread-round.constants.js';
 import { FederationThreadSyncStateService } from './federation-thread-sync-state.service.js';
+import { FederationThreadRoundRemoteError } from './federation-thread-round-error.js';
 
 export type FederationReverseMessageResult =
   | { kind: 'page'; scannedThrough: number; hasMore: boolean }
   | { kind: 'history-boundary' };
+
+/** Exact reverse network progress exists only for the lifetime of one scheduler process. */
+export interface FederationReverseRoundContext {
+  authorizationEpoch: number;
+  gapId: bigint;
+  gapBeforeSeq: number;
+  nextBeforeSeq: number;
+  throughSeq: number;
+  departedMemberProfiles: DepartedMemberProfile[];
+}
 
 export interface FederationThreadReverseRoundDriver {
   fetchMessages(params: {
     threadId: number;
     peerDomain: string;
     before: number;
-    through?: number;
+    through: number;
     take: number;
   }): Promise<FederationReverseMessageResult>;
   processDepartedMemberProfiles?(params: {
@@ -23,35 +36,32 @@ export interface FederationThreadReverseRoundDriver {
     before: number;
     through: number;
     take: number;
-  }): Promise<void>;
-  hasBlockingPendingAtFrontier(params: {
-    threadId: number;
-    peerDomain: string;
-    frontierSeq: number;
-  }): Promise<boolean>;
+  }): Promise<readonly DepartedMemberProfile[]>;
   complete(params: {
     threadId: number;
     peerDomain: string;
-    frozenBeforeSeq: number;
-    frozenClosureOriginSeq: number | null;
-    nextBeforeSeq: number;
-    closesReverseHistory: boolean;
+    context: FederationReverseRoundContext;
+    closesGap: boolean;
+  }): Promise<void>;
+  markUnavailable(params: {
+    threadId: number;
+    peerDomain: string;
+    context: FederationReverseRoundContext;
   }): Promise<void>;
 }
 
 export interface FederationThreadReverseRoundResult {
   beforeSeq: number;
-  closureOriginSeq: number | null;
+  throughSeq: number | null;
   batchOldestSeq: number | null;
   nextBeforeSeq: number;
   fetchedMessages: boolean;
   processedDepartedMemberProfiles: boolean;
-  blockedByPending: boolean;
   closesReverseHistory: boolean;
+  continuation: FederationReverseRoundContext | null;
 }
 
-/** Executes one already-single-flighted reverse construction round. The driver atomically publishes
- * the completed local window and commits its reverse position; scheduling remains caller-owned. */
+/** Executes one scheduler quantum of an already-single-flighted reverse logical round. */
 @Injectable()
 export class FederationThreadReverseRoundService {
   constructor(private readonly states: FederationThreadSyncStateService) {}
@@ -61,156 +71,192 @@ export class FederationThreadReverseRoundService {
     peerDomain: string,
     driver: FederationThreadReverseRoundDriver,
     requestedTake?: number,
+    continuation?: FederationReverseRoundContext,
   ): Promise<FederationThreadReverseRoundResult> {
     const take = resolveFederationThreadRoundTake(requestedTake);
-    const state = await this.states.require(threadId, peerDomain);
-    const beforeSeq = state.reverseNextBeforeSeq;
-    const closureOriginSeq = state.reverseClosureOriginSeq;
-    this.assertBeforeCursor(beforeSeq, 'reverse before seq');
-    this.assertClosureTarget(closureOriginSeq, beforeSeq);
-
-    if (state.historyBoundaryReached) {
-      return {
-        beforeSeq,
-        closureOriginSeq,
-        batchOldestSeq: null,
-        nextBeforeSeq: beforeSeq,
-        fetchedMessages: false,
-        processedDepartedMemberProfiles: false,
-        blockedByPending: false,
-        closesReverseHistory: true,
-      };
-    }
-    if (beforeSeq === 0) {
-      await driver.complete({
-        threadId,
-        peerDomain,
-        frozenBeforeSeq: 0,
-        frozenClosureOriginSeq: null,
-        nextBeforeSeq: 0,
-        closesReverseHistory: true,
-      });
-      return {
-        beforeSeq: 0,
-        closureOriginSeq: null,
-        batchOldestSeq: null,
-        nextBeforeSeq: 0,
-        fetchedMessages: false,
-        processedDepartedMemberProfiles: false,
-        blockedByPending: false,
-        closesReverseHistory: true,
-      };
-    }
-    if (
-      await driver.hasBlockingPendingAtFrontier({
-        threadId,
-        peerDomain,
-        frontierSeq: beforeSeq,
-      })
-    ) {
-      return {
-        beforeSeq,
-        closureOriginSeq,
-        batchOldestSeq: null,
-        nextBeforeSeq: beforeSeq,
-        fetchedMessages: false,
-        processedDepartedMemberProfiles: false,
-        blockedByPending: true,
-        closesReverseHistory: false,
-      };
-    }
-
-    const reusable = await this.states.deriveReusableReverseBatch({
+    const context = await this.resolveContext(
       threadId,
       peerDomain,
-      beforeSeq,
-      closureOriginSeq,
-      take,
-    });
-    let fetchedMessages = false;
-    let batchOldestSeq: number;
-    let closesReverseHistory = false;
-    if (reusable.canSkipMessageQuery) {
-      if (reusable.batchOldestSeq === null) {
-        throw new Error('complete reusable reverse batch has no oldest seq');
-      }
-      batchOldestSeq = reusable.batchOldestSeq;
-      this.assertBatchBoundary(batchOldestSeq, beforeSeq);
-      closesReverseHistory = reusable.reachedClosureTarget;
-    } else {
-      const result = await driver.fetchMessages({
+      continuation,
+    );
+    if (context === null) {
+      return {
+        beforeSeq: 0,
+        throughSeq: null,
+        batchOldestSeq: null,
+        nextBeforeSeq: 0,
+        fetchedMessages: false,
+        processedDepartedMemberProfiles: false,
+        closesReverseHistory: true,
+        continuation: null,
+      };
+    }
+    this.assertContext(context);
+
+    const beforeSeq = context.nextBeforeSeq;
+    let result: FederationReverseMessageResult;
+    try {
+      result = await driver.fetchMessages({
         threadId,
         peerDomain,
         before: beforeSeq,
-        ...(closureOriginSeq === null ? {} : { through: closureOriginSeq }),
+        through: context.throughSeq,
         take,
       });
-      fetchedMessages = true;
-      if (result.kind === 'history-boundary') {
-        await driver.complete({
-          threadId,
-          peerDomain,
-          frozenBeforeSeq: beforeSeq,
-          frozenClosureOriginSeq: closureOriginSeq,
-          nextBeforeSeq: beforeSeq,
-          closesReverseHistory: true,
-        });
-        return {
-          beforeSeq,
-          closureOriginSeq,
-          batchOldestSeq: null,
-          nextBeforeSeq: beforeSeq,
-          fetchedMessages,
-          processedDepartedMemberProfiles: false,
-          blockedByPending: false,
-          closesReverseHistory: true,
-        };
-      }
-      batchOldestSeq = result.scannedThrough;
-      this.assertBatchBoundary(batchOldestSeq, beforeSeq);
-      closesReverseHistory =
-        !result.hasMore ||
-        (closureOriginSeq !== null && batchOldestSeq <= closureOriginSeq);
+    } catch (error) {
+      throw new FederationThreadRoundRemoteError(
+        error,
+        context.authorizationEpoch,
+      );
+    }
+    if (result.kind === 'history-boundary') {
+      await driver.markUnavailable({ threadId, peerDomain, context });
+      return {
+        beforeSeq,
+        throughSeq: context.throughSeq,
+        batchOldestSeq: null,
+        nextBeforeSeq: beforeSeq,
+        fetchedMessages: true,
+        processedDepartedMemberProfiles: false,
+        closesReverseHistory: true,
+        continuation: null,
+      };
     }
 
+    const batchOldestSeq = result.scannedThrough;
+    this.assertBatchBoundary(batchOldestSeq, beforeSeq, context.throughSeq);
     let processedDepartedMemberProfiles = false;
+    let departedMemberProfiles = context.departedMemberProfiles;
     if (driver.processDepartedMemberProfiles) {
-      await driver.processDepartedMemberProfiles({
-        threadId,
-        peerDomain,
-        before: beforeSeq,
-        through: batchOldestSeq,
-        take,
-      });
+      let fetchedProfiles: readonly DepartedMemberProfile[];
+      try {
+        fetchedProfiles = await driver.processDepartedMemberProfiles({
+          threadId,
+          peerDomain,
+          before: beforeSeq,
+          through: batchOldestSeq,
+          take,
+        });
+      } catch (error) {
+        throw new FederationThreadRoundRemoteError(
+          error,
+          context.authorizationEpoch,
+        );
+      }
+      departedMemberProfiles = this.mergeDepartedMemberProfiles(
+        departedMemberProfiles,
+        fetchedProfiles,
+      );
       processedDepartedMemberProfiles = true;
     }
 
-    const nextBeforeSeq = batchOldestSeq;
+    const nextContext: FederationReverseRoundContext = {
+      ...context,
+      nextBeforeSeq: batchOldestSeq,
+      departedMemberProfiles,
+    };
+    const closesReverseHistory =
+      !result.hasMore || batchOldestSeq <= context.throughSeq;
     await driver.complete({
       threadId,
       peerDomain,
-      frozenBeforeSeq: beforeSeq,
-      frozenClosureOriginSeq: closureOriginSeq,
-      nextBeforeSeq,
-      closesReverseHistory,
+      context: nextContext,
+      closesGap: closesReverseHistory,
     });
     return {
       beforeSeq,
-      closureOriginSeq,
+      throughSeq: context.throughSeq,
       batchOldestSeq,
-      nextBeforeSeq,
-      fetchedMessages,
+      nextBeforeSeq: batchOldestSeq,
+      fetchedMessages: true,
       processedDepartedMemberProfiles,
-      blockedByPending: false,
       closesReverseHistory,
+      continuation: null,
     };
   }
 
-  private assertBatchBoundary(batchOldestSeq: number, beforeSeq: number): void {
-    this.assertCoordinate(batchOldestSeq, 'reverse scanned-through seq');
-    if (batchOldestSeq === 0 || batchOldestSeq >= beforeSeq) {
+  private async createContext(
+    threadId: number,
+    peerDomain: string,
+  ): Promise<FederationReverseRoundContext | null> {
+    const window = await this.states.resolveReverseWindow(threadId, peerDomain);
+    if (window.gapId === null || window.throughSeq === null) return null;
+    return {
+      authorizationEpoch: window.authorizationEpoch,
+      gapId: window.gapId,
+      gapBeforeSeq: window.beforeSeq,
+      nextBeforeSeq: window.beforeSeq,
+      throughSeq: window.throughSeq,
+      departedMemberProfiles: [],
+    };
+  }
+
+  private async resolveContext(
+    threadId: number,
+    peerDomain: string,
+    continuation?: FederationReverseRoundContext,
+  ): Promise<FederationReverseRoundContext | null> {
+    if (continuation) {
+      const state = await this.states.require(threadId, peerDomain);
+      if (
+        state.authorizationEpoch === continuation.authorizationEpoch &&
+        state.activeGapId !== null &&
+        state.activeGapId === continuation.gapId &&
+        !state.historyBoundaryReached
+      ) {
+        return continuation;
+      }
+    }
+    return this.createContext(threadId, peerDomain);
+  }
+
+  private mergeDepartedMemberProfiles(
+    existing: readonly DepartedMemberProfile[],
+    incoming: readonly DepartedMemberProfile[],
+  ): DepartedMemberProfile[] {
+    const merged = new Map<string, DepartedMemberProfile>();
+    for (const member of [...existing, ...incoming]) {
+      const account = normalizeAccount(member.account);
+      const key = JSON.stringify([member.domain, account]);
+      const current = merged.get(key);
+      if (!current) {
+        merged.set(key, { ...member, account });
+        continue;
+      }
+      const newestProfile =
+        member.profileRev > current.profileRev
+          ? { ...member, account }
+          : current;
+      merged.set(key, {
+        ...newestProfile,
+        lastSentSeq: Math.max(current.lastSentSeq, member.lastSentSeq),
+      });
+    }
+    return [...merged.values()];
+  }
+
+  private assertContext(context: FederationReverseRoundContext): void {
+    this.assertBeforeCursor(context.gapBeforeSeq, 'reverse gap before seq');
+    this.assertBeforeCursor(context.nextBeforeSeq, 'reverse next before seq');
+    this.assertCoordinate(context.throughSeq, 'reverse through seq');
+    if (
+      context.throughSeq < 1 ||
+      context.nextBeforeSeq <= context.throughSeq ||
+      context.nextBeforeSeq > context.gapBeforeSeq
+    ) {
+      throw new Error('reverse round context has invalid inclusive boundaries');
+    }
+  }
+
+  private assertBatchBoundary(
+    scannedThrough: number,
+    beforeSeq: number,
+    throughSeq: number,
+  ): void {
+    this.assertCoordinate(scannedThrough, 'reverse scanned-through seq');
+    if (scannedThrough < throughSeq || scannedThrough >= beforeSeq) {
       throw new Error(
-        'reverse scanned-through seq must be positive and less than its before cursor',
+        'reverse scanned-through seq must be within its requested interval',
       );
     }
   }
@@ -229,21 +275,8 @@ export class FederationThreadReverseRoundService {
 
   private assertBeforeCursor(value: number, label: string): void {
     const maximum = FEDERATION_THREAD_SEQUENCE_MAX + 1;
-    if (!Number.isSafeInteger(value) || value < 0 || value > maximum) {
-      throw new Error(`${label} must be an integer between 0 and ${maximum}`);
-    }
-  }
-
-  private assertClosureTarget(
-    closureOriginSeq: number | null,
-    beforeSeq: number,
-  ): void {
-    if (closureOriginSeq === null) return;
-    this.assertCoordinate(closureOriginSeq, 'reverse closure origin seq');
-    if (closureOriginSeq === 0 || closureOriginSeq >= beforeSeq) {
-      throw new Error(
-        'reverse closure origin seq must be positive and less than its before cursor',
-      );
+    if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
+      throw new Error(`${label} must be an integer between 1 and ${maximum}`);
     }
   }
 }

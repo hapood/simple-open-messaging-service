@@ -1,4 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ClientMessageFeedWriter } from '../message/client-message-feed.service.js';
+import { DeletedMessageService } from '../message/deleted-message.service.js';
 import {
   FederationService,
   FederationMessageContextError,
@@ -20,7 +22,87 @@ const item = (sequence: string): FederationMessageFeedMessage => ({
   assets: [],
 });
 
+afterEach(() => vi.restoreAllMocks());
+
 describe('federation message context isolation', () => {
+  it('does not advance ClientMessageFeed when committing reverse history', async () => {
+    const service = Object.create(
+      FederationService.prototype,
+    ) as FederationService & Record<string, unknown>;
+    const insertedValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([
+        {
+          id: 1n,
+          threadId: 9,
+          seq: 70,
+          originSeq: 70,
+          federationSourceDomain: 'origin.test',
+          creatorAccount: 'bob',
+          creatorDomain: 'origin.test',
+          contentType: 'PURE_TEXT',
+          content: JSON.stringify({ text: 'history' }),
+          localState: 'STUB',
+          isDeleted: false,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ]),
+    });
+    const tx = {
+      query: {
+        message: { findFirst: vi.fn().mockResolvedValue(undefined) },
+        federatedMessageTombstone: {
+          findFirst: vi.fn().mockResolvedValue(undefined),
+        },
+      },
+      insert: vi.fn().mockReturnValue({ values: insertedValues }),
+    };
+    Object.assign(service, {
+      assertThreadResponseWritable: vi.fn(),
+      assertPreservedMessageSeqAvailable: vi.fn(),
+      quota: { tickLax: vi.fn() },
+    });
+    vi.spyOn(DeletedMessageService, 'lockFederatedIdentity').mockResolvedValue(
+      {} as never,
+    );
+    const publishMessage = vi
+      .spyOn(ClientMessageFeedWriter, 'publishMessage')
+      .mockResolvedValue(undefined);
+
+    await (
+      service as unknown as {
+        storePulledMessageInTransaction(
+          tx: object,
+          params: object,
+        ): Promise<unknown>;
+      }
+    ).storePulledMessageInTransaction(tx, {
+      threadId: 9,
+      creator: { account: 'bob', domain: 'origin.test' },
+      fetchedFromDomain: 'origin.test',
+      message: {
+        originSeq: 70,
+        clientMessageId: null,
+        contentType: 'PURE_TEXT',
+        content: JSON.stringify({ text: 'history' }),
+        ts: 1_700_000_000_000,
+      },
+      expectedFederationVersion: 4,
+      incomingText: null,
+      originTime: new Date(1_700_000_000_000),
+      sequencePolicy: {
+        kind: 'PRESERVE_ORIGIN',
+        beforeSeq: 100,
+        throughSeq: 40,
+      },
+    });
+
+    expect(insertedValues).toHaveBeenCalledWith(
+      expect.objectContaining({ seq: 70, localState: 'STUB' }),
+    );
+    expect(publishMessage).not.toHaveBeenCalled();
+  });
+
   it('does not publish realtime effects for a committed historical message', async () => {
     const service = Object.create(
       FederationService.prototype,
@@ -296,6 +378,70 @@ describe('federation message context isolation', () => {
     );
   });
 
+  it('maps a group author local domain to the authenticated peer domain', async () => {
+    const service = Object.create(
+      FederationService.prototype,
+    ) as FederationService & Record<string, unknown>;
+    const logger = { error: vi.fn(), warn: vi.fn() };
+    Object.assign(service, {
+      config: { domain: 'local.test' },
+      logger,
+      assertPeerResponseWritable: vi.fn(),
+    });
+    const localAuthorItem = {
+      ...item('1'),
+      thread: { account: '!group' },
+      author: { account: 'alice', domain: 'local' },
+    } as FederationMessageFeedMessage;
+    delete (localAuthorItem as { authorRef?: unknown }).authorRef;
+    const author = (
+      service as unknown as {
+        federatedMessageAuthor(
+          value: FederationMessageFeedMessage,
+          peerDomain: string,
+        ): { account: string; domain: string };
+      }
+    ).federatedMessageAuthor(localAuthorItem, 'peer.test');
+
+    expect(author).toEqual({ account: 'alice', domain: 'peer.test' });
+  });
+
+  it('warns when applying a group author local-domain compatibility item', async () => {
+    const service = Object.create(
+      FederationService.prototype,
+    ) as FederationService & Record<string, unknown>;
+    const logger = { error: vi.fn(), warn: vi.fn() };
+    Object.assign(service, {
+      config: { domain: 'local.test' },
+      logger,
+      assertPeerResponseWritable: vi.fn(),
+    });
+    const localAuthorItem = {
+      ...item('1'),
+      thread: { account: '!group' },
+      author: { account: 'alice', domain: 'local' },
+      contentType: 'STICKER',
+    } as unknown as FederationMessageFeedMessage;
+    delete (localAuthorItem as { authorRef?: unknown }).authorRef;
+    const tx = { execute: vi.fn().mockResolvedValue({ rows: [] }) };
+
+    await expect(
+      service.applyMessageQueryItemsInTransaction(
+        tx as never,
+        'peer.test',
+        [localAuthorItem],
+        {} as never,
+      ),
+    ).resolves.toEqual([]);
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('authenticated peer domain'),
+    );
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.stringContaining('unknown federated message content type'),
+    );
+  });
+
   it('logs and skips malformed wire data instead of aborting the page', async () => {
     const service = Object.create(
       FederationService.prototype,
@@ -330,6 +476,37 @@ describe('federation message context isolation', () => {
     expect(logged).toContain('contentBytes');
     expect(logged).not.toContain('secret-message-body-that-must-not-be-logged');
     expect(logged).not.toContain('attacker\nforged-log-line');
+  });
+
+  it('aborts a reverse batch when one item cannot be staged', async () => {
+    const service = Object.create(
+      FederationService.prototype,
+    ) as FederationService & Record<string, unknown>;
+    Object.assign(service, {
+      config: { domain: 'local.test' },
+      logger: { error: vi.fn() },
+      assertPeerResponseWritable: vi.fn(),
+    });
+    const malformed = item('70');
+    malformed.contentType = 'SYSTEM';
+    const execute = vi.fn().mockResolvedValue({ rows: [] });
+
+    await expect(
+      service.applyMessageQueryItemsInTransaction(
+        { execute } as never,
+        'peer.test',
+        [malformed],
+        {} as never,
+        {
+          sequencePolicy: {
+            kind: 'PRESERVE_ORIGIN',
+            beforeSeq: 100,
+            throughSeq: 40,
+          },
+        },
+      ),
+    ).rejects.toThrow('unknown federated message content type');
+    expect(execute).toHaveBeenCalledTimes(3);
   });
 
   it.each(['SYSTEM', 'STICKER'])(

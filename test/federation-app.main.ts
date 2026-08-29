@@ -24,7 +24,8 @@ import { configureApp } from '../src/bootstrap.js';
 import { KeypairService } from '../src/federation/keypair.service.js';
 import { SignatureService } from '../src/federation/signature.service.js';
 import { DiscoveryService } from '../src/federation/discovery.service.js';
-import { S2sController } from '../src/federation/s2s.controller.js';
+import { FederationService } from '../src/federation/federation.service.js';
+import { FederationThreadRoundSchedulerService } from '../src/federation/federation-thread-round-scheduler.service.js';
 import {
   TestDiscoveryService,
   makeInMemoryKeypair,
@@ -135,21 +136,14 @@ async function main(): Promise<void> {
     .compile();
   const adapter = new FastifyAdapter();
   const app = moduleRef.createNestApplication<NestFastifyApplication>(adapter);
-  const controller = moduleRef.get(S2sController, {
+  const federation = moduleRef.get(FederationService, { strict: false });
+  const scheduler = moduleRef.get(FederationThreadRoundSchedulerService, {
     strict: false,
   }) as unknown as {
-    federation: {
-      pullStateFromPeer: (
-        peerDomain: string,
-        requiredRevision?: bigint,
-      ) => Promise<bigint>;
-    };
-    scheduleFeedDrainRetry: (peerDomain: string) => void;
+    scheduleStateFeedDrainRetry: (peerDomain: string) => void;
   };
-  const originalPull = controller.federation.pullStateFromPeer.bind(
-    controller.federation,
-  );
-  controller.federation.pullStateFromPeer = async (
+  const originalPull = federation.pullStateFromPeer.bind(federation);
+  federation.pullStateFromPeer = async (
     peerDomain: string,
     requiredRevision?: bigint,
   ): Promise<bigint> => {
@@ -187,8 +181,8 @@ async function main(): Promise<void> {
     }
   };
   const originalScheduleRetry =
-    controller.scheduleFeedDrainRetry.bind(controller);
-  controller.scheduleFeedDrainRetry = (peerDomain: string): void => {
+    scheduler.scheduleStateFeedDrainRetry.bind(scheduler);
+  scheduler.scheduleStateFeedDrainRetry = (peerDomain: string): void => {
     feedDrainDiagnostics.retriesScheduled += 1;
     originalScheduleRetry(peerDomain);
   };

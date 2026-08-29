@@ -250,13 +250,13 @@ request is never authorization proof by itself.
 
 The required closure is:
 
-| Operation                                   | Required state-derived rule                                                                                                                                                  |
-| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `state-feed`                                | Publishes only relationship facts, profiles, group-meta heads, and thread-content heads visible through durable authorization facts.                                      |
-| `group-meta`                                | Publishes only the origin-authoritative current roster; it does not provide a historical roster.                                                                             |
-| `/departed-member-profiles`                 | Publishes a reverse-only compressed projection of source-scoped profiles for departed authors selected from an authorized group interval.                                    |
-| `/messages` and `/message-tombstones`       | Recompute current relationship, group audience, and historical allocation authorization on every request; a stale thread-content head grants no authority.                  |
-| Media and forward bundles                   | Recompute the exact authorized message/thread binding independently of every feed cursor or hint.                                                                            |
+| Operation                             | Required state-derived rule                                                                                                                                |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `state-feed`                          | Publishes only relationship facts, profiles, group-meta heads, and thread-content heads visible through durable authorization facts.                       |
+| `group-meta`                          | Publishes only the origin-authoritative current roster; it does not provide a historical roster.                                                           |
+| `/departed-member-profiles`           | Publishes a reverse-only compressed projection of source-scoped profiles for departed authors selected from an authorized group interval.                  |
+| `/messages` and `/message-tombstones` | Recompute current relationship, group audience, and historical allocation authorization on every request; a stale thread-content head grants no authority. |
+| Media and forward bundles             | Recompute the exact authorized message/thread binding independently of every feed cursor or hint.                                                          |
 
 Consumers MUST drain state first and MUST NOT use data learned from another
 feed to invent a relationship or member absent from the applicable state
@@ -339,6 +339,13 @@ Applying a page and adopting its cursor position MUST be atomic from the protoco
 Feed retention is operation-specific. State Feed MUST retain every current non-deletion stable-key projection needed to rebuild from its advertised oldest boundary. Group Meta MUST retain the latest `UPSERT` needed for every current roster member and every complete `DEPART` needed to associate an author projection with a still-serviceable ordinary forward message interval allocated to that peer; its delta retention floor cannot cross either dependency. A completed full snapshot infers departure from absence but does not replace a required historical member projection. Message query has an independent serviceable window. Tombstone facts remain permanent even when loss of authorization removes their current thread-content projection.
 
 The closed `feed-heads` body contains only `stateFeedEndId`. The authenticated signer domain identifies the feed source and is not repeated in the body. The value is an inclusive State Feed scan bound used only for wake-up and bounded draining; it is not an ACK, business revision, or query sequence. A hint may be lost, duplicated, or reordered and MUST NOT be the sole recovery mechanism.
+
+For each authenticated publisher, a consumer MUST retain the greatest
+`stateFeedEndId` it has observed but not yet durably covered. A duplicate or
+smaller reordered hint MUST NOT reduce a queued target, an active drain target,
+or the committed State Feed cursor. A greater hint received during an active
+bounded drain creates subsequent work rather than changing that drain's frozen
+`through` value.
 
 After receiving hint `S`, a consumer drains State Feed from its committed cursor:
 

@@ -1,13 +1,22 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { eq } from 'drizzle-orm';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
+  federatedPeer,
+  federationThreadHistoryGap,
   federationThreadSyncState,
   message,
   messageThread,
-  pendingMedia,
 } from '../src/database/schema.js';
 import { FederationThreadSyncStateService } from '../src/federation/federation-thread-sync-state.service.js';
 
@@ -16,6 +25,7 @@ describe('federation thread synchronization state', () => {
   let database: DatabaseService;
   let states: FederationThreadSyncStateService;
   let threadId: number;
+  const peerDomain = 'peer.test';
 
   beforeAll(async () => {
     mod = await Test.createTestingModule({
@@ -30,8 +40,12 @@ describe('federation thread synchronization state', () => {
 
   beforeEach(async () => {
     await database.pool.query(
-      'TRUNCATE TABLE "MessageThread" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE',
     );
+    await database.db.insert(federatedPeer).values({
+      domain: peerDomain,
+      trustLevel: 'available',
+    });
     const [thread] = await database.db
       .insert(messageThread)
       .values({ type: 'P2P', updatedAt: new Date() })
@@ -39,137 +53,146 @@ describe('federation thread synchronization state', () => {
     threadId = thread.id;
   });
 
-  it('initializes both directions at the advertised tail without moving committed boundaries later', async () => {
+  async function initializeTail(messageTargetSeq: number): Promise<void> {
     await database.db.transaction((tx) =>
-      FederationThreadSyncStateService.mergeMessageTargetInTx(tx, threadId, 20),
+      FederationThreadSyncStateService.reconcileThreadHeadInTx(tx, {
+        threadId,
+        peerDomain,
+        messageTargetSeq,
+        deletionTargetSeq: 0,
+        reverseEnabled: true,
+      }),
     );
-    await database.db.transaction((tx) =>
-      FederationThreadSyncStateService.mergeMessageTargetInTx(tx, threadId, 25),
-    );
+  }
 
-    const state = await states.require(threadId);
-    expect(state).toMatchObject({
-      threadId,
-      messageTargetSeq: 25,
+  it('keeps the newest advertised message forward and creates an inclusive older gap', async () => {
+    await initializeTail(100);
+
+    await expect(states.require(threadId, peerDomain)).resolves.toMatchObject({
+      messageTargetSeq: 100,
+      messageProcessedThroughSeq: 99,
       deletionTargetSeq: 0,
-      messageProcessedThroughSeq: 0,
       deletionProcessedThroughSeq: 0,
-      reverseNextBeforeSeq: 20,
-      reverseClosureOriginSeq: null,
+      authorizationEpoch: 0,
       historyBoundaryReached: false,
     });
-  });
-
-  it('rejects a missing state instead of fabricating a zero cursor', async () => {
-    await expect(states.require(threadId)).rejects.toThrow(
-      `federated mirror thread ${threadId} has no synchronization state`,
-    );
-  });
-
-  it('derives a complete reusable reverse batch from distinct message and inbound pending coordinates', async () => {
-    const now = new Date();
-    await database.db.insert(message).values([
-      {
-        threadId,
-        seq: 1,
-        originSeq: 9,
-        federationSourceDomain: 'upstream.test',
-        creatorAccount: 'alice',
-        creatorDomain: 'upstream.test',
-        contentType: 'PURE_TEXT',
-        content: JSON.stringify({ text: 'nine' }),
-        updatedAt: now,
-      },
-      {
-        threadId,
-        seq: 2,
-        originSeq: 8,
-        federationSourceDomain: 'upstream.test',
-        creatorAccount: 'alice',
-        creatorDomain: 'upstream.test',
-        contentType: 'PURE_TEXT',
-        content: JSON.stringify({ text: 'eight' }),
-        updatedAt: now,
-      },
-    ]);
-    await database.db.insert(pendingMedia).values([
-      {
-        threadId,
-        originSeq: 8,
-        federationSourceDomain: 'upstream.test',
-        originDomain: 'upstream.test',
-        creatorAccount: 'alice',
-        creatorDomain: 'upstream.test',
-        contentType: 'IMAGE',
-        content: '[]',
-        direction: 'INBOUND',
-        updatedAt: now,
-      },
-      {
-        threadId,
-        originSeq: 7,
-        federationSourceDomain: 'upstream.test',
-        originDomain: 'upstream.test',
-        creatorAccount: 'bob',
-        creatorDomain: 'upstream.test',
-        contentType: 'IMAGE',
-        content: '[]',
-        direction: 'INBOUND',
-        updatedAt: now,
-      },
-      {
-        threadId,
-        originSeq: 6,
-        federationSourceDomain: 'upstream.test',
-        creatorAccount: 'alice',
-        creatorDomain: 'upstream.test',
-        contentType: 'IMAGE',
-        content: '[]',
-        direction: 'OUTBOUND',
-        updatedAt: now,
-      },
-    ]);
-
-    await database.db.insert(federationThreadSyncState).values({
-      threadId,
-      messageTargetSeq: 10,
-      deletionTargetSeq: 0,
-      reverseNextBeforeSeq: 10,
-      reverseClosureOriginSeq: null,
-    });
-
-    await expect(
-      states.deriveReusableReverseBatch({
-        threadId,
-        beforeSeq: 10,
-        closureOriginSeq: null,
-        take: 3,
-      }),
-    ).resolves.toEqual({
-      sourceSeqs: [9, 8, 7],
-      batchOldestSeq: 7,
-      reachedClosureTarget: false,
-      canSkipMessageQuery: true,
-    });
-
-    await expect(
-      states.deriveReusableReverseBatch({
-        threadId,
-        beforeSeq: 9,
-        closureOriginSeq: null,
-        take: 3,
-      }),
-    ).resolves.toEqual({
-      sourceSeqs: [8, 7],
-      batchOldestSeq: null,
-      reachedClosureTarget: false,
-      canSkipMessageQuery: false,
-    });
-
-    const [stored] = await database.db
+    const [gap] = await database.db
       .select()
-      .from(federationThreadSyncState)
-      .where(eq(federationThreadSyncState.threadId, threadId));
-    expect(stored.reverseNextBeforeSeq).toBe(10);
+      .from(federationThreadHistoryGap)
+      .where(eq(federationThreadHistoryGap.threadId, threadId));
+    expect(gap).toMatchObject({ startSeq: 1, endSeq: 99, recoverable: true });
+  });
+
+  it('commits STUB insertion and reverse gap shrink in one transaction', async () => {
+    await initializeTail(100);
+    const state = await states.require(threadId, peerDomain);
+    const applyDependencies = vi.fn();
+
+    await database.db.transaction((tx) =>
+      FederationThreadSyncStateService.commitReverseBatchInTx(tx, {
+        threadId,
+        peerDomain,
+        authorizationEpoch: 0,
+        gapId: state.activeGapId!,
+        beforeSeq: 100,
+        scannedThrough: 50,
+        throughSeq: 1,
+        closesGap: false,
+        applyDependencies: async () => {
+          await tx.insert(message).values({
+            threadId,
+            seq: 99,
+            originSeq: 99,
+            federationSourceDomain: peerDomain,
+            creatorAccount: 'bob',
+            creatorDomain: peerDomain,
+            contentType: 'IMAGE',
+            content: JSON.stringify({ digest: 'a'.repeat(64) }),
+            localState: 'STUB',
+            updatedAt: new Date(),
+          });
+          await applyDependencies();
+        },
+      }),
+    );
+
+    const [gap] = await database.db
+      .select()
+      .from(federationThreadHistoryGap)
+      .where(eq(federationThreadHistoryGap.id, state.activeGapId!));
+    expect(gap).toMatchObject({ startSeq: 1, endSeq: 49 });
+    await expect(
+      database.db.query.message.findFirst({
+        where: eq(message.threadId, threadId),
+      }),
+    ).resolves.toMatchObject({ seq: 99, localState: 'STUB' });
+    expect(applyDependencies).toHaveBeenCalledOnce();
+  });
+
+  it('rolls back an old-epoch reverse commit before applying its buffered facts', async () => {
+    await initializeTail(100);
+    const state = await states.require(threadId, peerDomain);
+    await database.db
+      .update(messageThread)
+      .set({ authorizationEpoch: 1 })
+      .where(eq(messageThread.id, threadId));
+    const applyDependencies = vi.fn();
+
+    await expect(
+      database.db.transaction((tx) =>
+        FederationThreadSyncStateService.commitReverseBatchInTx(tx, {
+          threadId,
+          peerDomain,
+          authorizationEpoch: 0,
+          gapId: state.activeGapId!,
+          beforeSeq: 100,
+          scannedThrough: 50,
+          throughSeq: 1,
+          closesGap: false,
+          applyDependencies,
+        }),
+      ),
+    ).rejects.toThrow('reverse round authorization epoch changed');
+
+    expect(applyDependencies).not.toHaveBeenCalled();
+    const [gap] = await database.db
+      .select()
+      .from(federationThreadHistoryGap)
+      .where(eq(federationThreadHistoryGap.id, state.activeGapId!));
+    expect(gap).toMatchObject({ startSeq: 1, endSeq: 99 });
+  });
+
+  it('deletes the final gap only after switching synchronization state to terminal', async () => {
+    await initializeTail(2);
+    const state = await states.require(threadId, peerDomain);
+
+    await database.db.transaction((tx) =>
+      FederationThreadSyncStateService.commitReverseBatchInTx(tx, {
+        threadId,
+        peerDomain,
+        authorizationEpoch: 0,
+        gapId: state.activeGapId!,
+        beforeSeq: 2,
+        scannedThrough: 1,
+        throughSeq: 1,
+        closesGap: true,
+      }),
+    );
+
+    await expect(states.require(threadId, peerDomain)).resolves.toMatchObject({
+      activeGapId: null,
+      historyBoundaryReached: true,
+    });
+    const gaps = await database.db
+      .select()
+      .from(federationThreadHistoryGap)
+      .where(eq(federationThreadHistoryGap.threadId, threadId));
+    expect(gaps).toEqual([]);
+  });
+
+  it('rejects a missing state instead of fabricating zero cursors', async () => {
+    await expect(states.require(threadId, peerDomain)).rejects.toThrow(
+      `federated thread ${threadId} has no synchronization state for ${peerDomain}`,
+    );
   });
 });

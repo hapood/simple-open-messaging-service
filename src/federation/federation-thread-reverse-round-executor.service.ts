@@ -1,10 +1,8 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { and, eq, ne } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import { ContentType } from '../database/enums.js';
-import { pendingMedia } from '../database/schema.js';
 import {
   FORWARD_MAX_WIRE_JSON_BYTES,
   type ForwardWireBundle,
@@ -27,10 +25,18 @@ import type {
 import {
   FederationThreadReverseRoundService,
   type FederationReverseMessageResult,
+  type FederationReverseRoundContext,
   type FederationThreadReverseRoundResult,
 } from './federation-thread-reverse-round.service.js';
 import { FederationThreadSyncStateService } from './federation-thread-sync-state.service.js';
 import { FederationThreadSourceService } from './federation-thread-source.service.js';
+
+interface BufferedReverseMessageBatch {
+  response: FederationThreadResourceResponse<FederationMessageQueryPage>;
+  before: number;
+  through?: number;
+  prefetchedForwardClosures: ReadonlyMap<number, ForwardWireBundle>;
+}
 
 /** Connects one caller-owned reverse round to signed peer reads and durable local application.
  * Scheduling and per-direction single-flight ownership deliberately remain outside this service. */
@@ -48,13 +54,19 @@ export class FederationThreadReverseRoundExecutorService {
     threadId: number,
     peerDomain: string,
     take?: number,
+    continuation?: FederationReverseRoundContext,
   ): Promise<FederationThreadReverseRoundResult> {
     const source = await this.sources.resolve(threadId, peerDomain);
+    let messageBatch: BufferedReverseMessageBatch | null = null;
     return this.rounds.run(
       threadId,
       peerDomain,
       {
-        fetchMessages: (params) => this.fetchMessages(source, params),
+        fetchMessages: async (params) => {
+          const fetched = await this.fetchMessages(source, params);
+          messageBatch = fetched.batch;
+          return fetched.result;
+        },
         ...(source.kind === 'GROUP'
           ? {
               processDepartedMemberProfiles: ({
@@ -68,25 +80,32 @@ export class FederationThreadReverseRoundExecutorService {
                 through: number;
                 take: number;
               }) =>
-                this.departedProfiles.process(source, {
+                this.departedProfiles.fetch(source, {
                   before,
                   through,
                   take: pageTake,
                 }),
             }
           : {}),
-        hasBlockingPendingAtFrontier: ({ frontierSeq }) =>
-          this.hasPendingAtFrontier(threadId, peerDomain, frontierSeq),
-        complete: (params) => this.commit(params),
+        complete: ({ context, closesGap }) => {
+          if (!messageBatch)
+            throw new Error('reverse round completed without a message batch');
+          return this.commit(source, context, closesGap, messageBatch);
+        },
+        markUnavailable: ({ context }) => this.markUnavailable(source, context),
       },
       take,
+      continuation,
     );
   }
 
   private async fetchMessages(
     source: FederationReverseThreadSource,
     params: { before: number; through?: number; take: number },
-  ): Promise<FederationReverseMessageResult> {
+  ): Promise<{
+    result: FederationReverseMessageResult;
+    batch: BufferedReverseMessageBatch | null;
+  }> {
     const query = new URLSearchParams();
     query.set('account', source.selector.account);
     if ('peerAccount' in source.selector)
@@ -113,7 +132,7 @@ export class FederationThreadReverseRoundExecutorService {
       ) {
         const bounds = this.parseCursorUnavailable(error.data);
         if (bounds && params.before <= bounds.resumeAfter + 1) {
-          return { kind: 'history-boundary' };
+          return { result: { kind: 'history-boundary' }, batch: null };
         }
       }
       throw error;
@@ -124,16 +143,18 @@ export class FederationThreadReverseRoundExecutorService {
       source,
       response,
     );
-    await this.federation.applyReverseMessagePage({
-      response,
-      before: params.before,
-      ...(params.through === undefined ? {} : { through: params.through }),
-      prefetchedForwardClosures,
-    });
     return {
-      kind: 'page',
-      scannedThrough: response.data.scannedThrough,
-      hasMore: response.data.hasMore,
+      result: {
+        kind: 'page',
+        scannedThrough: response.data.scannedThrough,
+        hasMore: response.data.hasMore,
+      },
+      batch: {
+        response,
+        before: params.before,
+        ...(params.through === undefined ? {} : { through: params.through }),
+        prefetchedForwardClosures,
+      },
     };
   }
 
@@ -171,7 +192,9 @@ export class FederationThreadReverseRoundExecutorService {
       page.scannedThrough < 1 ||
       page.scannedThrough >= params.before ||
       (params.through !== undefined && page.scannedThrough < params.through) ||
-      typeof page.hasMore !== 'boolean'
+      typeof page.hasMore !== 'boolean' ||
+      (params.through !== undefined &&
+        page.hasMore !== page.scannedThrough > params.through)
     ) {
       this.malformed('peer returned an invalid reverse message page boundary');
     }
@@ -265,40 +288,59 @@ export class FederationThreadReverseRoundExecutorService {
     }
   }
 
-  private async hasPendingAtFrontier(
-    threadId: number,
-    peerDomain: string,
-    frontierSeq: number,
-  ): Promise<boolean> {
-    const pending = await this.database.db.query.pendingMedia.findFirst({
-      where: and(
-        eq(pendingMedia.threadId, threadId),
-        eq(pendingMedia.originDomain, peerDomain),
-        eq(pendingMedia.originSeq, frontierSeq),
-        eq(pendingMedia.useOriginSeqAsMessageSeq, true),
-        ne(pendingMedia.status, 'tombstoned'),
-      ),
-      columns: { id: true },
+  private async commit(
+    source: FederationReverseThreadSource,
+    context: FederationReverseRoundContext,
+    closesGap: boolean,
+    batch: BufferedReverseMessageBatch,
+  ): Promise<void> {
+    let publish: (() => Promise<void>) | undefined;
+    await this.database.db.transaction(async (tx) => {
+      await FederationThreadSyncStateService.commitReverseBatchInTx(tx, {
+        threadId: source.threadId,
+        peerDomain: source.peerDomain,
+        authorizationEpoch: context.authorizationEpoch,
+        gapId: context.gapId,
+        beforeSeq: batch.before,
+        scannedThrough: context.nextBeforeSeq,
+        throughSeq: context.throughSeq,
+        closesGap,
+        applyDependencies: async () => {
+          const applied =
+            await this.federation.applyReverseMessagePageInTransaction(
+              tx,
+              batch,
+            );
+          publish = applied.publish;
+          if (source.kind === 'GROUP') {
+            await this.departedProfiles.applyInTransaction(
+              tx,
+              source,
+              context.departedMemberProfiles,
+            );
+          }
+          await this.federation.finalizeReverseMessageWindowInTransaction(tx, {
+            threadId: source.threadId,
+            peerDomain: source.peerDomain,
+            beforeSeq: batch.before,
+            throughSeq: context.nextBeforeSeq,
+          });
+        },
+      });
     });
-    return pending !== undefined;
+    await publish?.();
   }
 
-  private async commit(params: {
-    threadId: number;
-    peerDomain: string;
-    frozenBeforeSeq: number;
-    frozenClosureOriginSeq: number | null;
-    nextBeforeSeq: number;
-    closesReverseHistory: boolean;
-  }): Promise<void> {
+  private async markUnavailable(
+    source: FederationReverseThreadSource,
+    context: FederationReverseRoundContext,
+  ): Promise<void> {
     await this.database.db.transaction((tx) =>
-      FederationThreadSyncStateService.commitReverseProgressInTx(tx, {
-        threadId: params.threadId,
-        peerDomain: params.peerDomain,
-        frozenBeforeSeq: params.frozenBeforeSeq,
-        frozenClosureOriginSeq: params.frozenClosureOriginSeq,
-        nextBeforeSeq: params.nextBeforeSeq,
-        historyBoundaryReached: params.closesReverseHistory,
+      FederationThreadSyncStateService.markReverseGapUnavailableInTx(tx, {
+        threadId: source.threadId,
+        peerDomain: source.peerDomain,
+        authorizationEpoch: context.authorizationEpoch,
+        gapId: context.gapId,
       }),
     );
   }

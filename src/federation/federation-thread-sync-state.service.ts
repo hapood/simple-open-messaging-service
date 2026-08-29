@@ -1,117 +1,285 @@
 import { Injectable } from '@nestjs/common';
-import { and, eq, isNotNull, lt, max, sql } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import {
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
-import { federationThreadSyncState, message } from '../database/schema.js';
+import {
+  federationThreadHistoryGap,
+  federationThreadSyncState,
+  messageThread,
+} from '../database/schema.js';
 import { FEDERATION_THREAD_SEQUENCE_MAX } from './federation-thread-round.constants.js';
 
-export interface ReusableReverseMessageBatch {
-  sourceSeqs: number[];
-  batchOldestSeq: number | null;
-  reachedClosureTarget: boolean;
-  canSkipMessageQuery: boolean;
+export interface FederationReverseWindow {
+  authorizationEpoch: number;
+  gapId: bigint | null;
+  beforeSeq: number;
+  throughSeq: number | null;
 }
 
 @Injectable()
 export class FederationThreadSyncStateService {
   constructor(private readonly database: DatabaseService) {}
 
-  static async mergeMessageTargetInTx(
+  static async lockAuthorizationEpochInTx(
     tx: DatabaseTransaction,
     threadId: number,
-    peerDomain: string,
-    messageTargetSeq: number,
-    reverseEnabled: boolean,
-  ): Promise<{ created: boolean }> {
-    this.assertCoordinate(messageTargetSeq, 'message target seq');
-    const reverseNextBeforeSeq = reverseEnabled ? messageTargetSeq + 1 : 0;
-    const [closure] = reverseEnabled
-      ? await tx
-          .select({ originSeq: max(message.originSeq) })
-          .from(message)
-          .where(
-            and(
-              eq(message.threadId, threadId),
-              eq(message.federationSourceDomain, peerDomain),
-              isNotNull(message.originSeq),
-              lt(message.originSeq, reverseNextBeforeSeq),
-            ),
-          )
-      : [{ originSeq: null }];
-    const reverseClosureOriginSeq = closure?.originSeq ?? null;
-    const inserted = await tx
-      .insert(federationThreadSyncState)
-      .values({
-        threadId,
-        peerDomain,
-        messageTargetSeq,
-        messageProcessedThroughSeq: reverseEnabled ? messageTargetSeq : 0,
-        deletionTargetSeq: 0,
-        reverseNextBeforeSeq,
-        reverseClosureOriginSeq,
-        historyBoundaryReached: !reverseEnabled,
-        updatedAt: new Date(),
-      })
-      .onConflictDoNothing({
-        target: [
-          federationThreadSyncState.threadId,
-          federationThreadSyncState.peerDomain,
-        ],
-      })
-      .returning({ threadId: federationThreadSyncState.threadId });
-    if (inserted.length > 0) return { created: true };
-    await tx
-      .update(federationThreadSyncState)
-      .set({
-        messageTargetSeq: sql`GREATEST(${federationThreadSyncState.messageTargetSeq}, ${messageTargetSeq})`,
-        reverseNextBeforeSeq: sql`CASE
-          WHEN ${federationThreadSyncState.messageTargetSeq} = 0
-            THEN ${reverseNextBeforeSeq}
-          ELSE ${federationThreadSyncState.reverseNextBeforeSeq}
-        END`,
-        reverseClosureOriginSeq: sql`CASE
-          WHEN ${federationThreadSyncState.messageTargetSeq} = 0
-            THEN ${reverseClosureOriginSeq}
-          ELSE ${federationThreadSyncState.reverseClosureOriginSeq}
-        END`,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(federationThreadSyncState.threadId, threadId),
-          eq(federationThreadSyncState.peerDomain, peerDomain),
-        ),
-      );
-    return { created: false };
+    authorizationEpoch: number,
+  ): Promise<void> {
+    const locked = await tx.execute(sql`
+      UPDATE "MessageThread"
+      SET "authorizationEpoch" = "authorizationEpoch"
+      WHERE id = ${threadId}
+        AND "authorizationEpoch" = ${authorizationEpoch}
+      RETURNING "authorizationEpoch"
+    `);
+    if ((locked.rows ?? []).length === 0) {
+      throw new Error('federation round authorization epoch changed');
+    }
   }
 
-  static async mergeDeletionTargetInTx(
+  static async reconcileThreadHeadInTx(
     tx: DatabaseTransaction,
-    threadId: number,
-    peerDomain: string,
-    deletionTargetSeq: number,
-  ): Promise<void> {
-    this.assertCoordinate(deletionTargetSeq, 'deletion target seq');
-    const updated = await tx
+    params: {
+      threadId: number;
+      peerDomain: string;
+      messageTargetSeq: number;
+      deletionTargetSeq: number;
+      reverseEnabled: boolean;
+    },
+  ): Promise<{
+    created: boolean;
+    epochChanged: boolean;
+    reverseRequired: boolean;
+    /** Message-coordinate ceiling paired with this head for the next tombstone drain. */
+    tombstoneMaxMessageSeq: number;
+  }> {
+    this.assertCoordinate(params.messageTargetSeq, 'message target seq');
+    this.assertCoordinate(params.deletionTargetSeq, 'deletion target seq');
+
+    const [thread] = await tx
+      .select({ authorizationEpoch: messageThread.authorizationEpoch })
+      .from(messageThread)
+      .where(eq(messageThread.id, params.threadId))
+      .for('update')
+      .limit(1);
+    if (!thread) throw new Error('federation synchronization thread missing');
+
+    const stateResult = await tx.execute<{
+      messageTargetSeq: number;
+      messageProcessedThroughSeq: number;
+      deletionProcessedThroughSeq: number;
+      authorizationEpoch: number;
+      activeGapId: bigint | string | null;
+      historyBoundaryReached: boolean;
+    }>(sql`
+      SELECT "messageTargetSeq", "messageProcessedThroughSeq",
+        "deletionProcessedThroughSeq",
+        "authorizationEpoch", "activeGapId", "historyBoundaryReached"
+      FROM "FederationThreadSyncState"
+      WHERE "threadId" = ${params.threadId}
+        AND "peerDomain" = ${params.peerDomain}
+      FOR UPDATE
+    `);
+    const state = stateResult.rows[0];
+    if (!state) {
+      const reverseEndSeq = params.messageTargetSeq - 1;
+      let activeGapId: bigint | null = null;
+      if (params.reverseEnabled && reverseEndSeq >= 1) {
+        const [gap] = await tx
+          .insert(federationThreadHistoryGap)
+          .values({
+            threadId: params.threadId,
+            startSeq: 1,
+            endSeq: reverseEndSeq,
+            recoverable: true,
+            updatedAt: new Date(),
+          })
+          .returning({ id: federationThreadHistoryGap.id });
+        activeGapId = gap.id;
+        await this.reserveReverseSequenceRangeInTx(
+          tx,
+          params.threadId,
+          reverseEndSeq,
+        );
+      }
+      await tx.insert(federationThreadSyncState).values({
+        threadId: params.threadId,
+        peerDomain: params.peerDomain,
+        messageTargetSeq: params.messageTargetSeq,
+        deletionTargetSeq: params.deletionTargetSeq,
+        // The newest advertised message is intentionally left to the forward
+        // query. Only the older closed interval is represented by a gap.
+        messageProcessedThroughSeq: params.reverseEnabled
+          ? Math.max(0, params.messageTargetSeq - 1)
+          : 0,
+        deletionProcessedThroughSeq: 0,
+        authorizationEpoch: thread.authorizationEpoch,
+        activeGapId,
+        historyBoundaryReached: activeGapId === null,
+        updatedAt: new Date(),
+      });
+      return {
+        created: true,
+        epochChanged: false,
+        reverseRequired: activeGapId !== null,
+        tombstoneMaxMessageSeq: params.messageTargetSeq,
+      };
+    }
+
+    if (state.authorizationEpoch === thread.authorizationEpoch) {
+      await tx
+        .update(federationThreadSyncState)
+        .set({
+          messageTargetSeq: sql`GREATEST(${federationThreadSyncState.messageTargetSeq}, ${params.messageTargetSeq})`,
+          deletionTargetSeq: sql`GREATEST(${federationThreadSyncState.deletionTargetSeq}, ${params.deletionTargetSeq})`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(federationThreadSyncState.threadId, params.threadId),
+            eq(federationThreadSyncState.peerDomain, params.peerDomain),
+          ),
+        );
+      return {
+        created: false,
+        epochChanged: false,
+        reverseRequired: false,
+        tombstoneMaxMessageSeq: params.messageTargetSeq,
+      };
+    }
+
+    const nextMessageTargetSeq = Math.max(
+      state.messageTargetSeq,
+      params.messageTargetSeq,
+    );
+    const nextMessageProcessedThroughSeq = params.reverseEnabled
+      ? Math.max(state.messageProcessedThroughSeq, nextMessageTargetSeq - 1)
+      : state.messageProcessedThroughSeq;
+    let activeGapId: bigint | null = null;
+    const obsoleteGapIds: bigint[] = [];
+    if (params.reverseEnabled) {
+      const newGapStartSeq = state.messageProcessedThroughSeq + 1;
+      const newGapEndSeq = nextMessageProcessedThroughSeq;
+      if (newGapStartSeq <= newGapEndSeq) {
+        const overlaps = await tx.execute<{
+          id: bigint | string;
+          startSeq: number;
+          endSeq: number;
+        }>(sql`
+          SELECT id, "startSeq", "endSeq"
+          FROM "FederationThreadHistoryGap"
+          WHERE "threadId" = ${params.threadId}
+            AND recoverable = true
+            AND "startSeq"::bigint <= ${newGapEndSeq}::bigint + 1
+            AND "endSeq"::bigint + 1 >= ${newGapStartSeq}
+          FOR UPDATE
+        `);
+        const mergedStartSeq = Math.min(
+          newGapStartSeq,
+          ...overlaps.rows.map((gap) => gap.startSeq),
+        );
+        const mergedEndSeq = Math.max(
+          newGapEndSeq,
+          ...overlaps.rows.map((gap) => gap.endSeq),
+        );
+        const exact = overlaps.rows.find(
+          (gap) =>
+            gap.startSeq === mergedStartSeq && gap.endSeq === mergedEndSeq,
+        );
+        if (exact) {
+          activeGapId = BigInt(exact.id);
+        } else {
+          const [merged] = await tx
+            .insert(federationThreadHistoryGap)
+            .values({
+              threadId: params.threadId,
+              startSeq: mergedStartSeq,
+              endSeq: mergedEndSeq,
+              recoverable: true,
+              updatedAt: new Date(),
+            })
+            .onConflictDoUpdate({
+              target: [
+                federationThreadHistoryGap.threadId,
+                federationThreadHistoryGap.startSeq,
+                federationThreadHistoryGap.endSeq,
+              ],
+              set: { recoverable: true, updatedAt: new Date() },
+            })
+            .returning({ id: federationThreadHistoryGap.id });
+          activeGapId = merged.id;
+        }
+        obsoleteGapIds.push(
+          ...overlaps.rows
+            .map((gap) => BigInt(gap.id))
+            .filter((id) => id !== activeGapId),
+        );
+      } else {
+        const [latestGap] = await tx
+          .select({ id: federationThreadHistoryGap.id })
+          .from(federationThreadHistoryGap)
+          .where(
+            and(
+              eq(federationThreadHistoryGap.threadId, params.threadId),
+              eq(federationThreadHistoryGap.recoverable, true),
+            ),
+          )
+          .orderBy(desc(federationThreadHistoryGap.endSeq))
+          .limit(1);
+        activeGapId = latestGap?.id ?? null;
+      }
+    }
+
+    const [updated] = await tx
       .update(federationThreadSyncState)
       .set({
-        deletionTargetSeq: sql`GREATEST(${federationThreadSyncState.deletionTargetSeq}, ${deletionTargetSeq})`,
+        messageTargetSeq: nextMessageTargetSeq,
+        messageProcessedThroughSeq: nextMessageProcessedThroughSeq,
+        deletionTargetSeq: sql`GREATEST(${federationThreadSyncState.deletionTargetSeq}, ${params.deletionTargetSeq})`,
+        authorizationEpoch: thread.authorizationEpoch,
+        activeGapId,
+        historyBoundaryReached: activeGapId === null,
         updatedAt: new Date(),
       })
       .where(
         and(
-          eq(federationThreadSyncState.threadId, threadId),
-          eq(federationThreadSyncState.peerDomain, peerDomain),
+          eq(federationThreadSyncState.threadId, params.threadId),
+          eq(federationThreadSyncState.peerDomain, params.peerDomain),
+          eq(
+            federationThreadSyncState.authorizationEpoch,
+            state.authorizationEpoch,
+          ),
         ),
       )
       .returning({ threadId: federationThreadSyncState.threadId });
-    if (updated.length === 0) {
-      throw new Error(
-        `federated thread ${threadId} has no synchronization state for ${peerDomain}`,
+    if (!updated) {
+      throw new Error('federation synchronization epoch changed');
+    }
+    if (params.reverseEnabled && nextMessageProcessedThroughSeq >= 1) {
+      await this.reserveReverseSequenceRangeInTx(
+        tx,
+        params.threadId,
+        nextMessageProcessedThroughSeq,
       );
     }
+    if (obsoleteGapIds.length > 0) {
+      await tx.execute(sql`
+        DELETE FROM "FederationThreadHistoryGap"
+        WHERE "threadId" = ${params.threadId}
+          AND id IN (${sql.join(
+            obsoleteGapIds.map((id) => sql`${id}`),
+            sql`, `,
+          )})
+      `);
+    }
+    return {
+      created: false,
+      epochChanged: true,
+      reverseRequired: activeGapId !== null,
+      tombstoneMaxMessageSeq: state.messageProcessedThroughSeq,
+    };
   }
 
   static async advanceMessageProcessedThroughInTx(
@@ -176,69 +344,6 @@ export class FederationThreadSyncStateService {
     }
   }
 
-  /** Commits a completed reverse batch. The visibility publication belongs in the same transaction. */
-  static async commitReverseProgressInTx(
-    tx: DatabaseTransaction,
-    params: {
-      threadId: number;
-      peerDomain: string;
-      frozenBeforeSeq: number;
-      frozenClosureOriginSeq: number | null;
-      nextBeforeSeq: number;
-      historyBoundaryReached: boolean;
-    },
-  ): Promise<void> {
-    this.assertBeforeCursor(
-      params.frozenBeforeSeq,
-      'reverse frozen before seq',
-    );
-    this.assertBeforeCursor(params.nextBeforeSeq, 'reverse next before seq');
-    this.assertClosureTarget(
-      params.frozenClosureOriginSeq,
-      params.frozenBeforeSeq,
-    );
-    if (params.nextBeforeSeq > params.frozenBeforeSeq) {
-      throw new Error(
-        'reverse next before seq must not exceed its frozen before cursor',
-      );
-    }
-    if (
-      !params.historyBoundaryReached &&
-      params.frozenClosureOriginSeq !== null &&
-      params.nextBeforeSeq <= params.frozenClosureOriginSeq
-    ) {
-      throw new Error(
-        'reverse progress that reaches its closure target must complete history',
-      );
-    }
-    const [updated] = await tx
-      .update(federationThreadSyncState)
-      .set({
-        reverseNextBeforeSeq: params.nextBeforeSeq,
-        reverseClosureOriginSeq: params.historyBoundaryReached
-          ? null
-          : params.frozenClosureOriginSeq,
-        historyBoundaryReached: params.historyBoundaryReached,
-        updatedAt: new Date(),
-      })
-      .where(
-        sql`${federationThreadSyncState.threadId} = ${params.threadId}
-          AND ${federationThreadSyncState.peerDomain} = ${params.peerDomain}
-          AND ${federationThreadSyncState.reverseNextBeforeSeq} = ${params.frozenBeforeSeq}
-          AND (
-            (${params.frozenClosureOriginSeq} IS NULL
-              AND ${federationThreadSyncState.reverseClosureOriginSeq} IS NULL)
-            OR ${federationThreadSyncState.reverseClosureOriginSeq} = ${params.frozenClosureOriginSeq}
-          )`,
-      )
-      .returning({ threadId: federationThreadSyncState.threadId });
-    if (!updated) {
-      throw new Error(
-        `federated mirror thread ${params.threadId} reverse position changed during the round`,
-      );
-    }
-  }
-
   async require(threadId: number, peerDomain: string) {
     const state =
       await this.database.db.query.federationThreadSyncState.findFirst({
@@ -255,66 +360,256 @@ export class FederationThreadSyncStateService {
     return state;
   }
 
-  /** Reuses an interrupted reverse round only when a complete local batch is already durable. */
-  async deriveReusableReverseBatch(params: {
-    threadId: number;
-    peerDomain: string;
-    beforeSeq: number;
-    closureOriginSeq: number | null;
-    take: number;
-  }): Promise<ReusableReverseMessageBatch> {
-    FederationThreadSyncStateService.assertBeforeCursor(
-      params.beforeSeq,
-      'reverse before seq',
-    );
-    FederationThreadSyncStateService.assertClosureTarget(
-      params.closureOriginSeq,
-      params.beforeSeq,
-    );
-    if (!Number.isSafeInteger(params.take) || params.take <= 0) {
-      throw new Error('reverse take must be a positive safe integer');
+  /** Reconstruct the process-local reverse cursor from immutable gap boundaries and durable STUBs. */
+  async resolveReverseWindow(
+    threadId: number,
+    peerDomain: string,
+  ): Promise<FederationReverseWindow> {
+    const state = await this.require(threadId, peerDomain);
+    if (state.historyBoundaryReached) {
+      return {
+        authorizationEpoch: state.authorizationEpoch,
+        gapId: null,
+        beforeSeq: 0,
+        throughSeq: null,
+      };
     }
-    const result = await this.database.db.execute<{ sourceSeq: number }>(sql`
-      SELECT DISTINCT durable."sourceSeq"
-      FROM (
-        SELECT message."originSeq" AS "sourceSeq"
-        FROM "Message" message
-        WHERE message."threadId" = ${params.threadId}
-          AND message."federationSourceDomain" = ${params.peerDomain}
-          AND message."originSeq" IS NOT NULL
-          AND message."originSeq" < ${params.beforeSeq}
-          AND (${params.closureOriginSeq} IS NULL
-            OR message."originSeq" >= ${params.closureOriginSeq})
-        UNION ALL
-        SELECT pending."originSeq" AS "sourceSeq"
-        FROM "PendingMedia" pending
-        WHERE pending."threadId" = ${params.threadId}
-          AND pending."originDomain" = ${params.peerDomain}
-          AND pending.direction = 'INBOUND'
-          AND pending."originSeq" IS NOT NULL
-          AND pending."originSeq" < ${params.beforeSeq}
-          AND (${params.closureOriginSeq} IS NULL
-            OR pending."originSeq" >= ${params.closureOriginSeq})
-      ) durable
-      ORDER BY durable."sourceSeq" DESC
-      LIMIT ${params.take}
+    if (state.activeGapId === null) {
+      throw new Error('unfinished reverse history has no active gap');
+    }
+    const gapId = state.activeGapId;
+    const result = await this.database.db.execute<{
+      startSeq: number;
+      endSeq: number;
+    }>(sql`
+      SELECT "startSeq", "endSeq"
+      FROM "FederationThreadHistoryGap"
+      WHERE id = ${gapId}
+        AND "threadId" = ${threadId}
+        AND recoverable = true
     `);
-    const sourceSeqs = result.rows.map((row) => row.sourceSeq);
-    const reachedClosureTarget =
-      params.closureOriginSeq !== null &&
-      sourceSeqs.includes(params.closureOriginSeq);
-    const canSkipMessageQuery =
-      reachedClosureTarget || sourceSeqs.length === params.take;
+    const gap = result.rows[0];
+    if (!gap) throw new Error('active federation history gap is invalid');
+    const beforeSeq = gap.endSeq + 1;
+    FederationThreadSyncStateService.assertBeforeCursor(
+      beforeSeq,
+      'reverse upper boundary',
+    );
+
     return {
-      sourceSeqs,
-      batchOldestSeq: reachedClosureTarget
-        ? params.closureOriginSeq
-        : canSkipMessageQuery
-          ? sourceSeqs.at(-1)!
-          : null,
-      reachedClosureTarget,
-      canSkipMessageQuery,
+      authorizationEpoch: state.authorizationEpoch,
+      gapId,
+      beforeSeq,
+      throughSeq: gap.startSeq,
     };
+  }
+
+  static async commitReverseBatchInTx(
+    tx: DatabaseTransaction,
+    params: {
+      threadId: number;
+      peerDomain: string;
+      authorizationEpoch: number;
+      gapId: bigint;
+      beforeSeq: number;
+      scannedThrough: number;
+      throughSeq: number;
+      closesGap: boolean;
+      applyDependencies?: () => Promise<void>;
+    },
+  ): Promise<void> {
+    const epoch = await tx.execute<{ authorizationEpoch: number }>(sql`
+      UPDATE "MessageThread"
+      SET "authorizationEpoch" = "authorizationEpoch"
+      WHERE id = ${params.threadId}
+        AND "authorizationEpoch" = ${params.authorizationEpoch}
+      RETURNING "authorizationEpoch"
+    `);
+    if (!epoch.rows[0])
+      throw new Error('reverse round authorization epoch changed');
+
+    const stateResult = await tx.execute<{
+      activeGapId: bigint | string | null;
+    }>(sql`
+      SELECT "activeGapId"
+      FROM "FederationThreadSyncState"
+      WHERE "threadId" = ${params.threadId}
+        AND "peerDomain" = ${params.peerDomain}
+        AND "authorizationEpoch" = ${params.authorizationEpoch}
+      FOR UPDATE
+    `);
+    const state = stateResult.rows[0];
+    if (!state) throw new Error('reverse synchronization state changed');
+    if (
+      state.activeGapId === null ||
+      BigInt(state.activeGapId) !== params.gapId
+    ) {
+      throw new Error('active reverse gap changed');
+    }
+
+    const gapResult = await tx.execute<{
+      startSeq: number;
+      endSeq: number;
+    }>(sql`
+      SELECT "startSeq", "endSeq"
+      FROM "FederationThreadHistoryGap"
+      WHERE id = ${params.gapId}
+        AND "threadId" = ${params.threadId}
+        AND recoverable = true
+      FOR UPDATE
+    `);
+    const gap = gapResult.rows[0];
+    if (!gap) throw new Error('active reverse gap changed');
+    if (
+      params.beforeSeq !== gap.endSeq + 1 ||
+      params.throughSeq !== gap.startSeq ||
+      params.scannedThrough < gap.startSeq ||
+      params.scannedThrough >= params.beforeSeq
+    ) {
+      throw new Error('reverse batch is outside the active gap');
+    }
+    const closesGap = params.scannedThrough === gap.startSeq;
+    if (params.closesGap !== closesGap) {
+      throw new Error('reverse response completion disagrees with active gap');
+    }
+
+    await params.applyDependencies?.();
+
+    if (!closesGap) {
+      const [updatedGap] = await tx
+        .update(federationThreadHistoryGap)
+        .set({ endSeq: params.scannedThrough - 1, updatedAt: new Date() })
+        .where(
+          and(
+            eq(federationThreadHistoryGap.id, params.gapId),
+            eq(federationThreadHistoryGap.threadId, params.threadId),
+            eq(federationThreadHistoryGap.endSeq, gap.endSeq),
+          ),
+        )
+        .returning({ id: federationThreadHistoryGap.id });
+      if (!updatedGap) throw new Error('active reverse gap changed');
+      return;
+    }
+
+    const completedGapId = params.gapId;
+    const [nextGap] = await tx
+      .select({ id: federationThreadHistoryGap.id })
+      .from(federationThreadHistoryGap)
+      .where(
+        sql`${federationThreadHistoryGap.threadId} = ${params.threadId}
+          AND ${federationThreadHistoryGap.recoverable} = true
+          AND (${completedGapId}::bigint IS NULL
+            OR ${federationThreadHistoryGap.id} <> ${completedGapId})`,
+      )
+      .orderBy(desc(federationThreadHistoryGap.endSeq))
+      .limit(1);
+    const [updated] = await tx
+      .update(federationThreadSyncState)
+      .set({
+        activeGapId: nextGap?.id ?? null,
+        historyBoundaryReached: nextGap === undefined,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(federationThreadSyncState.threadId, params.threadId),
+          eq(federationThreadSyncState.peerDomain, params.peerDomain),
+          eq(
+            federationThreadSyncState.authorizationEpoch,
+            params.authorizationEpoch,
+          ),
+        ),
+      )
+      .returning({ threadId: federationThreadSyncState.threadId });
+    if (!updated) throw new Error('reverse synchronization state changed');
+
+    // The state owns a RESTRICT reference to its active gap. Move that reference
+    // before deleting the completed row.
+    if (completedGapId !== null) {
+      await tx
+        .delete(federationThreadHistoryGap)
+        .where(
+          and(
+            eq(federationThreadHistoryGap.threadId, params.threadId),
+            eq(federationThreadHistoryGap.id, completedGapId),
+          ),
+        );
+    }
+  }
+
+  static async markReverseGapUnavailableInTx(
+    tx: DatabaseTransaction,
+    params: {
+      threadId: number;
+      peerDomain: string;
+      authorizationEpoch: number;
+      gapId: bigint;
+    },
+  ): Promise<void> {
+    const epoch = await tx.execute(sql`
+      UPDATE "MessageThread"
+      SET "authorizationEpoch" = "authorizationEpoch"
+      WHERE id = ${params.threadId}
+        AND "authorizationEpoch" = ${params.authorizationEpoch}
+      RETURNING "authorizationEpoch"
+    `);
+    if ((epoch.rows ?? []).length === 0) {
+      throw new Error('reverse round authorization epoch changed');
+    }
+    const state = await tx.execute<{ activeGapId: bigint | string | null }>(sql`
+      SELECT "activeGapId"
+      FROM "FederationThreadSyncState"
+      WHERE "threadId" = ${params.threadId}
+        AND "peerDomain" = ${params.peerDomain}
+        AND "authorizationEpoch" = ${params.authorizationEpoch}
+      FOR UPDATE
+    `);
+    if (
+      state.rows[0]?.activeGapId === null ||
+      state.rows[0]?.activeGapId === undefined ||
+      BigInt(state.rows[0].activeGapId) !== params.gapId
+    ) {
+      throw new Error('active reverse gap changed');
+    }
+    await tx
+      .update(federationThreadHistoryGap)
+      .set({ recoverable: false, updatedAt: new Date() })
+      .where(
+        and(
+          eq(federationThreadHistoryGap.threadId, params.threadId),
+          eq(federationThreadHistoryGap.id, params.gapId),
+        ),
+      );
+    const [nextGap] = await tx
+      .select({ id: federationThreadHistoryGap.id })
+      .from(federationThreadHistoryGap)
+      .where(
+        and(
+          eq(federationThreadHistoryGap.threadId, params.threadId),
+          eq(federationThreadHistoryGap.recoverable, true),
+        ),
+      )
+      .orderBy(desc(federationThreadHistoryGap.endSeq))
+      .limit(1);
+    const [updated] = await tx
+      .update(federationThreadSyncState)
+      .set({
+        activeGapId: nextGap?.id ?? null,
+        historyBoundaryReached: nextGap === undefined,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(federationThreadSyncState.threadId, params.threadId),
+          eq(federationThreadSyncState.peerDomain, params.peerDomain),
+          eq(
+            federationThreadSyncState.authorizationEpoch,
+            params.authorizationEpoch,
+          ),
+        ),
+      )
+      .returning({ threadId: federationThreadSyncState.threadId });
+    if (!updated) throw new Error('reverse synchronization state changed');
   }
 
   private static assertCoordinate(value: number, label: string): void {
@@ -329,23 +624,23 @@ export class FederationThreadSyncStateService {
     }
   }
 
+  /** Reserve the skipped publisher interval before the newest item is allocated forward. */
+  private static async reserveReverseSequenceRangeInTx(
+    tx: DatabaseTransaction,
+    threadId: number,
+    endSeq: number,
+  ): Promise<void> {
+    await tx.execute(sql`
+      UPDATE "MessageThread"
+      SET "curSeq" = GREATEST("curSeq", ${endSeq})
+      WHERE id = ${threadId}
+    `);
+  }
+
   private static assertBeforeCursor(value: number, label: string): void {
     const maximum = FEDERATION_THREAD_SEQUENCE_MAX + 1;
     if (!Number.isSafeInteger(value) || value < 0 || value > maximum) {
       throw new Error(`${label} must be an integer between 0 and ${maximum}`);
-    }
-  }
-
-  private static assertClosureTarget(
-    closureOriginSeq: number | null,
-    beforeSeq: number,
-  ): void {
-    if (closureOriginSeq === null) return;
-    this.assertCoordinate(closureOriginSeq, 'reverse closure origin seq');
-    if (closureOriginSeq === 0 || closureOriginSeq >= beforeSeq) {
-      throw new Error(
-        'reverse closure origin seq must be positive and less than its before cursor',
-      );
     }
   }
 

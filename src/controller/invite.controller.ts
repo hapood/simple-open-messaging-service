@@ -12,6 +12,7 @@ import { UserService } from '../user/user.service.js';
 import { InviteService } from '../invite/invite.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { FederationService } from '../federation/federation.service.js';
+import { FederationRelationshipCommandService } from '../federation/federation-relationship-command.service.js';
 import { ApiResultResponse, envelope } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -48,6 +49,7 @@ export class InviteController {
     private readonly inviteService: InviteService,
     private readonly participantService: ThreadParticipantService,
     private readonly federationService: FederationService,
+    private readonly relationshipCommands: FederationRelationshipCommandService,
     private readonly userQuota: UserQuotaService,
     private readonly clientStateFeed: ClientStateFeedService,
   ) {}
@@ -186,7 +188,7 @@ export class InviteController {
       async (tx, state) => {
         await this.userQuota.tick(req.user.userId, 'requests', tx);
         statePeers =
-          await this.federationService.writeAddressedFriendRequestInTx(
+          await this.relationshipCommands.writeAddressedFriendRequestInTx(
             tx,
             req.user.userId,
             { account, domain },
@@ -240,15 +242,16 @@ export class InviteController {
           columns: { domain: true },
         });
         if (from?.domain !== 'local') {
-          friendStatePeers = await this.federationService.writeFriendIntentInTx(
-            tx,
-            req.user.userId,
-            fromUserId,
-            true,
-            '',
-            clientFeedUpdates,
-            true,
-          );
+          friendStatePeers =
+            await this.relationshipCommands.writeFriendIntentInTx(
+              tx,
+              req.user.userId,
+              fromUserId,
+              true,
+              '',
+              clientFeedUpdates,
+              true,
+            );
         } else
           clientFeedUpdates.push(
             ...(await this.inviteService.writeLocalFriendIntentInTx(
@@ -261,7 +264,7 @@ export class InviteController {
       },
       async (tx, threadId) => {
         groupStatePeers =
-          await this.federationService.writeMemberRelationshipIntentInTx(
+          await this.relationshipCommands.writeMemberRelationshipIntentInTx(
             tx,
             threadId,
             req.user.userId,
@@ -330,7 +333,7 @@ export class InviteController {
           columns: { domain: true },
         });
         if (to?.domain !== 'local')
-          statePeers = await this.federationService.writeFriendIntentInTx(
+          statePeers = await this.relationshipCommands.writeFriendIntentInTx(
             tx,
             me,
             toUserId,
@@ -373,7 +376,7 @@ export class InviteController {
           columns: { domain: true },
         });
         if (from?.domain !== 'local')
-          statePeers = await this.federationService.writeFriendIntentInTx(
+          statePeers = await this.relationshipCommands.writeFriendIntentInTx(
             tx,
             me,
             fromUserId,

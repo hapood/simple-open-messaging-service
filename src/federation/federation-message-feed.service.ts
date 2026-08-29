@@ -200,6 +200,7 @@ export class FederationMessageFeedService {
                   ? lte(message.seq, queryEnd)
                   : lt(message.seq, queryBefore),
                 eq(message.isDeleted, false),
+                eq(message.localState, 'READY'),
                 ne(message.contentType, ContentType.SYSTEM),
                 includeSelf ? undefined : ne(message.creatorDomain, peerDomain),
               ),
@@ -323,10 +324,13 @@ export class FederationMessageFeedService {
             })
             .from(message)
             .where(
-              sql`(${message.threadId}, ${message.seq}) IN (${sql.join(
-                quoteRefs.map((ref) => sql`(${ref.threadId}, ${ref.seq})`),
-                sql`, `,
-              )})`,
+              and(
+                eq(message.localState, 'READY'),
+                sql`(${message.threadId}, ${message.seq}) IN (${sql.join(
+                  quoteRefs.map((ref) => sql`(${ref.threadId}, ${ref.seq})`),
+                  sql`, `,
+                )})`,
+              ),
             );
     const quoteTargets = new Map(
       quoted.map((row) => [

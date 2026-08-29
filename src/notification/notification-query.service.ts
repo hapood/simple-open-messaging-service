@@ -9,6 +9,7 @@ import { UserService } from '../user/user.service.js';
 import { GroupService } from '../group/group.service.js';
 import { derivePreview } from '../message/message.service.js';
 import { pickLocale, type SupportedLocale } from '../common/locale.js';
+import type { MediaStatus } from '../common/media-status.js';
 import {
   buildSummaryBody,
   buildSummaryTitle,
@@ -49,7 +50,7 @@ export interface ThreadCatchUpItem {
     content: string;
     creator: { account: string; domain: string } | null;
     createdAt: Date;
-    mediaStatus: 'ready' | 'failed';
+    mediaStatus: MediaStatus;
     sv: number;
   } | null;
 }
@@ -446,6 +447,6 @@ type AttachedMessage = {
   content: string;
   creator: { account: string; domain: string } | null;
   createdAt: Date;
-  mediaStatus: 'ready' | 'failed';
+  mediaStatus: MediaStatus;
   sv: number;
 };

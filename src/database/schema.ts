@@ -57,6 +57,11 @@ export const contentType = pgEnum('ContentType', [
 ]);
 export const groupRole = pgEnum('GroupRole', ['OWNER', 'ADMIN', 'MEMBER']);
 export const messageThreadType = pgEnum('MessageThreadType', ['P2P', 'GROUP']);
+export const messageLocalState = pgEnum('MessageLocalState', [
+  'STUB',
+  'FAILED',
+  'READY',
+]);
 export const pushPlatform = pgEnum('PushPlatform', ['ANDROID', 'WEB', 'IOS']);
 export const uploadSessionStatus = pgEnum('UploadSessionStatus', [
   'UPLOADING',
@@ -481,6 +486,8 @@ export const messageThread = pgTable(
     federationTruncated: boolean().default(false).notNull(),
     /** Invalidates asynchronous federation responses captured before a completed thread cleanup. */
     federationVersion: integer().default(0).notNull(),
+    /** Invalidates federation work captured before an effective authorization transition. */
+    authorizationEpoch: integer().default(0).notNull(),
   },
   (table) => [
     uniqueIndex('MessageThread_groupId_key').using(
@@ -501,6 +508,10 @@ export const messageThread = pgTable(
     check(
       'MessageThread_federationVersion_check',
       sql`${table.federationVersion} >= 0`,
+    ),
+    check(
+      'MessageThread_authorizationEpoch_check',
+      sql`${table.authorizationEpoch} >= 0`,
     ),
     check(
       'MessageThread_deletionSeqAllocatedThrough_check',
@@ -675,6 +686,9 @@ export const message = pgTable(
     }),
     /** Direct publisher whose thread-local seq is stored in originSeq. Null for local originals. */
     federationSourceDomain: varchar({ length: 255 }),
+    /** Local materialization state. STUB and FAILED are client-visible placeholders; only READY
+     * participates in durable message-derived projections and federation publication. */
+    localState: messageLocalState().default('READY').notNull(),
   },
   (table) => [
     check('Message_seq_check', sql`${table.seq} > 0`),
@@ -727,6 +741,9 @@ export const message = pgTable(
       table.threadId.asc().nullsLast().op('int4_ops'),
       table.seq.asc().nullsLast().op('int4_ops'),
     ),
+    index('Message_threadId_ready_seq_idx')
+      .on(table.threadId, table.seq)
+      .where(sql`${table.localState} = 'READY'`),
     foreignKey({
       columns: [table.threadId],
       foreignColumns: [messageThread.id],
@@ -1132,24 +1149,16 @@ export const pendingMedia = pgTable(
   'PendingMedia',
   {
     id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
-    threadId: integer().notNull(),
-    creatorAccount: varchar({ length: 31 }).notNull(),
-    creatorDomain: varchar({ length: 63 }).notNull(),
-    contentType: contentType().notNull(),
-    content: text().notNull(),
+    /** Present only for inbound federation downloads; points at the staged Message. */
+    messageId: bigint({ mode: 'bigint' }),
+    /** Outbound-only identity retained until the local Message is created. */
+    threadId: integer(),
+    creatorAccount: varchar({ length: 31 }),
+    creatorDomain: varchar({ length: 63 }),
+    contentType: contentType(),
+    content: text(),
     digest: varchar({ length: 64 }),
     clientMessageId: varchar({ length: 36 }),
-    originSeq: integer(),
-    // Immutable author-home creation time carried by federation. Nullable for local/outbound staging.
-    originServerTime: timestamp({
-      precision: 3,
-      withTimezone: true,
-      mode: 'date',
-    }),
-    /** Direct publisher whose thread-local seq is stored in originSeq. */
-    federationSourceDomain: varchar({ length: 255 }),
-    /** Promote this inbound row with Message.seq=originSeq instead of allocating a new local seq. */
-    useOriginSeqAsMessageSeq: boolean().default(false).notNull(),
     status: varchar({ length: 12 }).default('pending').notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
@@ -1160,37 +1169,57 @@ export const pendingMedia = pgTable(
       mode: 'date',
     }).notNull(),
     failReason: varchar({ length: 255 }),
-    // Download-inbox extension (federation design doc §12.2): groups a message's files by batchId and
-    // tracks per-file state in FileSyncProgress. direction distinguishes outbound staging from inbound
-    // localization; originDomain/expectedFederationVersion are inbound-only.
+    // Groups one message's files by batchId. INBOUND rows reference an existing STUB Message;
+    // OUTBOUND rows retain the pre-Message staging fields above.
     direction: fileSyncDirection().default('OUTBOUND').notNull(),
     batchId: uuid().defaultRandom().notNull(),
     fileCnt: integer().default(1).notNull(),
     anyFailed: boolean().default(false).notNull(),
     originDomain: varchar({ length: 63 }),
-    expectedFederationVersion: integer(),
+    expectedAuthorizationEpoch: integer(),
     // A pulled text message may quote an earlier message whose media is still localizing. Keep the
     // wire coordinate durable until that target is promoted and has a receiver-local Message.seq.
     dependsOnOriginSeq: integer(),
   },
   (table) => [
     check(
-      'PendingMedia_origin_seq_check',
-      sql`${table.originSeq} IS NULL OR ${table.originSeq} > 0`,
+      'PendingMedia_direction_shape_check',
+      sql`(
+          ${table.direction} = 'OUTBOUND'
+          AND ${table.messageId} IS NULL
+          AND ${table.threadId} IS NOT NULL
+          AND ${table.creatorAccount} IS NOT NULL
+          AND ${table.creatorDomain} IS NOT NULL
+          AND ${table.contentType} IS NOT NULL
+          AND ${table.content} IS NOT NULL
+          AND ${table.originDomain} IS NULL
+          AND ${table.expectedAuthorizationEpoch} IS NULL
+          AND ${table.dependsOnOriginSeq} IS NULL
+        ) OR (
+          ${table.direction} = 'INBOUND'
+          AND ${table.messageId} IS NOT NULL
+          AND ${table.threadId} IS NULL
+          AND ${table.creatorAccount} IS NULL
+          AND ${table.creatorDomain} IS NULL
+          AND ${table.contentType} IS NULL
+          AND ${table.content} IS NULL
+          AND ${table.clientMessageId} IS NULL
+          AND ${table.originDomain} IS NOT NULL
+          AND ${table.expectedAuthorizationEpoch} IS NOT NULL
+        )`,
     ),
     check(
       'PendingMedia_depends_on_origin_seq_check',
       sql`${table.dependsOnOriginSeq} IS NULL OR ${table.dependsOnOriginSeq} > 0`,
     ),
     check(
-      'PendingMedia_origin_seq_policy_check',
-      sql`${table.useOriginSeqAsMessageSeq} = false
-        OR (
-          ${table.direction} = 'INBOUND'
-          AND ${table.originSeq} IS NOT NULL
-        )`,
+      'PendingMedia_expectedAuthorizationEpoch_check',
+      sql`${table.expectedAuthorizationEpoch} IS NULL OR ${table.expectedAuthorizationEpoch} >= 0`,
     ),
     index('PendingMedia_batchId_idx').on(table.batchId),
+    uniqueIndex('PendingMedia_messageId_key')
+      .on(table.messageId)
+      .where(sql`${table.messageId} IS NOT NULL`),
     uniqueIndex('PendingMedia_clientMessageId_key').using(
       'btree',
       table.clientMessageId.asc().nullsLast().op('text_ops'),
@@ -1200,16 +1229,6 @@ export const pendingMedia = pgTable(
       table.status.asc().nullsLast().op('text_ops'),
       table.createdAt.asc().nullsLast().op('timestamptz_ops'),
     ),
-    uniqueIndex('PendingMedia_threadId_creator_originSeq_key').using(
-      'btree',
-      table.threadId.asc().nullsLast().op('int4_ops'),
-      table.creatorAccount.asc().nullsLast().op('text_ops'),
-      table.creatorDomain.asc().nullsLast().op('text_ops'),
-      table.originSeq.asc().nullsLast().op('int4_ops'),
-    ),
-    uniqueIndex('PendingMedia_threadId_preserved_originSeq_key')
-      .on(table.threadId, table.originSeq)
-      .where(sql`${table.useOriginSeqAsMessageSeq} = true`),
     index('PendingMedia_threadId_idx').using(
       'btree',
       table.threadId.asc().nullsLast().op('int4_ops'),
@@ -1219,6 +1238,11 @@ export const pendingMedia = pgTable(
       table.originDomain,
       table.dependsOnOriginSeq,
     ),
+    foreignKey({
+      columns: [table.messageId],
+      foreignColumns: [message.id],
+      name: 'PendingMedia_messageId_fkey',
+    }).onDelete('cascade'),
     foreignKey({
       columns: [table.threadId],
       foreignColumns: [messageThread.id],
@@ -2186,6 +2210,50 @@ export const groupAuditLog = pgTable(
   ],
 );
 
+/** A durable inclusive publisher-sequence interval not yet committed by reverse synchronization. */
+export const federationThreadHistoryGap = pgTable(
+  'FederationThreadHistoryGap',
+  {
+    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
+    threadId: integer().notNull(),
+    /** First missing publisher message coordinate, inclusive. */
+    startSeq: integer().notNull(),
+    /** Last missing publisher message coordinate, inclusive. */
+    endSeq: integer().notNull(),
+    /** False when the publisher has declared this interval unavailable. */
+    recoverable: boolean().default(true).notNull(),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('FederationThreadHistoryGap_threadId_id_key').on(
+      table.threadId,
+      table.id,
+    ),
+    uniqueIndex('FederationThreadHistoryGap_interval_key').on(
+      table.threadId,
+      table.startSeq,
+      table.endSeq,
+    ),
+    index('FederationThreadHistoryGap_recoverable_idx')
+      .on(table.threadId, table.endSeq)
+      .where(sql`${table.recoverable} = true`),
+    foreignKey({
+      columns: [table.threadId],
+      foreignColumns: [messageThread.id],
+      name: 'FederationThreadHistoryGap_threadId_fkey',
+    }).onDelete('cascade'),
+    check(
+      'FederationThreadHistoryGap_interval_check',
+      sql`${table.startSeq} > 0 AND ${table.endSeq} >= ${table.startSeq}`,
+    ),
+  ],
+);
+
 /** Durable synchronization facts for one publisher's coordinate space within a local thread. */
 export const federationThreadSyncState = pgTable(
   'FederationThreadSyncState',
@@ -2200,10 +2268,10 @@ export const federationThreadSyncState = pgTable(
     messageProcessedThroughSeq: integer().default(0).notNull(),
     /** Greatest source deletion seq durably scanned by forward tombstone queries. */
     deletionProcessedThroughSeq: integer().default(0).notNull(),
-    /** Exclusive source cursor passed as before to the next reverse message query. */
-    reverseNextBeforeSeq: integer().default(0).notNull(),
-    /** Existing source message coordinate whose rescan closes reverse reconstruction. */
-    reverseClosureOriginSeq: integer(),
+    /** MessageThread authorization epoch under which this state was initialized. */
+    authorizationEpoch: integer().default(0).notNull(),
+    /** Recoverable historical interval currently selected for reverse reconstruction. */
+    activeGapId: bigint({ mode: 'bigint' }),
     historyBoundaryReached: boolean().default(false).notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
@@ -2224,6 +2292,14 @@ export const federationThreadSyncState = pgTable(
       foreignColumns: [federatedPeer.domain],
       name: 'FederationThreadSyncState_peerDomain_fkey',
     }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.threadId, table.activeGapId],
+      foreignColumns: [
+        federationThreadHistoryGap.threadId,
+        federationThreadHistoryGap.id,
+      ],
+      name: 'FederationThreadSyncState_activeGap_fkey',
+    }).onDelete('restrict'),
     check(
       'FederationThreadSyncState_messageSeqs_check',
       sql`${table.messageTargetSeq} >= 0
@@ -2232,19 +2308,11 @@ export const federationThreadSyncState = pgTable(
         AND ${table.deletionProcessedThroughSeq} >= 0
         AND ${table.messageProcessedThroughSeq} <= ${table.messageTargetSeq}
         AND ${table.deletionProcessedThroughSeq} <= ${table.deletionTargetSeq}
-        AND ${table.reverseNextBeforeSeq} >= 0
-        AND (
-          ${table.reverseNextBeforeSeq} <= ${table.messageTargetSeq}
-          OR ${table.reverseNextBeforeSeq} - 1 = ${table.messageTargetSeq}
-        )`,
+        AND ${table.authorizationEpoch} >= 0`,
     ),
     check(
-      'FederationThreadSyncState_reverseClosureOriginSeq_check',
-      sql`${table.reverseClosureOriginSeq} IS NULL
-        OR (
-          ${table.reverseClosureOriginSeq} > 0
-          AND ${table.reverseClosureOriginSeq} < ${table.reverseNextBeforeSeq}
-        )`,
+      'FederationThreadSyncState_history_check',
+      sql`NOT (${table.historyBoundaryReached} AND ${table.activeGapId} IS NOT NULL)`,
     ),
   ],
 );

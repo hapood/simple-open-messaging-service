@@ -298,6 +298,7 @@ export class ForwardBundleService {
             where: and(
               eq(message.threadId, source.threadId),
               eq(message.seq, source.seq),
+              eq(message.localState, 'READY'),
             ),
             with: {
               forwardMessages: {

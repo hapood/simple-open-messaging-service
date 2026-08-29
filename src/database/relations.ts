@@ -30,6 +30,8 @@ import {
   peerStateFeedPullCursor,
   relationshipIntent,
   relationshipPair,
+  federationThreadHistoryGap,
+  federationThreadSyncState,
 } from './schema.js';
 
 export const federatedPeerRelations = relations(
@@ -120,6 +122,7 @@ export const messageRelations = relations(message, ({ one, many }) => ({
     fields: [message.threadId],
     references: [messageThread.id],
   }),
+  inboundPendingMedia: one(pendingMedia),
 }));
 
 export const threadParticipantRelations = relations(
@@ -159,6 +162,8 @@ export const messageThreadRelations = relations(
     messageAssets: many(messageAsset),
     messages: many(message),
     pendingMedias: many(pendingMedia),
+    federationHistoryGaps: many(federationThreadHistoryGap),
+    federationSyncStates: many(federationThreadSyncState),
   }),
 );
 
@@ -224,11 +229,45 @@ export const adminActionLogRelations = relations(adminActionLog, ({ one }) => ({
 }));
 
 export const pendingMediaRelations = relations(pendingMedia, ({ one }) => ({
+  message: one(message, {
+    fields: [pendingMedia.messageId],
+    references: [message.id],
+  }),
   messageThread: one(messageThread, {
     fields: [pendingMedia.threadId],
     references: [messageThread.id],
   }),
 }));
+
+export const federationThreadHistoryGapRelations = relations(
+  federationThreadHistoryGap,
+  ({ one }) => ({
+    messageThread: one(messageThread, {
+      fields: [federationThreadHistoryGap.threadId],
+      references: [messageThread.id],
+    }),
+  }),
+);
+
+export const federationThreadSyncStateRelations = relations(
+  federationThreadSyncState,
+  ({ one }) => ({
+    messageThread: one(messageThread, {
+      fields: [federationThreadSyncState.threadId],
+      references: [messageThread.id],
+    }),
+    activeGap: one(federationThreadHistoryGap, {
+      fields: [
+        federationThreadSyncState.threadId,
+        federationThreadSyncState.activeGapId,
+      ],
+      references: [
+        federationThreadHistoryGap.threadId,
+        federationThreadHistoryGap.id,
+      ],
+    }),
+  }),
+);
 
 export const groupRelations = relations(group, ({ one }) => ({
   messageThread: one(messageThread),

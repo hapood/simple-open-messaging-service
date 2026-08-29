@@ -1,16 +1,26 @@
 import { Injectable } from '@nestjs/common';
 import { FederationThreadSyncStateService } from './federation-thread-sync-state.service.js';
 import { resolveFederationThreadRoundTake } from './federation-thread-round.constants.js';
+import { FederationThreadRoundRemoteError } from './federation-thread-round-error.js';
 
-export interface FederationThreadForwardRoundDriver {
-  processMessages(params: {
+export interface FederationThreadForwardMessageRoundDriver {
+  process(params: {
     threadId: number;
     peerDomain: string;
     after: number;
     through: number;
     take: number;
-  }): Promise<{ blockedByPending: boolean }>;
-  processTombstones(params: {
+  }): Promise<void>;
+  complete(params: {
+    threadId: number;
+    peerDomain: string;
+    authorizationEpoch: number;
+    targetSeq: number;
+  }): Promise<void>;
+}
+
+export interface FederationThreadForwardTombstoneRoundDriver {
+  process(params: {
     threadId: number;
     peerDomain: string;
     after: number;
@@ -21,96 +31,112 @@ export interface FederationThreadForwardRoundDriver {
   complete(params: {
     threadId: number;
     peerDomain: string;
-    messageTargetSeq: number;
-    deletionTargetSeq: number;
+    authorizationEpoch: number;
+    targetSeq: number;
   }): Promise<void>;
 }
 
-export interface FederationThreadForwardRoundResult {
-  messageTargetSeq: number;
-  deletionTargetSeq: number;
-  processedMessages: boolean;
-  processedTombstones: boolean;
-  blockedByPending: boolean;
+export interface FederationThreadForwardMessageRoundResult {
+  targetSeq: number;
+  processed: boolean;
 }
 
-/** Executes one already-single-flighted forward round. Scheduling and wake-up coalescing are owned by
- * the caller; this service freezes durable targets once and never absorbs targets published mid-run. */
+export interface FederationThreadForwardTombstoneRoundResult {
+  targetSeq: number;
+  maxMessageSeq: number;
+  processed: boolean;
+}
+
+/** Freezes one bounded page for either independent forward stream. The scheduler owns
+ * per-stream single-flight, pairing tombstone cutoffs with State Feed heads, and retries. */
 @Injectable()
 export class FederationThreadForwardRoundService {
   constructor(private readonly states: FederationThreadSyncStateService) {}
 
-  async run(
+  async runMessages(
     threadId: number,
     peerDomain: string,
-    driver: FederationThreadForwardRoundDriver,
+    driver: FederationThreadForwardMessageRoundDriver,
     requestedTake?: number,
-  ): Promise<FederationThreadForwardRoundResult> {
+  ): Promise<FederationThreadForwardMessageRoundResult> {
     const take = resolveFederationThreadRoundTake(requestedTake);
     const state = await this.states.require(threadId, peerDomain);
-    const messageTargetSeq = state.messageTargetSeq;
-    const deletionTargetSeq = state.deletionTargetSeq;
-    const messageProcessedThrough = state.messageProcessedThroughSeq;
-    const deletionProcessedThrough = state.deletionProcessedThroughSeq;
-    this.assertCoordinate(messageProcessedThrough, 'processed message seq');
-    this.assertCoordinate(deletionProcessedThrough, 'processed deletion seq');
+    const targetSeq = state.messageTargetSeq;
+    const processedThrough = state.messageProcessedThroughSeq;
+    this.assertCoordinate(processedThrough, 'processed message seq');
+    if (targetSeq <= processedThrough) return { targetSeq, processed: false };
 
-    const processMessages = messageTargetSeq > messageProcessedThrough;
-    const processTombstones = deletionTargetSeq > deletionProcessedThrough;
-    if (!processMessages && !processTombstones) {
-      return {
-        messageTargetSeq,
-        deletionTargetSeq,
-        processedMessages: false,
-        processedTombstones: false,
-        blockedByPending: false,
-      };
-    }
-
-    let messageResult: { blockedByPending: boolean } = {
-      blockedByPending: false,
-    };
-    const work: Promise<void>[] = [];
-    if (processMessages) {
-      work.push(
-        driver
-          .processMessages({
-            threadId,
-            peerDomain,
-            after: messageProcessedThrough,
-            through: messageTargetSeq,
-            take,
-          })
-          .then((result) => {
-            messageResult = result;
-          }),
+    try {
+      await driver.process({
+        threadId,
+        peerDomain,
+        after: processedThrough,
+        through: targetSeq,
+        take,
+      });
+    } catch (error) {
+      throw new FederationThreadRoundRemoteError(
+        error,
+        state.authorizationEpoch,
       );
     }
-    if (processTombstones) {
-      work.push(
-        driver.processTombstones({
-          threadId,
-          peerDomain,
-          after: deletionProcessedThrough,
-          through: deletionTargetSeq,
-          maxMessageSeq: Math.max(messageProcessedThrough, messageTargetSeq),
-          take,
-        }),
-      );
-    }
-    await Promise.all(work);
     await driver.complete({
       threadId,
       peerDomain,
-      messageTargetSeq,
-      deletionTargetSeq,
+      authorizationEpoch: state.authorizationEpoch,
+      targetSeq,
+    });
+    return { targetSeq, processed: true };
+  }
+
+  async runTombstones(
+    threadId: number,
+    peerDomain: string,
+    targetSeq: number,
+    maxMessageSeq: number,
+    driver: FederationThreadForwardTombstoneRoundDriver,
+    requestedTake?: number,
+  ): Promise<FederationThreadForwardTombstoneRoundResult> {
+    const take = resolveFederationThreadRoundTake(requestedTake);
+    this.assertCoordinate(targetSeq, 'tombstone target seq');
+    this.assertCoordinate(maxMessageSeq, 'tombstone message cutoff seq');
+    const state = await this.states.require(threadId, peerDomain);
+    const frozenTargetSeq = Math.min(targetSeq, state.deletionTargetSeq);
+    const processedThrough = state.deletionProcessedThroughSeq;
+    this.assertCoordinate(processedThrough, 'processed deletion seq');
+    if (frozenTargetSeq <= processedThrough) {
+      return {
+        targetSeq: frozenTargetSeq,
+        maxMessageSeq,
+        processed: false,
+      };
+    }
+
+    try {
+      await driver.process({
+        threadId,
+        peerDomain,
+        after: processedThrough,
+        through: frozenTargetSeq,
+        maxMessageSeq,
+        take,
+      });
+    } catch (error) {
+      throw new FederationThreadRoundRemoteError(
+        error,
+        state.authorizationEpoch,
+      );
+    }
+    await driver.complete({
+      threadId,
+      peerDomain,
+      authorizationEpoch: state.authorizationEpoch,
+      targetSeq: frozenTargetSeq,
     });
     return {
-      messageTargetSeq,
-      deletionTargetSeq,
-      processedMessages: processMessages,
-      processedTombstones: processTombstones,
-      blockedByPending: messageResult.blockedByPending,
+      targetSeq: frozenTargetSeq,
+      maxMessageSeq,
+      processed: true,
     };
   }
 

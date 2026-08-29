@@ -33,10 +33,13 @@ export interface S2sProxy {
    *  real receiver-process restart without adding test branches to production code. */
   blockGetFile: (blocked: boolean) => void;
   blockedGetFileCount: () => number;
-  /** Hold message-feed requests while state-feed continues normally. This lets tests prove that a
+  /** Hold all message-query requests while state-feed continues normally. This lets tests prove that a
    * relationship-closing state snapshot is applied before its inclusive final message boundary. */
   blockMessageFeed: (blocked: boolean) => void;
   blockedMessageFeedCount: () => number;
+  /** Hold only reverse message queries (`before` cursor) while forward synchronization continues. */
+  blockReverseMessages: (blocked: boolean) => void;
+  blockedReverseMessageCount: () => number;
   /** Hold state-feed GETs while feed-heads wake-ups continue. Used to prove
    * a mirror does not activate a join before the origin confirms GROUP_META. */
   blockStateFeed: (blocked: boolean) => void;
@@ -64,6 +67,8 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
     const blockedGetFiles = new Set<() => void>();
     let messageFeedBlocked = false;
     const blockedMessageFeeds = new Set<() => void>();
+    let reverseMessagesBlocked = false;
+    const blockedReverseMessages = new Set<() => void>();
     let stateFeedBlocked = false;
     const blockedStateFeeds = new Set<() => void>();
     const getFileFixtures = new Map<string, Buffer>();
@@ -78,16 +83,17 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
         range.startsWith('bytes=0-');
       if (isGetFileFirstRange) firstRangeCount++;
       const shouldTruncate = isGetFileFirstRange && truncateNextGetFile;
-      const isMessageFeed =
-        typeof req.url === 'string' && req.url.includes('/s2s/v1/message-feed');
+      const requestUrl = new URL(
+        req.url ?? '/',
+        'http://federation-proxy.invalid',
+      );
+      const isMessageFeed = requestUrl.pathname === '/s2s/v1/messages';
+      const isReverseMessageQuery =
+        isMessageFeed && requestUrl.searchParams.has('before');
       // The first compact-feed request intentionally has no `after` query
       // parameter. Match the route by pathname so bootstrap and resumed pulls
       // are both eligible for state-feed fault injection.
-      const requestPathname = new URL(
-        req.url ?? '/',
-        'http://federation-proxy.invalid',
-      ).pathname;
-      const isStateFeed = requestPathname === '/s2s/v1/state-feed';
+      const isStateFeed = requestUrl.pathname === '/s2s/v1/state-feed';
       if (shouldTruncate) truncateNextGetFile = false; // consume the one-shot
 
       const relay = (): void => {
@@ -232,6 +238,15 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
         req.once('aborted', () => blockedMessageFeeds.delete(resume));
         return;
       }
+      if (isReverseMessageQuery && reverseMessagesBlocked) {
+        const resume = (): void => {
+          blockedReverseMessages.delete(resume);
+          relay();
+        };
+        blockedReverseMessages.add(resume);
+        req.once('aborted', () => blockedReverseMessages.delete(resume));
+        return;
+      }
       if (isStateFeed && stateFeedBlocked) {
         const resume = (): void => {
           blockedStateFeeds.delete(resume);
@@ -272,6 +287,13 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
           }
         },
         blockedMessageFeedCount: () => blockedMessageFeeds.size,
+        blockReverseMessages: (blocked: boolean) => {
+          reverseMessagesBlocked = blocked;
+          if (!blocked) {
+            for (const resume of [...blockedReverseMessages]) resume();
+          }
+        },
+        blockedReverseMessageCount: () => blockedReverseMessages.size,
         blockStateFeed: (blocked: boolean) => {
           stateFeedBlocked = blocked;
           if (!blocked) {

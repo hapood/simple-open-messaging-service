@@ -49,7 +49,8 @@ The string key is mapped to a PostgreSQL advisory-lock integer with
 `hashtextextended` and acquired using `pg_advisory_xact_lock`. A hash collision
 can only serialize unrelated scopes; it cannot allow conflicting mutations to
 run concurrently. PostgreSQL releases the lock automatically when the
-transaction ends.
+transaction ends. A rollback, connection loss, process crash, or service restart
+therefore cannot leave a stale business lock behind.
 
 ## 3. Lock order
 
@@ -126,3 +127,20 @@ Read-only endpoints do not need the advisory lock. A caller that already holds
 the canonical scope may use lower-level helpers, but it must preserve the row
 order above and must not acquire a second business scope in the same transaction
 without a separately defined cross-scope ordering rule.
+
+## 6. Transaction boundary
+
+A relationship command has one caller-owned database transaction. The command
+service accepts that transaction and does not open an inner transaction. The
+business advisory lock, lock-protected re-read, intent transition, active-pair
+fold, membership projections, federation authorization projection, and durable
+client or peer feed writes all commit or roll back together. Profile and Group
+Meta projection processing is part of this transaction. When a successful
+transition first materializes a Group, MessageThread, ThreadMember, or
+ThreadParticipant, that creation is part of the same transaction as well.
+
+SSE delivery, lightweight federation notifications, and State Feed high-water
+mark pushes occur only after that transaction commits. Here, "push" means the
+network wake-up; creation and persistence of the referenced feed items remains
+inside the transaction. Pushes are hints and are never part of the atomic
+relationship state change.

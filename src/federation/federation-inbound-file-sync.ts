@@ -72,6 +72,7 @@ export class FederationInboundFileSync {
     batchId: string,
     fetchChunksFor: (digest: string, offset: number) => AsyncIterable<Buffer>,
     promote: (batchId: string) => Promise<void>,
+    fail: (batchId: string) => Promise<void>,
   ): Promise<void> {
     await this.batchLocks.runExclusive(batchId, async () => {
       const rows = await this.database.db.query.fileSyncProgress.findMany({
@@ -82,7 +83,7 @@ export class FederationInboundFileSync {
       });
       const originDomain = rows[0]?.originDomain;
       if (originDomain && this.quota.isTripped(originDomain)) return;
-      await Promise.all(
+      const results = await Promise.allSettled(
         rows.map((row) => {
           const peerDomain = row.originDomain ?? originDomain;
           if (!peerDomain) {
@@ -99,6 +100,21 @@ export class FederationInboundFileSync {
             .then(() => this.markCoalescedWaiterReady(row.id));
         }),
       );
+      const rejected = results.find(
+        (result): result is PromiseRejectedResult =>
+          result.status === 'rejected',
+      );
+      if (rejected) {
+        const failed = await this.database.db.query.fileSyncProgress.findFirst({
+          where: and(
+            eq(tables.fileSyncProgress.batchId, batchId),
+            eq(tables.fileSyncProgress.status, 'FAILED'),
+          ),
+          columns: { id: true },
+        });
+        if (failed) await fail(batchId);
+        throw rejected.reason;
+      }
       await promote(batchId);
     });
   }

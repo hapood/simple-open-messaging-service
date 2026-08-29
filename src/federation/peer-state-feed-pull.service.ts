@@ -73,7 +73,6 @@ export class PeerStateFeedPullService {
       if (!applied) return;
       if ('cursorReset' in applied) continue;
       drainTarget ??= applied.sourceEndId;
-      await callbacks.afterCommit?.(applied.page);
       if (applied.hasMore) continue;
       if (applied.scannedThrough !== drainTarget)
         throw new Error('peer ended state drain before its fixed target');
@@ -103,35 +102,27 @@ export class PeerStateFeedPullService {
     callbacks: PeerStateFeedPullCallbacks,
     through?: bigint,
   ) {
-    return this.database.db.transaction(async (tx) => {
-      const lock = await tx.execute<{ locked: boolean }>(
-        sql`SELECT pg_try_advisory_xact_lock(hashtextextended(${peerDomain}, 912774)) AS locked`,
+    const cursor =
+      await this.database.db.query.peerStateFeedPullCursor.findFirst({
+        where: eq(peerStateFeedPullCursor.peerDomain, peerDomain),
+      });
+    if (!cursor) return null;
+
+    let page: PeerStateFeedPage;
+    try {
+      page = await callbacks.fetch(
+        cursor.initialized ? cursor.committedThrough : undefined,
+        cursor.initialized ? through : undefined,
       );
-      if (!lock.rows[0]?.locked) return null;
-      const [cursor] = await tx
-        .select()
-        .from(peerStateFeedPullCursor)
-        .where(eq(peerStateFeedPullCursor.peerDomain, peerDomain))
-        .limit(1);
-      if (!cursor) return null;
-      let page: PeerStateFeedPage;
-      try {
-        page = await callbacks.fetch(
-          cursor.initialized ? cursor.committedThrough : undefined,
-          cursor.initialized ? through : undefined,
-        );
-      } catch (error) {
-        if (!(error instanceof RemoteFeedCursorUnavailableError)) throw error;
-        if (
-          error.resumeAfter < 0n ||
-          (cursor.initialized && error.resumeAfter === cursor.committedThrough)
-        ) {
-          throw new Error('peer returned an invalid state-feed resume cursor');
-        }
+    } catch (error) {
+      if (!(error instanceof RemoteFeedCursorUnavailableError)) throw error;
+      if (
+        error.resumeAfter < 0n ||
+        (cursor.initialized && error.resumeAfter === cursor.committedThrough)
+      )
+        throw new Error('peer returned an invalid state-feed resume cursor');
+      await this.database.db.transaction(async (tx) => {
         await callbacks.beginRebuild?.(tx);
-        this.logger.warn(
-          `state-feed cursor for peer ${peerDomain} is unavailable; rebuilding from ${error.resumeAfter.toString()}`,
-        );
         await tx
           .update(peerStateFeedPullCursor)
           .set({
@@ -140,35 +131,88 @@ export class PeerStateFeedPullService {
             updatedAt: new Date(),
           })
           .where(eq(peerStateFeedPullCursor.peerDomain, peerDomain));
-        return {
-          cursorReset: true,
-        };
-      }
-      if (!cursor.initialized) {
-        throw new Error('peer returned a state page without bootstrap cursor');
-      }
-      const scannedThrough = this.parseRev(
-        page.scannedThrough,
-        'scannedThrough',
+      });
+      this.logger.warn(
+        `state-feed cursor for peer ${peerDomain} is unavailable; rebuilding from ${error.resumeAfter.toString()}`,
       );
-      const sourceEndId = this.parseRev(page.stateFeedEndId, 'stateFeedEndId');
-      const scanEnd =
-        through === undefined || sourceEndId < through ? sourceEndId : through;
-      if (
-        scannedThrough < cursor.committedThrough ||
-        scannedThrough > scanEnd ||
-        (page.hasMore && scannedThrough === cursor.committedThrough) ||
-        page.hasMore !== scannedThrough < scanEnd
-      )
-        throw new Error('peer returned an invalid state feed boundary');
-      let previous = cursor.committedThrough;
-      for (const item of page.items) {
-        const feedId = this.parseRev(item.feedId, 'item.feedId');
-        if (feedId <= previous || feedId > scannedThrough)
-          throw new Error('peer returned unordered state feed items');
-        previous = feedId;
-      }
-      await callbacks.apply(tx, page);
+      return { cursorReset: true };
+    }
+    if (!cursor.initialized)
+      throw new Error('peer returned a state page without bootstrap cursor');
+
+    const scannedThrough = this.parseRev(page.scannedThrough, 'scannedThrough');
+    const sourceEndId = this.parseRev(page.stateFeedEndId, 'stateFeedEndId');
+    const scanEnd =
+      through === undefined || sourceEndId < through ? sourceEndId : through;
+    if (
+      scannedThrough < cursor.committedThrough ||
+      scannedThrough > scanEnd ||
+      (page.hasMore && scannedThrough === cursor.committedThrough) ||
+      page.hasMore !== scannedThrough < scanEnd
+    )
+      throw new Error('peer returned an invalid state feed boundary');
+
+    let previous = cursor.committedThrough;
+    const items = page.items.map((item) => {
+      const feedId = this.parseRev(item.feedId, 'item.feedId');
+      if (feedId <= previous || feedId > scannedThrough)
+        throw new Error('peer returned unordered state feed items');
+      previous = feedId;
+      return { item, feedId };
+    });
+
+    for (const { item, feedId } of items) {
+      const itemPage: PeerStateFeedPage = {
+        ...page,
+        items: [item],
+        scannedThrough: item.feedId,
+        hasMore: feedId < scanEnd,
+      };
+      const applied = await this.database.db.transaction(async (tx) => {
+        const lock = await tx.execute<{ locked: boolean }>(
+          sql`SELECT pg_try_advisory_xact_lock(hashtextextended(${peerDomain}, 912774)) AS locked`,
+        );
+        if (!lock.rows[0]?.locked)
+          throw new Error('state-feed database single-flight is busy');
+        const [current] = await tx
+          .select({
+            committedThrough: peerStateFeedPullCursor.committedThrough,
+          })
+          .from(peerStateFeedPullCursor)
+          .where(eq(peerStateFeedPullCursor.peerDomain, peerDomain))
+          .limit(1);
+        if (!current) throw new Error('state-feed pull cursor disappeared');
+        if (current.committedThrough >= feedId) return false;
+        await callbacks.apply(tx, itemPage);
+        await tx
+          .update(peerStateFeedPullCursor)
+          .set({
+            initialized: true,
+            committedThrough: feedId,
+            updatedAt: new Date(),
+          })
+          .where(eq(peerStateFeedPullCursor.peerDomain, peerDomain));
+        return true;
+      });
+      if (applied) await callbacks.afterCommit?.(itemPage);
+    }
+
+    const appliedThrough = items.at(-1)?.feedId ?? cursor.committedThrough;
+    await this.database.db.transaction(async (tx) => {
+      const lock = await tx.execute<{ locked: boolean }>(
+        sql`SELECT pg_try_advisory_xact_lock(hashtextextended(${peerDomain}, 912774)) AS locked`,
+      );
+      if (!lock.rows[0]?.locked)
+        throw new Error('state-feed database single-flight is busy');
+      const [current] = await tx
+        .select({ committedThrough: peerStateFeedPullCursor.committedThrough })
+        .from(peerStateFeedPullCursor)
+        .where(eq(peerStateFeedPullCursor.peerDomain, peerDomain))
+        .limit(1);
+      if (!current) throw new Error('state-feed pull cursor disappeared');
+      if (current.committedThrough < appliedThrough)
+        throw new Error('state-feed item cursor did not commit');
+      if (current.committedThrough >= scannedThrough) return;
       await tx
         .update(peerStateFeedPullCursor)
         .set({
@@ -177,14 +221,14 @@ export class PeerStateFeedPullService {
           updatedAt: new Date(),
         })
         .where(eq(peerStateFeedPullCursor.peerDomain, peerDomain));
-      return {
-        requestedAfter: cursor.committedThrough,
-        scannedThrough,
-        sourceEndId,
-        hasMore: page.hasMore,
-        page,
-      };
     });
+    return {
+      requestedAfter: cursor.committedThrough,
+      scannedThrough,
+      sourceEndId,
+      hasMore: page.hasMore,
+      page,
+    };
   }
 
   private parseRev(value: string, name: string): bigint {

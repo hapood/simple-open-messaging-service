@@ -1,18 +1,11 @@
-import { HttpStatus } from '@nestjs/common';
-import { and, eq, isNull, lt, or, sql } from 'drizzle-orm';
-import { BusinessCode } from '../common/business-code.js';
-import { BusinessException } from '../common/business.exception.js';
+import { and, eq, sql } from 'drizzle-orm';
 import type {
   DatabaseService,
   DatabaseTransaction,
 } from '../database/database.service.js';
-import { ContentType } from '../database/enums.js';
 import * as tables from '../database/schema.js';
-import { ClientMessageFeedWriter } from '../message/client-message-feed.service.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
-import { recordHostedGroupSentBoundaries } from '../message/hosted-group-sent-boundaries.js';
-import { derivePreview } from '../message/message.service.js';
-import type { QuotaService } from '../quota/quota.service.js';
+import { requireInboundPendingMedia } from '../message/pending-media-row.js';
 import {
   parseTextMessageContent,
   stringifyTextMessageContent,
@@ -20,47 +13,29 @@ import {
 import { contextualizeCasUrls } from '../upload/cas-url.js';
 import { extractDigests } from '../upload/file-content.js';
 
-export interface PendingMediaPromotionEffect {
-  message: {
-    seq: number;
-    createdAt: Date;
-    isDeleted: boolean;
-  };
-  threadId: number;
-  creator: { account: string; domain: string };
-  originSeq: number;
-  originDomain: string;
-  recipients: number[];
-  historical: boolean;
+export interface PendingMediaMaterializationEffect {
   dependentBatchIds: string[];
 }
 
-export interface PendingMediaPromotionCallbacks {
-  assertThreadWritable(
-    tx: DatabaseTransaction,
-    threadId: number,
-    peerDomain: string,
-    expectedFederationVersion: number,
-  ): Promise<void>;
-  activeLocalMemberIds(threadId: number): Promise<number[]>;
-}
-
-/** Converts a fully downloaded PendingMedia row into a committed Message. */
+/**
+ * Completes the local dependencies of an inbound Message STUB.
+ *
+ * Synchronization progress already committed when the STUB was inserted. Download completion makes
+ * the Message READY and publishes READY-only local projections without touching federation cursors.
+ */
 export class FederationPendingMediaPromoter {
-  constructor(
-    private readonly database: DatabaseService,
-    private readonly quota: QuotaService,
-  ) {}
+  constructor(private readonly database: DatabaseService) {}
 
   async promote(
     batchId: string,
-    callbacks: PendingMediaPromotionCallbacks,
-  ): Promise<PendingMediaPromotionEffect | null> {
+  ): Promise<PendingMediaMaterializationEffect | null> {
     const effect = await this.database.db.transaction(async (tx) => {
-      const batch = await tx.query.pendingMedia.findFirst({
+      const row = await tx.query.pendingMedia.findFirst({
         where: eq(tables.pendingMedia.batchId, batchId),
       });
-      if (!batch) return null;
+      if (!row) return null;
+      const batch = requireInboundPendingMedia(row);
+
       const outstanding = await tx.execute(sql`
         SELECT 1 FROM "FileSyncProgress"
         WHERE "batchId" = ${batchId} AND status <> 'SUCCEEDED'
@@ -68,136 +43,161 @@ export class FederationPendingMediaPromoter {
       `);
       if ((outstanding.rows ?? []).length > 0) return null;
 
-      const threadId = batch.threadId;
-      const creator = {
-        account: batch.creatorAccount,
-        domain: batch.creatorDomain,
-      };
-      const originSeq = batch.originSeq!;
-      const originDomain = batch.originDomain!;
-      if (!batch.originServerTime) {
-        throw new Error('inbound pending media is missing originCreatedAt');
+      const stagedIdentity = await tx.query.message.findFirst({
+        where: eq(tables.message.id, batch.messageId),
+        columns: {
+          threadId: true,
+          originSeq: true,
+          federationSourceDomain: true,
+        },
+      });
+      if (
+        !stagedIdentity ||
+        stagedIdentity.originSeq === null ||
+        stagedIdentity.federationSourceDomain !== batch.originDomain
+      ) {
+        throw new Error(
+          `inbound PendingMedia ${batchId} has an invalid Message STUB`,
+        );
       }
-      await callbacks.assertThreadWritable(
-        tx,
-        threadId,
-        originDomain,
-        batch.expectedFederationVersion!,
-      );
       await DeletedMessageService.lockFederatedIdentity(
         tx,
-        threadId,
-        originDomain,
-        originSeq,
+        stagedIdentity.threadId,
+        batch.originDomain,
+        stagedIdentity.originSeq,
       );
+      const currentJob = await tx.query.pendingMedia.findFirst({
+        where: eq(tables.pendingMedia.id, batch.id),
+        columns: { id: true },
+      });
+      if (!currentJob) return null;
+
+      const [stagedMessage] = await tx
+        .select()
+        .from(tables.message)
+        .where(eq(tables.message.id, batch.messageId))
+        .for('update')
+        .limit(1);
+      if (!stagedMessage) {
+        throw new Error(`inbound PendingMedia ${batchId} has no Message STUB`);
+      }
+      if (
+        stagedMessage.localState !== 'STUB' ||
+        stagedMessage.originSeq === null ||
+        stagedMessage.federationSourceDomain !== batch.originDomain
+      ) {
+        throw new Error(
+          `inbound PendingMedia ${batchId} has an invalid Message STUB`,
+        );
+      }
+
+      const [thread] = await tx
+        .select({ authorizationEpoch: tables.messageThread.authorizationEpoch })
+        .from(tables.messageThread)
+        .where(eq(tables.messageThread.id, stagedMessage.threadId))
+        .for('update')
+        .limit(1);
+      if (!thread) throw new Error('inbound Message STUB thread is missing');
+      if (thread.authorizationEpoch !== batch.expectedAuthorizationEpoch) {
+        return null;
+      }
+
       const tombstone = await tx.query.federatedMessageTombstone.findFirst({
         where: and(
-          eq(tables.federatedMessageTombstone.threadId, threadId),
-          eq(tables.federatedMessageTombstone.sourceDomain, originDomain),
-          eq(tables.federatedMessageTombstone.messageSeq, originSeq),
+          eq(tables.federatedMessageTombstone.threadId, stagedMessage.threadId),
+          eq(tables.federatedMessageTombstone.sourceDomain, batch.originDomain),
+          eq(
+            tables.federatedMessageTombstone.messageSeq,
+            stagedMessage.originSeq,
+          ),
         ),
-        columns: { type: true, sourceDomain: true },
+        columns: { type: true },
       });
+
       const localQuoteSeq = tombstone
         ? undefined
         : await this.resolveQuoteSeq(
             tx,
-            threadId,
-            originDomain,
+            stagedMessage.threadId,
+            batch.originDomain,
             batch.dependsOnOriginSeq,
           );
       if (batch.dependsOnOriginSeq !== null && localQuoteSeq === null) {
         return null;
       }
 
-      const seq = batch.useOriginSeqAsMessageSeq
-        ? await this.requireUnoccupiedOriginSeq(tx, threadId, originSeq)
-        : await this.allocateMessageSeq(tx, threadId);
-      let storedContent = contextualizeCasUrls(batch.content, threadId, seq);
+      let storedContent = contextualizeCasUrls(
+        stagedMessage.content,
+        stagedMessage.threadId,
+        stagedMessage.seq,
+      );
       if (localQuoteSeq !== undefined && localQuoteSeq !== null) {
-        const text = parseTextMessageContent(batch.content);
+        const text = parseTextMessageContent(stagedMessage.content);
         if (!text) throw new Error('pending quote has invalid text content');
         storedContent = stringifyTextMessageContent({
           text: text.text,
           quote: { seq: localQuoteSeq },
         });
       }
-      const [message] = await tx
-        .insert(tables.message)
-        .values({
-          contentType: batch.contentType as ContentType,
+
+      await tx
+        .update(tables.message)
+        .set({
           content: storedContent,
-          threadId,
-          creatorAccount: creator.account,
-          creatorDomain: creator.domain,
-          seq,
-          originSeq,
-          clientMessageId: batch.clientMessageId,
-          originServerTime: batch.originServerTime,
-          federationSourceDomain: originDomain,
           isDeleted: tombstone !== undefined,
+          localState: 'READY',
           updatedAt: new Date(),
         })
-        .returning();
-      await recordHostedGroupSentBoundaries(tx, threadId, creator, seq);
-      const localDeletionSeq = await this.applyAssetsOrTombstone(
-        tx,
-        batch.content,
-        message.id,
-        threadId,
-        seq,
-        originDomain,
-        originSeq,
-        tombstone,
-      );
-      await ClientMessageFeedWriter.publishMessage(tx, threadId, seq);
-      if (localDeletionSeq !== null) {
-        await ClientMessageFeedWriter.publishTombstone(
-          tx,
-          threadId,
-          localDeletionSeq,
-        );
+        .where(eq(tables.message.id, stagedMessage.id));
+
+      if (!tombstone) {
+        const digests = extractDigests(storedContent);
+        if (digests.length > 0) {
+          await tx
+            .insert(tables.messageAsset)
+            .values(
+              digests.map((digest) => ({
+                messageId: stagedMessage.id,
+                threadId: stagedMessage.threadId,
+                digest,
+              })),
+            )
+            .onConflictDoNothing();
+        }
       }
-      if (!batch.useOriginSeqAsMessageSeq) {
-        await this.updateThreadPreview(
-          tx,
-          threadId,
-          seq,
-          batch.contentType as ContentType,
-          storedContent,
-          message.createdAt,
-        );
-      }
-      const recipients = await callbacks.activeLocalMemberIds(threadId);
+
       await tx
         .delete(tables.fileSyncProgress)
         .where(eq(tables.fileSyncProgress.batchId, batchId));
       await tx
         .delete(tables.pendingMedia)
         .where(eq(tables.pendingMedia.id, batch.id));
-      await this.quota.tickLax(originDomain, 'messages', tx, 1);
+
       return {
-        message,
-        threadId,
-        creator,
-        originSeq,
-        originDomain,
-        recipients,
-        historical: batch.useOriginSeqAsMessageSeq,
+        threadId: stagedMessage.threadId,
+        originDomain: batch.originDomain,
+        originSeq: stagedMessage.originSeq,
       };
     });
     if (!effect) return null;
-    const dependents = await this.database.db.query.pendingMedia.findMany({
-      where: and(
-        eq(tables.pendingMedia.threadId, effect.threadId),
-        eq(tables.pendingMedia.originDomain, effect.originDomain),
-        eq(tables.pendingMedia.dependsOnOriginSeq, effect.originSeq),
-      ),
-      columns: { batchId: true },
-    });
+
+    const dependents = await this.database.db
+      .select({ batchId: tables.pendingMedia.batchId })
+      .from(tables.pendingMedia)
+      .innerJoin(
+        tables.message,
+        eq(tables.message.id, tables.pendingMedia.messageId),
+      )
+      .where(
+        and(
+          eq(tables.pendingMedia.direction, 'INBOUND'),
+          eq(tables.message.threadId, effect.threadId),
+          eq(tables.pendingMedia.originDomain, effect.originDomain),
+          eq(tables.pendingMedia.dependsOnOriginSeq, effect.originSeq),
+        ),
+      );
     return {
-      ...effect,
-      dependentBatchIds: dependents.map(({ batchId }) => batchId),
+      dependentBatchIds: dependents.map(({ batchId: id }) => id),
     };
   }
 
@@ -208,15 +208,26 @@ export class FederationPendingMediaPromoter {
     sourceSeq: number | null,
   ): Promise<number | null | undefined> {
     if (sourceSeq === null) return undefined;
-    const direct = await tx.query.message.findFirst({
-      where: and(
-        eq(tables.message.threadId, threadId),
-        eq(tables.message.federationSourceDomain, sourceDomain),
-        eq(tables.message.originSeq, sourceSeq),
-      ),
-      columns: { seq: true },
-    });
-    if (direct) return direct.seq;
+    const [direct] = await tx
+      .select({
+        seq: tables.message.seq,
+        pendingId: tables.pendingMedia.id,
+      })
+      .from(tables.message)
+      .leftJoin(
+        tables.pendingMedia,
+        eq(tables.pendingMedia.messageId, tables.message.id),
+      )
+      .where(
+        and(
+          eq(tables.message.threadId, threadId),
+          eq(tables.message.federationSourceDomain, sourceDomain),
+          eq(tables.message.originSeq, sourceSeq),
+        ),
+      )
+      .limit(1);
+    if (direct) return direct.pendingId === null ? direct.seq : null;
+
     const receipt = await tx.query.federationMessageReceipt.findFirst({
       where: and(
         eq(tables.federationMessageReceipt.peerDomain, sourceDomain),
@@ -226,118 +237,13 @@ export class FederationPendingMediaPromoter {
       columns: { messageId: true },
     });
     if (!receipt) return null;
-    const message = await tx.query.message.findFirst({
+    const resolved = await tx.query.message.findFirst({
       where: and(
         eq(tables.message.id, receipt.messageId),
         eq(tables.message.threadId, threadId),
       ),
       columns: { seq: true },
     });
-    return message?.seq ?? null;
-  }
-
-  private async requireUnoccupiedOriginSeq(
-    tx: DatabaseTransaction,
-    threadId: number,
-    originSeq: number,
-  ): Promise<number> {
-    const occupied = await tx.query.message.findFirst({
-      where: and(
-        eq(tables.message.threadId, threadId),
-        eq(tables.message.seq, originSeq),
-      ),
-      columns: { id: true },
-    });
-    if (occupied) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'reverse pending message seq conflicts with an existing local message',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    return originSeq;
-  }
-
-  private async allocateMessageSeq(
-    tx: DatabaseTransaction,
-    threadId: number,
-  ): Promise<number> {
-    const [thread] = await tx
-      .update(tables.messageThread)
-      .set({ curSeq: sql`${tables.messageThread.curSeq} + 1` })
-      .where(eq(tables.messageThread.id, threadId))
-      .returning({ curSeq: tables.messageThread.curSeq });
-    if (!thread) throw new Error(`message thread ${threadId} is missing`);
-    return thread.curSeq;
-  }
-
-  private async applyAssetsOrTombstone(
-    tx: DatabaseTransaction,
-    content: string,
-    messageId: bigint,
-    threadId: number,
-    messageSeq: number,
-    originDomain: string,
-    originSeq: number,
-    tombstone:
-      | {
-          type: (typeof tables.federatedMessageTombstone.$inferSelect)['type'];
-          sourceDomain: string;
-        }
-      | undefined,
-  ): Promise<number | null> {
-    if (!tombstone) {
-      for (const digest of extractDigests(content)) {
-        await tx
-          .insert(tables.messageAsset)
-          .values({ messageId, threadId, digest })
-          .onConflictDoNothing();
-      }
-      return null;
-    }
-    const deletion = await DeletedMessageService.ensureFactInTx(tx, {
-      threadId,
-      messageSeq,
-      type: tombstone.type,
-      federationSourceDomain: tombstone.sourceDomain,
-      updatedAt: new Date(),
-    });
-    await tx
-      .delete(tables.federatedMessageTombstone)
-      .where(
-        and(
-          eq(tables.federatedMessageTombstone.threadId, threadId),
-          eq(tables.federatedMessageTombstone.sourceDomain, originDomain),
-          eq(tables.federatedMessageTombstone.messageSeq, originSeq),
-        ),
-      );
-    return deletion.created ? deletion.deletionSeq : null;
-  }
-
-  private async updateThreadPreview(
-    tx: DatabaseTransaction,
-    threadId: number,
-    seq: number,
-    contentType: ContentType,
-    content: string,
-    arrival: Date,
-  ): Promise<void> {
-    await tx
-      .update(tables.messageThread)
-      .set({
-        lastMessageSeq: seq,
-        lastMessagePreview: derivePreview(contentType, content),
-        lastMessageAt: arrival,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(tables.messageThread.id, threadId),
-          or(
-            isNull(tables.messageThread.lastMessageAt),
-            lt(tables.messageThread.lastMessageAt, arrival),
-          ),
-        ),
-      );
+    return resolved?.seq ?? null;
   }
 }

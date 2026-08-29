@@ -14,22 +14,28 @@ function page(scannedThrough: string, hasMore = false): PeerStateFeedPage {
 
 function harness(committedThrough = 0n) {
   const order: string[] = [];
-  const limit = vi.fn().mockResolvedValue([
-    {
-      peerDomain: 'peer.test',
-      initialized: true,
-      committedThrough,
-      updatedAt: new Date(),
-    },
-  ]);
+  const cursor = {
+    peerDomain: 'peer.test',
+    initialized: true,
+    committedThrough,
+    updatedAt: new Date(),
+  };
+  const limit = vi.fn(async () => [{ ...cursor }]);
   const select = vi.fn(() => ({
     from: vi.fn(() => ({ where: vi.fn(() => ({ limit })) })),
   }));
-  const whereUpdate = vi.fn(async () => order.push('cursor'));
+  const whereUpdate = vi.fn(async () => undefined);
+  const setUpdate = vi.fn((values: Partial<typeof cursor>) => ({
+    where: async () => {
+      Object.assign(cursor, values);
+      order.push('cursor');
+      return whereUpdate();
+    },
+  }));
   const tx = {
     execute: vi.fn().mockResolvedValue({ rows: [{ locked: true }] }),
     select,
-    update: vi.fn(() => ({ set: vi.fn(() => ({ where: whereUpdate })) })),
+    update: vi.fn(() => ({ set: setUpdate })),
   };
   const database = {
     db: {
@@ -38,7 +44,7 @@ function harness(committedThrough = 0n) {
       ),
       query: {
         peerStateFeedPullCursor: {
-          findFirst: vi.fn().mockResolvedValue({ committedThrough }),
+          findFirst: vi.fn(async () => ({ ...cursor })),
         },
       },
     },
@@ -50,11 +56,16 @@ function harness(committedThrough = 0n) {
   };
 }
 
-describe('PeerStateFeedPullService atomic page application', () => {
-  it('publishes only after state and cursor commit', async () => {
+describe('PeerStateFeedPullService atomic item application', () => {
+  it('publishes each item only after its state and cursor commit', async () => {
     const { service, order } = harness();
     await service.run('peer.test', {
-      fetch: async () => page('0'),
+      fetch: async () => ({
+        ...page('1'),
+        items: [
+          { account: 'alice', eventType: 'PROFILE', feedId: '1', body: {} },
+        ],
+      }),
       apply: async () => void order.push('state'),
       afterCommit: async () => void order.push('publish'),
     });
@@ -65,7 +76,17 @@ describe('PeerStateFeedPullService atomic page application', () => {
     const { service, order, whereUpdate } = harness();
     await expect(
       service.run('peer.test', {
-        fetch: async () => page('0'),
+        fetch: async () => ({
+          ...page('1'),
+          items: [
+            {
+              account: 'alice',
+              eventType: 'PROFILE',
+              feedId: '1',
+              body: {},
+            },
+          ],
+        }),
         apply: async () => {
           order.push('state');
           throw new Error('invalid state');
@@ -75,6 +96,42 @@ describe('PeerStateFeedPullService atomic page application', () => {
     ).rejects.toThrow('invalid state');
     expect(order).toEqual(['state']);
     expect(whereUpdate).not.toHaveBeenCalled();
+  });
+
+  it('keeps an earlier item committed when a later item fails', async () => {
+    const { service, order } = harness();
+    const apply = vi.fn(async (_tx: unknown, itemPage: PeerStateFeedPage) => {
+      const feedId = itemPage.items[0]!.feedId;
+      order.push(`state-${feedId}`);
+      if (feedId === '2') throw new Error('second item failed');
+    });
+    await expect(
+      service.run('peer.test', {
+        fetch: async () => ({
+          items: [
+            {
+              account: 'alice',
+              eventType: 'PROFILE',
+              feedId: '1',
+              body: {},
+            },
+            {
+              account: 'bob',
+              eventType: 'PROFILE',
+              feedId: '2',
+              body: {},
+            },
+          ],
+          scannedThrough: '2',
+          stateFeedEndId: '2',
+          hasMore: false,
+        }),
+        apply,
+        afterCommit: async (itemPage) =>
+          void order.push(`publish-${itemPage.items[0]!.feedId}`),
+      }),
+    ).rejects.toThrow('second item failed');
+    expect(order).toEqual(['state-1', 'cursor', 'publish-1', 'state-2']);
   });
 
   it('rejects unordered or out-of-bound revs before applying state', async () => {

@@ -147,6 +147,14 @@ export class MessageResponseDto {
   isDeleted!: boolean;
 
   @ApiProperty({
+    enum: ['STUB', 'FAILED', 'READY'],
+    example: 'READY',
+    description:
+      'Local materialization state. STUB and FAILED remain client-visible placeholders; only READY participates in derived projections.',
+  })
+  localState!: 'STUB' | 'FAILED' | 'READY';
+
+  @ApiProperty({
     required: false,
     example: 'b3f4a1e2-1c2d-4e3f-8a9b-0c1d2e3f4a5b',
     description:
@@ -160,10 +168,8 @@ export class MessageResponseDto {
     example: MEDIA_STATUS.READY,
     description:
       'Federated media localize status (IMAGE/FILE/VIDEO/AUDIO only; absent = ready for non-media). ' +
-      "'ready' = bytes local + authz written (the URL serves 200); 'failed' = localize failed (URL 4xx, " +
-      "retryable from the detail view); 'downloading' = localize in flight (carried only on a freshly-pulled " +
-      "NEW_MESSAGE frame — the backend stores/pushes the 'ready'|'failed' terminals; the client infers " +
-      "'downloading' optimistically on arrival / manual retry).",
+      "'ready' = the Message is READY and every referenced blob is local; 'failed' = the Message is a " +
+      "FAILED placeholder; 'downloading' = the Message is a STUB placeholder.",
   })
   mediaStatus?: MediaStatus;
 

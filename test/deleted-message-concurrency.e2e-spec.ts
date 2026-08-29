@@ -281,21 +281,30 @@ describe('federated message deletion transaction ordering', () => {
     expect(state.cursor?.committedThrough).toBe(12);
   });
 
-  it('terminates but retains an inbound pending download and its resumable progress', async () => {
-    const [pending] = await database.db
-      .insert(pendingMedia)
+  it('turns a tombstoned STUB into a formal deletion and cancels its download', async () => {
+    const [stub] = await database.db
+      .insert(message)
       .values({
         threadId,
+        seq: 1,
         creatorAccount: 'bob',
         creatorDomain: 'peer.test',
         contentType: 'IMAGE',
         content: JSON.stringify({ digest: 'a'.repeat(64) }),
         originSeq: 7,
+        federationSourceDomain: 'peer.test',
+        localState: 'STUB',
+        updatedAt: new Date(),
+      })
+      .returning({ id: message.id });
+    const [pending] = await database.db
+      .insert(pendingMedia)
+      .values({
+        messageId: stub.id,
         direction: 'INBOUND',
         fileCnt: 1,
         originDomain: 'peer.test',
-        expectedFederationVersion: 0,
-        status: 'pending',
+        expectedAuthorizationEpoch: 0,
         updatedAt: new Date(),
       })
       .returning({ batchId: pendingMedia.batchId });
@@ -315,19 +324,25 @@ describe('federated message deletion transaction ordering', () => {
     const retained = await database.db.query.pendingMedia.findFirst({
       where: eq(pendingMedia.batchId, pending.batchId),
     });
-    const [progress] = await database.db
+    const progress = await database.db
       .select()
       .from(fileSyncProgress)
       .where(eq(fileSyncProgress.batchId, pending.batchId));
-    expect(retained).toMatchObject({
-      status: 'tombstoned',
-      anyFailed: true,
-      failReason: 'SOURCE_MESSAGE_DELETED',
+    expect(retained).toBeUndefined();
+    expect(progress).toEqual([]);
+    await expect(
+      database.db.query.message.findFirst({
+        where: eq(message.id, stub.id),
+      }),
+    ).resolves.toMatchObject({
+      localState: 'STUB',
+      isDeleted: true,
     });
-    expect(progress).toMatchObject({
-      status: 'TOMBSTONED',
-      errorKind: 'SOURCE_MESSAGE_DELETED',
-      bytesReceived: 40n,
-    });
+    const facts = await database.db
+      .select()
+      .from(deletedMessage)
+      .where(eq(deletedMessage.threadId, threadId));
+    expect(facts).toHaveLength(1);
+    expect(facts[0]).toMatchObject({ messageSeq: 1, deletionSeq: 1 });
   });
 });

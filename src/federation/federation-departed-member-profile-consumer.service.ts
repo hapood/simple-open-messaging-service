@@ -19,7 +19,7 @@ import { requireDomain } from './federation-resource-request.js';
 import type { FederationReverseThreadSource } from './federation-reverse-thread-source.js';
 import { FederationService } from './federation.service.js';
 
-/** Drains and applies the reverse-only departed-author profile dependency for one group batch. */
+/** Fetches and transactionally applies the reverse-only departed-author profile dependency. */
 @Injectable()
 export class FederationDepartedMemberProfileConsumerService {
   constructor(
@@ -28,11 +28,12 @@ export class FederationDepartedMemberProfileConsumerService {
     private readonly federation: FederationService,
   ) {}
 
-  async process(
+  async fetch(
     source: Extract<FederationReverseThreadSource, { kind: 'GROUP' }>,
     params: { before: number; through: number; take: number },
-  ): Promise<void> {
+  ): Promise<DepartedMemberProfile[]> {
     let before = params.before;
+    const members: DepartedMemberProfile[] = [];
     while (before > params.through) {
       const query = new URLSearchParams();
       query.set('account', source.selector.account);
@@ -47,16 +48,17 @@ export class FederationDepartedMemberProfileConsumerService {
           4 * 1024 * 1024,
         );
       this.assertPage(response.data, before, params.through);
-      await this.database.db.transaction(async (tx) => {
-        await this.federation.assertThreadResourceResponseWritableInTransaction(
+      await this.database.db.transaction((tx) =>
+        this.federation.assertThreadResourceResponseWritableInTransaction(
           tx,
           response,
-        );
-        await this.applyPageInTransaction(tx, source, response.data.members);
-      });
-      if (!response.data.hasMore) return;
+        ),
+      );
+      members.push(...response.data.members);
+      if (!response.data.hasMore) return members;
       before = response.data.scannedThrough;
     }
+    return members;
   }
 
   private assertPage(
@@ -124,7 +126,7 @@ export class FederationDepartedMemberProfileConsumerService {
     }
   }
 
-  private async applyPageInTransaction(
+  async applyInTransaction(
     tx: DatabaseTransaction,
     source: Extract<FederationReverseThreadSource, { kind: 'GROUP' }>,
     members: readonly DepartedMemberProfile[],

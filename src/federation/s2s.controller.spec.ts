@@ -15,7 +15,7 @@ function target() {
   };
   const messageFeedPull = { advertise: vi.fn() };
   const tombstonePull = { advertise: vi.fn() };
-  const peerStateFeedPull = { advertise: vi.fn() };
+  const roundScheduler = { wakeStateFeed: vi.fn() };
   const messageFeed = {
     query: vi
       .fn()
@@ -62,7 +62,7 @@ function target() {
     tombstoneFeed as never,
     {} as never,
     peerStateFeed as never,
-    peerStateFeedPull as never,
+    roundScheduler as never,
     groupMetaFeed as never,
     departedMemberProfiles as never,
   );
@@ -74,7 +74,7 @@ function target() {
     peerStateFeed,
     messageFeedPull,
     tombstonePull,
-    peerStateFeedPull,
+    roundScheduler,
     groupMetaFeed,
     departedMemberProfiles,
   };
@@ -483,13 +483,10 @@ describe('S2sController departed-member profile query', () => {
 });
 
 describe('S2sController feed-head recovery', () => {
-  it('rejects the removed origin field instead of ignoring it', async () => {
-    const { controller, peerStateFeedPull } = target();
+  it('rejects unknown fields without scheduling work', async () => {
+    const { controller, roundScheduler } = target();
     const req = {
-      body: {
-        origin: 'a.example',
-        stateFeedEndId: '7',
-      },
+      body: { origin: 'a.example', stateFeedEndId: '7' },
       peer: { domain: 'a.example', keyId: 'a.example/key-1' },
     } as unknown as FastifyRequest;
 
@@ -497,86 +494,21 @@ describe('S2sController feed-head recovery', () => {
       bizCode: BusinessCode.FEDERATION_MALFORMED,
       status: 400,
     });
-    expect(peerStateFeedPull.advertise).not.toHaveBeenCalled();
+    expect(roundScheduler.wakeStateFeed).not.toHaveBeenCalled();
   });
 
-  it('drains in-flight work and rejects new scheduling during shutdown', async () => {
-    const { controller, federation } = target();
-    let release!: () => void;
-    federation.pullStateFromPeer.mockImplementationOnce(
-      () =>
-        new Promise<bigint>((resolve) => {
-          release = () => resolve(7n);
-        }),
-    );
+  it('validates and forwards the publisher target to the global scheduler', async () => {
+    const { controller, roundScheduler } = target();
     const req = {
-      body: {
-        stateFeedEndId: '7',
-      },
+      body: { stateFeedEndId: '11' },
       peer: { domain: 'a.example', keyId: 'a.example/key-1' },
     } as unknown as FastifyRequest;
 
     await controller.postDiscoveryHwm(req);
-    await vi.waitFor(() =>
-      expect(federation.pullStateFromPeer).toHaveBeenCalledOnce(),
+
+    expect(roundScheduler.wakeStateFeed).toHaveBeenCalledExactlyOnceWith(
+      'a.example',
+      11n,
     );
-    let destroyed = false;
-    const shutdown = controller.onModuleDestroy().then(() => {
-      destroyed = true;
-    });
-    await Promise.resolve();
-    expect(destroyed).toBe(false);
-
-    await controller.postDiscoveryHwm(req);
-    expect(federation.pullStateFromPeer).toHaveBeenCalledOnce();
-    release();
-    await shutdown;
-  });
-
-  it('backs off and merges lightweight heads before retrying', async () => {
-    vi.useFakeTimers();
-    try {
-      const { controller, federation } = target();
-      federation.pullStateFromPeer
-        .mockRejectedValueOnce(new Error('temporarily offline'))
-        .mockResolvedValueOnce(7n);
-      const req = {
-        body: {
-          stateFeedEndId: '7',
-        },
-        peer: { domain: 'a.example', keyId: 'a.example/key-1' },
-      } as unknown as FastifyRequest;
-
-      await controller.postDiscoveryHwm(req);
-      await vi.waitFor(() =>
-        expect(federation.pullStateFromPeer).toHaveBeenCalledTimes(1),
-      );
-      await vi.waitFor(() =>
-        expect(
-          (
-            controller as unknown as {
-              feedDrainRetryTimers: Map<string, unknown>;
-            }
-          ).feedDrainRetryTimers.has('a.example'),
-        ).toBe(true),
-      );
-      await controller.postDiscoveryHwm({
-        ...req,
-        body: {
-          ...req.body,
-          stateFeedEndId: '11',
-        },
-      });
-      await vi.advanceTimersByTimeAsync(1_000);
-      await vi.waitFor(() =>
-        expect(federation.pullStateFromPeer).toHaveBeenCalledTimes(2),
-      );
-      expect(federation.pullStateFromPeer).toHaveBeenLastCalledWith(
-        'a.example',
-        11n,
-      );
-    } finally {
-      vi.useRealTimers();
-    }
   });
 });

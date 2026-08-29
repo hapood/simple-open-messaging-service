@@ -6,8 +6,6 @@ import {
   Post,
   HttpCode,
   HttpStatus,
-  Logger,
-  OnModuleDestroy,
   Query,
   Req,
   Res,
@@ -24,11 +22,11 @@ import { FederationMessageFeedService } from './federation-message-feed.service.
 import { FederationMessageTombstoneFeedService } from './federation-message-tombstone-feed.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
-import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
 import { GroupMetaFeedService } from './group-meta-feed.service.js';
 import { DepartedMemberProfileQueryService } from './departed-member-profile-query.service.js';
 import { FEDERATION_API_PREFIX } from './federation-protocol.js';
 import { FEDERATION_THREAD_SEQUENCE_MAX } from './federation-thread-round.constants.js';
+import { FederationThreadRoundSchedulerService } from './federation-thread-round-scheduler.service.js';
 import {
   parseFederationResourceRequest,
   parseFederationRange,
@@ -59,26 +57,14 @@ import {
 @Public()
 @Controller(FEDERATION_API_PREFIX)
 @UseGuards(S2sSignatureGuard)
-export class S2sController implements OnModuleDestroy {
-  private readonly logger = new Logger(S2sController.name);
-  private readonly feedDrainRunning = new Set<string>();
-  private readonly feedDrainPending = new Set<string>();
-  private readonly feedDrainRetryAttempts = new Map<string, number>();
-  private readonly feedDrainRetryTimers = new Map<
-    string,
-    ReturnType<typeof setTimeout>
-  >();
-  private readonly feedDrainRequiredState = new Map<string, bigint>();
-  private readonly feedDrainTasks = new Set<Promise<void>>();
-  private shuttingDown = false;
-
+export class S2sController {
   constructor(
     private readonly federation: FederationService,
     private readonly messageFeed: FederationMessageFeedService,
     private readonly tombstoneFeed: FederationMessageTombstoneFeedService,
     private readonly settings: SettingsService,
     private readonly peerStateFeed: PeerStateFeedService,
-    private readonly peerStateFeedPull: PeerStateFeedPullService,
+    private readonly roundScheduler: FederationThreadRoundSchedulerService,
     private readonly groupMetaFeed: GroupMetaFeedService,
     private readonly departedMemberProfiles: DepartedMemberProfileQueryService,
   ) {}
@@ -212,80 +198,7 @@ export class S2sController implements OnModuleDestroy {
       );
     }
     const stateFeedEndId = BigInt(body.stateFeedEndId);
-    this.peerStateFeedPull.advertise(signer, stateFeedEndId);
-    // Wake-up is intentionally fire-and-forget: the durable cursor/page transaction owns recovery,
-    // while this lightweight push returns promptly even when the peer has a large backlog. A transient
-    // pull failure is retried locally: the HWM notification is only a hint and the sender is not required
-    // to emit another one merely because transport became available again.
-    const required = this.feedDrainRequiredState.get(signer);
-    if (required === undefined || stateFeedEndId > required)
-      this.feedDrainRequiredState.set(signer, stateFeedEndId);
-    this.startFeedDrain(signer);
-  }
-
-  private startFeedDrain(domain: string): void {
-    if (this.shuttingDown) return;
-    this.feedDrainPending.add(domain);
-    // A degraded peer stays quiet for the complete cooldown. New lightweight
-    // heads only raise the merged required HWM; they must not shorten the
-    // cooldown or start another concurrent drain.
-    if (this.feedDrainRetryTimers.has(domain)) return;
-    if (this.feedDrainRunning.has(domain)) return;
-    const task = this.drainFeedHeads(domain).finally(() => {
-      this.feedDrainTasks.delete(task);
-    });
-    this.feedDrainTasks.add(task);
-  }
-
-  private async drainFeedHeads(domain: string): Promise<void> {
-    if (this.feedDrainRunning.has(domain)) return;
-    this.feedDrainRunning.add(domain);
-    try {
-      do {
-        this.feedDrainPending.delete(domain);
-        const requiredState = this.feedDrainRequiredState.get(domain) ?? 0n;
-        await this.federation.pullStateFromPeer(domain, requiredState);
-      } while (this.feedDrainPending.has(domain));
-      this.feedDrainRetryAttempts.delete(domain);
-    } catch (error) {
-      this.logger.warn(
-        `feed-head drain failed for ${domain}: ${(error as Error).message}`,
-      );
-      this.feedDrainPending.add(domain);
-      this.scheduleFeedDrainRetry(domain);
-    } finally {
-      this.feedDrainRunning.delete(domain);
-      if (
-        this.feedDrainPending.has(domain) &&
-        !this.feedDrainRetryTimers.has(domain)
-      )
-        queueMicrotask(() => this.startFeedDrain(domain));
-    }
-  }
-
-  private scheduleFeedDrainRetry(domain: string): void {
-    if (this.shuttingDown) return;
-    if (this.feedDrainRetryTimers.has(domain)) return;
-    const attempt = (this.feedDrainRetryAttempts.get(domain) ?? 0) + 1;
-    this.feedDrainRetryAttempts.set(domain, attempt);
-    // Most failures here are short recognition/restart races. Recover those
-    // promptly, while exponentially backing off a persistently unavailable
-    // peer so its lightweight wake-ups cannot create a retry storm.
-    const delayMs = Math.min(60_000, 1000 * 2 ** (attempt - 1));
-    const timer = setTimeout(() => {
-      this.feedDrainRetryTimers.delete(domain);
-      this.startFeedDrain(domain);
-    }, delayMs);
-    timer.unref();
-    this.feedDrainRetryTimers.set(domain, timer);
-  }
-
-  async onModuleDestroy(): Promise<void> {
-    this.shuttingDown = true;
-    this.feedDrainPending.clear();
-    for (const timer of this.feedDrainRetryTimers.values()) clearTimeout(timer);
-    this.feedDrainRetryTimers.clear();
-    await Promise.allSettled([...this.feedDrainTasks]);
+    this.roundScheduler.wakeStateFeed(signer, stateFeedEndId);
   }
 
   @Get('message-tombstones')

@@ -40,7 +40,10 @@ import {
 } from '../upload/file-content.js';
 import { contextualizeCasUrls } from '../upload/cas-url.js';
 import { LinkPreviewService } from '../link-preview/link-preview.service.js';
-import { MEDIA_STATUS } from '../common/media-status.js';
+import {
+  MEDIA_STATUS,
+  type MediaStatus,
+} from '../common/media-status.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { isThreadMutuallyAuthorized } from '../invite/relationship-authorization.js';
@@ -65,6 +68,7 @@ import {
 import { loadFederationConfig } from '../federation/federation.config.js';
 import { ClientMessageFeedWriter } from './client-message-feed.service.js';
 import { recordHostedGroupSentBoundaries } from './hosted-group-sent-boundaries.js';
+import { requireOutboundPendingMedia } from './pending-media-row.js';
 
 interface ReplyPreview {
   author: string;
@@ -694,9 +698,12 @@ export class MessageService {
       }
       return { clientMessageId }; // already promoted — nothing to stage
     }
-    const existing = await this.database.db.query.pendingMedia.findFirst({
+    const existingRow = await this.database.db.query.pendingMedia.findFirst({
       where: eq(pendingMedia.clientMessageId, clientMessageId),
     });
+    const existing = existingRow
+      ? requireOutboundPendingMedia(existingRow)
+      : undefined;
     if (!existing) {
       try {
         await this.database.db.transaction(async (tx) => {
@@ -714,9 +721,12 @@ export class MessageService {
         return { clientMessageId };
       } catch (error) {
         if (!isUniqueViolation(error)) throw error;
-        const winner = await this.database.db.query.pendingMedia.findFirst({
+        const winnerRow = await this.database.db.query.pendingMedia.findFirst({
           where: eq(pendingMedia.clientMessageId, clientMessageId),
         });
+        const winner = winnerRow
+          ? requireOutboundPendingMedia(winnerRow)
+          : undefined;
         if (
           !winner ||
           winner.creatorAccount !== author.account ||
@@ -943,9 +953,12 @@ export class MessageService {
   } | null> {
     const committed = await this.findByClientMessageId(clientMessageId);
     if (committed) return { message: committed, newlyPromoted: false };
-    const stage = await this.database.db.query.pendingMedia.findFirst({
+    const stageRow = await this.database.db.query.pendingMedia.findFirst({
       where: eq(pendingMedia.clientMessageId, clientMessageId),
     });
+    const stage = stageRow
+      ? requireOutboundPendingMedia(stageRow)
+      : undefined;
     if (
       !stage ||
       stage.status !== 'pending' ||
@@ -1417,7 +1430,10 @@ export class MessageService {
   async attachMediaStatus<T extends Message>(
     msgs: T[],
   ): Promise<
-    (PublicMessage<T> & { mediaStatus: 'ready' | 'failed'; sv: number })[]
+    (PublicMessage<T> & {
+      mediaStatus: MediaStatus;
+      sv: number;
+    })[]
   > {
     if (msgs.length === 0) return [];
     const byMsg = new Map<bigint, string[]>();
@@ -1453,6 +1469,16 @@ export class MessageService {
       assetRows.filter((a) => !a.isDeleted).map((a) => a.digest),
     );
     return msgs.map((m) => {
+      if (m.localState !== 'READY') {
+        return {
+          ...stripMessageId(m),
+          mediaStatus:
+            m.localState === 'FAILED'
+              ? MEDIA_STATUS.FAILED
+              : MEDIA_STATUS.DOWNLOADING,
+          sv: m.seq,
+        };
+      }
       const ds = byMsg.get(m.id) ?? [];
       const ready =
         ds.length === 0 ||
@@ -1472,7 +1498,9 @@ export class MessageService {
   async queryMediaStatus(
     threadId: number,
     seqs: number[],
-  ): Promise<Array<{ seq: number; status: 'ready' | 'failed'; sv: number }>> {
+  ): Promise<
+    Array<{ seq: number; status: MediaStatus; sv: number }>
+  > {
     if (seqs.length === 0) return [];
     const msgs = await this.database.db.query.message.findMany({
       where: and(
@@ -1509,6 +1537,7 @@ export class MessageService {
       FROM "Message"
       WHERE "threadId" = ${threadId}
         AND "isDeleted" = false
+        AND "localState" = 'READY'
         ${cursor}
         AND (
           (
@@ -1571,6 +1600,7 @@ export class MessageService {
     return this.database.db.query.message.findMany({
       where: and(
         eq(message.isDeleted, false),
+        eq(message.localState, 'READY'),
         or(
           ...pairs.map((pair) =>
             and(eq(message.threadId, pair.threadId), eq(message.seq, pair.seq)),
@@ -1627,6 +1657,7 @@ export class MessageService {
               AND self.domain = msg."creatorDomain"
           )
           AND msg."isDeleted" = false
+          AND msg."localState" = 'READY'
         ORDER BY msg.seq ASC
         LIMIT 1000
       ) m ON TRUE
@@ -1687,6 +1718,7 @@ export class MessageService {
               AND self.domain = m."creatorDomain"
           )
           AND m."isDeleted" = false
+          AND m."localState" = 'READY'
         ORDER BY m.seq ASC
         LIMIT 1000
       )
@@ -1837,6 +1869,7 @@ export class MessageService {
               AND self.domain = m."creatorDomain"
           )
           AND m."isDeleted" = false
+          AND m."localState" = 'READY'
           ${hiddenClause}
         ORDER BY m.id DESC
         LIMIT ${sampleLimit}
@@ -1934,6 +1967,7 @@ export class MessageService {
               AND self.domain = m."creatorDomain"
           )
           AND m."isDeleted" = false
+          AND m."localState" = 'READY'
           ${hiddenClause}
       )
       SELECT * FROM ranked WHERE rn <= ${perThreadLimit}
@@ -2010,6 +2044,8 @@ export class MessageService {
        )
       WHERE tp."accountId" = ${userId}
         AND tp."threadId" IN (${this.joinSql(threadIds)})
+        AND m."isDeleted" = false
+        AND m."localState" = 'READY'
         AND m."contentType" = 'PURE_TEXT'
         AND (
           strpos(m.content ->> 'text', '](somfp://user/') > 0
@@ -2060,6 +2096,8 @@ export class MessageService {
        AND tp."accountId" = ${userId}
        AND tp.muted = false
       WHERE m.id > ${sinceId}
+        AND m."isDeleted" = false
+        AND m."localState" = 'READY'
         AND NOT EXISTS (
           SELECT 1 FROM "User" self
           WHERE self.id = ${userId}

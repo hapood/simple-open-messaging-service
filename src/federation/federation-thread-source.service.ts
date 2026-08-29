@@ -3,6 +3,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import { MessageThreadType } from '../database/enums.js';
 import { group, messageThread } from '../database/schema.js';
+import { FederationMessageContextError } from './federation-errors.js';
 import type { FederationReverseThreadSource } from './federation-reverse-thread-source.js';
 
 @Injectable()
@@ -27,8 +28,32 @@ export class FederationThreadSourceService {
       .limit(1);
     if (groupThread) {
       if (groupThread.domain !== 'local' && groupThread.domain !== peerDomain) {
-        throw new Error(
+        throw new FederationMessageContextError(
           `group thread ${threadId} is not sourced by ${peerDomain}`,
+        );
+      }
+      const active = await this.database.db.execute(sql`
+        SELECT 1
+        FROM "RelationshipPair" pair
+        JOIN "User" member_identity
+          ON ((pair."endpointAType" = 'USER'
+               AND pair."endpointAAccount" = member_identity.account
+               AND pair."endpointADomain" = member_identity.domain)
+           OR (pair."endpointBType" = 'USER'
+               AND pair."endpointBAccount" = member_identity.account
+               AND pair."endpointBDomain" = member_identity.domain))
+        WHERE pair.kind = 'GROUP_MEMBER'
+          AND pair.active = true
+          AND pair."threadId" = ${threadId}
+          AND ((${groupThread.domain} = ${peerDomain}
+                AND member_identity.domain = 'local')
+            OR (${groupThread.domain} = 'local'
+                AND member_identity.domain = ${peerDomain}))
+        LIMIT 1
+      `);
+      if (active.rows.length === 0) {
+        throw new FederationMessageContextError(
+          `group thread ${threadId} has no active federation source`,
         );
       }
       return {
@@ -76,7 +101,7 @@ export class FederationThreadSourceService {
     `);
     const p2p = pair.rows[0];
     if (!p2p) {
-      throw new Error(
+      throw new FederationMessageContextError(
         `federated mirror thread ${threadId} has no active federation source`,
       );
     }

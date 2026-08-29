@@ -1,8 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
-import { federationThreadSyncState } from '../database/schema.js';
+import {
+  federationThreadHistoryGap,
+  federationThreadSyncState,
+  messageThread,
+} from '../database/schema.js';
 import { FederationThreadSyncStateService } from './federation-thread-sync-state.service.js';
 
-function transaction(updated = true) {
+function lockedThreadSelect(authorizationEpoch: number) {
+  const limit = vi.fn().mockResolvedValue([{ authorizationEpoch }]);
+  const forUpdate = vi.fn().mockReturnValue({ limit });
+  const where = vi.fn().mockReturnValue({ for: forUpdate });
+  const from = vi.fn().mockReturnValue({ where });
+  return vi.fn().mockReturnValue({ from });
+}
+
+function processedPositionTransaction(updated = true) {
   const returning = vi
     .fn()
     .mockResolvedValue(updated ? [{ threadId: 31 }] : []);
@@ -12,41 +24,84 @@ function transaction(updated = true) {
   return { tx: { update }, update, set };
 }
 
-function insertTransaction(closureOriginSeq: number | null = null) {
-  const where = vi.fn().mockResolvedValue([{ originSeq: closureOriginSeq }]);
-  const from = vi.fn().mockReturnValue({ where });
-  const select = vi.fn().mockReturnValue({ from });
-  const returning = vi.fn().mockResolvedValue([{ threadId: 31 }]);
-  const onConflictDoNothing = vi.fn().mockReturnValue({ returning });
-  const values = vi.fn().mockReturnValue({ onConflictDoNothing });
-  const insert = vi.fn().mockReturnValue({ values });
-  return { tx: { select, insert }, values };
+function missingStateTransaction(
+  authorizationEpoch: number,
+  gapId: bigint = 12n,
+) {
+  const select = lockedThreadSelect(authorizationEpoch);
+  const execute = vi.fn().mockResolvedValue({ rows: [] });
+  const gapReturning = vi.fn().mockResolvedValue([{ id: gapId }]);
+  const gapValues = vi.fn().mockReturnValue({ returning: gapReturning });
+  const stateValues = vi.fn().mockResolvedValue(undefined);
+  const insert = vi.fn((table: unknown) => ({
+    values: table === federationThreadHistoryGap ? gapValues : stateValues,
+  }));
+  return { tx: { select, execute, insert }, insert, gapValues, stateValues };
+}
+
+function epochTransaction(params: {
+  state: {
+    messageTargetSeq: number;
+    messageProcessedThroughSeq: number;
+    authorizationEpoch: number;
+    activeGapId: bigint | null;
+    historyBoundaryReached: boolean;
+  };
+  overlaps?: Array<{ id: bigint; startSeq: number; endSeq: number }>;
+  latestGapId?: bigint | null;
+  mergedGapId?: bigint;
+}) {
+  const threadSelect = lockedThreadSelect(params.state.authorizationEpoch + 1);
+  const latestLimit = vi
+    .fn()
+    .mockResolvedValue(
+      params.latestGapId === null
+        ? []
+        : [{ id: params.latestGapId ?? params.state.activeGapId ?? 12n }],
+    );
+  const orderBy = vi.fn().mockReturnValue({ limit: latestLimit });
+  const latestWhere = vi.fn().mockReturnValue({ orderBy });
+  const latestFrom = vi.fn().mockReturnValue({ where: latestWhere });
+  const select = vi.fn((shape?: unknown) =>
+    shape && 'authorizationEpoch' in (shape as object)
+      ? threadSelect(shape)
+      : { from: latestFrom },
+  );
+  const execute = vi
+    .fn()
+    .mockResolvedValueOnce({
+      rows: [
+        {
+          ...params.state,
+          deletionProcessedThroughSeq: 0,
+        },
+      ],
+    })
+    .mockResolvedValueOnce({ rows: params.overlaps ?? [] })
+    .mockResolvedValue({ rows: [] });
+  const mergedReturning = vi
+    .fn()
+    .mockResolvedValue([{ id: params.mergedGapId ?? 13n }]);
+  const onConflictDoUpdate = vi
+    .fn()
+    .mockReturnValue({ returning: mergedReturning });
+  const gapValues = vi.fn().mockReturnValue({ onConflictDoUpdate });
+  const insert = vi.fn().mockReturnValue({ values: gapValues });
+  const updateReturning = vi.fn().mockResolvedValue([{ threadId: 31 }]);
+  const updateWhere = vi.fn().mockReturnValue({ returning: updateReturning });
+  const set = vi.fn().mockReturnValue({ where: updateWhere });
+  const update = vi.fn().mockReturnValue({ set });
+  return {
+    tx: { select, execute, insert, update },
+    execute,
+    gapValues,
+    set,
+  };
 }
 
 describe('FederationThreadSyncStateService processed positions', () => {
-  it('persists an exclusive reverse cursor after the advertised tail', async () => {
-    const { tx, values } = insertTransaction(60);
-
-    await FederationThreadSyncStateService.mergeMessageTargetInTx(
-      tx as never,
-      31,
-      'peer.test',
-      80,
-      true,
-    );
-
-    expect(values).toHaveBeenCalledWith(
-      expect.objectContaining({
-        threadId: 31,
-        messageTargetSeq: 80,
-        reverseNextBeforeSeq: 81,
-        reverseClosureOriginSeq: 60,
-      }),
-    );
-  });
-
   it('advances message and deletion positions through the thread state row', async () => {
-    const message = transaction();
+    const message = processedPositionTransaction();
     await FederationThreadSyncStateService.advanceMessageProcessedThroughInTx(
       message.tx as never,
       31,
@@ -55,11 +110,8 @@ describe('FederationThreadSyncStateService processed positions', () => {
       12,
     );
     expect(message.update).toHaveBeenCalledWith(federationThreadSyncState);
-    expect(message.set).toHaveBeenCalledWith(
-      expect.objectContaining({ updatedAt: expect.any(Date) }),
-    );
 
-    const deletion = transaction();
+    const deletion = processedPositionTransaction();
     await FederationThreadSyncStateService.advanceDeletionProcessedThroughInTx(
       deletion.tx as never,
       31,
@@ -68,13 +120,10 @@ describe('FederationThreadSyncStateService processed positions', () => {
       7,
     );
     expect(deletion.update).toHaveBeenCalledWith(federationThreadSyncState);
-    expect(deletion.set).toHaveBeenCalledWith(
-      expect.objectContaining({ updatedAt: expect.any(Date) }),
-    );
   });
 
-  it('rejects a page boundary beyond the frozen round target', async () => {
-    const { tx, update } = transaction();
+  it('rejects a processed position beyond the frozen target', async () => {
+    const { tx, update } = processedPositionTransaction();
     await expect(
       FederationThreadSyncStateService.advanceMessageProcessedThroughInTx(
         tx as never,
@@ -86,174 +135,357 @@ describe('FederationThreadSyncStateService processed positions', () => {
     ).rejects.toThrow('must not exceed its frozen target');
     expect(update).not.toHaveBeenCalled();
   });
+});
 
-  it('rejects an advance when the thread state no longer provides the target', async () => {
-    const { tx } = transaction(false);
+describe('FederationThreadSyncStateService initial history interval', () => {
+  it.each([
+    { latest: 0, processed: 0 },
+    { latest: 1, processed: 0 },
+  ])(
+    'creates no reverse gap when latest=$latest',
+    async ({ latest, processed }) => {
+      const mock = missingStateTransaction(7);
+
+      await expect(
+        FederationThreadSyncStateService.reconcileThreadHeadInTx(
+          mock.tx as never,
+          {
+            threadId: 31,
+            peerDomain: 'peer.test',
+            messageTargetSeq: latest,
+            deletionTargetSeq: 0,
+            reverseEnabled: true,
+          },
+        ),
+      ).resolves.toEqual({
+        created: true,
+        epochChanged: false,
+        reverseRequired: false,
+        tombstoneMaxMessageSeq: latest,
+      });
+      expect(mock.insert).toHaveBeenCalledTimes(1);
+      expect(mock.stateValues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messageProcessedThroughSeq: processed,
+          activeGapId: null,
+          historyBoundaryReached: true,
+        }),
+      );
+    },
+  );
+
+  it('puts only older messages in the reverse gap and leaves latest for forward', async () => {
+    const mock = missingStateTransaction(7);
+
     await expect(
-      FederationThreadSyncStateService.advanceDeletionProcessedThroughInTx(
-        tx as never,
-        31,
-        'peer.test',
-        5,
-        7,
+      FederationThreadSyncStateService.reconcileThreadHeadInTx(
+        mock.tx as never,
+        {
+          threadId: 31,
+          peerDomain: 'peer.test',
+          messageTargetSeq: 2,
+          deletionTargetSeq: 0,
+          reverseEnabled: true,
+        },
       ),
-    ).rejects.toThrow('has no deletion target for this round');
-  });
-
-  it('commits reverse progress only from the frozen before cursor', async () => {
-    const reverse = transaction();
-
-    await FederationThreadSyncStateService.commitReverseProgressInTx(
-      reverse.tx as never,
-      {
-        threadId: 31,
-        peerDomain: 'peer.test',
-        frozenBeforeSeq: 80,
-        frozenClosureOriginSeq: null,
-        nextBeforeSeq: 30,
-        historyBoundaryReached: false,
-      },
+    ).resolves.toEqual({
+      created: true,
+      epochChanged: false,
+      reverseRequired: true,
+      tombstoneMaxMessageSeq: 2,
+    });
+    expect(mock.gapValues).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: 31, startSeq: 1, endSeq: 1 }),
     );
-
-    expect(reverse.update).toHaveBeenCalledWith(federationThreadSyncState);
-    expect(reverse.set).toHaveBeenCalledWith(
+    expect(mock.stateValues).toHaveBeenCalledWith(
       expect.objectContaining({
-        reverseNextBeforeSeq: 30,
-        reverseClosureOriginSeq: null,
+        messageTargetSeq: 2,
+        messageProcessedThroughSeq: 1,
+        activeGapId: 12n,
         historyBoundaryReached: false,
-        updatedAt: expect.any(Date),
       }),
     );
-  });
-
-  it('rejects reverse movement beyond the frozen before cursor', async () => {
-    const { tx, update } = transaction();
-
-    await expect(
-      FederationThreadSyncStateService.commitReverseProgressInTx(tx as never, {
-        threadId: 31,
-        peerDomain: 'peer.test',
-        frozenBeforeSeq: 80,
-        frozenClosureOriginSeq: null,
-        nextBeforeSeq: 81,
-        historyBoundaryReached: false,
-      }),
-    ).rejects.toThrow('must not exceed its frozen before cursor');
-    expect(update).not.toHaveBeenCalled();
-  });
-
-  it('rejects stale reverse completion', async () => {
-    const { tx } = transaction(false);
-
-    await expect(
-      FederationThreadSyncStateService.commitReverseProgressInTx(tx as never, {
-        threadId: 31,
-        peerDomain: 'peer.test',
-        frozenBeforeSeq: 80,
-        frozenClosureOriginSeq: null,
-        nextBeforeSeq: 30,
-        historyBoundaryReached: false,
-      }),
-    ).rejects.toThrow('reverse position changed during the round');
   });
 });
 
-describe('FederationThreadSyncStateService reverse batch reuse', () => {
-  it('uses the oldest of take distinct durable source coordinates', async () => {
-    const execute = vi.fn().mockResolvedValue({
-      rows: Array.from({ length: 50 }, (_, index) => ({
-        sourceSeq: 100 - index,
-      })),
+describe('FederationThreadSyncStateService epoch interval reconciliation', () => {
+  it('merges a state-only old interval with the newly skipped interval', async () => {
+    const mock = epochTransaction({
+      state: {
+        messageTargetSeq: 100,
+        messageProcessedThroughSeq: 99,
+        authorizationEpoch: 7,
+        activeGapId: 12n,
+        historyBoundaryReached: false,
+      },
+      overlaps: [{ id: 12n, startSeq: 1, endSeq: 99 }],
     });
-    const service = new FederationThreadSyncStateService({
-      db: { execute },
-    } as never);
 
     await expect(
-      service.deriveReusableReverseBatch({
-        threadId: 31,
-        peerDomain: 'peer.test',
-        beforeSeq: 101,
-        closureOriginSeq: null,
-        take: 50,
-      }),
-    ).resolves.toMatchObject({
-      batchOldestSeq: 51,
-      reachedClosureTarget: false,
-      canSkipMessageQuery: true,
-    });
-  });
-
-  it('requires a remote message query when fewer than take coordinates exist', async () => {
-    const execute = vi.fn().mockResolvedValue({
-      rows: Array.from({ length: 49 }, (_, index) => ({
-        sourceSeq: 100 - index,
-      })),
-    });
-    const service = new FederationThreadSyncStateService({
-      db: { execute },
-    } as never);
-
-    await expect(
-      service.deriveReusableReverseBatch({
-        threadId: 31,
-        peerDomain: 'peer.test',
-        beforeSeq: 101,
-        closureOriginSeq: null,
-        take: 50,
-      }),
-    ).resolves.toMatchObject({
-      batchOldestSeq: null,
-      reachedClosureTarget: false,
-      canSkipMessageQuery: false,
-    });
-  });
-
-  it('closes a partial reusable batch when it contains the persisted target', async () => {
-    const execute = vi.fn().mockResolvedValue({
-      rows: [{ sourceSeq: 70 }, { sourceSeq: 60 }],
-    });
-    const service = new FederationThreadSyncStateService({
-      db: { execute },
-    } as never);
-
-    await expect(
-      service.deriveReusableReverseBatch({
-        threadId: 31,
-        peerDomain: 'peer.test',
-        beforeSeq: 80,
-        closureOriginSeq: 60,
-        take: 50,
-      }),
+      FederationThreadSyncStateService.reconcileThreadHeadInTx(
+        mock.tx as never,
+        {
+          threadId: 31,
+          peerDomain: 'peer.test',
+          messageTargetSeq: 200,
+          deletionTargetSeq: 0,
+          reverseEnabled: true,
+        },
+      ),
     ).resolves.toEqual({
-      sourceSeqs: [70, 60],
-      batchOldestSeq: 60,
-      reachedClosureTarget: true,
-      canSkipMessageQuery: true,
+      created: false,
+      epochChanged: true,
+      reverseRequired: true,
+      tombstoneMaxMessageSeq: 99,
     });
+
+    expect(mock.gapValues).toHaveBeenCalledWith(
+      expect.objectContaining({ startSeq: 1, endSeq: 199 }),
+    );
+    expect(mock.set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageTargetSeq: 200,
+        messageProcessedThroughSeq: 199,
+        activeGapId: 13n,
+      }),
+    );
   });
 
-  it('clears the closure target when reverse history completes', async () => {
-    const reverse = transaction();
+  it('keeps two gaps when committed forward messages separate them', async () => {
+    const mock = epochTransaction({
+      state: {
+        messageTargetSeq: 150,
+        messageProcessedThroughSeq: 150,
+        authorizationEpoch: 7,
+        activeGapId: 12n,
+        historyBoundaryReached: false,
+      },
+      overlaps: [],
+    });
 
-    await FederationThreadSyncStateService.commitReverseProgressInTx(
-      reverse.tx as never,
+    await FederationThreadSyncStateService.reconcileThreadHeadInTx(
+      mock.tx as never,
       {
         threadId: 31,
         peerDomain: 'peer.test',
-        frozenBeforeSeq: 80,
-        frozenClosureOriginSeq: 60,
-        nextBeforeSeq: 60,
-        historyBoundaryReached: true,
+        messageTargetSeq: 200,
+        deletionTargetSeq: 0,
+        reverseEnabled: true,
       },
     );
 
-    expect(reverse.set).toHaveBeenCalledWith(
-      expect.objectContaining({
-        reverseNextBeforeSeq: 60,
-        reverseClosureOriginSeq: null,
+    expect(mock.gapValues).toHaveBeenCalledWith(
+      expect.objectContaining({ startSeq: 151, endSeq: 199 }),
+    );
+    expect(mock.set).toHaveBeenCalledWith(
+      expect.objectContaining({ activeGapId: 13n }),
+    );
+  });
+
+  it('creates the next interval after a reverse-only completed epoch', async () => {
+    const mock = epochTransaction({
+      state: {
+        messageTargetSeq: 100,
+        messageProcessedThroughSeq: 100,
+        authorizationEpoch: 7,
+        activeGapId: null,
         historyBoundaryReached: true,
+      },
+      overlaps: [],
+    });
+
+    await FederationThreadSyncStateService.reconcileThreadHeadInTx(
+      mock.tx as never,
+      {
+        threadId: 31,
+        peerDomain: 'peer.test',
+        messageTargetSeq: 200,
+        deletionTargetSeq: 0,
+        reverseEnabled: true,
+      },
+    );
+
+    expect(mock.gapValues).toHaveBeenCalledWith(
+      expect.objectContaining({ startSeq: 101, endSeq: 199 }),
+    );
+  });
+
+  it('does not create an empty gap when new latest equals committed plus one', async () => {
+    const mock = epochTransaction({
+      state: {
+        messageTargetSeq: 150,
+        messageProcessedThroughSeq: 150,
+        authorizationEpoch: 7,
+        activeGapId: 12n,
+        historyBoundaryReached: false,
+      },
+      latestGapId: 12n,
+    });
+
+    await FederationThreadSyncStateService.reconcileThreadHeadInTx(
+      mock.tx as never,
+      {
+        threadId: 31,
+        peerDomain: 'peer.test',
+        messageTargetSeq: 151,
+        deletionTargetSeq: 0,
+        reverseEnabled: true,
+      },
+    );
+
+    expect(mock.gapValues).not.toHaveBeenCalled();
+    expect(mock.set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageTargetSeq: 151,
+        messageProcessedThroughSeq: 150,
+        activeGapId: 12n,
       }),
     );
+  });
+});
+
+describe('FederationThreadSyncStateService reverse window reconstruction', () => {
+  it('uses only the active gap coordinates', async () => {
+    const findFirst = vi.fn().mockResolvedValue({
+      authorizationEpoch: 8,
+      activeGapId: 12n,
+      historyBoundaryReached: false,
+    });
+    const execute = vi
+      .fn()
+      .mockResolvedValue({ rows: [{ startSeq: 1, endSeq: 99 }] });
+    const service = new FederationThreadSyncStateService({
+      db: {
+        query: { federationThreadSyncState: { findFirst } },
+        execute,
+      },
+    } as never);
+
+    await expect(
+      service.resolveReverseWindow(31, 'peer.test'),
+    ).resolves.toEqual({
+      authorizationEpoch: 8,
+      gapId: 12n,
+      beforeSeq: 100,
+      throughSeq: 1,
+    });
+  });
+
+  it('returns a terminal window when no recoverable interval remains', async () => {
+    const findFirst = vi.fn().mockResolvedValue({
+      authorizationEpoch: 8,
+      activeGapId: null,
+      historyBoundaryReached: true,
+    });
+    const execute = vi.fn();
+    const service = new FederationThreadSyncStateService({
+      db: {
+        query: { federationThreadSyncState: { findFirst } },
+        execute,
+      },
+    } as never);
+
+    await expect(
+      service.resolveReverseWindow(31, 'peer.test'),
+    ).resolves.toEqual({
+      authorizationEpoch: 8,
+      gapId: null,
+      beforeSeq: 0,
+      throughSeq: null,
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
+});
+
+describe('FederationThreadSyncStateService reverse closure commit', () => {
+  it('shrinks a committed reverse batch without waiting for message materialization', async () => {
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [{ authorizationEpoch: 7 }] })
+      .mockResolvedValueOnce({ rows: [{ activeGapId: '12' }] })
+      .mockResolvedValueOnce({ rows: [{ startSeq: 1, endSeq: 99 }] });
+    const returning = vi.fn().mockResolvedValue([{ id: 12n }]);
+    const where = vi.fn().mockReturnValue({ returning });
+    const set = vi.fn().mockReturnValue({ where });
+    const update = vi.fn().mockReturnValue({ set });
+    const applyDependencies = vi.fn().mockResolvedValue(undefined);
+
+    await FederationThreadSyncStateService.commitReverseBatchInTx(
+      { execute, update } as never,
+      {
+        threadId: 31,
+        peerDomain: 'peer.test',
+        authorizationEpoch: 7,
+        gapId: 12n,
+        beforeSeq: 100,
+        scannedThrough: 50,
+        throughSeq: 1,
+        closesGap: false,
+        applyDependencies,
+      },
+    );
+
+    expect(applyDependencies).toHaveBeenCalledOnce();
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ endSeq: 49 }));
+  });
+
+  it('moves the active reference before deleting the completed gap', async () => {
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [{ authorizationEpoch: 7 }] })
+      .mockResolvedValueOnce({ rows: [{ activeGapId: '12' }] })
+      .mockResolvedValueOnce({ rows: [{ startSeq: 1, endSeq: 99 }] });
+    const nextLimit = vi.fn().mockResolvedValue([{ id: 11n }]);
+    const orderBy = vi.fn().mockReturnValue({ limit: nextLimit });
+    const selectWhere = vi.fn().mockReturnValue({ orderBy });
+    const from = vi.fn().mockReturnValue({ where: selectWhere });
+    const select = vi.fn().mockReturnValue({ from });
+    const returning = vi.fn().mockResolvedValue([{ threadId: 31 }]);
+    const updateWhere = vi.fn().mockReturnValue({ returning });
+    const set = vi.fn().mockReturnValue({ where: updateWhere });
+    const update = vi.fn().mockReturnValue({ set });
+    const deleteWhere = vi.fn().mockResolvedValue(undefined);
+    const remove = vi.fn().mockReturnValue({ where: deleteWhere });
+
+    await FederationThreadSyncStateService.commitReverseBatchInTx(
+      { execute, select, update, delete: remove } as never,
+      {
+        threadId: 31,
+        peerDomain: 'peer.test',
+        authorizationEpoch: 7,
+        gapId: 12n,
+        beforeSeq: 100,
+        scannedThrough: 1,
+        throughSeq: 1,
+        closesGap: true,
+      },
+    );
+
+    expect(set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        activeGapId: 11n,
+        historyBoundaryReached: false,
+      }),
+    );
+    expect(update.mock.invocationCallOrder[0]).toBeLessThan(
+      remove.mock.invocationCallOrder[0]!,
+    );
+  });
+});
+
+it('locks MessageThread when reconciling a head', async () => {
+  const mock = missingStateTransaction(7);
+  await FederationThreadSyncStateService.reconcileThreadHeadInTx(
+    mock.tx as never,
+    {
+      threadId: 31,
+      peerDomain: 'peer.test',
+      messageTargetSeq: 0,
+      deletionTargetSeq: 0,
+      reverseEnabled: true,
+    },
+  );
+  expect(mock.tx.select).toHaveBeenCalledWith({
+    authorizationEpoch: messageThread.authorizationEpoch,
   });
 });

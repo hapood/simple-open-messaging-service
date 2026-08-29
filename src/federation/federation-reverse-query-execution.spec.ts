@@ -49,7 +49,7 @@ function reverseExecutor(federation: object) {
 }
 
 describe('federation reverse query execution', () => {
-  it('uses the frozen reverse cursors directly and applies the historical page', async () => {
+  it('uses the frozen reverse cursors and buffers the historical page for commit', async () => {
     const response = {
       data: { messages: [message(70)], scannedThrough: 70, hasMore: true },
       threadId: 31,
@@ -58,11 +58,7 @@ describe('federation reverse query execution', () => {
       peerToken,
     };
     const fetchThreadResource = vi.fn().mockResolvedValue(response);
-    const applyReverseMessagePage = vi.fn().mockResolvedValue(undefined);
-    const executor = reverseExecutor({
-      fetchThreadResource,
-      applyReverseMessagePage,
-    });
+    const executor = reverseExecutor({ fetchThreadResource });
 
     await expect(
       executor.fetchMessages(groupSource, {
@@ -70,19 +66,21 @@ describe('federation reverse query execution', () => {
         through: 40,
         take: 20,
       }),
-    ).resolves.toEqual({ kind: 'page', scannedThrough: 70, hasMore: true });
+    ).resolves.toEqual({
+      result: { kind: 'page', scannedThrough: 70, hasMore: true },
+      batch: {
+        response,
+        before: 100,
+        through: 40,
+        prefetchedForwardClosures: new Map(),
+      },
+    });
     expect(fetchThreadResource).toHaveBeenCalledWith(
       31,
       '/s2s/v1/messages?account=%21group&before=100&through=40&take=20&includeSelf=true',
       'origin.test',
       16 * 1024 * 1024,
     );
-    expect(applyReverseMessagePage).toHaveBeenCalledWith({
-      response,
-      before: 100,
-      through: 40,
-      prefetchedForwardClosures: new Map(),
-    });
   });
 
   it('recognizes only the lower cursor error as a history boundary', async () => {
@@ -101,7 +99,10 @@ describe('federation reverse query execution', () => {
 
     await expect(
       executor.fetchMessages(groupSource, { before: 60, take: 20 }),
-    ).resolves.toEqual({ kind: 'history-boundary' });
+    ).resolves.toEqual({
+      result: { kind: 'history-boundary' },
+      batch: null,
+    });
   });
 
   it('drains every departed-member page in the frozen message window', async () => {
@@ -137,7 +138,6 @@ describe('federation reverse query execution', () => {
         federationVersion: 4,
         peerToken,
       });
-    const applyPageInTransaction = vi.fn();
     const federation = {
       fetchThreadResource,
       assertThreadResourceResponseWritableInTransaction: vi.fn(),
@@ -151,15 +151,14 @@ describe('federation reverse query execution', () => {
       {} as never,
       federation as never,
     );
-    Object.assign(consumer, { applyPageInTransaction });
 
     await expect(
-      consumer.process(groupSource, {
+      consumer.fetch(groupSource, {
         before: 100,
         through: 50,
         take: 20,
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual([profile(80), profile(60)]);
     expect(fetchThreadResource).toHaveBeenNthCalledWith(
       2,
       31,
@@ -167,6 +166,5 @@ describe('federation reverse query execution', () => {
       'origin.test',
       4 * 1024 * 1024,
     );
-    expect(applyPageInTransaction).toHaveBeenCalledTimes(2);
   });
 });

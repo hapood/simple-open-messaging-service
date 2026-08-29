@@ -1,4 +1,4 @@
-// Unit tests for MessageService.attachMediaStatus — the bulk ready/failed判定 that backs the
+// Unit tests for MessageService.attachMediaStatus — the bulk readiness decision that backs the
 // query-messages mediaStatus field + the scroll-probe media-status endpoint. Drizzle is mocked.
 import { describe, it, expect, vi } from 'vitest';
 import { derivePreview, MessageService } from './message.service.js';
@@ -50,7 +50,7 @@ function databaseMock(queries: {
   };
 }
 
-/** Minimal Message row (only the fields attachMediaStatus reads: id, seq, content, contentType). */
+/** Minimal persisted Message row with the database's READY default. */
 function mk(
   p: Partial<Message> & { id: bigint; seq: number; content: string },
 ): Message {
@@ -62,6 +62,7 @@ function mk(
     createdAt: new Date(),
     updatedAt: new Date(),
     isDeleted: false,
+    localState: 'READY',
     ...p,
   } as Message;
 }

@@ -1,17 +1,17 @@
--- Greenfield schema baseline, consolidated on 2026-08-24.
+-- Greenfield schema baseline, consolidated on 2026-08-29.
 -- Keep this file in sync with src/database/schema.ts.
 
 --
 -- PostgreSQL database dump
 --
 
-
--- Dumped from database version 16.14
--- Dumped by pg_dump version 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
+-- Dumped from database version 18.4 (Debian 18.4-1.pgdg13+1)
+-- Dumped by pg_dump version 18.4 (Debian 18.4-1.pgdg13+1)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
+SET transaction_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
 SET check_function_bodies = false;
@@ -99,7 +99,7 @@ CREATE TYPE public."FileSyncStatus" AS ENUM (
 
 CREATE TYPE public."GroupMetaMemberOperation" AS ENUM (
     'UPSERT',
-    'DELETE'
+    'DEPART'
 );
 
 
@@ -119,8 +119,19 @@ CREATE TYPE public."GroupRole" AS ENUM (
 --
 
 CREATE TYPE public."MessageDeleteType" AS ENUM (
-    'WITHDRAW',
-    'REPORT'
+    'USER_RETRACTION',
+    'MODERATION_REMOVAL'
+);
+
+
+--
+-- Name: MessageLocalState; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public."MessageLocalState" AS ENUM (
+    'STUB',
+    'FAILED',
+    'READY'
 );
 
 
@@ -152,7 +163,8 @@ CREATE TYPE public."MessageThreadType" AS ENUM (
 CREATE TYPE public."PeerStateEventType" AS ENUM (
     'PROFILE',
     'RELATIONSHIP_INTENT',
-    'GROUP_META_FEED_HEAD'
+    'GROUP_META_FEED_HEAD',
+    'THREAD_CONTENT_HEAD'
 );
 
 
@@ -212,6 +224,22 @@ $$;
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
+
+--
+-- Name: Account; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public."Account" (
+    id integer NOT NULL,
+    "hashPwd" character varying(127),
+    "mustChangePassword" boolean DEFAULT false NOT NULL,
+    "disabledAt" timestamp(3) with time zone,
+    "stateFeedAllocatedThrough" integer DEFAULT 0 NOT NULL,
+    "readRevision" integer DEFAULT 0 NOT NULL,
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
 
 --
 -- Name: Admin; Type: TABLE; Schema: public; Owner: -
@@ -365,8 +393,8 @@ CREATE TABLE public."CallTombstone" (
 --
 
 CREATE TABLE public."ClientGroupMetaFeedTarget" (
-    "userId" integer NOT NULL,
-    "groupUserId" integer NOT NULL,
+    "accountId" integer NOT NULL,
+    "groupId" integer NOT NULL,
     "allocatedThrough" bigint DEFAULT 0 NOT NULL,
     "oldestAvailableAfter" bigint DEFAULT 0 NOT NULL,
     active boolean DEFAULT true NOT NULL,
@@ -381,19 +409,17 @@ CREATE TABLE public."ClientGroupMetaFeedTarget" (
 --
 
 CREATE TABLE public."ClientGroupMetaMemberFeed" (
-    "userId" integer NOT NULL,
-    "groupUserId" integer NOT NULL,
+    "accountId" integer NOT NULL,
+    "groupId" integer NOT NULL,
     "feedId" bigint NOT NULL,
     "memberAccount" character varying(31) NOT NULL,
     "memberDomain" character varying(63) NOT NULL,
-    "memberRev" integer NOT NULL,
     operation public."GroupMetaMemberOperation" NOT NULL,
     body jsonb NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT "ClientGroupMetaMemberFeed_body_check" CHECK ((((operation = 'UPSERT'::public."GroupMetaMemberOperation") AND (body <> '{}'::jsonb)) OR ((operation = 'DELETE'::public."GroupMetaMemberOperation") AND (body = '{}'::jsonb)))),
-    CONSTRAINT "ClientGroupMetaMemberFeed_feedId_check" CHECK (("feedId" > 0)),
-    CONSTRAINT "ClientGroupMetaMemberFeed_memberRev_check" CHECK (("memberRev" >= 0))
+    CONSTRAINT "ClientGroupMetaMemberFeed_body_check" CHECK ((((operation = 'UPSERT'::public."GroupMetaMemberOperation") AND (body <> '{}'::jsonb)) OR ((operation = 'DEPART'::public."GroupMetaMemberOperation") AND (body = '{}'::jsonb)))),
+    CONSTRAINT "ClientGroupMetaMemberFeed_feedId_check" CHECK (("feedId" > 0))
 );
 
 
@@ -434,7 +460,7 @@ CREATE TABLE public."ClientMessageTombstoneFeed" (
     "userId" integer NOT NULL,
     "threadId" integer NOT NULL,
     "feedId" integer NOT NULL,
-    "tombstoneEndSeq" bigint NOT NULL,
+    "tombstoneEndSeq" integer NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT "ClientMessageTombstoneFeed_feedId_check" CHECK (("feedId" > 0)),
     CONSTRAINT "ClientMessageTombstoneFeed_tombstoneEndSeq_check" CHECK (("tombstoneEndSeq" > 0))
@@ -451,7 +477,7 @@ CREATE TABLE public."ClientStateFeed" (
     domain character varying(63) NOT NULL,
     "eventType" character varying(31) NOT NULL,
     "subjectAccount" character varying(31) DEFAULT ''::character varying NOT NULL,
-    "subjectDomain" character varying(63) DEFAULT ''::character varying NOT NULL,
+    "subjectDomain" character varying(63) DEFAULT 'local'::character varying NOT NULL,
     "feedId" integer NOT NULL,
     body jsonb NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -465,34 +491,16 @@ CREATE TABLE public."ClientStateFeed" (
 --
 
 CREATE TABLE public."DeletedMessage" (
-    id bigint NOT NULL,
     "threadId" integer NOT NULL,
-    seq integer NOT NULL,
+    "messageSeq" integer CONSTRAINT "DeletedMessage_seq_not_null" NOT NULL,
     type public."MessageDeleteType" NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "federationSourceDomain" character varying(63),
-    CONSTRAINT "DeletedMessage_seq_check" CHECK ((seq > 0))
+    "deletionSeq" integer NOT NULL,
+    CONSTRAINT "DeletedMessage_deletionSeq_check" CHECK (("deletionSeq" > 0)),
+    CONSTRAINT "DeletedMessage_messageSeq_check" CHECK (("messageSeq" > 0))
 );
-
-
---
--- Name: DeletedMessage_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public."DeletedMessage_id_seq"
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: DeletedMessage_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public."DeletedMessage_id_seq" OWNED BY public."DeletedMessage".id;
 
 
 --
@@ -558,44 +566,6 @@ CREATE TABLE public."FederatedFriendRequest" (
 
 
 --
--- Name: FederatedGroupMember; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."FederatedGroupMember" (
-    "sourcePeerDomain" character varying(63) NOT NULL,
-    "groupAccount" character varying(31) NOT NULL,
-    "memberAccount" character varying(31) NOT NULL,
-    "memberDomain" character varying(63) NOT NULL,
-    "memberRev" integer NOT NULL,
-    role public."GroupRole" NOT NULL,
-    "seenAtFeedId" bigint NOT NULL,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT "FederatedGroupMember_groupAccount_check" CHECK ((("groupAccount")::text ~~ '!%'::text)),
-    CONSTRAINT "FederatedGroupMember_memberRev_check" CHECK (("memberRev" >= 0)),
-    CONSTRAINT "FederatedGroupMember_seenAtFeedId_check" CHECK (("seenAtFeedId" >= 0))
-);
-
-
---
--- Name: FederatedMemberProfile; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."FederatedMemberProfile" (
-    "sourcePeerDomain" character varying(63) NOT NULL,
-    "memberAccount" character varying(31) NOT NULL,
-    "memberDomain" character varying(63) NOT NULL,
-    revision integer NOT NULL,
-    availability character varying(16) NOT NULL,
-    "displayName" character varying(30),
-    avatar character varying(255),
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT "FederatedMemberProfile_availability_check" CHECK (((availability)::text = ANY (ARRAY[('AVAILABLE'::character varying)::text, ('REMOVED'::character varying)::text]))),
-    CONSTRAINT "FederatedMemberProfile_body_check" CHECK (((((availability)::text = 'AVAILABLE'::text) AND ("displayName" IS NOT NULL)) OR (((availability)::text = 'REMOVED'::text) AND ("displayName" IS NULL) AND (avatar IS NULL)))),
-    CONSTRAINT "FederatedMemberProfile_revision_check" CHECK ((revision >= 0))
-);
-
-
---
 -- Name: FederatedMessageTombstone; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -605,12 +575,13 @@ CREATE TABLE public."FederatedMessageTombstone" (
     "messageSeq" integer NOT NULL,
     "authorityDomain" character varying(255) NOT NULL,
     "sourceDomain" character varying(255) NOT NULL,
-    "remoteDeletedId" bigint NOT NULL,
+    "remoteDeletionSeq" integer CONSTRAINT "FederatedMessageTombstone_remoteDeletedId_not_null" NOT NULL,
     type public."MessageDeleteType" NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "authorityDeletedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT "FederatedMessageTombstone_message_seq_check" CHECK (("messageSeq" > 0))
+    CONSTRAINT "FederatedMessageTombstone_message_seq_check" CHECK (("messageSeq" > 0)),
+    CONSTRAINT "FederatedMessageTombstone_remoteDeletionSeq_check" CHECK (("remoteDeletionSeq" > 0))
 );
 
 
@@ -732,22 +703,6 @@ COMMENT ON TABLE public."FederatedPeerReset" IS 'Persistent tombstone preventing
 
 
 --
--- Name: FederatedProfile; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."FederatedProfile" (
-    domain character varying(63) NOT NULL,
-    account character varying(31) NOT NULL,
-    revision integer NOT NULL,
-    "displayName" character varying(30) NOT NULL,
-    bio character varying(255) DEFAULT ''::character varying NOT NULL,
-    avatar character varying(255),
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT "FederatedProfile_revision_check" CHECK ((revision >= 0))
-);
-
-
---
 -- Name: FederationDeletedCursor; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -757,9 +712,10 @@ CREATE TABLE public."FederationDeletedCursor" (
     "peerDomain" character varying(255) NOT NULL,
     "streamAccount" character varying(255) DEFAULT ''::character varying NOT NULL,
     "streamKind" character varying(32) NOT NULL,
-    "deletedHwm" bigint DEFAULT 0 NOT NULL,
+    "committedThrough" integer DEFAULT 0 CONSTRAINT "FederationDeletedCursor_deletedHwm_not_null" NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "FederationDeletedCursor_committedThrough_check" CHECK (("committedThrough" >= 0))
 );
 
 
@@ -783,34 +739,6 @@ ALTER SEQUENCE public."FederationDeletedCursor_id_seq" OWNED BY public."Federati
 
 
 --
--- Name: FederationMessageFeedIndex; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."FederationMessageFeedIndex" (
-    "peerDomain" character varying(63) NOT NULL,
-    "threadId" integer NOT NULL,
-    "feedId" bigint NOT NULL,
-    "messageEndSeq" integer NOT NULL,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT "FederationMessageFeedIndex_feedId_check" CHECK (("feedId" > 0)),
-    CONSTRAINT "FederationMessageFeedIndex_messageEndSeq_check" CHECK (("messageEndSeq" > 0))
-);
-
-
---
--- Name: FederationMessageQueryCursor; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."FederationMessageQueryCursor" (
-    "peerDomain" character varying(63) NOT NULL,
-    "threadKey" character varying(255) NOT NULL,
-    "committedThrough" integer NOT NULL,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT "FederationMessageQueryCursor_committedThrough_check" CHECK (("committedThrough" >= 0))
-);
-
-
---
 -- Name: FederationMessageReceipt; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -825,83 +753,57 @@ CREATE TABLE public."FederationMessageReceipt" (
 
 
 --
--- Name: FederationPullCursor; Type: TABLE; Schema: public; Owner: -
+-- Name: FederationThreadHistoryGap; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public."FederationPullCursor" (
-    "peerDomain" character varying(63) NOT NULL,
-    "committedThrough" bigint DEFAULT 0 NOT NULL,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "retainedAfter" bigint DEFAULT 0 NOT NULL,
-    initialized boolean DEFAULT false NOT NULL,
-    CONSTRAINT "FederationPullCursor_committedThrough_check" CHECK (("committedThrough" >= "retainedAfter")),
-    CONSTRAINT "FederationPullCursor_retainedAfter_check" CHECK (("retainedAfter" >= 0))
-);
-
-
---
--- Name: FederationServeCursor; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."FederationServeCursor" (
-    "peerDomain" character varying(63) NOT NULL,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "allocatedThrough" bigint DEFAULT 0 NOT NULL,
-    CONSTRAINT "FederationServeCursor_allocatedThrough_check" CHECK (("allocatedThrough" >= 0))
-);
-
-
---
--- Name: FederationTombstoneFeedIndex; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."FederationTombstoneFeedIndex" (
-    "peerDomain" character varying(63) NOT NULL,
+CREATE TABLE public."FederationThreadHistoryGap" (
+    id bigint NOT NULL,
     "threadId" integer NOT NULL,
-    "feedId" bigint NOT NULL,
-    "tombstoneEndSeq" bigint NOT NULL,
+    "startSeq" integer NOT NULL,
+    "endSeq" integer NOT NULL,
+    recoverable boolean DEFAULT true NOT NULL,
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT "FederationTombstoneFeedIndex_feedId_check" CHECK (("feedId" > 0)),
-    CONSTRAINT "FederationTombstoneFeedIndex_tombstoneEndSeq_check" CHECK (("tombstoneEndSeq" > 0))
+    CONSTRAINT "FederationThreadHistoryGap_interval_check" CHECK ((("startSeq" > 0) AND ("endSeq" >= "startSeq")))
 );
 
 
 --
--- Name: FederationTombstonePullCursor; Type: TABLE; Schema: public; Owner: -
+-- Name: FederationThreadHistoryGap_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
-CREATE TABLE public."FederationTombstonePullCursor" (
+CREATE SEQUENCE public."FederationThreadHistoryGap_id_seq"
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: FederationThreadHistoryGap_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public."FederationThreadHistoryGap_id_seq" OWNED BY public."FederationThreadHistoryGap".id;
+
+
+--
+-- Name: FederationThreadSyncState; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public."FederationThreadSyncState" (
+    "threadId" integer NOT NULL,
     "peerDomain" character varying(63) NOT NULL,
-    "committedThrough" bigint DEFAULT 0 NOT NULL,
+    "messageTargetSeq" integer DEFAULT 0 NOT NULL,
+    "deletionTargetSeq" integer DEFAULT 0 NOT NULL,
+    "messageProcessedThroughSeq" integer DEFAULT 0 NOT NULL,
+    "deletionProcessedThroughSeq" integer DEFAULT 0 NOT NULL,
+    "historyBoundaryReached" boolean DEFAULT false NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    initialized boolean DEFAULT false NOT NULL,
-    CONSTRAINT "FederationTombstonePullCursor_committedThrough_check" CHECK (("committedThrough" >= 0))
-);
-
-
---
--- Name: FederationTombstoneQueryCursor; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."FederationTombstoneQueryCursor" (
-    "peerDomain" character varying(63) NOT NULL,
-    "threadKey" character varying(255) NOT NULL,
-    "committedThrough" bigint NOT NULL,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT "FederationTombstoneQueryCursor_committedThrough_check" CHECK (("committedThrough" >= 0))
-);
-
-
---
--- Name: FederationTombstoneServeCursor; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."FederationTombstoneServeCursor" (
-    "peerDomain" character varying(63) NOT NULL,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "allocatedThrough" bigint DEFAULT 0 NOT NULL,
-    "sourceScannedThrough" bigint DEFAULT 0 NOT NULL,
-    CONSTRAINT "FederationTombstoneServeCursor_order_check" CHECK ((("sourceScannedThrough" >= 0) AND ("allocatedThrough" >= 0)))
+    "authorizationEpoch" integer DEFAULT 0 NOT NULL,
+    "activeGapId" bigint,
+    CONSTRAINT "FederationThreadSyncState_history_check" CHECK ((NOT ("historyBoundaryReached" AND ("activeGapId" IS NOT NULL)))),
+    CONSTRAINT "FederationThreadSyncState_messageSeqs_check" CHECK ((("messageTargetSeq" >= 0) AND ("deletionTargetSeq" >= 0) AND ("messageProcessedThroughSeq" >= 0) AND ("deletionProcessedThroughSeq" >= 0) AND ("messageProcessedThroughSeq" <= "messageTargetSeq") AND ("deletionProcessedThroughSeq" <= "deletionTargetSeq") AND ("authorizationEpoch" >= 0)))
 );
 
 
@@ -1010,14 +912,20 @@ CREATE TABLE public."ForwardMessage" (
 
 CREATE TABLE public."Group" (
     id integer NOT NULL,
-    "groupUserId" integer NOT NULL,
-    "ownerId" integer NOT NULL,
-    "rosterRev" integer DEFAULT 0 NOT NULL,
-    "remoteRosterRev" integer,
+    account character varying(31) NOT NULL,
+    domain character varying(63) DEFAULT 'local'::character varying NOT NULL,
+    name character varying(30) NOT NULL,
+    avatar text DEFAULT ''::text NOT NULL,
+    description character varying(255) DEFAULT ''::character varying NOT NULL,
+    "profileRev" integer DEFAULT 0 NOT NULL,
+    "remoteGroupMetaFeedId" bigint,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "dissolvedAt" timestamp(3) with time zone,
-    "remoteGroupMetaFeedId" bigint
+    "federationAuthorized" boolean DEFAULT false NOT NULL,
+    CONSTRAINT "Group_account_sigil_check" CHECK (((account)::text ~~ '!%'::text)),
+    CONSTRAINT "Group_local_federationAuthorized_check" CHECK ((((domain)::text <> 'local'::text) OR ("federationAuthorized" = false))),
+    CONSTRAINT "Group_profileRev_check" CHECK (("profileRev" >= 0))
 );
 
 
@@ -1028,7 +936,7 @@ CREATE TABLE public."Group" (
 CREATE TABLE public."GroupAuditLog" (
     id bigint NOT NULL,
     "eventKey" character varying(191) NOT NULL,
-    "groupUserId" integer,
+    "groupId" integer,
     "groupAccount" character varying(31) NOT NULL,
     "groupDomain" character varying(63) NOT NULL,
     "actorType" character varying(24) NOT NULL,
@@ -1065,34 +973,12 @@ ALTER SEQUENCE public."GroupAuditLog_id_seq" OWNED BY public."GroupAuditLog".id;
 
 
 --
--- Name: GroupJoinRequestProjection; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."GroupJoinRequestProjection" (
-    "managerUserId" integer NOT NULL,
-    "threadId" integer NOT NULL,
-    "applicantUserId" integer NOT NULL,
-    "feedId" integer NOT NULL,
-    "requestId" bigint NOT NULL,
-    status character varying(15) NOT NULL,
-    note character varying(255) DEFAULT ''::character varying NOT NULL,
-    "requestedAt" timestamp(3) with time zone NOT NULL,
-    "expiresAt" timestamp(3) with time zone NOT NULL,
-    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT "GroupJoinRequestProjection_feedId_check" CHECK (("feedId" > 0)),
-    CONSTRAINT "GroupJoinRequestProjection_retention_check" CHECK ((("expiresAt" > "requestedAt") AND ("expiresAt" <= ("requestedAt" + '7 days'::interval)))),
-    CONSTRAINT "GroupJoinRequestProjection_status_check" CHECK (((status)::text = ANY (ARRAY[('REQUESTED'::character varying)::text, ('ACCEPTED'::character varying)::text, ('REVOKED'::character varying)::text])))
-);
-
-
---
 -- Name: GroupMetaFeedTarget; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public."GroupMetaFeedTarget" (
     "targetPeerDomain" character varying(63) NOT NULL,
-    "groupUserId" integer NOT NULL,
+    "groupId" integer NOT NULL,
     "allocatedThrough" bigint DEFAULT 0 NOT NULL,
     "oldestAvailableAfter" bigint DEFAULT 0 NOT NULL,
     active boolean DEFAULT true NOT NULL,
@@ -1108,18 +994,40 @@ CREATE TABLE public."GroupMetaFeedTarget" (
 
 CREATE TABLE public."GroupMetaMemberFeed" (
     "targetPeerDomain" character varying(63) NOT NULL,
-    "groupUserId" integer NOT NULL,
+    "groupId" integer NOT NULL,
     "feedId" bigint NOT NULL,
     "memberAccount" character varying(31) NOT NULL,
     "memberDomain" character varying(63) NOT NULL,
-    "memberRev" integer NOT NULL,
     operation public."GroupMetaMemberOperation" NOT NULL,
     body jsonb NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT "GroupMetaMemberFeed_body_check" CHECK ((((operation = 'UPSERT'::public."GroupMetaMemberOperation") AND (body <> '{}'::jsonb)) OR ((operation = 'DELETE'::public."GroupMetaMemberOperation") AND (body = '{}'::jsonb)))),
-    CONSTRAINT "GroupMetaMemberFeed_feedId_check" CHECK (("feedId" > 0)),
-    CONSTRAINT "GroupMetaMemberFeed_memberRev_check" CHECK (("memberRev" >= 0))
+    CONSTRAINT "GroupMetaMemberFeed_body_check" CHECK ((body <> '{}'::jsonb)),
+    CONSTRAINT "GroupMetaMemberFeed_feedId_check" CHECK (("feedId" > 0))
+);
+
+
+--
+-- Name: GroupRequestProjection; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public."GroupRequestProjection" (
+    "managerUserId" integer CONSTRAINT "GroupJoinRequestProjection_managerUserId_not_null" NOT NULL,
+    "threadId" integer CONSTRAINT "GroupJoinRequestProjection_threadId_not_null" NOT NULL,
+    "memberUserId" integer CONSTRAINT "GroupJoinRequestProjection_applicantUserId_not_null" NOT NULL,
+    "feedId" integer CONSTRAINT "GroupJoinRequestProjection_feedId_not_null" NOT NULL,
+    "requestId" bigint CONSTRAINT "GroupJoinRequestProjection_requestId_not_null" NOT NULL,
+    status character varying(15) CONSTRAINT "GroupJoinRequestProjection_status_not_null" NOT NULL,
+    note character varying(255) DEFAULT ''::character varying CONSTRAINT "GroupJoinRequestProjection_note_not_null" NOT NULL,
+    "requestedAt" timestamp(3) with time zone CONSTRAINT "GroupJoinRequestProjection_requestedAt_not_null" NOT NULL,
+    "expiresAt" timestamp(3) with time zone CONSTRAINT "GroupJoinRequestProjection_expiresAt_not_null" NOT NULL,
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP CONSTRAINT "GroupJoinRequestProjection_createdAt_not_null" NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP CONSTRAINT "GroupJoinRequestProjection_updatedAt_not_null" NOT NULL,
+    direction character varying(15) NOT NULL,
+    CONSTRAINT "GroupRequestProjection_direction_check" CHECK (((direction)::text = ANY ((ARRAY['APPLICATION'::character varying, 'INVITATION'::character varying])::text[]))),
+    CONSTRAINT "GroupRequestProjection_feedId_check" CHECK (("feedId" > 0)),
+    CONSTRAINT "GroupRequestProjection_retention_check" CHECK ((("expiresAt" > "requestedAt") AND ("expiresAt" <= ("requestedAt" + '7 days'::interval)))),
+    CONSTRAINT "GroupRequestProjection_status_check" CHECK (((status)::text = ANY (ARRAY[('REQUESTED'::character varying)::text, ('ACCEPTED'::character varying)::text, ('REVOKED'::character varying)::text])))
 );
 
 
@@ -1141,43 +1049,6 @@ CREATE SEQUENCE public."Group_id_seq"
 --
 
 ALTER SEQUENCE public."Group_id_seq" OWNED BY public."Group".id;
-
-
---
--- Name: LinkCardRule; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."LinkCardRule" (
-    id integer NOT NULL,
-    hostname character varying(255) NOT NULL,
-    note character varying(100),
-    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "imageSelection" character varying(5) DEFAULT 'first'::character varying NOT NULL,
-    "descriptionSelection" character varying(5) DEFAULT 'first'::character varying NOT NULL,
-    CONSTRAINT "LinkCardRule_descriptionSelection_check" CHECK ((("descriptionSelection")::text = ANY (ARRAY[('first'::character varying)::text, ('last'::character varying)::text]))),
-    CONSTRAINT "LinkCardRule_imageSelection_check" CHECK ((("imageSelection")::text = ANY (ARRAY[('first'::character varying)::text, ('last'::character varying)::text])))
-);
-
-
---
--- Name: LinkCardRule_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public."LinkCardRule_id_seq"
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: LinkCardRule_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public."LinkCardRule_id_seq" OWNED BY public."LinkCardRule".id;
 
 
 --
@@ -1252,7 +1123,6 @@ CREATE TABLE public."Message" (
     "contentType" public."ContentType" NOT NULL,
     content jsonb NOT NULL,
     "threadId" integer NOT NULL,
-    creator integer,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone NOT NULL,
     "isDeleted" boolean DEFAULT false NOT NULL,
@@ -1260,9 +1130,12 @@ CREATE TABLE public."Message" (
     "originSeq" integer,
     "originServerTime" timestamp(3) with time zone,
     "federationSourceDomain" character varying(255),
+    "creatorAccount" character varying(31),
+    "creatorDomain" character varying(63),
+    "localState" public."MessageLocalState" DEFAULT 'READY'::public."MessageLocalState" NOT NULL,
     CONSTRAINT "Message_origin_seq_check" CHECK ((("originSeq" IS NULL) OR ("originSeq" > 0))),
     CONSTRAINT "Message_seq_check" CHECK ((seq > 0)),
-    CONSTRAINT "Message_system_creator_check" CHECK (((("contentType" = 'SYSTEM'::public."ContentType") AND (creator IS NULL)) OR (("contentType" <> 'SYSTEM'::public."ContentType") AND (creator IS NOT NULL))))
+    CONSTRAINT "Message_system_creator_check" CHECK (((("contentType" = 'SYSTEM'::public."ContentType") AND ("creatorAccount" IS NULL) AND ("creatorDomain" IS NULL)) OR (("contentType" <> 'SYSTEM'::public."ContentType") AND ("creatorAccount" IS NOT NULL) AND ("creatorDomain" IS NOT NULL))))
 );
 
 
@@ -1329,12 +1202,16 @@ CREATE TABLE public."MessageThread" (
     "lastMessageSeq" integer,
     "lastMessagePreview" character varying(255),
     "lastMessageAt" timestamp(3) with time zone,
-    "groupUserId" integer,
     "pullUntil" integer DEFAULT 0 NOT NULL,
     "federationTruncated" boolean DEFAULT false NOT NULL,
     "federationVersion" integer DEFAULT 0 NOT NULL,
+    "groupId" integer,
+    "deletionSeqAllocatedThrough" integer DEFAULT 0 NOT NULL,
+    "authorizationEpoch" integer DEFAULT 0 NOT NULL,
+    CONSTRAINT "MessageThread_authorizationEpoch_check" CHECK (("authorizationEpoch" >= 0)),
+    CONSTRAINT "MessageThread_deletionSeqAllocatedThrough_check" CHECK (("deletionSeqAllocatedThrough" >= 0)),
     CONSTRAINT "MessageThread_federationVersion_check" CHECK (("federationVersion" >= 0)),
-    CONSTRAINT "MessageThread_groupUserId_type_check" CHECK (("federationTruncated" OR ((type = 'P2P'::public."MessageThreadType") = ("groupUserId" IS NULL))))
+    CONSTRAINT "MessageThread_groupId_type_check" CHECK (("federationTruncated" OR ((type = 'P2P'::public."MessageThreadType") = ("groupId" IS NULL))))
 );
 
 
@@ -1350,13 +1227,6 @@ COMMENT ON COLUMN public."MessageThread"."federationTruncated" IS 'True after fe
 --
 
 COMMENT ON COLUMN public."MessageThread"."federationVersion" IS 'Incremented when federation truncation completes; stale asynchronous responses must not write across versions.';
-
-
---
--- Name: CONSTRAINT "MessageThread_groupUserId_type_check" ON "MessageThread"; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON CONSTRAINT "MessageThread_groupUserId_type_check" ON public."MessageThread" IS 'A truncated federation thread is an inert retained shell and no longer owns a group user.';
 
 
 --
@@ -1407,14 +1277,14 @@ CREATE TABLE public."PeerStateFeed" (
     account character varying(31) NOT NULL,
     "eventType" public."PeerStateEventType" NOT NULL,
     "subjectAccount" character varying(31) DEFAULT ''::character varying NOT NULL,
-    rev bigint NOT NULL,
+    "feedId" bigint CONSTRAINT "PeerStateFeed_rev_not_null" NOT NULL,
     body jsonb NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     domain character varying(63) NOT NULL,
-    "subjectDomain" character varying(63) DEFAULT ''::character varying NOT NULL,
-    CONSTRAINT "PeerStateFeed_rev_check" CHECK ((rev > 0)),
-    CONSTRAINT "PeerStateFeed_subject_check" CHECK (((("eventType" = 'RELATIONSHIP_INTENT'::public."PeerStateEventType") AND (("subjectAccount")::text <> ''::text) AND (("subjectDomain")::text <> ''::text)) OR (("eventType" <> 'RELATIONSHIP_INTENT'::public."PeerStateEventType") AND (("subjectAccount")::text = ''::text) AND (("subjectDomain")::text = ''::text))))
+    "subjectDomain" character varying(63) DEFAULT 'local'::character varying NOT NULL,
+    CONSTRAINT "PeerStateFeed_feedId_check" CHECK (("feedId" > 0)),
+    CONSTRAINT "PeerStateFeed_subject_check" CHECK (((("eventType" = 'RELATIONSHIP_INTENT'::public."PeerStateEventType") AND (("subjectAccount")::text <> ''::text) AND (("subjectDomain")::text <> ''::text)) OR (("eventType" = 'THREAD_CONTENT_HEAD'::public."PeerStateEventType") AND ((((account)::text ~~ '!%'::text) AND (("subjectAccount")::text = ''::text) AND (("subjectDomain")::text = 'local'::text)) OR (((account)::text !~~ '!%'::text) AND (("subjectAccount")::text <> ''::text) AND (("subjectDomain")::text = ("peerDomain")::text)))) OR (("eventType" <> ALL (ARRAY['RELATIONSHIP_INTENT'::public."PeerStateEventType", 'THREAD_CONTENT_HEAD'::public."PeerStateEventType"])) AND (("subjectAccount")::text = ''::text) AND (("subjectDomain")::text = 'local'::text))))
 );
 
 
@@ -1449,13 +1319,11 @@ CREATE TABLE public."PeerStateFeedTarget" (
 
 CREATE TABLE public."PendingMedia" (
     id bigint NOT NULL,
-    "threadId" integer NOT NULL,
-    "creatorId" integer NOT NULL,
-    "contentType" public."ContentType" NOT NULL,
-    content text NOT NULL,
+    "threadId" integer,
+    "contentType" public."ContentType",
+    content text,
     digest character varying(64),
     "clientMessageId" character varying(36),
-    "originSeq" integer,
     status character varying(12) DEFAULT 'pending'::character varying NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone NOT NULL,
@@ -1465,12 +1333,14 @@ CREATE TABLE public."PendingMedia" (
     "fileCnt" integer DEFAULT 1 NOT NULL,
     "anyFailed" boolean DEFAULT false NOT NULL,
     "originDomain" character varying(63),
-    "expectedFederationVersion" integer,
-    "originServerTime" timestamp(3) with time zone,
-    "federationSourceDomain" character varying(255),
     "dependsOnOriginSeq" integer,
+    "creatorAccount" character varying(31),
+    "creatorDomain" character varying(63),
+    "messageId" bigint,
+    "expectedAuthorizationEpoch" integer,
     CONSTRAINT "PendingMedia_depends_on_origin_seq_check" CHECK ((("dependsOnOriginSeq" IS NULL) OR ("dependsOnOriginSeq" > 0))),
-    CONSTRAINT "PendingMedia_origin_seq_check" CHECK ((("originSeq" IS NULL) OR ("originSeq" > 0)))
+    CONSTRAINT "PendingMedia_direction_shape_check" CHECK ((((direction = 'OUTBOUND'::public."FileSyncDirection") AND ("messageId" IS NULL) AND ("threadId" IS NOT NULL) AND ("creatorAccount" IS NOT NULL) AND ("creatorDomain" IS NOT NULL) AND ("contentType" IS NOT NULL) AND (content IS NOT NULL) AND ("originDomain" IS NULL) AND ("expectedAuthorizationEpoch" IS NULL) AND ("dependsOnOriginSeq" IS NULL)) OR ((direction = 'INBOUND'::public."FileSyncDirection") AND ("messageId" IS NOT NULL) AND ("threadId" IS NULL) AND ("creatorAccount" IS NULL) AND ("creatorDomain" IS NULL) AND ("contentType" IS NULL) AND (content IS NULL) AND ("clientMessageId" IS NULL) AND ("originDomain" IS NOT NULL) AND ("expectedAuthorizationEpoch" IS NOT NULL)))),
+    CONSTRAINT "PendingMedia_expectedAuthorizationEpoch_check" CHECK ((("expectedAuthorizationEpoch" IS NULL) OR ("expectedAuthorizationEpoch" >= 0)))
 );
 
 
@@ -1572,15 +1442,15 @@ CREATE TABLE public."QuotaFileByteUsage" (
 --
 
 CREATE TABLE public."RelationshipIntent" (
-    "authorUserId" integer NOT NULL,
-    "subjectUserId" integer NOT NULL,
+    id bigint NOT NULL,
+    "pairId" bigint NOT NULL,
+    "authorSide" character varying(1) NOT NULL,
     status public."RelationshipIntentStatus" NOT NULL,
     note character varying(255) DEFAULT ''::character varying NOT NULL,
     "requestedAt" timestamp(3) with time zone,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    id bigint NOT NULL,
     "expiresAt" timestamp(3) with time zone,
-    CONSTRAINT "FriendRequest_distinct_users_check" CHECK (("authorUserId" <> "subjectUserId")),
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "RelationshipIntent_authorSide_check" CHECK ((("authorSide")::text = ANY ((ARRAY['A'::character varying, 'B'::character varying])::text[]))),
     CONSTRAINT "RelationshipIntent_expiry_check" CHECK ((((status = 'REQUESTED'::public."RelationshipIntentStatus") AND ("requestedAt" IS NOT NULL) AND ("expiresAt" IS NOT NULL) AND ("expiresAt" > "requestedAt") AND ("expiresAt" <= ("requestedAt" + '7 days'::interval))) OR ((status = 'ACCEPTED'::public."RelationshipIntentStatus") AND ("requestedAt" IS NOT NULL) AND ("expiresAt" IS NULL)) OR ((status = 'REVOKED'::public."RelationshipIntentStatus") AND ("expiresAt" IS NULL))))
 );
 
@@ -1609,15 +1479,42 @@ ALTER SEQUENCE public."RelationshipIntent_id_seq" OWNED BY public."RelationshipI
 --
 
 CREATE TABLE public."RelationshipPair" (
-    "userLowId" integer NOT NULL,
-    "userHighId" integer NOT NULL,
+    id bigint NOT NULL,
+    kind character varying(16) NOT NULL,
+    "endpointAType" character varying(8) NOT NULL,
+    "endpointAAccount" character varying(31) NOT NULL,
+    "endpointADomain" character varying(63) NOT NULL,
+    "endpointBType" character varying(8) NOT NULL,
+    "endpointBAccount" character varying(31) NOT NULL,
+    "endpointBDomain" character varying(63) NOT NULL,
     "threadId" integer,
     active boolean DEFAULT false NOT NULL,
     revision integer DEFAULT 0 NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT "FriendPair_order_check" CHECK (("userLowId" < "userHighId")),
-    CONSTRAINT "FriendPair_revision_check" CHECK ((revision >= 0))
+    CONSTRAINT "RelationshipPair_distinct_endpoints_check" CHECK (((("endpointAType")::text <> ("endpointBType")::text) OR (("endpointAAccount")::text <> ("endpointBAccount")::text) OR (("endpointADomain")::text <> ("endpointBDomain")::text))),
+    CONSTRAINT "RelationshipPair_endpoint_type_check" CHECK (((("endpointAType")::text = ANY ((ARRAY['USER'::character varying, 'GROUP'::character varying])::text[])) AND (("endpointBType")::text = ANY ((ARRAY['USER'::character varying, 'GROUP'::character varying])::text[])) AND ((((kind)::text = 'P2P'::text) AND (("endpointAType")::text = 'USER'::text) AND (("endpointBType")::text = 'USER'::text)) OR (((kind)::text = 'GROUP_MEMBER'::text) AND (("endpointAType")::text <> ("endpointBType")::text))))),
+    CONSTRAINT "RelationshipPair_kind_check" CHECK (((kind)::text = ANY ((ARRAY['P2P'::character varying, 'GROUP_MEMBER'::character varying])::text[]))),
+    CONSTRAINT "RelationshipPair_revision_check" CHECK ((revision >= 0))
 );
+
+
+--
+-- Name: RelationshipPair_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public."RelationshipPair_id_seq"
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: RelationshipPair_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public."RelationshipPair_id_seq" OWNED BY public."RelationshipPair".id;
 
 
 --
@@ -1724,30 +1621,67 @@ ALTER SEQUENCE public."ThreadAudience_id_seq" OWNED BY public."ThreadAudience".i
 
 
 --
+-- Name: ThreadMember; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public."ThreadMember" (
+    id integer NOT NULL,
+    "threadId" integer NOT NULL,
+    "userId" integer NOT NULL,
+    role public."GroupRole",
+    "left" boolean DEFAULT false NOT NULL,
+    "lastSentSeq" integer,
+    "joinedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "firstSentSeq" integer,
+    CONSTRAINT "ThreadMember_firstSentSeq_check" CHECK ((("firstSentSeq" IS NULL) OR ("firstSentSeq" > 0))),
+    CONSTRAINT "ThreadMember_lastSentSeq_check" CHECK ((("lastSentSeq" IS NULL) OR ("lastSentSeq" > 0)))
+);
+
+
+--
+-- Name: ThreadMember_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public."ThreadMember_id_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: ThreadMember_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public."ThreadMember_id_seq" OWNED BY public."ThreadMember".id;
+
+
+--
 -- Name: ThreadParticipant; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public."ThreadParticipant" (
     id integer NOT NULL,
-    "userId" integer NOT NULL,
+    "accountId" integer NOT NULL,
     "threadId" integer NOT NULL,
-    "lastReadSeq" integer,
     role public."GroupRole",
-    "joinedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "lastReadSeq" integer,
+    "readRevision" integer DEFAULT 0 NOT NULL,
     muted boolean DEFAULT false NOT NULL,
+    blocked boolean DEFAULT false NOT NULL,
     pinned boolean DEFAULT false NOT NULL,
     "pinnedAt" timestamp(3) with time zone,
+    "clearedSeq" integer,
+    "messageVisibleBeforeSeq" bigint,
     alias character varying(64),
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone NOT NULL,
-    "clearedSeq" integer,
-    "readRevision" integer DEFAULT 0 NOT NULL,
-    "relationshipRev" integer DEFAULT 0 NOT NULL,
-    blocked boolean DEFAULT false NOT NULL,
-    "messageVisibleBeforeSeq" bigint,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT "ThreadParticipant_cleared_seq_check" CHECK ((("clearedSeq" IS NULL) OR ("clearedSeq" >= 0))),
-    CONSTRAINT "ThreadParticipant_messageVisibleBeforeSeq_check" CHECK ((("messageVisibleBeforeSeq" IS NULL) OR ("messageVisibleBeforeSeq" > 1))),
-    CONSTRAINT "ThreadParticipant_relationship_rev_check" CHECK (("relationshipRev" >= 0))
+    CONSTRAINT "ThreadParticipant_messageVisibleBeforeSeq_check" CHECK ((("messageVisibleBeforeSeq" IS NULL) OR ("messageVisibleBeforeSeq" > 1)))
 );
 
 
@@ -1862,22 +1796,17 @@ ALTER SEQUENCE public."UploadSession_id_seq" OWNED BY public."UploadSession".id;
 CREATE TABLE public."User" (
     id integer NOT NULL,
     account character varying(31) NOT NULL,
-    "hashPwd" character varying(127),
     name text NOT NULL,
     avatar text DEFAULT ''::text NOT NULL,
     bio character varying(255) DEFAULT ''::character varying NOT NULL,
-    "isForeigner" boolean NOT NULL,
-    "isGroup" boolean DEFAULT false NOT NULL,
     domain character varying(63) DEFAULT 'local'::character varying NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone NOT NULL,
-    "isDeleted" boolean DEFAULT false NOT NULL,
     "profileRev" integer DEFAULT 0 NOT NULL,
-    "remoteProfileRev" integer,
-    "stateFeedAllocatedThrough" integer DEFAULT 0 NOT NULL,
-    "mustChangePassword" boolean DEFAULT false NOT NULL,
-    "readRevision" integer DEFAULT 0 NOT NULL,
-    CONSTRAINT "User_isGroup_sigil_check" CHECK ((((account)::text ~~ '!%'::text) = "isGroup"))
+    "sourceDomain" character varying(63) DEFAULT 'local'::character varying NOT NULL,
+    availability character varying(16) DEFAULT 'AVAILABLE'::character varying NOT NULL,
+    CONSTRAINT "User_account_check" CHECK (((account)::text !~~ '!%'::text)),
+    CONSTRAINT "User_availability_check" CHECK (((availability)::text = ANY ((ARRAY['AVAILABLE'::character varying, 'REMOVED'::character varying])::text[])))
 );
 
 
@@ -2028,13 +1957,6 @@ ALTER TABLE ONLY public."AdminSession" ALTER COLUMN id SET DEFAULT nextval('publ
 
 
 --
--- Name: DeletedMessage id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."DeletedMessage" ALTER COLUMN id SET DEFAULT nextval('public."DeletedMessage_id_seq"'::regclass);
-
-
---
 -- Name: DiagnosticsReport id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2063,6 +1985,13 @@ ALTER TABLE ONLY public."FederationDeletedCursor" ALTER COLUMN id SET DEFAULT ne
 
 
 --
+-- Name: FederationThreadHistoryGap id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."FederationThreadHistoryGap" ALTER COLUMN id SET DEFAULT nextval('public."FederationThreadHistoryGap_id_seq"'::regclass);
+
+
+--
 -- Name: FileSyncProgress id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2081,13 +2010,6 @@ ALTER TABLE ONLY public."Group" ALTER COLUMN id SET DEFAULT nextval('public."Gro
 --
 
 ALTER TABLE ONLY public."GroupAuditLog" ALTER COLUMN id SET DEFAULT nextval('public."GroupAuditLog_id_seq"'::regclass);
-
-
---
--- Name: LinkCardRule id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."LinkCardRule" ALTER COLUMN id SET DEFAULT nextval('public."LinkCardRule_id_seq"'::regclass);
 
 
 --
@@ -2140,6 +2062,13 @@ ALTER TABLE ONLY public."RelationshipIntent" ALTER COLUMN id SET DEFAULT nextval
 
 
 --
+-- Name: RelationshipPair id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."RelationshipPair" ALTER COLUMN id SET DEFAULT nextval('public."RelationshipPair_id_seq"'::regclass);
+
+
+--
 -- Name: SessionToken id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2151,6 +2080,13 @@ ALTER TABLE ONLY public."SessionToken" ALTER COLUMN id SET DEFAULT nextval('publ
 --
 
 ALTER TABLE ONLY public."ThreadAudience" ALTER COLUMN id SET DEFAULT nextval('public."ThreadAudience_id_seq"'::regclass);
+
+
+--
+-- Name: ThreadMember id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."ThreadMember" ALTER COLUMN id SET DEFAULT nextval('public."ThreadMember_id_seq"'::regclass);
 
 
 --
@@ -2186,6 +2122,14 @@ ALTER TABLE ONLY public."User" ALTER COLUMN id SET DEFAULT nextval('public."User
 --
 
 ALTER TABLE ONLY public."WebAuthnCredential" ALTER COLUMN id SET DEFAULT nextval('public."WebAuthnCredential_id_seq"'::regclass);
+
+
+--
+-- Name: Account Account_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."Account"
+    ADD CONSTRAINT "Account_pkey" PRIMARY KEY (id);
 
 
 --
@@ -2233,7 +2177,7 @@ ALTER TABLE ONLY public."CallTombstone"
 --
 
 ALTER TABLE ONLY public."ClientGroupMetaFeedTarget"
-    ADD CONSTRAINT "ClientGroupMetaFeedTarget_pkey" PRIMARY KEY ("userId", "groupUserId");
+    ADD CONSTRAINT "ClientGroupMetaFeedTarget_pkey" PRIMARY KEY ("accountId", "groupId");
 
 
 --
@@ -2241,7 +2185,7 @@ ALTER TABLE ONLY public."ClientGroupMetaFeedTarget"
 --
 
 ALTER TABLE ONLY public."ClientGroupMetaMemberFeed"
-    ADD CONSTRAINT "ClientGroupMetaMemberFeed_pkey" PRIMARY KEY ("userId", "groupUserId", "feedId");
+    ADD CONSTRAINT "ClientGroupMetaMemberFeed_pkey" PRIMARY KEY ("accountId", "groupId", "feedId");
 
 
 --
@@ -2281,7 +2225,7 @@ ALTER TABLE ONLY public."ClientStateFeed"
 --
 
 ALTER TABLE ONLY public."DeletedMessage"
-    ADD CONSTRAINT "DeletedMessage_pkey" PRIMARY KEY (id);
+    ADD CONSTRAINT "DeletedMessage_pkey" PRIMARY KEY ("threadId", "deletionSeq");
 
 
 --
@@ -2298,22 +2242,6 @@ ALTER TABLE ONLY public."DiagnosticsReport"
 
 ALTER TABLE ONLY public."FederatedFriendRequest"
     ADD CONSTRAINT "FederatedFriendRequest_pkey" PRIMARY KEY ("localUserId", "remoteDomain", "remoteAccount", direction);
-
-
---
--- Name: FederatedGroupMember FederatedGroupMember_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederatedGroupMember"
-    ADD CONSTRAINT "FederatedGroupMember_pkey" PRIMARY KEY ("sourcePeerDomain", "groupAccount", "memberAccount", "memberDomain");
-
-
---
--- Name: FederatedMemberProfile FederatedMemberProfile_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederatedMemberProfile"
-    ADD CONSTRAINT "FederatedMemberProfile_pkey" PRIMARY KEY ("sourcePeerDomain", "memberAccount", "memberDomain");
 
 
 --
@@ -2349,43 +2277,11 @@ ALTER TABLE ONLY public."FederatedPeer"
 
 
 --
--- Name: FederatedProfile FederatedProfile_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederatedProfile"
-    ADD CONSTRAINT "FederatedProfile_pkey" PRIMARY KEY (domain, account);
-
-
---
 -- Name: FederationDeletedCursor FederationDeletedCursor_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."FederationDeletedCursor"
     ADD CONSTRAINT "FederationDeletedCursor_pkey" PRIMARY KEY (id);
-
-
---
--- Name: FederationMessageFeedIndex FederationMessageFeedIndex_peerDomain_feedId_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationMessageFeedIndex"
-    ADD CONSTRAINT "FederationMessageFeedIndex_peerDomain_feedId_key" UNIQUE ("peerDomain", "feedId");
-
-
---
--- Name: FederationMessageFeedIndex FederationMessageFeedIndex_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationMessageFeedIndex"
-    ADD CONSTRAINT "FederationMessageFeedIndex_pkey" PRIMARY KEY ("peerDomain", "threadId");
-
-
---
--- Name: FederationMessageQueryCursor FederationMessageQueryCursor_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationMessageQueryCursor"
-    ADD CONSTRAINT "FederationMessageQueryCursor_pkey" PRIMARY KEY ("peerDomain", "threadKey");
 
 
 --
@@ -2397,59 +2293,19 @@ ALTER TABLE ONLY public."FederationMessageReceipt"
 
 
 --
--- Name: FederationPullCursor FederationPullCursor_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: FederationThreadHistoryGap FederationThreadHistoryGap_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public."FederationPullCursor"
-    ADD CONSTRAINT "FederationPullCursor_pkey" PRIMARY KEY ("peerDomain");
-
-
---
--- Name: FederationServeCursor FederationServeCursor_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationServeCursor"
-    ADD CONSTRAINT "FederationServeCursor_pkey" PRIMARY KEY ("peerDomain");
+ALTER TABLE ONLY public."FederationThreadHistoryGap"
+    ADD CONSTRAINT "FederationThreadHistoryGap_pkey" PRIMARY KEY (id);
 
 
 --
--- Name: FederationTombstoneFeedIndex FederationTombstoneFeedIndex_peerDomain_feedId_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: FederationThreadSyncState FederationThreadSyncState_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public."FederationTombstoneFeedIndex"
-    ADD CONSTRAINT "FederationTombstoneFeedIndex_peerDomain_feedId_key" UNIQUE ("peerDomain", "feedId");
-
-
---
--- Name: FederationTombstoneFeedIndex FederationTombstoneFeedIndex_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationTombstoneFeedIndex"
-    ADD CONSTRAINT "FederationTombstoneFeedIndex_pkey" PRIMARY KEY ("peerDomain", "threadId");
-
-
---
--- Name: FederationTombstonePullCursor FederationTombstonePullCursor_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationTombstonePullCursor"
-    ADD CONSTRAINT "FederationTombstonePullCursor_pkey" PRIMARY KEY ("peerDomain");
-
-
---
--- Name: FederationTombstoneQueryCursor FederationTombstoneQueryCursor_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationTombstoneQueryCursor"
-    ADD CONSTRAINT "FederationTombstoneQueryCursor_pkey" PRIMARY KEY ("peerDomain", "threadKey");
-
-
---
--- Name: FederationTombstoneServeCursor FederationTombstoneServeCursor_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationTombstoneServeCursor"
-    ADD CONSTRAINT "FederationTombstoneServeCursor_pkey" PRIMARY KEY ("peerDomain");
+ALTER TABLE ONLY public."FederationThreadSyncState"
+    ADD CONSTRAINT "FederationThreadSyncState_pkey" PRIMARY KEY ("threadId", "peerDomain");
 
 
 --
@@ -2493,22 +2349,6 @@ ALTER TABLE ONLY public."ForwardMessage"
 
 
 --
--- Name: RelationshipPair FriendPair_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."RelationshipPair"
-    ADD CONSTRAINT "FriendPair_pkey" PRIMARY KEY ("userLowId", "userHighId");
-
-
---
--- Name: RelationshipIntent FriendRequest_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."RelationshipIntent"
-    ADD CONSTRAINT "FriendRequest_pkey" PRIMARY KEY ("authorUserId", "subjectUserId");
-
-
---
 -- Name: GroupAuditLog GroupAuditLog_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2517,27 +2357,11 @@ ALTER TABLE ONLY public."GroupAuditLog"
 
 
 --
--- Name: GroupJoinRequestProjection GroupJoinRequestProjection_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."GroupJoinRequestProjection"
-    ADD CONSTRAINT "GroupJoinRequestProjection_pkey" PRIMARY KEY ("managerUserId", "threadId", "applicantUserId");
-
-
---
 -- Name: GroupMetaFeedTarget GroupMetaFeedTarget_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."GroupMetaFeedTarget"
-    ADD CONSTRAINT "GroupMetaFeedTarget_pkey" PRIMARY KEY ("targetPeerDomain", "groupUserId");
-
-
---
--- Name: GroupMetaMemberFeed GroupMetaMemberFeed_member_rev_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."GroupMetaMemberFeed"
-    ADD CONSTRAINT "GroupMetaMemberFeed_member_rev_key" UNIQUE ("targetPeerDomain", "groupUserId", "memberDomain", "memberAccount", "memberRev");
+    ADD CONSTRAINT "GroupMetaFeedTarget_pkey" PRIMARY KEY ("targetPeerDomain", "groupId");
 
 
 --
@@ -2545,7 +2369,15 @@ ALTER TABLE ONLY public."GroupMetaMemberFeed"
 --
 
 ALTER TABLE ONLY public."GroupMetaMemberFeed"
-    ADD CONSTRAINT "GroupMetaMemberFeed_pkey" PRIMARY KEY ("targetPeerDomain", "groupUserId", "feedId");
+    ADD CONSTRAINT "GroupMetaMemberFeed_pkey" PRIMARY KEY ("targetPeerDomain", "groupId", "feedId");
+
+
+--
+-- Name: GroupRequestProjection GroupRequestProjection_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."GroupRequestProjection"
+    ADD CONSTRAINT "GroupRequestProjection_pkey" PRIMARY KEY ("managerUserId", "threadId", "memberUserId", direction);
 
 
 --
@@ -2554,14 +2386,6 @@ ALTER TABLE ONLY public."GroupMetaMemberFeed"
 
 ALTER TABLE ONLY public."Group"
     ADD CONSTRAINT "Group_pkey" PRIMARY KEY (id);
-
-
---
--- Name: LinkCardRule LinkCardRule_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."LinkCardRule"
-    ADD CONSTRAINT "LinkCardRule_pkey" PRIMARY KEY (id);
 
 
 --
@@ -2685,6 +2509,22 @@ ALTER TABLE ONLY public."QuotaFileByteUsage"
 
 
 --
+-- Name: RelationshipIntent RelationshipIntent_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."RelationshipIntent"
+    ADD CONSTRAINT "RelationshipIntent_pkey" PRIMARY KEY ("pairId", "authorSide");
+
+
+--
+-- Name: RelationshipPair RelationshipPair_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."RelationshipPair"
+    ADD CONSTRAINT "RelationshipPair_pkey" PRIMARY KEY (id);
+
+
+--
 -- Name: S2SKeyCache S2SKeyCache_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2714,6 +2554,14 @@ ALTER TABLE ONLY public."SystemSetting"
 
 ALTER TABLE ONLY public."ThreadAudience"
     ADD CONSTRAINT "ThreadAudience_pkey" PRIMARY KEY (id);
+
+
+--
+-- Name: ThreadMember ThreadMember_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."ThreadMember"
+    ADD CONSTRAINT "ThreadMember_pkey" PRIMARY KEY (id);
 
 
 --
@@ -2863,14 +2711,7 @@ CREATE INDEX "CallTombstone_expiresAt_idx" ON public."CallTombstone" USING btree
 -- Name: ClientGroupMetaMemberFeed_member_feed_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX "ClientGroupMetaMemberFeed_member_feed_idx" ON public."ClientGroupMetaMemberFeed" USING btree ("userId", "groupUserId", "memberDomain", "memberAccount", "feedId");
-
-
---
--- Name: ClientGroupMetaMemberFeed_member_rev_key; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX "ClientGroupMetaMemberFeed_member_rev_key" ON public."ClientGroupMetaMemberFeed" USING btree ("userId", "groupUserId", "memberDomain", "memberAccount", "memberRev");
+CREATE INDEX "ClientGroupMetaMemberFeed_member_feed_idx" ON public."ClientGroupMetaMemberFeed" USING btree ("accountId", "groupId", "memberDomain", "memberAccount", "feedId");
 
 
 --
@@ -2895,17 +2736,10 @@ CREATE INDEX "ClientStateFeed_user_feedId_idx" ON public."ClientStateFeed" USING
 
 
 --
--- Name: DeletedMessage_threadId_id_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: DeletedMessage_threadId_messageSeq_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX "DeletedMessage_threadId_id_idx" ON public."DeletedMessage" USING btree ("threadId", id);
-
-
---
--- Name: DeletedMessage_threadId_seq_key; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX "DeletedMessage_threadId_seq_key" ON public."DeletedMessage" USING btree ("threadId", seq);
+CREATE UNIQUE INDEX "DeletedMessage_threadId_messageSeq_key" ON public."DeletedMessage" USING btree ("threadId", "messageSeq");
 
 
 --
@@ -2937,17 +2771,10 @@ CREATE INDEX "FederatedFriendRequest_pending_idx" ON public."FederatedFriendRequ
 
 
 --
--- Name: FederatedGroupMember_group_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "FederatedGroupMember_group_idx" ON public."FederatedGroupMember" USING btree ("sourcePeerDomain", "groupAccount");
-
-
---
 -- Name: FederatedMessageTombstone_source_event_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX "FederatedMessageTombstone_source_event_key" ON public."FederatedMessageTombstone" USING btree ("sourceDomain", "remoteDeletedId");
+CREATE UNIQUE INDEX "FederatedMessageTombstone_source_event_key" ON public."FederatedMessageTombstone" USING btree ("sourceDomain", "threadId", "remoteDeletionSeq");
 
 
 --
@@ -3004,6 +2831,27 @@ CREATE UNIQUE INDEX "FederationDeletedCursor_stream_key" ON public."FederationDe
 --
 
 CREATE INDEX "FederationMessageReceipt_messageId_idx" ON public."FederationMessageReceipt" USING btree ("messageId");
+
+
+--
+-- Name: FederationThreadHistoryGap_interval_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX "FederationThreadHistoryGap_interval_key" ON public."FederationThreadHistoryGap" USING btree ("threadId", "startSeq", "endSeq");
+
+
+--
+-- Name: FederationThreadHistoryGap_recoverable_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX "FederationThreadHistoryGap_recoverable_idx" ON public."FederationThreadHistoryGap" USING btree ("threadId", "endSeq") WHERE (recoverable = true);
+
+
+--
+-- Name: FederationThreadHistoryGap_threadId_id_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX "FederationThreadHistoryGap_threadId_id_key" ON public."FederationThreadHistoryGap" USING btree ("threadId", id);
 
 
 --
@@ -3091,13 +2939,6 @@ CREATE INDEX "ForwardMessage_bundleId_idx" ON public."ForwardMessage" USING btre
 
 
 --
--- Name: FriendRequest_id_key; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX "FriendRequest_id_key" ON public."RelationshipIntent" USING btree (id);
-
-
---
 -- Name: GroupAuditLog_action_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3112,59 +2953,45 @@ CREATE UNIQUE INDEX "GroupAuditLog_eventKey_key" ON public."GroupAuditLog" USING
 
 
 --
--- Name: GroupAuditLog_groupUserId_at_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: GroupAuditLog_groupId_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX "GroupAuditLog_groupUserId_at_idx" ON public."GroupAuditLog" USING btree ("groupUserId", at);
-
-
---
--- Name: GroupJoinRequestProjection_expiry_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "GroupJoinRequestProjection_expiry_idx" ON public."GroupJoinRequestProjection" USING btree ("expiresAt");
-
-
---
--- Name: GroupJoinRequestProjection_manager_feed_key; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX "GroupJoinRequestProjection_manager_feed_key" ON public."GroupJoinRequestProjection" USING btree ("managerUserId", "feedId");
-
-
---
--- Name: GroupJoinRequestProjection_thread_feed_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "GroupJoinRequestProjection_thread_feed_idx" ON public."GroupJoinRequestProjection" USING btree ("managerUserId", "threadId", "feedId");
+CREATE INDEX "GroupAuditLog_groupId_at_idx" ON public."GroupAuditLog" USING btree ("groupId", at);
 
 
 --
 -- Name: GroupMetaMemberFeed_member_feed_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX "GroupMetaMemberFeed_member_feed_idx" ON public."GroupMetaMemberFeed" USING btree ("targetPeerDomain", "groupUserId", "memberDomain", "memberAccount", "feedId");
+CREATE INDEX "GroupMetaMemberFeed_member_feed_idx" ON public."GroupMetaMemberFeed" USING btree ("targetPeerDomain", "groupId", "memberDomain", "memberAccount", "feedId");
 
 
 --
--- Name: Group_groupUserId_key; Type: INDEX; Schema: public; Owner: -
+-- Name: GroupRequestProjection_expiry_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX "Group_groupUserId_key" ON public."Group" USING btree ("groupUserId");
-
-
---
--- Name: Group_ownerId_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "Group_ownerId_idx" ON public."Group" USING btree ("ownerId");
+CREATE INDEX "GroupRequestProjection_expiry_idx" ON public."GroupRequestProjection" USING btree ("expiresAt");
 
 
 --
--- Name: LinkCardRule_hostname_key; Type: INDEX; Schema: public; Owner: -
+-- Name: GroupRequestProjection_manager_feed_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX "LinkCardRule_hostname_key" ON public."LinkCardRule" USING btree (hostname);
+CREATE UNIQUE INDEX "GroupRequestProjection_manager_feed_key" ON public."GroupRequestProjection" USING btree ("managerUserId", "feedId");
+
+
+--
+-- Name: GroupRequestProjection_thread_feed_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX "GroupRequestProjection_thread_feed_idx" ON public."GroupRequestProjection" USING btree ("managerUserId", "threadId", "feedId");
+
+
+--
+-- Name: Group_account_domain_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX "Group_account_domain_key" ON public."Group" USING btree (account, domain);
 
 
 --
@@ -3217,10 +3044,10 @@ CREATE INDEX "MessageReport_status_createdAt_idx" ON public."MessageReport" USIN
 
 
 --
--- Name: MessageThread_groupUserId_key; Type: INDEX; Schema: public; Owner: -
+-- Name: MessageThread_groupId_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX "MessageThread_groupUserId_key" ON public."MessageThread" USING btree ("groupUserId");
+CREATE UNIQUE INDEX "MessageThread_groupId_key" ON public."MessageThread" USING btree ("groupId");
 
 
 --
@@ -3238,10 +3065,10 @@ CREATE INDEX "Message_createdAt_idx" ON public."Message" USING btree ("createdAt
 
 
 --
--- Name: Message_creator_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: Message_creator_address_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX "Message_creator_idx" ON public."Message" USING btree (creator);
+CREATE INDEX "Message_creator_address_idx" ON public."Message" USING btree ("creatorAccount", "creatorDomain");
 
 
 --
@@ -3255,7 +3082,7 @@ CREATE INDEX "Message_threadId_createdAt_idx" ON public."Message" USING btree ("
 -- Name: Message_threadId_creator_originSeq_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX "Message_threadId_creator_originSeq_key" ON public."Message" USING btree ("threadId", creator, "originSeq");
+CREATE UNIQUE INDEX "Message_threadId_creator_originSeq_key" ON public."Message" USING btree ("threadId", "creatorAccount", "creatorDomain", "originSeq");
 
 
 --
@@ -3263,6 +3090,13 @@ CREATE UNIQUE INDEX "Message_threadId_creator_originSeq_key" ON public."Message"
 --
 
 CREATE INDEX "Message_threadId_id_idx" ON public."Message" USING btree ("threadId", id);
+
+
+--
+-- Name: Message_threadId_ready_seq_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX "Message_threadId_ready_seq_idx" ON public."Message" USING btree ("threadId", seq) WHERE ("localState" = 'READY'::public."MessageLocalState");
 
 
 --
@@ -3280,10 +3114,10 @@ CREATE UNIQUE INDEX "Message_threadId_source_originSeq_key" ON public."Message" 
 
 
 --
--- Name: PeerStateFeed_peerDomain_rev_key; Type: INDEX; Schema: public; Owner: -
+-- Name: PeerStateFeed_peerDomain_feedId_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX "PeerStateFeed_peerDomain_rev_key" ON public."PeerStateFeed" USING btree ("peerDomain", rev);
+CREATE UNIQUE INDEX "PeerStateFeed_peerDomain_feedId_key" ON public."PeerStateFeed" USING btree ("peerDomain", "feedId");
 
 
 --
@@ -3301,6 +3135,13 @@ CREATE UNIQUE INDEX "PendingMedia_clientMessageId_key" ON public."PendingMedia" 
 
 
 --
+-- Name: PendingMedia_messageId_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX "PendingMedia_messageId_key" ON public."PendingMedia" USING btree ("messageId") WHERE ("messageId" IS NOT NULL);
+
+
+--
 -- Name: PendingMedia_quote_dependency_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3312,13 +3153,6 @@ CREATE INDEX "PendingMedia_quote_dependency_idx" ON public."PendingMedia" USING 
 --
 
 CREATE INDEX "PendingMedia_status_createdAt_idx" ON public."PendingMedia" USING btree (status, "createdAt");
-
-
---
--- Name: PendingMedia_threadId_creatorId_originSeq_key; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX "PendingMedia_threadId_creatorId_originSeq_key" ON public."PendingMedia" USING btree ("threadId", "creatorId", "originSeq");
 
 
 --
@@ -3354,6 +3188,34 @@ CREATE INDEX "QuotaDailyUsage_date_idx" ON public."QuotaDailyUsage" USING btree 
 --
 
 CREATE INDEX "QuotaFileByteUsage_date_idx" ON public."QuotaFileByteUsage" USING btree (date);
+
+
+--
+-- Name: RelationshipIntent_id_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX "RelationshipIntent_id_key" ON public."RelationshipIntent" USING btree (id);
+
+
+--
+-- Name: RelationshipPair_endpointA_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX "RelationshipPair_endpointA_idx" ON public."RelationshipPair" USING btree ("endpointAType", "endpointAAccount", "endpointADomain", active);
+
+
+--
+-- Name: RelationshipPair_endpointB_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX "RelationshipPair_endpointB_idx" ON public."RelationshipPair" USING btree ("endpointBType", "endpointBAccount", "endpointBDomain", active);
+
+
+--
+-- Name: RelationshipPair_endpoints_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX "RelationshipPair_endpoints_key" ON public."RelationshipPair" USING btree ("endpointAType", "endpointAAccount", "endpointADomain", "endpointBType", "endpointBAccount", "endpointBDomain");
 
 
 --
@@ -3413,10 +3275,59 @@ CREATE UNIQUE INDEX "ThreadAudience_peer_key" ON public."ThreadAudience" USING b
 
 
 --
--- Name: ThreadParticipant_one_group_owner_key; Type: INDEX; Schema: public; Owner: -
+-- Name: ThreadMember_id_threadId_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX "ThreadParticipant_one_group_owner_key" ON public."ThreadParticipant" USING btree ("threadId") WHERE (role = 'OWNER'::public."GroupRole");
+CREATE UNIQUE INDEX "ThreadMember_id_threadId_key" ON public."ThreadMember" USING btree (id, "threadId");
+
+
+--
+-- Name: ThreadMember_one_current_owner_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX "ThreadMember_one_current_owner_key" ON public."ThreadMember" USING btree ("threadId") WHERE ((role = 'OWNER'::public."GroupRole") AND ("left" = false));
+
+
+--
+-- Name: ThreadMember_threadId_left_firstSentSeq_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX "ThreadMember_threadId_left_firstSentSeq_idx" ON public."ThreadMember" USING btree ("threadId", "left", "firstSentSeq");
+
+
+--
+-- Name: ThreadMember_threadId_left_lastSentSeq_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX "ThreadMember_threadId_left_lastSentSeq_idx" ON public."ThreadMember" USING btree ("threadId", "left", "lastSentSeq");
+
+
+--
+-- Name: ThreadMember_threadId_userId_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX "ThreadMember_threadId_userId_key" ON public."ThreadMember" USING btree ("threadId", "userId");
+
+
+--
+-- Name: ThreadParticipant_accountId_pinned_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX "ThreadParticipant_accountId_pinned_idx" ON public."ThreadParticipant" USING btree ("accountId", pinned);
+
+
+--
+-- Name: ThreadParticipant_accountId_readRevision_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX "ThreadParticipant_accountId_readRevision_idx" ON public."ThreadParticipant" USING btree ("accountId", "readRevision");
+
+
+--
+-- Name: ThreadParticipant_accountId_threadId_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX "ThreadParticipant_accountId_threadId_key" ON public."ThreadParticipant" USING btree ("accountId", "threadId");
 
 
 --
@@ -3424,34 +3335,6 @@ CREATE UNIQUE INDEX "ThreadParticipant_one_group_owner_key" ON public."ThreadPar
 --
 
 CREATE INDEX "ThreadParticipant_threadId_idx" ON public."ThreadParticipant" USING btree ("threadId");
-
-
---
--- Name: ThreadParticipant_threadId_joinedAt_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "ThreadParticipant_threadId_joinedAt_idx" ON public."ThreadParticipant" USING btree ("threadId", "joinedAt");
-
-
---
--- Name: ThreadParticipant_userId_pinned_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "ThreadParticipant_userId_pinned_idx" ON public."ThreadParticipant" USING btree ("userId", pinned);
-
-
---
--- Name: ThreadParticipant_userId_readRevision_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "ThreadParticipant_userId_readRevision_idx" ON public."ThreadParticipant" USING btree ("userId", "readRevision");
-
-
---
--- Name: ThreadParticipant_userId_threadId_key; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX "ThreadParticipant_userId_threadId_key" ON public."ThreadParticipant" USING btree ("userId", "threadId");
 
 
 --
@@ -3518,10 +3401,24 @@ CREATE INDEX "UserQuotaFileByteUsage_date_idx" ON public."UserQuotaFileByteUsage
 
 
 --
--- Name: User_account_domain_key; Type: INDEX; Schema: public; Owner: -
+-- Name: User_account_domain_sourceDomain_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX "User_account_domain_key" ON public."User" USING btree (account, domain);
+CREATE UNIQUE INDEX "User_account_domain_sourceDomain_key" ON public."User" USING btree (account, domain, "sourceDomain");
+
+
+--
+-- Name: User_address_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX "User_address_idx" ON public."User" USING btree (account, domain);
+
+
+--
+-- Name: User_source_address_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX "User_source_address_idx" ON public."User" USING btree ("sourceDomain", account, domain);
 
 
 --
@@ -3543,6 +3440,14 @@ CREATE UNIQUE INDEX "WebAuthnCredential_credentialId_key" ON public."WebAuthnCre
 --
 
 CREATE TRIGGER "Message_federation_feed_notify" AFTER INSERT ON public."Message" FOR EACH ROW EXECUTE FUNCTION public.soms_notify_federation_message_committed();
+
+
+--
+-- Name: Account Account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."Account"
+    ADD CONSTRAINT "Account_id_fkey" FOREIGN KEY (id) REFERENCES public."User"(id) ON DELETE CASCADE;
 
 
 --
@@ -3574,39 +3479,39 @@ ALTER TABLE ONLY public."AdminSession"
 --
 
 ALTER TABLE ONLY public."Admin"
-    ADD CONSTRAINT "Admin_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."User"(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+    ADD CONSTRAINT "Admin_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."Account"(id) ON UPDATE CASCADE ON DELETE RESTRICT;
 
 
 --
--- Name: ClientGroupMetaFeedTarget ClientGroupMetaFeedTarget_groupUserId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."ClientGroupMetaFeedTarget"
-    ADD CONSTRAINT "ClientGroupMetaFeedTarget_groupUserId_fkey" FOREIGN KEY ("groupUserId") REFERENCES public."User"(id) ON DELETE CASCADE;
-
-
---
--- Name: ClientGroupMetaFeedTarget ClientGroupMetaFeedTarget_userId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: ClientGroupMetaFeedTarget ClientGroupMetaFeedTarget_accountId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."ClientGroupMetaFeedTarget"
-    ADD CONSTRAINT "ClientGroupMetaFeedTarget_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."User"(id) ON DELETE CASCADE;
+    ADD CONSTRAINT "ClientGroupMetaFeedTarget_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES public."Account"(id) ON DELETE CASCADE;
 
 
 --
--- Name: ClientGroupMetaMemberFeed ClientGroupMetaMemberFeed_groupUserId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: ClientGroupMetaFeedTarget ClientGroupMetaFeedTarget_groupId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."ClientGroupMetaFeedTarget"
+    ADD CONSTRAINT "ClientGroupMetaFeedTarget_groupId_fkey" FOREIGN KEY ("groupId") REFERENCES public."Group"(id) ON DELETE CASCADE;
+
+
+--
+-- Name: ClientGroupMetaMemberFeed ClientGroupMetaMemberFeed_accountId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."ClientGroupMetaMemberFeed"
-    ADD CONSTRAINT "ClientGroupMetaMemberFeed_groupUserId_fkey" FOREIGN KEY ("groupUserId") REFERENCES public."User"(id) ON DELETE CASCADE;
+    ADD CONSTRAINT "ClientGroupMetaMemberFeed_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES public."Account"(id) ON DELETE CASCADE;
 
 
 --
--- Name: ClientGroupMetaMemberFeed ClientGroupMetaMemberFeed_userId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: ClientGroupMetaMemberFeed ClientGroupMetaMemberFeed_groupId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."ClientGroupMetaMemberFeed"
-    ADD CONSTRAINT "ClientGroupMetaMemberFeed_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."User"(id) ON DELETE CASCADE;
+    ADD CONSTRAINT "ClientGroupMetaMemberFeed_groupId_fkey" FOREIGN KEY ("groupId") REFERENCES public."Group"(id) ON DELETE CASCADE;
 
 
 --
@@ -3614,7 +3519,7 @@ ALTER TABLE ONLY public."ClientGroupMetaMemberFeed"
 --
 
 ALTER TABLE ONLY public."ClientMessageFeedTarget"
-    ADD CONSTRAINT "ClientMessageFeedTarget_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."User"(id) ON DELETE CASCADE;
+    ADD CONSTRAINT "ClientMessageFeedTarget_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."Account"(id) ON DELETE CASCADE;
 
 
 --
@@ -3630,7 +3535,7 @@ ALTER TABLE ONLY public."ClientMessageFeed"
 --
 
 ALTER TABLE ONLY public."ClientMessageFeed"
-    ADD CONSTRAINT "ClientMessageFeed_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."User"(id) ON DELETE CASCADE;
+    ADD CONSTRAINT "ClientMessageFeed_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."Account"(id) ON DELETE CASCADE;
 
 
 --
@@ -3646,7 +3551,7 @@ ALTER TABLE ONLY public."ClientMessageTombstoneFeed"
 --
 
 ALTER TABLE ONLY public."ClientMessageTombstoneFeed"
-    ADD CONSTRAINT "ClientMessageTombstoneFeed_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."User"(id) ON DELETE CASCADE;
+    ADD CONSTRAINT "ClientMessageTombstoneFeed_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."Account"(id) ON DELETE CASCADE;
 
 
 --
@@ -3654,7 +3559,7 @@ ALTER TABLE ONLY public."ClientMessageTombstoneFeed"
 --
 
 ALTER TABLE ONLY public."ClientStateFeed"
-    ADD CONSTRAINT "ClientStateFeed_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."User"(id) ON DELETE CASCADE;
+    ADD CONSTRAINT "ClientStateFeed_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."Account"(id) ON DELETE CASCADE;
 
 
 --
@@ -3670,7 +3575,7 @@ ALTER TABLE ONLY public."DeletedMessage"
 --
 
 ALTER TABLE ONLY public."DiagnosticsReport"
-    ADD CONSTRAINT "DiagnosticsReport_reporterUserId_fkey" FOREIGN KEY ("reporterUserId") REFERENCES public."User"(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+    ADD CONSTRAINT "DiagnosticsReport_reporterUserId_fkey" FOREIGN KEY ("reporterUserId") REFERENCES public."Account"(id) ON UPDATE CASCADE ON DELETE RESTRICT;
 
 
 --
@@ -3678,7 +3583,7 @@ ALTER TABLE ONLY public."DiagnosticsReport"
 --
 
 ALTER TABLE ONLY public."FederatedFriendRequest"
-    ADD CONSTRAINT "FederatedFriendRequest_localUserId_fkey" FOREIGN KEY ("localUserId") REFERENCES public."User"(id) ON DELETE CASCADE;
+    ADD CONSTRAINT "FederatedFriendRequest_localUserId_fkey" FOREIGN KEY ("localUserId") REFERENCES public."Account"(id) ON DELETE CASCADE;
 
 
 --
@@ -3690,22 +3595,6 @@ ALTER TABLE ONLY public."FederatedFriendRequest"
 
 
 --
--- Name: FederatedGroupMember FederatedGroupMember_sourcePeerDomain_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederatedGroupMember"
-    ADD CONSTRAINT "FederatedGroupMember_sourcePeerDomain_fkey" FOREIGN KEY ("sourcePeerDomain") REFERENCES public."FederatedPeer"(domain) ON DELETE CASCADE;
-
-
---
--- Name: FederatedMemberProfile FederatedMemberProfile_sourcePeerDomain_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederatedMemberProfile"
-    ADD CONSTRAINT "FederatedMemberProfile_sourcePeerDomain_fkey" FOREIGN KEY ("sourcePeerDomain") REFERENCES public."FederatedPeer"(domain) ON DELETE CASCADE;
-
-
---
 -- Name: FederatedMessageTombstone FederatedMessageTombstone_threadId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3714,43 +3603,11 @@ ALTER TABLE ONLY public."FederatedMessageTombstone"
 
 
 --
--- Name: FederatedProfile FederatedProfile_domain_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederatedProfile"
-    ADD CONSTRAINT "FederatedProfile_domain_fkey" FOREIGN KEY (domain) REFERENCES public."FederatedPeer"(domain) ON DELETE CASCADE;
-
-
---
 -- Name: FederationDeletedCursor FederationDeletedCursor_threadId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."FederationDeletedCursor"
     ADD CONSTRAINT "FederationDeletedCursor_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES public."MessageThread"(id) ON UPDATE CASCADE ON DELETE CASCADE;
-
-
---
--- Name: FederationMessageFeedIndex FederationMessageFeedIndex_peerDomain_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationMessageFeedIndex"
-    ADD CONSTRAINT "FederationMessageFeedIndex_peerDomain_fkey" FOREIGN KEY ("peerDomain") REFERENCES public."FederatedPeer"(domain) ON DELETE CASCADE;
-
-
---
--- Name: FederationMessageFeedIndex FederationMessageFeedIndex_threadId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationMessageFeedIndex"
-    ADD CONSTRAINT "FederationMessageFeedIndex_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES public."MessageThread"(id) ON DELETE RESTRICT;
-
-
---
--- Name: FederationMessageQueryCursor FederationMessageQueryCursor_peerDomain_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationMessageQueryCursor"
-    ADD CONSTRAINT "FederationMessageQueryCursor_peerDomain_fkey" FOREIGN KEY ("peerDomain") REFERENCES public."FederatedPeer"(domain) ON DELETE CASCADE;
 
 
 --
@@ -3778,59 +3635,35 @@ ALTER TABLE ONLY public."FederationMessageReceipt"
 
 
 --
--- Name: FederationPullCursor FederationPullCursor_peerDomain_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: FederationThreadHistoryGap FederationThreadHistoryGap_threadId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public."FederationPullCursor"
-    ADD CONSTRAINT "FederationPullCursor_peerDomain_fkey" FOREIGN KEY ("peerDomain") REFERENCES public."FederatedPeer"(domain) ON DELETE CASCADE;
-
-
---
--- Name: FederationServeCursor FederationServeCursor_peerDomain_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationServeCursor"
-    ADD CONSTRAINT "FederationServeCursor_peerDomain_fkey" FOREIGN KEY ("peerDomain") REFERENCES public."FederatedPeer"(domain) ON DELETE CASCADE;
+ALTER TABLE ONLY public."FederationThreadHistoryGap"
+    ADD CONSTRAINT "FederationThreadHistoryGap_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES public."MessageThread"(id) ON DELETE CASCADE;
 
 
 --
--- Name: FederationTombstoneFeedIndex FederationTombstoneFeedIndex_peerDomain_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: FederationThreadSyncState FederationThreadSyncState_activeGap_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public."FederationTombstoneFeedIndex"
-    ADD CONSTRAINT "FederationTombstoneFeedIndex_peerDomain_fkey" FOREIGN KEY ("peerDomain") REFERENCES public."FederatedPeer"(domain) ON DELETE CASCADE;
-
-
---
--- Name: FederationTombstoneFeedIndex FederationTombstoneFeedIndex_threadId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationTombstoneFeedIndex"
-    ADD CONSTRAINT "FederationTombstoneFeedIndex_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES public."MessageThread"(id) ON DELETE RESTRICT;
+ALTER TABLE ONLY public."FederationThreadSyncState"
+    ADD CONSTRAINT "FederationThreadSyncState_activeGap_fkey" FOREIGN KEY ("threadId", "activeGapId") REFERENCES public."FederationThreadHistoryGap"("threadId", id) ON DELETE RESTRICT;
 
 
 --
--- Name: FederationTombstonePullCursor FederationTombstonePullCursor_peerDomain_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: FederationThreadSyncState FederationThreadSyncState_peerDomain_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public."FederationTombstonePullCursor"
-    ADD CONSTRAINT "FederationTombstonePullCursor_peerDomain_fkey" FOREIGN KEY ("peerDomain") REFERENCES public."FederatedPeer"(domain) ON DELETE CASCADE;
-
-
---
--- Name: FederationTombstoneQueryCursor FederationTombstoneQueryCursor_peerDomain_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationTombstoneQueryCursor"
-    ADD CONSTRAINT "FederationTombstoneQueryCursor_peerDomain_fkey" FOREIGN KEY ("peerDomain") REFERENCES public."FederatedPeer"(domain) ON DELETE CASCADE;
+ALTER TABLE ONLY public."FederationThreadSyncState"
+    ADD CONSTRAINT "FederationThreadSyncState_peerDomain_fkey" FOREIGN KEY ("peerDomain") REFERENCES public."FederatedPeer"(domain) ON DELETE CASCADE;
 
 
 --
--- Name: FederationTombstoneServeCursor FederationTombstoneServeCursor_peerDomain_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: FederationThreadSyncState FederationThreadSyncState_threadId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public."FederationTombstoneServeCursor"
-    ADD CONSTRAINT "FederationTombstoneServeCursor_peerDomain_fkey" FOREIGN KEY ("peerDomain") REFERENCES public."FederatedPeer"(domain) ON DELETE CASCADE;
+ALTER TABLE ONLY public."FederationThreadSyncState"
+    ADD CONSTRAINT "FederationThreadSyncState_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES public."MessageThread"(id) ON DELETE CASCADE;
 
 
 --
@@ -3874,75 +3707,11 @@ ALTER TABLE ONLY public."ForwardMessage"
 
 
 --
--- Name: RelationshipPair FriendPair_threadId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."RelationshipPair"
-    ADD CONSTRAINT "FriendPair_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES public."MessageThread"(id) ON DELETE SET NULL;
-
-
---
--- Name: RelationshipPair FriendPair_userHighId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."RelationshipPair"
-    ADD CONSTRAINT "FriendPair_userHighId_fkey" FOREIGN KEY ("userHighId") REFERENCES public."User"(id) ON DELETE CASCADE;
-
-
---
--- Name: RelationshipPair FriendPair_userLowId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."RelationshipPair"
-    ADD CONSTRAINT "FriendPair_userLowId_fkey" FOREIGN KEY ("userLowId") REFERENCES public."User"(id) ON DELETE CASCADE;
-
-
---
--- Name: RelationshipIntent FriendRequest_requesterUserId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."RelationshipIntent"
-    ADD CONSTRAINT "FriendRequest_requesterUserId_fkey" FOREIGN KEY ("authorUserId") REFERENCES public."User"(id) ON DELETE CASCADE;
-
-
---
--- Name: RelationshipIntent FriendRequest_targetUserId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."RelationshipIntent"
-    ADD CONSTRAINT "FriendRequest_targetUserId_fkey" FOREIGN KEY ("subjectUserId") REFERENCES public."User"(id) ON DELETE CASCADE;
-
-
---
--- Name: GroupJoinRequestProjection GroupJoinRequestProjection_applicantUserId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."GroupJoinRequestProjection"
-    ADD CONSTRAINT "GroupJoinRequestProjection_applicantUserId_fkey" FOREIGN KEY ("applicantUserId") REFERENCES public."User"(id) ON DELETE CASCADE;
-
-
---
--- Name: GroupJoinRequestProjection GroupJoinRequestProjection_managerUserId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."GroupJoinRequestProjection"
-    ADD CONSTRAINT "GroupJoinRequestProjection_managerUserId_fkey" FOREIGN KEY ("managerUserId") REFERENCES public."User"(id) ON DELETE CASCADE;
-
-
---
--- Name: GroupJoinRequestProjection GroupJoinRequestProjection_threadId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."GroupJoinRequestProjection"
-    ADD CONSTRAINT "GroupJoinRequestProjection_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES public."MessageThread"(id) ON DELETE CASCADE;
-
-
---
--- Name: GroupMetaFeedTarget GroupMetaFeedTarget_groupUserId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: GroupMetaFeedTarget GroupMetaFeedTarget_groupId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."GroupMetaFeedTarget"
-    ADD CONSTRAINT "GroupMetaFeedTarget_groupUserId_fkey" FOREIGN KEY ("groupUserId") REFERENCES public."User"(id) ON DELETE CASCADE;
+    ADD CONSTRAINT "GroupMetaFeedTarget_groupId_fkey" FOREIGN KEY ("groupId") REFERENCES public."Group"(id) ON DELETE CASCADE;
 
 
 --
@@ -3954,11 +3723,11 @@ ALTER TABLE ONLY public."GroupMetaFeedTarget"
 
 
 --
--- Name: GroupMetaMemberFeed GroupMetaMemberFeed_groupUserId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: GroupMetaMemberFeed GroupMetaMemberFeed_groupId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."GroupMetaMemberFeed"
-    ADD CONSTRAINT "GroupMetaMemberFeed_groupUserId_fkey" FOREIGN KEY ("groupUserId") REFERENCES public."User"(id) ON DELETE CASCADE;
+    ADD CONSTRAINT "GroupMetaMemberFeed_groupId_fkey" FOREIGN KEY ("groupId") REFERENCES public."Group"(id) ON DELETE CASCADE;
 
 
 --
@@ -3970,11 +3739,27 @@ ALTER TABLE ONLY public."GroupMetaMemberFeed"
 
 
 --
--- Name: Group Group_groupUserId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: GroupRequestProjection GroupRequestProjection_managerUserId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public."Group"
-    ADD CONSTRAINT "Group_groupUserId_fkey" FOREIGN KEY ("groupUserId") REFERENCES public."User"(id) ON UPDATE CASCADE ON DELETE CASCADE;
+ALTER TABLE ONLY public."GroupRequestProjection"
+    ADD CONSTRAINT "GroupRequestProjection_managerUserId_fkey" FOREIGN KEY ("managerUserId") REFERENCES public."Account"(id) ON DELETE CASCADE;
+
+
+--
+-- Name: GroupRequestProjection GroupRequestProjection_memberUserId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."GroupRequestProjection"
+    ADD CONSTRAINT "GroupRequestProjection_memberUserId_fkey" FOREIGN KEY ("memberUserId") REFERENCES public."User"(id) ON DELETE CASCADE;
+
+
+--
+-- Name: GroupRequestProjection GroupRequestProjection_threadId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."GroupRequestProjection"
+    ADD CONSTRAINT "GroupRequestProjection_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES public."MessageThread"(id) ON DELETE CASCADE;
 
 
 --
@@ -3982,7 +3767,7 @@ ALTER TABLE ONLY public."Group"
 --
 
 ALTER TABLE ONLY public."LoginCode"
-    ADD CONSTRAINT "LoginCode_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."User"(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+    ADD CONSTRAINT "LoginCode_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."Account"(id) ON UPDATE CASCADE ON DELETE CASCADE;
 
 
 --
@@ -4014,7 +3799,7 @@ ALTER TABLE ONLY public."MessageReport"
 --
 
 ALTER TABLE ONLY public."MessageReport"
-    ADD CONSTRAINT "MessageReport_reporterId_fkey" FOREIGN KEY ("reporterId") REFERENCES public."User"(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+    ADD CONSTRAINT "MessageReport_reporterId_fkey" FOREIGN KEY ("reporterId") REFERENCES public."Account"(id) ON UPDATE CASCADE ON DELETE RESTRICT;
 
 
 --
@@ -4034,19 +3819,11 @@ ALTER TABLE ONLY public."MessageReport"
 
 
 --
--- Name: MessageThread MessageThread_groupUserId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: MessageThread MessageThread_groupId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."MessageThread"
-    ADD CONSTRAINT "MessageThread_groupUserId_fkey" FOREIGN KEY ("groupUserId") REFERENCES public."User"(id) ON UPDATE CASCADE ON DELETE CASCADE;
-
-
---
--- Name: Message Message_creator_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."Message"
-    ADD CONSTRAINT "Message_creator_fkey" FOREIGN KEY (creator) REFERENCES public."User"(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+    ADD CONSTRAINT "MessageThread_groupId_fkey" FOREIGN KEY ("groupId") REFERENCES public."Group"(id) ON UPDATE CASCADE ON DELETE CASCADE;
 
 
 --
@@ -4082,6 +3859,14 @@ ALTER TABLE ONLY public."PeerStateFeed"
 
 
 --
+-- Name: PendingMedia PendingMedia_messageId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."PendingMedia"
+    ADD CONSTRAINT "PendingMedia_messageId_fkey" FOREIGN KEY ("messageId") REFERENCES public."Message"(id) ON DELETE CASCADE;
+
+
+--
 -- Name: PendingMedia PendingMedia_threadId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4094,7 +3879,23 @@ ALTER TABLE ONLY public."PendingMedia"
 --
 
 ALTER TABLE ONLY public."PushToken"
-    ADD CONSTRAINT "PushToken_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."User"(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+    ADD CONSTRAINT "PushToken_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."Account"(id) ON UPDATE CASCADE ON DELETE CASCADE;
+
+
+--
+-- Name: RelationshipIntent RelationshipIntent_pairId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."RelationshipIntent"
+    ADD CONSTRAINT "RelationshipIntent_pairId_fkey" FOREIGN KEY ("pairId") REFERENCES public."RelationshipPair"(id) ON DELETE CASCADE;
+
+
+--
+-- Name: RelationshipPair RelationshipPair_threadId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."RelationshipPair"
+    ADD CONSTRAINT "RelationshipPair_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES public."MessageThread"(id) ON DELETE SET NULL;
 
 
 --
@@ -4102,7 +3903,7 @@ ALTER TABLE ONLY public."PushToken"
 --
 
 ALTER TABLE ONLY public."SessionToken"
-    ADD CONSTRAINT "SessionToken_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."User"(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+    ADD CONSTRAINT "SessionToken_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."Account"(id) ON UPDATE CASCADE ON DELETE CASCADE;
 
 
 --
@@ -4110,7 +3911,7 @@ ALTER TABLE ONLY public."SessionToken"
 --
 
 ALTER TABLE ONLY public."ThreadAudience"
-    ADD CONSTRAINT "ThreadAudience_localUserId_fkey" FOREIGN KEY ("localUserId") REFERENCES public."User"(id) ON UPDATE CASCADE ON DELETE CASCADE;
+    ADD CONSTRAINT "ThreadAudience_localUserId_fkey" FOREIGN KEY ("localUserId") REFERENCES public."Account"(id) ON UPDATE CASCADE ON DELETE CASCADE;
 
 
 --
@@ -4122,19 +3923,35 @@ ALTER TABLE ONLY public."ThreadAudience"
 
 
 --
+-- Name: ThreadMember ThreadMember_threadId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."ThreadMember"
+    ADD CONSTRAINT "ThreadMember_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES public."MessageThread"(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: ThreadMember ThreadMember_userId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."ThreadMember"
+    ADD CONSTRAINT "ThreadMember_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."User"(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: ThreadParticipant ThreadParticipant_accountId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."ThreadParticipant"
+    ADD CONSTRAINT "ThreadParticipant_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES public."Account"(id) ON DELETE RESTRICT;
+
+
+--
 -- Name: ThreadParticipant ThreadParticipant_threadId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."ThreadParticipant"
-    ADD CONSTRAINT "ThreadParticipant_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES public."MessageThread"(id) ON UPDATE CASCADE ON DELETE RESTRICT;
-
-
---
--- Name: ThreadParticipant ThreadParticipant_userId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."ThreadParticipant"
-    ADD CONSTRAINT "ThreadParticipant_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."User"(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+    ADD CONSTRAINT "ThreadParticipant_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES public."MessageThread"(id) ON DELETE RESTRICT;
 
 
 --
@@ -4150,7 +3967,7 @@ ALTER TABLE ONLY public."TwoFactorBackupCode"
 --
 
 ALTER TABLE ONLY public."UploadSession"
-    ADD CONSTRAINT "UploadSession_creatorId_fkey" FOREIGN KEY ("creatorId") REFERENCES public."User"(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+    ADD CONSTRAINT "UploadSession_creatorId_fkey" FOREIGN KEY ("creatorId") REFERENCES public."Account"(id) ON UPDATE CASCADE ON DELETE RESTRICT;
 
 
 --
@@ -4158,7 +3975,7 @@ ALTER TABLE ONLY public."UploadSession"
 --
 
 ALTER TABLE ONLY public."UserPreference"
-    ADD CONSTRAINT "UserPreference_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."User"(id) ON UPDATE CASCADE ON DELETE CASCADE;
+    ADD CONSTRAINT "UserPreference_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."Account"(id) ON UPDATE CASCADE ON DELETE CASCADE;
 
 
 --
@@ -4166,7 +3983,7 @@ ALTER TABLE ONLY public."UserPreference"
 --
 
 ALTER TABLE ONLY public."UserQuotaDailyAllowance"
-    ADD CONSTRAINT "UserQuotaDailyAllowance_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."User"(id) ON DELETE CASCADE;
+    ADD CONSTRAINT "UserQuotaDailyAllowance_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."Account"(id) ON DELETE CASCADE;
 
 
 --
@@ -4174,7 +3991,7 @@ ALTER TABLE ONLY public."UserQuotaDailyAllowance"
 --
 
 ALTER TABLE ONLY public."UserQuotaDailyUsage"
-    ADD CONSTRAINT "UserQuotaDailyUsage_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."User"(id) ON DELETE CASCADE;
+    ADD CONSTRAINT "UserQuotaDailyUsage_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."Account"(id) ON DELETE CASCADE;
 
 
 --
@@ -4182,7 +3999,7 @@ ALTER TABLE ONLY public."UserQuotaDailyUsage"
 --
 
 ALTER TABLE ONLY public."UserQuotaFileByteUsage"
-    ADD CONSTRAINT "UserQuotaFileByteUsage_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."User"(id) ON DELETE CASCADE;
+    ADD CONSTRAINT "UserQuotaFileByteUsage_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."Account"(id) ON DELETE CASCADE;
 
 
 --
@@ -4190,7 +4007,7 @@ ALTER TABLE ONLY public."UserQuotaFileByteUsage"
 --
 
 ALTER TABLE ONLY public."UserQuotaPolicy"
-    ADD CONSTRAINT "UserQuotaPolicy_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."User"(id) ON DELETE CASCADE;
+    ADD CONSTRAINT "UserQuotaPolicy_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."Account"(id) ON DELETE CASCADE;
 
 
 --

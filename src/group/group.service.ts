@@ -29,6 +29,7 @@ import { BusinessCode } from '../common/business-code.js';
 import { mintGroupAccount, isP2002 } from '../common/account.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import { FederationService } from '../federation/federation.service.js';
+import { FederationRelationshipCommandService } from '../federation/federation-relationship-command.service.js';
 import { MessageService } from '../message/message.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { SystemMessageType } from '../message/system-message.js';
@@ -71,6 +72,7 @@ export class GroupService {
   constructor(
     private database: DatabaseService,
     private readonly federation: FederationService,
+    private readonly relationshipCommands: FederationRelationshipCommandService,
     private readonly clientStateFeed: ClientStateFeedService,
     @Optional() private readonly messages?: MessageService,
     @Optional()
@@ -382,7 +384,7 @@ export class GroupService {
           BusinessCode.NOT_FOUND,
           'join request not found',
         );
-      await this.federation.lockGroupMutationInTx(
+      await this.relationshipCommands.lockGroupMutationInTx(
         tx,
         threadId,
         candidate.memberUserId,
@@ -393,15 +395,16 @@ export class GroupService {
           BusinessCode.NOT_FOUND,
           'join request not found',
         );
-      statePeers = await this.federation.writeGroupRelationshipIntentInTx(
-        tx,
-        threadId,
-        request.memberUserId,
-        decision === 'ACCEPTED' ? request.note : '',
-        decision,
-        clientFeedUpdates,
-        'APPLICATION',
-      );
+      statePeers =
+        await this.relationshipCommands.writeGroupRelationshipIntentInTx(
+          tx,
+          threadId,
+          request.memberUserId,
+          decision === 'ACCEPTED' ? request.note : '',
+          decision,
+          clientFeedUpdates,
+          'APPLICATION',
+        );
     });
     this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
     await this.federation.pushStateFeedDomains(statePeers.keys());
@@ -435,7 +438,7 @@ export class GroupService {
           BusinessCode.NOT_FOUND,
           'group invitation not found',
         );
-      await this.federation.lockGroupMutationInTx(
+      await this.relationshipCommands.lockGroupMutationInTx(
         tx,
         threadId,
         candidate.memberUserId,
@@ -446,15 +449,16 @@ export class GroupService {
           BusinessCode.NOT_FOUND,
           'group invitation not found',
         );
-      statePeers = await this.federation.writeGroupRelationshipIntentInTx(
-        tx,
-        threadId,
-        request.memberUserId,
-        '',
-        'REVOKED',
-        clientFeedUpdates,
-        'INVITATION',
-      );
+      statePeers =
+        await this.relationshipCommands.writeGroupRelationshipIntentInTx(
+          tx,
+          threadId,
+          request.memberUserId,
+          '',
+          'REVOKED',
+          clientFeedUpdates,
+          'INVITATION',
+        );
     });
     this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
     await this.federation.pushStateFeedDomains(statePeers.keys());
@@ -658,7 +662,7 @@ export class GroupService {
             userId: number;
             feedId: number;
           }> = [];
-          await this.federation.writeGroupRelationshipIntentInTx(
+          await this.relationshipCommands.writeGroupRelationshipIntentInTx(
             tx,
             thread.id,
             params.owner,
@@ -666,14 +670,14 @@ export class GroupService {
             'REQUESTED',
             clientFeedUpdates,
           );
-          await this.federation.writeMemberRelationshipIntentInTx(
+          await this.relationshipCommands.writeMemberRelationshipIntentInTx(
             tx,
             thread.id,
             params.owner,
             'ACCEPTED',
             clientFeedUpdates,
           );
-          await this.federation.writeGroupRelationshipIntentInTx(
+          await this.relationshipCommands.writeGroupRelationshipIntentInTx(
             tx,
             thread.id,
             params.owner,
@@ -721,7 +725,7 @@ export class GroupService {
     const result = await this.database.db.transaction(async (tx) => {
       const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
       const shouldDelete = params.deleteData;
-      await this.federation.lockGroupMutationInTx(
+      await this.relationshipCommands.lockGroupMutationInTx(
         tx,
         params.threadId,
         params.userId,
@@ -826,7 +830,7 @@ export class GroupService {
           .where(eq(group.id, thread.groupId));
       }
       const requestState = transitioned
-        ? await this.federation.writeMemberRelationshipIntentInTx(
+        ? await this.relationshipCommands.writeMemberRelationshipIntentInTx(
             tx,
             params.threadId,
             params.userId,
@@ -835,7 +839,7 @@ export class GroupService {
           )
         : new Map<string, bigint>();
       if (transitioned && thread.groupDomain === 'local') {
-        await this.federation.writeGroupRelationshipIntentInTx(
+        await this.relationshipCommands.writeGroupRelationshipIntentInTx(
           tx,
           params.threadId,
           params.userId,
@@ -844,7 +848,7 @@ export class GroupService {
           clientFeedUpdates,
         );
       }
-      await this.federation.reconcileGroupJoinRequestManagerInTx(
+      await this.relationshipCommands.reconcileGroupJoinRequestManagerInTx(
         tx,
         params.threadId,
         params.userId,
@@ -1046,7 +1050,7 @@ export class GroupService {
     reason?: string;
   }): Promise<{ transitioned: boolean }> {
     const result = await this.database.db.transaction(async (tx) => {
-      await this.federation.lockGroupMutationInTx(
+      await this.relationshipCommands.lockGroupMutationInTx(
         tx,
         params.threadId,
         params.targetUserId,
@@ -1165,7 +1169,7 @@ export class GroupService {
       }
       const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
       const requestState =
-        await this.federation.writeGroupRelationshipIntentInTx(
+        await this.relationshipCommands.writeGroupRelationshipIntentInTx(
           tx,
           params.threadId,
           params.targetUserId,
@@ -1175,7 +1179,7 @@ export class GroupService {
         );
       if (thread?.groupDomain === 'local' && target.domain === 'local') {
         const reverseState =
-          await this.federation.writeMemberRelationshipIntentInTx(
+          await this.relationshipCommands.writeMemberRelationshipIntentInTx(
             tx,
             params.threadId,
             params.targetUserId,
@@ -1338,13 +1342,13 @@ export class GroupService {
         params.threadId,
         clientFeedUpdates,
       );
-      await this.federation.reconcileGroupJoinRequestManagerInTx(
+      await this.relationshipCommands.reconcileGroupJoinRequestManagerInTx(
         tx,
         params.threadId,
         params.fromUserId,
         clientFeedUpdates,
       );
-      await this.federation.reconcileGroupJoinRequestManagerInTx(
+      await this.relationshipCommands.reconcileGroupJoinRequestManagerInTx(
         tx,
         params.threadId,
         params.toUserId,
@@ -1471,7 +1475,7 @@ export class GroupService {
         params.threadId,
         clientFeedUpdates,
       );
-      await this.federation.reconcileGroupJoinRequestManagerInTx(
+      await this.relationshipCommands.reconcileGroupJoinRequestManagerInTx(
         tx,
         params.threadId,
         params.targetUserId,

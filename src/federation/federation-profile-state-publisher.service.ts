@@ -12,6 +12,7 @@ import {
 } from '../invite/relationship-authorization.js';
 import { UploadService } from '../upload/upload.service.js';
 import { loadFederationConfig } from './federation.config.js';
+import { FederationThreadContentHeadService } from './federation-thread-content-head.service.js';
 import { GroupMetaFeedService } from './group-meta-feed.service.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
 
@@ -23,6 +24,7 @@ export class FederationProfileStatePublisher {
     private readonly upload: UploadService,
     private readonly stateFeed: PeerStateFeedService,
     private readonly clientStateFeed: ClientStateFeedService,
+    private readonly threadContentHeads: FederationThreadContentHeadService,
     @Optional() private readonly groupMetaFeed?: GroupMetaFeedService,
   ) {}
 
@@ -348,7 +350,7 @@ export class FederationProfileStatePublisher {
           memberProjection,
         ),
       );
-    return this.stateFeed.writeManyInTx(
+    const published = await this.stateFeed.writeManyInTx(
       tx,
       [...peerDomains].flatMap((peerDomain) => [
         {
@@ -379,6 +381,11 @@ export class FederationProfileStatePublisher {
         },
       ]),
     );
+    // A newly authorized peer must receive the already-committed thread head in the same transaction.
+    // Writing it after identity and roster state preserves the provider-side dependency order.
+    for (const peerDomain of peerDomains)
+      await this.threadContentHeads.refreshInTx(tx, peerDomain, threadId);
+    return published;
   }
 
   private async readAvatar(path: string): Promise<{

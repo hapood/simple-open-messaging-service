@@ -85,6 +85,7 @@ function createService(
   return new GroupService(
     database as never,
     federation as never,
+    federation as never,
     clientStateFeed as never,
     messages as never,
     messageFanout as never,
@@ -106,6 +107,7 @@ describe('GroupService membership lifecycle', () => {
     };
     const service = new GroupService(
       database as never,
+      {} as never,
       {} as never,
       {} as never,
     );

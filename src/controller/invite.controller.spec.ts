@@ -22,27 +22,43 @@ function makeController(federated: boolean) {
     writeLocalFriendIntentInTx: vi.fn().mockResolvedValue([]),
   };
   const federationService = {
+    pushStateFeedDomains: vi.fn(),
+  };
+  const relationshipCommands = {
     writeFriendIntentInTx: vi
       .fn()
       .mockResolvedValue(new Map([['peer.test', 3n]])),
-    pushStateFeedDomains: vi.fn(),
   };
   const controller = new InviteController(
     {} as never,
     inviteService as never,
     {} as never,
     federationService as never,
+    relationshipCommands as never,
     {} as never,
     { notifyFeedUpdates: vi.fn() } as never,
   );
   const request = { user: { userId: 7 } } as never;
-  return { controller, inviteService, federationService, request, tx };
+  return {
+    controller,
+    inviteService,
+    federationService,
+    relationshipCommands,
+    request,
+    tx,
+  };
 }
 
 describe('InviteController.revokeInvite', () => {
   it('closes the federated direction transactionally and wakes the state feed', async () => {
-    const { controller, inviteService, federationService, request, tx } =
-      makeController(true);
+    const {
+      controller,
+      inviteService,
+      federationService,
+      relationshipCommands,
+      request,
+      tx,
+    } = makeController(true);
 
     await controller.revokeInvite(request, { inviteId: '42' });
 
@@ -51,7 +67,7 @@ describe('InviteController.revokeInvite', () => {
       7,
       expect.any(Function),
     );
-    expect(federationService.writeFriendIntentInTx).toHaveBeenCalledWith(
+    expect(relationshipCommands.writeFriendIntentInTx).toHaveBeenCalledWith(
       tx,
       7,
       9,
@@ -68,8 +84,14 @@ describe('InviteController.revokeInvite', () => {
   });
 
   it('uses the same directed fact state machine for a local friend', async () => {
-    const { controller, inviteService, federationService, request, tx } =
-      makeController(false);
+    const {
+      controller,
+      inviteService,
+      federationService,
+      relationshipCommands,
+      request,
+      tx,
+    } = makeController(false);
 
     await controller.revokeInvite(request, { inviteId: '42' });
 
@@ -79,7 +101,7 @@ describe('InviteController.revokeInvite', () => {
       9,
       false,
     );
-    expect(federationService.writeFriendIntentInTx).not.toHaveBeenCalled();
+    expect(relationshipCommands.writeFriendIntentInTx).not.toHaveBeenCalled();
     expect([
       ...federationService.pushStateFeedDomains.mock.calls[0][0],
     ]).toEqual([]);

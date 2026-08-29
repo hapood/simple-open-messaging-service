@@ -5,11 +5,8 @@
  *  strings — the wire contract).
  *
  *  - 'ready'       bytes local + authz written → the URL serves 200.
- *  - 'failed'      localize failed / never succeeded → the URL returns 4xx (retryable). A persistent
- *                  backend state (stored in the message's digests + pushed).
- *  - 'downloading' localize in flight. Carried only on a freshly-pulled NEW_MESSAGE frame; the backend
- *                  stores/pushes only the 'ready'|'failed' terminals. The client infers 'downloading'
- *                  optimistically on arrival / manual retry. */
+ *  - 'failed'      local materialization failed; the visible FAILED placeholder is retryable.
+ *  - 'downloading' local materialization is in progress; the visible STUB owns its final seq. */
 export const MEDIA_STATUS = {
   READY: 'ready',
   DOWNLOADING: 'downloading',

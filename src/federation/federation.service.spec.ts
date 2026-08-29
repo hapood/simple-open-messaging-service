@@ -64,6 +64,79 @@ describe('client group intent compaction identity', () => {
   });
 });
 
+describe('thread-query FORBIDDEN convergence', () => {
+  function forbiddenHarness(epoch: number) {
+    const tx = {
+      execute: vi.fn().mockResolvedValue({
+        rows: [{ localUserId: 1, remoteUserId: 2 }],
+      }),
+      query: {
+        messageThread: {
+          findFirst: vi.fn().mockResolvedValue({ authorizationEpoch: epoch }),
+        },
+      },
+    };
+    const allocated = new Map([['peer.test', 9n]]);
+    const relationshipIntents = {
+      readP2PRelationshipInTx: vi.fn().mockResolvedValue({
+        pair: { active: true, threadId: 31 },
+        firstIntent: { status: 'ACCEPTED' },
+        secondIntent: { status: 'ACCEPTED' },
+      }),
+    };
+    const relationshipCommands = {
+      writeFriendIntentInTx: vi.fn().mockResolvedValue(allocated),
+    };
+    const clientStateFeed = { notifyFeedUpdates: vi.fn() };
+    const service = Object.create(FederationService.prototype) as FederationService &
+      Record<string, unknown>;
+    Object.assign(service, {
+      database: { db: { transaction: (run: (value: unknown) => unknown) => run(tx) } },
+      relationshipIntents,
+      relationshipCommands,
+      clientStateFeed,
+      pushStateFeedDomains: vi.fn(),
+    });
+    return {
+      service,
+      tx,
+      relationshipIntents,
+      relationshipCommands,
+      clientStateFeed,
+    };
+  }
+
+  it('revokes only the local P2P direction under the frozen epoch', async () => {
+    const harness = forbiddenHarness(7);
+
+    await expect(
+      harness.service.handleThreadQueryForbidden(31, 'peer.test', 7),
+    ).resolves.toBe('P2P_REVOKED');
+    expect(
+      harness.relationshipCommands.writeFriendIntentInTx,
+    ).toHaveBeenCalledWith(
+      harness.tx,
+      1,
+      2,
+      false,
+      '',
+      expect.any(Array),
+    );
+    expect(harness.clientStateFeed.notifyFeedUpdates).toHaveBeenCalledOnce();
+  });
+
+  it('does not let an old denied round revoke a newer authorization epoch', async () => {
+    const harness = forbiddenHarness(8);
+
+    await expect(
+      harness.service.handleThreadQueryForbidden(31, 'peer.test', 7),
+    ).resolves.toBe('STALE');
+    expect(
+      harness.relationshipCommands.writeFriendIntentInTx,
+    ).not.toHaveBeenCalled();
+  });
+});
+
 describe('federated profile resource path', () => {
   it('canonically percent-encodes a group account', async () => {
     const { svc } = makeStubs();
@@ -215,13 +288,17 @@ describe('federated group join request', () => {
     const target = svc as unknown as {
       fetchRemoteUser: typeof fetchRemoteUser;
       ensureFederatedGroupRequestShellInTx: typeof ensureShell;
-      writeMemberRelationshipIntentInTx: typeof writeIntent;
+      relationshipCommands: {
+        writeMemberRelationshipIntentInTx: typeof writeIntent;
+      };
       clientStateFeed: { notifyFeedUpdates: () => void };
       pushStateFeedDomains: typeof pushStateFeedDomains;
     };
     target.fetchRemoteUser = fetchRemoteUser;
     target.ensureFederatedGroupRequestShellInTx = ensureShell;
-    target.writeMemberRelationshipIntentInTx = writeIntent;
+    target.relationshipCommands = {
+      writeMemberRelationshipIntentInTx: writeIntent,
+    };
     target.clientStateFeed = { notifyFeedUpdates: vi.fn() };
     target.pushStateFeedDomains = pushStateFeedDomains;
 
@@ -381,10 +458,11 @@ function makeStubs() {
     {} as never, // stateFeed
     {} as never, // clientStateFeed
     {} as never, // relationshipIntents
-    {} as never, // groupRequestProjection
     {} as never, // groupRelationships
     {} as never, // groupRosterProjection
     {} as never, // threadContentHeads
+    {} as never, // profileStatePublisher
+    {} as never, // relationshipCommands
   );
   return {
     svc,

@@ -320,7 +320,9 @@ thread-content targets, regardless of placement within one fetched page.
 A malformed item is isolated according to the common permanent-item rules. A
 failed group-meta fetch or page transaction does not advance the state cursor.
 Hints may be lost, repeated, or reordered; startup and periodic reconciliation
-must drain from the durable local cursor.
+must drain from the durable local cursor. The consumer retains the maximum
+observed pending `stateFeedEndId`; an older hint never moves pending, active, or
+committed progress backward.
 
 Removing a current state-feed projection allocates no deletion item unless the
 event's own state machine defines a durable terminal fact, such as

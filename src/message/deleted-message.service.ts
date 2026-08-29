@@ -433,6 +433,7 @@ export class DeletedMessageService {
         creatorDomain: true,
         contentType: true,
         isDeleted: true,
+        localState: true,
       },
     });
     const pending = await tx.query.federatedMessageTombstone.findFirst({
@@ -462,7 +463,7 @@ export class DeletedMessageService {
       );
 
     if (!target) {
-      if (params.allowPending === false)
+      if (!target && params.allowPending === false)
         throw new BusinessException(
           BusinessCode.FEDERATION_BINDING_VIOLATION,
           'group origin cannot accept a deletion for an unknown message',
@@ -545,11 +546,7 @@ export class DeletedMessageService {
                 },
           )
         ).message;
-      } else {
-        systemMessage = null;
       }
-      // This table is only an unmatched-deletion inbox. Once the target exists, DeletedMessage is
-      // the durable local fact and the pending row must disappear in the same transaction.
       await tx
         .delete(federatedMessageTombstone)
         .where(
@@ -561,76 +558,27 @@ export class DeletedMessageService {
         );
     }
 
-    // Download-inbox (§12.8): if the deleted message is still staged, terminate its logical download
-    // without destroying resumable digest state. Another authorized message may reference the same
-    // digest later, so FileSyncProgress and the shared CAS partial are retained for inspection/reuse.
-    // TOMBSTONED is a protocol terminal, distinct from an operator-retryable transfer failure. The
-    // advisory lock serializes this with promotion; the message tombstone prevents replay re-staging.
-    const staged = await tx.query.pendingMedia.findFirst({
-      where: and(
-        eq(pendingMedia.threadId, params.threadId),
-        eq(pendingMedia.originDomain, params.sourceDomain),
-        eq(pendingMedia.originSeq, params.messageSeq),
-      ),
-      columns: { batchId: true },
-    });
+    // A tombstone makes staged media terminal without waiting for localization.
+    const [staged] = await tx
+      .select({ batchId: pendingMedia.batchId })
+      .from(pendingMedia)
+      .innerJoin(message, eq(message.id, pendingMedia.messageId))
+      .where(
+        and(
+          eq(pendingMedia.direction, 'INBOUND'),
+          eq(message.threadId, params.threadId),
+          eq(pendingMedia.originDomain, params.sourceDomain),
+          eq(message.originSeq, params.messageSeq),
+        ),
+      )
+      .limit(1);
     if (staged) {
       await tx
-        .update(fileSyncProgress)
-        .set({
-          status: 'TOMBSTONED',
-          errorKind: 'SOURCE_MESSAGE_DELETED',
-          updatedAt: new Date(),
-        })
+        .delete(fileSyncProgress)
         .where(eq(fileSyncProgress.batchId, staged.batchId));
       await tx
-        .update(pendingMedia)
-        .set({
-          status: 'tombstoned',
-          anyFailed: true,
-          failReason: 'SOURCE_MESSAGE_DELETED',
-          updatedAt: new Date(),
-        })
+        .delete(pendingMedia)
         .where(eq(pendingMedia.batchId, staged.batchId));
-
-      // A quote waiting for this staged target can never acquire a local seq after the authoritative
-      // deletion. It has no useful terminal representation, so remove the whole dependent chain.
-      await tx.execute(sql`
-        WITH RECURSIVE dependents AS (
-          SELECT child."batchId", child."threadId", child."originDomain", child."originSeq"
-            FROM "PendingMedia" child
-           WHERE child."threadId" = ${params.threadId}
-             AND child."originDomain" = ${params.sourceDomain}
-             AND child."dependsOnOriginSeq" = ${params.messageSeq}
-          UNION
-          SELECT child."batchId", child."threadId", child."originDomain", child."originSeq"
-            FROM "PendingMedia" child
-            JOIN dependents parent
-              ON child."threadId" = parent."threadId"
-             AND child."originDomain" = parent."originDomain"
-             AND child."dependsOnOriginSeq" = parent."originSeq"
-        )
-        DELETE FROM "FileSyncProgress"
-         WHERE "batchId" IN (SELECT "batchId" FROM dependents)
-      `);
-      await tx.execute(sql`
-        WITH RECURSIVE dependents AS (
-          SELECT child."batchId", child."threadId", child."originDomain", child."originSeq"
-            FROM "PendingMedia" child
-           WHERE child."threadId" = ${params.threadId}
-             AND child."originDomain" = ${params.sourceDomain}
-             AND child."dependsOnOriginSeq" = ${params.messageSeq}
-          UNION
-          SELECT child."batchId", child."threadId", child."originDomain", child."originSeq"
-            FROM "PendingMedia" child
-            JOIN dependents parent
-              ON child."threadId" = parent."threadId"
-             AND child."originDomain" = parent."originDomain"
-             AND child."dependsOnOriginSeq" = parent."originSeq"
-        )
-        DELETE FROM "PendingMedia"
-         WHERE "batchId" IN (SELECT "batchId" FROM dependents)
-      `);
     }
 
     if (params.cursor) {

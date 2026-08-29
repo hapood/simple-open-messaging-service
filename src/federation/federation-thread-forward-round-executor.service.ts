@@ -24,10 +24,23 @@ import type {
 import type { FederationMessageTombstoneQueryPage } from './federation-message-tombstone-feed.service.js';
 import {
   FederationThreadForwardRoundService,
-  type FederationThreadForwardRoundResult,
+  type FederationThreadForwardMessageRoundResult,
+  type FederationThreadForwardTombstoneRoundResult,
 } from './federation-thread-forward-round.service.js';
 import { FederationThreadSourceService } from './federation-thread-source.service.js';
 import { FederationThreadSyncStateService } from './federation-thread-sync-state.service.js';
+
+interface BufferedForwardMessagePage {
+  response: FederationThreadResourceResponse<FederationMessageQueryPage>;
+  after: number;
+  frozenTargetSeq: number;
+  prefetchedForwardClosures: ReadonlyMap<number, ForwardWireBundle>;
+}
+
+interface BufferedForwardTombstonePage {
+  response: FederationThreadResourceResponse<FederationMessageTombstoneQueryPage>;
+  frozenTargetSeq: number;
+}
 
 @Injectable()
 export class FederationThreadForwardRoundExecutorService {
@@ -38,39 +51,42 @@ export class FederationThreadForwardRoundExecutorService {
     private readonly sources: FederationThreadSourceService,
   ) {}
 
-  async run(
+  async runMessages(
     threadId: number,
     peerDomain: string,
     take?: number,
-  ): Promise<FederationThreadForwardRoundResult> {
+  ): Promise<FederationThreadForwardMessageRoundResult> {
     const source = await this.sources.resolve(threadId, peerDomain);
-    const publications: Array<() => Promise<void>> = [];
+    let messageBatch: BufferedForwardMessagePage | undefined;
     let messageAdvance: { processed: number; target: number } | undefined;
-    let deletionAdvance: { processed: number; target: number } | undefined;
-    return this.rounds.run(
+    return this.rounds.runMessages(
       threadId,
       peerDomain,
       {
-        processMessages: async (params) => {
+        process: async (params) => {
           const result = await this.processMessages(source, params);
-          if (result.publish) publications.push(result.publish);
-          if (!result.blockedByPending)
-            messageAdvance = {
-              processed: result.scannedThrough,
-              target: params.through,
-            };
-          return { blockedByPending: result.blockedByPending };
-        },
-        processTombstones: async (params) => {
-          const publication = await this.processTombstones(source, params);
-          if (publication.publish) publications.push(publication.publish);
-          deletionAdvance = {
-            processed: publication.scannedThrough,
+          messageBatch = result.batch;
+          messageAdvance = {
+            processed: result.scannedThrough,
             target: params.through,
           };
         },
-        complete: async () => {
+        complete: async ({ authorizationEpoch }) => {
+          let publish: (() => Promise<void>) | undefined;
           await this.database.db.transaction(async (tx) => {
+            await FederationThreadSyncStateService.lockAuthorizationEpochInTx(
+              tx,
+              threadId,
+              authorizationEpoch,
+            );
+            if (messageBatch) {
+              const publication =
+                await this.federation.applyForwardMessagePageInTransaction(
+                  tx,
+                  messageBatch,
+                );
+              publish = publication.publish;
+            }
             if (messageAdvance)
               await FederationThreadSyncStateService.advanceMessageProcessedThroughInTx(
                 tx,
@@ -79,6 +95,54 @@ export class FederationThreadForwardRoundExecutorService {
                 messageAdvance.processed,
                 messageAdvance.target,
               );
+          });
+          await publish?.();
+        },
+      },
+      take,
+    );
+  }
+
+  async runTombstones(
+    threadId: number,
+    peerDomain: string,
+    targetSeq: number,
+    maxMessageSeq: number,
+    take?: number,
+  ): Promise<FederationThreadForwardTombstoneRoundResult> {
+    const source = await this.sources.resolve(threadId, peerDomain);
+    let tombstoneBatch: BufferedForwardTombstonePage | undefined;
+    let deletionAdvance: { processed: number; target: number } | undefined;
+    return this.rounds.runTombstones(
+      threadId,
+      peerDomain,
+      targetSeq,
+      maxMessageSeq,
+      {
+        process: async (params) => {
+          const result = await this.processTombstones(source, params);
+          tombstoneBatch = result.batch;
+          deletionAdvance = {
+            processed: result.scannedThrough,
+            target: params.through,
+          };
+        },
+        complete: async ({ authorizationEpoch }) => {
+          let publish: (() => Promise<void>) | undefined;
+          await this.database.db.transaction(async (tx) => {
+            await FederationThreadSyncStateService.lockAuthorizationEpochInTx(
+              tx,
+              threadId,
+              authorizationEpoch,
+            );
+            if (tombstoneBatch) {
+              const publication =
+                await this.federation.applyForwardTombstonePageInTransaction(
+                  tx,
+                  tombstoneBatch,
+                );
+              publish = publication.publish;
+            }
             if (deletionAdvance)
               await FederationThreadSyncStateService.advanceDeletionProcessedThroughInTx(
                 tx,
@@ -88,7 +152,7 @@ export class FederationThreadForwardRoundExecutorService {
                 deletionAdvance.target,
               );
           });
-          for (const publish of publications) await publish();
+          await publish?.();
         },
       },
       take,
@@ -99,9 +163,8 @@ export class FederationThreadForwardRoundExecutorService {
     source: FederationReverseThreadSource,
     params: { after: number; through: number; take: number },
   ): Promise<{
-    blockedByPending: boolean;
     scannedThrough: number;
-    publish?: () => Promise<void>;
+    batch?: BufferedForwardMessagePage;
   }> {
     const query = this.threadQuery(source);
     query.set('after', params.after.toString());
@@ -120,17 +183,19 @@ export class FederationThreadForwardRoundExecutorService {
     } catch (error) {
       const resumeAfter = this.resumeAfter(error, params.after, params.through);
       if (resumeAfter === null) throw error;
-      return { blockedByPending: false, scannedThrough: resumeAfter };
+      return { scannedThrough: resumeAfter };
     }
     this.assertMessagePage(source, response.data, params);
     const closures = await this.prefetchForwardClosures(source, response);
-    const applied = await this.federation.applyForwardMessagePage({
-      response,
-      after: params.after,
-      frozenTargetSeq: params.through,
-      prefetchedForwardClosures: closures,
-    });
-    return { ...applied, scannedThrough: response.data.scannedThrough };
+    return {
+      scannedThrough: response.data.scannedThrough,
+      batch: {
+        response,
+        after: params.after,
+        frozenTargetSeq: params.through,
+        prefetchedForwardClosures: closures,
+      },
+    };
   }
 
   private async processTombstones(
@@ -143,7 +208,7 @@ export class FederationThreadForwardRoundExecutorService {
     },
   ): Promise<{
     scannedThrough: number;
-    publish?: () => Promise<void>;
+    batch?: BufferedForwardTombstonePage;
   }> {
     const query = this.threadQuery(source);
     query.set('after', params.after.toString());
@@ -166,13 +231,9 @@ export class FederationThreadForwardRoundExecutorService {
       return { scannedThrough: resumeAfter };
     }
     this.assertTombstonePage(source, response.data, params);
-    const applied = await this.federation.applyForwardTombstonePage({
-      response,
-      frozenTargetSeq: params.through,
-    });
     return {
       scannedThrough: response.data.scannedThrough,
-      publish: applied.publish,
+      batch: { response, frozenTargetSeq: params.through },
     };
   }
 
