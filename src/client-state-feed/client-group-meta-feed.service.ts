@@ -14,6 +14,7 @@ import {
 export interface ClientGroupMetaMemberWrite {
   account: string;
   domain: string;
+  namespaceId: number;
   body: Record<string, unknown>;
 }
 
@@ -94,13 +95,13 @@ export class ClientGroupMetaFeedService {
       .orderBy(asc(clientGroupMetaMemberFeed.feedId));
     const current = new Map(
       history.map((item) => [
-        `${item.memberDomain}\u0000${item.memberAccount}`,
+        `${item.memberNamespaceId}\u0000${item.memberDomain}\u0000${item.memberAccount}`,
         item,
       ]),
     );
     const desired = new Map(
       members.map((member) => [
-        `${member.domain}\u0000${member.account}`,
+        `${member.namespaceId}\u0000${member.domain}\u0000${member.account}`,
         {
           ...member,
           body: serializeBody(member.body) as Record<string, unknown>,
@@ -110,6 +111,7 @@ export class ClientGroupMetaFeedService {
     const changes: Array<{
       account: string;
       domain: string;
+      namespaceId: number;
       operation: 'UPSERT' | 'DEPART';
       body: Record<string, unknown>;
     }> = [];
@@ -123,16 +125,18 @@ export class ClientGroupMetaFeedService {
       changes.push({
         account: member.account,
         domain: member.domain,
+        namespaceId: member.namespaceId,
         operation: 'UPSERT',
         body: member.body,
       });
     }
     for (const previous of current.values()) {
-      const key = `${previous.memberDomain}\u0000${previous.memberAccount}`;
+      const key = `${previous.memberNamespaceId}\u0000${previous.memberDomain}\u0000${previous.memberAccount}`;
       if (previous.operation !== 'UPSERT' || desired.has(key)) continue;
       changes.push({
         account: previous.memberAccount,
         domain: previous.memberDomain,
+        namespaceId: previous.memberNamespaceId,
         operation: 'DEPART',
         body: {},
       });
@@ -149,6 +153,7 @@ export class ClientGroupMetaFeedService {
           feedId: ++allocatedThrough,
           memberAccount: change.account,
           memberDomain: change.domain,
+          memberNamespaceId: change.namespaceId,
           operation: change.operation,
           body: change.body,
         })),
@@ -234,16 +239,17 @@ export class ClientGroupMetaFeedService {
               feedId: bigint;
               memberAccount: string;
               memberDomain: string;
+              memberNamespaceId: number;
               operation: 'UPSERT' | 'DEPART';
               body: unknown;
             }>(sql`
               SELECT latest.* FROM (
-                SELECT DISTINCT ON ("memberDomain", "memberAccount")
-                  "feedId", "memberAccount", "memberDomain", operation, body
+                SELECT DISTINCT ON ("memberNamespaceId", "memberDomain", "memberAccount")
+                  "feedId", "memberAccount", "memberDomain", "memberNamespaceId", operation, body
                 FROM "ClientGroupMetaMemberFeed"
                 WHERE "accountId" = ${userId} AND "groupId" = ${groupId}
                   AND "feedId" <= ${scanEnd}
-                ORDER BY "memberDomain", "memberAccount", "feedId" DESC
+                ORDER BY "memberNamespaceId", "memberDomain", "memberAccount", "feedId" DESC
               ) latest
               WHERE latest.operation = 'UPSERT' AND latest."feedId" > ${after}
               ORDER BY latest."feedId" LIMIT ${limit}
@@ -259,6 +265,7 @@ export class ClientGroupMetaFeedService {
         feedId: row.feedId.toString(),
         account: row.memberAccount,
         domain: row.memberDomain,
+        namespaceId: row.memberNamespaceId,
         operation: row.operation,
         body: row.body,
       })),

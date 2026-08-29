@@ -171,6 +171,7 @@ describe('ThreadParticipantService.setBlocked', () => {
       userId: 4,
       account: '',
       domain: 'local',
+      namespaceId: 0,
       eventType: 'THREAD_BLOCK',
       subjectAccount: '9',
       subjectDomain: 'local',

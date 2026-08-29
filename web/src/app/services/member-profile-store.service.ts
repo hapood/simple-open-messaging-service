@@ -8,6 +8,7 @@ export interface ResolvedMemberProfile {
   account: string;
   domain: string;
   profileSourceDomain: string;
+  namespaceId: number;
   role: 'OWNER' | 'ADMIN' | 'MEMBER';
   isOwner: boolean;
   name: string;
@@ -31,12 +32,17 @@ export class MemberProfileRepository {
     const members = await this.webdb.queryGroupMembers({ threadId, ...params });
     return members.map((member) => ({
       identityKey: messageCreatorKey(
-        { account: member.account, domain: member.domain },
+        {
+          account: member.account,
+          domain: member.domain,
+          namespaceId: member.namespaceId,
+        },
         member.sourceDomain,
       ),
       account: member.account,
       domain: member.domain,
       profileSourceDomain: member.sourceDomain,
+      namespaceId: member.namespaceId,
       role: member.role,
       isOwner: member.role === 'OWNER',
       name: member.user.name,
@@ -55,6 +61,7 @@ export class MemberProfileRepository {
       identity.account,
       identity.domain,
       identity.sourceDomain,
+      identity.namespaceId,
     );
     if (!member) return undefined;
     return {
@@ -62,6 +69,7 @@ export class MemberProfileRepository {
       account: member.account,
       domain: member.domain,
       profileSourceDomain: member.sourceDomain,
+      namespaceId: member.namespaceId,
       role: member.role,
       isOwner: member.role === 'OWNER',
       name: member.user.name,

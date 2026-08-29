@@ -48,11 +48,12 @@ describe('FederationProfileStatePublisher', () => {
     );
 
     await expect(
-      publisher.writeUserProfileToPeerInTx(tx, 1, 'peer.test', true),
+      publisher.writeUserProfileToPeerInTx(tx, 1, 'peer.test', 12, true),
     ).resolves.toEqual(new Map([['peer.test', 7n]]));
     expect(stateFeed.writeManyInTx).toHaveBeenCalledWith(tx, [
       expect.objectContaining({
         peerDomain: 'peer.test',
+        namespaceId: 12,
         account: 'alice',
         eventType: 'PROFILE',
         forceReindex: true,
@@ -87,6 +88,7 @@ describe('FederationProfileStatePublisher', () => {
           {
             account: 'alice',
             domain: 'local',
+            namespaceId: 0,
             role: 'OWNER',
             name: 'Alice',
             avatar: '',
@@ -95,7 +97,9 @@ describe('FederationProfileStatePublisher', () => {
           },
         ]),
       )
-      .mockImplementationOnce(() => queryResult([{ domain: 'peer.test' }]));
+      .mockImplementationOnce(() =>
+        queryResult([{ domain: 'peer.test', namespaceId: 12 }]),
+      );
     const tx = { select } as never;
     const stateFeed = {
       writeManyInTx: vi.fn().mockResolvedValue(new Map([['peer.test', 11n]])),
@@ -122,6 +126,7 @@ describe('FederationProfileStatePublisher', () => {
     expect(groupMetaFeed.reconcileInTx).toHaveBeenCalledWith(
       tx,
       'peer.test',
+      12,
       9,
       [
         expect.objectContaining({
@@ -143,6 +148,7 @@ describe('FederationProfileStatePublisher', () => {
     expect(threadContentHeads.refreshInTx).toHaveBeenCalledWith(
       tx,
       'peer.test',
+      12,
       5,
     );
     expect(stateFeed.writeManyInTx.mock.invocationCallOrder[0]).toBeLessThan(

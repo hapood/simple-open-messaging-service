@@ -27,13 +27,6 @@ export class FederationPeerLifecycle {
     const existing = await this.database.db.query.federatedPeer.findFirst({
       where: eq(tables.federatedPeer.domain, domain),
     });
-    if (existing?.resetInProgress) {
-      throw new BusinessException(
-        BusinessCode.INTERNAL,
-        `${domain} federation relationship is under administrative maintenance`,
-        HttpStatus.SERVICE_UNAVAILABLE,
-      );
-    }
     if (existing?.trustLevel === 'available') return;
     if (existing?.trustLevel === 'halted') {
       const code = this.isFatalCode(existing.haltCode)
@@ -96,7 +89,6 @@ export class FederationPeerLifecycle {
         .where(
           and(
             eq(tables.federatedPeer.domain, domain),
-            eq(tables.federatedPeer.resetInProgress, false),
             or(
               isNull(tables.federatedPeer.lastSuccessAt),
               lt(
@@ -184,12 +176,11 @@ export class FederationPeerLifecycle {
     if (
       !existing ||
       existing.trustLevel !== 'halted' ||
-      existing.haltCode !== BusinessCode.FEDERATION_PEER_BLOCKED ||
-      existing.resetInProgress
+      existing.haltCode !== BusinessCode.FEDERATION_PEER_BLOCKED
     ) {
       return;
     }
-    const trustLevel = !existing.identityPinnedAt
+    const trustLevel = existing.activeNamespaceId === null
       ? 'unrecognized'
       : existing.recognizesPeer &&
           existing.outboundRecognitionConfirmed &&
@@ -261,22 +252,28 @@ export class FederationPeerLifecycle {
         HttpStatus.BAD_REQUEST,
       );
     }
-    const peer = await this.database.db.query.federatedPeer.findFirst({
-      where: eq(tables.federatedPeer.domain, domain),
-      columns: {
-        trustLevel: true,
-        haltCode: true,
-        resetInProgress: true,
-        rootKeyFingerprint: true,
-        rootPublicKey: true,
-        identityPinnedAt: true,
-      },
-    });
+    const [peer] = await this.database.db
+      .select({
+        trustLevel: tables.federatedPeer.trustLevel,
+        haltCode: tables.federatedPeer.haltCode,
+        activeNamespaceId: tables.federatedPeer.activeNamespaceId,
+        rootKeyFingerprint: tables.identityNamespace.rootKeyFingerprint,
+        rootPublicKey: tables.identityNamespace.rootPublicKey,
+      })
+      .from(tables.federatedPeer)
+      .innerJoin(
+        tables.identityNamespace,
+        eq(
+          tables.identityNamespace.id,
+          tables.federatedPeer.activeNamespaceId,
+        ),
+      )
+      .where(eq(tables.federatedPeer.domain, domain))
+      .limit(1);
     if (
       peer?.trustLevel !== 'halted' ||
       peer.haltCode !== BusinessCode.FEDERATION_IDENTITY_MISMATCH ||
-      peer.resetInProgress ||
-      !peer.identityPinnedAt ||
+      peer.activeNamespaceId === null ||
       !peer.rootKeyFingerprint ||
       !peer.rootPublicKey
     ) {
@@ -302,15 +299,13 @@ export class FederationPeerLifecycle {
       );
     }
 
-    await this.discovery.cacheDocument(domain, doc);
+    await this.discovery.cacheDocument(domain, peer.activeNamespaceId, doc);
     await this.database.db.transaction(async (tx) => {
       const [locked] = await tx
         .select({
           trustLevel: tables.federatedPeer.trustLevel,
           haltCode: tables.federatedPeer.haltCode,
-          resetInProgress: tables.federatedPeer.resetInProgress,
-          rootKeyFingerprint: tables.federatedPeer.rootKeyFingerprint,
-          rootPublicKey: tables.federatedPeer.rootPublicKey,
+          activeNamespaceId: tables.federatedPeer.activeNamespaceId,
         })
         .from(tables.federatedPeer)
         .where(eq(tables.federatedPeer.domain, domain))
@@ -319,9 +314,7 @@ export class FederationPeerLifecycle {
       if (
         locked?.trustLevel !== 'halted' ||
         locked.haltCode !== BusinessCode.FEDERATION_IDENTITY_MISMATCH ||
-        locked.resetInProgress ||
-        locked.rootKeyFingerprint !== peer.rootKeyFingerprint ||
-        locked.rootPublicKey !== peer.rootPublicKey
+        locked.activeNamespaceId !== peer.activeNamespaceId
       ) {
         throw new BusinessException(
           BusinessCode.FEDERATION_IDENTITY_MISMATCH,

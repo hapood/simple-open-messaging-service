@@ -56,8 +56,8 @@ export class S2sRecognitionController {
       headers,
       certificate.ed25519,
     );
-    await this.discovery.cacheDocument(domain, doc);
-    await this.recognition.acceptInbound(domain, doc);
+    const context = await this.recognition.acceptInbound(domain, doc);
+    await this.discovery.cacheDocument(domain, context.namespaceId, doc);
     this.recognition.dispatchReverse(domain);
     return { ok: true } as const;
   }
@@ -76,8 +76,10 @@ export class S2sRecognitionController {
     try {
       // A recognized peer may legitimately rotate to a newly published key. Refresh on a cache miss,
       // but collapse every fetch/authorization outcome into Health's privacy-safe result.
+      const context = await this.recognition.captureContext(signer.domain);
       publicKey = await this.discovery.getPublicKey(
         signer.domain,
+        context.namespaceId,
         signer.keyId,
       );
     } catch {

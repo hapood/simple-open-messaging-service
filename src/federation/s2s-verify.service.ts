@@ -108,10 +108,15 @@ export class S2sVerifyService {
     headers: OutboundSignatureHeaders,
     keyId: string,
     domain: string,
+    namespaceId: number,
   ): Promise<void> {
     let publicKey: Uint8Array | null;
     try {
-      publicKey = await this.discovery.getPublicKey(domain, keyId);
+      publicKey = await this.discovery.getPublicKey(
+        domain,
+        namespaceId,
+        keyId,
+      );
     } catch (e) {
       throw new BusinessException(
         BusinessCode.INTERNAL,

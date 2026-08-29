@@ -271,6 +271,7 @@ export class DiscoveryService {
 
   async getPublicKey(
     domain: string,
+    namespaceId: number,
     keyId: string,
   ): Promise<Uint8Array | null> {
     const normalized = this.normalizeDomain(domain);
@@ -278,6 +279,7 @@ export class DiscoveryService {
     const cached = await this.database.db.query.s2SKeyCache.findFirst({
       where: and(
         eq(tables.s2SKeyCache.domain, normalized),
+        eq(tables.s2SKeyCache.namespaceId, namespaceId),
         eq(tables.s2SKeyCache.keyId, keyId),
       ),
     });
@@ -285,7 +287,7 @@ export class DiscoveryService {
       return Uint8Array.from(Buffer.from(cached.publicKey, 'base64'));
     }
     const doc = await this.fetchWellKnown(normalized);
-    await this.cacheDocument(normalized, doc);
+    await this.cacheDocument(normalized, namespaceId, doc);
     const hit = doc.keys.find(
       (key) =>
         key.keyId === keyId &&
@@ -297,12 +299,14 @@ export class DiscoveryService {
 
   async getCachedPublicKey(
     domain: string,
+    namespaceId: number,
     keyId: string,
   ): Promise<Uint8Array | null> {
     const now = new Date();
     const cached = await this.database.db.query.s2SKeyCache.findFirst({
       where: and(
         eq(tables.s2SKeyCache.domain, this.normalizeDomain(domain)),
+        eq(tables.s2SKeyCache.namespaceId, namespaceId),
         eq(tables.s2SKeyCache.keyId, keyId),
       ),
     });
@@ -312,43 +316,63 @@ export class DiscoveryService {
   }
 
   /** Verify root continuity and atomically replace the cache with the currently published certificates. */
-  async cacheDocument(domain: string, doc: WellKnownDoc): Promise<void> {
+  async cacheDocument(
+    domain: string,
+    namespaceId: number,
+    doc: WellKnownDoc,
+  ): Promise<void> {
     const normalized = this.normalizeDomain(domain);
     const fingerprint = this.fingerprint(doc.rootKey.ed25519);
     const mismatch = await this.database.db.transaction(async (tx) => {
-      const peer = await tx.query.federatedPeer.findFirst({
-        where: eq(tables.federatedPeer.domain, normalized),
-      });
+      const [peer] = await tx
+        .select({
+          activeNamespaceId: tables.federatedPeer.activeNamespaceId,
+          rootPublicKey: tables.identityNamespace.rootPublicKey,
+          rootKeyFingerprint: tables.identityNamespace.rootKeyFingerprint,
+        })
+        .from(tables.federatedPeer)
+        .innerJoin(
+          tables.identityNamespace,
+          and(
+            eq(tables.identityNamespace.domain, normalized),
+            eq(tables.identityNamespace.id, namespaceId),
+          ),
+        )
+        .where(eq(tables.federatedPeer.domain, normalized))
+        .limit(1);
       if (
-        peer?.identityPinnedAt &&
-        (peer.rootPublicKey !== doc.rootKey.ed25519 ||
-          peer.rootKeyFingerprint !== fingerprint)
+        !peer ||
+        peer.rootPublicKey !== doc.rootKey.ed25519 ||
+        peer.rootKeyFingerprint !== fingerprint
       ) {
         const reason =
           'peer presented a root different from the pinned identity';
-        await tx
-          .update(tables.federatedPeer)
-          .set({
-            trustLevel: 'halted',
-            remoteServiceReachable: false,
-            haltedAt: new Date(),
-            haltCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
-            haltReason: reason,
-          })
-          .where(eq(tables.federatedPeer.domain, normalized));
-        await tx.insert(tables.federatedPeerEvent).values({
-          domain: normalized,
-          type: 'halted',
-          reason,
-        });
+        if (peer?.activeNamespaceId === namespaceId) {
+          await tx
+            .update(tables.federatedPeer)
+            .set({
+              trustLevel: 'halted',
+              remoteServiceReachable: false,
+              haltedAt: new Date(),
+              haltCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+              haltReason: reason,
+            })
+            .where(eq(tables.federatedPeer.domain, normalized));
+          await tx.insert(tables.federatedPeerEvent).values({
+            domain: normalized,
+            type: 'halted',
+            reason,
+          });
+        }
         return reason;
       }
       await tx
         .delete(tables.s2SKeyCache)
-        .where(eq(tables.s2SKeyCache.domain, normalized));
+        .where(eq(tables.s2SKeyCache.namespaceId, namespaceId));
       await tx.insert(tables.s2SKeyCache).values(
         doc.keys.map((key) => ({
           domain: normalized,
+          namespaceId,
           keyId: key.keyId,
           publicKey: key.ed25519,
           notBefore: new Date(key.notBefore),
@@ -371,12 +395,15 @@ export class DiscoveryService {
   private async refreshAll(): Promise<void> {
     if (!this.keypair.getStatus().available) return;
     const rows = await this.database.db
-      .selectDistinct({ domain: tables.s2SKeyCache.domain })
+      .selectDistinct({
+        domain: tables.s2SKeyCache.domain,
+        namespaceId: tables.s2SKeyCache.namespaceId,
+      })
       .from(tables.s2SKeyCache);
-    for (const { domain } of rows) {
+    for (const { domain, namespaceId } of rows) {
       try {
         const doc = await this.fetchWellKnown(domain);
-        await this.cacheDocument(domain, doc);
+        await this.cacheDocument(domain, namespaceId, doc);
       } catch (error) {
         this.logger.warn(
           `proactive key refresh failed for ${domain}: ${(error as Error).message}`,

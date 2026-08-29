@@ -34,6 +34,14 @@ export type Message = Omit<S['MessageResponseDto'], 'contentType'> & {
 };
 export type MessageCreator = NonNullable<Message['creator']>;
 
+/** Presentation-only namespace address. Canonical domains remain unchanged for every API request. */
+export function displayIdentityDomain(
+  domain: string,
+  namespaceId: number,
+): string {
+  return namespaceId === 0 ? domain : `${namespaceId}.${domain}.local`;
+}
+
 export function messageCreatorKey(
   creator: MessageCreator,
   sourceDomain: string,
@@ -45,17 +53,25 @@ export function messageCreatorKey(
 ): string | null {
   return creator === null
     ? null
-    : `${sourceDomain}\u0000${creator.domain}\u0000${creator.account}`;
+    : `${creator.namespaceId}\u0000${sourceDomain}\u0000${creator.domain}\u0000${creator.account}`;
 }
 
 export function parseUserIdentityKey(key: string): {
   account: string;
   domain: string;
   sourceDomain: string;
+  namespaceId: number;
 } | null {
-  const [sourceDomain, domain, account, ...rest] = key.split('\u0000');
-  return sourceDomain && domain && account && rest.length === 0
-    ? { account, domain, sourceDomain }
+  const [rawNamespaceId, sourceDomain, domain, account, ...rest] =
+    key.split('\u0000');
+  const namespaceId = Number(rawNamespaceId);
+  return Number.isSafeInteger(namespaceId) &&
+    namespaceId >= 0 &&
+    sourceDomain &&
+    domain &&
+    account &&
+    rest.length === 0
+    ? { account, domain, sourceDomain, namespaceId }
     : null;
 }
 export interface Group {
@@ -67,6 +83,7 @@ export interface Group {
   profileRev: number;
   description: string;
   domain: string;
+  namespaceId: number;
   threadId: number;
   createdAt: number;
   updatedAt: number;
@@ -159,6 +176,7 @@ export function createP2PConversation(
       bio: '',
       isGroup: false,
       domain: 'local',
+      namespaceId: 0,
       createdAt: 0,
       updatedAt: 0,
       profileRev: 0,
@@ -201,6 +219,7 @@ export function createGroupConversation(
       avatar: '',
       description: '',
       domain: 'local',
+      namespaceId: 0,
       threadId,
       createdAt: 0,
       updatedAt: 0,

@@ -99,15 +99,17 @@ export class FederationMessageFeedService {
 
   async rejectMissingQueryAfter(
     peerDomain: string,
+    namespaceId: number,
     selector: FederationThreadQuery,
   ): Promise<never> {
     const { messageAccessAfterSeq } = await this.resolveAuthorizedThread(
       peerDomain,
+      namespaceId,
       selector,
     );
     const currentEnd = Math.max(
       await this.database.db.transaction((tx) =>
-        this.readAdvertisedMessageEnd(tx, peerDomain, selector),
+        this.readAdvertisedMessageEnd(tx, peerDomain, namespaceId, selector),
       ),
       messageAccessAfterSeq,
     );
@@ -124,6 +126,7 @@ export class FederationMessageFeedService {
 
   async query(
     peerDomain: string,
+    namespaceId: number,
     selector: FederationThreadQuery,
     after: number | undefined,
     requestedTake?: number,
@@ -140,10 +143,15 @@ export class FederationMessageFeedService {
     if (before !== undefined && through !== undefined && through > before)
       this.invalidReverseThrough();
     const { threadId, messageAccessAfterSeq } =
-      await this.resolveAuthorizedThread(peerDomain, selector);
+      await this.resolveAuthorizedThread(peerDomain, namespaceId, selector);
     return this.database.db.transaction(async (tx) => {
       const currentEnd = Math.max(
-        await this.readAdvertisedMessageEnd(tx, peerDomain, selector),
+        await this.readAdvertisedMessageEnd(
+          tx,
+          peerDomain,
+          namespaceId,
+          selector,
+        ),
         messageAccessAfterSeq,
       );
       const resumeAfter = messageAccessAfterSeq;
@@ -449,6 +457,7 @@ export class FederationMessageFeedService {
 
   async resolveAuthorizedThread(
     peerDomain: string,
+    namespaceId: number,
     selector: FederationThreadQuery,
   ): Promise<{ threadId: number; messageAccessAfterSeq: number }> {
     const rows =
@@ -463,6 +472,7 @@ export class FederationMessageFeedService {
             JOIN "Group" group_user ON group_user.id = thread."groupId"
             JOIN "ThreadAudience" audience ON audience."threadId" = thread.id
               AND audience."targetDomain" = ${peerDomain}
+              AND audience."targetNamespaceId" = ${namespaceId}
               AND audience."localUserId" IS NULL
             WHERE thread.type = 'GROUP'
               AND group_user.account = ${selector.account}
@@ -477,6 +487,7 @@ export class FederationMessageFeedService {
             FROM "MessageThread" thread
             JOIN "ThreadAudience" audience ON audience."threadId" = thread.id
               AND audience."targetDomain" = ${peerDomain}
+              AND audience."targetNamespaceId" = ${namespaceId}
               AND audience."localUserId" IS NULL
             WHERE thread.type = 'P2P'
               AND EXISTS (
@@ -486,6 +497,7 @@ export class FederationMessageFeedService {
                   AND member_link."left" = false
                   AND member.account = ${selector.account}
                   AND member.domain = 'local'
+                  AND member."namespaceId" = 0
               )
               AND EXISTS (
                 SELECT 1 FROM "ThreadMember" member_link
@@ -495,6 +507,7 @@ export class FederationMessageFeedService {
                   AND member.account = ${selector.peerAccount}
                   AND member.domain <> 'local'
                   AND member.domain = ${peerDomain}
+                  AND member."namespaceId" = ${namespaceId}
               )
             LIMIT 1
           `);
@@ -591,6 +604,7 @@ export class FederationMessageFeedService {
   private async readAdvertisedMessageEnd(
     tx: DatabaseTransaction,
     peerDomain: string,
+    namespaceId: number,
     selector: FederationThreadQuery,
   ): Promise<number> {
     const [row] = await tx
@@ -599,6 +613,7 @@ export class FederationMessageFeedService {
       .where(
         and(
           eq(peerStateFeed.peerDomain, peerDomain),
+          eq(peerStateFeed.namespaceId, namespaceId),
           eq(peerStateFeed.account, selector.account),
           eq(peerStateFeed.domain, this.localDomain),
           eq(peerStateFeed.eventType, 'THREAD_CONTENT_HEAD'),

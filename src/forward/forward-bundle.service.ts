@@ -316,6 +316,7 @@ export class ForwardBundleService {
                     where: and(
                       eq(user.account, row.creatorAccount),
                       eq(user.domain, row.creatorDomain),
+                      eq(user.namespaceId, row.creatorNamespaceId),
                     ),
                     columns: {
                       account: true,

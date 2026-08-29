@@ -63,25 +63,17 @@ export class S2sSignatureGuard implements CanActivate {
     const peer = await this.database.db.query.federatedPeer.findFirst({
       columns: {
         trustLevel: true,
-        identityPinnedAt: true,
+        activeNamespaceId: true,
         recognizesPeer: true,
         outboundRecognitionConfirmed: true,
         inboundRecognitionConfirmed: true,
         lightweightInboundReady: true,
         localServiceAvailable: true,
-        resetInProgress: true,
         haltCode: true,
         haltReason: true,
       },
       where: eq(federatedPeer.domain, signerDomain),
     });
-    if (peer?.resetInProgress) {
-      throw new BusinessException(
-        BusinessCode.INTERNAL,
-        `${signerDomain} federation relationship is under administrative maintenance`,
-        HttpStatus.SERVICE_UNAVAILABLE,
-      );
-    }
     if (peer?.trustLevel === 'halted') {
       const code = [
         BusinessCode.FEDERATION_PEER_BLOCKED,
@@ -96,7 +88,7 @@ export class S2sSignatureGuard implements CanActivate {
         HttpStatus.CONFLICT,
       );
     }
-    if (!peer || !peer.identityPinnedAt) {
+    if (!peer || peer.activeNamespaceId === null) {
       throw new BusinessException(
         BusinessCode.FEDERATION_RECOGNITION_REQUIRED,
         `${signerDomain} is not recognized`,
@@ -124,6 +116,7 @@ export class S2sSignatureGuard implements CanActivate {
       headers,
       keyId,
       signerDomain,
+      peer.activeNamespaceId,
     );
 
     // 6. Binding rule (bodies carrying a `from` field; GETs have none): the asserted sender must live
@@ -147,6 +140,7 @@ export class S2sSignatureGuard implements CanActivate {
     // Stash the verified signer for the handler.
     req.peer = {
       domain: signerDomain,
+      namespaceId: peer.activeNamespaceId,
       keyId,
       signatureExpiresAtSec: expires,
     };

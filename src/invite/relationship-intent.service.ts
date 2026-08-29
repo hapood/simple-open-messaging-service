@@ -33,6 +33,7 @@ type RelationshipEndpoint = {
   type: 'USER' | 'GROUP';
   account: string;
   domain: string;
+  namespaceId: number;
 };
 
 type PairKey = {
@@ -346,13 +347,17 @@ export class RelationshipIntentService {
     const located = await tx.execute<{
       groupAccount: string;
       groupDomain: string;
+      groupNamespaceId: number;
       memberAccount: string;
       memberDomain: string;
+      memberNamespaceId: number;
     }>(sql`
       SELECT group_profile.account AS "groupAccount",
         group_profile.domain AS "groupDomain",
+        group_profile."namespaceId" AS "groupNamespaceId",
         member.account AS "memberAccount",
-        member.domain AS "memberDomain"
+        member.domain AS "memberDomain",
+        member."namespaceId" AS "memberNamespaceId"
       FROM "Group" group_profile
       CROSS JOIN "User" member
       WHERE group_profile.id = ${params.groupId}
@@ -369,13 +374,17 @@ export class RelationshipIntentService {
     const endpoint = await tx.execute<{
       groupAccount: string;
       groupDomain: string;
+      groupNamespaceId: number;
       memberAccount: string;
       memberDomain: string;
+      memberNamespaceId: number;
     }>(sql`
       SELECT group_profile.account AS "groupAccount",
         group_profile.domain AS "groupDomain",
+        group_profile."namespaceId" AS "groupNamespaceId",
         member.account AS "memberAccount",
-        member.domain AS "memberDomain"
+        member.domain AS "memberDomain",
+        member."namespaceId" AS "memberNamespaceId"
       FROM "Group" group_profile
       CROSS JOIN "User" member
       WHERE group_profile.id = ${params.groupId}
@@ -393,17 +402,23 @@ export class RelationshipIntentService {
     if (!thread.rows[0])
       throw new Error('group relationship thread does not exist');
 
+    const relationshipNamespaceId = this.relationshipNamespaceId(
+      row.groupNamespaceId,
+      row.memberNamespaceId,
+    );
     const pair = await this.lockCanonicalPairInTx(tx, {
       kind: 'GROUP_MEMBER',
       endpointA: {
         type: 'GROUP',
         account: row.groupAccount,
         domain: row.groupDomain,
+        namespaceId: relationshipNamespaceId,
       },
       endpointB: {
         type: 'USER',
         account: row.memberAccount,
         domain: row.memberDomain,
+        namespaceId: relationshipNamespaceId,
       },
       threadId: params.threadId,
     });
@@ -578,16 +593,35 @@ export class RelationshipIntentService {
     threadId: number | null,
   ): Promise<LockedPair> {
     const identities = await tx
-      .select({ id: user.id, account: user.account, domain: user.domain })
+      .select({
+        id: user.id,
+        account: user.account,
+        domain: user.domain,
+        namespaceId: user.namespaceId,
+      })
       .from(user)
       .where(sql`${user.id} IN (${firstUserId}, ${secondUserId})`);
     const first = identities.find((identity) => identity.id === firstUserId);
     const second = identities.find((identity) => identity.id === secondUserId);
     if (!first || !second || first.id === second.id)
       throw new Error('relationship user endpoint does not exist');
+    const relationshipNamespaceId = this.relationshipNamespaceId(
+      first.namespaceId,
+      second.namespaceId,
+    );
     const endpoints = [
-      { type: 'USER' as const, account: first.account, domain: first.domain },
-      { type: 'USER' as const, account: second.account, domain: second.domain },
+      {
+        type: 'USER' as const,
+        account: first.account,
+        domain: first.domain,
+        namespaceId: relationshipNamespaceId,
+      },
+      {
+        type: 'USER' as const,
+        account: second.account,
+        domain: second.domain,
+        namespaceId: relationshipNamespaceId,
+      },
     ].sort((left, right) => this.compareEndpoints(left, right));
     await lockBusinessScopeInTx(
       tx,
@@ -623,9 +657,11 @@ export class RelationshipIntentService {
         endpointAType: key.endpointA.type,
         endpointAAccount: key.endpointA.account,
         endpointADomain: key.endpointA.domain,
+        endpointANamespaceId: key.endpointA.namespaceId,
         endpointBType: key.endpointB.type,
         endpointBAccount: key.endpointB.account,
         endpointBDomain: key.endpointB.domain,
+        endpointBNamespaceId: key.endpointB.namespaceId,
         threadId: key.threadId,
       })
       .onConflictDoNothing();
@@ -638,9 +674,17 @@ export class RelationshipIntentService {
             eq(relationshipPair.endpointAType, key.endpointA.type),
             eq(relationshipPair.endpointAAccount, key.endpointA.account),
             eq(relationshipPair.endpointADomain, key.endpointA.domain),
+            eq(
+              relationshipPair.endpointANamespaceId,
+              key.endpointA.namespaceId,
+            ),
             eq(relationshipPair.endpointBType, key.endpointB.type),
             eq(relationshipPair.endpointBAccount, key.endpointB.account),
             eq(relationshipPair.endpointBDomain, key.endpointB.domain),
+            eq(
+              relationshipPair.endpointBNamespaceId,
+              key.endpointB.namespaceId,
+            ),
           ),
         );
     const locked = await tx.execute<{
@@ -652,9 +696,11 @@ export class RelationshipIntentService {
       WHERE "endpointAType" = ${key.endpointA.type}
         AND "endpointAAccount" = ${key.endpointA.account}
         AND "endpointADomain" = ${key.endpointA.domain}
+        AND "endpointANamespaceId" = ${key.endpointA.namespaceId}
         AND "endpointBType" = ${key.endpointB.type}
         AND "endpointBAccount" = ${key.endpointB.account}
         AND "endpointBDomain" = ${key.endpointB.domain}
+        AND "endpointBNamespaceId" = ${key.endpointB.namespaceId}
       FOR UPDATE
     `);
     const row = locked.rows[0];
@@ -831,8 +877,23 @@ export class RelationshipIntentService {
     left: RelationshipEndpoint,
     right: RelationshipEndpoint,
   ): number {
-    return `${left.type}\u0000${left.domain}\u0000${left.account}`.localeCompare(
-      `${right.type}\u0000${right.domain}\u0000${right.account}`,
+    return `${left.type}\u0000${left.domain}\u0000${left.account}\u0000${left.namespaceId}`.localeCompare(
+      `${right.type}\u0000${right.domain}\u0000${right.account}\u0000${right.namespaceId}`,
     );
+  }
+
+  private relationshipNamespaceId(
+    firstNamespaceId: number,
+    secondNamespaceId: number,
+  ): number {
+    const federationNamespaceIds = new Set(
+      [firstNamespaceId, secondNamespaceId].filter(
+        (namespaceId) => namespaceId !== 0,
+      ),
+    );
+    if (federationNamespaceIds.size > 1) {
+      throw new Error('relationship endpoints span federation namespaces');
+    }
+    return federationNamespaceIds.values().next().value ?? 0;
   }
 }

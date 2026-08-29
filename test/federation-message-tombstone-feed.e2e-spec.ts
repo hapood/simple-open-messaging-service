@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { BusinessCode } from '../src/common/business-code.js';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
@@ -8,20 +8,23 @@ import { MessageDeleteType } from '../src/database/enums.js';
 import {
   deletedMessage,
   federatedPeer,
-  federationTombstoneServeCursor,
+  identityNamespace,
   message,
   messageThread,
+  peerStateFeed,
   threadAudience,
   user,
 } from '../src/database/schema.js';
 import { FederationMessageTombstoneFeedService } from '../src/federation/federation-message-tombstone-feed.service.js';
+import { loadFederationConfig } from '../src/federation/federation.config.js';
 import { seedAcceptedRelationship } from './seed.js';
 
-describe('FederationMessageTombstoneFeedService compacted feed', () => {
+describe('FederationMessageTombstoneFeedService query', () => {
   let mod: TestingModule;
   let database: DatabaseService;
   let service: FederationMessageTombstoneFeedService;
   const peerDomain = 'tombstone-feed-peer.test';
+  const localDomain = loadFederationConfig().domain;
 
   beforeAll(async () => {
     mod = await Test.createTestingModule({
@@ -32,22 +35,46 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
 
   beforeEach(async () => {
     await database.pool.query(
-      'TRUNCATE TABLE "User", "Account", "FederatedPeer" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "PeerStateFeed", "User", "Account", "FederatedPeer" RESTART IDENTITY CASCADE',
     );
     service = new FederationMessageTombstoneFeedService(database);
   });
 
   afterAll(async () => {
     await database.pool.query(
-      'TRUNCATE TABLE "User", "Account", "FederatedPeer" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "PeerStateFeed", "User", "Account", "FederatedPeer" RESTART IDENTITY CASCADE',
     );
     await mod.close();
   });
 
   async function seedDeletion() {
     const now = new Date('2026-08-12T01:02:03.000Z');
+    const [existingNamespace] = await database.db
+      .select({ id: identityNamespace.id })
+      .from(identityNamespace)
+      .where(
+        and(
+          eq(identityNamespace.domain, peerDomain),
+          isNull(identityNamespace.retiredAt),
+        ),
+      )
+      .limit(1);
+    const namespaceId =
+      existingNamespace?.id ??
+      (
+        await database.db
+          .insert(identityNamespace)
+          .values({
+            domain: peerDomain,
+            rootKeyFingerprint: 'sha256:tombstone-feed-test',
+            rootPublicKey: Buffer.alloc(32, 1).toString('base64'),
+            identityPinnedAt: now,
+          })
+          .returning({ id: identityNamespace.id })
+      )[0].id;
     await database.db.insert(federatedPeer).values({
       domain: peerDomain,
+      activeNamespaceId: namespaceId,
       trustLevel: 'available',
     });
     const [alice, bob] = await database.db
@@ -64,6 +91,7 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
           name: 'Bob',
           domain: peerDomain,
           sourceDomain: peerDomain,
+          namespaceId,
           updatedAt: now,
         },
       ])
@@ -80,6 +108,7 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
     await seedAcceptedRelationship(database.db, alice.id, bob.id, thread.id);
     await database.db.insert(threadAudience).values({
       targetDomain: peerDomain,
+      targetNamespaceId: namespaceId,
       threadId: thread.id,
       messageAccessAfterSeq: 0,
     });
@@ -108,28 +137,22 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
         updatedAt: now,
       })
       .returning();
-    await database.db
-      .insert(federationTombstoneServeCursor)
-      .values({ peerDomain });
-    return { deletion, target, thread };
+    await database.db.insert(peerStateFeed).values({
+      peerDomain,
+      namespaceId,
+      account: alice.account,
+      domain: localDomain,
+      eventType: 'THREAD_CONTENT_HEAD',
+      subjectAccount: bob.account,
+      subjectDomain: peerDomain,
+      feedId: 1n,
+      body: { messageEndSeq: 1, tombstoneEndSeq: deletion.deletionSeq },
+    });
+    return { deletion, namespaceId, target, thread };
   }
 
-  it('serves only a compacted thread/end index and queries the fact separately', async () => {
+  it('queries deletion facts through the advertised State Feed head', async () => {
     const { deletion } = await seedDeletion();
-
-    const feed = await service.serve(peerDomain, 0n);
-    expect(feed).toMatchObject({
-      scannedThrough: '1',
-      tombstoneFeedEndId: '1',
-      hasMore: false,
-      items: [
-        {
-          feedId: '1',
-          tombstoneEndSeq: deletion.deletionSeq,
-        },
-      ],
-    });
-    expect(feed).not.toHaveProperty('tombstones');
 
     const page = await service.query(
       peerDomain,
@@ -151,17 +174,8 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
     });
   });
 
-  it('keeps the compacted current-access feed index without source ACK cleanup', async () => {
-    await seedDeletion();
-    const first = await service.serve(peerDomain, 0n);
-    const replay = await new FederationMessageTombstoneFeedService(
-      database,
-    ).serve(peerDomain, 0n);
-    expect(replay).toEqual(first);
-  });
-
   it('omits requester-authored tombstones when includeSelf is false', async () => {
-    const { deletion } = await seedDeletion();
+    const { deletion, namespaceId } = await seedDeletion();
     const page = await service.query(
       peerDomain,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
@@ -174,7 +188,7 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
 
     await database.db
       .update(message)
-      .set({ creatorDomain: peerDomain })
+      .set({ creatorDomain: peerDomain, creatorNamespaceId: namespaceId })
       .where(eq(message.seq, 1));
     const filtered = await service.query(
       peerDomain,
@@ -192,7 +206,7 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
   });
 
   it('scans past tombstones above the fixed maxMessageSeq boundary', async () => {
-    const { deletion, thread } = await seedDeletion();
+    const { deletion, namespaceId, thread } = await seedDeletion();
     const now = new Date('2026-08-12T01:03:03.000Z');
     await database.db.insert(message).values({
       seq: 2,
@@ -224,6 +238,12 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
       .update(messageThread)
       .set({ deletionSeqAllocatedThrough: 2 })
       .where(eq(messageThread.id, thread.id));
+    await database.db
+      .update(peerStateFeed)
+      .set({
+        body: { messageEndSeq: 2, tombstoneEndSeq: laterDeletion.deletionSeq },
+      })
+      .where(eq(peerStateFeed.namespaceId, namespaceId));
 
     const page = await service.query(
       peerDomain,
@@ -244,7 +264,6 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
 
   it('rejects tombstone queries after current audience closes', async () => {
     const { thread } = await seedDeletion();
-    await service.fill(peerDomain);
     await database.db
       .delete(threadAudience)
       .where(eq(threadAudience.threadId, thread.id));
@@ -258,7 +277,7 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
     ).rejects.toMatchObject({ bizCode: BusinessCode.FORBIDDEN });
   });
 
-  it('does not expose tombstones for messages below a reauthorized audience floor', async () => {
+  it('exposes pre-floor tombstones inside a filtered reauthorization drain', async () => {
     const { deletion, thread } = await seedDeletion();
     await database.db
       .update(threadAudience)
@@ -271,31 +290,20 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
       0,
       undefined,
       deletion.deletionSeq,
+      true,
+      1,
     );
-    expect(page.tombstones).toEqual([]);
+    expect(page.tombstones).toEqual([
+      expect.objectContaining({
+        deletionSeq: deletion.deletionSeq,
+        messageSeq: 1,
+      }),
+    ]);
     expect(page.scannedThrough).toBe(deletion.deletionSeq);
   });
 
-  it('does not publish a deletion without current audience access', async () => {
-    const { thread } = await seedDeletion();
-    await database.db
-      .delete(threadAudience)
-      .where(eq(threadAudience.threadId, thread.id));
-
-    await expect(service.serve(peerDomain, 0n)).resolves.toEqual({
-      items: [],
-      scannedThrough: '0',
-      tombstoneFeedEndId: '0',
-      hasMore: false,
-    });
-  });
-
-  it('uses 0 as the missing-after bootstrap for feed and query', async () => {
+  it('uses 0 as the missing-after bootstrap for the thread query', async () => {
     await seedDeletion();
-    await expect(service.rejectMissingAfter(peerDomain)).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
-      data: { resumeAfter: '0', resumeBefore: '2' },
-    });
     await expect(
       service.rejectMissingQueryAfter(peerDomain, {
         type: 'P2P',

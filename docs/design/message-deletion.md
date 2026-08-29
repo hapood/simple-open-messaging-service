@@ -62,9 +62,15 @@ The stable target is `(thread, creator, originSeq)`, and tombstone authorization
 `(peer, message)` delivery proof, so leave/rejoin gaps do not expose targets a peer never received.
 
 Message and tombstone targets share one compacted State Feed item but retain
-independent thread-local sequence spaces and processed positions. A forward
-round may fetch tombstones and messages concurrently. Message insertion and tombstone application serialize on the same stable identity,
-so message-first and tombstone-first delivery both converge without resurrection.
+independent thread-local sequence spaces and processed positions. Initial mirror
+creation adopts the first deletion target without querying it because no older
+message replica exists locally. After relationship reauthorization, one durable
+recovery drain returns tombstones at or below the pre-loss committed message
+coordinate and fast-forwards later targets in the same deletion interval. Every
+subsequent deletion drain is unfiltered and ordered only by deletion sequence.
+Message insertion and tombstone application serialize on the same stable
+identity, so message-first and tombstone-first delivery both converge without
+resurrection.
 
 ## Migration
 

@@ -37,6 +37,12 @@ export interface S2sProxy {
    * relationship-closing state snapshot is applied before its inclusive final message boundary. */
   blockMessageFeed: (blocked: boolean) => void;
   blockedMessageFeedCount: () => number;
+  /** Buffer completed message-query responses until released. */
+  blockMessageFeedResponse: (blocked: boolean) => void;
+  blockedMessageFeedResponseCount: () => number;
+  /** Hold tombstone queries open while other federation traffic continues normally. */
+  blockTombstoneFeed: (blocked: boolean) => void;
+  blockedTombstoneFeedCount: () => number;
   /** Hold only reverse message queries (`before` cursor) while forward synchronization continues. */
   blockReverseMessages: (blocked: boolean) => void;
   blockedReverseMessageCount: () => number;
@@ -67,6 +73,10 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
     const blockedGetFiles = new Set<() => void>();
     let messageFeedBlocked = false;
     const blockedMessageFeeds = new Set<() => void>();
+    let messageFeedResponseBlocked = false;
+    const blockedMessageFeedResponses = new Set<() => void>();
+    let tombstoneFeedBlocked = false;
+    const blockedTombstoneFeeds = new Set<() => void>();
     let reverseMessagesBlocked = false;
     const blockedReverseMessages = new Set<() => void>();
     let stateFeedBlocked = false;
@@ -88,6 +98,8 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
         'http://federation-proxy.invalid',
       );
       const isMessageFeed = requestUrl.pathname === '/s2s/v1/messages';
+      const isTombstoneFeed =
+        requestUrl.pathname === '/s2s/v1/message-tombstones';
       const isReverseMessageQuery =
         isMessageFeed && requestUrl.searchParams.has('before');
       // The first compact-feed request intentionally has no `after` query
@@ -170,6 +182,30 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
               responseBody: '',
             };
             requests.push(requestEntry);
+            if (isMessageFeed && messageFeedResponseBlocked) {
+              const chunks: Buffer[] = [];
+              upRes.on('data', (chunk: Buffer) => {
+                chunks.push(chunk);
+                if (requestEntry.responseBody.length < 4096)
+                  requestEntry.responseBody = (
+                    requestEntry.responseBody + chunk.toString('utf8')
+                  ).slice(0, 4096);
+              });
+              upRes.on('end', () => {
+                const resume = (): void => {
+                  blockedMessageFeedResponses.delete(resume);
+                  if (res.destroyed) return;
+                  res.writeHead(upRes.statusCode ?? 200, upRes.headers);
+                  res.end(Buffer.concat(chunks));
+                };
+                blockedMessageFeedResponses.add(resume);
+                res.once('close', () =>
+                  blockedMessageFeedResponses.delete(resume),
+                );
+                if (!messageFeedResponseBlocked) resume();
+              });
+              return;
+            }
             upRes.on('data', (chunk: Buffer) => {
               if (requestEntry.responseBody.length < 4096)
                 requestEntry.responseBody = (
@@ -238,6 +274,15 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
         req.once('aborted', () => blockedMessageFeeds.delete(resume));
         return;
       }
+      if (isTombstoneFeed && tombstoneFeedBlocked) {
+        const resume = (): void => {
+          blockedTombstoneFeeds.delete(resume);
+          relay();
+        };
+        blockedTombstoneFeeds.add(resume);
+        req.once('aborted', () => blockedTombstoneFeeds.delete(resume));
+        return;
+      }
       if (isReverseMessageQuery && reverseMessagesBlocked) {
         const resume = (): void => {
           blockedReverseMessages.delete(resume);
@@ -287,6 +332,20 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
           }
         },
         blockedMessageFeedCount: () => blockedMessageFeeds.size,
+        blockMessageFeedResponse: (blocked: boolean) => {
+          messageFeedResponseBlocked = blocked;
+          if (!blocked) {
+            for (const resume of [...blockedMessageFeedResponses]) resume();
+          }
+        },
+        blockedMessageFeedResponseCount: () => blockedMessageFeedResponses.size,
+        blockTombstoneFeed: (blocked: boolean) => {
+          tombstoneFeedBlocked = blocked;
+          if (!blocked) {
+            for (const resume of [...blockedTombstoneFeeds]) resume();
+          }
+        },
+        blockedTombstoneFeedCount: () => blockedTombstoneFeeds.size,
         blockReverseMessages: (blocked: boolean) => {
           reverseMessagesBlocked = blocked;
           if (!blocked) {

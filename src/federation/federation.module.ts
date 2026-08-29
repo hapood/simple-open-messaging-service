@@ -43,6 +43,8 @@ import { FederationThreadRoundSchedulerService } from './federation-thread-round
 import { FederationThreadContentHeadService } from './federation-thread-content-head.service.js';
 import { FederationProfileStatePublisher } from './federation-profile-state-publisher.service.js';
 import { FederationRelationshipCommandService } from './federation-relationship-command.service.js';
+import { FederationNamespaceService } from './federation-namespace.service.js';
+import { FederationStateFeedConsumerService } from './federation-state-feed-consumer.service.js';
 
 /**
  * Federation (S2S). @Global so its services inject across modules (UserController, AdminController).
@@ -103,6 +105,8 @@ import { FederationRelationshipCommandService } from './federation-relationship-
     FederationThreadContentHeadService,
     FederationProfileStatePublisher,
     FederationRelationshipCommandService,
+    FederationNamespaceService,
+    FederationStateFeedConsumerService,
   ],
   exports: [
     KeypairService,
@@ -131,6 +135,7 @@ import { FederationRelationshipCommandService } from './federation-relationship-
     FederationThreadContentHeadService,
     FederationProfileStatePublisher,
     FederationRelationshipCommandService,
+    FederationNamespaceService,
   ],
 })
 export class FederationModule {}

@@ -14,7 +14,7 @@ const groupSource: Extract<FederationReverseThreadSource, { kind: 'GROUP' }> = {
 
 const peerToken = {
   domain: 'origin.test',
-  resetGeneration: 2,
+  namespaceId: 2,
   rootKeyFingerprint: 'fingerprint',
 };
 

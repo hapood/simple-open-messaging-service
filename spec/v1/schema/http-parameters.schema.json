@@ -102,7 +102,7 @@
           "dependentRequired": {
             "take": ["after"],
             "through": ["after"],
-            "maxMessageSeq": ["after"]
+            "maxMessageSeq": ["after", "through"]
           },
           "properties": {
             "account": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
@@ -123,7 +123,7 @@
           "dependentRequired": {
             "take": ["after"],
             "through": ["after"],
-            "maxMessageSeq": ["after"]
+            "maxMessageSeq": ["after", "through"]
           },
           "properties": {
             "account": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },

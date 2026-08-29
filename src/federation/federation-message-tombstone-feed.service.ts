@@ -43,11 +43,12 @@ export class FederationMessageTombstoneFeedService {
 
   async rejectMissingQueryAfter(
     peerDomain: string,
+    namespaceId: number,
     selector: FederationThreadQuery,
   ): Promise<never> {
-    await this.resolveAuthorizedThread(peerDomain, selector);
+    await this.resolveAuthorizedThread(peerDomain, namespaceId, selector);
     const currentEnd = await this.database.db.transaction((tx) =>
-      this.readAdvertisedDeletionEnd(tx, peerDomain, selector),
+      this.readAdvertisedDeletionEnd(tx, peerDomain, namespaceId, selector),
     );
     throw new BusinessException(
       BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
@@ -59,6 +60,7 @@ export class FederationMessageTombstoneFeedService {
 
   async query(
     peerDomain: string,
+    namespaceId: number,
     selector: FederationThreadQuery,
     after: number,
     requestedTake?: number,
@@ -68,12 +70,16 @@ export class FederationMessageTombstoneFeedService {
   ): Promise<FederationMessageTombstoneQueryPage> {
     const take = this.pageSize(requestedTake);
     if (through !== undefined && through < after) this.invalidThrough();
-    const { threadId, messageAccessAfterSeq } =
-      await this.resolveAuthorizedThread(peerDomain, selector);
+    const { threadId } = await this.resolveAuthorizedThread(
+      peerDomain,
+      namespaceId,
+      selector,
+    );
     return this.database.db.transaction(async (tx) => {
       const currentEnd = await this.readAdvertisedDeletionEnd(
         tx,
         peerDomain,
+        namespaceId,
         selector,
       );
       const resumeAfter = 0;
@@ -111,7 +117,6 @@ export class FederationMessageTombstoneFeedService {
         .where(
           and(
             eq(deletedMessage.threadId, threadId),
-            gt(message.seq, messageAccessAfterSeq),
             isNull(deletedMessage.federationSourceDomain),
             includeSelf ? undefined : ne(message.creatorDomain, peerDomain),
             maxMessageSeq !== undefined
@@ -152,40 +157,37 @@ export class FederationMessageTombstoneFeedService {
 
   private async resolveAuthorizedThread(
     peerDomain: string,
+    namespaceId: number,
     selector: FederationThreadQuery,
-  ): Promise<{ threadId: number; messageAccessAfterSeq: number }> {
+  ): Promise<{ threadId: number }> {
     const rows =
       selector.type === 'GROUP'
-        ? await this.database.db.execute<{
-            threadId: number;
-            messageAccessAfterSeq: number;
-          }>(sql`
-            SELECT thread.id AS "threadId",
-              audience."messageAccessAfterSeq" AS "messageAccessAfterSeq"
+        ? await this.database.db.execute<{ threadId: number }>(sql`
+            SELECT thread.id AS "threadId"
             FROM "MessageThread" thread
             JOIN "Group" group_user ON group_user.id = thread."groupId"
             JOIN "ThreadAudience" audience ON audience."threadId" = thread.id
               AND audience."targetDomain" = ${peerDomain}
+              AND audience."targetNamespaceId" = ${namespaceId}
               AND audience."localUserId" IS NULL
             WHERE thread.type = 'GROUP' AND group_user.account = ${selector.account}
             LIMIT 1
           `)
-        : await this.database.db.execute<{
-            threadId: number;
-            messageAccessAfterSeq: number;
-          }>(sql`
-            SELECT thread.id AS "threadId",
-              audience."messageAccessAfterSeq" AS "messageAccessAfterSeq"
+        : await this.database.db.execute<{ threadId: number }>(sql`
+            SELECT thread.id AS "threadId"
             FROM "MessageThread" thread
             JOIN "ThreadAudience" audience ON audience."threadId" = thread.id
               AND audience."targetDomain" = ${peerDomain}
+              AND audience."targetNamespaceId" = ${namespaceId}
               AND audience."localUserId" IS NULL
             WHERE thread.type = 'P2P'
               AND EXISTS (SELECT 1 FROM "ThreadMember" p JOIN "User" u ON u.id = p."userId"
-                WHERE p."threadId" = thread.id AND u.account = ${selector.account} AND u.domain = 'local')
+                WHERE p."threadId" = thread.id AND u.account = ${selector.account}
+                  AND u.domain = 'local' AND u."namespaceId" = 0)
               AND EXISTS (SELECT 1 FROM "ThreadMember" p JOIN "User" u ON u.id = p."userId"
                 WHERE p."threadId" = thread.id AND u.account = ${selector.peerAccount}
-                  AND u.domain = ${peerDomain} AND u.domain <> 'local')
+                  AND u.domain = ${peerDomain} AND u.domain <> 'local'
+                  AND u."namespaceId" = ${namespaceId})
             LIMIT 1
           `);
     const authorized = rows.rows[0];
@@ -272,6 +274,7 @@ export class FederationMessageTombstoneFeedService {
   private async readAdvertisedDeletionEnd(
     tx: DatabaseTransaction,
     peerDomain: string,
+    namespaceId: number,
     selector: FederationThreadQuery,
   ): Promise<number> {
     const [row] = await tx
@@ -280,6 +283,7 @@ export class FederationMessageTombstoneFeedService {
       .where(
         and(
           eq(peerStateFeed.peerDomain, peerDomain),
+          eq(peerStateFeed.namespaceId, namespaceId),
           eq(peerStateFeed.account, selector.account),
           eq(peerStateFeed.domain, this.localDomain),
           eq(peerStateFeed.eventType, 'THREAD_CONTENT_HEAD'),

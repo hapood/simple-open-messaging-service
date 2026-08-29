@@ -310,6 +310,7 @@ describe('WebdbService', () => {
       } as never);
       const revoked: ClientStateFeedItem = {
         feedId: 12,
+        namespaceId: 12,
         account: 'alice',
         domain: 'local',
         eventType: 'RELATIONSHIP_INTENT',
@@ -347,6 +348,7 @@ describe('WebdbService', () => {
     it('materializes a local P2P conversation from two distinct local intent directions', async () => {
       await webdb.openForUser('1');
       const peer = {
+        namespaceId: 0,
         id: 2,
         account: 'bob',
         name: 'Bob',
@@ -357,6 +359,7 @@ describe('WebdbService', () => {
       const items: ClientStateFeedItem[] = [
         {
           feedId: 20,
+          namespaceId: 0,
           account: 'alice',
           domain: 'local',
           eventType: 'RELATIONSHIP_INTENT',
@@ -374,6 +377,7 @@ describe('WebdbService', () => {
         },
         {
           feedId: 21,
+          namespaceId: 0,
           account: 'bob',
           domain: 'local',
           eventType: 'RELATIONSHIP_INTENT',
@@ -412,6 +416,7 @@ describe('WebdbService', () => {
       const db = await webdb.openForUser('1');
       const requestedAt = Date.now();
       const peer = {
+        namespaceId: 12,
         id: 2,
         account: 'admin',
         name: 'admin',
@@ -425,6 +430,7 @@ describe('WebdbService', () => {
         status: 'REQUESTED' | 'ACCEPTED',
       ): ClientStateFeedItem => ({
         feedId,
+        namespaceId: 12,
         account: direction === 'OUTGOING' ? 'bravo' : 'admin',
         domain: direction === 'OUTGOING' ? 'local' : 'bravo.test',
         eventType: 'RELATIONSHIP_INTENT',
@@ -462,6 +468,7 @@ describe('WebdbService', () => {
         [
           {
             feedId: 40,
+            namespaceId: 12,
             account: 'alice',
             domain: 'peer.test',
             eventType: 'RELATIONSHIP_INTENT',
@@ -509,6 +516,7 @@ describe('WebdbService', () => {
         status: 'REQUESTED' | 'REVOKED',
       ): ClientStateFeedItem => ({
         feedId,
+        namespaceId: 12,
         account: 'alice',
         domain: 'peer.test',
         eventType: 'RELATIONSHIP_INTENT',
@@ -567,6 +575,7 @@ describe('WebdbService', () => {
         peer: { name: string; avatar: string },
       ): ClientStateFeedItem => ({
         feedId,
+        namespaceId: 12,
         account: 'alice',
         domain: 'peer.test',
         eventType: 'RELATIONSHIP_INTENT',
@@ -625,6 +634,7 @@ describe('WebdbService', () => {
       const expiresAt = Date.now() + 1_000;
       const request: ClientStateFeedItem = {
         feedId: 20,
+        namespaceId: 12,
         account: 'me',
         domain: 'local.test',
         eventType: 'RELATIONSHIP_INTENT',
@@ -667,6 +677,7 @@ describe('WebdbService', () => {
       const expiresAt = requestedAt + 1_000;
       const invite: ClientStateFeedItem = {
         feedId: 21,
+        namespaceId: 12,
         account: '!group',
         domain: 'groups.test',
         eventType: 'RELATIONSHIP_INTENT',
@@ -680,6 +691,7 @@ describe('WebdbService', () => {
           direction: 'INCOMING',
           threadId: 8,
           group: {
+            namespaceId: 12,
             account: '!group',
             domain: 'groups.test',
             isLocal: false,
@@ -709,6 +721,7 @@ describe('WebdbService', () => {
       const requestedAt = Date.now();
       const invite: ClientStateFeedItem = {
         feedId: 22,
+        namespaceId: 12,
         account: '!group',
         domain: 'groups.test',
         eventType: 'RELATIONSHIP_INTENT',
@@ -722,6 +735,7 @@ describe('WebdbService', () => {
           direction: 'INCOMING',
           threadId: 8,
           group: {
+            namespaceId: 12,
             account: '!group',
             domain: 'groups.test',
             isLocal: false,
@@ -734,6 +748,7 @@ describe('WebdbService', () => {
       };
       const profile: ClientStateFeedItem = {
         feedId: 23,
+        namespaceId: 12,
         account: '!group',
         domain: 'groups.test',
         eventType: 'PROFILE',
@@ -768,6 +783,7 @@ describe('WebdbService', () => {
         [
           {
             feedId: 22,
+            namespaceId: 12,
             // Older federated writers used GROUP->MEMBER as the compaction key even for a
             // member-authored request. The body direction is the authoritative authored side.
             account: '!group',
@@ -783,6 +799,7 @@ describe('WebdbService', () => {
               direction: 'OUTGOING',
               threadId: 8,
               group: {
+                namespaceId: 12,
                 account: '!group',
                 domain: 'groups.test',
                 isLocal: false,
@@ -823,6 +840,7 @@ describe('WebdbService', () => {
       } as never);
       await db!.put('members', {
         threadId: 9,
+        namespaceId: 0,
         account: 'alice',
         domain: 'local',
         sourceDomain: 'local',
@@ -847,6 +865,7 @@ describe('WebdbService', () => {
 
       await db!.put('members', {
         threadId: 9,
+        namespaceId: 0,
         account: 'bob',
         domain: 'local',
         sourceDomain: 'local',
@@ -871,6 +890,7 @@ describe('WebdbService', () => {
         blocked: boolean,
       ): ClientStateFeedItem => ({
         feedId,
+        namespaceId: 0,
         account: '',
         domain: 'local',
         eventType: 'THREAD_BLOCK',
@@ -903,6 +923,7 @@ describe('WebdbService', () => {
         avatar: '/a.webp',
         bio: '',
         domain: 'home.example',
+        namespaceId: 12,
         sourceServer: 'local',
         profileRev: 6,
       });
@@ -915,6 +936,7 @@ describe('WebdbService', () => {
         avatar: '',
         bio: '',
         domain: 'local',
+        namespaceId: 0,
         sourceServer: 'local',
         profileRev: 1,
       });
@@ -922,6 +944,7 @@ describe('WebdbService', () => {
       await webdb.applyStateFeedPage([], 3, [
         {
           threadId: 9,
+          namespaceId: 0,
           sourceServer: 'local',
           page: {
             account: '!team',
@@ -932,6 +955,7 @@ describe('WebdbService', () => {
                 operation: 'UPSERT',
                 account: 'self',
                 domain: 'local',
+                namespaceId: 0,
                 body: {
                   role: 'OWNER',
                   profileRev: 1,
@@ -944,6 +968,7 @@ describe('WebdbService', () => {
                 operation: 'UPSERT',
                 account: 'alice',
                 domain: 'home.example',
+                namespaceId: 12,
                 body: {
                   role: 'ADMIN',
                   profileRev: 6,
@@ -983,6 +1008,7 @@ describe('WebdbService', () => {
       await webdb.applyStateFeedPage([], 4, [
         {
           threadId: 9,
+          namespaceId: 0,
           sourceServer: 'local',
           page: {
             account: '!team',
@@ -993,6 +1019,7 @@ describe('WebdbService', () => {
                 operation: 'UPSERT',
                 account: 'self',
                 domain: 'local',
+                namespaceId: 0,
                 body: {
                   role: 'ADMIN',
                   profileRev: 1,
@@ -1014,6 +1041,7 @@ describe('WebdbService', () => {
       await webdb.applyStateFeedPage([], 5, [
         {
           threadId: 9,
+          namespaceId: 0,
           sourceServer: 'local',
           page: {
             account: '!team',
@@ -1024,6 +1052,7 @@ describe('WebdbService', () => {
                 operation: 'DEPART',
                 account: 'self',
                 domain: 'local',
+                namespaceId: 0,
                 body: {},
               },
             ],
@@ -1040,6 +1069,7 @@ describe('WebdbService', () => {
       await webdb.applyStateFeedPage([], 6, [
         {
           threadId: 9,
+          namespaceId: 0,
           sourceServer: 'local',
           page: {
             account: '!team',
@@ -1050,6 +1080,7 @@ describe('WebdbService', () => {
                 operation: 'DEPART',
                 account: 'alice',
                 domain: 'home.example',
+                namespaceId: 12,
                 body: {},
               },
             ],
@@ -1073,6 +1104,7 @@ describe('WebdbService', () => {
         avatar: '',
         bio: '',
         domain: 'remote.test',
+        namespaceId: 12,
         sourceServer: 'local',
         profileRev: 1,
       });
@@ -1085,12 +1117,14 @@ describe('WebdbService', () => {
         avatar: '',
         bio: '',
         domain: 'local',
+        namespaceId: 0,
         sourceServer: 'local',
         profileRev: 1,
       });
       const group = {
         account: '!dev',
         domain: 'local',
+        namespaceId: 0,
         isLocal: true,
         name: 'dev',
         avatar: '',
@@ -1112,6 +1146,7 @@ describe('WebdbService', () => {
         {
           ...common,
           feedId: 1,
+          namespaceId: 0,
           account: '!dev',
           domain: 'local',
           subjectAccount: 'alice',
@@ -1121,6 +1156,7 @@ describe('WebdbService', () => {
         {
           ...common,
           feedId: 2,
+          namespaceId: 0,
           account: 'alice',
           domain: 'local',
           subjectAccount: '!dev',
@@ -1132,6 +1168,7 @@ describe('WebdbService', () => {
       await webdb.applyStateFeedPage(items, 3, [
         {
           threadId: 12,
+          namespaceId: 0,
           sourceServer: 'local',
           page: {
             account: '!dev',
@@ -1142,6 +1179,7 @@ describe('WebdbService', () => {
                 operation: 'UPSERT',
                 account: 'alice',
                 domain: 'local.test',
+                namespaceId: 0,
                 body: {
                   role: 'OWNER',
                   profileRev: 1,
@@ -1154,6 +1192,7 @@ describe('WebdbService', () => {
                 operation: 'UPSERT',
                 account: 'bob',
                 domain: 'remote.test',
+                namespaceId: 12,
                 body: {
                   role: 'MEMBER',
                   profileRev: 1,
@@ -1186,6 +1225,7 @@ describe('WebdbService', () => {
         [
           {
             feedId: 4,
+            namespaceId: 0,
             eventType: 'RELATIONSHIP_INTENT',
             account: 'alice',
             domain: 'local',

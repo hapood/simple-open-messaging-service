@@ -116,6 +116,7 @@ export interface ClientGroupInviteIntent {
   group: {
     account: string;
     domain: string;
+    namespaceId: number;
     isLocal: boolean;
     name: string;
     avatar: string;
@@ -154,6 +155,7 @@ export type ClientStateFeedItem =
       feedId: number;
       account: string;
       domain: string;
+      namespaceId: number;
       eventType: 'PROFILE';
       subjectAccount: '';
       subjectDomain: 'local';
@@ -168,6 +170,7 @@ export type ClientStateFeedItem =
       feedId: number;
       account: string;
       domain: string;
+      namespaceId: number;
       eventType: 'RELATIONSHIP_INTENT';
       subjectAccount: string;
       subjectDomain: string;
@@ -177,6 +180,7 @@ export type ClientStateFeedItem =
       feedId: number;
       account: string;
       domain: string;
+      namespaceId: number;
       eventType: 'GROUP_JOIN_REQUEST_HEAD';
       subjectAccount: '';
       subjectDomain: 'local';
@@ -191,6 +195,7 @@ export type ClientStateFeedItem =
       feedId: number;
       account: '';
       domain: 'local';
+      namespaceId: 0;
       eventType: 'INCOMING_INVITE_HEAD';
       subjectAccount: '';
       subjectDomain: 'local';
@@ -202,6 +207,7 @@ export type ClientStateFeedItem =
       feedId: number;
       account: string;
       domain: string;
+      namespaceId: number;
       eventType: 'GROUP_META_FEED_HEAD';
       subjectAccount: '';
       subjectDomain: 'local';
@@ -211,10 +217,25 @@ export type ClientStateFeedItem =
       feedId: number;
       account: '';
       domain: 'local';
+      namespaceId: 0;
       eventType: 'THREAD_BLOCK';
       subjectAccount: string;
       subjectDomain: 'local';
       body: { threadId: number; blocked: boolean };
+    }
+  | {
+      feedId: number;
+      account: '';
+      domain: string;
+      namespaceId: number;
+      eventType: 'NAMESPACE_CHANGED';
+      subjectAccount: '';
+      subjectDomain: 'local';
+      body: {
+        domain: string;
+        previousNamespaceId: number;
+        activeNamespaceId: number | null;
+      };
     };
 
 export interface ClientGroupMetaFeedPage {
@@ -224,6 +245,7 @@ export interface ClientGroupMetaFeedPage {
     feedId: string;
     account: string;
     domain: string;
+    namespaceId: number;
     operation: 'UPSERT' | 'DEPART';
     body:
       | {
@@ -419,6 +441,7 @@ export class UserService {
           bio: u.bio,
           domain: u.domain,
           sourceServer: u.domain,
+          namespaceId: u.namespaceId,
           profileRev: u.profileRev,
         });
       }
@@ -568,6 +591,7 @@ export class UserService {
       bio: u.bio,
       domain: u.domain,
       sourceServer: u.domain,
+      namespaceId: u.namespaceId,
       profileRev: u.profileRev,
     });
   }
@@ -658,6 +682,7 @@ export class UserService {
           bio: u.bio,
           domain: u.domain,
           sourceServer: u.domain,
+          namespaceId: u.namespaceId,
           profileRev: u.profileRev,
         });
         return u;

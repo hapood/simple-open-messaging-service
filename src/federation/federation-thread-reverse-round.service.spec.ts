@@ -39,7 +39,7 @@ describe('FederationThreadReverseRoundService', () => {
   it('runs one quantum from the active inclusive gap', async () => {
     const { service, driver } = harness();
 
-    await expect(service.run(31, 'peer.test', driver)).resolves.toEqual({
+    await expect(service.run(31, 'peer.test', 12, driver)).resolves.toEqual({
       beforeSeq: 100,
       throughSeq: 1,
       batchOldestSeq: 50,
@@ -72,7 +72,9 @@ describe('FederationThreadReverseRoundService', () => {
       hasMore: false,
     });
 
-    await expect(service.run(31, 'peer.test', driver)).resolves.toMatchObject({
+    await expect(
+      service.run(31, 'peer.test', 12, driver),
+    ).resolves.toMatchObject({
       nextBeforeSeq: 1,
       closesReverseHistory: true,
       continuation: null,
@@ -97,7 +99,7 @@ describe('FederationThreadReverseRoundService', () => {
     const { processDepartedMemberProfiles: _, ...p2pDriver } = driver;
 
     await expect(
-      service.run(31, 'peer.test', p2pDriver),
+      service.run(31, 'peer.test', 12, p2pDriver),
     ).resolves.toMatchObject({ processedDepartedMemberProfiles: false });
   });
 
@@ -109,7 +111,9 @@ describe('FederationThreadReverseRoundService', () => {
       throughSeq: null,
     });
 
-    await expect(service.run(31, 'peer.test', driver)).resolves.toMatchObject({
+    await expect(
+      service.run(31, 'peer.test', 12, driver),
+    ).resolves.toMatchObject({
       fetchedMessages: false,
       closesReverseHistory: true,
       continuation: null,
@@ -121,7 +125,9 @@ describe('FederationThreadReverseRoundService', () => {
     const { service, driver } = harness();
     driver.fetchMessages.mockResolvedValueOnce({ kind: 'history-boundary' });
 
-    await expect(service.run(31, 'peer.test', driver)).resolves.toMatchObject({
+    await expect(
+      service.run(31, 'peer.test', 12, driver),
+    ).resolves.toMatchObject({
       closesReverseHistory: true,
       continuation: null,
     });

@@ -49,6 +49,7 @@ export async function assertServerGroupCapacityInTx(
     JOIN "RelationshipIntent" intent
       ON intent."pairId" = pair.id AND intent."authorSide" = 'A'
     WHERE pair.kind = 'GROUP_MEMBER'
+      AND pair."threadId" = ${threadId}
       AND pair."endpointAType" = 'GROUP'
       AND pair."endpointAAccount" = ${locked.rows[0].account}
       AND pair."endpointADomain" = ${locked.rows[0].domain}

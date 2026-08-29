@@ -53,14 +53,20 @@ export class FederationThreadReverseRoundExecutorService {
   async run(
     threadId: number,
     peerDomain: string,
+    namespaceId: number,
     take?: number,
     continuation?: FederationReverseRoundContext,
   ): Promise<FederationThreadReverseRoundResult> {
-    const source = await this.sources.resolve(threadId, peerDomain);
+    const source = await this.sources.resolve(
+      threadId,
+      peerDomain,
+      namespaceId,
+    );
     let messageBatch: BufferedReverseMessageBatch | null = null;
     return this.rounds.run(
       threadId,
       peerDomain,
+      namespaceId,
       {
         fetchMessages: async (params) => {
           const fetched = await this.fetchMessages(source, params);
@@ -276,8 +282,7 @@ export class FederationThreadReverseRoundExecutorService {
       dependency.peerDomain !== message.peerDomain ||
       dependency.federationVersion !== message.federationVersion ||
       dependency.peerToken.domain !== message.peerToken.domain ||
-      dependency.peerToken.resetGeneration !==
-        message.peerToken.resetGeneration ||
+      dependency.peerToken.namespaceId !== message.peerToken.namespaceId ||
       dependency.peerToken.rootKeyFingerprint !==
         message.peerToken.rootKeyFingerprint
     ) {
@@ -299,6 +304,7 @@ export class FederationThreadReverseRoundExecutorService {
       await FederationThreadSyncStateService.commitReverseBatchInTx(tx, {
         threadId: source.threadId,
         peerDomain: source.peerDomain,
+        namespaceId: source.namespaceId,
         authorizationEpoch: context.authorizationEpoch,
         gapId: context.gapId,
         beforeSeq: batch.before,
@@ -322,6 +328,7 @@ export class FederationThreadReverseRoundExecutorService {
           await this.federation.finalizeReverseMessageWindowInTransaction(tx, {
             threadId: source.threadId,
             peerDomain: source.peerDomain,
+            namespaceId: source.namespaceId,
             beforeSeq: batch.before,
             throughSeq: context.nextBeforeSeq,
           });
@@ -339,6 +346,7 @@ export class FederationThreadReverseRoundExecutorService {
       FederationThreadSyncStateService.markReverseGapUnavailableInTx(tx, {
         threadId: source.threadId,
         peerDomain: source.peerDomain,
+        namespaceId: source.namespaceId,
         authorizationEpoch: context.authorizationEpoch,
         gapId: context.gapId,
       }),

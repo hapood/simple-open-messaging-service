@@ -3884,6 +3884,8 @@ export interface components {
             account: string;
             /** @example local */
             domain: string;
+            /** @example 7 */
+            namespaceId: number;
         };
         MessageResponseDto: {
             /**
@@ -4294,6 +4296,11 @@ export interface components {
              * @example example.com
              */
             domain: string;
+            /**
+             * @description Identity namespace; 0 for identities created on this server
+             * @example 7
+             */
+            namespaceId: number;
             /**
              * @description Created at (ms timestamp)
              * @example 31

@@ -34,6 +34,7 @@ import {
   openFederatedAudienceInTx,
 } from '../federation/federation-audience.js';
 import { RelationshipIntentService } from './relationship-intent.service.js';
+import { FederationNamespaceService } from '../federation/federation-namespace.service.js';
 
 /** Friend + group invite TTL: 7 days. Validated at accept time; the background sweep/GC is deferred
  *  (a row stays PENDING past expiry until then — the client renders an "expired" prompt from
@@ -110,6 +111,7 @@ export class InviteService {
     private readonly participantService: ThreadParticipantService,
     private readonly clientStateFeed: ClientStateFeedService,
     private readonly relationshipIntents: RelationshipIntentService,
+    private readonly namespaces: FederationNamespaceService,
     @Optional() private readonly messages?: MessageService,
     @Optional()
     @Inject(forwardRef(() => MessageFanoutService))
@@ -143,10 +145,13 @@ export class InviteService {
             SELECT 1 FROM "FederatedFriendRequest" request
             WHERE request.status IN ('REQUESTED', 'ACCEPTED')
               AND (request.status = 'ACCEPTED' OR request."expiresAt" > CURRENT_TIMESTAMP)
+              AND request."namespaceId" = pair."endpointANamespaceId"
+              AND pair."endpointANamespaceId" = pair."endpointBNamespaceId"
               AND (
                 EXISTS (
                   SELECT 1 FROM "User" local_identity
                   WHERE local_identity.id = request."localUserId"
+                    AND local_identity."namespaceId" = 0
                     AND ((local_identity.account = pair."endpointAAccount"
                       AND local_identity.domain = pair."endpointADomain"
                       AND request."remoteAccount" = pair."endpointBAccount"
@@ -210,6 +215,8 @@ export class InviteService {
               AND pair."threadId" = ${threadId}
               AND pair."endpointBAccount" = identity.account
               AND pair."endpointBDomain" = identity.domain
+              AND pair."endpointANamespaceId" = pair."endpointBNamespaceId"
+              AND pair."endpointBNamespaceId" = identity."namespaceId"
           )`,
         ),
       }),
@@ -223,6 +230,7 @@ export class InviteService {
       userId: memberUserId,
       account: state.account,
       domain: this.config.domain,
+      namespaceId: 0,
       eventType: 'RELATIONSHIP_INTENT',
       subjectAccount: member.account,
       subjectDomain: this.config.domain,
@@ -264,6 +272,7 @@ export class InviteService {
     afterWrite: (
       tx: DatabaseTransaction,
       state: {
+        namespaceId: number;
         requestedAt: Date;
         expiresAt: Date;
         note: string;
@@ -275,6 +284,7 @@ export class InviteService {
     const trimmed = note.slice(0, 255);
     const now = new Date();
     const result = await this.database.db.transaction(async (tx) => {
+      const context = await this.namespaces.captureActiveInTx(tx, remoteDomain);
       const [current] = await tx
         .select({
           status: federatedFriendRequest.status,
@@ -286,6 +296,7 @@ export class InviteService {
             eq(federatedFriendRequest.localUserId, localUserId),
             eq(federatedFriendRequest.remoteAccount, account),
             eq(federatedFriendRequest.remoteDomain, remoteDomain),
+            eq(federatedFriendRequest.namespaceId, context.namespaceId),
             eq(federatedFriendRequest.direction, 'OUTGOING'),
           ),
         )
@@ -306,6 +317,7 @@ export class InviteService {
           localUserId,
           remoteAccount: account,
           remoteDomain,
+          namespaceId: context.namespaceId,
           direction: 'OUTGOING',
           status: 'REQUESTED',
           note: trimmed,
@@ -318,7 +330,7 @@ export class InviteService {
         .onConflictDoUpdate({
           target: [
             federatedFriendRequest.localUserId,
-            federatedFriendRequest.remoteDomain,
+            federatedFriendRequest.namespaceId,
             federatedFriendRequest.remoteAccount,
             federatedFriendRequest.direction,
           ],
@@ -333,6 +345,7 @@ export class InviteService {
           },
         });
       await afterWrite(tx, {
+        namespaceId: context.namespaceId,
         requestedAt,
         expiresAt,
         note: trimmed,
@@ -351,29 +364,38 @@ export class InviteService {
     remoteDomain: string,
   ): Promise<FriendRelationshipState> {
     const account = normalizeAccount(remoteAccount);
-    const stub = await this.database.db.query.user.findFirst({
-      where: and(eq(user.account, account), eq(user.domain, remoteDomain)),
-      columns: { id: true },
+    const { stub, rows } = await this.database.db.transaction(async (tx) => {
+      const context = await this.namespaces.captureActiveInTx(tx, remoteDomain);
+      const stub = await tx.query.user.findFirst({
+        where: and(
+          eq(user.account, account),
+          eq(user.domain, remoteDomain),
+          eq(user.namespaceId, context.namespaceId),
+        ),
+        columns: { id: true },
+      });
+      const rows = await tx
+        .select({
+          direction: federatedFriendRequest.direction,
+          status: federatedFriendRequest.status,
+          expiresAt: federatedFriendRequest.expiresAt,
+        })
+        .from(federatedFriendRequest)
+        .where(
+          and(
+            eq(federatedFriendRequest.localUserId, localUserId),
+            eq(federatedFriendRequest.remoteAccount, account),
+            eq(federatedFriendRequest.remoteDomain, remoteDomain),
+            eq(federatedFriendRequest.namespaceId, context.namespaceId),
+          ),
+        );
+      return { stub, rows };
     });
     if (
       stub &&
       (await this.participantService.areFriends(localUserId, stub.id))
     )
       return 'FRIEND';
-    const rows = await this.database.db
-      .select({
-        direction: federatedFriendRequest.direction,
-        status: federatedFriendRequest.status,
-        expiresAt: federatedFriendRequest.expiresAt,
-      })
-      .from(federatedFriendRequest)
-      .where(
-        and(
-          eq(federatedFriendRequest.localUserId, localUserId),
-          eq(federatedFriendRequest.remoteAccount, account),
-          eq(federatedFriendRequest.remoteDomain, remoteDomain),
-        ),
-      );
     const active = rows.filter(
       (row) =>
         row.status === 'REQUESTED' &&
@@ -513,6 +535,7 @@ export class InviteService {
           userId: owner.id,
           account: actor.account,
           domain: actor.domain,
+          namespaceId: peer.namespaceId,
           eventType: 'RELATIONSHIP_INTENT',
           subjectAccount: subject.account,
           subjectDomain: subject.domain,
@@ -588,6 +611,9 @@ export class InviteService {
          AND ((peer.account = pair."endpointAAccount" AND peer.domain = pair."endpointADomain")
            OR (peer.account = pair."endpointBAccount" AND peer.domain = pair."endpointBDomain"))
         WHERE pair.kind = 'P2P'
+          AND pair."endpointANamespaceId" = pair."endpointBNamespaceId"
+          AND self."namespaceId" = 0
+          AND pair."endpointANamespaceId" = peer."namespaceId"
           AND intent.status = 'REQUESTED'
           AND intent."expiresAt" > CURRENT_TIMESTAMP
           AND ((self.account = pair."endpointAAccount" AND self.domain = pair."endpointADomain")
@@ -741,6 +767,8 @@ export class InviteService {
               AND pair."threadId" = ${threadId}
               AND pair."endpointBAccount" = member_identity.account
               AND pair."endpointBDomain" = member_identity.domain
+              AND pair."endpointANamespaceId" = pair."endpointBNamespaceId"
+              AND pair."endpointBNamespaceId" = member_identity."namespaceId"
           )`,
         ),
         columns: {
@@ -887,16 +915,24 @@ export class InviteService {
               ? {
                   account: invite.pair.endpointAAccount,
                   domain: invite.pair.endpointADomain,
+                  namespaceId: invite.pair.endpointANamespaceId,
                 }
               : {
                   account: invite.pair.endpointBAccount,
                   domain: invite.pair.endpointBDomain,
+                  namespaceId: invite.pair.endpointBNamespaceId,
                 };
           const requester = await tx.query.user.findFirst({
             where: and(
               eq(user.account, requesterAddress.account),
               eq(user.domain, requesterAddress.domain),
               eq(user.sourceDomain, requesterAddress.domain),
+              eq(
+                user.namespaceId,
+                requesterAddress.domain === 'local'
+                  ? 0
+                  : requesterAddress.namespaceId,
+              ),
             ),
           });
           if (!requester)
@@ -1236,6 +1272,9 @@ export class InviteService {
         OR ((self.account = pair."endpointBAccount" AND self.domain = pair."endpointBDomain")
           AND peer.account = pair."endpointAAccount" AND peer.domain = pair."endpointADomain"))
       WHERE pair.kind = 'P2P' AND intent.status = 'REQUESTED'
+        AND pair."endpointANamespaceId" = pair."endpointBNamespaceId"
+        AND self."namespaceId" = 0
+        AND pair."endpointANamespaceId" = peer."namespaceId"
         AND intent."expiresAt" > CURRENT_TIMESTAMP
         AND intent."requestedAt" > ${since}
       ORDER BY intent."requestedAt" DESC
@@ -1664,10 +1703,22 @@ export class InviteService {
             and(
               eq(user.account, row.pair.endpointAAccount),
               eq(user.domain, row.pair.endpointADomain),
+              eq(
+                user.namespaceId,
+                row.pair.endpointADomain === 'local'
+                  ? 0
+                  : row.pair.endpointANamespaceId,
+              ),
             ),
             and(
               eq(user.account, row.pair.endpointBAccount),
               eq(user.domain, row.pair.endpointBDomain),
+              eq(
+                user.namespaceId,
+                row.pair.endpointBDomain === 'local'
+                  ? 0
+                  : row.pair.endpointBNamespaceId,
+              ),
             ),
           ),
         ),
@@ -1753,12 +1804,24 @@ export class InviteService {
         and(
           eq(group.account, relationshipPair.endpointAAccount),
           eq(group.domain, relationshipPair.endpointADomain),
+          sql`${group.namespaceId} = CASE
+            WHEN ${group.domain} = 'local' THEN 0
+            ELSE ${relationshipPair.endpointANamespaceId}
+          END`,
         ),
       )
       .innerJoin(user, eq(user.id, callerId))
       .where(
         and(
           eq(relationshipPair.kind, 'GROUP_MEMBER'),
+          eq(
+            relationshipPair.endpointANamespaceId,
+            relationshipPair.endpointBNamespaceId,
+          ),
+          sql`${relationshipPair.endpointANamespaceId} = CASE
+            WHEN ${group.namespaceId} <> 0 THEN ${group.namespaceId}
+            ELSE ${user.namespaceId}
+          END`,
           eq(relationshipIntent.authorSide, 'A'),
           eq(relationshipPair.endpointBAccount, user.account),
           eq(relationshipPair.endpointBDomain, user.domain),

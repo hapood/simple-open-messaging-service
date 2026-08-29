@@ -1506,6 +1506,7 @@ export class MessageThreadComponent implements OnDestroy {
           item.type === 'P2P' &&
           item.peerUser.account === profile.account &&
           (item.peerUser.domain || 'local') === profile.domain &&
+          item.peerUser.namespaceId === profile.namespaceId &&
           item.friendshipActive !== false,
       )?.threadId;
     this.route.popupDlg(
@@ -1517,6 +1518,7 @@ export class MessageThreadComponent implements OnDestroy {
           avatar: profile.avatar,
           bio: '',
           domain: profile.domain || 'local',
+          namespaceId: profile.namespaceId,
           friendThreadId,
           relationship:
             profile.account === this.userService.sessionProfile()?.account &&
@@ -3504,7 +3506,7 @@ export class MessageThreadComponent implements OnDestroy {
       type: 'msg',
       msgId: placeholderId,
       creator: messageCreatorKey(
-        { account: profile.account, domain: 'local' },
+        { account: profile.account, domain: 'local', namespaceId: 0 },
         'local',
       ),
       isSelf: true,

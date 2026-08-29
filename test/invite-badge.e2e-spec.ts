@@ -7,9 +7,13 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
 import { InviteService } from '../src/invite/invite.service';
-import { account, relationshipIntent } from '../src/database/schema';
+import { account, relationshipIntent, user } from '../src/database/schema';
 import { and, eq } from 'drizzle-orm';
-import { findP2PRelationship, seedUserWithSession } from './seed';
+import {
+  findP2PRelationship,
+  seedFederatedPeerNamespace,
+  seedUserWithSession,
+} from './seed';
 
 /**
  * Friend-request badge — the BACKEND half of the data contract.
@@ -138,7 +142,22 @@ describe('Friend-request client state e2e', () => {
 
   it('atomically confirms two expired directions after both sides renew', async () => {
     const a = await seedUserWithSession(app, 'expired-a', { name: 'A' });
-    const b = await seedUserWithSession(app, 'expired-b', { name: 'B' });
+    const peerDomain = 'peer.test';
+    const namespaceId = await seedFederatedPeerNamespace(
+      database.db,
+      peerDomain,
+    );
+    const [b] = await database.db
+      .insert(user)
+      .values({
+        account: 'expired-b',
+        name: 'B',
+        domain: peerDomain,
+        sourceDomain: peerDomain,
+        namespaceId,
+        updatedAt: new Date(),
+      })
+      .returning({ id: user.id });
     const pastRequestedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
     const pastExpiresAt = new Date(
       pastRequestedAt.getTime() + 6 * 24 * 60 * 60 * 1000,
@@ -165,7 +184,7 @@ describe('Friend-request client state e2e', () => {
         note: 'arrived too late',
         requestedAt: pastRequestedAt,
         expiresAt: pastExpiresAt,
-        origin: 'peer.test',
+        origin: peerDomain,
       });
     });
 
@@ -198,7 +217,7 @@ describe('Friend-request client state e2e', () => {
         note: 'renewed',
         requestedAt: now,
         expiresAt: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
-        origin: 'peer.test',
+        origin: peerDomain,
       });
     });
 
@@ -216,7 +235,7 @@ describe('Friend-request client state e2e', () => {
         note: 'renewed',
         requestedAt: new Date(),
         expiresAt: null,
-        origin: 'peer.test',
+        origin: peerDomain,
       }),
     );
     pair = (await findP2PRelationship(database.db, a.id, b.id)).pair;

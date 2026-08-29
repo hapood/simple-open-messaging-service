@@ -51,6 +51,7 @@ function harness(committedThrough = 0n) {
   };
   return {
     service: new PeerStateFeedPullService(database as never),
+    database,
     order,
     whereUpdate,
   };
@@ -59,7 +60,7 @@ function harness(committedThrough = 0n) {
 describe('PeerStateFeedPullService atomic item application', () => {
   it('publishes each item only after its state and cursor commit', async () => {
     const { service, order } = harness();
-    await service.run('peer.test', {
+    await service.run('peer.test', 12, {
       fetch: async () => ({
         ...page('1'),
         items: [
@@ -75,7 +76,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
   it('rolls the page back without publishing when one state item is invalid', async () => {
     const { service, order, whereUpdate } = harness();
     await expect(
-      service.run('peer.test', {
+      service.run('peer.test', 12, {
         fetch: async () => ({
           ...page('1'),
           items: [
@@ -106,7 +107,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
       if (feedId === '2') throw new Error('second item failed');
     });
     await expect(
-      service.run('peer.test', {
+      service.run('peer.test', 12, {
         fetch: async () => ({
           items: [
             {
@@ -134,11 +135,90 @@ describe('PeerStateFeedPullService atomic item application', () => {
     expect(order).toEqual(['state-1', 'cursor', 'publish-1', 'state-2']);
   });
 
+  it('resumes from the last committed item after the pull service is recreated', async () => {
+    const { service, database, order } = harness();
+    const firstApply = vi.fn(
+      async (_tx: unknown, itemPage: PeerStateFeedPage) => {
+        const feedId = itemPage.items[0]!.feedId;
+        order.push(`state-${feedId}`);
+        if (feedId === '2') throw new Error('process stopped on item 2');
+      },
+    );
+    await expect(
+      service.run('peer.test', 12, {
+        fetch: async () => ({
+          items: [
+            {
+              account: 'alice',
+              eventType: 'PROFILE',
+              feedId: '1',
+              body: {},
+            },
+            {
+              account: 'bob',
+              eventType: 'PROFILE',
+              feedId: '2',
+              body: {},
+            },
+          ],
+          scannedThrough: '2',
+          stateFeedEndId: '2',
+          hasMore: false,
+        }),
+        apply: firstApply,
+        afterCommit: async (itemPage) =>
+          void order.push(`publish-${itemPage.items[0]!.feedId}`),
+      }),
+    ).rejects.toThrow('process stopped on item 2');
+
+    const resumed = new PeerStateFeedPullService(database as never);
+    const resumedFetch = vi.fn(async () => ({
+      items: [
+        {
+          account: 'bob',
+          eventType: 'PROFILE' as const,
+          feedId: '2',
+          body: {},
+        },
+        {
+          account: 'carol',
+          eventType: 'PROFILE' as const,
+          feedId: '3',
+          body: {},
+        },
+      ],
+      scannedThrough: '3',
+      stateFeedEndId: '3',
+      hasMore: false,
+    }));
+    await resumed.run('peer.test', 12, {
+      fetch: resumedFetch,
+      apply: async (_tx, itemPage) =>
+        void order.push(`state-${itemPage.items[0]!.feedId}`),
+      afterCommit: async (itemPage) =>
+        void order.push(`publish-${itemPage.items[0]!.feedId}`),
+    });
+
+    expect(resumedFetch).toHaveBeenCalledWith(1n, undefined);
+    expect(order).toEqual([
+      'state-1',
+      'cursor',
+      'publish-1',
+      'state-2',
+      'state-2',
+      'cursor',
+      'publish-2',
+      'state-3',
+      'cursor',
+      'publish-3',
+    ]);
+  });
+
   it('rejects unordered or out-of-bound revs before applying state', async () => {
     const { service } = harness(2n);
     const apply = vi.fn();
     await expect(
-      service.run('peer.test', {
+      service.run('peer.test', 12, {
         fetch: async () => ({
           items: [
             {
@@ -168,7 +248,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
       .mockRejectedValueOnce(new RemoteFeedCursorUnavailableError(0n, 4n))
       .mockRejectedValueOnce(new Error('replacement fetch failed'));
     await expect(
-      service.run('peer.test', {
+      service.run('peer.test', 12, {
         fetch,
         beginRebuild: async () => void order.push('rebuild'),
         apply: async () => void order.push('state'),

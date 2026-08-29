@@ -12,6 +12,7 @@ export interface FriendRequestPeer {
   avatar: string;
   bio: string;
   domain: string;
+  namespaceId: number;
 }
 
 export interface RelationshipIntentFact {
@@ -24,21 +25,23 @@ export interface RelationshipIntentFact {
 }
 
 export function relationshipIntentKey(input: {
+  namespaceId: number;
   account: string;
   domain: string;
   subjectAccount: string;
   subjectDomain: string;
 }): string {
-  return `${input.domain}\u0000${input.account}->${input.subjectDomain}\u0000${input.subjectAccount}`;
+  return `${input.namespaceId}\u0000${input.domain}\u0000${input.account}->${input.subjectDomain}\u0000${input.subjectAccount}`;
 }
 
 export function reverseRelationshipIntentKey(input: {
+  namespaceId: number;
   account: string;
   domain: string;
   subjectAccount: string;
   subjectDomain: string;
 }): string {
-  return `${input.subjectDomain}\u0000${input.subjectAccount}->${input.domain}\u0000${input.account}`;
+  return `${input.namespaceId}\u0000${input.subjectDomain}\u0000${input.subjectAccount}->${input.domain}\u0000${input.account}`;
 }
 
 export function relationshipFactsAreActive(
@@ -62,6 +65,7 @@ export function relationshipFactsAreActive(
  * is derived from separately persisted intent facts, never from this record. */
 export interface FriendRequestProjection {
   key: string;
+  namespaceId: number;
   kind: 'FRIEND' | 'GROUP';
   bucket: FriendRequestBucket;
   direction: FriendRequestDirection;
@@ -75,6 +79,7 @@ export interface FriendRequestProjection {
   group?: {
     account: string;
     domain: string;
+    namespaceId: number;
     isLocal: boolean;
     name: string;
     avatar: string;
@@ -87,6 +92,7 @@ export interface FriendRequestProjection {
 }
 
 export interface FriendIntentProjectionInput {
+  namespaceId: number;
   account: string;
   domain: string;
   subjectAccount: string;
@@ -102,6 +108,7 @@ export interface FriendIntentProjectionInput {
 }
 
 export interface GroupInviteProjectionInput {
+  namespaceId: number;
   account: string;
   domain: string;
   status: FriendRequestIntentStatus;
@@ -124,6 +131,7 @@ export function projectionDirectionForFact(input: {
 
 export function friendRequestKey(
   input: {
+    namespaceId: number;
     account: string;
     domain: string;
     subjectAccount: string;
@@ -136,15 +144,16 @@ export function friendRequestKey(
   const authored = sameAuthoredDirection
     ? `${input.domain}\u0000${input.account}->${input.subjectDomain}\u0000${input.subjectAccount}`
     : `${input.subjectDomain}\u0000${input.subjectAccount}->${input.domain}\u0000${input.account}`;
-  return `friend:${JSON.stringify(authored)}`;
+  return `friend:${input.namespaceId}:${JSON.stringify(authored)}`;
 }
 
 export function groupRequestKey(
+  namespaceId: number,
   domain: string,
   account: string,
   direction: FriendRequestDirection,
 ): string {
-  return `group:${domain}\u0000${account}:${direction}`;
+  return `group:${namespaceId}:${domain}\u0000${account}:${direction}`;
 }
 
 export interface ProjectionTransition {
@@ -167,6 +176,7 @@ export function applyFriendIntentToProjection(
     return { record: current ?? null, becameActionable: false };
   const record: FriendRequestProjection = {
     key: friendRequestKey(input, input.direction),
+    namespaceId: input.namespaceId,
     kind: 'FRIEND',
     bucket: input.direction === 'INCOMING' ? 'RECEIVED' : 'SENT',
     direction: input.direction,
@@ -212,7 +222,13 @@ export function applyGroupIntentToProjection(
   if (expiresAt === null || expiresAt <= now)
     return { record: current ?? null, becameActionable: false };
   const record: FriendRequestProjection = {
-    key: groupRequestKey(input.domain, input.account, direction),
+    key: groupRequestKey(
+      input.namespaceId,
+      input.domain,
+      input.account,
+      direction,
+    ),
+    namespaceId: input.namespaceId,
     kind: 'GROUP',
     bucket: direction === 'INCOMING' ? 'RECEIVED' : 'SENT',
     direction,

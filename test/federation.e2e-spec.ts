@@ -145,6 +145,17 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     return row.count;
   }
 
+  async function requireActiveNamespaceId(app: FedApp, domain: string) {
+    const peer = await app.database.query.federatedPeer.findFirst({
+      where: eq(federatedPeer.domain, domain),
+      columns: { activeNamespaceId: true },
+    });
+    if (peer?.activeNamespaceId == null) {
+      throw new Error(`No active namespace for federated peer ${domain}`);
+    }
+    return peer.activeNamespaceId;
+  }
+
   const textContent = (value: string) => JSON.stringify({ text: value });
 
   async function findGroupThreadByAccount(app: FedApp, account: string) {
@@ -359,6 +370,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   });
 
   it('publishes PROFILE after an addressed request so the pending card has an avatar', async () => {
+    const [namespaceBOnA, namespaceAOnB] = await Promise.all([
+      requireActiveNamespaceId(appA, DOM_B),
+      requireActiveNamespaceId(appB, DOM_A),
+    ]);
     const res = await request(appA.baseUrl)
       .post('/api/v1/invite/federated-friend')
       .set('Authorization', `Bearer ${tokenA}`)
@@ -371,30 +386,32 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(res.status).toBe(200);
     expect(res.body.code, JSON.stringify(res.body)).toBe(BusinessCode.OK);
 
-    const incoming = await vi.waitFor(
+    const [incoming] = await vi.waitFor(
       async () => {
         const row = await appB.database.query.federatedFriendRequest.findFirst({
           where: and(
             eq(federatedFriendRequest.localUserId, bobLocalIdB),
             eq(federatedFriendRequest.remoteAccount, 'alice'),
             eq(federatedFriendRequest.remoteDomain, DOM_A),
+            eq(federatedFriendRequest.namespaceId, namespaceAOnB),
             eq(federatedFriendRequest.direction, 'INCOMING'),
           ),
         });
         expect(row).toBeDefined();
-        return row!;
+        expect(row?.profileRevision).toBeGreaterThan(0);
+        const profile = await appB.database.query.user.findFirst({
+          where: and(
+            eq(user.account, 'alice'),
+            eq(user.domain, DOM_A),
+            eq(user.sourceDomain, DOM_A),
+            eq(user.namespaceId, namespaceAOnB),
+          ),
+        });
+        expect(profile).toBeDefined();
+        return [row!, profile!] as const;
       },
       { timeout: 5000, interval: 100 },
     );
-    expect(
-      await appB.database.query.user.findFirst({
-        where: and(
-          eq(user.account, 'alice'),
-          eq(user.domain, DOM_A),
-          eq(user.sourceDomain, DOM_A),
-        ),
-      }),
-    ).toBeDefined();
     expect(incoming.expiresAt).not.toBeNull();
     expect(
       incoming.expiresAt!.getTime() - incoming.requestedAt!.getTime(),
@@ -407,6 +424,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       appA.database.query.peerStateFeed.findFirst({
         where: and(
           eq(peerStateFeed.peerDomain, DOM_B),
+          eq(peerStateFeed.namespaceId, namespaceBOnA),
           eq(peerStateFeed.account, 'alice'),
           eq(peerStateFeed.eventType, 'PROFILE'),
         ),
@@ -414,6 +432,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       appA.database.query.peerStateFeed.findFirst({
         where: and(
           eq(peerStateFeed.peerDomain, DOM_B),
+          eq(peerStateFeed.namespaceId, namespaceBOnA),
           eq(peerStateFeed.account, 'alice'),
           eq(peerStateFeed.subjectAccount, 'bob'),
           eq(peerStateFeed.eventType, 'RELATIONSHIP_INTENT'),
@@ -434,10 +453,18 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       async () => {
         const stubs = await Promise.all([
           appB.database.query.user.findFirst({
-            where: and(eq(user.account, 'alice'), eq(user.domain, DOM_A)),
+            where: and(
+              eq(user.account, 'alice'),
+              eq(user.domain, DOM_A),
+              eq(user.namespaceId, namespaceAOnB),
+            ),
           }),
           appA.database.query.user.findFirst({
-            where: and(eq(user.account, 'bob'), eq(user.domain, DOM_B)),
+            where: and(
+              eq(user.account, 'bob'),
+              eq(user.domain, DOM_B),
+              eq(user.namespaceId, namespaceBOnA),
+            ),
           }),
         ]);
         expect(stubs[0]).toBeDefined();
@@ -503,6 +530,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       registerAndLogin(appA, alphaAccount, 'Cross Alpha'),
       registerAndLogin(appB, betaAccount, 'Cross Beta'),
     ]);
+    const [namespaceBOnA, namespaceAOnB] = await Promise.all([
+      requireActiveNamespaceId(appA, DOM_B),
+      requireActiveNamespaceId(appB, DOM_A),
+    ]);
     const [[betaStubA], [alphaStubB]] = await Promise.all([
       appA.database
         .insert(user)
@@ -511,6 +542,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           name: 'Cross Beta',
           domain: DOM_B,
           sourceDomain: DOM_B,
+          namespaceId: namespaceBOnA,
           updatedAt: new Date(),
         })
         .returning({ id: user.id }),
@@ -521,6 +553,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           name: 'Cross Alpha',
           domain: DOM_A,
           sourceDomain: DOM_A,
+          namespaceId: namespaceAOnB,
           updatedAt: new Date(),
         })
         .returning({ id: user.id }),
@@ -1713,12 +1746,14 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // Force the next GROUP_META_HEAD to perform a full rebuild and seed one receiver-only current
     // member. The authoritative full snapshot must mark that absent member as departed while retaining
     // its source-scoped identity for already materialized data.
+    const namespaceAOnB = await requireActiveNamespaceId(appB, DOM_A);
     const [staleIdentity] = await appB.database
       .insert(user)
       .values({
         account: 'stale-roster-member',
         domain: 'stale.test',
         sourceDomain: DOM_A,
+        namespaceId: namespaceAOnB,
         name: 'Stale roster member',
         updatedAt: new Date(),
       })

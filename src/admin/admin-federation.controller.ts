@@ -109,7 +109,7 @@ export class AdminFederationController {
   @Post('admin/federation/peers/:domain/reset-preview')
   @ApiOperation({
     summary:
-      'Preview the destructive scope of an identity-mismatch halted peer reset (read-only)',
+      'Preview the namespace retired by an identity-mismatch halted peer reset (read-only)',
   })
   async resetPreview(@Param('domain') domain: string) {
     return this.resetService.preview(domain);
@@ -125,7 +125,7 @@ export class AdminFederationController {
   @Post('admin/federation/peers/:domain/reset')
   @ApiOperation({
     summary:
-      'Freeze an identity-mismatch halted domain and mark its related threads for resumable truncation',
+      'Retire the active namespace of an identity-mismatch halted peer',
   })
   async resetPeer(
     @Param('domain') domain: string,

@@ -316,7 +316,11 @@ export class MessageController {
     }
     const quoteVisibility: {
       clearedThroughSeq?: number | null;
-      hideCreators?: Array<{ account: string; domain: string }>;
+      hideCreators?: Array<{
+        account: string;
+        domain: string;
+        namespaceId: number;
+      }>;
     } = { clearedThroughSeq: req.threadAccess.participant.clearedSeq };
     const hasQuote =
       contentType === ContentType.PURE_TEXT &&
@@ -334,6 +338,7 @@ export class MessageController {
         quoteVisibility.hideCreators = peers.map((peer) => ({
           account: peer.account,
           domain: peer.domain,
+          namespaceId: peer.user.namespaceId,
         }));
     }
     await this.userQuota.assertCanSend(req.user.userId);

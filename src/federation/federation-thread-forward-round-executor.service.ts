@@ -54,14 +54,20 @@ export class FederationThreadForwardRoundExecutorService {
   async runMessages(
     threadId: number,
     peerDomain: string,
+    namespaceId: number,
     take?: number,
   ): Promise<FederationThreadForwardMessageRoundResult> {
-    const source = await this.sources.resolve(threadId, peerDomain);
+    const source = await this.sources.resolve(
+      threadId,
+      peerDomain,
+      namespaceId,
+    );
     let messageBatch: BufferedForwardMessagePage | undefined;
     let messageAdvance: { processed: number; target: number } | undefined;
     return this.rounds.runMessages(
       threadId,
       peerDomain,
+      namespaceId,
       {
         process: async (params) => {
           const result = await this.processMessages(source, params);
@@ -92,6 +98,7 @@ export class FederationThreadForwardRoundExecutorService {
                 tx,
                 threadId,
                 peerDomain,
+                namespaceId,
                 messageAdvance.processed,
                 messageAdvance.target,
               );
@@ -106,18 +113,20 @@ export class FederationThreadForwardRoundExecutorService {
   async runTombstones(
     threadId: number,
     peerDomain: string,
-    targetSeq: number,
-    maxMessageSeq: number,
+    namespaceId: number,
     take?: number,
   ): Promise<FederationThreadForwardTombstoneRoundResult> {
-    const source = await this.sources.resolve(threadId, peerDomain);
+    const source = await this.sources.resolve(
+      threadId,
+      peerDomain,
+      namespaceId,
+    );
     let tombstoneBatch: BufferedForwardTombstonePage | undefined;
     let deletionAdvance: { processed: number; target: number } | undefined;
     return this.rounds.runTombstones(
       threadId,
       peerDomain,
-      targetSeq,
-      maxMessageSeq,
+      namespaceId,
       {
         process: async (params) => {
           const result = await this.processTombstones(source, params);
@@ -148,6 +157,7 @@ export class FederationThreadForwardRoundExecutorService {
                 tx,
                 threadId,
                 peerDomain,
+                namespaceId,
                 deletionAdvance.processed,
                 deletionAdvance.target,
               );
@@ -203,7 +213,7 @@ export class FederationThreadForwardRoundExecutorService {
     params: {
       after: number;
       through: number;
-      maxMessageSeq: number;
+      maxMessageSeq?: number;
       take: number;
     },
   ): Promise<{
@@ -215,7 +225,8 @@ export class FederationThreadForwardRoundExecutorService {
     query.set('through', params.through.toString());
     query.set('take', params.take.toString());
     query.set('includeSelf', 'true');
-    query.set('maxMessageSeq', params.maxMessageSeq.toString());
+    if (params.maxMessageSeq !== undefined)
+      query.set('maxMessageSeq', params.maxMessageSeq.toString());
     let response: FederationThreadResourceResponse<FederationMessageTombstoneQueryPage>;
     try {
       response =
@@ -300,7 +311,7 @@ export class FederationThreadForwardRoundExecutorService {
   private assertTombstonePage(
     source: FederationReverseThreadSource,
     page: FederationMessageTombstoneQueryPage,
-    params: { after: number; through: number },
+    params: { after: number; through: number; maxMessageSeq?: number },
   ): void {
     if (
       !page ||
@@ -318,6 +329,10 @@ export class FederationThreadForwardRoundExecutorService {
       if (
         !this.matchesThread(item.thread, source) ||
         !Number.isSafeInteger(item.deletionSeq) ||
+        !Number.isSafeInteger(item.messageSeq) ||
+        item.messageSeq < 0 ||
+        (params.maxMessageSeq !== undefined &&
+          item.messageSeq > params.maxMessageSeq) ||
         item.deletionSeq <= previous ||
         item.deletionSeq > page.scannedThrough
       )
@@ -383,8 +398,7 @@ export class FederationThreadForwardRoundExecutorService {
           dependency.peerDomain !== response.peerDomain ||
           dependency.federationVersion !== response.federationVersion ||
           dependency.peerToken.domain !== response.peerToken.domain ||
-          dependency.peerToken.resetGeneration !==
-            response.peerToken.resetGeneration ||
+          dependency.peerToken.namespaceId !== response.peerToken.namespaceId ||
           dependency.peerToken.rootKeyFingerprint !==
             response.peerToken.rootKeyFingerprint
         )

@@ -13,16 +13,20 @@ export class FederationThreadSourceService {
   async resolve(
     threadId: number,
     peerDomain: string,
+    namespaceId: number,
   ): Promise<FederationReverseThreadSource> {
     const [groupThread] = await this.database.db
-      .select({ account: group.account, domain: group.domain })
+      .select({
+        account: group.account,
+        domain: group.domain,
+        namespaceId: group.namespaceId,
+      })
       .from(messageThread)
       .innerJoin(group, eq(group.id, messageThread.groupId))
       .where(
         and(
           eq(messageThread.id, threadId),
           eq(messageThread.type, MessageThreadType.GROUP),
-          eq(messageThread.federationTruncated, false),
         ),
       )
       .limit(1);
@@ -30,6 +34,14 @@ export class FederationThreadSourceService {
       if (groupThread.domain !== 'local' && groupThread.domain !== peerDomain) {
         throw new FederationMessageContextError(
           `group thread ${threadId} is not sourced by ${peerDomain}`,
+        );
+      }
+      if (
+        groupThread.domain === peerDomain &&
+        groupThread.namespaceId !== namespaceId
+      ) {
+        throw new FederationMessageContextError(
+          `group thread ${threadId} belongs to another namespace`,
         );
       }
       const active = await this.database.db.execute(sql`
@@ -46,9 +58,13 @@ export class FederationThreadSourceService {
           AND pair.active = true
           AND pair."threadId" = ${threadId}
           AND ((${groupThread.domain} = ${peerDomain}
-                AND member_identity.domain = 'local')
+                AND member_identity.domain = 'local'
+                AND member_identity."namespaceId" = 0)
             OR (${groupThread.domain} = 'local'
-                AND member_identity.domain = ${peerDomain}))
+                AND member_identity.domain = ${peerDomain}
+                AND member_identity."namespaceId" = ${namespaceId}))
+          AND pair."endpointANamespaceId" = ${namespaceId}
+          AND pair."endpointBNamespaceId" = ${namespaceId}
         LIMIT 1
       `);
       if (active.rows.length === 0) {
@@ -60,6 +76,7 @@ export class FederationThreadSourceService {
         kind: 'GROUP',
         threadId,
         peerDomain,
+        namespaceId,
         selector: { account: groupThread.account },
       };
     }
@@ -90,9 +107,10 @@ export class FederationThreadSourceService {
         AND pair.kind = 'P2P'
         AND pair.active = true
         AND thread.type = 'P2P'
-        AND thread."federationTruncated" = false
         AND (pair."endpointADomain" = ${peerDomain}
           OR pair."endpointBDomain" = ${peerDomain})
+        AND pair."endpointANamespaceId" = ${namespaceId}
+        AND pair."endpointBNamespaceId" = ${namespaceId}
         AND ((pair."endpointADomain" = 'local'
               AND pair."endpointBDomain" <> 'local')
           OR (pair."endpointBDomain" = 'local'
@@ -109,6 +127,7 @@ export class FederationThreadSourceService {
       kind: 'P2P',
       threadId,
       peerDomain: p2p.remoteDomain,
+      namespaceId,
       selector: {
         account: p2p.remoteAccount,
         peerAccount: p2p.localAccount,

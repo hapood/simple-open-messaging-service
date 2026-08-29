@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use tauri::Manager;
 
 const DB_FILENAME: &str = "soms-local.sqlite3";
-const CACHE_SCHEMA_VERSION: i64 = 9;
+const CACHE_SCHEMA_VERSION: i64 = 10;
 
 fn db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app
@@ -139,23 +139,25 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
           account TEXT NOT NULL,
           domain TEXT NOT NULL,
           source_domain TEXT NOT NULL,
+          namespace_id INTEGER NOT NULL,
           surrogate_id INTEGER,
           payload_json TEXT NOT NULL,
           profile_rev INTEGER NOT NULL,
-          PRIMARY KEY (user_id, account, domain, source_domain)
+          PRIMARY KEY (user_id, account, domain, source_domain, namespace_id)
         );
         CREATE INDEX IF NOT EXISTS users_address
-          ON users(user_id, account, domain);
+          ON users(user_id, account, domain, namespace_id);
         CREATE INDEX IF NOT EXISTS users_id
           ON users(user_id, surrogate_id) WHERE surrogate_id IS NOT NULL;
         CREATE TABLE IF NOT EXISTS groups (
           user_id INTEGER NOT NULL,
           account TEXT NOT NULL,
           domain TEXT NOT NULL,
+          namespace_id INTEGER NOT NULL,
           surrogate_id INTEGER,
           payload_json TEXT NOT NULL,
           profile_rev INTEGER NOT NULL,
-          PRIMARY KEY (user_id, account, domain)
+          PRIMARY KEY (user_id, account, domain, namespace_id)
         );
         CREATE INDEX IF NOT EXISTS groups_id
           ON groups(user_id, surrogate_id) WHERE surrogate_id IS NOT NULL;
@@ -165,14 +167,15 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
           member_account TEXT NOT NULL,
           member_domain TEXT NOT NULL,
           source_domain TEXT NOT NULL,
+          namespace_id INTEGER NOT NULL,
           role TEXT NOT NULL,
           left_state INTEGER NOT NULL DEFAULT 0,
-          PRIMARY KEY (user_id, thread_id, member_account, member_domain, source_domain)
+          PRIMARY KEY (user_id, thread_id, member_account, member_domain, source_domain, namespace_id)
         );
         CREATE INDEX IF NOT EXISTS members_thread
-          ON members(user_id, thread_id, left_state, source_domain, member_domain, member_account);
+          ON members(user_id, thread_id, left_state, namespace_id, source_domain, member_domain, member_account);
         CREATE INDEX IF NOT EXISTS members_search
-          ON members(user_id, thread_id, member_account, member_domain, source_domain);
+          ON members(user_id, thread_id, member_account, member_domain, source_domain, namespace_id);
         CREATE TABLE IF NOT EXISTS friend_requests (
           user_id INTEGER NOT NULL,
           stable_key TEXT NOT NULL,
@@ -457,17 +460,19 @@ fn intent_is_effective(value: Option<&Value>, now: i64) -> bool {
 }
 
 fn relationship_intent_key(
+    namespace_id: i64,
     account: &str,
     domain: &str,
     subject_account: &str,
     subject_domain: &str,
 ) -> String {
-    format!("{domain}\0{account}->{subject_domain}\0{subject_account}")
+    format!("{namespace_id}\0{domain}\0{account}->{subject_domain}\0{subject_account}")
 }
 
 fn apply_relationship_intent_fact(
     tx: &Transaction<'_>,
     user_id: i64,
+    namespace_id: i64,
     account: &str,
     domain: &str,
     subject_account: &str,
@@ -480,8 +485,20 @@ fn apply_relationship_intent_fact(
         .and_then(Value::as_str)
         .ok_or_else(|| "relationship intent has no status".to_string())?;
     let expires_at = body.get("expiresAt").and_then(Value::as_i64);
-    let key = relationship_intent_key(account, domain, subject_account, subject_domain);
-    let reverse_key = relationship_intent_key(subject_account, subject_domain, account, domain);
+    let key = relationship_intent_key(
+        namespace_id,
+        account,
+        domain,
+        subject_account,
+        subject_domain,
+    );
+    let reverse_key = relationship_intent_key(
+        namespace_id,
+        subject_account,
+        subject_domain,
+        account,
+        domain,
+    );
     let fact = serde_json::json!({
         "status": status,
         "expiresAt": expires_at,
@@ -555,6 +572,7 @@ fn apply_friend_request_effect(
     tx: &Transaction<'_>,
     user_id: i64,
     revision: i64,
+    namespace_id: i64,
     account: &str,
     domain: &str,
     subject_account: &str,
@@ -569,11 +587,26 @@ fn apply_friend_request_effect(
     }
     let reverse = status == "ACCEPTED";
     let authored = if reverse {
-        relationship_intent_key(subject_account, subject_domain, account, domain)
+        relationship_intent_key(
+            namespace_id,
+            subject_account,
+            subject_domain,
+            account,
+            domain,
+        )
     } else {
-        relationship_intent_key(account, domain, subject_account, subject_domain)
+        relationship_intent_key(
+            namespace_id,
+            account,
+            domain,
+            subject_account,
+            subject_domain,
+        )
     };
-    let key = format!("friend:{}", json_text(&Value::String(authored))?);
+    let key = format!(
+        "friend:{namespace_id}:{}",
+        json_text(&Value::String(authored))?
+    );
     if status != "REQUESTED" {
         return update_live_request_projection(tx, user_id, &key, status, now);
     }
@@ -595,8 +628,19 @@ fn apply_friend_request_effect(
             |row| row.get(0),
         )
         .map_err(|e| format!("read request projection actionability: {e}"))?;
+    let mut peer = body.get("peer").cloned().unwrap_or(Value::Null);
+    if let Some(peer_object) = peer.as_object_mut() {
+        let peer_namespace_id =
+            if peer_object.get("domain").and_then(Value::as_str) == Some("local") {
+                0
+            } else {
+                namespace_id
+            };
+        peer_object.insert("namespaceId".into(), Value::from(peer_namespace_id));
+    }
     let projection = serde_json::json!({
         "key": key,
+        "namespaceId": namespace_id,
         "kind": "FRIEND",
         "bucket": if direction == "INCOMING" { "RECEIVED" } else { "SENT" },
         "direction": direction,
@@ -606,7 +650,7 @@ fn apply_friend_request_effect(
         "inviteId": body.get("inviteId").cloned().unwrap_or(Value::Null),
         "note": body.get("note").cloned().unwrap_or(Value::String(String::new())),
         "requestedAt": requested_at,
-        "peer": body.get("peer").cloned().unwrap_or(Value::Null),
+        "peer": peer,
         "requestedSort": requested_at,
         "updatedAt": now,
     });
@@ -626,6 +670,7 @@ fn apply_group_request_effect(
     tx: &Transaction<'_>,
     user_id: i64,
     revision: i64,
+    namespace_id: i64,
     group_account: &str,
     group_domain: &str,
     direction: &str,
@@ -641,7 +686,7 @@ fn apply_group_request_effect(
     } else {
         direction
     };
-    let key = format!("group:{group_domain}\0{group_account}:{target_direction}");
+    let key = format!("group:{namespace_id}:{group_domain}\0{group_account}:{target_direction}");
     if status != "REQUESTED" {
         return update_live_request_projection(tx, user_id, &key, status, now);
     }
@@ -654,8 +699,18 @@ fn apply_group_request_effect(
     else {
         return Ok(());
     };
+    let mut group = body.get("group").cloned().unwrap_or(Value::Null);
+    if let Some(group_object) = group.as_object_mut() {
+        let group_namespace_id = if group_domain == "local" {
+            0
+        } else {
+            namespace_id
+        };
+        group_object.insert("namespaceId".into(), Value::from(group_namespace_id));
+    }
     let projection = serde_json::json!({
         "key": key,
+        "namespaceId": namespace_id,
         "kind": "GROUP",
         "bucket": if direction == "INCOMING" { "RECEIVED" } else { "SENT" },
         "direction": direction,
@@ -665,7 +720,7 @@ fn apply_group_request_effect(
         "inviteId": group_account,
         "note": body.get("note").cloned().unwrap_or(Value::String(String::new())),
         "requestedAt": requested_at,
-        "group": body.get("group").cloned().unwrap_or(Value::Null),
+        "group": group,
         "sourceLabel": if body.get("group").and_then(|group| group.get("isLocal")).and_then(Value::as_bool) == Some(true) { "local" } else { group_domain },
         "requestedSort": requested_at,
         "updatedAt": now,
@@ -697,6 +752,7 @@ pub(crate) struct ClientStateFeedItem {
     feed_id: Option<i64>,
     account: Option<String>,
     domain: Option<String>,
+    namespace_id: i64,
     event_type: Option<String>,
     subject_account: Option<String>,
     subject_domain: Option<String>,
@@ -708,6 +764,7 @@ pub(crate) struct ClientStateFeedItem {
 pub(crate) struct ClientGroupMetaApply {
     thread_id: i64,
     source_server: String,
+    namespace_id: i64,
     page: ClientGroupMetaPage,
 }
 
@@ -724,6 +781,7 @@ pub(crate) struct ClientGroupMetaPage {
 pub(crate) struct ClientGroupMetaItem {
     account: String,
     domain: String,
+    namespace_id: i64,
     operation: String,
     body: Value,
 }
@@ -743,6 +801,7 @@ fn materialize_group_thread_from_fact(
     user_id: i64,
     group_account: &str,
     group_domain: &str,
+    namespace_id: i64,
     body: &Value,
     active: bool,
 ) -> Result<(), String> {
@@ -754,6 +813,11 @@ fn materialize_group_thread_from_fact(
     };
     let group = body.get("group").cloned().unwrap_or(Value::Null);
     let group_object = group.as_object().cloned().unwrap_or_default();
+    let group_namespace_id = if group_domain == "local" {
+        0
+    } else {
+        namespace_id
+    };
     let thread = serde_json::json!({
         "threadId": thread_id, "type": "GROUP", "role": null,
         "lastMessageAt": null, "lastMessageSeq": null, "muted": false,
@@ -769,6 +833,7 @@ fn materialize_group_thread_from_fact(
             "avatar": group_object.get("avatar").cloned().unwrap_or(Value::String(String::new())),
             "description": group_object.get("description").cloned().unwrap_or(Value::String(String::new())),
             "domain": group_object.get("domain").cloned().unwrap_or(Value::String(group_domain.into())),
+            "namespaceId": group_namespace_id,
             "threadId": thread_id, "createdAt": 0, "updatedAt": 0,
             "profileRev": group_object.get("profileRev").cloned().unwrap_or(Value::from(0)),
             "dissolvedAt": null, "memberCount": 0, "groupMetaFeedId": "0"
@@ -786,6 +851,7 @@ fn materialize_group_thread_from_fact(
 fn apply_friend_thread_from_facts(
     tx: &Transaction<'_>,
     user_id: i64,
+    namespace_id: i64,
     body: &Value,
     active: bool,
 ) -> Result<(), String> {
@@ -807,7 +873,17 @@ fn apply_friend_thread_from_facts(
             thread["conversationState"] =
                 Value::String(if active { "ACTIVE" } else { "READ_ONLY" }.into());
             if let Some(peer) = body.get("peer") {
-                thread["peerUser"] = peer.clone();
+                let mut peer = peer.clone();
+                if let Some(peer_object) = peer.as_object_mut() {
+                    let peer_namespace_id =
+                        if peer_object.get("domain").and_then(Value::as_str) == Some("local") {
+                            0
+                        } else {
+                            namespace_id
+                        };
+                    peer_object.insert("namespaceId".into(), Value::from(peer_namespace_id));
+                }
+                thread["peerUser"] = peer;
             }
             tx.execute(
                 "UPDATE threads SET payload_json=?3 WHERE user_id=?1 AND thread_id=?2",
@@ -818,6 +894,12 @@ fn apply_friend_thread_from_facts(
     } else if active {
         let mut peer = body.get("peer").cloned().unwrap_or(Value::Null);
         if let Some(peer) = peer.as_object_mut() {
+            let peer_namespace_id = if peer.get("domain").and_then(Value::as_str) == Some("local") {
+                0
+            } else {
+                namespace_id
+            };
+            peer.insert("namespaceId".into(), Value::from(peer_namespace_id));
             peer.entry("isGroup").or_insert(Value::Bool(false));
             peer.entry("profileRev").or_insert(Value::from(0));
             peer.entry("createdAt").or_insert(Value::from(0));
@@ -1229,6 +1311,7 @@ pub(crate) async fn native_db_apply_state_feed_page(
             let active = apply_relationship_intent_fact(
                 &tx,
                 user_id,
+                op.namespace_id,
                 account,
                 op.domain.as_deref().unwrap_or(""),
                 subject_account,
@@ -1246,6 +1329,7 @@ pub(crate) async fn native_db_apply_state_feed_page(
                     &tx,
                     user_id,
                     op.feed_id.ok_or_else(|| "state-feed item has no feedId".to_string())?,
+                    op.namespace_id,
                     group_account,
                     group_domain,
                     direction,
@@ -1256,6 +1340,7 @@ pub(crate) async fn native_db_apply_state_feed_page(
                     user_id,
                     group_account,
                     group_domain,
+                    op.namespace_id,
                     body,
                     active,
                 )?;
@@ -1279,18 +1364,28 @@ pub(crate) async fn native_db_apply_state_feed_page(
                     user_id,
                     op.feed_id
                         .ok_or_else(|| "state-feed item has no feedId".to_string())?,
+                    op.namespace_id,
                     account,
                     op.domain.as_deref().unwrap_or(""),
                     subject_account,
                     op.subject_domain.as_deref().unwrap_or(""),
                     body,
                 )?;
-                apply_friend_thread_from_facts(&tx, user_id, body, active)?;
+                apply_friend_thread_from_facts(
+                    &tx,
+                    user_id,
+                    op.namespace_id,
+                    body,
+                    active,
+                )?;
             }
         }
         for update in group_meta {
             if update.source_server.is_empty() {
                 return Err("group-meta sourceServer must be canonical and non-empty".into());
+            }
+            if update.namespace_id <= 0 {
+                return Err("group-meta source namespace must be positive".into());
             }
             if update.page.mode != "full" && update.page.mode != "delta" {
                 return Err("group-meta mode must be full or delta".into());
@@ -1306,12 +1401,15 @@ pub(crate) async fn native_db_apply_state_feed_page(
             let mut thread = payload.map(parse_json).transpose()?;
             let now = chrono_millis();
             for item in update.page.items {
+                if item.namespace_id < 0 {
+                    return Err("group-meta member namespace must be non-negative".into());
+                }
                 if item.operation == "DEPART" {
                     tx.execute(
                         "UPDATE members SET left_state=1
                          WHERE user_id=?1 AND thread_id=?2 AND member_account=?3
-                           AND member_domain=?4 AND source_domain=?5",
-                        params![user_id, update.thread_id, item.account, item.domain, source_server],
+                           AND member_domain=?4 AND source_domain=?5 AND namespace_id=?6",
+                        params![user_id, update.thread_id, item.account, item.domain, source_server, item.namespace_id],
                     ).map_err(|e| format!("depart group member: {e}"))?;
                     continue;
                 }
@@ -1324,6 +1422,7 @@ pub(crate) async fn native_db_apply_state_feed_page(
                     "account": item.account,
                     "domain": item.domain,
                     "sourceDomain": source_server,
+                    "namespaceId": item.namespace_id,
                     "name": item.body.get("displayName").cloned().unwrap_or(Value::String(String::new())),
                     "avatar": item.body.get("avatar").and_then(Value::as_str).unwrap_or(""),
                     "bio": "",
@@ -1333,24 +1432,25 @@ pub(crate) async fn native_db_apply_state_feed_page(
                     "updatedAt": now,
                 });
                 tx.execute(
-                    "INSERT INTO users(user_id,account,domain,source_domain,surrogate_id,payload_json,profile_rev)
-                     VALUES(?1,?2,?3,?4,NULL,?5,?6)
-                     ON CONFLICT(user_id,account,domain,source_domain) DO UPDATE SET
+                    "INSERT INTO users(user_id,account,domain,source_domain,namespace_id,surrogate_id,payload_json,profile_rev)
+                     VALUES(?1,?2,?3,?4,?5,NULL,?6,?7)
+                     ON CONFLICT(user_id,account,domain,source_domain,namespace_id) DO UPDATE SET
                        payload_json=excluded.payload_json,profile_rev=excluded.profile_rev
                      WHERE excluded.profile_rev >= users.profile_rev",
                     params![
                         user_id, item.account, item.domain, source_server,
-                        json_text(&profile)?, profile_rev,
+                        item.namespace_id, json_text(&profile)?, profile_rev,
                     ],
                 ).map_err(|e| format!("upsert group member user: {e}"))?;
                 tx.execute(
                     "INSERT INTO members(
-                       user_id,thread_id,member_account,member_domain,source_domain,role,left_state
-                     ) VALUES(?1,?2,?3,?4,?5,?6,0)
-                     ON CONFLICT(user_id,thread_id,member_account,member_domain,source_domain)
+                       user_id,thread_id,member_account,member_domain,source_domain,namespace_id,role,left_state
+                     ) VALUES(?1,?2,?3,?4,?5,?6,?7,0)
+                     ON CONFLICT(user_id,thread_id,member_account,member_domain,source_domain,namespace_id)
                      DO UPDATE SET role=excluded.role,left_state=0",
                     params![
                         user_id, update.thread_id, item.account, item.domain, source_server,
+                        item.namespace_id,
                         item.body.get("role").and_then(Value::as_str).unwrap_or("MEMBER"),
                     ],
                 ).map_err(|e| format!("upsert group member: {e}"))?;
@@ -1363,6 +1463,7 @@ pub(crate) async fn native_db_apply_state_feed_page(
                      WHERE member.user_id=?1 AND member.thread_id=?2 AND member.left_state=0
                        AND member.member_account=self_user.account
                        AND member.member_domain=self_user.domain
+                       AND member.namespace_id=self_user.namespace_id
                      LIMIT 1",
                     params![user_id, update.thread_id],
                     |row| row.get(0),
@@ -1394,6 +1495,7 @@ pub(crate) async fn native_db_apply_state_feed_page(
                 "PROFILE" => {
                     let account = op.account.ok_or_else(|| "PROFILE has no account".to_string())?;
                     let domain = op.domain.ok_or_else(|| "PROFILE has no domain".to_string())?;
+                    let namespace_id = op.namespace_id;
                     let body = op.body.ok_or_else(|| "PROFILE has no body".to_string())?;
                     let profile_rev = body.get("profileRev").and_then(Value::as_i64)
                         .ok_or_else(|| "PROFILE has no profileRev".to_string())?;
@@ -1401,6 +1503,7 @@ pub(crate) async fn native_db_apply_state_feed_page(
                     if account.starts_with('!') {
                         let profile = serde_json::json!({
                             "account": account, "domain": domain,
+                            "namespaceId": namespace_id,
                             "name": body.get("displayName").cloned().unwrap_or(Value::String(String::new())),
                             "avatar": body.get("avatar").and_then(Value::as_str).unwrap_or(""),
                             "description": body.get("bio").cloned().unwrap_or(Value::String(String::new())),
@@ -1408,16 +1511,17 @@ pub(crate) async fn native_db_apply_state_feed_page(
                             "dissolvedAt": Value::Null,
                         });
                         tx.execute(
-                            "INSERT INTO groups(user_id,account,domain,surrogate_id,payload_json,profile_rev)
-                             VALUES(?1,?2,?3,NULL,?4,?5)
-                             ON CONFLICT(user_id,account,domain) DO UPDATE SET
+                            "INSERT INTO groups(user_id,account,domain,namespace_id,surrogate_id,payload_json,profile_rev)
+                             VALUES(?1,?2,?3,?4,NULL,?5,?6)
+                             ON CONFLICT(user_id,account,domain,namespace_id) DO UPDATE SET
                                payload_json=excluded.payload_json,profile_rev=excluded.profile_rev
                              WHERE excluded.profile_rev >= groups.profile_rev",
-                            params![user_id, account, domain, json_text(&profile)?, profile_rev],
+                            params![user_id, account, domain, namespace_id, json_text(&profile)?, profile_rev],
                         ).map_err(|e| format!("apply group profile state: {e}"))?;
                     } else {
                         let profile = serde_json::json!({
                             "account": account, "domain": domain, "sourceDomain": domain,
+                            "namespaceId": namespace_id,
                             "name": body.get("displayName").cloned().unwrap_or(Value::String(String::new())),
                             "avatar": body.get("avatar").and_then(Value::as_str).unwrap_or(""),
                             "bio": body.get("bio").cloned().unwrap_or(Value::String(String::new())),
@@ -1425,12 +1529,12 @@ pub(crate) async fn native_db_apply_state_feed_page(
                             "createdAt": now, "updatedAt": now,
                         });
                         tx.execute(
-                            "INSERT INTO users(user_id,account,domain,source_domain,surrogate_id,payload_json,profile_rev)
-                             VALUES(?1,?2,?3,?3,NULL,?4,?5)
-                             ON CONFLICT(user_id,account,domain,source_domain) DO UPDATE SET
+                            "INSERT INTO users(user_id,account,domain,source_domain,namespace_id,surrogate_id,payload_json,profile_rev)
+                             VALUES(?1,?2,?3,?3,?4,NULL,?5,?6)
+                             ON CONFLICT(user_id,account,domain,source_domain,namespace_id) DO UPDATE SET
                                payload_json=excluded.payload_json,profile_rev=excluded.profile_rev
                              WHERE excluded.profile_rev >= users.profile_rev",
-                            params![user_id, account, domain, json_text(&profile)?, profile_rev],
+                            params![user_id, account, domain, namespace_id, json_text(&profile)?, profile_rev],
                         ).map_err(|e| format!("apply user profile state: {e}"))?;
                     }
                     tx.execute(
@@ -1439,11 +1543,13 @@ pub(crate) async fn native_db_apply_state_feed_page(
                              '$.group.name', ?4,
                              '$.group.avatar', ?5,
                              '$.group.description', ?6,
-                             '$.group.profileRev', ?7)
+                             '$.group.profileRev', ?7,
+                             '$.group.namespaceId', ?8)
                          WHERE user_id=?1
                            AND json_extract(payload_json, '$.kind')='GROUP'
                            AND json_extract(payload_json, '$.group.account')=?2
                            AND json_extract(payload_json, '$.group.domain')=?3
+                           AND json_extract(payload_json, '$.group.namespaceId')=?8
                            AND COALESCE(json_extract(payload_json, '$.group.profileRev'), 0) <= ?7",
                         params![
                             user_id, account, domain,
@@ -1451,6 +1557,7 @@ pub(crate) async fn native_db_apply_state_feed_page(
                             body.get("avatar").and_then(Value::as_str).unwrap_or(""),
                             body.get("bio").and_then(Value::as_str).unwrap_or(""),
                             profile_rev,
+                            namespace_id,
                         ],
                     ).map_err(|e| format!("apply group request profile state: {e}"))?;
                     let mut statement = tx.prepare(
@@ -1458,12 +1565,14 @@ pub(crate) async fn native_db_apply_state_feed_page(
                          WHERE user_id=?1 AND (
                            (json_extract(payload_json,'$.type')='P2P'
                             AND json_extract(payload_json,'$.peerUser.account')=?2
-                            AND COALESCE(json_extract(payload_json,'$.peerUser.domain'),'')=?3)
+                            AND COALESCE(json_extract(payload_json,'$.peerUser.domain'),'')=?3
+                            AND json_extract(payload_json,'$.peerUser.namespaceId')=?4)
                            OR (json_extract(payload_json,'$.type')='GROUP'
                             AND json_extract(payload_json,'$.group.account')=?2
-                            AND COALESCE(json_extract(payload_json,'$.group.domain'),'')=?3))",
+                            AND COALESCE(json_extract(payload_json,'$.group.domain'),'')=?3
+                            AND json_extract(payload_json,'$.group.namespaceId')=?4))",
                     ).map_err(|e| format!("prepare profile thread projection: {e}"))?;
-                    let rows = statement.query_map(params![user_id, account, domain], |row| {
+                    let rows = statement.query_map(params![user_id, account, domain, namespace_id], |row| {
                         Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
                     }).map_err(|e| format!("query profile thread projection: {e}"))?;
                     let mut replacements = Vec::new();
@@ -1555,6 +1664,17 @@ pub(crate) async fn native_db_apply_state_feed_page(
                     .map_err(|e| format!("save incoming-invitation read watermark: {e}"))?;
                 }
                 "GROUP_META_FEED_HEAD" | "GROUP_JOIN_REQUEST_HEAD" => {}
+                "NAMESPACE_CHANGED" => {
+                    let domain = op.domain.ok_or_else(|| "NAMESPACE_CHANGED has no domain".to_string())?;
+                    let body = op.body.ok_or_else(|| "NAMESPACE_CHANGED has no body".to_string())?;
+                    let active_namespace_id = body.get("activeNamespaceId").cloned().unwrap_or(Value::Null);
+                    tx.execute(
+                        "INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,?2,?3)
+                         ON CONFLICT(user_id,key) DO UPDATE SET value_json=excluded.value_json",
+                        params![user_id, format!("activeFederationNamespace:{domain}"), active_namespace_id.to_string()],
+                    )
+                    .map_err(|e| format!("save active federation namespace: {e}"))?;
+                }
                 other => return Err(format!("unknown state-feed event type: {other}")),
             }
         }
@@ -1649,6 +1769,7 @@ pub(crate) async fn native_db_get_profile(
             "bio": record.get("bio").or_else(|| record.get("description")).cloned().unwrap_or(Value::String(String::new())),
             "domain": record.get("domain").cloned().unwrap_or(Value::String(String::new())),
             "sourceServer": record.get("sourceDomain").or_else(|| record.get("domain")).cloned().unwrap_or(Value::String(String::new())),
+            "namespaceId": record.get("namespaceId").cloned().unwrap_or(Value::from(0)),
             "profileRev": record.get("profileRev").cloned().unwrap_or(Value::from(0)),
         })))
     })
@@ -1663,13 +1784,14 @@ pub(crate) async fn native_db_get_user(
     account: String,
     domain: String,
     source_domain: String,
+    namespace_id: i64,
 ) -> Result<Option<Value>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let value = open(&app)?
             .query_row(
                 "SELECT payload_json FROM users
-             WHERE user_id=?1 AND account=?2 AND domain=?3 AND source_domain=?4",
-                params![user_id, account, domain, source_domain],
+             WHERE user_id=?1 AND account=?2 AND domain=?3 AND source_domain=?4 AND namespace_id=?5",
+                params![user_id, account, domain, source_domain, namespace_id],
                 |row| row.get::<_, String>(0),
             )
             .optional()
@@ -1688,20 +1810,24 @@ pub(crate) async fn native_db_get_group_member(
     account: String,
     domain: String,
     source_domain: String,
+    namespace_id: i64,
 ) -> Result<Option<Value>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let value = open(&app)?.query_row(
             "SELECT json_object(
                'threadId',member.thread_id,'account',member.member_account,
                'domain',member.member_domain,'sourceDomain',member.source_domain,
+               'namespaceId',member.namespace_id,
                'role',member.role,'left',json('false'),
                'user',json(identity.payload_json))
              FROM members member JOIN users identity
                ON identity.user_id=member.user_id AND identity.account=member.member_account
               AND identity.domain=member.member_domain AND identity.source_domain=member.source_domain
+              AND identity.namespace_id=member.namespace_id
              WHERE member.user_id=?1 AND member.thread_id=?2 AND member.member_account=?3
-               AND member.member_domain=?4 AND member.source_domain=?5 AND member.left_state=0",
-            params![user_id,thread_id,account,domain,source_domain],
+               AND member.member_domain=?4 AND member.source_domain=?5 AND member.namespace_id=?6
+               AND member.left_state=0",
+            params![user_id,thread_id,account,domain,source_domain,namespace_id],
             |row| row.get::<_, String>(0),
         ).optional().map_err(|e| format!("get group member: {e}"))?;
         value.map(parse_json).transpose()
@@ -1720,6 +1846,7 @@ pub(crate) async fn native_db_query_group_members(
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open(&app)?;
         let mut cursor = after_identity.split('\0');
+        let after_namespace = cursor.next().unwrap_or("0").parse::<i64>().unwrap_or(0);
         let after_source = cursor.next().unwrap_or("");
         let after_domain = cursor.next().unwrap_or("");
         let after_account = cursor.next().unwrap_or("");
@@ -1728,7 +1855,8 @@ pub(crate) async fn native_db_query_group_members(
                 "SELECT json_object(
                    'threadId', member.thread_id,
                    'account', member.member_account, 'domain', member.member_domain,
-                   'sourceDomain', member.source_domain, 'role', member.role,
+                   'sourceDomain', member.source_domain, 'namespaceId', member.namespace_id,
+                   'role', member.role,
                    'left', json('false'),
                    'user', json(identity.payload_json)
                  )
@@ -1737,16 +1865,17 @@ pub(crate) async fn native_db_query_group_members(
                   AND identity.account=member.member_account
                   AND identity.domain=member.member_domain
                   AND identity.source_domain=member.source_domain
+                  AND identity.namespace_id=member.namespace_id
                  WHERE member.user_id=?1 AND member.thread_id=?2 AND member.left_state=0
-                   AND (member.source_domain,member.member_domain,member.member_account)>(?3,?4,?5)
-                   AND (?6='' OR instr(lower(json_extract(identity.payload_json,'$.name')),lower(?6))>0
-                                OR instr(lower(member.member_account),lower(?6))>0)
-                 ORDER BY member.source_domain,member.member_domain,member.member_account LIMIT ?7",
+                   AND (member.namespace_id,member.source_domain,member.member_domain,member.member_account)>(?3,?4,?5,?6)
+                   AND (?7='' OR instr(lower(json_extract(identity.payload_json,'$.name')),lower(?7))>0
+                                OR instr(lower(member.member_account),lower(?7))>0)
+                 ORDER BY member.namespace_id,member.source_domain,member.member_domain,member.member_account LIMIT ?8",
             )
             .map_err(|e| format!("prepare group member page: {e}"))?;
         let rows = statement
             .query_map(
-                params![user_id, thread_id, after_source, after_domain, after_account, search, take],
+                params![user_id, thread_id, after_namespace, after_source, after_domain, after_account, search, take],
                 |row| row.get::<_, String>(0),
             )
             .map_err(|e| format!("query group member page: {e}"))?;
@@ -1776,11 +1905,14 @@ pub(crate) async fn native_db_put_profile(
         let conn = open(&app)?;
         let account = profile.get("account").and_then(Value::as_str).unwrap_or("");
         let domain = profile.get("domain").and_then(Value::as_str).unwrap_or("");
+        let namespace_id = profile.get("namespaceId").and_then(Value::as_i64)
+            .ok_or_else(|| "profile has no namespaceId".to_string())?;
         let surrogate_id = profile.get("id").and_then(Value::as_i64).filter(|id| *id > 0);
         let now = chrono_millis();
         let changed = if profile.get("kind").and_then(Value::as_str) == Some("group") {
             let record = serde_json::json!({
                 "id": surrogate_id, "account": account, "domain": domain,
+                "namespaceId": namespace_id,
                 "name": profile.get("name").cloned().unwrap_or(Value::String(String::new())),
                 "avatar": profile.get("avatar").cloned().unwrap_or(Value::String(String::new())),
                 "description": profile.get("bio").cloned().unwrap_or(Value::String(String::new())),
@@ -1788,18 +1920,19 @@ pub(crate) async fn native_db_put_profile(
                 "dissolvedAt": Value::Null,
             });
             conn.execute(
-                "INSERT INTO groups(user_id,account,domain,surrogate_id,payload_json,profile_rev)
-                 VALUES(?1,?2,?3,?4,?5,?6)
-                 ON CONFLICT(user_id,account,domain) DO UPDATE SET
+                "INSERT INTO groups(user_id,account,domain,namespace_id,surrogate_id,payload_json,profile_rev)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7)
+                 ON CONFLICT(user_id,account,domain,namespace_id) DO UPDATE SET
                    surrogate_id=COALESCE(excluded.surrogate_id,groups.surrogate_id),
                    payload_json=excluded.payload_json,profile_rev=excluded.profile_rev
                  WHERE excluded.profile_rev >= groups.profile_rev",
-                params![user_id,account,domain,surrogate_id,json_text(&record)?,profile_rev],
+                params![user_id,account,domain,namespace_id,surrogate_id,json_text(&record)?,profile_rev],
             )
         } else {
             let source = profile.get("sourceServer").and_then(Value::as_str).unwrap_or(domain);
             let record = serde_json::json!({
                 "id": surrogate_id, "account": account, "domain": domain, "sourceDomain": source,
+                "namespaceId": namespace_id,
                 "name": profile.get("name").cloned().unwrap_or(Value::String(String::new())),
                 "avatar": profile.get("avatar").cloned().unwrap_or(Value::String(String::new())),
                 "bio": profile.get("bio").cloned().unwrap_or(Value::String(String::new())),
@@ -1807,13 +1940,13 @@ pub(crate) async fn native_db_put_profile(
                 "createdAt": now, "updatedAt": now,
             });
             conn.execute(
-                "INSERT INTO users(user_id,account,domain,source_domain,surrogate_id,payload_json,profile_rev)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7)
-                 ON CONFLICT(user_id,account,domain,source_domain) DO UPDATE SET
+                "INSERT INTO users(user_id,account,domain,source_domain,namespace_id,surrogate_id,payload_json,profile_rev)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8)
+                 ON CONFLICT(user_id,account,domain,source_domain,namespace_id) DO UPDATE SET
                    surrogate_id=COALESCE(excluded.surrogate_id,users.surrogate_id),
                    payload_json=excluded.payload_json,profile_rev=excluded.profile_rev
                  WHERE excluded.profile_rev >= users.profile_rev",
-                params![user_id,account,domain,source,surrogate_id,json_text(&record)?,profile_rev],
+                params![user_id,account,domain,source,namespace_id,surrogate_id,json_text(&record)?,profile_rev],
             )
         }
             .map_err(|e| format!("put profile: {e}"))?;

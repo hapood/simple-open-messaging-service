@@ -25,7 +25,11 @@ export interface ClientStateFeedWrite {
     | 'GROUP_META_FEED_HEAD'
     | 'GROUP_JOIN_REQUEST_HEAD'
     | 'INCOMING_INVITE_HEAD'
-    | 'THREAD_BLOCK';
+    | 'THREAD_BLOCK'
+    | 'NAMESPACE_CHANGED';
+  /** Federation context owning this fact. If either relationship endpoint is federated, both
+   * authored directions use that captured namespace; only wholly local facts use namespace 0. */
+  namespaceId: number;
   subjectAccount: string;
   subjectDomain: string;
   body: Record<string, unknown>;
@@ -100,6 +104,7 @@ export class ClientStateFeedService {
           eq(clientStateFeed.eventType, write.eventType),
           eq(clientStateFeed.subjectAccount, write.subjectAccount),
           eq(clientStateFeed.subjectDomain, write.subjectDomain),
+          eq(clientStateFeed.namespaceId, write.namespaceId),
         ),
       )
       .limit(1);
@@ -124,6 +129,7 @@ export class ClientStateFeedService {
           clientStateFeed.eventType,
           clientStateFeed.subjectAccount,
           clientStateFeed.subjectDomain,
+          clientStateFeed.namespaceId,
         ],
         set: {
           feedId: owner.feedId,
@@ -194,6 +200,7 @@ export class ClientStateFeedService {
       userId: write.userId,
       account: write.account,
       domain: write.domain,
+      namespaceId: 0,
       eventType: 'GROUP_JOIN_REQUEST_HEAD',
       subjectAccount: '',
       subjectDomain: 'local',
@@ -331,6 +338,7 @@ export class ClientStateFeedService {
         userId,
         account: '',
         domain: 'local',
+        namespaceId: 0,
         eventType: 'INCOMING_INVITE_HEAD',
         subjectAccount: '',
         subjectDomain: 'local',
@@ -357,6 +365,7 @@ export class ClientStateFeedService {
         bio: true,
         avatar: true,
         profileRev: true,
+        namespaceId: true,
       },
     });
     if (!subject) return [];
@@ -366,6 +375,7 @@ export class ClientStateFeedService {
         userId,
         account: subject.account,
         domain: subject.domain,
+        namespaceId: subject.namespaceId,
         eventType: 'PROFILE',
         subjectAccount: '',
         subjectDomain: 'local',
@@ -438,8 +448,10 @@ export class ClientStateFeedService {
       bio: string;
       avatar: string;
       profileRev: number;
+      namespaceId: number;
     }>(sql`
       SELECT group_state.id AS "groupId", group_state.account, group_state.domain,
+             group_state."namespaceId",
              group_state.name AS "displayName", group_state.description AS bio,
              group_state.avatar, group_state."profileRev" AS "profileRev"
       FROM "MessageThread" thread
@@ -457,10 +469,12 @@ export class ClientStateFeedService {
       displayName: string;
       avatar: string | null;
       profileRev: number;
+      namespaceId: number;
       isLocalAccount: boolean;
       isAuthorized: boolean;
     }>(sql`
       SELECT member.id AS "userId", member.account, member.domain,
+             member."namespaceId",
              COALESCE(membership.role, 'MEMBER') AS role,
              member.name AS "displayName", NULLIF(member.avatar, '') AS avatar,
              member."profileRev" AS "profileRev",
@@ -471,10 +485,14 @@ export class ClientStateFeedService {
                WHERE pair."threadId" = ${threadId} AND pair.active = true
                  AND ((pair."endpointAType" = 'USER'
                        AND pair."endpointAAccount" = member.account
-                       AND pair."endpointADomain" = member.domain)
+                       AND pair."endpointADomain" = member.domain
+                       AND (member."namespaceId" = 0
+                         OR pair."endpointANamespaceId" = member."namespaceId"))
                    OR (pair."endpointBType" = 'USER'
                        AND pair."endpointBAccount" = member.account
-                       AND pair."endpointBDomain" = member.domain))
+                       AND pair."endpointBDomain" = member.domain
+                       AND (member."namespaceId" = 0
+                         OR pair."endpointBNamespaceId" = member."namespaceId")))
              ) AS "isAuthorized"
       FROM "ThreadMember" membership
       JOIN "User" member ON member.id = membership."userId"
@@ -485,6 +503,7 @@ export class ClientStateFeedService {
     const memberProjection = members.rows.map((member) => ({
       account: member.account,
       domain: member.domain,
+      namespaceId: member.namespaceId,
       body: {
         role: member.role,
         profileRev: member.profileRev,
@@ -502,6 +521,7 @@ export class ClientStateFeedService {
         userId,
         account: group.account,
         domain: group.domain,
+        namespaceId: group.namespaceId,
         eventType: 'PROFILE',
         subjectAccount: '',
         subjectDomain: 'local',
@@ -524,6 +544,7 @@ export class ClientStateFeedService {
         userId,
         account: group.account,
         domain: group.domain,
+        namespaceId: group.namespaceId,
         eventType: 'GROUP_META_FEED_HEAD',
         subjectAccount: '',
         subjectDomain: 'local',

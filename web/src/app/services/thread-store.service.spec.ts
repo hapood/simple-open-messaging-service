@@ -242,6 +242,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     creator: Message['creator'] = {
       account: `u${threadId * 11}`,
       domain: 'local',
+      namespaceId: 0,
     },
   ): Promise<void> {
     const db = await webdb.messageDb();
@@ -349,13 +350,14 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     await seedMessage(1, 5, 'hello world', {
       account: 'u77',
       domain: 'local',
+      namespaceId: 0,
     });
     repo.load();
     await flush(20);
     const items = repo.items();
     expect(items[0].lastMessagePreview).toBe('hello world');
     expect(items[0].lastMessageSenderId).toBe(
-      'local\u0000local\u0000u77',
+      '0\u0000local\u0000local\u0000u77',
     );
   });
 
@@ -385,6 +387,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     await seedMessage(1, 5, 'hello world', {
       account: 'u77',
       domain: 'local',
+      namespaceId: 0,
     });
     missed.catchUp.mockResolvedValue({
       items: [
@@ -1180,7 +1183,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
             seq: 12,
             contentType: 'PURE_TEXT',
             content: JSON.stringify({ text: 'sent from the open thread' }),
-            creator: { account: 'me', domain: 'local' },
+            creator: { account: 'me', domain: 'local', namespaceId: 0 },
             createdAt: 1000,
             mediaStatus: 'ready',
             sv: 0,
@@ -1211,7 +1214,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(repo.items()[0]).toEqual(
       expect.objectContaining({
         lastMessagePreview: 'sent from the open thread',
-        lastMessageSenderId: 'local\u0000local\u0000me',
+        lastMessageSenderId: '0\u0000local\u0000local\u0000me',
         lastReadSeq: 12,
         unreadCount: 2,
       }),

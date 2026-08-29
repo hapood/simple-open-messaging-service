@@ -263,10 +263,7 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
       ? (message.contentType as ChatMsgData['contentType'])
       : 'PURE_TEXT';
     const media = parseMedia(snapshotMessage, id, this.snapshotMediaUrl);
-    const creator = messageCreatorKey(
-      { account: message.author.account, domain: message.author.domain },
-      message.author.domain,
-    );
+    const creator = `${bundle.id}\u0000${message.author.domain}\u0000${message.author.account}`;
     const quoteTarget = message.quoteTargetId
       ? bundle.messages.find(
           (candidate) => candidate.id === message.quoteTargetId,

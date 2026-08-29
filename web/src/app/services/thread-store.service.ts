@@ -1506,6 +1506,7 @@ export class ThreadRepository {
       updates.push({
         threadId,
         sourceServer: item.domain,
+        namespaceId: item.namespaceId,
         page: {
           account: item.account,
           mode,
@@ -1659,6 +1660,7 @@ export class ThreadRepository {
       bio: u.bio,
       domain: u.domain,
       sourceServer: u.domain,
+      namespaceId: u.namespaceId,
       profileRev: u.profileRev,
     });
   }
@@ -1666,6 +1668,7 @@ export class ThreadRepository {
     id: number;
     account: string;
     domain: string;
+    namespaceId: number;
     name: string;
     avatar: string;
     profileRev: number;
@@ -1677,6 +1680,7 @@ export class ThreadRepository {
       avatar: g.avatar,
       domain: g.domain,
       sourceServer: g.domain,
+      namespaceId: g.namespaceId,
       profileRev: g.profileRev,
     });
   }

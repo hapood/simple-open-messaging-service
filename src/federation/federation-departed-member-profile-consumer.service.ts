@@ -138,6 +138,7 @@ export class FederationDepartedMemberProfileConsumerService {
           eq(user.account, account),
           eq(user.domain, member.domain),
           eq(user.sourceDomain, source.peerDomain),
+          eq(user.namespaceId, source.namespaceId),
         ),
         columns: { bio: true },
       });
@@ -152,6 +153,7 @@ export class FederationDepartedMemberProfileConsumerService {
         account,
         domain: member.domain,
         sourceDomain: source.peerDomain,
+        namespaceId: source.namespaceId,
         name: member.displayName,
         avatar,
         bio: existing?.bio ?? '',

@@ -88,10 +88,78 @@ describe('thread-query FORBIDDEN convergence', () => {
       writeFriendIntentInTx: vi.fn().mockResolvedValue(allocated),
     };
     const clientStateFeed = { notifyFeedUpdates: vi.fn() };
-    const service = Object.create(FederationService.prototype) as FederationService &
-      Record<string, unknown>;
+    const service = Object.create(
+      FederationService.prototype,
+    ) as FederationService & Record<string, unknown>;
     Object.assign(service, {
-      database: { db: { transaction: (run: (value: unknown) => unknown) => run(tx) } },
+      database: {
+        db: { transaction: (run: (value: unknown) => unknown) => run(tx) },
+      },
+      relationshipIntents,
+      relationshipCommands,
+      clientStateFeed,
+      pushStateFeedDomains: vi.fn(),
+    });
+    return {
+      service,
+      tx,
+      relationshipIntents,
+      relationshipCommands,
+      clientStateFeed,
+    };
+  }
+
+  function groupForbiddenHarness(
+    epoch: number,
+    members: Array<{
+      groupId: number;
+      groupDomain: string;
+      memberUserId: number;
+    }>,
+  ) {
+    const tx = {
+      execute: vi
+        .fn()
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              groupAccount: '!group',
+              groupDomain: members[0]?.groupDomain ?? 'peer.test',
+            },
+          ],
+        })
+        .mockResolvedValueOnce({ rows: [{ authorizationEpoch: epoch }] })
+        .mockResolvedValueOnce({ rows: members }),
+      query: {
+        messageThread: {
+          findFirst: vi.fn().mockResolvedValue({
+            type: 'GROUP',
+            authorizationEpoch: epoch,
+          }),
+        },
+      },
+    };
+    const relationshipIntents = {
+      lockGroupBusinessScopeInTx: vi.fn().mockResolvedValue(undefined),
+    };
+    const relationshipCommands = {
+      lockGroupMutationInTx: vi.fn().mockResolvedValue(undefined),
+      writeMemberRelationshipIntentInTx: vi
+        .fn()
+        .mockResolvedValue(new Map([['peer.test', 10n]])),
+      writeGroupRelationshipIntentInTx: vi
+        .fn()
+        .mockResolvedValue(new Map([['peer.test', 11n]])),
+    };
+    const clientStateFeed = { notifyFeedUpdates: vi.fn() };
+    const service = Object.create(
+      FederationService.prototype,
+    ) as FederationService & Record<string, unknown>;
+    Object.assign(service, {
+      database: {
+        db: { transaction: (run: (value: unknown) => unknown) => run(tx) },
+      },
       relationshipIntents,
       relationshipCommands,
       clientStateFeed,
@@ -110,18 +178,11 @@ describe('thread-query FORBIDDEN convergence', () => {
     const harness = forbiddenHarness(7);
 
     await expect(
-      harness.service.handleThreadQueryForbidden(31, 'peer.test', 7),
+      harness.service.handleThreadQueryForbidden(31, 'peer.test', 5, 7),
     ).resolves.toBe('P2P_REVOKED');
     expect(
       harness.relationshipCommands.writeFriendIntentInTx,
-    ).toHaveBeenCalledWith(
-      harness.tx,
-      1,
-      2,
-      false,
-      '',
-      expect.any(Array),
-    );
+    ).toHaveBeenCalledWith(harness.tx, 1, 2, false, '', expect.any(Array));
     expect(harness.clientStateFeed.notifyFeedUpdates).toHaveBeenCalledOnce();
   });
 
@@ -129,10 +190,111 @@ describe('thread-query FORBIDDEN convergence', () => {
     const harness = forbiddenHarness(8);
 
     await expect(
-      harness.service.handleThreadQueryForbidden(31, 'peer.test', 7),
+      harness.service.handleThreadQueryForbidden(31, 'peer.test', 5, 7),
     ).resolves.toBe('STALE');
     expect(
       harness.relationshipCommands.writeFriendIntentInTx,
+    ).not.toHaveBeenCalled();
+  });
+
+  it('revokes every local member direction for a remotely owned group', async () => {
+    const harness = groupForbiddenHarness(7, [
+      { groupId: 4, groupDomain: 'peer.test', memberUserId: 1 },
+      { groupId: 4, groupDomain: 'peer.test', memberUserId: 3 },
+    ]);
+
+    await expect(
+      harness.service.handleThreadQueryForbidden(31, 'peer.test', 5, 7),
+    ).resolves.toBe('GROUP_REVOKED');
+    expect(
+      harness.relationshipCommands.lockGroupMutationInTx,
+    ).toHaveBeenCalledWith(harness.tx, 31, 1, [1, 3]);
+    expect(
+      harness.relationshipIntents.lockGroupBusinessScopeInTx,
+    ).toHaveBeenCalledWith(harness.tx, {
+      account: '!group',
+      domain: 'peer.test',
+    });
+    expect(
+      harness.relationshipCommands.writeMemberRelationshipIntentInTx,
+    ).toHaveBeenCalledTimes(2);
+    expect(
+      harness.relationshipCommands.writeMemberRelationshipIntentInTx,
+    ).toHaveBeenNthCalledWith(
+      1,
+      harness.tx,
+      31,
+      1,
+      'REVOKED',
+      expect.any(Array),
+    );
+    expect(
+      harness.relationshipCommands.writeMemberRelationshipIntentInTx,
+    ).toHaveBeenNthCalledWith(
+      2,
+      harness.tx,
+      31,
+      3,
+      'REVOKED',
+      expect.any(Array),
+    );
+    expect(
+      harness.relationshipCommands.writeGroupRelationshipIntentInTx,
+    ).not.toHaveBeenCalled();
+  });
+
+  it('revokes every local-group direction for members hosted by the denied peer', async () => {
+    const harness = groupForbiddenHarness(7, [
+      { groupId: 4, groupDomain: 'local', memberUserId: 2 },
+      { groupId: 4, groupDomain: 'local', memberUserId: 5 },
+    ]);
+
+    await expect(
+      harness.service.handleThreadQueryForbidden(31, 'peer.test', 5, 7),
+    ).resolves.toBe('GROUP_REVOKED');
+    expect(
+      harness.relationshipCommands.writeGroupRelationshipIntentInTx,
+    ).toHaveBeenCalledTimes(2);
+    expect(
+      harness.relationshipCommands.writeGroupRelationshipIntentInTx,
+    ).toHaveBeenNthCalledWith(
+      1,
+      harness.tx,
+      31,
+      2,
+      '',
+      'REVOKED',
+      expect.any(Array),
+    );
+    expect(
+      harness.relationshipCommands.writeGroupRelationshipIntentInTx,
+    ).toHaveBeenNthCalledWith(
+      2,
+      harness.tx,
+      31,
+      5,
+      '',
+      'REVOKED',
+      expect.any(Array),
+    );
+    expect(
+      harness.relationshipCommands.writeMemberRelationshipIntentInTx,
+    ).not.toHaveBeenCalled();
+  });
+
+  it('does not revoke group directions when the frozen epoch is stale', async () => {
+    const harness = groupForbiddenHarness(8, [
+      { groupId: 4, groupDomain: 'peer.test', memberUserId: 1 },
+    ]);
+
+    await expect(
+      harness.service.handleThreadQueryForbidden(31, 'peer.test', 5, 7),
+    ).resolves.toBe('STALE');
+    expect(
+      harness.relationshipCommands.writeMemberRelationshipIntentInTx,
+    ).not.toHaveBeenCalled();
+    expect(
+      harness.relationshipCommands.writeGroupRelationshipIntentInTx,
     ).not.toHaveBeenCalled();
   });
 });
@@ -287,7 +449,9 @@ describe('federated group join request', () => {
     database.db.transaction = vi.fn(async (operation) => operation({}));
     const target = svc as unknown as {
       fetchRemoteUser: typeof fetchRemoteUser;
-      ensureFederatedGroupRequestShellInTx: typeof ensureShell;
+      stateFeedConsumer: {
+        ensureFederatedGroupRequestShellInTx: typeof ensureShell;
+      };
       relationshipCommands: {
         writeMemberRelationshipIntentInTx: typeof writeIntent;
       };
@@ -295,7 +459,9 @@ describe('federated group join request', () => {
       pushStateFeedDomains: typeof pushStateFeedDomains;
     };
     target.fetchRemoteUser = fetchRemoteUser;
-    target.ensureFederatedGroupRequestShellInTx = ensureShell;
+    target.stateFeedConsumer = {
+      ensureFederatedGroupRequestShellInTx: ensureShell,
+    };
     target.relationshipCommands = {
       writeMemberRelationshipIntentInTx: writeIntent,
     };
@@ -317,6 +483,7 @@ describe('federated group join request', () => {
       expect.anything(),
       '!group',
       'peer.test',
+      1,
     );
     expect(writeIntent).toHaveBeenCalledWith(
       expect.anything(),
@@ -459,10 +626,23 @@ function makeStubs() {
     {} as never, // clientStateFeed
     {} as never, // relationshipIntents
     {} as never, // groupRelationships
-    {} as never, // groupRosterProjection
     {} as never, // threadContentHeads
     {} as never, // profileStatePublisher
     {} as never, // relationshipCommands
+    {
+      captureActive: vi.fn(async (domain: string) => ({
+        domain,
+        namespaceId: 1,
+        rootKeyFingerprint: 'peer-root',
+      })),
+      captureActiveInTx: vi.fn(async (_tx: unknown, domain: string) => ({
+        domain,
+        namespaceId: 1,
+        rootKeyFingerprint: 'peer-root',
+      })),
+      requireCapturedInTx: vi.fn(),
+    } as never, // namespaces
+    {} as never, // stateFeedConsumer
   );
   return {
     svc,
@@ -492,6 +672,7 @@ describe('FederationService inbound call preflight', () => {
       'call.frame.incoming.preflight',
       {
         peerDomain: 'peer.example',
+        namespaceId: 1_700_000_300,
         frame: {
           callSid: frame.callId,
           callType: frame.mediaType,
@@ -517,20 +698,28 @@ describe('FederationService state-feed drain window', () => {
     });
     const target = svc as unknown as {
       stateFeedPull: {
-        advertise: (domain: string, revision: bigint) => void;
+        advertise: (
+          domain: string,
+          namespaceId: number,
+          revision: bigint,
+        ) => void;
         run: (
           domain: string,
+          namespaceId: number,
           callbacks: {
             fetch: (after?: bigint, through?: bigint) => Promise<unknown>;
           },
         ) => Promise<void>;
       };
       pullStateFeedPage: typeof pullStateFeedPage;
-      readStatePullCursor: (domain: string) => Promise<bigint>;
+      readStatePullCursor: (
+        domain: string,
+        namespaceId: number,
+      ) => Promise<bigint>;
     };
     target.stateFeedPull = {
       advertise: vi.fn(),
-      run: vi.fn(async (_domain, callbacks) => {
+      run: vi.fn(async (_domain, _namespaceId, callbacks) => {
         await callbacks.fetch(2n, 5n);
       }),
     };
@@ -744,20 +933,14 @@ describe('FederationService CAS error classification', () => {
 });
 
 describe('FederationService thread-bound S2S preflight', () => {
-  function installPreflight(state: {
-    federationTruncated: boolean;
-    federationVersion: number;
-    trustLevel: string;
-  }) {
+  function installPreflight(state?: { federationVersion: number }) {
     const { svc, database } = makeStubs();
-    const limit = vi.fn().mockResolvedValue([state]);
+    const limit = vi.fn().mockResolvedValue(state ? [state] : []);
     const where = vi.fn(() => ({ limit }));
-    const innerJoin = vi.fn(() => ({ where }));
-    const from = vi.fn(() => ({ innerJoin }));
+    const from = vi.fn(() => ({ where }));
     const select = vi.fn(() => ({ from }));
-    const execute = vi.fn().mockResolvedValue(undefined);
     const transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
-      fn({ execute, select }),
+      fn({ select }),
     );
     (database.db as { transaction?: typeof transaction }).transaction =
       transaction;
@@ -776,16 +959,13 @@ describe('FederationService thread-bound S2S preflight', () => {
     };
     target.getSigned = getSigned;
     target.withTrustedPeer = (_domain, action) => action();
-    return { target, getSigned, execute, select, innerJoin, transaction };
+    return { target, getSigned, select, transaction };
   }
 
-  it('takes the shared reset lock, performs one joined state read, and carries the captured version', async () => {
-    const { target, getSigned, execute, select, innerJoin, transaction } =
-      installPreflight({
-        federationTruncated: false,
-        federationVersion: 7,
-        trustLevel: 'available',
-      });
+  it('captures the active namespace before carrying the thread authorization version', async () => {
+    const { target, getSigned, select, transaction } = installPreflight({
+      federationVersion: 7,
+    });
 
     await expect(
       target.getSignedForThread<{ messages: unknown[] }>(
@@ -795,38 +975,21 @@ describe('FederationService thread-bound S2S preflight', () => {
       ),
     ).resolves.toEqual({ data: { messages: [] }, federationVersion: 7 });
     expect(transaction).toHaveBeenCalledOnce();
-    expect(execute).toHaveBeenCalledOnce();
     expect(select).toHaveBeenCalledOnce();
-    expect(innerJoin).toHaveBeenCalledOnce();
     expect(getSigned).toHaveBeenCalledWith('/messages', 'peer.test', undefined);
   });
 
-  it.each([
-    ['reset domain', false, 'halted', true],
-    ['truncated thread', true, 'available', false],
-  ])(
-    'does not send for a %s',
-    async (_label, truncated, trustLevel, resetInProgress) => {
-      const { target, getSigned } = installPreflight({
-        federationTruncated: truncated,
-        federationVersion: 7,
-        trustLevel,
-        resetInProgress,
-      });
+  it('does not send when the thread is missing', async () => {
+    const { target, getSigned } = installPreflight();
 
-      await expect(
-        target.getSignedForThread(10, '/messages', 'peer.test'),
-      ).rejects.toThrow('federation thread 10 is unavailable');
-      expect(getSigned).not.toHaveBeenCalled();
-    },
-  );
+    await expect(
+      target.getSignedForThread(10, '/messages', 'peer.test'),
+    ).rejects.toThrow('federation thread 10 is unavailable');
+    expect(getSigned).not.toHaveBeenCalled();
+  });
 
   it('attaches the captured version to an application error response', async () => {
-    const { target, getSigned } = installPreflight({
-      federationTruncated: false,
-      federationVersion: 7,
-      trustLevel: 'available',
-    });
+    const { target, getSigned } = installPreflight({ federationVersion: 7 });
     getSigned.mockRejectedValueOnce(
       new S2sResponseError('gone', 200, BusinessCode.GROUP_DISSOLVED),
     );
@@ -890,18 +1053,12 @@ describe('FederationService global missed transport', () => {
 });
 
 describe('FederationService thread-bound response write gate', () => {
-  function installWriteGate(state: {
-    federationTruncated: boolean;
-    federationVersion: number;
-    trustLevel: string;
-  }) {
+  function installWriteGate(state?: { federationVersion: number }) {
     const { svc } = makeStubs();
-    const limit = vi.fn().mockResolvedValue([state]);
+    const limit = vi.fn().mockResolvedValue(state ? [state] : []);
     const where = vi.fn(() => ({ limit }));
-    const innerJoin = vi.fn(() => ({ where }));
-    const from = vi.fn(() => ({ innerJoin }));
+    const from = vi.fn(() => ({ where }));
     const select = vi.fn(() => ({ from }));
-    const execute = vi.fn().mockResolvedValue(undefined);
     const target = svc as unknown as {
       assertThreadResponseWritable: (
         tx: unknown,
@@ -912,111 +1069,76 @@ describe('FederationService thread-bound response write gate', () => {
     };
     return {
       target,
-      tx: { execute, select },
-      execute,
+      tx: { select },
       select,
-      innerJoin,
     };
   }
 
-  it('accepts the response only while the joined reset state and version still match', async () => {
-    const { target, tx, execute, select, innerJoin } = installWriteGate({
-      federationTruncated: false,
+  it('accepts the response while the thread authorization version still matches', async () => {
+    const { target, tx, select } = installWriteGate({
       federationVersion: 7,
-      trustLevel: 'available',
     });
 
     await expect(
       target.assertThreadResponseWritable(tx, 10, 'peer.test', 7),
     ).resolves.toBeUndefined();
-    expect(execute).toHaveBeenCalledOnce();
     expect(select).toHaveBeenCalledOnce();
-    expect(innerJoin).toHaveBeenCalledOnce();
   });
 
-  it.each([
-    ['changed version', false, 8, 'available', false],
-    ['truncated thread', true, 7, 'available', false],
-    ['reset domain', false, 7, 'halted', true],
-  ])(
-    'rejects a stale response for a %s',
-    async (_label, truncated, version, trustLevel, resetInProgress) => {
-      const { target, tx } = installWriteGate({
-        federationTruncated: truncated,
-        federationVersion: version,
-        trustLevel,
-        resetInProgress,
-      });
+  it('rejects a response after the thread authorization version changes', async () => {
+    const { target, tx } = installWriteGate({ federationVersion: 8 });
 
-      await expect(
-        target.assertThreadResponseWritable(tx, 10, 'peer.test', 7),
-      ).rejects.toThrow('stale federation response');
-    },
-  );
+    await expect(
+      target.assertThreadResponseWritable(tx, 10, 'peer.test', 7),
+    ).rejects.toThrow('stale federation response');
+  });
+
+  it('rejects a response after the thread disappears', async () => {
+    const { target, tx } = installWriteGate();
+
+    await expect(
+      target.assertThreadResponseWritable(tx, 10, 'peer.test', 7),
+    ).rejects.toThrow('stale federation response');
+  });
 });
 
 describe('FederationService peer-bound response write gate', () => {
   const token = {
     domain: 'peer.test',
-    resetGeneration: 3,
+    namespaceId: 12,
     rootKeyFingerprint: 'sha256:root-a',
   };
 
-  function installPeerGate(state: {
-    trustLevel: string;
-    resetGeneration: number;
-    rootKeyFingerprint: string | null;
-    recognizesPeer?: boolean;
-    outboundRecognitionConfirmed?: boolean;
-    inboundRecognitionConfirmed?: boolean;
-    localServiceAvailable?: boolean;
-  }) {
+  function installPeerGate() {
     const { svc } = makeStubs();
-    const execute = vi
-      .fn()
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [state] });
+    const requireCapturedInTx = vi.fn().mockResolvedValue(undefined);
+    Object.assign(svc, { namespaces: { requireCapturedInTx } });
     const target = svc as unknown as {
       assertPeerResponseWritable: (
-        tx: { execute: typeof execute },
+        tx: object,
         value: typeof token,
       ) => Promise<void>;
     };
-    return { target, tx: { execute } };
+    return { target, tx: {}, requireCapturedInTx };
   }
 
-  it('accepts a response while generation and root identity still match', async () => {
-    const { target, tx } = installPeerGate({
-      trustLevel: 'available',
-      resetGeneration: 3,
-      rootKeyFingerprint: 'sha256:root-a',
-      recognizesPeer: true,
-      outboundRecognitionConfirmed: true,
-      inboundRecognitionConfirmed: true,
-      localServiceAvailable: true,
-    });
+  it('checks the captured namespace before persisting a peer response', async () => {
+    const { target, tx, requireCapturedInTx } = installPeerGate();
 
     await expect(
       target.assertPeerResponseWritable(tx, token),
     ).resolves.toBeUndefined();
+    expect(requireCapturedInTx).toHaveBeenCalledWith(tx, token);
   });
 
-  it.each([
-    ['reset generation changed', 4, 'sha256:root-a'],
-    ['root identity changed', 3, 'sha256:root-b'],
-  ])('rejects a stale response when %s', async (_label, generation, root) => {
-    const { target, tx } = installPeerGate({
-      trustLevel: 'available',
-      resetGeneration: generation,
-      rootKeyFingerprint: root,
-      recognizesPeer: true,
-      outboundRecognitionConfirmed: true,
-      inboundRecognitionConfirmed: true,
-      localServiceAvailable: true,
-    });
+  it('propagates rejection when the captured namespace is no longer valid', async () => {
+    const { target, tx, requireCapturedInTx } = installPeerGate();
+    requireCapturedInTx.mockRejectedValueOnce(
+      new Error('captured namespace is unavailable'),
+    );
 
     await expect(target.assertPeerResponseWritable(tx, token)).rejects.toThrow(
-      'stale federation response',
+      'captured namespace is unavailable',
     );
   });
 });
@@ -1044,6 +1166,7 @@ describe('FederationService quote coordinates', () => {
           tx: unknown,
           threadId: number,
           sourceDomain: string,
+          namespaceId: number,
           target: {
             creator: { account: string; domain: string };
             targetSeq: number;
@@ -1053,7 +1176,7 @@ describe('FederationService quote coordinates', () => {
     ).resolveLocalQuoteSeq.bind(svc);
 
     await expect(
-      resolveLocalQuoteSeq(tx, 10, 'peer.example', {
+      resolveLocalQuoteSeq(tx, 10, 'peer.example', 12, {
         creator: { account: 'alice', domain: 'peer.example' },
         targetSeq: 7,
       }),
@@ -1081,13 +1204,14 @@ describe('FederationService quote coordinates', () => {
           tx: unknown,
           threadId: number,
           sourceDomain: string,
+          namespaceId: number,
           target: { targetSeq: number },
         ) => Promise<number>;
       }
     ).resolveLocalQuoteSeq.bind(svc);
 
     await expect(
-      resolveLocalQuoteSeq(tx, 10, 'peer.example', { targetSeq: 44 }),
+      resolveLocalQuoteSeq(tx, 10, 'peer.example', 12, { targetSeq: 44 }),
     ).resolves.toBe(12);
     expect(tx.query.federationMessageReceipt.findFirst).toHaveBeenCalled();
   });

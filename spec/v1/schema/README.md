@@ -19,7 +19,7 @@ This directory ships with the v1 normative text as a non-normative validation re
 - `call.schema.json`: every call lifecycle and signal operation with its closed conditional field set.
 - `profile.schema.json`, `forward-bundle.schema.json`, and `error.schema.json`: the remaining JSON operations.
 - `http-parameters.schema.json`: normalized query and path parameter objects,
-  including the tombstone `maxMessageSeq` projection bound.
+  including the reauthorization tombstone drain's `maxMessageSeq` fast-forward bound.
 
 JSON Schema checks closed shapes, dependencies, canonical decimal query forms,
 and JSON safe-integer bounds. The numeric upper bound of a

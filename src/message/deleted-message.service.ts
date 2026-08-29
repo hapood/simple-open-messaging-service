@@ -9,7 +9,6 @@ import {
   deletedMessage,
   federatedMessageTombstone,
   federationDeletedCursor,
-  federatedPeer,
   fileSyncProgress,
   message,
   messageThread,
@@ -41,6 +40,7 @@ export class DeletedMessageService {
       messageSeq: number;
       type: MessageDeleteType;
       federationSourceDomain?: string | null;
+      sourceNamespaceId?: number | null;
       updatedAt?: Date;
     },
   ): Promise<{ deletionSeq: number; created: boolean }> {
@@ -75,6 +75,7 @@ export class DeletedMessageService {
       messageSeq: params.messageSeq,
       type: params.type,
       federationSourceDomain: params.federationSourceDomain ?? null,
+      sourceNamespaceId: params.sourceNamespaceId ?? null,
       updatedAt: params.updatedAt ?? new Date(),
     });
     return { deletionSeq: allocated.deletionSeq, created: true };
@@ -84,28 +85,19 @@ export class DeletedMessageService {
     tx: DatabaseTransaction,
     threadId: number,
     peerDomain: string,
+    namespaceId: number,
     expectedFederationVersion: number,
   ): Promise<void> {
-    await tx.execute(
-      sql`SELECT pg_advisory_xact_lock_shared(hashtextextended('federation-reset-global', 0))`,
-    );
     const [state] = await tx
       .select({
-        federationTruncated: messageThread.federationTruncated,
         federationVersion: messageThread.federationVersion,
-        trustLevel: federatedPeer.trustLevel,
-        resetInProgress: federatedPeer.resetInProgress,
       })
       .from(messageThread)
-      .innerJoin(federatedPeer, eq(federatedPeer.domain, peerDomain))
       .where(eq(messageThread.id, threadId))
       .limit(1);
     if (
       !state ||
-      state.federationTruncated ||
-      state.federationVersion !== expectedFederationVersion ||
-      state.resetInProgress ||
-      state.trustLevel === 'halted'
+      state.federationVersion !== expectedFederationVersion
     ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
@@ -205,6 +197,7 @@ export class DeletedMessageService {
         JOIN "User" author
           ON author.account = message."creatorAccount"
          AND author.domain = message."creatorDomain"
+         AND author."namespaceId" = message."creatorNamespaceId"
         WHERE message."threadId" = ${threadId}
           AND message.seq = ${seq}
           AND author.id = ${userId}
@@ -321,9 +314,10 @@ export class DeletedMessageService {
     tx: DatabaseTransaction,
     threadId: number,
     sourceDomain: string,
+    namespaceId: number,
     messageSeq: number,
   ) {
-    const identity = `${threadId}:${sourceDomain}:${messageSeq}`;
+    const identity = `${threadId}:${sourceDomain}:${namespaceId}:${messageSeq}`;
     return tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtextextended(${identity}, 0))`,
     );
@@ -334,7 +328,7 @@ export class DeletedMessageService {
   async advanceFederatedCursor(params: {
     threadId: number;
     remoteDeletionSeq: number;
-    cursor: { peerDomain: string; streamAccount: string; streamKind: string };
+    cursor: { peerDomain: string; namespaceId: number; streamAccount: string; streamKind: string };
     expectedFederationVersion: number;
   }): Promise<void> {
     await this.database.db.transaction(async (tx) => {
@@ -342,6 +336,7 @@ export class DeletedMessageService {
         tx,
         params.threadId,
         params.cursor.peerDomain,
+        params.cursor.namespaceId,
         params.expectedFederationVersion,
       );
       await tx
@@ -349,6 +344,7 @@ export class DeletedMessageService {
         .values({
           threadId: params.threadId,
           peerDomain: params.cursor.peerDomain,
+          namespaceId: params.cursor.namespaceId,
           streamAccount: params.cursor.streamAccount,
           streamKind: params.cursor.streamKind,
           committedThrough: params.remoteDeletionSeq,
@@ -357,7 +353,7 @@ export class DeletedMessageService {
         .onConflictDoUpdate({
           target: [
             federationDeletedCursor.threadId,
-            federationDeletedCursor.peerDomain,
+            federationDeletedCursor.namespaceId,
             federationDeletedCursor.streamAccount,
             federationDeletedCursor.streamKind,
           ],
@@ -374,12 +370,13 @@ export class DeletedMessageService {
     messageSeq: number;
     authorityDomain: string;
     sourceDomain: string;
+    sourceNamespaceId: number;
     remoteDeletionSeq: number;
     type: MessageDeleteType;
     authorityDeletedAt?: Date;
     allowPending?: boolean;
     federationSourceDomain?: string | null;
-    cursor: { peerDomain: string; streamAccount: string; streamKind: string };
+    cursor: { peerDomain: string; namespaceId: number; streamAccount: string; streamKind: string };
     expectedFederationVersion: number;
   }) {
     return this.database.db.transaction((tx) =>
@@ -394,6 +391,7 @@ export class DeletedMessageService {
       messageSeq: number;
       authorityDomain: string;
       sourceDomain: string;
+      sourceNamespaceId: number;
       remoteDeletionSeq: number;
       type: MessageDeleteType;
       authorityDeletedAt?: Date;
@@ -403,6 +401,7 @@ export class DeletedMessageService {
       federationSourceDomain?: string | null;
       cursor?: {
         peerDomain: string;
+        namespaceId: number;
         streamAccount: string;
         streamKind: string;
       };
@@ -413,24 +412,28 @@ export class DeletedMessageService {
       tx,
       params.threadId,
       params.sourceDomain,
+      params.sourceNamespaceId,
       params.expectedFederationVersion,
     );
     await DeletedMessageService.lockFederatedIdentity(
       tx,
       params.threadId,
       params.sourceDomain,
+      params.sourceNamespaceId,
       params.messageSeq,
     );
     const target = await tx.query.message.findFirst({
       where: and(
         eq(message.threadId, params.threadId),
         eq(message.federationSourceDomain, params.sourceDomain),
+        eq(message.sourceNamespaceId, params.sourceNamespaceId),
         eq(message.originSeq, params.messageSeq),
       ),
       columns: {
         seq: true,
         creatorAccount: true,
         creatorDomain: true,
+        creatorNamespaceId: true,
         contentType: true,
         isDeleted: true,
         localState: true,
@@ -440,6 +443,10 @@ export class DeletedMessageService {
       where: and(
         eq(federatedMessageTombstone.threadId, params.threadId),
         eq(federatedMessageTombstone.sourceDomain, params.sourceDomain),
+        eq(
+          federatedMessageTombstone.sourceNamespaceId,
+          params.sourceNamespaceId,
+        ),
         eq(federatedMessageTombstone.messageSeq, params.messageSeq),
       ),
       columns: {
@@ -477,6 +484,7 @@ export class DeletedMessageService {
             messageSeq: params.messageSeq,
             authorityDomain: params.authorityDomain,
             sourceDomain: params.sourceDomain,
+            sourceNamespaceId: params.sourceNamespaceId,
             remoteDeletionSeq: params.remoteDeletionSeq,
             type: params.type,
             authorityDeletedAt: params.authorityDeletedAt ?? new Date(),
@@ -501,6 +509,7 @@ export class DeletedMessageService {
           and(
             eq(message.threadId, params.threadId),
             eq(message.federationSourceDomain, params.sourceDomain),
+            eq(message.sourceNamespaceId, params.sourceNamespaceId),
             eq(message.originSeq, params.messageSeq),
           ),
         );
@@ -512,6 +521,7 @@ export class DeletedMessageService {
           params.federationSourceDomain === undefined
             ? params.sourceDomain
             : params.federationSourceDomain,
+        sourceNamespaceId: params.sourceNamespaceId,
         updatedAt: now,
       });
       localDeletionSeq = localDeletion.created
@@ -538,10 +548,12 @@ export class DeletedMessageService {
                   subjectAddress: {
                     account: target.creatorAccount,
                     domain: target.creatorDomain,
+                    namespaceId: target.creatorNamespaceId,
                   },
                   actorAddress: {
                     account: target.creatorAccount,
                     domain: target.creatorDomain,
+                    namespaceId: target.creatorNamespaceId,
                   },
                 },
           )
@@ -553,6 +565,10 @@ export class DeletedMessageService {
           and(
             eq(federatedMessageTombstone.threadId, params.threadId),
             eq(federatedMessageTombstone.sourceDomain, params.sourceDomain),
+            eq(
+              federatedMessageTombstone.sourceNamespaceId,
+              params.sourceNamespaceId,
+            ),
             eq(federatedMessageTombstone.messageSeq, params.messageSeq),
           ),
         );
@@ -567,6 +583,7 @@ export class DeletedMessageService {
         and(
           eq(pendingMedia.direction, 'INBOUND'),
           eq(message.threadId, params.threadId),
+          eq(message.sourceNamespaceId, params.sourceNamespaceId),
           eq(pendingMedia.originDomain, params.sourceDomain),
           eq(message.originSeq, params.messageSeq),
         ),
@@ -587,6 +604,7 @@ export class DeletedMessageService {
         .values({
           threadId: params.threadId,
           peerDomain: params.cursor.peerDomain,
+          namespaceId: params.cursor.namespaceId,
           streamAccount: params.cursor.streamAccount,
           streamKind: params.cursor.streamKind,
           committedThrough: params.remoteDeletionSeq,
@@ -595,7 +613,7 @@ export class DeletedMessageService {
         .onConflictDoUpdate({
           target: [
             federationDeletedCursor.threadId,
-            federationDeletedCursor.peerDomain,
+            federationDeletedCursor.namespaceId,
             federationDeletedCursor.streamAccount,
             federationDeletedCursor.streamKind,
           ],

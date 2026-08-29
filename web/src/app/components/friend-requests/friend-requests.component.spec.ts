@@ -54,6 +54,7 @@ describe('FriendRequestsComponent federated search progress', () => {
       items: [
         {
           key: `friend:${id}`,
+          namespaceId: 0,
           kind: 'FRIEND' as const,
           bucket: 'RECEIVED' as const,
           direction: 'INCOMING' as const,
@@ -66,6 +67,7 @@ describe('FriendRequestsComponent federated search progress', () => {
           requestedSort: 1,
           updatedAt: 1,
           peer: {
+            namespaceId: 0,
             id: Number(id),
             account: name,
             name,
@@ -252,7 +254,7 @@ describe('FriendRequestsComponent federated search progress', () => {
       name: 'Me',
     } as User;
     const userService = {
-      sessionProfile: () => ({ id: self.id }),
+      sessionProfile: () => self,
       resolveUser: vi.fn().mockReturnValue(of({ code: 0, data: self })),
       localRelationship: vi.fn(),
     };
@@ -378,7 +380,9 @@ describe('FriendRequestsComponent federated search progress', () => {
     component.searchUser();
 
     expect(component.localResults()).toEqual([local]);
-    expect(component.relationshipStates().get(local.id)).toBe('FRIEND');
+    expect(
+      component.relationshipStates().get(component.userIdentity(local)),
+    ).toBe('FRIEND');
     expect(component.connectingDomain()).toBeNull();
     expect(component.addTabStatus()).toBe(AddTabStatus.SUCCESS);
   });
@@ -391,7 +395,7 @@ describe('FriendRequestsComponent federated search progress', () => {
       domain: 'local',
     } as User;
     const userService = {
-      sessionProfile: () => ({ id: self.id }),
+      sessionProfile: () => self,
       peerTrustStatus: vi
         .fn()
         .mockReturnValue(of({ code: 0, data: { trusted: true } })),
@@ -559,6 +563,7 @@ describe('FriendRequestsComponent federated search progress', () => {
       items: [
         {
           key: request.projectionKey,
+          namespaceId: 0,
           kind: 'FRIEND',
           bucket: 'RECEIVED',
           direction: 'INCOMING',
@@ -571,6 +576,7 @@ describe('FriendRequestsComponent federated search progress', () => {
           requestedSort: 2,
           updatedAt: 2,
           peer: {
+            namespaceId: 0,
             id: 41,
             account: 'alice',
             name: 'Alice refreshed',

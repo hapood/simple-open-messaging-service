@@ -42,24 +42,34 @@ export class FederationProfileStatePublisher {
         profileRev: tables.user.profileRev,
       })
       .from(tables.user)
-      .where(and(eq(tables.user.id, userId), eq(tables.user.domain, 'local')))
+      .where(
+        and(
+          eq(tables.user.id, userId),
+          eq(tables.user.domain, 'local'),
+          eq(tables.user.namespaceId, 0),
+        ),
+      )
       .limit(1);
     if (!user) return new Map();
     const avatar = await this.readAvatar(user.avatar);
-    const peers = await tx.execute<{ domain: string }>(sql`
-      SELECT DISTINCT peer_user.domain
+    const peers = await tx.execute<{ domain: string; namespaceId: number }>(sql`
+      SELECT DISTINCT peer_user.domain, peer_user."namespaceId"
       FROM "ThreadMember" mine
       JOIN "MessageThread" thread ON thread.id = mine."threadId" AND thread.type = 'P2P'
       JOIN "ThreadMember" peer_part ON peer_part."threadId" = mine."threadId"
       JOIN "User" peer_user ON peer_user.id = peer_part."userId"
+      JOIN "FederatedPeer" peer
+        ON peer.domain = peer_user.domain
+       AND peer."activeNamespaceId" = peer_user."namespaceId"
       WHERE mine."userId" = ${userId}
         AND ${mutuallyAuthorizedSql(userId, sql`peer_part."userId"`)}
         AND peer_user.domain <> 'local'
     `);
     const directProfiles = await this.stateFeed.writeManyInTx(
       tx,
-      peers.rows.map(({ domain }) => ({
+      peers.rows.map(({ domain, namespaceId }) => ({
         peerDomain: domain,
+        namespaceId,
         account: user.account,
         domain: this.config.domain,
         eventType: 'PROFILE' as const,
@@ -109,6 +119,7 @@ export class FederationProfileStatePublisher {
     tx: DatabaseTransaction,
     userId: number,
     peerDomain: string,
+    namespaceId: number,
     forceReindex = false,
   ): Promise<Map<string, bigint>> {
     const [user] = await tx
@@ -120,12 +131,19 @@ export class FederationProfileStatePublisher {
         profileRev: tables.user.profileRev,
       })
       .from(tables.user)
-      .where(and(eq(tables.user.id, userId), eq(tables.user.domain, 'local')))
+      .where(
+        and(
+          eq(tables.user.id, userId),
+          eq(tables.user.domain, 'local'),
+          eq(tables.user.namespaceId, 0),
+        ),
+      )
       .limit(1);
     if (!user) throw new Error(`local user ${userId} not found`);
     return this.stateFeed.writeManyInTx(tx, [
       {
         peerDomain,
+        namespaceId,
         account: user.account,
         domain: this.config.domain,
         eventType: 'PROFILE',
@@ -146,6 +164,7 @@ export class FederationProfileStatePublisher {
     tx: DatabaseTransaction,
     groupId: number,
     peerDomain: string,
+    namespaceId: number,
     forceReindex = false,
   ): Promise<Map<string, bigint>> {
     const group = await tx.query.group.findFirst({
@@ -165,6 +184,7 @@ export class FederationProfileStatePublisher {
     return this.stateFeed.writeManyInTx(tx, [
       {
         peerDomain,
+        namespaceId,
         account: group.account,
         domain: this.config.domain,
         eventType: 'PROFILE',
@@ -186,6 +206,7 @@ export class FederationProfileStatePublisher {
     localUserId: number,
     localAccount: string,
     peerDomain: string,
+    namespaceId: number,
   ): Promise<void> {
     const visible = await tx.execute<{ visible: boolean }>(sql`
       SELECT EXISTS (
@@ -194,6 +215,8 @@ export class FederationProfileStatePublisher {
         JOIN "User" local_user ON local_user.id = ${localUserId}
         WHERE pair.active = true
           AND pair.kind = 'P2P'
+          AND pair."endpointANamespaceId" = ${namespaceId}
+          AND pair."endpointBNamespaceId" = ${namespaceId}
           AND ((pair."endpointAAccount" = local_user.account
                 AND pair."endpointADomain" = local_user.domain
                 AND pair."endpointBDomain" = ${peerDomain})
@@ -205,6 +228,7 @@ export class FederationProfileStatePublisher {
     if (visible.rows[0]?.visible) return;
     await this.stateFeed.deleteProjectionInTx(tx, {
       peerDomain,
+      namespaceId,
       account: localAccount,
       domain: this.config.domain,
       eventType: 'PROFILE',
@@ -219,6 +243,7 @@ export class FederationProfileStatePublisher {
     groupId: number,
     groupAccount: string,
     peerDomain: string,
+    namespaceId: number,
     clientFeedUpdates: PendingClientStateFeedUpdate[],
   ): Promise<Map<string, bigint>> {
     const visible = await tx.execute<{ visible: boolean }>(sql`
@@ -228,6 +253,8 @@ export class FederationProfileStatePublisher {
         JOIN "Group" group_state ON group_state.id = ${groupId}
         WHERE pair.active = true
           AND pair.kind = 'GROUP_MEMBER'
+          AND pair."endpointANamespaceId" = ${namespaceId}
+          AND pair."endpointBNamespaceId" = ${namespaceId}
           AND pair."endpointAAccount" = group_state.account
           AND pair."endpointADomain" = group_state.domain
           AND pair."endpointBDomain" = ${peerDomain}
@@ -239,9 +266,15 @@ export class FederationProfileStatePublisher {
       ...(await this.clientStateFeed.recordGroupStateInTx(tx, threadId)),
     );
     if (!this.groupMetaFeed) throw new Error('group meta feed is unavailable');
-    await this.groupMetaFeed.deactivateTargetInTx(tx, peerDomain, groupId);
+    await this.groupMetaFeed.deactivateTargetInTx(
+      tx,
+      peerDomain,
+      namespaceId,
+      groupId,
+    );
     await this.stateFeed.deleteProjectionInTx(tx, {
       peerDomain,
+      namespaceId,
       account: groupAccount,
       domain: this.config.domain,
       eventType: 'PROFILE',
@@ -250,6 +283,7 @@ export class FederationProfileStatePublisher {
     });
     await this.stateFeed.deleteProjectionInTx(tx, {
       peerDomain,
+      namespaceId,
       account: groupAccount,
       domain: this.config.domain,
       eventType: 'GROUP_META_FEED_HEAD',
@@ -291,6 +325,7 @@ export class FederationProfileStatePublisher {
       .select({
         account: tables.user.account,
         domain: tables.user.domain,
+        namespaceId: tables.user.namespaceId,
         role: tables.threadMember.role,
         name: tables.user.name,
         avatar: tables.user.avatar,
@@ -306,8 +341,24 @@ export class FederationProfileStatePublisher {
     );
     clientFeedUpdates?.push(...clientGroupUpdates);
     const activePeerRows = await tx
-      .select({ domain: tables.relationshipPair.endpointBDomain })
+      .select({
+        domain: tables.relationshipPair.endpointBDomain,
+        namespaceId: tables.relationshipPair.endpointBNamespaceId,
+      })
       .from(tables.relationshipPair)
+      .innerJoin(
+        tables.federatedPeer,
+        and(
+          eq(
+            tables.federatedPeer.domain,
+            tables.relationshipPair.endpointBDomain,
+          ),
+          eq(
+            tables.federatedPeer.activeNamespaceId,
+            tables.relationshipPair.endpointBNamespaceId,
+          ),
+        ),
+      )
       .where(
         and(
           eq(tables.relationshipPair.threadId, threadId),
@@ -318,8 +369,14 @@ export class FederationProfileStatePublisher {
           ne(tables.relationshipPair.endpointBDomain, 'local'),
         ),
       );
-    const peerDomains = new Set(activePeerRows.map((row) => row.domain));
-    if (!peerDomains.size) return new Map();
+    const peerContexts = new Map(
+      activePeerRows.flatMap((row) =>
+        row.namespaceId === null
+          ? []
+          : [[row.domain, row.namespaceId] as const],
+      ),
+    );
+    if (!peerContexts.size) return new Map();
     const groupAvatar = await this.readAvatar(state.avatar);
     if (!this.groupMetaFeed) throw new Error('group meta feed is unavailable');
     const memberProjection = state.dissolvedAt
@@ -331,6 +388,7 @@ export class FederationProfileStatePublisher {
               account: member.account,
               domain:
                 member.domain === 'local' ? this.config.domain : member.domain,
+              namespaceId: member.namespaceId,
               body: {
                 role: member.role ?? GroupRole.MEMBER,
                 profileRev: member.profileRev,
@@ -340,21 +398,23 @@ export class FederationProfileStatePublisher {
             })),
         );
     const groupMetaHeads = new Map<string, bigint>();
-    for (const peerDomain of peerDomains)
+    for (const [peerDomain, namespaceId] of peerContexts)
       groupMetaHeads.set(
         peerDomain,
         await this.groupMetaFeed.reconcileInTx(
           tx,
           peerDomain,
+          namespaceId,
           state.groupId,
           memberProjection,
         ),
       );
     const published = await this.stateFeed.writeManyInTx(
       tx,
-      [...peerDomains].flatMap((peerDomain) => [
+      [...peerContexts].flatMap(([peerDomain, namespaceId]) => [
         {
           peerDomain,
+          namespaceId,
           account: state.account,
           domain: this.config.domain,
           eventType: 'PROFILE' as const,
@@ -370,6 +430,7 @@ export class FederationProfileStatePublisher {
         },
         {
           peerDomain,
+          namespaceId,
           account: state.account,
           domain: this.config.domain,
           eventType: 'GROUP_META_FEED_HEAD' as const,
@@ -383,8 +444,13 @@ export class FederationProfileStatePublisher {
     );
     // A newly authorized peer must receive the already-committed thread head in the same transaction.
     // Writing it after identity and roster state preserves the provider-side dependency order.
-    for (const peerDomain of peerDomains)
-      await this.threadContentHeads.refreshInTx(tx, peerDomain, threadId);
+    for (const [peerDomain, namespaceId] of peerContexts)
+      await this.threadContentHeads.refreshInTx(
+        tx,
+        peerDomain,
+        namespaceId,
+        threadId,
+      );
     return published;
   }
 

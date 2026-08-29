@@ -49,12 +49,14 @@ export class FederationPendingMediaPromoter {
           threadId: true,
           originSeq: true,
           federationSourceDomain: true,
+          sourceNamespaceId: true,
         },
       });
       if (
         !stagedIdentity ||
         stagedIdentity.originSeq === null ||
         stagedIdentity.federationSourceDomain !== batch.originDomain
+        || stagedIdentity.sourceNamespaceId !== batch.namespaceId
       ) {
         throw new Error(
           `inbound PendingMedia ${batchId} has an invalid Message STUB`,
@@ -64,6 +66,7 @@ export class FederationPendingMediaPromoter {
         tx,
         stagedIdentity.threadId,
         batch.originDomain,
+        batch.namespaceId,
         stagedIdentity.originSeq,
       );
       const currentJob = await tx.query.pendingMedia.findFirst({

@@ -86,7 +86,11 @@ function mediaRequest(range: string): FastifyRequest {
     url: `/s2s/v1/media/${'a'.repeat(64)}?fromAccount=alice&fromDomain=b.example&toAccount=bob&seq=42`,
     rawBody: Buffer.alloc(0),
     headers: { range },
-    peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+    peer: {
+      domain: 'a.example',
+      keyId: 'a.example/key-1',
+      namespaceId: 7,
+    },
   } as unknown as FastifyRequest;
 }
 
@@ -161,12 +165,17 @@ describe('S2sController reverse thread queries', () => {
     const { controller, messageFeed } = target();
     const req = {
       query: { account: 'alice', peerAccount: 'bob', before: '3' },
-      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+      peer: {
+        domain: 'a.example',
+        keyId: 'a.example/key-1',
+        namespaceId: 7,
+      },
     } as unknown as FastifyRequest;
 
     await controller.queryMessages(req, 'alice', 'bob', undefined, '3');
     expect(messageFeed.query).toHaveBeenCalledWith(
       'a.example',
+      7,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       undefined,
       undefined,
@@ -184,7 +193,11 @@ describe('S2sController reverse thread queries', () => {
         peerAccount: 'bob',
         before: '9007199254740991',
       },
-      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+      peer: {
+        domain: 'a.example',
+        keyId: 'a.example/key-1',
+        namespaceId: 7,
+      },
     } as unknown as FastifyRequest;
 
     await controller.queryMessages(
@@ -196,6 +209,7 @@ describe('S2sController reverse thread queries', () => {
     );
     expect(messageFeed.query).toHaveBeenLastCalledWith(
       'a.example',
+      7,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       undefined,
       undefined,
@@ -210,7 +224,11 @@ describe('S2sController reverse thread queries', () => {
         peerAccount: 'bob',
         before: '9007199254740992',
       },
-      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+      peer: {
+        domain: 'a.example',
+        keyId: 'a.example/key-1',
+        namespaceId: 7,
+      },
     } as unknown as FastifyRequest;
     await expect(
       controller.queryMessages(
@@ -235,7 +253,11 @@ describe('S2sController reverse thread queries', () => {
         after: '1',
         before: '3',
       },
-      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+      peer: {
+        domain: 'a.example',
+        keyId: 'a.example/key-1',
+        namespaceId: 7,
+      },
     } as unknown as FastifyRequest;
 
     await expect(
@@ -255,7 +277,11 @@ describe('S2sController reverse thread queries', () => {
         after: '1',
         includeSelf: 'false',
       },
-      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+      peer: {
+        domain: 'a.example',
+        keyId: 'a.example/key-1',
+        namespaceId: 7,
+      },
     } as unknown as FastifyRequest;
 
     await controller.queryMessageTombstones(
@@ -269,6 +295,7 @@ describe('S2sController reverse thread queries', () => {
     );
     expect(tombstoneFeed.query).toHaveBeenCalledWith(
       'a.example',
+      7,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       1,
       undefined,
@@ -285,9 +312,14 @@ describe('S2sController reverse thread queries', () => {
         account: 'alice',
         peerAccount: 'bob',
         after: '1',
+        through: '9',
         maxMessageSeq: '42',
       },
-      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+      peer: {
+        domain: 'a.example',
+        keyId: 'a.example/key-1',
+        namespaceId: 7,
+      },
     } as unknown as FastifyRequest;
 
     await controller.queryMessageTombstones(
@@ -296,16 +328,17 @@ describe('S2sController reverse thread queries', () => {
       'bob',
       '1',
       undefined,
-      undefined,
+      '9',
       undefined,
       '42',
     );
     expect(tombstoneFeed.query).toHaveBeenCalledWith(
       'a.example',
+      7,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       1,
       undefined,
-      undefined,
+      9,
       true,
       42,
     );
@@ -317,7 +350,11 @@ describe('S2sController reverse thread queries', () => {
         before: '3',
         maxMessageSeq: '2',
       },
-      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+      peer: {
+        domain: 'a.example',
+        keyId: 'a.example/key-1',
+        namespaceId: 7,
+      },
     } as unknown as FastifyRequest;
     await expect(
       controller.queryMessageTombstones(reverse, 'alice', 'bob'),
@@ -351,6 +388,7 @@ describe('S2sController group-meta modes', () => {
     );
     expect(groupMetaFeed.serve).toHaveBeenLastCalledWith(
       'a.example',
+      undefined,
       '!01arz3ndektsv4rrffq69g5fav',
       'full',
       0n,
@@ -374,6 +412,7 @@ describe('S2sController group-meta modes', () => {
     );
     expect(groupMetaFeed.serve).toHaveBeenLastCalledWith(
       'a.example',
+      undefined,
       '!01arz3ndektsv4rrffq69g5fav',
       'delta',
       7n,
@@ -395,6 +434,7 @@ describe('S2sController group-meta modes', () => {
     await controller.getGroupMeta(req, '!01arz3ndektsv4rrffq69g5fav', 'full');
     expect(groupMetaFeed.serve).toHaveBeenLastCalledWith(
       'a.example',
+      undefined,
       '!01arz3ndektsv4rrffq69g5fav',
       'full',
       undefined,
@@ -440,13 +480,18 @@ describe('S2sController departed-member profile query', () => {
         through: '20',
         take: '25',
       },
-      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+      peer: {
+        domain: 'a.example',
+        keyId: 'a.example/key-1',
+        namespaceId: 7,
+      },
     } as unknown as FastifyRequest;
 
     await controller.getDepartedMemberProfiles(req, '!group', '41', '20', '25');
 
     expect(departedMemberProfiles.query).toHaveBeenCalledWith(
       'a.example',
+      7,
       '!group',
       41,
       25,
@@ -458,11 +503,16 @@ describe('S2sController departed-member profile query', () => {
     const { controller, departedMemberProfiles } = target();
     const bootstrap = {
       query: { account: '!group' },
-      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+      peer: {
+        domain: 'a.example',
+        keyId: 'a.example/key-1',
+        namespaceId: 7,
+      },
     } as unknown as FastifyRequest;
     await controller.getDepartedMemberProfiles(bootstrap, '!group');
     expect(departedMemberProfiles.query).toHaveBeenLastCalledWith(
       'a.example',
+      7,
       '!group',
       undefined,
       undefined,

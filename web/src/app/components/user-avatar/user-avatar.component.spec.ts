@@ -240,6 +240,7 @@ describe('UserAvatarComponent offline cold-start integration', () => {
       bio: '',
       isGroup: false,
       domain: 'local',
+      namespaceId: 0,
       createdAt: 0,
       updatedAt: 0,
       profileRev: 3,

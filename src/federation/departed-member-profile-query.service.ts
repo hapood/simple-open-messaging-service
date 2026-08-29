@@ -51,6 +51,7 @@ export class DepartedMemberProfileQueryService {
 
   async query(
     peerDomain: string,
+    namespaceId: number,
     account: string,
     before: number | undefined,
     requestedTake?: number,
@@ -63,7 +64,7 @@ export class DepartedMemberProfileQueryService {
       this.malformed('invalid departed-member profile page size');
     const take = Math.min(requestedTake ?? DEFAULT_TAKE, MAX_TAKE);
     if (before === undefined) {
-      const window = await this.window(peerDomain, account);
+      const window = await this.window(peerDomain, namespaceId, account);
       throw new BusinessException(
         BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
         'before is required; initialize the departed-member profile feed',
@@ -79,7 +80,7 @@ export class DepartedMemberProfileQueryService {
     if (through !== undefined && through > before)
       this.malformed('through must be less than or equal to before');
 
-    const window = await this.window(peerDomain, account);
+    const window = await this.window(peerDomain, namespaceId, account);
     const { threadId, resumeAfter, resumeBefore } = window;
     if (before <= resumeAfter + 1 || before > resumeBefore) {
       throw new BusinessException(
@@ -199,6 +200,7 @@ export class DepartedMemberProfileQueryService {
 
   private async window(
     peerDomain: string,
+    namespaceId: number,
     account: string,
   ): Promise<{
     threadId: number;
@@ -207,6 +209,7 @@ export class DepartedMemberProfileQueryService {
   }> {
     const authorized = await this.messageFeed.resolveAuthorizedThread(
       peerDomain,
+      namespaceId,
       { type: 'GROUP', account },
     );
     const [state] = await this.database.db
@@ -220,6 +223,7 @@ export class DepartedMemberProfileQueryService {
         peerStateFeed,
         and(
           eq(peerStateFeed.peerDomain, peerDomain),
+          eq(peerStateFeed.namespaceId, namespaceId),
           eq(peerStateFeed.account, account),
           eq(peerStateFeed.domain, this.localDomain),
           eq(peerStateFeed.eventType, 'THREAD_CONTENT_HEAD'),

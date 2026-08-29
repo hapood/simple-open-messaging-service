@@ -736,6 +736,16 @@
       }
     },
     {
+      "name": "tombstone recovery filter requires a fixed deletion target",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/messageTombstoneQuery",
+      "value": {
+        "account": "alice",
+        "peerAccount": "bob",
+        "after": "4",
+        "maxMessageSeq": "27"
+      }
+    },
+    {
       "name": "thread-content head rejects a string deletion end",
       "schema": "urn:somfp:v1:state-feed",
       "value": {

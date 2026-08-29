@@ -367,6 +367,9 @@ export class GroupService {
           ON member.account = pair."endpointBAccount"
          AND member.domain = pair."endpointBDomain"
          AND member."sourceDomain" = pair."endpointBDomain"
+         AND ((member.domain = 'local' AND member."namespaceId" = 0)
+           OR (member.domain <> 'local'
+             AND member."namespaceId" = pair."endpointBNamespaceId"))
         LEFT JOIN "RelationshipIntent" prior
           ON prior."pairId" = pair.id AND prior."authorSide" = 'A'
         WHERE pair."threadId" = ${threadId} AND intent.id = ${requestId}
@@ -425,6 +428,9 @@ export class GroupService {
             ON member.account = pair."endpointBAccount"
            AND member.domain = pair."endpointBDomain"
            AND member."sourceDomain" = pair."endpointBDomain"
+           AND ((member.domain = 'local' AND member."namespaceId" = 0)
+             OR (member.domain <> 'local'
+               AND member."namespaceId" = pair."endpointBNamespaceId"))
           WHERE pair."threadId" = ${threadId} AND intent.id = ${requestId}
             AND pair.kind = 'GROUP_MEMBER' AND intent."authorSide" = 'A'
             AND intent.status = 'REQUESTED'
@@ -752,6 +758,8 @@ export class GroupService {
           AND pair."endpointBType" = 'USER'
           AND pair."endpointBAccount" = identity.account
           AND pair."endpointBDomain" = identity.domain
+          AND (identity."namespaceId" = 0
+            OR pair."endpointBNamespaceId" = identity."namespaceId")
       `);
       if (params.role === null && outgoing.rows.length === 0)
         throw new BusinessException(BusinessCode.NOT_FOUND, 'member not found');

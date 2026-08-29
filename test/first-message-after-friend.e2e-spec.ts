@@ -20,7 +20,10 @@ import {
   openSse,
   waitForSseEvent,
 } from './federation-test-helpers';
-import { findP2PRelationship } from './seed';
+import {
+  findP2PRelationship,
+  seedFederatedPeerNamespace,
+} from './seed';
 
 /**
  * Regression contract test for the "first message after friend-add not delivered" bug.
@@ -221,6 +224,10 @@ describe('First message after friend-add is delivered (single instance)', () => 
   it('creates one local-user audience and one peer-domain audience for a federated friendship', async () => {
     const appLike = { baseUrl, database: database.db };
     const alice = await registerAndLogin(appLike, 'alice', 'Alice');
+    const namespaceId = await seedFederatedPeerNamespace(
+      database.db,
+      'peer.test',
+    );
     const [foreignBob] = await database.db
       .insert(user)
       .values({
@@ -228,6 +235,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
         name: 'Bob',
         domain: 'peer.test',
         sourceDomain: 'peer.test',
+        namespaceId,
         updatedAt: new Date(),
       })
       .returning({ id: user.id });
@@ -277,6 +285,10 @@ describe('First message after friend-add is delivered (single instance)', () => 
   it('immediately confirms crossed federated friend requests', async () => {
     const appLike = { baseUrl, database: database.db };
     const alice = await registerAndLogin(appLike, 'strict-alice', 'Alice');
+    const namespaceId = await seedFederatedPeerNamespace(
+      database.db,
+      'strict-peer.test',
+    );
     const [foreignBob] = await database.db
       .insert(user)
       .values({
@@ -284,6 +296,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
         name: 'Bob',
         domain: 'strict-peer.test',
         sourceDomain: 'strict-peer.test',
+        namespaceId,
         updatedAt: new Date(),
       })
       .returning({ id: user.id });

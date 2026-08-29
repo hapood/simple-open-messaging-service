@@ -805,6 +805,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
             identity.account,
             identity.domain,
             identity.sourceDomain,
+            identity.namespaceId,
           );
           if (!cached)
             throw new Error(

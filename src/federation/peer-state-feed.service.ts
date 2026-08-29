@@ -22,6 +22,7 @@ export type PeerStateBody = Record<string, unknown>;
 
 export interface PeerStateFeedWrite {
   peerDomain: string;
+  namespaceId: number;
   account: string;
   domain: string;
   eventType: PeerStateEventType;
@@ -82,10 +83,11 @@ export class PeerStateFeedService {
   async initializePeerInTx(
     tx: DatabaseTransaction,
     peerDomain: string,
+    namespaceId: number,
   ): Promise<void> {
     await tx
       .insert(peerStateFeedTarget)
-      .values({ peerDomain })
+      .values({ peerDomain, namespaceId })
       .onConflictDoNothing();
   }
 
@@ -98,6 +100,7 @@ export class PeerStateFeedService {
       .where(
         and(
           eq(peerStateFeed.peerDomain, key.peerDomain),
+          eq(peerStateFeed.namespaceId, key.namespaceId),
           eq(peerStateFeed.account, key.account),
           eq(peerStateFeed.domain, key.domain),
           eq(peerStateFeed.eventType, key.eventType),
@@ -116,6 +119,7 @@ export class PeerStateFeedService {
     const ordered = [...writes].sort(
       (a, b) =>
         a.peerDomain.localeCompare(b.peerDomain) ||
+        a.namespaceId - b.namespaceId ||
         a.domain.localeCompare(b.domain) ||
         a.account.localeCompare(b.account) ||
         a.eventType.localeCompare(b.eventType) ||
@@ -147,13 +151,13 @@ export class PeerStateFeedService {
           'state address key is incomplete or has an invalid directional subject',
         );
       }
-      await this.initializePeerInTx(tx, write.peerDomain);
+      await this.initializePeerInTx(tx, write.peerDomain, write.namespaceId);
       // The allocator row is the per-peer serialization point. Locking before reading the compacted
       // key prevents two concurrent writers from both observing the old value and burning a feed ID.
       await tx
         .select({ feedId: peerStateFeedTarget.allocatedThrough })
         .from(peerStateFeedTarget)
-        .where(eq(peerStateFeedTarget.peerDomain, write.peerDomain))
+        .where(eq(peerStateFeedTarget.namespaceId, write.namespaceId))
         .for('update')
         .limit(1);
       const [current] = await tx
@@ -164,6 +168,7 @@ export class PeerStateFeedService {
         .where(
           and(
             eq(peerStateFeed.peerDomain, write.peerDomain),
+            eq(peerStateFeed.namespaceId, write.namespaceId),
             eq(peerStateFeed.account, write.account),
             eq(peerStateFeed.domain, write.domain),
             eq(peerStateFeed.eventType, write.eventType),
@@ -199,7 +204,7 @@ export class PeerStateFeedService {
           allocatedThrough: sql`${peerStateFeedTarget.allocatedThrough} + 1`,
           updatedAt: new Date(),
         })
-        .where(eq(peerStateFeedTarget.peerDomain, write.peerDomain))
+        .where(eq(peerStateFeedTarget.namespaceId, write.namespaceId))
         .returning({ feedId: peerStateFeedTarget.allocatedThrough });
       if (!allocated)
         throw new Error(`missing state feed target for ${write.peerDomain}`);
@@ -207,6 +212,7 @@ export class PeerStateFeedService {
         .insert(peerStateFeed)
         .values({
           peerDomain: write.peerDomain,
+          namespaceId: write.namespaceId,
           account: write.account,
           domain: write.domain,
           eventType: write.eventType,
@@ -217,7 +223,7 @@ export class PeerStateFeedService {
         })
         .onConflictDoUpdate({
           target: [
-            peerStateFeed.peerDomain,
+            peerStateFeed.namespaceId,
             peerStateFeed.account,
             peerStateFeed.domain,
             peerStateFeed.eventType,
@@ -238,6 +244,7 @@ export class PeerStateFeedService {
           .where(
             and(
               eq(peerStateFeed.peerDomain, write.peerDomain),
+              eq(peerStateFeed.namespaceId, write.namespaceId),
               eq(peerStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
             ),
           );
@@ -246,6 +253,7 @@ export class PeerStateFeedService {
             tx,
             dependents.map((dependent) => ({
               peerDomain: dependent.peerDomain,
+              namespaceId: dependent.namespaceId,
               account: dependent.account,
               domain: dependent.domain,
               eventType: 'THREAD_CONTENT_HEAD' as const,
@@ -262,20 +270,23 @@ export class PeerStateFeedService {
     return result;
   }
 
-  async readFeedEndId(peerDomain: string): Promise<bigint> {
+  async readFeedEndId(namespaceId: number): Promise<bigint> {
     const [target] = await this.database.db
       .select({ feedId: peerStateFeedTarget.allocatedThrough })
       .from(peerStateFeedTarget)
-      .where(eq(peerStateFeedTarget.peerDomain, peerDomain))
+      .where(eq(peerStateFeedTarget.namespaceId, namespaceId))
       .limit(1);
     return target?.feedId ?? 0n;
   }
 
-  async rejectMissingAfter(peerDomain: string): Promise<never> {
+  async rejectMissingAfter(
+    peerDomain: string,
+    namespaceId: number,
+  ): Promise<never> {
     const [target] = await this.database.db
       .select({ peerDomain: peerStateFeedTarget.peerDomain })
       .from(peerStateFeedTarget)
-      .where(eq(peerStateFeedTarget.peerDomain, peerDomain))
+      .where(eq(peerStateFeedTarget.namespaceId, namespaceId))
       .limit(1);
     if (!target) throw new Error(`peer ${peerDomain} has no state feed`);
     throw new BusinessException(
@@ -284,13 +295,14 @@ export class PeerStateFeedService {
       HttpStatus.OK,
       {
         resumeAfter: '0',
-        resumeBefore: ((await this.readFeedEndId(peerDomain)) + 1n).toString(),
+        resumeBefore: ((await this.readFeedEndId(namespaceId)) + 1n).toString(),
       },
     );
   }
 
   async serve(
     peerDomain: string,
+    namespaceId: number,
     after: bigint,
     requestedTake?: number,
     through?: bigint,
@@ -307,7 +319,7 @@ export class PeerStateFeedService {
       const [target] = await tx
         .select()
         .from(peerStateFeedTarget)
-        .where(eq(peerStateFeedTarget.peerDomain, peerDomain))
+        .where(eq(peerStateFeedTarget.namespaceId, namespaceId))
         .limit(1);
       if (!target) {
         throw new Error(
@@ -341,6 +353,7 @@ export class PeerStateFeedService {
         .where(
           and(
             eq(peerStateFeed.peerDomain, peerDomain),
+            eq(peerStateFeed.namespaceId, namespaceId),
             gt(peerStateFeed.feedId, after),
             lte(peerStateFeed.feedId, scanEnd),
           ),

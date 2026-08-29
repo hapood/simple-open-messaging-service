@@ -43,6 +43,8 @@ function epochTransaction(params: {
   state: {
     messageTargetSeq: number;
     messageProcessedThroughSeq: number;
+    deletionTargetSeq?: number;
+    deletionProcessedThroughSeq?: number;
     authorizationEpoch: number;
     activeGapId: bigint | null;
     historyBoundaryReached: boolean;
@@ -73,7 +75,11 @@ function epochTransaction(params: {
       rows: [
         {
           ...params.state,
-          deletionProcessedThroughSeq: 0,
+          deletionTargetSeq: params.state.deletionTargetSeq ?? 0,
+          deletionProcessedThroughSeq:
+            params.state.deletionProcessedThroughSeq ?? 0,
+          deletionRecoveryThroughSeq: null,
+          deletionRecoveryMaxMessageSeq: null,
         },
       ],
     })
@@ -106,6 +112,7 @@ describe('FederationThreadSyncStateService processed positions', () => {
       message.tx as never,
       31,
       'peer.test',
+      7,
       8,
       12,
     );
@@ -116,10 +123,17 @@ describe('FederationThreadSyncStateService processed positions', () => {
       deletion.tx as never,
       31,
       'peer.test',
+      7,
       5,
       7,
     );
     expect(deletion.update).toHaveBeenCalledWith(federationThreadSyncState);
+    expect(deletion.set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deletionRecoveryThroughSeq: expect.anything(),
+        deletionRecoveryMaxMessageSeq: expect.anything(),
+      }),
+    );
   });
 
   it('rejects a processed position beyond the frozen target', async () => {
@@ -129,6 +143,7 @@ describe('FederationThreadSyncStateService processed positions', () => {
         tx as never,
         31,
         'peer.test',
+        7,
         13,
         12,
       ),
@@ -152,6 +167,7 @@ describe('FederationThreadSyncStateService initial history interval', () => {
           {
             threadId: 31,
             peerDomain: 'peer.test',
+            namespaceId: 7,
             messageTargetSeq: latest,
             deletionTargetSeq: 0,
             reverseEnabled: true,
@@ -161,7 +177,6 @@ describe('FederationThreadSyncStateService initial history interval', () => {
         created: true,
         epochChanged: false,
         reverseRequired: false,
-        tombstoneMaxMessageSeq: latest,
       });
       expect(mock.insert).toHaveBeenCalledTimes(1);
       expect(mock.stateValues).toHaveBeenCalledWith(
@@ -183,6 +198,7 @@ describe('FederationThreadSyncStateService initial history interval', () => {
         {
           threadId: 31,
           peerDomain: 'peer.test',
+          namespaceId: 7,
           messageTargetSeq: 2,
           deletionTargetSeq: 0,
           reverseEnabled: true,
@@ -192,7 +208,6 @@ describe('FederationThreadSyncStateService initial history interval', () => {
       created: true,
       epochChanged: false,
       reverseRequired: true,
-      tombstoneMaxMessageSeq: 2,
     });
     expect(mock.gapValues).toHaveBeenCalledWith(
       expect.objectContaining({ threadId: 31, startSeq: 1, endSeq: 1 }),
@@ -206,6 +221,29 @@ describe('FederationThreadSyncStateService initial history interval', () => {
       }),
     );
   });
+
+  it('adopts the initial deletion head without scheduling historical tombstones', async () => {
+    const mock = missingStateTransaction(7);
+
+    await FederationThreadSyncStateService.reconcileThreadHeadInTx(
+      mock.tx as never,
+      {
+        threadId: 31,
+        peerDomain: 'peer.test',
+        namespaceId: 7,
+        messageTargetSeq: 20,
+        deletionTargetSeq: 6,
+        reverseEnabled: true,
+      },
+    );
+
+    expect(mock.stateValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deletionTargetSeq: 6,
+        deletionProcessedThroughSeq: 6,
+      }),
+    );
+  });
 });
 
 describe('FederationThreadSyncStateService epoch interval reconciliation', () => {
@@ -214,6 +252,8 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
       state: {
         messageTargetSeq: 100,
         messageProcessedThroughSeq: 99,
+        deletionTargetSeq: 5,
+        deletionProcessedThroughSeq: 3,
         authorizationEpoch: 7,
         activeGapId: 12n,
         historyBoundaryReached: false,
@@ -227,8 +267,9 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
         {
           threadId: 31,
           peerDomain: 'peer.test',
+          namespaceId: 7,
           messageTargetSeq: 200,
-          deletionTargetSeq: 0,
+          deletionTargetSeq: 20,
           reverseEnabled: true,
         },
       ),
@@ -236,7 +277,6 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
       created: false,
       epochChanged: true,
       reverseRequired: true,
-      tombstoneMaxMessageSeq: 99,
     });
 
     expect(mock.gapValues).toHaveBeenCalledWith(
@@ -246,6 +286,9 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
       expect.objectContaining({
         messageTargetSeq: 200,
         messageProcessedThroughSeq: 199,
+        deletionTargetSeq: 20,
+        deletionRecoveryThroughSeq: 20,
+        deletionRecoveryMaxMessageSeq: 99,
         activeGapId: 13n,
       }),
     );
@@ -268,6 +311,7 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
       {
         threadId: 31,
         peerDomain: 'peer.test',
+        namespaceId: 7,
         messageTargetSeq: 200,
         deletionTargetSeq: 0,
         reverseEnabled: true,
@@ -299,6 +343,7 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
       {
         threadId: 31,
         peerDomain: 'peer.test',
+        namespaceId: 7,
         messageTargetSeq: 200,
         deletionTargetSeq: 0,
         reverseEnabled: true,
@@ -327,6 +372,7 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
       {
         threadId: 31,
         peerDomain: 'peer.test',
+        namespaceId: 7,
         messageTargetSeq: 151,
         deletionTargetSeq: 0,
         reverseEnabled: true,
@@ -362,7 +408,7 @@ describe('FederationThreadSyncStateService reverse window reconstruction', () =>
     } as never);
 
     await expect(
-      service.resolveReverseWindow(31, 'peer.test'),
+      service.resolveReverseWindow(31, 'peer.test', 7),
     ).resolves.toEqual({
       authorizationEpoch: 8,
       gapId: 12n,
@@ -386,7 +432,7 @@ describe('FederationThreadSyncStateService reverse window reconstruction', () =>
     } as never);
 
     await expect(
-      service.resolveReverseWindow(31, 'peer.test'),
+      service.resolveReverseWindow(31, 'peer.test', 7),
     ).resolves.toEqual({
       authorizationEpoch: 8,
       gapId: null,
@@ -415,6 +461,7 @@ describe('FederationThreadSyncStateService reverse closure commit', () => {
       {
         threadId: 31,
         peerDomain: 'peer.test',
+        namespaceId: 7,
         authorizationEpoch: 7,
         gapId: 12n,
         beforeSeq: 100,
@@ -452,6 +499,7 @@ describe('FederationThreadSyncStateService reverse closure commit', () => {
       {
         threadId: 31,
         peerDomain: 'peer.test',
+        namespaceId: 7,
         authorizationEpoch: 7,
         gapId: 12n,
         beforeSeq: 100,
@@ -480,6 +528,7 @@ it('locks MessageThread when reconciling a head', async () => {
     {
       threadId: 31,
       peerDomain: 'peer.test',
+      namespaceId: 7,
       messageTargetSeq: 0,
       deletionTargetSeq: 0,
       reverseEnabled: true,

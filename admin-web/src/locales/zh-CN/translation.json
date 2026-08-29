@@ -451,6 +451,8 @@
     "empty": "暂无联邦对端",
     "meta": {
       "createdAt": "发现时间",
+      "activeNamespace": "当前命名空间",
+      "none": "无",
       "trustedAt": "信任起始于",
       "lastSuccessAt": "最近成功联系",
       "degradedAt": "降级时间",
@@ -937,6 +939,13 @@
       "perPeer": "单节点并发",
       "save": "保存",
       "saved": "联邦 HTTP 并发限制已更新"
+    },
+    "federationHistoryAccess": {
+      "title": "联邦历史访问",
+      "desc": "控制新授权的节点能否查询授权前仍由源端保留的消息；已有授权不会改变。",
+      "enabled": "允许新授权访问保留的历史消息",
+      "save": "保存",
+      "saved": "联邦历史访问设置已更新"
     },
     "vapid": {
       "title": "Web Push（VAPID）",

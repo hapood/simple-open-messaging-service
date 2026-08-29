@@ -609,7 +609,7 @@
       }
     },
     {
-      "name": "forward tombstone query fixes a message projection boundary",
+      "name": "reauthorization tombstone drain fixes its fast-forward boundary",
       "schema": "urn:somfp:v1:http-parameters#/$defs/messageTombstoneQuery",
       "value": {
         "account": "alice",

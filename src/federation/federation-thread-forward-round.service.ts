@@ -25,7 +25,7 @@ export interface FederationThreadForwardTombstoneRoundDriver {
     peerDomain: string;
     after: number;
     through: number;
-    maxMessageSeq: number;
+    maxMessageSeq?: number;
     take: number;
   }): Promise<void>;
   complete(params: {
@@ -43,12 +43,11 @@ export interface FederationThreadForwardMessageRoundResult {
 
 export interface FederationThreadForwardTombstoneRoundResult {
   targetSeq: number;
-  maxMessageSeq: number;
+  maxMessageSeq?: number;
   processed: boolean;
 }
 
-/** Freezes one bounded page for either independent forward stream. The scheduler owns
- * per-stream single-flight, pairing tombstone cutoffs with State Feed heads, and retries. */
+/** Freezes one bounded page for either independent forward stream. */
 @Injectable()
 export class FederationThreadForwardRoundService {
   constructor(private readonly states: FederationThreadSyncStateService) {}
@@ -56,11 +55,12 @@ export class FederationThreadForwardRoundService {
   async runMessages(
     threadId: number,
     peerDomain: string,
+    namespaceId: number,
     driver: FederationThreadForwardMessageRoundDriver,
     requestedTake?: number,
   ): Promise<FederationThreadForwardMessageRoundResult> {
     const take = resolveFederationThreadRoundTake(requestedTake);
-    const state = await this.states.require(threadId, peerDomain);
+    const state = await this.states.require(threadId, peerDomain, namespaceId);
     const targetSeq = state.messageTargetSeq;
     const processedThrough = state.messageProcessedThroughSeq;
     this.assertCoordinate(processedThrough, 'processed message seq');
@@ -92,16 +92,21 @@ export class FederationThreadForwardRoundService {
   async runTombstones(
     threadId: number,
     peerDomain: string,
-    targetSeq: number,
-    maxMessageSeq: number,
+    namespaceId: number,
     driver: FederationThreadForwardTombstoneRoundDriver,
     requestedTake?: number,
   ): Promise<FederationThreadForwardTombstoneRoundResult> {
     const take = resolveFederationThreadRoundTake(requestedTake);
-    this.assertCoordinate(targetSeq, 'tombstone target seq');
-    this.assertCoordinate(maxMessageSeq, 'tombstone message cutoff seq');
-    const state = await this.states.require(threadId, peerDomain);
-    const frozenTargetSeq = Math.min(targetSeq, state.deletionTargetSeq);
+    const state = await this.states.require(threadId, peerDomain, namespaceId);
+    const recovering = state.deletionRecoveryThroughSeq !== null;
+    if (recovering !== (state.deletionRecoveryMaxMessageSeq !== null))
+      throw new Error('incomplete tombstone recovery state');
+    const frozenTargetSeq =
+      state.deletionRecoveryThroughSeq ?? state.deletionTargetSeq;
+    const maxMessageSeq = state.deletionRecoveryMaxMessageSeq ?? undefined;
+    this.assertCoordinate(frozenTargetSeq, 'tombstone target seq');
+    if (maxMessageSeq !== undefined)
+      this.assertCoordinate(maxMessageSeq, 'tombstone message cutoff seq');
     const processedThrough = state.deletionProcessedThroughSeq;
     this.assertCoordinate(processedThrough, 'processed deletion seq');
     if (frozenTargetSeq <= processedThrough) {

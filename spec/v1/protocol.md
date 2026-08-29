@@ -353,9 +353,9 @@ After receiving hint `S`, a consumer drains State Feed from its committed cursor
 state-feed?after=<committedStateCursor>&through=S
 ```
 
-The consumer commits the applicable relationship, profile, and Group Meta dependencies before accepting a `THREAD_CONTENT_HEAD` target. The item supplies both thread end sequences; `/messages` and `/message-tombstones` provide actual content. For a normal forward group-message interval, the consumer SHOULD first commit the required Group Meta head, including complete profile-bearing `DEPART` items. When that profile projection is temporarily unavailable, the stable author Address remains valid, the consumer MUST continue Group Meta convergence, and it MUST NOT infer a role or current-membership state from the absent projection. It MUST NOT query the reverse-only departed-member profile feed. For the same forward thread interval, the bounded tombstone and message queries MAY execute concurrently. The interval is not reconciled until both required query drains have committed; the tombstone drain uses its fixed `maxMessageSeq` even if the message drain commits first. Compaction may move an item to a greater feed ID during a drain; a later hint or periodic reconciliation MUST discover it again.
+The consumer commits the applicable relationship, profile, and Group Meta dependencies before accepting a `THREAD_CONTENT_HEAD` target. The item supplies both thread end sequences; `/messages` and `/message-tombstones` provide actual content. For a normal forward group-message interval, the consumer SHOULD first commit the required Group Meta head, including complete profile-bearing `DEPART` items. When that profile projection is temporarily unavailable, the stable author Address remains valid, the consumer MUST continue Group Meta convergence, and it MUST NOT infer a role or current-membership state from the absent projection. It MUST NOT query the reverse-only departed-member profile feed. Required bounded tombstone and message queries MAY execute concurrently and commit independently. Compaction may move an item to a greater feed ID during a drain; a later hint or periodic reconciliation MUST discover it again.
 
-Absence of a `THREAD_CONTENT_HEAD` from the current State Feed projection is not a deletion notice. State Feed relationship facts remain the primary path for relationship termination. If a consumer retains an old P2P end, message query returns `FORBIDDEN`, and both retained authored directions are still `REQUESTED` or `ACCEPTED`, the consumer MUST invalidate the thread's current pending query target and publish `REVOKED` for its own direction without rewriting the peer-authored fact. It publishes no transition if either direction is already `REVOKED` or absent. A GROUP denial only invalidates the query target and prioritizes State Feed convergence because the peer-level query address does not identify one consumer-authored member direction. Neither path moves a feed cursor or committed thread-local cursor backward.
+Absence of a `THREAD_CONTENT_HEAD` from the current State Feed projection is not a deletion notice. State Feed relationship facts remain the primary path for relationship termination. An authenticated query denial follows the current-state revalidation and locally authored P2P or GROUP convergence rules in Message Query Section 4. Neither a denial nor its relationship transition moves a feed cursor or committed thread-local cursor backward.
 
 At startup and during periodic reconciliation, even without a hint, a consumer MUST read and drain State Feed from its committed cursor. The `stateFeedEndId` returned by the first successful page without `through` may be fixed as that drain's target. That first page participates in the drain, and later pages use the target as `through`.
 
@@ -376,16 +376,24 @@ derives bounded work from committed coordinates and newly observed heads.
 After the State Feed barrier is committed, the consumer selects nondecreasing
 per-thread targets from each `THREAD_CONTENT_HEAD` item's `messageEndSeq` and
 `tombstoneEndSeq`. It freezes the targets it will process before issuing content
-queries. It MAY drain `/messages` and `/message-tombstones` concurrently, but
-does not complete reconciliation of the message interval until both bounded
-results have been applied. A forward tombstone drain SHOULD include a fixed
-`maxMessageSeq` equal to the frozen message target for the same forward thread
-round. For a tombstone-only round, it is the greatest publisher message
-coordinate the consumer had already covered when the round began. The value
-remains unchanged across all pages and cursor-recovery retries. A later message
-target belongs to a later tombstone drain. No wire-level round ID or source-side
-round state exists; the fixed boundaries and consumer's durable cursors define
-the round.
+queries. Required `/messages` and `/message-tombstones` drains MAY execute
+concurrently and commit independently.
+
+When a consumer first initializes a thread with no previous replica in that
+publisher's message-coordinate space, it does not query the deletion history
+covered by the first head. It initializes its committed deletion cursor to the
+head's `tombstoneEndSeq`; source-side message queries already omit messages
+terminated by those earlier facts. When an existing relationship is later
+reauthorized, the first bounded deletion drain starts at the previously
+committed deletion cursor and ends at a frozen `tombstoneEndSeq`. It MUST carry
+`maxMessageSeq` equal to the greatest publisher message coordinate continuously
+committed before authorization was lost. Tombstones above that message cutoff
+are scannable gaps, so the drain can commit its complete deletion bound. The
+cutoff remains fixed for every page and retry in that drain. After the recovery
+drain commits, later deletion drains MUST omit `maxMessageSeq` and consume only
+by deletion sequence. A later head never enlarges an active bounded drain and
+belongs to later work. No wire-level round ID or source-side round state exists;
+the fixed boundaries and consumer's durable cursors define the round.
 
 A **reverse reconstruction round** is consumer-local history recovery. It is
 initialized when the consumer first commits an authoritative thread-content

@@ -231,7 +231,8 @@ similarity is not an identity substitute.
 
 ### Federation (S2S)
 
-- **FederatedPeer** — domain allow-list and recognition state. `trustLevel` is `unrecognized | establishing | available | degraded | halted`; `resetInProgress` is a separate persisted maintenance-job flag; per-peer daily-quota overrides are stored alongside it.
+- **FederatedPeer** — stable domain allow-list and recognition state. `activeNamespaceId` points to the currently verified identity namespace; `trustLevel` is `unrecognized | establishing | available | degraded | halted`; per-peer daily-quota overrides remain domain-scoped.
+- **FederationNamespace** — immutable verified peer-identity epochs. Reset retires the active namespace without rewriting data already owned by it; the next successful verification creates and activates a new integer namespace.
 - **FederatedPeerEvent** — append-only trust-lifecycle log (decoupled, no FK — history survives any row change).
 - **S2SKeyCache** — cached peer signing keys (JWKS-style, TTL'd).
 - **PeerStateFeed / PeerStateFeedTarget / PeerStateFeedPullCursor** — compacted per-peer relationship,

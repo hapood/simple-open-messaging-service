@@ -7,11 +7,13 @@
 // user but don't care HOW they authenticated. For the process-boundary federation e2e, see
 // federation-test-helpers.ts, which uses its own Drizzle client.
 import type { INestApplication } from '@nestjs/common';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
 import {
   account as accountTable,
+  federatedPeer,
   group,
+  identityNamespace,
   relationshipIntent,
   relationshipPair,
   threadMember,
@@ -30,6 +32,54 @@ export interface SeededUser {
   account: string;
 }
 
+export async function seedFederatedPeerNamespace(
+  database: Database,
+  domain: string,
+): Promise<number> {
+  const [existing] = await database
+    .select({ id: identityNamespace.id })
+    .from(identityNamespace)
+    .where(
+      and(
+        eq(identityNamespace.domain, domain),
+        isNull(identityNamespace.retiredAt),
+      ),
+    )
+    .limit(1);
+  const namespaceId =
+    existing?.id ??
+    (
+      await database
+        .insert(identityNamespace)
+        .values({
+          domain,
+          rootKeyFingerprint: `sha256:e2e:${domain}`,
+          rootPublicKey: Buffer.alloc(32, domain.length).toString('base64'),
+          identityPinnedAt: new Date(),
+        })
+        .returning({ id: identityNamespace.id })
+    )[0].id;
+  await database
+    .insert(federatedPeer)
+    .values({ domain, activeNamespaceId: namespaceId, trustLevel: 'available' })
+    .onConflictDoUpdate({
+      target: federatedPeer.domain,
+      set: { activeNamespaceId: namespaceId, trustLevel: 'available' },
+    });
+  return namespaceId;
+}
+
+function relationshipNamespaceForFixture(
+  namespaceIds: readonly number[],
+): number {
+  const federationNamespaceIds = new Set(
+    namespaceIds.filter((namespaceId) => namespaceId !== 0),
+  );
+  if (federationNamespaceIds.size > 1)
+    throw new Error('relationship fixture spans federation namespaces');
+  return federationNamespaceIds.values().next().value ?? 0;
+}
+
 /** Resolve the fixed GROUP(A) -> USER(B) relationship pair used by roster assertions. */
 export async function findGroupRelationship(
   database: Database,
@@ -39,24 +89,36 @@ export async function findGroupRelationship(
   const [groupIdentity, memberIdentity] = await Promise.all([
     database.query.group.findFirst({
       where: eq(group.id, groupId),
-      columns: { account: true, domain: true },
+      columns: { account: true, domain: true, namespaceId: true },
     }),
     database.query.user.findFirst({
       where: eq(user.id, memberUserId),
-      columns: { account: true, domain: true },
+      columns: { account: true, domain: true, namespaceId: true },
     }),
   ]);
   if (!groupIdentity || !memberIdentity)
     throw new Error('group relationship endpoint missing');
+  const relationshipNamespaceId = relationshipNamespaceForFixture([
+    groupIdentity.namespaceId,
+    memberIdentity.namespaceId,
+  ]);
   const pair = await database.query.relationshipPair.findFirst({
     where: and(
       eq(relationshipPair.kind, 'GROUP_MEMBER'),
       eq(relationshipPair.endpointAType, 'GROUP'),
       eq(relationshipPair.endpointAAccount, groupIdentity.account),
       eq(relationshipPair.endpointADomain, groupIdentity.domain),
+      eq(
+        relationshipPair.endpointANamespaceId,
+        relationshipNamespaceId,
+      ),
       eq(relationshipPair.endpointBType, 'USER'),
       eq(relationshipPair.endpointBAccount, memberIdentity.account),
       eq(relationshipPair.endpointBDomain, memberIdentity.domain),
+      eq(
+        relationshipPair.endpointBNamespaceId,
+        relationshipNamespaceId,
+      ),
     ),
   });
   return { pair, groupSide: 'A' as const, memberSide: 'B' as const };
@@ -69,13 +131,22 @@ export async function findP2PRelationship(
   secondUserId: number,
 ) {
   const identities = await database
-    .select({ id: user.id, account: user.account, domain: user.domain })
+    .select({
+      id: user.id,
+      account: user.account,
+      domain: user.domain,
+      namespaceId: user.namespaceId,
+    })
     .from(user)
     .where(sql`${user.id} IN (${firstUserId}, ${secondUserId})`);
   const first = identities.find((identity) => identity.id === firstUserId);
   const second = identities.find((identity) => identity.id === secondUserId);
   if (!first || !second || first.id === second.id)
     throw new Error('relationship lookup user missing');
+  const relationshipNamespaceId = relationshipNamespaceForFixture([
+    first.namespaceId,
+    second.namespaceId,
+  ]);
   const endpoints = [first, second].sort((left, right) =>
     `USER\u0000${left.domain}\u0000${left.account}`.localeCompare(
       `USER\u0000${right.domain}\u0000${right.account}`,
@@ -86,9 +157,17 @@ export async function findP2PRelationship(
       eq(relationshipPair.endpointAType, 'USER'),
       eq(relationshipPair.endpointAAccount, endpoints[0].account),
       eq(relationshipPair.endpointADomain, endpoints[0].domain),
+      eq(
+        relationshipPair.endpointANamespaceId,
+        relationshipNamespaceId,
+      ),
       eq(relationshipPair.endpointBType, 'USER'),
       eq(relationshipPair.endpointBAccount, endpoints[1].account),
       eq(relationshipPair.endpointBDomain, endpoints[1].domain),
+      eq(
+        relationshipPair.endpointBNamespaceId,
+        relationshipNamespaceId,
+      ),
     ),
   });
   return {
@@ -110,12 +189,20 @@ export async function seedAcceptedRelationship(
   const updatedAt = new Date();
   await database.transaction(async (tx) => {
     const identities = await tx
-      .select({ id: user.id, account: user.account, domain: user.domain })
+      .select({
+        id: user.id,
+        account: user.account,
+        domain: user.domain,
+        namespaceId: user.namespaceId,
+      })
       .from(user)
       .where(sql`${user.id} IN (${firstUserId}, ${secondUserId})`);
     const first = identities.find((identity) => identity.id === firstUserId);
     const second = identities.find((identity) => identity.id === secondUserId);
     if (!first || !second) throw new Error('relationship seed user missing');
+    const relationshipNamespaceId = relationshipNamespaceForFixture(
+      identities.map((identity) => identity.namespaceId),
+    );
     const localAccountIds = identities
       .filter((identity) => identity.domain === 'local')
       .map((identity) => ({ id: identity.id }));
@@ -136,9 +223,11 @@ export async function seedAcceptedRelationship(
         endpointAType: 'USER',
         endpointAAccount: endpoints[0].account,
         endpointADomain: endpoints[0].domain,
+        endpointANamespaceId: relationshipNamespaceId,
         endpointBType: 'USER',
         endpointBAccount: endpoints[1].account,
         endpointBDomain: endpoints[1].domain,
+        endpointBNamespaceId: relationshipNamespaceId,
         threadId,
         active: true,
         revision: 1,
@@ -149,9 +238,11 @@ export async function seedAcceptedRelationship(
           relationshipPair.endpointAType,
           relationshipPair.endpointAAccount,
           relationshipPair.endpointADomain,
+          relationshipPair.endpointANamespaceId,
           relationshipPair.endpointBType,
           relationshipPair.endpointBAccount,
           relationshipPair.endpointBDomain,
+          relationshipPair.endpointBNamespaceId,
         ],
         set: { threadId, active: true, revision: 1, updatedAt },
       })

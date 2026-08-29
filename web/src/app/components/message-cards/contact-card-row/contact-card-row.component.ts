@@ -99,6 +99,13 @@ export class ContactCardRowComponent {
           bio: card.bio,
           avatar: card.avatar,
           domain: card.domain,
+          ...(conversation?.type === 'GROUP'
+            ? { namespaceId: conversation.group.namespaceId }
+            : conversation?.type === 'P2P'
+              ? { namespaceId: conversation.peerUser.namespaceId }
+              : card.domain === 'local'
+                ? { namespaceId: 0 }
+                : {}),
           relationship:
             card.account === this.userService.sessionProfile()?.account &&
             card.domain ===

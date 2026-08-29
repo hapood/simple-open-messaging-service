@@ -7,6 +7,7 @@ export interface SourceUserProfile {
   account: string;
   domain: string;
   sourceDomain: string;
+  namespaceId: number;
   name: string;
   avatar?: string | null;
   bio?: string;
@@ -27,6 +28,7 @@ export async function upsertSourceUserInTx(
       account,
       domain: profile.domain,
       sourceDomain: profile.sourceDomain,
+      namespaceId: profile.namespaceId,
       name: profile.name,
       avatar: profile.avatar ?? '',
       bio: profile.bio ?? '',
@@ -35,7 +37,12 @@ export async function upsertSourceUserInTx(
       updatedAt: new Date(),
     })
     .onConflictDoUpdate({
-      target: [user.account, user.domain, user.sourceDomain],
+      target: [
+        user.account,
+        user.domain,
+        user.sourceDomain,
+        user.namespaceId,
+      ],
       set: {
         name: profile.name,
         avatar: profile.avatar ?? '',
@@ -54,6 +61,7 @@ export async function upsertSourceUserInTx(
       eq(user.account, account),
       eq(user.domain, profile.domain),
       eq(user.sourceDomain, profile.sourceDomain),
+      eq(user.namespaceId, profile.namespaceId),
     ),
     columns: { id: true },
   });

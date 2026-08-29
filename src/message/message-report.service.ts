@@ -167,6 +167,7 @@ export class MessageReportService {
           and(
             eq(creator.account, message.creatorAccount),
             eq(creator.domain, message.creatorDomain),
+            eq(creator.namespaceId, message.creatorNamespaceId),
           ),
         )
         .where(where)

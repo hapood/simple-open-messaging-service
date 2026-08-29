@@ -44,6 +44,7 @@ export class FederationThreadSyncStateService {
     params: {
       threadId: number;
       peerDomain: string;
+      namespaceId: number;
       messageTargetSeq: number;
       deletionTargetSeq: number;
       reverseEnabled: boolean;
@@ -52,8 +53,6 @@ export class FederationThreadSyncStateService {
     created: boolean;
     epochChanged: boolean;
     reverseRequired: boolean;
-    /** Message-coordinate ceiling paired with this head for the next tombstone drain. */
-    tombstoneMaxMessageSeq: number;
   }> {
     this.assertCoordinate(params.messageTargetSeq, 'message target seq');
     this.assertCoordinate(params.deletionTargetSeq, 'deletion target seq');
@@ -70,15 +69,20 @@ export class FederationThreadSyncStateService {
       messageTargetSeq: number;
       messageProcessedThroughSeq: number;
       deletionProcessedThroughSeq: number;
+      deletionTargetSeq: number;
+      deletionRecoveryThroughSeq: number | null;
+      deletionRecoveryMaxMessageSeq: number | null;
       authorizationEpoch: number;
       activeGapId: bigint | string | null;
       historyBoundaryReached: boolean;
     }>(sql`
       SELECT "messageTargetSeq", "messageProcessedThroughSeq",
-        "deletionProcessedThroughSeq",
+        "deletionTargetSeq", "deletionProcessedThroughSeq",
+        "deletionRecoveryThroughSeq", "deletionRecoveryMaxMessageSeq",
         "authorizationEpoch", "activeGapId", "historyBoundaryReached"
       FROM "FederationThreadSyncState"
       WHERE "threadId" = ${params.threadId}
+        AND "namespaceId" = ${params.namespaceId}
         AND "peerDomain" = ${params.peerDomain}
       FOR UPDATE
     `);
@@ -91,6 +95,7 @@ export class FederationThreadSyncStateService {
           .insert(federationThreadHistoryGap)
           .values({
             threadId: params.threadId,
+            namespaceId: params.namespaceId,
             startSeq: 1,
             endSeq: reverseEndSeq,
             recoverable: true,
@@ -106,6 +111,7 @@ export class FederationThreadSyncStateService {
       }
       await tx.insert(federationThreadSyncState).values({
         threadId: params.threadId,
+        namespaceId: params.namespaceId,
         peerDomain: params.peerDomain,
         messageTargetSeq: params.messageTargetSeq,
         deletionTargetSeq: params.deletionTargetSeq,
@@ -114,7 +120,9 @@ export class FederationThreadSyncStateService {
         messageProcessedThroughSeq: params.reverseEnabled
           ? Math.max(0, params.messageTargetSeq - 1)
           : 0,
-        deletionProcessedThroughSeq: 0,
+        // There cannot be locally retained messages from an earlier authorized
+        // segment, so historical deletion entries have nothing to reconcile.
+        deletionProcessedThroughSeq: params.deletionTargetSeq,
         authorizationEpoch: thread.authorizationEpoch,
         activeGapId,
         historyBoundaryReached: activeGapId === null,
@@ -124,7 +132,6 @@ export class FederationThreadSyncStateService {
         created: true,
         epochChanged: false,
         reverseRequired: activeGapId !== null,
-        tombstoneMaxMessageSeq: params.messageTargetSeq,
       };
     }
 
@@ -139,6 +146,7 @@ export class FederationThreadSyncStateService {
         .where(
           and(
             eq(federationThreadSyncState.threadId, params.threadId),
+            eq(federationThreadSyncState.namespaceId, params.namespaceId),
             eq(federationThreadSyncState.peerDomain, params.peerDomain),
           ),
         );
@@ -146,7 +154,6 @@ export class FederationThreadSyncStateService {
         created: false,
         epochChanged: false,
         reverseRequired: false,
-        tombstoneMaxMessageSeq: params.messageTargetSeq,
       };
     }
 
@@ -157,6 +164,12 @@ export class FederationThreadSyncStateService {
     const nextMessageProcessedThroughSeq = params.reverseEnabled
       ? Math.max(state.messageProcessedThroughSeq, nextMessageTargetSeq - 1)
       : state.messageProcessedThroughSeq;
+    const nextDeletionTargetSeq = Math.max(
+      state.deletionTargetSeq,
+      params.deletionTargetSeq,
+    );
+    const recoveryRequired =
+      nextDeletionTargetSeq > state.deletionProcessedThroughSeq;
     let activeGapId: bigint | null = null;
     const obsoleteGapIds: bigint[] = [];
     if (params.reverseEnabled) {
@@ -171,6 +184,7 @@ export class FederationThreadSyncStateService {
           SELECT id, "startSeq", "endSeq"
           FROM "FederationThreadHistoryGap"
           WHERE "threadId" = ${params.threadId}
+            AND "namespaceId" = ${params.namespaceId}
             AND recoverable = true
             AND "startSeq"::bigint <= ${newGapEndSeq}::bigint + 1
             AND "endSeq"::bigint + 1 >= ${newGapStartSeq}
@@ -195,6 +209,7 @@ export class FederationThreadSyncStateService {
             .insert(federationThreadHistoryGap)
             .values({
               threadId: params.threadId,
+              namespaceId: params.namespaceId,
               startSeq: mergedStartSeq,
               endSeq: mergedEndSeq,
               recoverable: true,
@@ -203,6 +218,7 @@ export class FederationThreadSyncStateService {
             .onConflictDoUpdate({
               target: [
                 federationThreadHistoryGap.threadId,
+                federationThreadHistoryGap.namespaceId,
                 federationThreadHistoryGap.startSeq,
                 federationThreadHistoryGap.endSeq,
               ],
@@ -223,6 +239,7 @@ export class FederationThreadSyncStateService {
           .where(
             and(
               eq(federationThreadHistoryGap.threadId, params.threadId),
+              eq(federationThreadHistoryGap.namespaceId, params.namespaceId),
               eq(federationThreadHistoryGap.recoverable, true),
             ),
           )
@@ -237,7 +254,13 @@ export class FederationThreadSyncStateService {
       .set({
         messageTargetSeq: nextMessageTargetSeq,
         messageProcessedThroughSeq: nextMessageProcessedThroughSeq,
-        deletionTargetSeq: sql`GREATEST(${federationThreadSyncState.deletionTargetSeq}, ${params.deletionTargetSeq})`,
+        deletionTargetSeq: nextDeletionTargetSeq,
+        deletionRecoveryThroughSeq: recoveryRequired
+          ? nextDeletionTargetSeq
+          : null,
+        deletionRecoveryMaxMessageSeq: recoveryRequired
+          ? state.messageProcessedThroughSeq
+          : null,
         authorizationEpoch: thread.authorizationEpoch,
         activeGapId,
         historyBoundaryReached: activeGapId === null,
@@ -246,6 +269,7 @@ export class FederationThreadSyncStateService {
       .where(
         and(
           eq(federationThreadSyncState.threadId, params.threadId),
+          eq(federationThreadSyncState.namespaceId, params.namespaceId),
           eq(federationThreadSyncState.peerDomain, params.peerDomain),
           eq(
             federationThreadSyncState.authorizationEpoch,
@@ -268,6 +292,7 @@ export class FederationThreadSyncStateService {
       await tx.execute(sql`
         DELETE FROM "FederationThreadHistoryGap"
         WHERE "threadId" = ${params.threadId}
+          AND "namespaceId" = ${params.namespaceId}
           AND id IN (${sql.join(
             obsoleteGapIds.map((id) => sql`${id}`),
             sql`, `,
@@ -278,7 +303,6 @@ export class FederationThreadSyncStateService {
       created: false,
       epochChanged: true,
       reverseRequired: activeGapId !== null,
-      tombstoneMaxMessageSeq: state.messageProcessedThroughSeq,
     };
   }
 
@@ -286,6 +310,7 @@ export class FederationThreadSyncStateService {
     tx: DatabaseTransaction,
     threadId: number,
     peerDomain: string,
+    namespaceId: number,
     processedThroughSeq: number,
     frozenTargetSeq: number,
   ): Promise<void> {
@@ -303,6 +328,7 @@ export class FederationThreadSyncStateService {
       .where(
         sql`${federationThreadSyncState.threadId} = ${threadId}
           AND ${federationThreadSyncState.peerDomain} = ${peerDomain}
+          AND ${federationThreadSyncState.namespaceId} = ${namespaceId}
           AND ${federationThreadSyncState.messageTargetSeq} >= ${frozenTargetSeq}`,
       )
       .returning({ threadId: federationThreadSyncState.threadId });
@@ -317,6 +343,7 @@ export class FederationThreadSyncStateService {
     tx: DatabaseTransaction,
     threadId: number,
     peerDomain: string,
+    namespaceId: number,
     processedThroughSeq: number,
     frozenTargetSeq: number,
   ): Promise<void> {
@@ -329,11 +356,24 @@ export class FederationThreadSyncStateService {
       .update(federationThreadSyncState)
       .set({
         deletionProcessedThroughSeq: sql`GREATEST(${federationThreadSyncState.deletionProcessedThroughSeq}, ${processedThroughSeq})`,
+        deletionRecoveryThroughSeq: sql`CASE
+          WHEN ${federationThreadSyncState.deletionRecoveryThroughSeq} IS NOT NULL
+            AND GREATEST(${federationThreadSyncState.deletionProcessedThroughSeq}, ${processedThroughSeq}) >= ${federationThreadSyncState.deletionRecoveryThroughSeq}
+          THEN NULL
+          ELSE ${federationThreadSyncState.deletionRecoveryThroughSeq}
+        END`,
+        deletionRecoveryMaxMessageSeq: sql`CASE
+          WHEN ${federationThreadSyncState.deletionRecoveryThroughSeq} IS NOT NULL
+            AND GREATEST(${federationThreadSyncState.deletionProcessedThroughSeq}, ${processedThroughSeq}) >= ${federationThreadSyncState.deletionRecoveryThroughSeq}
+          THEN NULL
+          ELSE ${federationThreadSyncState.deletionRecoveryMaxMessageSeq}
+        END`,
         updatedAt: new Date(),
       })
       .where(
         sql`${federationThreadSyncState.threadId} = ${threadId}
           AND ${federationThreadSyncState.peerDomain} = ${peerDomain}
+          AND ${federationThreadSyncState.namespaceId} = ${namespaceId}
           AND ${federationThreadSyncState.deletionTargetSeq} >= ${frozenTargetSeq}`,
       )
       .returning({ threadId: federationThreadSyncState.threadId });
@@ -344,12 +384,13 @@ export class FederationThreadSyncStateService {
     }
   }
 
-  async require(threadId: number, peerDomain: string) {
+  async require(threadId: number, peerDomain: string, namespaceId: number) {
     const state =
       await this.database.db.query.federationThreadSyncState.findFirst({
         where: and(
           eq(federationThreadSyncState.threadId, threadId),
           eq(federationThreadSyncState.peerDomain, peerDomain),
+          eq(federationThreadSyncState.namespaceId, namespaceId),
         ),
       });
     if (!state) {
@@ -364,8 +405,9 @@ export class FederationThreadSyncStateService {
   async resolveReverseWindow(
     threadId: number,
     peerDomain: string,
+    namespaceId: number,
   ): Promise<FederationReverseWindow> {
-    const state = await this.require(threadId, peerDomain);
+    const state = await this.require(threadId, peerDomain, namespaceId);
     if (state.historyBoundaryReached) {
       return {
         authorizationEpoch: state.authorizationEpoch,
@@ -386,6 +428,7 @@ export class FederationThreadSyncStateService {
       FROM "FederationThreadHistoryGap"
       WHERE id = ${gapId}
         AND "threadId" = ${threadId}
+        AND "namespaceId" = ${namespaceId}
         AND recoverable = true
     `);
     const gap = result.rows[0];
@@ -409,6 +452,7 @@ export class FederationThreadSyncStateService {
     params: {
       threadId: number;
       peerDomain: string;
+      namespaceId: number;
       authorizationEpoch: number;
       gapId: bigint;
       beforeSeq: number;
@@ -434,6 +478,7 @@ export class FederationThreadSyncStateService {
       SELECT "activeGapId"
       FROM "FederationThreadSyncState"
       WHERE "threadId" = ${params.threadId}
+        AND "namespaceId" = ${params.namespaceId}
         AND "peerDomain" = ${params.peerDomain}
         AND "authorizationEpoch" = ${params.authorizationEpoch}
       FOR UPDATE
@@ -455,6 +500,7 @@ export class FederationThreadSyncStateService {
       FROM "FederationThreadHistoryGap"
       WHERE id = ${params.gapId}
         AND "threadId" = ${params.threadId}
+        AND "namespaceId" = ${params.namespaceId}
         AND recoverable = true
       FOR UPDATE
     `);
@@ -483,6 +529,7 @@ export class FederationThreadSyncStateService {
           and(
             eq(federationThreadHistoryGap.id, params.gapId),
             eq(federationThreadHistoryGap.threadId, params.threadId),
+            eq(federationThreadHistoryGap.namespaceId, params.namespaceId),
             eq(federationThreadHistoryGap.endSeq, gap.endSeq),
           ),
         )
@@ -497,6 +544,7 @@ export class FederationThreadSyncStateService {
       .from(federationThreadHistoryGap)
       .where(
         sql`${federationThreadHistoryGap.threadId} = ${params.threadId}
+          AND ${federationThreadHistoryGap.namespaceId} = ${params.namespaceId}
           AND ${federationThreadHistoryGap.recoverable} = true
           AND (${completedGapId}::bigint IS NULL
             OR ${federationThreadHistoryGap.id} <> ${completedGapId})`,
@@ -513,6 +561,7 @@ export class FederationThreadSyncStateService {
       .where(
         and(
           eq(federationThreadSyncState.threadId, params.threadId),
+          eq(federationThreadSyncState.namespaceId, params.namespaceId),
           eq(federationThreadSyncState.peerDomain, params.peerDomain),
           eq(
             federationThreadSyncState.authorizationEpoch,
@@ -531,6 +580,7 @@ export class FederationThreadSyncStateService {
         .where(
           and(
             eq(federationThreadHistoryGap.threadId, params.threadId),
+            eq(federationThreadHistoryGap.namespaceId, params.namespaceId),
             eq(federationThreadHistoryGap.id, completedGapId),
           ),
         );
@@ -542,6 +592,7 @@ export class FederationThreadSyncStateService {
     params: {
       threadId: number;
       peerDomain: string;
+      namespaceId: number;
       authorizationEpoch: number;
       gapId: bigint;
     },
@@ -560,6 +611,7 @@ export class FederationThreadSyncStateService {
       SELECT "activeGapId"
       FROM "FederationThreadSyncState"
       WHERE "threadId" = ${params.threadId}
+        AND "namespaceId" = ${params.namespaceId}
         AND "peerDomain" = ${params.peerDomain}
         AND "authorizationEpoch" = ${params.authorizationEpoch}
       FOR UPDATE
@@ -577,6 +629,7 @@ export class FederationThreadSyncStateService {
       .where(
         and(
           eq(federationThreadHistoryGap.threadId, params.threadId),
+          eq(federationThreadHistoryGap.namespaceId, params.namespaceId),
           eq(federationThreadHistoryGap.id, params.gapId),
         ),
       );
@@ -586,6 +639,7 @@ export class FederationThreadSyncStateService {
       .where(
         and(
           eq(federationThreadHistoryGap.threadId, params.threadId),
+          eq(federationThreadHistoryGap.namespaceId, params.namespaceId),
           eq(federationThreadHistoryGap.recoverable, true),
         ),
       )
@@ -601,6 +655,7 @@ export class FederationThreadSyncStateService {
       .where(
         and(
           eq(federationThreadSyncState.threadId, params.threadId),
+          eq(federationThreadSyncState.namespaceId, params.namespaceId),
           eq(federationThreadSyncState.peerDomain, params.peerDomain),
           eq(
             federationThreadSyncState.authorizationEpoch,

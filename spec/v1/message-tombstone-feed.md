@@ -78,10 +78,13 @@ of the response coordinates.
 A query MAY also carry `maxMessageSeq`, a non-negative canonical decimal string
 no greater than `SafeInteger - 1`. It is an inclusive upper bound in the
 publisher's exposed `MessageTombstone.messageSeq` coordinate, not in the
-deletion coordinate. Omission retains the unfiltered behavior for compatibility.
-A consumer that supplies it MUST freeze the value for the complete bounded
-query drain, including retries and cursor recovery; increasing it creates
-later-round work rather than enlarging the active drain.
+deletion coordinate. This parameter is used only by the first deletion drain
+after an existing relationship is reauthorized. Its value is the greatest
+publisher message coordinate that the consumer had continuously committed
+before the preceding authorization loss. The value and the drain's `through`
+MUST remain fixed across every page, retry, and cursor recovery in that bounded
+drain. Every later deletion drain for the authorization segment MUST omit
+`maxMessageSeq` and therefore uses the unfiltered behavior.
 
 The wire representation, default, and pagination behavior of `includeSelf`
 are identical to the message query. With `includeSelf=false`, the source uses
@@ -127,12 +130,22 @@ skip an authoritative fact in the interval that this peer may learn.
 
 A tombstone excluded only by `maxMessageSeq` is a scannable gap. The source
 MUST still advance `scannedThrough` according to the deletion window and MUST
-NOT alter or discard the authoritative fact. This is safe for an ordinary
-forward round because the consumer chooses the bound from message coordinates
-it has already durably covered, while the source's message query omits messages
-that were already tombstoned. A deletion committed after a message page was
-served is discovered by a later `THREAD_CONTENT_HEAD` update, when the consumer's
-durable message boundary includes that message.
+NOT alter or discard the authoritative fact. This lets the reauthorization
+drain return withdrawals that can target retained pre-loss replicas while
+fast-forwarding deletion facts whose target message coordinate is greater than
+the consumer's pre-loss committed message boundary. Completing that bounded
+drain commits its full `scannedThrough`, not merely the greatest returned
+tombstone. A later `THREAD_CONTENT_HEAD` creates an ordinary unfiltered deletion
+drain.
+
+A consumer initializing a thread for which it has no previous replica in the
+publisher's message-coordinate space MUST NOT query the tombstone history that
+precedes its first committed `THREAD_CONTENT_HEAD`. It initializes its deletion
+cursor directly to that item's `tombstoneEndSeq`. This is safe because the
+source message query does not return messages already terminated by an
+authoritative tombstone, and the consumer has no older local replica to remove.
+This initial cursor adoption is not relationship reauthorization and MUST NOT
+cause a `maxMessageSeq` request.
 
 When starting or restarting a forward tombstone-query drain, a consumer MAY
 advance its local `after` cursor to a greater position because of finite local
@@ -164,11 +177,14 @@ existing durable facts, but the GET request itself MUST NOT create or broaden
 authorization.
 
 After receiving relationship termination through the state feed, a consumer
-MUST invalidate that peer/thread's current deletion target. If a
-tombstone query first returns `FORBIDDEN` because the current relationship is
-invalid, the consumer MUST stop querying that thread, invalidate its pending
-end, and prioritize draining the state feed again. It MUST NOT decrease the
-State Feed cursor or undo an applied authoritative tombstone.
+MUST invalidate that peer/thread's current deletion target. If a tombstone
+query first returns `FORBIDDEN` because the current relationship is invalid,
+the consumer MUST apply the current-state-guarded P2P or GROUP convergence rules in
+[Message Feed](./message-feed.md), stop every query direction covered by a
+matching epoch, invalidate its pending ends, and prioritize draining the State
+Feed again. A denial invalidated by newer relationship state authors no
+transition and resumes from current durable state. This handling MUST NOT
+decrease the State Feed cursor or undo an applied authoritative tombstone.
 
 When the source cannot serve the query because its quota is exhausted, it MAY
 return HTTP `200 FEDERATION_QUOTA_EXCEEDED` with the sole structured data

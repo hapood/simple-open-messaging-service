@@ -16,6 +16,7 @@ import {
 import { MessageThreadType } from '../src/database/enums.js';
 import { GroupMetaFeedService } from '../src/federation/group-meta-feed.service.js';
 import { loadFederationConfig } from '../src/federation/federation.config.js';
+import { seedFederatedPeerNamespace } from './seed.js';
 
 describe('group-meta compacted feed', () => {
   const suffix = Date.now().toString(36);
@@ -31,6 +32,8 @@ describe('group-meta compacted feed', () => {
   let threadId: number;
   let ownerUserId: number;
   let memberUserId: number;
+  let peerNamespaceId: number;
+  let otherPeerNamespaceId: number;
 
   beforeAll(async () => {
     mod = await Test.createTestingModule({
@@ -39,9 +42,14 @@ describe('group-meta compacted feed', () => {
     }).compile();
     database = mod.get(DatabaseService);
     feed = mod.get(GroupMetaFeedService);
-    await database.db
-      .insert(federatedPeer)
-      .values([{ domain: peerDomain }, { domain: otherPeerDomain }]);
+    peerNamespaceId = await seedFederatedPeerNamespace(
+      database.db,
+      peerDomain,
+    );
+    otherPeerNamespaceId = await seedFederatedPeerNamespace(
+      database.db,
+      otherPeerDomain,
+    );
     const [owner, member] = await database.db
       .insert(user)
       .values([
@@ -54,6 +62,8 @@ describe('group-meta compacted feed', () => {
         {
           account: accounts[2],
           domain: peerDomain,
+          sourceDomain: peerDomain,
+          namespaceId: peerNamespaceId,
           name: 'Member',
           updatedAt: new Date(),
         },
@@ -97,11 +107,13 @@ describe('group-meta compacted feed', () => {
     await database.db.insert(threadAudience).values([
       {
         targetDomain: peerDomain,
+        targetNamespaceId: peerNamespaceId,
         threadId,
         messageAccessAfterSeq: 0,
       },
       {
         targetDomain: otherPeerDomain,
+        targetNamespaceId: otherPeerNamespaceId,
         threadId,
         messageAccessAfterSeq: 0,
       },
@@ -131,6 +143,7 @@ describe('group-meta compacted feed', () => {
   const owner = {
     account: accounts[1],
     domain: localDomain,
+    namespaceId: 0,
     body: {
       role: 'OWNER',
       profileRev: 1,
@@ -141,6 +154,9 @@ describe('group-meta compacted feed', () => {
   const member = {
     account: accounts[2],
     domain: peerDomain,
+    get namespaceId() {
+      return peerNamespaceId;
+    },
     body: {
       role: 'MEMBER',
       profileRev: 1,
@@ -151,10 +167,16 @@ describe('group-meta compacted feed', () => {
 
   it('returns the current roster in full and ordered changes in delta', async () => {
     await database.db.transaction((tx) =>
-      feed.reconcileInTx(tx, peerDomain, groupId, [owner, member]),
+      feed.reconcileInTx(
+        tx,
+        peerDomain,
+        peerNamespaceId,
+        groupId,
+        [owner, member],
+      ),
     );
     await database.db.transaction((tx) =>
-      feed.reconcileInTx(tx, peerDomain, groupId, [owner]),
+      feed.reconcileInTx(tx, peerDomain, peerNamespaceId, groupId, [owner]),
     );
     await database.db
       .update(threadMember)
@@ -166,14 +188,26 @@ describe('group-meta compacted feed', () => {
         ),
       );
 
-    const full = await feed.serve(peerDomain, groupAccount, 'full', 0n);
+    const full = await feed.serve(
+      peerDomain,
+      peerNamespaceId,
+      groupAccount,
+      'full',
+      0n,
+    );
     expect(full.groupMetaFeedEndId).toBe('3');
     expect(full.scannedThrough).toBe('3');
     expect(full.items.map((item) => [item.account, item.operation])).toEqual([
       [accounts[1], 'UPSERT'],
     ]);
 
-    const delta = await feed.serve(peerDomain, groupAccount, 'delta', 2n);
+    const delta = await feed.serve(
+      peerDomain,
+      peerNamespaceId,
+      groupAccount,
+      'delta',
+      2n,
+    );
     expect(delta.items).toMatchObject([
       {
         feedId: '3',
@@ -185,6 +219,7 @@ describe('group-meta compacted feed', () => {
 
     const firstPage = await feed.serve(
       peerDomain,
+      peerNamespaceId,
       groupAccount,
       'delta',
       0n,
@@ -198,6 +233,7 @@ describe('group-meta compacted feed', () => {
     expect(firstPage.items.map((item) => item.feedId)).toEqual(['1']);
     const secondPage = await feed.serve(
       peerDomain,
+      peerNamespaceId,
       groupAccount,
       'delta',
       1n,
@@ -211,7 +247,7 @@ describe('group-meta compacted feed', () => {
     expect(secondPage.items.map((item) => item.feedId)).toEqual(['2']);
 
     await expect(
-      feed.serve(peerDomain, groupAccount, 'full', undefined),
+      feed.serve(peerDomain, peerNamespaceId, groupAccount, 'full', undefined),
     ).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
       data: { resumeAfter: '0', resumeBefore: '4' },
@@ -225,11 +261,12 @@ describe('group-meta compacted feed', () => {
       .where(
         and(
           eq(groupMetaFeedTarget.targetPeerDomain, peerDomain),
+          eq(groupMetaFeedTarget.targetNamespaceId, peerNamespaceId),
           eq(groupMetaFeedTarget.groupId, groupId),
         ),
       );
     await expect(
-      feed.serve(peerDomain, groupAccount, 'delta', 2n),
+      feed.serve(peerDomain, peerNamespaceId, groupAccount, 'delta', 2n),
     ).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
       data: { resumeAfter: '0', resumeBefore: '4' },
@@ -247,9 +284,21 @@ describe('group-meta compacted feed', () => {
         ),
       );
     await database.db.transaction((tx) =>
-      feed.reconcileInTx(tx, peerDomain, groupId, [owner, member]),
+      feed.reconcileInTx(
+        tx,
+        peerDomain,
+        peerNamespaceId,
+        groupId,
+        [owner, member],
+      ),
     );
-    const delta = await feed.serve(peerDomain, groupAccount, 'delta', 3n);
+    const delta = await feed.serve(
+      peerDomain,
+      peerNamespaceId,
+      groupAccount,
+      'delta',
+      3n,
+    );
     expect(delta.items).toMatchObject([
       { feedId: '4', account: accounts[2], operation: 'UPSERT' },
     ]);
@@ -266,14 +315,26 @@ describe('group-meta compacted feed', () => {
         ),
       );
     await database.db.transaction((tx) =>
-      feed.reconcileInTx(tx, peerDomain, groupId, [owner]),
+      feed.reconcileInTx(tx, peerDomain, peerNamespaceId, groupId, [owner]),
     );
 
-    const full = await feed.serve(peerDomain, groupAccount, 'full', 0n);
+    const full = await feed.serve(
+      peerDomain,
+      peerNamespaceId,
+      groupAccount,
+      'full',
+      0n,
+    );
     expect(full.items.map((item) => [item.account, item.operation])).toEqual([
       [accounts[1], 'UPSERT'],
     ]);
-    const delta = await feed.serve(peerDomain, groupAccount, 'delta', 4n);
+    const delta = await feed.serve(
+      peerDomain,
+      peerNamespaceId,
+      groupAccount,
+      'delta',
+      4n,
+    );
     expect(delta.items).toMatchObject([
       {
         feedId: '5',
@@ -293,24 +354,36 @@ describe('group-meta compacted feed', () => {
         ),
       );
     await database.db.transaction((tx) =>
-      feed.reconcileInTx(tx, peerDomain, groupId, [owner, member]),
+      feed.reconcileInTx(
+        tx,
+        peerDomain,
+        peerNamespaceId,
+        groupId,
+        [owner, member],
+      ),
     );
   });
 
   it('preserves the allocator while authorization is inactive', async () => {
     await database.db.transaction((tx) =>
-      feed.deactivateTargetInTx(tx, peerDomain, groupId),
+      feed.deactivateTargetInTx(tx, peerDomain, peerNamespaceId, groupId),
     );
     await expect(
-      feed.serve(peerDomain, groupAccount, 'full', 0n),
+      feed.serve(peerDomain, peerNamespaceId, groupAccount, 'full', 0n),
     ).rejects.toMatchObject({ bizCode: BusinessCode.FORBIDDEN });
 
     const unchangedHead = await database.db.transaction((tx) =>
-      feed.reconcileInTx(tx, peerDomain, groupId, [owner, member]),
+      feed.reconcileInTx(
+        tx,
+        peerDomain,
+        peerNamespaceId,
+        groupId,
+        [owner, member],
+      ),
     );
     expect(unchangedHead).toBe(6n);
     const advancedHead = await database.db.transaction((tx) =>
-      feed.reconcileInTx(tx, peerDomain, groupId, [
+      feed.reconcileInTx(tx, peerDomain, peerNamespaceId, groupId, [
         owner,
         {
           ...member,
@@ -323,16 +396,34 @@ describe('group-meta compacted feed', () => {
 
   it('keeps the same member address independent for different source peers', async () => {
     await database.db.transaction((tx) =>
-      feed.reconcileInTx(tx, otherPeerDomain, groupId, [
+      feed.reconcileInTx(
+        tx,
+        otherPeerDomain,
+        otherPeerNamespaceId,
+        groupId,
+        [
         owner,
         {
           ...member,
           body: { ...member.body, displayName: 'Different projection' },
         },
-      ]),
+        ],
+      ),
     );
-    const first = await feed.serve(peerDomain, groupAccount, 'full', 0n);
-    const second = await feed.serve(otherPeerDomain, groupAccount, 'full', 0n);
+    const first = await feed.serve(
+      peerDomain,
+      peerNamespaceId,
+      groupAccount,
+      'full',
+      0n,
+    );
+    const second = await feed.serve(
+      otherPeerDomain,
+      otherPeerNamespaceId,
+      groupAccount,
+      'full',
+      0n,
+    );
     expect(
       first.items.find((item) => item.account === accounts[2])?.body,
     ).toMatchObject({ displayName: 'Member' });

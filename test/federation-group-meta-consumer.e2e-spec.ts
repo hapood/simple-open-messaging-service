@@ -12,8 +12,9 @@ import {
 } from '../src/database/schema.js';
 import type { DatabaseTransaction } from '../src/database/database.service.js';
 import type { GroupMetaFeedPage } from '../src/federation/group-meta-feed.service.js';
-import { FederationService } from '../src/federation/federation.service.js';
+import { FederationStateFeedConsumerService } from '../src/federation/federation-state-feed-consumer.service.js';
 import { recordHostedGroupSentBoundaries } from '../src/message/hosted-group-sent-boundaries.js';
+import { seedFederatedPeerNamespace } from './seed.js';
 
 describe('federation Group Meta consumer', () => {
   const suffix = Date.now().toString(36);
@@ -25,12 +26,14 @@ describe('federation Group Meta consumer', () => {
   let threadId: number;
   let ownerId: number;
   let memberId: number;
+  let namespaceId: number;
 
   beforeAll(async () => {
     mod = await Test.createTestingModule({
       imports: [DatabaseModule],
     }).compile();
     database = mod.get(DatabaseService);
+    namespaceId = await seedFederatedPeerNamespace(database.db, peerDomain);
     const users = await database.db
       .insert(user)
       .values([
@@ -38,6 +41,7 @@ describe('federation Group Meta consumer', () => {
           account: `owner-${suffix}`,
           domain: peerDomain,
           sourceDomain: peerDomain,
+          namespaceId,
           name: 'Owner',
           profileRev: 1,
           updatedAt: new Date(),
@@ -46,6 +50,7 @@ describe('federation Group Meta consumer', () => {
           account: `member-${suffix}`,
           domain: 'member.example',
           sourceDomain: peerDomain,
+          namespaceId,
           name: 'Old member',
           profileRev: 1,
           updatedAt: new Date(),
@@ -58,6 +63,7 @@ describe('federation Group Meta consumer', () => {
       .values({
         account: groupAccount,
         domain: peerDomain,
+        namespaceId,
         name: 'Mirror',
         updatedAt: new Date(),
       })
@@ -68,6 +74,7 @@ describe('federation Group Meta consumer', () => {
       .values({
         type: MessageThreadType.GROUP,
         groupId,
+        authorityNamespaceId: namespaceId,
         updatedAt: new Date(),
       })
       .returning({ id: messageThread.id });
@@ -104,8 +111,8 @@ describe('federation Group Meta consumer', () => {
 
   it('retains the complete DEPART member for historical message display', async () => {
     const service = Object.create(
-      FederationService.prototype,
-    ) as FederationService & Record<string, unknown>;
+      FederationStateFeedConsumerService.prototype,
+    ) as FederationStateFeedConsumerService & Record<string, unknown>;
     const applyProjection = vi.fn().mockResolvedValue({
       threadId,
       users: [],
@@ -142,13 +149,20 @@ describe('federation Group Meta consumer', () => {
       applyGroupMetaFeedPageInTx(
         tx: DatabaseTransaction,
         peer: string,
+        namespaceId: number,
         account: string,
         page: GroupMetaFeedPage,
       ): Promise<unknown>;
     };
 
     await database.db.transaction((tx) =>
-      target.applyGroupMetaFeedPageInTx(tx, peerDomain, groupAccount, page),
+      target.applyGroupMetaFeedPageInTx(
+        tx,
+        peerDomain,
+        namespaceId,
+        groupAccount,
+        page,
+      ),
     );
 
     const retained = await database.db

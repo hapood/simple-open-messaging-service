@@ -69,6 +69,7 @@ export class FederationThreadReverseRoundService {
   async run(
     threadId: number,
     peerDomain: string,
+    namespaceId: number,
     driver: FederationThreadReverseRoundDriver,
     requestedTake?: number,
     continuation?: FederationReverseRoundContext,
@@ -77,6 +78,7 @@ export class FederationThreadReverseRoundService {
     const context = await this.resolveContext(
       threadId,
       peerDomain,
+      namespaceId,
       continuation,
     );
     if (context === null) {
@@ -178,8 +180,13 @@ export class FederationThreadReverseRoundService {
   private async createContext(
     threadId: number,
     peerDomain: string,
+    namespaceId: number,
   ): Promise<FederationReverseRoundContext | null> {
-    const window = await this.states.resolveReverseWindow(threadId, peerDomain);
+    const window = await this.states.resolveReverseWindow(
+      threadId,
+      peerDomain,
+      namespaceId,
+    );
     if (window.gapId === null || window.throughSeq === null) return null;
     return {
       authorizationEpoch: window.authorizationEpoch,
@@ -194,10 +201,15 @@ export class FederationThreadReverseRoundService {
   private async resolveContext(
     threadId: number,
     peerDomain: string,
+    namespaceId: number,
     continuation?: FederationReverseRoundContext,
   ): Promise<FederationReverseRoundContext | null> {
     if (continuation) {
-      const state = await this.states.require(threadId, peerDomain);
+      const state = await this.states.require(
+        threadId,
+        peerDomain,
+        namespaceId,
+      );
       if (
         state.authorizationEpoch === continuation.authorizationEpoch &&
         state.activeGapId !== null &&
@@ -207,7 +219,7 @@ export class FederationThreadReverseRoundService {
         return continuation;
       }
     }
-    return this.createContext(threadId, peerDomain);
+    return this.createContext(threadId, peerDomain, namespaceId);
   }
 
   private mergeDepartedMemberProfiles(

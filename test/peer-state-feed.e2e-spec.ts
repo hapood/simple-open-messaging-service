@@ -8,6 +8,7 @@ import {
   federatedFriendRequest,
   federatedPeer,
   group,
+  identityNamespace,
   messageThread,
   relationshipIntent,
   relationshipPair,
@@ -17,7 +18,7 @@ import {
 } from '../src/database/schema.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
 import { RelationshipIntentService } from '../src/invite/relationship-intent.service.js';
-import { FederationService } from '../src/federation/federation.service.js';
+import { FederationStateFeedConsumerService } from '../src/federation/federation-state-feed-consumer.service.js';
 import type { DatabaseTransaction } from '../src/database/database.service.js';
 
 const DOMAINS = ['state-feed-a.test', 'state-feed-b.test'];
@@ -28,6 +29,33 @@ describe('per-peer state feed', () => {
   let database: DatabaseService;
   let feed: PeerStateFeedService;
   let membership: RelationshipIntentService;
+  const namespaceIds = new Map<string, number>();
+
+  async function seedPeer(domain: string): Promise<number> {
+    const [namespace] = await database.db
+      .insert(identityNamespace)
+      .values({
+        domain,
+        rootKeyFingerprint: `sha256:${domain}`,
+        rootPublicKey: Buffer.alloc(32, domain.length).toString('base64'),
+        identityPinnedAt: new Date(),
+      })
+      .returning({ id: identityNamespace.id });
+    await database.db.insert(federatedPeer).values({
+      domain,
+      activeNamespaceId: namespace.id,
+      trustLevel: 'available',
+    });
+    namespaceIds.set(domain, namespace.id);
+    return namespace.id;
+  }
+
+  function namespaceId(domain: string): number {
+    const value = namespaceIds.get(domain);
+    if (value === undefined)
+      throw new Error(`missing test namespace for ${domain}`);
+    return value;
+  }
 
   beforeAll(async () => {
     mod = await Test.createTestingModule({
@@ -37,10 +65,7 @@ describe('per-peer state feed', () => {
     database = mod.get(DatabaseService);
     feed = mod.get(PeerStateFeedService);
     membership = mod.get(RelationshipIntentService);
-    await database.db
-      .insert(federatedPeer)
-      .values(DOMAINS.map((domain) => ({ domain, trustLevel: 'available' })))
-      .onConflictDoNothing();
+    for (const domain of DOMAINS) await seedPeer(domain);
   });
 
   afterAll(async () => {
@@ -58,6 +83,7 @@ describe('per-peer state feed', () => {
       await feed.writeManyInTx(tx, [
         {
           peerDomain: DOMAINS[0],
+          namespaceId: namespaceId(DOMAINS[0]),
           account: 'alice',
           domain: 'local.test',
           eventType: 'PROFILE',
@@ -69,6 +95,7 @@ describe('per-peer state feed', () => {
       await feed.writeManyInTx(tx, [
         {
           peerDomain: DOMAINS[0],
+          namespaceId: namespaceId(DOMAINS[0]),
           account: 'alice',
           domain: 'local.test',
           eventType: 'PROFILE',
@@ -80,6 +107,7 @@ describe('per-peer state feed', () => {
       await feed.writeManyInTx(tx, [
         {
           peerDomain: DOMAINS[0],
+          namespaceId: namespaceId(DOMAINS[0]),
           account: 'alice',
           domain: 'local.test',
           eventType: 'PROFILE',
@@ -89,7 +117,11 @@ describe('per-peer state feed', () => {
         },
       ]);
     });
-    const page = await feed.serve(DOMAINS[0], 0n);
+    const page = await feed.serve(
+      DOMAINS[0],
+      namespaceId(DOMAINS[0]),
+      0n,
+    );
     expect(page.stateFeedEndId).toBe('2');
     expect(page.scannedThrough).toBe('2');
     expect(page.items).toMatchObject([
@@ -108,16 +140,15 @@ describe('per-peer state feed', () => {
     const account = 'unsolicited-profile';
     const peerDomain = DOMAINS[0];
     const receiver = Object.create(
-      FederationService.prototype,
-    ) as FederationService;
+      FederationStateFeedConsumerService.prototype,
+    ) as FederationStateFeedConsumerService;
     Object.assign(receiver, {
       config: { domain: 'receiver.test' },
     });
-    const applyStateFeedPageInTx = receiver['applyStateFeedPageInTx'].bind(
-      receiver,
-    ) as (
+    const applyStateFeedPageInTx = receiver.applyPageInTx.bind(receiver) as (
       tx: DatabaseTransaction,
       domain: string,
+      namespaceId: number,
       page: {
         stateFeedEndId: string;
         scannedThrough: string;
@@ -137,7 +168,7 @@ describe('per-peer state feed', () => {
     ) => Promise<unknown>;
 
     await database.db.transaction((tx) =>
-      applyStateFeedPageInTx(tx, peerDomain, {
+      applyStateFeedPageInTx(tx, peerDomain, namespaceId(peerDomain), {
         stateFeedEndId: '1',
         scannedThrough: '1',
         hasMore: false,
@@ -174,7 +205,7 @@ describe('per-peer state feed', () => {
 
   it('reindexes an unchanged confirmation when explicitly required', async () => {
     const domain = 'state-feed-confirmation.test';
-    await database.db.insert(federatedPeer).values({ domain });
+    const testNamespaceId = await seedPeer(domain);
     try {
       const body = {
         status: 'ACCEPTED',
@@ -186,6 +217,7 @@ describe('per-peer state feed', () => {
         await feed.writeManyInTx(tx, [
           {
             peerDomain: domain,
+            namespaceId: testNamespaceId,
             account: 'alice',
             domain: 'local.test',
             subjectAccount: 'bob',
@@ -197,6 +229,7 @@ describe('per-peer state feed', () => {
         await feed.writeManyInTx(tx, [
           {
             peerDomain: domain,
+            namespaceId: testNamespaceId,
             account: 'alice',
             domain: 'local.test',
             subjectAccount: 'bob',
@@ -208,7 +241,7 @@ describe('per-peer state feed', () => {
         ]);
       });
 
-      const page = await feed.serve(domain, 0n);
+      const page = await feed.serve(domain, testNamespaceId, 0n);
       expect(page.stateFeedEndId).toBe('2');
       expect(page.items).toEqual([
         {
@@ -233,10 +266,11 @@ describe('per-peer state feed', () => {
 
   it('advances the feed while reusing the current snapshot revision', async () => {
     const domain = 'state-feed-snapshot-revision.test';
-    await database.db.insert(federatedPeer).values({ domain });
+    const testNamespaceId = await seedPeer(domain);
     try {
       const write = {
         peerDomain: domain,
+        namespaceId: testNamespaceId,
         account: 'alice',
         domain: 'local.test',
         eventType: 'PROFILE' as const,
@@ -249,7 +283,7 @@ describe('per-peer state feed', () => {
         await feed.writeManyInTx(tx, [{ ...write, forceReindex: true }]);
       });
 
-      const page = await feed.serve(domain, 0n);
+      const page = await feed.serve(domain, testNamespaceId, 0n);
       expect(page.stateFeedEndId).toBe('2');
       expect(page.items).toMatchObject([
         { feedId: '2', body: { profileRev: 7 } },
@@ -263,10 +297,11 @@ describe('per-peer state feed', () => {
 
   it('deduplicates an unchanged snapshot revision without reindexing', async () => {
     const domain = 'state-feed-snapshot-dedup.test';
-    await database.db.insert(federatedPeer).values({ domain });
+    const testNamespaceId = await seedPeer(domain);
     try {
       const write = {
         peerDomain: domain,
+        namespaceId: testNamespaceId,
         account: 'alice',
         domain: 'local.test',
         eventType: 'PROFILE' as const,
@@ -279,7 +314,7 @@ describe('per-peer state feed', () => {
         await feed.writeManyInTx(tx, [write]);
       });
 
-      const page = await feed.serve(domain, 0n);
+      const page = await feed.serve(domain, testNamespaceId, 0n);
       expect(page.stateFeedEndId).toBe('1');
       expect(page.items).toMatchObject([
         { feedId: '1', body: { profileRev: 8 } },
@@ -293,13 +328,14 @@ describe('per-peer state feed', () => {
 
   it('rejects PROFILE changes that do not advance the snapshot revision', async () => {
     const domain = 'state-feed-snapshot-mutation.test';
-    await database.db.insert(federatedPeer).values({ domain });
+    const testNamespaceId = await seedPeer(domain);
     try {
       await expect(
         database.db.transaction(async (tx) => {
           await feed.writeManyInTx(tx, [
             {
               peerDomain: domain,
+              namespaceId: testNamespaceId,
               account: 'alice',
               domain: 'local.test',
               eventType: 'PROFILE',
@@ -316,6 +352,7 @@ describe('per-peer state feed', () => {
           await feed.writeManyInTx(tx, [
             {
               peerDomain: domain,
+              namespaceId: testNamespaceId,
               account: 'alice',
               domain: 'local.test',
               eventType: 'PROFILE',
@@ -355,6 +392,7 @@ describe('per-peer state feed', () => {
       await feed.writeManyInTx(tx, [
         {
           peerDomain: DOMAINS[0],
+          namespaceId: namespaceId(DOMAINS[0]),
           account: 'alice',
           domain: 'local.test',
           subjectAccount: 'bob',
@@ -369,6 +407,7 @@ describe('per-peer state feed', () => {
         },
         {
           peerDomain: DOMAINS[0],
+          namespaceId: namespaceId(DOMAINS[0]),
           account: 'alice',
           domain: 'local.test',
           subjectAccount: 'carol',
@@ -383,6 +422,7 @@ describe('per-peer state feed', () => {
         },
         {
           peerDomain: DOMAINS[1],
+          namespaceId: namespaceId(DOMAINS[1]),
           account: 'alice',
           domain: 'local.test',
           eventType: 'PROFILE',
@@ -392,16 +432,24 @@ describe('per-peer state feed', () => {
         },
       ]);
     });
-    const a = await feed.serve(DOMAINS[0], 2n);
-    const b = await feed.serve(DOMAINS[1], 0n);
+    const a = await feed.serve(DOMAINS[0], namespaceId(DOMAINS[0]), 2n);
+    const b = await feed.serve(DOMAINS[1], namespaceId(DOMAINS[1]), 0n);
     expect(a.items.map((x) => x.peerAccount)).toEqual(['bob', 'carol']);
     expect(b.items).toHaveLength(1);
     expect(b.items[0].body).toMatchObject({ name: 'private-to-b' });
   });
 
   it('serves an older after without maintaining a source-side peer cursor', async () => {
-    const later = await feed.serve(DOMAINS[0], 4n);
-    const replay = await feed.serve(DOMAINS[0], 0n);
+    const later = await feed.serve(
+      DOMAINS[0],
+      namespaceId(DOMAINS[0]),
+      4n,
+    );
+    const replay = await feed.serve(
+      DOMAINS[0],
+      namespaceId(DOMAINS[0]),
+      0n,
+    );
     expect(BigInt(replay.scannedThrough)).toBeGreaterThanOrEqual(
       BigInt(later.scannedThrough),
     );
@@ -414,6 +462,7 @@ describe('per-peer state feed', () => {
         await feed.writeManyInTx(tx, [
           {
             peerDomain: DOMAINS[1],
+            namespaceId: namespaceId(DOMAINS[1]),
             account: 'rollback',
             domain: 'local.test',
             eventType: 'PROFILE',
@@ -437,13 +486,14 @@ describe('per-peer state feed', () => {
     expect(rows).toHaveLength(0);
   });
 
-  it('cascades feed, allocator, and pull cursor on peer deletion', async () => {
+  it('retains the namespace feed when the peer control row is deleted', async () => {
     const domain = 'state-feed-cascade.test';
-    await database.db.insert(federatedPeer).values({ domain });
+    const testNamespaceId = await seedPeer(domain);
     await database.db.transaction((tx) =>
       feed.writeManyInTx(tx, [
         {
           peerDomain: domain,
+          namespaceId: testNamespaceId,
           account: 'alice',
           domain: 'local.test',
           eventType: 'PROFILE',
@@ -456,7 +506,7 @@ describe('per-peer state feed', () => {
     await database.db
       .delete(federatedPeer)
       .where(eq(federatedPeer.domain, domain));
-    expect(await feed.readFeedEndId(domain)).toBe(0n);
+    expect(await feed.readFeedEndId(testNamespaceId)).toBe(1n);
   });
 
   it('applies a later received group direction snapshot', async () => {
@@ -467,6 +517,7 @@ describe('per-peer state feed', () => {
         account: `!rev-${suffix}`,
         name: 'revision group',
         domain: DOMAINS[0],
+        namespaceId: namespaceId(DOMAINS[0]),
         updatedAt: new Date(),
       })
       .returning({ id: group.id });
@@ -475,6 +526,7 @@ describe('per-peer state feed', () => {
       .values({
         type: MessageThreadType.GROUP,
         groupId: groupState.id,
+        authorityNamespaceId: namespaceId(DOMAINS[0]),
         updatedAt: new Date(),
       })
       .returning({ id: messageThread.id });

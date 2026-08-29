@@ -13,6 +13,7 @@ import {
 } from './friend-request-state';
 
 const friendInput: FriendIntentProjectionInput = {
+  namespaceId: 12,
   account: 'alice',
   domain: 'local',
   subjectAccount: 'bob',
@@ -25,6 +26,7 @@ const friendInput: FriendIntentProjectionInput = {
   requestedAt: 1_000,
   expiresAt: 10_000,
   peer: {
+    namespaceId: 12,
     id: 2,
     account: 'bob',
     domain: 'remote.test',
@@ -35,6 +37,7 @@ const friendInput: FriendIntentProjectionInput = {
 };
 
 const groupInput: GroupInviteProjectionInput = {
+  namespaceId: 0,
   account: '!group',
   domain: 'local',
   status: 'REQUESTED',
@@ -44,6 +47,7 @@ const groupInput: GroupInviteProjectionInput = {
   direction: 'INCOMING',
   threadId: 9,
   group: {
+    namespaceId: 0,
     account: '!group',
     domain: 'local',
     isLocal: true,
@@ -139,7 +143,7 @@ describe('request projection effects', () => {
       2_000,
     ).record!;
     expect(request).toMatchObject({
-      key: groupRequestKey('local', '!group', 'INCOMING'),
+      key: groupRequestKey(0, 'local', '!group', 'INCOMING'),
       kind: 'GROUP',
       direction: 'INCOMING',
       status: 'REQUESTED',

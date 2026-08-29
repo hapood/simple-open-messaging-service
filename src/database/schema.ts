@@ -18,6 +18,7 @@ import {
   pgEnum,
   uuid,
   customType,
+  unique,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
@@ -114,6 +115,54 @@ export const fileSyncKind = pgEnum('FileSyncKind', [
   'BUNDLE',
 ]);
 
+/** Storage namespace for identity-bearing data. ID 0 is the single local namespace; positive IDs
+ * are immutable verified federation identity epochs. */
+export const identityNamespace = pgTable(
+  'IdentityNamespace',
+  {
+    id: serial().primaryKey().notNull(),
+    domain: varchar({ length: 63 }).notNull(),
+    rootKeyFingerprint: varchar({ length: 80 }),
+    rootPublicKey: varchar({ length: 44 }),
+    identityPinnedAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    retiredAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
+  },
+  (table) => [
+    unique('IdentityNamespace_domain_id_key').on(table.domain, table.id),
+    uniqueIndex('IdentityNamespace_one_live_per_domain_key')
+      .on(table.domain)
+      .where(sql`${table.id} > 0 AND ${table.retiredAt} IS NULL`),
+    check(
+      'IdentityNamespace_shape_check',
+      sql`(
+        ${table.id} = 0
+        AND ${table.domain} = 'local'
+        AND ${table.rootKeyFingerprint} IS NULL
+        AND ${table.rootPublicKey} IS NULL
+        AND ${table.identityPinnedAt} IS NULL
+        AND ${table.retiredAt} IS NULL
+      ) OR (
+        ${table.id} > 0
+        AND ${table.domain} <> 'local'
+        AND ${table.rootKeyFingerprint} IS NOT NULL
+        AND ${table.rootPublicKey} IS NOT NULL
+        AND ${table.identityPinnedAt} IS NOT NULL
+      )`,
+    ),
+    check(
+      'IdentityNamespace_retiredAt_check',
+      sql`${table.retiredAt} IS NULL OR ${table.retiredAt} >= ${table.createdAt}`,
+    ),
+  ],
+);
+
 export const adminSession = pgTable(
   'AdminSession',
   {
@@ -202,6 +251,7 @@ export const forwardBundle = pgTable(
     // You can use { mode: "bigint" } if numbers are exceeding js number limitations
     totalBytes: bigint({ mode: 'bigint' }).notNull(),
     sourceDomain: varchar({ length: 63 }),
+    sourceNamespaceId: integer(),
     sourceBundleId: varchar({ length: 26 }),
     createdBy: integer(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -213,11 +263,16 @@ export const forwardBundle = pgTable(
       'btree',
       table.createdBy.asc().nullsLast().op('int4_ops'),
     ),
-    uniqueIndex('ForwardBundle_sourceDomain_sourceBundleId_key').using(
+    uniqueIndex('ForwardBundle_sourceNamespace_sourceBundleId_key').using(
       'btree',
-      table.sourceDomain.asc().nullsLast().op('text_ops'),
+      table.sourceNamespaceId.asc().nullsLast().op('int4_ops'),
       table.sourceBundleId.asc().nullsLast().op('text_ops'),
     ),
+    foreignKey({
+      columns: [table.sourceNamespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'ForwardBundle_sourceNamespaceId_fkey',
+    }).onDelete('restrict'),
     check('ForwardBundle_asset_count_check', sql`"assetCount" >= 0`),
     check(
       'ForwardBundle_messages_shape_check',
@@ -242,6 +297,8 @@ export const user = pgTable(
     domain: varchar({ length: 63 }).default('local').notNull(),
     /** Publisher of this source-scoped profile. Only identities created here use `local`. */
     sourceDomain: varchar({ length: 63 }).default('local').notNull(),
+    /** Identity namespace which materialized this projection; 0 for locally created identities. */
+    namespaceId: integer().default(0).notNull(),
     availability: varchar({ length: 16 }).default('AVAILABLE').notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
@@ -254,17 +311,27 @@ export const user = pgTable(
     profileRev: integer().default(0).notNull(),
   },
   (table) => [
-    uniqueIndex('User_account_domain_sourceDomain_key').using(
-      'btree',
-      table.account.asc().nullsLast().op('text_ops'),
-      table.domain.asc().nullsLast().op('text_ops'),
-      table.sourceDomain.asc().nullsLast().op('text_ops'),
+    unique('User_account_domain_sourceDomain_namespaceId_key').on(
+      table.account,
+      table.domain,
+      table.sourceDomain,
+      table.namespaceId,
     ),
     index('User_address_idx').on(table.account, table.domain),
     index('User_source_address_idx').on(
       table.sourceDomain,
+      table.namespaceId,
       table.account,
       table.domain,
+    ),
+    foreignKey({
+      columns: [table.sourceDomain, table.namespaceId],
+      foreignColumns: [identityNamespace.domain, identityNamespace.id],
+      name: 'User_sourceNamespace_fkey',
+    }).onDelete('restrict'),
+    check(
+      'User_namespace_check',
+      sql`(${table.sourceDomain} = 'local') = (${table.namespaceId} = 0)`,
     ),
     check('User_account_check', sql`${table.account} NOT LIKE '!%'`),
     check(
@@ -482,9 +549,9 @@ export const messageThread = pgTable(
     }),
     groupId: integer(),
     pullUntil: integer().default(0).notNull(),
-    /** Federation reset completion marker. The retained thread shell is invisible after truncation. */
-    federationTruncated: boolean().default(false).notNull(),
-    /** Invalidates asynchronous federation responses captured before a completed thread cleanup. */
+    /** Identity namespace which owns this thread coordinate space. */
+    authorityNamespaceId: integer().default(0).notNull(),
+    /** Invalidates a response when the retained thread coordinate space itself is replaced. */
     federationVersion: integer().default(0).notNull(),
     /** Invalidates federation work captured before an effective authorization transition. */
     authorizationEpoch: integer().default(0).notNull(),
@@ -503,8 +570,13 @@ export const messageThread = pgTable(
       .onDelete('cascade'),
     check(
       'MessageThread_groupId_type_check',
-      sql`${table.federationTruncated} OR ((type = 'P2P'::"MessageThreadType") = ("groupId" IS NULL))`,
+      sql`(type = 'P2P'::"MessageThreadType") = ("groupId" IS NULL)`,
     ),
+    foreignKey({
+      columns: [table.authorityNamespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'MessageThread_authorityNamespaceId_fkey',
+    }).onDelete('restrict'),
     check(
       'MessageThread_federationVersion_check',
       sql`${table.federationVersion} >= 0`,
@@ -527,6 +599,7 @@ export const threadAudience = pgTable(
     id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
     /** `local` addresses one local user; every other value addresses the whole federated peer domain. */
     targetDomain: varchar({ length: 63 }).notNull(),
+    targetNamespaceId: integer().default(0).notNull(),
     localUserId: integer(),
     threadId: integer().notNull(),
     /** Exclusive federation message-access lower bound. A peer audience may query only messages with
@@ -548,7 +621,7 @@ export const threadAudience = pgTable(
     uniqueIndex('ThreadAudience_peer_key')
       .using(
         'btree',
-        table.targetDomain.asc().nullsLast().op('text_ops'),
+        table.targetNamespaceId.asc().nullsLast().op('int4_ops'),
         table.threadId.asc().nullsLast().op('int4_ops'),
       )
       .where(sql`${table.targetDomain} <> 'local'`),
@@ -562,10 +635,15 @@ export const threadAudience = pgTable(
     index('ThreadAudience_peer_access_idx')
       .using(
         'btree',
-        table.targetDomain.asc().nullsLast().op('text_ops'),
+        table.targetNamespaceId.asc().nullsLast().op('int4_ops'),
         table.threadId.asc().nullsLast().op('int4_ops'),
       )
       .where(sql`${table.targetDomain} <> 'local'`),
+    foreignKey({
+      columns: [table.targetDomain, table.targetNamespaceId],
+      foreignColumns: [identityNamespace.domain, identityNamespace.id],
+      name: 'ThreadAudience_targetNamespace_fkey',
+    }).onDelete('restrict'),
     foreignKey({
       columns: [table.localUserId],
       foreignColumns: [account.id],
@@ -582,7 +660,7 @@ export const threadAudience = pgTable(
       .onDelete('cascade'),
     check(
       'ThreadAudience_target_check',
-      sql`(${table.targetDomain} = 'local' AND ${table.localUserId} IS NOT NULL) OR (${table.targetDomain} <> 'local' AND ${table.localUserId} IS NULL)`,
+      sql`(${table.targetDomain} = 'local' AND ${table.localUserId} IS NOT NULL AND ${table.targetNamespaceId} = 0) OR (${table.targetDomain} <> 'local' AND ${table.localUserId} IS NULL AND ${table.targetNamespaceId} > 0)`,
     ),
     check(
       'ThreadAudience_messageAccessAfterSeq_check',
@@ -668,6 +746,7 @@ export const message = pgTable(
     /** Author identity snapshot. Both fields are null only for server-authored SYSTEM notices. */
     creatorAccount: varchar({ length: 31 }),
     creatorDomain: varchar({ length: 63 }),
+    creatorNamespaceId: integer().default(0).notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -686,6 +765,7 @@ export const message = pgTable(
     }),
     /** Direct publisher whose thread-local seq is stored in originSeq. Null for local originals. */
     federationSourceDomain: varchar({ length: 255 }),
+    sourceNamespaceId: integer(),
     /** Local materialization state. STUB and FAILED are client-visible placeholders; only READY
      * participates in durable message-derived projections and federation publication. */
     localState: messageLocalState().default('READY').notNull(),
@@ -712,11 +792,12 @@ export const message = pgTable(
       'btree',
       table.creatorAccount.asc().nullsLast().op('text_ops'),
       table.creatorDomain.asc().nullsLast().op('text_ops'),
+      table.creatorNamespaceId.asc().nullsLast().op('int4_ops'),
     ),
     index('Message_threadId_createdAt_idx').using(
       'btree',
       table.threadId.asc().nullsLast().op('int4_ops'),
-      table.createdAt.asc().nullsLast().op('int4_ops'),
+      table.createdAt.asc().nullsLast().op('timestamptz_ops'),
     ),
     index('Message_threadId_id_idx').using(
       'btree',
@@ -728,12 +809,13 @@ export const message = pgTable(
       table.threadId.asc().nullsLast().op('int4_ops'),
       table.creatorAccount.asc().nullsLast().op('text_ops'),
       table.creatorDomain.asc().nullsLast().op('text_ops'),
+      table.creatorNamespaceId.asc().nullsLast().op('int4_ops'),
       table.originSeq.asc().nullsLast().op('int4_ops'),
     ),
     uniqueIndex('Message_threadId_source_originSeq_key').using(
       'btree',
       table.threadId.asc().nullsLast().op('int4_ops'),
-      table.federationSourceDomain.asc().nullsLast().op('text_ops'),
+      table.sourceNamespaceId.asc().nullsLast().op('int4_ops'),
       table.originSeq.asc().nullsLast().op('int4_ops'),
     ),
     uniqueIndex('Message_threadId_seq_key').using(
@@ -744,6 +826,16 @@ export const message = pgTable(
     index('Message_threadId_ready_seq_idx')
       .on(table.threadId, table.seq)
       .where(sql`${table.localState} = 'READY'`),
+    foreignKey({
+      columns: [table.creatorNamespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'Message_creatorNamespaceId_fkey',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.federationSourceDomain, table.sourceNamespaceId],
+      foreignColumns: [identityNamespace.domain, identityNamespace.id],
+      name: 'Message_identityNamespace_fkey',
+    }).onDelete('restrict'),
     foreignKey({
       columns: [table.threadId],
       foreignColumns: [messageThread.id],
@@ -760,6 +852,7 @@ export const federationMessageReceipt = pgTable(
   'FederationMessageReceipt',
   {
     peerDomain: varchar({ length: 63 }).notNull(),
+    namespaceId: integer().notNull(),
     threadId: integer().notNull(),
     peerSeq: integer().notNull(),
     messageId: bigint({ mode: 'bigint' }).notNull(),
@@ -769,16 +862,16 @@ export const federationMessageReceipt = pgTable(
   },
   (table) => [
     primaryKey({
-      columns: [table.peerDomain, table.threadId, table.peerSeq],
+      columns: [table.namespaceId, table.threadId, table.peerSeq],
       name: 'FederationMessageReceipt_pkey',
     }),
     check('FederationMessageReceipt_peerSeq_check', sql`${table.peerSeq} > 0`),
     index('FederationMessageReceipt_messageId_idx').on(table.messageId),
     foreignKey({
-      columns: [table.peerDomain],
-      foreignColumns: [federatedPeer.domain],
-      name: 'FederationMessageReceipt_peerDomain_fkey',
-    }).onDelete('cascade'),
+      columns: [table.peerDomain, table.namespaceId],
+      foreignColumns: [identityNamespace.domain, identityNamespace.id],
+      name: 'FederationMessageReceipt_namespace_fkey',
+    }).onDelete('restrict'),
     foreignKey({
       columns: [table.threadId],
       foreignColumns: [messageThread.id],
@@ -804,6 +897,7 @@ export const deletedMessage = pgTable(
     /** Non-null only when this local projection consumed a remote authority fact. Such a row must
      * never be published again; group-origin acceptance of a member submission remains null. */
     federationSourceDomain: varchar({ length: 63 }),
+    sourceNamespaceId: integer(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -824,6 +918,11 @@ export const deletedMessage = pgTable(
       table.messageSeq.asc().nullsLast().op('int4_ops'),
     ),
     foreignKey({
+      columns: [table.sourceNamespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'DeletedMessage_sourceNamespaceId_fkey',
+    }).onDelete('restrict'),
+    foreignKey({
       columns: [table.threadId],
       foreignColumns: [messageThread.id],
       name: 'DeletedMessage_threadId_fkey',
@@ -843,6 +942,7 @@ export const federatedMessageTombstone = pgTable(
     messageSeq: integer().notNull(),
     authorityDomain: varchar({ length: 255 }).notNull(),
     sourceDomain: varchar({ length: 255 }).notNull(),
+    sourceNamespaceId: integer().notNull(),
     remoteDeletionSeq: integer().notNull(),
     type: messageDeleteType().notNull(),
     authorityDeletedAt: timestamp({
@@ -871,15 +971,20 @@ export const federatedMessageTombstone = pgTable(
     uniqueIndex('FederatedMessageTombstone_target_key').using(
       'btree',
       table.threadId.asc().nullsLast().op('int4_ops'),
-      table.sourceDomain.asc().nullsLast().op('text_ops'),
+      table.sourceNamespaceId.asc().nullsLast().op('int4_ops'),
       table.messageSeq.asc().nullsLast().op('int4_ops'),
     ),
     uniqueIndex('FederatedMessageTombstone_source_event_key').using(
       'btree',
-      table.sourceDomain.asc().nullsLast().op('text_ops'),
+      table.sourceNamespaceId.asc().nullsLast().op('int4_ops'),
       table.threadId.asc().nullsLast().op('int4_ops'),
       table.remoteDeletionSeq.asc().nullsLast().op('int4_ops'),
     ),
+    foreignKey({
+      columns: [table.sourceNamespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'FederatedMessageTombstone_sourceNamespaceId_fkey',
+    }).onDelete('restrict'),
     foreignKey({
       columns: [table.threadId],
       foreignColumns: [messageThread.id],
@@ -898,6 +1003,7 @@ export const federationDeletedCursor = pgTable(
     id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
     threadId: integer().notNull(),
     peerDomain: varchar({ length: 255 }).notNull(),
+    namespaceId: integer().notNull(),
     streamAccount: varchar({ length: 255 }).default('').notNull(),
     streamKind: varchar({ length: 32 }).notNull(),
     committedThrough: integer().default(0).notNull(),
@@ -916,10 +1022,15 @@ export const federationDeletedCursor = pgTable(
     uniqueIndex('FederationDeletedCursor_stream_key').using(
       'btree',
       table.threadId.asc().nullsLast().op('int4_ops'),
-      table.peerDomain.asc().nullsLast().op('text_ops'),
+      table.namespaceId.asc().nullsLast().op('int4_ops'),
       table.streamAccount.asc().nullsLast().op('text_ops'),
       table.streamKind.asc().nullsLast().op('text_ops'),
     ),
+    foreignKey({
+      columns: [table.namespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'FederationDeletedCursor_namespaceId_fkey',
+    }).onDelete('restrict'),
     foreignKey({
       columns: [table.threadId],
       foreignColumns: [messageThread.id],
@@ -1057,7 +1168,7 @@ export const federatedPeerEvent = pgTable(
     index('FederatedPeerEvent_domain_createdAt_idx').using(
       'btree',
       table.domain.asc().nullsLast().op('text_ops'),
-      table.createdAt.asc().nullsLast().op('text_ops'),
+      table.createdAt.asc().nullsLast().op('timestamptz_ops'),
     ),
   ],
 );
@@ -1176,6 +1287,7 @@ export const pendingMedia = pgTable(
     fileCnt: integer().default(1).notNull(),
     anyFailed: boolean().default(false).notNull(),
     originDomain: varchar({ length: 63 }),
+    namespaceId: integer().default(0).notNull(),
     expectedAuthorizationEpoch: integer(),
     // A pulled text message may quote an earlier message whose media is still localizing. Keep the
     // wire coordinate durable until that target is promoted and has a receiver-local Message.seq.
@@ -1239,6 +1351,11 @@ export const pendingMedia = pgTable(
       table.dependsOnOriginSeq,
     ),
     foreignKey({
+      columns: [table.namespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'PendingMedia_namespaceId_fkey',
+    }).onDelete('restrict'),
+    foreignKey({
       columns: [table.messageId],
       foreignColumns: [message.id],
       name: 'PendingMedia_messageId_fkey',
@@ -1269,7 +1386,7 @@ export const uploadSession = pgTable(
     originalName: varchar({ length: 100 }).notNull(),
     mimeType: varchar({ length: 255 }).notNull(),
     totalBytes: bigint({ mode: 'bigint' }).notNull(),
-    receivedBytes: bigint({ mode: 'bigint' }).default(0n).notNull(),
+    receivedBytes: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
     status: uploadSessionStatus().default('UPLOADING').notNull(),
     tmpKey: uuid().defaultRandom().notNull(),
     digest: varchar({ length: 64 }),
@@ -1339,9 +1456,10 @@ export const fileSyncProgress = pgTable(
     direction: fileSyncDirection().notNull(),
     kind: fileSyncKind().notNull(),
     status: fileSyncStatus().default('PENDING').notNull(),
-    bytesTotal: bigint({ mode: 'bigint' }).default(0n).notNull(),
-    bytesReceived: bigint({ mode: 'bigint' }).default(0n).notNull(),
+    bytesTotal: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
+    bytesReceived: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
     originDomain: varchar({ length: 63 }),
+    namespaceId: integer().default(0).notNull(),
     errorKind: varchar({ length: 255 }),
     // Tick-once guard: once this file's file-cnt/file-bytes quota has been charged, admin retry or crash-resume
     // must not re-charge it. Set true after the first successful claim.
@@ -1372,6 +1490,11 @@ export const fileSyncProgress = pgTable(
       table.status,
       table.updatedAt,
     ),
+    foreignKey({
+      columns: [table.namespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'FileSyncProgress_namespaceId_fkey',
+    }).onDelete('restrict'),
     check(
       'FileSyncProgress_position_check',
       sql`${table.position} IS NULL OR ${table.position} BETWEEN 0 AND 9`,
@@ -1389,6 +1512,7 @@ export const group = pgTable(
     id: serial().primaryKey().notNull(),
     account: varchar({ length: 31 }).notNull(),
     domain: varchar({ length: 63 }).default('local').notNull(),
+    namespaceId: integer().default(0).notNull(),
     name: varchar({ length: 30 }).notNull(),
     avatar: text().default('').notNull(),
     description: varchar({ length: 255 }).default('').notNull(),
@@ -1408,7 +1532,20 @@ export const group = pgTable(
     dissolvedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
   },
   (table) => [
-    uniqueIndex('Group_account_domain_key').on(table.account, table.domain),
+    unique('Group_account_domain_namespaceId_key').on(
+      table.account,
+      table.domain,
+      table.namespaceId,
+    ),
+    foreignKey({
+      columns: [table.domain, table.namespaceId],
+      foreignColumns: [identityNamespace.domain, identityNamespace.id],
+      name: 'Group_namespace_fkey',
+    }).onDelete('restrict'),
+    check(
+      'Group_namespace_check',
+      sql`(${table.domain} = 'local') = (${table.namespaceId} = 0)`,
+    ),
     check('Group_account_sigil_check', sql`${table.account} LIKE '!%'`),
     check('Group_profileRev_check', sql`${table.profileRev} >= 0`),
     check(
@@ -1425,12 +1562,14 @@ export const group = pgTable(
 export const clientStateFeed = pgTable(
   'ClientStateFeed',
   {
+    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
     userId: integer().notNull(),
     account: varchar({ length: 31 }).notNull(),
     domain: varchar({ length: 63 }).notNull(),
     eventType: varchar({ length: 31 }).notNull(),
     subjectAccount: varchar({ length: 31 }).default('').notNull(),
     subjectDomain: varchar({ length: 63 }).default('local').notNull(),
+    namespaceId: integer().default(0).notNull(),
     feedId: integer().notNull(),
     body: jsonb().notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -1441,18 +1580,22 @@ export const clientStateFeed = pgTable(
       .notNull(),
   },
   (table) => [
-    primaryKey({
-      columns: [
+    unique('ClientStateFeed_compaction_key')
+      .on(
         table.userId,
         table.account,
         table.domain,
         table.eventType,
         table.subjectAccount,
         table.subjectDomain,
-      ],
-      name: 'ClientStateFeed_pkey',
-    }),
+        table.namespaceId,
+      ),
     index('ClientStateFeed_user_feedId_idx').on(table.userId, table.feedId),
+    foreignKey({
+      columns: [table.namespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'ClientStateFeed_namespaceId_fkey',
+    }).onDelete('restrict'),
     foreignKey({
       columns: [table.userId],
       foreignColumns: [account.id],
@@ -1675,6 +1818,7 @@ export const federatedPeer = pgTable(
   'FederatedPeer',
   {
     domain: varchar({ length: 63 }).primaryKey().notNull(),
+    activeNamespaceId: integer(),
     trustLevel: varchar({ length: 31 }).default('unrecognized').notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
@@ -1697,13 +1841,6 @@ export const federatedPeer = pgTable(
     // single file cnt + file total size; bundles count +1 file cnt and 0 bytes. null = use the global default.
     dailyFileLimit: integer(),
     dailyFileBytesLimit: bigint({ mode: 'bigint' }),
-    rootKeyFingerprint: varchar({ length: 80 }),
-    rootPublicKey: varchar({ length: 44 }),
-    identityPinnedAt: timestamp({
-      precision: 3,
-      withTimezone: true,
-      mode: 'date',
-    }),
     recognizesPeer: boolean().default(false).notNull(),
     outboundRecognitionConfirmed: boolean().default(false).notNull(),
     inboundRecognitionConfirmed: boolean().default(false).notNull(),
@@ -1721,8 +1858,6 @@ export const federatedPeer = pgTable(
       withTimezone: true,
       mode: 'date',
     }),
-    resetInProgress: boolean().default(false).notNull(),
-    resetGeneration: integer().default(0).notNull(),
     resetAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
   },
   (table) => [
@@ -1738,9 +1873,11 @@ export const federatedPeer = pgTable(
       'btree',
       table.trustLevel.asc().nullsLast().op('text_ops'),
     ),
-    uniqueIndex('FederatedPeer_single_reset_in_progress_key')
-      .on(sql`(true)`)
-      .where(sql`${table.resetInProgress} = true`),
+    foreignKey({
+      columns: [table.domain, table.activeNamespaceId],
+      foreignColumns: [identityNamespace.domain, identityNamespace.id],
+      name: 'FederatedPeer_activeNamespace_fkey',
+    }).onDelete('restrict'),
   ],
 );
 
@@ -1750,6 +1887,7 @@ export const peerStateFeed = pgTable(
   'PeerStateFeed',
   {
     peerDomain: varchar({ length: 63 }).notNull(),
+    namespaceId: integer().notNull(),
     account: varchar({ length: 31 }).notNull(),
     domain: varchar({ length: 63 }).notNull(),
     eventType: peerStateEventType().notNull(),
@@ -1767,7 +1905,7 @@ export const peerStateFeed = pgTable(
   (table) => [
     primaryKey({
       columns: [
-        table.peerDomain,
+        table.namespaceId,
         table.account,
         table.domain,
         table.eventType,
@@ -1777,14 +1915,14 @@ export const peerStateFeed = pgTable(
       name: 'PeerStateFeed_pkey',
     }),
     uniqueIndex('PeerStateFeed_peerDomain_feedId_key').on(
-      table.peerDomain,
+      table.namespaceId,
       table.feedId,
     ),
     foreignKey({
-      columns: [table.peerDomain],
-      foreignColumns: [federatedPeer.domain],
-      name: 'PeerStateFeed_peerDomain_fkey',
-    }).onDelete('cascade'),
+      columns: [table.peerDomain, table.namespaceId],
+      foreignColumns: [identityNamespace.domain, identityNamespace.id],
+      name: 'PeerStateFeed_namespace_fkey',
+    }).onDelete('restrict'),
     check('PeerStateFeed_feedId_check', sql`${table.feedId} > 0`),
     check(
       'PeerStateFeed_subject_check',
@@ -1798,18 +1936,19 @@ export const peerStateFeed = pgTable(
 export const peerStateFeedTarget = pgTable(
   'PeerStateFeedTarget',
   {
-    peerDomain: varchar({ length: 63 }).primaryKey().notNull(),
-    allocatedThrough: bigint({ mode: 'bigint' }).default(0n).notNull(),
+    peerDomain: varchar({ length: 63 }).notNull(),
+    namespaceId: integer().primaryKey().notNull(),
+    allocatedThrough: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
   (table) => [
     foreignKey({
-      columns: [table.peerDomain],
-      foreignColumns: [federatedPeer.domain],
-      name: 'PeerStateFeedTarget_peerDomain_fkey',
-    }).onDelete('cascade'),
+      columns: [table.peerDomain, table.namespaceId],
+      foreignColumns: [identityNamespace.domain, identityNamespace.id],
+      name: 'PeerStateFeedTarget_namespace_fkey',
+    }).onDelete('restrict'),
     check(
       'PeerStateFeedTarget_allocatedThrough_check',
       sql`${table.allocatedThrough} >= 0`,
@@ -1822,10 +1961,12 @@ export const groupMetaMemberFeed = pgTable(
   'GroupMetaMemberFeed',
   {
     targetPeerDomain: varchar({ length: 63 }).notNull(),
+    targetNamespaceId: integer().notNull(),
     groupId: integer().notNull(),
     feedId: bigint({ mode: 'bigint' }).notNull(),
     memberAccount: varchar({ length: 31 }).notNull(),
     memberDomain: varchar({ length: 63 }).notNull(),
+    memberNamespaceId: integer().default(0).notNull(),
     operation: groupMetaMemberOperation().notNull(),
     body: jsonb().$type<Record<string, unknown>>().notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -1837,21 +1978,28 @@ export const groupMetaMemberFeed = pgTable(
   },
   (table) => [
     primaryKey({
-      columns: [table.targetPeerDomain, table.groupId, table.feedId],
+      columns: [table.targetNamespaceId, table.groupId, table.feedId],
       name: 'GroupMetaMemberFeed_pkey',
     }),
     index('GroupMetaMemberFeed_member_feed_idx').on(
       table.targetPeerDomain,
+      table.targetNamespaceId,
       table.groupId,
       table.memberDomain,
+      table.memberNamespaceId,
       table.memberAccount,
       table.feedId,
     ),
     foreignKey({
-      columns: [table.targetPeerDomain],
-      foreignColumns: [federatedPeer.domain],
-      name: 'GroupMetaMemberFeed_targetPeerDomain_fkey',
-    }).onDelete('cascade'),
+      columns: [table.memberNamespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'GroupMetaMemberFeed_memberNamespaceId_fkey',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.targetPeerDomain, table.targetNamespaceId],
+      foreignColumns: [identityNamespace.domain, identityNamespace.id],
+      name: 'GroupMetaMemberFeed_targetNamespace_fkey',
+    }).onDelete('restrict'),
     foreignKey({
       columns: [table.groupId],
       foreignColumns: [group.id],
@@ -1866,9 +2014,10 @@ export const groupMetaFeedTarget = pgTable(
   'GroupMetaFeedTarget',
   {
     targetPeerDomain: varchar({ length: 63 }).notNull(),
+    targetNamespaceId: integer().notNull(),
     groupId: integer().notNull(),
-    allocatedThrough: bigint({ mode: 'bigint' }).default(0n).notNull(),
-    oldestAvailableAfter: bigint({ mode: 'bigint' }).default(0n).notNull(),
+    allocatedThrough: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
+    oldestAvailableAfter: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
     active: boolean().default(true).notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
@@ -1876,14 +2025,14 @@ export const groupMetaFeedTarget = pgTable(
   },
   (table) => [
     primaryKey({
-      columns: [table.targetPeerDomain, table.groupId],
+      columns: [table.targetNamespaceId, table.groupId],
       name: 'GroupMetaFeedTarget_pkey',
     }),
     foreignKey({
-      columns: [table.targetPeerDomain],
-      foreignColumns: [federatedPeer.domain],
-      name: 'GroupMetaFeedTarget_targetPeerDomain_fkey',
-    }).onDelete('cascade'),
+      columns: [table.targetPeerDomain, table.targetNamespaceId],
+      foreignColumns: [identityNamespace.domain, identityNamespace.id],
+      name: 'GroupMetaFeedTarget_targetNamespace_fkey',
+    }).onDelete('restrict'),
     foreignKey({
       columns: [table.groupId],
       foreignColumns: [group.id],
@@ -1909,6 +2058,7 @@ export const clientGroupMetaMemberFeed = pgTable(
     feedId: bigint({ mode: 'bigint' }).notNull(),
     memberAccount: varchar({ length: 31 }).notNull(),
     memberDomain: varchar({ length: 63 }).notNull(),
+    memberNamespaceId: integer().default(0).notNull(),
     operation: groupMetaMemberOperation().notNull(),
     body: jsonb().notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -1927,9 +2077,15 @@ export const clientGroupMetaMemberFeed = pgTable(
       table.accountId,
       table.groupId,
       table.memberDomain,
+      table.memberNamespaceId,
       table.memberAccount,
       table.feedId,
     ),
+    foreignKey({
+      columns: [table.memberNamespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'ClientGroupMetaMemberFeed_memberNamespaceId_fkey',
+    }).onDelete('restrict'),
     foreignKey({
       columns: [table.accountId],
       foreignColumns: [account.id],
@@ -1954,8 +2110,8 @@ export const clientGroupMetaFeedTarget = pgTable(
   {
     accountId: integer().notNull(),
     groupId: integer().notNull(),
-    allocatedThrough: bigint({ mode: 'bigint' }).default(0n).notNull(),
-    oldestAvailableAfter: bigint({ mode: 'bigint' }).default(0n).notNull(),
+    allocatedThrough: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
+    oldestAvailableAfter: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
     active: boolean().default(true).notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
@@ -1997,6 +2153,7 @@ export const federatedFriendRequest = pgTable(
     localUserId: integer().notNull(),
     remoteAccount: varchar({ length: 31 }).notNull(),
     remoteDomain: varchar({ length: 63 }).notNull(),
+    namespaceId: integer().notNull(),
     direction: varchar({ length: 16 }).notNull(),
     status: varchar({ length: 16 }).notNull(),
     note: varchar({ length: 255 }).default('').notNull(),
@@ -2016,7 +2173,7 @@ export const federatedFriendRequest = pgTable(
     primaryKey({
       columns: [
         table.localUserId,
-        table.remoteDomain,
+        table.namespaceId,
         table.remoteAccount,
         table.direction,
       ],
@@ -2034,10 +2191,10 @@ export const federatedFriendRequest = pgTable(
       name: 'FederatedFriendRequest_localUserId_fkey',
     }).onDelete('cascade'),
     foreignKey({
-      columns: [table.remoteDomain],
-      foreignColumns: [federatedPeer.domain],
-      name: 'FederatedFriendRequest_remoteDomain_fkey',
-    }).onDelete('cascade'),
+      columns: [table.remoteDomain, table.namespaceId],
+      foreignColumns: [identityNamespace.domain, identityNamespace.id],
+      name: 'FederatedFriendRequest_namespace_fkey',
+    }).onDelete('restrict'),
     check(
       'FederatedFriendRequest_direction_check',
       sql`${table.direction} IN ('INCOMING', 'OUTGOING')`,
@@ -2060,19 +2217,20 @@ export const federatedFriendRequest = pgTable(
 export const peerStateFeedPullCursor = pgTable(
   'PeerStateFeedPullCursor',
   {
-    peerDomain: varchar({ length: 63 }).primaryKey().notNull(),
+    peerDomain: varchar({ length: 63 }).notNull(),
+    namespaceId: integer().primaryKey().notNull(),
     initialized: boolean().default(false).notNull(),
-    committedThrough: bigint({ mode: 'bigint' }).default(0n).notNull(),
+    committedThrough: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
   (table) => [
     foreignKey({
-      columns: [table.peerDomain],
-      foreignColumns: [federatedPeer.domain],
-      name: 'PeerStateFeedPullCursor_peerDomain_fkey',
-    }).onDelete('cascade'),
+      columns: [table.peerDomain, table.namespaceId],
+      foreignColumns: [identityNamespace.domain, identityNamespace.id],
+      name: 'PeerStateFeedPullCursor_namespace_fkey',
+    }).onDelete('restrict'),
     check(
       'PeerStateFeedPullCursor_committedThrough_check',
       sql`${table.committedThrough} >= 0`,
@@ -2127,9 +2285,11 @@ export const relationshipPair = pgTable(
     endpointAType: varchar({ length: 8 }).notNull(),
     endpointAAccount: varchar({ length: 31 }).notNull(),
     endpointADomain: varchar({ length: 63 }).notNull(),
+    endpointANamespaceId: integer().default(0).notNull(),
     endpointBType: varchar({ length: 8 }).notNull(),
     endpointBAccount: varchar({ length: 31 }).notNull(),
     endpointBDomain: varchar({ length: 63 }).notNull(),
+    endpointBNamespaceId: integer().default(0).notNull(),
     threadId: integer(),
     active: boolean().default(false).notNull(),
     revision: integer().default(0).notNull(),
@@ -2138,26 +2298,41 @@ export const relationshipPair = pgTable(
       .notNull(),
   },
   (table) => [
-    uniqueIndex('RelationshipPair_endpoints_key').on(
-      table.endpointAType,
-      table.endpointAAccount,
-      table.endpointADomain,
-      table.endpointBType,
-      table.endpointBAccount,
-      table.endpointBDomain,
-    ),
+    unique('RelationshipPair_endpoints_key')
+      .on(
+        table.endpointAType,
+        table.endpointAAccount,
+        table.endpointADomain,
+        table.endpointANamespaceId,
+        table.endpointBType,
+        table.endpointBAccount,
+        table.endpointBDomain,
+        table.endpointBNamespaceId,
+      ),
     index('RelationshipPair_endpointA_idx').on(
       table.endpointAType,
       table.endpointAAccount,
       table.endpointADomain,
+      table.endpointANamespaceId,
       table.active,
     ),
     index('RelationshipPair_endpointB_idx').on(
       table.endpointBType,
       table.endpointBAccount,
       table.endpointBDomain,
+      table.endpointBNamespaceId,
       table.active,
     ),
+    foreignKey({
+      columns: [table.endpointANamespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'RelationshipPair_endpointANamespaceId_fkey',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.endpointBNamespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'RelationshipPair_endpointBNamespaceId_fkey',
+    }).onDelete('restrict'),
     foreignKey({
       columns: [table.threadId],
       foreignColumns: [messageThread.id],
@@ -2216,6 +2391,7 @@ export const federationThreadHistoryGap = pgTable(
   {
     id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
     threadId: integer().notNull(),
+    namespaceId: integer().notNull(),
     /** First missing publisher message coordinate, inclusive. */
     startSeq: integer().notNull(),
     /** Last missing publisher message coordinate, inclusive. */
@@ -2230,18 +2406,25 @@ export const federationThreadHistoryGap = pgTable(
       .notNull(),
   },
   (table) => [
-    uniqueIndex('FederationThreadHistoryGap_threadId_id_key').on(
+    unique('FederationThreadHistoryGap_threadId_namespaceId_id_key').on(
       table.threadId,
+      table.namespaceId,
       table.id,
     ),
     uniqueIndex('FederationThreadHistoryGap_interval_key').on(
       table.threadId,
+      table.namespaceId,
       table.startSeq,
       table.endSeq,
     ),
     index('FederationThreadHistoryGap_recoverable_idx')
-      .on(table.threadId, table.endSeq)
+      .on(table.threadId, table.namespaceId, table.endSeq)
       .where(sql`${table.recoverable} = true`),
+    foreignKey({
+      columns: [table.namespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'FederationThreadHistoryGap_namespaceId_fkey',
+    }).onDelete('restrict'),
     foreignKey({
       columns: [table.threadId],
       foreignColumns: [messageThread.id],
@@ -2260,6 +2443,7 @@ export const federationThreadSyncState = pgTable(
   {
     threadId: integer().notNull(),
     peerDomain: varchar({ length: 63 }).notNull(),
+    namespaceId: integer().notNull(),
     /** Greatest message-query target merged from committed State Feed items. */
     messageTargetSeq: integer().default(0).notNull(),
     /** Greatest deletion-query target merged from committed State Feed items. */
@@ -2268,6 +2452,10 @@ export const federationThreadSyncState = pgTable(
     messageProcessedThroughSeq: integer().default(0).notNull(),
     /** Greatest source deletion seq durably scanned by forward tombstone queries. */
     deletionProcessedThroughSeq: integer().default(0).notNull(),
+    /** Frozen deletion target for a reauthorization recovery drain. */
+    deletionRecoveryThroughSeq: integer(),
+    /** Frozen message cutoff paired with deletionRecoveryThroughSeq. */
+    deletionRecoveryMaxMessageSeq: integer(),
     /** MessageThread authorization epoch under which this state was initialized. */
     authorizationEpoch: integer().default(0).notNull(),
     /** Recoverable historical interval currently selected for reverse reconstruction. */
@@ -2279,7 +2467,7 @@ export const federationThreadSyncState = pgTable(
   },
   (table) => [
     primaryKey({
-      columns: [table.threadId, table.peerDomain],
+      columns: [table.threadId, table.namespaceId],
       name: 'FederationThreadSyncState_pkey',
     }),
     foreignKey({
@@ -2288,14 +2476,15 @@ export const federationThreadSyncState = pgTable(
       name: 'FederationThreadSyncState_threadId_fkey',
     }).onDelete('cascade'),
     foreignKey({
-      columns: [table.peerDomain],
-      foreignColumns: [federatedPeer.domain],
-      name: 'FederationThreadSyncState_peerDomain_fkey',
-    }).onDelete('cascade'),
+      columns: [table.peerDomain, table.namespaceId],
+      foreignColumns: [identityNamespace.domain, identityNamespace.id],
+      name: 'FederationThreadSyncState_namespace_fkey',
+    }).onDelete('restrict'),
     foreignKey({
-      columns: [table.threadId, table.activeGapId],
+      columns: [table.threadId, table.namespaceId, table.activeGapId],
       foreignColumns: [
         federationThreadHistoryGap.threadId,
+        federationThreadHistoryGap.namespaceId,
         federationThreadHistoryGap.id,
       ],
       name: 'FederationThreadSyncState_activeGap_fkey',
@@ -2311,28 +2500,21 @@ export const federationThreadSyncState = pgTable(
         AND ${table.authorizationEpoch} >= 0`,
     ),
     check(
+      'FederationThreadSyncState_deletionRecovery_check',
+      sql`(
+          ${table.deletionRecoveryThroughSeq} IS NULL
+          AND ${table.deletionRecoveryMaxMessageSeq} IS NULL
+        ) OR (
+          ${table.deletionRecoveryThroughSeq} IS NOT NULL
+          AND ${table.deletionRecoveryMaxMessageSeq} IS NOT NULL
+          AND ${table.deletionRecoveryThroughSeq} > ${table.deletionProcessedThroughSeq}
+          AND ${table.deletionRecoveryThroughSeq} <= ${table.deletionTargetSeq}
+          AND ${table.deletionRecoveryMaxMessageSeq} >= 0
+        )`,
+    ),
+    check(
       'FederationThreadSyncState_history_check',
       sql`NOT (${table.historyBoundaryReached} AND ${table.activeGapId} IS NOT NULL)`,
-    ),
-  ],
-);
-
-/** Survives destructive peer reset after FederatedPeer itself is removed. It prevents a newly
- * registered server at the same domain from inheriting trust merely by completing /init. */
-export const federatedPeerReset = pgTable(
-  'FederatedPeerReset',
-  {
-    domain: varchar({ length: 63 }).primaryKey().notNull(),
-    resetGeneration: integer().notNull(),
-    reinitPending: boolean().default(false).notNull(),
-    resetAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    check(
-      'FederatedPeerReset_resetGeneration_check',
-      sql`${table.resetGeneration} > 0`,
     ),
   ],
 );
@@ -2452,7 +2634,7 @@ export const twoFactorBackupCode = pgTable(
     index('TwoFactorBackupCode_adminId_codeHash_idx').using(
       'btree',
       table.adminId.asc().nullsLast().op('int4_ops'),
-      table.codeHash.asc().nullsLast().op('int4_ops'),
+      table.codeHash.asc().nullsLast().op('text_ops'),
     ),
     foreignKey({
       columns: [table.adminId],
@@ -2609,6 +2791,7 @@ export const s2SKeyCache = pgTable(
   'S2SKeyCache',
   {
     domain: varchar({ length: 63 }).notNull(),
+    namespaceId: integer().notNull(),
     keyId: varchar({ length: 127 }).notNull(),
     publicKey: varchar({ length: 127 }).notNull(),
     notBefore: timestamp({
@@ -2628,9 +2811,14 @@ export const s2SKeyCache = pgTable(
   },
   (table) => [
     primaryKey({
-      columns: [table.domain, table.keyId],
+      columns: [table.namespaceId, table.keyId],
       name: 'S2SKeyCache_pkey',
     }),
+    foreignKey({
+      columns: [table.domain, table.namespaceId],
+      foreignColumns: [identityNamespace.domain, identityNamespace.id],
+      name: 'S2SKeyCache_namespace_fkey',
+    }).onDelete('restrict'),
   ],
 );
 
@@ -2712,7 +2900,7 @@ export const quotaFileByteUsage = pgTable(
   {
     domain: varchar({ length: 63 }).notNull(),
     date: date({ mode: 'date' }).notNull(),
-    bytes: bigint({ mode: 'bigint' }).default(0n).notNull(),
+    bytes: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
   },
   (table) => [
     index('QuotaFileByteUsage_date_idx').using(
@@ -2735,7 +2923,7 @@ export const userQuotaFileByteUsage = pgTable(
   {
     userId: integer().notNull(),
     date: date({ mode: 'date' }).notNull(),
-    bytes: bigint({ mode: 'bigint' }).default(0n).notNull(),
+    bytes: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
   },
   (table) => [
     index('UserQuotaFileByteUsage_date_idx').using(
@@ -2766,7 +2954,7 @@ export const quotaDailyAllowance = pgTable(
     date: date({ mode: 'date' }).notNull(),
     extraMsg: integer().default(0).notNull(),
     extraFile: integer().default(0).notNull(),
-    extraFileBytes: bigint({ mode: 'bigint' }).default(0n).notNull(),
+    extraFileBytes: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
   },
   (table) => [
     primaryKey({
@@ -2784,6 +2972,7 @@ export const callTombstone = pgTable(
   'CallTombstone',
   {
     peerDomain: varchar({ length: 253 }).notNull(),
+    namespaceId: integer().notNull(),
     callSid: varchar({ length: 36 }).notNull(),
     terminalOp: varchar({ length: 16 }).notNull(),
     endReason: varchar({ length: 16 }),
@@ -2801,9 +2990,14 @@ export const callTombstone = pgTable(
   },
   (table) => [
     primaryKey({
-      columns: [table.peerDomain, table.callSid],
+      columns: [table.namespaceId, table.callSid],
       name: 'CallTombstone_pkey',
     }),
+    foreignKey({
+      columns: [table.namespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'CallTombstone_namespaceId_fkey',
+    }).onDelete('restrict'),
     index('CallTombstone_expiresAt_idx').on(table.expiresAt),
   ],
 );
@@ -2816,7 +3010,7 @@ export const userQuotaDailyAllowance = pgTable(
     date: date({ mode: 'date' }).notNull(),
     extraMsg: integer().default(0).notNull(),
     extraFile: integer().default(0).notNull(),
-    extraFileBytes: bigint({ mode: 'bigint' }).default(0n).notNull(),
+    extraFileBytes: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
   },
   (table) => [
     foreignKey({

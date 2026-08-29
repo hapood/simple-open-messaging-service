@@ -196,11 +196,14 @@ FederationThreadSyncState and branches on its stored epoch:
 
 - a missing row leaves the newest advertised message to the forward query and,
   when at least one older coordinate exists, creates `[1, messageTargetSeq - 1]`
-  as its initial active gap;
+  as its initial active gap, while initializing deletion processed-through to
+  the advertised deletion target without issuing a tombstone query;
 - a matching epoch only merges the monotonic forward targets;
 - a mismatching epoch creates or merges `[oldCommitted + 1, newTail - 1]`,
   selects the newest recoverable gap as `activeGapId`, leaves `newTail` to the
-  forward query, and reinitializes the state for the locked thread epoch.
+  forward query, and reinitializes the state for the locked thread epoch. When
+  new deletion work exists, it also freezes the old committed message
+  coordinate and the new deletion target as the recovery tombstone drain.
 
 The transaction then advances the State Feed cursor through the current item.
 
@@ -224,8 +227,9 @@ For a retained row whose epoch is older than MessageThread, the head starts a
 new authorization segment:
 
 - forward message work starts at the newly advertised tail only;
-- forward tombstone work starts after the prior durably committed deletion
-  cursor;
+- forward tombstone recovery starts after the prior durably committed deletion
+  cursor and filters target message coordinates above the old committed message
+  coordinate for the complete frozen recovery drain;
 - skipped older coordinates become an inclusive durable gap;
 - adjacent unfinished gaps merge, while READY forward islands keep gaps
   separate;
@@ -273,11 +277,15 @@ processed-through cursor. Messages are inserted at least as STUBs; content
 which is already complete may be READY in the same transaction. Pending content
 remains STUB and is completed independently.
 
-The State Feed wake initially pairs both streams. A tombstone round freezes the
-pair's message coordinate as `maxMessageSeq`; the first pair after an epoch
-change instead uses the message coordinate committed before the change. A newer
-pair received during an active tombstone round is process-local dirty work for
-the next round and does not alter the active cutoff.
+Ordinary tombstone rounds carry no message cutoff. The recovery drain after an
+epoch change uses the persisted `deletionRecoveryMaxMessageSeq` and
+`deletionRecoveryThroughSeq` for every bounded `take=50` page. Each page may
+advance the deletion cursor in its own transaction, but every following page
+continues to send the same filter until the committed cursor reaches the frozen
+recovery target. A newer head received during that drain is dirty work for a
+later unfiltered round and does not alter either recovery boundary. The
+transaction that reaches the persisted recovery target clears both fields; a
+partial page or failed transaction clears neither.
 
 ### 5.2 Reverse commit condition
 
@@ -308,20 +316,23 @@ commit transaction, but federation materialization still emits no SSE.
 
 ### 6.1 Authorization failure
 
-An authorization failure stops both continuation and retry for every direction
-of the affected thread-source key. Before authoring a P2P revoke, the failure
-handler locks the USER_PAIR business scope and MessageThread and compares the
-captured epoch:
+An authorization failure is reconciled under the epoch captured before the
+denied request. The failure handler locks the canonical USER_PAIR or GROUP
+business scope and MessageThread and then compares the captured epoch:
 
 - a changed epoch means another relationship transaction already invalidated
   the round, so no second revoke is written;
 - an unchanged active P2P pair enters the normal command that revokes only the
-  locally authored direction;
-- the scheduler removes the affected thread work after either outcome.
+  locally authored user direction;
+- for an unchanged remotely owned GROUP, the normal commands revoke every
+  active local member-to-group direction;
+- for an unchanged locally owned GROUP, the normal commands revoke every active
+  group-to-member direction for members hosted by the denied peer.
 
-A GROUP denial cannot identify a unique locally authored member direction. It
-therefore writes no relationship command, stops the thread-source key, and
-prioritizes State Feed convergence.
+Matching-epoch handling stops continuation and retry for every direction of the
+affected thread-source key and prioritizes State Feed convergence. A stale
+denial writes nothing and reschedules from the current durable state. Neither
+case writes a peer-authored direction.
 
 No buffered fact or synchronization cursor from the failed round commits.
 

@@ -36,7 +36,7 @@ export class ContactCardShareService {
       type: 'msg',
       msgId: -1,
       creator: messageCreatorKey(
-        { account: self.account, domain: 'local' },
+        { account: self.account, domain: 'local', namespaceId: 0 },
         'local',
       ),
       isSelf: true,

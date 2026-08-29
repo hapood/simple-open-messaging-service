@@ -7,6 +7,7 @@ import {
 import { deletedMessage, message, threadAudience } from '../database/schema.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
 import { loadFederationConfig } from './federation.config.js';
+import { FederationNamespaceService } from './federation-namespace.service.js';
 
 interface ThreadContentProjection {
   account: string;
@@ -22,6 +23,7 @@ export class FederationThreadContentHeadService {
   constructor(
     private readonly database: DatabaseService,
     private readonly stateFeed: PeerStateFeedService,
+    private readonly namespaces: FederationNamespaceService,
   ) {}
 
   async offerCommitted(
@@ -29,33 +31,56 @@ export class FederationThreadContentHeadService {
     threadId: number,
     expectedMessageSeq?: number,
   ): Promise<void> {
+    const context = await this.namespaces.captureActive(peerDomain);
     await this.database.db.transaction((tx) =>
-      this.refreshInTx(tx, peerDomain, threadId, false, expectedMessageSeq),
+      this.refreshInTx(
+        tx,
+        peerDomain,
+        context.namespaceId,
+        threadId,
+        false,
+        expectedMessageSeq,
+      ),
     );
   }
 
   async fill(peerDomain: string): Promise<void> {
+    const context = await this.namespaces.captureActive(peerDomain);
     const audiences = await this.database.db
       .select({ threadId: threadAudience.threadId })
       .from(threadAudience)
       .where(
         and(
           eq(threadAudience.targetDomain, peerDomain),
+          eq(threadAudience.targetNamespaceId, context.namespaceId),
           isNull(threadAudience.localUserId),
         ),
       );
     for (const audience of audiences)
-      await this.offerCommitted(peerDomain, audience.threadId);
+      await this.database.db.transaction((tx) =>
+        this.refreshInTx(
+          tx,
+          peerDomain,
+          context.namespaceId,
+          audience.threadId,
+        ),
+      );
   }
 
   async refreshInTx(
     tx: DatabaseTransaction,
     peerDomain: string,
+    namespaceId: number,
     threadId: number,
     forceReindex = false,
     expectedMessageSeq?: number,
   ): Promise<void> {
-    const projection = await this.readProjectionInTx(tx, peerDomain, threadId);
+    const projection = await this.readProjectionInTx(
+      tx,
+      peerDomain,
+      namespaceId,
+      threadId,
+    );
     if (!projection) {
       if (expectedMessageSeq !== undefined)
         throw new Error(
@@ -73,6 +98,7 @@ export class FederationThreadContentHeadService {
     await this.stateFeed.writeManyInTx(tx, [
       {
         peerDomain,
+        namespaceId,
         account: projection.account,
         domain: this.localDomain,
         eventType: 'THREAD_CONTENT_HEAD',
@@ -90,6 +116,7 @@ export class FederationThreadContentHeadService {
   private async readProjectionInTx(
     tx: DatabaseTransaction,
     peerDomain: string,
+    namespaceId: number,
     threadId: number,
   ): Promise<ThreadContentProjection | null> {
     const result = await tx.execute<{
@@ -118,9 +145,9 @@ export class FederationThreadContentHeadService {
        AND pair.kind = 'P2P'
        AND pair.active = true
       WHERE audience."targetDomain" = ${peerDomain}
+        AND audience."targetNamespaceId" = ${namespaceId}
         AND audience."localUserId" IS NULL
         AND audience."threadId" = ${threadId}
-        AND thread."federationTruncated" = false
       LIMIT 1
       FOR SHARE OF audience, thread
     `);
@@ -136,8 +163,8 @@ export class FederationThreadContentHeadService {
           sql`${message.contentType} <> 'SYSTEM'`,
         ),
       );
-    if (messageEnd?.value === null || messageEnd?.value === undefined)
-      return null;
+    const messageEndSeq = messageEnd?.value ?? route.messageAccessAfterSeq;
+    if (messageEndSeq === 0) return null;
     const [deletionEnd] = await tx
       .select({
         value: sql<number>`COALESCE(MAX(${deletedMessage.deletionSeq}), 0)`,
@@ -154,7 +181,6 @@ export class FederationThreadContentHeadService {
         and(
           eq(deletedMessage.threadId, threadId),
           isNull(deletedMessage.federationSourceDomain),
-          sql`${message.seq} > ${route.messageAccessAfterSeq}`,
         ),
       );
     if (route.threadType === 'GROUP') {
@@ -162,7 +188,7 @@ export class FederationThreadContentHeadService {
         throw new Error(`group thread ${threadId} has no group address`);
       return {
         account: route.groupAccount,
-        messageEndSeq: messageEnd.value,
+        messageEndSeq,
         tombstoneEndSeq: deletionEnd?.value ?? 0,
       };
     }
@@ -173,7 +199,7 @@ export class FederationThreadContentHeadService {
     return {
       account: route.account,
       peerAccount: route.peerAccount,
-      messageEndSeq: messageEnd.value,
+      messageEndSeq,
       tombstoneEndSeq: deletionEnd?.value ?? 0,
     };
   }

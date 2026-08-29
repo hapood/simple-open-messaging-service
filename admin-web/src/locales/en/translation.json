@@ -454,6 +454,8 @@
     "empty": "No federated peers",
     "meta": {
       "createdAt": "Discovered",
+      "activeNamespace": "Active namespace",
+      "none": "none",
       "trustedAt": "Trusted since",
       "lastSuccessAt": "Last successful contact",
       "degradedAt": "Degraded at",
@@ -940,6 +942,13 @@
       "perPeer": "Per-peer concurrency",
       "save": "Save",
       "saved": "Federation HTTP concurrency limits updated"
+    },
+    "federationHistoryAccess": {
+      "title": "Federation history access",
+      "desc": "Control whether newly authorized peers may query messages retained from before authorization. Existing authorizations are unchanged.",
+      "enabled": "Allow retained history for new authorizations",
+      "save": "Save",
+      "saved": "Federation history access updated"
     },
     "vapid": {
       "title": "Web Push (VAPID)",

@@ -156,6 +156,7 @@ export class ThreadParticipantService {
         userId,
         account: '',
         domain: 'local',
+        namespaceId: 0,
         eventType: 'THREAD_BLOCK',
         subjectAccount: threadId.toString(),
         subjectDomain: 'local',
@@ -296,6 +297,7 @@ export class ThreadParticipantService {
             userId: user.id,
             account: user.account,
             domain: user.domain,
+            namespaceId: user.namespaceId,
           })
           .from(threadMember)
           .innerJoin(user, eq(user.id, threadMember.userId))
@@ -428,6 +430,7 @@ export class ThreadParticipantService {
         await this.stateFeed.writeManyInTx(tx, [
           {
             peerDomain: peer.domain,
+            namespaceId: peer.namespaceId!,
             account: mine.account,
             domain: localDomain,
             subjectAccount: peer.account,

@@ -191,7 +191,7 @@ export class InviteController {
           await this.relationshipCommands.writeAddressedFriendRequestInTx(
             tx,
             req.user.userId,
-            { account, domain },
+            { account, domain, namespaceId: state.namespaceId },
             state,
             clientFeedUpdates,
           );

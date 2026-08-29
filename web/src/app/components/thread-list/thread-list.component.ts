@@ -19,6 +19,7 @@ import {
 import { UserService } from '../../services/user.service';
 import {
   ConversationItem,
+  displayIdentityDomain,
   displayThreadName,
   messageCreatorKey,
 } from '../../services/model';
@@ -187,7 +188,10 @@ export class ThreadListComponent implements OnInit {
     if (
       self &&
       t.lastMessageSenderId ===
-        messageCreatorKey({ account: self.account, domain: 'local' }, 'local')
+        messageCreatorKey(
+          { account: self.account, domain: 'local', namespaceId: 0 },
+          'local',
+        )
     )
       return this.transloco.translate('chat.youPrefix', { text: base }) ?? '';
     return base;
@@ -234,8 +238,12 @@ export class ThreadListComponent implements OnInit {
 
   federatedDomain(t: ConversationItem): string | undefined {
     if (t.type === 'P2P')
-      return t.peerUser.domain !== 'local' ? t.peerUser.domain : undefined;
-    return t.group.domain ?? undefined;
+      return t.peerUser.domain !== 'local'
+        ? displayIdentityDomain(t.peerUser.domain, t.peerUser.namespaceId)
+        : undefined;
+    return t.group.domain !== 'local'
+      ? displayIdentityDomain(t.group.domain, t.group.namespaceId)
+      : undefined;
   }
 
   /** One concise announcement for screen readers; visible badges/icons remain aria-hidden to avoid repetition. */

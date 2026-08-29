@@ -1,6 +1,6 @@
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { createHash } from 'node:crypto';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, getTableColumns, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import {
@@ -13,6 +13,10 @@ import { loadFederationConfig } from './federation.config.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
 import { SignatureService } from './signature.service.js';
 import { FederationTransportConfigService } from './federation-transport-config.service.js';
+import {
+  FederationNamespaceService,
+  type FederationContext,
+} from './federation-namespace.service.js';
 
 export type FederationHealthStatus = 'available' | 'degraded' | 'unavailable';
 export type FederationRecognitionStage =
@@ -40,6 +44,7 @@ export class FederationRecognitionService {
     private readonly signature: SignatureService,
     private readonly stateFeed: PeerStateFeedService,
     private readonly transportConfig: FederationTransportConfigService,
+    private readonly namespaces: FederationNamespaceService,
   ) {}
 
   async recognize(peerDomain: string): Promise<void> {
@@ -52,6 +57,10 @@ export class FederationRecognitionService {
     });
     this.inFlight.set(domain, run);
     return run;
+  }
+
+  captureContext(peerDomain: string): Promise<FederationContext> {
+    return this.namespaces.captureActive(this.normalizeDomain(peerDomain));
   }
 
   /** Observe the domain-level bootstrap only. A re-entrant caller immediately receives the latest
@@ -95,7 +104,7 @@ export class FederationRecognitionService {
     const peer = await this.database.db.query.federatedPeer.findFirst({
       where: eq(tables.federatedPeer.domain, domain),
       columns: {
-        identityPinnedAt: true,
+        activeNamespaceId: true,
         recognizesPeer: true,
         outboundRecognitionConfirmed: true,
         inboundRecognitionConfirmed: true,
@@ -106,7 +115,7 @@ export class FederationRecognitionService {
     // `degraded` while this side has no post-reset recognition row at all; treating that response as
     // sufficient would let ensurePeerTrusted return before the local authorization facts exist.
     if (
-      !peer?.identityPinnedAt ||
+      peer?.activeNamespaceId == null ||
       !peer.recognizesPeer ||
       !peer.outboundRecognitionConfirmed ||
       !peer.inboundRecognitionConfirmed ||
@@ -183,7 +192,10 @@ export class FederationRecognitionService {
     }
   }
 
-  async acceptInbound(domain: string, doc: WellKnownDoc): Promise<void> {
+  async acceptInbound(
+    domain: string,
+    doc: WellKnownDoc,
+  ): Promise<FederationContext> {
     const normalized = this.normalizeDomain(domain);
     const fingerprint = this.fingerprint(doc.rootKey.ed25519);
     const mismatch = await this.database.db.transaction(async (tx) => {
@@ -195,7 +207,7 @@ export class FederationRecognitionService {
           peer.rootKeyFingerprint !== fingerprint)
       ) {
         await this.markIdentityLostInTx(tx, normalized);
-        return true;
+        return { mismatch: true as const };
       }
       const now = new Date();
       const next = {
@@ -212,9 +224,6 @@ export class FederationRecognitionService {
         .values({
           domain: normalized,
           trustLevel: 'establishing',
-          rootPublicKey: doc.rootKey.ed25519,
-          rootKeyFingerprint: fingerprint,
-          identityPinnedAt: now,
           inboundRecognitionConfirmed: true,
           inboundRecognizedAt: now,
           lightweightInboundReady: true,
@@ -223,9 +232,6 @@ export class FederationRecognitionService {
         .onConflictDoUpdate({
           target: tables.federatedPeer.domain,
           set: {
-            rootPublicKey: doc.rootKey.ed25519,
-            rootKeyFingerprint: fingerprint,
-            identityPinnedAt: peer?.identityPinnedAt ?? now,
             inboundRecognitionConfirmed: true,
             inboundRecognizedAt: peer?.inboundRecognizedAt ?? now,
             lightweightInboundReady: true,
@@ -239,16 +245,23 @@ export class FederationRecognitionService {
                 : peer?.trustedAt,
           },
         });
-      await this.initializePeerInTx(tx, normalized);
+      const context = await this.namespaces.activateVerifiedInTx(tx, {
+        domain: normalized,
+        rootPublicKey: doc.rootKey.ed25519,
+        rootKeyFingerprint: fingerprint,
+        identityPinnedAt: peer?.identityPinnedAt ?? now,
+      });
+      await this.initializePeerInTx(tx, context.domain, context.namespaceId);
       if (!peer) {
         await tx.insert(tables.federatedPeerEvent).values({
           domain: normalized,
           type: 'discovered',
         });
       }
-      return false;
+      return { mismatch: false as const, context };
     });
-    if (mismatch) this.throwIdentityMismatch(normalized);
+    if (mismatch.mismatch) this.throwIdentityMismatch(normalized);
+    return mismatch.context;
   }
 
   /** Prepare the reverse direction durably, then dispatch it outside the inbound HTTP transaction. */
@@ -268,11 +281,10 @@ export class FederationRecognitionService {
     });
     if (
       !peer ||
-      !peer.identityPinnedAt ||
+      peer.activeNamespaceId === null ||
       !peer.inboundRecognitionConfirmed ||
       !peer.localServiceAvailable ||
-      peer.trustLevel === 'halted' ||
-      peer.resetInProgress
+      peer.trustLevel === 'halted'
     ) {
       return 'unavailable';
     }
@@ -283,16 +295,11 @@ export class FederationRecognitionService {
     const peer = await this.database.db.query.federatedPeer.findFirst({
       where: eq(tables.federatedPeer.domain, this.normalizeDomain(domain)),
       columns: {
-        identityPinnedAt: true,
+        activeNamespaceId: true,
         trustLevel: true,
-        resetInProgress: true,
       },
     });
-    return (
-      !!peer?.identityPinnedAt &&
-      peer.trustLevel !== 'halted' &&
-      !peer.resetInProgress
-    );
+    return peer?.activeNamespaceId != null && peer.trustLevel !== 'halted';
   }
 
   async applyHealthResult(
@@ -309,8 +316,7 @@ export class FederationRecognitionService {
       if (
         !peer ||
         !peer.identityPinnedAt ||
-        peer.trustLevel === 'halted' ||
-        peer.resetInProgress
+        peer.trustLevel === 'halted'
       )
         return;
       const now = new Date();
@@ -343,8 +349,7 @@ export class FederationRecognitionService {
       if (
         !peer ||
         !peer.identityPinnedAt ||
-        peer.trustLevel === 'halted' ||
-        peer.resetInProgress
+        peer.trustLevel === 'halted'
       )
         return;
       const now = new Date();
@@ -380,7 +385,6 @@ export class FederationRecognitionService {
       if (
         !peer ||
         peer.trustLevel === 'halted' ||
-        peer.resetInProgress ||
         (operationStartedAt !== undefined &&
           peer.lastSuccessAt !== null &&
           peer.lastSuccessAt > operationStartedAt)
@@ -418,8 +422,8 @@ export class FederationRecognitionService {
     await this.discovery.resolveBase(domain);
     this.publishProgress(domain, 'VERIFYING_IDENTITY');
     const doc = await this.discovery.fetchWellKnown(domain);
-    await this.prepareOutbound(domain, doc);
-    await this.discovery.cacheDocument(domain, doc);
+    const context = await this.prepareOutbound(domain, doc);
+    await this.discovery.cacheDocument(domain, context.namespaceId, doc);
     const base = await this.discovery.resolveBase(domain);
     const url = new URL(`${base}/s2s/v1/recognize`);
     const body = '{}';
@@ -500,13 +504,6 @@ export class FederationRecognitionService {
     }
     this.publishProgress(domain, 'WAITING_FOR_PEER');
     await this.awaitBidirectionalConvergence(domain);
-    // A destructive reset keeps a generation tombstone so in-flight pre-reset responses remain
-    // fenced. Consume only its reinitialization flag after fresh bidirectional recognition has fully
-    // converged; the generation itself remains durable for stale-response comparisons.
-    await this.database.db
-      .update(tables.federatedPeerReset)
-      .set({ reinitPending: false })
-      .where(eq(tables.federatedPeerReset.domain, domain));
   }
 
   private async awaitBidirectionalConvergence(domain: string): Promise<void> {
@@ -550,7 +547,7 @@ export class FederationRecognitionService {
   private async prepareOutbound(
     domain: string,
     doc: WellKnownDoc,
-  ): Promise<void> {
+  ): Promise<FederationContext> {
     const fingerprint = this.fingerprint(doc.rootKey.ed25519);
     const mismatch = await this.database.db.transaction(async (tx) => {
       const peer = await this.lockPeer(tx, domain);
@@ -561,7 +558,7 @@ export class FederationRecognitionService {
           peer.rootKeyFingerprint !== fingerprint)
       ) {
         await this.markIdentityLostInTx(tx, domain);
-        return true;
+        return { mismatch: true as const };
       }
       const now = new Date();
       const next = {
@@ -576,18 +573,12 @@ export class FederationRecognitionService {
         .values({
           domain,
           trustLevel: 'establishing',
-          rootPublicKey: doc.rootKey.ed25519,
-          rootKeyFingerprint: fingerprint,
-          identityPinnedAt: now,
           recognizesPeer: true,
           localServiceAvailable: true,
         })
         .onConflictDoUpdate({
           target: tables.federatedPeer.domain,
           set: {
-            rootPublicKey: doc.rootKey.ed25519,
-            rootKeyFingerprint: fingerprint,
-            identityPinnedAt: peer?.identityPinnedAt ?? now,
             recognizesPeer: true,
             localServiceAvailable: true,
             trustLevel,
@@ -597,44 +588,67 @@ export class FederationRecognitionService {
                 : peer?.trustedAt,
           },
         });
-      await this.initializePeerInTx(tx, domain);
+      const context = await this.namespaces.activateVerifiedInTx(tx, {
+        domain,
+        rootPublicKey: doc.rootKey.ed25519,
+        rootKeyFingerprint: fingerprint,
+        identityPinnedAt: peer?.identityPinnedAt ?? now,
+      });
+      await this.initializePeerInTx(tx, context.domain, context.namespaceId);
       if (!peer) {
         await tx.insert(tables.federatedPeerEvent).values({
           domain,
           type: 'discovered',
         });
       }
-      return false;
+      return { mismatch: false as const, context };
     });
-    if (mismatch) this.throwIdentityMismatch(domain);
+    if (mismatch.mismatch) this.throwIdentityMismatch(domain);
+    return mismatch.context;
   }
 
   private async initializePeerInTx(
     tx: DatabaseTransaction,
     domain: string,
+    namespaceId: number,
   ): Promise<void> {
-    await this.stateFeed.initializePeerInTx(tx, domain);
+    await this.stateFeed.initializePeerInTx(tx, domain, namespaceId);
     await tx
       .insert(tables.peerStateFeedPullCursor)
-      .values({ peerDomain: domain })
+      .values({ peerDomain: domain, namespaceId })
       .onConflictDoNothing();
   }
 
   private async lockPeer(tx: DatabaseTransaction, domain: string) {
     const [peer] = await tx
-      .select()
+      .select({
+        ...getTableColumns(tables.federatedPeer),
+        rootKeyFingerprint: tables.identityNamespace.rootKeyFingerprint,
+        rootPublicKey: tables.identityNamespace.rootPublicKey,
+        identityPinnedAt: tables.identityNamespace.identityPinnedAt,
+      })
       .from(tables.federatedPeer)
+      .leftJoin(
+        tables.identityNamespace,
+        and(
+          eq(
+            tables.identityNamespace.id,
+            tables.federatedPeer.activeNamespaceId,
+          ),
+          eq(tables.identityNamespace.domain, tables.federatedPeer.domain),
+        ),
+      )
       .where(eq(tables.federatedPeer.domain, domain))
-      .for('update')
+      .for('update', { of: tables.federatedPeer })
       .limit(1);
     return peer;
   }
 
   private assertPolicyAllowsRecognition(
-    peer: typeof tables.federatedPeer.$inferSelect | undefined,
+    peer: Awaited<ReturnType<FederationRecognitionService['lockPeer']>>,
     domain: string,
   ): void {
-    if (peer?.trustLevel === 'halted' && !peer.resetInProgress) {
+    if (peer?.trustLevel === 'halted') {
       const code = this.isFatalCode(peer.haltCode)
         ? peer.haltCode
         : BusinessCode.FEDERATION_IDENTITY_MISMATCH;
@@ -644,12 +658,6 @@ export class FederationRecognitionService {
         HttpStatus.CONFLICT,
       );
     }
-    if (peer?.resetInProgress)
-      throw new BusinessException(
-        BusinessCode.INTERNAL,
-        `${domain} federation relationship is under administrative maintenance`,
-        HttpStatus.SERVICE_UNAVAILABLE,
-      );
   }
 
   private async markIdentityLostInTx(
@@ -675,9 +683,11 @@ export class FederationRecognitionService {
   }
 
   private lifecycle(
-    peer: Partial<typeof tables.federatedPeer.$inferSelect>,
+    peer: Partial<typeof tables.federatedPeer.$inferSelect> & {
+      identityPinnedAt?: Date | null;
+    },
   ): string {
-    if (peer.trustLevel === 'halted' || peer.resetInProgress) {
+    if (peer.trustLevel === 'halted') {
       return 'halted';
     }
     if (!peer.identityPinnedAt) return 'unrecognized';

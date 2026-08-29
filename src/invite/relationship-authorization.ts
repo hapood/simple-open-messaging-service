@@ -14,8 +14,21 @@ const endpointMatchesUserSql = (
   const prefix = side === 'A' ? 'endpointA' : 'endpointB';
   return sql`${pairAlias}.${sql.identifier(`${prefix}Type`)} = 'USER'
     AND ${pairAlias}.${sql.identifier(`${prefix}Account`)} = ${identityAlias}.account
-    AND ${pairAlias}.${sql.identifier(`${prefix}Domain`)} = ${identityAlias}.domain`;
+    AND ${pairAlias}.${sql.identifier(`${prefix}Domain`)} = ${identityAlias}.domain
+    AND (${identityAlias}."namespaceId" = 0
+      OR ${pairAlias}.${sql.identifier(`${prefix}NamespaceId`)} = ${identityAlias}."namespaceId")`;
 };
+
+const pairNamespaceMatchesUsersSql = (
+  pairAlias: SQLWrapper,
+  firstIdentityAlias: SQLWrapper,
+  secondIdentityAlias: SQLWrapper,
+) => sql`${pairAlias}."endpointANamespaceId" = ${pairAlias}."endpointBNamespaceId"
+  AND ${pairAlias}."endpointANamespaceId" = CASE
+    WHEN ${firstIdentityAlias}."namespaceId" <> 0
+      THEN ${firstIdentityAlias}."namespaceId"
+    ELSE ${secondIdentityAlias}."namespaceId"
+  END`;
 
 /** One directed intent for a fixed Pair endpoint. This is request/one-way authority only. */
 export const effectiveRelationshipIntentSql = (
@@ -27,7 +40,8 @@ export const effectiveRelationshipIntentSql = (
   JOIN "User" author_identity ON author_identity.id = ${authorUserId}
   JOIN "User" subject_identity ON subject_identity.id = ${subjectUserId}
   JOIN "RelationshipIntent" intent ON intent."pairId" = pair.id
-  WHERE (
+  WHERE ${pairNamespaceMatchesUsersSql(sql`pair`, sql`author_identity`, sql`subject_identity`)}
+    AND (
       (${endpointMatchesUserSql(sql`pair`, 'A', sql`author_identity`)}
        AND ${endpointMatchesUserSql(sql`pair`, 'B', sql`subject_identity`)}
        AND intent."authorSide" = 'A')
@@ -50,6 +64,7 @@ export const mutuallyAuthorizedSql = (
   JOIN "User" first_identity ON first_identity.id = ${firstUserId}
   JOIN "User" second_identity ON second_identity.id = ${secondUserId}
   WHERE pair.active = true
+    AND ${pairNamespaceMatchesUsersSql(sql`pair`, sql`first_identity`, sql`second_identity`)}
     AND ((
       ${endpointMatchesUserSql(sql`pair`, 'A', sql`first_identity`)}
       AND ${endpointMatchesUserSql(sql`pair`, 'B', sql`second_identity`)}

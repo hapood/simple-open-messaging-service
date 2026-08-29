@@ -75,6 +75,7 @@ export class AdminBootstrapService implements OnApplicationBootstrap {
         name: 'admin',
         domain: 'local',
         sourceDomain: 'local',
+        namespaceId: 0,
         updatedAt: new Date(),
       })
       .onConflictDoNothing({
@@ -82,6 +83,7 @@ export class AdminBootstrapService implements OnApplicationBootstrap {
           userTable.account,
           userTable.domain,
           userTable.sourceDomain,
+          userTable.namespaceId,
         ],
       })
       .returning({ id: userTable.id });
@@ -92,6 +94,7 @@ export class AdminBootstrapService implements OnApplicationBootstrap {
           where: and(
             eq(userTable.account, 'admin'),
             eq(userTable.domain, 'local'),
+            eq(userTable.namespaceId, 0),
           ),
           columns: { id: true },
         })

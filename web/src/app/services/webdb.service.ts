@@ -81,6 +81,7 @@ export interface UserRecord {
   bio: string;
   domain: string;
   sourceDomain: string;
+  namespaceId: number;
   availability: 'AVAILABLE' | 'REMOVED';
   createdAt: number;
   updatedAt: number;
@@ -95,6 +96,7 @@ export interface GroupRecord {
   avatar: string;
   description: string;
   domain: string;
+  namespaceId: number;
   profileRev: number;
   createdAt: number;
   updatedAt: number;
@@ -107,6 +109,7 @@ export interface MemberRecord {
   account: string;
   domain: string;
   sourceDomain: string;
+  namespaceId: number;
   role: 'OWNER' | 'ADMIN' | 'MEMBER';
   left: boolean;
 }
@@ -126,12 +129,14 @@ export interface ProfileRecord {
   bio: string;
   domain: string;
   sourceServer: string;
+  namespaceId: number;
   profileRev: number;
 }
 
 export interface ClientGroupMetaApply {
   threadId: number;
   sourceServer: string;
+  namespaceId: number;
   page: ClientGroupMetaFeedPage;
 }
 
@@ -262,21 +267,21 @@ function messageCoverageKey(threadId: number): string {
 export interface WebdbSchema extends DBSchema {
   avatars: { key: string; value: AvatarRecord };
   users: {
-    key: [string, string, string];
+    key: [string, string, string, number];
     value: UserRecord;
-    indexes: { address: [string, string]; id: number };
+    indexes: { address: [string, string, number]; id: number };
   };
   groups: {
-    key: [string, string];
+    key: [string, string, number];
     value: GroupRecord;
     indexes: { id: number };
   };
   members: {
-    key: [number, string, string, string];
+    key: [number, string, string, string, number];
     value: MemberRecord;
     indexes: {
       thread: number;
-      address: [number, string, string];
+      address: [number, string, string, number];
     };
   };
   /** One record per conversation, keyed by `threadId` (the field is the keyPath). */
@@ -306,7 +311,7 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-export const CACHE_SCHEMA_VERSION = 8;
+export const CACHE_SCHEMA_VERSION = 10;
 export const MESSAGE_CACHE_SCHEMA_VERSION = 1;
 const IDB_FORMAT_VERSION = 1;
 
@@ -645,19 +650,30 @@ export class WebdbService implements OnDestroy {
           throw new Error('cache recreation expected an empty IndexedDB');
         db.createObjectStore('avatars', { keyPath: 'identity' });
         const users = db.createObjectStore('users', {
-          keyPath: ['account', 'domain', 'sourceDomain'],
+          keyPath: ['account', 'domain', 'sourceDomain', 'namespaceId'],
         });
-        users.createIndex('address', ['account', 'domain']);
+        users.createIndex('address', ['account', 'domain', 'namespaceId']);
         users.createIndex('id', 'id', { unique: true });
         const groups = db.createObjectStore('groups', {
-          keyPath: ['account', 'domain'],
+          keyPath: ['account', 'domain', 'namespaceId'],
         });
         groups.createIndex('id', 'id', { unique: true });
         const members = db.createObjectStore('members', {
-          keyPath: ['threadId', 'account', 'domain', 'sourceDomain'],
+          keyPath: [
+            'threadId',
+            'account',
+            'domain',
+            'sourceDomain',
+            'namespaceId',
+          ],
         });
         members.createIndex('thread', 'threadId');
-        members.createIndex('address', ['threadId', 'account', 'domain']);
+        members.createIndex('address', [
+          'threadId',
+          'account',
+          'domain',
+          'namespaceId',
+        ]);
         db.createObjectStore('threads', { keyPath: 'threadId' });
         const friendRequests = db.createObjectStore('friendRequests', {
           keyPath: 'key',
@@ -1410,10 +1426,26 @@ export class WebdbService implements OnDestroy {
           direction,
         });
         if (targetDirection === null) return;
-        const key = groupRequestKey(groupDomain, groupAccount, targetDirection);
+        const group = {
+          ...body.group,
+          namespaceId: body.group.domain === 'local' ? 0 : op.namespaceId,
+        };
+        const key = groupRequestKey(
+          op.namespaceId,
+          groupDomain,
+          groupAccount,
+          targetDirection,
+        );
         const transition = applyGroupIntentToProjection(
           await store.get(key),
-          { account: groupAccount, domain: groupDomain, ...body, direction },
+          {
+            namespaceId: op.namespaceId,
+            account: groupAccount,
+            domain: groupDomain,
+            ...body,
+            group,
+            direction,
+          },
           Date.now(),
         );
         if (transition.record) await store.put(transition.record);
@@ -1442,11 +1474,16 @@ export class WebdbService implements OnDestroy {
       const transition = applyFriendIntentToProjection(
         await store.get(projectionKey),
         {
+          namespaceId: op.namespaceId,
           account: op.account,
           domain: op.domain,
           subjectAccount: op.subjectAccount,
           subjectDomain: op.subjectDomain,
           ...body,
+          peer: {
+            ...body.peer,
+            namespaceId: body.peer.domain === 'local' ? 0 : op.namespaceId,
+          },
         },
         Date.now(),
       );
@@ -1496,7 +1533,13 @@ export class WebdbService implements OnDestroy {
             await threads.put(
               createGroupConversation(
                 threadId,
-                { id: threadId, ownerId: 0, ...groupBody.group },
+                {
+                  id: threadId,
+                  ownerId: 0,
+                  ...groupBody.group,
+                  namespaceId:
+                    groupBody.group.domain === 'local' ? 0 : op.namespaceId,
+                },
                 { role: null },
               ),
             );
@@ -1512,7 +1555,11 @@ export class WebdbService implements OnDestroy {
             await threads.delete(threadId);
             await tx
               .objectStore('groups')
-              .delete([existing.group.account, existing.group.domain]);
+              .delete([
+                existing.group.account,
+                existing.group.domain,
+                existing.group.namespaceId ?? 0,
+              ]);
           }
         } else {
           const friendBody = body as Omit<
@@ -1524,15 +1571,20 @@ export class WebdbService implements OnDestroy {
             | 'subjectDomain'
             | 'requestedSort'
           >;
+          const peer = {
+            ...friendBody.peer,
+            namespaceId:
+              friendBody.peer.domain === 'local' ? 0 : op.namespaceId,
+          };
           if (existing?.type === 'P2P')
             await threads.put({
               ...existing,
               friendshipActive: active,
               conversationState: active ? 'ACTIVE' : 'READ_ONLY',
-              peerUser: { ...existing.peerUser, ...friendBody.peer },
+              peerUser: { ...existing.peerUser, ...peer },
             });
           else if (active)
-            await threads.put(createP2PConversation(threadId, friendBody.peer));
+            await threads.put(createP2PConversation(threadId, peer));
         }
       }
       await applyRequestProjectionEffect(op);
@@ -1551,7 +1603,12 @@ export class WebdbService implements OnDestroy {
         const sourceDomain = update.sourceServer;
         const previous = await members
           .index('address')
-          .get([update.threadId, item.account, item.domain]);
+          .get([
+            update.threadId,
+            item.account,
+            item.domain,
+            update.namespaceId,
+          ]);
         if (item.operation === 'DEPART') {
           if (previous) await members.put({ ...previous, left: true });
           continue;
@@ -1564,13 +1621,14 @@ export class WebdbService implements OnDestroy {
         };
         const existingUser = await tx
           .objectStore('users')
-          .get([item.account, item.domain, sourceDomain]);
+          .get([item.account, item.domain, sourceDomain, update.namespaceId]);
         if (!existingUser || body.profileRev >= existingUser.profileRev)
           await tx.objectStore('users').put({
             ...(existingUser?.id === undefined ? {} : { id: existingUser.id }),
             account: item.account,
             domain: item.domain,
             sourceDomain,
+            namespaceId: update.namespaceId,
             name: body.displayName,
             avatar: body.avatar ?? '',
             bio: existingUser?.bio ?? '',
@@ -1584,6 +1642,7 @@ export class WebdbService implements OnDestroy {
           account: item.account,
           domain: item.domain,
           sourceDomain,
+          namespaceId: update.namespaceId,
           role: body.role,
           left: false,
         });
@@ -1627,12 +1686,18 @@ export class WebdbService implements OnDestroy {
         const now = Date.now();
         if (op.account.startsWith('!')) {
           const groups = tx.objectStore('groups');
-          const previous = await groups.get([op.account, op.domain]);
+          const namespaceId = op.namespaceId;
+          const previous = await groups.get([
+            op.account,
+            op.domain,
+            namespaceId,
+          ]);
           if (!previous || body.profileRev >= previous.profileRev)
             await groups.put({
               id: previous?.id,
               account: op.account,
               domain: op.domain,
+              namespaceId,
               name: body.displayName,
               avatar: body.avatar ?? '',
               description: body.bio,
@@ -1647,10 +1712,12 @@ export class WebdbService implements OnDestroy {
               ? body.sourceDomain
               : op.domain;
           const users = tx.objectStore('users');
+          const namespaceId = op.namespaceId;
           const previous = await users.get([
             op.account,
             op.domain,
             sourceDomain,
+            namespaceId,
           ]);
           if (!previous || body.profileRev >= previous.profileRev)
             await users.put({
@@ -1658,6 +1725,7 @@ export class WebdbService implements OnDestroy {
               account: op.account,
               domain: op.domain,
               sourceDomain,
+              namespaceId,
               availability: 'AVAILABLE',
               createdAt: previous?.createdAt ?? now,
               updatedAt: now,
@@ -1776,6 +1844,13 @@ export class WebdbService implements OnDestroy {
             ...thread,
             blocked: op.body.blocked,
           });
+        continue;
+      }
+      if (op.eventType === 'NAMESPACE_CHANGED') {
+        await tx.objectStore('settings').put({
+          key: `activeFederationNamespace:${op.domain}`,
+          value: op.body.activeNamespaceId,
+        });
       }
     }
     await tx.objectStore('settings').put({ key: 'stateFeedId', value: feedId });
@@ -1813,6 +1888,7 @@ export class WebdbService implements OnDestroy {
     account: string,
     domain: string,
     sourceDomain: string,
+    namespaceId: number,
   ): Promise<UserRecord | undefined> {
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId != null)
@@ -1822,9 +1898,15 @@ export class WebdbService implements OnDestroy {
             account,
             domain,
             sourceDomain,
+            namespaceId,
           })) ?? undefined
         );
-      return (await this.db()).get('users', [account, domain, sourceDomain]);
+      return (await this.db()).get('users', [
+        account,
+        domain,
+        sourceDomain,
+        namespaceId,
+      ]);
     });
   }
 
@@ -1856,12 +1938,12 @@ export class WebdbService implements OnDestroy {
           .getAll(params.threadId)
       )
         .filter((member) => {
-          const identity = `${member.sourceDomain}\u0000${member.domain}\u0000${member.account}`;
+          const identity = `${member.namespaceId}\u0000${member.sourceDomain}\u0000${member.domain}\u0000${member.account}`;
           return !member.left && identity > (params.afterIdentity ?? '');
         })
         .sort((a, b) =>
-          `${a.sourceDomain}\u0000${a.domain}\u0000${a.account}`.localeCompare(
-            `${b.sourceDomain}\u0000${b.domain}\u0000${b.account}`,
+          `${a.namespaceId}\u0000${a.sourceDomain}\u0000${a.domain}\u0000${a.account}`.localeCompare(
+            `${b.namespaceId}\u0000${b.sourceDomain}\u0000${b.domain}\u0000${b.account}`,
           ),
         );
       for (const member of members) {
@@ -1870,6 +1952,7 @@ export class WebdbService implements OnDestroy {
           member.account,
           member.domain,
           member.sourceDomain,
+          member.namespaceId,
         ]);
         if (!user) continue;
         if (
@@ -1888,6 +1971,7 @@ export class WebdbService implements OnDestroy {
     account: string,
     domain: string,
     sourceDomain: string,
+    namespaceId: number,
   ): Promise<ResolvedMemberRecord | undefined> {
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId != null)
@@ -1900,6 +1984,7 @@ export class WebdbService implements OnDestroy {
               account,
               domain,
               sourceDomain,
+              namespaceId,
             },
           )) ?? undefined
         );
@@ -1909,9 +1994,15 @@ export class WebdbService implements OnDestroy {
         account,
         domain,
         sourceDomain,
+        namespaceId,
       ]);
       if (!member || member.left) return undefined;
-      const user = await db.get('users', [account, domain, sourceDomain]);
+      const user = await db.get('users', [
+        account,
+        domain,
+        sourceDomain,
+        namespaceId,
+      ]);
       return user ? { ...member, user } : undefined;
     });
   }
@@ -1931,10 +2022,14 @@ export class WebdbService implements OnDestroy {
     if (identity.startsWith('a:')) {
       const [domain, account] = identity.slice(2).split('\u0000');
       if (!domain || !account) return undefined;
-      const matches = await db.getAllFromIndex('users', 'address', [
-        account,
-        domain,
-      ]);
+      const matches = await db.getAllFromIndex(
+        'users',
+        'address',
+        IDBKeyRange.bound(
+          [account, domain, 0],
+          [account, domain, Number.MAX_SAFE_INTEGER],
+        ),
+      );
       const record = matches.find((user) => user.sourceDomain === domain);
       return record ? this.userAsProfile(identity, record) : undefined;
     }
@@ -1964,10 +2059,11 @@ export class WebdbService implements OnDestroy {
     }
     const db = await this.db();
     if (record.kind === 'user') {
-      const key: [string, string, string] = [
+      const key: [string, string, string, number] = [
         record.account,
         record.domain,
         record.sourceServer,
+        record.namespaceId,
       ];
       const previous = await db.get('users', key);
       if (previous && previous.profileRev > record.profileRev) return false;
@@ -1976,6 +2072,7 @@ export class WebdbService implements OnDestroy {
         account: record.account,
         domain: record.domain,
         sourceDomain: record.sourceServer,
+        namespaceId: record.namespaceId,
         name: record.name,
         avatar: record.avatar,
         bio: record.bio,
@@ -1985,13 +2082,18 @@ export class WebdbService implements OnDestroy {
         updatedAt: Date.now(),
       });
     } else {
-      const key: [string, string] = [record.account, record.domain];
+      const key: [string, string, number] = [
+        record.account,
+        record.domain,
+        record.namespaceId,
+      ];
       const previous = await db.get('groups', key);
       if (previous && previous.profileRev > record.profileRev) return false;
       await db.put('groups', {
         id: record.id || previous?.id,
         account: record.account,
         domain: record.domain,
+        namespaceId: record.namespaceId,
         name: record.name,
         avatar: record.avatar,
         description: record.bio,
@@ -2015,6 +2117,7 @@ export class WebdbService implements OnDestroy {
       bio: record.bio,
       domain: record.domain,
       sourceServer: record.sourceDomain,
+      namespaceId: record.namespaceId,
       profileRev: record.profileRev,
     };
   }
@@ -2030,6 +2133,7 @@ export class WebdbService implements OnDestroy {
       bio: record.description,
       domain: record.domain,
       sourceServer: record.domain,
+      namespaceId: record.namespaceId,
       profileRev: record.profileRev,
     };
   }

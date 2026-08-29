@@ -17,6 +17,7 @@ import {
 export interface GroupMetaMemberWrite {
   account: string;
   domain: string;
+  namespaceId: number;
   body: Record<string, unknown>;
 }
 
@@ -51,6 +52,7 @@ export class GroupMetaFeedService {
   async deactivateTargetInTx(
     tx: DatabaseTransaction,
     targetPeerDomain: string,
+    targetNamespaceId: number,
     groupId: number,
   ): Promise<void> {
     await tx
@@ -59,6 +61,7 @@ export class GroupMetaFeedService {
       .where(
         and(
           eq(groupMetaFeedTarget.targetPeerDomain, targetPeerDomain),
+          eq(groupMetaFeedTarget.targetNamespaceId, targetNamespaceId),
           eq(groupMetaFeedTarget.groupId, groupId),
         ),
       );
@@ -67,15 +70,21 @@ export class GroupMetaFeedService {
   async reconcileInTx(
     tx: DatabaseTransaction,
     targetPeerDomain: string,
+    targetNamespaceId: number,
     groupId: number,
     members: readonly GroupMetaMemberWrite[],
   ): Promise<bigint> {
     await tx
       .insert(groupMetaFeedTarget)
-      .values({ targetPeerDomain, groupId, active: true })
+      .values({
+        targetPeerDomain,
+        targetNamespaceId,
+        groupId,
+        active: true,
+      })
       .onConflictDoUpdate({
         target: [
-          groupMetaFeedTarget.targetPeerDomain,
+          groupMetaFeedTarget.targetNamespaceId,
           groupMetaFeedTarget.groupId,
         ],
         set: { active: true, updatedAt: new Date() },
@@ -84,6 +93,7 @@ export class GroupMetaFeedService {
       SELECT "allocatedThrough"
       FROM "GroupMetaFeedTarget"
       WHERE "targetPeerDomain" = ${targetPeerDomain}
+        AND "targetNamespaceId" = ${targetNamespaceId}
         AND "groupId" = ${groupId}
       FOR UPDATE
     `);
@@ -92,6 +102,7 @@ export class GroupMetaFeedService {
       .select({
         account: groupMetaMemberFeed.memberAccount,
         domain: groupMetaMemberFeed.memberDomain,
+        namespaceId: groupMetaMemberFeed.memberNamespaceId,
         operation: groupMetaMemberFeed.operation,
         body: groupMetaMemberFeed.body,
       })
@@ -99,16 +110,20 @@ export class GroupMetaFeedService {
       .where(
         and(
           eq(groupMetaMemberFeed.targetPeerDomain, targetPeerDomain),
+          eq(groupMetaMemberFeed.targetNamespaceId, targetNamespaceId),
           eq(groupMetaMemberFeed.groupId, groupId),
         ),
       )
       .orderBy(asc(groupMetaMemberFeed.feedId));
     const current = new Map(
-      history.map((item) => [`${item.domain}\u0000${item.account}`, item]),
+      history.map((item) => [
+        `${item.namespaceId}\u0000${item.domain}\u0000${item.account}`,
+        item,
+      ]),
     );
     const desired = new Map(
       members.map((member) => [
-        `${member.domain}\u0000${member.account}`,
+        `${member.namespaceId}\u0000${member.domain}\u0000${member.account}`,
         {
           ...member,
           body: serializeBody(member.body) as Record<string, unknown>,
@@ -118,6 +133,7 @@ export class GroupMetaFeedService {
     const changes: Array<{
       account: string;
       domain: string;
+      namespaceId: number;
       operation: 'UPSERT' | 'DEPART';
       body: Record<string, unknown>;
     }> = [];
@@ -131,16 +147,18 @@ export class GroupMetaFeedService {
       changes.push({
         account: member.account,
         domain: member.domain,
+        namespaceId: member.namespaceId,
         operation: 'UPSERT',
         body: member.body,
       });
     }
     for (const previous of current.values()) {
-      const key = `${previous.domain}\u0000${previous.account}`;
+      const key = `${previous.namespaceId}\u0000${previous.domain}\u0000${previous.account}`;
       if (previous.operation !== 'UPSERT' || desired.has(key)) continue;
       changes.push({
         account: previous.account,
         domain: previous.domain,
+        namespaceId: previous.namespaceId,
         operation: 'DEPART',
         body: previous.body,
       });
@@ -154,10 +172,12 @@ export class GroupMetaFeedService {
       await tx.insert(groupMetaMemberFeed).values(
         changes.map((change) => ({
           targetPeerDomain,
+          targetNamespaceId,
           groupId,
           feedId: ++allocatedThrough,
           memberAccount: change.account,
           memberDomain: change.domain,
+          memberNamespaceId: change.namespaceId,
           operation: change.operation,
           body: change.body,
           updatedAt: new Date(),
@@ -169,6 +189,7 @@ export class GroupMetaFeedService {
         .where(
           and(
             eq(groupMetaFeedTarget.targetPeerDomain, targetPeerDomain),
+            eq(groupMetaFeedTarget.targetNamespaceId, targetNamespaceId),
             eq(groupMetaFeedTarget.groupId, groupId),
           ),
         );
@@ -178,6 +199,7 @@ export class GroupMetaFeedService {
 
   async serve(
     peerDomain: string,
+    namespaceId: number,
     account: string,
     mode: 'full' | 'delta',
     after: bigint | undefined,
@@ -196,6 +218,7 @@ export class GroupMetaFeedService {
         and(
           eq(groupMetaFeedTarget.groupId, group.id),
           eq(groupMetaFeedTarget.targetPeerDomain, peerDomain),
+          eq(groupMetaFeedTarget.targetNamespaceId, namespaceId),
         ),
       )
       .where(
@@ -260,8 +283,10 @@ export class GroupMetaFeedService {
               SELECT MAX(latest."feedId")
               FROM "GroupMetaMemberFeed" latest
               WHERE latest."targetPeerDomain" = ${peerDomain}
+                AND latest."targetNamespaceId" = ${namespaceId}
                 AND latest."groupId" = ${source.groupId}
                 AND latest."memberDomain" = ${groupMetaMemberFeed.memberDomain}
+                AND latest."memberNamespaceId" = ${groupMetaMemberFeed.memberNamespaceId}
                 AND latest."memberAccount" = ${groupMetaMemberFeed.memberAccount}
                 AND latest."feedId" <= ${scanEnd}
             )`,
@@ -273,6 +298,7 @@ export class GroupMetaFeedService {
       .where(
         and(
           eq(groupMetaMemberFeed.targetPeerDomain, peerDomain),
+          eq(groupMetaMemberFeed.targetNamespaceId, namespaceId),
           eq(groupMetaMemberFeed.groupId, source.groupId),
           sql`${groupMetaMemberFeed.feedId} > ${after}`,
           lte(groupMetaMemberFeed.feedId, scanEnd),

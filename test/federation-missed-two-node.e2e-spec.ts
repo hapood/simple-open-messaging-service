@@ -22,6 +22,7 @@ import {
   messageAsset,
   pendingMedia,
   quotaDailyUsage,
+  relationshipPair,
   threadMember,
   user,
 } from '../src/database/schema.js';
@@ -49,6 +50,7 @@ describe('federation durable missed transport (two nodes)', () => {
   let tokenB: string;
   let aliceIdA: number;
   let bobIdB: number;
+  let bobStubIdA: number;
   let aliceStubIdB: number;
 
   beforeAll(async () => {
@@ -80,7 +82,7 @@ describe('federation durable missed transport (two nodes)', () => {
       remoteDomain: FED_DOMAIN_B,
       note: 'durable missed e2e',
     });
-    const bobStubIdA = friendship.remoteStubIdOnLocal;
+    bobStubIdA = friendship.remoteStubIdOnLocal;
     aliceStubIdB = friendship.localStubIdOnRemote;
     await vi.waitFor(
       async () => {
@@ -105,6 +107,7 @@ describe('federation durable missed transport (two nodes)', () => {
 
   afterEach(() => {
     proxy?.blockGetFile(false);
+    proxy?.blockStateFeed(false);
   });
 
   it('delivers through the state-feed and forward thread-round pipeline', async () => {
@@ -467,4 +470,128 @@ describe('federation durable missed transport (two nodes)', () => {
     );
     proxy.setGetFileFixture(digest, null);
   }, 60_000);
+
+  it('converges a delayed-state unfriend and immediate re-add through current facts', async () => {
+    const [memberOnA, memberOnB] = await Promise.all([
+      appA.database.query.threadMember.findFirst({
+        where: eq(threadMember.userId, bobStubIdA),
+      }),
+      appB.database.query.threadMember.findFirst({
+        where: eq(threadMember.userId, aliceStubIdB),
+      }),
+    ]);
+    expect(memberOnA).toBeDefined();
+    expect(memberOnB).toBeDefined();
+
+    const before = await vi.waitFor(
+      async () => {
+        const state =
+          await appB.database.query.federationThreadSyncState.findFirst({
+            where: and(
+              eq(federationThreadSyncState.threadId, memberOnB!.threadId),
+              eq(federationThreadSyncState.peerDomain, FED_DOMAIN_A),
+            ),
+          });
+        expect(state).toBeDefined();
+        expect(state!.messageProcessedThroughSeq).toBe(state!.messageTargetSeq);
+        return state!;
+      },
+      { timeout: 10_000, interval: 100 },
+    );
+
+    proxy.blockStateFeed(true);
+    const hiddenText = 'p2p-hidden-across-unfriend';
+    const hidden = await request(appA.baseUrl)
+      .post('/api/v1/send-message')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({
+        threadId: memberOnA!.threadId,
+        content: hiddenText,
+        contentType: 'PURE_TEXT',
+        clientMessageId: randomUUID(),
+      });
+    expect(hidden.body.code).toBe(BusinessCode.OK);
+    await vi.waitFor(
+      () => expect(proxy.blockedStateFeedCount()).toBeGreaterThan(0),
+      { timeout: 10_000, interval: 100 },
+    );
+
+    const removed = await request(appA.baseUrl)
+      .post('/api/v1/user/delete-friend')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ account: 'missedbob', domain: FED_DOMAIN_B });
+    expect(removed.body.code).toBe(BusinessCode.OK);
+    const restored = await request(appA.baseUrl)
+      .post('/api/v1/invite/federated-friend')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({
+        account: 'missedbob',
+        domain: FED_DOMAIN_B,
+        displayName: 'Missed Bob',
+        note: 'restore after compacted revoke',
+      });
+    expect(restored.body.code).toBe(BusinessCode.OK);
+    proxy.blockStateFeed(false);
+
+    await vi.waitFor(
+      async () => {
+        const [pair, state] = await Promise.all([
+          appB.database.query.relationshipPair.findFirst({
+            where: and(
+              eq(relationshipPair.threadId, memberOnB!.threadId),
+              eq(relationshipPair.active, true),
+            ),
+          }),
+          appB.database.query.federationThreadSyncState.findFirst({
+            where: and(
+              eq(federationThreadSyncState.threadId, memberOnB!.threadId),
+              eq(federationThreadSyncState.peerDomain, FED_DOMAIN_A),
+            ),
+          }),
+        ]);
+        expect(pair).toBeDefined();
+        expect(state!.authorizationEpoch).toBeGreaterThan(
+          before.authorizationEpoch,
+        );
+        expect(state).toMatchObject({
+          deletionRecoveryThroughSeq: null,
+          deletionRecoveryMaxMessageSeq: null,
+        });
+      },
+      { timeout: 30_000, interval: 100 },
+    );
+    expect(
+      await appB.database.query.message.findFirst({
+        where: and(
+          eq(message.threadId, memberOnB!.threadId),
+          eq(message.content, JSON.stringify({ text: hiddenText })),
+        ),
+      }),
+    ).toBeUndefined();
+
+    const liveText = 'p2p-after-re-add';
+    const live = await request(appA.baseUrl)
+      .post('/api/v1/send-message')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({
+        threadId: memberOnA!.threadId,
+        content: liveText,
+        contentType: 'PURE_TEXT',
+        clientMessageId: randomUUID(),
+      });
+    expect(live.body.code).toBe(BusinessCode.OK);
+    await vi.waitFor(
+      async () => {
+        expect(
+          await appB.database.query.message.findFirst({
+            where: and(
+              eq(message.threadId, memberOnB!.threadId),
+              eq(message.content, JSON.stringify({ text: liveText })),
+            ),
+          }),
+        ).toBeDefined();
+      },
+      { timeout: 20_000, interval: 100 },
+    );
+  }, 90_000);
 });

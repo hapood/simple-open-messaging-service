@@ -120,6 +120,9 @@ export function PeerDetailPage() {
                   <Meta label={t('federation.meta.createdAt')}>
                     <Timestamp value={peer.createdAt} />
                   </Meta>
+                  <Meta label={t('federation.meta.activeNamespace')}>
+                    {peer.activeNamespaceId ?? t('federation.meta.none')}
+                  </Meta>
                   <Meta label={t('federation.meta.trustedAt')}>
                     <Timestamp value={peer.trustedAt} />
                   </Meta>

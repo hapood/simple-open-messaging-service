@@ -6,13 +6,14 @@ import { randomUUID } from 'crypto';
 import { existsSync } from 'fs';
 import { unlink } from 'fs/promises';
 import { join } from 'path';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
 import {
   forwardBundle,
   federatedMessageTombstone,
+  identityNamespace,
   mediaAsset,
   messageAsset,
   message,
@@ -33,6 +34,7 @@ describe('Media asset garbage collection', () => {
   let database: DatabaseService;
   let upload: UploadService;
   let gc: MediaAssetGcService;
+  let originNamespaceId: number;
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -48,6 +50,29 @@ describe('Media asset garbage collection', () => {
     await database.db.execute(
       sql`TRUNCATE TABLE "MediaAsset" RESTART IDENTITY`,
     );
+    const [existingNamespace] = await database.db
+      .select({ id: identityNamespace.id })
+      .from(identityNamespace)
+      .where(
+        and(
+          eq(identityNamespace.domain, 'origin.test'),
+          isNull(identityNamespace.retiredAt),
+        ),
+      )
+      .limit(1);
+    originNamespaceId =
+      existingNamespace?.id ??
+      (
+        await database.db
+          .insert(identityNamespace)
+          .values({
+            domain: 'origin.test',
+            rootKeyFingerprint: 'sha256:media-gc-test',
+            rootPublicKey: Buffer.alloc(32, 4).toString('base64'),
+            identityPinnedAt: new Date(),
+          })
+          .returning({ id: identityNamespace.id })
+      )[0].id;
   });
 
   afterAll(async () => {
@@ -84,6 +109,7 @@ describe('Media asset garbage collection', () => {
         messageSeq: 7,
         authorityDomain: 'origin.test',
         sourceDomain: 'origin.test',
+        sourceNamespaceId: originNamespaceId,
         remoteDeletionSeq: 42,
         type: 'USER_RETRACTION',
       })
@@ -303,12 +329,18 @@ describe('Media asset garbage collection', () => {
         account: 'avatar-gc-live',
         domain: 'local',
         sourceDomain: 'local',
+        namespaceId: 0,
         name: 'live',
         avatar: liveUrl,
         updatedAt: new Date(),
       })
       .onConflictDoUpdate({
-        target: [user.account, user.domain, user.sourceDomain],
+        target: [
+          user.account,
+          user.domain,
+          user.sourceDomain,
+          user.namespaceId,
+        ],
         set: { avatar: liveUrl, updatedAt: new Date() },
       });
     const livePath = join(upload.uploadDir, liveUrl.slice('/uploads/'.length));

@@ -99,6 +99,8 @@ interface LiveCall {
   localAccount: string | null;
   /** The server domain hosting the foreign participant (the S2S POST target); null for a local call. */
   peerDomain: string | null;
+  /** Identity namespace captured when the federated call was admitted. */
+  peerNamespaceId: number | null;
   /** Server-authoritative setup signaling (store-and-forward). The caller's offer + ICE are staged for the
    *  CALLEE to fetch; the callee's answer + ICE for the CALLER. Each server stages for its LOCAL participant
    *  (caller server for the caller, callee server for the callee), so an offline callee still gets an
@@ -125,6 +127,7 @@ export interface InboundCallFramePayload {
   peerStubId?: number;
   /** The verified HTTP signer domain; Call Frame bodies carry account names only. */
   peerDomain: string;
+  namespaceId: number;
   /** The LOCAL P2P thread between the local user and the peer stub. */
   threadId?: number;
   signatureExpiresAtSec: number;
@@ -230,7 +233,7 @@ export class CallsService implements OnModuleDestroy {
     // late incoming while its own outgoing screen is up).
     const callee = await this.database.db.query.user.findFirst({
       where: eq(user.id, dto.calleeUserId),
-      columns: { account: true, domain: true },
+      columns: { account: true, domain: true, namespaceId: true },
     });
     const federated = callee?.domain !== 'local';
 
@@ -259,6 +262,7 @@ export class CallsService implements OnModuleDestroy {
       peerAccount: federated ? callee!.account : null,
       localAccount: null,
       peerDomain: federated ? callee!.domain : null,
+      peerNamespaceId: federated ? callee!.namespaceId : null,
       pendingOfferIce: [],
       pendingAnswerIce: [],
       localSignalIds: new Set(),
@@ -702,11 +706,11 @@ export class CallsService implements OnModuleDestroy {
    *  HTTP 200 business rejection → writes an `unreachable` bubble. */
   @OnEvent('call.frame.inbound')
   async onInboundCallFrame(payload: InboundCallFramePayload): Promise<void> {
-    const { peerDomain, frame } = payload;
+    const { peerDomain, namespaceId, frame } = payload;
     if (frame.op !== 'incoming') {
       const active = this.activeCalls.get(frame.callSid);
       if (!active || active.peerDomain !== peerDomain) {
-        await this.resolveInactiveFrame(peerDomain, frame);
+        await this.resolveInactiveFrame(peerDomain, namespaceId, frame);
         return;
       }
       if (active.terminal) {
@@ -719,7 +723,7 @@ export class CallsService implements OnModuleDestroy {
       ) {
         return; // first accepted ID wins before comparing a retried signal body
       }
-      this.assertInboundActiveBinding(active, peerDomain, frame);
+      this.assertInboundActiveBinding(active, peerDomain, namespaceId, frame);
     }
     switch (frame.op) {
       case 'incoming':
@@ -727,6 +731,7 @@ export class CallsService implements OnModuleDestroy {
           payload.localUserId!,
           payload.peerStubId!,
           peerDomain,
+          namespaceId,
           payload.threadId!,
           frame,
         );
@@ -755,9 +760,10 @@ export class CallsService implements OnModuleDestroy {
   @OnEvent('call.frame.incoming.preflight')
   onInboundIncomingPreflight(payload: {
     peerDomain: string;
+    namespaceId: number;
     frame: Extract<S2SCallFrame, { op: 'incoming' }>;
   }): boolean {
-    const { peerDomain, frame } = payload;
+    const { peerDomain, namespaceId, frame } = payload;
     const existing = this.activeCalls.get(frame.callSid);
     if (!existing) return false;
     if (existing.terminal) {
@@ -769,6 +775,7 @@ export class CallsService implements OnModuleDestroy {
       existing.peerAccount === frame.payload.fromAccount &&
       existing.localAccount === frame.payload.toAccount &&
       existing.peerDomain === peerDomain &&
+      existing.peerNamespaceId === namespaceId &&
       existing.initialCallType === frame.callType;
     if (sameCall) return true;
     throw new BusinessException(
@@ -784,9 +791,11 @@ export class CallsService implements OnModuleDestroy {
   private assertInboundActiveBinding(
     call: LiveCall,
     peerDomain: string,
+    namespaceId: number,
     frame: S2SCallFrame,
   ): void {
-    const sameParticipants = peerDomain === call.peerDomain;
+    const sameParticipants =
+      peerDomain === call.peerDomain && namespaceId === call.peerNamespaceId;
     const sameType =
       frame.op === 'video-upgraded'
         ? frame.callType === 'VIDEO'
@@ -828,6 +837,7 @@ export class CallsService implements OnModuleDestroy {
     localUserId: number,
     peerStubId: number,
     peerDomain: string,
+    namespaceId: number,
     threadId: number,
     frame: Extract<S2SCallFrame, { op: 'incoming' }>,
   ): Promise<void> {
@@ -844,6 +854,7 @@ export class CallsService implements OnModuleDestroy {
         existing.peerAccount === frame.payload.fromAccount &&
         existing.localAccount === frame.payload.toAccount &&
         existing.peerDomain === peerDomain &&
+        existing.peerNamespaceId === namespaceId &&
         existing.initialCallType === frame.callType;
       if (sameCall) return; // exact duplicate ring (retry) — already active here
       throw new BusinessException(
@@ -876,6 +887,7 @@ export class CallsService implements OnModuleDestroy {
       peerAccount: frame.payload.fromAccount,
       localAccount: frame.payload.toAccount,
       peerDomain,
+      peerNamespaceId: namespaceId,
       pendingOfferIce: [],
       pendingAnswerIce: [],
       localSignalIds: new Set(),
@@ -1088,11 +1100,13 @@ export class CallsService implements OnModuleDestroy {
 
   private async resolveInactiveFrame(
     peerDomain: string,
+    namespaceId: number,
     frame: Exclude<S2SCallFrame, { op: 'incoming' }>,
   ): Promise<void> {
     const tombstone = await this.database.db.query.callTombstone.findFirst({
       where: and(
         eq(callTombstone.peerDomain, peerDomain),
+        eq(callTombstone.namespaceId, namespaceId),
         eq(callTombstone.callSid, frame.callSid),
         gt(callTombstone.expiresAt, new Date()),
       ),
@@ -1153,6 +1167,8 @@ export class CallsService implements OnModuleDestroy {
     signatureExpiresAtSec: number,
   ): Promise<void> {
     if (!call.peerDomain) return;
+    if (call.peerNamespaceId === null)
+      throw new Error('federated call has no captured namespace');
     const expiresAt = new Date(
       Math.min(
         signatureExpiresAtSec * 1000,
@@ -1166,6 +1182,7 @@ export class CallsService implements OnModuleDestroy {
       .insert(callTombstone)
       .values({
         peerDomain: call.peerDomain,
+        namespaceId: call.peerNamespaceId,
         callSid: call.callSid,
         terminalOp,
         endReason,

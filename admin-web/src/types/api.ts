@@ -250,7 +250,7 @@ export interface FederatedPeer {
   haltedAt: number | null;
   haltCode: number | null;
   haltReason: string | null;
-  resetInProgress: boolean;
+  activeNamespaceId: number | null;
   recognizesPeer: boolean;
   outboundRecognitionConfirmed: boolean;
   inboundRecognitionConfirmed: boolean;
@@ -703,6 +703,7 @@ export interface AdminSettings {
     global: number;
     perPeer: number;
   };
+  federationHistoryAccessEnabled: boolean;
   federationTransport: {
     keyCacheTtlSec: number;
     connectTimeoutSec: number;

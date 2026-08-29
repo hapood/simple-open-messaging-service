@@ -74,6 +74,7 @@ export class FederationRelationshipCommandService {
         columns: {
           account: true,
           domain: true,
+          namespaceId: true,
           name: true,
           avatar: true,
           description: true,
@@ -135,6 +136,7 @@ export class FederationRelationshipCommandService {
           userId: memberUserId,
           account: endpoints.account,
           domain: 'local',
+          namespaceId: 0,
           eventType: 'RELATIONSHIP_INTENT',
           subjectAccount: endpoints.subjectAccount,
           subjectDomain: 'local',
@@ -165,6 +167,7 @@ export class FederationRelationshipCommandService {
     }
     const relationship: PeerStateFeedWrite = {
       peerDomain: group.domain,
+      namespaceId: group.namespaceId!,
       account: member.account,
       domain: this.config.domain,
       subjectAccount: group.account,
@@ -192,6 +195,7 @@ export class FederationRelationshipCommandService {
         userId: memberUserId,
         account: endpoints.account,
         domain: 'local',
+        namespaceId: group.namespaceId,
         eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: endpoints.subjectAccount,
         subjectDomain: group.domain,
@@ -223,6 +227,7 @@ export class FederationRelationshipCommandService {
         memberUserId,
         member.account,
         group.domain,
+        group.namespaceId!,
       );
       return intent;
     }
@@ -252,6 +257,7 @@ export class FederationRelationshipCommandService {
         groupAvatar: tables.group.avatar,
         groupDescription: tables.group.description,
         groupProfileRev: tables.group.profileRev,
+        groupNamespaceId: tables.group.namespaceId,
       })
       .from(tables.messageThread)
       .innerJoin(
@@ -263,7 +269,7 @@ export class FederationRelationshipCommandService {
     if (!state?.groupId) throw new Error('group invite target is invalid');
     const member = await tx.query.user.findFirst({
       where: eq(tables.user.id, memberUserId),
-      columns: { account: true, domain: true },
+      columns: { account: true, domain: true, namespaceId: true },
     });
     if (!member) throw new Error('group invite identity is invalid');
     const membership = await this.groupRelationships.writeAuthoredIntentInTx(
@@ -321,6 +327,7 @@ export class FederationRelationshipCommandService {
         userId: memberUserId,
         account: endpoints.account,
         domain: 'local',
+        namespaceId: 0,
         eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: endpoints.subjectAccount,
         subjectDomain: 'local',
@@ -349,6 +356,7 @@ export class FederationRelationshipCommandService {
     }
     const relationship: PeerStateFeedWrite = {
       peerDomain: member.domain,
+      namespaceId: member.namespaceId!,
       account: state.groupAccount,
       domain: this.config.domain,
       subjectAccount: member.account,
@@ -370,6 +378,7 @@ export class FederationRelationshipCommandService {
         state.groupId,
         state.groupAccount,
         member.domain,
+        member.namespaceId!,
         clientFeedUpdates,
       );
       return new Map([...intent, ...cleanup]);
@@ -379,6 +388,7 @@ export class FederationRelationshipCommandService {
       tx,
       state.groupId,
       member.domain,
+      member.namespaceId!,
       membership.request.status === 'REQUESTED',
     );
     const identityState = new Map([...intent, ...profile]);
@@ -405,7 +415,7 @@ export class FederationRelationshipCommandService {
         eq(tables.user.id, peerUserId),
         ne(tables.user.domain, 'local'),
       ),
-      columns: { account: true, domain: true },
+      columns: { account: true, domain: true, namespaceId: true },
     });
     const local = await tx.query.user.findFirst({
       where: and(
@@ -434,6 +444,7 @@ export class FederationRelationshipCommandService {
     if (!current) throw new Error('friend request write disappeared');
     const relationship: PeerStateFeedWrite = {
       peerDomain: remote.domain,
+      namespaceId: remote.namespaceId!,
       account: local.account,
       domain: this.config.domain,
       subjectAccount: remote.account,
@@ -454,6 +465,7 @@ export class FederationRelationshipCommandService {
         localUserId,
         local.account,
         remote.domain,
+        remote.namespaceId!,
       );
       return written;
     }
@@ -468,7 +480,7 @@ export class FederationRelationshipCommandService {
   async writeAddressedFriendRequestInTx(
     tx: DatabaseTransaction,
     localUserId: number,
-    remote: { account: string; domain: string },
+    remote: { account: string; domain: string; namespaceId: number },
     state: {
       requestedAt: Date;
       expiresAt: Date;
@@ -491,6 +503,7 @@ export class FederationRelationshipCommandService {
       tx,
       remote.account,
       remote.domain,
+      remote.namespaceId,
     );
     clientFeedUpdates.push(
       ...(await this.invite.writeLocalFriendIntentInTx(
@@ -507,6 +520,7 @@ export class FederationRelationshipCommandService {
       localUserId,
       {
         peerDomain: remote.domain,
+        namespaceId: remote.namespaceId,
         account: local.account,
         domain: this.config.domain,
         subjectAccount: normalizeAccount(remote.account),
@@ -534,6 +548,7 @@ export class FederationRelationshipCommandService {
       tx,
       identityUserId,
       relationship.peerDomain,
+      relationship.namespaceId,
       forceProfileReindex,
     );
     return new Map([...intent, ...profile]);
@@ -543,6 +558,7 @@ export class FederationRelationshipCommandService {
     tx: DatabaseTransaction,
     account: string,
     domain: string,
+    namespaceId: number,
   ): Promise<number> {
     const normalized = normalizeAccount(account);
     if (normalized.startsWith('!'))
@@ -551,6 +567,7 @@ export class FederationRelationshipCommandService {
       account: normalized,
       domain,
       sourceDomain: domain,
+      namespaceId,
       name: normalized,
       profileRev: 0,
     });

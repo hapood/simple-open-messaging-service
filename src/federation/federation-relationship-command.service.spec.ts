@@ -88,7 +88,11 @@ describe('FederationRelationshipCommandService', () => {
     const expiresAt = new Date('2026-09-04T00:00:00.000Z');
     const findFirst = vi
       .fn()
-      .mockResolvedValueOnce({ account: 'remote-user', domain: 'peer.example' })
+      .mockResolvedValueOnce({
+        account: 'remote-user',
+        domain: 'peer.example',
+        namespaceId: 12,
+      })
       .mockResolvedValueOnce({ account: 'local-user' });
     const tx = { query: { user: { findFirst } } } as never;
     const relationshipIntents = {
@@ -161,6 +165,7 @@ describe('FederationRelationshipCommandService', () => {
       tx,
       1,
       'peer.example',
+      12,
       true,
     );
     expect(stateFeed.writeManyInTx.mock.invocationCallOrder[0]).toBeLessThan(

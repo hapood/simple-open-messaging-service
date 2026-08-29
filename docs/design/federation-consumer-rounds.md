@@ -54,6 +54,11 @@ For the first advertised message tail `E`:
 - `E=1`: forward interval `(0,1]`, no reverse gap;
 - `E>1`: forward interval `(E-1,E]` and reverse gap `[1,E-1]`.
 
+The same first-head transaction initializes
+`deletionProcessedThroughSeq=deletionTargetSeq`. A new mirror has no older
+publisher-coordinate message replica, so it creates no tombstone work for the
+initial deletion history.
+
 When a reverse gap is created, the same transaction reserves the local message
 sequence allocator through the gap's upper boundary. The newest advertised
 message can then be applied by the ordinary forward path at the next local
@@ -72,18 +77,31 @@ hint; durable state remains authoritative.
 
 Forward messages and tombstones have independent scheduler queues,
 single-flights, concurrency limits, retries, and fairness quanta. A committed
-`THREAD_CONTENT_HEAD` starts both streams together by pairing its `feedId`,
-`messageEndSeq`, and `tombstoneEndSeq`. After that start, the two streams run
-concurrently and commit independently.
+`THREAD_CONTENT_HEAD` merges both targets into durable thread state and wakes
+both streams. After that wake, the two streams read their own durable target,
+run concurrently, and commit independently. The scheduler does not retain a
+second authoritative copy of either target or of the recovery cutoff.
 
-The tombstone query freezes `maxMessageSeq` when its bounded drain starts. On
-the first head after an authorization-epoch change, the cutoff is the message
-coordinate committed before that epoch change. For an ordinary head, it is the
-paired `messageEndSeq`. A newer head received while a tombstone page is active
-is retained in scheduler memory for the next round and does not enlarge the
-active `through` or `maxMessageSeq`. Losing the epoch-transition cutoff on a
-process restart is an accepted optimization loss: reconciliation uses the
-latest head and may fetch additional harmless tombstone facts.
+An ordinary tombstone drain carries no message-coordinate filter. On the first
+head after an authorization-epoch change, State Feed reconciliation creates a
+durable recovery drain with two frozen values:
+
+- `deletionRecoveryThroughSeq`, copied from that head's deletion target;
+- `deletionRecoveryMaxMessageSeq`, copied from the message coordinate committed
+  before the epoch change.
+
+Every `take=50` scheduler quantum belonging to that bounded recovery drain sends
+the same `maxMessageSeq` and scans toward the same `through`. Each returned page
+may commit in its own transaction, but a partial commit does not end recovery:
+the next quantum carries the filter again. Tombstones targeting a greater
+publisher message coordinate are response holes but still advance
+`scannedThrough`; tombstones at or below the cutoff are applied normally. Every
+page advances the deletion cursor transactionally. The transaction for which
+`deletionProcessedThroughSeq` reaches `deletionRecoveryThroughSeq` also clears
+both recovery fields atomically. Later dirty tombstone targets run without
+`maxMessageSeq`.
+Because the pair is durable, a restart resumes the same recovery semantics
+instead of silently turning a recovery drain into an ordinary drain.
 
 Each stream's final transaction compare-and-sets the MessageThread
 authorization epoch, validates its response authority token, applies its page,
@@ -189,12 +207,18 @@ query results are retried from durable state. A valid `retryAfter` is honored as
 a minimum delay. Permanent protocol or business failures stop the affected
 task instead of entering an unbounded retry loop.
 
-An authenticated `FORBIDDEN` stops all three directions for the thread-source
-key and prioritizes a State Feed drain. For P2P, the scheduler passes the epoch
-captured before the denied request into the ordinary relationship command: an
-unchanged active pair revokes only the locally authored direction, while a
-changed epoch makes the response stale. A GROUP denial authors no relationship
-transition because it does not identify one member direction. A later committed
+An authenticated `FORBIDDEN` is handled against the authorization epoch frozen
+before the denied request. The handler locks the canonical USER_PAIR or GROUP
+business scope and MessageThread before comparing that epoch. A changed epoch
+makes the response stale: it writes nothing, leaves the scheduler key open, and
+restarts work from current durable state.
+
+For a matching epoch, the scheduler stops all three directions for the
+thread-source key and prioritizes a State Feed drain. The ordinary relationship
+commands revoke only directions authored locally: the local user direction for
+P2P; every local member-to-group direction for a remotely owned group; or every
+group-to-member direction for members hosted by the denied peer for a locally
+owned group. The peer-authored directions are never rewritten. A later committed
 thread-head wake may enable the key again.
 
 ## 8. Publication invariants

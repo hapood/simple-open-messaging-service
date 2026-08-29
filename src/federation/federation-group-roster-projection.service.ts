@@ -18,6 +18,7 @@ export class FederationGroupRosterProjectionService {
     tx: DatabaseTransaction,
     params: {
       peerDomain: string;
+      namespaceId: number;
       groupAccount: string;
       revision: bigint;
       active: boolean;
@@ -48,6 +49,7 @@ export class FederationGroupRosterProjectionService {
         and(
           eq(tables.group.account, params.groupAccount),
           eq(tables.group.domain, params.peerDomain),
+          eq(tables.group.namespaceId, params.namespaceId),
         ),
       )
       .limit(1);

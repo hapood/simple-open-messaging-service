@@ -10,7 +10,7 @@ import {
 import { TranslocoPipe } from '@jsverse/transloco';
 import { RouteService, PopupType } from '../../services/route.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
-import type { User } from '../../services/model';
+import { displayIdentityDomain, type User } from '../../services/model';
 import { UserService } from '../../services/user.service';
 import {
   UserAvatarComponent,
@@ -25,6 +25,9 @@ export interface ContactIdentityDialogData {
   avatar?: string;
   bio: string;
   domain: string;
+  /** Present only when this dialog is bound to a materialized identity. A raw contact-card payload
+   * is an address string and intentionally has no storage namespace. */
+  namespaceId?: number;
   friendThreadId?: number;
   groupThreadId?: number;
   relationship?: RelationshipState;
@@ -65,8 +68,18 @@ export class ContactIdentityDialogComponent {
     this.isGroup() ? UserAvatarType.GROUP : UserAvatarType.OTHER,
   );
   readonly federatedDomain = computed(() => {
-    const domain = this.identity().domain;
-    return domain && domain !== 'local' ? domain : null;
+    const identity = this.identity();
+    return identity.domain !== 'local'
+      ? identity.namespaceId === undefined
+        ? identity.domain
+        : displayIdentityDomain(identity.domain, identity.namespaceId)
+      : null;
+  });
+  readonly displayDomain = computed(() => {
+    const identity = this.identity();
+    return identity.namespaceId === undefined
+      ? identity.domain
+      : displayIdentityDomain(identity.domain, identity.namespaceId);
   });
   readonly actionKey = computed(() => {
     const identity = this.identity();
@@ -162,28 +175,22 @@ export class ContactIdentityDialogComponent {
       return;
     }
     this.route.closeDlg();
-    this.route.popupDlg(
-      PopupType.FRIEND_REQUESTS,
-      {
-        initialUser: {
-          id: identity.domain === 'local' ? (identity.userId ?? 0) : 0,
-          account: identity.account,
-          name: identity.name,
-          avatar: identity.avatar ?? '',
-          bio: identity.bio ?? '',
-          domain: identity.domain === 'local' ? 'local' : identity.domain,
-        } as User,
-      },
-    );
+    this.route.popupDlg(PopupType.FRIEND_REQUESTS, {
+      initialUser: {
+        id: identity.domain === 'local' ? (identity.userId ?? 0) : 0,
+        account: identity.account,
+        name: identity.name,
+        avatar: identity.avatar ?? '',
+        bio: identity.bio ?? '',
+        domain: identity.domain === 'local' ? 'local' : identity.domain,
+      } as User,
+    });
   }
 
   private openGroupJoinRequest(identity: ContactIdentityDialogData): void {
     const open = (user: User) => {
       this.route.closeDlg();
-      this.route.popupDlg(
-        PopupType.FRIEND_INVITE,
-        { user, standalone: true },
-      );
+      this.route.popupDlg(PopupType.FRIEND_INVITE, { user, standalone: true });
     };
     const user = {
       id: identity.userId ?? 0,

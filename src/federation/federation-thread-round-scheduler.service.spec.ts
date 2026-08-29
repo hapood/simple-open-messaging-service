@@ -44,6 +44,9 @@ function harness() {
     pullStateFromPeer: vi.fn().mockResolvedValue(0n),
     handleThreadQueryForbidden: vi.fn().mockResolvedValue('P2P_REVOKED'),
   };
+  const namespaces = {
+    captureActive: vi.fn().mockResolvedValue({ namespaceId: 7 }),
+  };
   const scheduler = new FederationThreadRoundSchedulerService(
     database as never,
     states as never,
@@ -51,6 +54,7 @@ function harness() {
     reverse as never,
     federation as never,
     sources as never,
+    namespaces as never,
   );
   return {
     scheduler,
@@ -105,31 +109,20 @@ describe('FederationThreadRoundSchedulerService', () => {
     scheduler.onWake({
       threadId: 1,
       peerDomain: 'a.test',
+      namespaceId: 7,
       direction: 'forward',
-      head: {
-        feedId: '7',
-        messageEndSeq: 10,
-        tombstoneEndSeq: 4,
-        tombstoneMaxMessageSeq: 10,
-      },
     });
 
     await vi.waitFor(() => {
       expect(forward.runMessages).toHaveBeenCalledOnce();
-      expect(forward.runTombstones).toHaveBeenCalledWith(
-        1,
-        'a.test',
-        4,
-        10,
-        50,
-      );
+      expect(forward.runTombstones).toHaveBeenCalledWith(1, 'a.test', 7, 50);
     });
     releaseMessage();
     releaseTombstone();
     await scheduler.onModuleDestroy();
   });
 
-  it('keeps an active tombstone cutoff frozen and adopts the newest head pair next', async () => {
+  it('coalesces new tombstone work while the durable round is active', async () => {
     const { scheduler, states, forward } = harness();
     states.require.mockResolvedValue({
       messageTargetSeq: 20,
@@ -151,39 +144,24 @@ describe('FederationThreadRoundSchedulerService', () => {
     scheduler.onWake({
       threadId: 1,
       peerDomain: 'a.test',
+      namespaceId: 7,
       direction: 'forward',
-      head: {
-        feedId: '7',
-        messageEndSeq: 10,
-        tombstoneEndSeq: 9,
-        tombstoneMaxMessageSeq: 4,
-      },
     });
     await vi.waitFor(() =>
-      expect(forward.runTombstones).toHaveBeenCalledWith(1, 'a.test', 9, 4, 50),
+      expect(forward.runTombstones).toHaveBeenCalledWith(1, 'a.test', 7, 50),
     );
 
     scheduler.onWake({
       threadId: 1,
       peerDomain: 'a.test',
+      namespaceId: 7,
       direction: 'forward',
-      head: {
-        feedId: '11',
-        messageEndSeq: 20,
-        tombstoneEndSeq: 12,
-        tombstoneMaxMessageSeq: 20,
-      },
     });
     scheduler.onWake({
       threadId: 1,
       peerDomain: 'a.test',
+      namespaceId: 7,
       direction: 'forward',
-      head: {
-        feedId: '9',
-        messageEndSeq: 15,
-        tombstoneEndSeq: 10,
-        tombstoneMaxMessageSeq: 15,
-      },
     });
     expect(forward.runTombstones).toHaveBeenCalledOnce();
     releaseFirst();
@@ -193,8 +171,7 @@ describe('FederationThreadRoundSchedulerService', () => {
         2,
         1,
         'a.test',
-        12,
-        20,
+        7,
         50,
       ),
     );
@@ -309,6 +286,7 @@ describe('FederationThreadRoundSchedulerService', () => {
   it('honors retryAfter for a retryable query business result', async () => {
     vi.useFakeTimers();
     try {
+      vi.spyOn(Math, 'random').mockReturnValue(0);
       const { scheduler, forward } = harness();
       forward.runMessages
         .mockRejectedValueOnce(
@@ -337,6 +315,35 @@ describe('FederationThreadRoundSchedulerService', () => {
     }
   });
 
+  it('retries an HTTP server failure from durable state', async () => {
+    vi.useFakeTimers();
+    try {
+      const { scheduler, forward, states } = harness();
+      forward.runTombstones
+        .mockRejectedValueOnce(
+          new FederationThreadRoundRemoteError(
+            new S2sResponseError('peer unavailable', 503),
+            7,
+          ),
+        )
+        .mockResolvedValueOnce(undefined);
+
+      await scheduler.wake(1, 'a.test', 'tombstone');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(forward.runTombstones).toHaveBeenCalledOnce();
+      expect(states.require).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.waitFor(() =>
+        expect(forward.runTombstones).toHaveBeenCalledTimes(2),
+      );
+      expect(states.require).toHaveBeenCalledOnce();
+      await scheduler.onModuleDestroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('stops every direction on FORBIDDEN and reopens only after a new thread wake', async () => {
     const { scheduler, forward, federation } = harness();
     forward.runMessages
@@ -354,20 +361,44 @@ describe('FederationThreadRoundSchedulerService', () => {
         1,
         'a.test',
         7,
+        7,
       ),
     );
     await scheduler.wake(1, 'a.test', 'message');
     expect(forward.runMessages).toHaveBeenCalledOnce();
-    expect(federation.pullStateFromPeer).toHaveBeenCalledWith('a.test', 0n);
+    await vi.waitFor(() =>
+      expect(federation.pullStateFromPeer).toHaveBeenCalledWith('a.test', 0n),
+    );
 
     scheduler.onWake({
       threadId: 1,
       peerDomain: 'a.test',
+      namespaceId: 7,
       direction: 'forward',
     });
     await vi.waitFor(() =>
       expect(forward.runMessages).toHaveBeenCalledTimes(2),
     );
+    await scheduler.onModuleDestroy();
+  });
+
+  it('immediately restarts stale FORBIDDEN work without blocking the thread', async () => {
+    const { scheduler, forward, federation } = harness();
+    federation.handleThreadQueryForbidden.mockResolvedValueOnce('STALE');
+    forward.runMessages
+      .mockRejectedValueOnce(
+        new FederationThreadRoundRemoteError(
+          new S2sResponseError('forbidden', 200, BusinessCode.FORBIDDEN),
+          7,
+        ),
+      )
+      .mockResolvedValueOnce(undefined);
+
+    await scheduler.wake(1, 'a.test', 'message');
+    await vi.waitFor(() =>
+      expect(forward.runMessages).toHaveBeenCalledTimes(2),
+    );
+    expect(federation.pullStateFromPeer).toHaveBeenCalledWith('a.test', 0n);
     await scheduler.onModuleDestroy();
   });
 
@@ -378,6 +409,7 @@ describe('FederationThreadRoundSchedulerService', () => {
         {
           threadId: 1,
           peerDomain: 'a.test',
+          namespaceId: 7,
           messageTargetSeq: 12,
           deletionTargetSeq: 4,
           messageProcessedThroughSeq: 10,
@@ -390,13 +422,7 @@ describe('FederationThreadRoundSchedulerService', () => {
     await scheduler.onApplicationBootstrap();
     await vi.waitFor(() => {
       expect(forward.runMessages).toHaveBeenCalledOnce();
-      expect(forward.runTombstones).toHaveBeenCalledWith(
-        1,
-        'a.test',
-        4,
-        12,
-        50,
-      );
+      expect(forward.runTombstones).toHaveBeenCalledWith(1, 'a.test', 7, 50);
       expect(reverse.run).toHaveBeenCalledOnce();
     });
     await scheduler.onModuleDestroy();

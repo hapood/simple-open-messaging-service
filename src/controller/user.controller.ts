@@ -64,13 +64,15 @@ type ClientStateFeedItem = {
   feedId: number;
   account: string;
   domain: string;
+  namespaceId: number;
   eventType:
     | 'PROFILE'
     | 'RELATIONSHIP_INTENT'
     | 'GROUP_META_FEED_HEAD'
     | 'GROUP_JOIN_REQUEST_HEAD'
     | 'INCOMING_INVITE_HEAD'
-    | 'THREAD_BLOCK';
+    | 'THREAD_BLOCK'
+    | 'NAMESPACE_CHANGED';
   subjectAccount: string;
   subjectDomain: string;
   body: unknown;
@@ -273,6 +275,7 @@ export class UserController {
     ).map((item) => ({
       account: item.account,
       domain: item.domain,
+      namespaceId: item.namespaceId,
       eventType: item.eventType as ClientStateFeedItem['eventType'],
       subjectAccount: item.subjectAccount,
       subjectDomain: item.subjectDomain,

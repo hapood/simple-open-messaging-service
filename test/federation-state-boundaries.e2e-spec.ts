@@ -16,7 +16,10 @@ import {
 import { InviteService } from '../src/invite/invite.service.js';
 import { RelationshipIntentService } from '../src/invite/relationship-intent.service.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
-import { findP2PRelationship } from './seed.js';
+import {
+  findP2PRelationship,
+  seedFederatedPeerNamespace,
+} from './seed.js';
 
 describe('federation directed-state boundaries', () => {
   let mod: TestingModule;
@@ -43,6 +46,10 @@ describe('federation directed-state boundaries', () => {
   afterAll(async () => mod.close());
 
   async function createPair(suffix: string) {
+    const peerNamespaceId = await seedFederatedPeerNamespace(
+      database.db,
+      'peer.test',
+    );
     const [local, peer] = await database.db.transaction(async (tx) => {
       const identities = await tx
         .insert(user)
@@ -52,6 +59,7 @@ describe('federation directed-state boundaries', () => {
             name: 'local',
             domain: 'local',
             sourceDomain: 'local',
+            namespaceId: 0,
             updatedAt: new Date(),
           },
           {
@@ -59,6 +67,7 @@ describe('federation directed-state boundaries', () => {
             name: 'peer',
             domain: 'peer.test',
             sourceDomain: 'peer.test',
+            namespaceId: peerNamespaceId,
             updatedAt: new Date(),
           },
         ])

@@ -18,6 +18,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
 import { NavStateMachineService } from '../../services/nav-state.service';
 import {
   ConversationItem,
+  displayIdentityDomain,
   displayUserAccount,
   displayUserName,
 } from '../../services/model';
@@ -463,7 +464,9 @@ export class PeerProfileComponent {
   /** The peer's domain when federated, else null. */
   readonly peerDomain = computed(() => {
     const p = this.peer();
-    return p?.domain && p.domain !== 'local' ? p.domain : null;
+    return p?.domain && p.domain !== 'local'
+      ? displayIdentityDomain(p.domain, p.namespaceId)
+      : null;
   });
 
   constructor() {

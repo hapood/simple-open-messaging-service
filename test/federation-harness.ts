@@ -17,6 +17,7 @@ import { DiscoveryService } from '../src/federation/discovery.service.js';
 import { signingCertificateStatement } from '../src/federation/federation-certificate.js';
 import { startS2sProxy, type S2sProxy } from './federation-proxy.js';
 import { ensureDatabase } from './database.js';
+import { e2eWorkerDatabaseName } from './e2e-database-names.js';
 
 export type { S2sProxy };
 
@@ -184,8 +185,10 @@ export class TestDiscoveryService extends DiscoveryService {
 /** Derive the two per-app DB names from this fork's base fork DB (created by setup-env). */
 function federationDbNames(): { a: string; b: string } {
   const poolId = process.env.VITEST_POOL_ID ?? '0';
-  const base = `soms_test_fork${poolId}`;
-  return { a: `${base}_a`, b: `${base}_b` };
+  return {
+    a: e2eWorkerDatabaseName(poolId, 'a'),
+    b: e2eWorkerDatabaseName(poolId, 'b'),
+  };
 }
 
 /** Resolve both per-app DBs prepared by global setup. Returns the two datasource URLs. */

@@ -1,25 +1,27 @@
-// Runs once before the whole e2e suite: apply pending migrations to soms_test so
-// its schema is current. Idempotent — safe to run repeatedly.
+// Runs once before the whole e2e suite: migrate a uniquely named template and
+// clone isolated databases for every worker and federation node.
 import 'dotenv/config';
 import {
+  dropDatabase,
   ensureDatabase,
   recreateDatabaseFromTemplate,
   resetAndMigrateDatabase,
 } from './database.js';
 import { E2E_MAX_WORKERS } from './e2e-config.js';
+import {
+  e2eTemplateDatabaseName,
+  e2eWorkerDatabaseName,
+} from './e2e-database-names.js';
 
-function toTestDatabase(url: string): string {
-  return url.replace(/^(.*\/)[^/?]*(\?.*)?$/, '$1soms_test$2');
-}
-
-export default async function globalSetup(): Promise<void> {
+export default async function globalSetup(): Promise<() => Promise<void>> {
   if (!process.env.DATABASE_URL) {
     throw new Error(
       'DATABASE_URL missing — copy .env.example to .env and configure it.',
     );
   }
-  const testUrl = toTestDatabase(process.env.DATABASE_URL);
-  await ensureDatabase(process.env.DATABASE_URL, 'soms_test');
+  const baseUrl = process.env.DATABASE_URL;
+  const templateDatabase = e2eTemplateDatabaseName();
+  const testUrl = await ensureDatabase(baseUrl, templateDatabase);
   await resetAndMigrateDatabase(testUrl);
 
   // Clone the fully migrated, empty template before workers start. PostgreSQL
@@ -29,17 +31,19 @@ export default async function globalSetup(): Promise<void> {
   // copies it as a template. Parallel clone attempts therefore race with one another and can fail
   // with 55006 (or wait indefinitely behind a concurrent copy). Build the worker databases in a
   // deterministic sequence; Vitest still runs the completed databases in parallel afterwards.
+  const runDatabases = [templateDatabase];
   for (let index = 0; index < E2E_MAX_WORKERS; index++) {
     const poolId = index + 1;
     for (const database of [
-      `soms_test_fork${poolId}`,
-      `soms_test_fork${poolId}_a`,
-      `soms_test_fork${poolId}_b`,
+      e2eWorkerDatabaseName(String(poolId)),
+      e2eWorkerDatabaseName(String(poolId), 'a'),
+      e2eWorkerDatabaseName(String(poolId), 'b'),
     ]) {
+      runDatabases.push(database);
       await recreateDatabaseFromTemplate(
-        process.env.DATABASE_URL,
+        baseUrl,
         database,
-        'soms_test',
+        templateDatabase,
       );
     }
   }
@@ -49,4 +53,11 @@ export default async function globalSetup(): Promise<void> {
   // worker launch its own concurrent TypeScript compilation.
   const { ensureCompiledEntry } = await import('./federation-harness.js');
   ensureCompiledEntry();
+
+  return async () => {
+    if (process.env.SOMS_E2E_KEEP_DATABASES === '1') return;
+    for (const database of runDatabases.reverse()) {
+      await dropDatabase(baseUrl, database);
+    }
+  };
 }

@@ -22,6 +22,7 @@ describe('S2sRecognitionController Health privacy projection', () => {
     };
     const recognition = {
       hasPinnedIdentity: vi.fn().mockResolvedValue(true),
+      captureContext: vi.fn().mockResolvedValue({ namespaceId: 12 }),
       queryHealth: vi.fn(),
     };
     const controller = new S2sRecognitionController(
@@ -45,6 +46,7 @@ describe('S2sRecognitionController Health privacy projection', () => {
     ).resolves.toEqual({ status: 'unavailable' });
     expect(discovery.getPublicKey).toHaveBeenCalledWith(
       'peer.example',
+      12,
       'peer.example/key-2',
     );
     expect(verify.verifyWithPublicKey).not.toHaveBeenCalled();

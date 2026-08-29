@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { BusinessCode } from '../common/business-code.js';
 import { FederationThreadForwardRoundExecutorService } from './federation-thread-forward-round-executor.service.js';
 import type {
   FederationThreadForwardMessageRoundDriver,
@@ -16,7 +17,7 @@ function response(data: object) {
     federationVersion: 2,
     peerToken: {
       domain: 'origin.test',
-      resetGeneration: 1,
+      namespaceId: 1,
       rootKeyFingerprint: 'fingerprint',
     },
   };
@@ -39,6 +40,7 @@ function harness() {
       async (
         threadId: number,
         peerDomain: string,
+        _namespaceId: number,
         driver: FederationThreadForwardMessageRoundDriver,
         take: number,
       ) => {
@@ -62,11 +64,12 @@ function harness() {
       async (
         threadId: number,
         peerDomain: string,
-        targetSeq: number,
-        maxMessageSeq: number,
+        _namespaceId: number,
         driver: FederationThreadForwardTombstoneRoundDriver,
         take: number,
       ) => {
+        const targetSeq = 9;
+        const maxMessageSeq = 42;
         await driver.process({
           threadId,
           peerDomain,
@@ -122,6 +125,7 @@ function harness() {
   );
   return {
     executor,
+    rounds,
     federation,
     database,
     publishMessage,
@@ -139,7 +143,7 @@ describe('FederationThreadForwardRoundExecutorService', () => {
       response({ messages: [], scannedThrough: 60, hasMore: true }),
     );
 
-    await h.executor.runMessages(31, 'origin.test', 50);
+    await h.executor.runMessages(31, 'origin.test', 7, 50);
 
     expect(h.federation.fetchThreadResource).toHaveBeenCalledWith(
       31,
@@ -151,6 +155,7 @@ describe('FederationThreadForwardRoundExecutorService', () => {
       {},
       31,
       'origin.test',
+      7,
       60,
       100,
     );
@@ -166,7 +171,7 @@ describe('FederationThreadForwardRoundExecutorService', () => {
       response({ tombstones: [], scannedThrough: 9, hasMore: false }),
     );
 
-    await h.executor.runTombstones(31, 'origin.test', 9, 42, 50);
+    await h.executor.runTombstones(31, 'origin.test', 7, 50);
 
     expect(h.federation.fetchThreadResource).toHaveBeenCalledWith(
       31,
@@ -174,10 +179,77 @@ describe('FederationThreadForwardRoundExecutorService', () => {
       'origin.test',
       4 * 1024 * 1024,
     );
-    expect(h.deletionAdvance).toHaveBeenCalledWith({}, 31, 'origin.test', 9, 9);
+    expect(h.deletionAdvance).toHaveBeenCalledWith(
+      {},
+      31,
+      'origin.test',
+      7,
+      9,
+      9,
+    );
     expect(h.messageAdvance).not.toHaveBeenCalled();
     expect(h.epochLock).toHaveBeenCalledWith({}, 31, 4);
     expect(h.publishTombstone).toHaveBeenCalledOnce();
     expect(h.publishMessage).not.toHaveBeenCalled();
+  });
+
+  it('omits maxMessageSeq after the recovery drain is complete', async () => {
+    const h = harness();
+    h.rounds.runTombstones.mockImplementationOnce(
+      async (
+        threadId: number,
+        peerDomain: string,
+        _namespaceId: number,
+        driver: FederationThreadForwardTombstoneRoundDriver,
+        take: number,
+      ) => {
+        await driver.process({
+          threadId,
+          peerDomain,
+          after: 9,
+          through: 12,
+          take,
+        });
+        return { targetSeq: 12, processed: true };
+      },
+    );
+    h.federation.fetchThreadResource.mockResolvedValueOnce(
+      response({ tombstones: [], scannedThrough: 12, hasMore: false }),
+    );
+
+    await h.executor.runTombstones(31, 'origin.test', 7, 50);
+
+    expect(h.federation.fetchThreadResource).toHaveBeenCalledWith(
+      31,
+      '/s2s/v1/message-tombstones?account=%21group&after=9&through=12&take=50&includeSelf=true',
+      'origin.test',
+      4 * 1024 * 1024,
+    );
+  });
+
+  it('rejects a tombstone above the frozen recovery cutoff', async () => {
+    const h = harness();
+    h.federation.fetchThreadResource.mockResolvedValueOnce(
+      response({
+        tombstones: [
+          {
+            deletionSeq: 5,
+            thread: { account: '!group' },
+            messageSeq: 43,
+            type: 'USER_RETRACTION',
+            deletedAt: 1,
+          },
+        ],
+        scannedThrough: 9,
+        hasMore: false,
+      }),
+    );
+
+    await expect(
+      h.executor.runTombstones(31, 'origin.test', 7, 50),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_MALFORMED,
+    });
+    expect(h.deletionAdvance).not.toHaveBeenCalled();
   });
 });

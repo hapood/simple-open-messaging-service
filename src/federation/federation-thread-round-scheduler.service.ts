@@ -26,22 +26,19 @@ import { FederationThreadRoundRemoteError } from './federation-thread-round-erro
 import { FederationThreadSyncStateService } from './federation-thread-sync-state.service.js';
 import { FederationService } from './federation.service.js';
 import { FederationThreadSourceService } from './federation-thread-source.service.js';
+import { FederationNamespaceService } from './federation-namespace.service.js';
 
 type Direction = 'message' | 'tombstone' | 'reverse';
-
-interface TombstoneHeadPair {
-  feedId: bigint;
-  messageEndSeq: number;
-  tombstoneEndSeq: number;
-  maxMessageSeq: number;
-}
 
 interface DirectionQueue {
   active: number;
   readonly activeThreads: Set<string>;
   readonly queuedThreads: Set<string>;
   readonly dirtyThreads: Set<string>;
-  readonly byPeer: Map<string, number[]>;
+  readonly byPeer: Map<
+    string,
+    Array<{ threadId: number; namespaceId: number }>
+  >;
   readonly peerOrder: string[];
   lastServedPeer: string | null;
 }
@@ -71,7 +68,6 @@ export class FederationThreadRoundSchedulerService
     tombstone: DEFAULT_TOMBSTONE_LIMIT,
     reverse: DEFAULT_REVERSE_LIMIT,
   };
-  private readonly tombstoneHeads = new Map<string, TombstoneHeadPair>();
   private readonly activeTasks = new Set<Promise<void>>();
   private readonly retries = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly retryAttempts = new Map<string, number>();
@@ -99,6 +95,7 @@ export class FederationThreadRoundSchedulerService
     private readonly reverse: FederationThreadReverseRoundExecutorService,
     private readonly federation: FederationService,
     private readonly sources: FederationThreadSourceService,
+    private readonly namespaces: FederationNamespaceService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -107,24 +104,39 @@ export class FederationThreadRoundSchedulerService
       .from(federationThreadSyncState);
     for (const state of rows) {
       try {
-        await this.sources.resolve(state.threadId, state.peerDomain);
+        const context = await this.namespaces.captureActive(state.peerDomain);
+        if (context.namespaceId !== state.namespaceId) continue;
+        await this.sources.resolve(
+          state.threadId,
+          state.peerDomain,
+          state.namespaceId,
+        );
       } catch (error) {
         if (error instanceof FederationMessageContextError) continue;
         throw error;
       }
       if (state.messageProcessedThroughSeq < state.messageTargetSeq)
-        void this.wake(state.threadId, state.peerDomain, 'message');
+        void this.wakeCaptured(
+          state.threadId,
+          state.peerDomain,
+          state.namespaceId,
+          'message',
+        );
       if (state.deletionProcessedThroughSeq < state.deletionTargetSeq) {
-        this.rememberTombstoneHead(state.threadId, state.peerDomain, {
-          feedId: 0n,
-          messageEndSeq: state.messageTargetSeq,
-          tombstoneEndSeq: state.deletionTargetSeq,
-          maxMessageSeq: state.messageTargetSeq,
-        });
-        void this.wake(state.threadId, state.peerDomain, 'tombstone');
+        void this.wakeCaptured(
+          state.threadId,
+          state.peerDomain,
+          state.namespaceId,
+          'tombstone',
+        );
       }
       if (!state.historyBoundaryReached)
-        void this.wake(state.threadId, state.peerDomain, 'reverse');
+        void this.wakeCaptured(
+          state.threadId,
+          state.peerDomain,
+          state.namespaceId,
+          'reverse',
+        );
     }
     for (const peerDomain of await this.federation.listTrustedPeerDomains()) {
       this.scheduleStateFeedPush(peerDomain);
@@ -134,27 +146,51 @@ export class FederationThreadRoundSchedulerService
 
   @OnEvent(FEDERATION_THREAD_ROUND_WAKE)
   onWake(event: FederationThreadRoundWake): void {
-    this.blockedThreads.delete(this.workKey(event.threadId, event.peerDomain));
-    if (event.head) {
-      this.rememberTombstoneHead(event.threadId, event.peerDomain, {
-        feedId: BigInt(event.head.feedId),
-        messageEndSeq: event.head.messageEndSeq,
-        tombstoneEndSeq: event.head.tombstoneEndSeq,
-        maxMessageSeq: event.head.tombstoneMaxMessageSeq,
-      });
-    }
+    this.blockedThreads.delete(
+      this.workKey(event.threadId, event.peerDomain, event.namespaceId),
+    );
     if (event.direction === 'both') {
-      void this.wake(event.threadId, event.peerDomain, 'message');
-      void this.wake(event.threadId, event.peerDomain, 'tombstone');
-      void this.wake(event.threadId, event.peerDomain, 'reverse');
+      void this.wakeCaptured(
+        event.threadId,
+        event.peerDomain,
+        event.namespaceId,
+        'message',
+      );
+      void this.wakeCaptured(
+        event.threadId,
+        event.peerDomain,
+        event.namespaceId,
+        'tombstone',
+      );
+      void this.wakeCaptured(
+        event.threadId,
+        event.peerDomain,
+        event.namespaceId,
+        'reverse',
+      );
       return;
     }
     if (event.direction === 'forward') {
-      void this.wake(event.threadId, event.peerDomain, 'message');
-      void this.wake(event.threadId, event.peerDomain, 'tombstone');
+      void this.wakeCaptured(
+        event.threadId,
+        event.peerDomain,
+        event.namespaceId,
+        'message',
+      );
+      void this.wakeCaptured(
+        event.threadId,
+        event.peerDomain,
+        event.namespaceId,
+        'tombstone',
+      );
       return;
     }
-    void this.wake(event.threadId, event.peerDomain, 'reverse');
+    void this.wakeCaptured(
+      event.threadId,
+      event.peerDomain,
+      event.namespaceId,
+      'reverse',
+    );
   }
 
   @OnEvent(FEDERATION_STATE_FEED_PUSH)
@@ -180,9 +216,24 @@ export class FederationThreadRoundSchedulerService
     peerDomain: string,
     direction: Direction,
   ): Promise<void> {
+    const context = await this.namespaces.captureActive(peerDomain);
+    return this.wakeCaptured(
+      threadId,
+      peerDomain,
+      context.namespaceId,
+      direction,
+    );
+  }
+
+  private async wakeCaptured(
+    threadId: number,
+    peerDomain: string,
+    namespaceId: number,
+    direction: Direction,
+  ): Promise<void> {
     if (this.shuttingDown) return;
     const queue = this.queues[direction];
-    const workKey = this.workKey(threadId, peerDomain);
+    const workKey = this.workKey(threadId, peerDomain, namespaceId);
     if (this.blockedThreads.has(workKey)) return;
     if (queue.activeThreads.has(workKey)) {
       queue.dirtyThreads.add(workKey);
@@ -190,9 +241,9 @@ export class FederationThreadRoundSchedulerService
     }
     if (queue.queuedThreads.has(workKey)) return;
     const peerQueue = queue.byPeer.get(peerDomain);
-    if (peerQueue) peerQueue.push(threadId);
+    if (peerQueue) peerQueue.push({ threadId, namespaceId });
     else {
-      queue.byPeer.set(peerDomain, [threadId]);
+      queue.byPeer.set(peerDomain, [{ threadId, namespaceId }]);
       queue.peerOrder.push(peerDomain);
     }
     queue.queuedThreads.add(workKey);
@@ -210,7 +261,6 @@ export class FederationThreadRoundSchedulerService
       clearTimeout(timer);
     this.stateDrainRetryTimers.clear();
     this.stateDrainTargets.clear();
-    this.tombstoneHeads.clear();
     this.blockedThreads.clear();
     for (const queue of Object.values(this.queues)) {
       queue.byPeer.clear();
@@ -306,13 +356,7 @@ export class FederationThreadRoundSchedulerService
     if (this.shuttingDown || this.stateDrainRetryTimers.has(peerDomain)) return;
     const attempt = (this.stateDrainRetryAttempts.get(peerDomain) ?? 0) + 1;
     this.stateDrainRetryAttempts.set(peerDomain, attempt);
-    const delay = Math.min(
-      2_147_483_647,
-      Math.max(
-        minimumDelayMs,
-        Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** (attempt - 1)),
-      ),
-    );
+    const delay = this.retryDelay(attempt, minimumDelayMs);
     const timer = setTimeout(() => {
       this.stateDrainRetryTimers.delete(peerDomain);
       this.runStateFeedDrain(peerDomain);
@@ -328,13 +372,18 @@ export class FederationThreadRoundSchedulerService
       const selected = this.takeNext(queue);
       if (!selected) return;
       queue.active += 1;
-      const workKey = this.workKey(selected.threadId, selected.peerDomain);
+      const workKey = this.workKey(
+        selected.threadId,
+        selected.peerDomain,
+        selected.namespaceId,
+      );
       queue.activeThreads.add(workKey);
       let requeue = false;
       const task = this.execute(
         direction,
         selected.threadId,
         selected.peerDomain,
+        selected.namespaceId,
       )
         .then((shouldContinue) => {
           requeue = shouldContinue;
@@ -343,9 +392,10 @@ export class FederationThreadRoundSchedulerService
           this.logger.warn(
             `${direction} round failed for thread ${selected.threadId}: ${(error as Error).message}`,
           );
-          await this.handleRoundFailure(
+          requeue = await this.handleRoundFailure(
             selected.threadId,
             selected.peerDomain,
+            selected.namespaceId,
             direction,
             error,
           );
@@ -373,70 +423,48 @@ export class FederationThreadRoundSchedulerService
     direction: Direction,
     threadId: number,
     peerDomain: string,
+    namespaceId: number,
   ): Promise<boolean> {
     const queue = this.queues[direction];
-    const workKey = this.workKey(threadId, peerDomain);
+    const workKey = this.workKey(threadId, peerDomain, namespaceId);
     queue.dirtyThreads.delete(workKey);
     if (direction === 'message') {
       await this.forward.runMessages(
         threadId,
         peerDomain,
+        namespaceId,
         FEDERATION_THREAD_ROUND_DEFAULT_TAKE,
       );
     } else if (direction === 'tombstone') {
-      let head = this.tombstoneHeads.get(workKey);
-      if (!head) {
-        const state = await this.states.require(threadId, peerDomain);
-        head = {
-          feedId: 0n,
-          messageEndSeq: state.messageTargetSeq,
-          tombstoneEndSeq: state.deletionTargetSeq,
-          maxMessageSeq: state.messageTargetSeq,
-        };
-        this.tombstoneHeads.set(workKey, head);
-      }
       await this.forward.runTombstones(
         threadId,
         peerDomain,
-        head.tombstoneEndSeq,
-        head.maxMessageSeq,
+        namespaceId,
         FEDERATION_THREAD_ROUND_DEFAULT_TAKE,
       );
     } else {
       await this.reverse.run(
         threadId,
         peerDomain,
+        namespaceId,
         FEDERATION_THREAD_ROUND_DEFAULT_TAKE,
       );
     }
-    this.clearRetry(threadId, peerDomain, direction);
+    this.clearRetry(threadId, peerDomain, namespaceId, direction);
     const dirty = queue.dirtyThreads.delete(workKey);
-    const state = await this.states.require(threadId, peerDomain);
+    const state = await this.states.require(threadId, peerDomain, namespaceId);
     const shouldContinue =
       direction === 'message'
         ? state.messageProcessedThroughSeq < state.messageTargetSeq
         : direction === 'tombstone'
-          ? state.deletionProcessedThroughSeq <
-            (this.tombstoneHeads.get(workKey)?.tombstoneEndSeq ??
-              state.deletionTargetSeq)
+          ? state.deletionProcessedThroughSeq < state.deletionTargetSeq
           : !state.historyBoundaryReached;
     return shouldContinue || dirty;
   }
 
-  private rememberTombstoneHead(
-    threadId: number,
-    peerDomain: string,
-    pair: TombstoneHeadPair,
-  ): void {
-    const key = this.workKey(threadId, peerDomain);
-    const current = this.tombstoneHeads.get(key);
-    if (current && current.feedId > pair.feedId) return;
-    this.tombstoneHeads.set(key, pair);
-  }
-
   private takeNext(
     queue: DirectionQueue,
-  ): { peerDomain: string; threadId: number } | null {
+  ): { peerDomain: string; threadId: number; namespaceId: number } | null {
     if (
       queue.peerOrder.length > 1 &&
       queue.peerOrder[0] === queue.lastServedPeer
@@ -449,12 +477,14 @@ export class FederationThreadRoundSchedulerService
         queue.byPeer.delete(peerDomain);
         continue;
       }
-      const threadId = peerQueue.shift()!;
-      queue.queuedThreads.delete(this.workKey(threadId, peerDomain));
+      const selected = peerQueue.shift()!;
+      queue.queuedThreads.delete(
+        this.workKey(selected.threadId, peerDomain, selected.namespaceId),
+      );
       if (peerQueue.length > 0) queue.peerOrder.push(peerDomain);
       else queue.byPeer.delete(peerDomain);
       queue.lastServedPeer = peerDomain;
-      return { peerDomain, threadId };
+      return { peerDomain, ...selected };
     }
     return null;
   }
@@ -462,21 +492,16 @@ export class FederationThreadRoundSchedulerService
   private scheduleRetry(
     threadId: number,
     peerDomain: string,
+    namespaceId: number,
     direction: Direction,
     minimumDelayMs = 0,
   ): void {
     if (this.shuttingDown) return;
-    const key = this.retryKey(threadId, peerDomain, direction);
+    const key = this.retryKey(threadId, peerDomain, namespaceId, direction);
     if (this.retries.has(key)) return;
     const attempt = (this.retryAttempts.get(key) ?? 0) + 1;
     this.retryAttempts.set(key, attempt);
-    const delay = Math.min(
-      2_147_483_647,
-      Math.max(
-        minimumDelayMs,
-        Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** (attempt - 1)),
-      ),
-    );
+    const delay = this.retryDelay(attempt, minimumDelayMs);
     const timer = setTimeout(() => {
       this.retries.delete(key);
       void this.wake(threadId, peerDomain, direction);
@@ -488,9 +513,10 @@ export class FederationThreadRoundSchedulerService
   private async handleRoundFailure(
     threadId: number,
     peerDomain: string,
+    namespaceId: number,
     direction: Direction,
     error: unknown,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const wrapped =
       error instanceof FederationThreadRoundRemoteError ? error : null;
     const cause = wrapped?.remoteCause ?? error;
@@ -498,37 +524,50 @@ export class FederationThreadRoundSchedulerService
       cause instanceof S2sResponseError &&
       cause.code === BusinessCode.FORBIDDEN
     ) {
-      this.blockThread(threadId, peerDomain);
       if (wrapped) {
         try {
           const outcome = await this.federation.handleThreadQueryForbidden(
             threadId,
             peerDomain,
+            namespaceId,
             wrapped.authorizationEpoch,
           );
+          if (outcome === 'STALE') {
+            this.wakeStateFeed(peerDomain, 0n);
+            return true;
+          }
+          this.blockThread(threadId, peerDomain, namespaceId);
           this.logger.warn(
             `stopped forbidden federation thread ${threadId} from ${peerDomain}: ${outcome}`,
           );
         } catch (handlerError) {
-          this.blockedThreads.delete(this.workKey(threadId, peerDomain));
           this.logger.error(
             `failed to converge forbidden federation thread ${threadId} from ${peerDomain}: ${(handlerError as Error).message}`,
           );
-          this.scheduleRetry(threadId, peerDomain, direction);
-          return;
+          this.scheduleRetry(threadId, peerDomain, namespaceId, direction);
+          return false;
         }
+      } else {
+        this.blockThread(threadId, peerDomain, namespaceId);
       }
       this.wakeStateFeed(peerDomain, 0n);
-      return;
+      return false;
     }
     const decision = this.retryDecision(cause);
     if (decision.retry) {
-      this.scheduleRetry(threadId, peerDomain, direction, decision.delayMs);
-      return;
+      this.scheduleRetry(
+        threadId,
+        peerDomain,
+        namespaceId,
+        direction,
+        decision.delayMs,
+      );
+      return false;
     }
     this.logger.error(
       `stopped permanent ${direction} failure for federation thread ${threadId} from ${peerDomain}: ${(cause as Error).message}`,
     );
+    return false;
   }
 
   private retryDecision(error: unknown): { retry: boolean; delayMs: number } {
@@ -564,30 +603,54 @@ export class FederationThreadRoundSchedulerService
     return Math.min(2_147_483_647, Number(retryAfter) * 1_000);
   }
 
-  private blockThread(threadId: number, peerDomain: string): void {
-    const workKey = this.workKey(threadId, peerDomain);
+  private retryDelay(attempt: number, minimumDelayMs: number): number {
+    const exponential = Math.min(
+      RETRY_MAX_MS,
+      RETRY_BASE_MS * 2 ** (attempt - 1),
+    );
+    const floor = Math.min(
+      2_147_483_647,
+      Math.max(minimumDelayMs, exponential),
+    );
+    if (minimumDelayMs <= 0 || floor >= 2_147_483_647) return floor;
+    const jitterWindow = Math.max(1, Math.min(1_000, Math.floor(floor / 10)));
+    return Math.min(
+      2_147_483_647,
+      floor + Math.floor(Math.random() * (jitterWindow + 1)),
+    );
+  }
+
+  private blockThread(
+    threadId: number,
+    peerDomain: string,
+    namespaceId: number,
+  ): void {
+    const workKey = this.workKey(threadId, peerDomain, namespaceId);
     this.blockedThreads.add(workKey);
-    this.tombstoneHeads.delete(workKey);
     for (const direction of Object.keys(this.queues) as Direction[]) {
       const queue = this.queues[direction];
       queue.dirtyThreads.delete(workKey);
       queue.queuedThreads.delete(workKey);
       const peerQueue = queue.byPeer.get(peerDomain);
       if (peerQueue) {
-        const retained = peerQueue.filter((queued) => queued !== threadId);
+        const retained = peerQueue.filter(
+          (queued) =>
+            queued.threadId !== threadId || queued.namespaceId !== namespaceId,
+        );
         if (retained.length > 0) queue.byPeer.set(peerDomain, retained);
         else queue.byPeer.delete(peerDomain);
       }
-      this.clearRetry(threadId, peerDomain, direction);
+      this.clearRetry(threadId, peerDomain, namespaceId, direction);
     }
   }
 
   private clearRetry(
     threadId: number,
     peerDomain: string,
+    namespaceId: number,
     direction: Direction,
   ): void {
-    const key = this.retryKey(threadId, peerDomain, direction);
+    const key = this.retryKey(threadId, peerDomain, namespaceId, direction);
     const timer = this.retries.get(key);
     if (timer) clearTimeout(timer);
     this.retries.delete(key);
@@ -597,13 +660,18 @@ export class FederationThreadRoundSchedulerService
   private retryKey(
     threadId: number,
     peerDomain: string,
+    namespaceId: number,
     direction: Direction,
   ): string {
-    return `${direction}:${peerDomain}:${threadId}`;
+    return `${direction}:${peerDomain}:${namespaceId}:${threadId}`;
   }
 
-  private workKey(threadId: number, peerDomain: string): string {
-    return JSON.stringify([peerDomain, threadId]);
+  private workKey(
+    threadId: number,
+    peerDomain: string,
+    namespaceId: number,
+  ): string {
+    return JSON.stringify([peerDomain, namespaceId, threadId]);
   }
 
   private createQueue(): DirectionQueue {

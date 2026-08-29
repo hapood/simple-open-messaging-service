@@ -58,6 +58,7 @@ describe('federation message context isolation', () => {
       insert: vi.fn().mockReturnValue({ values: insertedValues }),
     };
     Object.assign(service, {
+      config: { domain: 'local.example' },
       assertThreadResponseWritable: vi.fn(),
       assertPreservedMessageSeqAvailable: vi.fn(),
       quota: { tickLax: vi.fn() },
@@ -80,6 +81,7 @@ describe('federation message context isolation', () => {
       threadId: 9,
       creator: { account: 'bob', domain: 'origin.test' },
       fetchedFromDomain: 'origin.test',
+      namespaceId: 12,
       message: {
         originSeq: 70,
         clientMessageId: null,

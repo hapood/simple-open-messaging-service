@@ -1,14 +1,9 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { signingCertificateStatement } from './federation-certificate.js';
+import { DiscoveryService } from './discovery.service.js';
 
 process.env.SOMS_DOMAIN = 'local.example';
-
-let DiscoveryService: typeof import('./discovery.service.js').DiscoveryService;
-
-beforeAll(async () => {
-  ({ DiscoveryService } = await import('./discovery.service.js'));
-}, 30_000);
 
 function certificate(rootPrivateKey: Uint8Array, keyId: string, seed: number) {
   const privateKey = Uint8Array.from(

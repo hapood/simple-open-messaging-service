@@ -223,10 +223,16 @@ export class UserService {
           // Display name is now a required registration input (no longer defaulted to account).
           name: params.name,
           avatar: '',
+          namespaceId: 0,
           updatedAt: new Date(),
         })
         .onConflictDoNothing({
-          target: [user.account, user.domain, user.sourceDomain],
+          target: [
+            user.account,
+            user.domain,
+            user.sourceDomain,
+            user.namespaceId,
+          ],
         })
         .returning({ id: user.id, account: user.account });
       if (!newUser) return { status: 2 };

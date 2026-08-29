@@ -63,7 +63,11 @@ export class ResumableUploadService {
       !stage ||
       stage.status !== 'pending' ||
       !(await this.messages.isAuthoredBy(
-        { account: stage.creatorAccount, domain: stage.creatorDomain },
+        {
+          account: stage.creatorAccount,
+          domain: stage.creatorDomain,
+          namespaceId: 0,
+        },
         userId,
       ))
     ) {

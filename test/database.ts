@@ -39,6 +39,27 @@ export async function ensureDatabase(
   return databaseUrl(baseUrl, database);
 }
 
+export async function dropDatabase(
+  baseUrl: string,
+  database: string,
+): Promise<void> {
+  if (!/^[a-zA-Z0-9_]+$/.test(database)) {
+    throw new Error(`unsafe test database name: ${database}`);
+  }
+  const adminUrl = databaseUrl(baseUrl, 'postgres');
+  const client = new Client({ connectionString: adminUrl });
+  await client.connect();
+  try {
+    await client.query(
+      'SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()',
+      [database],
+    );
+    await client.query(`DROP DATABASE IF EXISTS "${database}"`);
+  } finally {
+    await client.end();
+  }
+}
+
 export async function recreateDatabaseFromTemplate(
   baseUrl: string,
   database: string,

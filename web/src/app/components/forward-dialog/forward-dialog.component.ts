@@ -174,14 +174,14 @@ export class ForwardDialogComponent {
     return {
       ...original,
       creator: messageCreatorKey(
-        { account: self.account, domain: 'local' },
+        { account: self.account, domain: 'local', namespaceId: 0 },
         'local',
       ),
       isSelf: true,
       name: self?.name || self?.account || original.name,
       avatar: self?.avatar || undefined,
       avatarIdentityId: messageCreatorKey(
-        { account: self.account, domain: 'local' },
+        { account: self.account, domain: 'local', namespaceId: 0 },
         'local',
       ),
       avatarAccount: self?.account,
@@ -300,7 +300,7 @@ export class ForwardDialogComponent {
     const self = this.user.sessionProfile();
     if (!self) throw new Error('session profile is required to forward');
     return messageCreatorKey(
-      { account: self.account, domain: 'local' },
+      { account: self.account, domain: 'local', namespaceId: 0 },
       'local',
     );
   }

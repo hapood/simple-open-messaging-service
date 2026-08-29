@@ -64,7 +64,7 @@ describe('FederationThreadReverseRoundExecutorService', () => {
       harness();
 
     await expect(
-      executor.run(31, source.peerDomain, 20),
+      executor.run(31, source.peerDomain, 12, 20),
     ).resolves.toMatchObject({
       beforeSeq: 100,
       throughSeq: 40,
@@ -104,7 +104,7 @@ describe('FederationThreadReverseRoundExecutorService', () => {
       new Error('profile page failed'),
     );
 
-    await expect(executor.run(31, 'origin.test')).rejects.toThrow(
+    await expect(executor.run(31, 'origin.test', 12)).rejects.toThrow(
       'profile page failed',
     );
     expect(commit).not.toHaveBeenCalled();
@@ -113,7 +113,7 @@ describe('FederationThreadReverseRoundExecutorService', () => {
   it('omits the departed-member query for P2P history', async () => {
     const { executor, departedProfiles, commit } = harness('P2P');
 
-    await expect(executor.run(31, 'peer.test')).resolves.toBeDefined();
+    await expect(executor.run(31, 'peer.test', 12)).resolves.toBeDefined();
     expect(departedProfiles.fetch).not.toHaveBeenCalled();
     expect(commit).toHaveBeenCalledOnce();
   });

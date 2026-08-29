@@ -46,6 +46,13 @@ export class UserResponseDto {
   domain!: string;
 
   @ApiProperty({
+    example: 7,
+    description:
+      'Identity namespace; 0 for identities created on this server',
+  })
+  namespaceId!: number;
+
+  @ApiProperty({
     example: 31,
     description: 'Created at (ms timestamp)',
   })
@@ -108,6 +115,9 @@ export class MessageAuthorAddressResponseDto {
 
   @ApiProperty({ example: 'local' })
   domain!: string;
+
+  @ApiProperty({ example: 7 })
+  namespaceId!: number;
 }
 
 export class MessageResponseDto {

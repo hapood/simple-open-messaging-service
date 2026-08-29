@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import { MessageDeleteType } from '../src/database/enums.js';
@@ -10,6 +10,7 @@ import {
   federatedPeer,
   federationDeletedCursor,
   fileSyncProgress,
+  identityNamespace,
   message,
   messageThread,
   pendingMedia,
@@ -24,12 +25,15 @@ describe('federated message deletion transaction ordering', () => {
   let deletions: DeletedMessageService;
   let threadId: number;
   let creatorId: number;
+  let namespaceId: number;
 
-  const cursor = {
-    peerDomain: 'peer.test',
+  const peerDomain = 'peer.test';
+  const cursor = () => ({
+    peerDomain,
+    namespaceId,
     streamAccount: 'bob',
     streamKind: 'p2p-author',
-  };
+  });
 
   beforeAll(async () => {
     mod = await Test.createTestingModule({
@@ -55,8 +59,32 @@ describe('federated message deletion transaction ordering', () => {
       'TRUNCATE TABLE "User", "FederatedPeer" RESTART IDENTITY CASCADE',
     );
     const now = new Date();
+    const [existingNamespace] = await database.db
+      .select({ id: identityNamespace.id })
+      .from(identityNamespace)
+      .where(
+        and(
+          eq(identityNamespace.domain, peerDomain),
+          isNull(identityNamespace.retiredAt),
+        ),
+      )
+      .limit(1);
+    namespaceId =
+      existingNamespace?.id ??
+      (
+        await database.db
+          .insert(identityNamespace)
+          .values({
+            domain: peerDomain,
+            rootKeyFingerprint: 'sha256:deleted-message-test',
+            rootPublicKey: Buffer.alloc(32, 3).toString('base64'),
+            identityPinnedAt: now,
+          })
+          .returning({ id: identityNamespace.id })
+      )[0].id;
     await database.db.insert(federatedPeer).values({
-      domain: 'peer.test',
+      domain: peerDomain,
+      activeNamespaceId: namespaceId,
       trustLevel: 'available',
     });
     const [creator] = await database.db
@@ -64,14 +92,20 @@ describe('federated message deletion transaction ordering', () => {
       .values({
         account: 'bob',
         name: 'Bob',
-        domain: 'peer.test',
+        domain: peerDomain,
+        sourceDomain: peerDomain,
+        namespaceId,
         updatedAt: now,
       })
       .returning({ id: user.id });
     creatorId = creator.id;
     const [thread] = await database.db
       .insert(messageThread)
-      .values({ type: 'P2P', updatedAt: now })
+      .values({
+        type: 'P2P',
+        authorityNamespaceId: namespaceId,
+        updatedAt: now,
+      })
       .returning({ id: messageThread.id });
     threadId = thread.id;
   });
@@ -80,11 +114,12 @@ describe('federated message deletion transaction ordering', () => {
     return deletions.applyFederated({
       threadId,
       messageSeq: 7,
-      authorityDomain: 'peer.test',
-      sourceDomain: 'peer.test',
+      authorityDomain: peerDomain,
+      sourceDomain: peerDomain,
+      sourceNamespaceId: namespaceId,
       remoteDeletionSeq,
       type: MessageDeleteType.USER_RETRACTION,
-      cursor,
+      cursor: cursor(),
       expectedFederationVersion: 0,
     });
   }
@@ -99,7 +134,8 @@ describe('federated message deletion transaction ordering', () => {
       await DeletedMessageService.lockFederatedIdentity(
         tx,
         threadId,
-        'peer.test',
+        peerDomain,
+        namespaceId,
         7,
       );
       gates?.locked();
@@ -108,10 +144,11 @@ describe('federated message deletion transaction ordering', () => {
       const tombstone = await tx.query.federatedMessageTombstone.findFirst({
         where: and(
           eq(federatedMessageTombstone.threadId, threadId),
-          eq(federatedMessageTombstone.sourceDomain, 'peer.test'),
+          eq(federatedMessageTombstone.sourceDomain, peerDomain),
+          eq(federatedMessageTombstone.sourceNamespaceId, namespaceId),
           eq(federatedMessageTombstone.messageSeq, 7),
         ),
-        columns: { type: true, sourceDomain: true },
+        columns: { type: true, sourceDomain: true, sourceNamespaceId: true },
       });
       const [{ curSeq: seq }] = await tx
         .update(messageThread)
@@ -123,9 +160,11 @@ describe('federated message deletion transaction ordering', () => {
         .values({
           threadId,
           creatorAccount: 'bob',
-          creatorDomain: 'peer.test',
+          creatorDomain: peerDomain,
+          creatorNamespaceId: namespaceId,
           originSeq: 7,
-          federationSourceDomain: 'peer.test',
+          federationSourceDomain: peerDomain,
+          sourceNamespaceId: namespaceId,
           seq,
           contentType: 'PURE_TEXT',
           content: JSON.stringify({ text: 'federated' }),
@@ -139,6 +178,7 @@ describe('federated message deletion transaction ordering', () => {
           messageSeq: seq,
           type: tombstone.type,
           federationSourceDomain: tombstone.sourceDomain,
+          sourceNamespaceId: tombstone.sourceNamespaceId,
           updatedAt: new Date(),
         });
         await tx
@@ -146,7 +186,8 @@ describe('federated message deletion transaction ordering', () => {
           .where(
             and(
               eq(federatedMessageTombstone.threadId, threadId),
-              eq(federatedMessageTombstone.sourceDomain, 'peer.test'),
+              eq(federatedMessageTombstone.sourceDomain, peerDomain),
+              eq(federatedMessageTombstone.sourceNamespaceId, namespaceId),
               eq(federatedMessageTombstone.messageSeq, 7),
             ),
           );
@@ -160,7 +201,9 @@ describe('federated message deletion transaction ordering', () => {
       where: and(
         eq(message.threadId, threadId),
         eq(message.creatorAccount, 'bob'),
-        eq(message.creatorDomain, 'peer.test'),
+        eq(message.creatorDomain, peerDomain),
+        eq(message.creatorNamespaceId, namespaceId),
+        eq(message.sourceNamespaceId, namespaceId),
         eq(message.originSeq, 7),
       ),
       columns: { seq: true, isDeleted: true },
@@ -168,14 +211,27 @@ describe('federated message deletion transaction ordering', () => {
     const tombstones = await database.db
       .select()
       .from(federatedMessageTombstone)
-      .where(eq(federatedMessageTombstone.threadId, threadId));
+      .where(
+        and(
+          eq(federatedMessageTombstone.threadId, threadId),
+          eq(federatedMessageTombstone.sourceNamespaceId, namespaceId),
+        ),
+      );
     const logs = await database.db
       .select()
       .from(deletedMessage)
-      .where(eq(deletedMessage.threadId, threadId));
+      .where(
+        and(
+          eq(deletedMessage.threadId, threadId),
+          eq(deletedMessage.sourceNamespaceId, namespaceId),
+        ),
+      );
     const storedCursor =
       await database.db.query.federationDeletedCursor.findFirst({
-        where: eq(federationDeletedCursor.threadId, threadId),
+        where: and(
+          eq(federationDeletedCursor.threadId, threadId),
+          eq(federationDeletedCursor.namespaceId, namespaceId),
+        ),
         columns: { committedThrough: true },
       });
     return { stored, tombstones, logs, cursor: storedCursor };
@@ -288,11 +344,13 @@ describe('federated message deletion transaction ordering', () => {
         threadId,
         seq: 1,
         creatorAccount: 'bob',
-        creatorDomain: 'peer.test',
+        creatorDomain: peerDomain,
+        creatorNamespaceId: namespaceId,
         contentType: 'IMAGE',
         content: JSON.stringify({ digest: 'a'.repeat(64) }),
         originSeq: 7,
-        federationSourceDomain: 'peer.test',
+        federationSourceDomain: peerDomain,
+        sourceNamespaceId: namespaceId,
         localState: 'STUB',
         updatedAt: new Date(),
       })
@@ -303,7 +361,7 @@ describe('federated message deletion transaction ordering', () => {
         messageId: stub.id,
         direction: 'INBOUND',
         fileCnt: 1,
-        originDomain: 'peer.test',
+        originDomain: peerDomain,
         expectedAuthorizationEpoch: 0,
         updatedAt: new Date(),
       })
@@ -316,7 +374,7 @@ describe('federated message deletion transaction ordering', () => {
       status: 'DOWNLOADING',
       bytesTotal: 100n,
       bytesReceived: 40n,
-      originDomain: 'peer.test',
+      originDomain: peerDomain,
     });
 
     await apply(13);

@@ -12,6 +12,7 @@ export interface ProfileData {
   bio?: string;
   domain: string;
   sourceServer: string;
+  namespaceId: number;
   profileRev: number;
 }
 
@@ -54,6 +55,7 @@ export class ProfileRepository {
         bio: data.bio ?? prev?.bio ?? '',
         domain: data.domain,
         sourceServer: data.sourceServer,
+        namespaceId: data.namespaceId,
         profileRev: data.profileRev,
       };
       const written = await this.webdb.putProfile(record);
@@ -78,8 +80,14 @@ export class ProfileRepository {
     account: string,
     domain: string,
     sourceDomain: string,
+    namespaceId: number,
   ): Promise<ProfileRecord | undefined> {
-    const record = await this.webdb.getUser(account, domain, sourceDomain);
+    const record = await this.webdb.getUser(
+      account,
+      domain,
+      sourceDomain,
+      namespaceId,
+    );
     if (!record) return undefined;
     return {
       identity: `${sourceDomain}\u0000${domain}\u0000${account}`,
@@ -91,6 +99,7 @@ export class ProfileRepository {
       bio: record.bio,
       domain: record.domain,
       sourceServer: record.sourceDomain,
+      namespaceId: record.namespaceId,
       profileRev: record.profileRev,
     };
   }

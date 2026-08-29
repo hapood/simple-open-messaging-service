@@ -24,7 +24,7 @@
     </div>
   </div>
   <div class="identity-account">
-    {{ identity().account }}&#64;{{ identity().domain }}
+    {{ identity().account }}&#64;{{ displayDomain() }}
   </div>
   @if (actionKey(); as key) {
     <app-dialog-action-footer

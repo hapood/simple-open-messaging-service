@@ -86,10 +86,11 @@ export type Message = typeof message.$inferSelect;
 export interface MessageAuthorAddress {
   account: string;
   domain: string;
+  namespaceId: number;
 }
 export type PublicMessage<T extends Message = Message> = Omit<
   T,
-  'id' | 'creatorAccount' | 'creatorDomain'
+  'id' | 'creatorAccount' | 'creatorDomain' | 'creatorNamespaceId'
 > & {
   creator: MessageAuthorAddress | null;
 };
@@ -138,19 +139,28 @@ export function stripMessageId<
     id: bigint;
     creatorAccount: string | null;
     creatorDomain: string | null;
+    creatorNamespaceId: number;
   },
 >(
   msg: T,
-): Omit<T, 'id' | 'creatorAccount' | 'creatorDomain'> & {
+): Omit<
+  T,
+  'id' | 'creatorAccount' | 'creatorDomain' | 'creatorNamespaceId'
+> & {
   creator: MessageAuthorAddress | null;
 } {
-  const { id, creatorAccount, creatorDomain, ...rest } = msg;
+  const { id, creatorAccount, creatorDomain, creatorNamespaceId, ...rest } =
+    msg;
   return {
     ...rest,
     creator:
       creatorAccount === null || creatorDomain === null
         ? null
-        : { account: creatorAccount, domain: creatorDomain },
+        : {
+            account: creatorAccount,
+            domain: creatorDomain,
+            namespaceId: creatorNamespaceId,
+          },
   };
 }
 
@@ -197,10 +207,15 @@ export class MessageService {
   private async localAuthor(userId: number): Promise<{
     account: string;
     domain: string;
+    namespaceId: number;
   }> {
     const author = await this.database.db.query.user.findFirst({
-      where: eq(user.id, userId),
-      columns: { account: true, domain: true },
+      where: and(
+        eq(user.id, userId),
+        eq(user.domain, 'local'),
+        eq(user.namespaceId, 0),
+      ),
+      columns: { account: true, domain: true, namespaceId: true },
     });
     if (!author) throw new Error('message author does not exist');
     return author;
@@ -213,7 +228,9 @@ export class MessageService {
     if (creator === null) return false;
     const author = await this.localAuthor(userId);
     return (
-      creator.account === author.account && creator.domain === author.domain
+      creator.account === author.account &&
+      creator.domain === author.domain &&
+      creator.namespaceId === author.namespaceId
     );
   }
 
@@ -285,6 +302,7 @@ export class MessageService {
             type: messageThread.type,
             creatorAccount: user.account,
             creatorDomain: user.domain,
+            creatorNamespaceId: user.namespaceId,
           })
           .from(messageThread)
           .innerJoin(
@@ -364,6 +382,7 @@ export class MessageService {
                     where: and(
                       eq(user.account, row.creatorAccount),
                       eq(user.domain, row.creatorDomain!),
+                      eq(user.namespaceId, row.creatorNamespaceId),
                     ),
                     columns: { name: true },
                   });
@@ -386,7 +405,8 @@ export class MessageService {
               quoteVisibility?.hideCreators?.some(
                 (creator) =>
                   creator.account === quoteTarget.creatorAccount &&
-                  creator.domain === quoteTarget.creatorDomain,
+                  creator.domain === quoteTarget.creatorDomain &&
+                  creator.namespaceId === quoteTarget.creatorNamespaceId,
               )))
         ) {
           throw new BusinessException(
@@ -410,6 +430,7 @@ export class MessageService {
             threadId,
             creatorAccount: writeAccess.creatorAccount,
             creatorDomain: writeAccess.creatorDomain,
+            creatorNamespaceId: writeAccess.creatorNamespaceId,
             clientMessageId,
             seq,
             updatedAt: new Date(),
@@ -684,12 +705,17 @@ export class MessageService {
     const author = await this.localAuthor(userId);
     const committed = await this.database.db.query.message.findFirst({
       where: eq(message.clientMessageId, clientMessageId),
-      columns: { creatorAccount: true, creatorDomain: true },
+      columns: {
+        creatorAccount: true,
+        creatorDomain: true,
+        creatorNamespaceId: true,
+      },
     });
     if (committed) {
       if (
         committed.creatorAccount !== author.account ||
-        committed.creatorDomain !== author.domain
+        committed.creatorDomain !== author.domain ||
+        committed.creatorNamespaceId !== author.namespaceId
       ) {
         throw new BusinessException(
           BusinessCode.VALIDATION_FAILED,
@@ -711,6 +737,7 @@ export class MessageService {
             threadId,
             creatorAccount: author.account,
             creatorDomain: author.domain,
+            namespaceId: author.namespaceId,
             contentType,
             content: '{}',
             clientMessageId,
@@ -731,6 +758,7 @@ export class MessageService {
           !winner ||
           winner.creatorAccount !== author.account ||
           winner.creatorDomain !== author.domain ||
+          winner.namespaceId !== author.namespaceId ||
           winner.threadId !== threadId ||
           winner.contentType !== contentType
         ) {
@@ -745,6 +773,7 @@ export class MessageService {
     if (
       existing.creatorAccount !== author.account ||
       existing.creatorDomain !== author.domain ||
+      existing.namespaceId !== author.namespaceId ||
       existing.threadId !== threadId ||
       existing.contentType !== contentType
     ) {
@@ -795,6 +824,7 @@ export class MessageService {
           eq(pendingMedia.clientMessageId, clientMessageId),
           eq(pendingMedia.creatorAccount, author.account),
           eq(pendingMedia.creatorDomain, author.domain),
+          eq(pendingMedia.namespaceId, author.namespaceId),
           eq(pendingMedia.status, 'pending'),
         ),
       );
@@ -808,6 +838,7 @@ export class MessageService {
         eq(pendingMedia.threadId, threadId),
         eq(pendingMedia.creatorAccount, author.account),
         eq(pendingMedia.creatorDomain, author.domain),
+        eq(pendingMedia.namespaceId, author.namespaceId),
         isNotNull(pendingMedia.clientMessageId),
       ),
       columns: {
@@ -856,6 +887,7 @@ export class MessageService {
         eq(pendingMedia.clientMessageId, clientMessageId),
         eq(pendingMedia.creatorAccount, author.account),
         eq(pendingMedia.creatorDomain, author.domain),
+        eq(pendingMedia.namespaceId, author.namespaceId),
       ),
       columns: {
         id: true,
@@ -903,6 +935,7 @@ export class MessageService {
         status: 'SUCCEEDED',
         bytesTotal: BigInt(payload.size),
         bytesReceived: BigInt(payload.size),
+        namespaceId: author.namespaceId,
         payload: payload as unknown as Record<string, unknown>,
         updatedAt: new Date(),
       })
@@ -924,6 +957,7 @@ export class MessageService {
         eq(pendingMedia.clientMessageId, clientMessageId),
         eq(pendingMedia.creatorAccount, author.account),
         eq(pendingMedia.creatorDomain, author.domain),
+        eq(pendingMedia.namespaceId, author.namespaceId),
       ),
       columns: { contentType: true, status: true },
     });
@@ -966,7 +1000,8 @@ export class MessageService {
         !(await this.localAuthor(userId).then(
           (author) =>
             author.account === stage.creatorAccount &&
-            author.domain === stage.creatorDomain,
+            author.domain === stage.creatorDomain &&
+            author.namespaceId === stage.namespaceId,
         )))
     ) {
       return null;
@@ -1017,6 +1052,7 @@ export class MessageService {
           where: and(
             eq(user.account, stage.creatorAccount),
             eq(user.domain, stage.creatorDomain),
+            eq(user.namespaceId, stage.namespaceId),
           ),
           columns: { id: true },
         });
@@ -1082,6 +1118,7 @@ export class MessageService {
             threadId: stage.threadId,
             creatorAccount: stage.creatorAccount,
             creatorDomain: stage.creatorDomain,
+            creatorNamespaceId: stage.namespaceId,
             clientMessageId,
             seq,
             updatedAt: new Date(),
@@ -1178,6 +1215,7 @@ export class MessageService {
             and(
               eq(message.creatorAccount, creator.account),
               eq(message.creatorDomain, creator.domain),
+              eq(message.creatorNamespaceId, creator.namespaceId),
             ),
           ),
         )})`,
@@ -1342,7 +1380,13 @@ export class MessageService {
     const authorAddresses = targets.flatMap((target) =>
       target.creatorAccount === null || target.creatorDomain === null
         ? []
-        : [{ account: target.creatorAccount, domain: target.creatorDomain }],
+        : [
+            {
+              account: target.creatorAccount,
+              domain: target.creatorDomain,
+              namespaceId: target.creatorNamespaceId,
+            },
+          ],
     );
     const authors =
       authorAddresses.length === 0
@@ -1353,14 +1397,20 @@ export class MessageService {
                 and(
                   eq(user.account, author.account),
                   eq(user.domain, author.domain),
+                  eq(user.namespaceId, author.namespaceId),
                 ),
               ),
             ),
-            columns: { account: true, domain: true, name: true },
+            columns: {
+              account: true,
+              domain: true,
+              namespaceId: true,
+              name: true,
+            },
           });
     const authorNames = new Map(
       authors.map((author) => [
-        `${author.account}\u0000${author.domain}`,
+        `${author.account}\u0000${author.domain}\u0000${author.namespaceId}`,
         author.name,
       ]),
     );
@@ -1375,7 +1425,8 @@ export class MessageService {
           viewerFilters?.hideCreators?.some(
             (creator) =>
               creator.account === target.creatorAccount &&
-              creator.domain === target.creatorDomain,
+              creator.domain === target.creatorDomain &&
+              creator.namespaceId === target.creatorNamespaceId,
           ))
       );
     });
@@ -1385,7 +1436,7 @@ export class MessageService {
           target.creatorAccount === null
             ? 'System'
             : (authorNames.get(
-                `${target.creatorAccount}\u0000${target.creatorDomain}`,
+                `${target.creatorAccount}\u0000${target.creatorDomain}\u0000${target.creatorNamespaceId}`,
               ) ?? target.creatorAccount),
           target.contentType,
           target.content,
@@ -1655,6 +1706,7 @@ export class MessageService {
             WHERE self.id = ${userId}
               AND self.account = msg."creatorAccount"
               AND self.domain = msg."creatorDomain"
+              AND self."namespaceId" = msg."creatorNamespaceId"
           )
           AND msg."isDeleted" = false
           AND msg."localState" = 'READY'
@@ -1716,6 +1768,7 @@ export class MessageService {
             WHERE self.id = ${userId}
               AND self.account = m."creatorAccount"
               AND self.domain = m."creatorDomain"
+              AND self."namespaceId" = m."creatorNamespaceId"
           )
           AND m."isDeleted" = false
           AND m."localState" = 'READY'
@@ -1823,6 +1876,7 @@ export class MessageService {
           WHERE hidden_author.id IN (${this.joinSql(hideCreatorIds)})
             AND hidden_author.account = m."creatorAccount"
             AND hidden_author.domain = m."creatorDomain"
+            AND hidden_author."namespaceId" = m."creatorNamespaceId"
         )`
       : sql.empty();
     const globalClause =
@@ -1867,6 +1921,7 @@ export class MessageService {
             WHERE self.id = ${userId}
               AND self.account = m."creatorAccount"
               AND self.domain = m."creatorDomain"
+              AND self."namespaceId" = m."creatorNamespaceId"
           )
           AND m."isDeleted" = false
           AND m."localState" = 'READY'
@@ -1921,6 +1976,7 @@ export class MessageService {
           WHERE hidden_author.id IN (${this.joinSql(hideCreatorIds)})
             AND hidden_author.account = m."creatorAccount"
             AND hidden_author.domain = m."creatorDomain"
+            AND hidden_author."namespaceId" = m."creatorNamespaceId"
         )`
       : sql.empty();
     const globalClause =
@@ -1951,6 +2007,7 @@ export class MessageService {
         LEFT JOIN "User" u
           ON u.account = m."creatorAccount"
          AND u.domain = m."creatorDomain"
+         AND u."namespaceId" = m."creatorNamespaceId"
          AND u.availability = 'AVAILABLE'
         JOIN "ThreadParticipant" tp
           ON tp."threadId" = m."threadId"
@@ -1965,6 +2022,7 @@ export class MessageService {
             WHERE self.id = ${userId}
               AND self.account = m."creatorAccount"
               AND self.domain = m."creatorDomain"
+              AND self."namespaceId" = m."creatorNamespaceId"
           )
           AND m."isDeleted" = false
           AND m."localState" = 'READY'
@@ -2041,6 +2099,7 @@ export class MessageService {
          WHERE self.id = ${userId}
            AND self.account = m."creatorAccount"
            AND self.domain = m."creatorDomain"
+           AND self."namespaceId" = m."creatorNamespaceId"
        )
       WHERE tp."accountId" = ${userId}
         AND tp."threadId" IN (${this.joinSql(threadIds)})
@@ -2084,6 +2143,7 @@ export class MessageService {
           WHERE hidden_author.id IN (${this.joinSql(hideCreatorIds)})
             AND hidden_author.account = m."creatorAccount"
             AND hidden_author.domain = m."creatorDomain"
+            AND hidden_author."namespaceId" = m."creatorNamespaceId"
         )`
       : sql.empty();
     const rows = await this.queryRaw<
@@ -2103,6 +2163,7 @@ export class MessageService {
           WHERE self.id = ${userId}
             AND self.account = m."creatorAccount"
             AND self.domain = m."creatorDomain"
+            AND self."namespaceId" = m."creatorNamespaceId"
         )
         ${hiddenClause}
         AND m."contentType" = 'PURE_TEXT'

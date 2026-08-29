@@ -96,6 +96,7 @@ export class FederationGroupRequestProjectionService {
               GroupRole.ADMIN,
             ]),
             eq(tables.user.domain, 'local'),
+            eq(tables.user.namespaceId, 0),
             managerUserId === undefined
               ? undefined
               : eq(tables.threadMember.userId, managerUserId),

@@ -282,7 +282,7 @@ describe('FederationMessageFeedService compacted feed', () => {
     });
   });
 
-  it('reauthorizes the stable thread above its prior history and returns a correcting cursor', async () => {
+  it('reauthorizes the stable thread without hiding retained history', async () => {
     const { alice, thread } = await seed();
     await append(thread.id, alice, 1);
     await database.db.transaction(async (tx) => {
@@ -296,9 +296,10 @@ describe('FederationMessageFeedService compacted feed', () => {
         { type: 'P2P', account: 'alice', peerAccount: 'bob' },
         0,
       ),
-    ).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
-      data: { resumeAfter: 1, resumeBefore: 2 },
+    ).resolves.toMatchObject({
+      messages: [{ seq: 1 }],
+      scannedThrough: 1,
+      hasMore: false,
     });
 
     await append(thread.id, alice, 2);

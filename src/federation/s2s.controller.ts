@@ -115,6 +115,7 @@ export class S2sController {
         : this.parseCursorBigInt(throughParam, 'through');
     return this.groupMetaFeed.serve(
       this.signerDomain(req),
+      req.peer!.namespaceId,
       normalizedAccount,
       mode,
       after,
@@ -168,6 +169,7 @@ export class S2sController {
         : this.parsePositiveSafeIntegerQuery(takeParam, 'take');
     return this.departedMemberProfiles.query(
       this.signerDomain(req),
+      req.peer!.namespaceId,
       normalizedAccount,
       before,
       take,
@@ -246,7 +248,11 @@ export class S2sController {
           HttpStatus.BAD_REQUEST,
         );
       }
-      return this.tombstoneFeed.rejectMissingQueryAfter(peerDomain, selector);
+      return this.tombstoneFeed.rejectMissingQueryAfter(
+        peerDomain,
+        req.peer!.namespaceId,
+        selector,
+      );
     }
     const after = this.parseThreadSequence(afterParam, 'after');
     const take =
@@ -257,6 +263,13 @@ export class S2sController {
       throughParam === undefined
         ? undefined
         : this.parseThreadSequence(throughParam, 'through');
+    if (maxMessageSeqParam !== undefined && through === undefined) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'maxMessageSeq requires through',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
     const maxMessageSeq =
       maxMessageSeqParam === undefined
         ? undefined
@@ -270,6 +283,7 @@ export class S2sController {
     }
     return this.tombstoneFeed.query(
       peerDomain,
+      req.peer!.namespaceId,
       selector,
       after,
       take,
@@ -328,7 +342,11 @@ export class S2sController {
           HttpStatus.BAD_REQUEST,
         );
       }
-      return this.messageFeed.rejectMissingQueryAfter(peerDomain, selector);
+      return this.messageFeed.rejectMissingQueryAfter(
+        peerDomain,
+        req.peer!.namespaceId,
+        selector,
+      );
     }
     const after =
       afterParam === undefined
@@ -348,6 +366,7 @@ export class S2sController {
         : this.parseThreadSequence(throughParam, 'through');
     return this.messageFeed.query(
       peerDomain,
+      req.peer!.namespaceId,
       selector,
       after,
       take,
@@ -366,6 +385,7 @@ export class S2sController {
   ) {
     this.assertQueryShape(req, ['after', 'take', 'through']);
     const peerDomain = this.signerDomain(req);
+    const namespaceId = req.peer!.namespaceId;
     if (afterParam === undefined) {
       if (takeParam !== undefined || throughParam !== undefined) {
         throw new BusinessException(
@@ -374,7 +394,7 @@ export class S2sController {
           HttpStatus.BAD_REQUEST,
         );
       }
-      return this.peerStateFeed.rejectMissingAfter(peerDomain);
+      return this.peerStateFeed.rejectMissingAfter(peerDomain, namespaceId);
     }
     const after = this.parseCursorBigInt(afterParam, 'after');
     const take = takeParam === undefined ? undefined : Number(takeParam);
@@ -382,7 +402,13 @@ export class S2sController {
       throughParam === undefined
         ? undefined
         : this.parseCursorBigInt(throughParam, 'through');
-    return this.peerStateFeed.serve(peerDomain, after, take, through);
+    return this.peerStateFeed.serve(
+      peerDomain,
+      namespaceId,
+      after,
+      take,
+      through,
+    );
   }
 
   @Post('call')
@@ -394,6 +420,7 @@ export class S2sController {
     await this.federation.handleCallFrame(
       req.body,
       this.signerDomain(req),
+      req.peer!.namespaceId,
       req.peer!.signatureExpiresAtSec,
     );
     return null;
@@ -583,6 +610,7 @@ export class S2sController {
         toAccount,
         fromDomain,
         signer,
+        req.peer!.namespaceId,
         digest,
         seq,
       ),
@@ -667,6 +695,7 @@ export class S2sController {
       this.federation.serveForwardBundleClosure(
         bundleId,
         this.signerDomain(req),
+        req.peer!.namespaceId,
       ),
     );
   }
