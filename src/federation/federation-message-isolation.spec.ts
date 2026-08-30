@@ -60,7 +60,7 @@ describe('federation message context isolation', () => {
     Object.assign(service, {
       config: { domain: 'local.example' },
       assertThreadResponseWritable: vi.fn(),
-      assertPreservedMessageSeqAvailable: vi.fn(),
+      assertMappedMessageSeqAvailable: vi.fn(),
       quota: { tickLax: vi.fn() },
     });
     vi.spyOn(DeletedMessageService, 'lockFederatedIdentity').mockResolvedValue(
@@ -93,14 +93,15 @@ describe('federation message context isolation', () => {
       incomingText: null,
       originTime: new Date(1_700_000_000_000),
       sequencePolicy: {
-        kind: 'PRESERVE_ORIGIN',
+        kind: 'MAP_ORIGIN',
         beforeSeq: 100,
         throughSeq: 40,
+        messageSeqOffset: 7,
       },
     });
 
     expect(insertedValues).toHaveBeenCalledWith(
-      expect.objectContaining({ seq: 70, localState: 'STUB' }),
+      expect.objectContaining({ seq: 77, localState: 'STUB' }),
     );
     expect(publishMessage).not.toHaveBeenCalled();
   });
@@ -247,9 +248,10 @@ describe('federation message context isolation', () => {
         {} as never,
         {
           sequencePolicy: {
-            kind: 'PRESERVE_ORIGIN',
+            kind: 'MAP_ORIGIN',
             beforeSeq: 100,
             throughSeq: 40,
+            messageSeqOffset: 0,
           },
         },
       ),
@@ -287,9 +289,10 @@ describe('federation message context isolation', () => {
         {} as never,
         {
           sequencePolicy: {
-            kind: 'PRESERVE_ORIGIN',
+            kind: 'MAP_ORIGIN',
             beforeSeq: 100,
             throughSeq: 40,
+            messageSeqOffset: 0,
           },
         },
       ),
@@ -501,9 +504,10 @@ describe('federation message context isolation', () => {
         {} as never,
         {
           sequencePolicy: {
-            kind: 'PRESERVE_ORIGIN',
+            kind: 'MAP_ORIGIN',
             beforeSeq: 100,
             throughSeq: 40,
+            messageSeqOffset: 0,
           },
         },
       ),

@@ -1,14 +1,15 @@
 import { FEDERATION_THREAD_SEQUENCE_MAX } from './federation-thread-round.constants.js';
 
-export interface PreserveFederationOriginSequence {
-  kind: 'PRESERVE_ORIGIN';
+export interface MapFederationOriginSequence {
+  kind: 'MAP_ORIGIN';
   beforeSeq: number;
   throughSeq?: number;
+  messageSeqOffset: number;
 }
 
-export function validatePreservedFederationOriginSequence(
+export function mapFederationOriginSequence(
   originSeq: number,
-  policy: PreserveFederationOriginSequence,
+  policy: MapFederationOriginSequence,
 ): number {
   assertThreadSequence(originSeq, 'federated message origin seq');
   assertThreadSequence(policy.beforeSeq, 'reverse before seq');
@@ -30,7 +31,17 @@ export function validatePreservedFederationOriginSequence(
       );
     }
   }
-  return originSeq;
+  if (
+    !Number.isSafeInteger(policy.messageSeqOffset) ||
+    policy.messageSeqOffset < 0
+  ) {
+    throw new Error(
+      'federated message seq offset must be a non-negative integer',
+    );
+  }
+  const localSeq = originSeq + policy.messageSeqOffset;
+  assertThreadSequence(localSeq, 'mapped local message seq');
+  return localSeq;
 }
 
 function assertThreadSequence(value: number, label: string): void {

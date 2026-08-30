@@ -19,6 +19,7 @@ export interface FederationReverseRoundContext {
   gapBeforeSeq: number;
   nextBeforeSeq: number;
   throughSeq: number;
+  messageSeqOffset: number;
   departedMemberProfiles: DepartedMemberProfile[];
 }
 
@@ -194,6 +195,7 @@ export class FederationThreadReverseRoundService {
       gapBeforeSeq: window.beforeSeq,
       nextBeforeSeq: window.beforeSeq,
       throughSeq: window.throughSeq,
+      messageSeqOffset: window.messageSeqOffset,
       departedMemberProfiles: [],
     };
   }

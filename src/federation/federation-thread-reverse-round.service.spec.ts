@@ -7,6 +7,7 @@ const WINDOW: FederationReverseWindow = {
   gapId: 12n,
   beforeSeq: 100,
   throughSeq: 1,
+  messageSeqOffset: 8,
 };
 
 function harness(window: FederationReverseWindow = WINDOW) {
@@ -88,6 +89,7 @@ describe('FederationThreadReverseRoundService', () => {
         gapBeforeSeq: 100,
         nextBeforeSeq: 1,
         throughSeq: 1,
+        messageSeqOffset: 8,
         departedMemberProfiles: [],
       },
       closesGap: true,
@@ -109,6 +111,7 @@ describe('FederationThreadReverseRoundService', () => {
       gapId: null,
       beforeSeq: 0,
       throughSeq: null,
+      messageSeqOffset: 0,
     });
 
     await expect(

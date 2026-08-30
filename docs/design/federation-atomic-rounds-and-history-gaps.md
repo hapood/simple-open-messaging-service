@@ -82,17 +82,21 @@ For an ordinary remote item, a STUB stores:
 | `isDeleted`              | False unless a durable tombstone already proves deletion    |
 | `localState`             | `STUB`                                                      |
 
-Reverse staging preserves the direct publisher order and uses the publisher
-sequence as the local Message sequence. Forward staging allocates local
-sequences in ascending response order. Every fetched message in a logical round,
-not only media messages, is staged. Staging only media messages would allocate
-their positions ahead of earlier in-memory non-media messages and reorder the
-local timeline.
+Reverse staging preserves direct-publisher order but does not require publisher
+and local coordinates to be equal. Each gap owns a fixed `messageSeqOffset`, and
+items in that gap use `localSeq = sourceSeq + messageSeqOffset`. Forward staging
+allocates local sequences in ascending response order. Every fetched message in
+a logical round, not only media messages, is staged. Staging only media messages
+would allocate their positions ahead of earlier in-memory non-media messages
+and reorder the local timeline.
 
-Creating a reverse gap reserves MessageThread's local allocator through that
-gap's upper boundary. Consequently, the newest advertised item left to the
-forward path is allocated after the reserved interval instead of occupying a
-publisher sequence that reverse reconstruction still owns.
+Creating a reverse gap locks MessageThread and reads its allocated local tail.
+If the gap starts at `S`, ends at `E - 1`, and the locked local tail is `L`, the
+transaction stores `messageSeqOffset = L + 1 - S` and reserves the local
+allocator through `(E - 1) + messageSeqOffset`. Equivalently, the newest item
+left to the forward path is allocated at
+`forwardStartSeq = E - S + L + 1`. Local relationship system messages are
+therefore never overwritten by a later reverse reconstruction.
 
 A returned item with non-null `originSeq` whose reconstructed author domain is
 the consumer's real domain is a processing receipt. It creates no STUB. The
@@ -140,13 +144,15 @@ id
 threadId
 startSeq
 endSeq
+messageSeqOffset
 recoverable
 createdAt
 updatedAt
 ```
 
 `startSeq` and `endSeq` are inclusive publisher coordinates and satisfy
-`1 <= startSeq <= endSeq`. A reverse request for the interval uses:
+`1 <= startSeq <= endSeq`. `messageSeqOffset` is non-negative and immutable for
+the lifetime of the gap. A reverse request for the interval uses:
 
 ```text
 before = endSeq + 1
@@ -169,9 +175,11 @@ with the epoch retained by FederationThreadSyncState. For an origin capable of
 reverse history, the newest advertised message always remains forward work. If
 `C` is the old committed forward coordinate and `E` is the new advertised tail,
 the new reverse interval is `[C + 1, E - 1]`. An empty interval creates no gap.
-Recoverable gaps that overlap or touch this interval are merged; a committed
-forward island between intervals keeps them separate. No Message row or
-in-memory reverse page cursor participates in this derivation.
+Recoverable gaps that overlap or touch this interval are merged only when they
+share the same local-sequence offset. Different epoch mappings remain separate;
+overlap with different mappings is an invariant violation. A committed forward
+island between intervals also keeps them separate. No Message row or in-memory
+reverse page cursor participates in this derivation.
 
 This is sound because each forward stream advances its own processed-through
 value only in the transaction that applies that stream's page, and each such
@@ -200,6 +208,7 @@ FederationThreadSyncState and branches on its stored epoch:
   the advertised deletion target without issuing a tombstone query;
 - a matching epoch only merges the monotonic forward targets;
 - a mismatching epoch creates or merges `[oldCommitted + 1, newTail - 1]`,
+  stores its mapping from publisher coordinates into the locked local timeline,
   selects the newest recoverable gap as `activeGapId`, leaves `newTail` to the
   forward query, and reinitializes the state for the locked thread epoch. When
   new deletion work exists, it also freezes the old committed message
@@ -231,8 +240,8 @@ new authorization segment:
   cursor and filters target message coordinates above the old committed message
   coordinate for the complete frozen recovery drain;
 - skipped older coordinates become an inclusive durable gap;
-- adjacent unfinished gaps merge, while READY forward islands keep gaps
-  separate;
+- adjacent unfinished gaps merge only when their local-sequence offsets match,
+  while different mappings and READY forward islands keep gaps separate;
 - the synchronization row adopts the current thread epoch.
 
 Targets received while a round is active remain monotonic dirty work and do not
@@ -241,7 +250,9 @@ enlarge that round's frozen bounds.
 FederationThreadSyncState does not persist a reverse page cursor. The scheduler
 keeps the current page's exact `before` value in memory. On restart it loads
 `activeGapId`, reconstructs `before=endSeq+1` and `through=startSeq`, and replays
-idempotently from that durable upper bound. It never infers a network cursor
+idempotently from that durable upper bound using the selected gap's fixed
+`messageSeqOffset`. Switching `activeGapId` therefore switches the mapping
+without a second synchronization-state field. It never infers a network cursor
 from Message or STUB rows.
 
 ## 5. Logical rounds and scheduler quanta

@@ -1564,6 +1564,8 @@ export const clientStateFeed = pgTable(
   {
     id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
     userId: integer().notNull(),
+    /** Event-specific stable identity used only for compaction within one local account. */
+    compactionKey: varchar({ length: 255 }).notNull(),
     account: varchar({ length: 31 }).notNull(),
     domain: varchar({ length: 63 }).notNull(),
     eventType: varchar({ length: 31 }).notNull(),
@@ -1580,16 +1582,10 @@ export const clientStateFeed = pgTable(
       .notNull(),
   },
   (table) => [
-    unique('ClientStateFeed_compaction_key')
-      .on(
-        table.userId,
-        table.account,
-        table.domain,
-        table.eventType,
-        table.subjectAccount,
-        table.subjectDomain,
-        table.namespaceId,
-      ),
+    unique('ClientStateFeed_compaction_key').on(
+      table.userId,
+      table.compactionKey,
+    ),
     index('ClientStateFeed_user_feedId_idx').on(table.userId, table.feedId),
     foreignKey({
       columns: [table.namespaceId],
@@ -2391,11 +2387,12 @@ export const federationThreadHistoryGap = pgTable(
   {
     id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
     threadId: integer().notNull(),
-    namespaceId: integer().notNull(),
     /** First missing publisher message coordinate, inclusive. */
     startSeq: integer().notNull(),
     /** Last missing publisher message coordinate, inclusive. */
     endSeq: integer().notNull(),
+    /** Fixed translation from publisher coordinates to local Message.seq values. */
+    messageSeqOffset: integer().default(0).notNull(),
     /** False when the publisher has declared this interval unavailable. */
     recoverable: boolean().default(true).notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -2406,25 +2403,18 @@ export const federationThreadHistoryGap = pgTable(
       .notNull(),
   },
   (table) => [
-    unique('FederationThreadHistoryGap_threadId_namespaceId_id_key').on(
+    unique('FederationThreadHistoryGap_threadId_id_key').on(
       table.threadId,
-      table.namespaceId,
       table.id,
     ),
     uniqueIndex('FederationThreadHistoryGap_interval_key').on(
       table.threadId,
-      table.namespaceId,
       table.startSeq,
       table.endSeq,
     ),
     index('FederationThreadHistoryGap_recoverable_idx')
-      .on(table.threadId, table.namespaceId, table.endSeq)
+      .on(table.threadId, table.endSeq)
       .where(sql`${table.recoverable} = true`),
-    foreignKey({
-      columns: [table.namespaceId],
-      foreignColumns: [identityNamespace.id],
-      name: 'FederationThreadHistoryGap_namespaceId_fkey',
-    }).onDelete('restrict'),
     foreignKey({
       columns: [table.threadId],
       foreignColumns: [messageThread.id],
@@ -2432,7 +2422,9 @@ export const federationThreadHistoryGap = pgTable(
     }).onDelete('cascade'),
     check(
       'FederationThreadHistoryGap_interval_check',
-      sql`${table.startSeq} > 0 AND ${table.endSeq} >= ${table.startSeq}`,
+      sql`${table.startSeq} > 0
+        AND ${table.endSeq} >= ${table.startSeq}
+        AND ${table.messageSeqOffset} >= 0`,
     ),
   ],
 );
@@ -2441,9 +2433,7 @@ export const federationThreadHistoryGap = pgTable(
 export const federationThreadSyncState = pgTable(
   'FederationThreadSyncState',
   {
-    threadId: integer().notNull(),
-    peerDomain: varchar({ length: 63 }).notNull(),
-    namespaceId: integer().notNull(),
+    threadId: integer().primaryKey().notNull(),
     /** Greatest message-query target merged from committed State Feed items. */
     messageTargetSeq: integer().default(0).notNull(),
     /** Greatest deletion-query target merged from committed State Feed items. */
@@ -2466,25 +2456,15 @@ export const federationThreadSyncState = pgTable(
       .notNull(),
   },
   (table) => [
-    primaryKey({
-      columns: [table.threadId, table.namespaceId],
-      name: 'FederationThreadSyncState_pkey',
-    }),
     foreignKey({
       columns: [table.threadId],
       foreignColumns: [messageThread.id],
       name: 'FederationThreadSyncState_threadId_fkey',
     }).onDelete('cascade'),
     foreignKey({
-      columns: [table.peerDomain, table.namespaceId],
-      foreignColumns: [identityNamespace.domain, identityNamespace.id],
-      name: 'FederationThreadSyncState_namespace_fkey',
-    }).onDelete('restrict'),
-    foreignKey({
-      columns: [table.threadId, table.namespaceId, table.activeGapId],
+      columns: [table.threadId, table.activeGapId],
       foreignColumns: [
         federationThreadHistoryGap.threadId,
-        federationThreadHistoryGap.namespaceId,
         federationThreadHistoryGap.id,
       ],
       name: 'FederationThreadSyncState_activeGap_fkey',

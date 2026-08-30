@@ -313,10 +313,10 @@ export class FederationThreadReverseRoundExecutorService {
         closesGap,
         applyDependencies: async () => {
           const applied =
-            await this.federation.applyReverseMessagePageInTransaction(
-              tx,
-              batch,
-            );
+            await this.federation.applyReverseMessagePageInTransaction(tx, {
+              ...batch,
+              messageSeqOffset: context.messageSeqOffset,
+            });
           publish = applied.publish;
           if (source.kind === 'GROUP') {
             await this.departedProfiles.applyInTransaction(

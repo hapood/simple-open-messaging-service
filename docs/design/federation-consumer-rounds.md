@@ -25,8 +25,9 @@ that publisher coordinate.
 - whether no recoverable reverse gap remains.
 
 `FederationThreadHistoryGap` stores an inclusive pending publisher interval
-`[startSeq, endSeq]`. The boundaries are coordinates, not foreign keys to
-Message rows. A request for the active interval uses:
+`[startSeq, endSeq]` and its fixed non-negative `messageSeqOffset`. The
+boundaries are coordinates, not foreign keys to Message rows. A request for the
+active interval uses:
 
 ```text
 before = endSeq + 1
@@ -59,16 +60,19 @@ The same first-head transaction initializes
 publisher-coordinate message replica, so it creates no tombstone work for the
 initial deletion history.
 
-When a reverse gap is created, the same transaction reserves the local message
-sequence allocator through the gap's upper boundary. The newest advertised
-message can then be applied by the ordinary forward path at the next local
-sequence, while reverse insertion retains the publisher sequence positions
-inside the reserved interval.
+When a reverse gap is created, the same transaction has already locked
+MessageThread. With publisher gap `[S,E-1]` and locked local tail `L`, it stores
+`messageSeqOffset=L+1-S`, reserves the allocator through
+`E-1+messageSeqOffset`, and leaves the newest publisher item for the ordinary
+forward path at `E-S+L+1`. Reverse insertion uses
+`localSeq=sourceSeq+messageSeqOffset`, so local system messages written between
+authorization epochs cannot collide with reconstructed history.
 
 On an epoch change, let `C` be the old committed forward message coordinate and
 `E` the new advertised tail. The skipped interval is `[C+1,E-1]`. Empty
-intervals are ignored. Overlapping or adjacent recoverable gaps are merged.
-A committed forward island keeps two gaps separate.
+intervals are ignored. Overlapping or adjacent recoverable gaps are merged only
+when their sequence offsets match. Different epoch mappings and committed
+forward islands keep gaps separate.
 
 The committed State Feed transaction emits a scheduler wake. A wake is only a
 hint; durable state remains authoritative.

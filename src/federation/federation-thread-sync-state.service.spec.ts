@@ -6,8 +6,8 @@ import {
 } from '../database/schema.js';
 import { FederationThreadSyncStateService } from './federation-thread-sync-state.service.js';
 
-function lockedThreadSelect(authorizationEpoch: number) {
-  const limit = vi.fn().mockResolvedValue([{ authorizationEpoch }]);
+function lockedThreadSelect(authorizationEpoch: number, curSeq = 0) {
+  const limit = vi.fn().mockResolvedValue([{ authorizationEpoch, curSeq }]);
   const forUpdate = vi.fn().mockReturnValue({ limit });
   const where = vi.fn().mockReturnValue({ for: forUpdate });
   const from = vi.fn().mockReturnValue({ where });
@@ -27,8 +27,9 @@ function processedPositionTransaction(updated = true) {
 function missingStateTransaction(
   authorizationEpoch: number,
   gapId: bigint = 12n,
+  curSeq = 0,
 ) {
-  const select = lockedThreadSelect(authorizationEpoch);
+  const select = lockedThreadSelect(authorizationEpoch, curSeq);
   const execute = vi.fn().mockResolvedValue({ rows: [] });
   const gapReturning = vi.fn().mockResolvedValue([{ id: gapId }]);
   const gapValues = vi.fn().mockReturnValue({ returning: gapReturning });
@@ -49,11 +50,20 @@ function epochTransaction(params: {
     activeGapId: bigint | null;
     historyBoundaryReached: boolean;
   };
-  overlaps?: Array<{ id: bigint; startSeq: number; endSeq: number }>;
+  overlaps?: Array<{
+    id: bigint;
+    startSeq: number;
+    endSeq: number;
+    messageSeqOffset?: number;
+  }>;
   latestGapId?: bigint | null;
   mergedGapId?: bigint;
+  localCurSeq?: number;
 }) {
-  const threadSelect = lockedThreadSelect(params.state.authorizationEpoch + 1);
+  const threadSelect = lockedThreadSelect(
+    params.state.authorizationEpoch + 1,
+    params.localCurSeq ?? params.state.messageTargetSeq,
+  );
   const latestLimit = vi
     .fn()
     .mockResolvedValue(
@@ -83,7 +93,12 @@ function epochTransaction(params: {
         },
       ],
     })
-    .mockResolvedValueOnce({ rows: params.overlaps ?? [] })
+    .mockResolvedValueOnce({
+      rows: (params.overlaps ?? []).map((gap) => ({
+        ...gap,
+        messageSeqOffset: gap.messageSeqOffset ?? 0,
+      })),
+    })
     .mockResolvedValue({ rows: [] });
   const mergedReturning = vi
     .fn()
@@ -222,6 +237,30 @@ describe('FederationThreadSyncStateService initial history interval', () => {
     );
   });
 
+  it('places initial history after an existing local system-message tail', async () => {
+    const mock = missingStateTransaction(7, 12n, 3);
+
+    await FederationThreadSyncStateService.reconcileThreadHeadInTx(
+      mock.tx as never,
+      {
+        threadId: 31,
+        peerDomain: 'peer.test',
+        namespaceId: 7,
+        messageTargetSeq: 3,
+        deletionTargetSeq: 0,
+        reverseEnabled: true,
+      },
+    );
+
+    expect(mock.gapValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        startSeq: 1,
+        endSeq: 2,
+        messageSeqOffset: 3,
+      }),
+    );
+  });
+
   it('adopts the initial deletion head without scheduling historical tombstones', async () => {
     const mock = missingStateTransaction(7);
 
@@ -247,7 +286,7 @@ describe('FederationThreadSyncStateService initial history interval', () => {
 });
 
 describe('FederationThreadSyncStateService epoch interval reconciliation', () => {
-  it('merges a state-only old interval with the newly skipped interval', async () => {
+  it('keeps an older gap separate when the new epoch uses another local mapping', async () => {
     const mock = epochTransaction({
       state: {
         messageTargetSeq: 100,
@@ -280,7 +319,11 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
     });
 
     expect(mock.gapValues).toHaveBeenCalledWith(
-      expect.objectContaining({ startSeq: 1, endSeq: 199 }),
+      expect.objectContaining({
+        startSeq: 100,
+        endSeq: 199,
+        messageSeqOffset: 1,
+      }),
     );
     expect(mock.set).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -397,9 +440,9 @@ describe('FederationThreadSyncStateService reverse window reconstruction', () =>
       activeGapId: 12n,
       historyBoundaryReached: false,
     });
-    const execute = vi
-      .fn()
-      .mockResolvedValue({ rows: [{ startSeq: 1, endSeq: 99 }] });
+    const execute = vi.fn().mockResolvedValue({
+      rows: [{ startSeq: 1, endSeq: 99, messageSeqOffset: 8 }],
+    });
     const service = new FederationThreadSyncStateService({
       db: {
         query: { federationThreadSyncState: { findFirst } },
@@ -414,6 +457,7 @@ describe('FederationThreadSyncStateService reverse window reconstruction', () =>
       gapId: 12n,
       beforeSeq: 100,
       throughSeq: 1,
+      messageSeqOffset: 8,
     });
   });
 
@@ -438,6 +482,7 @@ describe('FederationThreadSyncStateService reverse window reconstruction', () =>
       gapId: null,
       beforeSeq: 0,
       throughSeq: null,
+      messageSeqOffset: 0,
     });
     expect(execute).not.toHaveBeenCalled();
   });
@@ -536,5 +581,6 @@ it('locks MessageThread when reconciling a head', async () => {
   );
   expect(mock.tx.select).toHaveBeenCalledWith({
     authorizationEpoch: messageThread.authorizationEpoch,
+    curSeq: messageThread.curSeq,
   });
 });

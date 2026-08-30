@@ -550,9 +550,10 @@ describe('federation durable missed transport (two nodes)', () => {
           }),
         ]);
         expect(pair).toBeDefined();
-        expect(state!.authorizationEpoch).toBeGreaterThan(
-          before.authorizationEpoch,
-        );
+        // The blocked compacted feed exposes only the final active fact. Since
+        // this consumer never observes an effective inactive transition, it
+        // must not invent a local authorization epoch change.
+        expect(state!.authorizationEpoch).toBe(before.authorizationEpoch);
         expect(state).toMatchObject({
           deletionRecoveryThroughSeq: null,
           deletionRecoveryMaxMessageSeq: null,

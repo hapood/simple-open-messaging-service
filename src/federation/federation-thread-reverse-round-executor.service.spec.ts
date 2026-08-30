@@ -10,6 +10,7 @@ function harness(kind: 'GROUP' | 'P2P' = 'GROUP') {
       gapId: 12n,
       beforeSeq: 100,
       throughSeq: 40,
+      messageSeqOffset: 8,
     }),
     require: vi.fn(),
   };
@@ -91,6 +92,7 @@ describe('FederationThreadReverseRoundExecutorService', () => {
         gapBeforeSeq: 100,
         nextBeforeSeq: 40,
         throughSeq: 40,
+        messageSeqOffset: 8,
         departedMemberProfiles: [],
       },
       true,

@@ -16,6 +16,7 @@ export interface FederationReverseWindow {
   gapId: bigint | null;
   beforeSeq: number;
   throughSeq: number | null;
+  messageSeqOffset: number;
 }
 
 @Injectable()
@@ -58,7 +59,10 @@ export class FederationThreadSyncStateService {
     this.assertCoordinate(params.deletionTargetSeq, 'deletion target seq');
 
     const [thread] = await tx
-      .select({ authorizationEpoch: messageThread.authorizationEpoch })
+      .select({
+        authorizationEpoch: messageThread.authorizationEpoch,
+        curSeq: messageThread.curSeq,
+      })
       .from(messageThread)
       .where(eq(messageThread.id, params.threadId))
       .for('update')
@@ -91,6 +95,7 @@ export class FederationThreadSyncStateService {
       const reverseEndSeq = params.messageTargetSeq - 1;
       let activeGapId: bigint | null = null;
       if (params.reverseEnabled && reverseEndSeq >= 1) {
+        const messageSeqOffset = thread.curSeq;
         const [gap] = await tx
           .insert(federationThreadHistoryGap)
           .values({
@@ -98,6 +103,7 @@ export class FederationThreadSyncStateService {
             namespaceId: params.namespaceId,
             startSeq: 1,
             endSeq: reverseEndSeq,
+            messageSeqOffset,
             recoverable: true,
             updatedAt: new Date(),
           })
@@ -107,6 +113,7 @@ export class FederationThreadSyncStateService {
           tx,
           params.threadId,
           reverseEndSeq,
+          messageSeqOffset,
         );
       }
       await tx.insert(federationThreadSyncState).values({
@@ -180,8 +187,9 @@ export class FederationThreadSyncStateService {
           id: bigint | string;
           startSeq: number;
           endSeq: number;
+          messageSeqOffset: number;
         }>(sql`
-          SELECT id, "startSeq", "endSeq"
+          SELECT id, "startSeq", "endSeq", "messageSeqOffset"
           FROM "FederationThreadHistoryGap"
           WHERE "threadId" = ${params.threadId}
             AND "namespaceId" = ${params.namespaceId}
@@ -190,15 +198,31 @@ export class FederationThreadSyncStateService {
             AND "endSeq"::bigint + 1 >= ${newGapStartSeq}
           FOR UPDATE
         `);
+        const messageSeqOffset = thread.curSeq + 1 - newGapStartSeq;
+        this.assertOffset(messageSeqOffset);
+        const conflictingOverlap = overlaps.rows.find(
+          (gap) =>
+            gap.messageSeqOffset !== messageSeqOffset &&
+            gap.startSeq <= newGapEndSeq &&
+            gap.endSeq >= newGapStartSeq,
+        );
+        if (conflictingOverlap) {
+          throw new Error(
+            'overlapping federation history gaps have different message seq offsets',
+          );
+        }
+        const mergeable = overlaps.rows.filter(
+          (gap) => gap.messageSeqOffset === messageSeqOffset,
+        );
         const mergedStartSeq = Math.min(
           newGapStartSeq,
-          ...overlaps.rows.map((gap) => gap.startSeq),
+          ...mergeable.map((gap) => gap.startSeq),
         );
         const mergedEndSeq = Math.max(
           newGapEndSeq,
-          ...overlaps.rows.map((gap) => gap.endSeq),
+          ...mergeable.map((gap) => gap.endSeq),
         );
-        const exact = overlaps.rows.find(
+        const exact = mergeable.find(
           (gap) =>
             gap.startSeq === mergedStartSeq && gap.endSeq === mergedEndSeq,
         );
@@ -212,6 +236,7 @@ export class FederationThreadSyncStateService {
               namespaceId: params.namespaceId,
               startSeq: mergedStartSeq,
               endSeq: mergedEndSeq,
+              messageSeqOffset,
               recoverable: true,
               updatedAt: new Date(),
             })
@@ -228,7 +253,7 @@ export class FederationThreadSyncStateService {
           activeGapId = merged.id;
         }
         obsoleteGapIds.push(
-          ...overlaps.rows
+          ...mergeable
             .map((gap) => BigInt(gap.id))
             .filter((id) => id !== activeGapId),
         );
@@ -286,6 +311,7 @@ export class FederationThreadSyncStateService {
         tx,
         params.threadId,
         nextMessageProcessedThroughSeq,
+        thread.curSeq + 1 - (state.messageProcessedThroughSeq + 1),
       );
     }
     if (obsoleteGapIds.length > 0) {
@@ -414,6 +440,7 @@ export class FederationThreadSyncStateService {
         gapId: null,
         beforeSeq: 0,
         throughSeq: null,
+        messageSeqOffset: 0,
       };
     }
     if (state.activeGapId === null) {
@@ -423,8 +450,9 @@ export class FederationThreadSyncStateService {
     const result = await this.database.db.execute<{
       startSeq: number;
       endSeq: number;
+      messageSeqOffset: number;
     }>(sql`
-      SELECT "startSeq", "endSeq"
+      SELECT "startSeq", "endSeq", "messageSeqOffset"
       FROM "FederationThreadHistoryGap"
       WHERE id = ${gapId}
         AND "threadId" = ${threadId}
@@ -444,6 +472,7 @@ export class FederationThreadSyncStateService {
       gapId,
       beforeSeq,
       throughSeq: gap.startSeq,
+      messageSeqOffset: gap.messageSeqOffset,
     };
   }
 
@@ -684,12 +713,22 @@ export class FederationThreadSyncStateService {
     tx: DatabaseTransaction,
     threadId: number,
     endSeq: number,
+    messageSeqOffset: number,
   ): Promise<void> {
+    this.assertOffset(messageSeqOffset);
+    const localEndSeq = endSeq + messageSeqOffset;
+    this.assertCoordinate(localEndSeq, 'reserved local message seq');
     await tx.execute(sql`
       UPDATE "MessageThread"
-      SET "curSeq" = GREATEST("curSeq", ${endSeq})
+      SET "curSeq" = GREATEST("curSeq", ${localEndSeq})
       WHERE id = ${threadId}
     `);
+  }
+
+  private static assertOffset(value: number): void {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error('message seq offset must be a non-negative integer');
+    }
   }
 
   private static assertBeforeCursor(value: number, label: string): void {

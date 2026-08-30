@@ -74,8 +74,8 @@ import {
 import { contextualizeCasUrls } from '../upload/cas-url.js';
 import { KeyedMutex } from '../common/keyed-mutex.js';
 import {
-  type PreserveFederationOriginSequence,
-  validatePreservedFederationOriginSequence,
+  type MapFederationOriginSequence,
+  mapFederationOriginSequence,
 } from './federation-message-sequence-policy.js';
 import { openFederatedAudienceInTx } from './federation-audience.js';
 import { stat } from 'node:fs/promises';
@@ -220,7 +220,7 @@ interface MissedPageEffect {
 interface MessageQueryApplyOptions {
   prefetchedForwardClosures?: ReadonlyMap<number, ForwardWireBundle>;
   isolateMissingContext?: boolean;
-  sequencePolicy?: PreserveFederationOriginSequence;
+  sequencePolicy?: MapFederationOriginSequence;
   expectedThreadId?: number;
   historical?: boolean;
 }
@@ -2686,6 +2686,7 @@ export class FederationService {
     response: FederationThreadResourceResponse<FederationMessageQueryPage>;
     before: number;
     through?: number;
+    messageSeqOffset: number;
     prefetchedForwardClosures?: ReadonlyMap<number, ForwardWireBundle>;
   }): Promise<void> {
     const effects = await this.database.db.transaction(async (tx) => {
@@ -2700,6 +2701,7 @@ export class FederationService {
       response: FederationThreadResourceResponse<FederationMessageQueryPage>;
       before: number;
       through?: number;
+      messageSeqOffset: number;
       prefetchedForwardClosures?: ReadonlyMap<number, ForwardWireBundle>;
     },
   ): Promise<{ publish: () => Promise<void> }> {
@@ -2715,8 +2717,9 @@ export class FederationService {
       {
         prefetchedForwardClosures: params.prefetchedForwardClosures,
         sequencePolicy: {
-          kind: 'PRESERVE_ORIGIN',
+          kind: 'MAP_ORIGIN',
           beforeSeq: params.before,
+          messageSeqOffset: params.messageSeqOffset,
           ...(params.through === undefined
             ? {}
             : { throughSeq: params.through }),
@@ -3011,7 +3014,7 @@ export class FederationService {
     if (sequencePolicy) {
       for (const item of items) {
         try {
-          validatePreservedFederationOriginSequence(item.seq, sequencePolicy);
+          mapFederationOriginSequence(item.seq, sequencePolicy);
         } catch (error) {
           throw new BusinessException(
             BusinessCode.FEDERATION_MALFORMED,
@@ -4393,7 +4396,7 @@ export class FederationService {
         fromDomain: string;
         toAccount: string;
       };
-      sequencePolicy?: PreserveFederationOriginSequence;
+      sequencePolicy?: MapFederationOriginSequence;
     },
   ): Promise<
     | {
@@ -4421,10 +4424,7 @@ export class FederationService {
       sequencePolicy,
     } = params;
     if (sequencePolicy) {
-      validatePreservedFederationOriginSequence(
-        incoming.originSeq,
-        sequencePolicy,
-      );
+      mapFederationOriginSequence(incoming.originSeq, sequencePolicy);
     }
     await this.assertThreadResponseWritable(
       tx,
@@ -4462,10 +4462,10 @@ export class FederationService {
       };
     }
     if (sequencePolicy) {
-      await this.assertPreservedMessageSeqAvailable(
+      await this.assertMappedMessageSeqAvailable(
         tx,
         threadId,
-        incoming.originSeq,
+        mapFederationOriginSequence(incoming.originSeq, sequencePolicy),
       );
     }
     const tombstone = await tx.query.federatedMessageTombstone.findFirst({
@@ -4518,8 +4518,8 @@ export class FederationService {
     }
 
     // Media and messages quoting staged media commit a Message STUB at their final sequence before
-    // localization. Forward pulls allocate a local sequence; reverse pulls preserve the publisher
-    // coordinate. PendingMedia owns only the later materialization work.
+    // localization. Forward pulls allocate a local sequence; reverse pulls use the active gap's
+    // fixed publisher-to-local mapping. PendingMedia owns only the later materialization work.
     if (
       !tombstone &&
       !hasUnavailableAssets &&
@@ -4531,7 +4531,7 @@ export class FederationService {
       const batchId = randomUUID();
       const digests = extractDigestEntries(incoming.content);
       const seq = sequencePolicy
-        ? incoming.originSeq
+        ? mapFederationOriginSequence(incoming.originSeq, sequencePolicy)
         : await this.allocateMessageSeq(tx, threadId);
       const [thread] = await tx
         .select({ authorizationEpoch: tables.messageThread.authorizationEpoch })
@@ -4609,7 +4609,7 @@ export class FederationService {
       );
     }
     const seq = sequencePolicy
-      ? incoming.originSeq
+      ? mapFederationOriginSequence(incoming.originSeq, sequencePolicy)
       : await this.allocateMessageSeq(tx, threadId);
     storedContent = contextualizeCasUrls(storedContent, threadId, seq);
     if (incomingText && incoming.quoteTarget) {
@@ -4716,7 +4716,7 @@ export class FederationService {
     return thread.curSeq;
   }
 
-  private async assertPreservedMessageSeqAvailable(
+  private async assertMappedMessageSeqAvailable(
     tx: DatabaseTransaction,
     threadId: number,
     seq: number,
