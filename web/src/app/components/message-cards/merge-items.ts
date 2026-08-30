@@ -19,14 +19,14 @@
  *   crossing a page); cross-batch is absorbAlbumTail's job.
  */
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
-import type { ChatItemData } from './chat-item';
+import type { ChatItemData, ChatMsgData } from './chat-item';
 
 /** Max images a single album item will hold. Shared by mergeAlbumItems (per-batch) and absorbAlbumTail (cross-batch) so a
  *  burst splits consistently regardless of how it arrives. Presentation-only — the source keeps every individual IMAGE msg. */
 export const ALBUM_MAX = 6;
 
 /** Whether a content type participates in album aggregation (IMAGE + VIDEO; AUDIO is a standalone bubble). */
-function isAlbumMedia(t: ChatItemData['contentType']): boolean {
+function isAlbumMedia(t: ChatMsgData['contentType']): boolean {
   return t === 'IMAGE' || t === 'VIDEO';
 }
 
@@ -35,7 +35,7 @@ function isAlbumMedia(t: ChatItemData['contentType']): boolean {
  *  is identical. */
 function albumMemberIds(images: { msgId?: number }[]): number[] | undefined {
   const ids = images
-    .map(im => im.msgId)
+    .map((im) => im.msgId)
     .filter((x: number | undefined): x is number => typeof x === 'number');
   return ids.length > 1 ? ids : undefined;
 }
@@ -45,7 +45,11 @@ function albumMemberIds(images: { msgId?: number }[]): number[] | undefined {
  *  album — nothing to reconcile). Shared by both merge paths so the cid contract is identical: a merged album confirms
  *  EVERY member's optimistic bubble, not just the head's, so a same-batch self-sent burst (merge) or a cross-signal absorb
  *  both leave the kernel with the full cid list to pair against the optimistic tail. */
-function albumCids(items: ReadonlyArray<Pick<CbItem<ChatItemData>, 'clientMessageId' | 'clientMessageIds'>>): string[] | undefined {
+function albumCids(
+  items: ReadonlyArray<
+    Pick<CbItem<ChatItemData>, 'clientMessageId' | 'clientMessageIds'>
+  >,
+): string[] | undefined {
   const set = new Set<string>();
   for (const it of items) {
     if (it.clientMessageId) set.add(it.clientMessageId);
@@ -54,7 +58,9 @@ function albumCids(items: ReadonlyArray<Pick<CbItem<ChatItemData>, 'clientMessag
   return set.size > 0 ? [...set] : undefined;
 }
 
-export function mergeAlbumItems(items: CbItem<ChatItemData>[]): CbItem<ChatItemData>[] {
+export function mergeAlbumItems(
+  items: CbItem<ChatItemData>[],
+): CbItem<ChatItemData>[] {
   const out: CbItem<ChatItemData>[] = [];
   let i = 0;
   while (i < items.length) {
@@ -89,7 +95,13 @@ export function mergeAlbumItems(items: CbItem<ChatItemData>[]): CbItem<ChatItemD
       // clientMessageIds unions every member's cid so a same-batch self-sent burst (two+ IMAGE reals in one getNewer)
       // reconciles ALL their optimistic bubbles — without this, only the head's cid survives the merge and the tail
       // members' optimistics orphan (the merged album fulfills them but the kernel cannot see their cids).
-      out.push({ ...it, ids: albumMemberIds(imgs), data: { ...msg, images: imgs }, boundary, clientMessageIds: albumCids(items.slice(i, j)) });
+      out.push({
+        ...it,
+        ids: albumMemberIds(imgs),
+        data: { ...msg, images: imgs },
+        boundary,
+        clientMessageIds: albumCids(items.slice(i, j)),
+      });
       i = j;
     } else {
       out.push(it);
@@ -123,8 +135,12 @@ export function mergeAlbumItemsAtBoundary(
  * All-or-nothing: the whole `incoming` is folded (never split); over cap => no absorb. Only `incoming` is judged here;
  * the IMAGE/creator checks live in this function (the domain layer), keeping the kernel domain-agnostic.
  */
-export function absorbAlbumTail(target: CbItem<ChatItemData>, incoming: CbItem<ChatItemData>): CbItem<ChatItemData> | null {
-  const t = target.data, ic = incoming.data;
+export function absorbAlbumTail(
+  target: CbItem<ChatItemData>,
+  incoming: CbItem<ChatItemData>,
+): CbItem<ChatItemData> | null {
+  const t = target.data,
+    ic = incoming.data;
   if (
     t.type !== 'msg' ||
     ic.type !== 'msg' ||
@@ -136,7 +152,8 @@ export function absorbAlbumTail(target: CbItem<ChatItemData>, incoming: CbItem<C
   if (t.creator !== ic.creator) {
     return null;
   }
-  const tImgs = t.images ?? [], icImgs = ic.images ?? [];
+  const tImgs = t.images ?? [],
+    icImgs = ic.images ?? [];
   if (tImgs.length + icImgs.length > ALBUM_MAX) {
     return null;
   }

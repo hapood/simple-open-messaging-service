@@ -1,34 +1,49 @@
 import { Injectable, inject, effect } from '@angular/core';
 import { Subject, filter, firstValueFrom } from 'rxjs';
-import { MessageCoverageState, WebdbService } from './webdb.service';
+import { WebdbService } from './webdb.service';
 import { WebsocketService } from './websocket.service';
-import { MsgService } from './message.service';
-import { UserService } from './user.service';
 import {
-  Message,
-  QueryMessageLogParams,
-  MEDIA_STATUS,
-  MediaStatus,
-  StandardResponse,
-} from './model';
-import { SingleFlight } from '../lib/single-flight';
+  MsgService,
+  type MessageHistoryBackendRequest,
+  type MessageQueryCursorData,
+  type MessageQueryPage,
+} from './message.service';
+import { UserService } from './user.service';
+import { Message, MEDIA_STATUS, MediaStatus } from './model';
+import { isTauri, tauriInvoke } from './runtime';
 
-/** The read query shape — mirrors `MsgService.queryMessageLog` params (so the source swaps over 1:1). */
-export type MessageQuery = Pick<
-  QueryMessageLogParams,
-  'skip' | 'take' | 'lastSeq' | 'orderBy' | 'truncate' | 'truncateSeq'
->;
+export type NativeMessageHistoryDemand =
+  | { kind: 'latest'; count: number }
+  | {
+      kind: 'around';
+      anchor: number;
+      olderCount: number;
+      newerCount: number;
+    }
+  | { kind: 'older'; before: number; count: number }
+  | { kind: 'newer'; after: number; count: number };
 
-export interface MessagePage {
-  data: Message[];
-  hasMore: boolean;
-  truncated?: boolean;
-  /** Transport/business failure: never interpret an empty data array as a confirmed edge. */
-  failed?: boolean;
+export type MessageHistorySourceItem =
+  | { kind: 'message'; message: Message }
+  | {
+      kind: 'serverGap';
+      left: number;
+      right: number;
+      state: 'SERVER_PENDING' | 'SERVER_UNAVAILABLE';
+    };
+
+export interface NativeMessageHistoryResult {
+  items: MessageHistorySourceItem[];
+  hasOlder: boolean;
+  hasNewer: boolean;
+  failed: boolean;
 }
 
-interface CommittedFill extends MessagePage {
-  confirmedEndSeq?: number;
+type HistoryDirection = 'older' | 'newer';
+
+interface DirectionalHistoryWalk {
+  items: MessageHistorySourceItem[];
+  hasMore: boolean;
 }
 
 /** The client's stored media-status state for one message: its current status + the monotonic version of
@@ -70,20 +85,12 @@ export function reduceMediaStatus(
  * NO writes live here — sending is a direct UI → backend POST (bypasses the DB layer); the sent row
  * lands in IDB via the `NEW_MESSAGE` SSE echo, which this repository caches.
  *
- * **Persistence model:** messages are mirrored to IDB (`messages` store, composite key `[threadId, seq]`,
- * one record per message). Reads are **cache-first + gap-fill**: a held range is served from IDB with no
- * network; only a range the cache genuinely lacks is backfilled from the API (no duplicate pulls of held
- * data). Server-confirmed complete blocks are persisted as sparse `sectionLeft` / `sectionRight` markers
- * on their endpoint messages, so legitimate seq gaps remain reusable after a restart. Writes dedup by key
- * (idempotent `put`). Add-only PER MESSAGE — there is no server-side delete
+ * **Persistence model:** messages and explicit left-open/right-closed range records are mirrored to the
+ * local database. The source-level walker reads classified local intervals, fills only their complement,
+ * and commits message/range changes atomically. Writes deduplicate by `[threadId, seq]`. Add-only PER
+ * MESSAGE — there is no server-side delete
  * command, so individual messages are never removed; the ONE exception is whole-thread cache GC when a
  * thread leaves the user's roster (see {@link deleteByThread}).
- *
- * **Boot/init freshness:** `init` (`skip:0`) is stale-while-revalidate: a contiguous latest page already
- * held in IDB is returned immediately, while a backend probe refreshes the page in the background. If that
- * probe discovers a newer seq it emits the normal live signal, so the priming kernel replays/pulls the delta.
- * A cold/fragmented cache still awaits the backend. `getOlder`/`getNewer` (`skip:1`) remain cache-first with
- * gap-fill.
  *
  * **NEW_MESSAGE → cache → signal (in that order):** the body is `await`-cached in IDB BEFORE the
  * {@link liveSignal$} fires, so the kernel's subsequent `getNewer` pull (triggered by the signal) is a
@@ -132,17 +139,445 @@ export class MessageRepository {
   private readonly maxSeenSeq = new Map<number, number>();
   /** Shared finite upper bound for a newer walk. Reconnect clears it because frames may be missing. */
   private readonly newerTruncateSeq = new Map<number, number>();
-  /** Coverage summaries exist in memory only while at least one chatbox source retains the thread. */
-  private readonly activeCoverage = new Map<
-    number,
-    { refs: number; state?: MessageCoverageState; loading: Promise<void> }
-  >();
-  /** Same-start HTTP fills share one request regardless of count/cutoff. The promise resolves only after
-   *  its response has committed to DB; every waiter then reloads its own rows from DB. */
-  private readonly inflightFills = new SingleFlight<string, CommittedFill>();
-
   /** Previous sessionProfile id seen by the session-end effect (null = no logged-in user). */
   private prevSessionId: number | null = null;
+
+  /**
+   * Native history is a source-level operation. Rust owns the complete SQLite/HTTP/range-reducer walk
+   * and returns the final chronological projection in one IPC call; renderer code must not reproduce
+   * its recursion with page-level native database commands.
+   */
+  async queryNativeMessageHistory(
+    threadId: number,
+    clearedThroughSeq: number | undefined,
+    demand: NativeMessageHistoryDemand,
+  ): Promise<NativeMessageHistoryResult> {
+    if (!isTauri())
+      throw new Error('native message history requested outside Tauri');
+    const userId = this.userService.sessionUserId();
+    if (userId === null)
+      throw new Error('native message history requested without a session');
+    return tauriInvoke<NativeMessageHistoryResult>(
+      'native_message_history_get',
+      {
+        userId,
+        threadId,
+        clearedThroughSeq: clearedThroughSeq ?? null,
+        demand,
+      },
+    );
+  }
+
+  /** Browser equivalent of the native source walker. It owns every IDB read, HTTP fill, transactional
+   * reduction, and recursive continuation required by one source demand. */
+  async queryBrowserMessageHistory(
+    threadId: number,
+    clearedThroughSeq: number | undefined,
+    demand: NativeMessageHistoryDemand,
+  ): Promise<NativeMessageHistoryResult> {
+    if (isTauri())
+      throw new Error('browser message history requested inside Tauri');
+    const lowerHint = Math.max(0, clearedThroughSeq ?? 0);
+    const lifetime = this.webdb.captureMessageLifetime();
+    try {
+      switch (demand.kind) {
+        case 'latest': {
+          const [serverLower, upper] =
+            await this.bootstrapMessageBounds(threadId);
+          const lower = Math.max(lowerHint, serverLower);
+          const page = await this.walkBrowserMessageHistory(
+            threadId,
+            'older',
+            upper + 1,
+            demand.count,
+            lower,
+            upper,
+            upper,
+            lifetime,
+          );
+          return {
+            items: page.items.reverse(),
+            hasOlder: page.hasMore,
+            hasNewer: false,
+            failed: false,
+          };
+        }
+        case 'around': {
+          const [serverLower, upper] =
+            await this.bootstrapMessageBounds(threadId);
+          const lower = Math.max(lowerHint, serverLower);
+          const older = await this.walkBrowserMessageHistory(
+            threadId,
+            'older',
+            demand.anchor + 1,
+            demand.olderCount,
+            lower,
+            upper,
+            upper,
+            lifetime,
+          );
+          const newer = await this.walkBrowserMessageHistory(
+            threadId,
+            'newer',
+            demand.anchor,
+            demand.newerCount,
+            lower,
+            upper,
+            upper,
+            lifetime,
+          );
+          return {
+            items: [...older.items.reverse(), ...newer.items],
+            hasOlder: older.hasMore,
+            hasNewer: newer.hasMore,
+            failed: false,
+          };
+        }
+        case 'older': {
+          const knownNewest = await this.webdb.getMessageHead(threadId);
+          const upper = Math.max(
+            lowerHint,
+            knownNewest ?? 0,
+            this.maxSeenSeq.get(threadId) ?? 0,
+            demand.before - 1,
+          );
+          const page = await this.walkBrowserMessageHistory(
+            threadId,
+            'older',
+            demand.before,
+            demand.count,
+            lowerHint,
+            upper,
+            knownNewest,
+            lifetime,
+          );
+          return {
+            items: page.items.reverse(),
+            hasOlder: page.hasMore,
+            hasNewer: demand.before <= upper,
+            failed: false,
+          };
+        }
+        case 'newer': {
+          let lower = lowerHint;
+          const persistedHead = await this.webdb.getMessageHead(threadId);
+          const liveHead = Math.max(
+            this.maxSeenSeq.get(threadId) ?? -1,
+            this.newerTruncateSeq.get(threadId) ?? -1,
+          );
+          let upper = Math.max(persistedHead ?? -1, liveHead);
+          if (upper < 0) {
+            const bounds = await this.bootstrapMessageBounds(threadId);
+            lower = Math.max(lower, bounds[0]);
+            upper = bounds[1];
+          }
+          const page = await this.walkBrowserMessageHistory(
+            threadId,
+            'newer',
+            demand.after,
+            demand.count,
+            lower,
+            upper,
+            upper,
+            lifetime,
+          );
+          return {
+            items: page.items,
+            hasOlder: demand.after > lower,
+            hasNewer: page.hasMore,
+            failed: false,
+          };
+        }
+      }
+    } catch {
+      return { items: [], hasOlder: true, hasNewer: true, failed: true };
+    }
+  }
+
+  private async bootstrapMessageBounds(
+    threadId: number,
+  ): Promise<[number, number]> {
+    const response = await firstValueFrom(
+      this.msg.queryMessageHistoryPage({ threadId }),
+    );
+    if (response.code !== 30006 || !this.isHistoryCursor(response.data))
+      throw new Error('message bootstrap did not return cursor bounds');
+    if (
+      response.data.resumeAfter < 0 ||
+      response.data.resumeBefore <= response.data.resumeAfter
+    )
+      throw new Error('message bootstrap returned invalid cursor bounds');
+    return [response.data.resumeAfter, response.data.resumeBefore - 1];
+  }
+
+  private async walkBrowserMessageHistory(
+    threadId: number,
+    direction: HistoryDirection,
+    initialCursor: number,
+    count: number,
+    initialLower: number,
+    initialUpper: number,
+    knownNewestSeq: number | undefined,
+    lifetime: AbortSignal,
+  ): Promise<DirectionalHistoryWalk> {
+    if (!Number.isSafeInteger(count) || count < 0 || count > 200)
+      throw new Error('message history item count is outside 0..200');
+    let cursor = initialCursor;
+    let lower = initialLower;
+    let upper = initialUpper;
+    const ownershipSeam = cursor;
+    let ranges = await this.webdb.getMessageRanges(threadId);
+    const items: MessageHistorySourceItem[] = [];
+    let remaining = count;
+
+    for (let step = 0; step < 1024; step++) {
+      const atBoundary =
+        direction === 'older' ? cursor <= lower + 1 : cursor >= upper;
+      if (atBoundary || remaining === 0) return { items, hasMore: !atBoundary };
+
+      const coordinate = direction === 'older' ? cursor - 1 : cursor + 1;
+      const range = ranges.find(
+        (candidate) =>
+          coordinate > candidate.left && coordinate <= candidate.right,
+      );
+      if (range) {
+        if (range.state === 'LOCAL_COVERED') {
+          const boundary = direction === 'older' ? range.left : range.right;
+          const cached = await this.queryBrowserMessages(
+            threadId,
+            direction,
+            cursor,
+            boundary,
+            remaining,
+          );
+          for (const message of cached) {
+            cursor = message.seq;
+            items.push({ kind: 'message', message });
+            remaining--;
+            if (remaining === 0)
+              return {
+                items,
+                hasMore:
+                  direction === 'older' ? cursor > lower + 1 : cursor < upper,
+              };
+          }
+          cursor = direction === 'older' ? range.left + 1 : range.right;
+          continue;
+        }
+
+        const ownsGap =
+          direction === 'older'
+            ? range.right < ownershipSeam
+            : range.right > ownershipSeam;
+        if (ownsGap) {
+          items.push({
+            kind: 'serverGap',
+            left: range.left,
+            right: range.right,
+            state: range.state,
+          });
+          remaining--;
+        }
+        cursor = direction === 'older' ? range.left + 1 : range.right;
+        continue;
+      }
+
+      const optimisticBoundary = direction === 'older' ? lower : upper;
+      const optimistic = await this.queryBrowserMessages(
+        threadId,
+        direction,
+        cursor,
+        optimisticBoundary,
+        remaining,
+      );
+      const provisional =
+        optimistic.length === remaining
+          ? (optimistic.at(-1)?.seq ?? optimisticBoundary)
+          : optimisticBoundary;
+      const intersecting = ranges.filter((candidate) =>
+        direction === 'older'
+          ? candidate.left < cursor - 1 && candidate.right > provisional
+          : candidate.right > cursor && candidate.left < provisional,
+      );
+      const classifiedBoundary =
+        direction === 'older'
+          ? intersecting.sort((a, b) => b.right - a.right)[0]?.right
+          : intersecting.sort((a, b) => a.left - b.left)[0]?.left;
+      const through =
+        classifiedBoundary === undefined
+          ? provisional
+          : direction === 'older'
+            ? classifiedBoundary + 1
+            : classifiedBoundary;
+      if (
+        (direction === 'older' && through >= cursor) ||
+        (direction === 'newer' && through <= cursor)
+      )
+        throw new Error('browser history walker made no coordinate progress');
+
+      const request: MessageHistoryBackendRequest = {
+        threadId,
+        take: Math.min(remaining, 50),
+        through,
+        ...(direction === 'older' ? { before: cursor } : { after: cursor }),
+      };
+      const response = await firstValueFrom(
+        this.msg.queryMessageHistoryPage(request),
+      );
+      if (lifetime.aborted)
+        throw new Error('message cache lifetime expired during history fill');
+      if (response.code === 30006 && this.isHistoryCursor(response.data)) {
+        if (
+          response.data.resumeAfter < 0 ||
+          response.data.resumeBefore <= response.data.resumeAfter
+        )
+          throw new Error('message query returned invalid recovery bounds');
+        lower = Math.max(lower, response.data.resumeAfter);
+        upper = Math.min(upper, response.data.resumeBefore - 1);
+        cursor =
+          direction === 'older'
+            ? Math.min(cursor, response.data.resumeBefore)
+            : Math.max(cursor, response.data.resumeAfter);
+        continue;
+      }
+      if (response.code !== 0 || !this.isHistoryPage(response.data))
+        throw new Error('message history page request failed');
+      const page = response.data;
+      const scan = this.historyScan(direction, cursor, page.scannedThrough);
+      const gaps = page.gaps.map((gap) => ({
+        left: gap.startSeq - 1,
+        right: gap.endSeq,
+        state: gap.recoverable
+          ? ('SERVER_PENDING' as const)
+          : ('SERVER_UNAVAILABLE' as const),
+      }));
+      const committed = await this.webdb.commitBrowserMessagePage(
+        {
+          threadId,
+          scan,
+          messages: page.messages,
+          gaps,
+          knownNewestSeq,
+        },
+        lifetime,
+      );
+      ranges = committed.ranges;
+      if (!scan) return { items, hasMore: false };
+      const direct = this.projectCommittedHistoryPage(
+        direction,
+        scan,
+        committed.messages,
+        gaps,
+      );
+      if (direct.length >= remaining) {
+        for (const item of direct.slice(0, remaining)) {
+          cursor = this.historyCursorAfter(direction, item);
+          items.push(item);
+        }
+        return {
+          items,
+          hasMore: direction === 'older' ? cursor > lower + 1 : cursor < upper,
+        };
+      }
+      remaining -= direct.length;
+      items.push(...direct);
+      cursor = page.scannedThrough;
+    }
+    throw new Error('browser history walker exceeded its progress limit');
+  }
+
+  private async queryBrowserMessages(
+    threadId: number,
+    direction: HistoryDirection,
+    cursor: number,
+    boundary: number,
+    take: number,
+  ): Promise<Message[]> {
+    const messages = await this.webdb.queryCachedMessages(
+      threadId,
+      direction === 'older' ? 'desc' : 'asc',
+      take,
+      cursor,
+    );
+    return messages.filter((message) =>
+      direction === 'older'
+        ? message.seq > boundary && message.seq < cursor
+        : message.seq > cursor && message.seq <= boundary,
+    );
+  }
+
+  private historyScan(
+    direction: HistoryDirection,
+    cursor: number,
+    scannedThrough: number,
+  ): { left: number; right: number } | null {
+    if (direction === 'older' && scannedThrough < cursor)
+      return { left: scannedThrough - 1, right: cursor - 1 };
+    if (direction === 'newer' && scannedThrough > cursor)
+      return { left: cursor, right: scannedThrough };
+    if (scannedThrough === cursor) return null;
+    throw new Error('message scan cursor moved in the wrong direction');
+  }
+
+  private projectCommittedHistoryPage(
+    direction: HistoryDirection,
+    scan: { left: number; right: number },
+    messages: Message[],
+    gaps: Array<{
+      left: number;
+      right: number;
+      state: 'SERVER_PENDING' | 'SERVER_UNAVAILABLE';
+    }>,
+  ): MessageHistorySourceItem[] {
+    const positioned: Array<{
+      coordinate: number;
+      item: MessageHistorySourceItem;
+    }> = messages.map((message) => ({
+      coordinate: message.seq,
+      item: { kind: 'message', message },
+    }));
+    for (const gap of gaps) {
+      if (gap.right > scan.left && gap.right <= scan.right)
+        positioned.push({
+          coordinate: gap.right,
+          item: { kind: 'serverGap', ...gap },
+        });
+    }
+    positioned.sort((a, b) =>
+      direction === 'older'
+        ? b.coordinate - a.coordinate
+        : a.coordinate - b.coordinate,
+    );
+    return positioned.map(({ item }) => item);
+  }
+
+  private historyCursorAfter(
+    direction: HistoryDirection,
+    item: MessageHistorySourceItem,
+  ): number {
+    if (item.kind === 'message') return item.message.seq;
+    return direction === 'older' ? item.left + 1 : item.right;
+  }
+
+  private isHistoryCursor(value: unknown): value is MessageQueryCursorData {
+    if (!value || typeof value !== 'object') return false;
+    const cursor = value as Partial<MessageQueryCursorData>;
+    return (
+      Number.isSafeInteger(cursor.resumeAfter) &&
+      Number.isSafeInteger(cursor.resumeBefore)
+    );
+  }
+
+  private isHistoryPage(value: unknown): value is MessageQueryPage {
+    if (!value || typeof value !== 'object') return false;
+    const page = value as Partial<MessageQueryPage>;
+    return (
+      Array.isArray(page.messages) &&
+      Array.isArray(page.gaps) &&
+      Number.isSafeInteger(page.scannedThrough) &&
+      typeof page.hasMore === 'boolean'
+    );
+  }
 
   constructor() {
     // Own the NEW_MESSAGE SSE: identity-only {threadId, seq, ts} (no body — single data source = pull).
@@ -225,70 +660,12 @@ export class MessageRepository {
   private reset(): void {
     this.maxSeenSeq.clear();
     this.newerTruncateSeq.clear();
-    this.activeCoverage.clear();
-    // Requests already on the wire are not cancelled, but a new session must never subscribe to them.
-    // Their captured cache lifetime prevents their eventual response from writing the recreated DB.
-    this.inflightFills.clear();
-  }
-
-  /** Shared finite cutoff for all chatboxes mounted on the same thread. */
-  getNewerTruncateSeq(threadId: number): number | undefined {
-    return this.newerTruncateSeq.get(threadId);
   }
 
   /** Reconcile conversation metadata/live init state into the shared per-thread ceiling. */
   retainNewestSeq(threadId: number, seq: number): void {
     if (Number.isSafeInteger(seq) && seq >= 0)
       this.advanceCeiling(threadId, seq, false);
-  }
-
-  /** Open-chat lifecycle hook: hydrate the durable O(1) tail summary once for this mounted thread. */
-  retainCoverage(threadId: number, knownNewestSeq?: number): void {
-    void this.syncDeleted(threadId);
-    const active = this.activeCoverage.get(threadId);
-    if (active) {
-      active.refs++;
-      if (knownNewestSeq !== undefined)
-        this.advanceCeiling(threadId, knownNewestSeq);
-      return;
-    }
-    const entry: {
-      refs: number;
-      state?: MessageCoverageState;
-      loading: Promise<void>;
-    } = {
-      refs: 1,
-      loading: Promise.resolve(),
-    };
-    this.activeCoverage.set(threadId, entry);
-    entry.loading = this.webdb
-      .getMessageCoverage(threadId)
-      .then(async (stored) => {
-        if (this.activeCoverage.get(threadId) !== entry) return;
-        const newestSeq = Math.max(
-          stored?.knownNewestSeq ?? -1,
-          knownNewestSeq ?? -1,
-          this.maxSeenSeq.get(threadId) ?? -1,
-        );
-        if (newestSeq < 0) return;
-        this.maxSeenSeq.set(threadId, newestSeq);
-        entry.state =
-          stored?.knownNewestSeq === newestSeq
-            ? stored
-            : {
-                threadId,
-                knownNewestSeq: newestSeq,
-                coveredTail: stored?.coveredTail ?? null,
-              };
-        if (stored?.knownNewestSeq !== newestSeq) {
-          const coverage = await this.webdb.putMessages([], undefined, {
-            threadId,
-            seq: newestSeq,
-          });
-          if (this.activeCoverage.get(threadId) === entry && coverage)
-            entry.state = coverage;
-        }
-      });
   }
 
   syncDeleted(threadId: number): Promise<void> {
@@ -330,544 +707,16 @@ export class MessageRepository {
     }
   }
 
-  /** Close-chat lifecycle hook: the durable summary remains, only its memory acceleration is released. */
-  releaseCoverage(threadId: number): void {
-    const active = this.activeCoverage.get(threadId);
-    if (!active) return;
-    if (--active.refs === 0) this.activeCoverage.delete(threadId);
-  }
-
-  /**
-   * Read a message page — cache-first + gap-fill (mirrors `queryMessageLog` semantics so the source swaps
-   * over unchanged). `data` is returned in `orderBy` order (desc = newest-first, asc = oldest-first), just
-   * like the backend. Transport/business failures carry `failed:true`; callers must not interpret their
-   * empty data as a confirmed boundary.
-   *
-   * - latest `skip: 0` (init): always return after the local IDB read, including a valid empty result;
-   *   backend revalidation is background-only and wakes the mounted kernel when it discovers data.
-   * - `skip: 1` (getOlder/getNewer): cache-first when the held range is contiguous + the far boundary is
-   *   known (floor = seq 1 present; ceiling = maxSeenSeq); gap-fill from the API otherwise. A server may
-   *   start above 1, so only observing seq 1 proves the lower boundary locally.
-   */
-  async queryMessages(
-    threadId: number,
-    q: MessageQuery,
-    clearedThroughSeq?: number | null,
-    localOnly = false,
-  ): Promise<MessagePage> {
-    if (localOnly)
-      return this.queryMessagesInternal(threadId, q, clearedThroughSeq, true);
-    return this.queryMessagesInternal(threadId, q, clearedThroughSeq, false);
-  }
-
-  private async queryMessagesInternal(
-    threadId: number,
-    q: MessageQuery,
-    clearedThroughSeq?: number | null,
-    localOnly = false,
-  ): Promise<MessagePage> {
-    if (q.skip === 0 && q.orderBy === 'desc' && q.lastSeq === undefined) {
-      const cached = await this.latestPage(threadId, q.take, clearedThroughSeq);
-      if (cached.length > 0) {
-        if (!localOnly)
-          void this.refreshLatest(
-            threadId,
-            q,
-            cached[0]?.seq,
-            cached[cached.length - 1]?.seq,
-          );
-        const oldestSeq = cached[cached.length - 1].seq;
-        return {
-          data: cached,
-          hasMore: oldestSeq > 1,
-        };
-      }
-      if (localOnly) return { data: [], hasMore: false };
-    }
-    if (q.skip === 0) {
-      const anchor = q.lastSeq;
-      if (anchor === undefined) return this.backend(threadId, q);
-      if (localOnly) {
-        const anchorRow = await this.getOne(threadId, anchor);
-        if (!anchorRow) return { data: [], hasMore: false };
-        const tail =
-          q.orderBy === 'desc'
-            ? await this.rangeDesc(
-                threadId,
-                anchor,
-                Math.max(0, q.take - 1),
-                clearedThroughSeq,
-              )
-            : await this.rangeAsc(
-                threadId,
-                anchor,
-                Math.max(0, q.take - 1),
-                clearedThroughSeq,
-              );
-        const last = tail[tail.length - 1] ?? anchorRow;
-        const hasMore =
-          q.orderBy === 'desc'
-            ? last.seq > 1
-            : this.maxSeenSeq.get(threadId) === undefined ||
-              last.seq < this.maxSeenSeq.get(threadId)!;
-        return { data: [anchorRow, ...tail], hasMore };
-      }
-      return this.queryAnchoredHybrid(threadId, q, anchor, clearedThroughSeq);
-    }
-    // skip === 1 → getOlder (desc, below lastSeq) / getNewer (asc, above lastSeq): cache-first.
-    const anchor = q.lastSeq;
-    if (anchor === undefined) return this.backend(threadId, q); // no cursor → can't range the cache
-    if (!localOnly)
-      return this.queryHybrid(threadId, q, anchor, clearedThroughSeq);
-    const cached =
-      q.orderBy === 'desc'
-        ? await this.rangeDesc(threadId, anchor, q.take, clearedThroughSeq)
-        : await this.rangeAsc(threadId, anchor, q.take, clearedThroughSeq);
-    const verdict = await this.cacheVerdict(
-      cached,
-      anchor,
-      q.take,
-      q.orderBy,
-      threadId,
-    );
-    if (verdict.hit) return { data: cached, hasMore: verdict.hasMore };
-    return { data: [], hasMore: false };
-  }
-
-  /** Include the middle anchor exactly once, then use the normal exclusive-cursor hybrid walker. */
-  private async queryAnchoredHybrid(
-    threadId: number,
-    q: MessageQuery,
-    anchor: number,
-    clearedThroughSeq?: number | null,
-  ): Promise<MessagePage> {
-    const localAnchor = await this.getOne(threadId, anchor);
-    if (
-      localAnchor &&
-      (clearedThroughSeq == null || localAnchor.seq > clearedThroughSeq)
-    ) {
-      if (q.take === 1) return { data: [localAnchor], hasMore: true };
-      const tail = await this.queryHybrid(
-        threadId,
-        { ...q, skip: 1, take: q.take - 1 },
-        anchor,
-        clearedThroughSeq,
-      );
-      return {
-        data: [localAnchor, ...tail.data],
-        hasMore: tail.hasMore,
-        truncated: tail.truncated,
-        failed: tail.failed,
-      };
-    }
-
-    const cached =
-      q.orderBy === 'desc'
-        ? await this.rangeDesc(threadId, anchor, q.take, clearedThroughSeq)
-        : await this.rangeAsc(threadId, anchor, q.take, clearedThroughSeq);
-    const boundary = this.nearestBoundary(anchor, cached[0]?.seq, q);
-    const first = await this.backend(threadId, {
-      ...q,
-      truncate: boundary !== undefined,
-      truncateSeq: boundary,
-    });
-    if (first.failed) return first;
-    if (
-      !first.truncated ||
-      first.data.length >= q.take ||
-      boundary === q.truncateSeq
-    )
-      return first;
-
-    const step = q.orderBy === 'desc' ? -1 : 1;
-    const tail = await this.queryHybrid(
-      threadId,
-      { ...q, skip: 1, take: q.take - first.data.length },
-      boundary! - step,
-      clearedThroughSeq,
-    );
-    return {
-      data: [...first.data, ...tail.data],
-      hasMore: tail.hasMore,
-      truncated: tail.truncated,
-    };
-  }
-
-  /**
-   * Assemble one requested page from alternating local and remote contiguous segments. A remote segment
-   * is bounded at the nearest cached row in its direction, so it never re-downloads the cached tail. Once
-   * the backend reports that boundary reached (`truncated`), the next loop consumes local rows immediately;
-   * if those still do not fill `take`, the following gap is fetched with only the remaining count.
-   */
-  private async queryHybrid(
-    threadId: number,
-    q: MessageQuery,
-    anchor: number,
-    clearedThroughSeq?: number | null,
-  ): Promise<MessagePage> {
-    const out: Message[] = [];
-    let cursor = anchor;
-    let remaining = q.take;
-    let hasMore = true;
-    let reachedRequestedTruncate = false;
-    const step = q.orderBy === 'desc' ? -1 : 1;
-
-    while (remaining > 0 && hasMore) {
-      const cached =
-        q.orderBy === 'desc'
-          ? await this.rangeDesc(threadId, cursor, remaining, clearedThroughSeq)
-          : await this.rangeAsc(threadId, cursor, remaining, clearedThroughSeq);
-
-      // Consume the longest locally contiguous prefix adjacent to the current cursor.
-      let localCount = 0;
-      let localCursor = cursor;
-      while (
-        localCount < cached.length &&
-        (await this.isCompleteRange(
-          threadId,
-          localCursor,
-          cached[localCount].seq,
-        )) &&
-        this.withinRequestedTruncate(cached[localCount].seq, q)
-      ) {
-        localCursor = cached[localCount].seq;
-        localCount++;
-      }
-      if (localCount > 0) {
-        const local = cached.slice(0, localCount);
-        out.push(...local);
-        remaining -= local.length;
-        cursor = local[local.length - 1].seq;
-        if (q.truncate && cursor === q.truncateSeq) {
-          reachedRequestedTruncate = true;
-          hasMore = false;
-        } else if (q.orderBy === 'desc' && cursor === 1) {
-          hasMore = false;
-        } else if (
-          q.orderBy === 'asc' &&
-          this.maxSeenSeq.get(threadId) !== undefined &&
-          cursor >= this.maxSeenSeq.get(threadId)!
-        ) {
-          hasMore = false;
-        }
-        continue;
-      }
-
-      // The closest cached row marks the end of this remote gap. If the caller supplied a stricter
-      // boundary (post-init frozen newest seq), use whichever endpoint comes first in this direction.
-      const cachedBoundary = cached[0]?.seq;
-      const remoteBoundary = this.nearestBoundary(cursor, cachedBoundary, q);
-      const remote = await this.backend(threadId, {
-        ...q,
-        skip: 1,
-        take: remaining,
-        lastSeq: cursor,
-        truncate: remoteBoundary !== undefined,
-        truncateSeq: remoteBoundary,
-      });
-      if (remote.failed) {
-        return {
-          data: out,
-          hasMore: true,
-          failed: true,
-        };
-      }
-      const remoteData = remote.data.slice(0, remaining);
-      if (remoteData.length === 0) {
-        if (remote.truncated && remoteBoundary !== q.truncateSeq) {
-          // The empty remote gap ended immediately before an existing cached row. Rebase the synthetic
-          // cursor one step before that row so the next pass consumes the row locally.
-          cursor = remoteBoundary! - step;
-          hasMore = true;
-          continue;
-        }
-        hasMore = false;
-        reachedRequestedTruncate = remote.truncated === true;
-        break;
-      }
-      out.push(...remoteData);
-      remaining -= remoteData.length;
-      cursor = remoteData[remoteData.length - 1].seq;
-      hasMore = remote.hasMore;
-      if (remote.truncated) {
-        // Clear the just-hit local cutoff by continuing from its row. If it was the caller's ultimate
-        // cutoff, this whole request is complete instead.
-        if (remoteBoundary === q.truncateSeq) {
-          reachedRequestedTruncate = true;
-          hasMore = false;
-        } else {
-          cursor = remoteBoundary! - step;
-          hasMore = true;
-        }
-      }
-    }
-
-    const result = {
-      data: out,
-      hasMore: remaining === 0 ? hasMore : false,
-      truncated: reachedRequestedTruncate,
-    };
-    return result;
-  }
-
-  private withinRequestedTruncate(seq: number, q: MessageQuery): boolean {
-    if (!q.truncate || q.truncateSeq === undefined) return true;
-    return q.orderBy === 'asc' ? seq < q.truncateSeq : seq > q.truncateSeq;
-  }
-
-  private nearestBoundary(
-    cursor: number,
-    cachedBoundary: number | undefined,
-    q: MessageQuery,
-  ): number | undefined {
-    const requested = q.truncate ? q.truncateSeq : undefined;
-    const candidates = [cachedBoundary, requested].filter(
-      (seq): seq is number =>
-        seq !== undefined &&
-        (q.orderBy === 'asc' ? seq > cursor : seq < cursor),
-    );
-    if (candidates.length === 0) return undefined;
-    return q.orderBy === 'asc'
-      ? Math.min(...candidates)
-      : Math.max(...candidates);
-  }
-
-  private async isCompleteRange(
-    threadId: number,
-    a: number,
-    b: number,
-  ): Promise<boolean> {
-    const from = Math.min(a, b);
-    const to = Math.max(a, b);
-    // There is no integer seq between adjacent rows, so this hop is intrinsically complete even for
-    // pre-v3 cached messages that have not acquired persisted section markers yet.
-    if (to - from === 1) return true;
-    const active = this.activeCoverage.get(threadId);
-    if (active) {
-      await active.loading;
-      const tail = active.state;
-      if (
-        tail?.coveredTail != null &&
-        from >= tail.coveredTail.left &&
-        to <= tail.coveredTail.right
-      )
-        return true;
-    }
-    const section = await this.webdb.getMessageSection(threadId, a);
-    return section !== undefined && from >= section.left && to <= section.right;
-  }
-
-  /**
-   * Purge ALL cached message bodies for a thread — the cache-GC counterpart to
-   * {@link ThreadRepository.removeThread}. Called when a thread leaves the user's roster (unfriend /
-   * self-leave / self-kick / a multi-device THREAD_REVISION DELETE).
-   *
-   * This is the ONE exception to the add-only rule above. It is NOT a per-message delete (the backend has no
-   * such command); it is whole-thread cache garbage collection. An explicit delete-data action removes the
-   * local bytes even if a later relationship reuses the stable thread id. This matches the user's deletion
-   * choice, exactly as {@link WebdbService.closeAndDelete} reclaims the whole DB on logout. The stale
-   * {@link maxSeenSeq} ceiling is cleared too so no in-memory residue survives the removal.
-   *
-   * Best-effort: IDB unavailable → graceful no-op (a transient miss just leaves the cache behind until the
-   * next logout wipes the whole DB).
-   */
+  /** Purge all cached history state for a thread when it leaves the user's roster. */
   async deleteByThread(threadId: number): Promise<void> {
     this.maxSeenSeq.delete(threadId);
-    this.activeCoverage.delete(threadId);
+    this.newerTruncateSeq.delete(threadId);
     try {
       await this.webdb.deleteMessagesByThread(threadId);
     } catch {
-      /* local store unavailable / closed — cache is best-effort */
+      /* local cache is best-effort */
     }
   }
-
-  /** Backend read + write-through cache. Returns the page in `orderBy` order + the authoritative hasMore. */
-  private async backend(
-    threadId: number,
-    q: MessageQuery,
-  ): Promise<MessagePage> {
-    const waiterLifetime = this.webdb.captureMessageLifetime();
-    const key =
-      q.lastSeq === undefined
-        ? undefined
-        : `${threadId}:${q.lastSeq}:${q.orderBy}`;
-    const fill =
-      key === undefined
-        ? this.fetchAndCommit(threadId, q)
-        : this.inflightFills.run(key, () => this.fetchAndCommit(threadId, q));
-    const committed = await fill;
-    if (waiterLifetime.aborted) {
-      return { data: [], hasMore: true, failed: true };
-    }
-    if (committed.failed) return committed;
-
-    const data: Message[] = [];
-    for (const row of committed.data) {
-      const stored = await this.getOne(threadId, row.seq);
-      if (!stored) throw new Error('committed HTTP message is missing from DB');
-      if (this.withinRequestedTruncate(stored.seq, q)) data.push(stored);
-    }
-    const reachedOwnBoundary =
-      q.truncate === true &&
-      q.truncateSeq !== undefined &&
-      committed.confirmedEndSeq !== undefined &&
-      (q.orderBy === 'asc'
-        ? committed.confirmedEndSeq >= q.truncateSeq
-        : committed.confirmedEndSeq <= q.truncateSeq);
-    return {
-      data: data.slice(0, q.take),
-      hasMore: reachedOwnBoundary
-        ? false
-        : committed.truncated
-          ? true
-          : committed.hasMore,
-      truncated: reachedOwnBoundary,
-    };
-  }
-
-  private async fetchAndCommit(
-    threadId: number,
-    q: MessageQuery,
-  ): Promise<CommittedFill> {
-    const cacheLifetime = this.webdb.captureMessageLifetime();
-    let res: StandardResponse<Message[]>;
-    try {
-      res = await firstValueFrom(this.msg.queryMessageLog({ threadId, ...q }));
-    } catch {
-      return { data: [], hasMore: true, failed: true };
-    }
-    // A clear-cache operation may have completed while this request was in flight. Its response belongs
-    // to the old cache lifetime: do not mutate repository ceilings, return rows to a closing chatbox, or
-    // write them into the freshly-created database.
-    if (cacheLifetime.aborted) {
-      return { data: [], hasMore: true, failed: true };
-    }
-    if (res.code !== 0) {
-      return { data: [], hasMore: true, failed: true };
-    }
-    const data = res.data ?? [];
-    if (data.length === 0) {
-      if (res.truncated && q.truncateSeq === undefined)
-        throw new Error('message response truncated without a boundary');
-      if (!res.truncated && res.hasMore !== false)
-        throw new Error('empty message response has no confirmed endpoint');
-    }
-    let newest = this.maxSeenSeq.get(threadId);
-    if (data.length > 0) {
-      // A local-gap cutoff is not a server ceiling. Only an unbounded response, or a newest-page
-      // revalidation (desc/no cursor, whose first row is globally newest), may advance maxSeenSeq.
-      if (
-        !q.truncate ||
-        (q.skip === 0 && q.orderBy === 'desc' && q.lastSeq === undefined)
-      ) {
-        const max = data.reduce((mx, m) => (m.seq > mx ? m.seq : mx), -1);
-        newest = Math.max(newest ?? -1, max);
-      }
-    }
-    const confirmedEndSeq =
-      res.truncated && q.truncateSeq !== undefined
-        ? q.truncateSeq
-        : data[data.length - 1]?.seq;
-    // `truncateSeq` is an exclusive wire cutoff. It may be a synthetic sentinel (for example,
-    // knownNewestSeq + 1), so it is not necessarily the seq of a row that can anchor a persisted
-    // section. A real cached cutoff is safe to use; otherwise end the section at the last returned
-    // row. Empty responses at a synthetic cutoff confirm the request endpoint but create no section.
-    const persistedCutoff =
-      res.truncated && q.truncateSeq !== undefined
-        ? await this.getOne(threadId, q.truncateSeq)
-        : undefined;
-    const sectionEndpoint = persistedCutoff?.seq ?? data[data.length - 1]?.seq;
-    let confirmedSection:
-      | { threadId: number; left: number; right: number }
-      | undefined;
-    if (q.lastSeq !== undefined && sectionEndpoint !== undefined) {
-      confirmedSection = {
-        threadId,
-        left: Math.min(q.lastSeq, sectionEndpoint),
-        right: Math.max(q.lastSeq, sectionEndpoint),
-      };
-    } else if (data.length > 0) {
-      const seqs = data.map((m) => m.seq);
-      const endpoints = [
-        ...seqs,
-        ...(res.truncated && q.truncateSeq !== undefined
-          ? [q.truncateSeq]
-          : []),
-      ];
-      confirmedSection = {
-        threadId,
-        left: Math.min(...endpoints),
-        right: Math.max(...endpoints),
-      };
-    }
-    if (data.length > 0 || confirmedSection) {
-      let coverage: MessageCoverageState | undefined;
-      try {
-        coverage = await this.putMany(
-          data,
-          confirmedSection,
-          newest === undefined ? undefined : { threadId, seq: newest },
-          cacheLifetime,
-        );
-      } catch (error) {
-        if (cacheLifetime.aborted) {
-          return { data: [], hasMore: true, failed: true };
-        }
-        throw error;
-      }
-      // Recreation waits for the admitted write, but may begin immediately after it commits. Do not publish
-      // old-lifetime memory state or rows to the caller once that lifetime has been aborted.
-      if (cacheLifetime.aborted) {
-        return { data: [], hasMore: true, failed: true };
-      }
-      if (newest !== undefined) this.advanceCeiling(threadId, newest, false);
-      const active = this.activeCoverage.get(threadId);
-      if (active && coverage) active.state = coverage;
-    }
-    return {
-      data,
-      hasMore: res.hasMore ?? data.length >= q.take,
-      truncated: res.truncated,
-      confirmedEndSeq,
-    };
-  }
-
-  /** Refresh a locally completed latest page and wake the open kernel when the server has any data beyond
-   *  the local tail. `cachedNewestSeq === undefined` is the valid empty-cache case. */
-  async refreshLatest(
-    threadId: number,
-    q: MessageQuery,
-    cachedNewestSeq: number | undefined,
-    cachedOldestSeq?: number,
-  ): Promise<void> {
-    return this.refreshLatestInternal(
-      threadId,
-      q,
-      cachedNewestSeq,
-      cachedOldestSeq,
-    );
-  }
-
-  private async refreshLatestInternal(
-    threadId: number,
-    q: MessageQuery,
-    cachedNewestSeq: number | undefined,
-    cachedOldestSeq?: number,
-  ): Promise<void> {
-    const fresh = await this.backend(threadId, {
-      ...q,
-      truncate: cachedOldestSeq !== undefined,
-      truncateSeq: cachedOldestSeq,
-    });
-    const freshNewestSeq = fresh.data[0]?.seq;
-    if (
-      freshNewestSeq !== undefined &&
-      (cachedNewestSeq === undefined || freshNewestSeq > cachedNewestSeq)
-    ) {
-      this.signal$.next({ threadId, seq: freshNewestSeq });
-    }
-  }
-
   /** Identity-only NEW_MESSAGE — the SSE frame carries only {threadId, seq, ts} (no body). Advance the
    *  per-thread ceiling + emit the live signal so the open chat-box pulls the body via getNewer; the body
    *  is never carried on the realtime stream (single data source = pull). */
@@ -884,21 +733,7 @@ export class MessageRepository {
     const cur = this.maxSeenSeq.get(threadId) ?? -1;
     if (seq <= cur) return;
     this.maxSeenSeq.set(threadId, seq);
-    const active = this.activeCoverage.get(threadId);
-    if (active?.state && seq > active.state.knownNewestSeq)
-      active.state = { ...active.state, knownNewestSeq: seq };
-    if (persist)
-      void this.webdb
-        .putMessages([], undefined, { threadId, seq })
-        .then((coverage) => {
-          const current = this.activeCoverage.get(threadId);
-          if (
-            current &&
-            coverage &&
-            coverage.knownNewestSeq >= (current.state?.knownNewestSeq ?? -1)
-          )
-            current.state = coverage;
-        });
+    if (persist) void this.webdb.putMessageHead(threadId, seq);
   }
 
   /** The newest cached message (highest seq) for EACH threadId, fetched in ONE read transaction: one reverse
@@ -917,116 +752,13 @@ export class MessageRepository {
       return out;
     }
   }
-
-  /**
-   * Decide whether `cached` is inside a server-confirmed complete range (→ cache hit) or whether
-   * the cache lacks data here (→ gap-fill). `cached` is in `orderBy` order (desc: highest-first below the
-   * anchor; asc: lowest-first above it). A numeric seq gap may be legitimate under viewer filtering, so
-   * completeness comes from successful server pages rather than arithmetic adjacency alone.
-   */
-  private async cacheVerdict(
-    cached: Message[],
-    anchor: number,
-    take: number,
-    orderBy: 'desc' | 'asc',
-    threadId: number,
-  ): Promise<{ hit: boolean; hasMore: boolean }> {
-    if (cached.length === 0) return { hit: false, hasMore: true };
-    let cursor = anchor;
-    for (let i = 0; i < cached.length; i++) {
-      if (!(await this.isCompleteRange(threadId, cursor, cached[i].seq)))
-        return { hit: false, hasMore: true }; // gap
-      cursor = cached[i].seq;
-    }
-    const lastSeq = cached[cached.length - 1].seq;
-    if (orderBy === 'desc') {
-      // getOlder: seq 1 is the protocol minimum. A server may start above 1 or leave gaps, so a larger
-      // value never proves that the cache has reached the lower boundary.
-      const reachedFloor = lastSeq === 1;
-      const hit = cached.length === take || reachedFloor;
-      return { hit, hasMore: hit ? lastSeq > 1 : true };
-    }
-    // getNewer: the ceiling is maxSeenSeq (the newest seq observed via NEW_MESSAGE / a backend page).
-    const ceiling = this.maxSeenSeq.get(threadId);
-    const reachedCeiling = ceiling !== undefined && lastSeq >= ceiling;
-    const hit = cached.length === take || reachedCeiling;
-    return {
-      hit,
-      hasMore: hit ? ceiling !== undefined && lastSeq < ceiling : true,
-    };
-  }
-
-  // ── IDB range helpers (best-effort; IDB unavailable → empty → gap-fill) ─────────────────────
-
-  /** Latest cached page, newest-first. Message seq is monotonic but not required to be contiguous, so gaps
-   *  are valid and must never be interpreted as cache corruption. */
-  private async latestPage(
-    threadId: number,
-    take: number,
-    clearedThroughSeq?: number | null,
-  ): Promise<Message[]> {
-    try {
-      return (
-        await this.webdb.queryCachedMessages(threadId, 'desc', take)
-      ).filter((m) => clearedThroughSeq == null || m.seq > clearedThroughSeq);
-    } catch {
-      return [];
-    }
-  }
-
-  /** The `take` messages with seq < `belowSeq`, highest-first (desc). */
-  private async rangeDesc(
-    threadId: number,
-    belowSeq: number,
-    take: number,
-    clearedThroughSeq?: number | null,
-  ): Promise<Message[]> {
-    try {
-      return (
-        await this.webdb.queryCachedMessages(threadId, 'desc', take, belowSeq)
-      ).filter((m) => clearedThroughSeq == null || m.seq > clearedThroughSeq);
-    } catch {
-      return [];
-    }
-  }
-
-  /** The `take` messages with seq > `aboveSeq`, lowest-first (asc). */
-  private async rangeAsc(
-    threadId: number,
-    aboveSeq: number,
-    take: number,
-    clearedThroughSeq?: number | null,
-  ): Promise<Message[]> {
-    try {
-      return (
-        await this.webdb.queryCachedMessages(threadId, 'asc', take, aboveSeq)
-      ).filter((m) => clearedThroughSeq == null || m.seq > clearedThroughSeq);
-    } catch {
-      return [];
-    }
-  }
-
   /** Idempotent put by `[threadId, seq]` (the keyPath) — writing the same key twice just overwrites. */
   private async put(m: Message): Promise<void> {
     try {
-      await this.webdb.putMessages([m]);
+      await this.webdb.putCachedMessages([m]);
     } catch {
       /* IDB unavailable / closed — cache is best-effort */
     }
-  }
-
-  private async putMany(
-    msgs: Message[],
-    confirmedSection?: { threadId: number; left: number; right: number },
-    knownNewest?: { threadId: number; seq: number },
-    lifetime?: AbortSignal,
-  ): Promise<MessageCoverageState | undefined> {
-    return this.webdb.putMessages(
-      msgs,
-      confirmedSection,
-      knownNewest,
-      lifetime,
-    );
   }
 
   /** Read one cached message by its composite key [threadId, seq] (best-effort; undefined when IDB is

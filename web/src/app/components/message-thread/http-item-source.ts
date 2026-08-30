@@ -15,7 +15,7 @@
  *  anchor = latest → out[last] tagged 'newest'. The kernel's absorbBoundary reads these and sets its
  *  noOlder/noNewer.
  * [Dedup] incoming pushes are identity-only signals; message bodies have a single authoritative path through
- *  queryMessages. This source therefore does not suppress queried ids. Cursor paging keeps pages disjoint,
+ *  the repository history walker. This source therefore does not suppress queried ids. Cursor paging keeps pages disjoint,
  *  while the kernel rejects overlap with rows that are currently mounted.
  * [SSE] NEW_MESSAGE advances the repository-owned per-thread newer ceiling and re-checks this viewport's
  *  pending newer demand. It never asks the kernel to retry; the kernel only observes a demand resolving
@@ -29,7 +29,12 @@ import {
   type Subscription,
 } from 'rxjs';
 import dayjs from 'dayjs';
-import { MessageRepository } from '../../services/message-repository.service';
+import {
+  MessageRepository,
+  type MessageHistorySourceItem,
+  type NativeMessageHistoryDemand,
+  type NativeMessageHistoryResult,
+} from '../../services/message-repository.service';
 import { UserService } from '../../services/user.service';
 import { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
 import { ProfileRepository } from '../../services/profile-store.service';
@@ -69,6 +74,7 @@ import {
   parseCallMessageContent,
   type CallMessageContent,
 } from '../../../../../shared/call-message-content';
+import { isTauri } from '../../services/runtime';
 
 /**
  * Backend QueryMessagesDto enforces @Max(50) per request — the source owns this ceiling so the kernel's
@@ -107,10 +113,6 @@ export interface HttpItemSourceLiveOpts {
 }
 
 export class HttpItemSource implements CbSource<ChatItemData> {
-  private coverageRetained = true;
-  /** DB cursors (oldest/newest loaded msgId). */
-  private oldestMsgId: number | null = null;
-  private newestMsgId: number | null = null;
   private noOlder = false;
   private noNewer = true; // anchor is the latest; always true (SSE pushes one way only)
 
@@ -130,7 +132,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
    *  dropped by reconcilePending inside init/getNewer, and the kernel's reconcileOptimistic removes the mounted
    *  optimistic bubble. The array is owned by the application-scoped ThreadSendOutbox, so failed/in-flight
    *  entries survive destruction and recreation of this thread source. */
-  private readonly pending: CbItem<ChatItemData>[];
+  private readonly pending: CbItem<ChatMsgData>[];
   private sseSub?: Subscription;
   private reconnectSub?: Subscription;
   private mediaStatusSub?: Subscription;
@@ -159,6 +161,18 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   }>();
   private pumpingNewer = false;
   private newerPumpVersion = 0;
+  /** Gap rows use a source-lifetime synthetic id namespace far below optimistic ids. Directional
+   * repository cursors are resolved from the canonical interval instead of overloading CbItem.id. */
+  private nextGapItemId = Number.MIN_SAFE_INTEGER + 1;
+  private readonly gapIdByKey = new Map<string, number>();
+  private readonly gapById = new Map<
+    number,
+    {
+      left: number;
+      right: number;
+      state: 'SERVER_PENDING' | 'SERVER_UNAVAILABLE';
+    }
+  >();
 
   constructor(
     private readonly conv: ConversationItem,
@@ -168,10 +182,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     live: HttpItemSourceLiveOpts,
     private readonly profileRepo?: ProfileRepository,
   ) {
-    this.repo.retainCoverage(
-      this.conv.threadId,
-      this.conv.lastMessageSeq ?? undefined,
-    );
+    void this.repo.syncDeleted(this.conv.threadId);
     this.pending = outbox.forThread(conv.threadId);
     this.onMediaStatus = live.onMediaStatus ?? (() => {});
     this.onProfile = live.onProfile ?? (() => {});
@@ -215,86 +226,22 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     newerCount: number,
     _opts?: CbSourceInitOpts,
   ): Promise<CbItem<ChatItemData>[]> {
-    if (anchorId === -1) {
-      // Cap at MAX_PAGE (backend @Max(50)); the kernel top-ups the rest via getOlder. hasMore is
-      // authoritative (backend take+1 method), so it alone drives noOlder — the old `list.length < olderCount`
-      // heuristic would falsely signal exhaustion now that take is clamped below olderCount. init (skip:0)
-      // returns a contiguous IDB page immediately when warm; the repo revalidates it in the background.
-      const take = Math.min(olderCount, MAX_PAGE);
-      const { data, hasMore, failed } = await this.repo.queryMessages(
-        this.conv.threadId,
-        { skip: 0, take, orderBy: 'desc' },
-        this.conv.clearedSeq,
-        this.initializingDb,
-      );
-      if (failed) throw new MessagePageLoadError();
-      if (!data || data.length === 0) return [];
-      const list = [...data].reverse(); // desc → ascending (old → new)
-      this.noOlder = !hasMore;
-      this.noNewer = true; // anchor is the latest
-      const items = await this.rawToItems(list);
-      if (items.length > 0) {
-        // anchor=-1 → the last item is always the global newest; noOlder means it also reached the oldest. A length-1
-        // batch spanning both edges is a sole item → 'both' (the boundary field is single-valued; otherwise items[0]='oldest'
-        // and items[last]='newest' collide on it and noOlder is lost → a permanent top ghost on a single-message thread).
-        if (this.noOlder && items.length === 1)
-          items[0] = { ...items[0], boundary: 'both' };
-        else {
-          if (this.noOlder) items[0] = { ...items[0], boundary: 'oldest' };
-          items[items.length - 1] = {
-            ...items[items.length - 1],
-            boundary: 'newest',
-          };
-        }
-        this.oldestMsgId = firstMsgId(items);
-        this.newestMsgId = lastMsgId(items);
-      }
-      this.reconcilePending(items); // a returned real confirms its optimistic counterpart → drop it from pending
-      return items;
-    }
-    // Real msgId: fetch both directions (jump to a specific message / open conversation from a
-    // notification). take is capped at MAX_PAGE (backend @Max(50)). The older leg (skip:0) backend-probes
-    // for the anchor; the newer leg (skip:1) is cache-first via the repo.
-    const olderTake = Math.min(olderCount, MAX_PAGE);
-    const newerTake = Math.min(newerCount, MAX_PAGE);
-    const [olderPage, newerPage] = await Promise.all([
-      this.repo.queryMessages(
-        this.conv.threadId,
-        { skip: 0, take: olderTake, lastSeq: anchorId, orderBy: 'desc' },
-        this.conv.clearedSeq,
-        this.initializingDb,
-      ),
-      this.repo.queryMessages(
-        this.conv.threadId,
-        { skip: 1, take: newerTake, lastSeq: anchorId, orderBy: 'asc' },
-        this.conv.clearedSeq,
-        this.initializingDb,
-      ),
-    ]);
-    if (olderPage.failed || newerPage.failed) throw new MessagePageLoadError();
-    if (!olderPage.data || olderPage.data.length === 0) return []; // target msgId not found
-    const older = [...olderPage.data].reverse(); // desc → ascending: [older..anchorId] (includes anchorId)
-    const newer = newerPage.data ?? []; // already ascending: (anchorId..newer]
-    const list = [...older, ...newer];
-    this.noOlder = !olderPage.hasMore;
-    this.noNewer = !newerPage.hasMore;
-    const items = await this.rawToItems(list);
-    if (items.length > 0) {
-      // Bidirectional fetch: noOlder/noNewer reflect each direction's hasMore. A length-1 batch spanning both edges → 'both'.
-      if (this.noOlder && this.noNewer && items.length === 1)
-        items[0] = { ...items[0], boundary: 'both' };
-      else {
-        if (this.noOlder) items[0] = { ...items[0], boundary: 'oldest' };
-        if (this.noNewer)
-          items[items.length - 1] = {
-            ...items[items.length - 1],
-            boundary: 'newest',
-          };
-      }
-      this.oldestMsgId = firstMsgId(items);
-      this.newestMsgId = lastMsgId(items);
-    }
-    this.reconcilePending(items); // a returned real confirms its optimistic counterpart → drop it from pending
+    const result = await this.queryHistory(
+      anchorId === -1
+        ? { kind: 'latest', count: Math.min(olderCount, MAX_PAGE) }
+        : {
+            kind: 'around',
+            anchor: anchorId,
+            olderCount: Math.min(olderCount, MAX_PAGE),
+            newerCount: Math.min(newerCount, MAX_PAGE),
+          },
+    );
+    if (result.failed) throw new MessagePageLoadError();
+    const items = await this.historyItemsToCb(result.items);
+    this.noOlder = !result.hasOlder;
+    this.noNewer = !result.hasNewer;
+    this.applyBoundaries(items);
+    this.reconcilePending(items);
     return items;
   }
 
@@ -324,23 +271,16 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   ): Promise<CbItem<ChatItemData>[]> {
     if (this.noOlder) return [];
     const take = Math.min(count, MAX_PAGE);
-    const { data, hasMore, failed } = await this.repo.queryMessages(
-      this.conv.threadId,
-      { skip: 1, take, lastSeq: cursorId, orderBy: 'desc' },
-      this.conv.clearedSeq,
-      this.initializingDb,
-    );
-    if (failed) throw new MessagePageLoadError();
-    if (!data || data.length === 0) {
-      this.noOlder = true;
-      return [];
-    }
-    const list = [...data].reverse(); // desc → ascending
-    if (!hasMore) this.noOlder = true; // authoritative backend result, or cache reached minimum seq 1
-    const items = await this.rawToItems(list);
-    if (items.length === 0) return [];
-    if (this.noOlder) items[0] = { ...items[0], boundary: 'oldest' };
-    this.oldestMsgId = firstMsgId(items) ?? this.oldestMsgId;
+    const result = await this.queryHistory({
+      kind: 'older',
+      before: (this.gapById.get(cursorId)?.left ?? cursorId - 1) + 1,
+      count: take,
+    });
+    if (result.failed) throw new MessagePageLoadError();
+    const items = await this.historyItemsToCb(result.items);
+    this.noOlder = !result.hasOlder;
+    if (this.noOlder && items.length > 0)
+      items[0] = { ...items[0], boundary: 'oldest' };
     return items;
   }
 
@@ -352,35 +292,20 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     count: number,
   ): Promise<CbItem<ChatItemData>[]> {
     const take = Math.min(count, MAX_PAGE);
-    const truncateSeq = this.repo.getNewerTruncateSeq(this.conv.threadId);
-    // The mounted cursor already proves that this source is at the repository's frozen newest row.
-    // Keep the demand pending until SSE advances that ceiling. Edge walks stay unbounded; only the
-    // repository may truncate an internal gap at a real cached row.
-    if (truncateSeq !== undefined && cursorId >= truncateSeq) {
-      this.noNewer = true;
-      return [];
-    }
-    const { data, hasMore, failed } = await this.repo.queryMessages(
-      this.conv.threadId,
-      { skip: 1, take, lastSeq: cursorId, orderBy: 'asc' },
-      this.conv.clearedSeq,
-      this.initializingDb,
-    );
-    if (failed) throw new MessagePageLoadError();
-    if (!data || data.length === 0) {
-      this.noNewer = true;
-      return [];
-    }
-    const list = [...data]; // already ascending (old → new)
-    if (!hasMore) this.noNewer = true; // hasMore is authoritative (backend take+1 method, or the cache reached maxSeenSeq)
-    const items = await this.rawToItems(list);
-    if (items.length === 0) return [];
-    if (this.noNewer)
+    const result = await this.queryHistory({
+      kind: 'newer',
+      after: this.gapById.get(cursorId)?.right ?? cursorId,
+      count: take,
+    });
+    if (result.failed) throw new MessagePageLoadError();
+    const items = await this.historyItemsToCb(result.items);
+    this.noNewer = !result.hasNewer;
+    if (this.noNewer && items.length > 0)
       items[items.length - 1] = {
         ...items[items.length - 1],
         boundary: 'newest',
       };
-    this.newestMsgId = lastMsgId(items) ?? this.newestMsgId;
+    this.reconcilePending(items);
     return items;
   }
 
@@ -464,13 +389,15 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 
   /** Store an in-flight optimistic send (separate from the reloadable sequence). */
   addPending(item: CbItem<ChatItemData>): void {
-    this.pending.push(item);
+    if (item.data.serverGap)
+      throw new Error('server gap cannot enter the optimistic outbox');
+    this.pending.push(item as CbItem<ChatMsgData>);
   }
 
   /** Look up an outbox entry even when it is intentionally omitted from getPending() presentation. */
   pendingByClientMessageId(
     clientMessageId: string,
-  ): CbItem<ChatItemData> | undefined {
+  ): CbItem<ChatMsgData> | undefined {
     return this.pending.find(
       (item) => item.clientMessageId === clientMessageId,
     );
@@ -491,7 +418,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     );
     if (i < 0) return false;
     const entry = this.pending.splice(i, 1)[0];
-    const failed: CbItem<ChatItemData> = {
+    const failed: CbItem<ChatMsgData> = {
       ...entry,
       data: { ...entry.data, status: 'failed', kind: undefined },
     };
@@ -506,12 +433,12 @@ export class HttpItemSource implements CbSource<ChatItemData> {
    * status:'sending'. Returns the updated item (the caller re-issues the HTTP send with it), or undefined if no
    * pending entry matches (e.g. it was confirmed/dropped meanwhile).
    */
-  retryPending(clientMessageId: string): CbItem<ChatItemData> | undefined {
+  retryPending(clientMessageId: string): CbItem<ChatMsgData> | undefined {
     const i = this.pending.findIndex(
       (p) => p.clientMessageId === clientMessageId,
     );
     if (i < 0) return undefined;
-    const retrying: CbItem<ChatItemData> = {
+    const retrying: CbItem<ChatMsgData> = {
       ...this.pending[i],
       data: { ...this.pending[i].data, status: 'sending', kind: 'pending' },
     };
@@ -547,10 +474,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   }
 
   destroy(): void {
-    if (this.coverageRetained) {
-      this.coverageRetained = false;
-      this.repo.releaseCoverage(this.conv.threadId);
-    }
     this.sseSub?.unsubscribe();
     this.sseSub = undefined;
     this.mediaStatusSub?.unsubscribe();
@@ -559,6 +482,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     this.reconnectSub = undefined;
     for (const waiter of this.newerWaiters) waiter.subscriber.complete();
     this.newerWaiters.clear();
+    this.gapIdByKey.clear();
+    this.gapById.clear();
   }
 
   /**
@@ -636,7 +561,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       // bubble that shares it (mountNewerReals flags resortTarget by clientMessageId; reconcileOptimistic then
       // removes the optimistic duplicate). Without this the optimistic would never be reconciled away → two
       // bubbles. Backend serializeBody ships clientMessageId on the wire (no DTO whitelisting).
-      const item: CbItem<ChatItemData> = {
+      const item: CbItem<ChatMsgData> = {
         id,
         data: this.toMsgData(m, images, file, callContent),
       };
@@ -654,6 +579,93 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       out.push(item);
     }
     return out;
+  }
+
+  private async historyItemsToCb(
+    sourceItems: MessageHistorySourceItem[],
+  ): Promise<CbItem<ChatItemData>[]> {
+    const messages = sourceItems
+      .filter(
+        (
+          item,
+        ): item is Extract<MessageHistorySourceItem, { kind: 'message' }> =>
+          item.kind === 'message',
+      )
+      .map((item) => item.message);
+    const shaped = new Map(
+      (await this.rawToItems(messages)).map((item) => [item.id, item]),
+    );
+    const out: CbItem<ChatItemData>[] = [];
+    for (const item of sourceItems) {
+      if (item.kind === 'message') {
+        const message = shaped.get(item.message.seq);
+        if (message) out.push(message);
+        continue;
+      }
+      const gapKey = `${item.state}:${item.left}:${item.right}`;
+      let gapId = this.gapIdByKey.get(gapKey);
+      if (gapId === undefined) {
+        gapId = this.nextGapItemId++;
+        this.gapIdByKey.set(gapKey, gapId);
+        this.gapById.set(gapId, {
+          left: item.left,
+          right: item.right,
+          state: item.state,
+        });
+      }
+      out.push({
+        id: gapId,
+        data: {
+          type: 'system',
+          contentType: 'SYSTEM',
+          msgId: item.right,
+          isSelf: false,
+          name: '',
+          text: '',
+          time: '',
+          images: null,
+          file: null,
+          createdAtMs: 0,
+          serverGap: {
+            left: item.left,
+            right: item.right,
+            state: item.state,
+          },
+        },
+      });
+    }
+    return out;
+  }
+
+  private queryHistory(
+    demand: NativeMessageHistoryDemand,
+  ): Promise<NativeMessageHistoryResult> {
+    const clearedThroughSeq = this.conv.clearedSeq ?? undefined;
+    return isTauri()
+      ? this.repo.queryNativeMessageHistory(
+          this.conv.threadId,
+          clearedThroughSeq,
+          demand,
+        )
+      : this.repo.queryBrowserMessageHistory(
+          this.conv.threadId,
+          clearedThroughSeq,
+          demand,
+        );
+  }
+
+  private applyBoundaries(items: CbItem<ChatItemData>[]): void {
+    if (items.length === 0) return;
+    if (this.noOlder && this.noNewer && items.length === 1) {
+      items[0] = { ...items[0], boundary: 'both' };
+      return;
+    }
+    if (this.noOlder) items[0] = { ...items[0], boundary: 'oldest' };
+    if (this.noNewer)
+      items[items.length - 1] = {
+        ...items[items.length - 1],
+        boundary: 'newest',
+      };
   }
 
   private isSelfAddress(account: string, domain: string): boolean {
@@ -840,18 +852,4 @@ function sourceDemand<T>(work: () => Promise<CbDemandResult<T>>): CbDemand<T> {
         subscriber.complete();
       });
   });
-}
-
-// ---------- helpers ----------
-
-/** id of the first message in the range (the source returns only messages, so the head is the first
- *  message; the guard is defensive and for TS narrowing). */
-function firstMsgId(items: CbItem<ChatItemData>[]): number | null {
-  const first = items[0];
-  return first && first.data.type === 'msg' ? first.data.msgId : null;
-}
-/** id of the last message in the range. */
-function lastMsgId(items: CbItem<ChatItemData>[]): number | null {
-  const last = items[items.length - 1];
-  return last && last.data.type === 'msg' ? last.data.msgId : null;
 }

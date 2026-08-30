@@ -234,7 +234,7 @@ describe('WebdbService native SQLite routing', () => {
     expect(await avatar?.blob.text()).toBe('cached');
   });
 
-  it('routes message windows, writes, point reads, newest reads and thread cleanup to SQLite', async () => {
+  it('routes message cache maintenance, point reads, newest reads and thread cleanup to SQLite', async () => {
     const message = {
       threadId: 9,
       seq: 3,
@@ -248,32 +248,13 @@ describe('WebdbService native SQLite routing', () => {
     responses.set('native_db_query_messages', [message]);
     responses.set('native_db_get_message', message);
     responses.set('native_db_newest_messages', [message]);
-    responses.set('native_db_message_section', {
-      threadId: 9,
-      left: 3,
-      right: 8,
-    });
-    responses.set('native_db_message_coverage', {
-      threadId: 9,
-      knownNewestSeq: 8,
-      coveredTail: { left: 3, right: 8 },
-    });
 
     expect(await service.queryCachedMessages(9, 'desc', 20, 10)).toEqual([
       message,
     ]);
-    await service.putMessages([message]);
-    await service.putMessages([message], { threadId: 9, left: 3, right: 8 });
+    await service.putCachedMessages([message]);
+    await service.putMessageHead(9, 8);
     expect(await service.getMessage(9, 3)).toEqual(message);
-    expect(await service.getMessageSection(9, 5)).toEqual({
-      left: 3,
-      right: 8,
-    });
-    expect(await service.getMessageCoverage(9)).toEqual({
-      threadId: 9,
-      knownNewestSeq: 8,
-      coveredTail: { left: 3, right: 8 },
-    });
     expect(await service.getNewestMessages([9])).toEqual([message]);
     await service.deleteMessagesByThread(9);
 
@@ -291,32 +272,21 @@ describe('WebdbService native SQLite routing', () => {
     );
     expect(calls).toContainEqual(
       expect.objectContaining({
-        cmd: 'native_db_put_messages',
+        cmd: 'native_db_put_cached_messages',
         args: {
           userId: 42,
           messages: [message],
-          confirmedSection: null,
-          knownNewestSeq: null,
-          coverageThreadId: null,
         },
       }),
     );
     expect(calls).toContainEqual(
       expect.objectContaining({
-        cmd: 'native_db_put_messages',
+        cmd: 'native_db_put_message_head',
         args: {
           userId: 42,
-          messages: [message],
-          confirmedSection: { threadId: 9, left: 3, right: 8 },
-          knownNewestSeq: null,
-          coverageThreadId: null,
+          threadId: 9,
+          knownNewestSeq: 8,
         },
-      }),
-    );
-    expect(calls).toContainEqual(
-      expect.objectContaining({
-        cmd: 'native_db_message_section',
-        args: { userId: 42, threadId: 9, seq: 5 },
       }),
     );
     expect(calls).toContainEqual(

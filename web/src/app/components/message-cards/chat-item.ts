@@ -60,6 +60,12 @@ export interface FileInfo {
  * changes the old tail item's height (zero reflow).
  */
 interface ChatMessageBase {
+  /** Present only on the transient timeline projection of a persisted server history gap. */
+  serverGap?: {
+    left: number;
+    right: number;
+    state: 'SERVER_PENDING' | 'SERVER_UNAVAILABLE';
+  };
   /** = Message.id (virtual-scroll track key + WS/pagination dedup). */
   msgId: number;
   /** Whether creator matches the current user's address. */

@@ -71,8 +71,8 @@ last is `M`, `resumeBefore=M+1`. Neither adjacent sequence is guaranteed to
 contain a message because the coordinate space may contain holes.
 Re-establishing the same stable-key relationship does not create a smaller
 query-coordinate space. `0` is the exclusive cursor before the first valid
-message sequence. The minimum message sequence is `1`, but the source MAY begin
-allocation at a larger value and need not allocate contiguously.
+message sequence. The source MUST begin its message coordinate space at `1`,
+but later allocation need not be contiguous.
 
 ## 2. Query page
 

@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import type { CbItem } from '../lib/chat-box/chat-box-scroller';
-import type { ChatItemData } from '../components/message-cards/chat-item';
+import type { ChatMsgData } from '../components/message-cards/chat-item';
 import type { NativeUploadSelection } from './native-upload.service';
 
 export type PendingSendResource =
@@ -55,12 +55,12 @@ export type PendingSendResource =
  */
 @Injectable({ providedIn: 'root' })
 export class ThreadSendOutbox {
-  private readonly byThread = new Map<number, CbItem<ChatItemData>[]>();
+  private readonly byThread = new Map<number, CbItem<ChatMsgData>[]>();
   private readonly resources = new Map<string, PendingSendResource>();
   private nextPlaceholderId = -1;
 
   /** Return the live array owned by this outbox. HttpItemSource is the sole mutator. */
-  forThread(threadId: number): CbItem<ChatItemData>[] {
+  forThread(threadId: number): CbItem<ChatMsgData>[] {
     let pending = this.byThread.get(threadId);
     if (!pending) {
       pending = [];

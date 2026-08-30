@@ -20,7 +20,7 @@ export function albumMemberItem(
   item: CbItem<ChatItemData>,
   memberId: number,
 ): CbItem<ChatItemData> {
-  if ((item.ids?.length ?? 0) < 2) return item;
+  if (item.data.serverGap || (item.ids?.length ?? 0) < 2) return item;
   const media = item.data.images?.find((entry) => entry.msgId === memberId);
   return {
     ...item,

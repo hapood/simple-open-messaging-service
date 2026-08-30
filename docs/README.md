@@ -15,6 +15,7 @@ and client behavior.
 ## Design
 
 - [Consumer UI guidelines](./design/consumer-ui-guidelines.md)
+- [Client message history synchronization](./design/client-message-history-sync.md)
 - [Message deletion](./design/message-deletion.md)
 - [Message inline entities](./design/message-entities.md)
 

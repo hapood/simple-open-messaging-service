@@ -47,8 +47,7 @@ export class UserResponseDto {
 
   @ApiProperty({
     example: 7,
-    description:
-      'Identity namespace; 0 for identities created on this server',
+    description: 'Identity namespace; 0 for identities created on this server',
   })
   namespaceId!: number;
 
@@ -197,11 +196,25 @@ export class MessageQueryPageDto {
   @ApiProperty({ type: [MessageResponseDto] })
   messages!: MessageResponseDto[];
 
+  @ApiProperty({ type: () => [MessageHistoryGapDto] })
+  gaps!: MessageHistoryGapDto[];
+
   @ApiProperty({ example: 42, description: 'Direction-relative scan cursor' })
   scannedThrough!: number;
 
   @ApiProperty({ example: false })
   hasMore!: boolean;
+}
+
+export class MessageHistoryGapDto {
+  @ApiProperty({ example: 20, description: 'First missing message sequence' })
+  startSeq!: number;
+
+  @ApiProperty({ example: 30, description: 'Last missing message sequence' })
+  endSeq!: number;
+
+  @ApiProperty({ example: true })
+  recoverable!: boolean;
 }
 
 export class MessageTombstoneResponseDto {

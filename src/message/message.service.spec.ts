@@ -72,6 +72,158 @@ const D2 = 'b'.repeat(64);
 const url = (d: string): string =>
   `/uploads/msg-assets/${d.slice(0, 2)}/${d.slice(2, 4)}/${d}`;
 
+function selectBuilder<T>(result: T, resolvesAtLimit = false) {
+  const promise = Promise.resolve(result);
+  const builder = {
+    from: () => builder,
+    innerJoin: () => builder,
+    where: () => builder,
+    limit: () => (resolvesAtLimit ? promise : builder),
+    then: promise.then.bind(promise),
+  };
+  return builder;
+}
+
+describe('MessageService.queryClientMessagePage', () => {
+  it('selects messages, visibility, scan metadata, and full intersecting gaps in one snapshot', async () => {
+    const rows = [
+      mk({
+        id: 11n,
+        seq: 11,
+        contentType: 'PURE_TEXT',
+        content: JSON.stringify({ text: 'eleven' }),
+      }),
+    ];
+    const tx = {
+      select: vi
+        .fn()
+        .mockReturnValueOnce(
+          selectBuilder(
+            [
+              {
+                clearedSeq: 9,
+                visibleBeforeSeq: 46,
+                currentEnd: 50,
+              },
+            ],
+            true,
+          ),
+        )
+        .mockReturnValueOnce(
+          selectBuilder([
+            {
+              startSeq: 5,
+              endSeq: 25,
+              messageSeqOffset: 10,
+              recoverable: true,
+            },
+            {
+              startSeq: 31,
+              endSeq: 50,
+              messageSeqOffset: 10,
+              recoverable: false,
+            },
+          ]),
+        ),
+      query: { message: { findMany: vi.fn().mockResolvedValue(rows) } },
+    };
+    const transaction = vi.fn(async (work, config) => {
+      expect(config).toEqual({
+        isolationLevel: 'repeatable read',
+        accessMode: 'read only',
+      });
+      return work(tx);
+    });
+    const svc = new MessageService(
+      {
+        db: {
+          transaction,
+          query: {
+            message: { findMany: vi.fn() },
+            messageAsset: { findMany: vi.fn().mockResolvedValue([]) },
+            mediaAsset: { findMany: vi.fn().mockResolvedValue([]) },
+            user: { findMany: vi.fn().mockResolvedValue([]) },
+          },
+        },
+      } as never,
+      {} as never,
+    );
+
+    const page = await svc.queryClientMessagePage(7, {
+      threadId: 1,
+      after: 10,
+      through: 20,
+      take: 3,
+    });
+
+    expect(page.messages.map((message) => message.seq)).toEqual([11]);
+    expect(page.gaps).toEqual([
+      { startSeq: 15, endSeq: 35, recoverable: true },
+    ]);
+    expect(page.scannedThrough).toBe(20);
+    expect(page.hasMore).toBe(false);
+    expect(transaction).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a selected message that overlaps a gap from the same snapshot', async () => {
+    const tx = {
+      select: vi
+        .fn()
+        .mockReturnValueOnce(
+          selectBuilder(
+            [
+              {
+                clearedSeq: null,
+                visibleBeforeSeq: null,
+                currentEnd: 50,
+              },
+            ],
+            true,
+          ),
+        )
+        .mockReturnValueOnce(
+          selectBuilder([
+            {
+              startSeq: 15,
+              endSeq: 20,
+              messageSeqOffset: 0,
+              recoverable: true,
+            },
+          ]),
+        ),
+      query: {
+        message: {
+          findMany: vi.fn().mockResolvedValue([
+            mk({
+              id: 15n,
+              seq: 15,
+              contentType: 'PURE_TEXT',
+              content: JSON.stringify({ text: 'invalid overlap' }),
+            }),
+          ]),
+        },
+      },
+    };
+    const svc = new MessageService(
+      {
+        db: {
+          transaction: vi.fn((work) => work(tx)),
+        },
+      } as never,
+      {} as never,
+    );
+
+    await expect(
+      svc.queryClientMessagePage(7, {
+        threadId: 1,
+        after: 10,
+        through: 20,
+        take: 3,
+      }),
+    ).rejects.toThrow('message 1:15 overlaps a history gap');
+  });
+});
+
 describe('MessageService.attachMediaStatus', () => {
   it('returns [] for empty input', async () => {
     const store = {

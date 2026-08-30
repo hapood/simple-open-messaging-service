@@ -92,7 +92,7 @@ describe('MessageRepository.applyMediaStatus', () => {
           provide: WebdbService,
           useValue: {
             getMessage: async (...args: unknown[]) => dbGet(...args),
-            putMessages: async (messages: unknown[]) =>
+            putCachedMessages: async (messages: unknown[]) =>
               dbPut('messages', messages[0]),
           },
         },

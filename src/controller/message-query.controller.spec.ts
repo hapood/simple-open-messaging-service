@@ -4,17 +4,39 @@ import { MessageController } from './message.controller.js';
 import type { QueryMessagesDto } from '../dto/message.dto.js';
 import { ContentType } from '../database/enums.js';
 import { BusinessCode } from '../common/business-code.js';
+import { BusinessException } from '../common/business.exception.js';
 
 function setup(rows: Array<{ seq: number }> = []) {
-  const queryMessages = vi.fn().mockResolvedValue(rows);
-  const readThreadEndSeq = vi.fn().mockResolvedValue(20);
+  const queryClientMessagePage = vi
+    .fn()
+    .mockImplementation((_userId, query) => {
+      if (query.after === undefined && query.before === undefined)
+        throw new BusinessException(
+          BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
+          'after or before is required; initialize the message query cursor',
+          200,
+          { resumeAfter: 0, resumeBefore: 21 },
+        );
+      const selected = rows.slice(0, query.take);
+      const hasMore = rows.length > query.take;
+      return {
+        messages: selected,
+        gaps: [],
+        scannedThrough: hasMore
+          ? selected.at(-1)!.seq
+          : query.after !== undefined
+            ? (query.through ?? 20)
+            : (query.through ?? 1),
+        hasMore,
+      };
+    });
   const queryTombstones = vi.fn().mockResolvedValue({
     tombstones: [],
     scannedThrough: 1,
     hasMore: false,
   });
   const controller = new MessageController(
-    { queryMessages, readThreadEndSeq } as never,
+    { queryClientMessagePage } as never,
     {} as never,
     {} as never,
     { blockedByMe: vi.fn().mockResolvedValue(new Set<number>()) } as never,
@@ -36,9 +58,8 @@ function setup(rows: Array<{ seq: number }> = []) {
   } as unknown as FastifyRequest;
   return {
     controller,
-    queryMessages,
+    queryClientMessagePage,
     queryTombstones,
-    readThreadEndSeq,
     req,
   };
 }
@@ -54,23 +75,20 @@ function dto(overrides: Partial<QueryMessagesDto> = {}): QueryMessagesDto {
 
 describe('MessageController.queryMessages cursor contract', () => {
   it('maps a bounded forward interval and returns a direction-relative cursor', async () => {
-    const { controller, queryMessages, req } = setup([
+    const { controller, queryClientMessagePage, req } = setup([
       { seq: 11 },
       { seq: 12 },
     ]);
     const result = await controller.queryMessages(req, dto({ through: 15 }));
 
-    expect(queryMessages).toHaveBeenCalledWith(
-      42,
-      {
-        skip: 1,
-        take: 4,
-        orderBy: { seq: 'asc' },
-        cursor: { threadId_seq: { threadId: 42, seq: 10 } },
-        truncateSeq: 16,
-      },
-      { clearedThroughSeq: null, visibleBeforeSeq: undefined },
-    );
+    expect(queryClientMessagePage).toHaveBeenCalledWith(1, {
+      threadId: 42,
+      after: 10,
+      before: undefined,
+      through: 15,
+      take: 3,
+    });
+    expect(result.gaps).toEqual([]);
     expect(result.messages.map((row) => row.seq)).toEqual([11, 12]);
     expect(result.scannedThrough).toBe(15);
     expect(result.hasMore).toBe(false);
@@ -94,7 +112,7 @@ describe('MessageController.queryMessages cursor contract', () => {
   });
 
   it('returns both exclusive start cursors when the direction is omitted', async () => {
-    const { controller, queryMessages, req } = setup();
+    const { controller, queryClientMessagePage, req } = setup();
     await expect(
       controller.queryMessages(req, dto({ after: undefined, take: undefined })),
     ).rejects.toMatchObject({
@@ -102,7 +120,7 @@ describe('MessageController.queryMessages cursor contract', () => {
       status: 200,
       data: { resumeAfter: 0, resumeBefore: 21 },
     });
-    expect(queryMessages).not.toHaveBeenCalled();
+    expect(queryClientMessagePage).toHaveBeenCalledOnce();
   });
 });
 

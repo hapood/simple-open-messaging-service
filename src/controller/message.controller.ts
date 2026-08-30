@@ -11,10 +11,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
-import {
-  MessageService,
-  type MessageQueryParams,
-} from '../message/message.service.js';
+import { MessageService } from '../message/message.service.js';
 import { ContentType, GroupRole } from '../database/enums.js';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { ApiResultResponse, envelope } from '../common/api-result.js';
@@ -788,34 +785,7 @@ export class MessageController {
         'take and through require after or before',
         HttpStatus.BAD_REQUEST,
       );
-    const lower = Math.max(req.threadAccess.participant.clearedSeq ?? 0, 0);
-    const currentEnd = await this.messageService.readThreadEndSeq(dto.threadId);
-    const upper = Math.min(
-      currentEnd + 1,
-      req.threadAccess.participant.messageVisibleBeforeSeq ?? currentEnd + 1,
-    );
-    const cursorData = {
-      resumeAfter: lower,
-      resumeBefore: upper,
-    };
-    if (dto.after === undefined && dto.before === undefined)
-      throw new BusinessException(
-        BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
-        'after or before is required; initialize the message query cursor',
-        HttpStatus.OK,
-        cursorData,
-      );
     const { after, before, through } = dto;
-    if (
-      (after !== undefined && (after < lower || after >= upper)) ||
-      (before !== undefined && (before <= lower + 1 || before > upper))
-    )
-      throw new BusinessException(
-        BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
-        'message query cursor is outside the available coordinate space',
-        HttpStatus.OK,
-        cursorData,
-      );
     if (after !== undefined && through !== undefined && through < after)
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
@@ -828,55 +798,13 @@ export class MessageController {
         'through must be less than or equal to before',
         HttpStatus.BAD_REQUEST,
       );
-    const forward = after !== undefined;
-    const take = dto.take ?? 20;
-    const queryEnd = forward ? Math.min(through ?? upper - 1, upper - 1) : 0;
-    const queryStart = forward ? 0 : (through ?? lower + 1);
-    if (!forward && queryStart < lower + 1)
-      throw new BusinessException(
-        BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
-        'message query boundary is outside the available coordinate space',
-        HttpStatus.OK,
-        cursorData,
-      );
-    const newParams: MessageQueryParams = {
-      skip: 1,
-      take: take + 1,
-      orderBy: { seq: forward ? 'asc' : 'desc' },
-      cursor: {
-        threadId_seq: {
-          threadId: dto.threadId,
-          seq: forward ? after : before!,
-        },
-      },
-      truncateSeq: forward ? queryEnd + 1 : queryStart - 1,
-    };
-    // Blocking does not alter stored history. The client deliberately skips this request while a thread
-    // is blocked and can query the retained history again after unblocking.
-    const filters: {
-      clearedThroughSeq?: number | null;
-      visibleBeforeSeq?: number | null;
-    } = {
-      clearedThroughSeq: req.threadAccess.participant.clearedSeq,
-      visibleBeforeSeq: req.threadAccess.participant.messageVisibleBeforeSeq,
-    };
-    const rows = await this.messageService.queryMessages(
-      dto.threadId,
-      newParams,
-      filters,
-    );
-    const hasMore = rows.length > take;
-    const messages = hasMore ? rows.slice(0, take) : rows;
-    const scannedThrough = hasMore
-      ? messages.at(-1)!.seq
-      : forward
-        ? queryEnd
-        : queryStart;
-    return {
-      messages,
-      scannedThrough,
-      hasMore,
-    };
+    return this.messageService.queryClientMessagePage(req.user.userId, {
+      threadId: dto.threadId,
+      after,
+      before,
+      through,
+      take: dto.take ?? 20,
+    });
   }
 
   @ApiBearerAuth()

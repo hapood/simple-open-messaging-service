@@ -213,6 +213,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       liveSignal$,
       reconnectSignal$,
       mediaStatusLive$,
+      syncDeleted: vi.fn().mockResolvedValue(undefined),
       retainNewestSeq: vi
         .fn()
         .mockName('retainNewestSeq')

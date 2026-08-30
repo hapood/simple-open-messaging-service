@@ -83,15 +83,15 @@ export function computeRowFlags(
       prevMsg &&
       participatesInSenderGroup(prevMsg) &&
       participatesInSenderGroup(msg)
-      ? { creator: prevMsg.creator }
-      : null;
+        ? { creator: prevMsg.creator }
+        : null;
     const nextMsg = next?.data.type === 'msg' ? next.data : null;
     const nextCtx: GroupCtx | null =
       nextMsg &&
       participatesInSenderGroup(msg) &&
       participatesInSenderGroup(nextMsg)
-      ? { creator: nextMsg.creator }
-      : null;
+        ? { creator: nextMsg.creator }
+        : null;
     const groupFlags = classifyGroupFlags(prevCtx, curCtx, nextCtx);
     isShowHead = groupFlags.isShowHead;
     isGroupStart = isShowHead && !!prevMsg; // a sender-change group start adds inter-group spacing
@@ -650,4 +650,46 @@ function wrapEl<T>(
  *  A live region would re-announce historical rows whenever the window remounts while scrolling. */
 export function applyMessageListItemSemantics(el: HTMLElement): void {
   el.setAttribute('role', 'listitem');
+}
+
+/** Render a persisted server-gap range as one non-message timeline row. The jagged center seam is
+ * CSS-only; the range remains repository state and this DOM projection is intentionally transient. */
+export function createServerGapCbElement(
+  item: CbItem<ChatItemData>,
+  label: string,
+): CbElement<ChatItemData> {
+  if (!item.data.serverGap)
+    throw new Error('server-gap renderer received a message item');
+  const host = document.createElement('div');
+  host.className = `cb-server-gap cb-server-gap--${item.data.serverGap.state === 'SERVER_PENDING' ? 'pending' : 'unavailable'}`;
+  const rule = document.createElement('span');
+  rule.className = 'cb-server-gap__rule';
+  const text = document.createElement('span');
+  text.className = 'cb-server-gap__label';
+  text.textContent = label;
+  host.append(rule, text);
+  applyMessageListItemSemantics(host);
+  let observer: ResizeObserver | null = null;
+  let heightListener: ((height: number) => void) | null = null;
+  return {
+    el: host,
+    onHeightChange: (listener) => {
+      heightListener = listener;
+      observer ??= new ResizeObserver(() => {
+        const height = host.offsetHeight;
+        if (height > 0) heightListener?.(height);
+      });
+      observer.observe(host);
+      return () => {
+        heightListener = null;
+      };
+    },
+    update: () => {},
+    updateNext: () => {},
+    destroy: () => {
+      observer?.disconnect();
+      observer = null;
+      heightListener = null;
+    },
+  };
 }

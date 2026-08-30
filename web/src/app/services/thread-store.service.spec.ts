@@ -91,7 +91,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         {
           provide: MsgService,
           useValue: {
-            queryMessageLog: vi.fn().mockName('queryMessageLog'),
             getDeletedMessageHwm: vi
               .fn()
               .mockName('getDeletedMessageHwm')

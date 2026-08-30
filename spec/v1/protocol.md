@@ -300,8 +300,8 @@ sequences, their per-thread ends, and thread-query response boundaries use JSON
 safe integers; HTTP query parameters carry their canonical decimal text.
 Business sequences are positive integers. `0` is the exclusive cursor before
 the first valid ID or sequence and is not itself an item ID or business
-sequence. An implementation MAY begin allocation above `1` and MAY leave gaps,
-provided allocated values strictly increase, are never reused, and the open
+sequence. A message coordinate space MUST begin allocation at `1` and MAY leave
+later gaps, provided allocated values strictly increase, are never reused, and the open
 bootstrap window `(resumeAfter, resumeBefore)` contains every currently
 serviceable coordinate. Resume boundaries do not promise that either adjacent
 coordinate contains an item.

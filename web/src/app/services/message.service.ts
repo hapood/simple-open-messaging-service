@@ -16,7 +16,7 @@ import {
   tap,
   type Observable,
 } from 'rxjs';
-import { Message, QueryMessageLogParams, StandardResponse } from './model';
+import { Message, StandardResponse } from './model';
 import { apiPrefix } from './constants';
 import { isTauri, listenEvent, tauriInvoke } from './runtime';
 import { REPLAY_SAFE } from '../request-context';
@@ -42,15 +42,34 @@ interface ResumableUploadState {
   result?: Record<string, unknown>;
 }
 
-interface MessageQueryPage {
+export interface MessageHistoryGap {
+  startSeq: number;
+  endSeq: number;
+  recoverable: boolean;
+}
+
+export interface MessageQueryPage {
   messages: Message[];
+  gaps: MessageHistoryGap[];
   scannedThrough: number;
   hasMore: boolean;
 }
 
-interface MessageQueryCursorData {
+export interface MessageQueryCursorData {
   resumeAfter: number;
   resumeBefore: number;
+}
+
+export type MessageHistoryBackendData =
+  | MessageQueryPage
+  | MessageQueryCursorData;
+
+export interface MessageHistoryBackendRequest {
+  threadId: number;
+  take?: number;
+  after?: number;
+  before?: number;
+  through?: number;
 }
 
 interface MessageTombstoneQueryPage {
@@ -373,114 +392,12 @@ export class MsgService {
     return new HttpHeaders({ 'x-client-message-id': clientMessageId });
   }
 
-  queryMessageLog(params: QueryMessageLogParams) {
-    if (params.truncate && params.truncateSeq === undefined) {
-      return of({
-        code: 0,
-        message: 'success',
-        data: [],
-        hasMore: false,
-        truncated: true,
-      } satisfies StandardResponse<Message[]>);
-    }
-    const request = (body: Record<string, unknown>) =>
-      this.http.post<StandardResponse<MessageQueryPage>>(
-        `${apiPrefix()}/query-messages`,
-        body,
-      );
-    const body = this.messageQueryBody(params);
-    return request(body).pipe(
-      switchMap((response) => {
-        if (
-          response.code !== 30006 ||
-          params.lastSeq !== undefined ||
-          !this.isMessageCursorData(response.data)
-        )
-          return of(response);
-        const { resumeAfter, resumeBefore } = response.data;
-        if (
-          !Number.isSafeInteger(resumeAfter) ||
-          !Number.isSafeInteger(resumeBefore) ||
-          resumeBefore <= resumeAfter + 1
-        )
-          return of({
-            code: 0,
-            message: 'success',
-            data: {
-              messages: [],
-              scannedThrough:
-                params.orderBy === 'asc' ? resumeAfter : resumeBefore,
-              hasMore: false,
-            },
-          } satisfies StandardResponse<MessageQueryPage>);
-        return request(
-          this.messageQueryBody(
-            params,
-            params.orderBy === 'asc' ? resumeAfter : resumeBefore,
-          ),
-        );
-      }),
-      map((response): StandardResponse<Message[]> => {
-        if (response.code !== 0 || !response.data)
-          return {
-            code: response.code,
-            message: response.message,
-          };
-        return {
-          code: response.code,
-          message: response.message,
-          data: response.data.messages,
-          hasMore: response.data.hasMore,
-          truncated:
-            params.truncate === true ? !response.data.hasMore : undefined,
-        };
-      }),
-    );
-  }
-
-  private messageQueryBody(
-    params: QueryMessageLogParams,
-    bootstrapCursor?: number,
-  ): Record<string, unknown> {
-    const ascending = params.orderBy === 'asc';
-    const body: Record<string, unknown> = {
-      threadId: params.threadId,
-    };
-    const cursor = params.lastSeq ?? bootstrapCursor;
-    if (cursor !== undefined) {
-      body['take'] = params.take;
-      if (ascending) {
-        body['after'] =
-          params.lastSeq !== undefined && params.skip === 0
-            ? Math.max(0, cursor - 1)
-            : cursor;
-      } else {
-        body['before'] =
-          params.lastSeq !== undefined && params.skip === 0
-            ? cursor + 1
-            : cursor;
-      }
-    }
-    if (
-      cursor !== undefined &&
-      params.truncate &&
-      params.truncateSeq !== undefined
-    ) {
-      body['through'] = ascending
-        ? Math.max(0, params.truncateSeq - 1)
-        : params.truncateSeq + 1;
-    }
-    return body;
-  }
-
-  private isMessageCursorData(value: unknown): value is MessageQueryCursorData {
-    if (!value || typeof value !== 'object') return false;
-    const data = value as Partial<MessageQueryCursorData>;
-    return (
-      Number.isSafeInteger(data.resumeAfter) &&
-      data.resumeAfter! >= 0 &&
-      Number.isSafeInteger(data.resumeBefore) &&
-      data.resumeBefore! > data.resumeAfter!
+  /** Raw page contract used by the browser history walker. Cursor recovery, range reduction, commit,
+   * and recursion deliberately remain above this transport-only method. */
+  queryMessageHistoryPage(request: MessageHistoryBackendRequest) {
+    return this.http.post<StandardResponse<MessageHistoryBackendData>>(
+      `${apiPrefix()}/query-messages`,
+      request,
     );
   }
 
