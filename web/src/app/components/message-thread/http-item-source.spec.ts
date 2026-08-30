@@ -4,11 +4,11 @@ import type { Mock } from 'vitest';
  *
  * The DB-layer {@link MessageRepository} owns the identity-only NEW_MESSAGE SSE and emits `liveSignal$`;
  * this source filters that signal to its thread and treats it as "newer data exists, go pull." The kernel
- * pulls the body via queryMessages (IDB cache hit or backend gap-fill) on the next
- * source demand, and rawToItems shapes messages only at pull time. This is what keeps a self-send echo /
+ * pulls the body through the repository history walker on the next source demand, and rawToItems shapes
+ * messages only at pull time. This is what keeps a self-send echo /
  * incoming reply on an empty (just-added-friend) thread mountable.
  *
- * The repository is stubbed (HttpItemSource only calls queryMessages + liveSignal$); UserService is stubbed
+ * The repository walker and live signals are stubbed; UserService is stubbed
  * (ensureProfiles). The cache-first/gap-fill logic lives in MessageRepository and is tested in its own spec
  * — here the repo is a simple canned data source so this spec stays focused on the source's shaping,
  * boundary, remounting, and optimistic-pending reconcile.
@@ -31,6 +31,7 @@ import { ProfileRepository } from '../../services/profile-store.service';
 function conv(threadId: number): ConversationItem {
   return {
     threadId,
+    authorityNamespaceId: 0,
     id: 1,
     type: 'P2P',
     lastReadSeq: null,
@@ -43,6 +44,7 @@ function conv(threadId: number): ConversationItem {
       account: 'alice',
       name: 'Alice',
       domain: 'local',
+      namespaceId: 0,
       avatar: '',
     },
   } as unknown as ConversationItem;
@@ -57,8 +59,8 @@ function row(seq: number, creator: number, clientMessageId?: string): Message {
     threadId: 42,
     creator:
       creator === 1
-        ? { account: 'me', domain: 'local' }
-        : { account: 'alice', domain: 'local' },
+        ? { account: 'me', domain: 'local', namespaceId: 0 }
+        : { account: 'alice', domain: 'local', namespaceId: 0 },
     createdAt: 1700000000000,
     updatedAt: 1700000000000,
     isDeleted: false,
@@ -73,7 +75,7 @@ function pendingItem(cid: string, id = -1) {
     data: {
       type: 'msg',
       msgId: id,
-      creator: 'local\u0000local\u0000me',
+      creator: '0\u0000local\u0000local\u0000me',
       isSelf: true,
       name: 'Me',
       text: 'hi',
@@ -90,7 +92,7 @@ function pendingItem(cid: string, id = -1) {
 }
 
 describe('HttpItemSource (source-owned live demand over MessageRepository)', () => {
-  /** Build a source whose repository returns `dbResult` for every queryMessages call, with a drivable liveSignal$. */
+  /** Build a source whose repository walker returns `dbResult`, with a drivable liveSignal$. */
   function setup(
     dbResult: StandardResponse<Message[]>,
     tid = 42,
@@ -121,21 +123,103 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         data: dbResult.data ?? [],
         hasMore: dbResult.hasMore ?? false,
       });
+    const queryNativeMessageHistory = vi
+      .fn()
+      .mockName('queryNativeMessageHistory')
+      .mockResolvedValue({
+        items: (dbResult.data ?? []).map((message) => ({
+          kind: 'message' as const,
+          message,
+        })),
+        hasOlder: dbResult.hasMore ?? false,
+        hasNewer: false,
+        failed: false,
+      });
+    const queryBrowserMessageHistory = vi
+      .fn()
+      .mockName('queryBrowserMessageHistory')
+      .mockImplementation(
+        async (
+          _threadId: number,
+          _cleared: number | undefined,
+          demand:
+            | { kind: 'latest'; count: number }
+            | {
+                kind: 'around';
+                anchor: number;
+                olderCount: number;
+                newerCount: number;
+              }
+            | { kind: 'older'; before: number; count: number }
+            | { kind: 'newer'; after: number; count: number },
+        ) => {
+          const run = async (query: Record<string, unknown>) =>
+            (queryMessages as Mock)(tid, query, undefined, true);
+          if (demand.kind === 'around') {
+            const [older, newer] = await Promise.all([
+              run({
+                skip: 0,
+                take: demand.olderCount,
+                lastSeq: demand.anchor,
+                orderBy: 'desc',
+              }),
+              run({
+                skip: 1,
+                take: demand.newerCount,
+                lastSeq: demand.anchor,
+                orderBy: 'asc',
+              }),
+            ]);
+            return {
+              items: [
+                ...(older.data ?? []).slice().reverse(),
+                ...(newer.data ?? []),
+              ].map((message: Message) => ({ kind: 'message', message })),
+              hasOlder: older.hasMore ?? false,
+              hasNewer: newer.hasMore ?? false,
+              failed: older.failed === true || newer.failed === true,
+            };
+          }
+          const orderBy = demand.kind === 'newer' ? 'asc' : 'desc';
+          const page = await run({
+            skip: demand.kind === 'latest' ? 0 : 1,
+            take: demand.count,
+            ...(demand.kind === 'older'
+              ? { lastSeq: demand.before }
+              : demand.kind === 'newer'
+                ? { lastSeq: demand.after }
+                : {}),
+            orderBy,
+          });
+          const messages =
+            orderBy === 'desc'
+              ? (page.data ?? []).slice().reverse()
+              : (page.data ?? []);
+          return {
+            items: messages.map((message: Message) => ({
+              kind: 'message',
+              message,
+            })),
+            hasOlder: demand.kind === 'newer' ? true : (page.hasMore ?? false),
+            hasNewer: demand.kind === 'newer' ? (page.hasMore ?? false) : false,
+            failed: page.failed === true,
+          };
+        },
+      );
     const repo = {
       queryMessages,
+      queryNativeMessageHistory,
+      queryBrowserMessageHistory,
       liveSignal$,
       reconnectSignal$,
       mediaStatusLive$,
-      retainCoverage: vi.fn().mockName('retainCoverage'),
-      releaseCoverage: vi.fn().mockName('releaseCoverage'),
-      getNewerTruncateSeq: () => truncateSeq,
       retainNewestSeq: vi
         .fn()
         .mockName('retainNewestSeq')
         .mockImplementation((_threadId: number, seq: number) => {
           truncateSeq = Math.max(truncateSeq ?? -1, seq);
         }),
-    } as unknown as MessageRepository;
+    } as unknown as MessageRepository & { queryMessages: Mock };
     const users: User[] = [
       {
         id: 1,
@@ -144,6 +228,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         avatar: '',
         bio: '',
         domain: 'local',
+        namespaceId: 0,
         createdAt: 0,
         updatedAt: 0,
         isDeleted: false,
@@ -155,6 +240,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         avatar: '',
         bio: '',
         domain: 'local',
+        namespaceId: 0,
         createdAt: 0,
         updatedAt: 0,
         isDeleted: false,
@@ -221,21 +307,6 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       queryUserInfo,
     };
   }
-
-  it('retains coverage for the chatbox lifetime and releases it exactly once', () => {
-    const { src, repo } = setup({
-      code: 0,
-      message: 'ok',
-      data: [],
-      hasMore: false,
-    });
-    expect(repo.retainCoverage).toHaveBeenCalledTimes(1);
-    expect(repo.retainCoverage).toHaveBeenCalledWith(42, undefined);
-    src.destroy();
-    src.destroy();
-    expect(repo.releaseCoverage).toHaveBeenCalledTimes(1);
-    expect(repo.releaseCoverage).toHaveBeenCalledWith(42);
-  });
 
   it('liveSignal$ does not issue HTTP when no newer demand is mounted', async () => {
     const { src, repo, liveSignal$ } = setup({
@@ -441,28 +512,40 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     });
   });
 
-  it('keeps the newer demand pending without querying when its cursor is already newest', async () => {
+  it('keeps the newer demand pending when the repository confirms the newest boundary', async () => {
     const { src, repo, liveSignal$ } = setup({
       code: 0,
       message: 'ok',
       data: [row(50, 2)],
       hasMore: false,
     });
-    const queryMessages = repo.queryMessages as Mock;
+    const queryHistory = repo.queryBrowserMessageHistory as Mock;
 
     await src.init(-1, 50, 0);
     src.finishLocalInit(undefined, 50);
     liveSignal$.next({ threadId: 42, seq: 50 });
-    const callsAfterInit = vi.mocked(queryMessages).mock.calls.length;
+    queryHistory.mockResolvedValueOnce({
+      items: [],
+      hasOlder: true,
+      hasNewer: false,
+      failed: false,
+    });
+    const callsAfterInit = queryHistory.mock.calls.length;
     const subscription = src.requestNewer(50, 50).subscribe();
     await Promise.resolve();
 
-    expect(vi.mocked(queryMessages).mock.calls.length).toBe(callsAfterInit);
+    expect(queryHistory.mock.calls.length).toBe(callsAfterInit + 1);
 
-    queryMessages.mockResolvedValue({ data: [row(51, 2)], hasMore: false });
+    queryHistory.mockResolvedValueOnce({
+      items: [{ kind: 'message', message: row(51, 2) }],
+      hasOlder: true,
+      hasNewer: false,
+      failed: false,
+    });
     liveSignal$.next({ threadId: 42, seq: 51 });
-    await Promise.resolve();
-    expect(vi.mocked(queryMessages).mock.calls.length).toBe(callsAfterInit + 1);
+    while (queryHistory.mock.calls.length < callsAfterInit + 2)
+      await Promise.resolve();
+    expect(queryHistory.mock.calls.length).toBe(callsAfterInit + 2);
     subscription.unsubscribe();
   });
 
@@ -524,24 +607,23 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     src.finishLocalInit(12, 11);
   });
 
-  it('allows a post-ready getOlder top-up to backfill a one-row local cache from the backend', async () => {
+  it('routes a post-ready older top-up through the repository walker', async () => {
     const { src, repo } = setup({
       code: 0,
       message: 'ok',
       data: [row(10, 2)],
       hasMore: true,
     });
-    const queryMessages = repo.queryMessages as Mock;
+    const queryHistory = repo.queryBrowserMessageHistory as Mock;
 
     await src.init(-1, 50, 0);
     src.finishLocalInit(undefined);
     await src.getOlder(10, 50);
 
-    expect(vi.mocked(queryMessages).mock.lastCall).toEqual([
+    expect(queryHistory.mock.lastCall).toEqual([
       42,
-      { skip: 1, take: 50, lastSeq: 10, orderBy: 'desc' },
       undefined,
-      false,
+      { kind: 'older', before: 10, count: 50 },
     ]);
   });
 
@@ -1012,5 +1094,105 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         msgId: 101,
       }),
     );
+  });
+
+  describe('native source-level history boundary', () => {
+    type NativeWindow = Window & {
+      __TAURI_INTERNALS__?: unknown;
+      __TAURI__?: { core: { invoke: Mock } };
+    };
+
+    beforeEach(() => {
+      const nativeWindow = window as NativeWindow;
+      nativeWindow.__TAURI_INTERNALS__ = {};
+      nativeWindow.__TAURI__ = { core: { invoke: vi.fn() } };
+    });
+
+    afterEach(() => {
+      const nativeWindow = window as NativeWindow;
+      delete nativeWindow.__TAURI_INTERNALS__;
+      delete nativeWindow.__TAURI__;
+    });
+
+    it('uses one native source call for an around demand', async () => {
+      const { src, repo } = setup({ code: 0, message: 'ok', data: [] });
+      const queryNative = repo.queryNativeMessageHistory as Mock;
+      queryNative.mockResolvedValueOnce({
+        items: [
+          { kind: 'message', message: row(40, 2) },
+          { kind: 'message', message: row(41, 2) },
+        ],
+        hasOlder: true,
+        hasNewer: true,
+        failed: false,
+      });
+
+      const items = await src.init(40, 20, 10);
+
+      expect(items.map((item) => item.id)).toEqual([40, 41]);
+      expect(queryNative).toHaveBeenCalledTimes(1);
+      expect(queryNative).toHaveBeenCalledWith(42, undefined, {
+        kind: 'around',
+        anchor: 40,
+        olderCount: 20,
+        newerCount: 10,
+      });
+      expect(repo.queryMessages).not.toHaveBeenCalled();
+    });
+
+    it('projects one gap item and resumes an older walk from left plus one', async () => {
+      const { src, repo } = setup({ code: 0, message: 'ok', data: [] });
+      const queryNative = repo.queryNativeMessageHistory as Mock;
+      queryNative
+        .mockResolvedValueOnce({
+          items: [
+            {
+              kind: 'serverGap',
+              left: 20,
+              right: 30,
+              state: 'SERVER_PENDING',
+            },
+          ],
+          hasOlder: true,
+          hasNewer: true,
+          failed: false,
+        })
+        .mockResolvedValueOnce({
+          items: [{ kind: 'message', message: row(20, 2) }],
+          hasOlder: false,
+          hasNewer: true,
+          failed: false,
+        })
+        .mockResolvedValueOnce({
+          items: [{ kind: 'message', message: row(31, 2) }],
+          hasOlder: true,
+          hasNewer: false,
+          failed: false,
+        });
+
+      const initial = await src.init(-1, 50, 0);
+      const older = await src.getOlder(initial[0].id, 50);
+      const newer = await src.getNewer(initial[0].id, 50);
+
+      expect(initial).toHaveLength(1);
+      expect(initial[0].id).toBe(Number.MIN_SAFE_INTEGER + 1);
+      expect(initial[0].data.serverGap).toEqual({
+        left: 20,
+        right: 30,
+        state: 'SERVER_PENDING',
+      });
+      expect(older.map((item) => item.id)).toEqual([20]);
+      expect(newer.map((item) => item.id)).toEqual([31]);
+      expect(queryNative).toHaveBeenNthCalledWith(2, 42, undefined, {
+        kind: 'older',
+        before: 21,
+        count: 50,
+      });
+      expect(queryNative).toHaveBeenNthCalledWith(3, 42, undefined, {
+        kind: 'newer',
+        after: 30,
+        count: 50,
+      });
+    });
   });
 });

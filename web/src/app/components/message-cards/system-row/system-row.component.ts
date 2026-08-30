@@ -20,6 +20,7 @@ const LABEL_KEYS: Record<string, string> = {
   GROUP_OWNER_TRANSFERRED: 'groupOwnerTransferred',
   MESSAGE_WITHDRAWN: 'messageWithdrawn',
   MESSAGES_MODERATED: 'messagesModerated',
+  FEDERATION_NAMESPACE_ARCHIVED: 'federationNamespaceArchived',
 };
 
 @Component({
@@ -77,6 +78,7 @@ export class SystemRowComponent {
         subject?: { account?: string; domain?: string };
         actor?: { account?: string; domain?: string };
         count?: number;
+        domain?: string;
       };
       const labelKey = LABEL_KEYS[body.type ?? ''];
       if (!labelKey) return this.fallback('unknown system message type');
@@ -88,6 +90,11 @@ export class SystemRowComponent {
         return this.transloco.translate(
           'chat.systemMessage.messagesModerated',
           { count: body.count },
+        );
+      if (body.type === 'FEDERATION_NAMESPACE_ARCHIVED')
+        return this.transloco.translate(
+          'chat.systemMessage.federationNamespaceArchived',
+          { domain: body.domain },
         );
       if (!name) return this.fallback('system message subject is missing');
       if (body.type === 'MESSAGE_WITHDRAWN') {

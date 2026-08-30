@@ -24,6 +24,7 @@ import { MsgService } from './message.service';
 import { MemberProfileRepository } from './member-profile-store.service';
 import { ToastService } from './toast.service';
 import { TranslocoService } from '@jsverse/transloco';
+import { FederationNamespaceService } from './federation-namespace.service';
 
 const CLIENT_FEED_CURSOR_UNAVAILABLE = 30006;
 
@@ -72,6 +73,7 @@ export class ThreadRepository {
   private readonly memberProfiles = inject(MemberProfileRepository);
   private readonly toast = inject(ToastService);
   private readonly transloco = inject(TranslocoService);
+  private readonly namespaces = inject(FederationNamespaceService);
 
   private readonly _items = signal<ConversationItem[]>([]);
   readonly items = this._items.asReadonly();
@@ -286,6 +288,7 @@ export class ThreadRepository {
   /** Read the IDB `threads` store + apply it instantly (the eager pre-HELLO paint). Bails if the list is
    *  already populated so a late cache read cannot clobber a fresher HELLO delta that landed during it. */
   private async paintFromCache(): Promise<void> {
+    this.namespaces.replace(await this.webdb.getNamespaces());
     if (this._items().length > 0) return; // already populated — don't clobber a fresher state
     const cached = await this.readCachedThreads();
     if (cached.length > 0 && this._items().length === 0) {
@@ -368,6 +371,16 @@ export class ThreadRepository {
       void this.persistThread(changed);
       if ('pinned' in patch) void this.persistThreadOrder();
     }
+  }
+
+  markAuthorityNamespaceInactive(threadId: number): void {
+    const source = this._items().find((thread) => thread.threadId === threadId);
+    if (!source || source.authorityNamespaceId === 0) return;
+    const domain =
+      source.type === 'P2P' ? source.peerUser.domain : source.group.domain;
+    const namespaceId = source.authorityNamespaceId;
+    this.namespaces.archive(domain, namespaceId);
+    void this.webdb.archiveNamespace(domain, namespaceId);
   }
 
   private applyJoinRequestActivity(threadId: number, at: number): void {
@@ -1073,6 +1086,7 @@ export class ThreadRepository {
       if (caughtUp) {
         const updated = this.mergedSummaryThreads(summary);
         await this.webdb.applyCatchUp(updated, after);
+        this.namespaces.replace(await this.webdb.getNamespaces());
         await this.persistThreadOrder(updated);
         for (const item of summary)
           this.serverLastReadSeq.set(item.threadId, item.lastReadSeq);
@@ -1202,6 +1216,7 @@ export class ThreadRepository {
           groupMeta,
           page.mode === 'full' && cursor === 0,
         );
+        this.namespaces.replace(await this.webdb.getNamespaces());
         if (page.mode === 'full' && cursor === 0) {
           this._items.update((threads) =>
             threads.map((thread) => ({

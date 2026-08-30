@@ -2075,6 +2075,7 @@ export class FederationService {
 
   /** Group writes are gated exclusively by locally converged state. */
   async assertGroupWritable(threadId: number): Promise<void> {
+    await this.assertLocalSendNamespaceActive(threadId);
     const [state] = await this.database.db
       .select({ dissolvedAt: tables.group.dissolvedAt })
       .from(tables.messageThread)
@@ -2098,6 +2099,7 @@ export class FederationService {
     threadId: number,
     localUserId: number,
   ): Promise<void> {
+    await this.assertLocalSendNamespaceActive(threadId);
     if (
       !(await isThreadMutuallyAuthorized(
         this.database.db,
@@ -2106,6 +2108,45 @@ export class FederationService {
       ))
     ) {
       throw new BusinessException(BusinessCode.FRIEND_NOT_FOUND, 'not friends');
+    }
+  }
+
+  private async assertLocalSendNamespaceActive(threadId: number): Promise<void> {
+    const [state] = await this.database.db
+      .select({
+        authorityNamespaceId: tables.messageThread.authorityNamespaceId,
+        domain: tables.identityNamespace.domain,
+        activeNamespaceId: tables.federatedPeer.activeNamespaceId,
+      })
+      .from(tables.messageThread)
+      .innerJoin(
+        tables.identityNamespace,
+        eq(
+          tables.identityNamespace.id,
+          tables.messageThread.authorityNamespaceId,
+        ),
+      )
+      .leftJoin(
+        tables.federatedPeer,
+        eq(tables.federatedPeer.domain, tables.identityNamespace.domain),
+      )
+      .where(eq(tables.messageThread.id, threadId))
+      .limit(1);
+    if (!state) {
+      throw new BusinessException(
+        BusinessCode.THREAD_NOT_FOUND,
+        `no thread [${threadId}]`,
+      );
+    }
+    if (
+      state.authorityNamespaceId !== 0 &&
+      state.activeNamespaceId !== state.authorityNamespaceId
+    ) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_NAMESPACE_INACTIVE,
+        `thread ${threadId} belongs to an inactive namespace of ${state.domain}`,
+        HttpStatus.CONFLICT,
+      );
     }
   }
 

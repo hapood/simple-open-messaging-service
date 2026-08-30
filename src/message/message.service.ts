@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import {
   and,
   asc,
@@ -14,6 +14,7 @@ import {
   type SQL,
 } from 'drizzle-orm';
 import {
+  type Database,
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
@@ -27,6 +28,7 @@ import {
   messageThread,
   pendingMedia,
   fileSyncProgress,
+  federationThreadHistoryGap,
   group,
   threadParticipant,
   user,
@@ -40,10 +42,7 @@ import {
 } from '../upload/file-content.js';
 import { contextualizeCasUrls } from '../upload/cas-url.js';
 import { LinkPreviewService } from '../link-preview/link-preview.service.js';
-import {
-  MEDIA_STATUS,
-  type MediaStatus,
-} from '../common/media-status.js';
+import { MEDIA_STATUS, type MediaStatus } from '../common/media-status.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { isThreadMutuallyAuthorized } from '../invite/relationship-authorization.js';
@@ -102,6 +101,20 @@ export interface MessageQueryParams {
   truncateSeq?: number;
 }
 
+export interface ClientMessagePageQuery {
+  threadId: number;
+  after?: number;
+  before?: number;
+  through?: number;
+  take: number;
+}
+
+export interface ClientMessageHistoryGap {
+  startSeq: number;
+  endSeq: number;
+  recoverable: boolean;
+}
+
 export interface ThreadAttentionState {
   count: number;
   mention: UnreadMentionState;
@@ -143,10 +156,7 @@ export function stripMessageId<
   },
 >(
   msg: T,
-): Omit<
-  T,
-  'id' | 'creatorAccount' | 'creatorDomain' | 'creatorNamespaceId'
-> & {
+): Omit<T, 'id' | 'creatorAccount' | 'creatorDomain' | 'creatorNamespaceId'> & {
   creator: MessageAuthorAddress | null;
 } {
   const { id, creatorAccount, creatorDomain, creatorNamespaceId, ...rest } =
@@ -529,11 +539,13 @@ export class MessageService {
       actorAddress?: MessageAuthorAddress;
       recipientUserIds?: readonly number[];
       markReadUserId?: number;
+      domain?: string;
     },
   ): Promise<{ message: PublicMessage; messageId: bigint }> {
     const subjectRequired =
       type !== SystemMessageType.FRIEND_ADDED &&
-      type !== SystemMessageType.MESSAGES_MODERATED;
+      type !== SystemMessageType.MESSAGES_MODERATED &&
+      type !== SystemMessageType.FEDERATION_NAMESPACE_ARCHIVED;
     if (
       subjectRequired &&
       subjectUserId === undefined &&
@@ -577,6 +589,7 @@ export class MessageService {
       ...(subject ? { subject: toAddress(subject) } : {}),
       ...(actor ? { actor: toAddress(actor) } : {}),
       ...(options?.count === undefined ? {} : { count: options.count }),
+      ...(options?.domain === undefined ? {} : { domain: options.domain }),
     });
     const [{ curSeq: seq }] = await tx
       .update(messageThread)
@@ -637,6 +650,7 @@ export class MessageService {
       actorAddress?: MessageAuthorAddress;
       recipientUserIds?: readonly number[];
       markReadUserId?: number;
+      domain?: string;
     },
   ): Promise<PublicMessage> {
     const result = await this.database.db.transaction((tx) =>
@@ -658,6 +672,7 @@ export class MessageService {
       actorAddress?: MessageAuthorAddress;
       recipientUserIds?: readonly number[];
       markReadUserId?: number;
+      domain?: string;
     },
   ): Promise<PublicMessage | null> {
     try {
@@ -990,9 +1005,7 @@ export class MessageService {
     const stageRow = await this.database.db.query.pendingMedia.findFirst({
       where: eq(pendingMedia.clientMessageId, clientMessageId),
     });
-    const stage = stageRow
-      ? requireOutboundPendingMedia(stageRow)
-      : undefined;
+    const stage = stageRow ? requireOutboundPendingMedia(stageRow) : undefined;
     if (
       !stage ||
       stage.status !== 'pending' ||
@@ -1190,6 +1203,171 @@ export class MessageService {
       hideCreators?: MessageAuthorAddress[];
     },
   ) {
+    const rows = await this.queryMessageRows(
+      this.database.db,
+      threadId,
+      params,
+      filters,
+    );
+    return this.attachMediaStatus(
+      await this.attachQuotePreviews(rows, filters),
+    );
+  }
+
+  /** Builds one client history page from one PostgreSQL snapshot. Message presentation enrichment
+   * happens after the snapshot, but cannot change the selected message coordinates or gap facts. */
+  async queryClientMessagePage(userId: number, query: ClientMessagePageQuery) {
+    const page = await this.database.db.transaction(
+      async (tx) => {
+        const [scope] = await tx
+          .select({
+            clearedSeq: threadParticipant.clearedSeq,
+            visibleBeforeSeq: threadParticipant.messageVisibleBeforeSeq,
+            currentEnd: messageThread.curSeq,
+          })
+          .from(threadParticipant)
+          .innerJoin(
+            messageThread,
+            eq(messageThread.id, threadParticipant.threadId),
+          )
+          .where(
+            and(
+              eq(threadParticipant.accountId, userId),
+              eq(threadParticipant.threadId, query.threadId),
+            ),
+          )
+          .limit(1);
+        if (!scope)
+          throw new BusinessException(
+            BusinessCode.THREAD_NOT_FOUND,
+            `no thread [${query.threadId}]`,
+          );
+
+        const lower = Math.max(scope.clearedSeq ?? 0, 0);
+        const upper = Math.min(
+          scope.currentEnd + 1,
+          scope.visibleBeforeSeq ?? scope.currentEnd + 1,
+        );
+        const cursorData = { resumeAfter: lower, resumeBefore: upper };
+        const { after, before, through } = query;
+        if (after === undefined && before === undefined)
+          throw new BusinessException(
+            BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
+            'after or before is required; initialize the message query cursor',
+            HttpStatus.OK,
+            cursorData,
+          );
+        if (
+          (after !== undefined && (after < lower || after >= upper)) ||
+          (before !== undefined && (before <= lower + 1 || before > upper))
+        )
+          throw new BusinessException(
+            BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
+            'message query cursor is outside the available coordinate space',
+            HttpStatus.OK,
+            cursorData,
+          );
+
+        const forward = after !== undefined;
+        const queryEnd = forward
+          ? Math.min(through ?? upper - 1, upper - 1)
+          : 0;
+        const queryStart = forward ? 0 : (through ?? lower + 1);
+        if (!forward && queryStart < lower + 1)
+          throw new BusinessException(
+            BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
+            'message query boundary is outside the available coordinate space',
+            HttpStatus.OK,
+            cursorData,
+          );
+
+        const rows = await this.queryMessageRows(
+          tx,
+          query.threadId,
+          {
+            skip: 1,
+            take: query.take + 1,
+            orderBy: { seq: forward ? 'asc' : 'desc' },
+            cursor: {
+              threadId_seq: {
+                threadId: query.threadId,
+                seq: forward ? after : before!,
+              },
+            },
+            truncateSeq: forward ? queryEnd + 1 : queryStart - 1,
+          },
+          {
+            clearedThroughSeq: scope.clearedSeq,
+            visibleBeforeSeq: scope.visibleBeforeSeq,
+          },
+        );
+        const hasMore = rows.length > query.take;
+        const messages = hasMore ? rows.slice(0, query.take) : rows;
+        const scannedThrough = hasMore
+          ? messages.at(-1)!.seq
+          : forward
+            ? queryEnd
+            : queryStart;
+        const scanStart = forward ? after! + 1 : scannedThrough;
+        const scanEnd = forward ? scannedThrough : before! - 1;
+        const gaps =
+          scanStart > scanEnd
+            ? []
+            : await this.queryClientHistoryGaps(
+                tx,
+                query.threadId,
+                scanStart,
+                scanEnd,
+                lower + 1,
+                upper - 1,
+              );
+
+        for (const selected of messages) {
+          if (
+            gaps.some(
+              (gap) =>
+                selected.seq >= gap.startSeq && selected.seq <= gap.endSeq,
+            )
+          )
+            throw new Error(
+              `message ${query.threadId}:${selected.seq} overlaps a history gap`,
+            );
+        }
+        return {
+          messages,
+          gaps,
+          scannedThrough,
+          hasMore,
+          filters: {
+            clearedThroughSeq: scope.clearedSeq,
+            visibleBeforeSeq: scope.visibleBeforeSeq,
+          },
+        };
+      },
+      { isolationLevel: 'repeatable read', accessMode: 'read only' },
+    );
+
+    const messages = await this.attachMediaStatus(
+      await this.attachQuotePreviews(page.messages, page.filters),
+    );
+    return {
+      messages,
+      gaps: page.gaps,
+      scannedThrough: page.scannedThrough,
+      hasMore: page.hasMore,
+    };
+  }
+
+  private async queryMessageRows(
+    db: Database | DatabaseTransaction,
+    threadId: number,
+    params: MessageQueryParams,
+    filters?: {
+      clearedThroughSeq?: number | null;
+      visibleBeforeSeq?: number | null;
+      hideCreators?: MessageAuthorAddress[];
+    },
+  ) {
     // The viewer's per-thread filters, layered on top of the membership-resolved threadId:
     //  - clearedThroughSeq: per-user "clear history" watermark — hide rows through it for THIS user only.
     //  - hideCreators: P2P block — the blocker never sees a blocked creator's messages. Scoped to P2P
@@ -1242,7 +1420,7 @@ export class MessageService {
     // id is fetched here (not omitted) so attachMediaStatus can resolve MediaMessage authz by messageId;
     // attachMediaStatus strips id before returning (id is the internal global throughput side-channel
     // and must never reach a client).
-    const rows = await this.database.db.query.message.findMany({
+    return db.query.message.findMany({
       where: and(...conditions),
       orderBy:
         params.orderBy?.seq === 'asc'
@@ -1251,18 +1429,43 @@ export class MessageService {
       limit: params.take,
       offset: cursorSeq === undefined ? params.skip : 0,
     });
-    return this.attachMediaStatus(
-      await this.attachQuotePreviews(rows, filters),
-    );
   }
 
-  async readThreadEndSeq(threadId: number): Promise<number> {
-    const row = await this.database.db.query.messageThread.findFirst({
-      where: eq(messageThread.id, threadId),
-      columns: { curSeq: true },
-    });
-    if (!row) throw new Error(`message thread ${threadId} is missing`);
-    return row.curSeq;
+  private async queryClientHistoryGaps(
+    tx: DatabaseTransaction,
+    threadId: number,
+    scanStart: number,
+    scanEnd: number,
+    visibleStart: number,
+    visibleEnd: number,
+  ): Promise<ClientMessageHistoryGap[]> {
+    const rows = await tx
+      .select({
+        startSeq: federationThreadHistoryGap.startSeq,
+        endSeq: federationThreadHistoryGap.endSeq,
+        messageSeqOffset: federationThreadHistoryGap.messageSeqOffset,
+        recoverable: federationThreadHistoryGap.recoverable,
+      })
+      .from(federationThreadHistoryGap)
+      .where(eq(federationThreadHistoryGap.threadId, threadId));
+    const gaps = rows
+      .map((row) => ({
+        startSeq: Math.max(row.startSeq + row.messageSeqOffset, visibleStart),
+        endSeq: Math.min(row.endSeq + row.messageSeqOffset, visibleEnd),
+        recoverable: row.recoverable,
+      }))
+      .filter(
+        (gap) =>
+          gap.startSeq <= gap.endSeq &&
+          gap.startSeq <= scanEnd &&
+          gap.endSeq >= scanStart,
+      )
+      .sort((a, b) => a.startSeq - b.startSeq || a.endSeq - b.endSeq);
+    for (let index = 1; index < gaps.length; index++) {
+      if (gaps[index]!.startSeq <= gaps[index - 1]!.endSeq)
+        throw new Error(`thread ${threadId} has overlapping history gaps`);
+    }
+    return gaps;
   }
 
   private deriveReplyText(
@@ -1549,9 +1752,7 @@ export class MessageService {
   async queryMediaStatus(
     threadId: number,
     seqs: number[],
-  ): Promise<
-    Array<{ seq: number; status: MediaStatus; sv: number }>
-  > {
+  ): Promise<Array<{ seq: number; status: MediaStatus; sv: number }>> {
     if (seqs.length === 0) return [];
     const msgs = await this.database.db.query.message.findMany({
       where: and(
@@ -1811,22 +2012,21 @@ export class MessageService {
     fromRevision: number,
     toRevision: number,
   ) {
-    const participants =
-      await this.database.db
-        .select({
-          threadId: threadParticipant.threadId,
-          lastReadSeq: threadParticipant.lastReadSeq,
-          readRevision: threadParticipant.readRevision,
-        })
-        .from(threadParticipant)
-        .where(
-          and(
-            eq(threadParticipant.accountId, userId),
-            gt(threadParticipant.readRevision, fromRevision),
-            lte(threadParticipant.readRevision, toRevision),
-          ),
-        )
-        .orderBy(asc(threadParticipant.readRevision));
+    const participants = await this.database.db
+      .select({
+        threadId: threadParticipant.threadId,
+        lastReadSeq: threadParticipant.lastReadSeq,
+        readRevision: threadParticipant.readRevision,
+      })
+      .from(threadParticipant)
+      .where(
+        and(
+          eq(threadParticipant.accountId, userId),
+          gt(threadParticipant.readRevision, fromRevision),
+          lte(threadParticipant.readRevision, toRevision),
+        ),
+      )
+      .orderBy(asc(threadParticipant.readRevision));
     if (participants.length === 0) return [];
     const self = await this.database.db.query.user.findFirst({
       where: eq(user.id, userId),

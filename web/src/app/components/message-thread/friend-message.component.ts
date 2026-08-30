@@ -35,6 +35,7 @@ import {
 import { MediaProbeScheduler } from './media-probe-scheduler';
 import {
   createMsgCbElement,
+  createServerGapCbElement,
   createGhostCbElement,
   computeRowFlags,
 } from '../message-cards/create-item';
@@ -148,6 +149,7 @@ import {
 } from '../../services/member-profile-store.service';
 import { ChatContextService } from './chat-context.service';
 import { ChatAppearanceService } from '../../services/chat-appearance.service';
+import { FederationNamespaceService } from '../../services/federation-namespace.service';
 import {
   ALL_MENTION_ID,
   escapePlainText,
@@ -302,6 +304,7 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly fileDetail = inject(FileDetailService);
   private readonly nav = inject(NavStateMachineService);
   private readonly convList = inject(ConversationListService);
+  private readonly namespaces = inject(FederationNamespaceService);
   private readonly transfers = inject(MediaTransferService);
   private readonly nativeUploads = inject(NativeUploadService);
   private readonly attachmentUploads = inject(AttachmentUploadQueueService);
@@ -378,7 +381,7 @@ export class MessageThreadComponent implements OnDestroy {
     width: number;
     height: number;
   };
-  private readonly nativeVoiceItems = new Map<string, CbItem<ChatItemData>>();
+  private readonly nativeVoiceItems = new Map<string, CbItem<ChatMsgData>>();
 
   private scroller?: ScrollerApi<ChatItemData>;
   private source?: MessageThreadSource;
@@ -420,11 +423,11 @@ export class MessageThreadComponent implements OnDestroy {
   readonly selectedCount = computed(() => this.selectedMessageIds().size);
   private readonly selectedMessageItems = new Map<
     number,
-    CbItem<ChatItemData>
+    CbItem<ChatMsgData>
   >();
   readonly messageContextMenu = signal<{
-    sourceItem: CbItem<ChatItemData>;
-    targetItem: CbItem<ChatItemData>;
+    sourceItem: CbItem<ChatMsgData>;
+    targetItem: CbItem<ChatMsgData>;
     targetSeq: number;
     memberId?: number;
     x: number;
@@ -454,6 +457,13 @@ export class MessageThreadComponent implements OnDestroy {
       this.userMsgTrd()?.type === 'P2P' &&
       this.userMsgTrd()?.friendshipActive === false,
   );
+  readonly authorityNamespaceInactive = computed(() => {
+    const thread = this.userMsgTrd();
+    if (!thread || thread.authorityNamespaceId === 0) return false;
+    const domain =
+      thread.type === 'P2P' ? thread.peerUser.domain : thread.group.domain;
+    return !this.namespaces.isActive(domain, thread.authorityNamespaceId);
+  });
   readonly leftGroup = computed(
     () =>
       this.userMsgTrd()?.type === 'GROUP' &&
@@ -707,6 +717,7 @@ export class MessageThreadComponent implements OnDestroy {
         !this.initialLoading() &&
         !this.blockedPeer() &&
         !this.friendshipEnded() &&
+        !this.authorityNamespaceInactive() &&
         !this.leftGroup() &&
         !this.dissolvedGroup() &&
         !this.nativeComposerOccluded() &&
@@ -1264,6 +1275,18 @@ export class MessageThreadComponent implements OnDestroy {
     // Real items only — the topmost skeleton-slot decision (prev/boundary/noOlder) lives in the kernel's createVs,
     // rendered via the createSkeleton hook supplied below. createItem never branches on ghost-vs-real: that rule
     // drifted between playground and production and is what swallowed the empty-thread first message.
+    if (item.data.serverGap) {
+      return createServerGapCbElement(
+        item,
+        String(
+          this.transloco.translate(
+            item.data.serverGap.state === 'SERVER_PENDING'
+              ? 'chat.serverGapPending'
+              : 'chat.serverGapUnavailable',
+          ),
+        ),
+      );
+    }
     const { isShowHead, isGroupStart, showDate } = computeRowFlags(item, prev);
     if (item.data.mediaStatus === MEDIA_STATUS.DOWNLOADING)
       this.probe.track(item.id, true);
@@ -1308,9 +1331,13 @@ export class MessageThreadComponent implements OnDestroy {
     pointer?: { x: number; y: number },
     memberId?: number,
   ): void {
+    if (item.data.serverGap) return;
+    const messageItem = item;
     if (intent === 'open-menu') {
       const contextItem =
-        memberId === undefined ? item : albumMemberItem(item, memberId);
+        memberId === undefined
+          ? messageItem
+          : (albumMemberItem(messageItem, memberId) as CbItem<ChatMsgData>);
       const menuItemCount =
         2 +
         (this.canCopyMessage(contextItem.data) ? 1 : 0) +
@@ -1348,7 +1375,7 @@ export class MessageThreadComponent implements OnDestroy {
         MESSAGE_CONTEXT_MENU_INSET,
       );
       this.messageContextMenu.set({
-        sourceItem: item,
+        sourceItem: messageItem,
         targetItem: contextItem,
         targetSeq: contextItem.id,
         memberId,
@@ -1361,8 +1388,9 @@ export class MessageThreadComponent implements OnDestroy {
     }
     this.closeContextMenu();
     if (!this.selectionMode()) this.selectionMode.set(true);
-    if (memberId !== undefined) this.toggleAlbumMemberSelection(item, memberId);
-    else this.toggleMessageSelection(item);
+    if (memberId !== undefined)
+      this.toggleAlbumMemberSelection(messageItem, memberId);
+    else this.toggleMessageSelection(messageItem);
   }
 
   selectContextMessage(): void {
@@ -1542,7 +1570,7 @@ export class MessageThreadComponent implements OnDestroy {
     this.syncMountedSelectionState();
   }
 
-  private toggleMessageSelection(item: CbItem<ChatItemData>): void {
+  private toggleMessageSelection(item: CbItem<ChatMsgData>): void {
     const memberIds = messageMemberIds(item);
     const next = new Set(this.selectedMessageIds());
     const remove = memberIds.every((id) => next.has(id));
@@ -1552,7 +1580,10 @@ export class MessageThreadComponent implements OnDestroy {
         this.selectedMessageItems.delete(id);
       } else {
         next.add(id);
-        this.selectedMessageItems.set(id, albumMemberItem(item, id));
+        this.selectedMessageItems.set(
+          id,
+          albumMemberItem(item, id) as CbItem<ChatMsgData>,
+        );
       }
     }
     this.selectedMessageIds.set(next);
@@ -1560,7 +1591,7 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private toggleAlbumMemberSelection(
-    item: CbItem<ChatItemData>,
+    item: CbItem<ChatMsgData>,
     memberId: number,
   ): void {
     if (!messageMemberIds(item).includes(memberId)) return;
@@ -1570,7 +1601,10 @@ export class MessageThreadComponent implements OnDestroy {
       this.selectedMessageItems.delete(memberId);
     } else {
       next.add(memberId);
-      this.selectedMessageItems.set(memberId, albumMemberItem(item, memberId));
+      this.selectedMessageItems.set(
+        memberId,
+        albumMemberItem(item, memberId) as CbItem<ChatMsgData>,
+      );
     }
     this.selectedMessageIds.set(next);
     this.syncMountedSelectionState();
@@ -1677,12 +1711,12 @@ export class MessageThreadComponent implements OnDestroy {
   openSelectedForwardDialog(): void {
     const items = [...this.selectedMessageIds()]
       .map((id) => this.selectedMessageItems.get(id))
-      .filter((item): item is CbItem<ChatItemData> => item !== undefined);
+      .filter((item): item is CbItem<ChatMsgData> => item !== undefined);
     if (items.length) this.openForwardDialog(items, 'HISTORY');
   }
 
   private openForwardDialog(
-    items: readonly CbItem<ChatItemData>[],
+    items: readonly CbItem<ChatMsgData>[],
     mode: 'DIRECT' | 'HISTORY',
   ): void {
     const messages = items
@@ -2851,7 +2885,7 @@ export class MessageThreadComponent implements OnDestroy {
     void this.uploadAndSendAudio(cid, partId, f, item, { duration });
   }
 
-  private dispatchHttpSendText(item: CbItem<ChatItemData>): void {
+  private dispatchHttpSendText(item: CbItem<ChatMsgData>): void {
     const cid = item.clientMessageId!;
     const tid = this.threadId() ?? 0;
     if (!tid) return;
@@ -2913,6 +2947,11 @@ export class MessageThreadComponent implements OnDestroy {
     }
     if (res.code === BusinessCode.GROUP_DISSOLVED) {
       this.convList.applyGroupUpdate(threadId, { dissolvedAt: Date.now() });
+      this.toast.warn(translateBizResult(res, this.transloco));
+      return;
+    }
+    if (res.code === BusinessCode.FEDERATION_NAMESPACE_INACTIVE) {
+      this.convList.markAuthorityNamespaceInactive(threadId);
       this.toast.warn(translateBizResult(res, this.transloco));
       return;
     }
@@ -3401,7 +3440,7 @@ export class MessageThreadComponent implements OnDestroy {
           break;
       }
     } else {
-      this.dispatchHttpSendText(item);
+      if (!item.data.serverGap) this.dispatchHttpSendText(item);
     }
   }
 
@@ -3429,7 +3468,7 @@ export class MessageThreadComponent implements OnDestroy {
   /** Record HTTP/upload acceptance without confirming delivery visually. The optimistic row becomes `accepted`:
    *  its spinner stays visible, but cancellation and dimming stop. The push echo is the sole owner of the later
    *  spinner→check choreography. If the echo already won the race it has removed pending, so this is a no-op. */
-  private async markAccepted(item: CbItem<ChatMsgData>): Promise<void> {
+  private async markAccepted(item: CbItem<ChatItemData>): Promise<void> {
     const scroller = this.scroller;
     const source = this.source;
     if (!scroller || !source || item.clientMessageId === undefined) return;
@@ -3495,7 +3534,7 @@ export class MessageThreadComponent implements OnDestroy {
     contentType: AuthoredContentType,
     images: AlbumImage[] | null,
     file: FileInfo | null,
-  ): CbItem<ChatItemData> {
+  ): CbItem<ChatMsgData> {
     const profile = this.userService.sessionProfile();
     if (!profile) throw new Error('session profile is required to send');
     const now = new Date();

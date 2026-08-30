@@ -205,6 +205,10 @@ export class ConversationListService {
     this.repo.applyThreadMeta(threadId, patch);
   }
 
+  markAuthorityNamespaceInactive(threadId: number): void {
+    this.repo.markAuthorityNamespaceInactive(threadId);
+  }
+
   /** Replace a P2P item's peerUser (avatar/name/bio) after a profile sync. */
   updatePeerUser(threadId: number, user: User): void {
     this.repo.updatePeerUser(threadId, user);

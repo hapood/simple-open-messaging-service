@@ -14,6 +14,10 @@ function source(threadId: number) {
 }
 
 function harness() {
+  const databaseState = {
+    active: true,
+    startupRows: [] as Array<Record<string, unknown>>,
+  };
   const states = {
     require: vi.fn().mockResolvedValue({
       messageTargetSeq: 10,
@@ -33,9 +37,25 @@ function harness() {
   };
   const database = {
     db: {
-      select: vi.fn(() => ({
-        from: vi.fn().mockResolvedValue([]),
-      })),
+      select: vi.fn((shape: Record<string, unknown>) => {
+        const result =
+          'threadId' in shape
+            ? databaseState.startupRows
+            : 'domain' in shape
+              ? databaseState.active
+                ? [{ domain: 'a.test' }]
+                : []
+              : [{ peerDomain: 'a.test', namespaceId: 7 }];
+        const query = {
+          from: vi.fn(() => query),
+          innerJoin: vi.fn(() => query),
+          where: vi.fn(() => query),
+          limit: vi.fn().mockResolvedValue(result),
+          then: (resolve: (value: unknown) => unknown) =>
+            Promise.resolve(result).then(resolve),
+        };
+        return query;
+      }),
     },
   };
   const federation = {
@@ -44,9 +64,6 @@ function harness() {
     pullStateFromPeer: vi.fn().mockResolvedValue(0n),
     handleThreadQueryForbidden: vi.fn().mockResolvedValue('P2P_REVOKED'),
   };
-  const namespaces = {
-    captureActive: vi.fn().mockResolvedValue({ namespaceId: 7 }),
-  };
   const scheduler = new FederationThreadRoundSchedulerService(
     database as never,
     states as never,
@@ -54,7 +71,6 @@ function harness() {
     reverse as never,
     federation as never,
     sources as never,
-    namespaces as never,
   );
   return {
     scheduler,
@@ -63,6 +79,7 @@ function harness() {
     forward,
     reverse,
     database,
+    databaseState,
     federation,
   };
 }
@@ -197,11 +214,24 @@ describe('FederationThreadRoundSchedulerService', () => {
       return undefined;
     });
 
-    await Promise.all([
-      scheduler.wake(1, 'a.test', 'message'),
-      scheduler.wake(3, 'a.test', 'message'),
-      scheduler.wake(2, 'b.test', 'message'),
-    ]);
+    scheduler.onWake({
+      threadId: 1,
+      peerDomain: 'a.test',
+      namespaceId: 7,
+      direction: 'forward',
+    });
+    scheduler.onWake({
+      threadId: 3,
+      peerDomain: 'a.test',
+      namespaceId: 7,
+      direction: 'forward',
+    });
+    scheduler.onWake({
+      threadId: 2,
+      peerDomain: 'b.test',
+      namespaceId: 7,
+      direction: 'forward',
+    });
     await vi.waitFor(() => expect(order).toEqual([1]));
     releaseFirst();
     await vi.waitFor(() => expect(order).toEqual([1, 2, 3]));
@@ -251,6 +281,54 @@ describe('FederationThreadRoundSchedulerService', () => {
         expect(forward.runMessages).toHaveBeenCalledTimes(2),
       );
       expect(states.require).toHaveBeenCalledOnce();
+      await scheduler.onModuleDestroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('discards a network retry when the namespace is already inactive', async () => {
+    vi.useFakeTimers();
+    try {
+      const { scheduler, forward, databaseState } = harness();
+      databaseState.active = false;
+      forward.runMessages.mockRejectedValueOnce(
+        new Error('network unavailable'),
+      );
+
+      await scheduler.wake(1, 'a.test', 'message');
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(forward.runMessages).toHaveBeenCalledOnce();
+      scheduler.onWake({
+        threadId: 1,
+        peerDomain: 'a.test',
+        namespaceId: 7,
+        direction: 'forward',
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(forward.runMessages).toHaveBeenCalledOnce();
+      await scheduler.onModuleDestroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rechecks namespace activity immediately before a delayed retry', async () => {
+    vi.useFakeTimers();
+    try {
+      const { scheduler, forward, databaseState } = harness();
+      forward.runMessages.mockRejectedValueOnce(
+        new Error('network unavailable'),
+      );
+
+      await scheduler.wake(1, 'a.test', 'message');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(forward.runMessages).toHaveBeenCalledOnce();
+
+      databaseState.active = false;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(forward.runMessages).toHaveBeenCalledOnce();
       await scheduler.onModuleDestroy();
     } finally {
       vi.useRealTimers();
@@ -403,21 +481,19 @@ describe('FederationThreadRoundSchedulerService', () => {
   });
 
   it('reconstructs independent message, tombstone, and reverse work at startup', async () => {
-    const { scheduler, database, forward, reverse } = harness();
-    database.db.select.mockReturnValueOnce({
-      from: vi.fn().mockResolvedValue([
-        {
-          threadId: 1,
-          peerDomain: 'a.test',
-          namespaceId: 7,
-          messageTargetSeq: 12,
-          deletionTargetSeq: 4,
-          messageProcessedThroughSeq: 10,
-          deletionProcessedThroughSeq: 2,
-          historyBoundaryReached: false,
-        },
-      ]),
-    });
+    const { scheduler, databaseState, forward, reverse } = harness();
+    databaseState.startupRows = [
+      {
+        threadId: 1,
+        peerDomain: 'a.test',
+        namespaceId: 7,
+        messageTargetSeq: 12,
+        deletionTargetSeq: 4,
+        messageProcessedThroughSeq: 10,
+        deletionProcessedThroughSeq: 2,
+        historyBoundaryReached: false,
+      },
+    ];
 
     await scheduler.onApplicationBootstrap();
     await vi.waitFor(() => {

@@ -25,8 +25,7 @@ export interface ClientStateFeedWrite {
     | 'GROUP_META_FEED_HEAD'
     | 'GROUP_JOIN_REQUEST_HEAD'
     | 'INCOMING_INVITE_HEAD'
-    | 'THREAD_BLOCK'
-    | 'NAMESPACE_CHANGED';
+    | 'THREAD_BLOCK';
   /** Federation context owning this fact. If either relationship endpoint is federated, both
    * authored directions use that captured namespace; only wholly local facts use namespace 0. */
   namespaceId: number;
@@ -91,6 +90,7 @@ export class ClientStateFeedService {
     write: ClientStateFeedWrite,
   ): Promise<number | null> {
     const body = serializeBody(write.body) as Record<string, unknown>;
+    const compactionKey = this.compactionKey(write);
     const [current] = await tx
       .select({
         body: clientStateFeed.body,
@@ -99,12 +99,7 @@ export class ClientStateFeedService {
       .where(
         and(
           eq(clientStateFeed.userId, write.userId),
-          eq(clientStateFeed.account, write.account),
-          eq(clientStateFeed.domain, write.domain),
-          eq(clientStateFeed.eventType, write.eventType),
-          eq(clientStateFeed.subjectAccount, write.subjectAccount),
-          eq(clientStateFeed.subjectDomain, write.subjectDomain),
-          eq(clientStateFeed.namespaceId, write.namespaceId),
+          eq(clientStateFeed.compactionKey, compactionKey),
         ),
       )
       .limit(1);
@@ -120,17 +115,9 @@ export class ClientStateFeedService {
     if (!owner) throw new Error('client state feed owner missing');
     await tx
       .insert(clientStateFeed)
-      .values({ ...write, body, feedId: owner.feedId })
+      .values({ ...write, compactionKey, body, feedId: owner.feedId })
       .onConflictDoUpdate({
-        target: [
-          clientStateFeed.userId,
-          clientStateFeed.account,
-          clientStateFeed.domain,
-          clientStateFeed.eventType,
-          clientStateFeed.subjectAccount,
-          clientStateFeed.subjectDomain,
-          clientStateFeed.namespaceId,
-        ],
+        target: [clientStateFeed.userId, clientStateFeed.compactionKey],
         set: {
           feedId: owner.feedId,
           body,
@@ -138,6 +125,17 @@ export class ClientStateFeedService {
         },
       });
     return owner.feedId;
+  }
+
+  private compactionKey(write: ClientStateFeedWrite): string {
+    return JSON.stringify([
+      write.eventType,
+      write.namespaceId,
+      write.account,
+      write.domain,
+      write.subjectAccount,
+      write.subjectDomain,
+    ]);
   }
 
   /** Merge the account-wide unread watermark for one group's compacted application head. */

@@ -766,6 +766,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       avatar: '',
       bio: '',
       domain: 'peer.test',
+      namespaceId: 12,
     };
     queryStateFeedSpy.mockReturnValue(
       of({
@@ -777,6 +778,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
               feedId: 2,
               account: 'alice',
               domain: 'local.test',
+              namespaceId: 12,
               eventType: 'RELATIONSHIP_INTENT',
               subjectAccount: 'bob',
               subjectDomain: 'peer.test',
@@ -794,6 +796,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
               feedId: 3,
               account: 'bob',
               domain: 'peer.test',
+              namespaceId: 12,
               eventType: 'RELATIONSHIP_INTENT',
               subjectAccount: 'alice',
               subjectDomain: 'local.test',
@@ -848,6 +851,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       avatar: '',
       description: '',
       profileRev: 1,
+      namespaceId: 0,
     };
     queryStateFeedSpy.mockReturnValue(
       of({
@@ -859,6 +863,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
               feedId: 2,
               account: '!dev',
               domain: 'local',
+              namespaceId: 0,
               eventType: 'RELATIONSHIP_INTENT',
               subjectAccount: 'alice',
               subjectDomain: 'local',
@@ -876,6 +881,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
               feedId: 3,
               account: 'alice',
               domain: 'local',
+              namespaceId: 0,
               eventType: 'RELATIONSHIP_INTENT',
               subjectAccount: '!dev',
               subjectDomain: 'local',
@@ -893,6 +899,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
               feedId: 4,
               account: '!dev',
               domain: 'local',
+              namespaceId: 0,
               eventType: 'GROUP_META_FEED_HEAD',
               subjectAccount: '',
               subjectDomain: 'local',

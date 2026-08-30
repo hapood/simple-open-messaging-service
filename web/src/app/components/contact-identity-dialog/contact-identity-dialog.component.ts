@@ -10,13 +10,14 @@ import {
 import { TranslocoPipe } from '@jsverse/transloco';
 import { RouteService, PopupType } from '../../services/route.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
-import { displayIdentityDomain, type User } from '../../services/model';
+import type { User } from '../../services/model';
 import { UserService } from '../../services/user.service';
 import {
   UserAvatarComponent,
   UserAvatarType,
 } from '../user-avatar/user-avatar.component';
 import { DialogActionFooterComponent } from '../dialog-action-footer/dialog-action-footer.component';
+import { FederationNamespaceService } from '../../services/federation-namespace.service';
 
 export interface ContactIdentityDialogData {
   userId?: number;
@@ -52,6 +53,7 @@ export class ContactIdentityDialogComponent {
   private readonly route = inject(RouteService);
   private readonly nav = inject(NavStateMachineService);
   private readonly userService = inject(UserService);
+  private readonly namespaces = inject(FederationNamespaceService);
   readonly identity = input.required<ContactIdentityDialogData>();
   readonly relationship = signal<RelationshipState | undefined>(undefined);
   readonly optimisticFriendThreadId = signal<number | undefined>(undefined);
@@ -72,14 +74,14 @@ export class ContactIdentityDialogComponent {
     return identity.domain !== 'local'
       ? identity.namespaceId === undefined
         ? identity.domain
-        : displayIdentityDomain(identity.domain, identity.namespaceId)
+        : this.namespaces.displayDomain(identity.domain, identity.namespaceId)
       : null;
   });
   readonly displayDomain = computed(() => {
     const identity = this.identity();
     return identity.namespaceId === undefined
       ? identity.domain
-      : displayIdentityDomain(identity.domain, identity.namespaceId);
+      : this.namespaces.displayDomain(identity.domain, identity.namespaceId);
   });
   readonly actionKey = computed(() => {
     const identity = this.identity();

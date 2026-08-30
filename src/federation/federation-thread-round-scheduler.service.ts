@@ -5,10 +5,16 @@ import {
   OnModuleDestroy,
 } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
+import { and, eq } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
-import { federationThreadSyncState } from '../database/schema.js';
+import {
+  federationThreadSyncState,
+  federatedPeer,
+  identityNamespace,
+  messageThread,
+} from '../database/schema.js';
 import {
   FederationMessageContextError,
   S2sResponseError,
@@ -26,7 +32,6 @@ import { FederationThreadRoundRemoteError } from './federation-thread-round-erro
 import { FederationThreadSyncStateService } from './federation-thread-sync-state.service.js';
 import { FederationService } from './federation.service.js';
 import { FederationThreadSourceService } from './federation-thread-source.service.js';
-import { FederationNamespaceService } from './federation-namespace.service.js';
 
 type Direction = 'message' | 'tombstone' | 'reverse';
 
@@ -72,6 +77,7 @@ export class FederationThreadRoundSchedulerService
   private readonly retries = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly retryAttempts = new Map<string, number>();
   private readonly blockedThreads = new Set<string>();
+  private readonly inactiveThreads = new Set<string>();
   private readonly statePushDirty = new Set<string>();
   private readonly statePushActive = new Set<string>();
   private readonly statePushTimers = new Map<
@@ -95,17 +101,44 @@ export class FederationThreadRoundSchedulerService
     private readonly reverse: FederationThreadReverseRoundExecutorService,
     private readonly federation: FederationService,
     private readonly sources: FederationThreadSourceService,
-    private readonly namespaces: FederationNamespaceService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
     const rows = await this.database.db
-      .select()
-      .from(federationThreadSyncState);
+      .select({
+        threadId: federationThreadSyncState.threadId,
+        peerDomain: identityNamespace.domain,
+        namespaceId: messageThread.authorityNamespaceId,
+        messageTargetSeq: federationThreadSyncState.messageTargetSeq,
+        deletionTargetSeq: federationThreadSyncState.deletionTargetSeq,
+        messageProcessedThroughSeq:
+          federationThreadSyncState.messageProcessedThroughSeq,
+        deletionProcessedThroughSeq:
+          federationThreadSyncState.deletionProcessedThroughSeq,
+        historyBoundaryReached:
+          federationThreadSyncState.historyBoundaryReached,
+      })
+      .from(federationThreadSyncState)
+      .innerJoin(
+        messageThread,
+        eq(messageThread.id, federationThreadSyncState.threadId),
+      )
+      .innerJoin(
+        identityNamespace,
+        eq(identityNamespace.id, messageThread.authorityNamespaceId),
+      )
+      .innerJoin(
+        federatedPeer,
+        and(
+          eq(federatedPeer.domain, identityNamespace.domain),
+          eq(
+            federatedPeer.activeNamespaceId,
+            messageThread.authorityNamespaceId,
+          ),
+        ),
+      );
     for (const state of rows) {
       try {
-        const context = await this.namespaces.captureActive(state.peerDomain);
-        if (context.namespaceId !== state.namespaceId) continue;
         await this.sources.resolve(
           state.threadId,
           state.peerDomain,
@@ -146,8 +179,14 @@ export class FederationThreadRoundSchedulerService
 
   @OnEvent(FEDERATION_THREAD_ROUND_WAKE)
   onWake(event: FederationThreadRoundWake): void {
+    const key = this.workKey(
+      event.threadId,
+      event.peerDomain,
+      event.namespaceId,
+    );
+    if (this.inactiveThreads.has(key)) return;
     this.blockedThreads.delete(
-      this.workKey(event.threadId, event.peerDomain, event.namespaceId),
+      key,
     );
     if (event.direction === 'both') {
       void this.wakeCaptured(
@@ -216,7 +255,23 @@ export class FederationThreadRoundSchedulerService
     peerDomain: string,
     direction: Direction,
   ): Promise<void> {
-    const context = await this.namespaces.captureActive(peerDomain);
+    const [context] = await this.database.db
+      .select({
+        peerDomain: identityNamespace.domain,
+        namespaceId: messageThread.authorityNamespaceId,
+      })
+      .from(messageThread)
+      .innerJoin(
+        identityNamespace,
+        eq(identityNamespace.id, messageThread.authorityNamespaceId),
+      )
+      .where(eq(messageThread.id, threadId))
+      .limit(1);
+    if (!context || context.peerDomain !== peerDomain) {
+      throw new FederationMessageContextError(
+        `thread ${threadId} is not owned by ${peerDomain}`,
+      );
+    }
     return this.wakeCaptured(
       threadId,
       peerDomain,
@@ -234,7 +289,11 @@ export class FederationThreadRoundSchedulerService
     if (this.shuttingDown) return;
     const queue = this.queues[direction];
     const workKey = this.workKey(threadId, peerDomain, namespaceId);
-    if (this.blockedThreads.has(workKey)) return;
+    if (
+      this.blockedThreads.has(workKey) ||
+      this.inactiveThreads.has(workKey)
+    )
+      return;
     if (queue.activeThreads.has(workKey)) {
       queue.dirtyThreads.add(workKey);
       return;
@@ -262,6 +321,7 @@ export class FederationThreadRoundSchedulerService
     this.stateDrainRetryTimers.clear();
     this.stateDrainTargets.clear();
     this.blockedThreads.clear();
+    this.inactiveThreads.clear();
     for (const queue of Object.values(this.queues)) {
       queue.byPeer.clear();
       queue.peerOrder.length = 0;
@@ -452,7 +512,7 @@ export class FederationThreadRoundSchedulerService
     }
     this.clearRetry(threadId, peerDomain, namespaceId, direction);
     const dirty = queue.dirtyThreads.delete(workKey);
-    const state = await this.states.require(threadId, peerDomain, namespaceId);
+    const state = await this.states.require(threadId);
     const shouldContinue =
       direction === 'message'
         ? state.messageProcessedThroughSeq < state.messageTargetSeq
@@ -504,10 +564,36 @@ export class FederationThreadRoundSchedulerService
     const delay = this.retryDelay(attempt, minimumDelayMs);
     const timer = setTimeout(() => {
       this.retries.delete(key);
-      void this.wake(threadId, peerDomain, direction);
+      void this.retryIfActive(
+        threadId,
+        peerDomain,
+        namespaceId,
+        direction,
+      );
     }, delay);
     timer.unref?.();
     this.retries.set(key, timer);
+  }
+
+  private async retryIfActive(
+    threadId: number,
+    peerDomain: string,
+    namespaceId: number,
+    direction: Direction,
+  ): Promise<void> {
+    if (await this.isNamespaceActive(peerDomain, namespaceId)) {
+      await this.wakeCaptured(threadId, peerDomain, namespaceId, direction);
+      return;
+    }
+    const key = this.workKey(threadId, peerDomain, namespaceId);
+    this.inactiveThreads.add(key);
+    this.retryAttempts.delete(
+      this.retryKey(threadId, peerDomain, namespaceId, direction),
+    );
+    this.queues[direction].dirtyThreads.delete(key);
+    this.logger.log(
+      `discarded ${direction} retry for inactive namespace ${namespaceId} of ${peerDomain}`,
+    );
   }
 
   private async handleRoundFailure(
@@ -555,6 +641,16 @@ export class FederationThreadRoundSchedulerService
     }
     const decision = this.retryDecision(cause);
     if (decision.retry) {
+      if (!(await this.isNamespaceActive(peerDomain, namespaceId))) {
+        const key = this.workKey(threadId, peerDomain, namespaceId);
+        this.inactiveThreads.add(key);
+        this.queues[direction].dirtyThreads.delete(key);
+        this.clearRetry(threadId, peerDomain, namespaceId, direction);
+        this.logger.log(
+          `discarded ${direction} retry for inactive namespace ${namespaceId} of ${peerDomain}`,
+        );
+        return false;
+      }
       this.scheduleRetry(
         threadId,
         peerDomain,
@@ -568,6 +664,23 @@ export class FederationThreadRoundSchedulerService
       `stopped permanent ${direction} failure for federation thread ${threadId} from ${peerDomain}: ${(cause as Error).message}`,
     );
     return false;
+  }
+
+  private async isNamespaceActive(
+    peerDomain: string,
+    namespaceId: number,
+  ): Promise<boolean> {
+    const [peer] = await this.database.db
+      .select({ domain: federatedPeer.domain })
+      .from(federatedPeer)
+      .where(
+        and(
+          eq(federatedPeer.domain, peerDomain),
+          eq(federatedPeer.activeNamespaceId, namespaceId),
+        ),
+      )
+      .limit(1);
+    return peer !== undefined;
   }
 
   private retryDecision(error: unknown): { retry: boolean; delayMs: number } {

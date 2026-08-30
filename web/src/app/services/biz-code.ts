@@ -48,6 +48,7 @@ export const BusinessCode = {
   FEDERATION_QUOTA_EXCEEDED: 50011,
   FEDERATION_PAYLOAD_TOO_LARGE: 50012,
   FEDERATION_CAPABILITY_DISABLED: 50013,
+  FEDERATION_NAMESPACE_INACTIVE: 50026,
 } as const;
 
 /**
@@ -101,6 +102,8 @@ const BIZ_CODE_KEY: Readonly<Record<number, string>> = {
     'errors.biz.federationPayloadTooLarge',
   [BusinessCode.FEDERATION_CAPABILITY_DISABLED]:
     'errors.biz.federationCapabilityDisabled',
+  [BusinessCode.FEDERATION_NAMESPACE_INACTIVE]:
+    'errors.biz.federationNamespaceInactive',
 };
 
 /**

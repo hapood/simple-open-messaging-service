@@ -97,8 +97,6 @@ export class FederationThreadForwardRoundExecutorService {
               await FederationThreadSyncStateService.advanceMessageProcessedThroughInTx(
                 tx,
                 threadId,
-                peerDomain,
-                namespaceId,
                 messageAdvance.processed,
                 messageAdvance.target,
               );
@@ -156,8 +154,6 @@ export class FederationThreadForwardRoundExecutorService {
               await FederationThreadSyncStateService.advanceDeletionProcessedThroughInTx(
                 tx,
                 threadId,
-                peerDomain,
-                namespaceId,
                 deletionAdvance.processed,
                 deletionAdvance.target,
               );

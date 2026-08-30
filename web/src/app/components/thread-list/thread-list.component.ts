@@ -19,7 +19,6 @@ import {
 import { UserService } from '../../services/user.service';
 import {
   ConversationItem,
-  displayIdentityDomain,
   displayThreadName,
   messageCreatorKey,
 } from '../../services/model';
@@ -40,6 +39,7 @@ import { LanguageService } from '../../services/language.service';
 import { formatListTime } from '../message-cards/date-format';
 import { playFlipList, snapshotFlipRects } from '../../lib/flip-list';
 import { ComposerDraftService } from '../../services/composer-draft.service';
+import { FederationNamespaceService } from '../../services/federation-namespace.service';
 
 /**
  * Conversation list view. A thin view over the shared ConversationListService (the client-side source
@@ -71,6 +71,7 @@ export class ThreadListComponent implements OnInit {
   private readonly userService = inject(UserService);
   private readonly transloco = inject(TranslocoService);
   private readonly language = inject(LanguageService);
+  private readonly namespaces = inject(FederationNamespaceService);
   private readonly host = inject(ElementRef);
   readonly composerDrafts = inject(ComposerDraftService);
   /** Last-known row rects — the "before" snapshot the next top-insert FLIPs against. Refreshed on
@@ -239,10 +240,13 @@ export class ThreadListComponent implements OnInit {
   federatedDomain(t: ConversationItem): string | undefined {
     if (t.type === 'P2P')
       return t.peerUser.domain !== 'local'
-        ? displayIdentityDomain(t.peerUser.domain, t.peerUser.namespaceId)
+        ? this.namespaces.displayDomain(
+            t.peerUser.domain,
+            t.peerUser.namespaceId,
+          )
         : undefined;
     return t.group.domain !== 'local'
-      ? displayIdentityDomain(t.group.domain, t.group.namespaceId)
+      ? this.namespaces.displayDomain(t.group.domain, t.group.namespaceId)
       : undefined;
   }
 

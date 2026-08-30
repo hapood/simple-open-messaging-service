@@ -1565,7 +1565,7 @@ export const clientStateFeed = pgTable(
     id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
     userId: integer().notNull(),
     /** Event-specific stable identity used only for compaction within one local account. */
-    compactionKey: varchar({ length: 255 }).notNull(),
+    compactionKey: text().notNull(),
     account: varchar({ length: 31 }).notNull(),
     domain: varchar({ length: 63 }).notNull(),
     eventType: varchar({ length: 31 }).notNull(),

@@ -1644,8 +1644,6 @@ export class FederationStateFeedConsumerService {
           const merged =
             await FederationThreadSyncStateService.reconcileThreadHeadInTx(tx, {
               threadId: target.threadId,
-              peerDomain,
-              namespaceId,
               messageTargetSeq: Number(body.messageEndSeq),
               deletionTargetSeq: Number(body.tombstoneEndSeq),
               reverseEnabled: target.reverseEnabled,

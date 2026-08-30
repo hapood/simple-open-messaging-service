@@ -126,8 +126,6 @@ describe('FederationThreadSyncStateService processed positions', () => {
     await FederationThreadSyncStateService.advanceMessageProcessedThroughInTx(
       message.tx as never,
       31,
-      'peer.test',
-      7,
       8,
       12,
     );
@@ -137,8 +135,6 @@ describe('FederationThreadSyncStateService processed positions', () => {
     await FederationThreadSyncStateService.advanceDeletionProcessedThroughInTx(
       deletion.tx as never,
       31,
-      'peer.test',
-      7,
       5,
       7,
     );
@@ -157,8 +153,6 @@ describe('FederationThreadSyncStateService processed positions', () => {
       FederationThreadSyncStateService.advanceMessageProcessedThroughInTx(
         tx as never,
         31,
-        'peer.test',
-        7,
         13,
         12,
       ),
@@ -181,8 +175,6 @@ describe('FederationThreadSyncStateService initial history interval', () => {
           mock.tx as never,
           {
             threadId: 31,
-            peerDomain: 'peer.test',
-            namespaceId: 7,
             messageTargetSeq: latest,
             deletionTargetSeq: 0,
             reverseEnabled: true,
@@ -212,8 +204,6 @@ describe('FederationThreadSyncStateService initial history interval', () => {
         mock.tx as never,
         {
           threadId: 31,
-          peerDomain: 'peer.test',
-          namespaceId: 7,
           messageTargetSeq: 2,
           deletionTargetSeq: 0,
           reverseEnabled: true,
@@ -244,8 +234,6 @@ describe('FederationThreadSyncStateService initial history interval', () => {
       mock.tx as never,
       {
         threadId: 31,
-        peerDomain: 'peer.test',
-        namespaceId: 7,
         messageTargetSeq: 3,
         deletionTargetSeq: 0,
         reverseEnabled: true,
@@ -268,8 +256,6 @@ describe('FederationThreadSyncStateService initial history interval', () => {
       mock.tx as never,
       {
         threadId: 31,
-        peerDomain: 'peer.test',
-        namespaceId: 7,
         messageTargetSeq: 20,
         deletionTargetSeq: 6,
         reverseEnabled: true,
@@ -305,8 +291,6 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
         mock.tx as never,
         {
           threadId: 31,
-          peerDomain: 'peer.test',
-          namespaceId: 7,
           messageTargetSeq: 200,
           deletionTargetSeq: 20,
           reverseEnabled: true,
@@ -353,8 +337,6 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
       mock.tx as never,
       {
         threadId: 31,
-        peerDomain: 'peer.test',
-        namespaceId: 7,
         messageTargetSeq: 200,
         deletionTargetSeq: 0,
         reverseEnabled: true,
@@ -385,8 +367,6 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
       mock.tx as never,
       {
         threadId: 31,
-        peerDomain: 'peer.test',
-        namespaceId: 7,
         messageTargetSeq: 200,
         deletionTargetSeq: 0,
         reverseEnabled: true,
@@ -414,8 +394,6 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
       mock.tx as never,
       {
         threadId: 31,
-        peerDomain: 'peer.test',
-        namespaceId: 7,
         messageTargetSeq: 151,
         deletionTargetSeq: 0,
         reverseEnabled: true,
@@ -451,7 +429,7 @@ describe('FederationThreadSyncStateService reverse window reconstruction', () =>
     } as never);
 
     await expect(
-      service.resolveReverseWindow(31, 'peer.test', 7),
+      service.resolveReverseWindow(31),
     ).resolves.toEqual({
       authorizationEpoch: 8,
       gapId: 12n,
@@ -476,7 +454,7 @@ describe('FederationThreadSyncStateService reverse window reconstruction', () =>
     } as never);
 
     await expect(
-      service.resolveReverseWindow(31, 'peer.test', 7),
+      service.resolveReverseWindow(31),
     ).resolves.toEqual({
       authorizationEpoch: 8,
       gapId: null,
@@ -505,8 +483,6 @@ describe('FederationThreadSyncStateService reverse closure commit', () => {
       { execute, update } as never,
       {
         threadId: 31,
-        peerDomain: 'peer.test',
-        namespaceId: 7,
         authorizationEpoch: 7,
         gapId: 12n,
         beforeSeq: 100,
@@ -543,8 +519,6 @@ describe('FederationThreadSyncStateService reverse closure commit', () => {
       { execute, select, update, delete: remove } as never,
       {
         threadId: 31,
-        peerDomain: 'peer.test',
-        namespaceId: 7,
         authorizationEpoch: 7,
         gapId: 12n,
         beforeSeq: 100,
@@ -572,8 +546,6 @@ it('locks MessageThread when reconciling a head', async () => {
     mock.tx as never,
     {
       threadId: 31,
-      peerDomain: 'peer.test',
-      namespaceId: 7,
       messageTargetSeq: 0,
       deletionTargetSeq: 0,
       reverseEnabled: true,

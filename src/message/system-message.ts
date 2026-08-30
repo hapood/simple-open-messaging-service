@@ -8,6 +8,7 @@ export const SystemMessageType = {
   GROUP_OWNER_TRANSFERRED: 'GROUP_OWNER_TRANSFERRED',
   MESSAGE_WITHDRAWN: 'MESSAGE_WITHDRAWN',
   MESSAGES_MODERATED: 'MESSAGES_MODERATED',
+  FEDERATION_NAMESPACE_ARCHIVED: 'FEDERATION_NAMESPACE_ARCHIVED',
 } as const;
 
 export type SystemMessageType =
@@ -18,6 +19,7 @@ export interface SystemMessageContent {
   subject?: { account: string; domain: string };
   actor?: { account: string; domain: string };
   count?: number;
+  domain?: string;
 }
 
 const TYPES = new Set<string>(Object.values(SystemMessageType));
@@ -33,15 +35,19 @@ export function parseSystemMessageContent(
     const type = String(body['type']);
     const subjectRequired =
       type !== SystemMessageType.FRIEND_ADDED &&
-      type !== SystemMessageType.MESSAGES_MODERATED;
+      type !== SystemMessageType.MESSAGES_MODERATED &&
+      type !== SystemMessageType.FEDERATION_NAMESPACE_ARCHIVED;
     const countRequired = type === SystemMessageType.MESSAGES_MODERATED;
+    const domainRequired =
+      type === SystemMessageType.FEDERATION_NAMESPACE_ARCHIVED;
     if (
       keys.some(
         (key) =>
           key !== 'type' &&
           key !== 'subject' &&
           key !== 'actor' &&
-          key !== 'count',
+          key !== 'count' &&
+          key !== 'domain',
       ) ||
       !TYPES.has(type) ||
       (subjectRequired && subject === undefined) ||
@@ -51,6 +57,9 @@ export function parseSystemMessageContent(
           !Number.isSafeInteger(body['count']) ||
           body['count'] < 1)) ||
       (!countRequired && body['count'] !== undefined) ||
+      (domainRequired &&
+        (typeof body['domain'] !== 'string' || !body['domain'])) ||
+      (!domainRequired && body['domain'] !== undefined) ||
       (subject !== undefined &&
         (typeof subject !== 'object' ||
           Array.isArray(subject) ||

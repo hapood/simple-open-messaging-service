@@ -9,56 +9,9 @@ import {
   CACHE_SCHEMA_VERSION,
   LocalCacheVersionMismatchError,
   MESSAGE_CACHE_SCHEMA_VERSION,
-  mergeCoveredTail,
   STATE_FEED_WORKER_FACTORY,
   WebdbService,
 } from './webdb.service';
-
-describe('mergeCoveredTail', () => {
-  it('normalizes the first interval and preserves the right-most disjoint interval', () => {
-    expect(mergeCoveredTail(null, { left: 9, right: 3 })).toEqual({
-      left: 3,
-      right: 9,
-    });
-    expect(
-      mergeCoveredTail({ left: 20, right: 30 }, { left: 1, right: 10 }),
-    ).toEqual({
-      left: 20,
-      right: 30,
-    });
-    expect(
-      mergeCoveredTail({ left: 1, right: 10 }, { left: 20, right: 30 }),
-    ).toEqual({
-      left: 20,
-      right: 30,
-    });
-  });
-
-  it('merges overlap, adjacency, containment, and extensions in both directions', () => {
-    const tail = { left: 10, right: 20 };
-    expect(mergeCoveredTail(tail, { left: 15, right: 18 })).toEqual(tail);
-    expect(mergeCoveredTail(tail, { left: 5, right: 10 })).toEqual({
-      left: 5,
-      right: 20,
-    });
-    expect(mergeCoveredTail(tail, { left: 20, right: 25 })).toEqual({
-      left: 10,
-      right: 25,
-    });
-    expect(mergeCoveredTail(tail, { left: 5, right: 25 })).toEqual({
-      left: 5,
-      right: 25,
-    });
-    expect(mergeCoveredTail(tail, { left: 1, right: 9 })).toEqual({
-      left: 1,
-      right: 20,
-    });
-    expect(mergeCoveredTail(tail, { left: 21, right: 30 })).toEqual({
-      left: 10,
-      right: 30,
-    });
-  });
-});
 
 describe('WebdbService', () => {
   describe('IDB-backed storage (fake-indexeddb)', () => {
@@ -92,6 +45,7 @@ describe('WebdbService', () => {
         'friendRequests',
         'groups',
         'members',
+        'namespaces',
         'relationshipIntents',
         'settings',
         'threads',
@@ -100,6 +54,7 @@ describe('WebdbService', () => {
       const messageDb = await webdb.messageDb();
       expect(messageDb.name).toBe('soms-msgdb-u1');
       expect([...messageDb.objectStoreNames].sort()).toEqual([
+        'messageRanges',
         'messages',
         'settings',
       ]);
@@ -211,13 +166,117 @@ describe('WebdbService', () => {
 
     it('counts only cached message rows', async () => {
       await webdb.openForUser('1');
-      await webdb.putMessages([
+      await webdb.putCachedMessages([
         { threadId: 7, seq: 1 } as Message,
         { threadId: 7, seq: 2 } as Message,
         { threadId: 9, seq: 1 } as Message,
       ]);
 
       expect(await webdb.countCachedMessages()).toBe(3);
+    });
+
+    it('atomically commits messages and canonical explicit ranges', async () => {
+      await webdb.openForUser('1');
+      const page = await webdb.commitBrowserMessagePage({
+        threadId: 7,
+        scan: { left: 9, right: 50 },
+        messages: [
+          { threadId: 7, seq: 10, content: '', isDeleted: false } as Message,
+          { threadId: 7, seq: 40, content: '', isDeleted: false } as Message,
+        ],
+        gaps: [{ left: 19, right: 30, state: 'SERVER_PENDING' }],
+        knownNewestSeq: 50,
+      });
+
+      expect(page.messages.map((message) => message.seq)).toEqual([10, 40]);
+      expect(page.ranges).toEqual([
+        { threadId: 7, left: 9, right: 19, state: 'LOCAL_COVERED' },
+        { threadId: 7, left: 19, right: 30, state: 'SERVER_PENDING' },
+        { threadId: 7, left: 30, right: 50, state: 'LOCAL_COVERED' },
+      ]);
+      expect(await webdb.getMessageRanges(7)).toEqual(page.ranges);
+      expect((await webdb.getMessage(7, 10))?.seq).toBe(10);
+    });
+
+    it('does not partially write a page rejected by the range reducer', async () => {
+      await webdb.openForUser('1');
+
+      await expect(
+        webdb.commitBrowserMessagePage({
+          threadId: 7,
+          scan: { left: 9, right: 30 },
+          messages: [{ threadId: 7, seq: 20 } as Message],
+          gaps: [{ left: 19, right: 25, state: 'SERVER_PENDING' }],
+        }),
+      ).rejects.toThrow('overlaps a server gap');
+
+      expect(await webdb.getMessage(7, 20)).toBeUndefined();
+      expect(await webdb.getMessageRanges(7)).toEqual([]);
+    });
+
+    it('serializes complete page commits for one thread before opening either transaction', async () => {
+      await webdb.openForUser('1');
+      const liveDb = await webdb.messageDb();
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      let calls = 0;
+      const messageDb = vi
+        .spyOn(webdb, 'messageDb')
+        .mockImplementation(async () => {
+          calls++;
+          if (calls === 1) await held;
+          return liveDb;
+        });
+
+      const first = webdb.commitBrowserMessagePage({
+        threadId: 7,
+        scan: { left: 0, right: 1 },
+        messages: [
+          { threadId: 7, seq: 1, content: '', isDeleted: false } as Message,
+        ],
+        gaps: [],
+      });
+      await Promise.resolve();
+      const second = webdb.commitBrowserMessagePage({
+        threadId: 7,
+        scan: { left: 1, right: 2 },
+        messages: [
+          { threadId: 7, seq: 2, content: '', isDeleted: false } as Message,
+        ],
+        gaps: [],
+      });
+      await Promise.resolve();
+      expect(calls).toBe(1);
+
+      release();
+      await Promise.all([first, second]);
+      expect(calls).toBe(2);
+      messageDb.mockRestore();
+      expect(await webdb.getMessageRanges(7)).toEqual([
+        { threadId: 7, left: 0, right: 2, state: 'LOCAL_COVERED' },
+      ]);
+    });
+
+    it('deletes one thread messages, ranges, and head without touching another thread', async () => {
+      await webdb.openForUser('1');
+      for (const threadId of [7, 8]) {
+        await webdb.commitBrowserMessagePage({
+          threadId,
+          scan: { left: 0, right: 1 },
+          messages: [
+            { threadId, seq: 1, content: '', isDeleted: false } as Message,
+          ],
+          gaps: [],
+          knownNewestSeq: 1,
+        });
+      }
+
+      await webdb.deleteMessagesByThread(7);
+
+      expect(await webdb.getMessage(7, 1)).toBeUndefined();
+      expect(await webdb.getMessageRanges(7)).toEqual([]);
+      expect((await webdb.getMessage(8, 1))?.seq).toBe(1);
+      expect(await webdb.getMessageRanges(8)).toHaveLength(1);
     });
 
     it('closeAndDelete physically removes the database (per-user wipe)', async () => {
@@ -269,7 +328,11 @@ describe('WebdbService', () => {
 
     it('full recreation blocks new core operations and waits for an admitted core read', async () => {
       await webdb.openForUser('1');
-      await webdb.putThread({ threadId: 7, type: 'P2P' } as never);
+      await webdb.putThread({
+        threadId: 7,
+        authorityNamespaceId: 0,
+        type: 'P2P',
+      } as never);
       const liveDb = await webdb.db();
       let release!: () => void;
       const held = new Promise<void>((resolve) => (release = resolve));
@@ -286,7 +349,11 @@ describe('WebdbService', () => {
         .then(() => (recreated = true));
 
       await expect(
-        webdb.putThread({ threadId: 8, type: 'P2P' } as never),
+        webdb.putThread({
+          threadId: 8,
+          authorityNamespaceId: 0,
+          type: 'P2P',
+        } as never),
       ).rejects.toThrowError('account cache lifetime expired');
       expect(recreated).toBe(false);
 
@@ -303,6 +370,7 @@ describe('WebdbService', () => {
       await webdb.openForUser('1');
       await webdb.putThread({
         threadId: 7,
+        authorityNamespaceId: 0,
         type: 'P2P',
         friendshipActive: true,
         conversationState: 'ACTIVE',
@@ -828,12 +896,14 @@ describe('WebdbService', () => {
       const db = await webdb.openForUser('1');
       await webdb.putThread({
         threadId: 7,
+        authorityNamespaceId: 0,
         type: 'P2P',
         friendshipActive: true,
         conversationState: 'ACTIVE',
       } as never);
       await webdb.putThread({
         threadId: 9,
+        authorityNamespaceId: 0,
         type: 'GROUP',
         blocked: true,
         group: { memberCount: 1, groupMetaFeedId: '1' },
@@ -882,6 +952,7 @@ describe('WebdbService', () => {
       await webdb.openForUser('1');
       await webdb.putThread({
         threadId: 7,
+        authorityNamespaceId: 0,
         type: 'P2P',
         blocked: false,
       } as never);
@@ -907,10 +978,88 @@ describe('WebdbService', () => {
       expect(await webdb.getMeta('stateFeedId')).toBe(6);
     });
 
+    it('optimistically activates only the greatest newly discovered namespace', async () => {
+      await webdb.openForUser('1');
+      await webdb.putThread({
+        threadId: 7,
+        authorityNamespaceId: 12,
+        type: 'P2P',
+        conversationState: 'ACTIVE',
+        peerUser: { domain: 'peer.test', namespaceId: 12 },
+      } as never);
+      await webdb.putProfile({
+        identity: 'u11',
+        id: 11,
+        kind: 'user',
+        name: 'Old',
+        account: 'old',
+        avatar: '',
+        bio: '',
+        domain: 'peer.test',
+        namespaceId: 11,
+        sourceServer: 'peer.test',
+        profileRev: 1,
+      });
+      await webdb.putProfile({
+        identity: 'u13',
+        id: 13,
+        kind: 'user',
+        name: 'New',
+        account: 'new',
+        avatar: '',
+        bio: '',
+        domain: 'peer.test',
+        namespaceId: 13,
+        sourceServer: 'peer.test',
+        profileRev: 1,
+      });
+
+      expect(await webdb.getNamespaces()).toContainEqual({
+        domain: 'peer.test',
+        namespaceId: 12,
+        status: 'ARCHIVED',
+      });
+      expect(await webdb.getNamespaces()).toContainEqual({
+        domain: 'peer.test',
+        namespaceId: 11,
+        status: 'ARCHIVED',
+      });
+      expect(await webdb.getNamespaces()).toContainEqual({
+        domain: 'peer.test',
+        namespaceId: 13,
+        status: 'ACTIVE',
+      });
+    });
+
+    it('archives a rejected namespace without reactivating a repeated fact', async () => {
+      await webdb.openForUser('1');
+      const thread = {
+        threadId: 7,
+        authorityNamespaceId: 12,
+        type: 'P2P',
+        conversationState: 'ACTIVE',
+        peerUser: { domain: 'peer.test', namespaceId: 12 },
+      } as never;
+      await webdb.putThread(thread);
+      await webdb.archiveNamespace('peer.test', 12);
+      await webdb.putThread(thread);
+
+      expect(await webdb.getNamespaces()).toContainEqual({
+        domain: 'peer.test',
+        namespaceId: 12,
+        status: 'ARCHIVED',
+      });
+      expect((await webdb.getThreads())[0]).toMatchObject({
+        authorityNamespaceId: 12,
+        conversationState: 'ACTIVE',
+      });
+    });
+
     it('materializes full group metadata and pages/searches the local roster', async () => {
       const db = await webdb.openForUser('1');
       await webdb.putThread({
         threadId: 9,
+        authorityNamespaceId: 0,
         type: 'GROUP',
         group: { memberCount: 0, groupMetaFeedId: '0' },
       } as never);
@@ -1247,7 +1396,11 @@ describe('WebdbService', () => {
 
     it('commits missed-summary threads and cursor together', async () => {
       await webdb.openForUser('1');
-      const item = { threadId: 9, type: 'P2P' } as never;
+      const item = {
+        threadId: 9,
+        authorityNamespaceId: 0,
+        type: 'P2P',
+      } as never;
       const cursor = 4;
 
       await webdb.applyCatchUp([item], cursor);
@@ -1259,17 +1412,20 @@ describe('WebdbService', () => {
     it('recreates only the message DB and preserves the core cache', async () => {
       await webdb.openForUser('1');
       await webdb.putMeta('sentinel', 'core');
-      await webdb.putMessages(
-        [{ threadId: 7, seq: 1 } as never],
-        { threadId: 7, left: 1, right: 1 },
-        { threadId: 7, seq: 1 },
-      );
+      await webdb.commitBrowserMessagePage({
+        threadId: 7,
+        scan: { left: 0, right: 1 },
+        messages: [{ threadId: 7, seq: 1 } as never],
+        gaps: [],
+        knownNewestSeq: 1,
+      });
 
       await webdb.recreateMessageCache();
 
       expect(await webdb.getMeta('sentinel')).toBe('core');
       expect(await webdb.getMessage(7, 1)).toBeUndefined();
-      expect(await webdb.getMessageCoverage(7)).toBeUndefined();
+      expect(await webdb.getMessageRanges(7)).toEqual([]);
+      expect(await webdb.getMessageHead(7)).toBeUndefined();
     });
 
     it('aborts the old lifetime, closes admission, and waits for active message operations before recreating', async () => {
@@ -1310,10 +1466,13 @@ describe('WebdbService', () => {
       await webdb.recreateMessageCache();
 
       await expect(
-        webdb.putMessages(
-          [{ threadId: 7, seq: 1 } as never],
-          undefined,
-          undefined,
+        webdb.commitBrowserMessagePage(
+          {
+            threadId: 7,
+            scan: { left: 0, right: 1 },
+            messages: [{ threadId: 7, seq: 1 } as never],
+            gaps: [],
+          },
           lifetime,
         ),
       ).rejects.toThrowError('message cache lifetime expired');

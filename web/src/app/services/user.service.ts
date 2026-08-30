@@ -222,20 +222,6 @@ export type ClientStateFeedItem =
       subjectAccount: string;
       subjectDomain: 'local';
       body: { threadId: number; blocked: boolean };
-    }
-  | {
-      feedId: number;
-      account: '';
-      domain: string;
-      namespaceId: number;
-      eventType: 'NAMESPACE_CHANGED';
-      subjectAccount: '';
-      subjectDomain: 'local';
-      body: {
-        domain: string;
-        previousNamespaceId: number;
-        activeNamespaceId: number | null;
-      };
     };
 
 export interface ClientGroupMetaFeedPage {

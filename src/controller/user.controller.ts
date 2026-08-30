@@ -71,8 +71,7 @@ type ClientStateFeedItem = {
     | 'GROUP_META_FEED_HEAD'
     | 'GROUP_JOIN_REQUEST_HEAD'
     | 'INCOMING_INVITE_HEAD'
-    | 'THREAD_BLOCK'
-    | 'NAMESPACE_CHANGED';
+    | 'THREAD_BLOCK';
   subjectAccount: string;
   subjectDomain: string;
   body: unknown;

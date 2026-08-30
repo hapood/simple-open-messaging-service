@@ -303,8 +303,6 @@ export class FederationThreadReverseRoundExecutorService {
     await this.database.db.transaction(async (tx) => {
       await FederationThreadSyncStateService.commitReverseBatchInTx(tx, {
         threadId: source.threadId,
-        peerDomain: source.peerDomain,
-        namespaceId: source.namespaceId,
         authorizationEpoch: context.authorizationEpoch,
         gapId: context.gapId,
         beforeSeq: batch.before,
@@ -345,8 +343,6 @@ export class FederationThreadReverseRoundExecutorService {
     await this.database.db.transaction((tx) =>
       FederationThreadSyncStateService.markReverseGapUnavailableInTx(tx, {
         threadId: source.threadId,
-        peerDomain: source.peerDomain,
-        namespaceId: source.namespaceId,
         authorizationEpoch: context.authorizationEpoch,
         gapId: context.gapId,
       }),

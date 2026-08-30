@@ -26,13 +26,13 @@
           [identityId]="$safeNavigationMigration(group()?.id)"
           [account]="$safeNavigationMigration(group()?.account)"
           [src]="avatarUrl()"
-          [federatedDomain]="group()?.domain"
+          [federatedDomain]="displayDomain()"
         ></app-user-avatar>
       </span>
     </div>
     <mat-card appearance="outlined" class="group-profile-card">
       <div class="profile-meta">
-        {{ group()?.account }}&#64;{{ group()?.domain || 'local' }}
+        {{ group()?.account }}&#64;{{ displayDomain() }}
       </div>
       <button
         class="group-profile-row"

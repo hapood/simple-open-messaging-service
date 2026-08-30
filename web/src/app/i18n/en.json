@@ -558,6 +558,7 @@
       "messageWithdrawn": "{{name}} withdrew a message",
       "messageWithdrawnSelf": "You withdrew a message",
       "messagesModerated": "An administrator deleted {{count}} message(s)",
+      "federationNamespaceArchived": "The other server updated the identity binding for {{domain}}. This conversation is archived and can no longer send messages",
       "updated": "Conversation updated"
     },
     "selection": {
@@ -647,6 +648,8 @@
     "newMessagesAria": "Scroll to {{count}} new messages",
     "jumpToUnreadAria": "Jump to the first message that was unread on entry",
     "unreadDivider": "Unread messages",
+    "serverGapPending": "Some history is temporarily unavailable",
+    "serverGapUnavailable": "Some history is unavailable on this server",
     "messagePlaceholder": "Message",
     "emojiAria": "Emoji",
     "attachAria": "Attach",
@@ -775,6 +778,7 @@
       "quotaExceeded": "Your personal account's daily quota has been reached; please try again tomorrow",
       "federationQuotaExceeded": "The peer server's daily receiving quota has been reached; please try again tomorrow",
       "federationCapabilityDisabled": "The peer server has disabled receiving this type of content",
+      "federationNamespaceInactive": "The peer server changed its identity binding. This conversation is now read-only.",
       "federationPayloadTooLarge": "This item exceeds the peer server's per-item size limit",
       "federationDeliveryFailed": "The peer server could not be reached. Try again later.",
       "refreshReuse": "Your session changed; please sign in again",

@@ -151,7 +151,7 @@ enum OriginMode {
 /// the token Arc, the origin Arc, the config-path Arc are all refcounted), so every protocol handler +
 /// command handler sees the same live values.
 #[derive(Clone)]
-struct ProxyState {
+pub(crate) struct ProxyState {
     /// The ACTIVE origin — every transport (api_request/media_request/proxy_media/upload_stream_file)
     /// and the desktop SSE supervisor read THIS. Swapped in-place by `select_origin` on fallback, so the
     /// read sites never change. Cold-start select_origin may flip it from the persisted primary to the
@@ -630,6 +630,8 @@ pub fn run() {
                     media_cache::set_media_cache_limit,
                     native_video::create_native_video_stream,
                     native_db::native_db_threads,
+                    native_db::native_db_namespaces,
+                    native_db::native_db_archive_namespace,
                     native_db::native_db_list_friend_requests,
                     native_db::native_db_page_friend_requests,
                     native_db::native_db_mark_friend_request_accepted,
@@ -658,11 +660,11 @@ pub fn run() {
                     native_db::native_db_get_avatar,
                     native_db::native_db_put_avatar,
                     native_db::native_db_query_messages,
-                    native_db::native_db_put_messages,
+                    native_db::native_message_history_get,
+                    native_db::native_db_put_cached_messages,
+                    native_db::native_db_put_message_head,
                     native_db::native_db_get_deleted_hwm,
                     native_db::native_db_apply_deleted_messages,
-                    native_db::native_db_message_section,
-                    native_db::native_db_message_coverage,
                     native_db::native_db_get_message,
                     native_db::native_db_newest_messages,
                     native_db::native_db_delete_messages_by_thread,
@@ -705,6 +707,8 @@ pub fn run() {
                     media_cache::set_media_cache_limit,
                     native_video::create_native_video_stream,
                     native_db::native_db_threads,
+                    native_db::native_db_namespaces,
+                    native_db::native_db_archive_namespace,
                     native_db::native_db_list_friend_requests,
                     native_db::native_db_page_friend_requests,
                     native_db::native_db_mark_friend_request_accepted,
@@ -733,11 +737,11 @@ pub fn run() {
                     native_db::native_db_get_avatar,
                     native_db::native_db_put_avatar,
                     native_db::native_db_query_messages,
-                    native_db::native_db_put_messages,
+                    native_db::native_message_history_get,
+                    native_db::native_db_put_cached_messages,
+                    native_db::native_db_put_message_head,
                     native_db::native_db_get_deleted_hwm,
                     native_db::native_db_apply_deleted_messages,
-                    native_db::native_db_message_section,
-                    native_db::native_db_message_coverage,
                     native_db::native_db_get_message,
                     native_db::native_db_newest_messages,
                     native_db::native_db_delete_messages_by_thread,
@@ -1214,16 +1218,28 @@ async fn runtime_switch(state: &ProxyState) {
 /// only the headers phase is bounded by `API_HEADERS_TIMEOUT` (connect-only failures are already caught
 /// by `BACKEND_CONNECT_TIMEOUT`). Redirects are never followed (same posture as `http_client_for`).
 #[derive(serde::Serialize)]
-struct ApiRequestResult {
-    status: u16,
-    headers: std::collections::HashMap<String, String>,
-    body: String,
+pub(crate) struct ApiRequestResult {
+    pub(crate) status: u16,
+    pub(crate) headers: std::collections::HashMap<String, String>,
+    pub(crate) body: String,
 }
 
 #[tauri::command]
 async fn api_request(
     app: tauri::AppHandle,
     proxy: tauri::State<'_, ProxyState>,
+    method: String,
+    path: String,
+    headers: std::collections::HashMap<String, String>,
+    body: Option<Vec<u8>>,
+    replay_safe: bool,
+) -> Result<ApiRequestResult, String> {
+    perform_api_request(&app, &proxy, method, path, headers, body, replay_safe).await
+}
+
+pub(crate) async fn perform_api_request(
+    app: &tauri::AppHandle,
+    proxy: &ProxyState,
     method: String,
     path: String,
     headers: std::collections::HashMap<String, String>,

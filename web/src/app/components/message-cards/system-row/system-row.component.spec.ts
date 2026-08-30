@@ -163,4 +163,24 @@ describe('SystemRowComponent', () => {
       'Alice 已解除与你的好友关系',
     );
   });
+
+  it('renders an archived federation namespace as a read-only notice', () => {
+    language.setLang('zh-CN');
+    TestBed.flushEffects();
+    const fixture = TestBed.createComponent(SystemRowComponent);
+    fixture.componentRef.setInput(
+      'data',
+      message(
+        JSON.stringify({
+          type: 'FEDERATION_NAMESPACE_ARCHIVED',
+          domain: 'peer.test',
+        }),
+      ),
+    );
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain(
+      '对方服务器已更新 peer.test 的身份绑定',
+    );
+    expect(fixture.nativeElement.textContent).toContain('无法继续发送消息');
+  });
 });

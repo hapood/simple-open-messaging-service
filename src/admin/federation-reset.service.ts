@@ -1,10 +1,15 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
-import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import { FederationNamespaceService } from '../federation/federation-namespace.service.js';
+import { MessageFanoutService } from '../message/message-fanout.service.js';
+import {
+  MessageService,
+  type PublicMessage,
+} from '../message/message.service.js';
+import { SystemMessageType } from '../message/system-message.js';
 
 export interface FederationResetPreview {
   domain: string;
@@ -39,7 +44,8 @@ export class FederationResetService {
   constructor(
     private readonly database: DatabaseService,
     private readonly namespaces: FederationNamespaceService,
-    private readonly clientStateFeed: ClientStateFeedService,
+    private readonly messages: MessageService,
+    private readonly messageFanout: MessageFanoutService,
   ) {}
 
   async preview(domain: string): Promise<FederationResetPreview> {
@@ -105,7 +111,7 @@ export class FederationResetService {
       );
     }
 
-    const pending: Array<{ userId: number; feedId: number }> = [];
+    const systemMessages: PublicMessage[] = [];
     const result = await this.database.db.transaction(async (tx) => {
       const peerResult = await tx.execute<{
         activeNamespaceId: number | null;
@@ -120,34 +126,30 @@ export class FederationResetService {
       this.assertResettable(peerResult.rows[0], normalized);
       const archived = await this.namespaces.retireActiveInTx(tx, normalized);
 
-      const affected = await tx.execute<{ userId: number }>(sql`
-        SELECT DISTINCT participant."accountId" AS "userId"
-        FROM "ThreadParticipant" participant
-        JOIN "ThreadMember" member ON member."threadId" = participant."threadId"
-        JOIN "User" remote_user ON remote_user.id = member."userId"
-        WHERE remote_user."namespaceId" = ${archived.namespaceId}
-        UNION
-        SELECT DISTINCT feed."userId"
-        FROM "ClientStateFeed" feed
-        WHERE feed."namespaceId" = ${archived.namespaceId}
+      const affectedThreads = await tx.execute<{
+        threadId: number;
+        recipientUserIds: number[];
+      }>(sql`
+        SELECT thread.id AS "threadId",
+          array_agg(participant."accountId" ORDER BY participant."accountId") AS "recipientUserIds"
+        FROM "MessageThread" thread
+        JOIN "ThreadParticipant" participant ON participant."threadId" = thread.id
+        WHERE thread."authorityNamespaceId" = ${archived.namespaceId}
+        GROUP BY thread.id
+        ORDER BY thread.id
       `);
-
-      for (const { userId } of affected.rows) {
-        const feedId = await this.clientStateFeed.writeInTx(tx, {
-          userId,
-          account: '',
-          domain: normalized,
-          eventType: 'NAMESPACE_CHANGED',
-          subjectAccount: '',
-          subjectDomain: 'local',
-          namespaceId: archived.namespaceId,
-          body: {
+      for (const thread of affectedThreads.rows) {
+        const notice = await this.messages.writeSystemMessageInTx(
+          tx,
+          thread.threadId,
+          SystemMessageType.FEDERATION_NAMESPACE_ARCHIVED,
+          undefined,
+          {
             domain: normalized,
-            previousNamespaceId: archived.namespaceId,
-            activeNamespaceId: null,
+            recipientUserIds: thread.recipientUserIds,
           },
-        });
-        if (feedId !== null) pending.push({ userId, feedId });
+        );
+        systemMessages.push(notice.message);
       }
 
       await tx.execute(sql`
@@ -183,7 +185,8 @@ export class FederationResetService {
         status: 'reset' as const,
       };
     });
-    this.clientStateFeed.notifyFeedUpdates(pending);
+    for (const message of systemMessages)
+      void this.messageFanout.dispatch(message);
     return result;
   }
 

@@ -154,8 +154,6 @@ describe('FederationThreadForwardRoundExecutorService', () => {
     expect(h.messageAdvance).toHaveBeenCalledWith(
       {},
       31,
-      'origin.test',
-      7,
       60,
       100,
     );
@@ -182,8 +180,6 @@ describe('FederationThreadForwardRoundExecutorService', () => {
     expect(h.deletionAdvance).toHaveBeenCalledWith(
       {},
       31,
-      'origin.test',
-      7,
       9,
       9,
     );

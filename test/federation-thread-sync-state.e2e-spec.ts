@@ -87,8 +87,6 @@ describe('federation thread synchronization state', () => {
     await database.db.transaction((tx) =>
       FederationThreadSyncStateService.reconcileThreadHeadInTx(tx, {
         threadId,
-        peerDomain,
-        namespaceId,
         messageTargetSeq,
         deletionTargetSeq: 0,
         reverseEnabled: true,
@@ -100,7 +98,7 @@ describe('federation thread synchronization state', () => {
     await initializeTail(100);
 
     await expect(
-      states.require(threadId, peerDomain, namespaceId),
+      states.require(threadId),
     ).resolves.toMatchObject({
       messageTargetSeq: 100,
       messageProcessedThroughSeq: 99,
@@ -112,25 +110,18 @@ describe('federation thread synchronization state', () => {
     const [gap] = await database.db
       .select()
       .from(federationThreadHistoryGap)
-      .where(
-        and(
-          eq(federationThreadHistoryGap.threadId, threadId),
-          eq(federationThreadHistoryGap.namespaceId, namespaceId),
-        ),
-      );
+      .where(eq(federationThreadHistoryGap.threadId, threadId));
     expect(gap).toMatchObject({ startSeq: 1, endSeq: 99, recoverable: true });
   });
 
   it('commits STUB insertion and reverse gap shrink in one transaction', async () => {
     await initializeTail(100);
-    const state = await states.require(threadId, peerDomain, namespaceId);
+    const state = await states.require(threadId);
     const applyDependencies = vi.fn();
 
     await database.db.transaction((tx) =>
       FederationThreadSyncStateService.commitReverseBatchInTx(tx, {
         threadId,
-        peerDomain,
-        namespaceId,
         authorizationEpoch: 0,
         gapId: state.activeGapId!,
         beforeSeq: 100,
@@ -172,7 +163,7 @@ describe('federation thread synchronization state', () => {
 
   it('rolls back an old-epoch reverse commit before applying its buffered facts', async () => {
     await initializeTail(100);
-    const state = await states.require(threadId, peerDomain, namespaceId);
+    const state = await states.require(threadId);
     await database.db
       .update(messageThread)
       .set({ authorizationEpoch: 1 })
@@ -183,8 +174,6 @@ describe('federation thread synchronization state', () => {
       database.db.transaction((tx) =>
         FederationThreadSyncStateService.commitReverseBatchInTx(tx, {
           threadId,
-          peerDomain,
-          namespaceId,
           authorizationEpoch: 0,
           gapId: state.activeGapId!,
           beforeSeq: 100,
@@ -206,13 +195,11 @@ describe('federation thread synchronization state', () => {
 
   it('deletes the final gap only after switching synchronization state to terminal', async () => {
     await initializeTail(2);
-    const state = await states.require(threadId, peerDomain, namespaceId);
+    const state = await states.require(threadId);
 
     await database.db.transaction((tx) =>
       FederationThreadSyncStateService.commitReverseBatchInTx(tx, {
         threadId,
-        peerDomain,
-        namespaceId,
         authorizationEpoch: 0,
         gapId: state.activeGapId!,
         beforeSeq: 2,
@@ -223,7 +210,7 @@ describe('federation thread synchronization state', () => {
     );
 
     await expect(
-      states.require(threadId, peerDomain, namespaceId),
+      states.require(threadId),
     ).resolves.toMatchObject({
       activeGapId: null,
       historyBoundaryReached: true,
@@ -231,20 +218,13 @@ describe('federation thread synchronization state', () => {
     const gaps = await database.db
       .select()
       .from(federationThreadHistoryGap)
-      .where(
-        and(
-          eq(federationThreadHistoryGap.threadId, threadId),
-          eq(federationThreadHistoryGap.namespaceId, namespaceId),
-        ),
-      );
+      .where(eq(federationThreadHistoryGap.threadId, threadId));
     expect(gaps).toEqual([]);
   });
 
   it('rejects a missing state instead of fabricating zero cursors', async () => {
     await expect(
-      states.require(threadId, peerDomain, namespaceId),
-    ).rejects.toThrow(
-      `federated thread ${threadId} has no synchronization state for ${peerDomain}`,
-    );
+      states.require(threadId),
+    ).rejects.toThrow(`federated thread ${threadId} has no synchronization state`);
   });
 });

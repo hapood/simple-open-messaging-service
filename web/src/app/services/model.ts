@@ -34,14 +34,6 @@ export type Message = Omit<S['MessageResponseDto'], 'contentType'> & {
 };
 export type MessageCreator = NonNullable<Message['creator']>;
 
-/** Presentation-only namespace address. Canonical domains remain unchanged for every API request. */
-export function displayIdentityDomain(
-  domain: string,
-  namespaceId: number,
-): string {
-  return namespaceId === 0 ? domain : `${namespaceId}.${domain}.local`;
-}
-
 export function messageCreatorKey(
   creator: MessageCreator,
   sourceDomain: string,
@@ -94,6 +86,8 @@ export interface Group {
 
 type ConversationItemBase = {
   threadId: number;
+  /** Immutable namespace owning this thread's publisher coordinate space. */
+  authorityNamespaceId: number;
   role: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
   lastMessageAt: number | null;
   lastMessageSeq?: number | null;
@@ -151,8 +145,22 @@ export function createP2PConversation(
   peer: P2PPeerInput,
   overrides: Partial<P2PConversationItem> = {},
 ): P2PConversationItem {
+  const peerUser = {
+    avatar: '',
+    bio: '',
+    isGroup: false,
+    domain: 'local',
+    namespaceId: 0,
+    createdAt: 0,
+    updatedAt: 0,
+    profileRev: 0,
+    isDeleted: false,
+    ...peer,
+    ...overrides.peerUser,
+  };
   return {
     threadId,
+    authorityNamespaceId: peerUser.namespaceId,
     type: 'P2P',
     role: null,
     lastMessageAt: null,
@@ -171,19 +179,7 @@ export function createP2PConversation(
     lastMessagePreview: null,
     lastMessageSenderId: null,
     ...overrides,
-    peerUser: {
-      avatar: '',
-      bio: '',
-      isGroup: false,
-      domain: 'local',
-      namespaceId: 0,
-      createdAt: 0,
-      updatedAt: 0,
-      profileRev: 0,
-      isDeleted: false,
-      ...peer,
-      ...overrides.peerUser,
-    },
+    peerUser,
   };
 }
 
@@ -196,8 +192,24 @@ export function createGroupConversation(
   group: GroupInput,
   overrides: Partial<GroupConversationItem> = {},
 ): GroupConversationItem {
+  const groupProfile = {
+    avatar: '',
+    description: '',
+    domain: 'local',
+    namespaceId: 0,
+    threadId,
+    createdAt: 0,
+    updatedAt: 0,
+    profileRev: 0,
+    dissolvedAt: null,
+    memberCount: 0,
+    groupMetaFeedId: '0',
+    ...group,
+    ...overrides.group,
+  };
   return {
     threadId,
+    authorityNamespaceId: groupProfile.namespaceId,
     type: 'GROUP',
     role: null,
     lastMessageAt: null,
@@ -215,21 +227,7 @@ export function createGroupConversation(
     lastMessagePreview: null,
     lastMessageSenderId: null,
     ...overrides,
-    group: {
-      avatar: '',
-      description: '',
-      domain: 'local',
-      namespaceId: 0,
-      threadId,
-      createdAt: 0,
-      updatedAt: 0,
-      profileRev: 0,
-      dissolvedAt: null,
-      memberCount: 0,
-      groupMetaFeedId: '0',
-      ...group,
-      ...overrides.group,
-    },
+    group: groupProfile,
   };
 }
 
@@ -299,17 +297,6 @@ export interface PersonalQuotaState {
   resetAt: number;
 }
 
-/** Local timeline query used by the message repository. MsgService maps it to the HTTP
- * after/before/through coordinate contract at the transport boundary. */
-export interface QueryMessageLogParams {
-  threadId: number;
-  skip: number;
-  take: number;
-  lastSeq?: number;
-  orderBy: 'asc' | 'desc';
-  truncate?: boolean;
-  truncateSeq?: number;
-}
 export type MessageThreadType = ConversationItem['type'];
 
 // Envelope generic (the generated ApiResult.data is unknown and cannot replace this)

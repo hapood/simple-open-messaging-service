@@ -44,6 +44,7 @@ import {
 import { PageHeaderComponent } from '../page-header/page-header.component';
 import { ChatContextService } from '../message-thread/chat-context.service';
 import { ContactCardShareService } from '../../services/contact-card-share.service';
+import { FederationNamespaceService } from '../../services/federation-namespace.service';
 
 type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
 
@@ -93,6 +94,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   private readonly threadAdapter = inject(MESSAGE_THREAD_ADAPTER);
   private readonly chatContext = inject(ChatContextService);
   private readonly contactCardShare = inject(ContactCardShareService);
+  private readonly namespaces = inject(FederationNamespaceService);
 
   /** The open thread id (template-bound for the alias editor). */
   readonly threadId = this.convList.openThreadId;
@@ -159,6 +161,12 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly confirmDissolve = signal(false);
 
   readonly group = computed(() => this.userMsgTrd()?.group);
+  readonly displayDomain = computed(() => {
+    const group = this.group();
+    return group
+      ? this.namespaces.displayDomain(group.domain, group.namespaceId)
+      : 'local';
+  });
   readonly dissolved = computed(() => this.group()?.dissolvedAt != null);
   readonly readOnly = computed(
     () =>

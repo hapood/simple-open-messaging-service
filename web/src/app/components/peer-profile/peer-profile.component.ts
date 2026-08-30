@@ -18,7 +18,6 @@ import { ConversationListService } from '../../services/conversation-list.servic
 import { NavStateMachineService } from '../../services/nav-state.service';
 import {
   ConversationItem,
-  displayIdentityDomain,
   displayUserAccount,
   displayUserName,
 } from '../../services/model';
@@ -34,6 +33,7 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
 import { PageHeaderComponent } from '../page-header/page-header.component';
 import { ContactCardShareService } from '../../services/contact-card-share.service';
 import { FocusedInputRevealDirective } from '../../directives/focused-input-reveal.directive';
+import { FederationNamespaceService } from '../../services/federation-namespace.service';
 
 /**
  * P2P (friend) profile panel — rendered in the `aside` auxiliary outlet (`chat/:threadId/(aside:profile)`).
@@ -442,6 +442,7 @@ export class PeerProfileComponent {
   private readonly toast = inject(ToastService);
   private readonly transloco = inject(TranslocoService);
   private readonly contactCardShare = inject(ContactCardShareService);
+  private readonly namespaces = inject(FederationNamespaceService);
 
   /** The panel is open over the currently-viewed chat — read its id + item from the shared list. */
   readonly threadId = this.convList.openThreadId;
@@ -465,7 +466,7 @@ export class PeerProfileComponent {
   readonly peerDomain = computed(() => {
     const p = this.peer();
     return p?.domain && p.domain !== 'local'
-      ? displayIdentityDomain(p.domain, p.namespaceId)
+      ? this.namespaces.displayDomain(p.domain, p.namespaceId)
       : null;
   });
 

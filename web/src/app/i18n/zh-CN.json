@@ -558,6 +558,7 @@
       "messageWithdrawn": "{{name}} 撤回了一条消息",
       "messageWithdrawnSelf": "你撤回了一条消息",
       "messagesModerated": "管理员删除了 {{count}} 条消息",
+      "federationNamespaceArchived": "对方服务器已更新 {{domain}} 的身份绑定，此会话已归档，无法继续发送消息",
       "updated": "会话已更新"
     },
     "selection": {
@@ -647,6 +648,8 @@
     "newMessagesAria": "回到 {{count}} 条新消息",
     "jumpToUnreadAria": "跳到本次进入前的第一条未读消息",
     "unreadDivider": "未读消息",
+    "serverGapPending": "部分历史消息暂时缺失",
+    "serverGapUnavailable": "服务器无法提供这部分历史消息",
     "messagePlaceholder": "输入消息",
     "emojiAria": "表情",
     "attachAria": "附件",
@@ -775,6 +778,7 @@
       "quotaExceeded": "你的个人账号今日额度已用完，请明天再试",
       "federationQuotaExceeded": "对方联邦服务器今日接收额度已用完，请明天再试",
       "federationCapabilityDisabled": "对方联邦服务器已关闭该类内容的接收能力",
+      "federationNamespaceInactive": "对方服务器的身份绑定已变更，此会话现为只读",
       "federationPayloadTooLarge": "内容超过对方联邦服务器允许的单项大小",
       "federationDeliveryFailed": "暂时无法联系对方服务器，请稍后重试",
       "refreshReuse": "登录状态已变更，请重新登录",

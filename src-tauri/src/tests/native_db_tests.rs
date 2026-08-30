@@ -1,14 +1,200 @@
 use super::{
     apply_friend_request_effect, apply_group_request_effect, apply_relationship_intent_fact,
-    cleanup_friend_requests, decode_deleted_hwm, materialize_group_thread_from_fact,
-    merge_covered_tail, merge_message_section, update_live_request_projection,
-    update_message_coverage, CoveredInterval, MessageSection,
+    cleanup_friend_requests, decode_deleted_hwm, history_gap_is_owned, load_message_ranges,
+    materialize_group_thread_from_fact, merge_covered_tail, merge_message_section,
+    reduce_message_ranges, update_live_request_projection, update_message_coverage,
+    validate_message_ranges, CoveredInterval, HistoryDirection, MessageInterval, MessageRange,
+    MessageRangeState, MessageSection, ServerMessageRange,
 };
 use rusqlite::{params, Connection};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn interval(left: i64, right: i64) -> Option<CoveredInterval> {
     Some(CoveredInterval { left, right })
+}
+
+fn message_range(left: i64, right: i64, state: MessageRangeState) -> MessageRange {
+    MessageRange {
+        thread_id: 42,
+        left,
+        right,
+        state,
+    }
+}
+
+fn server_range(left: i64, right: i64, state: MessageRangeState) -> ServerMessageRange {
+    ServerMessageRange { left, right, state }
+}
+
+#[test]
+fn native_history_gap_item_is_owned_by_the_right_hand_page() {
+    assert!(!history_gap_is_owned(HistoryDirection::Older, 26, 30));
+    assert!(history_gap_is_owned(HistoryDirection::Newer, 25, 30));
+    assert!(history_gap_is_owned(HistoryDirection::Older, 26, 25));
+    assert!(!history_gap_is_owned(HistoryDirection::Newer, 25, 25));
+}
+
+#[test]
+fn native_message_range_reducer_matches_the_browser_state_transitions() {
+    use MessageRangeState::{LocalCovered, ServerPending, ServerUnavailable};
+
+    let initial = reduce_message_ranges(
+        42,
+        &[],
+        Some(MessageInterval { left: 9, right: 50 }),
+        &[server_range(19, 30, ServerPending)],
+        &[10, 50],
+    )
+    .unwrap();
+    assert_eq!(
+        initial,
+        vec![
+            message_range(9, 19, LocalCovered),
+            message_range(19, 30, ServerPending),
+            message_range(30, 50, LocalCovered),
+        ]
+    );
+
+    let shrunk = reduce_message_ranges(
+        42,
+        &initial,
+        Some(MessageInterval {
+            left: 19,
+            right: 30,
+        }),
+        &[server_range(25, 30, ServerPending)],
+        &[20, 25],
+    )
+    .unwrap();
+    assert_eq!(
+        shrunk,
+        vec![
+            message_range(9, 25, LocalCovered),
+            message_range(25, 30, ServerPending),
+            message_range(30, 50, LocalCovered),
+        ]
+    );
+
+    let stale = reduce_message_ranges(
+        42,
+        &shrunk,
+        Some(MessageInterval {
+            left: 19,
+            right: 30,
+        }),
+        &[server_range(19, 30, ServerPending)],
+        &[],
+    )
+    .unwrap();
+    assert_eq!(stale, shrunk);
+
+    let unavailable = reduce_message_ranges(
+        42,
+        &stale,
+        Some(MessageInterval {
+            left: 19,
+            right: 30,
+        }),
+        &[server_range(25, 30, ServerUnavailable)],
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        unavailable,
+        vec![
+            message_range(9, 25, LocalCovered),
+            message_range(25, 30, ServerUnavailable),
+            message_range(30, 50, LocalCovered),
+        ]
+    );
+    assert_eq!(
+        reduce_message_ranges(
+            42,
+            &unavailable,
+            Some(MessageInterval {
+                left: 19,
+                right: 30,
+            }),
+            &[server_range(25, 30, ServerPending)],
+            &[],
+        )
+        .unwrap(),
+        unavailable
+    );
+}
+
+#[test]
+fn native_message_range_reducer_keeps_full_gap_boundaries_outside_the_scan() {
+    assert_eq!(
+        reduce_message_ranges(
+            42,
+            &[],
+            Some(MessageInterval {
+                left: 10,
+                right: 20,
+            }),
+            &[server_range(14, 35, MessageRangeState::ServerPending)],
+            &[11],
+        )
+        .unwrap(),
+        vec![
+            message_range(10, 14, MessageRangeState::LocalCovered),
+            message_range(14, 35, MessageRangeState::ServerPending),
+        ]
+    );
+}
+
+#[test]
+fn native_message_ranges_persist_canonical_reducer_output() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE message_ranges(
+           user_id INTEGER NOT NULL,
+           thread_id INTEGER NOT NULL,
+           left_exclusive INTEGER NOT NULL,
+           right_inclusive INTEGER NOT NULL,
+           state TEXT NOT NULL,
+           PRIMARY KEY(user_id,thread_id,left_exclusive)
+         );",
+    )
+    .unwrap();
+    let ranges = [
+        MessageRange {
+            thread_id: 42,
+            left: 9,
+            right: 19,
+            state: MessageRangeState::LocalCovered,
+        },
+        MessageRange {
+            thread_id: 42,
+            left: 19,
+            right: 30,
+            state: MessageRangeState::ServerPending,
+        },
+    ];
+    validate_message_ranges(42, &ranges).unwrap();
+    for range in ranges {
+        conn.execute(
+            "INSERT INTO message_ranges VALUES(1,?1,?2,?3,?4)",
+            params![
+                range.thread_id,
+                range.left,
+                range.right,
+                range.state.as_str()
+            ],
+        )
+        .unwrap();
+    }
+    assert_eq!(load_message_ranges(&conn, 1, 42).unwrap(), ranges);
+
+    let invalid = [
+        ranges[0],
+        MessageRange {
+            state: ranges[0].state,
+            ..ranges[1]
+        },
+    ];
+    assert!(validate_message_ranges(42, &invalid).is_err());
 }
 
 #[test]
@@ -38,6 +224,7 @@ fn native_group_intents_materialize_the_conversation_before_group_meta() {
     let active = apply_relationship_intent_fact(
         &tx,
         1,
+        0,
         "!dev",
         "",
         "alice",
@@ -52,6 +239,7 @@ fn native_group_intents_materialize_the_conversation_before_group_meta() {
         &tx,
         1,
         10,
+        0,
         "!dev",
         "",
         "INCOMING",
@@ -66,6 +254,7 @@ fn native_group_intents_materialize_the_conversation_before_group_meta() {
         1,
         "!dev",
         "",
+        0,
         &serde_json::json!({
             "threadId": 12, "group": group
         }),
@@ -75,6 +264,7 @@ fn native_group_intents_materialize_the_conversation_before_group_meta() {
     let active = apply_relationship_intent_fact(
         &tx,
         1,
+        0,
         "alice",
         "",
         "!dev",
@@ -89,6 +279,7 @@ fn native_group_intents_materialize_the_conversation_before_group_meta() {
         &tx,
         1,
         11,
+        0,
         "!dev",
         "",
         "OUTGOING",
@@ -103,6 +294,7 @@ fn native_group_intents_materialize_the_conversation_before_group_meta() {
         1,
         "!dev",
         "",
+        0,
         &serde_json::json!({
             "threadId": 12, "group": group
         }),
@@ -172,6 +364,7 @@ fn native_projection_ignores_a_local_revoke_for_a_received_request() {
         &tx,
         1,
         10,
+        12,
         "peer",
         "peer.test",
         "me",
@@ -183,6 +376,7 @@ fn native_projection_ignores_a_local_revoke_for_a_received_request() {
         &tx,
         1,
         11,
+        12,
         "me",
         "local.test",
         "peer",
@@ -223,6 +417,7 @@ fn native_projection_persists_a_local_accept_side_effect() {
         &tx,
         1,
         10,
+        12,
         "peer",
         "peer.test",
         "me",
