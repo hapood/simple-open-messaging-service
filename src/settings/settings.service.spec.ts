@@ -96,6 +96,11 @@ describe('SettingsService — Firebase client config (file-based, boot-loaded)',
     });
   });
 
+  it('allows retained federation history by default', async () => {
+    const s = await boot();
+    await expect(s.getFederationHistoryAccessEnabled()).resolves.toBe(true);
+  });
+
   it('is unconfigured (null) when the file is malformed', async () => {
     const p = join(dir, 'bad.json');
     writeFileSync(p, '{not json');

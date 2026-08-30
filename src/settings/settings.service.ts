@@ -23,6 +23,10 @@ import { loadFederationConfig } from '../federation/federation.config.js';
 import { federationDownloadSettingKeys } from '../federation/federation-download-scheduler.js';
 import { federationHttpSettingKeys } from '../federation/federation-http-scheduler.js';
 import {
+  FEDERATION_HISTORY_ACCESS_SETTING_KEY,
+  federationHistoryAccessEnabled,
+} from '../federation/federation-history-access-setting.js';
+import {
   type VapidConfig,
   type VapidHealthReport,
   isValidPublicKey,
@@ -113,6 +117,18 @@ export class SettingsService implements OnModuleInit {
       Math.max(OTP_TTL_MIN, Math.trunc(minutes)),
     );
     await this.upsertSetting(OTP_TTL_KEY, String(clamped));
+  }
+
+  async getFederationHistoryAccessEnabled(): Promise<boolean> {
+    const row = await this.findSetting(FEDERATION_HISTORY_ACCESS_SETTING_KEY);
+    return federationHistoryAccessEnabled(row?.value);
+  }
+
+  async setFederationHistoryAccessEnabled(enabled: boolean): Promise<void> {
+    await this.upsertSetting(
+      FEDERATION_HISTORY_ACCESS_SETTING_KEY,
+      String(enabled),
+    );
   }
 
   async getFederationDownloadLimits(): Promise<{

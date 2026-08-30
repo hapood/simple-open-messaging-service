@@ -6,6 +6,7 @@ import {
   setOtpTtl,
   setFederationDownloadLimits,
   setFederationHttpLimits,
+  setFederationHistoryAccess,
   setUserQuotaDefaults,
   setFederationQuotaDefaults,
   setAdminSessionPolicy,
@@ -55,6 +56,14 @@ export function useSetFederationHttpLimits() {
   return useMutation({
     mutationFn: (limits: { global: number; perPeer: number }) =>
       setFederationHttpLimits(limits.global, limits.perPeer),
+    onSuccess: invalidate,
+  });
+}
+
+export function useSetFederationHistoryAccess() {
+  const invalidate = useInvalidateSettings();
+  return useMutation({
+    mutationFn: setFederationHistoryAccess,
     onSuccess: invalidate,
   });
 }

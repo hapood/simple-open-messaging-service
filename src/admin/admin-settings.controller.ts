@@ -21,6 +21,7 @@ import {
   AdminSessionPolicyDto,
   FederationDownloadLimitsDto,
   FederationHttpLimitsDto,
+  FederationHistoryAccessDto,
   FederationQuotaDefaultsDto,
   FederationTransportDto,
   UserQuotaDefaultsDto,
@@ -71,11 +72,13 @@ export class AdminSettingsController {
       otpTtlMinutes,
       federationDownloadLimits,
       federationHttpLimits,
+      federationHistoryAccessEnabled,
     ] = await Promise.all([
       this.settings.getVapidDescriptor(),
       this.settings.getOtpTtlMinutes(),
       this.settings.getFederationDownloadLimits(),
       this.settings.getFederationHttpLimits(),
+      this.settings.getFederationHistoryAccessEnabled(),
     ]);
     return {
       vapid,
@@ -85,6 +88,7 @@ export class AdminSettingsController {
       otpTtlMinutes,
       federationDownloadLimits,
       federationHttpLimits,
+      federationHistoryAccessEnabled,
       userQuotaDefaults: this.userQuota.getDefaultLimits(),
       federationQuotaDefaults: this.quota.getDefaultLimits(),
       adminSessionPolicy: this.adminAuth.getSessionPolicy(),
@@ -165,6 +169,16 @@ export class AdminSettingsController {
     await this.settings.setFederationHttpLimits(dto.global, dto.perPeer);
     this.httpScheduler.invalidateLimits();
     return { global: dto.global, perPeer: dto.perPeer };
+  }
+
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
+  @Audit('settings.federation-history-access.save')
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/settings/federation-history-access')
+  async setFederationHistoryAccess(@Body() dto: FederationHistoryAccessDto) {
+    await this.settings.setFederationHistoryAccessEnabled(dto.enabled);
+    return { enabled: dto.enabled };
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)

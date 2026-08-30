@@ -72,6 +72,12 @@ export class FederationHttpLimitsDto {
   perPeer!: number;
 }
 
+export class FederationHistoryAccessDto {
+  @ApiProperty({ example: true, default: true })
+  @IsBoolean()
+  enabled!: boolean;
+}
+
 export class FederationTransportDto {
   @ApiProperty({ minimum: 60, maximum: 604800, example: 21600 })
   @IsInt()

@@ -45,6 +45,13 @@ export function setFederationHttpLimits(global: number, perPeer: number) {
   );
 }
 
+export function setFederationHistoryAccess(enabled: boolean) {
+  return request<{ enabled: boolean }>(
+    '/admin/settings/federation-history-access',
+    { enabled },
+  );
+}
+
 export function setFederationTransport(
   value: AdminSettings['federationTransport'],
 ) {

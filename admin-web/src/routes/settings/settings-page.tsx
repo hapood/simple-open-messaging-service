@@ -6,6 +6,7 @@ import {
   useAdminSettings,
   useSetFederationDownloadLimits,
   useSetFederationHttpLimits,
+  useSetFederationHistoryAccess,
   useSetOtpTtl,
   useSetUserQuotaDefaults,
   useSetFederationQuotaDefaults,
@@ -40,6 +41,7 @@ export function SettingsPage() {
   const setOtpTtl = useSetOtpTtl();
   const setDownloadLimits = useSetFederationDownloadLimits();
   const setHttpLimits = useSetFederationHttpLimits();
+  const setHistoryAccess = useSetFederationHistoryAccess();
   const setUserQuotaDefaults = useSetUserQuotaDefaults();
   const setFederationQuotaDefaults = useSetFederationQuotaDefaults();
   const setAdminSessionPolicy = useSetAdminSessionPolicy();
@@ -50,6 +52,7 @@ export function SettingsPage() {
   const [chunkDigestEnabled, setChunkDigestEnabled] = useState(false);
   const [globalHttp, setGlobalHttp] = useState('');
   const [peerHttp, setPeerHttp] = useState('');
+  const [historyAccessEnabled, setHistoryAccessEnabled] = useState(true);
   const [userQuota, setUserQuota] = useState({
     dailyMsgLimit: '',
     dailyRequestLimit: '',
@@ -93,6 +96,10 @@ export function SettingsPage() {
       setPeerHttp(String(data.federationHttpLimits.perPeer));
     }
   }, [data?.federationHttpLimits]);
+  useEffect(() => {
+    if (typeof data?.federationHistoryAccessEnabled === 'boolean')
+      setHistoryAccessEnabled(data.federationHistoryAccessEnabled);
+  }, [data?.federationHistoryAccessEnabled]);
   useEffect(() => {
     if (!data?.userQuotaDefaults) return;
     setUserQuota({
@@ -176,6 +183,15 @@ export function SettingsPage() {
         perPeer: Math.trunc(Number(peerHttp)),
       });
       toast.success(t('settings.federationHttp.saved'));
+    } catch (e) {
+      toast.error(formatApiError(e));
+    }
+  }
+
+  async function onSaveHistoryAccess() {
+    try {
+      await setHistoryAccess.mutateAsync(historyAccessEnabled);
+      toast.success(t('settings.federationHistoryAccess.saved'));
     } catch (e) {
       toast.error(formatApiError(e));
     }
@@ -275,6 +291,45 @@ export function SettingsPage() {
           {t('settings.sections.transportDesc')}
         </p>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Network className="size-4" />
+            {t('settings.federationHistoryAccess.title')}
+          </CardTitle>
+          <CardDescription>
+            {t('settings.federationHistoryAccess.desc')}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={historyAccessEnabled}
+              onChange={(event) =>
+                setHistoryAccessEnabled(event.target.checked)
+              }
+              disabled={!canEdit}
+            />
+            <span>{t('settings.federationHistoryAccess.enabled')}</span>
+          </label>
+          <Button
+            size="sm"
+            onClick={onSaveHistoryAccess}
+            disabled={
+              !canEdit ||
+              setHistoryAccess.isPending ||
+              historyAccessEnabled === data?.federationHistoryAccessEnabled
+            }
+          >
+            {setHistoryAccess.isPending && (
+              <Loader2 className="size-3.5 animate-spin" />
+            )}
+            {t('settings.federationHistoryAccess.save')}
+          </Button>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
