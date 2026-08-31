@@ -502,7 +502,7 @@ export class AdminFederationSelfCheckDto {
 }
 
 /** Audit-log query: pagination + filters. `action` is a substring match (e.g. 'user.' );
- *  `success` filters the outcome; `adminId` scopes to one actor. */
+ *  `status` filters the lifecycle state; `adminId` scopes to one actor. */
 export class AdminAuditQueryDto {
   @ApiPropertyOptional({ default: 0 })
   @IsOptional()
@@ -532,10 +532,46 @@ export class AdminAuditQueryDto {
   @IsInt()
   adminId?: number;
 
-  @ApiPropertyOptional({ description: 'Filter by outcome' })
+  @ApiPropertyOptional({
+    enum: ['STARTED', 'SUCCEEDED', 'FAILED'],
+    description: 'Filter by lifecycle state',
+  })
   @IsOptional()
-  @Type(() => Boolean)
-  success?: boolean;
+  @IsIn(['STARTED', 'SUCCEEDED', 'FAILED'])
+  status?: 'STARTED' | 'SUCCEEDED' | 'FAILED';
+}
+
+/** Domain-command history query. Search covers command type and aggregate key; status is exact. */
+export class AdminDomainCommandQueryDto {
+  @ApiPropertyOptional({ default: 0 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  skip?: number;
+
+  @ApiPropertyOptional({ default: 50, minimum: 1, maximum: 200 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  take?: number;
+
+  @ApiPropertyOptional({
+    description: 'Substring over command type or aggregate key',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  search?: string;
+
+  @ApiPropertyOptional({
+    enum: ['PENDING', 'PROCESSING', 'SUCCEEDED', 'REJECTED', 'FAILED'],
+  })
+  @IsOptional()
+  @IsIn(['PENDING', 'PROCESSING', 'SUCCEEDED', 'REJECTED', 'FAILED'])
+  status?: 'PENDING' | 'PROCESSING' | 'SUCCEEDED' | 'REJECTED' | 'FAILED';
 }
 
 /** Admin self-management: paginated, searchable list of admin accounts. */

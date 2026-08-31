@@ -42,6 +42,11 @@ export const adminRole = pgEnum('AdminRole', [
   'ADMIN',
   'VIEWER',
 ]);
+export const adminAuditStatus = pgEnum('AdminAuditStatus', [
+  'STARTED',
+  'SUCCEEDED',
+  'FAILED',
+]);
 export const contentType = pgEnum('ContentType', [
   'PURE_TEXT',
   'IMAGE',
@@ -1331,7 +1336,7 @@ export const adminActionLog = pgTable(
     ip: varchar({ length: 64 }),
     userAgent: varchar({ length: 255 }),
     route: varchar({ length: 255 }),
-    success: boolean().default(true).notNull(),
+    status: adminAuditStatus().default('STARTED').notNull(),
     errorMessage: varchar({ length: 255 }),
     meta: jsonb(),
     at: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -2360,37 +2365,6 @@ export const relationshipPair = pgTable(
       sql`(${table.endpointAType}, ${table.endpointAAccount}, ${table.endpointADomain}) <> (${table.endpointBType}, ${table.endpointBAccount}, ${table.endpointBDomain})`,
     ),
     check('RelationshipPair_revision_check', sql`${table.revision} >= 0`),
-  ],
-);
-
-/** Append-only group-domain audit trail. Identity fields are snapshots rather than foreign keys so
- * account deletion, federation-stub cleanup, or later profile edits cannot erase who performed an action. */
-export const groupAuditLog = pgTable(
-  'GroupAuditLog',
-  {
-    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
-    eventKey: varchar({ length: 191 }).notNull(),
-    groupId: integer(),
-    groupAccount: varchar({ length: 31 }).notNull(),
-    groupDomain: varchar({ length: 63 }).notNull(),
-    actorType: varchar({ length: 24 }).notNull(),
-    actorUserId: integer(),
-    actorAccount: varchar({ length: 31 }).notNull(),
-    actorDomain: varchar({ length: 63 }).notNull(),
-    action: varchar({ length: 64 }).notNull(),
-    targetType: varchar({ length: 32 }),
-    targetId: varchar({ length: 191 }),
-    success: boolean().default(true).notNull(),
-    errorMessage: varchar({ length: 255 }),
-    meta: jsonb(),
-    at: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    uniqueIndex('GroupAuditLog_eventKey_key').on(table.eventKey),
-    index('GroupAuditLog_groupId_at_idx').on(table.groupId, table.at),
-    index('GroupAuditLog_action_at_idx').on(table.action, table.at),
   ],
 );
 

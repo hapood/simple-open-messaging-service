@@ -230,7 +230,7 @@ similarity is not an identity substitute.
 - **WebAuthnCredential** — passkey credential (public `credentialId` + COSE `publicKey`, clone-detection `counter`, transports/deviceType/backed).
 - **AdminLoginChallenge** — single-use challenge tracker (closes the WebAuthn replay window for counter=0 authenticators).
 - **TwoFactorBackupCode** — HMAC-SHA256(code) recovery codes (O(1) consume lookup; single-use via updateMany guard).
-- **AdminActionLog** — append-only audit of `@Audit` destructive actions (`adminRole` denormalized; best-effort write).
+- **AdminActionLog** — lifecycle audit of `@Audit` destructive actions (`adminRole` denormalized). A `STARTED` row is required before execution and is finalized as `SUCCEEDED` or `FAILED`; a stranded `STARTED` row means the outcome is unknown.
 
 ### Federation (S2S)
 

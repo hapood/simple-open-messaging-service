@@ -89,7 +89,7 @@ export class DashboardService {
           targetId: adminActionLog.targetId,
           adminId: adminActionLog.adminId,
           adminRole: adminActionLog.adminRole,
-          success: adminActionLog.success,
+          status: adminActionLog.status,
           errorMessage: adminActionLog.errorMessage,
           ip: adminActionLog.ip,
           at: adminActionLog.at,

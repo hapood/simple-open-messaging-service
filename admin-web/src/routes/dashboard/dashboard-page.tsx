@@ -5,6 +5,7 @@ import {
   Activity,
   ArrowRight,
   CheckCircle2,
+  CircleDashed,
   CircleUserRound,
   Radio,
   ShieldCheck,
@@ -259,8 +260,10 @@ export function DashboardPage() {
                     key={a.id}
                     className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted/50"
                   >
-                    {a.success ? (
+                    {a.status === 'SUCCEEDED' ? (
                       <CheckCircle2 className="size-4 shrink-0 text-emerald-500" />
+                    ) : a.status === 'STARTED' ? (
+                      <CircleDashed className="size-4 shrink-0 text-amber-500" />
                     ) : (
                       <span title={a.errorMessage ?? undefined}>
                         <XCircle className="size-4 shrink-0 text-destructive" />

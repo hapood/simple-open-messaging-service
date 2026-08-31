@@ -245,7 +245,7 @@ describe('Admin RBAC + revocation + audit', () => {
       )
       .limit(1);
     expect(failedAudit).toMatchObject({
-      success: false,
+      status: 'FAILED',
       adminRole: AdminRole.SUPER_ADMIN,
     });
     expect(failedAudit?.errorMessage).toBeTruthy();
@@ -269,7 +269,7 @@ describe('Admin RBAC + revocation + audit', () => {
   });
 
   // ── 3. Audit ──────────────────────────────────────────────────────────────────
-  it('writes an AdminActionLog row (success) for an executed mutation', async () => {
+  it('marks an AdminActionLog row SUCCEEDED for an executed mutation', async () => {
     const actor = await seedAdmin('auditor', AdminRole.SUPER_ADMIN);
     const target = await seedAdmin('audited', AdminRole.SUPER_ADMIN);
 
@@ -291,7 +291,7 @@ describe('Admin RBAC + revocation + audit', () => {
       )
       .limit(1);
     expect(log).toBeDefined();
-    expect(log?.success).toBe(true);
+    expect(log?.status).toBe('SUCCEEDED');
     expect(log?.adminRole).toBe(AdminRole.SUPER_ADMIN);
   });
 });

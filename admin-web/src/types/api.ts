@@ -541,7 +541,7 @@ export interface DashboardAction {
   targetLabel: string | null;
   adminId: number;
   adminRole: AdminRole;
-  success: boolean;
+  status: 'STARTED' | 'SUCCEEDED' | 'FAILED';
   errorMessage: string | null;
   ip: string | null;
   at: number;
@@ -561,25 +561,33 @@ export interface DashboardSummary {
   recentActions: DashboardAction[];
 }
 
-// ── Audit log (POST /admin/audit) ────────────────────────────────────────────
-export interface AuditEntry {
+// ── Domain command history (POST /admin/domain-commands) ─────────────────────
+export type DomainCommandStatus =
+  | 'PENDING'
+  | 'PROCESSING'
+  | 'SUCCEEDED'
+  | 'REJECTED'
+  | 'FAILED';
+
+export interface DomainCommandEntry {
   id: string;
-  adminId: number;
-  adminRole: AdminRole;
-  action: string;
-  targetType: string | null;
-  targetId: string | null;
-  targetLabel: string | null;
-  ip: string | null;
-  userAgent: string | null;
-  route: string | null;
-  success: boolean;
-  errorMessage: string | null;
-  at: number;
+  parentCommandId: string | null;
+  aggregateType: 'USER_PAIR' | 'GROUP';
+  aggregateKey: string;
+  commandType: string;
+  actorUserId: number | null;
+  payload: Record<string, unknown>;
+  progressCursor: number | null;
+  status: DomainCommandStatus;
+  resultCode: number | null;
+  lastError: string | null;
+  createdAt: number;
+  startedAt: number | null;
+  completedAt: number | null;
 }
 
-export interface AuditListResult {
-  list: AuditEntry[];
+export interface DomainCommandListResult {
+  list: DomainCommandEntry[];
   total: number;
 }
 

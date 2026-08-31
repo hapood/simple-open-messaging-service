@@ -38,15 +38,13 @@ export class AuditController {
   @Post('admin/audit')
   @ApiOperation({
     summary:
-      'Admin action audit log (paginated + filter by action/adminId/success)',
+      'Admin action audit log (paginated + filter by action/adminId/status)',
   })
   async list(@Body() dto: AdminAuditQueryDto) {
     const where = and(
       dto.action ? like(adminActionLog.action, `%${dto.action}%`) : undefined,
       dto.adminId ? eq(adminActionLog.adminId, dto.adminId) : undefined,
-      dto.success === true || dto.success === false
-        ? eq(adminActionLog.success, dto.success)
-        : undefined,
+      dto.status ? eq(adminActionLog.status, dto.status) : undefined,
     );
     const [rows, total] = await Promise.all([
       this.database.db
@@ -60,7 +58,7 @@ export class AuditController {
           ip: adminActionLog.ip,
           userAgent: adminActionLog.userAgent,
           route: adminActionLog.route,
-          success: adminActionLog.success,
+          status: adminActionLog.status,
           errorMessage: adminActionLog.errorMessage,
           at: adminActionLog.at,
         })

@@ -252,6 +252,6 @@ describe('message report HTTP workflow', () => {
         eq(adminActionLog.action, 'message_report.resolve'),
       ),
     });
-    expect(audit?.success).toBe(true);
+    expect(audit?.status).toBe('SUCCEEDED');
   });
 });

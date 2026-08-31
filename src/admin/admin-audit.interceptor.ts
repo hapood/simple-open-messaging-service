@@ -1,10 +1,13 @@
 import {
   CallHandler,
   ExecutionContext,
+  InternalServerErrorException,
   Injectable,
+  Logger,
   NestInterceptor,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
+import { eq } from 'drizzle-orm';
 import { catchError, concatMap, from, map, mergeMap, throwError } from 'rxjs';
 import type { Observable } from 'rxjs';
 import type { FastifyRequest } from 'fastify';
@@ -17,18 +20,20 @@ type AdminRequest = FastifyRequest & { user?: AdminPrincipal };
 
 /**
  * Global audit interceptor. For any handler tagged @Audit whose caller is an authenticated admin,
- * appends an AdminActionLog row capturing the outcome (success/error), identity (adminId + role),
+ * appends an AdminActionLog row capturing the lifecycle, identity (adminId + role),
  * target (action + targetType + targetId from the named path param), and origin (ip + userAgent +
  * route).
  *
- * Best-effort but response-ordered: an audit write failure never changes the observed operation's
- * result, while the response waits for the write attempt to finish. This prevents a successful admin
- * mutation from returning before its audit row is visible (and from losing the row on an immediate
- * process shutdown). Runs for ALL routes but is a no-op unless the handler carries @Audit metadata AND
- * req.user.adminId is set, so user-side traffic and the admin login endpoint incur no overhead.
+ * The STARTED row is durable before the handler runs. If that insert fails, the action is refused: a
+ * privileged mutation must not execute without an audit trail. The row is then updated to SUCCEEDED or
+ * FAILED. An outcome-update failure is logged and leaves STARTED behind as an explicit unknown result,
+ * which is safer than inventing a final outcome. Runs for ALL routes but is a no-op unless the handler
+ * carries @Audit metadata AND req.user.adminId is set.
  */
 @Injectable()
 export class AdminAuditInterceptor implements NestInterceptor {
+  private readonly logger = new Logger(AdminAuditInterceptor.name);
+
   constructor(
     private readonly reflector: Reflector,
     private readonly database: DatabaseService,
@@ -47,25 +52,27 @@ export class AdminAuditInterceptor implements NestInterceptor {
     // nothing meaningful to log.
     if (adminId === undefined) return next.handle();
 
-    return next.handle().pipe(
-      concatMap((value) =>
-        from(this.record(req, adminId, meta, true)).pipe(map(() => value)),
+    return from(this.start(req, adminId, meta)).pipe(
+      concatMap((auditId) =>
+        next.handle().pipe(
+          concatMap((value) =>
+            from(this.finish(auditId, 'SUCCEEDED')).pipe(map(() => value)),
+          ),
+          catchError((err: unknown) =>
+            from(this.finish(auditId, 'FAILED', err)).pipe(
+              mergeMap(() => throwError(() => err)),
+            ),
+          ),
+        ),
       ),
-      catchError((err: unknown) => {
-        return from(this.record(req, adminId, meta, false, err)).pipe(
-          mergeMap(() => throwError(() => err)),
-        );
-      }),
     );
   }
 
-  private async record(
+  private async start(
     req: AdminRequest,
     adminId: number,
     meta: AdminAuditMetadata,
-    success: boolean,
-    err?: unknown,
-  ): Promise<void> {
+  ): Promise<bigint> {
     try {
       const params = req.params as Record<string, unknown> | undefined;
       const targetId = meta.options?.targetParam
@@ -73,22 +80,54 @@ export class AdminAuditInterceptor implements NestInterceptor {
         : undefined;
       const ip = (req.ip ?? '').slice(0, 64);
       const ua = String(req.headers['user-agent'] ?? '').slice(0, 255);
-      await this.database.db.insert(adminActionLog).values({
-        adminId,
-        adminRole: req.user!.role,
-        action: meta.action,
-        targetType: meta.options?.targetType,
-        targetId: targetId || undefined,
-        ip: ip || null,
-        userAgent: ua || null,
-        route: String(req.url ?? '').slice(0, 255),
-        success,
-        errorMessage: success
-          ? null
-          : (err instanceof Error ? err.message : String(err)).slice(0, 255),
-      });
-    } catch {
-      // Swallow — audit is best-effort and must never break the observed operation.
+      const [row] = await this.database.db
+        .insert(adminActionLog)
+        .values({
+          adminId,
+          adminRole: req.user!.role,
+          action: meta.action,
+          targetType: meta.options?.targetType,
+          targetId: targetId || undefined,
+          ip: ip || null,
+          userAgent: ua || null,
+          route: String(req.url ?? '').slice(0, 255),
+          status: 'STARTED',
+        })
+        .returning({ id: adminActionLog.id });
+      if (!row) throw new Error('audit insert returned no row');
+      return row.id;
+    } catch (error) {
+      this.logger.error(
+        `refusing admin action because its audit record could not be created: ${meta.action}`,
+        error instanceof Error ? error.stack : String(error),
+      );
+      throw new InternalServerErrorException('admin audit unavailable');
+    }
+  }
+
+  private async finish(
+    auditId: bigint,
+    status: 'SUCCEEDED' | 'FAILED',
+    err?: unknown,
+  ): Promise<void> {
+    try {
+      const [row] = await this.database.db
+        .update(adminActionLog)
+        .set({
+          status,
+          errorMessage:
+            status === 'FAILED'
+              ? (err instanceof Error ? err.message : String(err)).slice(0, 255)
+              : null,
+        })
+        .where(eq(adminActionLog.id, auditId))
+        .returning({ id: adminActionLog.id });
+      if (!row) throw new Error('audit update returned no row');
+    } catch (error) {
+      this.logger.error(
+        `admin audit ${auditId.toString()} could not be finalized as ${status}; it remains STARTED`,
+        error instanceof Error ? error.stack : String(error),
+      );
     }
   }
 }
