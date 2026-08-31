@@ -193,18 +193,11 @@ function isCachedMessageBody(value: CachedMessage): value is CachedMessageBody {
   return !value.isDeleted && 'content' in value;
 }
 
-function readDeletedHwm(value: unknown): {
-  hwm: number;
-  legacyString: boolean;
-} {
+function readDeletedHwm(value: unknown): number {
+  if (value === undefined) return 0;
   if (Number.isSafeInteger(value) && (value as number) >= 0)
-    return { hwm: value as number, legacyString: false };
-  if (typeof value === 'string' && /^(?:0|[1-9]\d*)$/.test(value)) {
-    const parsed = Number(value);
-    if (Number.isSafeInteger(parsed))
-      return { hwm: parsed, legacyString: true };
-  }
-  return { hwm: 0, legacyString: false };
+    return value as number;
+  throw new Error('deleted-message HWM must be a non-negative integer');
 }
 
 function messageHeadKey(threadId: number): string {
@@ -1282,7 +1275,7 @@ export class WebdbService implements OnDestroy {
     groupMeta: readonly ClientGroupMetaApply[] = [],
     resetProjection = false,
   ): Promise<void> {
-    return this.runAccountOperation(async () => {
+    await this.runAccountOperation(async () => {
       if (!isTauri() && this.currentUserId !== null) {
         const workerApply = this.applyStateFeedPageInWorker(
           this.currentUserId,
@@ -1303,6 +1296,7 @@ export class WebdbService implements OnDestroy {
         resetProjection,
       );
     });
+    if (isAndroidNative()) window.SomsFcm?.setStateFeedCursor(feedId);
   }
 
   private applyStateFeedPageInWorker(
@@ -1867,6 +1861,19 @@ export class WebdbService implements OnDestroy {
         });
         continue;
       }
+      if (op.eventType === 'THREAD_CONTENT_HEAD') {
+        const thread = await tx.objectStore('threads').get(op.body.threadId);
+        if (thread)
+          await tx.objectStore('threads').put({
+            ...thread,
+            lastMessageSeq: op.body.messageEndSeq,
+            tombstoneEndSeq: op.body.tombstoneEndSeq,
+            lastMessagePreviewSeq: op.body.preview.seq,
+            lastMessagePreview: op.body.preview.text,
+            lastMessageSenderId: op.body.preview.senderId,
+          });
+        continue;
+      }
       if (op.eventType === 'THREAD_BLOCK') {
         const thread = await tx.objectStore('threads').get(op.body.threadId);
         if (thread)
@@ -1930,35 +1937,6 @@ export class WebdbService implements OnDestroy {
       domain,
       thread.authorityNamespaceId,
     );
-  }
-
-  /** Commit the refreshed thread-list snapshot and its missed-message cursor as one durable unit. */
-  async applyCatchUp(items: ConversationItem[], cursor: number): Promise<void> {
-    return this.runAccountOperation(async () => {
-      if (isTauri() && this.currentUserId != null) {
-        await tauriInvoke('native_db_apply_catch_up', {
-          userId: Number(this.currentUserId),
-          items,
-          cursor,
-        });
-        if (isAndroidNative()) window.SomsFcm?.setMessageFeedCursor(cursor);
-        return;
-      }
-      const db = await this.db();
-      const tx = db.transaction(
-        ['threads', 'namespaces', 'settings'],
-        'readwrite',
-      );
-      await tx.objectStore('threads').clear();
-      for (const item of items) {
-        await this.ensureThreadNamespaceInTx(tx, item);
-        await tx.objectStore('threads').put(item);
-      }
-      await tx
-        .objectStore('settings')
-        .put({ key: 'messageFeedCursor', value: cursor });
-      await tx.done;
-    });
   }
 
   private async registerNamespace(
@@ -2480,7 +2458,6 @@ export class WebdbService implements OnDestroy {
     return { messages: committedMessages, ranges };
   }
 
-
   async getMessage(
     threadId: number,
     seq: number,
@@ -2499,14 +2476,12 @@ export class WebdbService implements OnDestroy {
         });
         return hwm;
       }
-      const tx = (await this.messageDb()).transaction('settings', 'readwrite');
+      const tx = (await this.messageDb()).transaction('settings', 'readonly');
       const key = `deletedHwm:${threadId}`;
       const row = await tx.objectStore('settings').get(key);
-      const parsed = readDeletedHwm(row?.value);
-      if (parsed.legacyString)
-        await tx.objectStore('settings').put({ key, value: parsed.hwm });
+      const hwm = readDeletedHwm(row?.value);
       await tx.done;
-      return parsed.hwm;
+      return hwm;
     });
   }
 

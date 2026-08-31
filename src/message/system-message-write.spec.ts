@@ -2,11 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { ContentType } from '../database/enums.js';
 import { MessageService } from './message.service.js';
 import { SystemMessageType } from './system-message.js';
-import { ClientMessageFeedWriter } from './client-message-feed.service.js';
+import { ClientThreadContentHeadWriter } from './client-message-feed.service.js';
 
 describe('MessageService local system messages', () => {
   it('persists a local SYSTEM row', async () => {
-    vi.spyOn(ClientMessageFeedWriter, 'publishMessage').mockResolvedValue();
+    vi.spyOn(ClientThreadContentHeadWriter, 'publishMessage').mockResolvedValue();
     const stored = {
       id: 10n,
       threadId: 7,
@@ -99,7 +99,7 @@ describe('MessageService local system messages', () => {
   it('publishes a boundary SYSTEM message to explicit local recipients', async () => {
     vi.stubEnv('SOMS_DOMAIN', 'local.test');
     const publish = vi
-      .spyOn(ClientMessageFeedWriter, 'publishMessageToUsers')
+      .spyOn(ClientThreadContentHeadWriter, 'publishMessageToUsers')
       .mockResolvedValue();
     const stored = {
       id: 11n,

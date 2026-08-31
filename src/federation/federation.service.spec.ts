@@ -14,6 +14,14 @@ import { BusinessCode } from '../common/business-code.js';
 import { ContentType } from '../database/enums.js';
 import { UploadService } from '../upload/upload.service.js';
 import { messageThread, threadMember } from '../database/schema.js';
+import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
+import { FederationPeerHttp } from './federation-peer-http.js';
+import { FederationMediaRangeClient } from './federation-media-range-client.js';
+import { FederationUserDirectoryService } from './federation-user-directory.service.js';
+import { FederationCallBridgeService } from './federation-call-bridge.service.js';
+import { FederationThreadAccessService } from './federation-thread-access.service.js';
+import { FederationTrustedPeerClient } from './federation-trusted-peer-client.service.js';
+import { FederationThreadResourceClient } from './federation-thread-resource-client.service.js';
 
 describe('federated contact-card avatar limits', () => {
   const digest = 'a'.repeat(64);
@@ -527,6 +535,22 @@ function makeStubs() {
     markReachable: vi.fn(),
     markTransportDegraded: vi.fn(),
   };
+  const signature = { signOutbound: vi.fn(() => ({})) };
+  const discovery = {
+    resolveBase: vi.fn(async () => 'https://peer.test'),
+    acquireRequestSlot: vi.fn(async () => () => undefined),
+    request: (...args: Parameters<typeof fetch>) => fetch(...args),
+  };
+  const transportConfig = {
+    get: () => ({
+      keyCacheTtlSec: 21_600,
+      connectTimeoutSec: 12,
+      callTimeoutSec: 12,
+      mediaChunkBytes: 8 * 1024 * 1024,
+      mediaChunkTimeoutSec: 120,
+      mediaMaxChunkRetries: 5,
+    }),
+  };
   const database = {
     db: {
       execute: vi.fn().mockResolvedValue({ rows: [{ authorized: true }] }),
@@ -591,36 +615,81 @@ function makeStubs() {
       },
     },
   };
+  const peerLifecycle = new FederationPeerLifecycle(
+    database as never,
+    recognition as never,
+    discovery as never,
+  );
+  const peerHttp = new FederationPeerHttp(
+    signature as never,
+    discovery as never,
+    recognition as never,
+    transportConfig as never,
+    peerLifecycle,
+  );
+  const mediaRangeClient = new FederationMediaRangeClient(
+    signature as never,
+    discovery as never,
+    recognition as never,
+    transportConfig as never,
+    peerLifecycle,
+  );
+  const users = new FederationUserDirectoryService(database as never);
+  const participantService = {};
+  const quota = {};
+  const callBridge = new FederationCallBridgeService(
+    database as never,
+    peerHttp,
+    users,
+    participantService as never,
+    quota as never,
+    eventEmitter as never,
+  );
+  const namespaces = {
+    captureActive: vi.fn(async (domain: string) => ({
+      domain,
+      namespaceId: 1,
+      rootKeyFingerprint: 'peer-root',
+    })),
+    captureActiveInTx: vi.fn(async (_tx: unknown, domain: string) => ({
+      domain,
+      namespaceId: 1,
+      rootKeyFingerprint: 'peer-root',
+    })),
+    requireCapturedInTx: vi.fn(),
+  };
+  const threadAccess = new FederationThreadAccessService(
+    database as never,
+    namespaces as never,
+  );
+  const trustedPeers = new FederationTrustedPeerClient(peerHttp, peerLifecycle);
+  const threadResources = new FederationThreadResourceClient(
+    trustedPeers,
+    threadAccess,
+  );
   const svc = new FederationService(
     database as never,
-    {} as never, // signature
-    {
-      acquireRequestSlot: async () => () => undefined,
-      request: (...args: Parameters<typeof fetch>) => fetch(...args),
-    } as never, // discovery
+    peerHttp,
+    peerLifecycle,
+    mediaRangeClient,
+    {} as never, // inboundFileSync
+    {} as never, // pendingMediaPromoter
+    users,
+    callBridge,
+    threadAccess,
+    trustedPeers,
+    threadResources,
     {} as never, // upload
-    {} as never, // participantService
+    participantService as never,
     {} as never, // message
     {} as never, // invite
     sse as never,
-    {} as never, // quota
+    quota as never,
     {} as never, // linkPreview
     {} as never, // forwardBundles
     {} as never, // messageVisibility
     deletedMessages as never,
     eventEmitter as never,
-    recognition as never,
-    {} as never, // downloadScheduler
-    {
-      get: () => ({
-        keyCacheTtlSec: 21_600,
-        connectTimeoutSec: 12,
-        callTimeoutSec: 12,
-        mediaChunkBytes: 8 * 1024 * 1024,
-        mediaChunkTimeoutSec: 120,
-        mediaMaxChunkRetries: 5,
-      }),
-    } as never, // transportConfig
     {} as never, // stateFeedPull
     {} as never, // stateFeed
     {} as never, // clientStateFeed
@@ -629,19 +698,7 @@ function makeStubs() {
     {} as never, // threadContentHeads
     {} as never, // profileStatePublisher
     {} as never, // relationshipCommands
-    {
-      captureActive: vi.fn(async (domain: string) => ({
-        domain,
-        namespaceId: 1,
-        rootKeyFingerprint: 'peer-root',
-      })),
-      captureActiveInTx: vi.fn(async (_tx: unknown, domain: string) => ({
-        domain,
-        namespaceId: 1,
-        rootKeyFingerprint: 'peer-root',
-      })),
-      requireCapturedInTx: vi.fn(),
-    } as never, // namespaces
+    namespaces as never,
     {} as never, // stateFeedConsumer
   );
   return {
@@ -652,6 +709,11 @@ function makeStubs() {
     deletedMessages,
     eventEmitter,
     recognition,
+    peerHttp,
+    mediaRangeClient,
+    threadAccess,
+    trustedPeers,
+    threadResources,
   };
 }
 
@@ -734,18 +796,8 @@ describe('FederationService state-feed drain window', () => {
 
 describe('FederationService optional range digest', () => {
   function target() {
-    const { svc, recognition } = makeStubs();
-    const privateService = svc as unknown as {
-      signature: { signOutbound: () => Record<string, string> };
-      requestRangeUnit: (
-        url: URL,
-        domain: string,
-        start: number,
-        end: number,
-      ) => Promise<{ contentDigest?: string }>;
-    };
-    privateService.signature = { signOutbound: () => ({}) };
-    return { privateService, recognition };
+    const { mediaRangeClient, recognition } = makeStubs();
+    return { mediaRangeClient, recognition };
   }
 
   it('accepts a valid 206 range when the peer omits the optional digest', async () => {
@@ -756,7 +808,7 @@ describe('FederationService optional range digest', () => {
       }),
     );
     await expect(
-      target().privateService.requestRangeUnit(
+      target().mediaRangeClient.requestUnit(
         new URL('https://peer.test/file'),
         'peer.test',
         0,
@@ -777,7 +829,7 @@ describe('FederationService optional range digest', () => {
       }),
     );
     await expect(
-      target().privateService.requestRangeUnit(
+      target().mediaRangeClient.requestUnit(
         new URL('https://peer.test/file'),
         'peer.test',
         0,
@@ -798,9 +850,9 @@ describe('FederationService optional range digest', () => {
         { status: 200, headers: { 'content-type': 'application/json' } },
       ),
     );
-    const { privateService, recognition } = target();
+    const { mediaRangeClient, recognition } = target();
     await expect(
-      privateService.requestRangeUnit(
+      mediaRangeClient.requestUnit(
         new URL('https://peer.test/file'),
         'peer.test',
         0,
@@ -830,7 +882,7 @@ describe('FederationService optional range digest', () => {
       ),
     );
     await expect(
-      target().privateService.requestRangeUnit(
+      target().mediaRangeClient.requestUnit(
         new URL('https://peer.test/file'),
         'peer.test',
         3,
@@ -856,26 +908,9 @@ describe('FederationService JSON error data', () => {
         { status: 200, headers: { 'content-type': 'application/json' } },
       ),
     );
-    const { svc } = makeStubs();
-    const target = svc as unknown as {
-      signature: { signOutbound: () => Record<string, string> };
-      discovery: {
-        resolveBase: (domain: string) => Promise<string>;
-        acquireRequestSlot: (domain: string) => Promise<() => void>;
-        request: typeof fetch;
-      };
-      getSigned(path: string, domain: string): Promise<unknown>;
-    };
-    target.signature = { signOutbound: () => ({}) };
-    target.discovery = {
-      resolveBase: async () => 'https://peer.test',
-      acquireRequestSlot: async () => () => undefined,
-      request: (...args) => fetch(...args),
-    };
+    const { peerHttp } = makeStubs();
 
-    await expect(
-      target.getSigned('/resource', 'peer.test'),
-    ).rejects.toMatchObject({
+    await expect(peerHttp.get('/resource', 'peer.test')).rejects.toMatchObject({
       status: 200,
       code: BusinessCode.FEDERATION_QUOTA_EXCEEDED,
       data: { retryAfter: 60 },
@@ -932,9 +967,9 @@ describe('FederationService CAS error classification', () => {
   });
 });
 
-describe('FederationService thread-bound S2S preflight', () => {
+describe('FederationThreadResourceClient preflight', () => {
   function installPreflight(state?: { federationVersion: number }) {
-    const { svc, database } = makeStubs();
+    const { threadResources, trustedPeers, database } = makeStubs();
     const limit = vi.fn().mockResolvedValue(state ? [state] : []);
     const where = vi.fn(() => ({ limit }));
     const from = vi.fn(() => ({ where }));
@@ -945,21 +980,8 @@ describe('FederationService thread-bound S2S preflight', () => {
     (database.db as { transaction?: typeof transaction }).transaction =
       transaction;
     const getSigned = vi.fn().mockResolvedValue({ messages: [] });
-    const target = svc as unknown as {
-      getSigned: typeof getSigned;
-      withTrustedPeer: <T>(
-        domain: string,
-        action: () => Promise<T>,
-      ) => Promise<T>;
-      getSignedForThread: <T>(
-        threadId: number,
-        path: string,
-        domain: string,
-      ) => Promise<{ data: T; federationVersion: number }>;
-    };
-    target.getSigned = getSigned;
-    target.withTrustedPeer = (_domain, action) => action();
-    return { target, getSigned, select, transaction };
+    Object.assign(trustedPeers, { get: getSigned });
+    return { target: threadResources, getSigned, select, transaction };
   }
 
   it('captures the active namespace before carrying the thread authorization version', async () => {
@@ -968,11 +990,7 @@ describe('FederationService thread-bound S2S preflight', () => {
     });
 
     await expect(
-      target.getSignedForThread<{ messages: unknown[] }>(
-        10,
-        '/messages',
-        'peer.test',
-      ),
+      target.read<{ messages: unknown[] }>(10, '/messages', 'peer.test'),
     ).resolves.toEqual({ data: { messages: [] }, federationVersion: 7 });
     expect(transaction).toHaveBeenCalledOnce();
     expect(select).toHaveBeenCalledOnce();
@@ -982,9 +1000,9 @@ describe('FederationService thread-bound S2S preflight', () => {
   it('does not send when the thread is missing', async () => {
     const { target, getSigned } = installPreflight();
 
-    await expect(
-      target.getSignedForThread(10, '/messages', 'peer.test'),
-    ).rejects.toThrow('federation thread 10 is unavailable');
+    await expect(target.read(10, '/messages', 'peer.test')).rejects.toThrow(
+      'federation thread 10 is unavailable',
+    );
     expect(getSigned).not.toHaveBeenCalled();
   });
 
@@ -995,7 +1013,7 @@ describe('FederationService thread-bound S2S preflight', () => {
     );
 
     await expect(
-      target.getSignedForThread(10, '/messages', 'peer.test'),
+      target.read(10, '/messages', 'peer.test'),
     ).rejects.toMatchObject({
       status: 200,
       code: BusinessCode.GROUP_DISSOLVED,
@@ -1110,9 +1128,9 @@ describe('FederationService peer-bound response write gate', () => {
   };
 
   function installPeerGate() {
-    const { svc } = makeStubs();
+    const { svc, threadAccess } = makeStubs();
     const requireCapturedInTx = vi.fn().mockResolvedValue(undefined);
-    Object.assign(svc, { namespaces: { requireCapturedInTx } });
+    Object.assign(threadAccess, { namespaces: { requireCapturedInTx } });
     const target = svc as unknown as {
       assertPeerResponseWritable: (
         tx: object,

@@ -43,8 +43,6 @@ describe('ConversationListService stable markRead flush', () => {
             openThreadId: signal<number | undefined>(7).asReadonly(),
             items: signal([]).asReadonly(),
             refreshPeerOnOpen: vi.fn().mockName('refreshPeerOnOpen'),
-            messageFeedCursor: signal(null).asReadonly(),
-            advanceMessageFeedCursor: vi.fn().mockName('advanceMessageFeedCursor'),
             markTopOnNextUpdate: vi.fn().mockName('markTopOnNextUpdate'),
             load: vi.fn().mockName('load'),
           },
@@ -113,20 +111,17 @@ describe('ConversationListService stable markRead flush', () => {
 });
 
 /**
- * The away-cursor + per-thread dismiss-HWM delegations. `messageFeedCursor`/`threadHwms` are METHOD delegators
- * (the repo exposes them as methods, not bound signals), so they must reach the repo on call — the legacy
- * `readonly = this.repo.messageFeedCursor` field-copy captured an UNBOUND method and threw (silently swallowed by
- * the away-renderer's try/catch). This guard pins the fix.
+ * The away state cursor and per-thread dismiss-HWM delegations.
  */
 describe('ConversationListService (cursor + threadHwms delegation)', () => {
   let convList: ConversationListService;
-  let messageFeedCursor: Mock;
+  let stateFeedCursor: Mock;
   let threadHwms: Mock;
   let recordThreadDismiss: Mock;
   let clearThreadDismiss: Mock;
 
   beforeEach(() => {
-    messageFeedCursor = vi.fn().mockName('messageFeedCursor').mockReturnValue(0);
+    stateFeedCursor = vi.fn().mockName('stateFeedCursor').mockReturnValue(0);
     threadHwms = vi.fn().mockName('threadHwms').mockReturnValue({ 7: 3 });
     recordThreadDismiss = vi.fn().mockName('recordThreadDismiss');
     clearThreadDismiss = vi.fn().mockName('clearThreadDismiss');
@@ -146,7 +141,6 @@ describe('ConversationListService (cursor + threadHwms delegation)', () => {
             ).asReadonly(),
             topInserted: signal(null).asReadonly(),
             setOpenThread: vi.fn().mockName('setOpenThread'),
-            messageFeedCursor,
             threadHwms,
             recordThreadDismiss,
             clearThreadDismiss,
@@ -157,6 +151,7 @@ describe('ConversationListService (cursor + threadHwms delegation)', () => {
           useValue: {
             markRead: () => of({ code: 0 }),
             sessionUserId: signal<number | null>(null),
+            stateFeedCursor,
           },
         },
         { provide: GroupService, useValue: {} },
@@ -165,9 +160,9 @@ describe('ConversationListService (cursor + threadHwms delegation)', () => {
     convList = TestBed.inject(ConversationListService);
   });
 
-  it('messageFeedCursor / threadHwms delegate to the repo (method delegators, not field-copies)', () => {
-    expect(convList.messageFeedCursor()).toBe(0);
-    expect(messageFeedCursor).toHaveBeenCalledTimes(1);
+  it('stateFeedCursor delegates to UserService and threadHwms delegates to the repo', () => {
+    expect(convList.stateFeedCursor()).toBe(0);
+    expect(stateFeedCursor).toHaveBeenCalledTimes(1);
     expect(convList.threadHwms()).toEqual({ 7: 3 });
     expect(threadHwms).toHaveBeenCalledTimes(1);
   });

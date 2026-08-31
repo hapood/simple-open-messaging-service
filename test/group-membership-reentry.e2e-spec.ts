@@ -14,6 +14,7 @@ import {
   threadParticipant,
 } from '../src/database/schema.js';
 import { seedUserWithSession } from './seed.js';
+import { waitForLocalFriendInvite } from './domain-command-helpers.js';
 
 describe('group membership re-entry and ownership transfer', () => {
   let app: INestApplication;
@@ -45,10 +46,16 @@ describe('group membership re-entry and ownership transfer', () => {
       .set('Authorization', `Bearer ${first.token}`)
       .send({ account: second.account });
     expect(sent.body.code).toBe(BusinessCode.OK);
+    const inviteId = await waitForLocalFriendInvite(
+      database.db,
+      sent.body.data.commandId,
+      first.id,
+      second.id,
+    );
     const accepted = await request(app.getHttpServer())
       .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${second.token}`)
-      .send({ inviteId: sent.body.data.inviteId });
+      .send({ inviteId });
     expect(accepted.body.code).toBe(BusinessCode.OK);
   }
 

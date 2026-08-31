@@ -193,10 +193,10 @@ fn native_message_ranges_persist_canonical_reducer_output() {
 }
 
 #[test]
-fn deleted_hwm_accepts_numbers_and_identifies_legacy_strings() {
-    assert_eq!(decode_deleted_hwm("12").unwrap(), (12, false));
-    assert_eq!(decode_deleted_hwm("\"12\"").unwrap(), (12, true));
-    assert_eq!(decode_deleted_hwm("\"0\"").unwrap(), (0, true));
+fn deleted_hwm_accepts_only_non_negative_integer_json() {
+    assert_eq!(decode_deleted_hwm("12").unwrap(), 12);
+    assert!(decode_deleted_hwm("\"12\"").is_err());
+    assert!(decode_deleted_hwm("\"0\"").is_err());
     assert!(decode_deleted_hwm("\"012\"").is_err());
     assert!(decode_deleted_hwm("-1").is_err());
 }

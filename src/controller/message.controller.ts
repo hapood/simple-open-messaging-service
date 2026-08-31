@@ -64,6 +64,7 @@ import { UserQuotaService } from '../quota/user-quota.service.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
 import { MessageReportService } from '../message/message-report.service.js';
 import { CreateMessageReportsDto } from '../message/message-report.dto.js';
+import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import {
   parseTextMessageContent,
   stringifyTextMessageContent,
@@ -88,6 +89,7 @@ export class MessageController {
     private readonly messageReports: MessageReportService,
     private readonly users: UserService,
     private readonly groups: GroupService,
+    private readonly clientStateFeed: ClientStateFeedService,
   ) {}
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -149,6 +151,7 @@ export class MessageController {
       dto.take ?? 100,
       through,
       before,
+      dto.maxMessageSeq,
     );
   }
 
@@ -178,6 +181,7 @@ export class MessageController {
         participant.userId,
         dto.threadId,
         deleted.deletionSeq,
+        await this.clientStateFeed.readEndId(participant.userId),
       );
     }
     if (deleted.systemMessage) void this.fanout.dispatch(deleted.systemMessage);

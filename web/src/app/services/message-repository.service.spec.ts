@@ -255,7 +255,6 @@ describe('MessageRepository', () => {
     }
   });
 
-
   it('does not resurrect a tombstone when an in-flight HTTP page arrives later', async () => {
     await webdb.applyDeletedMessages(
       42,
@@ -310,31 +309,96 @@ describe('MessageRepository', () => {
     );
   });
 
-  it('advances the deletion cursor through an empty scanned interval', async () => {
-    queryDeletedMessagesSpy.mockReturnValueOnce(
-      of({
-        code: 0,
-        message: '',
-        data: { tombstones: [], scannedThrough: 9, hasMore: false },
-      }),
-    );
+  it('pins the first tombstone walk to the open-time head and local message cutoff', async () => {
+    await webdb.putCachedMessages([msg(42, 10)]);
+    queryDeletedMessagesSpy
+      .mockReturnValueOnce(
+        of({
+          code: 0,
+          message: '',
+          data: { tombstones: [], scannedThrough: 9, hasMore: false },
+        }),
+      )
+      .mockReturnValueOnce(
+        of({
+          code: 0,
+          message: '',
+          data: { tombstones: [], scannedThrough: 12, hasMore: false },
+        }),
+      );
 
-    await repo.syncDeleted(42);
+    await repo.openTombstoneStream(42, 9);
+    await repo.updateTombstoneTarget(42, 12);
 
-    expect(queryDeletedMessagesSpy).toHaveBeenCalledWith({
+    expect(queryDeletedMessagesSpy).toHaveBeenNthCalledWith(1, {
       threadId: 42,
       after: 0,
       take: 100,
+      through: 9,
+      maxMessageSeq: 10,
     });
-    expect(await webdb.getDeletedHwm(42)).toBe(9);
+    expect(queryDeletedMessagesSpy).toHaveBeenNthCalledWith(2, {
+      threadId: 42,
+      after: 9,
+      take: 100,
+      through: 12,
+    });
+    expect(await webdb.getDeletedHwm(42)).toBe(12);
   });
 
-  it('normalizes a legacy string deletion cursor when it is read', async () => {
-    const db = await webdb.messageDb();
-    await db.put('settings', { key: 'deletedHwm:42', value: '7' });
+  it('does not fetch tombstone bodies before the chatbox is opened', async () => {
+    await repo.updateTombstoneTarget(42, 9);
+    eventSubject.next({
+      event: 'DELETED_MESSAGE_UPDATED',
+      status: 0,
+      data: { threadId: 42, deletionSeq: 9, stateFeedId: 4 },
+    });
+    await flush();
 
-    expect(await webdb.getDeletedHwm(42)).toBe(7);
-    expect((await db.get('settings', 'deletedHwm:42'))?.value).toBe(7);
+    expect(queryDeletedMessagesSpy).not.toHaveBeenCalled();
   });
 
+  it('coalesces a racing target without bypassing the frozen open-time recovery round', async () => {
+    let resolveNewest!: (messages: Message[]) => void;
+    vi.spyOn(webdb, 'getNewestMessages').mockReturnValue(
+      new Promise<Message[]>((resolve) => {
+        resolveNewest = resolve;
+      }),
+    );
+    queryDeletedMessagesSpy
+      .mockReturnValueOnce(
+        of({
+          code: 0,
+          message: '',
+          data: { tombstones: [], scannedThrough: 9, hasMore: false },
+        }),
+      )
+      .mockReturnValueOnce(
+        of({
+          code: 0,
+          message: '',
+          data: { tombstones: [], scannedThrough: 12, hasMore: false },
+        }),
+      );
+
+    const opening = repo.openTombstoneStream(42, 9);
+    const racingUpdate = repo.updateTombstoneTarget(42, 12);
+    expect(queryDeletedMessagesSpy).not.toHaveBeenCalled();
+    resolveNewest([msg(42, 10)]);
+    await Promise.all([opening, racingUpdate]);
+
+    expect(queryDeletedMessagesSpy).toHaveBeenNthCalledWith(1, {
+      threadId: 42,
+      after: 0,
+      take: 100,
+      through: 9,
+      maxMessageSeq: 10,
+    });
+    expect(queryDeletedMessagesSpy).toHaveBeenNthCalledWith(2, {
+      threadId: 42,
+      after: 9,
+      take: 100,
+      through: 12,
+    });
+  });
 });

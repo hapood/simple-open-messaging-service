@@ -317,10 +317,10 @@ gap and stores the selected row as `activeGapId`.
 `historyBoundaryReached` becomes true only when the current segment is closed and
 no recoverable gap remains.
 
-Reverse history insertion does not publish `ClientMessageFeed` and does not
+Reverse history insertion does not publish a client `THREAD_CONTENT_HEAD` and does not
 emit SSE: it fills older coordinates rather than advancing the conversation
 tail. Ordinary client history reads the newly committed STUB rows directly.
-Forward STUB insertion does publish the compacted client message head in its
+Forward STUB insertion does publish the compacted client content head in its
 commit transaction, but federation materialization still emits no SSE.
 
 ## 6. Failures

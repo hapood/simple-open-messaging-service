@@ -1,12 +1,11 @@
 import type { Mock } from 'vitest';
 import 'fake-indexeddb/auto';
 import { TestBed } from '@angular/core/testing';
-import { Subject, firstValueFrom, of } from 'rxjs';
+import { Subject, of } from 'rxjs';
 import { signal, provideZonelessChangeDetection } from '@angular/core';
 import { WebdbService } from './webdb.service';
 import { rawPreview, ThreadRepository } from './thread-store.service';
 import { MessageRepository } from './message-repository.service';
-import { ThreadCatchUpService } from './thread-catch-up.service';
 import { ProfileRepository } from './profile-store.service';
 import { UserService } from './user.service';
 import { MsgService } from './message.service';
@@ -108,23 +107,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
               .fn()
               .mockName('getProfile')
               .mockResolvedValue(undefined),
-          },
-        },
-        {
-          provide: ThreadCatchUpService,
-          useValue: {
-            catchUp: vi.fn().mockName('catchUp').mockResolvedValue({
-              items: [],
-              hasMore: false,
-              scannedThrough: 0,
-              messageFeedEndId: 0,
-            }),
-            catchUpTombstones: vi.fn().mockResolvedValue({
-              items: [],
-              hasMore: false,
-              scannedThrough: 0,
-              tombstoneFeedEndId: 0,
-            }),
           },
         },
         {
@@ -356,7 +338,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     const items = repo.items();
     expect(items[0].lastMessagePreview).toBe('hello world');
     expect(items[0].lastMessageSenderId).toBe(
-      '0\u0000local\u0000local\u0000u77',
+      '[0,"local","local","u77"]',
     );
   });
 
@@ -367,60 +349,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     await flush(20);
     expect(establishSessionSpy).not.toHaveBeenCalled();
     expect(queryStateFeedSpy).not.toHaveBeenCalled();
-  });
-
-  it('HELLO always reconciles the durable message feed', async () => {
-    const missed = TestBed.inject(ThreadCatchUpService) as unknown as {
-      catchUp: Mock;
-    };
-    emitHello({ userId: 1, stateFeedEndId: 5 });
-    await flush(700);
-    expect(missed.catchUp).toHaveBeenCalledWith(0, undefined);
-  });
-
-  it('HELLO drains catch-up and durably commits its integer feed cursor', async () => {
-    const missed = TestBed.inject(ThreadCatchUpService) as unknown as {
-      catchUp: Mock;
-    };
-    await seedCachedThread(p2p(1, 77));
-    await seedMessage(1, 5, 'hello world', {
-      account: 'u77',
-      domain: 'local',
-      namespaceId: 0,
-    });
-    missed.catchUp.mockResolvedValue({
-      items: [
-        {
-          threadId: 1,
-          type: 'P2P',
-          displayName: 'User 77',
-          unreadCount: 0,
-          muted: false,
-          senderAvatarUrl: '',
-          senderUserId: 77,
-          latestMessage: {
-            threadId: 1,
-            seq: 5,
-            contentType: 'PURE_TEXT',
-            content: JSON.stringify({ text: 'hello world' }),
-            creator: { account: 'alice', domain: 'local' },
-            createdAt: 1000,
-            mediaStatus: 'ready',
-            sv: 5,
-          },
-        },
-      ],
-      hasMore: false,
-      scannedThrough: 1,
-      messageFeedEndId: 1,
-    });
-    emitHello({
-      userId: 1,
-      stateFeedEndId: 5,
-    });
-    await flush(700);
-    expect(missed.catchUp).toHaveBeenCalledWith(0, undefined);
-    expect(await webdb.getMeta('messageFeedCursor')).toBe(1);
   });
 
   // ── reconnect (the SSE stream re-pushes HELLO → onHello re-runs; no separate reconnect wiring) ──
@@ -497,62 +425,9 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     );
   });
 
-  it('drains a trailing missed-summary pull when messages arrive during an in-flight pull', async () => {
-    const missed = TestBed.inject(ThreadCatchUpService) as unknown as {
-      catchUp: Mock;
-    };
-    let resolveFirst!: (value: {
-      items: never[];
-      hasMore: boolean;
-      scannedThrough: number;
-      messageFeedEndId: number;
-    }) => void;
-    const first = new Promise<{
-      items: never[];
-      hasMore: boolean;
-      scannedThrough: number;
-      messageFeedEndId: number;
-    }>((resolve) => {
-      resolveFirst = resolve;
-    });
-    missed.catchUp.mockReturnValueOnce(first).mockReturnValueOnce(
-      Promise.resolve({
-        items: [],
-        hasMore: false,
-        scannedThrough: 2,
-        messageFeedEndId: 2,
-      }),
-    );
-    await populate([p2p(1, 11)]);
-
-    eventSubject.next({
-      event: 'NEW_MESSAGE',
-      data: { threadId: 1, seq: 1, ts: 100 },
-    });
-    await flush(250); // first debounced pull is now in flight
-    expect(missed.catchUp).toHaveBeenCalledTimes(1);
-    expect(missed.catchUp).toHaveBeenCalledWith(0, undefined);
-
-    eventSubject.next({
-      event: 'NEW_MESSAGE',
-      data: { threadId: 1, seq: 3, ts: 300 },
-    });
-    await flush(350); // trailing debounce fires while the first request is unresolved
-    resolveFirst({
-      items: [],
-      hasMore: false,
-      scannedThrough: 1,
-      messageFeedEndId: 1,
-    });
-    await flush(50);
-
-    expect(vi.mocked(missed.catchUp).mock.calls.length).toBe(2);
-    expect(vi.mocked(missed.catchUp).mock.lastCall).toEqual([1, undefined]);
-  });
-
   it('onNewMessage does not badge the open thread', async () => {
     await populate([p2p(1, 11)]);
-    repo.setOpenThread(1);
+    await repo.setOpenThread(1);
     eventSubject.next({
       event: 'NEW_MESSAGE',
       data: { threadId: 1, seq: 100, ts: 300 },
@@ -1128,102 +1003,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     });
     expect(repo.items()[0]).toEqual(
       expect.objectContaining({ lastReadSeq: 7, unreadCount: 0 }),
-    );
-  });
-
-  it('catch-up applies the authoritative per-thread unreadCount', async () => {
-    const fetchSpy = (
-      TestBed.inject(ThreadCatchUpService) as unknown as {
-        catchUp: Mock;
-      }
-    ).catchUp;
-    fetchSpy.mockResolvedValue({
-      items: [
-        {
-          threadId: 1,
-          type: 'P2P',
-          displayName: 'A',
-          unreadCount: 7,
-          muted: false,
-          lastReadSeq: 3,
-          senderAvatarUrl: '',
-          senderUserId: 11,
-          latestMessage: null,
-        },
-      ],
-      hasMore: false,
-      scannedThrough: 0,
-      messageFeedEndId: 0,
-    });
-    await populate([p2p(1, 11, { lastReadSeq: 3, unreadCount: 0 })]);
-    eventSubject.next({
-      event: 'NEW_MESSAGE',
-      data: { threadId: 1, seq: 12, ts: 1000 },
-    });
-    await flush(300); // past the 200ms pull debounce
-
-    const item = repo.items().find((t) => t.threadId === 1)!;
-    expect(item.unreadCount).toBe(7); // authoritative server value applied
-  });
-
-  it('catch-up refreshes preview/read state but preserves unread for the open thread', async () => {
-    const fetchSpy = (
-      TestBed.inject(ThreadCatchUpService) as unknown as {
-        catchUp: Mock;
-      }
-    ).catchUp;
-    fetchSpy.mockResolvedValue({
-      items: [
-        {
-          threadId: 1,
-          type: 'P2P',
-          displayName: 'A',
-          unreadCount: 0,
-          mentionUnread: [],
-          muted: false,
-          lastReadSeq: 12,
-          senderAvatarUrl: '',
-          senderUserId: 1,
-          latestMessage: {
-            threadId: 1,
-            seq: 12,
-            contentType: 'PURE_TEXT',
-            content: JSON.stringify({ text: 'sent from the open thread' }),
-            creator: { account: 'me', domain: 'local', namespaceId: 0 },
-            createdAt: 1000,
-            mediaStatus: 'ready',
-            sv: 0,
-          },
-        },
-      ],
-      hasMore: false,
-      scannedThrough: 0,
-      messageFeedEndId: 0,
-    });
-    await populate([
-      p2p(1, 11, {
-        lastReadSeq: 10,
-        unreadCount: 2,
-        lastMessagePreview: 'old preview',
-      }),
-    ]);
-    repo.setOpenThread(1);
-
-    const applied = firstValueFrom(repo.catchUpApplied$);
-    eventSubject.next({
-      event: 'NEW_MESSAGE',
-      data: { threadId: 1, seq: 12, ts: 1000 },
-    });
-    await applied;
-
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    expect(repo.items()[0]).toEqual(
-      expect.objectContaining({
-        lastMessagePreview: 'sent from the open thread',
-        lastMessageSenderId: '0\u0000local\u0000local\u0000me',
-        lastReadSeq: 12,
-        unreadCount: 2,
-      }),
     );
   });
 

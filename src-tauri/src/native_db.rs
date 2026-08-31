@@ -8,6 +8,13 @@ use tauri::Manager;
 
 use crate::{perform_api_request, ProxyState};
 
+mod avatars;
+mod preferences;
+pub(crate) use avatars::{native_db_get_avatar, native_db_put_avatar};
+pub(crate) use preferences::{
+    native_db_delete_preference, native_db_get_preference, native_db_put_preference,
+};
+
 const DB_FILENAME: &str = "soms-local.sqlite3";
 const CACHE_SCHEMA_VERSION: i64 = 13;
 
@@ -464,70 +471,6 @@ pub(crate) async fn native_db_count_messages(
     .map_err(|e| format!("join cached message count: {e}"))?
 }
 
-#[tauri::command]
-pub(crate) async fn native_db_get_preference(
-    app: tauri::AppHandle,
-    scope: String,
-    key: String,
-) -> Result<Option<Value>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let value = open_preferences(&app)?
-            .query_row(
-                "SELECT value_json FROM client_preferences WHERE scope = ?1 AND key = ?2",
-                params![scope, key],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(|e| format!("get preference: {e}"))?;
-        value.map(parse_json).transpose()
-    })
-    .await
-    .map_err(|e| format!("join preference read: {e}"))?
-}
-
-#[tauri::command]
-pub(crate) async fn native_db_put_preference(
-    app: tauri::AppHandle,
-    scope: String,
-    key: String,
-    value: Value,
-) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        open_preferences(&app)?
-            .execute(
-                "INSERT INTO client_preferences(scope, key, value_json, updated_at)
-                 VALUES(?1, ?2, ?3, ?4)
-                 ON CONFLICT(scope, key) DO UPDATE SET
-                   value_json = excluded.value_json,
-                   updated_at = excluded.updated_at",
-                params![scope, key, json_text(&value)?, chrono_millis()],
-            )
-            .map_err(|e| format!("put preference: {e}"))?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("join preference write: {e}"))?
-}
-
-#[tauri::command]
-pub(crate) async fn native_db_delete_preference(
-    app: tauri::AppHandle,
-    scope: String,
-    key: String,
-) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        open_preferences(&app)?
-            .execute(
-                "DELETE FROM client_preferences WHERE scope = ?1 AND key = ?2",
-                params![scope, key],
-            )
-            .map_err(|e| format!("delete preference: {e}"))?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("join preference delete: {e}"))?
-}
-
 fn json_text(value: &Value) -> Result<String, String> {
     serde_json::to_string(value).map_err(|e| format!("encode native db value: {e}"))
 }
@@ -892,16 +835,6 @@ pub(crate) struct ClientGroupMetaItem {
     body: Value,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct NativeAvatar {
-    identity: String,
-    path: String,
-    mime: String,
-    data: Vec<u8>,
-    last_render: i64,
-}
-
 fn materialize_group_thread_from_fact(
     tx: &Transaction<'_>,
     user_id: i64,
@@ -1030,73 +963,6 @@ fn apply_friend_thread_from_facts(
         .map_err(|e| format!("insert friend thread from relationship facts: {e}"))?;
     }
     Ok(())
-}
-
-#[tauri::command]
-pub(crate) async fn native_db_get_avatar(
-    app: tauri::AppHandle,
-    user_id: i64,
-    identity: String,
-) -> Result<Option<NativeAvatar>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let conn = open(&app)?;
-        let avatar = conn
-            .query_row(
-                "SELECT source_path, mime, data, last_render FROM avatars
-                 WHERE user_id = ?1 AND identity = ?2",
-                params![user_id, identity],
-                |row| {
-                    Ok(NativeAvatar {
-                        identity: identity.clone(),
-                        path: row.get(0)?,
-                        mime: row.get(1)?,
-                        data: row.get(2)?,
-                        last_render: row.get(3)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(|e| format!("get avatar: {e}"))?;
-        if avatar.is_some() {
-            conn.execute(
-                "UPDATE avatars SET last_render = ?3 WHERE user_id = ?1 AND identity = ?2",
-                params![user_id, identity, chrono_millis()],
-            )
-            .map_err(|e| format!("touch avatar: {e}"))?;
-        }
-        Ok(avatar)
-    })
-    .await
-    .map_err(|e| format!("join avatar read: {e}"))?
-}
-
-#[tauri::command]
-pub(crate) async fn native_db_put_avatar(
-    app: tauri::AppHandle,
-    user_id: i64,
-    identity: String,
-    path: String,
-    mime: String,
-    data: Vec<u8>,
-    last_render: i64,
-) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        open(&app)?
-            .execute(
-                "INSERT INTO avatars(user_id, identity, source_path, mime, data, last_render)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6)
-                 ON CONFLICT(user_id, identity) DO UPDATE SET
-                   source_path = excluded.source_path,
-                   mime = excluded.mime,
-                   data = excluded.data,
-                   last_render = excluded.last_render",
-                params![user_id, identity, path, mime, data, last_render],
-            )
-            .map_err(|e| format!("put avatar: {e}"))?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("join avatar write: {e}"))?
 }
 
 fn chrono_millis() -> i64 {
@@ -1776,6 +1642,59 @@ pub(crate) async fn native_db_apply_state_feed_page(
                         ).map_err(|e| format!("update profile thread projection: {e}"))?;
                     }
                 }
+                "THREAD_CONTENT_HEAD" => {
+                    let body = op
+                        .body
+                        .ok_or_else(|| "THREAD_CONTENT_HEAD has no body".to_string())?;
+                    let thread_id = body
+                        .get("threadId")
+                        .and_then(Value::as_i64)
+                        .ok_or_else(|| "THREAD_CONTENT_HEAD has no threadId".to_string())?;
+                    let message_end_seq = body
+                        .get("messageEndSeq")
+                        .and_then(Value::as_i64)
+                        .ok_or_else(|| "THREAD_CONTENT_HEAD has no messageEndSeq".to_string())?;
+                    let tombstone_end_seq = body
+                        .get("tombstoneEndSeq")
+                        .and_then(Value::as_i64)
+                        .ok_or_else(|| "THREAD_CONTENT_HEAD has no tombstoneEndSeq".to_string())?;
+                    let preview = body
+                        .get("preview")
+                        .and_then(Value::as_object)
+                        .ok_or_else(|| "THREAD_CONTENT_HEAD has no preview".to_string())?;
+                    let preview_seq = preview
+                        .get("seq")
+                        .and_then(Value::as_i64)
+                        .ok_or_else(|| "THREAD_CONTENT_HEAD preview has no seq".to_string())?;
+                    let preview_text = preview
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "THREAD_CONTENT_HEAD preview has no text".to_string())?;
+                    let preview_sender_id = preview.get("senderId").cloned().unwrap_or(Value::Null);
+                    let payload: Option<String> = tx
+                        .query_row(
+                            "SELECT payload_json FROM threads WHERE user_id=?1 AND thread_id=?2",
+                            params![user_id, thread_id],
+                            |row| row.get(0),
+                        )
+                        .optional()
+                        .map_err(|e| format!("read thread content projection: {e}"))?;
+                    if let Some(payload) = payload {
+                        let mut thread = parse_json(payload)?;
+                        if let Some(object) = thread.as_object_mut() {
+                            object.insert("lastMessageSeq".into(), Value::from(message_end_seq));
+                            object.insert("tombstoneEndSeq".into(), Value::from(tombstone_end_seq));
+                            object.insert("lastMessagePreviewSeq".into(), Value::from(preview_seq));
+                            object.insert("lastMessagePreview".into(), Value::String(preview_text.to_string()));
+                            object.insert("lastMessageSenderId".into(), preview_sender_id);
+                        }
+                        tx.execute(
+                            "UPDATE threads SET payload_json=?3 WHERE user_id=?1 AND thread_id=?2",
+                            params![user_id, thread_id, json_text(&thread)?],
+                        )
+                        .map_err(|e| format!("apply thread content projection: {e}"))?;
+                    }
+                }
                 "THREAD_BLOCK" => {
                     let body = op
                         .body
@@ -1843,43 +1762,6 @@ pub(crate) async fn native_db_apply_state_feed_page(
     })
     .await
     .map_err(|e| format!("join state-feed page: {e}"))?
-}
-
-#[tauri::command]
-pub(crate) async fn native_db_apply_catch_up(
-    app: tauri::AppHandle,
-    user_id: i64,
-    items: Vec<Value>,
-    cursor: i64,
-) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut conn = open(&app)?;
-        let tx = conn
-            .transaction()
-            .map_err(|e| format!("begin catch-up: {e}"))?;
-        tx.execute("DELETE FROM threads WHERE user_id = ?1", params![user_id])
-            .map_err(|e| format!("clear catch-up threads: {e}"))?;
-        for item in items {
-            let thread_id = item
-                .get("threadId")
-                .and_then(Value::as_i64)
-                .ok_or_else(|| "catch-up item has no threadId".to_string())?;
-            tx.execute(
-                "INSERT INTO threads(user_id, thread_id, payload_json) VALUES(?1, ?2, ?3)",
-                params![user_id, thread_id, json_text(&item)?],
-            )
-            .map_err(|e| format!("save catch-up thread: {e}"))?;
-        }
-        tx.execute(
-            "INSERT INTO sync_state(user_id, key, value_json) VALUES(?1, 'messageFeedCursor', ?2)
-             ON CONFLICT(user_id, key) DO UPDATE SET value_json = excluded.value_json",
-            params![user_id, cursor.to_string()],
-        )
-        .map_err(|e| format!("save catch-up cursor: {e}"))?;
-        tx.commit().map_err(|e| format!("commit catch-up: {e}"))
-    })
-    .await
-    .map_err(|e| format!("join catch-up: {e}"))?
 }
 
 #[tauri::command]
@@ -3386,21 +3268,11 @@ pub(crate) async fn native_db_put_message_head(
     .map_err(|error| format!("join message head write: {error}"))?
 }
 
-fn decode_deleted_hwm(value_json: &str) -> Result<(i64, bool), String> {
+fn decode_deleted_hwm(value_json: &str) -> Result<i64, String> {
     let value: Value =
         serde_json::from_str(value_json).map_err(|e| format!("parse deleted hwm: {e}"))?;
-    let (hwm, legacy_string) = match value {
-        Value::Number(value) => (value.as_i64(), false),
-        Value::String(value)
-            if value == "0"
-                || (!value.starts_with('0') && value.chars().all(|ch| ch.is_ascii_digit())) =>
-        {
-            (value.parse::<i64>().ok(), true)
-        }
-        _ => (None, false),
-    };
-    match hwm {
-        Some(hwm) if hwm >= 0 => Ok((hwm, legacy_string)),
+    match value.as_i64() {
+        Some(hwm) if hwm >= 0 => Ok(hwm),
         _ => Err("deleted hwm must be a non-negative integer".to_string()),
     }
 }
@@ -3423,17 +3295,7 @@ pub(crate) async fn native_db_get_deleted_hwm(
             .optional()
             .map_err(|e| format!("get deleted hwm: {e}"))?;
         match value {
-            Some(value) => {
-                let (hwm, legacy_string) = decode_deleted_hwm(&value)?;
-                if legacy_string {
-                    conn.execute(
-                        "UPDATE sync_state SET value_json=?3 WHERE user_id=?1 AND key=?2",
-                        params![user_id, key, hwm.to_string()],
-                    )
-                    .map_err(|e| format!("normalize deleted hwm: {e}"))?;
-                }
-                Ok(hwm)
-            }
+            Some(value) => decode_deleted_hwm(&value),
             None => Ok(0),
         }
     })

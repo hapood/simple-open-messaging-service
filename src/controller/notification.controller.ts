@@ -5,7 +5,6 @@ import {
   Get,
   Request,
   Body,
-  Query,
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
@@ -13,24 +12,15 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import { NotificationActionService } from '../notification/notification-action.service.js';
 import { AwayNotificationService } from '../notification/away-notification.service.js';
-import { ThreadListSyncService } from '../thread-sync/thread-list-sync.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 import {
   NotificationFeedQueryDto,
   ReportActionDto,
 } from '../dto/notification.dto.js';
-import { BusinessCode } from '../common/business-code.js';
-import { BusinessException } from '../common/business.exception.js';
-
-/** Default and maximum page sizes shared with the federation feed surfaces. */
-const CATCH_UP_DEFAULT_TAKE = 100;
-const CATCH_UP_MAX_TAKE = 200;
 
 /**
  * The notification + incremental-sync surface.
  *  - GET  /notifications/vapid-key — public Web Push VAPID key (no auth).
- * New code uses two explicit domain resources:
- *  - GET /thread-sync/catch-up — ThreadList preview/read-state catch-up.
  *  - POST /notification-feed/query — system-notification descriptors while the app is away.
  *
  * Handlers return raw data (the global SerializeInterceptor wraps the ApiResult envelope).
@@ -40,7 +30,6 @@ const CATCH_UP_MAX_TAKE = 200;
 @Controller()
 export class NotificationController {
   constructor(
-    private readonly threadListSync: ThreadListSyncService,
     private readonly awayNotifications: AwayNotificationService,
     private readonly notifAction: NotificationActionService,
     private readonly settings: SettingsService,
@@ -60,118 +49,11 @@ export class NotificationController {
     return { publicKey: this.settings.getVapid()?.publicKey ?? '' };
   }
 
-  /** Read one page of the compacted per-user message feed and hydrate its changed threads. */
-  @HttpCode(HttpStatus.OK)
-  @Get('thread-sync/catch-up')
-  @ApiOperation({
-    summary: 'Read changed thread previews from the per-user message feed',
-  })
-  async catchUp(
-    @Request() req: FastifyRequest,
-    @Query('after') afterParam?: string,
-    @Query('take') takeParam?: string,
-    @Query('through') throughParam?: string,
-  ) {
-    const userId = req.user.userId as number;
-    if (afterParam === undefined) {
-      if (takeParam !== undefined || throughParam !== undefined)
-        throw new BusinessException(
-          BusinessCode.VALIDATION_FAILED,
-          'take and through require after',
-          HttpStatus.BAD_REQUEST,
-        );
-      return this.threadListSync.rejectMissingAfter(userId, 'message');
-    }
-    const after = this.parseFeedCursor(afterParam, 'after');
-    const take = this.parseFeedTake(takeParam);
-    const through = this.parseFeedThrough(throughParam, after);
-    return this.threadListSync.catchUp(userId, {
-      after,
-      ...(through !== undefined ? { through } : {}),
-      take,
-    });
-  }
-
-  @HttpCode(HttpStatus.OK)
-  @Get('thread-sync/tombstones')
-  @ApiOperation({
-    summary: 'Read the compacted per-user message tombstone feed',
-  })
-  async catchUpTombstones(
-    @Request() req: FastifyRequest,
-    @Query('after') afterParam?: string,
-    @Query('take') takeParam?: string,
-    @Query('through') throughParam?: string,
-  ) {
-    const userId = req.user.userId as number;
-    if (afterParam === undefined) {
-      if (takeParam !== undefined || throughParam !== undefined)
-        throw new BusinessException(
-          BusinessCode.VALIDATION_FAILED,
-          'take and through require after',
-          HttpStatus.BAD_REQUEST,
-        );
-      return this.threadListSync.rejectMissingAfter(userId, 'tombstone');
-    }
-    const after = this.parseFeedCursor(afterParam, 'after');
-    const take = this.parseFeedTake(takeParam);
-    const through = this.parseFeedThrough(throughParam, after);
-    return this.threadListSync.catchUpTombstones(userId, {
-      after,
-      ...(through !== undefined ? { through } : {}),
-      take,
-    });
-  }
-
-  private parseFeedCursor(value: string, name: string): number {
-    if (!/^(0|[1-9]\d*)$/.test(value))
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        `${name} must be a non-negative integer`,
-        HttpStatus.BAD_REQUEST,
-      );
-    const parsed = Number(value);
-    if (!Number.isSafeInteger(parsed))
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        `${name} exceeds the safe integer range`,
-        HttpStatus.BAD_REQUEST,
-      );
-    return parsed;
-  }
-
-  private parseFeedTake(value?: string): number {
-    const take =
-      value === undefined
-        ? CATCH_UP_DEFAULT_TAKE
-        : this.parseFeedCursor(value, 'take');
-    if (take < 1 || take > CATCH_UP_MAX_TAKE)
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        'take must be an integer from 1 to 200',
-        HttpStatus.BAD_REQUEST,
-      );
-    return take;
-  }
-
-  private parseFeedThrough(value: string | undefined, after: number) {
-    if (value === undefined) return undefined;
-    const through = this.parseFeedCursor(value, 'through');
-    if (through < after)
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        'through must be greater than or equal to after',
-        HttpStatus.BAD_REQUEST,
-      );
-    return through;
-  }
-
-  /** Build a current notification snapshot for threads changed after a per-user message-feed cursor. */
+  /** Build a current notification snapshot for thread heads changed after a ClientStateFeed cursor. */
   @HttpCode(HttpStatus.OK)
   @Post('notification-feed/query')
   @ApiOperation({
-    summary:
-      'Build notifications from changed threads in the per-user message feed',
+    summary: 'Build notifications from changed thread heads in ClientStateFeed',
   })
   async queryNotifications(
     @Request() req: FastifyRequest,

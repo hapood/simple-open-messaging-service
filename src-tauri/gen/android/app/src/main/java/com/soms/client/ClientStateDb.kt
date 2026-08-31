@@ -91,14 +91,14 @@ object ClientStateDb {
         }
     }
 
-    fun getMessageFeedCursor(ctx: Context): Int = open(ctx).use { db ->
+    fun getStateFeedCursor(ctx: Context): Int = open(ctx).use { db ->
         db.rawQuery(
             "SELECT feed_id FROM notification_feed_state WHERE account_id = ?",
             arrayOf(ACTIVE_ACCOUNT.toString()),
         ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
     }
 
-    fun setMessageFeedCursor(ctx: Context, feedId: Int) = open(ctx).use { db ->
+    fun setStateFeedCursor(ctx: Context, feedId: Int) = open(ctx).use { db ->
         require(feedId >= 0)
         db.execSQL(
             """INSERT INTO notification_feed_state(account_id, feed_id, updated_at) VALUES(?, ?, ?)

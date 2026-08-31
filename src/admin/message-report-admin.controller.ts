@@ -8,6 +8,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import type { FastifyRequest } from 'fastify';
 import { Public } from '../common/public.decorator.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -38,6 +39,7 @@ export class MessageReportAdminController {
     private readonly participants: ThreadParticipantService,
     private readonly sse: SseService,
     private readonly federation: FederationService,
+    private readonly clientStateFeed: ClientStateFeedService,
     private readonly fanout: MessageFanoutService,
   ) {}
 
@@ -74,6 +76,7 @@ export class MessageReportAdminController {
           participant.userId,
           deletion.threadId,
           deletion.deletionSeq,
+          await this.clientStateFeed.readEndId(participant.userId),
         );
       }
       void this.federation.notifyOnSend(

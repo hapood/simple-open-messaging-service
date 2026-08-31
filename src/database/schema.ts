@@ -85,6 +85,17 @@ export const relationshipIntentStatus = pgEnum('RelationshipIntentStatus', [
   'ACCEPTED',
   'REVOKED',
 ]);
+export const domainCommandAggregateType = pgEnum('DomainCommandAggregateType', [
+  'USER_PAIR',
+  'GROUP',
+]);
+export const domainCommandStatus = pgEnum('DomainCommandStatus', [
+  'PENDING',
+  'PROCESSING',
+  'SUCCEEDED',
+  'REJECTED',
+  'FAILED',
+]);
 
 export const messageDeleteType = pgEnum('MessageDeleteType', [
   'USER_RETRACTION',
@@ -365,6 +376,100 @@ export const account = pgTable(
       foreignColumns: [user.id],
       name: 'Account_id_fkey',
     }).onDelete('cascade'),
+  ],
+);
+
+/** Durable domain-mutation queue. Aggregate ordering is application-defined by aggregateKey;
+ * command rows remain operational history while the relationship and group tables remain authoritative. */
+export const domainCommand = pgTable(
+  'DomainCommand',
+  {
+    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
+    parentCommandId: bigint({ mode: 'bigint' }),
+    aggregateType: domainCommandAggregateType().notNull(),
+    aggregateKey: varchar({ length: 512 }).notNull(),
+    commandType: varchar({ length: 64 }).notNull(),
+    actorUserId: integer(),
+    payload: jsonb().$type<Record<string, unknown>>().notNull(),
+    progressCursor: integer(),
+    status: domainCommandStatus().default('PENDING').notNull(),
+    resultCode: integer(),
+    lastError: varchar({ length: 1000 }),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    startedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
+    completedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
+  },
+  (table) => [
+    index('DomainCommand_pending_id_idx')
+      .on(table.id)
+      .where(sql`${table.status} = 'PENDING'`),
+    index('DomainCommand_blocking_aggregate_id_idx')
+      .on(table.aggregateKey, table.id)
+      .where(sql`${table.status} IN ('PENDING', 'PROCESSING', 'FAILED')`),
+    uniqueIndex('DomainCommand_one_processing_per_aggregate_key')
+      .on(table.aggregateKey)
+      .where(sql`${table.status} = 'PROCESSING'`),
+    index('DomainCommand_parentCommandId_idx').on(table.parentCommandId),
+    foreignKey({
+      columns: [table.parentCommandId],
+      foreignColumns: [table.id],
+      name: 'DomainCommand_parentCommandId_fkey',
+    }).onDelete('restrict'),
+    check(
+      'DomainCommand_parent_order_check',
+      sql`${table.parentCommandId} IS NULL OR ${table.parentCommandId} < ${table.id}`,
+    ),
+    check(
+      'DomainCommand_aggregate_key_check',
+      sql`length(${table.aggregateKey}) > 0`,
+    ),
+    check(
+      'DomainCommand_command_type_check',
+      sql`${table.commandType} ~ '^[A-Z][A-Z0-9_]*$'`,
+    ),
+    check(
+      'DomainCommand_actor_user_id_check',
+      sql`${table.actorUserId} IS NULL OR ${table.actorUserId} > 0`,
+    ),
+    check(
+      'DomainCommand_payload_check',
+      sql`jsonb_typeof(${table.payload}) = 'object'`,
+    ),
+    check(
+      'DomainCommand_progress_cursor_check',
+      sql`${table.progressCursor} IS NULL OR ${table.progressCursor} >= 0`,
+    ),
+    check(
+      'DomainCommand_status_timestamps_check',
+      sql`(
+        ${table.status} = 'PENDING'
+        AND ${table.startedAt} IS NULL
+        AND ${table.completedAt} IS NULL
+      ) OR (
+        ${table.status} = 'PROCESSING'
+        AND ${table.startedAt} IS NOT NULL
+        AND ${table.completedAt} IS NULL
+      ) OR (
+        ${table.status} IN ('SUCCEEDED', 'REJECTED', 'FAILED')
+        AND ${table.startedAt} IS NOT NULL
+        AND ${table.completedAt} IS NOT NULL
+      )`,
+    ),
+    check(
+      'DomainCommand_timestamp_order_check',
+      sql`(${table.startedAt} IS NULL OR ${table.startedAt} >= ${table.createdAt})
+        AND (${table.completedAt} IS NULL OR ${table.completedAt} >= ${table.startedAt})`,
+    ),
+    check(
+      'DomainCommand_result_check',
+      sql`${table.resultCode} IS NULL OR ${table.status} IN ('SUCCEEDED', 'REJECTED')`,
+    ),
+    check(
+      'DomainCommand_error_check',
+      sql`${table.lastError} IS NULL OR ${table.status} = 'FAILED'`,
+    ),
   ],
 );
 
@@ -1386,7 +1491,9 @@ export const uploadSession = pgTable(
     originalName: varchar({ length: 100 }).notNull(),
     mimeType: varchar({ length: 255 }).notNull(),
     totalBytes: bigint({ mode: 'bigint' }).notNull(),
-    receivedBytes: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
+    receivedBytes: bigint({ mode: 'bigint' })
+      .default(sql`0`)
+      .notNull(),
     status: uploadSessionStatus().default('UPLOADING').notNull(),
     tmpKey: uuid().defaultRandom().notNull(),
     digest: varchar({ length: 64 }),
@@ -1456,8 +1563,12 @@ export const fileSyncProgress = pgTable(
     direction: fileSyncDirection().notNull(),
     kind: fileSyncKind().notNull(),
     status: fileSyncStatus().default('PENDING').notNull(),
-    bytesTotal: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
-    bytesReceived: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
+    bytesTotal: bigint({ mode: 'bigint' })
+      .default(sql`0`)
+      .notNull(),
+    bytesReceived: bigint({ mode: 'bigint' })
+      .default(sql`0`)
+      .notNull(),
     originDomain: varchar({ length: 63 }),
     namespaceId: integer().default(0).notNull(),
     errorKind: varchar({ length: 255 }),
@@ -1681,115 +1792,6 @@ export const groupRequestProjection = pgTable(
   ],
 );
 
-/** Per-user allocator for the two independent device-facing message feeds. Updating this row is the
- * serialization point for one user's feed coordinates; writers lock users in ascending id order. */
-export const clientMessageFeedTarget = pgTable(
-  'ClientMessageFeedTarget',
-  {
-    userId: integer().primaryKey().notNull(),
-    messageAllocatedThrough: integer().default(0).notNull(),
-    tombstoneAllocatedThrough: integer().default(0).notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    foreignKey({
-      columns: [table.userId],
-      foreignColumns: [account.id],
-      name: 'ClientMessageFeedTarget_userId_fkey',
-    }).onDelete('cascade'),
-    check(
-      'ClientMessageFeedTarget_messageAllocatedThrough_check',
-      sql`${table.messageAllocatedThrough} >= 0`,
-    ),
-    check(
-      'ClientMessageFeedTarget_tombstoneAllocatedThrough_check',
-      sql`${table.tombstoneAllocatedThrough} >= 0`,
-    ),
-  ],
-);
-
-/** Compacted per-user message-discovery projection. messageEndSeq identifies the latest message admitted
- * by the client-feed policy, while visibility, block and read state are still resolved at query time. */
-export const clientMessageFeed = pgTable(
-  'ClientMessageFeed',
-  {
-    userId: integer().notNull(),
-    threadId: integer().notNull(),
-    feedId: integer().notNull(),
-    messageEndSeq: integer().notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.userId, table.threadId],
-      name: 'ClientMessageFeed_pkey',
-    }),
-    uniqueIndex('ClientMessageFeed_user_feedId_key').on(
-      table.userId,
-      table.feedId,
-    ),
-    foreignKey({
-      columns: [table.userId],
-      foreignColumns: [account.id],
-      name: 'ClientMessageFeed_userId_fkey',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.threadId],
-      foreignColumns: [messageThread.id],
-      name: 'ClientMessageFeed_threadId_fkey',
-    }).onDelete('cascade'),
-    check('ClientMessageFeed_feedId_check', sql`${table.feedId} > 0`),
-    check(
-      'ClientMessageFeed_messageEndSeq_check',
-      sql`${table.messageEndSeq} > 0`,
-    ),
-  ],
-);
-
-/** Compacted per-user deletion-discovery projection. Its coordinate space is intentionally independent
- * from ClientMessageFeed so either stream can be drained and committed without coupling failures. */
-export const clientMessageTombstoneFeed = pgTable(
-  'ClientMessageTombstoneFeed',
-  {
-    userId: integer().notNull(),
-    threadId: integer().notNull(),
-    feedId: integer().notNull(),
-    tombstoneEndSeq: integer().notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.userId, table.threadId],
-      name: 'ClientMessageTombstoneFeed_pkey',
-    }),
-    uniqueIndex('ClientMessageTombstoneFeed_user_feedId_key').on(
-      table.userId,
-      table.feedId,
-    ),
-    foreignKey({
-      columns: [table.userId],
-      foreignColumns: [account.id],
-      name: 'ClientMessageTombstoneFeed_userId_fkey',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.threadId],
-      foreignColumns: [messageThread.id],
-      name: 'ClientMessageTombstoneFeed_threadId_fkey',
-    }).onDelete('cascade'),
-    check('ClientMessageTombstoneFeed_feedId_check', sql`${table.feedId} > 0`),
-    check(
-      'ClientMessageTombstoneFeed_tombstoneEndSeq_check',
-      sql`${table.tombstoneEndSeq} > 0`,
-    ),
-  ],
-);
-
 export const systemSetting = pgTable('SystemSetting', {
   key: varchar({ length: 63 }).primaryKey().notNull(),
   value: text().notNull(),
@@ -1934,7 +1936,9 @@ export const peerStateFeedTarget = pgTable(
   {
     peerDomain: varchar({ length: 63 }).notNull(),
     namespaceId: integer().primaryKey().notNull(),
-    allocatedThrough: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
+    allocatedThrough: bigint({ mode: 'bigint' })
+      .default(sql`0`)
+      .notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -2012,8 +2016,12 @@ export const groupMetaFeedTarget = pgTable(
     targetPeerDomain: varchar({ length: 63 }).notNull(),
     targetNamespaceId: integer().notNull(),
     groupId: integer().notNull(),
-    allocatedThrough: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
-    oldestAvailableAfter: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
+    allocatedThrough: bigint({ mode: 'bigint' })
+      .default(sql`0`)
+      .notNull(),
+    oldestAvailableAfter: bigint({ mode: 'bigint' })
+      .default(sql`0`)
+      .notNull(),
     active: boolean().default(true).notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
@@ -2106,8 +2114,12 @@ export const clientGroupMetaFeedTarget = pgTable(
   {
     accountId: integer().notNull(),
     groupId: integer().notNull(),
-    allocatedThrough: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
-    oldestAvailableAfter: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
+    allocatedThrough: bigint({ mode: 'bigint' })
+      .default(sql`0`)
+      .notNull(),
+    oldestAvailableAfter: bigint({ mode: 'bigint' })
+      .default(sql`0`)
+      .notNull(),
     active: boolean().default(true).notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
@@ -2216,7 +2228,9 @@ export const peerStateFeedPullCursor = pgTable(
     peerDomain: varchar({ length: 63 }).notNull(),
     namespaceId: integer().primaryKey().notNull(),
     initialized: boolean().default(false).notNull(),
-    committedThrough: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
+    committedThrough: bigint({ mode: 'bigint' })
+      .default(sql`0`)
+      .notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -2294,17 +2308,16 @@ export const relationshipPair = pgTable(
       .notNull(),
   },
   (table) => [
-    unique('RelationshipPair_endpoints_key')
-      .on(
-        table.endpointAType,
-        table.endpointAAccount,
-        table.endpointADomain,
-        table.endpointANamespaceId,
-        table.endpointBType,
-        table.endpointBAccount,
-        table.endpointBDomain,
-        table.endpointBNamespaceId,
-      ),
+    unique('RelationshipPair_endpoints_key').on(
+      table.endpointAType,
+      table.endpointAAccount,
+      table.endpointADomain,
+      table.endpointANamespaceId,
+      table.endpointBType,
+      table.endpointBAccount,
+      table.endpointBDomain,
+      table.endpointBNamespaceId,
+    ),
     index('RelationshipPair_endpointA_idx').on(
       table.endpointAType,
       table.endpointAAccount,
@@ -2880,7 +2893,9 @@ export const quotaFileByteUsage = pgTable(
   {
     domain: varchar({ length: 63 }).notNull(),
     date: date({ mode: 'date' }).notNull(),
-    bytes: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
+    bytes: bigint({ mode: 'bigint' })
+      .default(sql`0`)
+      .notNull(),
   },
   (table) => [
     index('QuotaFileByteUsage_date_idx').using(
@@ -2903,7 +2918,9 @@ export const userQuotaFileByteUsage = pgTable(
   {
     userId: integer().notNull(),
     date: date({ mode: 'date' }).notNull(),
-    bytes: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
+    bytes: bigint({ mode: 'bigint' })
+      .default(sql`0`)
+      .notNull(),
   },
   (table) => [
     index('UserQuotaFileByteUsage_date_idx').using(
@@ -2934,7 +2951,9 @@ export const quotaDailyAllowance = pgTable(
     date: date({ mode: 'date' }).notNull(),
     extraMsg: integer().default(0).notNull(),
     extraFile: integer().default(0).notNull(),
-    extraFileBytes: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
+    extraFileBytes: bigint({ mode: 'bigint' })
+      .default(sql`0`)
+      .notNull(),
   },
   (table) => [
     primaryKey({
@@ -2990,7 +3009,9 @@ export const userQuotaDailyAllowance = pgTable(
     date: date({ mode: 'date' }).notNull(),
     extraMsg: integer().default(0).notNull(),
     extraFile: integer().default(0).notNull(),
-    extraFileBytes: bigint({ mode: 'bigint' }).default(sql`0`).notNull(),
+    extraFileBytes: bigint({ mode: 'bigint' })
+      .default(sql`0`)
+      .notNull(),
   },
   (table) => [
     foreignKey({

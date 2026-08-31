@@ -41,6 +41,7 @@ import {
   registerAndLogin,
   uploadAvatar,
 } from './federation-test-helpers.js';
+import { waitForDomainCommand } from './domain-command-helpers.js';
 
 describe('federation durable missed transport (two nodes)', () => {
   let appA: FedApp;
@@ -521,6 +522,7 @@ describe('federation durable missed transport (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({ account: 'missedbob', domain: FED_DOMAIN_B });
     expect(removed.body.code).toBe(BusinessCode.OK);
+    await waitForDomainCommand(appA.database, removed.body.data.commandId);
     const restored = await request(appA.baseUrl)
       .post('/api/v1/invite/federated-friend')
       .set('Authorization', `Bearer ${tokenA}`)

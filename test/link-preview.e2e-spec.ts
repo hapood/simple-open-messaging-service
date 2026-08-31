@@ -10,6 +10,7 @@ import { DatabaseService } from '../src/database/database.service';
 import { messageAsset, message } from '../src/database/schema';
 import { LinkPreviewService } from '../src/link-preview/link-preview.service.js';
 import { registerAndLogin } from './federation-test-helpers';
+import { waitForLocalFriendInvite } from './domain-command-helpers.js';
 
 /**
  * LINK message send contract (single instance). The client sends only the URL; the server rebuilds the
@@ -83,10 +84,16 @@ describe('LINK message send (single instance)', () => {
       .set('Authorization', `Bearer ${alice.token}`)
       .send({ account: 'bob' });
     expect(invite.body.code).toBe(0);
+    const inviteId = await waitForLocalFriendInvite(
+      database.db,
+      invite.body.data.commandId,
+      alice.id,
+      bob.id,
+    );
     const accept = await request(baseUrl)
       .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${bob.token}`)
-      .send({ inviteId: invite.body.data.inviteId });
+      .send({ inviteId });
     const threadId: number = accept.body.data.threadId;
 
     // Alice sends a LINK message — only the bare URL on the wire.
@@ -134,10 +141,16 @@ describe('LINK message send (single instance)', () => {
       .set('Authorization', `Bearer ${alice.token}`)
       .send({ account: 'bob2' })
       .expect((res) => expect(res.body.code).toBe(0));
+    const inviteId = await waitForLocalFriendInvite(
+      database.db,
+      invite.body.data.commandId,
+      alice.id,
+      bob.id,
+    );
     const accept = await request(baseUrl)
       .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${bob.token}`)
-      .send({ inviteId: invite.body.data.inviteId });
+      .send({ inviteId });
     const threadId: number = accept.body.data.threadId;
 
     const send = await request(baseUrl)

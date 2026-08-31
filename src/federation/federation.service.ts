@@ -45,10 +45,7 @@ import {
   ForwardBundleService,
   type ForwardWireBundle,
 } from '../forward/forward-bundle.service.js';
-import { SignatureService } from './signature.service.js';
-import { DiscoveryService } from './discovery.service.js';
 import { loadFederationConfig } from './federation.config.js';
-import { FederationTransportConfigService } from './federation-transport-config.service.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { QuotaService } from '../quota/quota.service.js';
@@ -72,7 +69,6 @@ import {
   extractDigests,
 } from '../upload/file-content.js';
 import { contextualizeCasUrls } from '../upload/cas-url.js';
-import { KeyedMutex } from '../common/keyed-mutex.js';
 import {
   type MapFederationOriginSequence,
   mapFederationOriginSequence,
@@ -87,26 +83,14 @@ import {
   buildCallContent,
   parseFederatedCallContent,
 } from '../calls/call-content.js';
-import {
-  type CallSignalPayload,
-  parseS2SCallWireFrame,
-  type S2SCallFrame,
-  toS2SCallWireFrame,
-} from '../calls/federated-call-protocol.js';
-import {
-  FederationCallDelivery,
-  type OutboundCallFrameParams,
-} from './federation-call-delivery.js';
+import { type OutboundCallFrameParams } from './federation-call-delivery.js';
 import {
   FederationMessageContextError,
   S2sResponseError,
 } from './federation-errors.js';
 import { FederationPeerHttp } from './federation-peer-http.js';
 import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
-import {
-  FederationMediaRangeClient,
-  type FederationMediaRangeUnit,
-} from './federation-media-range-client.js';
+import { FederationMediaRangeClient } from './federation-media-range-client.js';
 import {
   federationFileSyncKind,
   FederationInboundFileSync,
@@ -128,8 +112,9 @@ export type {
   S2SCallFrame,
   S2SCallOperation,
 } from '../calls/federated-call-protocol.js';
+export type { S2SAddress } from './federation-address.js';
+export type { FederationThreadResourceResponse } from './federation-thread-resource-client.service.js';
 
-import { FederationRecognitionService } from './federation-recognition.service.js';
 import {
   FEDERATED_MESSAGE_CONTENT_TYPES,
   type FederationMessageFeedMessage,
@@ -140,7 +125,6 @@ import {
   federatedContentDigests,
   fromFederatedMessageContent,
 } from './federated-message-content.js';
-import { FederationDownloadScheduler } from './federation-download-scheduler.js';
 import { RemoteFeedCursorUnavailableError } from './federation-feed-cursor-error.js';
 import { type FederationMessageTombstoneQueryPage } from './federation-message-tombstone-feed.service.js';
 import {
@@ -154,7 +138,7 @@ import { RelationshipIntentService } from '../invite/relationship-intent.service
 import { FederationGroupRelationshipService } from './federation-group-relationship.service.js';
 import { isThreadMutuallyAuthorized } from '../invite/relationship-authorization.js';
 import { SystemMessageType } from '../message/system-message.js';
-import { ClientMessageFeedWriter } from '../message/client-message-feed.service.js';
+import { ClientThreadContentHeadWriter } from '../message/client-message-feed.service.js';
 import { assertServerGroupCapacityInTx } from '../group/group-capacity.js';
 import {
   FEDERATION_STATE_FEED_PUSH,
@@ -171,6 +155,15 @@ import {
   FederationStateFeedConsumerService,
   type StatePageEffect,
 } from './federation-state-feed-consumer.service.js';
+import type { S2SAddress } from './federation-address.js';
+import { FederationUserDirectoryService } from './federation-user-directory.service.js';
+import { FederationCallBridgeService } from './federation-call-bridge.service.js';
+import { FederationThreadAccessService } from './federation-thread-access.service.js';
+import { FederationTrustedPeerClient } from './federation-trusted-peer-client.service.js';
+import {
+  FederationThreadResourceClient,
+  type FederationThreadResourceResponse,
+} from './federation-thread-resource-client.service.js';
 
 /** Preserve the relationship author's side in the client-feed compaction key. */
 export function clientGroupIntentEndpoints(
@@ -181,14 +174,6 @@ export function clientGroupIntentEndpoints(
   return author === 'GROUP'
     ? { account: groupAccount, subjectAccount: memberAccount }
     : { account: memberAccount, subjectAccount: groupAccount };
-}
-
-/** A federated user address on the wire: two separate fields (account + domain). The `@` separator
- *  is a UI input convention ONLY — the browser splits a typed `alice@bbb.com` into these two fields
- *  before any API call; S2S payloads + endpoints + consumer DTOs never carry an `@`-joined string. */
-export interface S2SAddress {
-  account: string;
-  domain: string;
 }
 
 export type PeerResponseToken = FederationContext;
@@ -223,14 +208,6 @@ interface MessageQueryApplyOptions {
   sequencePolicy?: MapFederationOriginSequence;
   expectedThreadId?: number;
   historical?: boolean;
-}
-
-export interface FederationThreadResourceResponse<T> {
-  data: T;
-  threadId: number;
-  peerDomain: string;
-  federationVersion: number;
-  peerToken: PeerResponseToken;
 }
 
 /**
@@ -312,17 +289,18 @@ export class FederationService {
   private static readonly GROUP_PULL_DEBOUNCE_MS = 500;
   /** Per-group-thread last pull timestamp (the receiver debounce on pullGroupWhole). */
   private readonly recentGroupPulls = new Map<number, number>();
-  /** Serializes inbound frames that may establish the same call binding, closing concurrent incoming races. */
-  private readonly callInboundLocks = new KeyedMutex();
-  private readonly callDelivery = new FederationCallDelivery();
-  private readonly peerLifecycle: FederationPeerLifecycle;
-  private readonly inboundFileSync: FederationInboundFileSync;
-  private readonly pendingMediaPromoter: FederationPendingMediaPromoter;
-
   constructor(
     private readonly database: DatabaseService,
-    private readonly signature: SignatureService,
-    private readonly discovery: DiscoveryService,
+    private readonly peerHttp: FederationPeerHttp,
+    private readonly peerLifecycle: FederationPeerLifecycle,
+    private readonly mediaRangeClient: FederationMediaRangeClient,
+    private readonly inboundFileSync: FederationInboundFileSync,
+    private readonly pendingMediaPromoter: FederationPendingMediaPromoter,
+    private readonly users: FederationUserDirectoryService,
+    private readonly callBridge: FederationCallBridgeService,
+    private readonly threadAccess: FederationThreadAccessService,
+    private readonly trustedPeers: FederationTrustedPeerClient,
+    private readonly threadResources: FederationThreadResourceClient,
     private readonly upload: UploadService,
     private readonly participantService: ThreadParticipantService,
     private readonly message: MessageService,
@@ -334,13 +312,7 @@ export class FederationService {
     private readonly forwardBundles: ForwardBundleService,
     private readonly messageVisibility: MessageVisibilityService,
     private readonly deletedMessages: DeletedMessageService,
-    // Inbound S2S call frames are bridged to CallsService via emitAsync('call.frame.inbound') rather
-    // than a direct injection — FederationService must NOT inject CallsService (that would cycle: the
-    // calls layer injects FederationService for outbound). The event bus breaks the edge cleanly.
     private readonly eventEmitter: EventEmitter2,
-    private readonly recognition: FederationRecognitionService,
-    private readonly downloadScheduler: FederationDownloadScheduler,
-    private readonly transportConfig: FederationTransportConfigService,
     private readonly stateFeedPull: PeerStateFeedPullService,
     private readonly stateFeed: PeerStateFeedService,
     private readonly clientStateFeed: ClientStateFeedService,
@@ -351,23 +323,7 @@ export class FederationService {
     private readonly relationshipCommands: FederationRelationshipCommandService,
     private readonly namespaces: FederationNamespaceService,
     private readonly stateFeedConsumer: FederationStateFeedConsumerService,
-  ) {
-    this.peerLifecycle = new FederationPeerLifecycle(
-      this.database,
-      this.recognition,
-      this.discovery,
-      this.config.domain,
-    );
-    this.inboundFileSync = new FederationInboundFileSync(
-      this.database,
-      this.quota,
-      this.upload,
-      this.downloadScheduler,
-    );
-    this.pendingMediaPromoter = new FederationPendingMediaPromoter(
-      this.database,
-    );
-  }
+  ) {}
 
   /** The wire address of a LOCAL user: { account, domain } (domain = our real config.domain). */
   localAddress(account: string): S2SAddress {
@@ -586,40 +542,12 @@ export class FederationService {
    *  /media/:digest never touches client tokens — so a disabled user's media would still flow out over federation
    *  unless we reject the soft-deleted row here. */
   async findLocalUserId(account: string): Promise<number | null> {
-    const u = await this.database.db.query.user.findFirst({
-      where: and(
-        eq(tables.user.account, normalizeAccount(account)),
-        eq(tables.user.domain, 'local'),
-        eq(tables.user.namespaceId, 0),
-      ),
-    });
-    return u && u.domain === 'local' && u.availability === 'AVAILABLE'
-      ? u.id
-      : null;
+    return this.users.findLocalUserId(account);
   }
 
   /** Look up a local user id from a full address (must be account@<our domain>). */
   async findLocalUserIdByAddress(address: S2SAddress): Promise<number | null> {
-    if (address.domain !== this.config.domain) return null;
-    return this.findLocalUserId(address.account);
-  }
-
-  /** Load a local user (full row) by id; throw if missing or not local. The single source for the
-   *  `from` address + outbound profile builders, replacing the old localAccount() helper. */
-  private async requireLocalUser(userId: number): Promise<{
-    id: number;
-    account: string;
-    name: string;
-    avatar: string;
-    bio: string;
-    profileRev: number;
-  }> {
-    const u = await this.database.db.query.user.findFirst({
-      where: eq(tables.user.id, userId),
-    });
-    if (!u || u.domain !== 'local')
-      throw new Error(`user ${userId} is not a local user`);
-    return u;
+    return this.users.findLocalUserIdByAddress(address);
   }
 
   /** Build the S2SProfile wire shape from a loaded local user (reads the avatar file → base64). */
@@ -770,7 +698,10 @@ export class FederationService {
               eq(tables.federatedFriendRequest.localUserId, localUserId),
               eq(tables.federatedFriendRequest.remoteAccount, remoteAccount),
               eq(tables.federatedFriendRequest.remoteDomain, remoteDomain),
-              eq(tables.federatedFriendRequest.namespaceId, request.namespaceId),
+              eq(
+                tables.federatedFriendRequest.namespaceId,
+                request.namespaceId,
+              ),
               eq(tables.federatedFriendRequest.direction, 'INCOMING'),
             ),
           );
@@ -1625,9 +1556,7 @@ export class FederationService {
     domain: string,
     namespaceId: number,
   ): Promise<number> {
-    return this.database.db.transaction((tx) =>
-      this.ensureForeignUserInTransaction(tx, account, domain, namespaceId),
-    );
+    return this.users.ensureForeignUser(account, domain, namespaceId);
   }
 
   private async ensureForeignUserInTransaction(
@@ -1636,25 +1565,12 @@ export class FederationService {
     domain: string,
     namespaceId: number,
   ): Promise<number> {
-    const acct = normalizeAccount(account);
-    const existing = await tx.query.user.findFirst({
-      where: and(
-        eq(tables.user.account, acct),
-        eq(tables.user.domain, domain),
-        eq(tables.user.sourceDomain, domain),
-        eq(tables.user.namespaceId, namespaceId),
-      ),
-      columns: { id: true },
-    });
-    if (existing) return existing.id;
-    return upsertSourceUserInTx(tx, {
-      account: acct,
+    return this.users.ensureForeignUserInTransaction(
+      tx,
+      account,
       domain,
-      sourceDomain: domain,
       namespaceId,
-      name: acct,
-      profileRev: 0,
-    });
+    );
   }
 
   /**
@@ -1681,20 +1597,7 @@ export class FederationService {
     body: string,
     peerDomain: string,
   ): Promise<void> {
-    await this.peerHttp().post(path, body, peerDomain);
-  }
-
-  /**
-   * Shared signed-POST transport: sign the (method, path, authority, body) tuple, POST, and apply the
-   * lifecycle wiring: network failure/503 degrades, a registered fatal 409 halts, and all HTTP 200
-   * business outcomes leave lifecycle unchanged.
-   */
-  private async sendSignedPost(
-    url: URL,
-    body: string,
-    peerDomain: string,
-  ): Promise<void> {
-    await this.peerHttp().postUrl(url, body, peerDomain);
+    await this.peerHttp.post(path, body, peerDomain);
   }
 
   /** GET a signed S2S endpoint (users / revision). Returns the parsed JSON. Throws on non-success. */
@@ -1703,22 +1606,7 @@ export class FederationService {
     peerDomain: string,
     maxResponseBytes?: number,
   ): Promise<T> {
-    return this.peerHttp().get<T>(path, peerDomain, maxResponseBytes);
-  }
-
-  private peerHttp(): FederationPeerHttp {
-    return new FederationPeerHttp(
-      this.signature,
-      this.discovery,
-      this.recognition,
-      this.transportConfig,
-      {
-        isFatalPeerCode: (code): code is number => this.isFatalPeerCode(code),
-        markContactSuccess: (domain) => this.markContactSuccess(domain),
-        markPeerHalted: (domain, code, message) =>
-          this.markPeerHalted(domain, code, message),
-      },
-    );
+    return this.peerHttp.get<T>(path, peerDomain, maxResponseBytes);
   }
 
   // ─── bidirectional server recognition ─────────────────────────────────────────
@@ -1754,7 +1642,7 @@ export class FederationService {
   // ─── trust lifecycle (state machine + audit log) ──────────────────────────────
   //
   // FederatedPeer holds the CURRENT state (the cheap read path); FederatedPeerEvent is the append-only
-  // log of every transition (the admin timeline). FederationService is the single owner: every
+  // log of every transition (the admin timeline). FederationPeerLifecycle is the single owner: every
   // transition — recognition convergence, transport health and admin actions — flows through these
   // methods, so the row + the event stay consistent. Recognition facts remain authoritative when a
   // transport failure temporarily moves a healthy peer to degraded.
@@ -1784,18 +1672,6 @@ export class FederationService {
   /** Compatibility wrapper for callers that observed a successful signed round trip. */
   async markRecovered(domain: string): Promise<void> {
     await this.peerLifecycle.markRecovered(domain);
-  }
-
-  private isFatalPeerCode(code: unknown): code is number {
-    return this.peerLifecycle.isFatalCode(code);
-  }
-
-  private async markPeerHalted(
-    domain: string,
-    code: number,
-    message: unknown,
-  ): Promise<void> {
-    await this.peerLifecycle.markHalted(domain, code, message);
   }
 
   /** Admin block: forbid federation with a peer; recognition and ordinary inbound traffic both reject
@@ -1847,63 +1723,7 @@ export class FederationService {
     params: OutboundCallFrameParams,
     peerDomain: string,
   ): Promise<void> {
-    await this.callDelivery.send(params, peerDomain, (frame, domain) =>
-      this.postCallFrame(frame, domain),
-    );
-  }
-
-  private async postCallFrame(
-    params: OutboundCallFrameParams,
-    peerDomain: string,
-  ): Promise<void> {
-    const base = {
-      callSid: params.callSid,
-      callType: params.callType,
-    };
-    let frame: S2SCallFrame;
-    if (params.op === 'incoming') {
-      const from = await this.requireLocalUser(params.fromLocalUserId);
-      frame = {
-        ...base,
-        op: 'incoming',
-        payload: {
-          fromAccount: from.account,
-          toAccount: params.to.account,
-        },
-      };
-    } else if (params.op === 'signal') {
-      const signalPayload = {
-        signalId: params.signalId,
-        signalType: params.signalType,
-        data: params.data,
-      };
-      frame = {
-        ...base,
-        op: 'signal',
-        payload: signalPayload as CallSignalPayload,
-      };
-    } else if (params.op === 'connected') {
-      frame = {
-        ...base,
-        op: 'connected',
-        payload: { startedAt: params.startedAt },
-      };
-    } else if (params.op === 'ended') {
-      frame = {
-        ...base,
-        op: 'ended',
-        payload: { endReason: params.endReason },
-      };
-    } else if (params.op === 'video-upgraded') {
-      frame = { ...base, op: 'video-upgraded', callType: 'VIDEO' };
-    } else {
-      frame = { ...base, op: params.op };
-    }
-    await this.postSigned(
-      '/s2s/v1/call',
-      JSON.stringify(toS2SCallWireFrame(frame)),
-      peerDomain,
-    );
+    await this.callBridge.sendFrame(params, peerDomain);
   }
 
   /** Whether this server is the roster and history authority for a group thread. */
@@ -1983,114 +1803,17 @@ export class FederationService {
     namespaceId: number,
     signatureExpiresAtSec: number,
   ): Promise<void> {
-    const frame = parseS2SCallWireFrame(body);
-    if (frame.op !== 'incoming') {
-      await this.eventEmitter.emitAsync('call.frame.inbound', {
-        peerDomain,
-        namespaceId,
-        signatureExpiresAtSec,
-        frame,
-      });
-      return;
-    }
-    await this.callInboundLocks.runExclusive(
-      JSON.stringify([peerDomain, namespaceId, frame.callSid]),
-      async () =>
-        this.handleInboundIncoming(
-          frame,
-          peerDomain,
-          namespaceId,
-          signatureExpiresAtSec,
-        ),
-    );
-  }
-
-  private async handleInboundIncoming(
-    body: Extract<S2SCallFrame, { op: 'incoming' }>,
-    peerDomain: string,
-    namespaceId: number,
-    signatureExpiresAtSec: number,
-  ): Promise<void> {
-    const preflight = await this.eventEmitter.emitAsync(
-      'call.frame.incoming.preflight',
-      { peerDomain, namespaceId, frame: body },
-    );
-    if (preflight?.some((handled) => handled === true)) return;
-    const terminal = await this.database.db.query.callTombstone.findFirst({
-      where: and(
-        eq(tables.callTombstone.peerDomain, peerDomain),
-        eq(tables.callTombstone.namespaceId, namespaceId),
-        eq(tables.callTombstone.callSid, body.callSid),
-        gt(tables.callTombstone.expiresAt, new Date()),
-      ),
-      columns: { terminalOp: true },
-    });
-    if (terminal) {
-      throw new BusinessException(
-        terminal.terminalOp === 'cancelled'
-          ? BusinessCode.CALL_CANCELLED
-          : BusinessCode.CALL_TERMINATED,
-        terminal.terminalOp === 'cancelled'
-          ? 'call was already cancelled'
-          : 'call was already terminated',
-        HttpStatus.OK,
-      );
-    }
-    await this.quota.peek(peerDomain, 'requests');
-    const peerStubId = await this.ensureForeignUser(
-      body.payload.fromAccount,
-      peerDomain,
-      namespaceId,
-    );
-    const localUserId = await this.findLocalUserIdByAddress({
-      account: body.payload.toAccount,
-      domain: this.config.domain,
-    });
-    if (localUserId === null) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        `local user ${body.payload.toAccount} not found`,
-      );
-    }
-    const threadId = await this.participantService.findP2PThreadBetween(
-      localUserId,
-      peerStubId,
-    );
-    if (threadId === null) {
-      throw new BusinessException(
-        BusinessCode.CALL_NOT_ALLOWED,
-        'no relationship with caller',
-      );
-    }
-    await this.eventEmitter.emitAsync('call.frame.inbound', {
-      localUserId,
-      peerStubId,
+    await this.callBridge.handleFrame(
+      body,
       peerDomain,
       namespaceId,
       signatureExpiresAtSec,
-      threadId,
-      frame: body,
-    });
+    );
   }
 
   /** Group writes are gated exclusively by locally converged state. */
   async assertGroupWritable(threadId: number): Promise<void> {
-    await this.assertLocalSendNamespaceActive(threadId);
-    const [state] = await this.database.db
-      .select({ dissolvedAt: tables.group.dissolvedAt })
-      .from(tables.messageThread)
-      .innerJoin(
-        tables.group,
-        eq(tables.group.id, tables.messageThread.groupId),
-      )
-      .where(eq(tables.messageThread.id, threadId))
-      .limit(1);
-    if (state?.dissolvedAt) {
-      throw new BusinessException(
-        BusinessCode.GROUP_DISSOLVED,
-        'group has been dissolved',
-      );
-    }
+    await this.threadAccess.assertGroupWritable(threadId);
   }
 
   /** P2P writes are gated exclusively by locally converged state. No synchronous peer query is allowed
@@ -2099,55 +1822,7 @@ export class FederationService {
     threadId: number,
     localUserId: number,
   ): Promise<void> {
-    await this.assertLocalSendNamespaceActive(threadId);
-    if (
-      !(await isThreadMutuallyAuthorized(
-        this.database.db,
-        localUserId,
-        threadId,
-      ))
-    ) {
-      throw new BusinessException(BusinessCode.FRIEND_NOT_FOUND, 'not friends');
-    }
-  }
-
-  private async assertLocalSendNamespaceActive(threadId: number): Promise<void> {
-    const [state] = await this.database.db
-      .select({
-        authorityNamespaceId: tables.messageThread.authorityNamespaceId,
-        domain: tables.identityNamespace.domain,
-        activeNamespaceId: tables.federatedPeer.activeNamespaceId,
-      })
-      .from(tables.messageThread)
-      .innerJoin(
-        tables.identityNamespace,
-        eq(
-          tables.identityNamespace.id,
-          tables.messageThread.authorityNamespaceId,
-        ),
-      )
-      .leftJoin(
-        tables.federatedPeer,
-        eq(tables.federatedPeer.domain, tables.identityNamespace.domain),
-      )
-      .where(eq(tables.messageThread.id, threadId))
-      .limit(1);
-    if (!state) {
-      throw new BusinessException(
-        BusinessCode.THREAD_NOT_FOUND,
-        `no thread [${threadId}]`,
-      );
-    }
-    if (
-      state.authorityNamespaceId !== 0 &&
-      state.activeNamespaceId !== state.authorityNamespaceId
-    ) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_NAMESPACE_INACTIVE,
-        `thread ${threadId} belongs to an inactive namespace of ${state.domain}`,
-        HttpStatus.CONFLICT,
-      );
-    }
+    await this.threadAccess.assertP2PWritable(threadId, localUserId);
   }
 
   /** Validate a wire address has non-empty account + domain AND a well-formed account charset (defense
@@ -2182,75 +1857,14 @@ export class FederationService {
     domain: string,
     fn: () => Promise<T>,
   ): Promise<T> {
-    await this.ensurePeerTrusted(domain);
-    try {
-      return await fn();
-    } catch (error) {
-      // A peer restart can make both sides mark each other degraded: its startup pull reaches us while we
-      // its recognition facts are incomplete, so it receives FEDERATION_RECOGNITION_REQUIRED.
-      // Only this explicit trust-state response is recoverable here. The pinned-identity signed
-      // heartbeat restores mutual reachability, after which the original operation is tried once.
-      // Other 401/403 responses (bad signatures, identity changes, admin policy) remain terminal.
-      if (
-        error instanceof S2sResponseError &&
-        error.code === BusinessCode.FEDERATION_RECOGNITION_REQUIRED
-      ) {
-        await this.recoverPeerTrust(domain);
-        return fn();
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * Start one thread-bound S2S read. Capturing the active namespace pins the peer identity context
-   * for this operation, while the thread authorization version travels with the response and is
-   * rechecked before any returned data may be persisted.
-   */
-  private async getSignedForThread<T>(
-    threadId: number,
-    path: string,
-    peerDomain: string,
-    maxResponseBytes?: number,
-  ): Promise<{ data: T; federationVersion: number }> {
-    const federationVersion = await this.readThreadFederationVersion(
-      threadId,
-      peerDomain,
-    );
-    try {
-      const data = await this.withTrustedPeer(peerDomain, () =>
-        this.getSigned<T>(path, peerDomain, maxResponseBytes),
-      );
-      return { data, federationVersion };
-    } catch (error) {
-      if (error instanceof S2sResponseError) {
-        error.federationVersion = federationVersion;
-      }
-      throw error;
-    }
+    return this.trustedPeers.run(domain, fn);
   }
 
   private async readThreadFederationVersion(
     threadId: number,
     peerDomain: string,
   ): Promise<number> {
-    return this.database.db.transaction(async (tx) => {
-      await this.namespaces.captureActiveInTx(tx, peerDomain);
-      const [state] = await tx
-        .select({
-          federationVersion: tables.messageThread.federationVersion,
-        })
-        .from(tables.messageThread)
-        .where(eq(tables.messageThread.id, threadId))
-        .limit(1);
-      if (!state) {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
-          `federation thread ${threadId} is unavailable for ${peerDomain}`,
-        );
-      }
-      return state.federationVersion;
-    });
+    return this.threadAccess.readFederationVersion(threadId, peerDomain);
   }
 
   private async assertThreadResponseWritable(
@@ -2259,30 +1873,23 @@ export class FederationService {
     peerDomain: string,
     expectedFederationVersion: number,
   ): Promise<void> {
-    const [state] = await tx
-      .select({
-        federationVersion: tables.messageThread.federationVersion,
-      })
-      .from(tables.messageThread)
-      .where(eq(tables.messageThread.id, threadId))
-      .limit(1);
-    if (!state || state.federationVersion !== expectedFederationVersion) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
-        `stale federation response for thread ${threadId} from ${peerDomain}`,
-      );
-    }
+    await this.threadAccess.assertResponseWritable(
+      tx,
+      threadId,
+      peerDomain,
+      expectedFederationVersion,
+    );
   }
 
   async capturePeerResponseToken(domain: string): Promise<PeerResponseToken> {
-    return this.namespaces.captureActive(domain);
+    return this.threadAccess.capturePeerResponseToken(domain);
   }
 
   private async assertPeerResponseWritable(
     tx: DatabaseTransaction,
     token: PeerResponseToken,
   ): Promise<void> {
-    await this.namespaces.requireCapturedInTx(tx, token);
+    await this.threadAccess.assertPeerResponseWritable(tx, token);
   }
 
   /** Lightweight, ephemeral discovery wake-up. The receiver never persists this advertised HWM. */
@@ -2644,6 +2251,7 @@ export class FederationService {
           status.threadId,
           status.message.seq,
           status.message.createdAt.getTime(),
+          await this.clientStateFeed.readEndId(recipientUserId),
         );
       return;
     }
@@ -2674,6 +2282,7 @@ export class FederationService {
             status.threadId,
             message.seq,
             message.createdAt.getTime(),
+            await this.clientStateFeed.readEndId(recipient.userId),
           );
       }
     } catch (error) {
@@ -2695,32 +2304,19 @@ export class FederationService {
     peerDomain: string,
     maxResponseBytes?: number,
   ): Promise<FederationThreadResourceResponse<T>> {
-    const peerToken = await this.capturePeerResponseToken(peerDomain);
-    const response = await this.getSignedForThread<T>(
+    return this.threadResources.fetch<T>(
       threadId,
       path,
       peerDomain,
       maxResponseBytes,
     );
-    return {
-      ...response,
-      threadId,
-      peerDomain,
-      peerToken,
-    };
   }
 
   async assertThreadResourceResponseWritableInTransaction(
     tx: DatabaseTransaction,
     response: FederationThreadResourceResponse<unknown>,
   ): Promise<void> {
-    await this.assertPeerResponseWritable(tx, response.peerToken);
-    await this.assertThreadResponseWritable(
-      tx,
-      response.threadId,
-      response.peerDomain,
-      response.federationVersion,
-    );
+    await this.threadAccess.assertResourceResponseWritable(tx, response);
   }
 
   async applyReverseMessagePage(params: {
@@ -2856,7 +2452,7 @@ export class FederationService {
       tombstoneEndSeq = Math.max(tombstoneEndSeq ?? deletionSeq, deletionSeq);
     }
     if (tombstoneEndSeq !== null) {
-      await ClientMessageFeedWriter.publishTombstone(
+      await ClientThreadContentHeadWriter.publishTombstone(
         tx,
         params.threadId,
         tombstoneEndSeq,
@@ -4092,10 +3688,7 @@ export class FederationService {
         and(
           eq(tables.threadAudience.threadId, tables.message.threadId),
           eq(tables.threadAudience.targetDomain, signerDomain),
-          eq(
-            tables.threadAudience.targetNamespaceId,
-            signerNamespaceId,
-          ),
+          eq(tables.threadAudience.targetNamespaceId, signerNamespaceId),
           isNull(tables.threadAudience.localUserId),
         ),
       )
@@ -4233,10 +3826,7 @@ export class FederationService {
         and(
           eq(tables.threadAudience.threadId, tables.message.threadId),
           eq(tables.threadAudience.targetDomain, signerDomain),
-          eq(
-            tables.threadAudience.targetNamespaceId,
-            signerNamespaceId,
-          ),
+          eq(tables.threadAudience.targetNamespaceId, signerNamespaceId),
           isNull(tables.threadAudience.localUserId),
         ),
       )
@@ -4602,7 +4192,7 @@ export class FederationService {
         .returning({ id: tables.message.id });
       if (!sequencePolicy) {
         await recordHostedGroupSentBoundaries(tx, threadId, creator, seq);
-        await ClientMessageFeedWriter.publishMessage(tx, threadId, seq);
+        await ClientThreadContentHeadWriter.publishMessage(tx, threadId, seq);
       }
       await tx.insert(tables.pendingMedia).values({
         messageId: stub.id,
@@ -4715,10 +4305,10 @@ export class FederationService {
         );
     }
     if (!sequencePolicy) {
-      await ClientMessageFeedWriter.publishMessage(tx, threadId, seq);
+      await ClientThreadContentHeadWriter.publishMessage(tx, threadId, seq);
     }
     if (localDeletionSeq !== null)
-      await ClientMessageFeedWriter.publishTombstone(
+      await ClientThreadContentHeadWriter.publishTombstone(
         tx,
         threadId,
         localDeletionSeq,
@@ -5500,7 +5090,7 @@ export class FederationService {
     sourceSeq: number,
     startOffset = 0,
   ): AsyncGenerator<Buffer> {
-    yield* this.mediaRangeClient().fetch(
+    yield* this.mediaRangeClient.fetch(
       peerDomain,
       digest,
       fromAccount,
@@ -5508,34 +5098,6 @@ export class FederationService {
       toAccount,
       sourceSeq,
       startOffset,
-    );
-  }
-
-  /** One signed Range GET to /media/:digest, with status-based classification (see fetchMediaChunks). Returns
-   *  the Response + parsed Content-Range bounds and optional per-unit Content-Digest. Throws — with
-   *  markTransportDegraded for auth/transport failures — on
-   *  anything that isn't 200/206. The raw query is covered by the request signature. */
-  private async requestRangeUnit(
-    url: URL,
-    peerDomain: string,
-    start: number,
-    end: number,
-  ): Promise<FederationMediaRangeUnit> {
-    return this.mediaRangeClient().requestUnit(url, peerDomain, start, end);
-  }
-
-  private mediaRangeClient(): FederationMediaRangeClient {
-    return new FederationMediaRangeClient(
-      this.signature,
-      this.discovery,
-      this.recognition,
-      this.transportConfig,
-      {
-        isFatalPeerCode: (code): code is number => this.isFatalPeerCode(code),
-        markContactSuccess: (domain) => this.markContactSuccess(domain),
-        markPeerHalted: (domain, code, message) =>
-          this.markPeerHalted(domain, code, message),
-      },
     );
   }
 

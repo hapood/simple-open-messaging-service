@@ -167,7 +167,7 @@ Authentication reuses the same credential as HTTP — the global `SessionAuthGua
 
 ### HELLO handshake
 
-On connect, `SseService` pushes a `HELLO` frame carrying the newest-message cursor, `stateRevision`, and `activeCall`. The state range includes PROFILE, CLIENT_STATE, and thread ADD/DELETE entries. HELLO is load-bearing because state catch-up and missed-summary recovery start from durable local cursors.
+On connect, `SseService` pushes a `HELLO` frame carrying `stateFeedEndId`, the read/attention revision, and `activeCall`. The compacted state feed includes profile, relationship, roster, request, client-state, and paired `THREAD_CONTENT_HEAD` entries. HELLO is load-bearing because the client drains that feed from its one durable local state cursor.
 
 ### Heartbeat and Liveness
 
@@ -234,10 +234,11 @@ seen revision stored in the local account database.
 
 ### Thread-list versioning
 
-Profile changes, incoming requests, and roster mutations share the client state feed.
+Profile changes, incoming requests, roster mutations, and paired message/tombstone heads share the client state feed.
 `GET /user/state-feed` returns a bounded page after a consumer-owned cursor. The
-client commits the page and its cursor atomically; thread previews, tombstones,
-and notification descriptors use their own catch-up resources.
+client commits the page and its cursor atomically. Message bodies and tombstone
+bodies are separate per-thread queries; tombstone queries begin only after that
+chatbox opens.
 
 ### Message Sending
 

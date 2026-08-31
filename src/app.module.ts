@@ -38,6 +38,7 @@ import { CallsController } from './controller/calls.controller.js';
 import { ForwardBundleModule } from './forward/forward-bundle.module.js';
 import { DatabaseModule } from './database/database.module.js';
 import { RateLimitModule } from './rate-limit/rate-limit.module.js';
+import { DomainCommandModule } from './domain-command/domain-command.module.js';
 
 // Static serving (uploaded images + the web/admin SPAs) is wired in main.ts via @fastify/static,
 // not a Nest module — @nestjs/serve-static silently dropped maxAge on the Fastify path
@@ -73,6 +74,7 @@ import { RateLimitModule } from './rate-limit/rate-limit.module.js';
     LinkPreviewModule,
     CallsModule,
     ForwardBundleModule,
+    DomainCommandModule,
   ],
   controllers: [
     MessageController,

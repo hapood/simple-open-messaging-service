@@ -80,12 +80,9 @@ export class ConversationListService {
   readonly openThreadId = this.repo.openThreadId;
   readonly readCommitPending = this.repo.readCommitPending;
   readonly topInserted = this.repo.topInserted;
-  /** The persisted high-water mark (the away-notification `since`). A METHOD delegator, NOT a `readonly =`
-   *  field like the signal delegations above — the repo exposes `messageFeedCursor` as a method (not a bound
-   *  signal), so a field copy would capture an UNBOUND method and throw on call (it was, silently, caught by
-   *  the away-renderer's try/catch). Delegates to the repo. */
-  messageFeedCursor(): number {
-    return this.repo.messageFeedCursor();
+  /** The one persisted ClientStateFeed cursor used by foreground and away consumers. */
+  stateFeedCursor(): number {
+    return this.userService.stateFeedCursor() ?? 0;
   }
 
   /** The per-thread dismiss-HWM map (sent as `threadHwms` on the away fetch). Delegates to the repo. */
@@ -144,7 +141,7 @@ export class ConversationListService {
     } else {
       this.unreadEntryBoundaries.delete(threadId);
     }
-    this.repo.setOpenThread(threadId);
+    void this.repo.setOpenThread(threadId);
   }
 
   /** Clear the open thread and discard its session-only entry boundary. An unstable (<500ms) viewport
@@ -152,7 +149,7 @@ export class ConversationListService {
   close() {
     const threadId = this.repo.openThreadId();
     if (threadId !== undefined) this.flushMarkRead(threadId);
-    this.repo.setOpenThread(undefined);
+    void this.repo.setOpenThread(undefined);
     if (threadId !== undefined) this.unreadEntryBoundaries.delete(threadId);
   }
 

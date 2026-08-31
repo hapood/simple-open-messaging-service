@@ -16,6 +16,7 @@ and client behavior.
 
 - [Consumer UI guidelines](./design/consumer-ui-guidelines.md)
 - [Client message history synchronization](./design/client-message-history-sync.md)
+- [Domain command scheduling](./design/domain-command-scheduling.md)
 - [Message deletion](./design/message-deletion.md)
 - [Message inline entities](./design/message-entities.md)
 

@@ -37,12 +37,19 @@ export type FederatedResolveFailure =
   | 'UNREACHABLE'
   | 'UNKNOWN';
 
-type SendFriendInviteResponse = StandardResponse<{
-  inviteId?: string;
-  threadId?: number;
-  account?: string;
-  domain?: string;
-}>;
+type DomainCommandAccepted = {
+  commandId: string;
+  status: 'PENDING';
+};
+
+type SendFriendInviteResponse = StandardResponse<
+  Partial<DomainCommandAccepted> & {
+    inviteId?: string;
+    threadId?: number;
+    account?: string;
+    domain?: string;
+  }
+>;
 
 export class FederatedResolveError extends Error {
   constructor(readonly reason: FederatedResolveFailure) {
@@ -212,6 +219,21 @@ export type ClientStateFeedItem =
       subjectAccount: '';
       subjectDomain: 'local';
       body: { groupMetaFeedEndId: string };
+    }
+  | {
+      feedId: number;
+      account: '';
+      domain: 'local';
+      namespaceId: 0;
+      eventType: 'THREAD_CONTENT_HEAD';
+      subjectAccount: '';
+      subjectDomain: 'local';
+      body: {
+        threadId: number;
+        messageEndSeq: number;
+        tombstoneEndSeq: number;
+        preview: { seq: number; text: string; senderId: string | null };
+      };
     }
   | {
       feedId: number;
@@ -1011,14 +1033,13 @@ export class UserService {
     };
   }
 
-  /** Accept an invite by id (friend → P2P thread; group → join). data carries the threadId. */
+  /** Accept an invite. Friend acceptance is queued; group/addressed acceptance remains direct. */
   acceptInvite(
     params: { inviteId: string } | { account: string; domain: string },
   ) {
-    return this.http.post<StandardResponse<{ threadId?: number }>>(
-      `${apiPrefix()}/invite/accept`,
-      params,
-    );
+    return this.http.post<
+      StandardResponse<Partial<DomainCommandAccepted> & { threadId?: number }>
+    >(`${apiPrefix()}/invite/accept`, params);
   }
 
   markFriendRequestAccepted(key: string): Promise<void> {
@@ -1036,14 +1057,14 @@ export class UserService {
   revokeInvite(
     params: { inviteId: string } | { account: string; domain: string },
   ) {
-    return this.http.post<StandardResponse>(
+    return this.http.post<StandardResponse<DomainCommandAccepted | undefined>>(
       `${apiPrefix()}/invite/revoke`,
       params,
     );
   }
 
   rejectInvite(params: { inviteId: string }) {
-    return this.http.post<StandardResponse>(
+    return this.http.post<StandardResponse<DomainCommandAccepted>>(
       `${apiPrefix()}/invite/reject`,
       params,
     );
@@ -1058,7 +1079,7 @@ export class UserService {
     domain?: string;
     deleteData?: boolean;
   }) {
-    return this.http.post<StandardResponse>(
+    return this.http.post<StandardResponse<DomainCommandAccepted>>(
       `${apiPrefix()}/user/delete-friend`,
       params,
     );

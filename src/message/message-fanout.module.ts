@@ -3,7 +3,6 @@ import { MessageFanoutService } from './message-fanout.service.js';
 import { NotificationQueryService } from '../notification/notification-query.service.js';
 import { NotificationActionService } from '../notification/notification-action.service.js';
 import { AwayNotificationService } from '../notification/away-notification.service.js';
-import { ThreadListSyncService } from '../thread-sync/thread-list-sync.service.js';
 import { GatewayModule } from '../gateway/gateway.module.js';
 import { PushModule } from '../push/push.module.js';
 import { ThreadParticipantModule } from '../thread-participant/thread-participant.module.js';
@@ -40,7 +39,6 @@ import { UploadModule } from '../upload/upload.module.js';
   providers: [
     MessageFanoutService,
     NotificationQueryService,
-    ThreadListSyncService,
     AwayNotificationService,
     NotificationActionService,
   ],
@@ -48,7 +46,6 @@ import { UploadModule } from '../upload/upload.module.js';
   // NotificationController (registered in AppModule) can inject them app-wide.
   exports: [
     MessageFanoutService,
-    ThreadListSyncService,
     AwayNotificationService,
     NotificationActionService,
   ],

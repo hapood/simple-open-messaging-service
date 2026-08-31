@@ -199,7 +199,7 @@ describe('NativeEventTransport', () => {
     new NativeEventTransport(rec.sink).start();
     fireConnState('open'); // first open — no pulse
     fireConnState('reconnecting'); // stream dropped (Android backgrounded / transient failure)
-    fireConnState('open'); // RE-connect — pulse (drives ThreadRepository reboot + ThreadCatchUpService catch-up)
+    fireConnState('open'); // reconnect pulse drives the ClientStateFeed drain
     fireConnState('reconnecting');
     fireConnState('open'); // another reconnect — pulse again
     expect(rec.reconnects()).toBe(2);

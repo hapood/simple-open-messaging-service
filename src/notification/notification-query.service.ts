@@ -22,13 +22,7 @@ import {
   type NotificationDescriptor,
 } from './notification-descriptor.js';
 
-/**
- * One thread's catch-up row — the data view consumed by the threadlist pre-warm (body hydration). The
- * BigInt `id` is NEVER present — only per-thread `seq` + time. `senderAvatarUrl` / `senderUserId` are carried
- * for completeness (the threadlist preview does not render them — its avatars come from the conversation
- * snapshot).
- */
-export interface ThreadCatchUpItem {
+interface HydratedThreadItem {
   threadId: number;
   type: 'P2P' | 'GROUP';
   displayName: string;
@@ -56,9 +50,8 @@ export interface ThreadCatchUpItem {
 }
 
 /**
- * Shared hydration/read model behind the message-feed catch-up and notification-feed presentation layers.
- * Durable discovery and pagination live in their feed services; this class resolves current visibility,
- * unread attention, latest-message bodies and localized notification descriptors.
+ * Read model for away-notification presentation. Durable discovery lives in ClientStateFeed;
+ * this class resolves current visibility, unread attention and localized descriptors.
  */
 @Injectable()
 export class NotificationQueryService {
@@ -69,46 +62,7 @@ export class NotificationQueryService {
     private readonly groupService: GroupService,
   ) {}
 
-  /** Hydrate feed-discovered threads with the current list preview and authoritative read state. The feed
-   * owns discovery/order; this read model owns visibility, unread and presentation data. */
-  async hydrateCatchUpThreads(
-    userId: number,
-    changes: Array<{ threadId: number; messageEndSeq: number }>,
-  ): Promise<ThreadCatchUpItem[]> {
-    if (changes.length === 0) return [];
-    const threadIds = changes.map((change) => change.threadId);
-    const ctx = await this.loadThreadContext(
-      userId,
-      threadIds,
-      new Map(changes.map((change) => [change.threadId, change.messageEndSeq])),
-      true,
-    );
-    const byId = new Map(ctx.active.map((row) => [row.threadId, row]));
-    const rows = threadIds
-      .map((threadId) => byId.get(threadId))
-      .filter((row): row is NonNullable<typeof row> => row !== undefined);
-    const self = await this.userService.findUniqueUser({ id: userId });
-    const attention = self
-      ? await this.messageService.unreadAttentionByThread(
-          userId,
-          self.account,
-          rows.map((row) => row.threadId),
-        )
-      : new Map();
-    return this.hydrateItems(
-      userId,
-      rows,
-      new Map(
-        [...attention].map(([threadId, state]) => [threadId, state.count]),
-      ),
-      ctx.attachedByThread,
-      new Map(
-        [...attention].map(([threadId, state]) => [threadId, state.mention]),
-      ),
-    );
-  }
-
-  /** Build current-unread descriptors for threads discovered from the per-user compacted message feed. */
+  /** Build current-unread descriptors for threads discovered from THREAD_CONTENT_HEAD items. */
   async buildFeedNotifyResponse(
     userId: number,
     threadIds: number[],
@@ -352,7 +306,7 @@ export class NotificationQueryService {
     unread: Map<number, number>,
     attachedByThread: Map<number, AttachedMessage>,
     mentions: Map<number, UnreadMentionState> = new Map(),
-  ): Promise<ThreadCatchUpItem[]> {
+  ): Promise<HydratedThreadItem[]> {
     // P2P display name + sender = the peer user (id carries for the icon color hash + cache key).
     const p2pThreadIds = rows
       .filter((p) => p.thread.type === 'P2P')

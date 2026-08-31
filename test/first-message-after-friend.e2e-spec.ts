@@ -9,7 +9,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
 import {
   message,
-  clientMessageFeed,
+  clientStateFeed,
   threadParticipant,
   threadAudience,
   user,
@@ -20,10 +20,11 @@ import {
   openSse,
   waitForSseEvent,
 } from './federation-test-helpers';
+import { findP2PRelationship, seedFederatedPeerNamespace } from './seed';
 import {
-  findP2PRelationship,
-  seedFederatedPeerNamespace,
-} from './seed';
+  waitForDomainCommand,
+  waitForLocalFriendInvite,
+} from './domain-command-helpers.js';
 
 /**
  * Regression contract test for the "first message after friend-add not delivered" bug.
@@ -84,14 +85,30 @@ describe('First message after friend-add is delivered (single instance)', () => 
         expect(res.status).toBe(200);
         expect(res.body.code).toBe(0);
       });
+    const inviteId = await waitForLocalFriendInvite(
+      database.db,
+      invite.body.data.commandId,
+      alice.id,
+      bob.id,
+    );
 
     const accept = await request(baseUrl)
       .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${bob.token}`)
-      .send({ inviteId: invite.body.data.inviteId });
+      .send({ inviteId });
     expect(accept.status).toBe(200);
     expect(accept.body.code).toBe(0);
-    const threadId: number = accept.body.data.threadId;
+    expect(accept.body.data).toMatchObject({ status: 'PENDING' });
+    await waitForDomainCommand(database.db, accept.body.data.commandId);
+    const relationship = await findP2PRelationship(
+      database.db,
+      alice.id,
+      bob.id,
+    );
+    const threadId = relationship.pair?.threadId;
+    if (threadId === null || threadId === undefined) {
+      throw new Error('friend acceptance completed without a P2P thread');
+    }
     expect(threadId).toBeGreaterThan(0);
 
     const audiences = await database.db
@@ -169,14 +186,14 @@ describe('First message after friend-add is delivered (single instance)', () => 
 
     const deleteReader = await openSse(baseUrl, bob.token);
     try {
-      await request(baseUrl)
+      const removed = await request(baseUrl)
         .post('/api/v1/user/delete-friend')
         .set('Authorization', `Bearer ${alice.token}`)
-        .send({ account: 'bob' })
-        .expect((res) => {
-          expect(res.status).toBe(200);
-          expect(res.body.code).toBe(0);
-        });
+        .send({ account: 'bob' });
+      expect(removed.status).toBe(200);
+      expect(removed.body.code).toBe(0);
+      expect(removed.body.data).toMatchObject({ status: 'PENDING' });
+      await waitForDomainCommand(database.db, removed.body.data.commandId);
       const boundaryWake = (await waitForSseEvent(
         deleteReader,
         (event, data) =>
@@ -202,12 +219,19 @@ describe('First message after friend-add is delivered (single instance)', () => 
       expect(
         participants.map((participant) => participant.messageVisibleBeforeSeq),
       ).toEqual([boundaryWake.seq + 1, boundaryWake.seq + 1]);
-      const projections = await database.db.query.clientMessageFeed.findMany({
-        where: and(
-          eq(clientMessageFeed.threadId, threadId),
-          eq(clientMessageFeed.messageEndSeq, boundaryWake.seq),
+      const projections = await database.db.query.clientStateFeed.findMany({
+        where: eq(
+          clientStateFeed.compactionKey,
+          JSON.stringify(['THREAD_CONTENT_HEAD', threadId]),
         ),
       });
+      expect(
+        projections.every(
+          (projection) =>
+            (projection.body as { messageEndSeq?: number }).messageEndSeq ===
+            boundaryWake.seq,
+        ),
+      ).toBe(true);
       expect(projections.map((projection) => projection.userId).sort()).toEqual(
         [alice.id, bob.id].sort(),
       );

@@ -20,7 +20,7 @@ import { UserService } from '../../services/user.service';
 import {
   ConversationItem,
   displayThreadName,
-  messageCreatorKey,
+  messagePreviewSenderKey,
 } from '../../services/model';
 import {
   UserAvatarComponent,
@@ -189,7 +189,7 @@ export class ThreadListComponent implements OnInit {
     if (
       self &&
       t.lastMessageSenderId ===
-        messageCreatorKey(
+        messagePreviewSenderKey(
           { account: self.account, domain: 'local', namespaceId: 0 },
           'local',
         )

@@ -48,6 +48,7 @@ function setup(rows: Array<{ seq: number }> = []) {
     { queryThread: vi.fn().mockResolvedValue([]) } as never,
     {} as never,
     {} as never,
+    { readEndId: vi.fn().mockResolvedValue(0) } as never,
   );
   const req = {
     user: { userId: 1 },
@@ -133,7 +134,14 @@ describe('MessageController.queryDeletedMessages cursor contract', () => {
       through: 2,
       take: 20,
     });
-    expect(queryTombstones).toHaveBeenCalledWith(42, undefined, 20, 2, 10);
+    expect(queryTombstones).toHaveBeenCalledWith(
+      42,
+      undefined,
+      20,
+      2,
+      10,
+      undefined,
+    );
   });
 
   it('rejects supplying both tombstone cursors', async () => {
@@ -174,6 +182,7 @@ describe('MessageController group mention resolution', () => {
       {} as never,
       {} as never,
       { resolveActiveMember } as never,
+      { readEndId: vi.fn().mockResolvedValue(0) } as never,
     );
     const req = {
       threadAccess: {
@@ -228,13 +237,19 @@ describe('MessageController.withdrawMessage quota', () => {
         onFirstWithdraw: (transaction: never) => Promise<void>,
       ) => {
         await onFirstWithdraw(tx as never);
-        return { id: '9', threadId: 42, seq: 3 };
+        return { id: '9', threadId: 42, seq: 3, deletionSeq: 6 };
       },
     );
+    const onDeletedMessageUpdated = vi.fn();
+    const readEndId = vi.fn().mockResolvedValue(19);
     const controller = new MessageController(
       {} as never,
-      { onDeletedMessageUpdated: vi.fn() } as never,
-      { getActiveParticipantUserIds: vi.fn().mockResolvedValue([]) } as never,
+      { onDeletedMessageUpdated } as never,
+      {
+        getActiveParticipantUserIds: vi
+          .fn()
+          .mockResolvedValue([{ userId: 8 }, { userId: 9 }]),
+      } as never,
       {} as never,
       {
         notifyOnSend: vi.fn(),
@@ -247,6 +262,7 @@ describe('MessageController.withdrawMessage quota', () => {
       {} as never,
       {} as never,
       {} as never,
+      { readEndId } as never,
     );
     const req = { user: { userId: 7 } } as unknown as FastifyRequest;
 
@@ -258,6 +274,11 @@ describe('MessageController.withdrawMessage quota', () => {
     expect(assertCanSend.mock.invocationCallOrder[0]).toBeLessThan(
       tickLax.mock.invocationCallOrder[0],
     );
+    expect(readEndId.mock.calls).toEqual([[8], [9]]);
+    expect(onDeletedMessageUpdated.mock.calls).toEqual([
+      [8, 42, 6, 19],
+      [9, 42, 6, 19],
+    ]);
   });
 });
 
@@ -289,6 +310,7 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
         {} as never,
         {} as never,
         {} as never,
+        { readEndId: vi.fn().mockResolvedValue(0) } as never,
       );
       const req = {
         user: { userId: 7 },
@@ -337,6 +359,7 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
       {} as never,
       {} as never,
       {} as never,
+      { readEndId: vi.fn().mockResolvedValue(0) } as never,
     );
     const req = {
       user: { userId: 7 },

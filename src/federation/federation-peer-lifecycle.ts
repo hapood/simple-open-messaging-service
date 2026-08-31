@@ -1,26 +1,28 @@
-import { HttpStatus } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
 import { and, count, desc, eq, ilike, isNull, lt, or } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import type { DatabaseService } from '../database/database.service.js';
+import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
-import type { DiscoveryService } from './discovery.service.js';
+import { DiscoveryService } from './discovery.service.js';
 import {
   FEDERATION_PROTOCOL_VERSION,
   selectFederationProtocolVersion,
 } from './federation-protocol.js';
-import type { FederationRecognitionService } from './federation-recognition.service.js';
+import { FederationRecognitionService } from './federation-recognition.service.js';
+import { loadFederationConfig } from './federation.config.js';
 
 /** Owns peer trust state, liveness bookkeeping, and administrative lifecycle operations. */
+@Injectable()
 export class FederationPeerLifecycle {
   private static readonly LAST_SUCCESS_WINDOW_MS = 60_000;
   private readonly lastSuccessSentAt = new Map<string, number>();
+  private readonly ourDomain = loadFederationConfig().domain;
 
   constructor(
     private readonly database: DatabaseService,
     private readonly recognition: FederationRecognitionService,
     private readonly discovery: DiscoveryService,
-    private readonly ourDomain: string,
   ) {}
 
   async ensureTrusted(domain: string): Promise<void> {
@@ -115,6 +117,10 @@ export class FederationPeerLifecycle {
     ].includes(code as BusinessCode);
   }
 
+  isFatalPeerCode(code: unknown): code is number {
+    return this.isFatalCode(code);
+  }
+
   async markHalted(
     domain: string,
     code: number,
@@ -135,6 +141,14 @@ export class FederationPeerLifecycle {
       })
       .where(eq(tables.federatedPeer.domain, domain));
     await this.logEvent(domain, 'halted', reason);
+  }
+
+  async markPeerHalted(
+    domain: string,
+    code: number,
+    message: unknown,
+  ): Promise<void> {
+    await this.markHalted(domain, code, message);
   }
 
   async markBlocked(domain: string, note?: string): Promise<void> {
@@ -180,16 +194,17 @@ export class FederationPeerLifecycle {
     ) {
       return;
     }
-    const trustLevel = existing.activeNamespaceId === null
-      ? 'unrecognized'
-      : existing.recognizesPeer &&
-          existing.outboundRecognitionConfirmed &&
-          existing.inboundRecognitionConfirmed &&
-          existing.localServiceAvailable
-        ? existing.remoteServiceReachable
-          ? 'available'
-          : 'degraded'
-        : 'establishing';
+    const trustLevel =
+      existing.activeNamespaceId === null
+        ? 'unrecognized'
+        : existing.recognizesPeer &&
+            existing.outboundRecognitionConfirmed &&
+            existing.inboundRecognitionConfirmed &&
+            existing.localServiceAvailable
+          ? existing.remoteServiceReachable
+            ? 'available'
+            : 'degraded'
+          : 'establishing';
     await this.database.db
       .update(tables.federatedPeer)
       .set({
@@ -263,10 +278,7 @@ export class FederationPeerLifecycle {
       .from(tables.federatedPeer)
       .innerJoin(
         tables.identityNamespace,
-        eq(
-          tables.identityNamespace.id,
-          tables.federatedPeer.activeNamespaceId,
-        ),
+        eq(tables.identityNamespace.id, tables.federatedPeer.activeNamespaceId),
       )
       .where(eq(tables.federatedPeer.domain, domain))
       .limit(1);

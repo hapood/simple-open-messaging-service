@@ -48,6 +48,20 @@ export function messageCreatorKey(
     : `${creator.namespaceId}\u0000${sourceDomain}\u0000${creator.domain}\u0000${creator.account}`;
 }
 
+/** JSON-safe identity persisted inside ClientStateFeed preview bodies. PostgreSQL JSONB cannot store the
+ * NUL-separated in-memory creator key, so durable thread previews use an explicit tuple encoding. */
+export function messagePreviewSenderKey(
+  creator: MessageCreator,
+  sourceDomain: string,
+): string {
+  return JSON.stringify([
+    creator.namespaceId,
+    sourceDomain,
+    creator.domain,
+    creator.account,
+  ]);
+}
+
 export function parseUserIdentityKey(key: string): {
   account: string;
   domain: string;
@@ -91,6 +105,8 @@ type ConversationItemBase = {
   role: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
   lastMessageAt: number | null;
   lastMessageSeq?: number | null;
+  /** Latest per-thread deletion-log target advertised by the unified content feed. */
+  tombstoneEndSeq?: number;
   muted: boolean;
   blocked?: boolean;
   pinned: boolean;
@@ -102,12 +118,10 @@ type ConversationItemBase = {
   conversationState?: 'ACTIVE' | 'READ_ONLY';
   lastReadSeq?: number | null;
   unreadCount: number;
-  // Latest-message preview state — sourced from the catch-up pull (the snapshot carries unread +
-  // lastMessageAt only; the body/preview is pulled). Populated by ThreadRepository.pullCatchUp (on boot +
-  // reconnect); a live identity-only NEW_MESSAGE reorders (advances lastMessageAt) but does NOT bump unread
-  // nor refresh the preview (unreadCount is server-authoritative + the body isn't in the signal) — both catch
-  // up on the next catch-up pull. lastMessageSenderId drives the "You:" prefix for the sender's own
-  // messages; the bare preview otherwise.
+  // Latest-message preview state is projected from THREAD_CONTENT_HEAD. The preview seq is separate from
+  // lastMessageSeq because withdrawing the current preview publishes an empty preview for the withdrawn
+  // message after the replacement SYSTEM message has advanced the message head.
+  lastMessagePreviewSeq?: number | null;
   lastMessagePreview?: string | null;
   lastMessageSenderId?: string | null;
   /** Distinct mention kinds among the server's bounded unread sample. */

@@ -9,7 +9,7 @@ import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
 import { message, messageThread, user } from '../src/database/schema';
 import { ContentType } from '../src/database/enums.js';
-import { ClientMessageFeedWriter } from '../src/message/client-message-feed.service.js';
+import { ClientThreadContentHeadWriter } from '../src/message/client-message-feed.service.js';
 import { seedAcceptedRelationship, seedUser, seedSession } from './seed';
 
 /**
@@ -98,7 +98,7 @@ describe('notifications/action (descriptor button round-trip)', () => {
       },
     ]);
     await database.db.transaction((tx) =>
-      ClientMessageFeedWriter.publishMessage(tx, threadId, 2, peerId),
+      ClientThreadContentHeadWriter.publishMessage(tx, threadId, 2),
     );
   });
 

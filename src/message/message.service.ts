@@ -65,7 +65,7 @@ import {
   SystemMessageType,
 } from './system-message.js';
 import { loadFederationConfig } from '../federation/federation.config.js';
-import { ClientMessageFeedWriter } from './client-message-feed.service.js';
+import { ClientThreadContentHeadWriter } from './client-message-feed.service.js';
 import { recordHostedGroupSentBoundaries } from './hosted-group-sent-boundaries.js';
 import { requireOutboundPendingMedia } from './pending-media-row.js';
 
@@ -483,7 +483,7 @@ export class MessageService {
           },
           seq,
         );
-        await ClientMessageFeedWriter.publishMessage(tx, threadId, seq);
+        await ClientThreadContentHeadWriter.publishMessage(tx, threadId, seq);
         // Per-object media authz: record the CAS digest this message references so the /uploads/cas/*
         // gate can authorize readers against thread membership (one indexed row). One message carries
         // one media (MediaMessage is 1:1). PURE_TEXT/
@@ -627,14 +627,14 @@ export class MessageService {
         );
     }
     if (options?.recipientUserIds) {
-      await ClientMessageFeedWriter.publishMessageToUsers(
+      await ClientThreadContentHeadWriter.publishMessageToUsers(
         tx,
         threadId,
         seq,
         options.recipientUserIds,
       );
     } else {
-      await ClientMessageFeedWriter.publishMessage(tx, threadId, seq);
+      await ClientThreadContentHeadWriter.publishMessage(tx, threadId, seq);
     }
     return { message: stripMessageId(stored), messageId: stored.id };
   }
@@ -1164,7 +1164,7 @@ export class MessageService {
           },
           seq,
         );
-        await ClientMessageFeedWriter.publishMessage(tx, stage.threadId, seq);
+        await ClientThreadContentHeadWriter.publishMessage(tx, stage.threadId, seq);
         // Insert EVERY referenced digest (1 for single-file, N for GALLERY) — the old promoteStaged
         // path only inserted the first, which silently dropped authz rows for multi-digest content.
         const digests = extractDigests(content);

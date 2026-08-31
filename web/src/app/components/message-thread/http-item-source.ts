@@ -182,7 +182,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     live: HttpItemSourceLiveOpts,
     private readonly profileRepo?: ProfileRepository,
   ) {
-    void this.repo.syncDeleted(this.conv.threadId);
     this.pending = outbox.forThread(conv.threadId);
     this.onMediaStatus = live.onMediaStatus ?? (() => {});
     this.onProfile = live.onProfile ?? (() => {});

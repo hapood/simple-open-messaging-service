@@ -11,14 +11,14 @@ import {
 } from 'class-validator';
 
 /**
- * Input for POST /notification-feed/query. The per-user message feed identifies changed threads; the
+ * Input for POST /notification-feed/query. The per-user state feed identifies changed threads; the
  * notification read model then builds a current, replace-by-tag snapshot from their unread messages.
  */
 export class NotificationFeedQueryDto {
   @ApiProperty({
     required: false,
     default: 0,
-    description: 'Exclusive per-user message-feed cursor.',
+    description: 'Exclusive per-user ClientStateFeed cursor.',
   })
   @IsOptional()
   @Type(() => Number)

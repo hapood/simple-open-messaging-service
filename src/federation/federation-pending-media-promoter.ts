@@ -1,7 +1,8 @@
+import { Injectable } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
-import type {
+import {
   DatabaseService,
-  DatabaseTransaction,
+  type DatabaseTransaction,
 } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
@@ -23,6 +24,7 @@ export interface PendingMediaMaterializationEffect {
  * Synchronization progress already committed when the STUB was inserted. Download completion makes
  * the Message READY and publishes READY-only local projections without touching federation cursors.
  */
+@Injectable()
 export class FederationPendingMediaPromoter {
   constructor(private readonly database: DatabaseService) {}
 
@@ -55,8 +57,8 @@ export class FederationPendingMediaPromoter {
       if (
         !stagedIdentity ||
         stagedIdentity.originSeq === null ||
-        stagedIdentity.federationSourceDomain !== batch.originDomain
-        || stagedIdentity.sourceNamespaceId !== batch.namespaceId
+        stagedIdentity.federationSourceDomain !== batch.originDomain ||
+        stagedIdentity.sourceNamespaceId !== batch.namespaceId
       ) {
         throw new Error(
           `inbound PendingMedia ${batchId} has an invalid Message STUB`,

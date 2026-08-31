@@ -7,7 +7,7 @@ import type { NotificationDescriptor } from './notification-descriptor.model';
 
 export interface NotificationFeedResult {
   notifications: NotificationDescriptor[];
-  messageFeedEndId: number;
+  stateFeedEndId: number;
 }
 
 /** HTTP boundary for server-authored away/system notification descriptors. */

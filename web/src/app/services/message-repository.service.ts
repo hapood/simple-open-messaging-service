@@ -46,6 +46,14 @@ interface DirectionalHistoryWalk {
   hasMore: boolean;
 }
 
+interface DeletedMessageStream {
+  target: number;
+  recovery?: { through: number; maxMessageSeq: number };
+  opening?: Promise<void>;
+  task?: Promise<void>;
+  pending?: boolean;
+}
+
 /** The client's stored media-status state for one message: its current status + the monotonic version of
  *  the event that last set it. 'downloading' is a client-only optimistic state (set directly on a manual
  *  retry click); 'ready'/'failed' are backend terminals (stored in IDB + pushed via MEDIA_STATUS). */
@@ -115,7 +123,7 @@ export class MessageRepository {
     seqs: number[];
   }>();
   readonly deletedLive$ = this.deletedSignal$.asObservable();
-  private readonly deletedSyncs = new Map<number, Promise<void>>();
+  private readonly deletedStreams = new Map<number, DeletedMessageStream>();
 
   /** Successful transport reconnect. The repository clears the finite HTTP cutoff before waking views. */
   private readonly reconnectSignal = new Subject<void>();
@@ -606,8 +614,13 @@ export class MessageRepository {
         ),
       )
       .subscribe((m) => {
-        const d = m.data as { threadId: number };
-        if (typeof d.threadId === 'number') void this.syncDeleted(d.threadId);
+        const d = m.data as { threadId: number; deletionSeq: number };
+        if (
+          typeof d.threadId === 'number' &&
+          Number.isSafeInteger(d.deletionSeq) &&
+          d.deletionSeq >= 0
+        )
+          void this.updateTombstoneTarget(d.threadId, d.deletionSeq);
       });
 
     // Own the MEDIA_STATUS SSE: a federated media message finished localizing ('ready') or failed
@@ -660,6 +673,7 @@ export class MessageRepository {
   private reset(): void {
     this.maxSeenSeq.clear();
     this.newerTruncateSeq.clear();
+    this.deletedStreams.clear();
   }
 
   /** Reconcile conversation metadata/live init state into the shared per-thread ceiling. */
@@ -668,22 +682,92 @@ export class MessageRepository {
       this.advanceCeiling(threadId, seq, false);
   }
 
-  syncDeleted(threadId: number): Promise<void> {
-    const existing = this.deletedSyncs.get(threadId);
-    if (existing) return existing;
-    const run = this.syncDeletedInternal(threadId).finally(() => {
-      if (this.deletedSyncs.get(threadId) === run)
-        this.deletedSyncs.delete(threadId);
+  /** Start this thread's deletion stream when its chatbox is first opened. The recovery target and local
+   * message cutoff are frozen together; later targets drain without a message filter. */
+  async openTombstoneStream(threadId: number, target: number): Promise<void> {
+    let stream = this.deletedStreams.get(threadId);
+    if (!stream) {
+      const recoveryThrough = Math.max(0, target);
+      stream = { target: recoveryThrough };
+      this.deletedStreams.set(threadId, stream);
+      const created = stream;
+      const opening = (async () => {
+        const [newest] = await this.webdb.getNewestMessages([threadId]);
+        created.recovery = {
+          through: recoveryThrough,
+          maxMessageSeq: newest?.seq ?? 0,
+        };
+        created.opening = undefined;
+        await this.runDeletedStream(threadId, created);
+      })().catch((error) => {
+        if (this.deletedStreams.get(threadId) === created)
+          this.deletedStreams.delete(threadId);
+        throw error;
+      });
+      created.opening = opening;
+      return opening;
+    } else {
+      stream.target = Math.max(stream.target, target);
+    }
+    if (stream.opening) return stream.opening;
+    if (stream.task) stream.pending = true;
+    return this.runDeletedStream(threadId, stream);
+  }
+
+  /** Advance an already-opened stream from a unified content-head or realtime hint. Closed/unopened
+   * threads deliberately retain only their durable feed head and do no tombstone-body I/O. */
+  updateTombstoneTarget(threadId: number, target: number): Promise<void> {
+    const stream = this.deletedStreams.get(threadId);
+    if (!stream || !Number.isSafeInteger(target) || target < 0)
+      return Promise.resolve();
+    stream.target = Math.max(stream.target, target);
+    if (stream.opening) return stream.opening;
+    if (stream.task) {
+      stream.pending = true;
+      return stream.task;
+    }
+    return this.runDeletedStream(threadId, stream);
+  }
+
+  private runDeletedStream(
+    threadId: number,
+    stream: DeletedMessageStream,
+  ): Promise<void> {
+    if (stream.task) return stream.task;
+    const run = this.syncDeletedInternal(threadId, stream).finally(() => {
+      if (stream.task === run) stream.task = undefined;
+      if (stream.pending) {
+        stream.pending = false;
+        void this.runDeletedStream(threadId, stream);
+      }
     });
-    this.deletedSyncs.set(threadId, run);
+    stream.task = run;
     return run;
   }
 
-  private async syncDeletedInternal(threadId: number): Promise<void> {
+  private async syncDeletedInternal(
+    threadId: number,
+    stream: DeletedMessageStream,
+  ): Promise<void> {
     let hwm = await this.webdb.getDeletedHwm(threadId);
     for (;;) {
+      const recovery = stream.recovery;
+      const target = recovery?.through ?? stream.target;
+      if (hwm >= target) {
+        if (recovery) {
+          stream.recovery = undefined;
+          continue;
+        }
+        return;
+      }
       const res = await firstValueFrom(
-        this.msg.queryDeletedMessages({ threadId, after: hwm, take: 100 }),
+        this.msg.queryDeletedMessages({
+          threadId,
+          after: hwm,
+          take: 100,
+          through: target,
+          ...(recovery ? { maxMessageSeq: recovery.maxMessageSeq } : {}),
+        }),
       );
       if (res.code !== 0 || !res.data) return;
       const { tombstones: items, scannedThrough: next, hasMore } = res.data;
@@ -703,7 +787,13 @@ export class MessageRepository {
         });
       }
       hwm = next;
-      if (!hasMore) return;
+      if (!hasMore) {
+        if (recovery) {
+          stream.recovery = undefined;
+          continue;
+        }
+        return;
+      }
     }
   }
 
@@ -711,6 +801,7 @@ export class MessageRepository {
   async deleteByThread(threadId: number): Promise<void> {
     this.maxSeenSeq.delete(threadId);
     this.newerTruncateSeq.delete(threadId);
+    this.deletedStreams.delete(threadId);
     try {
       await this.webdb.deleteMessagesByThread(threadId);
     } catch {

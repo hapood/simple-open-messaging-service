@@ -1245,40 +1245,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/thread-sync/catch-up": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Read changed thread previews from the per-user message feed */
-        get: operations["NotificationController_catchUp"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/thread-sync/tombstones": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Read the compacted per-user message tombstone feed */
-        get: operations["NotificationController_catchUpTombstones"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/notification-feed/query": {
         parameters: {
             query?: never;
@@ -3864,6 +3830,11 @@ export interface components {
              * @example 20
              */
             through?: number;
+            /**
+             * @description Initial recovery filter: return only tombstones targeting messages at or below this sequence while still scanning the full deletion interval.
+             * @example 200
+             */
+            maxMessageSeq?: number;
             /** @default 100 */
             take: number;
         };
@@ -6947,48 +6918,6 @@ export interface operations {
     NotificationController_vapidKey: {
         parameters: {
             query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    NotificationController_catchUp: {
-        parameters: {
-            query: {
-                after: string;
-                take: string;
-                through: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    NotificationController_catchUpTombstones: {
-        parameters: {
-            query: {
-                after: string;
-                take: string;
-                through: string;
-            };
             header?: never;
             path?: never;
             cookie?: never;

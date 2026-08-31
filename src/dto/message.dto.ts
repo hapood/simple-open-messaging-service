@@ -131,6 +131,18 @@ export class QueryDeletedMessagesDto {
   threadId!: number;
 
   @ApiPropertyOptional({
+    example: 120,
+    description:
+      'Optional recovery filter. Tombstones above this target message sequence are scanned but omitted.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  maxMessageSeq?: number;
+
+  @ApiPropertyOptional({
     example: 0,
     description: 'Exclusive forward tombstone cursor.',
   })

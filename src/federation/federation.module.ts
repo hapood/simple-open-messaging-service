@@ -45,6 +45,16 @@ import { FederationProfileStatePublisher } from './federation-profile-state-publ
 import { FederationRelationshipCommandService } from './federation-relationship-command.service.js';
 import { FederationNamespaceService } from './federation-namespace.service.js';
 import { FederationStateFeedConsumerService } from './federation-state-feed-consumer.service.js';
+import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
+import { FederationPeerHttp } from './federation-peer-http.js';
+import { FederationMediaRangeClient } from './federation-media-range-client.js';
+import { FederationInboundFileSync } from './federation-inbound-file-sync.js';
+import { FederationPendingMediaPromoter } from './federation-pending-media-promoter.js';
+import { FederationUserDirectoryService } from './federation-user-directory.service.js';
+import { FederationCallBridgeService } from './federation-call-bridge.service.js';
+import { FederationThreadAccessService } from './federation-thread-access.service.js';
+import { FederationTrustedPeerClient } from './federation-trusted-peer-client.service.js';
+import { FederationThreadResourceClient } from './federation-thread-resource-client.service.js';
 
 /**
  * Federation (S2S). @Global so its services inject across modules (UserController, AdminController).
@@ -77,6 +87,16 @@ import { FederationStateFeedConsumerService } from './federation-state-feed-cons
     DiscoveryService,
     S2sVerifyService,
     S2sSignatureGuard,
+    FederationPeerLifecycle,
+    FederationPeerHttp,
+    FederationMediaRangeClient,
+    FederationInboundFileSync,
+    FederationPendingMediaPromoter,
+    FederationUserDirectoryService,
+    FederationCallBridgeService,
+    FederationThreadAccessService,
+    FederationTrustedPeerClient,
+    FederationThreadResourceClient,
     FederationService,
     FederationGroupMembershipService,
     FederationGroupRequestProjectionService,

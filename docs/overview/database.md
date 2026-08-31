@@ -166,9 +166,12 @@ coordinate, retention policy, and API response shape.
 
 ### ClientStateFeed — Client state feed
 
-Thread, profile, member-profile, request, and client-state entries use a compacted
-per-user feed. The client reads `GET /user/state-feed` after its own cursor and
-applies each returned page and cursor atomically.
+Thread, profile, member-profile, request, and client-state entries use one
+compacted per-user feed. `THREAD_CONTENT_HEAD` stores required message and
+tombstone ends together with a preview identity. The client reads
+`GET /user/state-feed` after its sole device-feed cursor and applies each page
+and cursor atomically. There are no separate device message or tombstone feed
+tables.
 
 ### UserBlock — One-way block
 

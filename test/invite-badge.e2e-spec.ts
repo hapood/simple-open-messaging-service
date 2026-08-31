@@ -7,13 +7,22 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
 import { InviteService } from '../src/invite/invite.service';
-import { account, relationshipIntent, user } from '../src/database/schema';
+import {
+  account,
+  domainCommand,
+  relationshipIntent,
+  user,
+} from '../src/database/schema';
 import { and, eq } from 'drizzle-orm';
 import {
   findP2PRelationship,
   seedFederatedPeerNamespace,
   seedUserWithSession,
 } from './seed';
+import {
+  waitForDomainCommand,
+  waitForLocalFriendInvite,
+} from './domain-command-helpers.js';
 
 /**
  * Friend-request badge — the BACKEND half of the data contract.
@@ -54,12 +63,14 @@ describe('Friend-request client state e2e', () => {
 
     // 1+2. Seed inviter A + invitee B with sessions directly (registration is closed; the spec needs two
     // authenticated users, not the login flow).
-    const tokA = (
-      await seedUserWithSession(app, 'inviter', { name: 'Inviter' })
-    ).token;
-    const tokB = (
-      await seedUserWithSession(app, 'invitee', { name: 'Invitee' })
-    ).token;
+    const inviter = await seedUserWithSession(app, 'inviter', {
+      name: 'Inviter',
+    });
+    const invitee = await seedUserWithSession(app, 'invitee', {
+      name: 'Invitee',
+    });
+    const tokA = inviter.token;
+    const tokB = invitee.token;
     expect(tokA).toBeTruthy();
     expect(tokB).toBeTruthy();
     const authA = { Authorization: `Bearer ${tokA}` };
@@ -81,6 +92,12 @@ describe('Friend-request client state e2e', () => {
       .set(authA)
       .send({ account: 'invitee' });
     expect(invite.body.code).toBe(0);
+    const inviteId = await waitForLocalFriendInvite(
+      database.db,
+      invite.body.data.commandId,
+      inviter.id,
+      invitee.id,
+    );
 
     const after = await database.db.query.account.findFirst({
       where: eq(account.id, inviteeId),
@@ -108,16 +125,30 @@ describe('Friend-request client state e2e', () => {
         body: expect.objectContaining({
           direction: 'INCOMING',
           status: 'REQUESTED',
-          inviteId: invite.body.data.inviteId,
+          inviteId,
         }),
       }),
     );
 
+    const beforeInvalidAccept = await database.db
+      .select({ id: domainCommand.id })
+      .from(domainCommand);
+    const invalidAccept = await request(http)
+      .post('/api/v1/invite/accept')
+      .set(authA)
+      .send({ inviteId });
+    expect(invalidAccept.body.code).toBe(20012);
+    expect(
+      await database.db.select({ id: domainCommand.id }).from(domainCommand),
+    ).toHaveLength(beforeInvalidAccept.length);
+
     const accepted = await request(http)
       .post('/api/v1/invite/accept')
       .set(authB)
-      .send({ inviteId: invite.body.data.inviteId });
+      .send({ inviteId });
     expect(accepted.body.code).toBe(0);
+    expect(accepted.body.data).toMatchObject({ status: 'PENDING' });
+    await waitForDomainCommand(database.db, accepted.body.data.commandId);
     const acceptedHead = await database.db.query.account.findFirst({
       where: eq(account.id, inviteeId),
       columns: { stateFeedAllocatedThrough: true },
@@ -258,6 +289,12 @@ describe('Friend-request client state e2e', () => {
       .set(authA)
       .send({ account: b.account, note: 'old A to B' });
     expect(old.body.code).toBe(0);
+    await waitForLocalFriendInvite(
+      database.db,
+      old.body.data.commandId,
+      a.id,
+      b.id,
+    );
     const expiredAt = Date.now();
     const relationship = await findP2PRelationship(database.db, a.id, b.id);
     await database.db
@@ -278,6 +315,12 @@ describe('Friend-request client state e2e', () => {
       .set(authB)
       .send({ account: a.account, note: 'new B to A' });
     expect(reverse.body.code).toBe(0);
+    await waitForLocalFriendInvite(
+      database.db,
+      reverse.body.data.commandId,
+      b.id,
+      a.id,
+    );
     let pair = (await findP2PRelationship(database.db, a.id, b.id)).pair;
     expect(pair?.active).toBe(false);
 
@@ -298,7 +341,8 @@ describe('Friend-request client state e2e', () => {
       .set(authA)
       .send({ inviteId: incoming.body.data[0].id });
     expect(accepted.body.code).toBe(0);
-    expect(accepted.body.data.threadId).toBeTypeOf('number');
+    expect(accepted.body.data).toMatchObject({ status: 'PENDING' });
+    await waitForDomainCommand(database.db, accepted.body.data.commandId);
 
     const directions = await database.db.query.relationshipIntent.findMany({
       where: and(
@@ -309,6 +353,109 @@ describe('Friend-request client state e2e', () => {
     expect(directions[0]?.status).toBe('ACCEPTED');
     pair = (await findP2PRelationship(database.db, a.id, b.id)).pair;
     expect(pair?.active).toBe(true);
-    expect(pair?.threadId).toBe(accepted.body.data.threadId);
+    expect(pair?.threadId).toBeTypeOf('number');
+  });
+
+  it('validates reject ownership before enqueue and executes a valid reject asynchronously', async () => {
+    const sender = await seedUserWithSession(app, 'reject-sender');
+    const recipient = await seedUserWithSession(app, 'reject-recipient');
+    const stranger = await seedUserWithSession(app, 'reject-stranger');
+    const sent = await request(app.getHttpServer())
+      .post('/api/v1/invite/friend')
+      .set('Authorization', `Bearer ${sender.token}`)
+      .send({ account: recipient.account });
+    const inviteId = await waitForLocalFriendInvite(
+      database.db,
+      sent.body.data.commandId,
+      sender.id,
+      recipient.id,
+    );
+
+    const beforeInvalid = await database.db
+      .select({ id: domainCommand.id })
+      .from(domainCommand);
+    const invalid = await request(app.getHttpServer())
+      .post('/api/v1/invite/reject')
+      .set('Authorization', `Bearer ${stranger.token}`)
+      .send({ inviteId });
+    expect(invalid.body.code).toBe(20012);
+    expect(
+      await database.db.select({ id: domainCommand.id }).from(domainCommand),
+    ).toHaveLength(beforeInvalid.length);
+
+    const rejected = await request(app.getHttpServer())
+      .post('/api/v1/invite/reject')
+      .set('Authorization', `Bearer ${recipient.token}`)
+      .send({ inviteId });
+    expect(rejected.body).toMatchObject({
+      code: 0,
+      data: { status: 'PENDING' },
+    });
+    await waitForDomainCommand(database.db, rejected.body.data.commandId);
+
+    const relationship = await findP2PRelationship(
+      database.db,
+      recipient.id,
+      sender.id,
+    );
+    const reverse = await database.db.query.relationshipIntent.findFirst({
+      where: and(
+        eq(relationshipIntent.pairId, relationship.pair!.id),
+        eq(relationshipIntent.authorSide, relationship.firstSide),
+      ),
+      columns: { status: true },
+    });
+    expect(reverse?.status).toBe('REVOKED');
+  });
+
+  it('keeps addressed revoke direct but queues and executes local inviteId revoke', async () => {
+    const sender = await seedUserWithSession(app, 'revoke-sender');
+    const recipient = await seedUserWithSession(app, 'revoke-recipient');
+    const sent = await request(app.getHttpServer())
+      .post('/api/v1/invite/friend')
+      .set('Authorization', `Bearer ${sender.token}`)
+      .send({ account: recipient.account });
+    const inviteId = await waitForLocalFriendInvite(
+      database.db,
+      sent.body.data.commandId,
+      sender.id,
+      recipient.id,
+    );
+
+    const beforeInvalid = await database.db
+      .select({ id: domainCommand.id })
+      .from(domainCommand);
+    const invalid = await request(app.getHttpServer())
+      .post('/api/v1/invite/revoke')
+      .set('Authorization', `Bearer ${recipient.token}`)
+      .send({ inviteId });
+    expect(invalid.body.code).toBe(20012);
+    expect(
+      await database.db.select({ id: domainCommand.id }).from(domainCommand),
+    ).toHaveLength(beforeInvalid.length);
+
+    const revoked = await request(app.getHttpServer())
+      .post('/api/v1/invite/revoke')
+      .set('Authorization', `Bearer ${sender.token}`)
+      .send({ inviteId });
+    expect(revoked.body).toMatchObject({
+      code: 0,
+      data: { status: 'PENDING' },
+    });
+    await waitForDomainCommand(database.db, revoked.body.data.commandId);
+
+    const relationship = await findP2PRelationship(
+      database.db,
+      sender.id,
+      recipient.id,
+    );
+    const authored = await database.db.query.relationshipIntent.findFirst({
+      where: and(
+        eq(relationshipIntent.pairId, relationship.pair!.id),
+        eq(relationshipIntent.authorSide, relationship.firstSide),
+      ),
+      columns: { status: true },
+    });
+    expect(authored?.status).toBe('REVOKED');
   });
 });

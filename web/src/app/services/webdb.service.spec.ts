@@ -978,6 +978,45 @@ describe('WebdbService', () => {
       expect(await webdb.getMeta('stateFeedId')).toBe(6);
     });
 
+    it('applies the paired message and tombstone head with its preview identity', async () => {
+      await webdb.openForUser('1');
+      await webdb.putThread({
+        threadId: 7,
+        authorityNamespaceId: 0,
+        type: 'P2P',
+      } as never);
+
+      await webdb.applyStateFeedPage(
+        [
+          {
+            feedId: 7,
+            namespaceId: 0,
+            account: '',
+            domain: 'local',
+            eventType: 'THREAD_CONTENT_HEAD',
+            subjectAccount: '',
+            subjectDomain: 'local',
+            body: {
+              threadId: 7,
+              messageEndSeq: 12,
+              tombstoneEndSeq: 4,
+              preview: { seq: 11, text: '', senderId: null },
+            },
+          },
+        ],
+        7,
+      );
+
+      expect((await webdb.getThreads())[0]).toMatchObject({
+        lastMessageSeq: 12,
+        tombstoneEndSeq: 4,
+        lastMessagePreviewSeq: 11,
+        lastMessagePreview: '',
+        lastMessageSenderId: null,
+      });
+      expect(await webdb.getMeta('stateFeedId')).toBe(7);
+    });
+
     it('optimistically activates only the greatest newly discovered namespace', async () => {
       await webdb.openForUser('1');
       await webdb.putThread({
@@ -1392,21 +1431,6 @@ describe('WebdbService', () => {
       expect(await webdb.getThreads()).toEqual([]);
       expect(await webdb.getProfile('u8')).toBeDefined();
       expect(await webdb.getProfile('g12')).toBeUndefined();
-    });
-
-    it('commits missed-summary threads and cursor together', async () => {
-      await webdb.openForUser('1');
-      const item = {
-        threadId: 9,
-        authorityNamespaceId: 0,
-        type: 'P2P',
-      } as never;
-      const cursor = 4;
-
-      await webdb.applyCatchUp([item], cursor);
-
-      expect(await webdb.getThreads()).toEqual([item]);
-      expect(await webdb.getMeta('messageFeedCursor')).toEqual(cursor);
     });
 
     it('recreates only the message DB and preserves the core cache', async () => {

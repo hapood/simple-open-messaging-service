@@ -111,7 +111,7 @@ declare global {
        *  clear (and stop the native stream). Android-only. */
       setSessionToken: (token: string | null) => void;
       /** Mirror the per-user integer message-feed cursor into native notification storage. */
-      setMessageFeedCursor: (cursor: number) => void;
+      setStateFeedCursor: (cursor: number) => void;
       /** Synchronous read of the persisted session token from EncryptedSharedPreferences (the same store
        *  setSessionToken writes + the native RealtimeService reads). AuthService.restoreSession uses it to
        *  re-establish the session on a cold start with NO plaintext copy in JS storage. Returns null when

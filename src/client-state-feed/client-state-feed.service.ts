@@ -25,7 +25,8 @@ export interface ClientStateFeedWrite {
     | 'GROUP_META_FEED_HEAD'
     | 'GROUP_JOIN_REQUEST_HEAD'
     | 'INCOMING_INVITE_HEAD'
-    | 'THREAD_BLOCK';
+    | 'THREAD_BLOCK'
+    | 'THREAD_CONTENT_HEAD';
   /** Federation context owning this fact. If either relationship endpoint is federated, both
    * authored directions use that captured namespace; only wholly local facts use namespace 0. */
   namespaceId: number;

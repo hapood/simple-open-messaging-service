@@ -152,10 +152,11 @@ describe('FederationMessageTombstoneFeedService query', () => {
   }
 
   it('queries deletion facts through the advertised State Feed head', async () => {
-    const { deletion } = await seedDeletion();
+    const { deletion, namespaceId } = await seedDeletion();
 
     const page = await service.query(
       peerDomain,
+      namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
       undefined,
@@ -178,6 +179,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
     const { deletion, namespaceId } = await seedDeletion();
     const page = await service.query(
       peerDomain,
+      namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
       undefined,
@@ -192,6 +194,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
       .where(eq(message.seq, 1));
     const filtered = await service.query(
       peerDomain,
+      namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
       undefined,
@@ -247,6 +250,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
 
     const page = await service.query(
       peerDomain,
+      namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
       undefined,
@@ -262,8 +266,82 @@ describe('FederationMessageTombstoneFeedService query', () => {
     });
   });
 
+  it('advances a bounded multi-page scan across filtered deletion coordinates', async () => {
+    const { deletion, namespaceId, thread } = await seedDeletion();
+    const now = new Date('2026-08-12T01:04:03.000Z');
+    await database.db.insert(message).values(
+      [
+        { seq: 2, originSeq: 10, text: 'filtered-one' },
+        { seq: 3, originSeq: 2, text: 'eligible-two' },
+        { seq: 4, originSeq: 11, text: 'filtered-two' },
+      ].map(({ seq, originSeq, text }) => ({
+        seq,
+        originSeq,
+        originServerTime: now,
+        contentType: 'PURE_TEXT' as const,
+        content: JSON.stringify({ text }),
+        threadId: thread.id,
+        creatorAccount: 'alice',
+        creatorDomain: 'local',
+        isDeleted: true,
+        createdAt: now,
+        updatedAt: now,
+      })),
+    );
+    await database.db.insert(deletedMessage).values(
+      [2, 3, 4].map((deletionSeq) => ({
+        threadId: thread.id,
+        deletionSeq,
+        messageSeq: deletionSeq,
+        type: MessageDeleteType.USER_RETRACTION,
+        createdAt: now,
+        updatedAt: now,
+      })),
+    );
+    await database.db
+      .update(messageThread)
+      .set({ deletionSeqAllocatedThrough: 4 })
+      .where(eq(messageThread.id, thread.id));
+    await database.db
+      .update(peerStateFeed)
+      .set({ body: { messageEndSeq: 4, tombstoneEndSeq: 4 } })
+      .where(eq(peerStateFeed.namespaceId, namespaceId));
+
+    const first = await service.query(
+      peerDomain,
+      namespaceId,
+      { type: 'P2P', account: 'alice', peerAccount: 'bob' },
+      0,
+      1,
+      4,
+      true,
+      3,
+    );
+    const second = await service.query(
+      peerDomain,
+      namespaceId,
+      { type: 'P2P', account: 'alice', peerAccount: 'bob' },
+      first.scannedThrough,
+      1,
+      4,
+      true,
+      3,
+    );
+
+    expect(first).toMatchObject({
+      tombstones: [{ deletionSeq: deletion.deletionSeq, messageSeq: 1 }],
+      scannedThrough: 1,
+      hasMore: true,
+    });
+    expect(second).toMatchObject({
+      tombstones: [{ deletionSeq: 3, messageSeq: 2 }],
+      scannedThrough: 4,
+      hasMore: false,
+    });
+  });
+
   it('rejects tombstone queries after current audience closes', async () => {
-    const { thread } = await seedDeletion();
+    const { namespaceId, thread } = await seedDeletion();
     await database.db
       .delete(threadAudience)
       .where(eq(threadAudience.threadId, thread.id));
@@ -271,6 +349,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
     await expect(
       service.query(
         peerDomain,
+        namespaceId,
         { type: 'P2P', account: 'alice', peerAccount: 'bob' },
         0,
       ),
@@ -278,7 +357,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
   });
 
   it('exposes pre-floor tombstones inside a filtered reauthorization drain', async () => {
-    const { deletion, thread } = await seedDeletion();
+    const { deletion, namespaceId, thread } = await seedDeletion();
     await database.db
       .update(threadAudience)
       .set({ messageAccessAfterSeq: 1 })
@@ -286,6 +365,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
 
     const page = await service.query(
       peerDomain,
+      namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
       undefined,
@@ -303,9 +383,9 @@ describe('FederationMessageTombstoneFeedService query', () => {
   });
 
   it('uses 0 as the missing-after bootstrap for the thread query', async () => {
-    await seedDeletion();
+    const { namespaceId } = await seedDeletion();
     await expect(
-      service.rejectMissingQueryAfter(peerDomain, {
+      service.rejectMissingQueryAfter(peerDomain, namespaceId, {
         type: 'P2P',
         account: 'alice',
         peerAccount: 'bob',

@@ -405,6 +405,8 @@ export class MsgService {
     threadId: number;
     after: number;
     take?: number;
+    through?: number;
+    maxMessageSeq?: number;
   }) {
     return this.http.post<StandardResponse<MessageTombstoneQueryPage>>(
       `${apiPrefix()}/deleted-messages/query`,
@@ -412,6 +414,10 @@ export class MsgService {
         threadId: params.threadId,
         after: params.after,
         ...(params.take === undefined ? {} : { take: params.take }),
+        ...(params.through === undefined ? {} : { through: params.through }),
+        ...(params.maxMessageSeq === undefined
+          ? {}
+          : { maxMessageSeq: params.maxMessageSeq }),
       },
     );
   }

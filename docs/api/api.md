@@ -125,7 +125,9 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 
 - **Query**: `after`, optional `through`, `take`, and `mode=full|delta`. Returns a bounded page of
   compacted thread, profile, member-profile, request, and client-state changes after the client's
-  cursor. The response carries the current feed end and the next cursor for deterministic catch-up.
+  only durable device-feed cursor. `THREAD_CONTENT_HEAD` carries required `messageEndSeq` and
+  `tombstoneEndSeq` values together with `preview: { seq, text, senderId }`. The response carries the
+  current feed end and the next cursor for deterministic catch-up.
 - `GET /user/group-meta` serves a visible group's full or delta roster feed by `threadId` or account.
 
 ### POST `/user/query` · `/user/resolve` · `/user/search`
@@ -146,6 +148,9 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 
 - **Body**: `{ account, domain?, deleteData? }`. `domain` is omitted for a local account. Ends the active
   P2P relationship while retaining its conversation history (`20002` if not friends).
+- After synchronous identity and thread validation, returns
+  `{ commandId: string, status: "PENDING" }`. The existing P2P termination
+  transaction executes asynchronously in `USER_PAIR` order.
 
 ### POST `/user/peer-trust-status`
 
@@ -169,9 +174,13 @@ the complete transition, pair-folding, and projection-side-effect rules.
 ### POST `/invite/friend` — Send friend invite
 
 - **Body**: `{ account, note?: string(≤255) }`. The route resolves the local account internally; database
-  user ids are not part of the client identity contract. It upserts the caller's directed request. A new
-  request expires after seven days; an explicit resend after expiry renews the
-  absolute expiry. `20001` friending self · `20004` invalid target.
+  user ids are not part of the client identity contract. It validates the caller and target, then
+  durably enqueues the directed request mutation.
+- **Response data**: `{ commandId: string, status: "PENDING" }`. Success means the command was committed,
+  not that the relationship transaction has completed. The resulting `inviteId` arrives through the
+  Client State Feed or the incoming/outgoing request lists.
+- Execution upserts the caller's directed request. A new request expires after seven days; an explicit
+  resend after expiry renews the absolute expiry. `20001` friending self · `10001` target not found.
 
 ### POST `/invite/federated-friend` — Send a pre-stub federated request
 
@@ -200,6 +209,11 @@ the complete transition, pair-folding, and projection-side-effect rules.
 - `reject` closes an incoming local request; `revoke` closes the caller-owned outgoing direction.
   Federation convergence is asynchronous
   through the state feed; there are no S2S invite command endpoints.
+- `/invite/reject` validates request ownership and returns
+  `{ commandId: string, status: "PENDING" }` after durable command acceptance.
+  P2P `{ inviteId }` acceptance and revoke have the same durable acceptance
+  response. Group acceptance and addressed federated accept/revoke still
+  execute directly during the staged rollout.
 - Every pending friend/group request has an absolute expiry of at most seven days. Expired requests are
   ineffective even if an old feed projection remains. REVOKED has no expiry and is retained best-effort.
 
@@ -242,8 +256,11 @@ the complete transition, pair-folding, and projection-side-effect rules.
 
 ### POST `/deleted-messages/query` — Paginated tombstones
 
-- Uses the same `{ threadId, after?, before?, through?, take? }` directional cursor contract as
+- Uses the same `{ threadId, after?, before?, through?, take?, maxMessageSeq? }` directional cursor contract as
   `/query-messages`, in the conversation's deletion-coordinate space.
+- `maxMessageSeq` is used only by the first chatbox-open recovery walk. The client freezes it to the
+  newest locally persisted message sequence and freezes `through` to the state head visible at open;
+  the server still advances `scannedThrough` across filtered deletion coordinates. Later walks omit it.
 - Omitting both cursors returns `30006 { resumeAfter, resumeBefore }`. A successful page returns
   `{ tombstones, scannedThrough, hasMore }`; each public tombstone contains
   `{ deletionSeq, threadId, messageSeq, type, createdAt, updatedAt }`. The
@@ -321,7 +338,7 @@ See the [Android calls client contract](../platform/android/calls.md).
 - `POST /devices/register` / `DELETE /devices/register/:token` — register/unregister a push token (FCM registration token for ANDROID, Web Push subscription for WEB; a device's token is re-owned to the current user on re-register).
 - `POST /devices/fcm-probes`, `GET /devices/fcm-probes/:probeId`, and `POST /devices/fcm-probes/:probeId/ack` — run and observe a one-off Android FCM delivery probe.
 - `GET /notifications/vapid-key` (`@Public`) — Web Push VAPID public key.
-- `GET /thread-sync/catch-up` · `/thread-sync/tombstones` — bounded message-thread and deletion catch-up feeds.
+- `GET /user/state-feed` — the single device-facing state feed, including paired thread content heads.
 - `POST /notification-feed/query` — build away-notification descriptors from changed threads.
 - `POST /notifications/action` — dispatch a notification action such as mark-read or inline reply.
 

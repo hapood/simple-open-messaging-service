@@ -112,7 +112,7 @@ export class UnreadAttentionService {
 
   private onFocusChange(focused: boolean): void {
     if (!focused && this.focused())
-      this.awayAfter = this.convList.messageFeedCursor();
+      this.awayAfter = this.convList.stateFeedCursor();
     // The effect owns document.title; flipping `focused` re-runs it and restores the base title.
     this.focused.set(focused);
     if (focused) this.dismissActive();
@@ -173,9 +173,8 @@ export class UnreadAttentionService {
 
   /** Pull the current unread snapshot (the away-notification descriptors) and render each via the adapter,
    *  Sends the per-thread dismiss-HWM map (`threadHwms`) so a dismissed thread's count resets server-side.
-   *  Uses the away path's OWN single-flight (independent of
-   *  the threadlist catch-up path) so a threadlist pull at the same instant cannot starve the away-
-   *  notification. A `kind:'clear'` descriptor (nothing unread+unmuted) dismisses the prior notification.
+   *  Uses the away path's own single-flight, independent of the foreground state-feed pull. A
+   *  `kind:'clear'` descriptor (nothing unread+unmuted) dismisses the prior notification.
    *  Fire-and-forget. */
   private async pullAndRender(): Promise<void> {
     try {

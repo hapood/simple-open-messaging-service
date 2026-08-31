@@ -185,8 +185,19 @@ export class SseService implements OnModuleDestroy {
    *  data source; the realtime stream is a trigger, never a body carrier). No Last-Event-ID cursor: a
    *  transient drop or an offline gap is reconciled by the per-user catch-up feed on reconnect, not by SSE
    *  replay, so no message-cursor `id` is emitted. */
-  onNewMessage(userId: number, threadId: number, seq: number, ts: number) {
-    this.pushToUser(userId, 'NEW_MESSAGE', { threadId, seq, ts });
+  onNewMessage(
+    userId: number,
+    threadId: number,
+    seq: number,
+    ts: number,
+    stateFeedId: number,
+  ) {
+    this.pushToUser(userId, 'NEW_MESSAGE', {
+      threadId,
+      seq,
+      ts,
+      stateFeedId,
+    });
   }
 
   /** Hint only: the client pulls the durable log using its thread-level deletion HWM. */
@@ -194,10 +205,12 @@ export class SseService implements OnModuleDestroy {
     userId: number,
     threadId: number,
     deletionSeq: number,
+    stateFeedId: number,
   ) {
     this.pushToUser(userId, 'DELETED_MESSAGE_UPDATED', {
       threadId,
       deletionSeq,
+      stateFeedId,
     });
   }
 

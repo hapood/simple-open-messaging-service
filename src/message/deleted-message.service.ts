@@ -16,7 +16,7 @@ import {
 } from '../database/schema.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import { ClientMessageFeedWriter } from './client-message-feed.service.js';
+import { ClientThreadContentHeadWriter } from './client-message-feed.service.js';
 import {
   MessageService,
   type Message,
@@ -95,10 +95,7 @@ export class DeletedMessageService {
       .from(messageThread)
       .where(eq(messageThread.id, threadId))
       .limit(1);
-    if (
-      !state ||
-      state.federationVersion !== expectedFederationVersion
-    ) {
+    if (!state || state.federationVersion !== expectedFederationVersion) {
       throw new BusinessException(
         BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
         `stale federation deletion response for thread ${threadId}`,
@@ -112,6 +109,7 @@ export class DeletedMessageService {
     take: number,
     through?: number,
     before?: number,
+    maxMessageSeq?: number,
   ) {
     const tail = await this.database.db.query.messageThread.findFirst({
       where: eq(messageThread.id, threadId),
@@ -170,14 +168,19 @@ export class DeletedMessageService {
           ? queryEnd
           : queryStart;
     return {
-      tombstones: selected.map((row) => ({
-        deletionSeq: row.deletionSeq,
-        threadId: row.threadId,
-        messageSeq: row.messageSeq,
-        type: row.type,
-        createdAt: row.createdAt,
-        updatedAt: row.updatedAt,
-      })),
+      tombstones: selected
+        .filter(
+          (row) =>
+            maxMessageSeq === undefined || row.messageSeq <= maxMessageSeq,
+        )
+        .map((row) => ({
+          deletionSeq: row.deletionSeq,
+          threadId: row.threadId,
+          messageSeq: row.messageSeq,
+          type: row.type,
+          createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
+        })),
       scannedThrough,
       hasMore: rows.length > take,
     };
@@ -223,6 +226,12 @@ export class DeletedMessageService {
         );
       }
 
+      const threadHead = await tx.query.messageThread.findFirst({
+        where: eq(messageThread.id, threadId),
+        columns: { lastMessageSeq: true },
+      });
+      const clearsPreview = threadHead?.lastMessageSeq === seq;
+
       const now = new Date();
       await tx
         .update(message)
@@ -238,11 +247,6 @@ export class DeletedMessageService {
       // creates the durable deletion fact may charge it. Keeping the callback in this transaction also
       // rolls the deletion back if its quota gate rejects the operation.
       if (deletion.created && onFirstWithdraw) await onFirstWithdraw(tx);
-      await ClientMessageFeedWriter.publishTombstone(
-        tx,
-        threadId,
-        deletion.deletionSeq,
-      );
       const systemMessage = deletion.created
         ? (
             await this.messages.writeSystemMessageInTx(
@@ -254,6 +258,12 @@ export class DeletedMessageService {
             )
           ).message
         : null;
+      await ClientThreadContentHeadWriter.publishTombstone(
+        tx,
+        threadId,
+        deletion.deletionSeq,
+        clearsPreview ? { clearPreviewMessageSeq: seq } : undefined,
+      );
 
       return {
         deletionSeq: deletion.deletionSeq,
@@ -299,7 +309,7 @@ export class DeletedMessageService {
       type: MessageDeleteType.MODERATION_REMOVAL,
       updatedAt: now,
     });
-    await ClientMessageFeedWriter.publishTombstone(
+    await ClientThreadContentHeadWriter.publishTombstone(
       tx,
       threadId,
       deletion.deletionSeq,
@@ -328,7 +338,12 @@ export class DeletedMessageService {
   async advanceFederatedCursor(params: {
     threadId: number;
     remoteDeletionSeq: number;
-    cursor: { peerDomain: string; namespaceId: number; streamAccount: string; streamKind: string };
+    cursor: {
+      peerDomain: string;
+      namespaceId: number;
+      streamAccount: string;
+      streamKind: string;
+    };
     expectedFederationVersion: number;
   }): Promise<void> {
     await this.database.db.transaction(async (tx) => {
@@ -376,7 +391,12 @@ export class DeletedMessageService {
     authorityDeletedAt?: Date;
     allowPending?: boolean;
     federationSourceDomain?: string | null;
-    cursor: { peerDomain: string; namespaceId: number; streamAccount: string; streamKind: string };
+    cursor: {
+      peerDomain: string;
+      namespaceId: number;
+      streamAccount: string;
+      streamKind: string;
+    };
     expectedFederationVersion: number;
   }) {
     return this.database.db.transaction((tx) =>
@@ -527,12 +547,15 @@ export class DeletedMessageService {
       localDeletionSeq = localDeletion.created
         ? localDeletion.deletionSeq
         : null;
-      if (localDeletion.created)
-        await ClientMessageFeedWriter.publishTombstone(
-          tx,
-          params.threadId,
-          localDeletion.deletionSeq,
-        );
+      const clearsPreview =
+        localDeletion.created &&
+        params.type === MessageDeleteType.USER_RETRACTION &&
+        (
+          await tx.query.messageThread.findFirst({
+            where: eq(messageThread.id, params.threadId),
+            columns: { lastMessageSeq: true },
+          })
+        )?.lastMessageSeq === target.seq;
       if (localDeletion.created) {
         systemMessage = (
           await this.messages.writeSystemMessageInTx(
@@ -558,6 +581,12 @@ export class DeletedMessageService {
                 },
           )
         ).message;
+        await ClientThreadContentHeadWriter.publishTombstone(
+          tx,
+          params.threadId,
+          localDeletion.deletionSeq,
+          clearsPreview ? { clearPreviewMessageSeq: target.seq } : undefined,
+        );
       }
       await tx
         .delete(federatedMessageTombstone)

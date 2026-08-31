@@ -1595,11 +1595,11 @@ class MainActivity : TauriActivity() {
             }
         }
 
-        /** Mirror the WebView's committed per-user message-feed cursor for background notification queries. */
+        /** Mirror the WebView's committed ClientStateFeed cursor for background notification queries. */
         @JavascriptInterface
-        fun setMessageFeedCursor(cursor: Int) {
+        fun setStateFeedCursor(cursor: Int) {
             val a = activityRef.get() ?: return
-            if (cursor >= 0) ClientStateDb.setMessageFeedCursor(a, cursor)
+            if (cursor >= 0) ClientStateDb.setStateFeedCursor(a, cursor)
         }
 
         /** Synchronous read of the persisted session token from encrypted storage — the SAME store

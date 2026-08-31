@@ -123,7 +123,6 @@ import {
   selectedMessagesCopyText,
   type MessageCopyLabels,
 } from './message-copy';
-import { positionMessageContextMenu } from './message-context-menu-position';
 import { stringifyTextMessageContent } from '../../../../../shared/text-message-content';
 import {
   NativeComposerService,
@@ -160,10 +159,10 @@ import type { ChatMember } from '../chat-editor/chat-editor.component';
 import { StableReadTracker } from './stable-read-tracker';
 import { messageOpenOptions } from './message-open-position';
 import {
-  albumMemberItem,
   applyMessageSelectionState,
   messageMemberIds,
 } from './message-selection';
+import { MessageInteractionController } from './message-interaction.controller';
 import { jumpToMessage } from './message-jump';
 import type { ForwardMessageItem } from '../forward-message-card/forward-message-card.component';
 import type { ForwardDialogResult } from '../forward-dialog/forward-dialog.component';
@@ -205,10 +204,6 @@ type ThreadPasteItem = PastePanelItem &
   );
 
 let nativeComposerContextSequence = Date.now() * 1000;
-const MESSAGE_CONTEXT_MENU_WIDTH = 192;
-const MESSAGE_CONTEXT_MENU_ITEM_HEIGHT = 40;
-const MESSAGE_CONTEXT_MENU_CHROME_HEIGHT = 14;
-const MESSAGE_CONTEXT_MENU_INSET = 8;
 
 /**
  * Message thread container (shared by the desktop chat-pane inline view and the mobile root-popup dialog).
@@ -418,24 +413,14 @@ export class MessageThreadComponent implements OnDestroy {
    *  keep the empty-thread state hidden until init settles; ChatPane owns the switch-loading spinner. */
   readonly initialLoading = signal(true);
   readonly initialLoadFailed = signal(false);
-  readonly selectionMode = signal(false);
-  readonly selectedMessageIds = signal<ReadonlySet<number>>(new Set());
-  readonly selectedCount = computed(() => this.selectedMessageIds().size);
-  private readonly selectedMessageItems = new Map<
-    number,
-    CbItem<ChatMsgData>
-  >();
-  readonly messageContextMenu = signal<{
-    sourceItem: CbItem<ChatMsgData>;
-    targetItem: CbItem<ChatMsgData>;
-    targetSeq: number;
-    memberId?: number;
-    x: number;
-    y: number;
-  } | null>(null);
+  private readonly messageInteraction = new MessageInteractionController();
+  readonly selectionMode = this.messageInteraction.selectionMode;
+  readonly selectedMessageIds = this.messageInteraction.selectedMessageIds;
+  readonly selectedCount = this.messageInteraction.selectedCount;
+  readonly messageContextMenu = this.messageInteraction.contextMenu;
   private lastMessageScrollTop = 0;
   private contextMenuScrollTop = 0;
-  readonly composingQuote = signal<ChatMsgData['quote'] | null>(null);
+  readonly composingQuote = this.messageInteraction.composingQuote;
 
   /** True when the kernel's mounted window is empty — the thread is open but has no messages (a fresh P2P
    *  friendship, a newly-created group, or after clear-history). Maintained from onScroll's `mounted` count:
@@ -805,16 +790,7 @@ export class MessageThreadComponent implements OnDestroy {
   private onMessageDeleted(threadId: number, seq: number): void {
     this.galleryViewer.closeIfDeleted(threadId, seq);
     this.fileDetail.closeIfDeleted(threadId, seq);
-    if (this.messageContextMenu()?.targetSeq === seq) {
-      this.messageContextMenu.set(null);
-    }
-    this.selectedMessageItems.delete(seq);
-    this.selectedMessageIds.update((selected) => {
-      if (!selected.has(seq)) return selected;
-      const next = new Set(selected);
-      next.delete(seq);
-      return next;
-    });
+    this.messageInteraction.removeMessage(seq);
     this.scroller?.mutateItem(seq, (item) => {
       if (item.data.type !== 'msg') return null;
       const images = item.data.images;
@@ -1332,21 +1308,20 @@ export class MessageThreadComponent implements OnDestroy {
     memberId?: number,
   ): void {
     if (item.data.serverGap) return;
-    const messageItem = item;
     if (intent === 'open-menu') {
       const contextItem =
         memberId === undefined
-          ? messageItem
-          : (albumMemberItem(messageItem, memberId) as CbItem<ChatMsgData>);
+          ? (item as CbItem<ChatMsgData>)
+          : this.messageInteraction.targetItem(
+              item as CbItem<ChatMsgData>,
+              memberId,
+            );
       const menuItemCount =
         2 +
         (this.canCopyMessage(contextItem.data) ? 1 : 0) +
         (this.canQuote(contextItem.data) ? 1 : 0) +
         (this.canDirectForward(contextItem.data) ? 1 : 0) +
         (this.canWithdrawOrReport(contextItem.data) ? 1 : 0);
-      const menuHeight =
-        menuItemCount * MESSAGE_CONTEXT_MENU_ITEM_HEIGHT +
-        MESSAGE_CONTEXT_MENU_CHROME_HEIGHT;
       const visualViewport = window.visualViewport;
       const messageViewport =
         this.viewportRef()?.nativeElement.getBoundingClientRect();
@@ -1368,44 +1343,24 @@ export class MessageThreadComponent implements OnDestroy {
           messageViewport?.bottom ?? window.innerHeight,
         ),
       };
-      const position = positionMessageContextMenu(
-        pointer ?? { x: bounds.left, y: bounds.top },
-        bounds,
-        { width: MESSAGE_CONTEXT_MENU_WIDTH, height: menuHeight },
-        MESSAGE_CONTEXT_MENU_INSET,
-      );
-      this.messageContextMenu.set({
-        sourceItem: messageItem,
-        targetItem: contextItem,
-        targetSeq: contextItem.id,
+      this.messageInteraction.openContextMenu(
+        item,
         memberId,
-        x: position.x,
-        y: position.y,
-      });
+        pointer,
+        bounds,
+        menuItemCount,
+      );
       this.contextMenuScrollTop = this.lastMessageScrollTop;
       this.syncMountedSelectionState();
       return;
     }
-    this.closeContextMenu();
-    if (!this.selectionMode()) this.selectionMode.set(true);
-    if (memberId !== undefined)
-      this.toggleAlbumMemberSelection(messageItem, memberId);
-    else this.toggleMessageSelection(messageItem);
+    this.messageInteraction.toggle(item, memberId);
+    this.syncMountedSelectionState();
   }
 
   selectContextMessage(): void {
-    const context = this.messageContextMenu();
-    if (!context) return;
-
-    // Opening the context menu already establishes this item as the interaction target. Carry that
-    // target directly into multi-select so closing the menu cannot briefly clear or toggle it.
-    const next = new Set(this.selectedMessageIds());
-    next.add(context.targetSeq);
-    this.selectedMessageItems.set(context.targetSeq, context.targetItem);
-    this.selectedMessageIds.set(next);
-    this.selectionMode.set(true);
-    this.messageContextMenu.set(null);
-    this.syncMountedSelectionState();
+    if (this.messageInteraction.selectContextMessage())
+      this.syncMountedSelectionState();
   }
 
   dismissContextMenu(): void {
@@ -1413,9 +1368,8 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private closeContextMenu(): void {
-    if (!this.messageContextMenu()) return;
-    this.messageContextMenu.set(null);
-    this.syncMountedSelectionState();
+    if (this.messageInteraction.closeContextMenu())
+      this.syncMountedSelectionState();
   }
 
   async copyContextMessage(): Promise<void> {
@@ -1439,24 +1393,23 @@ export class MessageThreadComponent implements OnDestroy {
       return;
     const data = context.targetItem.data;
     const visual = this.replyVisual(data);
-    this.composingQuote.set({
+    this.messageInteraction.setQuote({
       seq: context.targetSeq,
       author: data.name,
       body: this.forwardSummary(data),
       contentType: data.contentType,
       ...visual,
     });
-    this.closeContextMenu();
   }
 
   cancelQuote(): void {
-    this.composingQuote.set(null);
+    this.messageInteraction.cancelQuote();
   }
 
   async copySelectedMessages(): Promise<void> {
-    const messages = [...this.selectedMessageIds()]
-      .map((id) => this.selectedMessageItems.get(id)?.data)
-      .filter((message): message is ChatMsgData => message !== undefined);
+    const messages = this.messageInteraction
+      .selectedItems()
+      .map((item) => item.data);
     if (!messages.length) return;
     await this.writeMessageClipboard(
       selectedMessagesCopyText(messages, this.messageCopyLabels()),
@@ -1564,49 +1517,7 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   exitSelectionMode(): void {
-    this.selectionMode.set(false);
-    this.selectedMessageIds.set(new Set());
-    this.selectedMessageItems.clear();
-    this.syncMountedSelectionState();
-  }
-
-  private toggleMessageSelection(item: CbItem<ChatMsgData>): void {
-    const memberIds = messageMemberIds(item);
-    const next = new Set(this.selectedMessageIds());
-    const remove = memberIds.every((id) => next.has(id));
-    for (const id of memberIds) {
-      if (remove) {
-        next.delete(id);
-        this.selectedMessageItems.delete(id);
-      } else {
-        next.add(id);
-        this.selectedMessageItems.set(
-          id,
-          albumMemberItem(item, id) as CbItem<ChatMsgData>,
-        );
-      }
-    }
-    this.selectedMessageIds.set(next);
-    this.syncMountedSelectionState();
-  }
-
-  private toggleAlbumMemberSelection(
-    item: CbItem<ChatMsgData>,
-    memberId: number,
-  ): void {
-    if (!messageMemberIds(item).includes(memberId)) return;
-    const next = new Set(this.selectedMessageIds());
-    if (next.has(memberId)) {
-      next.delete(memberId);
-      this.selectedMessageItems.delete(memberId);
-    } else {
-      next.add(memberId);
-      this.selectedMessageItems.set(
-        memberId,
-        albumMemberItem(item, memberId) as CbItem<ChatMsgData>,
-      );
-    }
-    this.selectedMessageIds.set(next);
+    this.messageInteraction.resetSelection();
     this.syncMountedSelectionState();
   }
 
@@ -1666,8 +1577,14 @@ export class MessageThreadComponent implements OnDestroy {
           return;
         }
         this.scroller?.removeItem(seq);
-        if (this.threadAdapter.syncWithdrawalsAfterMutation())
-          void this.msgRepo.syncDeleted(threadId);
+        const deletionSeq = (res.data as { deletionSeq?: unknown } | undefined)
+          ?.deletionSeq;
+        if (
+          this.threadAdapter.syncWithdrawalsAfterMutation() &&
+          typeof deletionSeq === 'number' &&
+          Number.isSafeInteger(deletionSeq)
+        )
+          void this.msgRepo.updateTombstoneTarget(threadId, deletionSeq);
       },
       error: () =>
         this.toast.warn(this.transloco.translate('chat.withdrawFailed')),
@@ -1709,9 +1626,7 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   openSelectedForwardDialog(): void {
-    const items = [...this.selectedMessageIds()]
-      .map((id) => this.selectedMessageItems.get(id))
-      .filter((item): item is CbItem<ChatMsgData> => item !== undefined);
+    const items = this.messageInteraction.selectedItems();
     if (items.length) this.openForwardDialog(items, 'HISTORY');
   }
 
@@ -2139,8 +2054,7 @@ export class MessageThreadComponent implements OnDestroy {
     );
     item.data.textSegments = rendered.segments;
     item.data.mentionState = rendered.mentionState;
-    item.data.quote = this.composingQuote() ?? undefined;
-    this.composingQuote.set(null);
+    item.data.quote = this.messageInteraction.consumeQuote() ?? undefined;
     this.dispatchPending(item);
     this.dispatchHttpSendText(item);
   }
@@ -3572,10 +3486,7 @@ export class MessageThreadComponent implements OnDestroy {
   private teardown(): void {
     this.cancelPaste();
     this.nativeComposerDraft.set('');
-    this.selectionMode.set(false);
-    this.selectedMessageIds.set(new Set());
-    this.messageContextMenu.set(null);
-    this.composingQuote.set(null);
+    this.messageInteraction.reset();
     this.stableRead.flush();
     this.stableRead.reset();
     this.firstUnreadSeq = null;

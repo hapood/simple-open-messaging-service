@@ -115,8 +115,8 @@ materialized or STUB when dependencies remain. Tombstone pages apply deletions,
 including deletions targeting an existing STUB. Cursor-unavailable recovery
 advances only the affected stream.
 
-Forward insertion advances the compacted local `ClientMessageFeed`, including
-for a committed STUB. It does not emit SSE. A target published while the round
+Forward insertion advances the compacted local `ClientStateFeed`
+`THREAD_CONTENT_HEAD`, including for a committed STUB. It does not emit SSE. A target published while the round
 is active remains dirty work for a later round.
 
 ## 5. Reverse rounds
@@ -157,7 +157,7 @@ Every reverse batch is a complete logical round and scheduler fairness unit.
 There is no process-local continuation across batches. A restart simply reads
 the shrunken durable gap.
 
-Reverse insertion does not update `ClientMessageFeed` and does not emit SSE.
+Reverse insertion does not publish `THREAD_CONTENT_HEAD` and does not emit SSE.
 It fills older history rather than announcing a new conversation tail. Client
 history queries read committed STUB, FAILED, and READY rows directly.
 

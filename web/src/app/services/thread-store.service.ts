@@ -5,17 +5,13 @@ import { UserService } from './user.service';
 import { WebsocketService } from './websocket.service';
 import { ProfileRepository } from './profile-store.service';
 import { MessageRepository } from './message-repository.service';
-import {
-  ThreadCatchUpService,
-  type ThreadCatchUpItem,
-} from './thread-catch-up.service';
 import { toDisplayText } from '../lib/message-entity';
 import { deriveMessagePreview } from '../../../../shared/message-preview';
 import {
   ConversationItem,
   GroupConversationItem,
   Message,
-  messageCreatorKey,
+  messagePreviewSenderKey,
   P2PConversationItem,
   ThreadReadState,
   User,
@@ -52,10 +48,9 @@ export type ConversationLoadStatus =
  *  - {@link load} eager-paints the IDB `threads` store INSTANTLY on mount — the per-user IDB is opened on
  *    the persisted lastUserId by AuthService.restoreSession (an APP_INITIALIZER, pre-router), so a returning
  *    user sees their list BEFORE the SSE/HELLO round-trip. A cold start (no cache) paints nothing until HELLO.
- *  - {@link onHello} (the SSE connect handshake) then delta-replays the list (full `(0, rev]` on first
- *    connect, incremental `(cursor, rev]` on reconnect) + walks the catch-up range. The SSE stream
- *    does NOT replay events missed while offline, so this HELLO-driven delta + missed walk is the freshness
- *    backstop.
+ *  - {@link onHello} (the SSE connect handshake) then drains the one ClientStateFeed (full on first
+ *    connect, incremental on reconnect). The SSE stream does not replay events missed while offline, so
+ *    this HELLO-driven state-feed pull is the freshness backstop.
  *
  * Every conversation is mirrored to IDB (`threads` store, one record per `threadId`). Each data-SSE event
  * mutates exactly the affected record(s) in IDB + emits a fine-grained signal update — never a whole-list
@@ -68,7 +63,6 @@ export class ThreadRepository {
   private readonly ws = inject(WebsocketService);
   private readonly profileRepo = inject(ProfileRepository);
   private readonly messageRepo = inject(MessageRepository);
-  private readonly catchUp = inject(ThreadCatchUpService);
   private readonly messages = inject(MsgService);
   private readonly memberProfiles = inject(MemberProfileRepository);
   private readonly toast = inject(ToastService);
@@ -135,8 +129,6 @@ export class ThreadRepository {
     seq: number;
   }>();
   readonly threadSeq$ = this._threadSeq.asObservable();
-  private readonly _catchUpApplied = new Subject<void>();
-  readonly catchUpApplied$ = this._catchUpApplied.asObservable();
 
   latestSeq(threadId: number): number | undefined {
     return this.lastSeenSeq.get(threadId);
@@ -184,9 +176,6 @@ export class ThreadRepository {
 
   /** Account-scoped first thread initialization barrier. It is independent of HELLO payload state;
    * both the list mount and a fast-arriving HELLO await this same single-flight operation. */
-  /** Durable consumer cursor for the compacted per-user message feed. */
-  private readonly _messageFeedCursor = signal(0);
-  private readonly _tombstoneFeedCursor = signal(0);
 
   /** Per-thread dismiss-HWM map (threadId → seq) for the away-notification's per-thread grouping. A dismiss
    *  records the descriptor's `{threadId, seq}` so the next notification-feed query counts THAT thread
@@ -206,14 +195,28 @@ export class ThreadRepository {
           void this.onHello(m.data as HelloPayload | undefined);
           break;
         case 'NEW_MESSAGE':
-          if (m.data !== undefined)
-            this.onNewMessage(
-              m.data as { threadId: number; seq: number; ts: number },
-            );
+          if (m.data !== undefined) {
+            const data = m.data as {
+              threadId: number;
+              seq: number;
+              ts: number;
+              stateFeedId: number;
+            };
+            this.onNewMessage(data);
+            if (Number.isSafeInteger(data.stateFeedId))
+              this.onStateFeedUpdated(data.stateFeedId);
+          }
           break;
         case 'STATE_FEED_UPDATED':
           if (m.data !== undefined)
             this.onStateFeedUpdated((m.data as { feedId: number }).feedId);
+          break;
+        case 'DELETED_MESSAGE_UPDATED':
+          if (m.data !== undefined) {
+            const data = m.data as { stateFeedId?: unknown };
+            if (typeof data.stateFeedId === 'number')
+              this.onStateFeedUpdated(data.stateFeedId);
+          }
           break;
         case 'ATTENTION_REV_UPDATED':
           if (m.data !== undefined)
@@ -224,7 +227,7 @@ export class ThreadRepository {
       }
     });
     // Reconnect refresh is HELLO-driven now: the SSE reconnect re-pushes HELLO → onHello re-runs
-    // (cache-paint + delta-replay + catch-up walk). No separate reconnect→boot wiring needed.
+    // (cache-paint + state-feed replay). No separate reconnect→boot wiring needed.
 
     // Session-end reset: when the session ends (sessionUserId → null, i.e. clearSession/logout), drop
     // the in-memory list so a second account logging into the same live SPA cannot inherit this user's
@@ -264,8 +267,6 @@ export class ThreadRepository {
     this.readSyncInFlight = false;
     this.readSyncTarget = 0;
     // Clear the native durable copy too (logout / account switch) so a different user does not inherit it.
-    clearTimeout(this.pullTimer);
-    this.pullArmedAt = 0;
   }
 
   // ── boot: account thread initialization + HELLO delta replay ──────────────────────────────
@@ -315,8 +316,14 @@ export class ThreadRepository {
   }
 
   /** Set/clear the open thread (UI layer drives this on open/close; used for unread suppression). */
-  setOpenThread(threadId: number | undefined): void {
+  async setOpenThread(threadId: number | undefined): Promise<void> {
     this._openThreadId.set(threadId);
+    if (threadId !== undefined) {
+      const target =
+        this._items().find((item) => item.threadId === threadId)
+          ?.tombstoneEndSeq ?? 0;
+      await this.messageRepo.openTombstoneStream(threadId, target);
+    }
   }
 
   /** Resolve the ConversationItem for a thread the caller knows exists, waiting for a reload if it is not
@@ -509,67 +516,6 @@ export class ThreadRepository {
     return true;
   }
 
-  /** Merge the catch-up's authoritative per-thread read state into list items. The summary is
-   *  the freshest server state (it runs on
-   *  every SSE signal), so this keeps each item's `lastReadSeq` + `unreadCount` current without a full snapshot
-   *  refresh. Open and read-commit-pending rows are merged too: the server watermark guard in
-   *  {@link applyReadState} prevents an older commit response from regressing a newer summary. */
-  private mergedSummaryThreads(items: ThreadCatchUpItem[]): ConversationItem[] {
-    if (items.length === 0) return this._items();
-    const serverLrs = new Map<number, number | null>();
-    const serverUnread = new Map<number, number>();
-    const serverMentions = new Map<number, Array<'all' | 'me'>>();
-    const previews = new Map<
-      number,
-      { text: string; creator: Message['creator'] }
-    >();
-    for (const i of items) {
-      serverLrs.set(i.threadId, i.lastReadSeq);
-      serverUnread.set(i.threadId, i.unreadCount);
-      serverMentions.set(i.threadId, i.mentionUnread ?? []);
-      if (i.latestMessage) {
-        previews.set(i.threadId, {
-          text: rawPreview(
-            i.latestMessage.contentType,
-            i.latestMessage.content,
-          ),
-          creator: i.latestMessage.creator,
-        });
-      }
-    }
-    let merged = this._items().map((it) => {
-      if (!serverLrs.has(it.threadId)) return it;
-      const isOpen = it.threadId === this._openThreadId();
-      const next = {
-        ...it,
-        lastReadSeq: serverLrs.get(it.threadId)!,
-        // The open chatbox owns its entry-time attention state until its viewport HWM is committed on
-        // close/switch. Catch-up still advances the preview and server read watermark, but must not mutate
-        // the badge underneath that open session.
-        ...(isOpen
-          ? {}
-          : {
-              unreadCount: serverUnread.get(it.threadId)!,
-              mentionUnread: serverMentions.get(it.threadId)!,
-            }),
-        ...(previews.has(it.threadId)
-          ? {
-              lastMessagePreview: previews.get(it.threadId)!.text,
-              lastMessageSenderId: this.creatorKeyForThread(
-                previews.get(it.threadId)!.creator,
-                it,
-              ),
-            }
-          : {}),
-      };
-      return next;
-    });
-    // Catch-up items arrive in ascending message-feed order. Replaying their explicit moves in that order
-    // makes the newest feed activity end at the ordinary-tier head without any timestamp comparator.
-    for (const item of items) merged = moveToTierTop(merged, item.threadId);
-    return merged;
-  }
-
   /** Apply the atomic read-commit response; this is the only in-session writer of the open row's badge. */
   applyReadState(d: ThreadReadState): void {
     if (typeof d?.threadId !== 'number' || typeof d?.lastReadSeq !== 'number')
@@ -629,7 +575,7 @@ export class ThreadRepository {
           mentionUnread: current.mentionUnread,
         };
         // Server thread hydration never owns message preview content. Preserve the local projection across
-        // every structural upsert; the message catch-up path replaces it after the corresponding body lands.
+        // every structural upsert; THREAD_CONTENT_HEAD replaces it when the content head lands.
         if (
           reconciled.lastMessagePreview == null &&
           current.lastMessagePreview != null
@@ -752,12 +698,9 @@ export class ThreadRepository {
 
   /**
    * Apply an inbound NEW_MESSAGE identity signal `{ threadId, seq, ts }` (no body — the body is pulled by
-   * the chat-box via queryMessages; the threadlist carries no preview). Advances the catch-up walk
-   * bound `to` + the thread's `lastMessageAt` (re-sort). Does NOT touch `unreadCount`: the count is
-   * server-authoritative, applied by
-   * {@link mergeSummaryReadState} when the debounced catch-up pull lands (the summary carries the
-   * correct per-thread unread — 0 for the caller's own messages, since the send tx advanced `lastReadSeq`;
-   * the real count for incoming). A redelivered/out-of-order seq is discarded by the per-thread HWM guard.
+   * the chat-box via queryMessages; preview and paired heads arrive through ClientStateFeed). It updates
+   * recency immediately but does not touch server-authoritative unread state. A redelivered/out-of-order
+   * seq is discarded by the per-thread HWM guard.
    * If the thread isn't in the list yet (a brand-new/restored conversation), fetches that thread's full
    * ConversationItem directly. Concurrent signals for the same unknown thread share one request.
    */
@@ -770,11 +713,6 @@ export class ThreadRepository {
     }
     // Session-only global HWM: cached thread rows do not seed it.
     if (!this.advanceThreadSeq(msg.threadId, msg.seq)) return;
-    // The body isn't in the identity signal — advance `to` to this signal + schedule a debounced missed-
-    // summary walk. That walk is what applies the authoritative unread count; only the `lastMessageAt`
-    // re-sort below is instant from the signal itself.
-    this.setToAndPull();
-
     if (!this.applyNewMessageToKnownThread(msg)) this.hydrateUnknownThread(msg);
   }
 
@@ -796,8 +734,7 @@ export class ThreadRepository {
         msg.seq <= item.lastMessageSeq
       )
         return list;
-      // No live unread bump — `unreadCount` is server-authoritative (set by mergeSummaryReadState on the
-      // catch-up pull). Advance the public per-thread message HWM together with recency.
+      // No live unread bump: unreadCount is server-authoritative. Advance recency and the in-memory HWM.
       changed = {
         ...item,
         lastMessageAt: msg.ts,
@@ -830,26 +767,6 @@ export class ThreadRepository {
     return true;
   }
 
-  /** Load the persisted catch-up cursor from IDB — the `(threadId, seq)` of the newest message the
-   *  threadlist has accounted for. Null on first boot → the next pull is a snapshot (newest `take`). */
-  private async loadMessageFeedCursor(): Promise<void> {
-    const cursor = await this.webdb.getMeta('messageFeedCursor');
-    this._messageFeedCursor.set(
-      typeof cursor === 'number' && Number.isSafeInteger(cursor) && cursor >= 0
-        ? cursor
-        : 0,
-    );
-  }
-
-  private async loadTombstoneFeedCursor(): Promise<void> {
-    const cursor = await this.webdb.getMeta('tombstoneFeedCursor');
-    this._tombstoneFeedCursor.set(
-      typeof cursor === 'number' && Number.isSafeInteger(cursor) && cursor >= 0
-        ? cursor
-        : 0,
-    );
-  }
-
   /** Load the persisted per-thread dismiss-HWM map from IDB. Malformed/absent → empty (defensive — never
    *  blocks the away path). The numeric keys are JSON-encoded as strings, so coerce + validate on read. */
   private async loadThreadHwms(): Promise<void> {
@@ -870,65 +787,15 @@ export class ThreadRepository {
     this._threadHwms.set(out);
   }
 
-  /** Debounce window for the catch-up pull: a burst of NEW_MESSAGE signals collapses into one pull.
-   *  The trailing edge fires `PULL_DEBOUNCE_MS` after the LAST signal; `PULL_MAX_WAIT_MS` is the hard
-   *  ceiling so a SUSTAINED burst (a flood where a new signal lands inside the debounce window every
-   *  time) still refreshes the preview within the bound instead of re-arming forever and starving it. */
-  private static readonly PULL_DEBOUNCE_MS = 200;
-  private static readonly PULL_MAX_WAIT_MS = 3000;
-  private pullTimer?: ReturnType<typeof setTimeout>;
-  /** A pull can outlive the debounce window. Preserve a later window as trailing work instead of letting
-   *  ThreadCatchUpService's single-flight no-op discard it. */
-  private pullTask?: Promise<void>;
-  private pullPending = false;
   private readRevision: number | undefined;
   private readSyncInFlight = false;
   private readSyncTarget = 0;
-  /** Epoch-ms the current debounce window opened (0 = no window armed). Lets a mid-window [schedulePull]
-   *  compute how much of the max-wait budget remains from the leading edge. */
-  private pullArmedAt = 0;
-
-  private schedulePull(): void {
-    const now = Date.now();
-    clearTimeout(this.pullTimer);
-    if (this.pullArmedAt === 0) {
-      // Leading edge of a fresh window → arm the standard trailing debounce.
-      this.pullArmedAt = now;
-      this.pullTimer = setTimeout(
-        () => this.firePull(),
-        ThreadRepository.PULL_DEBOUNCE_MS,
-      );
-      return;
-    }
-    // Mid-window: never push the fire past leading-edge + PULL_MAX_WAIT_MS. If the budget is spent, fire
-    // now (the burst is too long to keep coalescing); otherwise wait the smaller of the trailing debounce
-    // and the remaining budget.
-    const remaining =
-      ThreadRepository.PULL_MAX_WAIT_MS - (now - this.pullArmedAt);
-    const delay =
-      remaining <= 0
-        ? 0
-        : Math.min(ThreadRepository.PULL_DEBOUNCE_MS, remaining);
-    this.pullTimer = setTimeout(() => this.firePull(), delay);
-  }
-
-  /** Fire the pull and close the debounce window (the next [schedulePull] opens a fresh one). */
-  private firePull(): void {
-    this.pullArmedAt = 0;
-    void this.pullCatchUp();
-  }
-
-  /** Hard cap on walk pages per pull — a runaway-loop backstop (a backend bug returning hasMore forever must
-   *  not spin the client). 100 pages × 200 = 20000 threads is far past any real account. */
-  private static readonly PULL_MAX_PAGES = 100;
 
   /** HELLO (the SSE connect handshake) — the network-refresh half of boot (the cache-paint is owned by
    *  {@link load}, which eager-paints from the IDB cache before HELLO lands). Carries the caller's userId
-   *  (establishes the session — opens the IDB on cold start, idempotent on warm start), the newest-message
-   *  cursor (→ the catch-up walk's `to`), and the thread-list revision (→ a delta-replay). On each
-   *  connect this: establishes the session, loads the missed cursor, delta-replays the thread list (full
-   *  `(0, rev]` on first connect, incremental `(cursor, rev]` on reconnect), and kicks off the missed-
-   *  summary walk. Fire-and-forget from the SSE switch. */
+   *  (establishes the session — opens the IDB on cold start, idempotent on warm start) and the current
+   *  state-feed end. On each connect this establishes the session and drains the state feed from the one
+   *  persisted cursor. Fire-and-forget from the SSE switch. */
   private async onHello(d: HelloPayload | undefined): Promise<void> {
     if (
       !d ||
@@ -944,9 +811,7 @@ export class ThreadRepository {
     await this.userService.establishSession(d.userId, d.profileRev ?? 0);
     // HELLO can race the thread-list mount. It awaits the account-level thread-init barrier, but does
     // not provide or own the deletion HWM; reconnects reuse the persisted result.
-    // 2. Load the persisted catch-up cursor (the walk's `from`) + the per-thread dismiss-HWM map.
-    await this.loadMessageFeedCursor();
-    await this.loadTombstoneFeedCursor();
+    // 2. Load the per-thread dismiss-HWM map.
     await this.loadThreadHwms();
     const persistedReadRevision = await this.webdb.getMeta('readRevision');
     if (this.readRevision === undefined)
@@ -965,10 +830,7 @@ export class ThreadRepository {
       );
     }
     await this.pullDelta(d.stateFeedEndId);
-    // 4. Fully walk the missed-message summary before startup is considered synchronized.
-    await this.pullCatchUp();
-    await this.pullTombstones();
-    // 6. Re-derive previews from the local message store.
+    // 4. Re-derive previews from the local message store.
     void this.hydratePreviews();
   }
 
@@ -1006,16 +868,6 @@ export class ThreadRepository {
     void this.webdb.putMeta('readRevision', revision);
   }
 
-  /** Schedule a debounced catch-up walk; a burst of realtime signals collapses. */
-  private setToAndPull(): void {
-    this.schedulePull();
-  }
-
-  /** Persisted exclusive consumer cursor for the per-user message feed. */
-  messageFeedCursor(): number {
-    return this._messageFeedCursor();
-  }
-
   /** The per-thread dismiss-HWM map (the away-notification renderer sends it as `threadHwms`). */
   threadHwms(): Record<number, number> {
     return this._threadHwms();
@@ -1037,89 +889,6 @@ export class ThreadRepository {
     if (Object.keys(this._threadHwms()).length === 0) return;
     this._threadHwms.set({});
     void this.webdb.putMeta('threadHwms', {});
-  }
-
-  /** Drain the compacted per-user message feed. The first page pins an upper bound so pagination converges;
-   * transient failures leave the durable cursor unchanged and retry on the next realtime trigger. */
-  private pullCatchUp(): Promise<void> {
-    if (this.pullTask) {
-      this.pullPending = true;
-      return this.pullTask;
-    }
-    this.pullTask = this.drainCatchUpPulls();
-    return this.pullTask;
-  }
-
-  private async drainCatchUpPulls(): Promise<void> {
-    try {
-      do {
-        this.pullPending = false;
-        await this.pullCatchUpOnce();
-      } while (this.pullPending);
-    } finally {
-      this.pullTask = undefined;
-    }
-  }
-
-  private async pullCatchUpOnce(): Promise<void> {
-    try {
-      let after = this._messageFeedCursor();
-      let through: number | undefined;
-      let caughtUp = false;
-      const summary: ThreadCatchUpItem[] = [];
-      for (let i = 0; i < ThreadRepository.PULL_MAX_PAGES; i++) {
-        const res = await this.catchUp.catchUp(after, through);
-        if (!res) return;
-        if ('kind' in res) {
-          after = res.resumeAfter;
-          through = res.resumeBefore - 1;
-          continue;
-        }
-        through ??= res.messageFeedEndId;
-        summary.push(...res.items);
-        after = res.scannedThrough;
-        if (!res.hasMore) {
-          caughtUp = true;
-          break;
-        }
-      }
-      if (caughtUp) {
-        const updated = this.mergedSummaryThreads(summary);
-        await this.webdb.applyCatchUp(updated, after);
-        this.namespaces.replace(await this.webdb.getNamespaces());
-        await this.persistThreadOrder(updated);
-        for (const item of summary)
-          this.serverLastReadSeq.set(item.threadId, item.lastReadSeq);
-        this._items.set(updated);
-        this._messageFeedCursor.set(after);
-      }
-      this._catchUpApplied.next();
-    } catch {
-      /* next HELLO/NEW_MESSAGE retries the same durable cursor */
-    }
-  }
-
-  private async pullTombstones(): Promise<void> {
-    let after = this._tombstoneFeedCursor();
-    let through: number | undefined;
-    for (let i = 0; i < ThreadRepository.PULL_MAX_PAGES; i++) {
-      const page = await this.catchUp.catchUpTombstones(after, through);
-      if (!page) return;
-      if ('kind' in page) {
-        after = page.resumeAfter;
-        through = page.resumeBefore - 1;
-        continue;
-      }
-      through ??= page.tombstoneFeedEndId;
-      for (const item of page.items)
-        await this.messageRepo.syncDeleted(item.threadId);
-      after = page.scannedThrough;
-      if (!page.hasMore) {
-        this._tombstoneFeedCursor.set(after);
-        await this.webdb.putMeta('tombstoneFeedCursor', after);
-        return;
-      }
-    }
   }
 
   /**
@@ -1293,6 +1062,34 @@ export class ThreadRepository {
             this.userService.applyIncomingInviteReadHead(
               op.body.readThroughFeedId,
             );
+          } else if (op.eventType === 'THREAD_CONTENT_HEAD') {
+            let messageAdvanced = false;
+            this._items.update((threads) => {
+              const index = threads.findIndex(
+                (thread) => thread.threadId === op.body.threadId,
+              );
+              if (index < 0) return threads;
+              const current = threads[index];
+              messageAdvanced =
+                op.body.messageEndSeq > (current.lastMessageSeq ?? 0);
+              const next = threads.slice();
+              next[index] = {
+                ...current,
+                lastMessageSeq: op.body.messageEndSeq,
+                tombstoneEndSeq: op.body.tombstoneEndSeq,
+                lastMessagePreviewSeq: op.body.preview.seq,
+                lastMessagePreview: op.body.preview.text,
+                lastMessageSenderId: op.body.preview.senderId,
+              };
+              return messageAdvanced
+                ? moveToTierTop(next, op.body.threadId)
+                : next;
+            });
+            if (this._openThreadId() === op.body.threadId)
+              void this.messageRepo.updateTombstoneTarget(
+                op.body.threadId,
+                op.body.tombstoneEndSeq,
+              );
           } else if (op.eventType === 'THREAD_BLOCK') {
             this.applyThreadMeta(op.body.threadId, {
               blocked: op.body.blocked,
@@ -1600,12 +1397,12 @@ export class ThreadRepository {
         : thread.type === 'GROUP'
           ? thread.group.domain
           : thread.peerUser.domain || 'local';
-    return messageCreatorKey(creator, sourceDomain);
+    return messagePreviewSenderKey(creator, sourceDomain);
   }
 
   // ── IDB persistence helpers (best-effort; IDB unavailable → graceful no-op) ────────────────
 
-  /** Read all cached threads from IDB. Their durable recency is replayed by the message feed; only keep
+  /** Read all cached threads from IDB. Their durable content heads are replayed by ClientStateFeed; keep
    * the fixed/non-fixed boundary here, without reconstructing order from wall-clock timestamps. */
   private async readCachedThreads(): Promise<ConversationItem[]> {
     try {
@@ -1704,9 +1501,8 @@ export class ThreadRepository {
 // ── SSE payload shapes (the subset of fields each handler reads) ─────────────────────────────
 
 /** HELLO (SSE connect handshake) payload — pushed once per connect, the sole boot-critical state the
- *  client cannot derive locally: the caller's userId (opens the per-user IDB), the newest-message cursor
- *  (→ the catch-up walk's `to`), the thread-list revision (→ delta-replay `(0, rev]` on first
- *  connect), and the self-profile version (→ gate the /user/my-profile fetch). */
+ *  client cannot derive locally: the caller's userId (opens the per-user IDB), the current state-feed end,
+ *  and the self-profile version (which gates the /user/my-profile fetch). */
 interface HelloPayload {
   userId?: number;
   stateFeedEndId: number;

@@ -1,16 +1,14 @@
+import { Injectable } from '@nestjs/common';
 import { and, eq, inArray } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { KeyedMutex } from '../common/keyed-mutex.js';
-import type { DatabaseService } from '../database/database.service.js';
+import { DatabaseService } from '../database/database.service.js';
 import { ContentType } from '../database/enums.js';
 import * as tables from '../database/schema.js';
-import type { QuotaService } from '../quota/quota.service.js';
-import {
-  CasOversizeError,
-  type UploadService,
-} from '../upload/upload.service.js';
-import type { FederationDownloadScheduler } from './federation-download-scheduler.js';
+import { QuotaService } from '../quota/quota.service.js';
+import { CasOversizeError, UploadService } from '../upload/upload.service.js';
+import { FederationDownloadScheduler } from './federation-download-scheduler.js';
 
 type FileSyncKind =
   | 'IMAGE'
@@ -58,6 +56,7 @@ export function federationFileSyncKind(type: ContentType): FileSyncKind {
 }
 
 /** Drives durable inbound file rows and serializes promotion attempts per batch. */
+@Injectable()
 export class FederationInboundFileSync {
   private readonly batchLocks = new KeyedMutex();
 

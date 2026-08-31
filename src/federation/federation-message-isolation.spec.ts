@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ClientMessageFeedWriter } from '../message/client-message-feed.service.js';
+import { ClientThreadContentHeadWriter } from '../message/client-message-feed.service.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
 import {
   FederationService,
@@ -25,7 +25,7 @@ const item = (sequence: string): FederationMessageFeedMessage => ({
 afterEach(() => vi.restoreAllMocks());
 
 describe('federation message context isolation', () => {
-  it('does not advance ClientMessageFeed when committing reverse history', async () => {
+  it('does not publish THREAD_CONTENT_HEAD when committing reverse history', async () => {
     const service = Object.create(
       FederationService.prototype,
     ) as FederationService & Record<string, unknown>;
@@ -67,7 +67,7 @@ describe('federation message context isolation', () => {
       {} as never,
     );
     const publishMessage = vi
-      .spyOn(ClientMessageFeedWriter, 'publishMessage')
+      .spyOn(ClientThreadContentHeadWriter, 'publishMessage')
       .mockResolvedValue(undefined);
 
     await (

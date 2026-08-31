@@ -6,6 +6,7 @@ import { FederationService } from '../federation/federation.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { ContentType } from '../database/enums.js';
 import { planLiveDelivery } from './message-delivery-plan.js';
+import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 
 /**
  * Unified NEW_MESSAGE fan-out for every locally-authored message, shared by the text send path
@@ -40,6 +41,7 @@ export class MessageFanoutService {
     @Inject(forwardRef(() => FederationService))
     private readonly federation: Pick<FederationService, 'notifyOnSend'>,
     private readonly participantService: ThreadParticipantService,
+    private readonly clientStateFeed: ClientStateFeedService,
   ) {}
 
   async dispatch(message: PublicMessage): Promise<void> {
@@ -73,7 +75,13 @@ export class MessageFanoutService {
       );
       const plan = planLiveDelivery(participants, sender?.userId ?? null);
       for (const userId of plan.sseUserIds)
-        this.sseService.onNewMessage(userId, message.threadId, message.seq, ts);
+        this.sseService.onNewMessage(
+          userId,
+          message.threadId,
+          message.seq,
+          ts,
+          await this.clientStateFeed.readEndId(userId),
+        );
       void this.pushService.dispatchForMessage(
         plan.pushUserIds.map((userId) => ({ userId })),
         message.threadId,
@@ -90,7 +98,7 @@ export class MessageFanoutService {
     const senderAddress = message.creator;
     const threadId = message.threadId;
     // Identity-only signal — every signal (SSE + push) carries only {threadId, seq, ts}; the body is
-    // pulled by the client via the message feed + /query-messages (single data source).
+    // pulled by the client via THREAD_CONTENT_HEAD + /query-messages (single body source).
     const ts = message.createdAt.getTime();
     // Unified fan-out: every active participant of the thread (P2P = both sides, GROUP = all members).
     const participants =
@@ -103,9 +111,14 @@ export class MessageFanoutService {
         participant.domain === senderAddress?.domain,
     )?.userId;
     const plan = planLiveDelivery(participants, senderUserId ?? null);
-    plan.sseUserIds.forEach((userId) => {
-      this.sseService.onNewMessage(userId, threadId, message.seq, ts);
-    });
+    for (const userId of plan.sseUserIds)
+      this.sseService.onNewMessage(
+        userId,
+        threadId,
+        message.seq,
+        ts,
+        await this.clientStateFeed.readEndId(userId),
+      );
     // Push wake-up (FCM / Web Push): additionally exclude MUTED recipients (mute = suppress the heads-up
     // notification, NOT the in-app delivery) and the sender. Fire-and-forget.
     void this.pushService.dispatchForMessage(

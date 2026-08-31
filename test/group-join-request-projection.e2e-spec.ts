@@ -19,6 +19,7 @@ import { GroupService } from '../src/group/group.service.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
 import { FederationService } from '../src/federation/federation.service.js';
 import { seedUserWithSession } from './seed.js';
+import { waitForLocalFriendInvite } from './domain-command-helpers.js';
 
 describe('group join request projection', () => {
   let app: INestApplication;
@@ -183,12 +184,14 @@ describe('group join request projection', () => {
         ),
       }),
     ).toBeDefined();
-    await database.db.delete(threadParticipant).where(
-      and(
-        eq(threadParticipant.threadId, threadId),
-        eq(threadParticipant.accountId, owner.id),
-      ),
-    );
+    await database.db
+      .delete(threadParticipant)
+      .where(
+        and(
+          eq(threadParticipant.threadId, threadId),
+          eq(threadParticipant.accountId, owner.id),
+        ),
+      );
     expect(
       await app.get(GroupService).garbageCollectJoinRequestProjections(),
     ).toBe(0);
@@ -236,10 +239,16 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .send({ account: member.account });
     expect(friendRequest.body.code).toBe(BusinessCode.OK);
+    const friendInviteId = await waitForLocalFriendInvite(
+      app.get(DatabaseService).db,
+      friendRequest.body.data.commandId,
+      owner.id,
+      member.id,
+    );
     const accepted = await request(app.getHttpServer())
       .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${member.token}`)
-      .send({ inviteId: friendRequest.body.data.inviteId });
+      .send({ inviteId: friendInviteId });
     expect(accepted.body.code).toBe(BusinessCode.OK);
 
     const created = await request(app.getHttpServer())
@@ -327,10 +336,16 @@ describe('group join request projection', () => {
       .post('/api/v1/invite/friend')
       .set('Authorization', `Bearer ${owner.token}`)
       .send({ account: member.account });
+    const friendInviteId = await waitForLocalFriendInvite(
+      app.get(DatabaseService).db,
+      friendRequest.body.data.commandId,
+      owner.id,
+      member.id,
+    );
     await request(app.getHttpServer())
       .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${member.token}`)
-      .send({ inviteId: friendRequest.body.data.inviteId });
+      .send({ inviteId: friendInviteId });
     const created = await request(app.getHttpServer())
       .post('/api/v1/group/create')
       .set('Authorization', `Bearer ${owner.token}`)

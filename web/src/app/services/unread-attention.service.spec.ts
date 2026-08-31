@@ -41,7 +41,7 @@ describe('UnreadAttentionService (SW message routing + threadHwms wiring)', () =
     fetchAway = vi
       .fn()
       .mockName('fetchAwayNotifications')
-      .mockResolvedValue({ notifications: [], messageFeedEndId: 11 });
+      .mockResolvedValue({ notifications: [], stateFeedEndId: 11 });
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -50,7 +50,7 @@ describe('UnreadAttentionService (SW message routing + threadHwms wiring)', () =
           provide: ConversationListService,
           useValue: {
             items: signal([]).asReadonly(),
-            messageFeedCursor: () => 10,
+            stateFeedCursor: () => 10,
             threadHwms: () => ({ 7: 3 }),
             recordThreadDismiss,
             clearThreadDismiss: vi.fn().mockName('clearThreadDismiss'),

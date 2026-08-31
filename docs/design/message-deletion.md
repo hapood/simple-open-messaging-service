@@ -25,18 +25,25 @@ No new table is required. `MessageThread` owns the allocator and
 projection maintenance compares or publishes each thread's explicit deletion
 end instead.
 
-The compact client tombstone feed retains its outer feed IDs. Federation
-publishes each thread's deletion end together with its message end in the
-compacted State Feed `THREAD_CONTENT_HEAD`; the thread-level deletion query
-uses `DeletedMessage.deletionSeq` directly. A federation pending fact is deduplicated by
+The device-facing projection has one feed: `ClientStateFeed`. Each compacted
+`THREAD_CONTENT_HEAD` publishes a thread's required `messageEndSeq` and
+`tombstoneEndSeq` together, plus `{ seq, text, senderId }` for its preview. If
+the currently advertised preview message is withdrawn, the transaction
+publishes an empty preview carrying that withdrawn message's sequence. The
+thread-level deletion query uses `DeletedMessage.deletionSeq` directly. A federation pending fact is deduplicated by
 `(sourceDomain, thread, remoteDeletionSeq)`, because a source may reuse the same
 thread-local deletion sequence in different threads.
 
-On thread-list initialization, the app consumes the compact tombstone feed and
-stores each thread's advertised `tombstoneEndSeq`. Opening a thread performs a
-non-blocking forward deletion pull from its persisted thread-local committed
-position. `DELETED_MESSAGE_UPDATED` SSE is only a wake-up signal for the same
-pull; it does not introduce another cursor.
+The app consumes `THREAD_CONTENT_HEAD` while draining the ordinary state feed
+and stores both ends atomically with its sole state-feed cursor. It does not
+request tombstone bodies for a closed chatbox. On the first open, the client
+reads that thread's newest locally persisted message and freezes both that
+message sequence and the then-current `tombstoneEndSeq`. Every page of the
+initial tombstone loop sends the frozen values as `maxMessageSeq` and `through`
+until the frozen deletion end is reached. Later rounds omit `maxMessageSeq` and
+use the newly published tombstone end as `through`. Message-body and
+tombstone-body request loops remain independent. `DELETED_MESSAGE_UPDATED` SSE
+only wakes the same state-feed/tombstone path; it introduces no cursor.
 
 The browser and native clients persist tombstones in their ordinary message store. Applying a deletion page and advancing its HWM is one transaction. A later or concurrent message-page write cannot replace a tombstone. Mounted messages are removed; a deleted member of a merged media album rebuilds the row from the remaining members with viewport-anchor compensation. Message-scoped viewers and menus close when their target is deleted.
 

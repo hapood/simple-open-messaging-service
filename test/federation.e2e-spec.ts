@@ -26,6 +26,7 @@ import {
   seedAcceptedRelationship,
 } from './seed.js';
 import { BusinessCode } from '../src/common/business-code.js';
+import { waitForDomainCommand } from './domain-command-helpers.js';
 import { SignatureService } from '../src/federation/signature.service.js';
 import {
   ContentType,
@@ -55,7 +56,7 @@ import {
   mediaAsset,
   messageAsset,
   message,
-  clientMessageFeed,
+  clientStateFeed,
   messageThread,
   peerStateFeed,
   peerStateFeedPullCursor,
@@ -2692,6 +2693,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .send({ account: 'bob', domain: DOM_B });
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(BusinessCode.OK);
+    await waitForDomainCommand(appA.database, res.body.data.commandId);
     expect(
       await appA.database.query.federationMessageFeedIndex.findFirst({
         where: and(
@@ -2847,6 +2849,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({ account: 'bob', domain: DOM_B });
     expect(response.body.code).toBe(BusinessCode.OK);
+    await waitForDomainCommand(appA.database, response.body.data.commandId);
 
     await vi.waitFor(
       async () => {
@@ -2874,11 +2877,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           });
         expect(participant?.messageVisibleBeforeSeq).toBe(boundary!.seq + 1);
         expect(
-          await appB.database.query.clientMessageFeed.findFirst({
+          await appB.database.query.clientStateFeed.findFirst({
             where: and(
-              eq(clientMessageFeed.userId, bobLocalIdB),
-              eq(clientMessageFeed.threadId, threadB!.threadId),
-              eq(clientMessageFeed.messageEndSeq, boundary!.seq),
+              eq(clientStateFeed.userId, bobLocalIdB),
+              eq(
+                clientStateFeed.compactionKey,
+                JSON.stringify(['THREAD_CONTENT_HEAD', threadB!.threadId]),
+              ),
             ),
           }),
         ).toBeDefined();

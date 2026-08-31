@@ -215,7 +215,7 @@ class SomsMessagingService : FirebaseMessagingService() {
                 return null
             }
             val body = JSONObject().apply {
-                put("after", ClientStateDb.getMessageFeedCursor(ctx))
+                put("after", ClientStateDb.getStateFeedCursor(ctx))
                 // Privacy is server-enforced: private mode prevents message bodies from entering the response.
                 put("previewMode", ClientStateDb.getNotificationPreviewMode(ctx))
                 // Per-thread dismiss HWMs suppress an already-dismissed unread range until a newer message.
@@ -244,8 +244,8 @@ class SomsMessagingService : FirebaseMessagingService() {
                     val payload = raw ?: return null
                     val envelope = JSONObject(payload)
                     val data = envelope.optJSONObject("data")
-                    val end = data?.optInt("messageFeedEndId", -1) ?: -1
-                    if (end >= 0) ClientStateDb.setMessageFeedCursor(ctx, end)
+                    val end = data?.optInt("stateFeedEndId", -1) ?: -1
+                    if (end >= 0) ClientStateDb.setStateFeedCursor(ctx, end)
                     val list = NotifDescriptor.parseList(payload)
                     SomsLog.d("Notif") { "fetchDescriptors parsed=${list.size} kinds=${list.map { it.kind }}" }
                     list

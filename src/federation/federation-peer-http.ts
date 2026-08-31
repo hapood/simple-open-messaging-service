@@ -1,10 +1,11 @@
-import { HttpStatus } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
 import { BusinessCode } from '../common/business-code.js';
-import type { DiscoveryService } from './discovery.service.js';
+import { DiscoveryService } from './discovery.service.js';
 import { S2sResponseError } from './federation-errors.js';
-import type { FederationRecognitionService } from './federation-recognition.service.js';
-import type { FederationTransportConfigService } from './federation-transport-config.service.js';
-import type { SignatureService } from './signature.service.js';
+import { FederationRecognitionService } from './federation-recognition.service.js';
+import { FederationTransportConfigService } from './federation-transport-config.service.js';
+import { SignatureService } from './signature.service.js';
+import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
 
 export interface FederationPeerHttpLifecycle {
   isFatalPeerCode(code: unknown): code is number;
@@ -13,13 +14,14 @@ export interface FederationPeerHttpLifecycle {
 }
 
 /** Signed JSON transport shared by federation control-plane and feed requests. */
+@Injectable()
 export class FederationPeerHttp {
   constructor(
     private readonly signature: SignatureService,
     private readonly discovery: DiscoveryService,
     private readonly recognition: FederationRecognitionService,
     private readonly transportConfig: FederationTransportConfigService,
-    private readonly lifecycle: FederationPeerHttpLifecycle,
+    private readonly lifecycle: FederationPeerLifecycle,
   ) {}
 
   async post(path: string, body: string, peerDomain: string): Promise<void> {

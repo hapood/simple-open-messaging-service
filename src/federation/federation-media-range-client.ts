@@ -1,11 +1,11 @@
-import { HttpStatus } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
 import { BusinessCode } from '../common/business-code.js';
-import type { DiscoveryService } from './discovery.service.js';
+import { DiscoveryService } from './discovery.service.js';
 import { S2sResponseError } from './federation-errors.js';
-import type { FederationPeerHttpLifecycle } from './federation-peer-http.js';
-import type { FederationRecognitionService } from './federation-recognition.service.js';
-import type { FederationTransportConfigService } from './federation-transport-config.service.js';
-import { contentDigest, type SignatureService } from './signature.service.js';
+import { FederationRecognitionService } from './federation-recognition.service.js';
+import { FederationTransportConfigService } from './federation-transport-config.service.js';
+import { contentDigest, SignatureService } from './signature.service.js';
+import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
 
 export interface FederationMediaRangeUnit {
   res: Response;
@@ -16,13 +16,14 @@ export interface FederationMediaRangeUnit {
 }
 
 /** Fetches peer-hosted media as verified, resumable HTTP Range units. */
+@Injectable()
 export class FederationMediaRangeClient {
   constructor(
     private readonly signature: SignatureService,
     private readonly discovery: DiscoveryService,
     private readonly recognition: FederationRecognitionService,
     private readonly transportConfig: FederationTransportConfigService,
-    private readonly lifecycle: FederationPeerHttpLifecycle,
+    private readonly lifecycle: FederationPeerLifecycle,
   ) {}
 
   async *fetch(

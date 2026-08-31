@@ -14,20 +14,19 @@ import {
   user,
 } from '../src/database/schema';
 import { ContentType } from '../src/database/enums.js';
-import { BusinessCode } from '../src/common/business-code.js';
-import { ClientMessageFeedWriter } from '../src/message/client-message-feed.service.js';
+import { ClientThreadContentHeadWriter } from '../src/message/client-message-feed.service.js';
 import { seedAcceptedRelationship, seedUser, seedSession } from './seed';
 
 /**
- * /thread-sync/catch-up + /notification-feed/query e2e — the two separated domain endpoints:
- *  - catch-up: the `(after, through]` walk of the per-user compacted message feed.
+ * ClientStateFeed + /notification-feed/query e2e:
+ *  - state feed: the sole device-facing compacted feed, including paired thread content heads.
  *  - notification-feed query: one descriptor per conversation. Message mode includes a bounded
  *    recent-message sample; private mode omits content entirely.
  *
  * The BigInt message `id` is NEVER exposed — only per-thread `seq` + time. Three P2P threads seeded in
  * insertion order (Alice → Bob → Carol) so message ids strictly increase → deterministic.
  */
-describe('thread catch-up + notification feed', () => {
+describe('client state feed + notification feed', () => {
   let app: INestApplication;
   let database: DatabaseService;
   let sessionToken: string;
@@ -104,14 +103,14 @@ describe('thread catch-up + notification feed', () => {
       })),
     );
     await database.db.transaction((tx) =>
-      ClientMessageFeedWriter.publishMessage(tx, thread.id, 3, peer.id),
+      ClientThreadContentHeadWriter.publishMessage(tx, thread.id, 3),
     );
     return thread.id;
   }
 
-  function getSummary(params: Record<string, string | number>) {
+  function getState(params: Record<string, string | number>) {
     return request(app.getHttpServer())
-      .get('/api/v1/thread-sync/catch-up')
+      .get('/api/v1/user/state-feed')
       .set('Authorization', `Bearer ${sessionToken}`)
       .query(params);
   }
@@ -127,48 +126,36 @@ describe('thread catch-up + notification feed', () => {
       .send(body);
   }
 
-  // ── /thread-sync/catch-up ───────────────────────────────────────────────────────────────────
+  // ── /user/state-feed ───────────────────────────────────────────────────────────────────────
 
-  it('catch-up returns feed changes in ascending feed order', async () => {
-    // from = Alice's latest, to = Carol's latest → range = Bob + Carol (Alice's latest is the lower bound).
-    const res = await getSummary({
-      after: 1,
-      through: 3,
-      take: 50,
-    });
+  it('publishes paired message/tombstone heads and preview identities in the sole state feed', async () => {
+    const res = await getState({ after: 0, take: 200, mode: 'full' });
     expect(res.body.code).toBe(0);
-    expect(
-      res.body.data.items.map((i: { threadId: number }) => i.threadId),
-    ).toEqual([tBob, tCarol]);
-    expect(res.body.data.hasMore).toBe(false);
-    expect(res.body.data.scannedThrough).toBe(3);
-    expect(res.body.data.messageFeedEndId).toBe(3);
-    // Each item carries its thread's newest body (no BigInt id leaks).
-    const bob = res.body.data.items.find(
-      (i: { threadId: number }) => i.threadId === tBob,
+    const heads = res.body.data.items.filter(
+      (item: { eventType: string }) => item.eventType === 'THREAD_CONTENT_HEAD',
     );
-    expect(bob.latestMessage).toMatchObject({
-      seq: 3,
-      content: JSON.stringify({ text: 'Bob-2' }),
-    });
-    expect(bob.latestMessage).not.toHaveProperty('id');
-  });
-
-  it('catch-up paginates and advances scannedThrough to the page boundary', async () => {
-    // from absent (first boot), to = Carol's latest, take 2 → ASC oldest-first 2 of (−∞, carolLatest].
-    const res = await getSummary({
-      after: 0,
-      through: 3,
-      take: 2,
-    });
     expect(
-      res.body.data.items.map((i: { threadId: number }) => i.threadId),
-    ).toEqual([tAlice, tBob]); // ids 3,6
-    expect(res.body.data.hasMore).toBe(true);
-    expect(res.body.data.scannedThrough).toBe(2);
+      heads.map((item: { body: { threadId: number } }) => item.body.threadId),
+    ).toEqual(expect.arrayContaining([tAlice, tBob, tCarol]));
+    expect(
+      heads.find(
+        (item: { body: { threadId: number } }) => item.body.threadId === tBob,
+      )?.body,
+    ).toMatchObject({
+      threadId: tBob,
+      messageEndSeq: 3,
+      tombstoneEndSeq: 0,
+      preview: { seq: 3, text: 'Bob-2' },
+    });
   });
 
-  it('advances the sender feed and preview for cross-device sync', async () => {
+  it('compacts a newer message into the same content head with a new state-feed coordinate', async () => {
+    const before = await getState({ after: 0, take: 200, mode: 'full' });
+    const previous = before.body.data.items.find(
+      (item: { eventType: string; body: { threadId: number } }) =>
+        item.eventType === 'THREAD_CONTENT_HEAD' &&
+        item.body.threadId === tAlice,
+    );
     const now = new Date();
     await database.db.transaction(async (tx) => {
       await tx.insert(message).values({
@@ -191,58 +178,71 @@ describe('thread catch-up + notification feed', () => {
           updatedAt: now,
         })
         .where(eq(messageThread.id, tAlice));
-      await ClientMessageFeedWriter.publishMessage(tx, tAlice, 4);
+      await ClientThreadContentHeadWriter.publishMessage(tx, tAlice, 4);
     });
 
-    const advanced = await getSummary({ after: 3, take: 50 });
-    expect(advanced.body.data.items).toHaveLength(1);
-    expect(advanced.body.data.items[0]).toMatchObject({
-      threadId: tAlice,
-      latestMessage: {
-        seq: 4,
-        content: JSON.stringify({ text: 'self-only' }),
-        creator: { account: 'recip', domain: 'local' },
-      },
+    const advanced = await getState({
+      after: previous.feedId,
+      take: 200,
+      mode: 'delta',
     });
-    expect(advanced.body.data.messageFeedEndId).toBe(4);
-
-    const replay = await getSummary({ after: 0, through: 4, take: 50 });
-    const alice = replay.body.data.items.find(
-      (item: { threadId: number }) => item.threadId === tAlice,
+    const alice = advanced.body.data.items.find(
+      (item: { eventType: string; body: { threadId: number } }) =>
+        item.eventType === 'THREAD_CONTENT_HEAD' &&
+        item.body.threadId === tAlice,
     );
-    expect(alice.latestMessage.seq).toBe(4);
-    expect(alice.latestMessage.content).toContain('self-only');
-  });
-
-  it('catch-up rejects a through cursor below after', async () => {
-    const res = await getSummary({
-      after: 3,
-      through: 1,
-      take: 50,
+    expect(alice.feedId).toBeGreaterThan(previous.feedId);
+    expect(alice.body).toMatchObject({
+      threadId: tAlice,
+      messageEndSeq: 4,
+      tombstoneEndSeq: 0,
+      preview: { seq: 4, text: 'self-only' },
     });
-    expect(res.status).toBe(400);
-    expect(res.body.code).toBe(BusinessCode.VALIDATION_FAILED);
-  });
 
-  it('catch-up returns recovery bounds when after is missing', async () => {
-    const res = await request(app.getHttpServer())
-      .get('/api/v1/thread-sync/catch-up')
-      .set('Authorization', `Bearer ${sessionToken}`);
-    expect(res.status).toBe(200);
-    expect(res.body.code).toBe(BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE);
-    expect(res.body.data).toEqual({ resumeAfter: 0, resumeBefore: 4 });
-  });
+    const withdrawn = await request(app.getHttpServer())
+      .post('/api/v1/withdraw-message')
+      .set('Authorization', `Bearer ${sessionToken}`)
+      .send({ threadId: tAlice, seq: 4 });
+    expect(withdrawn.body.code).toBe(0);
+    const afterWithdraw = await getState({
+      after: 0,
+      take: 200,
+      mode: 'full',
+    });
+    const withdrawnHead = afterWithdraw.body.data.items.find(
+      (item: { eventType: string; body: { threadId: number } }) =>
+        item.eventType === 'THREAD_CONTENT_HEAD' &&
+        item.body.threadId === tAlice,
+    );
+    expect(withdrawnHead.body).toMatchObject({
+      threadId: tAlice,
+      messageEndSeq: 5,
+      tombstoneEndSeq: 1,
+      preview: { seq: 4, text: '', senderId: null },
+    });
 
-  it('catch-up rejects an invalid page size instead of clamping it', async () => {
-    const res = await getSummary({ after: 0, take: 201 });
-    expect(res.status).toBe(400);
-    expect(res.body.code).toBe(BusinessCode.VALIDATION_FAILED);
+    const filteredTombstones = await request(app.getHttpServer())
+      .post('/api/v1/deleted-messages/query')
+      .set('Authorization', `Bearer ${sessionToken}`)
+      .send({
+        threadId: tAlice,
+        after: 0,
+        through: 1,
+        take: 100,
+        maxMessageSeq: 3,
+      });
+    expect(filteredTombstones.body.data).toEqual({
+      tombstones: [],
+      scannedThrough: 1,
+      hasMore: false,
+    });
   });
 
   // ── /notification-feed/query ─────────────────────────────────────────────────────────────────
 
   it('notification feed at the current end returns a clear descriptor', async () => {
-    const res = await postMissed({ after: 3 });
+    const state = await getState({ after: 0, take: 200, mode: 'full' });
+    const res = await postMissed({ after: state.body.data.stateFeedEndId });
     expect(res.body.data.notifications).toHaveLength(1);
     expect(res.body.data.notifications[0].kind).toBe('clear');
   });
@@ -304,7 +304,8 @@ describe('thread catch-up + notification feed', () => {
       ),
       columns: { id: true },
     });
-    if (!participant) throw new Error('recipient thread participant is missing');
+    if (!participant)
+      throw new Error('recipient thread participant is missing');
     await database.db
       .update(threadParticipant)
       .set({ blocked: true, updatedAt: new Date() })
@@ -329,7 +330,8 @@ describe('thread catch-up + notification feed', () => {
       ),
       columns: { id: true },
     });
-    if (!participant) throw new Error('recipient thread participant is missing');
+    if (!participant)
+      throw new Error('recipient thread participant is missing');
     await database.db
       .update(threadParticipant)
       .set({ muted: true })
@@ -346,7 +348,8 @@ describe('thread catch-up + notification feed', () => {
   });
 
   it('notification feed at the current end returns no conversation descriptors', async () => {
-    const res = await postMissed({ after: 3 });
+    const state = await getState({ after: 0, take: 200, mode: 'full' });
+    const res = await postMissed({ after: state.body.data.stateFeedEndId });
     expect(res.body.data.notifications).toEqual([
       expect.objectContaining({ kind: 'clear' }),
     ]);

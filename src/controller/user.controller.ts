@@ -8,9 +8,6 @@ import {
   Request,
   HttpStatus,
   HttpCode,
-  forwardRef,
-  Inject,
-  Optional,
   Logger,
 } from '@nestjs/common';
 import {
@@ -25,7 +22,6 @@ import { FederationDomainResolutionError } from '../federation/discovery.service
 import { UserService } from '../user/user.service.js';
 import { UploadService } from '../upload/upload.service.js';
 import { MessageService } from '../message/message.service.js';
-import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { AuthService } from '../auth/auth.service.js';
 import { SseService } from '../gateway/sse.service.js';
@@ -58,6 +54,9 @@ import { Raw } from '../common/raw.decorator.js';
 import { STATE_FEED_PAGE_MAX_BYTES } from '../common/feed-page.js';
 import { formatSseFrame, initSseResponse } from '../common/sse-stream.js';
 import { FederationRecognitionService } from '../federation/federation-recognition.service.js';
+import { DomainCommandQueueService } from '../domain-command/domain-command-queue.service.js';
+import { DomainCommandType } from '../domain-command/domain-command.constants.js';
+import { DomainCommandAcceptedDto } from '../dto/domain-command.dto.js';
 
 /** One item in the device-facing compacted state feed. */
 type ClientStateFeedItem = {
@@ -71,6 +70,7 @@ type ClientStateFeedItem = {
     | 'GROUP_META_FEED_HEAD'
     | 'GROUP_JOIN_REQUEST_HEAD'
     | 'INCOMING_INVITE_HEAD'
+    | 'THREAD_CONTENT_HEAD'
     | 'THREAD_BLOCK';
   subjectAccount: string;
   subjectDomain: string;
@@ -102,12 +102,7 @@ export class UserController {
     private readonly clientGroupMetaFeed: ClientGroupMetaFeedService,
     private readonly userQuotaService: UserQuotaService,
     private readonly inviteService: InviteService,
-    @Optional()
-    @Inject(forwardRef(() => MessageFanoutService))
-    private readonly messageFanout?: Pick<
-      MessageFanoutService,
-      'dispatch' | 'dispatchToUsers'
-    >,
+    private readonly domainCommands: DomainCommandQueueService,
   ) {}
 
   @ApiBearerAuth()
@@ -385,6 +380,7 @@ export class UserController {
   @HttpCode(HttpStatus.OK)
   @Post('user/delete-friend')
   @ApiOperation({ summary: 'Unfriend — end a P2P conversation (mutual)' })
+  @ApiResultResponse(DomainCommandAcceptedDto)
   async deleteFriend(
     @Request() req: FastifyRequest,
     @Body() dto: DeleteFriendDto,
@@ -427,24 +423,21 @@ export class UserController {
         `not friends with [${account}@${domain}]`,
       );
     }
-    // End the friendship but retain both participant rows + the thread as a readable history item.
-    const ended = await this.participantService.endP2P(
-      threadId,
-      me,
-      dto.deleteData ?? false,
-    );
-    await Promise.allSettled(
-      ended.statePeers.map((domain) =>
-        this.federationService.pushDiscoveryHwm(domain),
-      ),
-    );
-    if (ended.systemMessage && this.messageFanout) {
-      void this.messageFanout.dispatchToUsers(
-        ended.systemMessage,
-        ended.localRecipientIds,
-      );
-    }
-    return envelope(undefined, { message: 'friend removed' });
+    const actor = await this.userService.findUniqueUser({ id: me });
+    if (!actor) throw new Error('authenticated user profile is missing');
+    const { commandId } = await this.domainCommands.enqueue({
+      aggregate: {
+        type: 'USER_PAIR',
+        endpoints: [
+          { account: actor.account, domain: actor.domain },
+          { account: target.account, domain: target.domain },
+        ],
+      },
+      commandType: DomainCommandType.END_FRIENDSHIP,
+      actorUserId: me,
+      payload: { threadId, deleteData: dto.deleteData ?? false },
+    });
+    return { commandId: commandId.toString(), status: 'PENDING' as const };
   }
 
   @ApiBearerAuth()
