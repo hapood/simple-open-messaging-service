@@ -6,6 +6,10 @@ import {
   FederationMessageContextError,
 } from './federation.service.js';
 import type { FederationMessageFeedMessage } from './federation-message-feed.service.js';
+import { FederationInboundMessageStoreService } from './federation-inbound-message-store.service.js';
+import { FederationInboundMessagePageService } from './federation-inbound-message-page.service.js';
+import { FederationInboundMessageRouteService } from './federation-inbound-message-route.service.js';
+import { FederationInboundMessageValidatorService } from './federation-inbound-message-validator.service.js';
 
 const item = (sequence: string): FederationMessageFeedMessage => ({
   thread: {
@@ -24,11 +28,30 @@ const item = (sequence: string): FederationMessageFeedMessage => ({
 
 afterEach(() => vi.restoreAllMocks());
 
+function createMessagePageService() {
+  const service = Object.create(
+    FederationInboundMessagePageService.prototype,
+  ) as FederationInboundMessagePageService & Record<string, unknown>;
+  const routes = Object.create(
+    FederationInboundMessageRouteService.prototype,
+  ) as FederationInboundMessageRouteService & Record<string, unknown>;
+  Object.assign(routes, { config: { domain: 'local.test' } });
+  Object.assign(service, {
+    config: { domain: 'local.test' },
+    logger: { error: vi.fn(), warn: vi.fn() },
+    threadAccess: { assertPeerResponseWritable: vi.fn() },
+    validator: new FederationInboundMessageValidatorService(),
+    routes,
+    inboundMessageStore: { store: vi.fn() },
+  });
+  return service;
+}
+
 describe('federation message context isolation', () => {
   it('does not publish THREAD_CONTENT_HEAD when committing reverse history', async () => {
     const service = Object.create(
-      FederationService.prototype,
-    ) as FederationService & Record<string, unknown>;
+      FederationInboundMessageStoreService.prototype,
+    ) as FederationInboundMessageStoreService & Record<string, unknown>;
     const insertedValues = vi.fn().mockReturnValue({
       returning: vi.fn().mockResolvedValue([
         {
@@ -59,7 +82,7 @@ describe('federation message context isolation', () => {
     };
     Object.assign(service, {
       config: { domain: 'local.example' },
-      assertThreadResponseWritable: vi.fn(),
+      threadAccess: { assertResponseWritable: vi.fn() },
       assertMappedMessageSeqAvailable: vi.fn(),
       quota: { tickLax: vi.fn() },
     });
@@ -70,14 +93,7 @@ describe('federation message context isolation', () => {
       .spyOn(ClientThreadContentHeadWriter, 'publishMessage')
       .mockResolvedValue(undefined);
 
-    await (
-      service as unknown as {
-        storePulledMessageInTransaction(
-          tx: object,
-          params: object,
-        ): Promise<unknown>;
-      }
-    ).storePulledMessageInTransaction(tx, {
+    await service.store(tx as never, {
       threadId: 9,
       creator: { account: 'bob', domain: 'origin.test' },
       fetchedFromDomain: 'origin.test',
@@ -148,9 +164,7 @@ describe('federation message context isolation', () => {
   });
 
   it('records a self-authored feed item as a delivery receipt without inserting a duplicate', async () => {
-    const service = Object.create(
-      FederationService.prototype,
-    ) as FederationService & Record<string, unknown>;
+    const service = createMessagePageService();
     const update = vi.fn();
     const receiptValues = vi.fn().mockResolvedValue(undefined);
     Object.assign(service, {
@@ -183,12 +197,7 @@ describe('federation message context isolation', () => {
     };
 
     await expect(
-      service.applyMessageQueryItemsInTransaction(
-        tx as never,
-        'group-origin.test',
-        [item('1')],
-        {} as never,
-      ),
+      service.apply(tx as never, 'group-origin.test', [item('1')], {} as never),
     ).resolves.toEqual([]);
 
     expect(update).not.toHaveBeenCalled();
@@ -201,9 +210,7 @@ describe('federation message context isolation', () => {
   });
 
   it('backfills the publisher coordinate for a self-authored reverse item', async () => {
-    const service = Object.create(
-      FederationService.prototype,
-    ) as FederationService & Record<string, unknown>;
+    const service = createMessagePageService();
     const where = vi.fn().mockResolvedValue(undefined);
     const set = vi.fn().mockReturnValue({ where });
     const update = vi.fn().mockReturnValue({ set });
@@ -241,7 +248,7 @@ describe('federation message context isolation', () => {
 
     const reverseItem = item('70');
     await expect(
-      service.applyMessageQueryItemsInTransaction(
+      service.apply(
         tx as never,
         'group-origin.test',
         [reverseItem],
@@ -273,16 +280,14 @@ describe('federation message context isolation', () => {
   });
 
   it('rejects a reverse page item below its persisted closure target before applying it', async () => {
-    const service = Object.create(
-      FederationService.prototype,
-    ) as FederationService & Record<string, unknown>;
+    const service = createMessagePageService();
     Object.assign(service, {
       assertPeerResponseWritable: vi.fn(),
     });
     const tx = { execute: vi.fn() };
 
     await expect(
-      service.applyMessageQueryItemsInTransaction(
+      service.apply(
         tx as never,
         'group-origin.test',
         [item('39')],
@@ -303,9 +308,7 @@ describe('federation message context isolation', () => {
   });
 
   it('rolls back a page that references an unknown thread', async () => {
-    const service = Object.create(
-      FederationService.prototype,
-    ) as FederationService & Record<string, unknown>;
+    const service = createMessagePageService();
     const logger = { error: vi.fn() };
     Object.assign(service, {
       config: { domain: 'local.test' },
@@ -341,7 +344,7 @@ describe('federation message context isolation', () => {
       })),
     };
     await expect(
-      service.applyMessageQueryItemsInTransaction(
+      service.apply(
         tx as never,
         'peer.test',
         [item('1'), item('2')],
@@ -353,9 +356,7 @@ describe('federation message context isolation', () => {
   });
 
   it('skips an unresolved thread after state recovery so later messages can progress', async () => {
-    const service = Object.create(
-      FederationService.prototype,
-    ) as FederationService & Record<string, unknown>;
+    const service = createMessagePageService();
     const logger = { error: vi.fn() };
     Object.assign(service, {
       config: { domain: 'local.test' },
@@ -370,13 +371,9 @@ describe('federation message context isolation', () => {
     const tx = { execute: vi.fn().mockResolvedValue({ rows: [] }) };
 
     await expect(
-      service.applyMessageQueryItemsInTransaction(
-        tx as never,
-        'peer.test',
-        [item('1')],
-        {} as never,
-        { isolateMissingContext: true },
-      ),
+      service.apply(tx as never, 'peer.test', [item('1')], {} as never, {
+        isolateMissingContext: true,
+      }),
     ).resolves.toEqual([]);
     expect(logger.error).toHaveBeenCalledWith(
       expect.stringContaining('unresolved context after state recovery'),
@@ -384,9 +381,7 @@ describe('federation message context isolation', () => {
   });
 
   it('maps a group author local domain to the authenticated peer domain', async () => {
-    const service = Object.create(
-      FederationService.prototype,
-    ) as FederationService & Record<string, unknown>;
+    const service = createMessagePageService();
     const logger = { error: vi.fn(), warn: vi.fn() };
     Object.assign(service, {
       config: { domain: 'local.test' },
@@ -412,9 +407,7 @@ describe('federation message context isolation', () => {
   });
 
   it('warns when applying a group author local-domain compatibility item', async () => {
-    const service = Object.create(
-      FederationService.prototype,
-    ) as FederationService & Record<string, unknown>;
+    const service = createMessagePageService();
     const logger = { error: vi.fn(), warn: vi.fn() };
     Object.assign(service, {
       config: { domain: 'local.test' },
@@ -431,12 +424,7 @@ describe('federation message context isolation', () => {
     const tx = { execute: vi.fn().mockResolvedValue({ rows: [] }) };
 
     await expect(
-      service.applyMessageQueryItemsInTransaction(
-        tx as never,
-        'peer.test',
-        [localAuthorItem],
-        {} as never,
-      ),
+      service.apply(tx as never, 'peer.test', [localAuthorItem], {} as never),
     ).resolves.toEqual([]);
 
     expect(logger.warn).toHaveBeenCalledWith(
@@ -448,9 +436,7 @@ describe('federation message context isolation', () => {
   });
 
   it('logs and skips malformed wire data instead of aborting the page', async () => {
-    const service = Object.create(
-      FederationService.prototype,
-    ) as FederationService & Record<string, unknown>;
+    const service = createMessagePageService();
     const logger = { error: vi.fn() };
     Object.assign(service, {
       config: { domain: 'local.test' },
@@ -466,12 +452,7 @@ describe('federation message context isolation', () => {
     const tx = { execute: vi.fn().mockResolvedValue({ rows: [] }) };
 
     await expect(
-      service.applyMessageQueryItemsInTransaction(
-        tx as never,
-        'peer.test',
-        [malformed],
-        {} as never,
-      ),
+      service.apply(tx as never, 'peer.test', [malformed], {} as never),
     ).resolves.toEqual([]);
     expect(logger.error).toHaveBeenCalledWith(
       expect.stringContaining('ignored invalid federated message'),
@@ -484,9 +465,7 @@ describe('federation message context isolation', () => {
   });
 
   it('aborts a reverse batch when one item cannot be staged', async () => {
-    const service = Object.create(
-      FederationService.prototype,
-    ) as FederationService & Record<string, unknown>;
+    const service = createMessagePageService();
     Object.assign(service, {
       config: { domain: 'local.test' },
       logger: { error: vi.fn() },
@@ -497,7 +476,7 @@ describe('federation message context isolation', () => {
     const execute = vi.fn().mockResolvedValue({ rows: [] });
 
     await expect(
-      service.applyMessageQueryItemsInTransaction(
+      service.apply(
         { execute } as never,
         'peer.test',
         [malformed],
@@ -518,9 +497,7 @@ describe('federation message context isolation', () => {
   it.each(['SYSTEM', 'STICKER'])(
     'uniformly logs and skips unknown content type %s',
     async (contentType) => {
-      const service = Object.create(
-        FederationService.prototype,
-      ) as FederationService & Record<string, unknown>;
+      const service = createMessagePageService();
       const logger = { error: vi.fn() };
       Object.assign(service, {
         config: { domain: 'local.test' },
@@ -532,12 +509,7 @@ describe('federation message context isolation', () => {
       const tx = { execute: vi.fn().mockResolvedValue({ rows: [] }) };
 
       await expect(
-        service.applyMessageQueryItemsInTransaction(
-          tx as never,
-          'peer.test',
-          [unknown],
-          {} as never,
-        ),
+        service.apply(tx as never, 'peer.test', [unknown], {} as never),
       ).resolves.toEqual([]);
       expect(logger.error).toHaveBeenCalledWith(
         expect.stringContaining('unknown federated message content type'),

@@ -25,6 +25,14 @@ import { FederationThreadResourceClient } from './federation-thread-resource-cli
 import { FederationProfileService } from './federation-profile.service.js';
 import { FederationInboundMediaBatchService } from './federation-inbound-media-batch.service.js';
 import { FederationMediaLocalizationService } from './federation-media-localization.service.js';
+import { FederationInboundMessageStoreService } from './federation-inbound-message-store.service.js';
+import { FederationInboundMessageRouteService } from './federation-inbound-message-route.service.js';
+import { FederationInboundMessageValidatorService } from './federation-inbound-message-validator.service.js';
+import { FederationInboundMessagePageService } from './federation-inbound-message-page.service.js';
+import { FederationPeerResourceService } from './federation-peer-resource.service.js';
+import { FederationInboundMessageCommitService } from './federation-inbound-message-commit.service.js';
+import { FederationOutboundMessageSignalService } from './federation-outbound-message-signal.service.js';
+import { FederationThreadQueryDenialService } from './federation-thread-query-denial.service.js';
 
 describe('federated contact-card avatar limits', () => {
   const digest = 'a'.repeat(64);
@@ -99,18 +107,15 @@ describe('thread-query FORBIDDEN convergence', () => {
       writeFriendIntentInTx: vi.fn().mockResolvedValue(allocated),
     };
     const clientStateFeed = { notifyFeedUpdates: vi.fn() };
-    const service = Object.create(
-      FederationService.prototype,
-    ) as FederationService & Record<string, unknown>;
-    Object.assign(service, {
-      database: {
+    const service = new FederationThreadQueryDenialService(
+      {
         db: { transaction: (run: (value: unknown) => unknown) => run(tx) },
-      },
-      relationshipIntents,
-      relationshipCommands,
-      clientStateFeed,
-      pushStateFeedDomains: vi.fn(),
-    });
+      } as never,
+      relationshipIntents as never,
+      relationshipCommands as never,
+      clientStateFeed as never,
+      { emit: vi.fn() } as never,
+    );
     return {
       service,
       tx,
@@ -164,18 +169,15 @@ describe('thread-query FORBIDDEN convergence', () => {
         .mockResolvedValue(new Map([['peer.test', 11n]])),
     };
     const clientStateFeed = { notifyFeedUpdates: vi.fn() };
-    const service = Object.create(
-      FederationService.prototype,
-    ) as FederationService & Record<string, unknown>;
-    Object.assign(service, {
-      database: {
+    const service = new FederationThreadQueryDenialService(
+      {
         db: { transaction: (run: (value: unknown) => unknown) => run(tx) },
-      },
-      relationshipIntents,
-      relationshipCommands,
-      clientStateFeed,
-      pushStateFeedDomains: vi.fn(),
-    });
+      } as never,
+      relationshipIntents as never,
+      relationshipCommands as never,
+      clientStateFeed as never,
+      { emit: vi.fn() } as never,
+    );
     return {
       service,
       tx,
@@ -627,6 +629,7 @@ function makeStubs() {
   const users = new FederationUserDirectoryService(database as never);
   const participantService = {};
   const quota = {};
+  const forwardBundles = {};
   const callBridge = new FederationCallBridgeService(
     database as never,
     peerHttp,
@@ -670,39 +673,82 @@ function makeStubs() {
     upload as never,
     mediaRangeClient,
     {} as never, // messageVisibility
-    {} as never, // forwardBundles
+    forwardBundles as never,
     inboundMediaBatches,
     threadAccess,
   );
+  const inboundMessageStore = new FederationInboundMessageStoreService(
+    threadAccess,
+    forwardBundles as never,
+    quota as never,
+  );
+  const inboundMessageRoutes = new FederationInboundMessageRouteService();
+  const inboundMessageValidator =
+    new FederationInboundMessageValidatorService();
+  const inboundMessagePages = new FederationInboundMessagePageService(
+    threadAccess,
+    inboundMessageValidator,
+    inboundMessageRoutes,
+    inboundMessageStore,
+  );
+  const statePull = {
+    pullStateFromPeer: vi.fn().mockResolvedValue(5n),
+  };
+  const peerResources = new FederationPeerResourceService(
+    database as never,
+    forwardBundles as never,
+  );
+  const inboundMessageCommits = new FederationInboundMessageCommitService(
+    database as never,
+    threadAccess,
+    inboundMessagePages,
+    inboundMessageRoutes,
+    deletedMessages as never,
+    inboundMediaBatches,
+  );
+  const outboundMessageSignals = new FederationOutboundMessageSignalService(
+    database as never,
+    {} as never, // threadContentHeads
+    statePull as never,
+  );
+  const threadQueryDenials = new FederationThreadQueryDenialService(
+    database as never,
+    {} as never, // relationshipIntents
+    {} as never, // relationshipCommands
+    {} as never, // clientStateFeed
+    eventEmitter as never,
+  );
   const svc = new FederationService(
     database as never,
-    peerHttp,
     peerLifecycle,
     mediaRangeClient,
     inboundMediaBatches,
     users,
     callBridge,
     threadAccess,
-    trustedPeers,
     threadResources,
     profiles,
     mediaLocalization,
+    inboundMessageRoutes,
+    inboundMessageValidator,
+    inboundMessagePages,
+    statePull as never,
+    {} as never, // localSystemMessages
+    peerResources,
+    inboundMessageCommits,
+    outboundMessageSignals,
+    threadQueryDenials,
     upload as never,
     participantService as never,
-    {} as never, // message
     {} as never, // invite
-    sse as never,
     quota as never,
     {} as never, // linkPreview
-    {} as never, // forwardBundles
-    deletedMessages as never,
+    forwardBundles as never,
     eventEmitter as never,
-    {} as never, // stateFeedPull
     {} as never, // stateFeed
     {} as never, // clientStateFeed
     {} as never, // relationshipIntents
     {} as never, // groupRelationships
-    {} as never, // threadContentHeads
     {} as never, // profileStatePublisher
     {} as never, // relationshipCommands
     namespaces as never,
@@ -722,6 +768,12 @@ function makeStubs() {
     trustedPeers,
     threadResources,
     profiles,
+    inboundMessageStore,
+    statePull,
+    peerResources,
+    inboundMessageCommits,
+    outboundMessageSignals,
+    threadQueryDenials,
     upload,
   };
 }
@@ -759,47 +811,12 @@ describe('FederationService inbound call preflight', () => {
 });
 
 describe('FederationService state-feed drain window', () => {
-  it('passes the pull worker fixed drain bound to state-feed pages', async () => {
-    const { svc } = makeStubs();
-    const pullStateFeedPage = vi.fn().mockResolvedValue({
-      items: [],
-      scannedThrough: '5',
-      stateFeedEndId: '5',
-      hasMore: false,
-    });
-    const target = svc as unknown as {
-      stateFeedPull: {
-        advertise: (
-          domain: string,
-          namespaceId: number,
-          revision: bigint,
-        ) => void;
-        run: (
-          domain: string,
-          namespaceId: number,
-          callbacks: {
-            fetch: (after?: bigint, through?: bigint) => Promise<unknown>;
-          },
-        ) => Promise<void>;
-      };
-      pullStateFeedPage: typeof pullStateFeedPage;
-      readStatePullCursor: (
-        domain: string,
-        namespaceId: number,
-      ) => Promise<bigint>;
-    };
-    target.stateFeedPull = {
-      advertise: vi.fn(),
-      run: vi.fn(async (_domain, _namespaceId, callbacks) => {
-        await callbacks.fetch(2n, 5n);
-      }),
-    };
-    target.pullStateFeedPage = pullStateFeedPage;
-    target.readStatePullCursor = vi.fn().mockResolvedValue(5n);
+  it('delegates the bounded drain to the state-pull owner', async () => {
+    const { svc, statePull } = makeStubs();
 
-    await svc.pullStateFromPeer('peer.test', 5n);
+    await expect(svc.pullStateFromPeer('peer.test', 5n)).resolves.toBe(5n);
 
-    expect(pullStateFeedPage).toHaveBeenCalledWith('peer.test', 2n, 100, 5n);
+    expect(statePull.pullStateFromPeer).toHaveBeenCalledWith('peer.test', 5n);
   });
 });
 
@@ -928,19 +945,13 @@ describe('FederationService JSON error data', () => {
   });
 });
 
-describe('FederationService CAS error classification', () => {
+describe('FederationPeerResourceService CAS error classification', () => {
   const digest = 'f'.repeat(64);
 
   function target() {
-    const { svc, store } = makeStubs();
+    const { peerResources, store } = makeStubs();
     return {
-      resolveCasFile: (
-        svc as unknown as {
-          resolveCasFile(
-            value: string,
-          ): Promise<{ absPath: string; bytes: number }>;
-        }
-      ).resolveCasFile.bind(svc),
+      resolveCasFile: peerResources.resolveCasFile.bind(peerResources),
       store,
     };
   }
@@ -1097,15 +1108,15 @@ describe('FederationService global missed transport', () => {
   });
 });
 
-describe('FederationService thread-bound response write gate', () => {
+describe('FederationThreadAccessService thread-bound response write gate', () => {
   function installWriteGate(state?: { federationVersion: number }) {
-    const { svc } = makeStubs();
+    const { threadAccess } = makeStubs();
     const limit = vi.fn().mockResolvedValue(state ? [state] : []);
     const where = vi.fn(() => ({ limit }));
     const from = vi.fn(() => ({ where }));
     const select = vi.fn(() => ({ from }));
-    const target = svc as unknown as {
-      assertThreadResponseWritable: (
+    const target = threadAccess as unknown as {
+      assertResponseWritable: (
         tx: unknown,
         threadId: number,
         domain: string,
@@ -1125,7 +1136,7 @@ describe('FederationService thread-bound response write gate', () => {
     });
 
     await expect(
-      target.assertThreadResponseWritable(tx, 10, 'peer.test', 7),
+      target.assertResponseWritable(tx, 10, 'peer.test', 7),
     ).resolves.toBeUndefined();
     expect(select).toHaveBeenCalledOnce();
   });
@@ -1134,7 +1145,7 @@ describe('FederationService thread-bound response write gate', () => {
     const { target, tx } = installWriteGate({ federationVersion: 8 });
 
     await expect(
-      target.assertThreadResponseWritable(tx, 10, 'peer.test', 7),
+      target.assertResponseWritable(tx, 10, 'peer.test', 7),
     ).rejects.toThrow('stale federation response');
   });
 
@@ -1142,12 +1153,12 @@ describe('FederationService thread-bound response write gate', () => {
     const { target, tx } = installWriteGate();
 
     await expect(
-      target.assertThreadResponseWritable(tx, 10, 'peer.test', 7),
+      target.assertResponseWritable(tx, 10, 'peer.test', 7),
     ).rejects.toThrow('stale federation response');
   });
 });
 
-describe('FederationService peer-bound response write gate', () => {
+describe('FederationThreadAccessService peer-bound response write gate', () => {
   const token = {
     domain: 'peer.test',
     namespaceId: 12,
@@ -1155,10 +1166,10 @@ describe('FederationService peer-bound response write gate', () => {
   };
 
   function installPeerGate() {
-    const { svc, threadAccess } = makeStubs();
+    const { threadAccess } = makeStubs();
     const requireCapturedInTx = vi.fn().mockResolvedValue(undefined);
     Object.assign(threadAccess, { namespaces: { requireCapturedInTx } });
-    const target = svc as unknown as {
+    const target = threadAccess as unknown as {
       assertPeerResponseWritable: (
         tx: object,
         value: typeof token,
@@ -1190,7 +1201,7 @@ describe('FederationService peer-bound response write gate', () => {
 
 describe('FederationService quote coordinates', () => {
   it('maps a direct publisher targetSeq back to the receiver local seq', async () => {
-    const { svc } = makeStubs();
+    const { inboundMessageStore } = makeStubs();
     const legacy = {
       user: {
         findMany: vi
@@ -1206,7 +1217,7 @@ describe('FederationService quote coordinates', () => {
       },
     };
     const resolveLocalQuoteSeq = (
-      svc as unknown as {
+      inboundMessageStore as unknown as {
         resolveLocalQuoteSeq: (
           tx: unknown,
           threadId: number,
@@ -1218,7 +1229,7 @@ describe('FederationService quote coordinates', () => {
           },
         ) => Promise<number>;
       }
-    ).resolveLocalQuoteSeq.bind(svc);
+    ).resolveLocalQuoteSeq.bind(inboundMessageStore);
 
     await expect(
       resolveLocalQuoteSeq(tx, 10, 'peer.example', 12, {
@@ -1230,7 +1241,7 @@ describe('FederationService quote coordinates', () => {
   });
 
   it('maps a peer receipt targetSeq back to the original local message', async () => {
-    const { svc } = makeStubs();
+    const { inboundMessageStore } = makeStubs();
     const messageFindFirst = vi
       .fn()
       .mockResolvedValueOnce(undefined)
@@ -1244,7 +1255,7 @@ describe('FederationService quote coordinates', () => {
       },
     };
     const resolveLocalQuoteSeq = (
-      svc as unknown as {
+      inboundMessageStore as unknown as {
         resolveLocalQuoteSeq: (
           tx: unknown,
           threadId: number,
@@ -1253,7 +1264,7 @@ describe('FederationService quote coordinates', () => {
           target: { targetSeq: number },
         ) => Promise<number>;
       }
-    ).resolveLocalQuoteSeq.bind(svc);
+    ).resolveLocalQuoteSeq.bind(inboundMessageStore);
 
     await expect(
       resolveLocalQuoteSeq(tx, 10, 'peer.example', 12, { targetSeq: 44 }),
@@ -1271,14 +1282,14 @@ const foreignUser = (userId: number, account: string, domain: string) => ({
   user: { account, domain },
 });
 
-describe('FederationService.signalOutbound — fixed-topology routing', () => {
+describe('FederationOutboundMessageSignalService — fixed-topology routing', () => {
   // A persisted pulled copy is exposed once to its direct source as a processing receipt. Normal
   // authority distribution excludes that source, so each destination is notified at most once.
 
   it('P2P: signals every foreign peer except the author', async () => {
-    const { svc, store } = makeStubs();
+    const { outboundMessageSignals, store } = makeStubs();
     const push = vi
-      .spyOn(svc as never, 'offerAndPushMessage' as never)
+      .spyOn(outboundMessageSignals as never, 'offerAndPush' as never)
       .mockResolvedValue(undefined as never);
     store.messageThread.findUnique.mockResolvedValue({
       groupUser: null,
@@ -1289,7 +1300,7 @@ describe('FederationService.signalOutbound — fixed-topology routing', () => {
       foreignUser(3, 'carol', 'c.com'),
     ]);
 
-    await svc.signalOutbound(
+    await outboundMessageSignals.signalMessage(
       10,
       { account: 'alice', domain: 'local' },
       5,
@@ -1303,9 +1314,9 @@ describe('FederationService.signalOutbound — fixed-topology routing', () => {
   });
 
   it('P2P: returns a receipt to fetchedFromDomain and signals other destinations', async () => {
-    const { svc, store } = makeStubs();
+    const { outboundMessageSignals, store } = makeStubs();
     const push = vi
-      .spyOn(svc as never, 'offerAndPushMessage' as never)
+      .spyOn(outboundMessageSignals as never, 'offerAndPush' as never)
       .mockResolvedValue(undefined as never);
     store.messageThread.findUnique.mockResolvedValue({
       groupUser: null,
@@ -1316,7 +1327,7 @@ describe('FederationService.signalOutbound — fixed-topology routing', () => {
       foreignUser(3, 'carol', 'c.com'),
     ]);
 
-    await svc.signalOutbound(
+    await outboundMessageSignals.signalMessage(
       10,
       { account: 'alice', domain: 'local' },
       5,
@@ -1330,9 +1341,9 @@ describe('FederationService.signalOutbound — fixed-topology routing', () => {
   });
 
   it('GROUP origin: returns a receipt to the submission source and distributes to other mirrors', async () => {
-    const { svc, store } = makeStubs();
+    const { outboundMessageSignals, store } = makeStubs();
     const push = vi
-      .spyOn(svc as never, 'offerAndPushMessage' as never)
+      .spyOn(outboundMessageSignals as never, 'offerAndPush' as never)
       .mockResolvedValue(undefined as never);
     store.messageThread.findUnique.mockResolvedValue({
       groupUser: { account: '!grp', domain: 'local' },
@@ -1345,7 +1356,7 @@ describe('FederationService.signalOutbound — fixed-topology routing', () => {
       foreignUser(3, 'carol', 'c.com'),
     ]);
 
-    await svc.signalOutbound(
+    await outboundMessageSignals.signalMessage(
       10,
       { account: 'alice', domain: 'local' },
       7,
@@ -1359,7 +1370,7 @@ describe('FederationService.signalOutbound — fixed-topology routing', () => {
 
     // The source receives the acceptance copy as its receipt; other mirrors receive normal distribution.
     push.mockClear();
-    await svc.signalOutbound(
+    await outboundMessageSignals.signalMessage(
       10,
       { account: 'alice', domain: 'local' },
       7,
@@ -1372,9 +1383,9 @@ describe('FederationService.signalOutbound — fixed-topology routing', () => {
   });
 
   it('GROUP mirror: signals only the origin, including as a processing receipt', async () => {
-    const { svc, store } = makeStubs();
+    const { outboundMessageSignals, store } = makeStubs();
     const push = vi
-      .spyOn(svc as never, 'offerAndPushMessage' as never)
+      .spyOn(outboundMessageSignals as never, 'offerAndPush' as never)
       .mockResolvedValue(undefined as never);
     store.messageThread.findUnique.mockResolvedValue({
       groupUser: { account: '!grp', domain: 'origin.com' },
@@ -1382,7 +1393,7 @@ describe('FederationService.signalOutbound — fixed-topology routing', () => {
     store.threadParticipant.findMany.mockResolvedValue([localUser(1, 'alice')]);
 
     // A mirror's sole destination is the origin (the hub it pulls from).
-    await svc.signalOutbound(
+    await outboundMessageSignals.signalMessage(
       10,
       { account: 'alice', domain: 'local' },
       7,
@@ -1392,7 +1403,7 @@ describe('FederationService.signalOutbound — fixed-topology routing', () => {
 
     // A copy pulled from the origin is queryable by that origin as a processing receipt.
     push.mockClear();
-    await svc.signalOutbound(
+    await outboundMessageSignals.signalMessage(
       10,
       { account: 'alice', domain: 'local' },
       7,
@@ -1402,14 +1413,14 @@ describe('FederationService.signalOutbound — fixed-topology routing', () => {
   });
 
   it('is a no-op when the thread is missing or the author is not a participant', async () => {
-    const { svc, store } = makeStubs();
+    const { outboundMessageSignals, store } = makeStubs();
     const push = vi
-      .spyOn(svc as never, 'offerAndPushMessage' as never)
+      .spyOn(outboundMessageSignals as never, 'offerAndPush' as never)
       .mockResolvedValue(undefined as never);
 
     store.messageThread.findUnique.mockResolvedValue(null);
     store.threadParticipant.findMany.mockResolvedValue([]);
-    await svc.signalOutbound(
+    await outboundMessageSignals.signalMessage(
       10,
       { account: 'alice', domain: 'local' },
       5,
@@ -1423,7 +1434,7 @@ describe('FederationService.signalOutbound — fixed-topology routing', () => {
     store.threadParticipant.findMany.mockResolvedValue([
       foreignUser(99, 'x', 'b.com'),
     ]);
-    await svc.signalOutbound(
+    await outboundMessageSignals.signalMessage(
       10,
       { account: 'alice', domain: 'local' },
       5,

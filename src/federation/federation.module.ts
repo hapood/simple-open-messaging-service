@@ -57,6 +57,16 @@ import { FederationTrustedPeerClient } from './federation-trusted-peer-client.se
 import { FederationThreadResourceClient } from './federation-thread-resource-client.service.js';
 import { FederationProfileService } from './federation-profile.service.js';
 import { FederationMediaLocalizationService } from './federation-media-localization.service.js';
+import { FederationInboundMessageStoreService } from './federation-inbound-message-store.service.js';
+import { FederationInboundMessageRouteService } from './federation-inbound-message-route.service.js';
+import { FederationInboundMessageValidatorService } from './federation-inbound-message-validator.service.js';
+import { FederationInboundMessagePageService } from './federation-inbound-message-page.service.js';
+import { FederationLocalSystemMessagePublisher } from './federation-local-system-message-publisher.service.js';
+import { FederationStatePullService } from './federation-state-pull.service.js';
+import { FederationPeerResourceService } from './federation-peer-resource.service.js';
+import { FederationInboundMessageCommitService } from './federation-inbound-message-commit.service.js';
+import { FederationOutboundMessageSignalService } from './federation-outbound-message-signal.service.js';
+import { FederationThreadQueryDenialService } from './federation-thread-query-denial.service.js';
 import { FederationInboundMediaBatchService } from './federation-inbound-media-batch.service.js';
 import { DomainCommandModule } from '../domain-command/domain-command.module.js';
 import { FederatedFriendCommandExecutionService } from './federated-friend-command-execution.service.js';
@@ -125,6 +135,16 @@ import {
     FederationThreadResourceClient,
     FederationProfileService,
     FederationMediaLocalizationService,
+    FederationInboundMessageStoreService,
+    FederationInboundMessageRouteService,
+    FederationInboundMessageValidatorService,
+    FederationInboundMessagePageService,
+    FederationLocalSystemMessagePublisher,
+    FederationStatePullService,
+    FederationPeerResourceService,
+    FederationInboundMessageCommitService,
+    FederationOutboundMessageSignalService,
+    FederationThreadQueryDenialService,
     FederationService,
     FederationGroupMembershipService,
     FederationGroupRequestProjectionService,
