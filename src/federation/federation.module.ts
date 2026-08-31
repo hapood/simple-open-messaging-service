@@ -56,7 +56,21 @@ import { FederationThreadAccessService } from './federation-thread-access.servic
 import { FederationTrustedPeerClient } from './federation-trusted-peer-client.service.js';
 import { FederationThreadResourceClient } from './federation-thread-resource-client.service.js';
 import { FederationProfileService } from './federation-profile.service.js';
+import { FederationMediaLocalizationService } from './federation-media-localization.service.js';
 import { FederationInboundMediaBatchService } from './federation-inbound-media-batch.service.js';
+import { DomainCommandModule } from '../domain-command/domain-command.module.js';
+import { FederatedFriendCommandExecutionService } from './federated-friend-command-execution.service.js';
+import {
+  AcceptAddressedFriendRequestCommandHandler,
+  RevokeAddressedFriendRequestCommandHandler,
+  SendFederatedFriendInviteCommandHandler,
+} from './federated-friend-command.handlers.js';
+import { FederatedGroupCommandExecutionService } from './federated-group-command-execution.service.js';
+import {
+  AcceptAddressedGroupInvitationCommandHandler,
+  RequestFederatedGroupJoinCommandHandler,
+  RevokeFederatedGroupJoinCommandHandler,
+} from './federated-group-command.handlers.js';
 
 /**
  * Federation (S2S). @Global so its services inject across modules (UserController, AdminController).
@@ -81,6 +95,7 @@ import { FederationInboundMediaBatchService } from './federation-inbound-media-b
     MessageModule,
     LinkPreviewModule,
     ForwardBundleModule,
+    DomainCommandModule,
   ],
   controllers: [WellKnownController, S2sController, S2sRecognitionController],
   providers: [
@@ -95,12 +110,21 @@ import { FederationInboundMediaBatchService } from './federation-inbound-media-b
     FederationInboundFileSync,
     FederationPendingMediaPromoter,
     FederationInboundMediaBatchService,
+    FederatedFriendCommandExecutionService,
+    SendFederatedFriendInviteCommandHandler,
+    AcceptAddressedFriendRequestCommandHandler,
+    RevokeAddressedFriendRequestCommandHandler,
+    FederatedGroupCommandExecutionService,
+    RequestFederatedGroupJoinCommandHandler,
+    RevokeFederatedGroupJoinCommandHandler,
+    AcceptAddressedGroupInvitationCommandHandler,
     FederationUserDirectoryService,
     FederationCallBridgeService,
     FederationThreadAccessService,
     FederationTrustedPeerClient,
     FederationThreadResourceClient,
     FederationProfileService,
+    FederationMediaLocalizationService,
     FederationService,
     FederationGroupMembershipService,
     FederationGroupRequestProjectionService,

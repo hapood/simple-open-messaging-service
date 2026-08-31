@@ -63,7 +63,6 @@ import {
 } from '../message/message.service.js';
 import { recordHostedGroupSentBoundaries } from '../message/hosted-group-sent-boundaries.js';
 import { upsertSourceUserInTx } from '../user/source-user.js';
-import { MessageVisibilityService } from '../message/message-visibility.service.js';
 import {
   extractDigestEntries,
   extractDigests,
@@ -165,6 +164,7 @@ import {
 } from './federation-thread-resource-client.service.js';
 import { FederationProfileService } from './federation-profile.service.js';
 import type { S2SProfile } from './federation-profile.js';
+import { FederationMediaLocalizationService } from './federation-media-localization.service.js';
 
 /** Preserve the relationship author's side in the client-feed compaction key. */
 export function clientGroupIntentEndpoints(
@@ -254,6 +254,7 @@ export class FederationService {
     private readonly trustedPeers: FederationTrustedPeerClient,
     private readonly threadResources: FederationThreadResourceClient,
     private readonly profiles: FederationProfileService,
+    private readonly mediaLocalization: FederationMediaLocalizationService,
     private readonly upload: UploadService,
     private readonly participantService: ThreadParticipantService,
     private readonly message: MessageService,
@@ -263,7 +264,6 @@ export class FederationService {
     private readonly quota: QuotaService,
     private readonly linkPreview: LinkPreviewService,
     private readonly forwardBundles: ForwardBundleService,
-    private readonly messageVisibility: MessageVisibilityService,
     private readonly deletedMessages: DeletedMessageService,
     private readonly eventEmitter: EventEmitter2,
     private readonly stateFeedPull: PeerStateFeedPullService,
@@ -704,6 +704,7 @@ export class FederationService {
     address: S2SAddress,
     note: string,
     snapshot: FederatedPendingProfileSnapshot,
+    beforeWrite?: (tx: DatabaseTransaction) => Promise<void>,
   ): Promise<void> {
     if (!address.account.startsWith('!'))
       throw new BusinessException(
@@ -723,6 +724,7 @@ export class FederationService {
           address.domain,
           context.namespaceId,
         );
+      if (beforeWrite) await beforeWrite(tx);
       return this.relationshipCommands.writeMemberRelationshipIntentInTx(
         tx,
         shell.threadId,
@@ -735,6 +737,47 @@ export class FederationService {
     });
     this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
     await this.pushStateFeedDomains(state.keys());
+  }
+
+  async resolveGroupJoinRequestCommandScope(
+    memberUserId: number,
+    address: S2SAddress,
+  ): Promise<{ account: string; domain: string }> {
+    const account = normalizeAccount(address.account);
+    const domain = address.domain.trim().toLowerCase();
+    await this.database.db.transaction(async (tx) => {
+      const context = await this.namespaces.captureActiveInTx(tx, domain);
+      const groupState = await tx.query.group.findFirst({
+        where: and(
+          eq(tables.group.account, account),
+          eq(tables.group.domain, domain),
+          eq(tables.group.namespaceId, context.namespaceId),
+        ),
+        columns: { id: true },
+      });
+      const thread = groupState
+        ? await tx.query.messageThread.findFirst({
+            where: eq(tables.messageThread.groupId, groupState.id),
+            columns: { id: true },
+          })
+        : undefined;
+      if (
+        !groupState ||
+        !thread ||
+        !(await this.relationshipIntents.hasValidGroupInviteInTx(tx, {
+          groupId: groupState.id,
+          memberUserId,
+          threadId: thread.id,
+          author: 'MEMBER',
+        }))
+      ) {
+        throw new BusinessException(
+          BusinessCode.INVITE_NOT_FOUND,
+          'group request not found',
+        );
+      }
+    });
+    return { account, domain };
   }
 
   async revokeGroupJoinRequest(
@@ -3127,10 +3170,10 @@ export class FederationService {
         effect.remoteForwardBundleId &&
         !effect.message!.isDeleted
       ) {
-        await this.localizeForwardAssets(
+        await this.mediaLocalization.localizeForwardAssets(
           effect.forwardClosure,
           domain,
-          await this.resolveForwardAssetAuth(effect.message!),
+          await this.mediaLocalization.resolveForwardAssetAuth(effect.message!),
         );
       }
     }
@@ -4408,48 +4451,6 @@ export class FederationService {
     });
   }
 
-  private async localizeForwardAssets(
-    closure: ForwardWireBundle,
-    peerDomain: string,
-    authorization: {
-      fromAccount: string;
-      fromDomain: string;
-      toAccount: string;
-      sourceSeq: number;
-    },
-  ): Promise<void> {
-    // Derive from the validated per-bundle manifests; the top-level `assets` array is only a wire
-    // convenience summary and is never an independent authorization/download authority.
-    for (const asset of this.forwardBundles.assetsFromClosure(closure)) {
-      try {
-        const have = await this.database.db.query.mediaAsset.findFirst({
-          where: and(
-            eq(tables.mediaAsset.digest, asset.digest),
-            eq(tables.mediaAsset.isDeleted, false),
-          ),
-          columns: { digest: true },
-        });
-        if (have) continue;
-        await this.upload.saveCasFromStream(
-          'bin',
-          (offset) =>
-            this.fetchMediaChunks(
-              peerDomain,
-              asset.digest,
-              authorization.fromAccount,
-              authorization.fromDomain,
-              authorization.toAccount,
-              authorization.sourceSeq,
-              offset,
-            ),
-          asset.digest,
-        );
-      } catch {
-        // Bundle JSON remains usable and the client can retry asset localization later.
-      }
-    }
-  }
-
   /** Whether a content type carries CAS media the receiver must localize from the peer. */
   private isMediaContentType(t: ContentType): boolean {
     return isFederatedMediaContentType(t);
@@ -4524,110 +4525,6 @@ export class FederationService {
   }
 
   /**
-   * Receiver-side media localize (§3.3 / §4.5): for each CAS digest referenced by a pulled message,
-   * fetch the bytes from the peer's /media/:digest and store them through the SAME CAS pipeline as a local
-   * upload (sha256 → shard path → MediaAsset ref++), then write the MediaMessage authz row so the local
-   * /uploads/cas/* gate admits the recipient. The content URL is already server-relative, so once the
-   * file is local it serves same-origin with no rewrite. Integrity-checked (the re-hash must match the
-   * advertised digest). Best-effort per file; a failure leaves the message with the peer's cross-origin
-   * URL (inert) for a later retry.
-   */
-  private async localizeMedia(
-    msg: {
-      id: bigint;
-      threadId: number;
-      seq: number;
-      content: string;
-      contentType: ContentType;
-    },
-    peerDomain: string,
-    fromAccount: string,
-    fromDomain: string,
-    toAccount: string,
-    sourceSeq: number,
-    expectedFederationVersion: number,
-  ): Promise<void> {
-    // Quota is charged inside driveFileSync (quotaCounted-guarded, type-agnostic) once the byte size is
-    // known; the dedup path below (file already local) skips fetchMediaChunks entirely — counted once.
-    for (const { digest, ext } of extractDigestEntries(msg.content)) {
-      try {
-        // Dedup: if the file is already local (prior fetch or a coincidental local upload), just ensure
-        // the authz row exists and skip the network fetch.
-        const have = await this.database.db.query.mediaAsset.findFirst({
-          where: and(
-            eq(tables.mediaAsset.digest, digest),
-            eq(tables.mediaAsset.isDeleted, false),
-          ),
-          columns: { digest: true },
-        });
-        if (!have) {
-          // Stream the asset from the peer in resumable Range chunks → local CAS (no whole-file
-          // buffer, no whole-transfer timeout). saveCasFromStream verifies the digest === advertised
-          // and throws on mismatch (corrupt/tampered/truncated) — caught below, leaving the message
-          // inert for a later retry.
-          await this.upload.saveCasFromStream(
-            ext,
-            (offset) =>
-              this.fetchMediaChunks(
-                peerDomain,
-                digest,
-                fromAccount,
-                fromDomain,
-                toAccount,
-                sourceSeq,
-                offset,
-              ),
-            digest,
-          );
-        }
-        await this.database.db.transaction(async (tx) => {
-          await this.assertThreadResponseWritable(
-            tx,
-            msg.threadId,
-            peerDomain,
-            expectedFederationVersion,
-          );
-          await tx
-            .insert(tables.messageAsset)
-            .values({ messageId: msg.id, threadId: msg.threadId, digest })
-            .onConflictDoNothing();
-        });
-      } catch {
-        // Best-effort per file — never block the text pull. The cross-origin URL stays inert until a
-        // later retry (the manual relocalize endpoint, or pull-on-open / next push) re-runs localize.
-      }
-    }
-  }
-
-  /** Whether every CAS digest referenced by `content` is fully local: each digest has a MediaMessage
-   *  authz row for THIS message (same-origin fetch admitted) AND a READY MediaAsset (bytes on
-   *  disk). A non-media message (no digest) is trivially ready. Drives the localize
-   *  outcome report + the MEDIA_STATUS signal, and is reused by the manual relocalize endpoint. */
-  private async isMessageMediaReady(
-    msgId: bigint,
-    content: string,
-  ): Promise<boolean> {
-    const digests = extractDigests(content);
-    if (digests.length === 0) return true;
-    const rows = await this.database.db.query.messageAsset.findMany({
-      where: and(
-        eq(tables.messageAsset.messageId, msgId),
-        inArray(tables.messageAsset.digest, digests),
-      ),
-      columns: { digest: true },
-    });
-    if (rows.length !== digests.length) return false; // a digest has no authz row yet
-    const assets = await this.database.db.query.mediaAsset.findMany({
-      where: and(
-        inArray(tables.mediaAsset.digest, digests),
-        eq(tables.mediaAsset.isDeleted, false),
-      ),
-      columns: { digest: true },
-    });
-    return assets.length === digests.length;
-  }
-
-  /**
    * Manually re-run localize for one federated media message (the user tapped retry in the detail
    * view). Resolves the localizeMedia context (creator account/domain + the thread's receiver/peer
    * domain) from the stored message alone, then re-runs the SAME localize path the pull flow uses —
@@ -4641,312 +4538,11 @@ export class FederationService {
     threadId: number,
     seq: number,
   ): Promise<MediaStatus> {
-    const msg = await this.messageVisibility.findVisibleByThreadSeq(
+    return this.mediaLocalization.localizeMediaForMessage(
       userId,
       threadId,
       seq,
     );
-    if (!msg) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        `no such message in thread [${threadId}]`,
-      );
-    }
-    if (msg.contentType === ContentType.FORWARD) {
-      return this.relocalizeForwardMessage(msg);
-    }
-    if (!this.isMediaContentType(msg.contentType)) return 'ready';
-    if (msg.creatorAccount === null || msg.creatorDomain === null)
-      throw new Error('user-authored media message has no creator');
-    if (msg.localState === 'STUB') {
-      return this.readInboundMediaJobStatus(msg.id);
-    }
-    const { toAccount, peerDomain } = await this.resolveMediaContext(
-      msg.threadId,
-      msg.creatorAccount,
-      msg.creatorDomain,
-      msg.creatorNamespaceId,
-    );
-    if (msg.localState === 'FAILED') {
-      if (
-        msg.originSeq === null ||
-        msg.federationSourceDomain === null ||
-        peerDomain !== msg.federationSourceDomain
-      ) {
-        throw new BusinessException(
-          BusinessCode.NOT_FOUND,
-          'failed placeholder has no retryable federation source',
-        );
-      }
-      const batchId = await this.restageFailedInboundMessage(msg, {
-        peerDomain,
-        fromAccount: msg.creatorAccount,
-        fromDomain:
-          msg.creatorDomain === 'local'
-            ? this.config.domain
-            : msg.creatorDomain,
-        toAccount,
-      });
-      if (batchId) {
-        await this.inboundMediaBatches.publishMessageStatus(
-          { threadId: msg.threadId, seq: msg.seq },
-          'pending',
-        );
-        void this.runFileSyncBatch(batchId, (digest, offset) =>
-          this.fetchMediaChunks(
-            peerDomain,
-            digest,
-            msg.creatorAccount!,
-            msg.creatorDomain === 'local'
-              ? this.config.domain
-              : msg.creatorDomain!,
-            toAccount,
-            msg.originSeq!,
-            offset,
-          ),
-        ).catch(() => undefined);
-        return 'pending';
-      }
-      return this.readInboundMediaJobStatus(msg.id);
-    }
-    const federationVersion = await this.readThreadFederationVersion(
-      msg.threadId,
-      peerDomain,
-    );
-    await this.localizeMedia(
-      msg,
-      peerDomain,
-      msg.creatorAccount,
-      msg.creatorDomain === 'local' ? this.config.domain : msg.creatorDomain,
-      toAccount,
-      msg.originSeq ?? msg.seq,
-      federationVersion,
-    );
-    return (await this.isMessageMediaReady(msg.id, msg.content))
-      ? 'ready'
-      : 'failed';
-  }
-
-  private async readInboundMediaJobStatus(
-    messageId: bigint,
-  ): Promise<MediaStatus> {
-    const job = await this.database.db.query.pendingMedia.findFirst({
-      where: and(
-        eq(tables.pendingMedia.messageId, messageId),
-        eq(tables.pendingMedia.direction, 'INBOUND'),
-      ),
-      columns: { status: true },
-    });
-    return job?.status === 'pending' ||
-      job?.status === 'downloading' ||
-      job?.status === 'ready' ||
-      job?.status === 'failed'
-      ? job.status
-      : 'failed';
-  }
-
-  private async restageFailedInboundMessage(
-    msg: Message,
-    authorization: {
-      peerDomain: string;
-      fromAccount: string;
-      fromDomain: string;
-      toAccount: string;
-    },
-  ): Promise<string | null> {
-    const digests = extractDigestEntries(msg.content);
-    if (digests.length === 0) return null;
-    if (msg.sourceNamespaceId === null)
-      throw new Error('failed inbound message has no source namespace');
-    const namespaceId = msg.sourceNamespaceId;
-    return this.database.db.transaction(async (tx) => {
-      const [locked] = await tx
-        .select({
-          localState: tables.message.localState,
-          authorizationEpoch: tables.messageThread.authorizationEpoch,
-        })
-        .from(tables.message)
-        .innerJoin(
-          tables.messageThread,
-          eq(tables.messageThread.id, tables.message.threadId),
-        )
-        .where(eq(tables.message.id, msg.id))
-        .for('update', { of: tables.message })
-        .limit(1);
-      if (!locked || locked.localState !== 'FAILED') return null;
-      const pending = await tx.query.pendingMedia.findFirst({
-        where: and(
-          eq(tables.pendingMedia.messageId, msg.id),
-          eq(tables.pendingMedia.direction, 'INBOUND'),
-          eq(tables.pendingMedia.status, 'failed'),
-        ),
-        columns: { id: true, batchId: true },
-      });
-      if (!pending) return null;
-      const batchId = pending.batchId;
-      await tx
-        .delete(tables.fileSyncProgress)
-        .where(eq(tables.fileSyncProgress.batchId, batchId));
-      await tx
-        .update(tables.pendingMedia)
-        .set({
-          status: 'pending',
-          failReason: null,
-          fileCnt: digests.length,
-          originDomain: authorization.peerDomain,
-          namespaceId,
-          expectedAuthorizationEpoch: locked.authorizationEpoch,
-          updatedAt: new Date(),
-        })
-        .where(eq(tables.pendingMedia.id, pending.id));
-      for (const { digest, size } of digests) {
-        await tx.insert(tables.fileSyncProgress).values({
-          batchId,
-          digest,
-          direction: 'INBOUND',
-          kind: this.fileSyncKindFor(msg.contentType),
-          status: 'PENDING',
-          bytesTotal: BigInt(size ?? 0),
-          originDomain: authorization.peerDomain,
-          namespaceId,
-          payload: authorization,
-        });
-      }
-      await tx
-        .update(tables.message)
-        .set({ localState: 'STUB', updatedAt: new Date() })
-        .where(eq(tables.message.id, msg.id));
-      return batchId;
-    });
-  }
-
-  private async relocalizeForwardMessage(
-    msg: Message,
-  ): Promise<'ready' | 'failed'> {
-    const binding = await this.database.db.query.forwardMessage.findFirst({
-      where: eq(tables.forwardMessage.messageId, msg.id),
-      columns: { bundleId: true },
-    });
-    if (!binding) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        'forward bundle binding not found',
-      );
-    }
-    const root = await this.database.db.query.forwardBundle.findFirst({
-      where: eq(tables.forwardBundle.id, binding.bundleId),
-      columns: { sourceDomain: true, sourceBundleId: true },
-    });
-    if (!root) {
-      throw new BusinessException(BusinessCode.NOT_FOUND, 'bundle not found');
-    }
-    const closure = await this.forwardBundles.buildClosure(binding.bundleId);
-    if (root.sourceDomain && root.sourceBundleId) {
-      // JSONB import is already committed. A retry creates a fresh best-effort download run from the
-      // immutable bundle metadata; it is deliberately not coupled to the import transaction.
-      await this.localizeForwardAssets(
-        closure,
-        root.sourceDomain,
-        await this.resolveForwardAssetAuth(msg),
-      );
-    }
-    const digests = [
-      ...new Set(
-        this.forwardBundles
-          .assetsFromClosure(closure)
-          .map((asset) => asset.digest),
-      ),
-    ];
-    const ready =
-      digests.length === 0 ||
-      (
-        await this.database.db.query.mediaAsset.findMany({
-          where: and(
-            inArray(tables.mediaAsset.digest, digests),
-            eq(tables.mediaAsset.isDeleted, false),
-          ),
-          columns: { digest: true },
-        })
-      ).length === digests.length;
-    return ready ? 'ready' : 'failed';
-  }
-
-  /**
-   * Resolve the localizeMedia transport context for a pulled message: `toAccount` + `peerDomain`
-   * naming the peer /media/:digest source. GROUP → the thread's group-User account + its origin domain
-   * (roster-gated source). P2P → the thread's OTHER active (non-creator) participant account (the
-   * local receiver), with peerDomain = the creator's domain (the sender server). Mirrors the context
-   * the pull paths compute at pull time (pullP2P / pullGroupWhole), recovered here from the stored
-   * message for the manual retry path. */
-  private async resolveMediaContext(
-    threadId: number,
-    creatorAccount: string,
-    creatorDomain: string,
-    creatorNamespaceId: number,
-  ): Promise<{ toAccount: string; peerDomain: string }> {
-    const [thread] = await this.database.db
-      .select({
-        type: tables.messageThread.type,
-        group: {
-          account: tables.group.account,
-          domain: tables.group.domain,
-        },
-      })
-      .from(tables.messageThread)
-      .leftJoin(tables.group, eq(tables.group.id, tables.messageThread.groupId))
-      .where(eq(tables.messageThread.id, threadId))
-      .limit(1);
-    if (thread?.type === MessageThreadType.GROUP && thread.group) {
-      return {
-        toAccount: thread.group.account,
-        peerDomain: thread.group.domain,
-      };
-    }
-    // P2P: the receiver is the thread's other active (non-creator) participant.
-    const [peer] = await this.database.db
-      .select({ account: tables.user.account })
-      .from(tables.threadMember)
-      .innerJoin(tables.user, eq(tables.user.id, tables.threadMember.userId))
-      .where(
-        and(
-          eq(tables.threadMember.threadId, threadId),
-          eq(tables.threadMember.left, false),
-          or(
-            ne(tables.user.account, creatorAccount),
-            ne(tables.user.domain, creatorDomain),
-            ne(tables.user.namespaceId, creatorNamespaceId),
-          ),
-        ),
-      )
-      .limit(1);
-    return {
-      toAccount: peer?.account ?? creatorAccount,
-      peerDomain: creatorDomain,
-    };
-  }
-
-  /** Derive the stable message/thread authorization coordinate for a stored FORWARD message. */
-  private async resolveForwardAssetAuth(msg: Message): Promise<{
-    fromAccount: string;
-    fromDomain: string;
-    toAccount: string;
-    sourceSeq: number;
-  }> {
-    if (msg.creatorAccount === null || msg.creatorDomain === null)
-      throw new Error('user-authored forward message has no creator');
-    const { toAccount } = await this.resolveMediaContext(
-      msg.threadId,
-      msg.creatorAccount,
-      msg.creatorDomain,
-      msg.creatorNamespaceId,
-    );
-    return {
-      fromAccount: msg.creatorAccount,
-      fromDomain:
-        msg.creatorDomain === 'local' ? this.config.domain : msg.creatorDomain,
-      toAccount,
-      sourceSeq: msg.originSeq ?? msg.seq,
-    };
   }
 
   /**

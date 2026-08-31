@@ -22,6 +22,9 @@ import { FederationCallBridgeService } from './federation-call-bridge.service.js
 import { FederationThreadAccessService } from './federation-thread-access.service.js';
 import { FederationTrustedPeerClient } from './federation-trusted-peer-client.service.js';
 import { FederationThreadResourceClient } from './federation-thread-resource-client.service.js';
+import { FederationProfileService } from './federation-profile.service.js';
+import { FederationInboundMediaBatchService } from './federation-inbound-media-batch.service.js';
+import { FederationMediaLocalizationService } from './federation-media-localization.service.js';
 
 describe('federated contact-card avatar limits', () => {
   const digest = 'a'.repeat(64);
@@ -307,20 +310,16 @@ describe('thread-query FORBIDDEN convergence', () => {
   });
 });
 
-describe('federated profile resource path', () => {
+describe('FederationProfileService resource path', () => {
   it('canonically percent-encodes a group account', async () => {
-    const { svc } = makeStubs();
+    const { profiles, peerHttp } = makeStubs();
     const getSigned = vi.fn().mockResolvedValue({ profileRev: 0 });
-    const target = svc as unknown as {
-      getSigned: typeof getSigned;
-      fetchRemoteUser(address: {
-        account: string;
-        domain: string;
-      }): Promise<unknown>;
-    };
-    target.getSigned = getSigned;
+    Object.assign(peerHttp, { get: getSigned });
 
-    await target.fetchRemoteUser({ account: '!group', domain: 'peer.test' });
+    await profiles.fetchRemoteUser({
+      account: '!group',
+      domain: 'peer.test',
+    });
 
     expect(getSigned).toHaveBeenCalledWith(
       '/s2s/v1/users/%21group',
@@ -329,19 +328,12 @@ describe('federated profile resource path', () => {
   });
 
   it('rejects a negative public profile revision', async () => {
-    const { svc } = makeStubs();
+    const { profiles, peerHttp } = makeStubs();
     const getSigned = vi.fn().mockResolvedValue({ profileRev: -1 });
-    const target = svc as unknown as {
-      getSigned: typeof getSigned;
-      fetchRemoteUser(address: {
-        account: string;
-        domain: string;
-      }): Promise<unknown>;
-    };
-    target.getSigned = getSigned;
+    Object.assign(peerHttp, { get: getSigned });
 
     await expect(
-      target.fetchRemoteUser({ account: 'alice', domain: 'peer.test' }),
+      profiles.fetchRemoteUser({ account: 'alice', domain: 'peer.test' }),
     ).rejects.toMatchObject({
       code: BusinessCode.FEDERATION_MALFORMED,
       status: 200,
@@ -349,27 +341,17 @@ describe('federated profile resource path', () => {
   });
 
   it('projects the public profile with the canonical inline avatar shape', async () => {
-    const { svc } = makeStubs();
+    const { profiles } = makeStubs();
     const bytes = Buffer.from('avatar');
     const readAvatarAsWire = vi.fn().mockResolvedValue({
       b64: bytes.toString('base64'),
       w: 32,
       h: 24,
     });
-    const target = svc as unknown as {
-      upload: { readAvatarAsWire: typeof readAvatarAsWire };
-      toS2SProfile(user: {
-        account: string;
-        name: string;
-        avatar: string;
-        bio: string;
-        profileRev: number;
-      }): Promise<unknown>;
-    };
-    target.upload = { readAvatarAsWire };
+    Object.assign(profiles, { upload: { readAvatarAsWire } });
 
     await expect(
-      target.toS2SProfile({
+      profiles.toS2SProfile({
         account: 'alice',
         name: 'Alice',
         avatar: '/uploads/avatars/alice.webp',
@@ -393,10 +375,10 @@ describe('federated profile resource path', () => {
   });
 
   it('maps a validated public avatar into the internal avatar pipeline', async () => {
-    const { svc } = makeStubs();
+    const { profiles } = makeStubs();
     const bytes = Buffer.from('avatar');
     const saveAvatarFromWire = vi.fn().mockResolvedValue('/avatar.webp');
-    const target = svc as unknown as {
+    const target = profiles as unknown as {
       upload: { saveAvatarFromWire: typeof saveAvatarFromWire };
       prepareForeignProfileData(profile: {
         account: string;
@@ -634,6 +616,14 @@ function makeStubs() {
     transportConfig as never,
     peerLifecycle,
   );
+  const inboundMediaBatches = new FederationInboundMediaBatchService(
+    database as never,
+    {} as never,
+    {} as never,
+    mediaRangeClient,
+    {} as never,
+    sse as never,
+  );
   const users = new FederationUserDirectoryService(database as never);
   const participantService = {};
   const quota = {};
@@ -667,19 +657,37 @@ function makeStubs() {
     trustedPeers,
     threadAccess,
   );
+  const upload = {};
+  const profiles = new FederationProfileService(
+    database as never,
+    upload as never,
+    peerHttp,
+    threadAccess,
+    users,
+  );
+  const mediaLocalization = new FederationMediaLocalizationService(
+    database as never,
+    upload as never,
+    mediaRangeClient,
+    {} as never, // messageVisibility
+    {} as never, // forwardBundles
+    inboundMediaBatches,
+    threadAccess,
+  );
   const svc = new FederationService(
     database as never,
     peerHttp,
     peerLifecycle,
     mediaRangeClient,
-    {} as never, // inboundFileSync
-    {} as never, // pendingMediaPromoter
+    inboundMediaBatches,
     users,
     callBridge,
     threadAccess,
     trustedPeers,
     threadResources,
-    {} as never, // upload
+    profiles,
+    mediaLocalization,
+    upload as never,
     participantService as never,
     {} as never, // message
     {} as never, // invite
@@ -687,7 +695,6 @@ function makeStubs() {
     quota as never,
     {} as never, // linkPreview
     {} as never, // forwardBundles
-    {} as never, // messageVisibility
     deletedMessages as never,
     eventEmitter as never,
     {} as never, // stateFeedPull
@@ -714,6 +721,8 @@ function makeStubs() {
     threadAccess,
     trustedPeers,
     threadResources,
+    profiles,
+    upload,
   };
 }
 
@@ -1018,6 +1027,24 @@ describe('FederationThreadResourceClient preflight', () => {
       status: 200,
       code: BusinessCode.GROUP_DISSOLVED,
       federationVersion: 7,
+    });
+  });
+
+  it('returns the peer token and thread version with a fetched resource', async () => {
+    const { target } = installPreflight({ federationVersion: 7 });
+
+    await expect(
+      target.fetch<{ messages: unknown[] }>(10, '/messages', 'peer.test'),
+    ).resolves.toEqual({
+      data: { messages: [] },
+      threadId: 10,
+      peerDomain: 'peer.test',
+      federationVersion: 7,
+      peerToken: {
+        domain: 'peer.test',
+        namespaceId: 1,
+        rootKeyFingerprint: 'peer-root',
+      },
     });
   });
 });
