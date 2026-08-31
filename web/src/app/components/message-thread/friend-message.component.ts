@@ -14,7 +14,7 @@ import {
   viewChild,
   ChangeDetectionStrategy,
 } from '@angular/core';
-import { firstValueFrom, Subscription, takeUntil } from 'rxjs';
+import { firstValueFrom, Subscription } from 'rxjs';
 import { HttpClient } from '@angular/common/http';
 import { TranslocoModule, TranslocoService } from '@jsverse/transloco';
 import {
@@ -104,7 +104,6 @@ import {
   type MediaTransferKind,
 } from '../../services/media-transfer.service';
 import {
-  NativeUploadError,
   NativeUploadService,
   type NativeUploadSelection,
 } from '../../services/native-upload.service';
@@ -118,7 +117,6 @@ import {
   selectedMessagesCopyText,
   type MessageCopyLabels,
 } from './message-copy';
-import { stringifyTextMessageContent } from '../../../../../shared/text-message-content';
 import {
   NativeComposerService,
   type NativeComposerEvent,
@@ -139,12 +137,7 @@ import {
 import { ChatContextService } from './chat-context.service';
 import { ChatAppearanceService } from '../../services/chat-appearance.service';
 import { FederationNamespaceService } from '../../services/federation-namespace.service';
-import {
-  ALL_MENTION_ID,
-  escapePlainText,
-  toDisplayText,
-  toRenderMessageEntities,
-} from '../../lib/message-entity';
+import { ALL_MENTION_ID, escapePlainText } from '../../lib/message-entity';
 import type { ChatMember } from '../chat-editor/chat-editor.component';
 import { StableReadTracker } from './stable-read-tracker';
 import { messageOpenOptions } from './message-open-position';
@@ -166,6 +159,7 @@ import { ThreadTransferController } from './thread-transfer.controller';
 import { ThreadComposerController } from './thread-composer.controller';
 import { NativeComposerBoundsController } from './native-composer-bounds.controller';
 import { ThreadAttachmentUploadController } from './thread-attachment-upload.controller';
+import { ThreadMessageSendController } from './thread-message-send.controller';
 import { NativeComposerDraftController } from './native-composer-draft.controller';
 import {
   NativeVoiceUploadController,
@@ -326,6 +320,8 @@ export class MessageThreadComponent implements OnDestroy {
     this.nav.paneStack().some((pane) => pane.kind === 'dialog'),
   );
   private readonly transloco = inject(TranslocoService);
+  private readonly debugTools = inject(DebugToolsService);
+  private readonly toast = inject(ToastService);
   private readonly sendOutbox = inject(ThreadSendOutbox);
   private readonly optimistic = new ThreadOptimisticController(() =>
     this.sendOutbox.allocatePlaceholderId(),
@@ -391,13 +387,16 @@ export class MessageThreadComponent implements OnDestroy {
           true,
         );
       },
-      text: (item) => this.dispatchHttpSendText(item),
+      text: (item) => this.messageSender.retryText(item),
     },
   );
   private readonly attachmentSender = new ThreadAttachmentUploadController(
     this.threadAdapter,
     this.transfers,
     this.transloco,
+    this.nativeUploads,
+    this.debugTools,
+    this.toast,
     {
       threadId: () => this.threadId(),
       failPending: (item) => this.failPending(item),
@@ -405,8 +404,26 @@ export class MessageThreadComponent implements OnDestroy {
       surfaceQuota: (response) => this.surfaceSendQuota(response),
     },
   );
+  private readonly messageSender = new ThreadMessageSendController(
+    this.threadAdapter,
+    this.msgService,
+    {
+      threadId: () => this.threadId(),
+      selfAccount: () => this.userService.sessionProfile()?.account,
+      consumeQuote: () => this.messageInteraction.consumeQuote(),
+      makeItem: (cid, text, contentType) =>
+        this.makeOptimisticItem(cid, text, contentType, null, null),
+      newClientMessageId: () => this.newClientMessageId(),
+      dispatch: (item) => this.dispatchPending(item),
+      source: () => this.source,
+      fail: (item) => this.failPending(item),
+      accept: (item) => this.markAccepted(item),
+      surfaceFailure: (response, threadId) =>
+        this.surfaceSendFailure(response, threadId),
+    },
+  );
   private readonly composer = new ThreadComposerController({
-    text: (intent) => this.sendText(intent.text),
+    text: (intent) => this.messageSender.text(intent.text),
     image: (intent) =>
       void this.sendChosenWebAttachments(
         Array.from(intent.files).filter((file) =>
@@ -416,15 +433,14 @@ export class MessageThreadComponent implements OnDestroy {
     file: (intent) => void this.sendChosenWebAttachments(intent.files),
     nativeFiles: (intent) =>
       void this.sendChosenNativeAttachments(intent.files),
-    link: (intent) => this.sendLink(intent.generationId, intent.content),
-    contact: (intent) => this.sendContactCard(intent),
+    link: (intent) =>
+      this.messageSender.link(intent.generationId, intent.content),
+    contact: (intent) => this.messageSender.contact(intent),
     paste: (intent) => this.appendWebPaste(intent.files, intent.text),
     audio: (intent) =>
       this.sendVoice(intent.blob, intent.duration, intent.mimeType),
   });
-  private readonly debugTools = inject(DebugToolsService);
   private readonly theme = inject(ThemeService);
-  private readonly toast = inject(ToastService);
   private readonly forwarding = new MessageForwardController(
     this.threadAdapter,
     this.convList,
@@ -1839,86 +1855,6 @@ export class MessageThreadComponent implements OnDestroy {
     else await this.sendNativeAttachments(files);
   }
 
-  private sendText(text: string): void {
-    const trimmed = text.trim();
-    if (!trimmed) return;
-    const cid = this.newClientMessageId();
-    const item = this.makeOptimisticItem(
-      cid,
-      toDisplayText(trimmed),
-      'PURE_TEXT',
-      null,
-      null,
-    );
-    item.data.wireText = trimmed;
-    const rendered = toRenderMessageEntities(
-      trimmed,
-      this.userService.sessionProfile()?.account,
-    );
-    item.data.textSegments = rendered.segments;
-    item.data.mentionState = rendered.mentionState;
-    item.data.quote = this.messageInteraction.consumeQuote() ?? undefined;
-    this.dispatchPending(item);
-    this.dispatchHttpSendText(item);
-  }
-
-  /** Send the exact reviewed generation. The completed preview is used for the optimistic card while the
-   * server consumes the owned generationId and persists its authoritative copy. */
-  private sendLink(
-    generationId: string,
-    content: import('../../services/link-card-generation.service').LinkCardContent,
-  ): void {
-    if (!this.threadId()) return;
-    const cid = this.newClientMessageId();
-    const item = this.makeOptimisticItem(
-      cid,
-      JSON.stringify(content),
-      'LINK',
-      null,
-      null,
-    );
-    this.dispatchPending(item);
-    this.dispatchHttpSendLink(item, generationId);
-  }
-
-  private sendContactCard(
-    contact: Extract<ChatSendIntent, { kind: 'contact' }>,
-  ): void {
-    const threadId = this.threadId();
-    if (!threadId) return;
-    const cid = this.newClientMessageId();
-    const item = this.makeOptimisticItem(
-      cid,
-      JSON.stringify({
-        account: contact.account,
-        domain: contact.domain,
-        displayName: contact.name,
-        bio: contact.bio,
-        ...(contact.avatar ? { avatar: contact.avatar } : {}),
-      }),
-      'CONTACT_CARD',
-      null,
-      null,
-    );
-    this.dispatchPending(item);
-    void firstValueFrom(
-      this.msgService.sendContactCard({
-        threadId,
-        ...(contact.targetGroupId !== undefined
-          ? { targetGroupId: contact.targetGroupId }
-          : { targetUserId: contact.targetUserId }),
-        clientMessageId: cid,
-      }),
-    )
-      .then((res) => {
-        if (res.code !== 0) {
-          this.surfaceSendFailure(res, threadId);
-          void this.failPending(item);
-        } else void this.markAccepted(item);
-      })
-      .catch(() => void this.failPending(item));
-  }
-
   /** Register the complete selection synchronously, then probe media metadata in parallel. Decoding a
    * large image or locating video metadata can delay that file's upload, but never the pending UI. */
   private async sendAttachments(
@@ -2030,80 +1966,13 @@ export class MessageThreadComponent implements OnDestroy {
     await this.uploadWebGallery(cid, parts, item);
   }
 
-  private async uploadWebGallery(
+  private uploadWebGallery(
     cid: string,
-    parts: readonly {
-      file: File;
-      partId: string;
-      position: number;
-      intent: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE';
-    }[],
+    parts: Parameters<ThreadAttachmentUploadController['uploadWebGallery']>[1],
     item: CbItem<ChatItemData>,
     retry = false,
   ): Promise<void> {
-    const threadId = this.threadId() ?? 0;
-    if (!threadId) return;
-    const total = parts.reduce((sum, part) => sum + part.file.size, 0);
-    const loaded = new Map<number, number>();
-    this.transfers.start({
-      clientMessageId: cid,
-      threadId,
-      kind: 'file',
-      file: parts[0].file,
-    });
-    this.transfers.registerRetry(cid, () => {
-      void this.uploadWebGallery(cid, parts, item, true);
-    });
-    try {
-      const staged = await firstValueFrom(
-        this.threadAdapter.stageMedia({
-          threadId,
-          contentType: 'GALLERY',
-          clientMessageId: cid,
-          fileCnt: parts.length,
-          retry,
-        }),
-      );
-      if (staged.code !== 0) {
-        this.surfaceSendQuota(staged);
-        throw new Error(staged.message);
-      }
-      const results = await Promise.all(
-        parts.map((part) =>
-          firstValueFrom(
-            this.threadAdapter
-              .uploadPart(
-                part.file,
-                {
-                  clientMessageId: cid,
-                  partId: part.partId,
-                  position: part.position,
-                  intent: part.intent,
-                },
-                (value) => {
-                  loaded.set(part.position, value);
-                  this.transfers.progress(
-                    cid,
-                    [...loaded.values()].reduce((sum, bytes) => sum + bytes, 0),
-                    total,
-                  );
-                },
-              )
-              .pipe(takeUntil(this.transfers.cancelled(cid))),
-          ),
-        ),
-      );
-      const failed = results.find((result) => result.code !== 0);
-      if (failed) {
-        this.surfaceSendQuota(failed);
-        throw new Error(failed.message);
-      }
-      this.transfers.complete(cid);
-      await this.markAccepted(item);
-    } catch (error) {
-      this.transfers.fail(cid, this.uploadFailureReason(error));
-      await this.failPending(item);
-    }
+    return this.attachmentSender.uploadWebGallery(cid, parts, item, retry);
   }
 
   private async sendNativeGallery(
@@ -2145,74 +2014,15 @@ export class MessageThreadComponent implements OnDestroy {
     await this.uploadNativeGallery(cid, parts, item);
   }
 
-  private async uploadNativeGallery(
+  private uploadNativeGallery(
     cid: string,
-    parts: readonly {
-      selection: NativeUploadSelection;
-      partId: string;
-      position: number;
-    }[],
+    parts: Parameters<
+      ThreadAttachmentUploadController['uploadNativeGallery']
+    >[1],
     item: CbItem<ChatItemData>,
     retry = false,
   ): Promise<void> {
-    const threadId = this.threadId() ?? 0;
-    if (!threadId) return;
-    const total = parts.reduce((sum, part) => sum + part.selection.size, 0);
-    const loaded = new Map<number, number>();
-    this.transfers.start({
-      clientMessageId: cid,
-      threadId,
-      kind: 'file',
-      name: parts[0].selection.name,
-      size: total,
-      previewUrl: parts[0].selection.preview,
-    });
-    this.transfers.registerRetry(cid, () => {
-      void this.uploadNativeGallery(cid, parts, item, true);
-    });
-    try {
-      const staged = await firstValueFrom(
-        this.threadAdapter.stageMedia({
-          threadId,
-          contentType: 'GALLERY',
-          clientMessageId: cid,
-          fileCnt: parts.length,
-          retry,
-        }),
-      );
-      if (staged.code !== 0) {
-        this.surfaceSendQuota(staged);
-        throw new Error(staged.message);
-      }
-      const results = await Promise.all(
-        parts.map((part) => {
-          const intent = nativeUploadIntent(part.selection.kind);
-          return this.nativeUploads.upload<StandardResponse<unknown>>(
-            part.selection,
-            cid,
-            { partId: part.partId, position: String(part.position), intent },
-            (value) => {
-              loaded.set(part.position, value);
-              this.transfers.progress(
-                cid,
-                [...loaded.values()].reduce((sum, bytes) => sum + bytes, 0),
-                total,
-              );
-            },
-          );
-        }),
-      );
-      const failed = results.find((result) => result.code !== 0);
-      if (failed) {
-        this.surfaceSendQuota(failed);
-        throw new Error(failed.message);
-      }
-      this.transfers.complete(cid);
-      await this.markAccepted(item);
-    } catch (error) {
-      this.transfers.fail(cid, this.uploadFailureReason(error));
-      await this.failPending(item);
-    }
+    return this.attachmentSender.uploadNativeGallery(cid, parts, item, retry);
   }
 
   private async startPreparedWebAttachment(
@@ -2370,84 +2180,14 @@ export class MessageThreadComponent implements OnDestroy {
     );
   }
 
-  private async uploadAndSendNative(
+  private uploadAndSendNative(
     cid: string,
     partId: string,
     file: NativeUploadSelection,
     item: CbItem<ChatItemData>,
     retry = false,
   ): Promise<void> {
-    const tid = this.threadId() ?? 0;
-    if (!tid) return;
-    try {
-      const contentType =
-        file.kind === 'image'
-          ? 'IMAGE'
-          : file.kind === 'video'
-            ? 'VIDEO'
-            : 'FILE';
-      const staged = await firstValueFrom(
-        this.threadAdapter
-          .stageMedia({
-            threadId: tid,
-            contentType,
-            clientMessageId: cid,
-            retry,
-          })
-          .pipe(takeUntil(this.transfers.cancelled(cid))),
-      );
-      if (staged.code !== 0) {
-        this.surfaceSendQuota(staged);
-        throw new Error(staged.message);
-      }
-      const response = await this.nativeUploads.upload<
-        StandardResponse<unknown>
-      >(
-        file,
-        cid,
-        {
-          partId,
-          position: '0',
-          intent: contentType,
-        },
-        (loaded, total) => this.transfers.progress(cid, loaded, total),
-      );
-      if (response.code !== 0) {
-        this.surfaceSendQuota(response);
-        throw new Error(response.message);
-      }
-      this.transfers.complete(cid);
-      await this.markAccepted(item);
-    } catch (error) {
-      if (error instanceof NativeUploadError && error.code !== undefined) {
-        this.surfaceSendQuota({
-          code: error.code,
-          message: error.message,
-          data:
-            error.retryAfter === undefined
-              ? undefined
-              : { retryAfter: error.retryAfter },
-        });
-      }
-      if (this.debugTools.enabled()) {
-        console.error(
-          '[upload] native send failed',
-          JSON.stringify({
-            clientMessageId: cid,
-            uploadId: file.uploadId,
-            kind: file.kind,
-            error: error instanceof Error ? error.message : String(error),
-          }),
-        );
-      }
-      const reason =
-        error instanceof Error && error.message
-          ? error.message
-          : this.transloco.translate('transfer.uploadFailed');
-      this.transfers.fail(cid, reason);
-      this.toast.warn(reason, { duration: 6000 });
-      await this.failPending(item);
-    }
+    return this.attachmentSender.uploadNative(cid, partId, file, item, retry);
   }
 
   private appendWebPaste(files: readonly File[], text: string): void {
@@ -2547,55 +2287,6 @@ export class MessageThreadComponent implements OnDestroy {
     });
     this.dispatchPending(item);
     void this.uploadAndSendAudio(cid, partId, f, item, { duration });
-  }
-
-  private dispatchHttpSendText(item: CbItem<ChatMsgData>): void {
-    const cid = item.clientMessageId!;
-    const tid = this.threadId() ?? 0;
-    if (!tid) return;
-    this.threadAdapter
-      .sendText({
-        threadId: tid,
-        content: stringifyTextMessageContent({
-          text: item.data.wireText ?? item.data.text,
-          ...(item.data.quote?.seq !== undefined
-            ? { quote: { seq: item.data.quote.seq } }
-            : {}),
-        }),
-        clientMessageId: cid,
-        optimistic: item,
-        source: this.source!,
-      })
-      .then((res) => {
-        if (res.code !== 0) {
-          this.surfaceSendFailure(res, tid);
-          void this.failPending(item);
-        } else void this.markAccepted(item);
-      })
-      .catch(() => void this.failPending(item));
-  }
-
-  /** LINK send: the wire content is the completed in-memory generation id. */
-  private dispatchHttpSendLink(
-    item: CbItem<ChatItemData>,
-    generationId: string,
-  ): void {
-    const cid = item.clientMessageId!;
-    const tid = this.threadId() ?? 0;
-    if (!tid) return;
-    this.threadAdapter
-      .sendLink({
-        threadId: tid,
-        generationId,
-        clientMessageId: cid,
-      })
-      .then((res) => {
-        if (res.code !== 0) {
-          this.surfaceSendFailure(res, tid);
-          void this.failPending(item);
-        } else void this.markAccepted(item);
-      })
-      .catch(() => void this.failPending(item));
   }
 
   /** Daily quota failures are business responses (HTTP 200), so the HTTP error interceptor never sees
@@ -2781,12 +2472,6 @@ export class MessageThreadComponent implements OnDestroy {
     this.transfers.registerRetry(clientMessageId, () => {
       void retry();
     });
-  }
-
-  private uploadFailureReason(error: unknown): string {
-    return error instanceof Error && error.message
-      ? error.message
-      : this.transloco.translate('transfer.uploadFailed');
   }
 
   private async rejectOversizedUpload(
@@ -3103,13 +2788,5 @@ function uploadIntentForMime(
   if (mime.startsWith('image/')) return 'IMAGE';
   if (mime.startsWith('video/')) return 'VIDEO';
   if (mime.startsWith('audio/')) return 'AUDIO';
-  return 'FILE';
-}
-
-function nativeUploadIntent(
-  kind: NativeUploadSelection['kind'],
-): 'IMAGE' | 'VIDEO' | 'FILE' {
-  if (kind === 'image') return 'IMAGE';
-  if (kind === 'video') return 'VIDEO';
   return 'FILE';
 }
