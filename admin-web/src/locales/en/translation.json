@@ -60,7 +60,7 @@
     "media": "Media & Storage",
     "settings": "Settings",
     "security": "My Account",
-    "audit": "Audit Trail",
+    "commands": "Command History",
     "messageReports": "Message Reports",
     "logout": "Log Out",
     "group": {
@@ -702,20 +702,30 @@
       "expires": "Expires"
     }
   },
-  "audit": {
-    "title": "Audit Log",
-    "desc": "Every destructive admin action — who did what, from where, when, and whether it succeeded.",
-    "searchPlaceholder": "Filter by action (e.g. user., federation.)",
-    "outcomeAll": "All",
-    "outcomeSuccess": "Success",
-    "outcomeFailed": "Failed",
-    "empty": "No matching actions",
+  "commands": {
+    "title": "Command History",
+    "desc": "Durable business commands, their ordering scope, execution state, and diagnostic details.",
+    "searchPlaceholder": "Search command type or aggregate key",
+    "empty": "No matching commands",
+    "completed": "Completed",
+    "resultCode": "Result code",
+    "progressCursor": "Progress cursor",
+    "payload": "Payload",
+    "status": {
+      "ALL": "All",
+      "PENDING": "Pending",
+      "PROCESSING": "Processing",
+      "SUCCEEDED": "Succeeded",
+      "REJECTED": "Rejected",
+      "FAILED": "Failed"
+    },
     "col": {
-      "action": "Action",
-      "target": "Target",
+      "status": "Status",
+      "command": "Command",
+      "aggregate": "Aggregate",
       "actor": "Actor",
-      "ip": "IP",
-      "at": "When"
+      "timing": "Timing",
+      "details": "Details"
     }
   },
   "diagnosticReports": {

@@ -19,6 +19,7 @@ export class FederationGroupMembershipService {
       memberUserId: number;
       active: boolean;
       hostedLocally: boolean;
+      allowOwnerDeactivation?: boolean;
     },
   ): Promise<void> {
     const localAccount = await tx.query.account.findFirst({
@@ -80,11 +81,16 @@ export class FederationGroupMembershipService {
       .update(threadMember)
       .set({ left: true, updatedAt: new Date() })
       .where(
-        and(
-          eq(threadMember.threadId, params.threadId),
-          eq(threadMember.userId, params.memberUserId),
-          ne(threadMember.role, GroupRole.OWNER),
-        ),
+        params.allowOwnerDeactivation
+          ? and(
+              eq(threadMember.threadId, params.threadId),
+              eq(threadMember.userId, params.memberUserId),
+            )
+          : and(
+              eq(threadMember.threadId, params.threadId),
+              eq(threadMember.userId, params.memberUserId),
+              ne(threadMember.role, GroupRole.OWNER),
+            ),
       );
   }
 }

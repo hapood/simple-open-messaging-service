@@ -12,8 +12,7 @@ import { UserService } from '../user/user.service.js';
 import { InviteService } from '../invite/invite.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { FederationService } from '../federation/federation.service.js';
-import { FederationRelationshipCommandService } from '../federation/federation-relationship-command.service.js';
-import { ApiResultResponse, envelope } from '../common/api-result.js';
+import { ApiResultResponse } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import {
@@ -24,13 +23,10 @@ import {
   InviteDto,
   ReadIncomingInvitesDto,
 } from '../dto/invite.dto.js';
-import { UserQuotaService } from '../quota/user-quota.service.js';
-import { eq } from 'drizzle-orm';
-import * as tables from '../database/schema.js';
-import {
-  ClientStateFeedService,
-  type PendingClientStateFeedUpdate,
-} from '../client-state-feed/client-state-feed.service.js';
+import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
+import { DomainCommandQueueService } from '../domain-command/domain-command-queue.service.js';
+import { DomainCommandType } from '../domain-command/domain-command.constants.js';
+import { DomainCommandAcceptedDto } from '../dto/domain-command.dto.js';
 
 /**
  * Invite endpoints — the single API for friend-add (and, when wired, group-invite). The service owns
@@ -49,9 +45,8 @@ export class InviteController {
     private readonly inviteService: InviteService,
     private readonly participantService: ThreadParticipantService,
     private readonly federationService: FederationService,
-    private readonly relationshipCommands: FederationRelationshipCommandService,
-    private readonly userQuota: UserQuotaService,
     private readonly clientStateFeed: ClientStateFeedService,
+    private readonly domainCommands: DomainCommandQueueService,
   ) {}
 
   @ApiBearerAuth()
@@ -78,22 +73,32 @@ export class InviteController {
   @ApiOperation({
     summary: 'Send a friend invite to a local account',
   })
+  @ApiResultResponse(DomainCommandAcceptedDto)
   async sendFriendInvite(
     @Request() req: FastifyRequest,
     @Body() dto: SendFriendInviteDto,
-  ) {
+  ): Promise<DomainCommandAcceptedDto> {
     const me = req.user.userId;
     const account = dto.account.trim().toLowerCase();
-    const target = await this.userService.findUniqueUser({
-      account_domain: { account, domain: 'local' },
-    });
+    const [actor, target] = await Promise.all([
+      this.userService.findUniqueUser({ id: me }),
+      this.userService.findUniqueUser({
+        account_domain: { account, domain: 'local' },
+      }),
+    ]);
+    if (!actor || actor.availability !== 'AVAILABLE') {
+      throw new BusinessException(
+        BusinessCode.UNAUTHENTICATED,
+        'authenticated user does not exist',
+      );
+    }
     if (target && me === target.id) {
       throw new BusinessException(
         BusinessCode.FRIEND_SELF,
         'can not invite yourself',
       );
     }
-    if (!target) {
+    if (!target || target.availability !== 'AVAILABLE') {
       // Errors are localized client-side by their numeric code (see ApiResult.messageKey) — they carry no
       // messageKey — so this throws and flows through the global AllExceptionsFilter like every other error.
       throw new BusinessException(
@@ -101,57 +106,22 @@ export class InviteController {
         'user does not exist',
       );
     }
-    if (await this.participantService.areFriends(me, target.id)) {
-      return envelope(undefined, {
-        message: 'you are already friends',
-        messageKey: 'friend.msg.alreadyFriends',
-      });
-    }
-
-    const clientFeedUpdates: PendingClientStateFeedUpdate[] = [];
-    const res = await this.inviteService.createFriendInvite(
-      me,
-      target.id,
-      dto.note ?? '',
-      true,
-      undefined,
-      async (tx, created) => {
-        if (created) await this.userQuota.tick(me, 'requests', tx);
-        clientFeedUpdates.push(
-          ...(await this.inviteService.writeLocalFriendIntentInTx(
-            tx,
-            me,
-            target.id,
-            true,
-            dto.note ?? '',
-          )),
-        );
+    const { commandId } = await this.domainCommands.enqueue({
+      aggregate: {
+        type: 'USER_PAIR',
+        endpoints: [
+          { account: actor.account, domain: actor.domain },
+          { account: target.account, domain: target.domain },
+        ],
       },
-    );
-    this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
-
-    if (res.status === 'auto-accepted') {
-      // Local mutual → friends immediately. Both sides' thread-list adds are driven by the
-      // Client-state feed updates notify both local devices after commit.
-      // no dedicated friend event — the delta subsumes it, aligning local
-      // with the federated path which already dropped it).
-      return envelope(
-        { threadId: res.threadId } as { threadId: number | undefined },
-        {
-          message: 'you are now friends',
-          messageKey: 'friend.msg.nowFriends',
-        },
-      );
-    }
-
-    // Local recipients learn through the client state feed; federation uses its own durable feed.
-    return envelope(
-      { inviteId: res.inviteId },
-      {
-        message: 'friend request sent',
-        messageKey: 'friend.msg.sent',
+      commandType: DomainCommandType.SEND_LOCAL_FRIEND_INVITE,
+      actorUserId: me,
+      payload: {
+        targetUserId: target.id,
+        note: dto.note ?? '',
       },
-    );
+    });
+    return { commandId: commandId.toString(), status: 'PENDING' };
   }
 
   @ApiBearerAuth()
@@ -160,10 +130,12 @@ export class InviteController {
   @ApiOperation({
     summary: 'Send a federated friend request by Address',
   })
+  @ApiResultResponse(DomainCommandAcceptedDto)
   async sendFederatedFriendInvite(
     @Request() req: FastifyRequest,
     @Body() dto: SendFederatedFriendInviteDto,
-  ) {
+  ): Promise<DomainCommandAcceptedDto> {
+    const actorUserId = req.user.userId;
     const account = dto.account.trim().toLowerCase();
     const domain = dto.domain.trim().toLowerCase();
     if (domain === 'local' || domain === this.federationService.ourDomain)
@@ -177,37 +149,32 @@ export class InviteController {
         BusinessCode.VALIDATION_FAILED,
         'group requests use /group/federated-join-request',
       );
-    let statePeers = new Map<string, bigint>();
-    const clientFeedUpdates: PendingClientStateFeedUpdate[] = [];
-    const result = await this.inviteService.createFederatedFriendInvite(
-      req.user.userId,
-      account,
-      domain,
-      dto.note ?? '',
-      { displayName: dto.displayName, avatar: dto.avatar },
-      async (tx, state) => {
-        await this.userQuota.tick(req.user.userId, 'requests', tx);
-        statePeers =
-          await this.relationshipCommands.writeAddressedFriendRequestInTx(
-            tx,
-            req.user.userId,
-            { account, domain, namespaceId: state.namespaceId },
-            state,
-            clientFeedUpdates,
-          );
+    const actor = await this.userService.findUniqueUser({ id: actorUserId });
+    if (!actor || actor.availability !== 'AVAILABLE') {
+      throw new BusinessException(
+        BusinessCode.UNAUTHENTICATED,
+        'authenticated user does not exist',
+      );
+    }
+    const { commandId } = await this.domainCommands.enqueue({
+      aggregate: {
+        type: 'USER_PAIR',
+        endpoints: [
+          { account: actor.account, domain: actor.domain },
+          { account, domain },
+        ],
       },
-    );
-    await this.federationService.pushStateFeedDomains(statePeers.keys());
-    this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
-    return envelope(
-      { account, domain },
-      {
-        message: 'friend request sent',
-        messageKey: result.created
-          ? 'friend.msg.sent'
-          : 'friend.msg.requestAlreadySent',
+      commandType: DomainCommandType.SEND_FEDERATED_FRIEND_INVITE,
+      actorUserId,
+      payload: {
+        account,
+        domain,
+        note: dto.note ?? '',
+        displayName: dto.displayName,
+        ...(dto.avatar ? { avatar: dto.avatar } : {}),
       },
-    );
+    });
+    return { commandId: commandId.toString(), status: 'PENDING' };
   }
 
   @ApiBearerAuth()
@@ -221,182 +188,143 @@ export class InviteController {
     @Request() req: FastifyRequest,
     @Body() dto: FriendInviteActionDto,
   ) {
+    const me = req.user.userId;
     if (this.isAddressedAction(dto)) {
-      const peers = await this.federationService.acceptAddressedFriendRequest(
-        req.user.userId,
-        { account: dto.account!, domain: dto.domain! },
-      );
-      await this.federationService.pushStateFeedDomains(peers.keys());
-      return {};
-    }
-    // acceptInvite throws BusinessException (INVITE_EXPIRED / NOT_FOUND / …) → the global filter renders it.
-    let friendStatePeers = new Map<string, bigint>();
-    let groupStatePeers = new Map<string, bigint>();
-    const clientFeedUpdates: PendingClientStateFeedUpdate[] = [];
-    const res = await this.inviteService.acceptInvite(
-      dto.inviteId!,
-      req.user.userId,
-      async (tx, fromUserId) => {
-        const from = await tx.query.user.findFirst({
-          where: eq(tables.user.id, fromUserId),
-          columns: { domain: true },
+      if (dto.account!.startsWith('!')) {
+        const scope =
+          await this.inviteService.resolveFederatedFriendRequestCommandScope(
+            me,
+            dto.account!,
+            dto.domain!,
+            'INCOMING',
+          );
+        const { commandId } = await this.domainCommands.enqueue({
+          aggregate: { type: 'GROUP', address: scope.remote },
+          commandType: DomainCommandType.ACCEPT_ADDRESSED_GROUP_INVITATION,
+          actorUserId: me,
+          payload: scope.remote,
         });
-        if (from?.domain !== 'local') {
-          friendStatePeers =
-            await this.relationshipCommands.writeFriendIntentInTx(
-              tx,
-              req.user.userId,
-              fromUserId,
-              true,
-              '',
-              clientFeedUpdates,
-              true,
-            );
-        } else
-          clientFeedUpdates.push(
-            ...(await this.inviteService.writeLocalFriendIntentInTx(
-              tx,
-              req.user.userId,
-              fromUserId,
-              true,
-            )),
-          );
-      },
-      async (tx, threadId) => {
-        groupStatePeers =
-          await this.relationshipCommands.writeMemberRelationshipIntentInTx(
-            tx,
-            threadId,
-            req.user.userId,
-            'ACCEPTED',
-            clientFeedUpdates,
-          );
-        await this.inviteService.writeGroupRequestClientStateInTx(
-          tx,
-          threadId,
-          req.user.userId,
-          clientFeedUpdates,
+        return { commandId: commandId.toString(), status: 'PENDING' as const };
+      }
+      const scope =
+        await this.inviteService.resolveFederatedFriendRequestCommandScope(
+          me,
+          dto.account!,
+          dto.domain!,
+          'INCOMING',
         );
-      },
-    );
-    await this.federationService.pushStateFeedDomains(friendStatePeers.keys());
-    await this.federationService.pushStateFeedDomains(groupStatePeers.keys());
-    this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
-
-    if (res.kind === 'FRIEND') {
-      const fromUser = await this.userService.findUniqueUser({
-        id: res.fromUserId,
+      const { commandId } = await this.domainCommands.enqueue({
+        aggregate: {
+          type: 'USER_PAIR',
+          endpoints: [scope.local, scope.remote],
+        },
+        commandType: DomainCommandType.ACCEPT_ADDRESSED_FRIEND_REQUEST,
+        actorUserId: me,
+        payload: scope.remote,
       });
-      void fromUser;
-      // Both local devices receive a state-feed update; no dedicated friend event (the feed
-      // subsumes it, aligning local with the federated path which already dropped it). Accepting does not
-      // create another unread incoming request, so no extra revision is needed.
-      return { threadId: res.threadId };
+      return { commandId: commandId.toString(), status: 'PENDING' as const };
     }
-
-    // Federated join delivery is the RELATIONSHIP_INTENT written in the accept transaction above.
-    return { threadId: res.threadId };
+    const scope = await this.inviteService.resolveAcceptInviteCommandScope(
+      dto.inviteId!,
+      me,
+    );
+    if (scope.kind === 'FRIEND') {
+      const { commandId } = await this.domainCommands.enqueue({
+        aggregate: { type: 'USER_PAIR', endpoints: scope.endpoints },
+        commandType: DomainCommandType.ACCEPT_FRIEND_INVITE,
+        actorUserId: me,
+        payload: { inviteId: scope.inviteId },
+      });
+      return { commandId: commandId.toString(), status: 'PENDING' as const };
+    }
+    const { commandId } = await this.domainCommands.enqueue({
+      aggregate: { type: 'GROUP', address: scope.address },
+      commandType: DomainCommandType.ACCEPT_GROUP_INVITATION,
+      actorUserId: me,
+      payload: { threadId: scope.threadId },
+    });
+    return { commandId: commandId.toString(), status: 'PENDING' as const };
   }
 
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('invite/revoke')
   @ApiOperation({ summary: 'Revoke my own outgoing invite' })
+  @ApiResultResponse(DomainCommandAcceptedDto)
   async revokeInvite(
     @Request() req: FastifyRequest,
     @Body() dto: FriendInviteActionDto,
-  ): Promise<void> {
+  ): Promise<void | DomainCommandAcceptedDto> {
     const me = req.user.userId;
     if (this.isAddressedAction(dto)) {
       if (dto.account!.startsWith('!')) {
-        await this.federationService.revokeGroupJoinRequest(me, {
-          account: dto.account!,
-          domain: dto.domain!,
+        const address =
+          await this.federationService.resolveGroupJoinRequestCommandScope(
+            me,
+            { account: dto.account!, domain: dto.domain! },
+          );
+        const { commandId } = await this.domainCommands.enqueue({
+          aggregate: { type: 'GROUP', address },
+          commandType: DomainCommandType.REVOKE_FEDERATED_GROUP_JOIN,
+          actorUserId: me,
+          payload: address,
         });
-        return;
+        return { commandId: commandId.toString(), status: 'PENDING' };
       }
-      const peers = await this.federationService.revokeAddressedOutgoingRequest(
-        me,
-        { account: dto.account!, domain: dto.domain! },
-      );
-      await this.federationService.pushStateFeedDomains(peers.keys());
-      return;
+      const scope =
+        await this.inviteService.resolveFederatedFriendRequestCommandScope(
+          me,
+          dto.account!,
+          dto.domain!,
+          'OUTGOING',
+        );
+      const { commandId } = await this.domainCommands.enqueue({
+        aggregate: {
+          type: 'USER_PAIR',
+          endpoints: [scope.local, scope.remote],
+        },
+        commandType: DomainCommandType.REVOKE_ADDRESSED_FRIEND_REQUEST,
+        actorUserId: me,
+        payload: scope.remote,
+      });
+      return { commandId: commandId.toString(), status: 'PENDING' };
     }
-    let statePeers = new Map<string, bigint>();
-    const clientFeedUpdates: PendingClientStateFeedUpdate[] = [];
-    await this.inviteService.revokeInvite(
+    const scope = await this.inviteService.resolveP2PInviteCommandScope(
       dto.inviteId!,
       me,
-      async (tx, toUserId) => {
-        const to = await tx.query.user.findFirst({
-          where: eq(tables.user.id, toUserId),
-          columns: { domain: true },
-        });
-        if (to?.domain !== 'local')
-          statePeers = await this.relationshipCommands.writeFriendIntentInTx(
-            tx,
-            me,
-            toUserId,
-            false,
-            '',
-            clientFeedUpdates,
-          );
-        else
-          clientFeedUpdates.push(
-            ...(await this.inviteService.writeLocalFriendIntentInTx(
-              tx,
-              me,
-              toUserId,
-              false,
-            )),
-          );
-      },
+      'AUTHOR',
     );
-    await this.federationService.pushStateFeedDomains(statePeers.keys());
-    this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
+    const { commandId } = await this.domainCommands.enqueue({
+      aggregate: { type: 'USER_PAIR', endpoints: scope.endpoints },
+      commandType: DomainCommandType.REVOKE_FRIEND_INVITE,
+      actorUserId: me,
+      payload: { inviteId: scope.inviteId },
+    });
+    return { commandId: commandId.toString(), status: 'PENDING' };
   }
 
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('invite/reject')
   @ApiOperation({ summary: 'Reject an incoming friend invite' })
+  @ApiResultResponse(DomainCommandAcceptedDto)
   async rejectInvite(
     @Request() req: FastifyRequest,
     @Body() dto: InviteIdDto,
-  ): Promise<void> {
+  ): Promise<DomainCommandAcceptedDto> {
     const me = req.user.userId;
-    let statePeers = new Map<string, bigint>();
-    const clientFeedUpdates: PendingClientStateFeedUpdate[] = [];
-    await this.inviteService.rejectInvite(
+    const scope = await this.inviteService.resolveP2PInviteCommandScope(
       dto.inviteId,
       me,
-      async (tx, fromUserId) => {
-        const from = await tx.query.user.findFirst({
-          where: eq(tables.user.id, fromUserId),
-          columns: { domain: true },
-        });
-        if (from?.domain !== 'local')
-          statePeers = await this.relationshipCommands.writeFriendIntentInTx(
-            tx,
-            me,
-            fromUserId,
-            false,
-            '',
-            clientFeedUpdates,
-          );
-        else
-          clientFeedUpdates.push(
-            ...(await this.inviteService.writeLocalFriendIntentInTx(
-              tx,
-              me,
-              fromUserId,
-              false,
-            )),
-          );
-      },
+      'SUBJECT',
     );
-    await this.federationService.pushStateFeedDomains(statePeers.keys());
-    this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
+    const { commandId } = await this.domainCommands.enqueue({
+      aggregate: { type: 'USER_PAIR', endpoints: scope.endpoints },
+      commandType: DomainCommandType.REJECT_FRIEND_INVITE,
+      actorUserId: me,
+      payload: { inviteId: scope.inviteId },
+    });
+    return { commandId: commandId.toString(), status: 'PENDING' };
   }
 
   private isAddressedAction(dto: FriendInviteActionDto): boolean {

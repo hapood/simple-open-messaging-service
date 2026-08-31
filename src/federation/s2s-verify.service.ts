@@ -61,7 +61,7 @@ export class S2sVerifyService {
   }
 
   /** Parse the RFC 9421 keyId from Signature-Input → { keyId, signer domain }. Cheap, no network.
-   *  Throws FEDERATION_MALFORMED (401) on missing/malformed Signature-Input/keyId. */
+   *  Throws FEDERATION_MALFORMED (400) on missing/malformed Signature-Input/keyId. */
   parseSigner(headers: OutboundSignatureHeaders): {
     keyId: string;
     domain: string;
@@ -73,7 +73,7 @@ export class S2sVerifyService {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
         'malformed or expired Signature-Input',
-        HttpStatus.UNAUTHORIZED,
+        HttpStatus.BAD_REQUEST,
       );
     }
     const metadata = this.signature.parseMetadata(headers);
@@ -81,7 +81,7 @@ export class S2sVerifyService {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
         'missing required Signature-Input metadata',
-        HttpStatus.UNAUTHORIZED,
+        HttpStatus.BAD_REQUEST,
       );
     }
     const { keyId, expires } = metadata;
@@ -90,7 +90,7 @@ export class S2sVerifyService {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
         `malformed keyId "${keyId}"`,
-        HttpStatus.UNAUTHORIZED,
+        HttpStatus.BAD_REQUEST,
       );
     }
     return { keyId, domain, expires };
@@ -99,7 +99,7 @@ export class S2sVerifyService {
   /**
    * Fetch the signer's public key from their .well-known (authoritative — fetch-on-miss + TTL cached,
    * so the requester can't lie with an inline key) and verify the signature over the raw body. Throws
-   * INTERNAL (500 → sender retries) on a transient fetch failure; FEDERATION_BAD_SIGNATURE
+   * INTERNAL (503 → sender retries) on a transient fetch failure; FEDERATION_BAD_SIGNATURE
    * (401, no retry) if the keyId isn't published or the signature/content-digest fails. Caches the key
    * on success (getPublicKey does the upsert).
    */
@@ -112,11 +112,7 @@ export class S2sVerifyService {
   ): Promise<void> {
     let publicKey: Uint8Array | null;
     try {
-      publicKey = await this.discovery.getPublicKey(
-        domain,
-        namespaceId,
-        keyId,
-      );
+      publicKey = await this.discovery.getPublicKey(domain, namespaceId, keyId);
     } catch (e) {
       throw new BusinessException(
         BusinessCode.INTERNAL,

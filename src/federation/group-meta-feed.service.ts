@@ -233,7 +233,7 @@ export class GroupMetaFeedService {
       throw new BusinessException(
         BusinessCode.FORBIDDEN,
         'group meta is not visible to this peer',
-        HttpStatus.FORBIDDEN,
+        HttpStatus.OK,
       );
     const end = source.allocatedThrough;
     const cursorData = {

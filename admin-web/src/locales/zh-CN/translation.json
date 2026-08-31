@@ -60,7 +60,7 @@
     "media": "媒体与存储",
     "settings": "设置",
     "security": "我的账户",
-    "audit": "操作审计",
+    "commands": "命令记录",
     "messageReports": "消息举报",
     "logout": "登出",
     "group": {
@@ -699,20 +699,30 @@
       "expires": "过期"
     }
   },
-  "audit": {
-    "title": "审计日志",
-    "desc": "每一次破坏性管理员操作 —— 谁在何时从何地对谁做了什么，以及是否成功。",
-    "searchPlaceholder": "按操作过滤（如 user.、federation.）",
-    "outcomeAll": "全部",
-    "outcomeSuccess": "成功",
-    "outcomeFailed": "失败",
-    "empty": "无匹配操作",
+  "commands": {
+    "title": "命令记录",
+    "desc": "查看持久化业务命令的顺序作用域、执行状态和诊断信息。",
+    "searchPlaceholder": "搜索命令类型或 aggregate key",
+    "empty": "没有匹配的命令",
+    "completed": "完成于",
+    "resultCode": "结果码",
+    "progressCursor": "进度游标",
+    "payload": "Payload",
+    "status": {
+      "ALL": "全部",
+      "PENDING": "等待中",
+      "PROCESSING": "执行中",
+      "SUCCEEDED": "成功",
+      "REJECTED": "已拒绝",
+      "FAILED": "失败"
+    },
     "col": {
-      "action": "操作",
-      "target": "目标",
+      "status": "状态",
+      "command": "命令",
+      "aggregate": "作用域",
       "actor": "操作者",
-      "ip": "IP",
-      "at": "时间"
+      "timing": "时间",
+      "details": "详情"
     }
   },
   "diagnosticReports": {

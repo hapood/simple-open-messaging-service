@@ -42,10 +42,7 @@ describe('group-meta compacted feed', () => {
     }).compile();
     database = mod.get(DatabaseService);
     feed = mod.get(GroupMetaFeedService);
-    peerNamespaceId = await seedFederatedPeerNamespace(
-      database.db,
-      peerDomain,
-    );
+    peerNamespaceId = await seedFederatedPeerNamespace(database.db, peerDomain);
     otherPeerNamespaceId = await seedFederatedPeerNamespace(
       database.db,
       otherPeerDomain,
@@ -167,13 +164,10 @@ describe('group-meta compacted feed', () => {
 
   it('returns the current roster in full and ordered changes in delta', async () => {
     await database.db.transaction((tx) =>
-      feed.reconcileInTx(
-        tx,
-        peerDomain,
-        peerNamespaceId,
-        groupId,
-        [owner, member],
-      ),
+      feed.reconcileInTx(tx, peerDomain, peerNamespaceId, groupId, [
+        owner,
+        member,
+      ]),
     );
     await database.db.transaction((tx) =>
       feed.reconcileInTx(tx, peerDomain, peerNamespaceId, groupId, [owner]),
@@ -284,13 +278,10 @@ describe('group-meta compacted feed', () => {
         ),
       );
     await database.db.transaction((tx) =>
-      feed.reconcileInTx(
-        tx,
-        peerDomain,
-        peerNamespaceId,
-        groupId,
-        [owner, member],
-      ),
+      feed.reconcileInTx(tx, peerDomain, peerNamespaceId, groupId, [
+        owner,
+        member,
+      ]),
     );
     const delta = await feed.serve(
       peerDomain,
@@ -354,13 +345,10 @@ describe('group-meta compacted feed', () => {
         ),
       );
     await database.db.transaction((tx) =>
-      feed.reconcileInTx(
-        tx,
-        peerDomain,
-        peerNamespaceId,
-        groupId,
-        [owner, member],
-      ),
+      feed.reconcileInTx(tx, peerDomain, peerNamespaceId, groupId, [
+        owner,
+        member,
+      ]),
     );
   });
 
@@ -370,16 +358,16 @@ describe('group-meta compacted feed', () => {
     );
     await expect(
       feed.serve(peerDomain, peerNamespaceId, groupAccount, 'full', 0n),
-    ).rejects.toMatchObject({ bizCode: BusinessCode.FORBIDDEN });
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FORBIDDEN,
+      status: 200,
+    });
 
     const unchangedHead = await database.db.transaction((tx) =>
-      feed.reconcileInTx(
-        tx,
-        peerDomain,
-        peerNamespaceId,
-        groupId,
-        [owner, member],
-      ),
+      feed.reconcileInTx(tx, peerDomain, peerNamespaceId, groupId, [
+        owner,
+        member,
+      ]),
     );
     expect(unchangedHead).toBe(6n);
     const advancedHead = await database.db.transaction((tx) =>
@@ -396,19 +384,13 @@ describe('group-meta compacted feed', () => {
 
   it('keeps the same member address independent for different source peers', async () => {
     await database.db.transaction((tx) =>
-      feed.reconcileInTx(
-        tx,
-        otherPeerDomain,
-        otherPeerNamespaceId,
-        groupId,
-        [
+      feed.reconcileInTx(tx, otherPeerDomain, otherPeerNamespaceId, groupId, [
         owner,
         {
           ...member,
           body: { ...member.body, displayName: 'Different projection' },
         },
-        ],
-      ),
+      ]),
     );
     const first = await feed.serve(
       peerDomain,

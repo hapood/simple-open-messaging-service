@@ -10,7 +10,11 @@ import { DatabaseService } from '../src/database/database.service';
 import { messageAsset, message } from '../src/database/schema';
 import { LinkPreviewService } from '../src/link-preview/link-preview.service.js';
 import { registerAndLogin } from './federation-test-helpers';
-import { waitForLocalFriendInvite } from './domain-command-helpers.js';
+import {
+  waitForAcceptedDomainCommand,
+  waitForLocalFriendInvite,
+} from './domain-command-helpers.js';
+import { findP2PRelationship } from './seed.js';
 
 /**
  * LINK message send contract (single instance). The client sends only the URL; the server rebuilds the
@@ -94,7 +98,11 @@ describe('LINK message send (single instance)', () => {
       .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${bob.token}`)
       .send({ inviteId });
-    const threadId: number = accept.body.data.threadId;
+    await waitForAcceptedDomainCommand(database.db, accept.body);
+    const threadId = (await findP2PRelationship(database.db, alice.id, bob.id))
+      .pair?.threadId;
+    if (threadId === null || threadId === undefined)
+      throw new Error('friend acceptance completed without a P2P thread');
 
     // Alice sends a LINK message — only the bare URL on the wire.
     const send = await request(baseUrl)
@@ -151,7 +159,11 @@ describe('LINK message send (single instance)', () => {
       .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${bob.token}`)
       .send({ inviteId });
-    const threadId: number = accept.body.data.threadId;
+    await waitForAcceptedDomainCommand(database.db, accept.body);
+    const threadId = (await findP2PRelationship(database.db, alice.id, bob.id))
+      .pair?.threadId;
+    if (threadId === null || threadId === undefined)
+      throw new Error('friend acceptance completed without a P2P thread');
 
     const send = await request(baseUrl)
       .post('/api/v1/send-message')

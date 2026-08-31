@@ -13,7 +13,7 @@ describe('matchNav', () => {
     expect(matchNav('/groups')?.item.key).toBe('groups');
     expect(matchNav('/connections')?.item.key).toBe('connections');
     expect(matchNav('/bans')?.item.key).toBe('bans');
-    expect(matchNav('/audit')?.item.key).toBe('audit');
+    expect(matchNav('/commands')?.item.key).toBe('commands');
     expect(matchNav('/message-reports')?.item.key).toBe('messageReports');
     expect(matchNav('/media')?.item.key).toBe('media');
     expect(matchNav('/settings')?.item.key).toBe('settings');
@@ -49,7 +49,7 @@ describe('matchNav', () => {
   it('resolves each item to its group', () => {
     expect(matchNav('/dashboard')?.group.labelKey).toBe('nav.group.overview');
     expect(matchNav('/sessions')?.group.labelKey).toBe('nav.group.access');
-    expect(matchNav('/audit')?.group.labelKey).toBe('nav.group.access');
+    expect(matchNav('/commands')?.group.labelKey).toBe('nav.group.access');
     expect(matchNav('/message-reports')?.group.labelKey).toBe(
       'nav.group.access',
     );

@@ -41,7 +41,11 @@ import {
   uploadAvatar,
 } from './federation-test-helpers.js';
 import { findGroupRelationship } from './seed.js';
-import { waitForLocalFriendInvite } from './domain-command-helpers.js';
+import {
+  waitForAcceptedDomainCommand,
+  waitForAcceptedDomainCommands,
+  waitForLocalFriendInvite,
+} from './domain-command-helpers.js';
 
 describe('federation reverse thread rounds (two nodes)', () => {
   let appA: FedApp;
@@ -97,6 +101,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenCarol}`)
       .send({ inviteId: localFriendInviteId });
     expect(localFriendAccepted.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(appA.database, localFriendAccepted.body);
   }, 120_000);
 
   afterEach(async () => {
@@ -146,6 +151,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
     expect(invited.body.code, JSON.stringify(invited.body)).toBe(
       BusinessCode.OK,
     );
+    await waitForAcceptedDomainCommands(appA.database, invited.body);
     const mirror = await vi.waitFor(
       async () => {
         const [row] = await appB.database
@@ -188,6 +194,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenB}`)
       .send({ groupId: mirror.id });
     expect(joined.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(appB.database, joined.body);
     await vi.waitFor(
       async () => {
         expect(
@@ -209,8 +216,9 @@ describe('federation reverse thread rounds (two nodes)', () => {
   }
 
   it('publishes one paired client head with an empty preview when the federated current message is withdrawn', async () => {
-    const { originThreadId, mirrorThreadId } =
-      await createJoinedFederatedGroup('withdraw-current-preview');
+    const { originThreadId, mirrorThreadId } = await createJoinedFederatedGroup(
+      'withdraw-current-preview',
+    );
     const text = 'federated-current-preview';
     const sent = await request(appA.baseUrl)
       .post('/api/v1/send-message')
@@ -296,6 +304,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({ groupId: originThreadId, userIds: [bobStubIdA] });
     expect(invited.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommands(appA.database, invited.body);
 
     const mirror = await vi.waitFor(
       async () => {
@@ -339,6 +348,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenB}`)
       .send({ groupId: mirror.id });
     expect(joined.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(appB.database, joined.body);
 
     await vi.waitFor(
       async () => {
@@ -399,10 +409,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
         expect(proxy.blockedReverseMessageCount()).toBeGreaterThan(0);
         const state =
           await appB.database.query.federationThreadSyncState.findFirst({
-            where: and(
-              eq(federationThreadSyncState.threadId, mirror.id),
-              eq(federationThreadSyncState.peerDomain, FED_DOMAIN_A),
-            ),
+            where: and(eq(federationThreadSyncState.threadId, mirror.id)),
           });
         expect(state?.activeGapId).not.toBeNull();
         expect(state?.historyBoundaryReached).toBe(false);
@@ -437,10 +444,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
     await appB.stop();
     const durableWhileStopped =
       await appB.database.query.federationThreadSyncState.findFirst({
-        where: and(
-          eq(federationThreadSyncState.threadId, mirror.id),
-          eq(federationThreadSyncState.peerDomain, FED_DOMAIN_A),
-        ),
+        where: and(eq(federationThreadSyncState.threadId, mirror.id)),
       });
     expect(durableWhileStopped?.activeGapId).toBe(
       beforeRestart.state.activeGapId,
@@ -468,10 +472,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       async () => {
         const state =
           await appB.database.query.federationThreadSyncState.findFirst({
-            where: and(
-              eq(federationThreadSyncState.threadId, mirror.id),
-              eq(federationThreadSyncState.peerDomain, FED_DOMAIN_A),
-            ),
+            where: and(eq(federationThreadSyncState.threadId, mirror.id)),
           });
         expect(state).toMatchObject({
           activeGapId: null,
@@ -543,11 +544,13 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({ groupId: originThreadId, userIds: [carolLocalIdA] });
     expect(inviteCarol.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommands(appA.database, inviteCarol.body);
     const joinCarol = await request(appA.baseUrl)
       .post('/api/v1/group/join-request')
       .set('Authorization', `Bearer ${tokenCarol}`)
       .send({ groupId: originThreadId });
     expect(joinCarol.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(appA.database, joinCarol.body);
 
     const departedHistoryText = 'history-from-departed-carol';
     const retainedWithdrawalText = 'retained-before-remote-leave';
@@ -571,6 +574,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenCarol}`)
       .send({ groupId: originThreadId, deleteData: false });
     expect(leaveCarol.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(appA.database, leaveCarol.body);
     const currentTail = await request(appA.baseUrl)
       .post('/api/v1/send-message')
       .set('Authorization', `Bearer ${tokenA}`)
@@ -590,6 +594,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       expect(invited.body.code, JSON.stringify(invited.body)).toBe(
         BusinessCode.OK,
       );
+      await waitForAcceptedDomainCommands(appA.database, invited.body);
     };
     await inviteBob();
     const mirror = await vi.waitFor(
@@ -635,6 +640,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
         .set('Authorization', `Bearer ${tokenB}`)
         .send({ groupId: mirror.id });
       expect(joined.body.code).toBe(BusinessCode.OK);
+      await waitForAcceptedDomainCommand(appB.database, joined.body);
     };
     await joinBob();
 
@@ -642,10 +648,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       async () => {
         const state =
           await appB.database.query.federationThreadSyncState.findFirst({
-            where: and(
-              eq(federationThreadSyncState.threadId, mirror.id),
-              eq(federationThreadSyncState.peerDomain, FED_DOMAIN_A),
-            ),
+            where: and(eq(federationThreadSyncState.threadId, mirror.id)),
           });
         expect(state).toMatchObject({
           activeGapId: null,
@@ -701,6 +704,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
         .set('Authorization', `Bearer ${tokenB}`)
         .send({ groupId: mirror.id, deleteData: false });
       expect(left.body.code).toBe(BusinessCode.OK);
+      await waitForAcceptedDomainCommand(appB.database, left.body);
       await vi.waitFor(
         async () => {
           expect(
@@ -718,10 +722,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
     await leaveBob();
     const stateBeforeReauthorization =
       await appB.database.query.federationThreadSyncState.findFirst({
-        where: and(
-          eq(federationThreadSyncState.threadId, mirror.id),
-          eq(federationThreadSyncState.peerDomain, FED_DOMAIN_A),
-        ),
+        where: and(eq(federationThreadSyncState.threadId, mirror.id)),
       });
     expect(stateBeforeReauthorization).toBeDefined();
 
@@ -756,10 +757,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
         expect(proxy.blockedTombstoneFeedCount()).toBeGreaterThan(0);
         const state =
           await appB.database.query.federationThreadSyncState.findFirst({
-            where: and(
-              eq(federationThreadSyncState.threadId, mirror.id),
-              eq(federationThreadSyncState.peerDomain, FED_DOMAIN_A),
-            ),
+            where: and(eq(federationThreadSyncState.threadId, mirror.id)),
           });
         expect(state!.authorizationEpoch).toBeGreaterThan(
           stateBeforeReauthorization!.authorizationEpoch,
@@ -815,10 +813,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       async () => {
         const state =
           await appB.database.query.federationThreadSyncState.findFirst({
-            where: and(
-              eq(federationThreadSyncState.threadId, mirror.id),
-              eq(federationThreadSyncState.peerDomain, FED_DOMAIN_A),
-            ),
+            where: and(eq(federationThreadSyncState.threadId, mirror.id)),
           });
         expect(state!.deletionRecoveryThroughSeq).toBe(
           recoveryState.deletionRecoveryThroughSeq,
@@ -841,10 +836,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
     );
     const durableRecovery =
       await appB.database.query.federationThreadSyncState.findFirst({
-        where: and(
-          eq(federationThreadSyncState.threadId, mirror.id),
-          eq(federationThreadSyncState.peerDomain, FED_DOMAIN_A),
-        ),
+        where: and(eq(federationThreadSyncState.threadId, mirror.id)),
       });
     expect(durableRecovery?.deletionRecoveryThroughSeq).toBe(
       recoveryState.deletionRecoveryThroughSeq,
@@ -874,10 +866,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
         ).toMatchObject({ isDeleted: true });
         const state =
           await appB.database.query.federationThreadSyncState.findFirst({
-            where: and(
-              eq(federationThreadSyncState.threadId, mirror.id),
-              eq(federationThreadSyncState.peerDomain, FED_DOMAIN_A),
-            ),
+            where: and(eq(federationThreadSyncState.threadId, mirror.id)),
           });
         expect(state).toMatchObject({
           deletionRecoveryThroughSeq: null,
@@ -977,10 +966,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
         ).toBeDefined();
         const state =
           await appB.database.query.federationThreadSyncState.findFirst({
-            where: and(
-              eq(federationThreadSyncState.threadId, mirror.id),
-              eq(federationThreadSyncState.peerDomain, FED_DOMAIN_A),
-            ),
+            where: and(eq(federationThreadSyncState.threadId, mirror.id)),
           });
         expect(state!.authorizationEpoch).toBeGreaterThan(
           recoveryState.authorizationEpoch,
@@ -1027,10 +1013,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
         expect(proxy.blockedReverseMessageCount()).toBeGreaterThan(0);
         const state =
           await appB.database.query.federationThreadSyncState.findFirst({
-            where: and(
-              eq(federationThreadSyncState.threadId, mirrorThreadId),
-              eq(federationThreadSyncState.peerDomain, FED_DOMAIN_A),
-            ),
+            where: and(eq(federationThreadSyncState.threadId, mirrorThreadId)),
           });
         expect(state?.activeGapId).not.toBeNull();
         const gap =
@@ -1061,10 +1044,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       async () => {
         const [state, unavailableGap] = await Promise.all([
           appB.database.query.federationThreadSyncState.findFirst({
-            where: and(
-              eq(federationThreadSyncState.threadId, mirrorThreadId),
-              eq(federationThreadSyncState.peerDomain, FED_DOMAIN_A),
-            ),
+            where: and(eq(federationThreadSyncState.threadId, mirrorThreadId)),
           }),
           appB.database.query.federationThreadHistoryGap.findFirst({
             where: eq(federationThreadHistoryGap.id, active.gap.id),
@@ -1216,10 +1196,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       async () => {
         const state =
           await appB.database.query.federationThreadSyncState.findFirst({
-            where: and(
-              eq(federationThreadSyncState.threadId, mirrorThreadId),
-              eq(federationThreadSyncState.peerDomain, FED_DOMAIN_A),
-            ),
+            where: and(eq(federationThreadSyncState.threadId, mirrorThreadId)),
           });
         expect(state).toBeDefined();
         expect(state!.messageProcessedThroughSeq).toBe(state!.messageTargetSeq);
@@ -1258,6 +1235,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenB}`)
       .send({ groupId: mirrorThreadId, deleteData: false });
     expect(left.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(appB.database, left.body);
     await vi.waitFor(
       async () => {
         expect(
@@ -1286,6 +1264,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
     expect(reinvited.body.code, JSON.stringify(reinvited.body)).toBe(
       BusinessCode.OK,
     );
+    await waitForAcceptedDomainCommands(appA.database, reinvited.body);
     await vi.waitFor(
       async () => {
         const relationship = await findGroupRelationship(
@@ -1310,14 +1289,12 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenB}`)
       .send({ groupId: mirrorThreadId });
     expect(rejoined.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(appB.database, rejoined.body);
     const newState = await vi.waitFor(
       async () => {
         const state =
           await appB.database.query.federationThreadSyncState.findFirst({
-            where: and(
-              eq(federationThreadSyncState.threadId, mirrorThreadId),
-              eq(federationThreadSyncState.peerDomain, FED_DOMAIN_A),
-            ),
+            where: and(eq(federationThreadSyncState.threadId, mirrorThreadId)),
           });
         expect(state!.authorizationEpoch).toBeGreaterThan(
           oldState.authorizationEpoch,
@@ -1338,10 +1315,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
         expect(relationship.pair?.active).toBe(true);
         const state =
           await appB.database.query.federationThreadSyncState.findFirst({
-            where: and(
-              eq(federationThreadSyncState.threadId, mirrorThreadId),
-              eq(federationThreadSyncState.peerDomain, FED_DOMAIN_A),
-            ),
+            where: and(eq(federationThreadSyncState.threadId, mirrorThreadId)),
           });
         expect(state?.authorizationEpoch).toBe(newState.authorizationEpoch);
       },

@@ -16,6 +16,7 @@ function source(threadId: number) {
 function harness() {
   const databaseState = {
     active: true,
+    ownerDomain: 'a.test',
     startupRows: [] as Array<Record<string, unknown>>,
   };
   const states = {
@@ -45,7 +46,12 @@ function harness() {
               ? databaseState.active
                 ? [{ domain: 'a.test' }]
                 : []
-              : [{ peerDomain: 'a.test', namespaceId: 7 }];
+              : [
+                  {
+                    peerDomain: databaseState.ownerDomain,
+                    namespaceId: 7,
+                  },
+                ];
         const query = {
           from: vi.fn(() => query),
           innerJoin: vi.fn(() => query),
@@ -85,6 +91,17 @@ function harness() {
 }
 
 describe('FederationThreadRoundSchedulerService', () => {
+  it('discards a stale wake after thread ownership changes', async () => {
+    const { scheduler, forward, databaseState } = harness();
+    databaseState.ownerDomain = 'b.test';
+
+    await expect(
+      scheduler.wake(1, 'a.test', 'message'),
+    ).resolves.toBeUndefined();
+    expect(forward.runMessages).not.toHaveBeenCalled();
+    await scheduler.onModuleDestroy();
+  });
+
   it('coalesces a wake received while the same direction is active', async () => {
     const { scheduler, forward } = harness();
     let release!: () => void;

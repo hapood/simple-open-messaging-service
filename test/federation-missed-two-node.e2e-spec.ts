@@ -41,7 +41,10 @@ import {
   registerAndLogin,
   uploadAvatar,
 } from './federation-test-helpers.js';
-import { waitForDomainCommand } from './domain-command-helpers.js';
+import {
+  waitForAcceptedDomainCommand,
+  waitForDomainCommand,
+} from './domain-command-helpers.js';
 
 describe('federation durable missed transport (two nodes)', () => {
   let appA: FedApp;
@@ -143,7 +146,6 @@ describe('federation durable missed transport (two nodes)', () => {
           await appA.database.query.federationThreadSyncState.findFirst({
             where: and(
               eq(federationThreadSyncState.threadId, received!.threadId),
-              eq(federationThreadSyncState.peerDomain, FED_DOMAIN_B),
             ),
           });
         expect(syncState?.messageTargetSeq).toBe(received!.originSeq);
@@ -261,7 +263,6 @@ describe('federation durable missed transport (two nodes)', () => {
           await appB.database.query.federationThreadSyncState.findFirst({
             where: and(
               eq(federationThreadSyncState.threadId, stagedMessage!.threadId),
-              eq(federationThreadSyncState.peerDomain, FED_DOMAIN_A),
             ),
           });
         expect(syncState?.messageProcessedThroughSeq).toBeGreaterThanOrEqual(
@@ -320,7 +321,11 @@ describe('federation durable missed transport (two nodes)', () => {
             await appB.database.query.pendingMedia.findFirst({
               where: eq(pendingMedia.batchId, batchId),
             }),
-          ).toBeUndefined();
+          ).toMatchObject({
+            status: 'ready',
+            anyFailed: false,
+            failReason: null,
+          });
         },
         { timeout: 5000 },
       );
@@ -409,7 +414,6 @@ describe('federation durable missed transport (two nodes)', () => {
           await appB.database.query.federationThreadSyncState.findFirst({
             where: and(
               eq(federationThreadSyncState.threadId, stagedMessage!.threadId),
-              eq(federationThreadSyncState.peerDomain, FED_DOMAIN_A),
             ),
           });
         expect(syncState?.messageProcessedThroughSeq).toBeGreaterThanOrEqual(
@@ -465,7 +469,11 @@ describe('federation durable missed transport (two nodes)', () => {
           await appB.database.query.pendingMedia.findFirst({
             where: eq(pendingMedia.batchId, batchId),
           }),
-        ).toBeUndefined();
+        ).toMatchObject({
+          status: 'ready',
+          anyFailed: false,
+          failReason: null,
+        });
       },
       { timeout: 5000 },
     );
@@ -490,7 +498,6 @@ describe('federation durable missed transport (two nodes)', () => {
           await appB.database.query.federationThreadSyncState.findFirst({
             where: and(
               eq(federationThreadSyncState.threadId, memberOnB!.threadId),
-              eq(federationThreadSyncState.peerDomain, FED_DOMAIN_A),
             ),
           });
         expect(state).toBeDefined();
@@ -533,6 +540,7 @@ describe('federation durable missed transport (two nodes)', () => {
         note: 'restore after compacted revoke',
       });
     expect(restored.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(appA.database, restored.body);
     proxy.blockStateFeed(false);
 
     await vi.waitFor(
@@ -547,7 +555,6 @@ describe('federation durable missed transport (two nodes)', () => {
           appB.database.query.federationThreadSyncState.findFirst({
             where: and(
               eq(federationThreadSyncState.threadId, memberOnB!.threadId),
-              eq(federationThreadSyncState.peerDomain, FED_DOMAIN_A),
             ),
           }),
         ]);

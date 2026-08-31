@@ -227,11 +227,17 @@ export const router = createBrowserRouter(
                 ),
             },
             {
-              path: '/audit',
+              path: '/commands',
               lazy: () =>
-                import('@/routes/audit/audit-page').then((m) => ({
-                  Component: m.AuditPage,
-                })),
+                import('@/routes/domain-commands/domain-command-page').then(
+                  (m) => ({
+                    Component: m.DomainCommandPage,
+                  }),
+                ),
+            },
+            {
+              path: '/audit',
+              element: <Navigate to="/commands" replace />,
             },
             {
               path: '/settings',

@@ -25,6 +25,7 @@ export class FederationGroupRelationshipService {
       status: RelationshipIntentStatus;
       note?: string;
       expiresAt?: Date | null;
+      allowOwnerDeactivation?: boolean;
     },
   ) {
     const membership =
@@ -44,6 +45,9 @@ export class FederationGroupRelationshipService {
       memberUserId: params.memberUserId,
       active,
       hostedLocally: params.hostedLocally,
+      ...(params.allowOwnerDeactivation
+        ? { allowOwnerDeactivation: true }
+        : {}),
     });
     return { ...membership, active, pairChanged };
   }
@@ -56,6 +60,7 @@ export class FederationGroupRelationshipService {
       memberUserId: number;
       active: boolean;
       hostedLocally: boolean;
+      allowOwnerDeactivation?: boolean;
     },
   ): Promise<boolean> {
     const pairChanged = await this.relationshipIntents.setGroupPairActiveInTx(
@@ -72,6 +77,9 @@ export class FederationGroupRelationshipService {
       memberUserId: params.memberUserId,
       active: params.active,
       hostedLocally: params.hostedLocally,
+      ...(params.allowOwnerDeactivation
+        ? { allowOwnerDeactivation: true }
+        : {}),
     });
     return pairChanged;
   }

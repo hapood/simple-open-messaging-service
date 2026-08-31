@@ -33,6 +33,11 @@ function groupIntentEndpoints(
     : { account: memberAccount, subjectAccount: groupAccount };
 }
 
+interface GroupRelationshipMutationOptions {
+  publishGroupState?: boolean;
+  allowOwnerDeactivation?: boolean;
+}
+
 /**
  * Serializes and applies relationship commands. Transport wake-ups remain an
  * outer orchestration concern and occur only after the caller's transaction
@@ -60,7 +65,9 @@ export class FederationRelationshipCommandService {
     clientFeedUpdates?: PendingClientStateFeedUpdate[],
     note = '',
     groupSnapshot?: FederatedPendingProfileSnapshot,
+    options: GroupRelationshipMutationOptions = {},
   ): Promise<Map<string, bigint>> {
+    const { publishGroupState = true, allowOwnerDeactivation } = options;
     await this.lockGroupMutationInTx(tx, threadId, memberUserId);
     const [thread] = await tx
       .select({ groupId: tables.messageThread.groupId })
@@ -106,6 +113,7 @@ export class FederationRelationshipCommandService {
           status === 'REQUESTED'
             ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
             : null,
+        ...(allowOwnerDeactivation ? { allowOwnerDeactivation: true } : {}),
       },
     );
     if (group.domain === 'local' && membership.changed)
@@ -120,7 +128,7 @@ export class FederationRelationshipCommandService {
         membership.request.status === 'REQUESTED',
       );
     if (group.domain === 'local') {
-      if (status === 'REVOKED')
+      if (status === 'REVOKED' && publishGroupState)
         return this.profiles.writeGroupStateInTx(
           tx,
           threadId,
@@ -161,7 +169,11 @@ export class FederationRelationshipCommandService {
         if (feedId !== null)
           clientFeedUpdates.push({ userId: memberUserId, feedId });
       }
-      if (!membership.shouldBeActive || !membership.pairChanged)
+      if (
+        !publishGroupState ||
+        !membership.shouldBeActive ||
+        !membership.pairChanged
+      )
         return new Map();
       return this.profiles.writeGroupStateInTx(tx, threadId, clientFeedUpdates);
     }
@@ -247,7 +259,9 @@ export class FederationRelationshipCommandService {
     status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED',
     clientFeedUpdates: PendingClientStateFeedUpdate[],
     requestProjectionDirection?: 'APPLICATION' | 'INVITATION',
+    options: GroupRelationshipMutationOptions = {},
   ): Promise<Map<string, bigint>> {
+    const { publishGroupState = true, allowOwnerDeactivation } = options;
     await this.lockGroupMutationInTx(tx, threadId, memberUserId);
     const [state] = await tx
       .select({
@@ -286,6 +300,7 @@ export class FederationRelationshipCommandService {
           status === 'REQUESTED'
             ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
             : null,
+        ...(allowOwnerDeactivation ? { allowOwnerDeactivation: true } : {}),
       },
     );
     if (membership.active) {
@@ -350,7 +365,8 @@ export class FederationRelationshipCommandService {
       });
       if (feedId !== null)
         clientFeedUpdates.push({ userId: memberUserId, feedId });
-      return membership.shouldBeActive || status === 'REVOKED'
+      return publishGroupState &&
+        (membership.shouldBeActive || status === 'REVOKED')
         ? this.profiles.writeGroupStateInTx(tx, threadId, clientFeedUpdates)
         : new Map();
     }

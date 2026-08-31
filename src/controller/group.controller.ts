@@ -15,19 +15,13 @@ import { ApiResultResponse } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { GroupService } from '../group/group.service.js';
-import { InviteService } from '../invite/invite.service.js';
 import { FederationService } from '../federation/federation.service.js';
-import { FederationRelationshipCommandService } from '../federation/federation-relationship-command.service.js';
 import { UserService } from '../user/user.service.js';
 import { ThreadAccessGuard } from '../thread-participant/thread-access.guard.js';
 import { ResourceId } from '../common/resource-id.decorator.js';
 import { RolesGuard } from '../group/roles.guard.js';
 import { Roles } from '../group/roles.decorator.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
-import {
-  ClientStateFeedService,
-  type PendingClientStateFeedUpdate,
-} from '../client-state-feed/client-state-feed.service.js';
 import {
   CreateGroupDto,
   InviteGroupDto,
@@ -44,9 +38,9 @@ import {
   FederatedGroupJoinRequestDto,
 } from '../dto/group.dto.js';
 import { CreateGroupResponseDto } from '../dto/response.dto.js';
-import { UserQuotaService } from '../quota/user-quota.service.js';
-import { DatabaseService } from '../database/database.service.js';
-import { envelope } from '../common/api-result.js';
+import { DomainCommandQueueService } from '../domain-command/domain-command-queue.service.js';
+import { DomainCommandType } from '../domain-command/domain-command.constants.js';
+import { DomainCommandAcceptedDto } from '../dto/domain-command.dto.js';
 
 @ApiTags('group')
 @Controller()
@@ -54,14 +48,26 @@ export class GroupController {
   constructor(
     private readonly groupService: GroupService,
     private readonly participantService: ThreadParticipantService,
-    private readonly inviteService: InviteService,
     private readonly federationService: FederationService,
-    private readonly relationshipCommands: FederationRelationshipCommandService,
     private readonly userService: UserService,
-    private readonly clientStateFeed: ClientStateFeedService,
-    private readonly userQuota: UserQuotaService,
-    private readonly database: DatabaseService,
+    private readonly domainCommands: DomainCommandQueueService,
   ) {}
+
+  private async enqueueGroupCommand(
+    threadId: number,
+    actorUserId: number,
+    commandType: string,
+    payload: Record<string, unknown>,
+  ): Promise<DomainCommandAcceptedDto> {
+    const address = await this.groupService.resolveGroupCommandScope(threadId);
+    const { commandId } = await this.domainCommands.enqueue({
+      aggregate: { type: 'GROUP', address },
+      commandType,
+      actorUserId,
+      payload: { threadId, ...payload },
+    });
+    return { commandId: commandId.toString(), status: 'PENDING' };
+  }
 
   @UseGuards(ThrottleGuard)
   @Throttle('group.create')
@@ -88,31 +94,39 @@ export class GroupController {
   }
 
   /**
-   * Invite friends into a group by updating membership state. Local invitees receive a client-state
-   * projection; federated invitees receive the group-authored relationship state through the state feed.
+   * Validate each target and durably enqueue one group-scoped invitation command.
    */
   private async writeInvites(
     inviter: number,
     group: {
       threadId: number;
       account: string;
-      name: string;
-      avatar: string;
-      profileRev: number;
+      domain: string;
     },
     userIds: number[],
   ): Promise<{
     invited: number[];
+    commands: Array<{
+      userId: number;
+      commandId: string;
+      status: 'PENDING';
+    }>;
     skipped: { userId: number; reason: string }[];
   }> {
     const deduped = Array.from(new Set(userIds));
     const invited: number[] = [];
+    const commands: Array<{
+      userId: number;
+      commandId: string;
+      status: 'PENDING';
+    }> = [];
     const skipped: { userId: number; reason: string }[] = [];
     const groupAccount = group.account;
     if (!groupAccount) {
       // Should not happen (inviter + group exist) — fail every target loudly rather than silent skip.
       return {
         invited,
+        commands,
         skipped: deduped.map((userId) => ({
           userId,
           reason: 'inviter or group missing',
@@ -139,31 +153,21 @@ export class GroupController {
         continue;
       }
       try {
-        let statePeers = new Map<string, bigint>();
-        const clientFeedUpdates: PendingClientStateFeedUpdate[] = [];
-        await this.inviteService.createGroupInvite(
-          inviter,
-          group.threadId,
-          userId,
-          '',
-          undefined,
-          async (tx) => {
-            statePeers =
-              await this.relationshipCommands.writeGroupRelationshipIntentInTx(
-                tx,
-                group.threadId,
-                userId,
-                '',
-                'REQUESTED',
-                clientFeedUpdates,
-              );
+        const { commandId } = await this.domainCommands.enqueue({
+          aggregate: {
+            type: 'GROUP',
+            address: { account: group.account, domain: group.domain },
           },
-        );
-        await this.federationService.pushStateFeedDomains(statePeers.keys());
-        clientFeedUpdates.forEach((pending) =>
-          this.clientStateFeed.notifyFeedUpdated(pending),
-        );
+          commandType: DomainCommandType.INVITE_GROUP_MEMBER,
+          actorUserId: inviter,
+          payload: { threadId: group.threadId, targetUserId: userId },
+        });
         invited.push(userId);
+        commands.push({
+          userId,
+          commandId: commandId.toString(),
+          status: 'PENDING',
+        });
       } catch (e) {
         skipped.push({
           userId,
@@ -171,7 +175,7 @@ export class GroupController {
         });
       }
     }
-    return { invited, skipped };
+    return { invited, commands, skipped };
   }
 
   @UseGuards(ThreadAccessGuard)
@@ -197,18 +201,15 @@ export class GroupController {
         'only group managers may invite',
       );
     }
-    const { invited, skipped } = await this.writeInvites(
+    return this.writeInvites(
       inviter,
       {
         threadId,
         account: group?.account ?? '',
-        name: group?.name ?? '',
-        avatar: group?.avatar ?? '',
-        profileRev: group?.profileRev ?? 0,
+        domain: group?.domain ?? '',
       },
       dto.userIds,
     );
-    return { invited, skipped };
   }
 
   @UseGuards(ThreadAccessGuard, RolesGuard)
@@ -299,14 +300,24 @@ export class GroupController {
   @ResourceId<HandleGroupJoinRequestDto>('groupId')
   @Post('group/join-request/accept')
   @ApiOperation({ summary: 'Accept a pending group join application' })
+  @ApiResultResponse(DomainCommandAcceptedDto)
   async acceptJoinRequest(
     @Request() req: FastifyRequest,
     @Body() dto: HandleGroupJoinRequestDto,
-  ): Promise<void> {
-    await this.groupService.handleJoinRequest(
-      req.threadAccess!.threadId,
-      BigInt(dto.requestId),
-      'ACCEPTED',
+  ): Promise<DomainCommandAcceptedDto> {
+    const threadId = req.threadAccess!.threadId;
+    const requestId = BigInt(dto.requestId);
+    const request = await this.groupService.resolveGroupRequestCommandScope({
+      threadId,
+      managerUserId: req.user.userId,
+      requestId,
+      direction: 'APPLICATION',
+    });
+    return this.enqueueGroupCommand(
+      threadId,
+      req.user.userId,
+      DomainCommandType.ACCEPT_GROUP_JOIN_REQUEST,
+      { requestId: requestId.toString(), memberUserId: request.memberUserId },
     );
   }
 
@@ -318,14 +329,24 @@ export class GroupController {
   @ResourceId<HandleGroupJoinRequestDto>('groupId')
   @Post('group/join-request/reject')
   @ApiOperation({ summary: 'Reject/delete a pending group join application' })
+  @ApiResultResponse(DomainCommandAcceptedDto)
   async rejectJoinRequest(
     @Request() req: FastifyRequest,
     @Body() dto: HandleGroupJoinRequestDto,
-  ): Promise<void> {
-    await this.groupService.handleJoinRequest(
-      req.threadAccess!.threadId,
-      BigInt(dto.requestId),
-      'REVOKED',
+  ): Promise<DomainCommandAcceptedDto> {
+    const threadId = req.threadAccess!.threadId;
+    const requestId = BigInt(dto.requestId);
+    const request = await this.groupService.resolveGroupRequestCommandScope({
+      threadId,
+      managerUserId: req.user.userId,
+      requestId,
+      direction: 'APPLICATION',
+    });
+    return this.enqueueGroupCommand(
+      threadId,
+      req.user.userId,
+      DomainCommandType.REJECT_GROUP_JOIN_REQUEST,
+      { requestId: requestId.toString(), memberUserId: request.memberUserId },
     );
   }
 
@@ -337,13 +358,24 @@ export class GroupController {
   @ResourceId<HandleGroupJoinRequestDto>('groupId')
   @Post('group/invitation/revoke')
   @ApiOperation({ summary: 'Revoke a pending group invitation' })
+  @ApiResultResponse(DomainCommandAcceptedDto)
   async revokeInvitation(
     @Request() req: FastifyRequest,
     @Body() dto: HandleGroupJoinRequestDto,
-  ): Promise<void> {
-    await this.groupService.revokeInvitation(
-      req.threadAccess!.threadId,
-      BigInt(dto.requestId),
+  ): Promise<DomainCommandAcceptedDto> {
+    const threadId = req.threadAccess!.threadId;
+    const requestId = BigInt(dto.requestId);
+    const request = await this.groupService.resolveGroupRequestCommandScope({
+      threadId,
+      managerUserId: req.user.userId,
+      requestId,
+      direction: 'INVITATION',
+    });
+    return this.enqueueGroupCommand(
+      threadId,
+      req.user.userId,
+      DomainCommandType.REVOKE_GROUP_INVITATION,
+      { requestId: requestId.toString(), memberUserId: request.memberUserId },
     );
   }
 
@@ -355,14 +387,24 @@ export class GroupController {
   @ApiOperation({
     summary: 'Author the local USER→GROUP request for an existing invitation',
   })
+  @ApiResultResponse(DomainCommandAcceptedDto)
   async joinRequestedGroup(
     @Request() req: FastifyRequest,
     @Body() dto: GroupIdDto,
-  ): Promise<void> {
-    await this.federationService.acceptGroupRequest(
-      dto.groupId,
-      req.user.userId,
-    );
+  ): Promise<DomainCommandAcceptedDto> {
+    const actorUserId = req.user.userId;
+    const address =
+      await this.federationService.resolveAcceptGroupRequestCommandScope(
+        dto.groupId,
+        actorUserId,
+      );
+    const { commandId } = await this.domainCommands.enqueue({
+      aggregate: { type: 'GROUP', address },
+      commandType: DomainCommandType.ACCEPT_GROUP_INVITATION,
+      actorUserId,
+      payload: { threadId: dto.groupId },
+    });
+    return { commandId: commandId.toString(), status: 'PENDING' };
   }
 
   @UseGuards(ThrottleGuard)
@@ -371,10 +413,11 @@ export class GroupController {
   @HttpCode(HttpStatus.OK)
   @Post('group/federated-join-request')
   @ApiOperation({ summary: 'Apply to a federated group by Address' })
+  @ApiResultResponse(DomainCommandAcceptedDto)
   async requestFederatedGroupJoin(
     @Request() req: FastifyRequest,
     @Body() dto: FederatedGroupJoinRequestDto,
-  ) {
+  ): Promise<DomainCommandAcceptedDto> {
     const account = dto.account.trim().toLowerCase();
     const domain = dto.domain.trim().toLowerCase();
     if (!account.startsWith('!'))
@@ -388,22 +431,20 @@ export class GroupController {
         'local groups do not use the federated join route',
       );
     await this.federationService.ensurePeerTrusted(domain);
-    await this.database.db.transaction((tx) =>
-      this.userQuota.tick(req.user.userId, 'requests', tx),
-    );
-    await this.federationService.requestFederatedGroupJoin(
-      req.user.userId,
-      { account, domain },
-      dto.note ?? '',
-      { displayName: dto.displayName, avatar: dto.avatar },
-    );
-    return envelope(
-      { account, domain },
-      {
-        message: 'group join request sent',
-        messageKey: 'group.msg.joinRequestSent',
+    const actorUserId = req.user.userId;
+    const { commandId } = await this.domainCommands.enqueue({
+      aggregate: { type: 'GROUP', address: { account, domain } },
+      commandType: DomainCommandType.REQUEST_FEDERATED_GROUP_JOIN,
+      actorUserId,
+      payload: {
+        account,
+        domain,
+        note: dto.note ?? '',
+        displayName: dto.displayName,
+        ...(dto.avatar ? { avatar: dto.avatar } : {}),
       },
-    );
+    });
+    return { commandId: commandId.toString(), status: 'PENDING' };
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -413,10 +454,11 @@ export class GroupController {
   @ResourceId<GroupTerminalActionDto>('groupId')
   @Post('group/leave')
   @ApiOperation({ summary: 'Leave a group (owner must transfer first)' })
+  @ApiResultResponse(DomainCommandAcceptedDto)
   async leaveGroup(
     @Request() req: FastifyRequest,
     @Body() dto: GroupTerminalActionDto,
-  ): Promise<void> {
+  ): Promise<DomainCommandAcceptedDto> {
     if (req.threadAccess!.groupDissolved) {
       throw new BusinessException(
         BusinessCode.GROUP_DISSOLVED,
@@ -424,13 +466,12 @@ export class GroupController {
       );
     }
     const threadId = req.threadAccess!.threadId;
-    const { participant } = req.threadAccess!;
-    await this.groupService.leaveGroup({
-      userId: req.user.userId,
+    return this.enqueueGroupCommand(
       threadId,
-      role: participant.role,
-      deleteData: dto.deleteData ?? false,
-    });
+      req.user.userId,
+      DomainCommandType.LEAVE_GROUP,
+      { deleteData: dto.deleteData ?? false },
+    );
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -440,21 +481,32 @@ export class GroupController {
   @ResourceId<GroupTerminalActionDto>('groupId')
   @Post('group/dissolve')
   @ApiOperation({ summary: 'Dissolve a group (owner only)' })
+  @ApiResultResponse(DomainCommandAcceptedDto)
   async dissolveGroup(
     @Request() req: FastifyRequest,
     @Body() dto: GroupTerminalActionDto,
-  ): Promise<void> {
+  ): Promise<DomainCommandAcceptedDto> {
     // Kept outside RolesGuard so a retry after a lost success response stays idempotent even though
     // RolesGuard rejects other mutations once dissolved. Ownership still comes from the guarded row.
     if (req.threadAccess.participant.role !== GroupRole.OWNER) {
       throw new BusinessException(BusinessCode.GROUP_FORBIDDEN, 'owner only');
     }
     const threadId = req.threadAccess!.threadId;
-    await this.groupService.dissolveGroup({
+    const actorUserId = req.user.userId;
+    const address = await this.groupService.resolveDisbandCommandScope(
       threadId,
-      operatorUserId: req.user.userId,
-      deleteForUserId: dto.deleteData ? req.user.userId : undefined,
+      actorUserId,
+    );
+    const { commandId } = await this.domainCommands.enqueue({
+      aggregate: { type: 'GROUP', address },
+      commandType: DomainCommandType.DISBAND_GROUP,
+      actorUserId,
+      payload: {
+        threadId,
+        deleteForUserId: dto.deleteData ? actorUserId : null,
+      },
     });
+    return { commandId: commandId.toString(), status: 'PENDING' };
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
@@ -465,17 +517,19 @@ export class GroupController {
   @ResourceId<KickGroupDto>('groupId')
   @Post('group/kick')
   @ApiOperation({ summary: 'Kick a member (owner/admin, must outrank target)' })
+  @ApiResultResponse(DomainCommandAcceptedDto)
   async kickMember(
     @Request() req: FastifyRequest,
     @Body() dto: KickGroupDto,
-  ): Promise<void> {
+  ): Promise<DomainCommandAcceptedDto> {
     const threadId = req.threadAccess!.threadId;
     const target = await this.groupService.resolveActiveMember(threadId, dto);
-    await this.groupService.kickMember({
+    return this.enqueueGroupCommand(
       threadId,
-      operatorUserId: req.user.userId,
-      targetUserId: target.userId,
-    });
+      req.user.userId,
+      DomainCommandType.KICK_GROUP_MEMBER,
+      { targetUserId: target.userId },
+    );
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
@@ -486,17 +540,19 @@ export class GroupController {
   @ResourceId<TransferGroupDto>('groupId')
   @Post('group/transfer')
   @ApiOperation({ summary: 'Transfer ownership to a member (owner only)' })
+  @ApiResultResponse(DomainCommandAcceptedDto)
   async transferOwnership(
     @Request() req: FastifyRequest,
     @Body() dto: TransferGroupDto,
-  ): Promise<void> {
+  ): Promise<DomainCommandAcceptedDto> {
     const threadId = req.threadAccess!.threadId;
     const target = await this.groupService.resolveActiveMember(threadId, dto);
-    await this.groupService.transferOwnership({
+    return this.enqueueGroupCommand(
       threadId,
-      fromUserId: req.user.userId,
-      toUserId: target.userId,
-    });
+      req.user.userId,
+      DomainCommandType.TRANSFER_GROUP_OWNERSHIP,
+      { targetUserId: target.userId },
+    );
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
@@ -507,18 +563,19 @@ export class GroupController {
   @ResourceId<SetRoleGroupDto>('groupId')
   @Post('group/set-role')
   @ApiOperation({ summary: "Set a member's role to ADMIN/MEMBER (owner only)" })
+  @ApiResultResponse(DomainCommandAcceptedDto)
   async setRole(
     @Request() req: FastifyRequest,
     @Body() dto: SetRoleGroupDto,
-  ): Promise<void> {
+  ): Promise<DomainCommandAcceptedDto> {
     const threadId = req.threadAccess!.threadId;
     const target = await this.groupService.resolveActiveMember(threadId, dto);
-    await this.groupService.setRole({
+    return this.enqueueGroupCommand(
       threadId,
-      targetUserId: target.userId,
-      role: dto.role,
-      operatorUserId: req.user.userId,
-    });
+      req.user.userId,
+      DomainCommandType.SET_GROUP_MEMBER_ROLE,
+      { targetUserId: target.userId, role: dto.role },
+    );
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)

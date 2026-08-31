@@ -3,10 +3,11 @@ import {
   HttpStatus,
   Inject,
   Injectable,
+  Logger,
   Optional,
 } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import {
   DatabaseService,
   type DatabaseTransaction,
@@ -69,6 +70,8 @@ function outranks(operator: GroupRole, target: GroupRole | null): boolean {
  */
 @Injectable()
 export class GroupService {
+  private readonly logger = new Logger(GroupService.name);
+
   constructor(
     private database: DatabaseService,
     private readonly federation: FederationService,
@@ -345,11 +348,12 @@ export class GroupService {
     return count;
   }
 
-  async handleJoinRequest(
-    threadId: number,
-    requestId: bigint,
-    decision: 'ACCEPTED' | 'REVOKED',
-  ): Promise<void> {
+  async handleJoinRequest(params: {
+    threadId: number;
+    requestId: bigint;
+    managerUserId: number;
+    decision: 'ACCEPTED' | 'REVOKED';
+  }): Promise<void> {
     let statePeers = new Map<string, bigint>();
     const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
     await this.database.db.transaction(async (tx) => {
@@ -372,7 +376,7 @@ export class GroupService {
              AND member."namespaceId" = pair."endpointBNamespaceId"))
         LEFT JOIN "RelationshipIntent" prior
           ON prior."pairId" = pair.id AND prior."authorSide" = 'A'
-        WHERE pair."threadId" = ${threadId} AND intent.id = ${requestId}
+        WHERE pair."threadId" = ${params.threadId} AND intent.id = ${params.requestId}
           AND pair.kind = 'GROUP_MEMBER' AND intent."authorSide" = 'B'
           AND intent.status = 'REQUESTED'
           AND intent."expiresAt" > CURRENT_TIMESTAMP
@@ -389,8 +393,14 @@ export class GroupService {
         );
       await this.relationshipCommands.lockGroupMutationInTx(
         tx,
-        threadId,
+        params.threadId,
         candidate.memberUserId,
+        [params.managerUserId],
+      );
+      await this.assertGroupManagerInTx(
+        tx,
+        params.threadId,
+        params.managerUserId,
       );
       const [request] = await readRequest();
       if (!request)
@@ -401,19 +411,26 @@ export class GroupService {
       statePeers =
         await this.relationshipCommands.writeGroupRelationshipIntentInTx(
           tx,
-          threadId,
+          params.threadId,
           request.memberUserId,
-          decision === 'ACCEPTED' ? request.note : '',
-          decision,
+          params.decision === 'ACCEPTED' ? request.note : '',
+          params.decision,
           clientFeedUpdates,
           'APPLICATION',
         );
     });
-    this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
-    await this.federation.pushStateFeedDomains(statePeers.keys());
+    this.notifyCommandEffects(
+      clientFeedUpdates,
+      statePeers.keys(),
+      'group join-request decision',
+    );
   }
 
-  async revokeInvitation(threadId: number, requestId: bigint): Promise<void> {
+  async revokeInvitation(params: {
+    threadId: number;
+    requestId: bigint;
+    managerUserId: number;
+  }): Promise<void> {
     let statePeers = new Map<string, bigint>();
     const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
     await this.database.db.transaction(async (tx) => {
@@ -431,7 +448,7 @@ export class GroupService {
            AND ((member.domain = 'local' AND member."namespaceId" = 0)
              OR (member.domain <> 'local'
                AND member."namespaceId" = pair."endpointBNamespaceId"))
-          WHERE pair."threadId" = ${threadId} AND intent.id = ${requestId}
+          WHERE pair."threadId" = ${params.threadId} AND intent.id = ${params.requestId}
             AND pair.kind = 'GROUP_MEMBER' AND intent."authorSide" = 'A'
             AND intent.status = 'REQUESTED'
             AND intent."expiresAt" > CURRENT_TIMESTAMP
@@ -446,8 +463,14 @@ export class GroupService {
         );
       await this.relationshipCommands.lockGroupMutationInTx(
         tx,
-        threadId,
+        params.threadId,
         candidate.memberUserId,
+        [params.managerUserId],
+      );
+      await this.assertGroupManagerInTx(
+        tx,
+        params.threadId,
+        params.managerUserId,
       );
       const [request] = await readRequest();
       if (!request)
@@ -458,7 +481,7 @@ export class GroupService {
       statePeers =
         await this.relationshipCommands.writeGroupRelationshipIntentInTx(
           tx,
-          threadId,
+          params.threadId,
           request.memberUserId,
           '',
           'REVOKED',
@@ -466,8 +489,11 @@ export class GroupService {
           'INVITATION',
         );
     });
-    this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
-    await this.federation.pushStateFeedDomains(statePeers.keys());
+    this.notifyCommandEffects(
+      clientFeedUpdates,
+      statePeers.keys(),
+      'group invitation revoke',
+    );
   }
 
   async markJoinRequestsRead(
@@ -726,6 +752,7 @@ export class GroupService {
     threadId: number;
     role: GroupRole | null;
     deleteData: boolean;
+    dissolvedFanout?: boolean;
   }): Promise<{ remainingMemberIds: number[]; transitioned: boolean }> {
     const now = new Date();
     const result = await this.database.db.transaction(async (tx) => {
@@ -740,13 +767,26 @@ export class GroupService {
         .select({
           groupId: messageThread.groupId,
           groupDomain: group.domain,
+          dissolvedAt: group.dissolvedAt,
+          role: threadMember.role,
         })
         .from(messageThread)
         .innerJoin(group, eq(group.id, messageThread.groupId))
+        .leftJoin(
+          threadMember,
+          and(
+            eq(threadMember.threadId, messageThread.id),
+            eq(threadMember.userId, params.userId),
+            eq(threadMember.left, false),
+          ),
+        )
         .where(eq(messageThread.id, params.threadId))
         .limit(1);
       if (!thread?.groupId)
         throw new BusinessException(BusinessCode.NOT_FOUND, 'group not found');
+      if (params.dissolvedFanout && thread.dissolvedAt === null) {
+        throw new Error('group member fan-out requires a dissolved group');
+      }
       const outgoing = await tx.execute<{ status: string }>(sql`
         SELECT intent.status
         FROM "RelationshipPair" pair
@@ -764,19 +804,39 @@ export class GroupService {
       if (params.role === null && outgoing.rows.length === 0)
         throw new BusinessException(BusinessCode.NOT_FOUND, 'member not found');
       const transitioned = outgoing.rows[0]?.status !== 'REVOKED';
+      const fanoutMember = params.dissolvedFanout
+        ? await tx.query.user.findFirst({
+            where: eq(user.id, params.userId),
+            columns: { domain: true },
+          })
+        : null;
+      if (params.dissolvedFanout && !fanoutMember) {
+        throw new Error('dissolved group member identity is missing');
+      }
       if (
         transitioned &&
+        !params.dissolvedFanout &&
         thread.groupDomain === 'local' &&
-        params.role === GroupRole.OWNER
+        thread.role === GroupRole.OWNER
       ) {
         throw new BusinessException(
           BusinessCode.GROUP_OWNER_MUST_TRANSFER,
           'transfer ownership or dissolve the group before leaving',
         );
       }
-      const localRecipientIds = transitioned
-        ? await this.localAuthorizedRecipientIdsInTx(tx, params.threadId)
-        : [];
+      let localRecipientIds: number[] = [];
+      if (transitioned) {
+        if (params.dissolvedFanout) {
+          if (fanoutMember?.domain === 'local') {
+            localRecipientIds = [params.userId];
+          }
+        } else {
+          localRecipientIds = await this.localAuthorizedRecipientIdsInTx(
+            tx,
+            params.threadId,
+          );
+        }
+      }
       const systemMessage =
         transitioned && this.messages
           ? (
@@ -837,24 +897,39 @@ export class GroupService {
           .set({ updatedAt: now })
           .where(eq(group.id, thread.groupId));
       }
-      const requestState = transitioned
-        ? await this.relationshipCommands.writeMemberRelationshipIntentInTx(
+      const requestState =
+        transitioned &&
+        (!params.dissolvedFanout || fanoutMember?.domain === 'local')
+          ? await this.relationshipCommands.writeMemberRelationshipIntentInTx(
+              tx,
+              params.threadId,
+              params.userId,
+              'REVOKED',
+              clientFeedUpdates,
+              '',
+              undefined,
+              {
+                publishGroupState: !params.dissolvedFanout,
+                allowOwnerDeactivation: params.dissolvedFanout === true,
+              },
+            )
+          : new Map<string, bigint>();
+      let groupRequestState = new Map<string, bigint>();
+      if (transitioned && thread.groupDomain === 'local') {
+        groupRequestState =
+          await this.relationshipCommands.writeGroupRelationshipIntentInTx(
             tx,
             params.threadId,
             params.userId,
+            '',
             'REVOKED',
             clientFeedUpdates,
-          )
-        : new Map<string, bigint>();
-      if (transitioned && thread.groupDomain === 'local') {
-        await this.relationshipCommands.writeGroupRelationshipIntentInTx(
-          tx,
-          params.threadId,
-          params.userId,
-          '',
-          'REVOKED',
-          clientFeedUpdates,
-        );
+            undefined,
+            {
+              publishGroupState: !params.dissolvedFanout,
+              allowOwnerDeactivation: params.dissolvedFanout === true,
+            },
+          );
       }
       await this.relationshipCommands.reconcileGroupJoinRequestManagerInTx(
         tx,
@@ -862,189 +937,203 @@ export class GroupService {
         params.userId,
         clientFeedUpdates,
       );
-      const groupState = transitioned
-        ? await this.federation.writeGroupStateInTx(
-            tx,
-            params.threadId,
-            clientFeedUpdates,
-          )
-        : new Map<string, bigint>();
-      const remaining = await tx
-        .select({ userId: threadMember.userId })
-        .from(threadMember)
-        .where(
-          and(
-            eq(threadMember.threadId, params.threadId),
-            eq(threadMember.left, false),
-          ),
-        );
-      const remainingAuthorization = await Promise.all(
-        remaining.map((row) =>
-          isThreadMutuallyAuthorized(tx, row.userId, params.threadId),
-        ),
-      );
-      return {
-        transitioned,
-        remainingMemberIds: remaining
-          .filter((_, index) => remainingAuthorization[index])
-          .map((row) => row.userId),
-        statePeers: [...requestState.keys(), ...groupState.keys()],
-        clientFeedUpdates,
-        systemMessage,
-        localRecipientIds,
-      };
-    });
-    this.clientStateFeed.notifyFeedUpdates(result.clientFeedUpdates);
-    await this.federation.pushStateFeedDomains(result.statePeers);
-    if (result.transitioned) {
-      await this.federation.notifyGroupLeave(params.threadId, params.userId);
-    }
-    if (result.systemMessage && this.messageFanout)
-      void this.messageFanout.dispatchToUsers(
-        result.systemMessage,
-        result.localRecipientIds,
-      );
-    return {
-      transitioned: result.transitioned,
-      remainingMemberIds: result.remainingMemberIds,
-    };
-  }
-
-  /** Mark a group terminal while retaining participants and history visibility. Pending invites are
-   * revoked in the same transaction, so an old card cannot join a dissolved group. */
-  async dissolveGroup(params: {
-    threadId: number;
-    operatorUserId?: number;
-    deleteForUserId?: number;
-  }): Promise<{ transitioned: boolean }> {
-    const now = new Date();
-    const result = await this.database.db.transaction(async (tx) => {
-      const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
-      const shouldDelete = params.deleteForUserId !== undefined;
-      const [thread] = await tx
-        .select({
-          groupId: messageThread.groupId,
-          groupDomain: group.domain,
-        })
-        .from(messageThread)
-        .innerJoin(group, eq(group.id, messageThread.groupId))
-        .where(eq(messageThread.id, params.threadId))
-        .limit(1);
-      if (thread?.groupId == null) {
-        throw new BusinessException(BusinessCode.NOT_FOUND, 'group not found');
-      }
-      const recipientsBeforeDissolve = this.messages
-        ? await this.localAuthorizedRecipientIdsInTx(tx, params.threadId)
-        : [];
-      const dissolved = await tx
-        .update(group)
-        .set({
-          dissolvedAt: now,
-          updatedAt: now,
-        })
-        .where(and(eq(group.id, thread.groupId), isNull(group.dissolvedAt)))
-        .returning({ id: group.id });
-      if (dissolved.length > 0) {
-        await tx
-          .update(threadMember)
-          .set({ left: true, updatedAt: now })
-          .where(eq(threadMember.threadId, params.threadId));
-        await tx
-          .update(relationshipIntent)
-          .set({
-            status: 'REVOKED',
-            expiresAt: null,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(relationshipIntent.authorSide, 'A'),
-              eq(relationshipIntent.status, 'REQUESTED'),
-              sql`EXISTS (SELECT 1 FROM "RelationshipPair" pair WHERE pair.id = ${relationshipIntent.pairId} AND pair."threadId" = ${params.threadId})`,
-            ),
-          );
-        await tx
-          .update(relationshipPair)
-          .set({
-            active: false,
-            revision: sql`${relationshipPair.revision} + 1`,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(relationshipPair.threadId, params.threadId),
-              eq(relationshipPair.kind, 'GROUP_MEMBER'),
-              eq(relationshipPair.active, true),
-            ),
-          );
-      }
-      const localRecipientIds =
-        dissolved.length > 0 && this.messages ? recipientsBeforeDissolve : [];
-      const systemMessages: Array<{
-        message: Awaited<
-          ReturnType<MessageService['writeSystemMessageInTx']>
-        >['message'];
-        recipientUserId: number;
-      }> = [];
-      for (const recipientUserId of localRecipientIds) {
-        const written = await this.messages!.writeSystemMessageInTx(
-          tx,
-          params.threadId,
-          SystemMessageType.GROUP_LEFT,
-          recipientUserId,
-          {
-            actorUserId: params.operatorUserId,
-            recipientUserIds: [recipientUserId],
-            markReadUserId:
-              recipientUserId === params.deleteForUserId
-                ? recipientUserId
-                : undefined,
-          },
-        );
-        systemMessages.push({
-          message: written.message,
-          recipientUserId,
-        });
-      }
-      if (shouldDelete && params.deleteForUserId !== undefined) {
-        await tx
-          .update(threadParticipant)
-          .set({
-            clearedSeq: sql`(SELECT "curSeq" FROM "MessageThread" WHERE id = ${params.threadId})`,
-            pinned: false,
-            pinnedAt: null,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(threadParticipant.accountId, params.deleteForUserId),
-              eq(threadParticipant.threadId, params.threadId),
-            ),
-          );
-      }
-      const stateItems =
-        dissolved.length > 0
+      const groupState =
+        transitioned && !params.dissolvedFanout
           ? await this.federation.writeGroupStateInTx(
               tx,
               params.threadId,
               clientFeedUpdates,
             )
           : new Map<string, bigint>();
+      const remaining = params.dissolvedFanout
+        ? []
+        : await tx
+            .select({ userId: threadMember.userId })
+            .from(threadMember)
+            .where(
+              and(
+                eq(threadMember.threadId, params.threadId),
+                eq(threadMember.left, false),
+              ),
+            );
+      const remainingAuthorization = params.dissolvedFanout
+        ? []
+        : await Promise.all(
+            remaining.map((row) =>
+              isThreadMutuallyAuthorized(tx, row.userId, params.threadId),
+            ),
+          );
       return {
-        transitioned: dissolved.length > 0,
-        statePeers: [...stateItems.keys()],
+        transitioned,
+        remainingMemberIds: remaining
+          .filter((_, index) => remainingAuthorization[index])
+          .map((row) => row.userId),
+        statePeers: [
+          ...requestState.keys(),
+          ...groupRequestState.keys(),
+          ...groupState.keys(),
+        ],
         clientFeedUpdates,
-        systemMessages,
+        systemMessage,
+        localRecipientIds,
       };
     });
-    this.clientStateFeed.notifyFeedUpdates(result.clientFeedUpdates);
-    await this.federation.pushStateFeedDomains(result.statePeers);
-    if (this.messageFanout)
-      for (const systemMessage of result.systemMessages)
-        void this.messageFanout.dispatchToUsers(systemMessage.message, [
-          systemMessage.recipientUserId,
-        ]);
-    return { transitioned: result.transitioned };
+    try {
+      this.clientStateFeed.notifyFeedUpdates(result.clientFeedUpdates);
+    } catch (error) {
+      this.logger.warn('group leave client-state wake failed', error);
+    }
+    void this.federation
+      .pushStateFeedDomains(result.statePeers)
+      .catch((error: unknown) =>
+        this.logger.warn('group leave state-feed wake failed', error),
+      );
+    if (result.transitioned && !params.dissolvedFanout) {
+      void this.federation
+        .notifyGroupLeave(params.threadId, params.userId)
+        .catch((error: unknown) =>
+          this.logger.warn('group leave notification failed', error),
+        );
+    }
+    if (result.systemMessage && this.messageFanout)
+      void this.messageFanout
+        .dispatchToUsers(result.systemMessage, result.localRecipientIds)
+        .catch((error: unknown) =>
+          this.logger.warn('group leave message wake failed', error),
+        );
+    return {
+      transitioned: result.transitioned,
+      remainingMemberIds: result.remainingMemberIds,
+    };
+  }
+
+  async revokeDissolvedGroupMember(params: {
+    threadId: number;
+    memberUserId: number;
+    deleteData: boolean;
+  }): Promise<void> {
+    await this.leaveGroup({
+      userId: params.memberUserId,
+      threadId: params.threadId,
+      role: null,
+      deleteData: params.deleteData,
+      dissolvedFanout: true,
+    });
+  }
+
+  async resolveDisbandCommandScope(
+    threadId: number,
+    operatorUserId: number,
+  ): Promise<{ account: string; domain: string }> {
+    const [state] = await this.database.db
+      .select({
+        account: group.account,
+        domain: group.domain,
+        role: threadMember.role,
+      })
+      .from(messageThread)
+      .innerJoin(group, eq(group.id, messageThread.groupId))
+      .innerJoin(
+        threadMember,
+        and(
+          eq(threadMember.threadId, messageThread.id),
+          eq(threadMember.userId, operatorUserId),
+        ),
+      )
+      .where(eq(messageThread.id, threadId))
+      .limit(1);
+    if (!state)
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'group not found');
+    if (state.domain !== 'local' || state.role !== GroupRole.OWNER) {
+      throw new BusinessException(BusinessCode.GROUP_FORBIDDEN, 'owner only');
+    }
+    return { account: state.account, domain: state.domain };
+  }
+
+  async resolveGroupCommandScope(
+    threadId: number,
+  ): Promise<{ account: string; domain: string }> {
+    const [state] = await this.database.db
+      .select({ account: group.account, domain: group.domain })
+      .from(messageThread)
+      .innerJoin(group, eq(group.id, messageThread.groupId))
+      .where(eq(messageThread.id, threadId))
+      .limit(1);
+    if (!state)
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'group not found');
+    return state;
+  }
+
+  async resolveGroupRequestCommandScope(params: {
+    threadId: number;
+    managerUserId: number;
+    requestId: bigint;
+    direction: 'APPLICATION' | 'INVITATION';
+  }): Promise<{ memberUserId: number }> {
+    const request =
+      await this.database.db.query.groupRequestProjection.findFirst({
+        where: and(
+          eq(groupRequestProjection.threadId, params.threadId),
+          eq(groupRequestProjection.managerUserId, params.managerUserId),
+          eq(groupRequestProjection.requestId, params.requestId),
+          eq(groupRequestProjection.direction, params.direction),
+          eq(groupRequestProjection.status, 'REQUESTED'),
+          gt(groupRequestProjection.expiresAt, new Date()),
+        ),
+        columns: { memberUserId: true },
+      });
+    if (!request) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        params.direction === 'APPLICATION'
+          ? 'join request not found'
+          : 'group invitation not found',
+      );
+    }
+    return request;
+  }
+
+  /** Commit only the terminal group fact. Member relationships are revoked by child commands. */
+  async markGroupDissolved(params: {
+    threadId: number;
+    operatorUserId: number;
+  }): Promise<{ transitioned: boolean }> {
+    const now = new Date();
+    return this.database.db.transaction(async (tx) => {
+      await this.relationshipCommands.lockGroupMutationInTx(
+        tx,
+        params.threadId,
+        params.operatorUserId,
+      );
+      const [state] = await tx
+        .select({
+          groupId: group.id,
+          groupDomain: group.domain,
+          role: threadMember.role,
+        })
+        .from(messageThread)
+        .innerJoin(group, eq(group.id, messageThread.groupId))
+        .innerJoin(
+          threadMember,
+          and(
+            eq(threadMember.threadId, messageThread.id),
+            eq(threadMember.userId, params.operatorUserId),
+          ),
+        )
+        .where(eq(messageThread.id, params.threadId))
+        .limit(1);
+      if (!state)
+        throw new BusinessException(BusinessCode.NOT_FOUND, 'group not found');
+      if (state.groupDomain !== 'local' || state.role !== GroupRole.OWNER) {
+        throw new BusinessException(BusinessCode.GROUP_FORBIDDEN, 'owner only');
+      }
+      const dissolved = await tx
+        .update(group)
+        .set({ dissolvedAt: now, updatedAt: now })
+        .where(and(eq(group.id, state.groupId), isNull(group.dissolvedAt)))
+        .returning({ id: group.id });
+      return { transitioned: dissolved.length > 0 };
+    });
   }
 
   /**
@@ -1587,5 +1676,50 @@ export class GroupService {
     this.clientStateFeed.notifyFeedUpdates(result.clientFeedUpdates);
     await this.federation.pushStateFeedDomains(result.statePeers);
     return result.row;
+  }
+
+  async assertGroupManagerInTx(
+    tx: DatabaseTransaction,
+    threadId: number,
+    managerUserId: number,
+  ): Promise<void> {
+    const [manager] = await tx
+      .select({ role: threadMember.role })
+      .from(threadMember)
+      .where(
+        and(
+          eq(threadMember.threadId, threadId),
+          eq(threadMember.userId, managerUserId),
+          eq(threadMember.left, false),
+        ),
+      )
+      .limit(1);
+    if (
+      (manager?.role !== GroupRole.OWNER &&
+        manager?.role !== GroupRole.ADMIN) ||
+      !(await isThreadMutuallyAuthorized(tx, managerUserId, threadId))
+    ) {
+      throw new BusinessException(
+        BusinessCode.GROUP_FORBIDDEN,
+        'only active group managers may handle requests',
+      );
+    }
+  }
+
+  private notifyCommandEffects(
+    clientFeedUpdates: Array<{ userId: number; feedId: number }>,
+    statePeers: Iterable<string>,
+    operation: string,
+  ): void {
+    try {
+      this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
+    } catch (error) {
+      this.logger.warn(`${operation} client-state wake failed`, error);
+    }
+    void this.federation
+      .pushStateFeedDomains(statePeers)
+      .catch((error: unknown) =>
+        this.logger.warn(`${operation} state-feed wake failed`, error),
+      );
   }
 }

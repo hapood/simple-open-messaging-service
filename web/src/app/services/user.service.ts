@@ -1033,7 +1033,7 @@ export class UserService {
     };
   }
 
-  /** Accept an invite. Friend acceptance is queued; group/addressed acceptance remains direct. */
+  /** Accept an invite. Stored friend and group invitations are queued. */
   acceptInvite(
     params: { inviteId: string } | { account: string; domain: string },
   ) {
@@ -1047,7 +1047,7 @@ export class UserService {
   }
 
   joinGroupRequest(params: { groupId: number }) {
-    return this.http.post<StandardResponse<void>>(
+    return this.http.post<StandardResponse<DomainCommandAccepted>>(
       `${apiPrefix()}/group/join-request`,
       params,
     );

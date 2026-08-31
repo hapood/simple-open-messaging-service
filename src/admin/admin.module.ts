@@ -43,6 +43,7 @@ import { FederationResetService } from './federation-reset.service.js';
 import { MessageModule } from '../message/message.module.js';
 import { ThreadParticipantModule } from '../thread-participant/thread-participant.module.js';
 import { MessageReportAdminController } from './message-report-admin.controller.js';
+import { DomainCommandAdminController } from './domain-command-admin.controller.js';
 
 @Module({
   imports: [
@@ -81,6 +82,7 @@ import { MessageReportAdminController } from './message-report-admin.controller.
     LogViewerController,
     RateLimitMonitoringController,
     MessageReportAdminController,
+    DomainCommandAdminController,
   ],
   providers: [
     AdminAuthService,

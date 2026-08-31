@@ -1,11 +1,11 @@
 import {
   Bell,
   CircleUser,
-  FileWarning,
   Globe,
   HardDrive,
   Hash,
   LayoutDashboard,
+  ListChecks,
   type LucideIcon,
   Monitor,
   Radio,
@@ -32,7 +32,7 @@ export type NavKey =
   | 'media'
   | 'settings'
   | 'security'
-  | 'audit'
+  | 'commands'
   | 'rateLimits'
   | 'messageReports';
 
@@ -80,7 +80,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { to: '/sessions', key: 'sessions', icon: Monitor },
       { to: '/groups', key: 'groups', icon: Hash },
       { to: '/bans', key: 'bans', icon: ShieldBan },
-      { to: '/audit', key: 'audit', icon: FileWarning },
+      { to: '/commands', key: 'commands', icon: ListChecks },
       {
         to: '/message-reports',
         key: 'messageReports',

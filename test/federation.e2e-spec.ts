@@ -26,7 +26,11 @@ import {
   seedAcceptedRelationship,
 } from './seed.js';
 import { BusinessCode } from '../src/common/business-code.js';
-import { waitForDomainCommand } from './domain-command-helpers.js';
+import {
+  waitForAcceptedDomainCommand,
+  waitForAcceptedDomainCommands,
+  waitForDomainCommand,
+} from './domain-command-helpers.js';
 import { SignatureService } from '../src/federation/signature.service.js';
 import {
   ContentType,
@@ -386,6 +390,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       });
     expect(res.status).toBe(200);
     expect(res.body.code, JSON.stringify(res.body)).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(appA.database, res.body);
 
     const [incoming] = await vi.waitFor(
       async () => {
@@ -449,6 +454,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenB}`)
       .send({ account: 'alice', domain: DOM_A });
     expect(accepted.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(appB.database, accepted.body);
 
     const [aliceStubB, bobStubA] = await vi.waitFor(
       async () => {
@@ -572,6 +578,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           note: 'A request',
         });
       expect(fromA.body.code).toBe(BusinessCode.OK);
+      await waitForAcceptedDomainCommand(appA.database, fromA.body);
 
       const fromB = await request(appB.baseUrl)
         .post('/api/v1/invite/federated-friend')
@@ -583,6 +590,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           note: 'B request',
         });
       expect(fromB.body.code).toBe(BusinessCode.OK);
+      await waitForAcceptedDomainCommand(appB.database, fromB.body);
 
       await vi.waitFor(
         () => expect(proxy.blockedStateFeedCount()).toBeGreaterThan(0),
@@ -1252,6 +1260,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({ groupId: groupThreadA, userIds: [bobStubIdOnA] });
     expect(invite.body.code, JSON.stringify(invite.body)).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommands(appA.database, invite.body);
 
     // The independent Group account is the on-wire group address.
     const trdA = await findGroupThreadById(appA, groupThreadA);
@@ -1338,6 +1347,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .send({ groupId: mirrorB.id });
     expect(accept.status).toBe(200);
     expect(accept.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(appB.database, accept.body);
     const outboundJoin = await appB.database.query.peerStateFeed.findFirst({
       where: and(
         eq(peerStateFeed.peerDomain, DOM_A),
@@ -1545,6 +1555,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         note: 'federated application',
       });
     expect(apply.body.code, JSON.stringify(apply.body)).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(appB.database, apply.body);
 
     const projected = await vi.waitFor(
       async () => {
@@ -1587,6 +1598,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         requestId: projected.requestId.toString(),
       });
     expect(rejected.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(appA.database, rejected.body);
     await vi.waitFor(
       async () => {
         expect(
@@ -1608,6 +1620,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         note: 'renewed application',
       });
     expect(renewed.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(appB.database, renewed.body);
     const renewedProjection = await vi.waitFor(
       async () => {
         const applicant = await appA.database.query.user.findFirst({
@@ -1641,6 +1654,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenErin}`)
       .send({ account: firstGroupAccount, domain: DOM_A });
     expect(revoked.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(appB.database, revoked.body);
     await vi.waitFor(
       async () => {
         const row = await appA.database.query.groupRequestProjection.findFirst({
@@ -1776,6 +1790,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({ groupId: firstGroupThreadA, userIds: [daveStubIdOnA] });
     expect(groupInviteDave.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommands(appA.database, groupInviteDave.body);
     expect(
       groupInviteDave.body.data.invited,
       JSON.stringify(groupInviteDave.body),
@@ -1803,6 +1818,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenDave}`)
       .send({ groupId: firstMirrorBId });
     expect(daveAccept.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(appB.database, daveAccept.body);
 
     // dave is now on the SAME mirror thread as bob (the shared-mirror property).
     await vi.waitFor(
@@ -2058,6 +2074,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .send({ groupId: firstMirrorBId, deleteData: false });
     expect(leave.status).toBe(200);
     expect(leave.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(appB.database, leave.body);
 
     await vi.waitFor(
       async () => {
@@ -2155,6 +2172,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({ groupId: firstGroupThreadA, userIds: [daveStubIdOnA] });
     expect(reinvite.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommands(appA.database, reinvite.body);
     expect(reinvite.body.data.invited, JSON.stringify(reinvite.body)).toContain(
       daveStubIdOnA,
     );
@@ -2181,6 +2199,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenDave}`)
       .send({ groupId: firstMirrorBId });
     expect(rejoin.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(appB.database, rejoin.body);
     await vi.waitFor(
       async () => {
         const davePair = (
@@ -2214,6 +2233,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenDave}`)
       .send({ groupId: firstMirrorBId, deleteData: false });
     expect(daveLeaveAgain.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(appB.database, daveLeaveAgain.body);
     await vi.waitFor(
       async () => {
         const pair = (
@@ -2250,6 +2270,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         .set('Authorization', `Bearer ${tokenB}`)
         .send({ groupId: firstMirrorBId, deleteData: false });
       expect(bobLeave.body.code).toBe(BusinessCode.OK);
+      await waitForAcceptedDomainCommand(appB.database, bobLeave.body);
       await vi.waitFor(
         async () => {
           const [bobOnOrigin, originAudience, bobOnMirror] = await Promise.all([
@@ -2333,6 +2354,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({ groupId: firstGroupThreadA, userIds: [bobStubIdOnA] });
     expect(reinviteBob.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommands(appA.database, reinviteBob.body);
     await vi.waitFor(
       async () => {
         const relationship = await findGroupRelationship(
@@ -2355,6 +2377,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenB}`)
       .send({ groupId: firstMirrorBId });
     expect(bobRejoin.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(appB.database, bobRejoin.body);
     await vi.waitFor(
       async () => {
         const [originAudience, localAudience, bobOnMirror] = await Promise.all([
@@ -2428,6 +2451,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         .set('Authorization', `Bearer ${tokenB}`)
         .send({ groupId: firstMirrorBId, deleteData: false });
       expect(leave.body.code).toBe(BusinessCode.OK);
+      await waitForAcceptedDomainCommand(appB.database, leave.body);
       expect(
         await appB.database.query.threadParticipant.findFirst({
           where: and(
@@ -2454,6 +2478,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         .set('Authorization', `Bearer ${tokenB}`)
         .send({ groupId: firstMirrorBId });
       expect(rejoin.body.code).toBe(BusinessCode.OK);
+      await waitForAcceptedDomainCommand(appB.database, rejoin.body);
       const relationship = await findGroupRelationship(
         appB.database,
         firstMirrorGroupBId,
@@ -2522,6 +2547,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({ groupId: originThreadId, userIds: [daveStubIdOnA] });
     expect(invited.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommands(appA.database, invited.body);
     const originThread = await findGroupThreadById(appA, originThreadId);
     const groupAccount = originThread!.group.account;
     const mirror = await vi.waitFor(
@@ -2581,6 +2607,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenB}`)
       .send({ groupId: mirror.id });
     expect(accepted.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(appB.database, accepted.body);
 
     await vi.waitFor(
       async () => {
@@ -2741,6 +2768,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         note: 'revive from alice',
       });
     expect(revive.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(appA.database, revive.body);
     expect(
       await findActiveP2pBetween(appA, aliceLocalIdA, bobStubIdOnA),
     ).toEqual(oldThreadA);

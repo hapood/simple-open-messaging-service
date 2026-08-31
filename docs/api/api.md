@@ -187,17 +187,19 @@ the complete transition, pair-folding, and projection-side-effect rules.
 - **Body**: `{ account, domain, note?, displayName?, avatar? }`. `account + domain` are the immutable target
   Address; `displayName/avatar` are only the untrusted request-card snapshot returned by the temporary
   lookup. The client is session-authenticated but does not sign this application or its snapshot.
-- The server creates the address-keyed relationship shell needed by the outgoing
+- The API returns `{ commandId: string, status: "PENDING" }`; command execution
+  creates the address-keyed relationship shell needed by the outgoing
   request, but does not expose a foreign `User` row. Every non-revoked request publishes the
   author's verified home-owned `PROFILE` immediately after `RELATIONSHIP_INTENT`; the receiver uses
   it to fill the address-keyed request projection before acceptance.
-- The response echoes `{ account, domain }`; no federated request id or foreign User stub is exposed.
+- No federated request id or foreign User stub is exposed.
 - This route accepts user accounts only. Group accounts use `/group/federated-join-request`.
 
 ### POST `/group/federated-join-request` — Apply to a federated group
 
 - **Body**: `{ account, domain, note?, displayName, avatar? }`, where `account` starts with `!`.
-- The route publishes a member-authored group relationship request. It does not pass through a friend
+- Returns `{ commandId: string, status: "PENDING" }`. The command publishes a
+  member-authored group relationship request. It does not pass through a friend
   endpoint or materialize the group as a User.
 
 ### POST `/invite/accept` · `/invite/reject` · `/invite/revoke`
@@ -212,8 +214,9 @@ the complete transition, pair-folding, and projection-side-effect rules.
 - `/invite/reject` validates request ownership and returns
   `{ commandId: string, status: "PENDING" }` after durable command acceptance.
   P2P `{ inviteId }` acceptance and revoke have the same durable acceptance
-  response. Group acceptance and addressed federated accept/revoke still
-  execute directly during the staged rollout.
+  response. Stored group invitations and addressed federated friend/group
+  accept or revoke operations also return this response and execute in their
+  canonical aggregate order.
 - Every pending friend/group request has an absolute expiry of at most seven days. Expired requests are
   ineffective even if an old feed projection remains. REVOKED has no expiry and is retained best-effort.
 
@@ -299,7 +302,9 @@ the complete transition, pair-folding, and projection-side-effect rules.
 
 ### POST `/group/invite`
 
-- **Body**: `{ groupId, userIds: number[] }` — mint GROUP invites for existing friends. `40002` non-friend.
+- **Body**: `{ groupId, userIds: number[] }` — enqueue one GROUP invitation per
+  valid existing friend. The response includes `commands[]` entries with each
+  accepted target's `commandId`; invalid targets remain in `skipped`.
 
 ### Group request projections
 
@@ -307,12 +312,26 @@ the complete transition, pair-folding, and projection-side-effect rules.
   contract: `{ groupId, before?, take? }`.
 - `POST /group/join-request/{accept,reject}` acts on a member-authored application.
 - `POST /group/invitation/revoke` cancels a still-live group-authored invitation.
+- These mutation routes return `{ commandId: string, status: "PENDING" }` after
+  validation and durable acceptance.
 - These lists are backend projections written after the corresponding intent fact and relationship
   fold commit. They are not membership authority.
 
 ### POST `/group/{leave, kick, transfer, set-role, update}`
 
-- `leave` (`40004` owner must transfer first) · `kick` (`40005` forbidden, `40006` target not a member) · `transfer` (ownership) · `set-role` (ADMIN/MEMBER) · `update` (name/avatar/bio).
+- `leave` (`40004` owner must transfer first) · `kick` (`40005` forbidden,
+  `40006` target not a member) · `transfer` (ownership) · `set-role`
+  (ADMIN/MEMBER) return durable command acceptance. `update`
+  (name/avatar/bio) remains synchronous because it is not a relationship
+  mutation.
+
+### POST `/group/dissolve`
+
+- **Body**: `{ groupId, deleteData? }`. Owner-only.
+- Returns `{ commandId: string, status: "PENDING" }` after durable acceptance.
+  The parent command commits the permanent dissolution marker and durably
+  checkpoints one member-revoke child command per active roster member. It does
+  not wait for those children to execute.
 
 ---
 
@@ -378,6 +397,7 @@ Admin auth is a **separate opaque session** (`AdminSession`, own `adminSecret`, 
 - `POST /admin/bans` · `/admin/bans/unban` `{ ip?, account? }` — list/unban login bans (the shared `BruteForceService`; one unban clears all account-keyed dims — password + OTP).
 - `POST /admin/sessions` `{ skip?, take?, userId?, ip? }` · `/admin/sessions/purge` — system-wide session overview / one-click purge.
 - `POST /admin/audit` — `@Audit`-tagged action log (`AdminActionLog`).
+- `POST /admin/domain-commands` — paginated domain-command execution history with status and search filters.
 - Federation / quota admin: `AdminFederationController` (peer trust timeline), `AdminQuotaController` (per-peer quota overrides). Diagnostics + log viewer: `AdminDiagnosticsController`, `LogViewerController` (`/admin/logs/*`).
 
 ---

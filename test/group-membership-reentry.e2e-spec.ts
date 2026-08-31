@@ -14,7 +14,11 @@ import {
   threadParticipant,
 } from '../src/database/schema.js';
 import { seedUserWithSession } from './seed.js';
-import { waitForLocalFriendInvite } from './domain-command-helpers.js';
+import {
+  waitForAcceptedDomainCommand,
+  waitForAcceptedDomainCommands,
+  waitForLocalFriendInvite,
+} from './domain-command-helpers.js';
 
 describe('group membership re-entry and ownership transfer', () => {
   let app: INestApplication;
@@ -57,6 +61,7 @@ describe('group membership re-entry and ownership transfer', () => {
       .set('Authorization', `Bearer ${second.token}`)
       .send({ inviteId });
     expect(accepted.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(database.db, accepted.body);
   }
 
   async function inviteAndJoin(
@@ -72,11 +77,13 @@ describe('group membership re-entry and ownership transfer', () => {
     expect(invited.body.data.invited, JSON.stringify(invited.body)).toContain(
       member.id,
     );
+    await waitForAcceptedDomainCommands(database.db, invited.body);
     const joined = await request(app.getHttpServer())
       .post('/api/v1/group/join-request')
       .set('Authorization', `Bearer ${member.token}`)
       .send({ groupId });
     expect(joined.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(database.db, joined.body);
   }
 
   it('joins, is kicked, rejoins the same thread, and sends a message', async () => {
@@ -95,6 +102,7 @@ describe('group membership re-entry and ownership transfer', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .send({ groupId, account: member.account, domain: 'local' });
     expect(kicked.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(database.db, kicked.body);
     expect(
       await database.db.query.threadMember.findFirst({
         where: and(
@@ -173,6 +181,7 @@ describe('group membership re-entry and ownership transfer', () => {
       .set('Authorization', `Bearer ${oldOwner.token}`)
       .send({ groupId, account: newOwner.account, domain: 'local' });
     expect(transferred.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(database.db, transferred.body);
     expect(
       await database.db.query.threadMember.findFirst({
         where: and(
@@ -203,6 +212,7 @@ describe('group membership re-entry and ownership transfer', () => {
       .set('Authorization', `Bearer ${newOwner.token}`)
       .send({ groupId, account: oldOwner.account, domain: 'local' });
     expect(kicked.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(database.db, kicked.body);
     expect(
       await database.db.query.threadMember.findFirst({
         where: and(

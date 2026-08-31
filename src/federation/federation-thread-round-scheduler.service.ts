@@ -268,9 +268,10 @@ export class FederationThreadRoundSchedulerService
       .where(eq(messageThread.id, threadId))
       .limit(1);
     if (!context || context.peerDomain !== peerDomain) {
-      throw new FederationMessageContextError(
-        `thread ${threadId} is not owned by ${peerDomain}`,
+      this.logger.debug(
+        `discarded stale wake for thread ${threadId} from ${peerDomain}`,
       );
+      return;
     }
     return this.wakeCaptured(
       threadId,

@@ -11,7 +11,6 @@ import {
   relationshipPair,
   federatedFriendRequest,
   relationshipIntent,
-  groupAuditLog,
   messageThread,
   threadAudience,
   threadMember,
@@ -409,6 +408,64 @@ export class InviteService {
     return 'NONE';
   }
 
+  async resolveFederatedFriendRequestCommandScope(
+    localUserId: number,
+    remoteAccount: string,
+    remoteDomain: string,
+    direction: 'INCOMING' | 'OUTGOING',
+  ): Promise<{
+    local: { account: string; domain: string };
+    remote: { account: string; domain: string };
+  }> {
+    const account = normalizeAccount(remoteAccount);
+    const domain = remoteDomain.trim().toLowerCase();
+    return this.database.db.transaction(async (tx) => {
+      const context = await this.namespaces.captureActiveInTx(tx, domain);
+      const [local, request] = await Promise.all([
+        tx.query.user.findFirst({
+          where: eq(user.id, localUserId),
+          columns: { account: true, domain: true },
+        }),
+        tx.query.federatedFriendRequest.findFirst({
+          where: and(
+            eq(federatedFriendRequest.localUserId, localUserId),
+            eq(federatedFriendRequest.remoteAccount, account),
+            eq(federatedFriendRequest.remoteDomain, domain),
+            eq(federatedFriendRequest.namespaceId, context.namespaceId),
+            eq(federatedFriendRequest.direction, direction),
+          ),
+          columns: { status: true, expiresAt: true },
+        }),
+      ]);
+      if (!local) {
+        throw new BusinessException(
+          BusinessCode.UNAUTHENTICATED,
+          'authenticated user does not exist',
+        );
+      }
+      if (!request) {
+        throw new BusinessException(
+          BusinessCode.INVITE_NOT_FOUND,
+          'request not found',
+        );
+      }
+      if (
+        request.status !== 'REQUESTED' ||
+        request.expiresAt === null ||
+        request.expiresAt <= new Date()
+      ) {
+        throw new BusinessException(
+          BusinessCode.INVITE_EXPIRED,
+          'request expired',
+        );
+      }
+      return {
+        local: { account: local.account, domain: local.domain },
+        remote: { account, domain },
+      };
+    });
+  }
+
   /** Apply one locally-authored direction. Purely local pairs use this same state machine but emit no
    * peer feed. The canonical pair row is locked before either directed request is inspected. */
   async writeLocalFriendIntentInTx(
@@ -724,17 +781,15 @@ export class InviteService {
     return result;
   }
 
-  /** Create or refresh one group membership invitation and its append-only origin audit entry. */
+  /** Create or refresh one group membership invitation. */
   async createGroupInvite(
     fromUserId: number,
     threadId: number,
     toUserId: number,
     note = '',
-    originOverride?: { origin: string; originId: string },
     afterWrite?: (tx: DatabaseTransaction) => Promise<void>,
   ): Promise<string> {
     const trimmed = (note ?? '').slice(0, 255);
-    void originOverride;
     return this.database.db.transaction(async (tx) => {
       const target = await tx.query.messageThread.findFirst({
         where: eq(messageThread.id, threadId),
@@ -773,62 +828,15 @@ export class InviteService {
         ),
         columns: {
           id: true,
-          requestedAt: true,
-          expiresAt: true,
         },
       });
       if (!request) throw new Error('group request write disappeared');
-      const [groupIdentity, memberIdentity, actorIdentity] = await Promise.all([
-        tx.query.group.findFirst({
-          where: eq(group.id, target.groupId),
-          columns: { account: true, domain: true },
-        }),
-        tx.query.user.findFirst({
-          where: eq(user.id, toUserId),
-          columns: { account: true, domain: true },
-        }),
-        tx.query.user.findFirst({
-          where: eq(user.id, fromUserId),
-          columns: { account: true, domain: true },
-        }),
-      ]);
-      if (!groupIdentity || !memberIdentity || !actorIdentity)
-        throw new Error('group invite audit identity missing');
-      const groupDomain =
-        groupIdentity.domain === 'local'
-          ? this.config.domain
-          : groupIdentity.domain;
-      const memberDomain =
-        memberIdentity.domain === 'local'
-          ? this.config.domain
-          : memberIdentity.domain;
-      const actorDomain =
-        actorIdentity.domain === 'local'
-          ? this.config.domain
-          : actorIdentity.domain;
-      await tx
-        .insert(groupAuditLog)
-        .values({
-          eventKey: `invite:${groupDomain}:${groupIdentity.account}:${memberDomain}:${memberIdentity.account}:${request.requestedAt?.getTime() ?? 0}:requested`,
-          groupId: target.groupId,
-          groupAccount: groupIdentity.account,
-          groupDomain,
-          actorType: 'USER',
-          actorUserId: fromUserId,
-          actorAccount: actorIdentity.account,
-          actorDomain,
-          action: 'group.invite.requested',
-          targetType: 'group_member',
-          targetId: `${memberIdentity.account}@${memberDomain}`,
-          meta: {
-            memberAccount: memberIdentity.account,
-            memberDomain,
-            requestedAt: request.requestedAt?.getTime() ?? null,
-            expiresAt: request.expiresAt?.getTime() ?? null,
-            note: trimmed,
-          },
-        })
-        .onConflictDoNothing({ target: groupAuditLog.eventKey });
+      const memberIdentity = await tx.query.user.findFirst({
+        where: eq(user.id, toUserId),
+        columns: { domain: true },
+      });
+      if (!memberIdentity)
+        throw new Error('group invite member identity missing');
       if (memberIdentity.domain !== 'local')
         await openFederatedAudienceInTx(tx, memberIdentity.domain, threadId);
       return request.id.toString();
@@ -1068,6 +1076,175 @@ export class InviteService {
       }
     }
     return result;
+  }
+
+  /** Read-only API locator. The mutation transaction revalidates all of these facts after claim. */
+  async resolveP2PInviteCommandScope(
+    inviteId: string,
+    byUserId: number,
+    ownership: 'AUTHOR' | 'SUBJECT',
+  ): Promise<{
+    inviteId: string;
+    authorUserId: number;
+    subjectUserId: number;
+    endpoints: readonly [
+      { account: string; domain: string },
+      { account: string; domain: string },
+    ];
+  }> {
+    const id = this.parseInviteId(inviteId);
+    return this.database.db.transaction(async (tx) => {
+      const relationship = await this.loadP2PIntentPartiesInTx(tx, id);
+      if (!relationship)
+        throw new BusinessException(
+          BusinessCode.INVITE_NOT_FOUND,
+          'request not found',
+        );
+      if (relationship.intent.status !== 'REQUESTED')
+        throw new BusinessException(
+          BusinessCode.INVITE_ALREADY_HANDLED,
+          'request already handled',
+        );
+      const ownerId =
+        ownership === 'AUTHOR'
+          ? relationship.authorUserId
+          : relationship.subjectUserId;
+      if (ownerId !== byUserId)
+        throw new BusinessException(
+          BusinessCode.INVITE_NOT_YOURS,
+          ownership === 'AUTHOR'
+            ? 'this request is not yours to revoke'
+            : 'this request is not yours to reject',
+        );
+      return {
+        inviteId: id.toString(),
+        authorUserId: relationship.authorUserId,
+        subjectUserId: relationship.subjectUserId,
+        endpoints: [
+          {
+            account: relationship.pair.endpointAAccount,
+            domain: relationship.pair.endpointADomain,
+          },
+          {
+            account: relationship.pair.endpointBAccount,
+            domain: relationship.pair.endpointBDomain,
+          },
+        ],
+      };
+    });
+  }
+
+  /** Read-only accept locator. The mutation transaction revalidates the selected invite after claim. */
+  async resolveAcceptInviteCommandScope(
+    inviteIdOrGroup: string,
+    byUserId: number,
+  ): Promise<
+    | {
+        kind: 'FRIEND';
+        inviteId: string;
+        endpoints: readonly [
+          { account: string; domain: string },
+          { account: string; domain: string },
+        ];
+      }
+    | {
+        kind: 'GROUP';
+        inviteId: string;
+        threadId: number;
+        address: { account: string; domain: string };
+      }
+  > {
+    const id = await this.resolveInviteId(inviteIdOrGroup, byUserId, true);
+    return this.database.db.transaction(async (tx) => {
+      const [invite] = await tx
+        .select({ intent: relationshipIntent, pair: relationshipPair })
+        .from(relationshipIntent)
+        .innerJoin(
+          relationshipPair,
+          eq(relationshipPair.id, relationshipIntent.pairId),
+        )
+        .where(eq(relationshipIntent.id, id))
+        .limit(1);
+      if (!invite)
+        throw new BusinessException(
+          BusinessCode.INVITE_NOT_FOUND,
+          'request not found',
+        );
+      if (invite.intent.status !== 'REQUESTED')
+        throw new BusinessException(
+          BusinessCode.INVITE_ALREADY_HANDLED,
+          'request already handled',
+        );
+      if (
+        invite.intent.expiresAt &&
+        invite.intent.expiresAt.getTime() <= Date.now()
+      )
+        throw new BusinessException(
+          BusinessCode.INVITE_EXPIRED,
+          'request expired',
+        );
+      const recipient = await tx.query.user.findFirst({
+        where: eq(user.id, byUserId),
+        columns: { account: true, domain: true },
+      });
+      const recipientSide =
+        recipient &&
+        invite.pair.endpointAType === 'USER' &&
+        invite.pair.endpointAAccount === recipient.account &&
+        invite.pair.endpointADomain === recipient.domain
+          ? 'A'
+          : recipient &&
+              invite.pair.endpointBType === 'USER' &&
+              invite.pair.endpointBAccount === recipient.account &&
+              invite.pair.endpointBDomain === recipient.domain
+            ? 'B'
+            : null;
+      if (!recipientSide || invite.intent.authorSide === recipientSide)
+        throw new BusinessException(
+          BusinessCode.INVITE_NOT_YOURS,
+          'this request is not yours to accept',
+        );
+      if (invite.pair.kind !== 'P2P') {
+        const threadId = invite.pair.threadId;
+        const address =
+          invite.pair.endpointAType === 'GROUP'
+            ? {
+                account: invite.pair.endpointAAccount,
+                domain: invite.pair.endpointADomain,
+              }
+            : invite.pair.endpointBType === 'GROUP'
+              ? {
+                  account: invite.pair.endpointBAccount,
+                  domain: invite.pair.endpointBDomain,
+                }
+              : null;
+        if (
+          invite.pair.kind !== 'GROUP_MEMBER' ||
+          threadId === null ||
+          address === null
+        ) {
+          throw new BusinessException(
+            BusinessCode.INVITE_NOT_FOUND,
+            'group mirror missing',
+          );
+        }
+        return { kind: 'GROUP', inviteId: id.toString(), threadId, address };
+      }
+      return {
+        kind: 'FRIEND',
+        inviteId: id.toString(),
+        endpoints: [
+          {
+            account: invite.pair.endpointAAccount,
+            domain: invite.pair.endpointADomain,
+          },
+          {
+            account: invite.pair.endpointBAccount,
+            domain: invite.pair.endpointBDomain,
+          },
+        ],
+      };
+    });
   }
 
   /** Revoke my own outgoing pending invite. */

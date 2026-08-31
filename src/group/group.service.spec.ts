@@ -10,6 +10,7 @@ function createTx(options: {
   selects: SelectResult[];
   updateResults?: unknown[][];
   deleteResults?: unknown[][];
+  userDomain?: string;
 }) {
   const selects = [...options.selects];
   const updateResults = [...(options.updateResults ?? [])];
@@ -20,6 +21,7 @@ function createTx(options: {
     const query = {
       from: vi.fn(() => query),
       innerJoin: vi.fn(() => query),
+      leftJoin: vi.fn(() => query),
       where: vi.fn(() => query),
       for: vi.fn(() => query),
       limit: vi.fn(() => Promise.resolve(result)),
@@ -53,7 +55,22 @@ function createTx(options: {
     return query;
   });
   const execute = vi.fn().mockResolvedValue({ rows: [{ authorized: true }] });
-  return { select, update, delete: deleteFrom, execute, sets };
+  return {
+    select,
+    update,
+    delete: deleteFrom,
+    execute,
+    sets,
+    query: {
+      user: {
+        findFirst: vi
+          .fn()
+          .mockResolvedValue(
+            options.userDomain ? { domain: options.userDomain } : undefined,
+          ),
+      },
+    },
+  };
 }
 
 function createService(
@@ -230,6 +247,9 @@ describe('GroupService membership lifecycle', () => {
       2,
       'REVOKED',
       expect.any(Array),
+      '',
+      undefined,
+      { publishGroupState: true, allowOwnerDeactivation: false },
     );
     expect(writeGroupRelationshipIntentInTx).toHaveBeenCalledWith(
       tx,
@@ -238,92 +258,115 @@ describe('GroupService membership lifecycle', () => {
       '',
       'REVOKED',
       expect.any(Array),
+      undefined,
+      { publishGroupState: true, allowOwnerDeactivation: false },
     );
   });
 
-  it('marks a group dissolved and revokes pending invites while retaining history membership', async () => {
+  it('commits only the terminal group marker before member fan-out', async () => {
     const tx = createTx({
-      selects: [[{ groupId: 99 }]],
-      updateResults: [[{ id: 1 }], []],
+      selects: [[{ groupId: 99, groupDomain: 'local', role: GroupRole.OWNER }]],
+      updateResults: [[{ id: 1 }]],
     });
     const service = createService(tx, {});
 
-    await expect(service.dissolveGroup({ threadId: 10 })).resolves.toEqual({
-      transitioned: true,
-    });
-    expect(tx.update).toHaveBeenCalledTimes(4);
-    expect(tx.update).toHaveBeenNthCalledWith(1, group);
+    await expect(
+      service.markGroupDissolved({ threadId: 10, operatorUserId: 1 }),
+    ).resolves.toEqual({ transitioned: true });
+    expect(tx.update).toHaveBeenCalledTimes(1);
+    expect(tx.update).toHaveBeenCalledWith(group);
     expect(tx.sets[0]).toMatchObject({
       table: group,
       value: { dissolvedAt: expect.any(Date), updatedAt: expect.any(Date) },
     });
-    expect(tx.update).toHaveBeenNthCalledWith(2, threadMember);
-    expect(tx.sets[1]).toMatchObject({
-      table: threadMember,
-      value: { left: true, updatedAt: expect.any(Date) },
-    });
   });
 
-  it('treats dissolving an already dissolved group as an idempotent success', async () => {
+  it('treats an already committed terminal marker as idempotent', async () => {
     const tx = createTx({
-      selects: [[{ groupId: 99 }]],
+      selects: [[{ groupId: 99, groupDomain: 'local', role: GroupRole.OWNER }]],
       updateResults: [[]],
     });
     const service = createService(tx, {});
 
-    await expect(service.dissolveGroup({ threadId: 10 })).resolves.toEqual({
-      transitioned: false,
-    });
+    await expect(
+      service.markGroupDissolved({ threadId: 10, operatorUserId: 1 }),
+    ).resolves.toEqual({ transitioned: false });
     expect(tx.update).toHaveBeenCalledTimes(1);
   });
 
-  it('writes one self-only removal notice per local member when dissolving', async () => {
-    const tx = createTx({
-      selects: [[{ groupId: 99 }], [{ userId: 1 }, { userId: 2 }]],
-      updateResults: [[{ id: 1 }], []],
+  it('delegates each dissolved member to the existing leave transaction in fan-out mode', async () => {
+    const tx = createTx({ selects: [] });
+    const service = createService(tx, {});
+    const leaveGroup = vi
+      .spyOn(service, 'leaveGroup')
+      .mockResolvedValue({ transitioned: true, remainingMemberIds: [] });
+
+    await service.revokeDissolvedGroupMember({
+      threadId: 10,
+      memberUserId: 2,
+      deleteData: true,
     });
-    const messages = {
-      writeSystemMessageInTx: vi
-        .fn()
-        .mockImplementation((_tx, _threadId, _type, subjectUserId: number) =>
-          Promise.resolve({
-            message: {
-              threadId: 10,
-              seq: subjectUserId,
-              createdAt: new Date(),
-            },
-          }),
-        ),
-    };
-    const messageFanout = { dispatchToUsers: vi.fn() };
-    const service = createService(tx, {}, messages, messageFanout);
 
-    await service.dissolveGroup({ threadId: 10, operatorUserId: 1 });
+    expect(leaveGroup).toHaveBeenCalledWith({
+      userId: 2,
+      threadId: 10,
+      role: null,
+      deleteData: true,
+      dissolvedFanout: true,
+    });
+  });
 
-    expect(messages.writeSystemMessageInTx).toHaveBeenCalledTimes(2);
-    expect(messages.writeSystemMessageInTx).toHaveBeenNthCalledWith(
-      1,
+  it('allows owner projection deactivation only during dissolved fan-out', async () => {
+    const tx = createTx({
+      selects: [
+        [
+          {
+            groupId: 99,
+            groupDomain: 'local',
+            dissolvedAt: new Date(),
+          },
+        ],
+      ],
+      userDomain: 'local',
+    });
+    const writeMemberRelationshipIntentInTx = vi
+      .fn()
+      .mockResolvedValue(new Map());
+    const writeGroupRelationshipIntentInTx = vi
+      .fn()
+      .mockResolvedValue(new Map());
+    const service = createService(tx, {
+      writeMemberRelationshipIntentInTx,
+      writeGroupRelationshipIntentInTx,
+    });
+
+    await service.leaveGroup({
+      userId: 2,
+      threadId: 10,
+      role: null,
+      deleteData: false,
+      dissolvedFanout: true,
+    });
+
+    expect(writeMemberRelationshipIntentInTx).toHaveBeenCalledWith(
       tx,
       10,
-      'GROUP_LEFT',
-      1,
-      expect.objectContaining({ actorUserId: 1, recipientUserIds: [1] }),
-    );
-    expect(messages.writeSystemMessageInTx).toHaveBeenNthCalledWith(
       2,
+      'REVOKED',
+      expect.any(Array),
+      '',
+      undefined,
+      { publishGroupState: false, allowOwnerDeactivation: true },
+    );
+    expect(writeGroupRelationshipIntentInTx).toHaveBeenCalledWith(
       tx,
       10,
-      'GROUP_LEFT',
       2,
-      expect.objectContaining({ actorUserId: 1, recipientUserIds: [2] }),
-    );
-    expect(messageFanout.dispatchToUsers).toHaveBeenCalledWith(
-      expect.objectContaining({ seq: 1 }),
-      [1],
-    );
-    expect(messageFanout.dispatchToUsers).toHaveBeenCalledWith(
-      expect.objectContaining({ seq: 2 }),
-      [2],
+      '',
+      'REVOKED',
+      expect.any(Array),
+      undefined,
+      { publishGroupState: false, allowOwnerDeactivation: true },
     );
   });
 

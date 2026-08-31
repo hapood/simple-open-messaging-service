@@ -75,7 +75,7 @@ export enum BusinessCode {
   THREAD_NOT_FOUND = 30003, // no such conversation
   FORWARD_MAX_DEPTH_EXCEEDED = 30004, // forwarding a depth-3 bundle would create an unsupported depth-4 snapshot
   FORWARD_INVALID_BUNDLE = 30005, // malformed/missing/inaccessible forward bundle or source message
-  CLIENT_FEED_CURSOR_UNAVAILABLE = 30006, // client message/tombstone feed cursor is invalid; data carries integer resume bounds
+  CLIENT_FEED_CURSOR_UNAVAILABLE = 30006, // a message or tombstone body cursor is invalid; data carries integer resume bounds
 
   // 40xxx group domain
   GROUP_NOT_FRIEND = 40002, // non-friend cannot be invited

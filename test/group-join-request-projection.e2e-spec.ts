@@ -17,9 +17,13 @@ import {
 } from '../src/database/schema.js';
 import { GroupService } from '../src/group/group.service.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
-import { FederationService } from '../src/federation/federation.service.js';
+import { FederationRelationshipCommandService } from '../src/federation/federation-relationship-command.service.js';
 import { seedUserWithSession } from './seed.js';
-import { waitForLocalFriendInvite } from './domain-command-helpers.js';
+import {
+  waitForAcceptedDomainCommand,
+  waitForAcceptedDomainCommands,
+  waitForLocalFriendInvite,
+} from './domain-command-helpers.js';
 
 describe('group join request projection', () => {
   let app: INestApplication;
@@ -45,7 +49,7 @@ describe('group join request projection', () => {
     await database.db.transaction(async (tx) => {
       const updates: Array<{ userId: number; feedId: number }> = [];
       await app
-        .get(FederationService)
+        .get(FederationRelationshipCommandService)
         .writeMemberRelationshipIntentInTx(
           tx,
           threadId,
@@ -121,6 +125,7 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .send({ groupId: threadId, requestId: pending.body.data.data[0].id });
     expect(rejected.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(database.db, rejected.body);
 
     const history = await request(app.getHttpServer())
       .post('/api/v1/group/join-requests')
@@ -250,6 +255,10 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${member.token}`)
       .send({ inviteId: friendInviteId });
     expect(accepted.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(
+      app.get(DatabaseService).db,
+      accepted.body,
+    );
 
     const created = await request(app.getHttpServer())
       .post('/api/v1/group/create')
@@ -262,6 +271,10 @@ describe('group join request projection', () => {
       .send({ groupId: threadId, userIds: [member.id] });
     expect(invited.body.code).toBe(BusinessCode.OK);
     expect(invited.body.data.invited).toEqual([member.id]);
+    await waitForAcceptedDomainCommands(
+      app.get(DatabaseService).db,
+      invited.body,
+    );
 
     const pending = await request(app.getHttpServer())
       .post('/api/v1/group/invitations')
@@ -278,6 +291,10 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .send({ groupId: threadId, requestId: pending.body.data.data[0].id });
     expect(revoked.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(
+      app.get(DatabaseService).db,
+      revoked.body,
+    );
     const history = await request(app.getHttpServer())
       .post('/api/v1/group/invitations')
       .set('Authorization', `Bearer ${owner.token}`)
@@ -311,6 +328,7 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .send({ groupId: threadId, requestId });
     expect(accepted.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(database.db, accepted.body);
 
     const projections = await database.db.query.groupRequestProjection.findMany(
       {
@@ -342,10 +360,14 @@ describe('group join request projection', () => {
       owner.id,
       member.id,
     );
-    await request(app.getHttpServer())
+    const friendAccepted = await request(app.getHttpServer())
       .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${member.token}`)
       .send({ inviteId: friendInviteId });
+    await waitForAcceptedDomainCommand(
+      app.get(DatabaseService).db,
+      friendAccepted.body,
+    );
     const created = await request(app.getHttpServer())
       .post('/api/v1/group/create')
       .set('Authorization', `Bearer ${owner.token}`)
@@ -356,6 +378,10 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .send({ groupId: threadId, userIds: [member.id] });
     expect(invited.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommands(
+      app.get(DatabaseService).db,
+      invited.body,
+    );
 
     const database = app.get(DatabaseService);
     expect(
@@ -379,6 +405,7 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${member.token}`)
       .send({ groupId: threadId });
     expect(accepted.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(database.db, accepted.body);
 
     const acceptedCandidates = await request(app.getHttpServer())
       .post('/api/v1/group/invite-candidates')
@@ -408,6 +435,7 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${member.token}`)
       .send({ groupId: threadId });
     expect(left.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(database.db, left.body);
     expect(
       await database.db.query.threadMember.findFirst({
         where: and(
@@ -469,7 +497,7 @@ describe('group join request projection', () => {
     expect(thread?.groupId).toBeTypeOf('number');
     await database.db.transaction(async (tx) => {
       const updates: Array<{ userId: number; feedId: number }> = [];
-      const federation = app.get(FederationService);
+      const federation = app.get(FederationRelationshipCommandService);
       await federation.writeGroupRelationshipIntentInTx(
         tx,
         threadId,
@@ -500,6 +528,7 @@ describe('group join request projection', () => {
     expect(promoted.body.code, JSON.stringify(promoted.body)).toBe(
       BusinessCode.OK,
     );
+    await waitForAcceptedDomainCommand(database.db, promoted.body);
     expect(
       await database.db.query.groupRequestProjection.findMany({
         where: and(
@@ -530,6 +559,7 @@ describe('group join request projection', () => {
     expect(demoted.body.code, JSON.stringify(demoted.body)).toBe(
       BusinessCode.OK,
     );
+    await waitForAcceptedDomainCommand(database.db, demoted.body);
     expect(
       await database.db.query.groupRequestProjection.findMany({
         where: eq(groupRequestProjection.managerUserId, admin.id),
@@ -555,6 +585,7 @@ describe('group join request projection', () => {
         role: 'ADMIN',
       });
     expect(promotedAgain.body.code).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(database.db, promotedAgain.body);
     expect(
       await database.db.query.groupRequestProjection.findMany({
         where: and(
@@ -569,6 +600,7 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${admin.token}`)
       .send({ groupId: threadId, deleteData: false });
     expect(left.body.code, JSON.stringify(left.body)).toBe(BusinessCode.OK);
+    await waitForAcceptedDomainCommand(database.db, left.body);
     expect(
       await database.db.query.groupRequestProjection.findMany({
         where: and(

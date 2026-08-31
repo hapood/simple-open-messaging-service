@@ -21,6 +21,7 @@ import {
 } from './federation-harness.js';
 import { registerAndLogin } from './federation-test-helpers.js';
 import { findP2PRelationship } from './seed.js';
+import { waitForAcceptedDomainCommand } from './domain-command-helpers.js';
 
 describe('federated Address friend request shells', () => {
   let appA: FedApp;
@@ -95,10 +96,8 @@ describe('federated Address friend request shells', () => {
         note: 'address request',
       });
     expect(sent.body.code, JSON.stringify(sent.body)).toBe(BusinessCode.OK);
-    expect(sent.body.data).toEqual({
-      account: 'address-bob',
-      domain: FED_DOMAIN_B,
-    });
+    expect(sent.body.data).toMatchObject({ status: 'PENDING' });
+    await waitForAcceptedDomainCommand(appA.database, sent.body);
     const requesterStub = await appA.database.query.user.findFirst({
       where: and(
         eq(user.account, 'address-bob'),
@@ -166,6 +165,7 @@ describe('federated Address friend request shells', () => {
     expect(accepted.body.code, JSON.stringify(accepted.body)).toBe(
       BusinessCode.OK,
     );
+    await waitForAcceptedDomainCommand(appB.database, accepted.body);
 
     await vi.waitFor(
       async () => {

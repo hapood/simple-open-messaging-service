@@ -55,6 +55,8 @@ export class GroupService {
   }) {
     return this.http.post<
       StandardResponse<{
+        commandId: string;
+        status: 'PENDING';
         inviteId?: string;
         threadId?: number;
         account?: string;
@@ -63,12 +65,16 @@ export class GroupService {
     >(`${apiPrefix()}/group/federated-join-request`, params);
   }
 
-  /** Batch invite: each friend receives an INVITE in the inviter↔invitee P2P thread. The server
-   *  returns { invited, skipped } — skipped entries are non-friends / no-P2P-thread / write failures. */
+  /** Batch invite acceptance. Each validated target receives a durable GROUP command. */
   inviteUsers(params: { userIds: number[]; groupId: number }) {
     return this.http.post<
       StandardResponse<{
         invited: number[];
+        commands: Array<{
+          userId: number;
+          commandId: string;
+          status: 'PENDING';
+        }>;
         skipped: { userId: number; reason: string }[];
       }>
     >(`${apiPrefix()}/group/invite`, params);
@@ -90,24 +96,21 @@ export class GroupService {
   }
 
   leaveGroup(params: { groupId: number; deleteData?: boolean }) {
-    return this.http.post<StandardResponse>(
-      `${apiPrefix()}/group/leave`,
-      params,
-    );
+    return this.http.post<
+      StandardResponse<{ commandId: string; status: 'PENDING' }>
+    >(`${apiPrefix()}/group/leave`, params);
   }
 
   dissolveGroup(params: { groupId: number; deleteData?: boolean }) {
-    return this.http.post<StandardResponse>(
-      `${apiPrefix()}/group/dissolve`,
-      params,
-    );
+    return this.http.post<
+      StandardResponse<{ commandId: string; status: 'PENDING' }>
+    >(`${apiPrefix()}/group/dissolve`, params);
   }
 
   kickMember(params: { groupId: number; account: string; domain: string }) {
-    return this.http.post<StandardResponse>(
-      `${apiPrefix()}/group/kick`,
-      params,
-    );
+    return this.http.post<
+      StandardResponse<{ commandId: string; status: 'PENDING' }>
+    >(`${apiPrefix()}/group/kick`, params);
   }
 
   transferOwnership(params: {
@@ -115,10 +118,9 @@ export class GroupService {
     account: string;
     domain: string;
   }) {
-    return this.http.post<StandardResponse>(
-      `${apiPrefix()}/group/transfer`,
-      params,
-    );
+    return this.http.post<
+      StandardResponse<{ commandId: string; status: 'PENDING' }>
+    >(`${apiPrefix()}/group/transfer`, params);
   }
 
   /** role is ADMIN or MEMBER; ownership changes use transferOwnership. */
@@ -128,10 +130,9 @@ export class GroupService {
     domain: string;
     role: 'ADMIN' | 'MEMBER';
   }) {
-    return this.http.post<StandardResponse>(
-      `${apiPrefix()}/group/set-role`,
-      params,
-    );
+    return this.http.post<
+      StandardResponse<{ commandId: string; status: 'PENDING' }>
+    >(`${apiPrefix()}/group/set-role`, params);
   }
 
   updateGroup(params: {
@@ -182,23 +183,20 @@ export class GroupService {
   }
 
   acceptJoinRequest(params: { groupId: number; requestId: string }) {
-    return this.http.post<StandardResponse>(
-      `${apiPrefix()}/group/join-request/accept`,
-      params,
-    );
+    return this.http.post<
+      StandardResponse<{ commandId: string; status: 'PENDING' }>
+    >(`${apiPrefix()}/group/join-request/accept`, params);
   }
 
   rejectJoinRequest(params: { groupId: number; requestId: string }) {
-    return this.http.post<StandardResponse>(
-      `${apiPrefix()}/group/join-request/reject`,
-      params,
-    );
+    return this.http.post<
+      StandardResponse<{ commandId: string; status: 'PENDING' }>
+    >(`${apiPrefix()}/group/join-request/reject`, params);
   }
 
   revokeInvitation(params: { groupId: number; requestId: string }) {
-    return this.http.post<StandardResponse>(
-      `${apiPrefix()}/group/invitation/revoke`,
-      params,
-    );
+    return this.http.post<
+      StandardResponse<{ commandId: string; status: 'PENDING' }>
+    >(`${apiPrefix()}/group/invitation/revoke`, params);
   }
 }

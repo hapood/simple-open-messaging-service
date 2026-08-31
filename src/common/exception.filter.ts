@@ -6,7 +6,7 @@ import {
   HttpStatus,
   Logger,
 } from '@nestjs/common';
-import type { FastifyReply } from 'fastify';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 import { BusinessCode } from './business-code.js';
 import { BusinessException } from './business.exception.js';
 import {
@@ -42,6 +42,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
   catch(exception: unknown, host: ArgumentsHost) {
     const ctx = host.switchToHttp();
+    const request = ctx.getRequest<FastifyRequest>();
     const response = ctx.getResponse<FastifyReply>();
 
     // Client disconnected mid-response (closed socket / aborted stream). Not a server fault and
@@ -55,7 +56,10 @@ export class AllExceptionsFilter implements ExceptionFilter {
       return;
     }
 
-    const { httpStatus, code, message } = this.map(exception);
+    const { httpStatus, code, message } = this.map(
+      exception,
+      this.isFederationRequest(request),
+    );
 
     // A BusinessException may carry a structured `data` payload (e.g. a quota hit's
     // {retryAfter}); surface it on the envelope. All other exceptions → data:null.
@@ -109,11 +113,20 @@ export class AllExceptionsFilter implements ExceptionFilter {
     );
   }
 
-  private map(exception: unknown): {
+  private isFederationRequest(request: FastifyRequest): boolean {
+    return (request.url ?? '').startsWith('/s2s/');
+  }
+
+  private map(
+    exception: unknown,
+    federationRequest = false,
+  ): {
     httpStatus: HttpStatus;
     code: number;
     message: string;
   } {
+    if (federationRequest) return this.mapFederationException(exception);
+
     // BusinessException carries a domain code that must reach the client verbatim (HTTP 200 +
     // code by convention); handle it before the generic HttpException branch, which would
     // otherwise derive the code from the HTTP status (FORBIDDEN → 10004, etc.).
@@ -173,6 +186,80 @@ export class AllExceptionsFilter implements ExceptionFilter {
       code: BusinessCode.INTERNAL,
       message: 'internal error',
     };
+  }
+
+  /** Federation HTTP status is part of the peer lifecycle protocol, so it must not inherit the
+   * client API's generic status mapping. Ordinary application outcomes stay on HTTP 200; only
+   * malformed input, authentication/binding failures, registered fatal conflicts, and temporary
+   * service failures use non-200 JSON statuses. */
+  private mapFederationException(exception: unknown): {
+    httpStatus: HttpStatus;
+    code: number;
+    message: string;
+  } {
+    if (exception instanceof BusinessException) {
+      const response = exception.getResponse() as {
+        code: number;
+        message: string;
+      };
+      return {
+        httpStatus: this.federationHttpStatus(response.code),
+        code: response.code,
+        message: response.message,
+      };
+    }
+
+    const status =
+      exception instanceof HttpException
+        ? exception.getStatus()
+        : (exception as { statusCode?: unknown } | null | undefined)
+            ?.statusCode;
+    if (status === HttpStatus.TOO_MANY_REQUESTS) {
+      return {
+        httpStatus: HttpStatus.SERVICE_UNAVAILABLE,
+        code: BusinessCode.RATE_LIMITED,
+        message: 'federation request rate limited',
+      };
+    }
+    if (
+      typeof status === 'number' &&
+      status >= HttpStatus.BAD_REQUEST &&
+      status < HttpStatus.INTERNAL_SERVER_ERROR
+    ) {
+      return {
+        httpStatus: HttpStatus.BAD_REQUEST,
+        code: BusinessCode.FEDERATION_MALFORMED,
+        message: 'malformed federation request',
+      };
+    }
+    return {
+      httpStatus: HttpStatus.SERVICE_UNAVAILABLE,
+      code: BusinessCode.INTERNAL,
+      message: 'federation service temporarily unavailable',
+    };
+  }
+
+  private federationHttpStatus(code: number): HttpStatus {
+    switch (code) {
+      case BusinessCode.FEDERATION_MALFORMED:
+        return HttpStatus.BAD_REQUEST;
+      case BusinessCode.FEDERATION_RECOGNITION_REQUIRED:
+      case BusinessCode.FEDERATION_BAD_SIGNATURE:
+      case BusinessCode.FEDERATION_BINDING_VIOLATION:
+        return HttpStatus.UNAUTHORIZED;
+      case BusinessCode.FEDERATION_PEER_BLOCKED:
+      case BusinessCode.FEDERATION_IDENTITY_MISMATCH:
+      case BusinessCode.FEDERATION_PROTOCOL_VERSION_UNSUPPORTED:
+        return HttpStatus.CONFLICT;
+      case BusinessCode.RATE_LIMITED:
+      case BusinessCode.INTERNAL:
+      case BusinessCode.FEDERATION_LOCAL_IDENTITY_LOST:
+        return HttpStatus.SERVICE_UNAVAILABLE;
+      case BusinessCode.FEDERATION_RANGE_NOT_SATISFIABLE:
+        return HttpStatus.REQUESTED_RANGE_NOT_SATISFIABLE;
+      default:
+        return HttpStatus.OK;
+    }
   }
 
   /** HTTP status → 10xxx business-code segment (protocol/system-layer errors; the HTTP code is kept for the broad category). */
