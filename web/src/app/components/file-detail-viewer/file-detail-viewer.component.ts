@@ -1,6 +1,8 @@
 import {
   Component,
+  OnDestroy,
   computed,
+  effect,
   inject,
   input,
   output,
@@ -9,8 +11,8 @@ import {
 } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { MatButtonModule } from '@angular/material/button';
+import { MatIconModule } from '@angular/material/icon';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
-import { firstValueFrom } from 'rxjs';
 import {
   MEDIA_STATUS,
   type ChatMsgData,
@@ -23,8 +25,10 @@ import {
   formatBytes,
   type FileCategory,
 } from '../message-cards/file-meta.util';
-import { MsgService } from '../../services/message.service';
-import { MessageRepository } from '../../services/message-repository.service';
+import {
+  MediaAvailabilityRegistration,
+  MediaAvailabilityService,
+} from '../../services/media-availability.service';
 
 /**
  * Fullscreen inspector for a single FILE message. Mounted by {@link FileDetailService} inside a CDK Overlay (global
@@ -41,28 +45,60 @@ import { MessageRepository } from '../../services/message-repository.service';
 @Component({
   selector: 'app-file-detail-viewer',
   standalone: true,
-  imports: [TranslocoPipe, MatButtonModule, MatProgressSpinnerModule],
+  imports: [
+    TranslocoPipe,
+    MatButtonModule,
+    MatIconModule,
+    MatProgressSpinnerModule,
+  ],
   templateUrl: './file-detail-viewer.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './file-detail-viewer.component.scss',
 })
-export class FileDetailViewerComponent {
+export class FileDetailViewerComponent implements OnDestroy {
   readonly data = input.required<ChatMsgData>();
   /** The owning thread — scopes the backend relocalize retry. */
   readonly threadId = input<number>(0);
   readonly close = output<void>();
 
   readonly MEDIA_STATUS = MEDIA_STATUS;
-  /** LOCAL status override set by a backend retry (the payload is a snapshot from open time). */
-  readonly statusOverride = signal<MediaStatus | null>(null);
-  /** Effective status: local override (post-retry) else the payload status, else 'ready'. */
+  readonly registeredStatus = signal<MediaStatus | null>(null);
   readonly currentStatus = computed<MediaStatus>(
     () =>
-      this.statusOverride() ?? this.data().mediaStatus ?? MEDIA_STATUS.READY,
+      this.registeredStatus() ?? this.data().mediaStatus ?? MEDIA_STATUS.READY,
   );
 
-  private readonly msg = inject(MsgService);
-  private readonly repo = inject(MessageRepository);
+  private readonly mediaAvailability = inject(MediaAvailabilityService);
+  private registration?: MediaAvailabilityRegistration;
+  private removeStatusListener?: () => void;
+  private removeWithdrawnListener?: () => void;
+
+  constructor() {
+    effect(() => {
+      this.releaseRegistration();
+      this.registeredStatus.set(null);
+      const threadId = this.threadId();
+      const data = this.data();
+      if (threadId === 0 || data.msgId < 1) return;
+      const registration = this.mediaAvailability.register(
+        threadId,
+        data.msgId,
+        data.mediaStatus ?? MEDIA_STATUS.READY,
+      );
+      this.registration = registration;
+      this.registeredStatus.set(registration.status());
+      this.removeStatusListener = registration.subscribe((status) =>
+        this.registeredStatus.set(status),
+      );
+      this.removeWithdrawnListener = registration.onWithdrawn(() =>
+        this.close.emit(),
+      );
+    });
+  }
+
+  ngOnDestroy(): void {
+    this.releaseRegistration();
+  }
 
   readonly file = computed(() => this.data().file);
   readonly category = computed<FileCategory>(() =>
@@ -81,15 +117,19 @@ export class FileDetailViewerComponent {
     const tid = this.threadId();
     const seq = this.data().msgId;
     if (tid === 0) return;
-    this.statusOverride.set(MEDIA_STATUS.DOWNLOADING);
-    void this.repo.setMediaDownloading(tid, seq);
     try {
-      const res = await firstValueFrom(this.msg.relocalizeMedia(tid, seq));
-      const status =
-        res.code === 0 && res.data ? res.data.status : MEDIA_STATUS.FAILED;
-      this.statusOverride.set(status);
+      await this.mediaAvailability.retry(tid, seq);
     } catch {
-      this.statusOverride.set(MEDIA_STATUS.FAILED);
+      // The retained failed status remains visible; transport errors are not CAS outcomes.
     }
+  }
+
+  private releaseRegistration(): void {
+    this.removeStatusListener?.();
+    this.removeStatusListener = undefined;
+    this.removeWithdrawnListener?.();
+    this.removeWithdrawnListener = undefined;
+    this.registration?.unregister();
+    this.registration = undefined;
   }
 }

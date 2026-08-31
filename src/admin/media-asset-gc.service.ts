@@ -799,6 +799,7 @@ export class MediaAssetGcService {
           .from(pendingMedia)
           .where(
             and(
+              eq(pendingMedia.direction, 'OUTBOUND'),
               or(
                 and(
                   eq(pendingMedia.status, 'pending'),

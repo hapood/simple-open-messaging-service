@@ -24,15 +24,11 @@ import {
   type CbItem,
   type CbScrollInfo,
 } from '../../lib/chat-box/chat-box-scroller';
-import {
-  isViewportTransformEnd,
-  UNREAD_DIVIDER_HEIGHT_PX,
-} from '../../lib/sticky-date';
+import { isViewportTransformEnd } from '../../lib/sticky-date';
 import {
   MESSAGE_THREAD_ADAPTER,
   type MessageThreadSource,
 } from './message-thread-adapter';
-import { MediaProbeScheduler } from './media-probe-scheduler';
 import {
   createMsgCbElement,
   createServerGapCbElement,
@@ -70,10 +66,7 @@ import {
   ChatInputComponent,
   type ChatSendIntent,
 } from '../../lib/chat-input/chat-input.component';
-import {
-  PastePanelComponent,
-  type PastePanelItem,
-} from '../../lib/chat-input/paste-panel.component';
+import { PastePanelComponent } from '../../lib/chat-input/paste-panel.component';
 import { KbdOffsetDirective } from '../../directives/kbd-offset.directive';
 import { ComposerWidthSourceDirective } from '../../directives/composer-width-source.directive';
 import { ComposerDraftService } from '../../services/composer-draft.service';
@@ -83,6 +76,10 @@ import { uuid } from '../../lib/uuid';
 import { assetUrl } from '../../services/runtime';
 import { MsgService } from '../../services/message.service';
 import { MessageRepository } from '../../services/message-repository.service';
+import {
+  MediaAvailabilityRegistration,
+  MediaAvailabilityService,
+} from '../../services/media-availability.service';
 import {
   avatarUrl as sizedAvatarUrl,
   UserService,
@@ -96,14 +93,12 @@ import { NavStateMachineService } from '../../services/nav-state.service';
 import {
   displayThreadName,
   displayUserAccount,
-  messageCreatorKey,
   parseUserIdentityKey,
   type ConversationItem,
   type StandardResponse,
 } from '../../services/model';
 import { serializeNativeComposerText } from '../chat-editor/editor-message-serializer';
 import { filterMentionCandidates } from '../chat-editor/mention-candidates';
-import { isMessageViewportAtBottom } from './message-scroll-state';
 import {
   MediaTransferService,
   type MediaTransferKind,
@@ -135,11 +130,6 @@ import { CallPresentationService } from '../../services/call-presentation.servic
 import { BusinessCode, translateBizResult } from '../../services/biz-code';
 import { tauriInvoke } from '../../services/runtime';
 import { ProfileRepository } from '../../services/profile-store.service';
-import {
-  categorizeFilename,
-  fileExt,
-  type FileCategory,
-} from '../message-cards/file-meta.util';
 import { PopupType, RouteService } from '../../services/route.service';
 import { ChatboxPopupComponent } from '../chatbox-popup/chatbox-popup.component';
 import {
@@ -164,8 +154,23 @@ import {
 } from './message-selection';
 import { MessageInteractionController } from './message-interaction.controller';
 import { jumpToMessage } from './message-jump';
-import type { ForwardMessageItem } from '../forward-message-card/forward-message-card.component';
-import type { ForwardDialogResult } from '../forward-dialog/forward-dialog.component';
+import { MessageForwardController } from './message-forward.controller';
+import {
+  ThreadPasteQueueController,
+  type ThreadPasteItem,
+} from './thread-paste-queue.controller';
+import { ThreadOptimisticController } from './thread-optimistic.controller';
+import { ThreadScrollController } from './thread-scroll.controller';
+import { ThreadSendRetryController } from './thread-send-retry.controller';
+import { ThreadTransferController } from './thread-transfer.controller';
+import { ThreadComposerController } from './thread-composer.controller';
+import { NativeComposerBoundsController } from './native-composer-bounds.controller';
+import { ThreadAttachmentUploadController } from './thread-attachment-upload.controller';
+import { NativeComposerDraftController } from './native-composer-draft.controller';
+import {
+  NativeVoiceUploadController,
+  nativeVoicePreview,
+} from './native-voice-upload.controller';
 
 type PreparedWebAttachment =
   | {
@@ -196,12 +201,6 @@ type PreparedWebAttachment =
       kind: 'file';
       probeMeta: null;
     };
-
-type ThreadPasteItem = PastePanelItem &
-  (
-    | { source: 'web'; file: File; fingerprint: string }
-    | { source: 'native'; selection: NativeUploadSelection }
-  );
 
 let nativeComposerContextSequence = Date.now() * 1000;
 
@@ -259,9 +258,6 @@ export class MessageThreadComponent implements OnDestroy {
   /** The A/B host keeps two threads mounted; only the foreground layer may own the one native composer. */
   readonly nativeComposerActive = input(false);
   private readonly chatInput = viewChild(ChatInputComponent);
-  readonly pasteItems = signal<ThreadPasteItem[]>([]);
-  readonly pasteOpen = computed(() => this.pasteItems().length > 0);
-  private readonly nativeComposerDraft = signal('');
 
   /** Emits the threadId once the kernel finishes `init()` on a thread open / re-init — the A/B buffer host
    *  awaits this before cross-fading a pane in, so the reveal never races a half-initialized kernel. Carries
@@ -289,6 +285,7 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly msgService = inject(MsgService);
   private readonly threadAdapter = inject(MESSAGE_THREAD_ADAPTER);
   private readonly msgRepo = inject(MessageRepository);
+  private readonly mediaAvailability = inject(MediaAvailabilityService);
   private readonly deletedSub: Subscription;
   private readonly userService = inject(UserService);
   readonly selfUserId = computed(() => this.userService.sessionProfile()?.id);
@@ -301,7 +298,16 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly convList = inject(ConversationListService);
   private readonly namespaces = inject(FederationNamespaceService);
   private readonly transfers = inject(MediaTransferService);
+  private readonly transferState = new ThreadTransferController(
+    this.transfers,
+    () => this.threadId(),
+  );
   private readonly nativeUploads = inject(NativeUploadService);
+  private readonly pasteQueue = new ThreadPasteQueueController((uploadId) =>
+    this.nativeUploads.discard(uploadId),
+  );
+  readonly pasteItems = this.pasteQueue.items;
+  readonly pasteOpen = this.pasteQueue.open;
   private readonly attachmentUploads = inject(AttachmentUploadQueueService);
   private readonly route = inject(RouteService);
   readonly chatboxDialogOpen = computed(() => {
@@ -319,17 +325,124 @@ export class MessageThreadComponent implements OnDestroy {
   readonly dialogOpen = computed(() =>
     this.nav.paneStack().some((pane) => pane.kind === 'dialog'),
   );
-  private readonly sendOutbox = inject(ThreadSendOutbox);
-  private readonly debugTools = inject(DebugToolsService);
   private readonly transloco = inject(TranslocoService);
+  private readonly sendOutbox = inject(ThreadSendOutbox);
+  private readonly optimistic = new ThreadOptimisticController(() =>
+    this.sendOutbox.allocatePlaceholderId(),
+  );
+  private readonly sendRetry = new ThreadSendRetryController(
+    this.sendOutbox,
+    this.optimistic,
+    {
+      webGallery: (cid, parts, item) =>
+        void this.uploadWebGallery(cid, parts, item, true),
+      nativeGallery: (cid, parts, item) =>
+        void this.uploadNativeGallery(cid, parts, item, true),
+      voice: (cid, resource, item) =>
+        void this.uploadAndSendAudio(
+          cid,
+          resource.partId,
+          resource.file,
+          item,
+          { duration: resource.duration },
+          true,
+        ),
+      nativeAttachment: (cid, resource, item) =>
+        void this.queueNativeUpload(
+          cid,
+          resource.partId,
+          resource.selection,
+          item,
+          true,
+        ),
+      webAttachment: async (cid, resource, item) => {
+        if (resource.mediaKind === 'image')
+          return this.queueImageUpload(
+            cid,
+            resource.partId,
+            resource.file,
+            item,
+            await readImageDims(resource.file),
+            true,
+          );
+        if (resource.mediaKind === 'video')
+          return this.queueVideoUpload(
+            cid,
+            resource.partId,
+            resource.file,
+            item,
+            await readVideoMeta(resource.file),
+            true,
+          );
+        if (resource.mediaKind === 'audio')
+          return this.uploadAndSendAudio(
+            cid,
+            resource.partId,
+            resource.file,
+            item,
+            { duration: 0 },
+            true,
+          );
+        return this.queueFileUpload(
+          cid,
+          resource.partId,
+          resource.file,
+          item,
+          true,
+        );
+      },
+      text: (item) => this.dispatchHttpSendText(item),
+    },
+  );
+  private readonly attachmentSender = new ThreadAttachmentUploadController(
+    this.threadAdapter,
+    this.transfers,
+    this.transloco,
+    {
+      threadId: () => this.threadId(),
+      failPending: (item) => this.failPending(item),
+      markAccepted: (item) => this.markAccepted(item),
+      surfaceQuota: (response) => this.surfaceSendQuota(response),
+    },
+  );
+  private readonly composer = new ThreadComposerController({
+    text: (intent) => this.sendText(intent.text),
+    image: (intent) =>
+      void this.sendChosenWebAttachments(
+        Array.from(intent.files).filter((file) =>
+          file.type.startsWith('image/'),
+        ),
+      ),
+    file: (intent) => void this.sendChosenWebAttachments(intent.files),
+    nativeFiles: (intent) =>
+      void this.sendChosenNativeAttachments(intent.files),
+    link: (intent) => this.sendLink(intent.generationId, intent.content),
+    contact: (intent) => this.sendContactCard(intent),
+    paste: (intent) => this.appendWebPaste(intent.files, intent.text),
+    audio: (intent) =>
+      this.sendVoice(intent.blob, intent.duration, intent.mimeType),
+  });
+  private readonly debugTools = inject(DebugToolsService);
   private readonly theme = inject(ThemeService);
   private readonly toast = inject(ToastService);
+  private readonly forwarding = new MessageForwardController(
+    this.threadAdapter,
+    this.convList,
+    this.route,
+    this.toast,
+    this.transloco,
+    () => this.newClientMessageId(),
+  );
   private readonly memberProfiles = inject(MemberProfileRepository);
   private readonly chatAppearance = inject(ChatAppearanceService);
   private readonly http = inject(HttpClient);
   readonly nativeComposer = inject(NativeComposerService);
   private readonly composerDrafts = inject(ComposerDraftService);
   private readonly linkGenerations = inject(LinkCardGenerationService);
+  private readonly nativeDraft = new NativeComposerDraftController(
+    this.composerDrafts,
+    this.linkGenerations,
+  );
   readonly mentionMembers = signal<ChatMember[]>([]);
   readonly searchMentionMembers = async (
     query: string,
@@ -362,21 +475,29 @@ export class MessageThreadComponent implements OnDestroy {
   };
   private nativeComposerContextId: number | null = null;
   private nativeComposerThreadId: number | null = null;
-  private nativeLinkUrl: string | null = null;
-  private nativeLinkGenerationId: string | null = null;
-  private nativeLinkGenerationStarting = false;
-  private nativeLinkGenerationRevision = 0;
-  private nativeComposerBoundsObserver?: ResizeObserver;
-  private nativeComposerBoundsFrame = 0;
-  private nativeComposerBoundsDirty = false;
-  private nativeComposerBoundsTarget?: HTMLElement;
-  private nativeComposerLastBounds?: {
-    left: number;
-    top: number;
-    width: number;
-    height: number;
-  };
-  private readonly nativeVoiceItems = new Map<string, CbItem<ChatMsgData>>();
+  private readonly nativeComposerBounds = new NativeComposerBoundsController(
+    this.nativeComposer,
+    () => this.nativeComposerContextId,
+    () => this.layout.reflowFrozen(),
+  );
+  private readonly nativeVoiceUploads = new NativeVoiceUploadController(
+    this.transfers,
+    this.transloco,
+    this.toast,
+    {
+      makeItem: (cid, duration, size) =>
+        this.makeOptimisticItem(
+          cid,
+          '',
+          'AUDIO',
+          nativeVoicePreview(duration, size),
+          null,
+        ),
+      dispatch: (item) => this.dispatchPending(item),
+      accept: (item) => this.markAccepted(item),
+      fail: (item) => this.failPending(item),
+    },
+  );
 
   private scroller?: ScrollerApi<ChatItemData>;
   private source?: MessageThreadSource;
@@ -387,10 +508,7 @@ export class MessageThreadComponent implements OnDestroy {
    *  tell a WARM resident (init done → emit `ready` now, no re-fetch) from a COLD one (idled via
    *  `teardownKernel` → reinit). */
   private kernelReady = false;
-  /** Frozen at chat-open before any local/server read cursor advances. */
-  private firstUnreadSeq: number | null = null;
-  /** The unread anchor missed the local-only init and must be positioned after the post-init catch-up. */
-  private pendingUnreadReanchor = false;
+  private readonly scrollState = new ThreadScrollController();
   private readonly stableRead = new StableReadTracker((seq) => {
     const threadId = this.threadId();
     if (threadId !== undefined) {
@@ -399,16 +517,13 @@ export class MessageThreadComponent implements OnDestroy {
     }
   });
 
-  readonly atBottom = signal(true);
+  readonly atBottom = this.scrollState.atBottom;
   /** Incoming message signals received while the user is reading history. Cleared only after the viewport
    *  reaches the visible newest zone, not merely the kernel's much wider newer-prefetch threshold. */
-  readonly newMessageCount = signal(0);
+  readonly newMessageCount = this.scrollState.newMessageCount;
   /** The frozen unread boundary is above the visible viewport; shown as the upward counterpart to latest. */
-  readonly unreadBoundaryAbove = signal(false);
-  readonly newMessageLabel = computed(() => {
-    const count = this.newMessageCount();
-    return count > 99 ? '99+' : String(count);
-  });
+  readonly unreadBoundaryAbove = this.scrollState.unreadBoundaryAbove;
+  readonly newMessageLabel = this.scrollState.newMessageLabel;
   /** True while the kernel fetches the initial batch on a thread open (or re-init on switch). Used only to
    *  keep the empty-thread state hidden until init settles; ChatPane owns the switch-loading spinner. */
   readonly initialLoading = signal(true);
@@ -427,14 +542,7 @@ export class MessageThreadComponent implements OnDestroy {
    *  the kernel's emit() fires on init's empty branch, on every mount, and on optimistic/incoming inserts, so
    *  the hero card reacts the instant the first message — including an optimistic send — mounts. Reset to false
    *  in teardown; the template additionally gates on !initialLoading() so the card never flashes mid-load. */
-  private readonly mountedMessageCount = signal(0);
-  /** Scroll-driven SSE backstop for federated media status — one instance per open thread. Owns the
-   *  in-flight ('downloading') seqs + the debounced/rate-limited bulk probe. See MediaProbeScheduler. */
-  private readonly probe = new MediaProbeScheduler(
-    this.msgService,
-    this.msgRepo,
-  );
-
+  private readonly mountedMessageCount = this.scrollState.mountedMessageCount;
   /** Conversation block state for both P2P and groups. */
   readonly blockedPeer = computed(() => !!this.userMsgTrd()?.blocked);
   readonly friendshipEnded = computed(
@@ -482,71 +590,18 @@ export class MessageThreadComponent implements OnDestroy {
         ) ||
       this.pasteOpen(),
   );
-  readonly uploadingTransfers = computed(() => {
-    const threadId = this.threadId();
-    return this.transfers
-      .tasks()
-      .filter(
-        (task) =>
-          task.threadId === threadId &&
-          task.kind !== 'audio' &&
-          task.status === 'uploading',
-      );
-  });
-  /** Only actively uploading attachments are shown in the aggregate send box. A completed upload leaves
-   * immediately; when the last upload completes Angular removes the whole tail-cap card. */
-  readonly sendingTransfers = computed(() => {
-    const threadId = this.threadId();
-    return this.transfers
-      .tasks()
-      .filter(
-        (task) =>
-          task.threadId === threadId &&
-          task.kind !== 'audio' &&
-          task.status === 'uploading',
-      );
-  });
-  readonly failedTransfers = computed(() => {
-    const threadId = this.threadId();
-    return this.transfers
-      .tasks()
-      .filter(
-        (task) =>
-          task.threadId === threadId &&
-          task.kind !== 'audio' &&
-          task.status === 'failed',
-      );
-  });
-  readonly retryableFailedTransfers = computed(() =>
-    this.failedTransfers().filter((task) => task.retryable !== false),
-  );
-  /** The per-thread queue uploads attachments serially. Highlight only the task currently moving bytes;
-   * before its first progress event, the first queued task is the active one. */
-  readonly currentUploadingTransferId = computed(() => {
-    const tasks = this.sendingTransfers().filter(
-      (task) => task.status === 'uploading',
-    );
-    const active = tasks.find(
-      (task) => task.loaded > 0 && task.loaded < task.size,
-    );
-    return active?.clientMessageId ?? tasks[0]?.clientMessageId ?? null;
-  });
-  readonly displayedSendingTransfers = computed(() => {
-    const tasks = this.sendingTransfers();
-    const currentId = this.currentUploadingTransferId();
-    if (!currentId) return tasks;
-    const current = tasks.find((task) => task.clientMessageId === currentId);
-    return current
-      ? [current, ...tasks.filter((task) => task.clientMessageId !== currentId)]
-      : tasks;
-  });
-  readonly transferExt = (name: string): string => fileExt(name);
-  readonly transferCategory = (name: string): FileCategory =>
-    categorizeFilename(name);
+  readonly uploadingTransfers = this.transferState.uploading;
+  readonly sendingTransfers = this.transferState.sending;
+  readonly failedTransfers = this.transferState.failed;
+  readonly retryableFailedTransfers = this.transferState.retryableFailed;
+  readonly currentUploadingTransferId = this.transferState.currentUploadingId;
+  readonly displayedSendingTransfers = this.transferState.displayedSending;
+  readonly transferExt = (name: string): string =>
+    this.transferState.extension(name);
+  readonly transferCategory = (name: string) =>
+    this.transferState.category(name);
   readonly transferProgress = (loaded: number, size: number): number =>
-    size > 0
-      ? Math.min(100, Math.max(0, Math.round((loaded / size) * 100)))
-      : 0;
+    this.transferState.progress(loaded, size);
   /** The global attachment card is one logical mounted tail item regardless of the number of files it
    * aggregates. Include it in empty-state accounting even though the kernel stores it in its measured tail
    * slot rather than in the message cursor array. */
@@ -556,9 +611,7 @@ export class MessageThreadComponent implements OnDestroy {
       this.sendingTransfers().length === 0 &&
       this.failedTransfers().length === 0,
   );
-  readonly uploadCountLabel = computed(() => {
-    return String(this.sendingTransfers().length);
-  });
+  readonly uploadCountLabel = this.transferState.countLabel;
   /** Hero-card content for the empty-thread placeholder. P2P shows the peer; GROUP shows the group. The name
    *  reuses displayThreadName (alias-aware) and the avatar reuses the same IDB-backed identity the conversation
    *  list uses, so an alias / cached avatar renders identically here and in the list. */
@@ -594,9 +647,6 @@ export class MessageThreadComponent implements OnDestroy {
     return this.emptyIsGroup() ? 'chat.emptyGroupHint' : 'chat.emptyP2PHint';
   });
 
-  /** Optimistic sends queued while the newer end was trimmed (scrolled into history); drained in onScroll once
-   *  the kernel reports noNewer (the mounted tail is the global newest → safe to anchor on). */
-  private pendingOptimistic: CbItem<ChatItemData>[] = [];
   /** Non-audio attachments share one FIFO upload lane. All selected tasks are registered before the
    * first upload starts, so the aggregate send box is the only pending UI and keeps the full batch in
    * selection order. Voice notes deliberately bypass this lane. */
@@ -691,7 +741,7 @@ export class MessageThreadComponent implements OnDestroy {
     effect(() => {
       if (this.layout.reflowFrozen()) return; // act only on the unfrozen edge
       this.scroller?.flushViewportResize();
-      if (this.nativeComposerBoundsDirty) this.scheduleNativeComposerBounds();
+      this.nativeComposerBounds.flush();
     });
     effect(() => {
       const threadId = this.threadId();
@@ -730,23 +780,7 @@ export class MessageThreadComponent implements OnDestroy {
         return;
       }
       this.hideNativeComposer();
-      const savedDraft = this.composerDrafts.get(threadId);
-      this.nativeLinkGenerationRevision++;
-      this.nativeLinkGenerationStarting = false;
-      this.nativeComposerDraft.set(savedDraft?.plainText ?? '');
-      this.nativeLinkUrl = savedDraft?.linkUrl ?? null;
-      this.nativeLinkGenerationId = savedDraft?.generationId ?? null;
-      if (
-        savedDraft?.generationId &&
-        savedDraft.generationExpiresAt &&
-        savedDraft.generationExpiresAt > Date.now()
-      ) {
-        this.linkGenerations.resume({
-          generationId: savedDraft.generationId,
-          status: 'pending',
-          expiresAt: savedDraft.generationExpiresAt,
-        });
-      }
+      const initialDraft = this.nativeDraft.open(threadId);
       const contextId = ++nativeComposerContextSequence;
       this.nativeComposerContextId = contextId;
       this.nativeComposerThreadId = threadId;
@@ -755,7 +789,7 @@ export class MessageThreadComponent implements OnDestroy {
         contextId,
         threadId: String(threadId),
         placeholder: this.transloco.translate('chat.messagePlaceholder'),
-        initialDraft: this.nativeComposerDraft(),
+        initialDraft,
         sending: false,
         canRecord: true,
         canUpload: true,
@@ -777,9 +811,8 @@ export class MessageThreadComponent implements OnDestroy {
     });
     effect(() => {
       const progress = this.nativeComposer.uploadProgress();
-      if (!progress || !this.nativeVoiceItems.has(progress.clientMessageId))
-        return;
-      this.transfers.progress(
+      if (!progress) return;
+      this.nativeVoiceUploads.progress(
         progress.clientMessageId,
         progress.loaded,
         progress.total,
@@ -819,14 +852,7 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private hideNativeComposer(resetGeometry = false): void {
-    this.nativeComposerBoundsObserver?.disconnect();
-    this.nativeComposerBoundsObserver = undefined;
-    if (this.nativeComposerBoundsFrame)
-      cancelAnimationFrame(this.nativeComposerBoundsFrame);
-    this.nativeComposerBoundsFrame = 0;
-    this.nativeComposerBoundsDirty = false;
-    this.nativeComposerBoundsTarget = undefined;
-    this.nativeComposerLastBounds = undefined;
+    this.nativeComposerBounds.reset();
     const contextId = this.nativeComposerContextId;
     if (contextId !== null) this.nativeComposer.hide(contextId);
     if (resetGeometry) this.nativeComposer.resetGeometry();
@@ -835,55 +861,10 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private observeNativeComposerBounds(contextId: number): void {
-    // Observe the shell-owned pane rather than the chatbox: message/composer/keyboard layout changes inside
-    // the chat must not feed back into the native overlay's horizontal bounds.
-    const chatbox = this.containerRef()?.nativeElement;
-    if (!chatbox) return;
-    const target = chatbox.closest<HTMLElement>('.chat-slot');
-    if (!target) return;
-    this.nativeComposerBoundsTarget = target;
-    this.nativeComposerBoundsObserver = new ResizeObserver(() => {
-      if (contextId !== this.nativeComposerContextId) return;
-      this.scheduleNativeComposerBounds();
-    });
-    this.nativeComposerBoundsObserver.observe(target);
-    this.scheduleNativeComposerBounds();
-  }
-
-  /** Coalesce wrapper changes and publish only a settled, post-animation layout rectangle. */
-  private scheduleNativeComposerBounds(): void {
-    this.nativeComposerBoundsDirty = true;
-    if (this.layout.reflowFrozen() || this.nativeComposerBoundsFrame) return;
-    this.nativeComposerBoundsFrame = requestAnimationFrame(() => {
-      this.nativeComposerBoundsFrame = 0;
-      if (this.layout.reflowFrozen()) return;
-      const target = this.nativeComposerBoundsTarget;
-      const contextId = this.nativeComposerContextId;
-      if (!target || contextId === null) return;
-      const rect = target.getBoundingClientRect();
-      const next = {
-        left: rect.left,
-        top: rect.top,
-        width: rect.width,
-        height: rect.height,
-      };
-      const previous = this.nativeComposerLastBounds;
-      this.nativeComposerBoundsDirty = false;
-      if (
-        previous &&
-        Math.abs(previous.left - next.left) < 0.5 &&
-        Math.abs(previous.top - next.top) < 0.5 &&
-        Math.abs(previous.width - next.width) < 0.5 &&
-        Math.abs(previous.height - next.height) < 0.5
-      ) {
-        return;
-      }
-      this.nativeComposerLastBounds = next;
-      this.nativeComposer.setBounds(
-        contextId,
-        new DOMRectReadOnly(next.left, next.top, next.width, next.height),
-      );
-    });
+    this.nativeComposerBounds.observe(
+      this.containerRef()?.nativeElement,
+      contextId,
+    );
   }
 
   private handleNativeComposerEvent(event: NativeComposerEvent): void {
@@ -906,8 +887,8 @@ export class MessageThreadComponent implements OnDestroy {
         }
         this.nativeComposer.acknowledge(event.actionId, accepted);
         if (accepted) {
-          this.nativeComposerDraft.set('');
-          this.clearNativeLinkGeneration();
+          this.nativeDraft.set('');
+          this.nativeDraft.clearLink();
         }
         return;
       }
@@ -951,62 +932,20 @@ export class MessageThreadComponent implements OnDestroy {
         this.appendNativePaste(event.files);
         return;
       case 'draft':
-        this.nativeComposerDraft.set(event.text);
+        this.nativeDraft.set(event.text);
         return;
       case 'linkMarkers':
-        this.nativeComposerDraft.set(event.text);
-        this.consumeNativeLinkMarker(event.links[0]?.href ?? null, event.text);
+        this.nativeDraft.set(event.text);
+        this.nativeDraft.consumeLink(event.links[0]?.href ?? null, event.text);
         return;
       case 'destroy':
-        this.nativeComposerDraft.set(event.text);
+        this.nativeDraft.set(event.text);
         this.saveNativeComposerDraft();
         return;
       case 'geometry':
       case 'recording':
         return;
     }
-  }
-
-  private consumeNativeLinkMarker(url: string | null, text: string): void {
-    if (
-      url === this.nativeLinkUrl &&
-      (!url || this.nativeLinkGenerationStarting || this.nativeLinkGenerationId)
-    )
-      return;
-    const revision = ++this.nativeLinkGenerationRevision;
-    if (this.nativeLinkGenerationId)
-      this.linkGenerations.forget(this.nativeLinkGenerationId);
-    this.nativeLinkUrl = url;
-    this.nativeLinkGenerationId = null;
-    this.nativeLinkGenerationStarting = Boolean(url);
-    if (!url) return;
-    void this.linkGenerations
-      .begin(url, text)
-      .then((generation) => {
-        if (
-          revision !== this.nativeLinkGenerationRevision ||
-          url !== this.nativeLinkUrl
-        ) {
-          this.linkGenerations.forget(generation.generationId);
-          return;
-        }
-        this.nativeLinkGenerationId = generation.generationId;
-        this.nativeLinkGenerationStarting = false;
-      })
-      .catch(() => {
-        // Marker recognition is intentionally independent of validity; the backend may reject the URL.
-        if (revision === this.nativeLinkGenerationRevision)
-          this.nativeLinkGenerationStarting = false;
-      });
-  }
-
-  private clearNativeLinkGeneration(): void {
-    this.nativeLinkGenerationRevision++;
-    if (this.nativeLinkGenerationId)
-      this.linkGenerations.forget(this.nativeLinkGenerationId);
-    this.nativeLinkUrl = null;
-    this.nativeLinkGenerationId = null;
-    this.nativeLinkGenerationStarting = false;
   }
 
   private async resolveNativeMentionMedia(
@@ -1049,50 +988,7 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private handleNativeVoiceUpload(event: NativeVoiceUploadEvent): void {
-    const cid = event.clientMessageId;
-    if (event.phase === 'started') {
-      if (this.nativeVoiceItems.has(cid)) return;
-      const duration = event.durationMs / 1000;
-      const images: AlbumImage[] = [
-        {
-          kind: 'audio',
-          src: '',
-          w: VOICE_BAR_W,
-          h: VOICE_BAR_H,
-          size: event.size,
-          duration,
-          name: 'voice.m4a',
-        },
-      ];
-      const item = this.makeOptimisticItem(cid, '', 'AUDIO', images, null);
-      this.nativeVoiceItems.set(cid, item);
-      this.transfers.start({
-        clientMessageId: cid,
-        threadId: event.threadId,
-        kind: 'audio',
-        name: 'voice.m4a',
-        size: event.size,
-      });
-      this.transfers.registerCancel(cid, () => {
-        void tauriInvoke('cancel_upload', { clientMessageId: cid });
-      });
-      this.dispatchPending(item);
-      return;
-    }
-    const item = this.nativeVoiceItems.get(cid);
-    if (!item) return;
-    if (event.phase === 'completed') {
-      this.transfers.complete(cid);
-      void this.markAccepted(item);
-      this.nativeVoiceItems.delete(cid);
-    } else {
-      const reason =
-        event.error ||
-        String(this.transloco.translate('transfer.uploadFailed'));
-      this.transfers.fail(cid, reason);
-      this.toast.warn(reason, { duration: 6000 });
-      void this.failPending(item);
-    }
+    this.nativeVoiceUploads.handle(event);
   }
 
   private initScroller(
@@ -1108,14 +1004,31 @@ export class MessageThreadComponent implements OnDestroy {
     }
     this.source = this.threadAdapter.createSource(trd, {
       onNewerAvailable: () => {
-        if (!this.atBottom()) this.newMessageCount.update((count) => count + 1);
+        this.scrollState.noteNewerAvailable();
         this.scroller?.notifyNewerAvailable?.();
       },
-      // mediaStatus change (MEDIA_STATUS SSE / scroll probe / retry ack) → re-render the one card in place.
+      // Shared media availability change → re-render the one card in place.
       // updateItemData is synchronous + height-neutral, so no async/catch and no anchor shift.
       onMediaStatus: (seq: number, status: MediaStatus) => {
-        this.scroller?.updateItemData(seq, { mediaStatus: status });
-        this.probe.track(seq, status === MEDIA_STATUS.DOWNLOADING);
+        const data = this.scroller?.getMountedGeometry(seq)?.item.data;
+        if (!data || data.type !== 'msg') return;
+        const images = (data.images ?? []).map((image) =>
+          image.msgId === seq ? { ...image, status } : image,
+        );
+        const states = images.map(
+          (image) => image.status ?? MEDIA_STATUS.READY,
+        );
+        const aggregate = states.includes(MEDIA_STATUS.FAILED)
+          ? MEDIA_STATUS.FAILED
+          : states.includes(MEDIA_STATUS.DOWNLOADING)
+            ? MEDIA_STATUS.DOWNLOADING
+            : states.includes(MEDIA_STATUS.PENDING)
+              ? MEDIA_STATUS.PENDING
+              : status;
+        this.scroller?.updateItemData(seq, {
+          images,
+          mediaStatus: aggregate,
+        });
       },
       // Profile hydration is deliberately off the init critical path. Patch any currently mounted row
       // once it arrives; album member ids resolve to their merged mounted entry in the kernel.
@@ -1142,9 +1055,9 @@ export class MessageThreadComponent implements OnDestroy {
         createItem: (item, prev) => this.createItem(item, prev),
         createSkeleton: () => createGhostCbElement(),
         mergeItems: (items) =>
-          mergeAlbumItemsAtBoundary(items, this.firstUnreadSeq),
+          mergeAlbumItemsAtBoundary(items, this.scrollState.firstUnreadSeq),
         absorbTail: (target, incoming) =>
-          incoming.id === this.firstUnreadSeq
+          incoming.id === this.scrollState.firstUnreadSeq
             ? null
             : absorbAlbumTail(target, incoming),
       },
@@ -1167,6 +1080,7 @@ export class MessageThreadComponent implements OnDestroy {
       isFrozen: () => this.layout.reflowFrozen(),
     });
     this.threadAdapter.configureScroller(this.scroller);
+    this.optimistic.bind(this.scroller, this.source);
     // The tail cap is created synchronously with the scroller. If transfers survived a pane remount, the
     // conditional stack may already exist and needs one post-construction placement pass.
     queueMicrotask(() => {
@@ -1182,10 +1096,10 @@ export class MessageThreadComponent implements OnDestroy {
     this.initialLoadFailed.set(false);
     this.kernelReady = false;
     const boundary = this.convList.unreadEntryBoundary(trd.threadId);
-    this.firstUnreadSeq = boundary?.firstUnreadSeq ?? null;
+    this.scrollState.open(boundary?.firstUnreadSeq ?? null);
     const openOptions = messageOpenOptions(
       this.chatAppearance.openPosition(),
-      this.firstUnreadSeq,
+      this.scrollState.firstUnreadSeq,
     );
     const source = this.source;
     const scroller = this.scroller;
@@ -1197,7 +1111,7 @@ export class MessageThreadComponent implements OnDestroy {
               onFallbackToLatest: () => {
                 // A local-only init miss is not evidence that the server-side unread anchor disappeared.
                 // Keep the frozen boundary and position it after finishLocalInit drives the catch-up demand.
-                this.pendingUnreadReanchor = true;
+                this.scrollState.markUnreadReanchorNeeded();
               },
             }
           : undefined,
@@ -1264,12 +1178,10 @@ export class MessageThreadComponent implements OnDestroy {
       );
     }
     const { isShowHead, isGroupStart, showDate } = computeRowFlags(item, prev);
-    if (item.data.mediaStatus === MEDIA_STATUS.DOWNLOADING)
-      this.probe.track(item.id, true);
     const isUnreadStart =
-      this.firstUnreadSeq !== null &&
-      (item.id === this.firstUnreadSeq ||
-        item.ids?.includes(this.firstUnreadSeq) === true);
+      this.scrollState.firstUnreadSeq !== null &&
+      (item.id === this.scrollState.firstUnreadSeq ||
+        item.ids?.includes(this.scrollState.firstUnreadSeq) === true);
     const rendered = createMsgCbElement(
       item,
       isShowHead,
@@ -1298,7 +1210,71 @@ export class MessageThreadComponent implements OnDestroy {
       this.selectedMessageIds(),
       contextId,
     );
+    this.bindMediaAvailability(rendered, item);
     return rendered;
+  }
+
+  private bindMediaAvailability(
+    rendered: CbElement<ChatItemData>,
+    initialItem: CbItem<ChatItemData>,
+  ): void {
+    const registrations = new Map<number, MediaAvailabilityRegistration>();
+    const sync = (item: CbItem<ChatItemData>) => {
+      const wanted = this.mediaStatuses(item);
+      for (const [seq, registration] of registrations) {
+        if (!wanted.has(seq)) {
+          registration.unregister();
+          registrations.delete(seq);
+        }
+      }
+      const threadId = this.threadId() ?? 0;
+      if (threadId === 0) return;
+      for (const [seq, status] of wanted) {
+        if (!registrations.has(seq)) {
+          registrations.set(
+            seq,
+            this.mediaAvailability.register(threadId, seq, status),
+          );
+        }
+      }
+    };
+    sync(initialItem);
+    const baseUpdate = rendered.update.bind(rendered);
+    rendered.update = (item, prev) => {
+      baseUpdate(item, prev);
+      sync(item);
+    };
+    const baseDestroy = rendered.destroy.bind(rendered);
+    rendered.destroy = () => {
+      for (const registration of registrations.values()) {
+        registration.unregister();
+      }
+      registrations.clear();
+      baseDestroy();
+    };
+  }
+
+  private mediaStatuses(item: CbItem<ChatItemData>): Map<number, MediaStatus> {
+    const statuses = new Map<number, MediaStatus>();
+    const data = item.data;
+    if (data.type !== 'msg' || item.id < 1) return statuses;
+    if (
+      !['IMAGE', 'VIDEO', 'FILE', 'AUDIO', 'GALLERY'].includes(data.contentType)
+    ) {
+      return statuses;
+    }
+    for (const image of data.images ?? []) {
+      if (image.msgId && image.msgId > 0) {
+        statuses.set(
+          image.msgId,
+          image.status ?? data.mediaStatus ?? MEDIA_STATUS.READY,
+        );
+      }
+    }
+    if (statuses.size === 0 && data.msgId > 0) {
+      statuses.set(data.msgId, data.mediaStatus ?? MEDIA_STATUS.READY);
+    }
+    return statuses;
   }
 
   private onMessageInteraction(
@@ -1396,7 +1372,7 @@ export class MessageThreadComponent implements OnDestroy {
     this.messageInteraction.setQuote({
       seq: context.targetSeq,
       author: data.name,
-      body: this.forwardSummary(data),
+      body: this.forwarding.summary(data),
       contentType: data.contentType,
       ...visual,
     });
@@ -1634,122 +1610,17 @@ export class MessageThreadComponent implements OnDestroy {
     items: readonly CbItem<ChatMsgData>[],
     mode: 'DIRECT' | 'HISTORY',
   ): void {
-    const messages = items
-      .slice()
-      .sort((a, b) => a.data.createdAtMs - b.data.createdAtMs)
-      .map(
-        (item): ForwardMessageItem => ({
-          id: item.id,
-          name: item.data.name,
-          summary: this.forwardSummary(item.data),
-          original: item.data,
-        }),
-      );
     const source = this.convList
       .items()
       .find((thread) => thread.threadId === this.threadId());
     const sourceThreadId = this.threadId();
     if (!sourceThreadId) return;
-    this.route.popupDlg(
-      PopupType.FORWARD,
-      {
-        messages,
-        mode,
-        recordKind: source?.type === 'GROUP' ? 'group' : 'chat',
-      },
-      (result) => {
-        if (result) void this.sendForward(result, sourceThreadId);
-      },
-    );
-  }
-
-  private async sendForward(
-    result: ForwardDialogResult,
-    sourceThreadId: number,
-  ): Promise<void> {
-    const sourceMessages = result.messages.map((message) => ({
-      threadId: sourceThreadId,
-      seq: message.id,
-    }));
-    const outcomes = await Promise.all(
-      result.threadIds.map(
-        async (
-          threadId,
-        ): Promise<{
-          ok: boolean;
-          response?: StandardResponse<unknown>;
-        }> => {
-          try {
-            const response = await firstValueFrom(
-              this.threadAdapter.sendForward({
-                threadId,
-                sourceMessages,
-                mode: result.mode,
-                clientMessageId: this.newClientMessageId(),
-              }),
-            );
-            if (response.code === BusinessCode.GROUP_DISSOLVED) {
-              this.convList.applyGroupUpdate(threadId, {
-                dissolvedAt: Date.now(),
-              });
-            } else if (response.code === BusinessCode.FRIEND_NOT_FOUND) {
-              this.convList.applyThreadMeta(threadId, {
-                friendshipActive: false,
-              });
-            }
-            return { ok: response.code === 0, response };
-          } catch {
-            return { ok: false };
-          }
-        },
-      ),
-    );
-    const sent = outcomes.filter((outcome) => outcome.ok).length;
-    if (sent === outcomes.length) {
-      this.toast.info(
-        this.transloco.translate('forward.sent', { count: sent }),
-      );
-      this.exitSelectionMode();
-      return;
-    }
-    if (sent > 0) {
-      this.toast.warn(
-        this.transloco.translate('forward.partiallySent', {
-          sent,
-          total: outcomes.length,
-        }),
-      );
-      this.exitSelectionMode();
-      return;
-    }
-    const businessFailure = outcomes.find(
-      (outcome) => outcome.response,
-    )?.response;
-    this.toast.warn(
-      businessFailure
-        ? translateBizResult(businessFailure, this.transloco)
-        : this.transloco.translate('forward.sendFailed'),
-    );
-  }
-
-  private forwardSummary(message: ChatMsgData): string {
-    if (message.contentType === 'PURE_TEXT' || message.contentType === 'LINK')
-      return (
-        message.text.trim() || this.transloco.translate('forward.emptyMessage')
-      );
-    if (message.contentType === 'FILE')
-      return (
-        message.file?.name || this.transloco.translate('chat.preview.file')
-      );
-    const keys: Partial<Record<ChatMsgData['contentType'], string>> = {
-      IMAGE: 'chat.preview.photo',
-      VIDEO: 'chat.preview.video',
-      AUDIO: 'chat.preview.voice',
-      GALLERY: 'chat.fileGroup',
-      CALL: 'forward.call',
-    };
-    return this.transloco.translate(
-      keys[message.contentType] ?? 'forward.message',
+    this.forwarding.open(
+      items,
+      mode,
+      sourceThreadId,
+      source?.type === 'GROUP' ? 'group' : 'chat',
+      () => this.exitSelectionMode(),
     );
   }
 
@@ -1832,46 +1703,13 @@ export class MessageThreadComponent implements OnDestroy {
     this.lastMessageScrollTop = info.scrollTop;
     // Drain optimistic sends queued while the newer end was trimmed: noNewer means the mounted tail IS the
     // global newest, so tailAnchorId() is now a safe anchor. Runs before the UI updates below for promptness.
-    if (info.noNewer && this.pendingOptimistic.length > 0) {
-      const queue = this.pendingOptimistic;
-      this.pendingOptimistic = [];
-      for (const item of queue) this.insertMsg(this.tailAnchorId(), item);
-    }
-    const atVisibleBottom = isMessageViewportAtBottom(info);
-    this.atBottom.set(atVisibleBottom);
-    if (atVisibleBottom) this.newMessageCount.set(0);
-    this.mountedMessageCount.set(info.mounted);
-    this.probe.schedule(this.threadId() ?? 0);
-    this.updateUnreadBoundaryPosition(info);
+    this.optimistic.drainAtNewest(info.noNewer);
+    const unreadReanchor = this.scrollState.update(info, this.scroller);
     this.stableRead.noteScroll();
-    const unread = this.firstUnreadSeq;
-    if (
-      this.pendingUnreadReanchor &&
-      unread !== null &&
-      info.oldestId !== null &&
-      info.newestId !== null &&
-      info.oldestId <= unread &&
-      unread <= info.newestId
-    ) {
-      this.pendingUnreadReanchor = false;
-      queueMicrotask(() => void jumpToMessage(this.scroller, unread, 'top'));
-    }
-  }
-
-  private updateUnreadBoundaryPosition(info: CbScrollInfo): void {
-    const target = this.firstUnreadSeq;
-    if (target === null || !this.scroller) {
-      this.unreadBoundaryAbove.set(false);
-      return;
-    }
-    const geometry = this.scroller.getMountedGeometry(target);
-    if (geometry?.el.classList.contains('cb-unread-entry')) {
-      this.unreadBoundaryAbove.set(geometry.top + UNREAD_DIVIDER_HEIGHT_PX < 8);
-      return;
-    }
-    this.unreadBoundaryAbove.set(
-      info.oldestId !== null && info.oldestId > target,
-    );
+    if (unreadReanchor !== null)
+      queueMicrotask(
+        () => void jumpToMessage(this.scroller, unreadReanchor, 'top'),
+      );
   }
 
   private pulseVisibleMention(
@@ -1932,8 +1770,8 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   scrollToUnread(): void {
-    if (this.firstUnreadSeq !== null)
-      void jumpToMessage(this.scroller, this.firstUnreadSeq, 'top');
+    if (this.scrollState.firstUnreadSeq !== null)
+      void jumpToMessage(this.scroller, this.scrollState.firstUnreadSeq, 'top');
   }
 
   openUploadDetails(): void {
@@ -1943,57 +1781,22 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   cancelUploadingTransfers(): void {
-    for (const task of this.uploadingTransfers()) {
-      this.transfers.discard(task.clientMessageId);
-    }
+    this.transferState.cancelUploading();
   }
 
   retryFailedTransfers(): void {
-    for (const task of this.retryableFailedTransfers()) {
-      this.transfers.retry(task.clientMessageId);
-    }
+    this.transferState.retryFailed();
   }
 
   cancelFailedTransfers(): void {
-    for (const task of this.failedTransfers()) {
-      this.transfers.discard(task.clientMessageId);
-    }
+    this.transferState.cancelFailed();
   }
 
   // ---------- ChatInputComponent intent → optimistic dispatch ----------
 
   /** The composer emits one structured intent; route it to the matching optimistic-send path. */
   onSendIntent(intent: ChatSendIntent): void {
-    switch (intent.kind) {
-      case 'text':
-        this.sendText(intent.text);
-        return;
-      case 'image':
-        void this.sendChosenWebAttachments(
-          Array.from(intent.files).filter((file) =>
-            file.type.startsWith('image/'),
-          ),
-        );
-        return;
-      case 'file':
-        void this.sendChosenWebAttachments(intent.files);
-        return;
-      case 'native-files':
-        void this.sendChosenNativeAttachments(intent.files);
-        return;
-      case 'link':
-        this.sendLink(intent.generationId, intent.content);
-        return;
-      case 'contact':
-        this.sendContactCard(intent);
-        return;
-      case 'paste':
-        this.appendWebPaste(intent.files, intent.text);
-        return;
-      case 'audio':
-        this.sendVoice(intent.blob, intent.duration, intent.mimeType);
-        return;
-    }
+    this.composer.dispatch(intent);
   }
 
   private async chooseCombinedSend(count: number): Promise<boolean | null> {
@@ -2649,50 +2452,11 @@ export class MessageThreadComponent implements OnDestroy {
 
   private appendWebPaste(files: readonly File[], text: string): void {
     this.appendComposerText(text);
-    const existing = new Set(
-      this.pasteItems()
-        .filter((item) => item.source === 'web')
-        .map((item) => item.fingerprint),
-    );
-    const additions: ThreadPasteItem[] = [];
-    for (const file of files) {
-      const fingerprint = `${file.name}:${file.type}:${file.size}:${file.lastModified}`;
-      if (existing.has(fingerprint)) continue;
-      existing.add(fingerprint);
-      additions.push({
-        id: `web:${fingerprint}:${uuid()}`,
-        source: 'web',
-        file,
-        fingerprint,
-        name: file.name,
-        size: file.size,
-        previewUrl: file.type.startsWith('image/')
-          ? URL.createObjectURL(file)
-          : undefined,
-      });
-    }
-    this.pasteItems.update((items) => [...items, ...additions]);
+    this.pasteQueue.appendWeb(files);
   }
 
   private appendNativePaste(files: readonly NativeUploadSelection[]): void {
-    const existing = new Set(
-      this.pasteItems()
-        .filter((item) => item.source === 'native')
-        .map((item) => item.selection.uploadId),
-    );
-    const additions = files
-      .filter((selection) => !existing.has(selection.uploadId))
-      .map(
-        (selection): ThreadPasteItem => ({
-          id: `native:${selection.uploadId}`,
-          source: 'native',
-          selection,
-          name: selection.name,
-          size: selection.size,
-          previewUrl: selection.preview ?? undefined,
-        }),
-      );
-    this.pasteItems.update((items) => [...items, ...additions]);
+    this.pasteQueue.appendNative(files);
   }
 
   appendPanelPaste(event: ClipboardEvent): void {
@@ -2702,17 +2466,11 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   removePasteItem(id: string): void {
-    const item = this.pasteItems().find((candidate) => candidate.id === id);
-    if (!item) return;
-    this.releasePasteItem(item);
-    this.pasteItems.update((items) =>
-      items.filter((candidate) => candidate.id !== id),
-    );
+    this.pasteQueue.remove(id);
   }
 
   cancelPaste(): void {
-    for (const item of this.pasteItems()) this.releasePasteItem(item);
-    this.pasteItems.set([]);
+    this.pasteQueue.cancel();
   }
 
   async confirmPaste(): Promise<void> {
@@ -2720,7 +2478,7 @@ export class MessageThreadComponent implements OnDestroy {
     if (items.length === 0) return;
     const combined = await this.chooseCombinedSend(items.length);
     if (combined === null) return;
-    this.pasteItems.set([]);
+    this.pasteQueue.take();
     if (combined && items.every((item) => item.source === 'web')) {
       const files = items.map(
         (item) => (item as Extract<ThreadPasteItem, { source: 'web' }>).file,
@@ -2756,15 +2514,7 @@ export class MessageThreadComponent implements OnDestroy {
       this.chatInput()?.appendText(text);
       return;
     }
-    this.nativeComposerDraft.update((draft) =>
-      draft ? `${draft}\n${text}` : text,
-    );
-  }
-
-  private releasePasteItem(item: ThreadPasteItem): void {
-    if (item.source === 'native')
-      this.nativeUploads.discard(item.selection.uploadId);
-    else if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+    this.nativeDraft.append(text);
   }
 
   /** Send an in-app recording through the dedicated voice pending path. */
@@ -2959,234 +2709,65 @@ export class MessageThreadComponent implements OnDestroy {
    *  then the upload (carrying the same cid via the x-client-message-id header) writes the file and the
    *  server promotes the stage to a real Message. The NEW_MESSAGE SSE echo (matched by cid) reconciles
    *  the optimistic bubble — so on upload success there is nothing to do here. Any failure → failPending. */
-  private async uploadAndSendImage(
+  private uploadAndSendImage(
     cid: string,
     partId: string,
-    f: File,
+    file: File,
     item: CbItem<ChatItemData>,
     dims: { w: number; h: number },
     retry = false,
     tracked = false,
   ): Promise<void> {
-    const tid = this.threadId() ?? 0;
-    if (!tid) return;
     if (!tracked)
-      this.trackTransfer(cid, tid, 'image', f, () =>
-        this.queueImageUpload(cid, partId, f, item, dims, true),
+      this.trackTransfer(cid, this.threadId() ?? 0, 'image', file, () =>
+        this.queueImageUpload(cid, partId, file, item, dims, true),
       );
-    if (await this.rejectOversizedUpload(cid, item, f, 10)) return;
-    try {
-      const staged = await firstValueFrom(
-        this.threadAdapter
-          .stageMedia({
-            threadId: tid,
-            contentType: 'IMAGE',
-            clientMessageId: cid,
-            retry,
-          })
-          .pipe(takeUntil(this.transfers.cancelled(cid))),
-      );
-      if (staged.code !== 0) {
-        this.surfaceSendQuota(staged);
-        this.transfers.fail(cid, translateBizResult(staged, this.transloco));
-        await this.failPending(item);
-        return;
-      }
-      const up = await firstValueFrom(
-        this.threadAdapter
-          .uploadPart<{ url: string; w: number; h: number }>(
-            f,
-            {
-              clientMessageId: cid,
-              partId,
-              position: 0,
-              intent: 'IMAGE',
-            },
-            (loaded, total) => this.transfers.progress(cid, loaded, total),
-          )
-          .pipe(takeUntil(this.transfers.cancelled(cid))),
-      );
-      if (up.code !== 0) {
-        this.surfaceSendQuota(up);
-        this.transfers.fail(cid, translateBizResult(up, this.transloco));
-        await this.failPending(item);
-      } else {
-        this.transfers.complete(cid);
-        await this.markAccepted(item);
-      }
-    } catch (error) {
-      this.transfers.fail(cid, this.uploadFailureReason(error));
-      await this.failPending(item);
-    }
+    return this.attachmentSender.uploadImage(cid, partId, file, item, retry);
   }
 
-  private async uploadAndSendFile(
+  private uploadAndSendFile(
     cid: string,
     partId: string,
-    f: File,
+    file: File,
     item: CbItem<ChatItemData>,
     retry = false,
     tracked = false,
   ): Promise<void> {
-    const tid = this.threadId() ?? 0;
-    if (!tid) return;
     if (!tracked)
-      this.trackTransfer(cid, tid, 'file', f, () =>
-        this.queueFileUpload(cid, partId, f, item, true),
+      this.trackTransfer(cid, this.threadId() ?? 0, 'file', file, () =>
+        this.queueFileUpload(cid, partId, file, item, true),
       );
-    if (await this.rejectOversizedUpload(cid, item, f, 50)) return;
-    try {
-      const staged = await firstValueFrom(
-        this.threadAdapter
-          .stageMedia({
-            threadId: tid,
-            contentType: 'FILE',
-            clientMessageId: cid,
-            retry,
-          })
-          .pipe(takeUntil(this.transfers.cancelled(cid))),
-      );
-      if (staged.code !== 0) {
-        this.surfaceSendQuota(staged);
-        this.transfers.fail(cid, translateBizResult(staged, this.transloco));
-        await this.failPending(item);
-        return;
-      }
-      const ok = await this.uploadFileResult(f, cid, partId);
-      if (!ok) {
-        this.transfers.fail(
-          cid,
-          this.transloco.translate('transfer.uploadFailed'),
-        );
-        await this.failPending(item);
-      } else {
-        this.transfers.complete(cid);
-        await this.markAccepted(item);
-      }
-    } catch (error) {
-      this.transfers.fail(cid, this.uploadFailureReason(error));
-      await this.failPending(item);
-    }
+    return this.attachmentSender.uploadFile(cid, partId, file, item, retry);
   }
 
-  private async uploadAndSendVideo(
+  private uploadAndSendVideo(
     cid: string,
     partId: string,
-    f: File,
+    file: File,
     item: CbItem<ChatItemData>,
     meta: { w: number; h: number; duration: number },
     retry = false,
     tracked = false,
   ): Promise<void> {
-    const tid = this.threadId() ?? 0;
-    if (!tid) return;
     if (!tracked)
-      this.trackTransfer(cid, tid, 'video', f, () =>
-        this.queueVideoUpload(cid, partId, f, item, meta, true),
+      this.trackTransfer(cid, this.threadId() ?? 0, 'video', file, () =>
+        this.queueVideoUpload(cid, partId, file, item, meta, true),
       );
-    if (await this.rejectOversizedUpload(cid, item, f, 100)) return;
-    try {
-      const staged = await firstValueFrom(
-        this.threadAdapter
-          .stageMedia({
-            threadId: tid,
-            contentType: 'VIDEO',
-            clientMessageId: cid,
-            retry,
-          })
-          .pipe(takeUntil(this.transfers.cancelled(cid))),
-      );
-      if (staged.code !== 0) {
-        this.surfaceSendQuota(staged);
-        this.transfers.fail(cid, translateBizResult(staged, this.transloco));
-        await this.failPending(item);
-        return;
-      }
-      const up = await firstValueFrom(
-        this.threadAdapter
-          .uploadPart(
-            f,
-            {
-              clientMessageId: cid,
-              partId,
-              position: 0,
-              intent: 'VIDEO',
-            },
-            (loaded, total) => this.transfers.progress(cid, loaded, total),
-          )
-          .pipe(takeUntil(this.transfers.cancelled(cid))),
-      );
-      if (up.code !== 0) {
-        this.surfaceSendQuota(up);
-        this.transfers.fail(cid, translateBizResult(up, this.transloco));
-        await this.failPending(item);
-      } else {
-        this.transfers.complete(cid);
-        await this.markAccepted(item);
-      }
-    } catch (error) {
-      this.transfers.fail(cid, this.uploadFailureReason(error));
-      await this.failPending(item);
-    }
+    return this.attachmentSender.uploadVideo(cid, partId, file, item, retry);
   }
 
-  private async uploadAndSendAudio(
+  private uploadAndSendAudio(
     cid: string,
     partId: string,
-    f: File,
+    file: File,
     item: CbItem<ChatItemData>,
     meta: { duration: number },
     retry = false,
   ): Promise<void> {
-    const tid = this.threadId() ?? 0;
-    if (!tid) return;
-    this.trackTransfer(cid, tid, 'audio', f, () =>
-      this.uploadAndSendAudio(cid, partId, f, item, meta, true),
+    this.trackTransfer(cid, this.threadId() ?? 0, 'audio', file, () =>
+      this.uploadAndSendAudio(cid, partId, file, item, meta, true),
     );
-    if (await this.rejectOversizedUpload(cid, item, f, 50)) return;
-    try {
-      const staged = await firstValueFrom(
-        this.threadAdapter
-          .stageMedia({
-            threadId: tid,
-            contentType: 'AUDIO',
-            clientMessageId: cid,
-            retry,
-          })
-          .pipe(takeUntil(this.transfers.cancelled(cid))),
-      );
-      if (staged.code !== 0) {
-        this.surfaceSendQuota(staged);
-        this.transfers.fail(cid, translateBizResult(staged, this.transloco));
-        await this.failPending(item);
-        return;
-      }
-      const up = await firstValueFrom(
-        this.threadAdapter
-          .uploadPart(
-            f,
-            {
-              clientMessageId: cid,
-              partId,
-              position: 0,
-              intent: 'AUDIO',
-            },
-            (loaded, total) => this.transfers.progress(cid, loaded, total),
-          )
-          .pipe(takeUntil(this.transfers.cancelled(cid))),
-      );
-      if (up.code !== 0) {
-        this.surfaceSendQuota(up);
-        this.transfers.fail(cid, translateBizResult(up, this.transloco));
-        await this.failPending(item);
-      } else {
-        this.transfers.complete(cid);
-        await this.markAccepted(item);
-      }
-    } catch (error) {
-      this.transfers.fail(cid, this.uploadFailureReason(error));
-      await this.failPending(item);
-    }
+    return this.attachmentSender.uploadAudio(cid, partId, file, item, retry);
   }
 
   private trackTransfer(
@@ -3227,167 +2808,30 @@ export class MessageThreadComponent implements OnDestroy {
   /** Reduce uploadFile's event stream to its final response body (the uploaded file metadata). Null on
    *  error. `cid` promotes a staged send; on a successful response the server has already committed the
    *  Message and the SSE echo reconciles the bubble. */
-  private async uploadFileResult(
-    f: File,
-    cid: string,
-    partId: string,
-  ): Promise<{
-    url: string;
-    name: string;
-    size: number;
-    mimeType: string;
-  } | null> {
-    try {
-      // Both upload paths report bytes through the callback but still reduce to the same final
-      // {code,message,data} envelope here.
-      const up = await firstValueFrom(
-        this.threadAdapter
-          .uploadPart<{
-            url: string;
-            name: string;
-            size: number;
-            mimeType: string;
-          }>(
-            f,
-            {
-              clientMessageId: cid,
-              partId,
-              position: 0,
-              intent: 'FILE',
-            },
-            (loaded, total) => this.transfers.progress(cid, loaded, total),
-          )
-          .pipe(takeUntil(this.transfers.cancelled(cid))),
-      );
-      return up.data ?? null;
-    } catch {
-      return null;
-    }
-  }
-
   /** Retry a failed send (the row's retry output → createMsgCbElement onRetry → here, with msgId = clientMessageId).
    *  Flip the SAME entry back to 'sending' (stable identity, in-place morph), then replay the send. The idempotent
    *  retry re-fans NEW_MESSAGE to the sender, so the SSE echo reconciles the bubble normally. */
   async retrySend(clientMessageId: string): Promise<void> {
-    const scroller = this.scroller;
-    const source = this.source;
-    if (!scroller || !source) return;
-    const item = source.retryPending(clientMessageId);
-    if (!item) return;
-    await scroller.reconcilePending(); // morph failed→sending in place
-    const resource = this.sendOutbox.resource(clientMessageId);
-    if (resource?.type === 'web-gallery') {
-      void this.uploadWebGallery(clientMessageId, resource.parts, item, true);
-      return;
-    }
-    if (resource?.type === 'native-gallery') {
-      void this.uploadNativeGallery(
-        clientMessageId,
-        resource.parts,
-        item,
-        true,
-      );
-      return;
-    }
-    if (resource?.type === 'voice') {
-      void this.uploadAndSendAudio(
-        clientMessageId,
-        resource.partId,
-        resource.file,
-        item,
-        { duration: resource.duration },
-        true,
-      );
-      return;
-    }
-    if (resource) {
-      if (resource.type === 'native-attachment') {
-        void this.queueNativeUpload(
-          clientMessageId,
-          resource.partId,
-          resource.selection,
-          item,
-          true,
-        );
-        return;
-      }
-      // Replay the original attachment send path.
-      switch (resource.mediaKind) {
-        case 'image':
-          void this.queueImageUpload(
-            clientMessageId,
-            resource.partId,
-            resource.file,
-            item,
-            await readImageDims(resource.file),
-            true,
-          );
-          break;
-        case 'video':
-          void this.queueVideoUpload(
-            clientMessageId,
-            resource.partId,
-            resource.file,
-            item,
-            await readVideoMeta(resource.file),
-            true,
-          );
-          break;
-        case 'audio':
-          void this.uploadAndSendAudio(
-            clientMessageId,
-            resource.partId,
-            resource.file,
-            item,
-            { duration: 0 },
-            true,
-          );
-          break;
-        default:
-          void this.queueFileUpload(
-            clientMessageId,
-            resource.partId,
-            resource.file,
-            item,
-            true,
-          );
-          break;
-      }
-    } else {
-      if (!item.data.serverGap) this.dispatchHttpSendText(item);
-    }
+    await this.sendRetry.retry(clientMessageId);
   }
 
   private async cancelPending(clientMessageId: string): Promise<void> {
-    const source = this.source;
-    const scroller = this.scroller;
-    if (!source || !scroller) return;
-    const item = source.pendingByClientMessageId(clientMessageId);
-    if (!item || !source.discardPending(clientMessageId)) return;
-    this.transfers.discard(clientMessageId);
-    scroller.removeItem(item.id);
+    if (this.optimistic.cancel(clientMessageId))
+      this.transfers.discard(clientMessageId);
   }
 
   /** Mark an optimistic send FAILED: the source flips its pending entry to status:'failed' (stable identity);
    *  the kernel's reconcilePending morphs the bubble in place (sending→failed) + FLIPs it to the tail. Self-heals
    *  the lost-HTTP-response race: if the SSE echo already dropped the pending entry, failPending finds nothing. */
   private async failPending(item: CbItem<ChatItemData>): Promise<void> {
-    const scroller = this.scroller;
-    const source = this.source;
-    if (!scroller || !source || item.clientMessageId === undefined) return;
-    if (!source.failPending(item.clientMessageId)) return; // already confirmed/dropped — nothing to fail
-    await scroller.reconcilePending();
+    await this.optimistic.fail(item);
   }
 
   /** Record HTTP/upload acceptance without confirming delivery visually. The optimistic row becomes `accepted`:
    *  its spinner stays visible, but cancellation and dimming stop. The push echo is the sole owner of the later
    *  spinner→check choreography. If the echo already won the race it has removed pending, so this is a no-op. */
   private async markAccepted(item: CbItem<ChatItemData>): Promise<void> {
-    const scroller = this.scroller;
-    const source = this.source;
-    if (!scroller || !source || item.clientMessageId === undefined) return;
-    if (!source.markPendingAccepted(item.clientMessageId)) return;
-    await scroller.reconcilePending();
+    if (!(await this.optimistic.accept(item))) return;
     // A successful send means the local-user quota breaker is no longer tripped — drop the pause banner.
     this.sendPaused.set(false);
   }
@@ -3398,43 +2842,13 @@ export class MessageThreadComponent implements OnDestroy {
    *  (noNewer, the common case) this is synchronous. When the newer end is trimmed (scrolled into history),
    *  queue the item and scrollToBottom() — the follow chain mounts the newest and onScroll drains the queue. */
   private dispatchPending(item: CbItem<ChatItemData>): void {
-    const scroller = this.scroller;
-    if (!scroller) return;
-    if (scroller.getInfo().noNewer) {
-      this.insertMsg(this.tailAnchorId(), item);
-    } else {
-      this.pendingOptimistic.push(item);
-      scroller.scrollToBottom();
-    }
+    this.optimistic.dispatch(item);
   }
 
   /** Keep an attachment send in the source outbox for retry/SSE reconciliation without mounting a
    * second per-file optimistic bubble. The aggregate transfer card is the sole pending presentation. */
   private registerPending(item: CbItem<ChatItemData>): void {
-    this.source?.addPending(item);
-  }
-
-  /** Register the optimistic item with the source pending area + mount it after the tail (insertAfter, optimistic)
-   *  + pin to reveal it. No confirm timer — confirmation is the SSE echo.
-   *  NB: do NOT bail on an empty `afterId`. The FIRST send into an EMPTY thread has tailAnchorId()===-1 (nothing is
-   *  mounted → newestId is null); the kernel's insertAfter treats an empty window as "insert as the sole entry", so
-   *  bailing here would silently swallow the first message of a fresh conversation — no pending bubble ever appears.
-   *  (Mirrors the playground insertMsg, whose comment calls out this exact case.) */
-  private insertMsg(afterId: number, item: CbItem<ChatItemData>): boolean {
-    const scroller = this.scroller;
-    const source = this.source;
-    if (!scroller || !source) return false;
-    source.addPending(item);
-    const ok = scroller.insertAfter(afterId, item, { optimistic: true });
-    if (ok) scroller.scrollToBottom(); // insertAfter is viewport-stable; a send always means "show my message"
-    return ok;
-  }
-
-  /** The id to anchor a newest-end insert after: the current tail (a prior pending, or the real newest). -1 if empty
-   *  (the kernel's insertAfter ignores afterId when the window is empty, so the sentinel never reaches indexOfId). */
-  private tailAnchorId(): number {
-    const id = this.scroller?.getInfo().newestId ?? null;
-    return id != null ? id : -1;
+    this.optimistic.register(item);
   }
 
   /** Build a fully-shaped optimistic self message. id/msgId = a synthetic NEGATIVE placeholder (msgId is a number
@@ -3451,59 +2865,36 @@ export class MessageThreadComponent implements OnDestroy {
   ): CbItem<ChatMsgData> {
     const profile = this.userService.sessionProfile();
     if (!profile) throw new Error('session profile is required to send');
-    const now = new Date();
-    const placeholderId = this.sendOutbox.allocatePlaceholderId();
-    const stampedImages =
-      images?.map((im) => ({ ...im, msgId: placeholderId })) ?? null;
-    const data: ChatMsgData = {
-      type: 'msg',
-      msgId: placeholderId,
-      creator: messageCreatorKey(
-        { account: profile.account, domain: 'local', namespaceId: 0 },
-        'local',
-      ),
-      isSelf: true,
-      isGroupConversation: this.userMsgTrd()?.type === 'GROUP',
-      name: profile.name,
+    return this.optimistic.makeItem(
+      clientMessageId,
+      profile,
+      this.userMsgTrd()?.type === 'GROUP',
       text,
-      time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
       contentType,
-      images: stampedImages,
+      images,
       file,
-      createdAtMs: now.getTime(),
-      status: 'sending',
-      kind: 'pending',
-    };
-    return { id: placeholderId, data, clientMessageId };
+    );
   }
 
   private newClientMessageId(): string {
-    // Always a spec-compliant UUID — the backend validates clientMessageId as a UUID. lib/uuid falls back to
-    // crypto.getRandomValues (not secure-context-gated, unlike randomUUID) so this works on http non-localhost origins.
-    return uuid();
+    return this.optimistic.newClientMessageId();
   }
 
   private teardown(): void {
     this.cancelPaste();
-    this.nativeComposerDraft.set('');
+    this.nativeDraft.reset();
     this.messageInteraction.reset();
     this.stableRead.flush();
     this.stableRead.reset();
-    this.firstUnreadSeq = null;
-    this.pendingUnreadReanchor = false;
-    this.unreadBoundaryAbove.set(false);
-    this.probe.destroy();
-    this.mountedMessageCount.set(0);
-    this.atBottom.set(true);
-    this.newMessageCount.set(0);
+    this.scrollState.reset();
     this.stickyOverlays()?.clear();
     this.scroller?.destroy(); // destroy() also calls source.destroy() (unsubscribes SSE)
     this.scroller = undefined;
     this.source = undefined;
+    this.optimistic.reset();
     this.kernelReady = false;
     // (In-chat search visibility lives on NavStateMachineService now — cleared by openChat/closeChat on
     // thread switch / going home — so no per-pane reset is needed here.)
-    this.pendingOptimistic = [];
   }
 
   /** Tear down the kernel + source but keep the COMPONENT instance alive. The A/B buffer host demotes a pane
@@ -3521,19 +2912,7 @@ export class MessageThreadComponent implements OnDestroy {
   private saveNativeComposerDraft(): void {
     const threadId = this.threadId();
     if (!threadId) return;
-    const text = this.nativeComposerDraft();
-    this.composerDrafts.save({
-      threadId,
-      html: escapeComposerText(text),
-      plainText: text,
-      linkUrl: this.nativeLinkUrl ?? undefined,
-      generationId: this.nativeLinkGenerationId ?? undefined,
-      generationExpiresAt: this.nativeLinkGenerationId
-        ? this.linkGenerations.snapshot(this.nativeLinkGenerationId)?.expiresAt
-        : undefined,
-      generationTriggered: Boolean(this.nativeLinkGenerationId),
-      updatedAt: Date.now(),
-    });
+    this.nativeDraft.save(threadId, escapeComposerText);
   }
 
   /** Force an in-place re-init for the current bound thread (teardown + rebuild), emitting `ready` when the

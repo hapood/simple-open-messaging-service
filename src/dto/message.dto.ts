@@ -519,8 +519,8 @@ export class RelocalizeMediaDto {
   seq!: number;
 }
 
-/** Bulk media-status probe for a set of messages in one thread — the client's scroll backstop for
- *  missed MEDIA_STATUS frames. Returns { seq, status, sv } per existing seq; missing seqs are omitted. */
+/** Bulk media-status snapshot for mounted messages in one thread. Returns { seq, status } per
+ *  existing seq; missing seqs are omitted. */
 export class MediaStatusDto {
   @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
   @Type(() => Number)

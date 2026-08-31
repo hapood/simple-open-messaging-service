@@ -173,23 +173,19 @@ export class MessageResponseDto {
 
   @ApiProperty({
     required: false,
-    enum: [MEDIA_STATUS.READY, MEDIA_STATUS.DOWNLOADING, MEDIA_STATUS.FAILED],
+    enum: [
+      MEDIA_STATUS.READY,
+      MEDIA_STATUS.PENDING,
+      MEDIA_STATUS.DOWNLOADING,
+      MEDIA_STATUS.FAILED,
+    ],
     example: MEDIA_STATUS.READY,
     description:
       'Federated media localize status (IMAGE/FILE/VIDEO/AUDIO only; absent = ready for non-media). ' +
       "'ready' = the Message is READY and every referenced blob is local; 'failed' = the Message is a " +
-      "FAILED placeholder; 'downloading' = the Message is a STUB placeholder.",
+      "FAILED placeholder; 'pending'/'downloading' = the Message is a STUB placeholder.",
   })
   mediaStatus?: MediaStatus;
-
-  @ApiProperty({
-    required: false,
-    example: 42,
-    description:
-      "Monotonic status version — the client's reduceMediaStatus drops stale out-of-order MEDIA_STATUS " +
-      'frames whose version is ≤ the already-applied one.',
-  })
-  sv?: number;
 }
 
 export class MessageQueryPageDto {

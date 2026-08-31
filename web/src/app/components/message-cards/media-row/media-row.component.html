@@ -206,12 +206,16 @@
                     class="msg-media-overlay"
                     role="status"
                     [attr.aria-label]="
-                      c.status === MEDIA_STATUS.DOWNLOADING
-                        ? ('chat.mediaDownloading' | transloco)
-                        : ('chat.mediaFailed' | transloco)
+                      c.status === MEDIA_STATUS.PENDING
+                        ? ('chat.mediaPending' | transloco)
+                        : c.status === MEDIA_STATUS.DOWNLOADING
+                          ? ('chat.mediaDownloading' | transloco)
+                          : ('chat.mediaFailed' | transloco)
                     "
                   >
-                    @if (c.status === MEDIA_STATUS.DOWNLOADING) {
+                    @if (c.status === MEDIA_STATUS.PENDING) {
+                      <mat-icon class="msg-media-overlay-icon">schedule</mat-icon>
+                    } @else if (c.status === MEDIA_STATUS.DOWNLOADING) {
                       <mat-progress-spinner
                         mode="indeterminate"
                         [diameter]="24"
@@ -362,15 +366,19 @@
                   mediaStatus()
                 }}"
               >
-                @if (mediaStatus() === MEDIA_STATUS.DOWNLOADING) {
+                @if (mediaStatus() === MEDIA_STATUS.PENDING) {
+                  <mat-icon>schedule</mat-icon>
+                } @else if (mediaStatus() === MEDIA_STATUS.DOWNLOADING) {
                   <mat-progress-spinner mode="indeterminate" [diameter]="12" />
                 } @else {
                   <mat-icon>error_outline</mat-icon>
                 }
                 {{
-                  (mediaStatus() === MEDIA_STATUS.DOWNLOADING
-                    ? 'chat.mediaDownloading'
-                    : 'chat.mediaFailed'
+                  (mediaStatus() === MEDIA_STATUS.PENDING
+                    ? 'chat.mediaPending'
+                    : mediaStatus() === MEDIA_STATUS.DOWNLOADING
+                      ? 'chat.mediaDownloading'
+                      : 'chat.mediaFailed'
                   ) | transloco
                 }}
               </span>

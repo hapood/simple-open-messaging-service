@@ -45,7 +45,6 @@ interface HydratedThreadItem {
     creator: { account: string; domain: string } | null;
     createdAt: Date;
     mediaStatus: MediaStatus;
-    sv: number;
   } | null;
 }
 
@@ -377,7 +376,6 @@ export class NotificationQueryService {
               creator: m.creator,
               createdAt: m.createdAt,
               mediaStatus: m.mediaStatus,
-              sv: m.sv,
             }
           : null,
       };
@@ -392,7 +390,7 @@ const THREAD_NOTIF_CAP = 30;
 const NOTIFICATION_MESSAGE_CAP = 5;
 
 /** The id-stripped, mediaStatus-attached message row (the output of `MessageService.attachMediaStatus`).
- *  Only the fields hydrate reads are named; the real object (Omit<Message,'id'> & {mediaStatus,sv}) carries
+ *  Only the fields hydrate reads are named; the real object (Omit<Message,'id'> & {mediaStatus}) carries
  *  more, which TS structural typing accepts. */
 type AttachedMessage = {
   threadId: number;
@@ -402,5 +400,4 @@ type AttachedMessage = {
   creator: { account: string; domain: string } | null;
   createdAt: Date;
   mediaStatus: MediaStatus;
-  sv: number;
 };

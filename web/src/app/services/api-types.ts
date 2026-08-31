@@ -353,7 +353,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Bulk-probe federated media localize status (scroll backstop for missed MEDIA_STATUS frames) */
+        /** Read federated media status for mounted messages */
         post: operations["MessageController_mediaStatus"];
         delete?: never;
         options?: never;
@@ -3899,16 +3899,11 @@ export interface components {
              */
             clientMessageId?: string;
             /**
-             * @description Federated media localize status (IMAGE/FILE/VIDEO/AUDIO only; absent = ready for non-media). 'ready' = bytes local + authz written (the URL serves 200); 'failed' = localize failed (URL 4xx, retryable from the detail view); 'downloading' = localize in flight (carried only on a freshly-pulled NEW_MESSAGE frame — the backend stores/pushes the 'ready'|'failed' terminals; the client infers 'downloading' optimistically on arrival / manual retry).
+             * @description Federated media localize status (IMAGE/FILE/VIDEO/AUDIO only; absent = ready for non-media). 'ready' = the Message is READY and every referenced blob is local; 'failed' = the Message is a FAILED placeholder; 'pending'/'downloading' = the Message is a STUB placeholder.
              * @example ready
              * @enum {string}
              */
-            mediaStatus?: "ready" | "downloading" | "failed";
-            /**
-             * @description Monotonic status version — the client's reduceMediaStatus drops stale out-of-order MEDIA_STATUS frames whose version is ≤ the already-applied one.
-             * @example 42
-             */
-            sv?: number;
+            mediaStatus?: "ready" | "pending" | "downloading" | "failed";
         };
         SendMessageDto: {
             /**

@@ -1,5 +1,5 @@
 // Unit tests for MessageService.attachMediaStatus — the bulk readiness decision that backs the
-// query-messages mediaStatus field + the scroll-probe media-status endpoint. Drizzle is mocked.
+// query-messages mediaStatus field + mounted-message media-status endpoint. Drizzle is mocked.
 import { describe, it, expect, vi } from 'vitest';
 import { derivePreview, MessageService } from './message.service.js';
 import type { Message } from './message.service.js';
@@ -26,6 +26,7 @@ function databaseMock(queries: {
   message?: ReturnType<typeof vi.fn>;
   mediaMessage?: ReturnType<typeof vi.fn>;
   mediaAsset?: ReturnType<typeof vi.fn>;
+  pendingMedia?: ReturnType<typeof vi.fn>;
   user?: ReturnType<typeof vi.fn>;
   execute?: ReturnType<typeof vi.fn>;
 }) {
@@ -35,6 +36,9 @@ function databaseMock(queries: {
         message: { findMany: queries.message ?? vi.fn() },
         messageAsset: { findMany: queries.mediaMessage ?? vi.fn() },
         mediaAsset: { findMany: queries.mediaAsset ?? vi.fn() },
+        pendingMedia: {
+          findMany: queries.pendingMedia ?? vi.fn().mockResolvedValue([]),
+        },
         user: {
           findMany:
             queries.user ??
@@ -142,6 +146,7 @@ describe('MessageService.queryClientMessagePage', () => {
             message: { findMany: vi.fn() },
             messageAsset: { findMany: vi.fn().mockResolvedValue([]) },
             mediaAsset: { findMany: vi.fn().mockResolvedValue([]) },
+            pendingMedia: { findMany: vi.fn().mockResolvedValue([]) },
             user: { findMany: vi.fn().mockResolvedValue([]) },
           },
         },
@@ -259,7 +264,7 @@ describe('MessageService.attachMediaStatus', () => {
     ]);
     expect(out).toHaveLength(1);
     expect(out[0].mediaStatus).toBe('ready');
-    expect(out[0].sv).toBe(5);
+    expect('sv' in out[0]).toBe(false);
     expect('id' in out[0]).toBe(false); // id is stripped (throughput side-channel)
   });
 
@@ -316,6 +321,55 @@ describe('MessageService.attachMediaStatus', () => {
       mk({ id: 1n, seq: 5, content: JSON.stringify({ url: url(DIG) }) }),
     ]);
     expect(out[0].mediaStatus).toBe('ready');
+  });
+
+  it.each([
+    ['pending', 'pending'],
+    ['downloading', 'downloading'],
+  ] as const)('maps an inbound STUB %s job to %s', async (job, expected) => {
+    const svc = new MessageService(
+      databaseMock({
+        mediaMessage: vi.fn().mockResolvedValue([]),
+        mediaAsset: vi.fn().mockResolvedValue([]),
+        pendingMedia: vi
+          .fn()
+          .mockResolvedValue([{ messageId: 1n, status: job }]),
+      }) as never,
+      {} as never,
+    );
+    const out = await svc.attachMediaStatus([
+      mk({
+        id: 1n,
+        seq: 5,
+        localState: 'STUB',
+        content: JSON.stringify({ url: url(DIG) }),
+      }),
+    ]);
+
+    expect(out[0].mediaStatus).toBe(expected);
+  });
+
+  it('maps an inbound FAILED message to failed while retaining its job row', async () => {
+    const svc = new MessageService(
+      databaseMock({
+        mediaMessage: vi.fn().mockResolvedValue([]),
+        mediaAsset: vi.fn().mockResolvedValue([]),
+        pendingMedia: vi
+          .fn()
+          .mockResolvedValue([{ messageId: 1n, status: 'failed' }]),
+      }) as never,
+      {} as never,
+    );
+    const out = await svc.attachMediaStatus([
+      mk({
+        id: 1n,
+        seq: 5,
+        localState: 'FAILED',
+        content: JSON.stringify({ url: url(DIG) }),
+      }),
+    ]);
+
+    expect(out[0].mediaStatus).toBe('failed');
   });
 
   it('a digest with no authz row → failed', async () => {

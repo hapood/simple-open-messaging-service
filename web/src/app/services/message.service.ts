@@ -510,25 +510,22 @@ export class MsgService {
     >(`${apiPrefix()}/search-messages`, params);
   }
 
-  /** Manually re-run federated media localize for one message — the detail-view retry after a localize
-   *  failure left the media inert. Idempotent (already-local digests skip the fetch, no quota burn).
-   *  Returns the post-localize status ('ready' = bytes local | 'failed' = still missing). */
+  /** Manually re-run federated media localization for one message. */
   relocalizeMedia(threadId: number, seq: number) {
-    return this.http.post<StandardResponse<{ status: 'ready' | 'failed' }>>(
-      `${apiPrefix()}/relocalize-media`,
-      { threadId, seq },
-    );
+    return this.http.post<
+      StandardResponse<{
+        status: 'pending' | 'downloading' | 'ready' | 'failed';
+      }>
+    >(`${apiPrefix()}/relocalize-media`, { threadId, seq });
   }
 
-  /** Bulk-probe federated media localize status for a set of messages — the scroll backstop for
-   *  MEDIA_STATUS frames the client missed while disconnected. Returns {seq, status, sv} per existing seq. */
+  /** Read the authoritative federated media status for mounted messages. Used on mount and reconnect. */
   queryMediaStatus(threadId: number, seqs: number[]) {
     return this.http.post<
       StandardResponse<{
         statuses: Array<{
           seq: number;
-          status: 'ready' | 'failed';
-          sv: number;
+          status: 'pending' | 'downloading' | 'ready' | 'failed';
         }>;
       }>
     >(`${apiPrefix()}/media-status`, { threadId, seqs });

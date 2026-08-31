@@ -14,23 +14,24 @@ type S = components['schemas'];
  *  SSE frame + the attachMediaStatus query field carry these exact strings). A const object so every
  *  reference is `MEDIA_STATUS.READY` (typed + refactor-safe), not a bare literal scattered around.
  *  Mirrors the backend's src/common/media-status.ts. 'ready' = bytes local + authz (URL serves 200);
- *  'failed' = localize failed (URL 4xx, retryable); 'downloading' = localize in flight (a client-side
- *  optimistic state only — the backend stores/pushes the 'ready'|'failed' terminals). */
+ *  'failed' = localize failed (URL 4xx, retryable); pending/downloading are durable backend states. */
 export const MEDIA_STATUS = {
   READY: 'ready',
+  PENDING: 'pending',
   DOWNLOADING: 'downloading',
   FAILED: 'failed',
 } as const;
 export type MediaStatus = (typeof MEDIA_STATUS)[keyof typeof MEDIA_STATUS];
 
 export type User = S['UserResponseDto'];
-export type Message = Omit<S['MessageResponseDto'], 'contentType'> & {
+export type Message = Omit<
+  S['MessageResponseDto'],
+  'contentType' | 'mediaStatus'
+> & {
   contentType: S['MessageResponseDto']['contentType'];
   /** Federated media localize status (absent = ready). Carried on query-messages rows + NEW_MESSAGE
-   *  frames; the client also sets 'downloading' optimistically on arrival / manual retry. */
+   *  frames; one mounted-message service reconciles mount, reconnect and SSE updates. */
   mediaStatus?: MediaStatus;
-  /** Monotonic status version — the anti-regression key for the client's reduceMediaStatus. */
-  sv?: number;
 };
 export type MessageCreator = NonNullable<Message['creator']>;
 

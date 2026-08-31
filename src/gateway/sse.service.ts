@@ -233,19 +233,16 @@ export class SseService implements OnModuleDestroy {
 
   /**
    * A federated media message finished localizing. Signal-only state flip: the recipient sets that
-   * message's mediaStatus to 'ready' (every digest has bytes on disk + an authz row → the URL serves
-   * 200) or 'failed' (at least one digest stayed inert → shown as a retryable failure), then re-renders
-   * the card. No message-cursor id (a status flip is not a resumable history cursor). `v` is a monotonic
-   * version the client uses to drop stale out-of-order frames (a manual retry re-localize, or a
-   * reconnect replay). Fan-out to each active local thread member mirrors NEW_MESSAGE.
+   * message's mediaStatus after a committed materialization transition, then re-renders every mounted
+   * consumer of that message. No message-cursor id: reconnecting clients reconcile their registered
+   * messages through the status query.
    */
   onMediaStatus(
     userId: number,
     data: {
       threadId: number;
       seq: number;
-      status: 'ready' | 'failed';
-      v: number;
+      status: 'pending' | 'downloading' | 'ready' | 'failed';
     },
   ) {
     this.pushToUser(userId, 'MEDIA_STATUS', data);

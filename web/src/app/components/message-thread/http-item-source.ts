@@ -94,7 +94,7 @@ export class MessagePageLoadError extends Error {
 export interface HttpItemSourceLiveOpts {
   /** Presentation-only notice for the unread/new-message badge. It never invokes a kernel load or retry. */
   onNewerAvailable?: (seq: number) => void;
-  /** A mediaStatus change landed for this thread (MEDIA_STATUS SSE / scroll probe / retry ack) — the
+  /** A mediaStatus change landed for this thread through the shared availability service — the
    *  kernel re-renders that one card in place via updateItemData (height-neutral). */
   onMediaStatus?: (seq: number, status: MediaStatus) => void;
   /** Background profile enrichment landed for a message already shaped from the local cache. The component
@@ -197,7 +197,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
           this.onNewerAvailable(s.seq);
         this.requestNewerPump();
       });
-    // mediaStatus changes (MEDIA_STATUS SSE / scroll probe / manual-retry ack) → re-render that one card
+    // Shared mediaStatus changes → re-render that one card
     // in place via updateItemData. Height-neutral (the overlay/meta slot never change the cell height).
     this.mediaStatusSub = repo.mediaStatusLive$
       .pipe(filter((s) => s.threadId === this.conv.threadId))

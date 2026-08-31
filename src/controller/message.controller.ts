@@ -1055,12 +1055,11 @@ export class MessageController {
   @HttpCode(HttpStatus.OK)
   @Post('media-status')
   @ApiOperation({
-    summary:
-      'Bulk-probe federated media localize status (scroll backstop for missed MEDIA_STATUS frames)',
+    summary: 'Read federated media status for mounted messages',
   })
   async mediaStatus(@Body() dto: MediaStatusDto) {
-    // No ThrottleGuard: a cheap read (two batched queries), fired only on scroll when the viewport
-    // exposes non-ready media. ThreadAccessGuard scopes threadId; missing seqs are omitted.
+    // No ThrottleGuard: a cheap batched read fired on mount and SSE reconnect. ThreadAccessGuard
+    // scopes threadId; missing or withdrawn seqs are omitted.
     const statuses = await this.messageService.queryMediaStatus(
       dto.threadId,
       dto.seqs,

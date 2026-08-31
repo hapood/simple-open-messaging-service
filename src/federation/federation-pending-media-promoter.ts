@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import {
   DatabaseService,
   type DatabaseTransaction,
@@ -15,6 +15,8 @@ import { contextualizeCasUrls } from '../upload/cas-url.js';
 import { extractDigests } from '../upload/file-content.js';
 
 export interface PendingMediaMaterializationEffect {
+  threadId: number;
+  seq: number;
   dependentBatchIds: string[];
 }
 
@@ -37,6 +39,7 @@ export class FederationPendingMediaPromoter {
       });
       if (!row) return null;
       const batch = requireInboundPendingMedia(row);
+      if (!['pending', 'downloading'].includes(batch.status)) return null;
 
       const outstanding = await tx.execute(sql`
         SELECT 1 FROM "FileSyncProgress"
@@ -72,7 +75,10 @@ export class FederationPendingMediaPromoter {
         stagedIdentity.originSeq,
       );
       const currentJob = await tx.query.pendingMedia.findFirst({
-        where: eq(tables.pendingMedia.id, batch.id),
+        where: and(
+          eq(tables.pendingMedia.id, batch.id),
+          inArray(tables.pendingMedia.status, ['pending', 'downloading']),
+        ),
         columns: { id: true },
       });
       if (!currentJob) return null;
@@ -175,11 +181,13 @@ export class FederationPendingMediaPromoter {
         .delete(tables.fileSyncProgress)
         .where(eq(tables.fileSyncProgress.batchId, batchId));
       await tx
-        .delete(tables.pendingMedia)
+        .update(tables.pendingMedia)
+        .set({ status: 'ready', failReason: null, updatedAt: new Date() })
         .where(eq(tables.pendingMedia.id, batch.id));
 
       return {
         threadId: stagedMessage.threadId,
+        seq: stagedMessage.seq,
         originDomain: batch.originDomain,
         originSeq: stagedMessage.originSeq,
       };
@@ -196,12 +204,15 @@ export class FederationPendingMediaPromoter {
       .where(
         and(
           eq(tables.pendingMedia.direction, 'INBOUND'),
+          inArray(tables.pendingMedia.status, ['pending', 'downloading']),
           eq(tables.message.threadId, effect.threadId),
           eq(tables.pendingMedia.originDomain, effect.originDomain),
           eq(tables.pendingMedia.dependsOnOriginSeq, effect.originSeq),
         ),
       );
     return {
+      threadId: effect.threadId,
+      seq: effect.seq,
       dependentBatchIds: dependents.map(({ batchId: id }) => id),
     };
   }
@@ -221,7 +232,10 @@ export class FederationPendingMediaPromoter {
       .from(tables.message)
       .leftJoin(
         tables.pendingMedia,
-        eq(tables.pendingMedia.messageId, tables.message.id),
+        and(
+          eq(tables.pendingMedia.messageId, tables.message.id),
+          inArray(tables.pendingMedia.status, ['pending', 'downloading']),
+        ),
       )
       .where(
         and(

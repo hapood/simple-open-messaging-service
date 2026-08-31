@@ -14,7 +14,6 @@ import {
 } from '@angular/core';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
-import { firstValueFrom } from 'rxjs';
 import type Artplayer from 'artplayer';
 import PhotoSwipe, { type SlideData } from 'photoswipe';
 import {
@@ -22,8 +21,10 @@ import {
   type AlbumImage,
   type MediaStatus,
 } from '../message-cards/chat-item';
-import { MsgService } from '../../services/message.service';
-import { MessageRepository } from '../../services/message-repository.service';
+import {
+  MediaAvailabilityRegistration,
+  MediaAvailabilityService,
+} from '../../services/media-availability.service';
 import { MediaSaveService } from '../../services/media-save.service';
 import { ToastService } from '../../services/toast.service';
 import { ImageDownloadService } from '../../services/image-download.service';
@@ -71,7 +72,7 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
 
   readonly MEDIA_STATUS = MEDIA_STATUS;
   readonly index = signal(0);
-  readonly statusOverrides = signal<Map<number, MediaStatus>>(new Map());
+  readonly registeredStatus = signal<MediaStatus | null>(null);
   readonly loadErrors = signal<Set<number>>(new Set());
   readonly videoErrors = signal<Map<number, VideoPlaybackError>>(new Map());
   readonly chromeVisible = signal(true);
@@ -86,9 +87,7 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   );
   readonly currentStatus = computed<MediaStatus>(
     () =>
-      this.statusOverrides().get(this.index()) ??
-      this.current()?.status ??
-      MEDIA_STATUS.READY,
+      this.registeredStatus() ?? this.current()?.status ?? MEDIA_STATUS.READY,
   );
   readonly currentLoadFailed = computed(() =>
     this.loadErrors().has(this.index()),
@@ -103,7 +102,11 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   });
   readonly currentNeedsLoad = computed(() => {
     const media = this.current();
-    return Boolean(media?.kind === 'image' && this.shouldGate(media));
+    return Boolean(
+      this.currentStatus() === MEDIA_STATUS.READY &&
+        media?.kind === 'image' &&
+        this.shouldGate(media),
+    );
   });
   readonly currentProgress = computed(() => {
     const task = this.currentTask();
@@ -134,8 +137,10 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   private readonly saveToastKeys = new Set<string>();
   private readonly renderedBlobUrls = new Map<number, string>();
 
-  private readonly msg = inject(MsgService);
-  private readonly repo = inject(MessageRepository);
+  private readonly mediaAvailability = inject(MediaAvailabilityService);
+  private mediaRegistration?: MediaAvailabilityRegistration;
+  private removeStatusListener?: () => void;
+  private removeWithdrawnListener?: () => void;
   private readonly i18n = inject(TranslocoService);
   private readonly mediaSave = inject(MediaSaveService);
   private readonly toast = inject(ToastService);
@@ -151,6 +156,14 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   readonly formatBytes = formatBytes;
 
   constructor() {
+    effect(() => {
+      const media = this.current();
+      this.replaceMediaRegistration(
+        this.threadId(),
+        media?.msgId,
+        media?.status ?? MEDIA_STATUS.READY,
+      );
+    });
     effect(() => {
       const tasks = this.downloads.tasks();
       for (const task of tasks) {
@@ -254,6 +267,7 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.destroying = true;
+    this.releaseMediaRegistration();
     this.destroyVideoPlayers();
     this.pswp?.destroy();
     this.pswp = null;
@@ -343,26 +357,14 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     if (!image?.msgId || threadId === 0) return;
 
     const i = this.index();
-    this.setStatus(i, MEDIA_STATUS.DOWNLOADING);
     this.setLoadError(i, false);
-    void this.repo.setMediaDownloading(threadId, image.msgId);
 
     try {
-      const response = await firstValueFrom(
-        this.msg.relocalizeMedia(threadId, image.msgId),
-      );
-      const status =
-        response.code === 0 && response.data
-          ? response.data.status
-          : MEDIA_STATUS.FAILED;
-      this.setStatus(i, status);
-      if (status === MEDIA_STATUS.READY) {
-        this.retryLoad();
-      } else {
+      const status = await this.mediaAvailability.retry(threadId, image.msgId);
+      if (status === MEDIA_STATUS.FAILED) {
         this.setLoadError(i, true);
       }
     } catch {
-      this.setStatus(i, MEDIA_STATUS.FAILED);
       this.setLoadError(i, true);
     }
   }
@@ -435,12 +437,39 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     });
   }
 
-  private setStatus(index: number, status: MediaStatus): void {
-    this.statusOverrides.update((current) => {
-      const next = new Map(current);
-      next.set(index, status);
-      return next;
+  private replaceMediaRegistration(
+    threadId: number,
+    seq: number | undefined,
+    initialStatus: MediaStatus,
+  ): void {
+    this.releaseMediaRegistration();
+    if (!seq || threadId === 0) {
+      this.registeredStatus.set(null);
+      return;
+    }
+    const registration = this.mediaAvailability.register(
+      threadId,
+      seq,
+      initialStatus,
+    );
+    this.mediaRegistration = registration;
+    this.registeredStatus.set(registration.status());
+    this.removeStatusListener = registration.subscribe((status) => {
+      this.registeredStatus.set(status);
+      if (status === MEDIA_STATUS.READY) this.retryLoad();
     });
+    this.removeWithdrawnListener = registration.onWithdrawn(() =>
+      this.pswp?.close(),
+    );
+  }
+
+  private releaseMediaRegistration(): void {
+    this.removeStatusListener?.();
+    this.removeStatusListener = undefined;
+    this.removeWithdrawnListener?.();
+    this.removeWithdrawnListener = undefined;
+    this.mediaRegistration?.unregister();
+    this.mediaRegistration = undefined;
   }
 
   private setLoadError(index: number, failed: boolean): void {

@@ -55,6 +55,8 @@ import { FederationCallBridgeService } from './federation-call-bridge.service.js
 import { FederationThreadAccessService } from './federation-thread-access.service.js';
 import { FederationTrustedPeerClient } from './federation-trusted-peer-client.service.js';
 import { FederationThreadResourceClient } from './federation-thread-resource-client.service.js';
+import { FederationProfileService } from './federation-profile.service.js';
+import { FederationInboundMediaBatchService } from './federation-inbound-media-batch.service.js';
 
 /**
  * Federation (S2S). @Global so its services inject across modules (UserController, AdminController).
@@ -92,11 +94,13 @@ import { FederationThreadResourceClient } from './federation-thread-resource-cli
     FederationMediaRangeClient,
     FederationInboundFileSync,
     FederationPendingMediaPromoter,
+    FederationInboundMediaBatchService,
     FederationUserDirectoryService,
     FederationCallBridgeService,
     FederationThreadAccessService,
     FederationTrustedPeerClient,
     FederationThreadResourceClient,
+    FederationProfileService,
     FederationService,
     FederationGroupMembershipService,
     FederationGroupRequestProjectionService,

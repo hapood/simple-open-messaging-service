@@ -5,10 +5,12 @@
  *  strings — the wire contract).
  *
  *  - 'ready'       bytes local + authz written → the URL serves 200.
+ *  - 'pending'     a durable inbound job exists but has not started transferring.
  *  - 'failed'      local materialization failed; the visible FAILED placeholder is retryable.
  *  - 'downloading' local materialization is in progress; the visible STUB owns its final seq. */
 export const MEDIA_STATUS = {
   READY: 'ready',
+  PENDING: 'pending',
   DOWNLOADING: 'downloading',
   FAILED: 'failed',
 } as const;

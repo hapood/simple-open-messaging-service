@@ -1164,7 +1164,11 @@ export class MessageService {
           },
           seq,
         );
-        await ClientThreadContentHeadWriter.publishMessage(tx, stage.threadId, seq);
+        await ClientThreadContentHeadWriter.publishMessage(
+          tx,
+          stage.threadId,
+          seq,
+        );
         // Insert EVERY referenced digest (1 for single-file, N for GALLERY) — the old promoteStaged
         // path only inserted the first, which silently dropped authz rows for multi-digest content.
         const digests = extractDigests(content);
@@ -1676,19 +1680,14 @@ export class MessageService {
     });
   }
 
-  /** Attach a `mediaStatus` ('ready' | 'failed') + `sv` (status version = seq) to each message by
+  /** Attach the current four-state media availability to each message by
    *  checking, in bulk, whether every CAS digest in its content has a MediaMessage authz row for THIS
    *  message AND a READY MediaAsset. Non-media messages (no digest)
    *  are trivially 'ready'. Two batch queries serve a whole page — no per-row N+1. Strips the internal
    *  id (it never reaches a client). Drives the query-messages response and the media-status probe. */
   async attachMediaStatus<T extends Message>(
     msgs: T[],
-  ): Promise<
-    (PublicMessage<T> & {
-      mediaStatus: MediaStatus;
-      sv: number;
-    })[]
-  > {
+  ): Promise<(PublicMessage<T> & { mediaStatus: MediaStatus })[]> {
     if (msgs.length === 0) return [];
     const byMsg = new Map<bigint, string[]>();
     const allDigests = new Set<string>();
@@ -1704,7 +1703,7 @@ export class MessageService {
       for (const d of ds) allDigests.add(d);
     }
     const ids = msgs.map((m) => m.id);
-    const [authRows, assetRows] = await Promise.all([
+    const [authRows, assetRows, pendingRows] = await Promise.all([
       this.database.db.query.messageAsset.findMany({
         where: inArray(messageAsset.messageId, ids),
         columns: { messageId: true, digest: true },
@@ -1715,6 +1714,13 @@ export class MessageService {
             where: inArray(mediaAsset.digest, [...allDigests]),
             columns: { digest: true, isDeleted: true },
           }),
+      this.database.db.query.pendingMedia.findMany({
+        where: and(
+          eq(pendingMedia.direction, 'INBOUND'),
+          inArray(pendingMedia.messageId, ids),
+        ),
+        columns: { messageId: true, status: true },
+      }),
     ]);
     // A digest is ready for message m iff an authz row (messageId, digest) exists AND the asset is a
     // live (non-deleted) blob. messageId is BigInt; String(1n) === "1" so the key is collision-free.
@@ -1722,15 +1728,24 @@ export class MessageService {
     const present = new Set(
       assetRows.filter((a) => !a.isDeleted).map((a) => a.digest),
     );
+    const jobs = new Map(
+      pendingRows
+        .filter((row) => row.messageId !== null)
+        .map((row) => [row.messageId!, row.status]),
+    );
     return msgs.map((m) => {
       if (m.localState !== 'READY') {
+        const jobStatus = jobs.get(m.id);
         return {
           ...stripMessageId(m),
           mediaStatus:
             m.localState === 'FAILED'
               ? MEDIA_STATUS.FAILED
-              : MEDIA_STATUS.DOWNLOADING,
-          sv: m.seq,
+              : jobStatus === 'pending'
+                ? MEDIA_STATUS.PENDING
+                : jobStatus === 'downloading'
+                  ? MEDIA_STATUS.DOWNLOADING
+                  : MEDIA_STATUS.FAILED,
         };
       }
       const ds = byMsg.get(m.id) ?? [];
@@ -1740,19 +1755,18 @@ export class MessageService {
       return {
         ...stripMessageId(m),
         mediaStatus: ready ? MEDIA_STATUS.READY : MEDIA_STATUS.FAILED,
-        sv: m.seq,
       };
     });
   }
 
-  /** Bulk media-status probe for a set of seqs within one thread (the client's scroll backstop for
-   *  missed MEDIA_STATUS frames). Returns {seq, status, sv} per requested seq that exists; missing seqs
+  /** Bulk media-status snapshot for mounted messages in one thread. Returns {seq, status} per
+   *  requested seq that exists; missing seqs
    *  are omitted (the client keeps its last known state). Reuses attachMediaStatus for the digest check;
    *  never exposes content/id. */
   async queryMediaStatus(
     threadId: number,
     seqs: number[],
-  ): Promise<Array<{ seq: number; status: MediaStatus; sv: number }>> {
+  ): Promise<Array<{ seq: number; status: MediaStatus }>> {
     if (seqs.length === 0) return [];
     const msgs = await this.database.db.query.message.findMany({
       where: and(
@@ -1765,7 +1779,6 @@ export class MessageService {
     return attached.map((m) => ({
       seq: m.seq,
       status: m.mediaStatus,
-      sv: m.sv,
     }));
   }
 

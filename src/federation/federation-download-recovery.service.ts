@@ -6,7 +6,7 @@ import {
 import { and, eq, inArray, isNotNull, or } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import { fileSyncProgress, pendingMedia } from '../database/schema.js';
-import { FederationService } from './federation.service.js';
+import { FederationInboundMediaBatchService } from './federation-inbound-media-batch.service.js';
 
 /**
  * Rebuilds the volatile download queue from durable inbound state after all modules have initialized.
@@ -21,7 +21,7 @@ export class FederationDownloadRecoveryService
 
   constructor(
     private readonly database: DatabaseService,
-    private readonly federation: FederationService,
+    private readonly inboundMediaBatches: FederationInboundMediaBatchService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -36,6 +36,7 @@ export class FederationDownloadRecoveryService
         .where(
           and(
             eq(pendingMedia.direction, 'INBOUND'),
+            inArray(pendingMedia.status, ['pending', 'downloading']),
             or(
               inArray(fileSyncProgress.status, ['PENDING', 'DOWNLOADING']),
               isNotNull(pendingMedia.dependsOnOriginSeq),
@@ -45,7 +46,7 @@ export class FederationDownloadRecoveryService
 
       for (const { batchId } of batches) {
         try {
-          await this.federation.recoverInboundBatch(batchId);
+          await this.inboundMediaBatches.recoverInboundBatch(batchId);
         } catch (error) {
           this.logger.error(
             `Failed to resume inbound media batch ${batchId}`,
@@ -88,7 +89,7 @@ export class FederationDownloadRecoveryService
       );
 
     for (const { batchId } of batches) {
-      await this.federation.recoverInboundBatch(batchId);
+      await this.inboundMediaBatches.recoverInboundBatch(batchId);
     }
     return batches.length;
   }

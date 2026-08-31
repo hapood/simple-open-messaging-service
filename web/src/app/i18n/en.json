@@ -583,6 +583,7 @@
     "openImageAria": "Open image",
     "openFileAria": "Open file",
     "retrySendAria": "Retry send",
+    "mediaPending": "Waiting to download",
     "mediaDownloading": "Downloading…",
     "mediaFailed": "Download failed",
     "tapToLoad": "Tap to load",

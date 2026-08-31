@@ -12,7 +12,6 @@ import {
   isValidAccount,
   isValidSomfpDomain,
 } from '../common/account.js';
-import { encodeFederationResourceComponent } from './federation-resource-request.js';
 import { dataDirectory } from '../common/data-directory.js';
 import {
   DatabaseService,
@@ -48,6 +47,7 @@ import {
 import { loadFederationConfig } from './federation.config.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
+import type { MediaStatus } from '../common/media-status.js';
 import { QuotaService } from '../quota/quota.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import {
@@ -93,11 +93,9 @@ import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
 import { FederationMediaRangeClient } from './federation-media-range-client.js';
 import {
   federationFileSyncKind,
-  FederationInboundFileSync,
   isFederatedMediaContentType,
 } from './federation-inbound-file-sync.js';
-import { FederationPendingMediaPromoter } from './federation-pending-media-promoter.js';
-import { requireInboundPendingMedia } from '../message/pending-media-row.js';
+import { FederationInboundMediaBatchService } from './federation-inbound-media-batch.service.js';
 
 export {
   deriveLocalGroupSystemEvents,
@@ -114,6 +112,7 @@ export type {
 } from '../calls/federated-call-protocol.js';
 export type { S2SAddress } from './federation-address.js';
 export type { FederationThreadResourceResponse } from './federation-thread-resource-client.service.js';
+export type { InlineProfileAvatar, S2SProfile } from './federation-profile.js';
 
 import {
   FEDERATED_MESSAGE_CONTENT_TYPES,
@@ -164,6 +163,8 @@ import {
   FederationThreadResourceClient,
   type FederationThreadResourceResponse,
 } from './federation-thread-resource-client.service.js';
+import { FederationProfileService } from './federation-profile.service.js';
+import type { S2SProfile } from './federation-profile.js';
 
 /** Preserve the relationship author's side in the client-feed compaction key. */
 export function clientGroupIntentEndpoints(
@@ -211,54 +212,6 @@ interface MessageQueryApplyOptions {
 }
 
 /**
- * Inline profile avatar transmitted over S2S. The receiver validates the digest, media type, Base64,
- * and dimensions before running the bytes through the local avatar pipeline. Null means no avatar.
- */
-export interface InlineProfileAvatar {
-  digest: string;
-  mimeType: string;
-  base64: string;
-  width: number;
-  height: number;
-}
-
-/**
- * A user's public profile as transmitted over S2S — the resolve endpoint (GET /s2s/v1/users/:account)
- * response body. `profileRev` is the sender's profile revision; receivers store it on the foreign
- * projection so an equal or older response cannot overwrite newer profile state.
- */
-export interface S2SProfile {
-  account: string;
-  domain: string;
-  displayName: string;
-  avatar: InlineProfileAvatar | null;
-  bio: string;
-  profileRev: number;
-}
-
-function parseInboundDownloadAuth(
-  value: unknown,
-): { fromAccount: string; fromDomain: string; toAccount: string } | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
-  const auth = value as Record<string, unknown>;
-  if (
-    typeof auth.fromAccount !== 'string' ||
-    typeof auth.fromDomain !== 'string' ||
-    typeof auth.toAccount !== 'string' ||
-    !auth.fromAccount ||
-    !auth.fromDomain ||
-    !auth.toAccount
-  ) {
-    return;
-  }
-  return {
-    fromAccount: auth.fromAccount,
-    fromDomain: auth.fromDomain,
-    toAccount: auth.toAccount,
-  };
-}
-
-/**
  * Outbound S2S: SYNCHRONOUS inline delivery. Each send* method builds a payload, signs it
  * (SignatureService), and POSTs it to the peer's friend-op endpoint (DiscoveryService resolves the
  * base URL), all inline within the caller's request. No outbox/worker — Step 1 friend-flow is low-volume
@@ -294,13 +247,13 @@ export class FederationService {
     private readonly peerHttp: FederationPeerHttp,
     private readonly peerLifecycle: FederationPeerLifecycle,
     private readonly mediaRangeClient: FederationMediaRangeClient,
-    private readonly inboundFileSync: FederationInboundFileSync,
-    private readonly pendingMediaPromoter: FederationPendingMediaPromoter,
+    private readonly inboundMediaBatches: FederationInboundMediaBatchService,
     private readonly users: FederationUserDirectoryService,
     private readonly callBridge: FederationCallBridgeService,
     private readonly threadAccess: FederationThreadAccessService,
     private readonly trustedPeers: FederationTrustedPeerClient,
     private readonly threadResources: FederationThreadResourceClient,
+    private readonly profiles: FederationProfileService,
     private readonly upload: UploadService,
     private readonly participantService: ThreadParticipantService,
     private readonly message: MessageService,
@@ -548,36 +501,6 @@ export class FederationService {
   /** Look up a local user id from a full address (must be account@<our domain>). */
   async findLocalUserIdByAddress(address: S2SAddress): Promise<number | null> {
     return this.users.findLocalUserIdByAddress(address);
-  }
-
-  /** Build the S2SProfile wire shape from a loaded local user (reads the avatar file → base64). */
-  private async toS2SProfile(u: {
-    account: string;
-    name: string;
-    avatar: string;
-    bio: string;
-    profileRev: number;
-  }): Promise<S2SProfile> {
-    const wire = u.avatar ? await this.upload.readAvatarAsWire(u.avatar) : null;
-    const avatar = wire
-      ? {
-          digest: createHash('sha256')
-            .update(Buffer.from(wire.b64, 'base64'))
-            .digest('hex'),
-          mimeType: 'image/webp',
-          base64: wire.b64,
-          width: wire.w,
-          height: wire.h,
-        }
-      : null;
-    return {
-      account: u.account,
-      domain: this.config.domain,
-      displayName: u.name,
-      avatar,
-      bio: u.bio,
-      profileRev: u.profileRev,
-    };
   }
 
   /** Transactional PROFILE writer used by profile mutations. The caller sends wake-ups only after commit. */
@@ -1029,6 +952,56 @@ export class FederationService {
 
   /** User-facing acceptance of a stored GROUP→USER request. Acceptance makes the local conversation
    * formal immediately; authoritative GROUP_META later fills and reconciles the complete roster. */
+  async resolveAcceptGroupRequestCommandScope(
+    threadId: number,
+    memberUserId: number,
+  ): Promise<{ account: string; domain: string }> {
+    return this.database.db.transaction(async (tx) => {
+      const [thread] = await tx
+        .select({
+          groupId: tables.messageThread.groupId,
+          account: tables.group.account,
+          domain: tables.group.domain,
+          dissolvedAt: tables.group.dissolvedAt,
+        })
+        .from(tables.messageThread)
+        .innerJoin(
+          tables.group,
+          eq(tables.group.id, tables.messageThread.groupId),
+        )
+        .where(eq(tables.messageThread.id, threadId))
+        .limit(1);
+      if (!thread?.groupId) {
+        throw new BusinessException(
+          BusinessCode.INVITE_NOT_FOUND,
+          'group request not found',
+        );
+      }
+      if (thread.dissolvedAt !== null) {
+        throw new BusinessException(
+          BusinessCode.GROUP_DISSOLVED,
+          'group dissolved',
+        );
+      }
+      const invited = await this.relationshipIntents.hasValidGroupInviteInTx(
+        tx,
+        {
+          groupId: thread.groupId,
+          memberUserId,
+          threadId,
+          author: 'GROUP',
+        },
+      );
+      if (!invited) {
+        throw new BusinessException(
+          BusinessCode.INVITE_NOT_FOUND,
+          'group request not found',
+        );
+      }
+      return { account: thread.account, domain: thread.domain };
+    });
+  }
+
   async acceptGroupRequest(
     threadId: number,
     memberUserId: number,
@@ -1039,6 +1012,7 @@ export class FederationService {
         .select({
           groupId: tables.messageThread.groupId,
           groupDomain: tables.group.domain,
+          dissolvedAt: tables.group.dissolvedAt,
         })
         .from(tables.messageThread)
         .innerJoin(
@@ -1051,6 +1025,11 @@ export class FederationService {
         throw new BusinessException(
           BusinessCode.INVITE_NOT_FOUND,
           'group request not found',
+        );
+      if (thread.dissolvedAt !== null)
+        throw new BusinessException(
+          BusinessCode.GROUP_DISSOLVED,
+          'group dissolved',
         );
       if (
         !(await this.relationshipIntents.hasValidGroupInviteInTx(tx, {
@@ -1538,16 +1517,7 @@ export class FederationService {
 
   /** Public profile of a local user (GET /s2s/v1/users/:account). Null if not local / not found. */
   async getLocalUserProfile(address: S2SAddress): Promise<S2SProfile | null> {
-    if (address.domain !== this.config.domain) return null;
-    const u = await this.database.db.query.user.findFirst({
-      where: and(
-        eq(tables.user.account, normalizeAccount(address.account)),
-        eq(tables.user.domain, 'local'),
-        eq(tables.user.namespaceId, 0),
-      ),
-    });
-    if (!u || u.domain !== 'local') return null;
-    return this.toS2SProfile(u);
+    return this.profiles.getLocalUserProfile(address);
   }
 
   /** Find or create a foreign User stub for account@<peer-domain>. Stubs never authenticate. */
@@ -1584,9 +1554,7 @@ export class FederationService {
     userId: number,
     address: S2SAddress,
   ): Promise<void> {
-    const peerToken = await this.capturePeerResponseToken(address.domain);
-    const profile = await this.fetchRemoteUser(address);
-    await this.localizeForeignProfile(userId, profile, { peerToken });
+    await this.profiles.ensureForeignUserLocalized(userId, address);
   }
 
   /** Sign + synchronously POST an arbitrary JSON body to a peer S2S path (`${base}${path}`). The single
@@ -4504,41 +4472,7 @@ export class FederationService {
     batchId: string,
     fetchChunksFor: (digest: string, offset: number) => AsyncIterable<Buffer>,
   ): Promise<void> {
-    await this.inboundFileSync.runBatch(
-      batchId,
-      fetchChunksFor,
-      (id) => this.promotePendingMessage(id),
-      (id) => this.failPendingMessage(id),
-    );
-  }
-
-  /** Persist a terminal inbound materialization failure on the Message and discard the spent job. */
-  private async failPendingMessage(batchId: string): Promise<void> {
-    await this.database.db.transaction(async (tx) => {
-      const row = await tx.query.pendingMedia.findFirst({
-        where: and(
-          eq(tables.pendingMedia.batchId, batchId),
-          eq(tables.pendingMedia.direction, 'INBOUND'),
-        ),
-      });
-      if (!row) return;
-      const batch = requireInboundPendingMedia(row);
-      await tx
-        .update(tables.message)
-        .set({ localState: 'FAILED', updatedAt: new Date() })
-        .where(
-          and(
-            eq(tables.message.id, batch.messageId),
-            eq(tables.message.localState, 'STUB'),
-          ),
-        );
-      await tx
-        .delete(tables.fileSyncProgress)
-        .where(eq(tables.fileSyncProgress.batchId, batchId));
-      await tx
-        .delete(tables.pendingMedia)
-        .where(eq(tables.pendingMedia.id, batch.id));
-    });
+    await this.inboundMediaBatches.runFileSyncBatch(batchId, fetchChunksFor);
   }
 
   /**
@@ -4551,7 +4485,7 @@ export class FederationService {
   async retryInboundBatch(
     batchId: string,
   ): Promise<{ batchId: string; resetFiles: number }> {
-    return this.resumeInboundBatch(batchId, ['DOWNLOADING', 'FAILED']);
+    return this.inboundMediaBatches.retryInboundBatch(batchId);
   }
 
   /**
@@ -4562,99 +4496,12 @@ export class FederationService {
   async recoverInboundBatch(
     batchId: string,
   ): Promise<{ batchId: string; resetFiles: number }> {
-    return this.resumeInboundBatch(batchId, ['DOWNLOADING']);
-  }
-
-  private async resumeInboundBatch(
-    batchId: string,
-    resetStatuses: Array<'DOWNLOADING' | 'FAILED'>,
-  ): Promise<{ batchId: string; resetFiles: number }> {
-    const batchRow = await this.database.db.query.pendingMedia.findFirst({
-      where: eq(tables.pendingMedia.batchId, batchId),
-    });
-    if (!batchRow || batchRow.direction !== 'INBOUND') {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        `inbound media batch ${batchId} not found`,
-        HttpStatus.NOT_FOUND,
-      );
-    }
-    const batch = requireInboundPendingMedia(batchRow);
-    const stagedMessage = await this.database.db.query.message.findFirst({
-      where: eq(tables.message.id, batch.messageId),
-      columns: { originSeq: true },
-    });
-    if (batch.dependsOnOriginSeq !== null) {
-      await this.promotePendingMessage(batchId);
-      return { batchId, resetFiles: 0 };
-    }
-    // Admin retry resets FAILED too; startup recovery resets only crash-stranded DOWNLOADING rows.
-    // SUCCEEDED and protocol-terminal TOMBSTONED files are always left as-is.
-    const reset = await this.database.db
-      .update(tables.fileSyncProgress)
-      .set({ status: 'PENDING', errorKind: null, updatedAt: new Date() })
-      .where(
-        and(
-          eq(tables.fileSyncProgress.batchId, batchId),
-          inArray(tables.fileSyncProgress.status, resetStatuses),
-        ),
-      )
-      .returning({ id: tables.fileSyncProgress.id });
-
-    // Global /missed persists the already-authorized wire route with each file. This matters when a
-    // relationship changes while a quota-paused transfer is waiting: recovery must replay the exact
-    // authorization context admitted with the change, not derive a potentially different current route.
-    const progress = await this.database.db.query.fileSyncProgress.findFirst({
-      where: eq(tables.fileSyncProgress.batchId, batchId),
-      columns: { payload: true },
-    });
-    const persistedAuth = parseInboundDownloadAuth(progress?.payload);
-
-    const fromAccount = persistedAuth?.fromAccount;
-    const fromDomain = persistedAuth?.fromDomain;
-    const toAccount = persistedAuth?.toAccount;
-    if (
-      !fromAccount ||
-      !fromDomain ||
-      !toAccount ||
-      stagedMessage?.originSeq == null
-    ) {
-      throw new BusinessException(
-        BusinessCode.INTERNAL,
-        `inbound media batch ${batchId} has no persisted download route`,
-        HttpStatus.INTERNAL_SERVER_ERROR,
-      );
-    }
-    const originDomain = batch.originDomain;
-    const originSeq = stagedMessage.originSeq;
-
-    // Fire-and-forget: the per-batch mutex serializes this against any in-flight original driver.
-    void this.runFileSyncBatch(batchId, (digest, offset) =>
-      this.fetchMediaChunks(
-        originDomain,
-        digest,
-        fromAccount,
-        fromDomain,
-        toAccount,
-        originSeq,
-        offset,
-      ),
-    ).catch(() => undefined);
-
-    return { batchId, resetFiles: reset.length };
+    return this.inboundMediaBatches.recoverInboundBatch(batchId);
   }
 
   /** Materialize an inbound STUB independently of its already-committed synchronization round. */
   private async promotePendingMessage(batchId: string): Promise<void> {
-    const promoted = await this.pendingMediaPromoter.promote(batchId);
-    if (!promoted) return;
-    const { dependentBatchIds } = promoted;
-
-    // Wake every durable quote that was waiting for this wire coordinate. Each successful child
-    // promotion performs the same lookup again, naturally draining quote chains without polling.
-    for (const dependentBatchId of dependentBatchIds) {
-      await this.promotePendingMessage(dependentBatchId);
-    }
+    await this.inboundMediaBatches.promotePendingMessage(batchId);
   }
 
   /** Apply an existing participant's thread-scoped delivery block without rechecking relationship
@@ -4793,7 +4640,7 @@ export class FederationService {
     userId: number,
     threadId: number,
     seq: number,
-  ): Promise<'ready' | 'downloading' | 'failed'> {
+  ): Promise<MediaStatus> {
     const msg = await this.messageVisibility.findVisibleByThreadSeq(
       userId,
       threadId,
@@ -4811,7 +4658,9 @@ export class FederationService {
     if (!this.isMediaContentType(msg.contentType)) return 'ready';
     if (msg.creatorAccount === null || msg.creatorDomain === null)
       throw new Error('user-authored media message has no creator');
-    if (msg.localState === 'STUB') return 'downloading';
+    if (msg.localState === 'STUB') {
+      return this.readInboundMediaJobStatus(msg.id);
+    }
     const { toAccount, peerDomain } = await this.resolveMediaContext(
       msg.threadId,
       msg.creatorAccount,
@@ -4839,6 +4688,10 @@ export class FederationService {
         toAccount,
       });
       if (batchId) {
+        await this.inboundMediaBatches.publishMessageStatus(
+          { threadId: msg.threadId, seq: msg.seq },
+          'pending',
+        );
         void this.runFileSyncBatch(batchId, (digest, offset) =>
           this.fetchMediaChunks(
             peerDomain,
@@ -4852,8 +4705,9 @@ export class FederationService {
             offset,
           ),
         ).catch(() => undefined);
+        return 'pending';
       }
-      return 'downloading';
+      return this.readInboundMediaJobStatus(msg.id);
     }
     const federationVersion = await this.readThreadFederationVersion(
       msg.threadId,
@@ -4873,6 +4727,24 @@ export class FederationService {
       : 'failed';
   }
 
+  private async readInboundMediaJobStatus(
+    messageId: bigint,
+  ): Promise<MediaStatus> {
+    const job = await this.database.db.query.pendingMedia.findFirst({
+      where: and(
+        eq(tables.pendingMedia.messageId, messageId),
+        eq(tables.pendingMedia.direction, 'INBOUND'),
+      ),
+      columns: { status: true },
+    });
+    return job?.status === 'pending' ||
+      job?.status === 'downloading' ||
+      job?.status === 'ready' ||
+      job?.status === 'failed'
+      ? job.status
+      : 'failed';
+  }
+
   private async restageFailedInboundMessage(
     msg: Message,
     authorization: {
@@ -4882,7 +4754,6 @@ export class FederationService {
       toAccount: string;
     },
   ): Promise<string | null> {
-    const batchId = randomUUID();
     const digests = extractDigestEntries(msg.content);
     if (digests.length === 0) return null;
     if (msg.sourceNamespaceId === null)
@@ -4903,16 +4774,31 @@ export class FederationService {
         .for('update', { of: tables.message })
         .limit(1);
       if (!locked || locked.localState !== 'FAILED') return null;
-      await tx.insert(tables.pendingMedia).values({
-        messageId: msg.id,
-        direction: 'INBOUND',
-        batchId,
-        fileCnt: digests.length,
-        originDomain: authorization.peerDomain,
-        namespaceId,
-        expectedAuthorizationEpoch: locked.authorizationEpoch,
-        updatedAt: new Date(),
+      const pending = await tx.query.pendingMedia.findFirst({
+        where: and(
+          eq(tables.pendingMedia.messageId, msg.id),
+          eq(tables.pendingMedia.direction, 'INBOUND'),
+          eq(tables.pendingMedia.status, 'failed'),
+        ),
+        columns: { id: true, batchId: true },
       });
+      if (!pending) return null;
+      const batchId = pending.batchId;
+      await tx
+        .delete(tables.fileSyncProgress)
+        .where(eq(tables.fileSyncProgress.batchId, batchId));
+      await tx
+        .update(tables.pendingMedia)
+        .set({
+          status: 'pending',
+          failReason: null,
+          fileCnt: digests.length,
+          originDomain: authorization.peerDomain,
+          namespaceId,
+          expectedAuthorizationEpoch: locked.authorizationEpoch,
+          updatedAt: new Date(),
+        })
+        .where(eq(tables.pendingMedia.id, pending.id));
       for (const { digest, size } of digests) {
         await tx.insert(tables.fileSyncProgress).values({
           batchId,
@@ -5108,18 +4994,7 @@ export class FederationService {
    * surfaces FEDERATION_DELIVERY_FAILED → user retries / inits).
    */
   async fetchRemoteUser(address: S2SAddress): Promise<S2SProfile> {
-    const profile = await this.getSigned<S2SProfile>(
-      `/s2s/v1/users/${encodeFederationResourceComponent(address.account)}`,
-      address.domain,
-    );
-    if (!Number.isSafeInteger(profile.profileRev) || profile.profileRev < 0) {
-      throw new S2sResponseError(
-        `S2S profile from ${address.domain} has an invalid profileRev`,
-        HttpStatus.OK,
-        BusinessCode.FEDERATION_MALFORMED,
-      );
-    }
-    return profile;
+    return this.profiles.fetchRemoteUser(address);
   }
 
   // ─── inbound / re-pull localization ──────────────────────────────────────────
@@ -5144,43 +5019,7 @@ export class FederationService {
         }
       | { peerToken: PeerResponseToken },
   ): Promise<void> {
-    const stub = await this.database.db.query.user.findFirst({
-      where: eq(tables.user.id, userId),
-      columns: { avatar: true, profileRev: true },
-    });
-    if (!stub) return; // stub gone — nothing to localize
-    if (profile.profileRev <= stub.profileRev) {
-      return; // already at least as fresh as this profile
-    }
-
-    const data = await this.prepareForeignProfileData(profile);
-    if (gate) {
-      await this.database.db.transaction(async (tx) => {
-        if ('peerToken' in gate) {
-          await this.assertPeerResponseWritable(tx, gate.peerToken);
-        } else {
-          await this.assertThreadResponseWritable(
-            tx,
-            gate.threadId,
-            gate.peerDomain,
-            gate.expectedFederationVersion,
-          );
-        }
-        await tx
-          .update(tables.user)
-          .set({ ...data, updatedAt: new Date() })
-          .where(eq(tables.user.id, userId));
-      });
-    } else {
-      await this.database.db
-        .update(tables.user)
-        .set({ ...data, updatedAt: new Date() })
-        .where(eq(tables.user.id, userId));
-    }
-
-    // The previous localized avatar files are intentionally LEFT on disk — gcOrphanedAvatars reaps
-    // them once they are no longer any User/Group's current avatar (no delete racing a render, and
-    // re-localization on a transient profile-fetch hiccup no longer thrashes the disk).
+    await this.profiles.localizeForeignProfile(userId, profile, gate);
   }
 
   async upsertForeignUserFromPeerResponse(
@@ -5189,87 +5028,12 @@ export class FederationService {
     profile: S2SProfile,
     peerToken: PeerResponseToken,
   ): Promise<number> {
-    if (peerToken.domain !== domain) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'peer response token domain does not match foreign user domain',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    return this.database.db.transaction(async (tx) => {
-      await this.assertPeerResponseWritable(tx, peerToken);
-      const userId = await this.ensureForeignUserInTransaction(
-        tx,
-        account,
-        domain,
-        peerToken.namespaceId,
-      );
-      const [stub] = await tx
-        .select({ profileRev: tables.user.profileRev })
-        .from(tables.user)
-        .where(eq(tables.user.id, userId))
-        .for('update')
-        .limit(1);
-      if (
-        stub?.profileRev !== undefined &&
-        profile.profileRev <= stub.profileRev
-      )
-        return userId;
-      const data = await this.prepareForeignProfileData(profile);
-      await tx
-        .update(tables.user)
-        .set({ ...data, updatedAt: new Date() })
-        .where(eq(tables.user.id, userId));
-      return userId;
-    });
-  }
-
-  private async prepareForeignProfileData(profile: S2SProfile): Promise<{
-    name: string;
-    bio: string;
-    profileRev: number;
-    avatar?: string;
-  }> {
-    let newAvatarUrl: string | null = null;
-    if (profile.avatar) {
-      try {
-        if (
-          !/^[a-f0-9]{64}$/.test(profile.avatar.digest) ||
-          typeof profile.avatar.mimeType !== 'string' ||
-          profile.avatar.mimeType.length === 0
-        ) {
-          throw new Error('invalid public profile avatar metadata');
-        }
-        const bytes = Buffer.from(profile.avatar.base64, 'base64');
-        if (
-          createHash('sha256').update(bytes).digest('hex') !==
-          profile.avatar.digest
-        ) {
-          throw new Error('public profile avatar digest mismatch');
-        }
-        newAvatarUrl = await this.upload.saveAvatarFromWire({
-          b64: profile.avatar.base64,
-          w: profile.avatar.width,
-          h: profile.avatar.height,
-        });
-      } catch {
-        newAvatarUrl = null;
-      }
-    } else {
-      newAvatarUrl = '';
-    }
-    const data: {
-      name: string;
-      bio: string;
-      profileRev: number;
-      avatar?: string;
-    } = {
-      name: profile.displayName,
-      bio: profile.bio,
-      profileRev: profile.profileRev,
-    };
-    if (newAvatarUrl !== null) data.avatar = newAvatarUrl;
-    return data;
+    return this.profiles.upsertForeignUserFromPeerResponse(
+      account,
+      domain,
+      profile,
+      peerToken,
+    );
   }
 }
 

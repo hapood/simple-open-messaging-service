@@ -168,6 +168,18 @@
       }
     </button>
   </div>
+} @else if (currentStatus() === MEDIA_STATUS.PENDING) {
+  <div
+    class="gv-status gv-status--pending"
+    role="status"
+    [attr.aria-label]="'chat.mediaPending' | transloco"
+  >
+    <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </svg>
+    <span>{{ 'chat.mediaPending' | transloco }}</span>
+  </div>
 } @else if (currentStatus() === MEDIA_STATUS.FAILED) {
   <div class="gv-load">
     <svg class="gv-load-icon" viewBox="0 0 24 24" aria-hidden="true">

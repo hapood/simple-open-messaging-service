@@ -6,6 +6,7 @@
 // flight (a client-side optimistic state only — the backend stores/pushes the 'ready'|'failed' terminals).
 export const MEDIA_STATUS = {
   READY: 'ready',
+  PENDING: 'pending',
   DOWNLOADING: 'downloading',
   FAILED: 'failed',
 } as const;

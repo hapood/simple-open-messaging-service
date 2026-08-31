@@ -72,6 +72,7 @@ export class FederationInboundFileSync {
     fetchChunksFor: (digest: string, offset: number) => AsyncIterable<Buffer>,
     promote: (batchId: string) => Promise<void>,
     fail: (batchId: string) => Promise<void>,
+    start?: (batchId: string) => Promise<void>,
   ): Promise<void> {
     await this.batchLocks.runExclusive(batchId, async () => {
       const rows = await this.database.db.query.fileSyncProgress.findMany({
@@ -82,6 +83,7 @@ export class FederationInboundFileSync {
       });
       const originDomain = rows[0]?.originDomain;
       if (originDomain && this.quota.isTripped(originDomain)) return;
+      if (rows.length > 0) await start?.(batchId);
       const results = await Promise.allSettled(
         rows.map((row) => {
           const peerDomain = row.originDomain ?? originDomain;

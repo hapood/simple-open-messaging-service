@@ -516,3 +516,11 @@
   justify-content: center;
   pointer-events: none;
 }
+
+.gv-status--pending {
+  flex-direction: column;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 14px;
+  line-height: 20px;
+}

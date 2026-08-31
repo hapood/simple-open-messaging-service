@@ -102,6 +102,9 @@
         </span>
         <span class="msg-file-dl" aria-hidden="true">
           @switch (data().mediaStatus ?? MEDIA_STATUS.READY) {
+            @case (MEDIA_STATUS.PENDING) {
+              <mat-icon>schedule</mat-icon>
+            }
             @case (MEDIA_STATUS.DOWNLOADING) {
               <mat-progress-spinner mode="indeterminate" [diameter]="20" />
             }

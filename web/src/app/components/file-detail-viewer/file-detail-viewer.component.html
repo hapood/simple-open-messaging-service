@@ -51,7 +51,12 @@
     <!-- Download / retry: the primary action. When the federated file is not yet local, swap to a retry
          (status 'failed') or a downloading spinner (status 'downloading'). Disabled when no URL (an
          optimistic send before its upload resolves). -->
-    @if (currentStatus() === MEDIA_STATUS.FAILED) {
+    @if (currentStatus() === MEDIA_STATUS.PENDING) {
+      <div class="fd-download fd-download--loading" aria-disabled="true">
+        <mat-icon>schedule</mat-icon>
+        <span>{{ 'chat.mediaPending' | transloco }}</span>
+      </div>
+    } @else if (currentStatus() === MEDIA_STATUS.FAILED) {
       <button type="button" class="fd-download fd-download--retry" (click)="relocalize()">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
              stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

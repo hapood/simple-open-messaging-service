@@ -583,6 +583,7 @@
     "openImageAria": "打开图片",
     "openFileAria": "打开文件",
     "retrySendAria": "重试发送",
+    "mediaPending": "待下载",
     "mediaDownloading": "下载中…",
     "mediaFailed": "下载失败",
     "tapToLoad": "点击加载",
