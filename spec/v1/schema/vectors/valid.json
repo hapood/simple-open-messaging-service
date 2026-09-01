@@ -53,20 +53,10 @@
             "feedId": "1",
             "body": {
               "status": "ACCEPTED",
+              "profileRev": 3,
               "note": "",
               "requestedAt": 1700000000000,
               "expiresAt": null
-            }
-          },
-          {
-            "account": "alice",
-            "eventType": "PROFILE",
-            "feedId": "2",
-            "body": {
-              "profileRev": 1,
-              "displayName": "Alice",
-              "bio": "",
-              "avatar": null
             }
           },
           {
@@ -76,20 +66,10 @@
             "feedId": "3",
             "body": {
               "status": "ACCEPTED",
+              "profileRev": 4,
               "note": "",
               "requestedAt": 1700000000000,
               "expiresAt": null
-            }
-          },
-          {
-            "account": "!01arz3ndektsv4rrffq69g5fav",
-            "eventType": "PROFILE",
-            "feedId": "4",
-            "body": {
-              "profileRev": 1,
-              "displayName": "Example Group",
-              "bio": "",
-              "avatar": null
             }
           },
           {
@@ -128,6 +108,7 @@
               "feedId": "1",
               "body": {
                 "status": "REQUESTED",
+                "profileRev": 3,
                 "note": "hello",
                 "requestedAt": 1700000000000,
                 "expiresAt": 1700604800000
@@ -147,6 +128,7 @@
               "feedId": "1",
               "body": {
                 "status": "REVOKED",
+                "profileRev": 3,
                 "note": "",
                 "requestedAt": null,
                 "expiresAt": null
@@ -166,6 +148,7 @@
               "feedId": "1",
               "body": {
                 "status": "REVOKED",
+                "profileRev": 3,
                 "note": "",
                 "requestedAt": 1700000000000,
                 "expiresAt": null
@@ -190,24 +173,19 @@
             "account": "alice",
             "domain": "a.example",
             "operation": "UPSERT",
-            "body": {
-              "role": "OWNER",
-              "profileRev": 2,
-              "displayName": "Alice",
-              "avatar": null
-            }
+            "body": { "role": "OWNER" }
           },
           {
             "feedId": "8",
             "account": "bob",
             "domain": "b.example",
             "operation": "UPSERT",
-            "body": {
-              "role": "MEMBER",
-              "profileRev": 1,
-              "displayName": "Bob",
-              "avatar": null
-            }
+            "body": { "role": "MEMBER" }
+          },
+          {
+            "feedId": "9",
+            "operation": "GROUP_PROFILE",
+            "body": { "profileRev": 4 }
           }
         ],
         "scannedThrough": "9",
@@ -216,7 +194,7 @@
       }
     },
     {
-      "name": "group meta departure retains complete historical member",
+      "name": "group meta departure retains Address and final role",
       "schema": "urn:somfp:v1:group-meta",
       "value": {
         "account": "!01arz3ndektsv4rrffq69g5fav",
@@ -227,12 +205,7 @@
             "account": "bob",
             "domain": "b.example",
             "operation": "DEPART",
-            "body": {
-              "role": "MEMBER",
-              "profileRev": 2,
-              "displayName": "Bob",
-              "avatar": null
-            }
+            "body": { "role": "MEMBER" }
           }
         ],
         "scannedThrough": "10",
@@ -252,6 +225,7 @@
             },
             "authorRef": "THREAD_ACCOUNT",
             "seq": 1,
+            "profileRev": 3,
             "originSeq": null,
             "contentType": "PURE_TEXT",
             "content": "{\"text\":\"hello\"}",
@@ -273,6 +247,7 @@
             "thread": { "account": "!team" },
             "author": { "account": "alice", "domain": "a.example" },
             "seq": 2,
+            "profileRev": 3,
             "originSeq": null,
             "contentType": "PURE_TEXT",
             "content": "{\"text\":\"hello group\"}",
@@ -294,6 +269,7 @@
             "thread": { "account": "alice", "peerAccount": "bob" },
             "authorRef": "THREAD_ACCOUNT",
             "seq": 3,
+            "profileRev": 3,
             "originSeq": null,
             "contentType": "CALL",
             "content": "{\"mediaType\":\"AUDIO\",\"outcome\":\"completed\",\"startedAt\":1700000000000,\"endedAt\":1700000001000}",
@@ -506,48 +482,58 @@
       ]
     },
     {
-      "name": "departed-member profile page",
-      "schema": "urn:somfp:v1:departed-member-profile-query",
+      "name": "authorized user and group profile responses",
+      "schema": "urn:somfp:v1:authorized-profile",
       "values": [
         {
-          "members": [
-            {
-              "account": "zed",
-              "domain": "a.example",
-              "lastSentSeq": 40,
-              "profileRev": 1,
-              "displayName": "Zed",
-              "avatar": null
-            },
-            {
-              "account": "alice",
-              "domain": "a.example",
-              "lastSentSeq": 40,
-              "profileRev": 3,
-              "displayName": "Alice",
-              "avatar": null
-            }
-          ],
-          "scannedThrough": 40,
-          "hasMore": true
+          "account": "alice",
+          "domain": "a.example",
+          "displayName": "Alice",
+          "bio": "",
+          "avatar": null,
+          "profileRev": 3
         },
         {
-          "members": [],
-          "scannedThrough": 10,
-          "hasMore": false
+          "account": "!group",
+          "domain": "a.example",
+          "displayName": "Example Group",
+          "bio": "",
+          "avatar": null,
+          "profileRev": 4
         }
       ]
     },
     {
-      "name": "departed-member profile feed parameters",
-      "schema": "urn:somfp:v1:http-parameters#/$defs/departedMemberProfileQuery",
+      "name": "authorized profile parameters",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/authorizedProfileParameters",
       "values": [
-        { "account": "!group" },
+        { "account": "alice", "rev": "3" },
+        { "account": "!group", "rev": "4" }
+      ]
+    },
+    {
+      "name": "message author profile response",
+      "schema": "urn:somfp:v1:message-author-profile",
+      "value": {
+        "account": "alice",
+        "domain": "a.example",
+        "profileRev": 3,
+        "displayName": "Alice",
+        "avatar": null
+      }
+    },
+    {
+      "name": "message author profile query parameters",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/messageAuthorProfileQuery",
+      "values": [
         {
           "account": "!group",
-          "before": "41",
-          "through": "10",
-          "take": "20"
+          "messageSeq": "41"
+        },
+        {
+          "account": "alice",
+          "peerAccount": "bob",
+          "messageSeq": "12"
         }
       ]
     },

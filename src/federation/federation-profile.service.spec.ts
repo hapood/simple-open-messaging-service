@@ -65,13 +65,62 @@ function makeSubject(storedProfileRev = 1) {
 describe('FederationProfileService localization', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('skips an equal or older profile revision', async () => {
+  it('adopts the directory-selected revision without numeric ordering', async () => {
     const { subject, upload, update } = makeSubject(7);
 
     await subject.localizeForeignProfile(17, profile(7));
 
     expect(upload.saveAvatarFromWire).not.toHaveBeenCalled();
-    expect(update).not.toHaveBeenCalled();
+    expect(update).toHaveBeenCalledOnce();
+  });
+
+  it('retains a message-referenced display snapshot without changing the user projection', async () => {
+    const onConflictDoNothing = vi.fn().mockResolvedValue(undefined);
+    const values = vi.fn(() => ({ onConflictDoNothing }));
+    const insert = vi.fn(() => ({ values }));
+    const database = {
+      db: {
+        query: {
+          user: { findFirst: vi.fn().mockResolvedValue({ id: 17 }) },
+        },
+        insert,
+      },
+    };
+    const upload = {
+      readAvatarAsWire: vi.fn(),
+      saveAvatarFromWire: vi.fn(),
+    };
+    const subject = new FederationProfileService(
+      database as never,
+      upload as never,
+      { get: vi.fn() } as never,
+      {} as never,
+      {} as never,
+    );
+
+    await subject.materializeReferencedUserProfile(
+      {
+        account: 'alice',
+        domain: 'peer.example',
+        displayName: 'Group Alice',
+        avatar: null,
+        profileRev: 8,
+      },
+      'group-host.example',
+      12,
+    );
+
+    expect(insert).toHaveBeenCalledOnce();
+    expect(values).toHaveBeenCalledWith({
+      userId: 17,
+      profileRev: 8,
+      displayName: 'Group Alice',
+      avatar: '',
+    });
+    expect(database.db.query.user.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ columns: { id: true } }),
+    );
+    expect(upload.saveAvatarFromWire).not.toHaveBeenCalled();
   });
 
   it('checks the captured peer identity before updating a foreign profile', async () => {
@@ -94,7 +143,7 @@ describe('FederationProfileService localization', () => {
         name: 'Alice',
         bio: 'hello',
         avatar: '',
-        profileRev: 2,
+        defaultProfileRev: 2,
         updatedAt: expect.any(Date),
       }),
     );

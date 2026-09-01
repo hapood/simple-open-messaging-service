@@ -60,17 +60,26 @@ export async function stageCasAsset(
   return { url: `/uploads/msg-assets/${rel}`, size: buf.length, digest };
 }
 
-/** Upload an avatar via the real HTTP route (multipart) — the test-process equivalent of
- *  `UploadService.saveAvatars` + `UserService.updateAvatar`. Returns the response. */
-export function uploadAvatar(
+/** Create a complete profile revision through the real JSON API while preserving name and bio. */
+export async function uploadAvatar(
   app: AppLike,
   token: string,
   png: Buffer,
-): request.Test {
-  return request(app.baseUrl)
-    .post('/api/v1/user/update-avatar')
+): Promise<request.Response> {
+  const current = await request(app.baseUrl)
+    .post('/api/v1/user/my-profile')
     .set('Authorization', `Bearer ${token}`)
-    .attach('file', png, { filename: 'avatar.png', contentType: 'image/png' });
+    .send({})
+    .expect(200);
+  return request(app.baseUrl)
+    .post('/api/v1/user/update-profile')
+    .set('Authorization', `Bearer ${token}`)
+    .send({
+      name: current.body.data.name,
+      bio: current.body.data.bio,
+      avatarBase64: png.toString('base64'),
+    })
+    .expect(200);
 }
 
 /** Hash a session token exactly as SessionTokenService does (sha256 hex) — replicated in the test process

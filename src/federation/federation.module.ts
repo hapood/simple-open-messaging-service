@@ -31,12 +31,10 @@ import { FederationMessageTombstoneFeedService } from './federation-message-tomb
 import { FederationHttpScheduler } from './federation-http-scheduler.js';
 import { FederationTransportConfigService } from './federation-transport-config.service.js';
 import { GroupMetaFeedService } from './group-meta-feed.service.js';
-import { DepartedMemberProfileQueryService } from './departed-member-profile-query.service.js';
 import { FederationThreadSyncStateService } from './federation-thread-sync-state.service.js';
 import { FederationThreadForwardRoundService } from './federation-thread-forward-round.service.js';
 import { FederationThreadReverseRoundService } from './federation-thread-reverse-round.service.js';
 import { FederationThreadReverseRoundExecutorService } from './federation-thread-reverse-round-executor.service.js';
-import { FederationDepartedMemberProfileConsumerService } from './federation-departed-member-profile-consumer.service.js';
 import { FederationThreadSourceService } from './federation-thread-source.service.js';
 import { FederationThreadForwardRoundExecutorService } from './federation-thread-forward-round-executor.service.js';
 import { FederationThreadRoundSchedulerService } from './federation-thread-round-scheduler.service.js';
@@ -65,6 +63,8 @@ import { FederationLocalSystemMessagePublisher } from './federation-local-system
 import { FederationStatePullService } from './federation-state-pull.service.js';
 import { FederationPeerResourceService } from './federation-peer-resource.service.js';
 import { FederationInboundMessageCommitService } from './federation-inbound-message-commit.service.js';
+import { ProfileResolutionCoordinatorService } from './profile-resolution-coordinator.service.js';
+import { ProfileResolutionController } from './profile-resolution.controller.js';
 import { FederationOutboundMessageSignalService } from './federation-outbound-message-signal.service.js';
 import { FederationThreadQueryDenialService } from './federation-thread-query-denial.service.js';
 import { FederationInboundMediaBatchService } from './federation-inbound-media-batch.service.js';
@@ -107,7 +107,12 @@ import {
     ForwardBundleModule,
     DomainCommandModule,
   ],
-  controllers: [WellKnownController, S2sController, S2sRecognitionController],
+  controllers: [
+    WellKnownController,
+    S2sController,
+    S2sRecognitionController,
+    ProfileResolutionController,
+  ],
   providers: [
     KeypairService,
     SignatureService,
@@ -116,6 +121,7 @@ import {
     S2sSignatureGuard,
     FederationPeerLifecycle,
     FederationPeerHttp,
+    ProfileResolutionCoordinatorService,
     FederationMediaRangeClient,
     FederationInboundFileSync,
     FederationPendingMediaPromoter,
@@ -161,19 +167,18 @@ import {
     PeerStateFeedService,
     PeerStateFeedPullService,
     GroupMetaFeedService,
-    DepartedMemberProfileQueryService,
     FederationThreadSyncStateService,
     FederationThreadForwardRoundService,
     FederationThreadReverseRoundService,
     FederationThreadSourceService,
     FederationThreadForwardRoundExecutorService,
-    FederationDepartedMemberProfileConsumerService,
     FederationThreadReverseRoundExecutorService,
     FederationThreadRoundSchedulerService,
     FederationThreadContentHeadService,
     FederationProfileStatePublisher,
     FederationRelationshipCommandService,
     FederationNamespaceService,
+    ProfileResolutionCoordinatorService,
     FederationStateFeedConsumerService,
   ],
   exports: [
@@ -191,13 +196,11 @@ import {
     PeerStateFeedService,
     PeerStateFeedPullService,
     GroupMetaFeedService,
-    DepartedMemberProfileQueryService,
     FederationThreadSyncStateService,
     FederationThreadForwardRoundService,
     FederationThreadReverseRoundService,
     FederationThreadSourceService,
     FederationThreadForwardRoundExecutorService,
-    FederationDepartedMemberProfileConsumerService,
     FederationThreadReverseRoundExecutorService,
     FederationThreadRoundSchedulerService,
     FederationThreadContentHeadService,

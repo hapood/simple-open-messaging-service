@@ -3,29 +3,14 @@
   "$id": "urn:somfp:v1:state-feed",
   "title": "GET /s2s/v1/state-feed response data",
   "$defs": {
-    "profileBody": {
+    "relationshipIntentBody": {
       "type": "object",
-      "required": ["profileRev", "displayName", "bio", "avatar"],
+      "required": ["status", "profileRev", "note", "requestedAt", "expiresAt"],
       "properties": {
+        "status": { "enum": ["REQUESTED", "ACCEPTED", "REVOKED"] },
         "profileRev": {
           "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
         },
-        "displayName": { "type": "string", "minLength": 1, "maxLength": 30 },
-        "bio": { "type": "string", "maxLength": 120 },
-        "avatar": {
-          "oneOf": [
-            { "$ref": "urn:somfp:v1:common#/$defs/inlineProfileAvatar" },
-            { "type": "null" }
-          ]
-        }
-      },
-      "additionalProperties": false
-    },
-    "relationshipIntentBody": {
-      "type": "object",
-      "required": ["status", "note", "requestedAt", "expiresAt"],
-      "properties": {
-        "status": { "enum": ["REQUESTED", "ACCEPTED", "REVOKED"] },
         "note": { "type": "string", "maxLength": 255 },
         "requestedAt": {
           "oneOf": [
@@ -118,14 +103,6 @@
     },
     "item": {
       "oneOf": [
-        {
-          "$ref": "#/$defs/itemBase",
-          "properties": {
-            "eventType": { "const": "PROFILE" },
-            "body": { "$ref": "#/$defs/profileBody" }
-          },
-          "unevaluatedProperties": false
-        },
         {
           "$ref": "#/$defs/itemBase",
           "properties": {

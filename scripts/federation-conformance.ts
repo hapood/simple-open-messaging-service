@@ -219,43 +219,21 @@ function semanticValid(schema: string, value: unknown): boolean {
     )
       return false;
     let previousFeedId = 0n;
+    let fullProfileItems = 0;
     for (const member of page.items ?? []) {
       const feedId = BigInt(member.feedId!);
+      if (member.operation === 'GROUP_PROFILE') fullProfileItems += 1;
       if (
         feedId <= previousFeedId ||
         feedId > BigInt(page.scannedThrough) ||
-        (page.mode === 'full' && member.operation !== 'UPSERT')
+        (page.mode === 'full' &&
+          member.operation !== 'UPSERT' &&
+          member.operation !== 'GROUP_PROFILE')
       )
         return false;
       previousFeedId = feedId;
     }
-    return true;
-  }
-  if (schema === 'urn:somfp:v1:departed-member-profile-query') {
-    const page = value as {
-      scannedThrough?: number;
-      members?: Array<{
-        account: string;
-        domain: string;
-        lastSentSeq: number;
-      }>;
-    };
-    if (page.scannedThrough === undefined) return false;
-    const members = new Set<string>();
-    let previousLastSentSeq: number | undefined;
-    for (const member of page.members ?? []) {
-      const lastSentSeq = member.lastSentSeq;
-      const memberKey = `${member.domain}@${member.account}`;
-      if (
-        lastSentSeq < page.scannedThrough ||
-        members.has(memberKey) ||
-        (previousLastSentSeq !== undefined && lastSentSeq > previousLastSentSeq)
-      )
-        return false;
-      members.add(memberKey);
-      previousLastSentSeq = lastSentSeq;
-    }
-    return true;
+    return page.mode !== 'full' || fullProfileItems === 1;
   }
   if (schema === 'urn:somfp:v1:error') {
     const error = value as {
@@ -342,7 +320,8 @@ async function validateManifest(ajv: Ajv2020Instance): Promise<void> {
     'POST /s2s/v1/feed-heads',
     'GET /s2s/v1/state-feed',
     'GET /s2s/v1/group-meta',
-    'GET /s2s/v1/departed-member-profiles',
+    'GET /s2s/v1/profiles/:account',
+    'GET /s2s/v1/message-author-profile',
     'GET /s2s/v1/messages',
     'GET /s2s/v1/message-tombstones',
     'POST /s2s/v1/call',

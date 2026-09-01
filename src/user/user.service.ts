@@ -1,21 +1,18 @@
 import { Injectable, HttpStatus } from '@nestjs/common';
 import { and, count, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { account as accountTable, user } from '../database/schema.js';
+import {
+  account as accountTable,
+  profileVersion,
+  user,
+} from '../database/schema.js';
 import { isValidUserAccount, normalizeAccount } from '../common/account.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
-import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
-import { FederationService } from '../federation/federation.service.js';
-import { isThreadMutuallyAuthorized } from '../invite/relationship-authorization.js';
 
 @Injectable()
 export class UserService {
-  constructor(
-    private readonly database: DatabaseService,
-    private readonly clientStateFeed: ClientStateFeedService,
-    private readonly federation: FederationService,
-  ) {}
+  constructor(private readonly database: DatabaseService) {}
 
   // Sensitive columns are omitted at the query layer (never loaded → can't leak into responses),
   // so there are no per-site `delete` lines. hashPwd is omitted by default; the opt-in read below
@@ -59,82 +56,49 @@ export class UserService {
       .then(([row]) => row);
   }
 
-  /** Update the current user's avatar (inline User.avatar). */
-  async updateAvatar(userId: number, avatar: string) {
-    const result = await this.updateProfileState(userId, { avatar });
-    result.pending.forEach((p) => this.clientStateFeed.notifyFeedUpdated(p));
-    await this.federation.pushStateFeedDomains(result.statePeers);
-    return result.row;
-  }
-
-  /** Update the current user's display name / bio (inline User columns). */
-  async updateProfile(userId: number, data: { name?: string; bio?: string }) {
-    const update: Partial<typeof user.$inferInsert> = {};
-    if (data.name !== undefined) update.name = data.name;
-    if (data.bio !== undefined) update.bio = data.bio;
-    const result = await this.updateProfileState(userId, update);
-    result.pending.forEach((p) => this.clientStateFeed.notifyFeedUpdated(p));
-    await this.federation.pushStateFeedDomains(result.statePeers);
-    return result.row;
-  }
-
-  private async updateProfileState(
+  /** Create an immutable complete profile snapshot and advance only the local default pointer. */
+  async updateProfile(
     userId: number,
-    update: Partial<typeof user.$inferInsert>,
+    data: { name: string; bio: string; avatar?: string | null },
   ) {
     return this.database.db.transaction(async (tx) => {
+      const [current] = await tx
+        .select({
+          defaultProfileRev: user.defaultProfileRev,
+          avatar: user.avatar,
+        })
+        .from(user)
+        .where(eq(user.id, userId))
+        .for('update')
+        .limit(1);
+      if (!current) {
+        throw new BusinessException(
+          BusinessCode.NOT_FOUND,
+          'user not found',
+          HttpStatus.NOT_FOUND,
+        );
+      }
+      const nextRev = current.defaultProfileRev + 1;
+      const avatar = data.avatar === undefined ? current.avatar : data.avatar ?? '';
+      await tx.insert(profileVersion).values({
+        userId,
+        profileRev: nextRev,
+        displayName: data.name,
+        avatar,
+        bio: data.bio,
+      });
       const [row] = await tx
         .update(user)
         .set({
-          ...update,
-          profileRev: sql`${user.profileRev} + 1`,
+          name: data.name,
+          bio: data.bio,
+          avatar,
+          defaultProfileRev: nextRev,
           updatedAt: new Date(),
         })
         .where(eq(user.id, userId))
         .returning(publicUserColumns);
-      const candidates = await tx.execute<{
-        userId: number;
-        threadId: number | null;
-      }>(sql`
-        SELECT ${userId}::integer AS "userId", NULL::integer AS "threadId"
-        UNION ALL
-        SELECT DISTINCT peer."accountId" AS "userId", mine."threadId"
-        FROM "ThreadParticipant" mine
-        JOIN "ThreadParticipant" peer
-          ON peer."threadId" = mine."threadId"
-         AND peer."accountId" <> mine."accountId"
-        WHERE mine."accountId" = ${userId}
-      `);
-      const consumers = (
-        await Promise.all(
-          candidates.rows.map(async (candidate) => ({
-            ...candidate,
-            authorized:
-              candidate.threadId === null ||
-              ((await isThreadMutuallyAuthorized(
-                tx,
-                userId,
-                candidate.threadId,
-              )) &&
-                (await isThreadMutuallyAuthorized(
-                  tx,
-                  candidate.userId,
-                  candidate.threadId,
-                ))),
-          })),
-        )
-      ).filter((candidate) => candidate.authorized);
-      const pending = await this.clientStateFeed.recordProfileStateInTx(
-        tx,
-        userId,
-        [...new Set(consumers.map((x) => x.userId))],
-      );
-      const stateItems = await this.federation.writeProfileStateInTx(
-        tx,
-        userId,
-        pending,
-      );
-      return { row, pending, statePeers: [...stateItems.keys()] };
+      return row;
     });
   }
 
@@ -240,6 +204,13 @@ export class UserService {
         id: newUser.id,
         hashPwd: params.hashPwd ?? null,
       });
+      await tx.insert(profileVersion).values({
+        userId: newUser.id,
+        profileRev: 0,
+        displayName: params.name,
+        avatar: '',
+        bio: '',
+      });
       return {
         status: 0,
         data: { id: newUser.id, account: newUser.account },
@@ -266,7 +237,7 @@ const publicUserColumns = {
   createdAt: user.createdAt,
   updatedAt: user.updatedAt,
   availability: user.availability,
-  profileRev: user.profileRev,
+  defaultProfileRev: user.defaultProfileRev,
 };
 
 const accountColumns = {

@@ -56,15 +56,11 @@ describe('federated command handlers', () => {
     await new AcceptAddressedFriendRequestCommandHandler(
       dispatcher as never,
       execution as never,
-    ).execute(
-      command('USER_PAIR', { account: 'bob', domain: 'peer.test' }),
-    );
+    ).execute(command('USER_PAIR', { account: 'bob', domain: 'peer.test' }));
     await new RevokeAddressedFriendRequestCommandHandler(
       dispatcher as never,
       execution as never,
-    ).execute(
-      command('USER_PAIR', { account: 'bob', domain: 'peer.test' }),
-    );
+    ).execute(command('USER_PAIR', { account: 'bob', domain: 'peer.test' }));
 
     expect(execution.send).toHaveBeenCalledWith({
       actorUserId: 7,
@@ -105,15 +101,11 @@ describe('federated command handlers', () => {
     await new RevokeFederatedGroupJoinCommandHandler(
       dispatcher as never,
       execution as never,
-    ).execute(
-      command('GROUP', { account: '!group', domain: 'peer.test' }),
-    );
+    ).execute(command('GROUP', { account: '!group', domain: 'peer.test' }));
     await new AcceptAddressedGroupInvitationCommandHandler(
       dispatcher as never,
       execution as never,
-    ).execute(
-      command('GROUP', { account: '!group', domain: 'peer.test' }),
-    );
+    ).execute(command('GROUP', { account: '!group', domain: 'peer.test' }));
 
     expect(execution.request).toHaveBeenCalledWith({
       actorUserId: 7,

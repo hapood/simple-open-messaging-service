@@ -99,6 +99,7 @@ describe('FederationRelationshipCommandService', () => {
       readP2PRelationshipInTx: vi.fn().mockResolvedValue({
         firstIntent: {
           status: 'REQUESTED',
+          profileRev: 4,
           note: 'hello',
           requestedAt,
           expiresAt,
@@ -113,11 +114,7 @@ describe('FederationRelationshipCommandService', () => {
     const stateFeed = {
       writeManyInTx: vi.fn().mockResolvedValue(new Map([['peer.example', 3n]])),
     };
-    const profiles = {
-      writeUserProfileToPeerInTx: vi
-        .fn()
-        .mockResolvedValue(new Map([['peer.example', 4n]])),
-    };
+    const profiles = {};
     const service = new FederationRelationshipCommandService(
       relationshipIntents as never,
       {} as never,
@@ -158,20 +155,11 @@ describe('FederationRelationshipCommandService', () => {
           account: 'local-user',
           subjectAccount: 'remote-user',
           eventType: 'RELATIONSHIP_INTENT',
+          body: expect.objectContaining({ profileRev: 4 }),
         }),
       ]),
     );
-    expect(profiles.writeUserProfileToPeerInTx).toHaveBeenCalledWith(
-      tx,
-      1,
-      'peer.example',
-      12,
-      true,
-    );
-    expect(stateFeed.writeManyInTx.mock.invocationCallOrder[0]).toBeLessThan(
-      profiles.writeUserProfileToPeerInTx.mock.invocationCallOrder[0],
-    );
     expect(clientFeedUpdates).toEqual([{ userId: 1, feedId: 2 }]);
-    expect(result).toEqual(new Map([['peer.example', 4n]]));
+    expect(result).toEqual(new Map([['peer.example', 3n]]));
   });
 });

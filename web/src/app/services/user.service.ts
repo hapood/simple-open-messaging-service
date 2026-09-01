@@ -65,6 +65,7 @@ export interface ClientIntentUser {
   avatar: string;
   bio: string;
   domain: string;
+  profileRev?: number;
 }
 
 interface ClientFriendIntentBase {
@@ -232,6 +233,7 @@ export type ClientStateFeedItem =
         threadId: number;
         messageEndSeq: number;
         tombstoneEndSeq: number;
+        peerProfileMessageSeq?: number | null;
         preview: { seq: number; text: string; senderId: string | null };
       };
     }
@@ -259,6 +261,8 @@ export interface ClientGroupMetaFeedPage {
       | {
           role: 'OWNER' | 'ADMIN' | 'MEMBER';
           profileRev: number;
+          profileMessageSeq?: number | null;
+          profileResolved?: boolean;
           displayName: string;
           avatar: string | null;
         }
@@ -749,24 +753,38 @@ export class UserService {
     );
   }
 
-  /** Upload and bind the current user's avatar (multipart file → backend rewrites multiple sizes with
-   *  sharp). Call updateSessionProfile() afterwards to refresh the local copy. */
-  updateAvatar(file: File) {
-    const fd = new FormData();
-    fd.append('file', file);
-    return this.http.post<StandardResponse<{ avatar: string }>>(
-      `${apiPrefix()}/user/update-avatar`,
-      fd,
-    );
-  }
-
-  /** Update the current user's display name / bio. Call updateSessionProfile() afterwards to refresh the
-   *  local copy. */
-  updateProfile(params: { name?: string; bio?: string }) {
+  /** Create one complete profile revision. */
+  updateProfile(params: {
+    name: string;
+    bio: string;
+    avatarBase64?: string | null;
+  }) {
     return this.http.post<StandardResponse<User>>(
       `${apiPrefix()}/user/update-profile`,
       params,
     );
+  }
+
+  startProfileResolution(
+    selector:
+      | { account: string; domain: string; rev: number }
+      | { threadId: number; messageSeq: number },
+  ) {
+    return this.http.post<
+      StandardResponse<
+        | {
+            status: 'READY';
+            profile: {
+              account: string;
+              domain: string;
+              rev: number;
+              name: string;
+              avatarBase64: string | null;
+            };
+          }
+        | { status: 'PENDING'; requestId: string }
+      >
+    >(`${apiPrefix()}/user/profile-resolution`, selector);
   }
 
   /** Read compacted client-state projections in one fixed feed-id range. */

@@ -4,20 +4,21 @@ An implementation may claim `SOMFP v1 conformant` and publish `1` in discovery `
 
 ## Mandatory specification modules
 
-| Module                           | Dependencies                  | v1 requirement                             |
-| -------------------------------- | ----------------------------- | ------------------------------------------ |
-| Core Protocol                    | None                          | Mandatory                                  |
-| Transport and Security           | Core                          | Mandatory                                  |
-| Peer Recognition                 | Core, Transport               | Mandatory                                  |
-| State Feed                       | Core, Recognition             | Mandatory                                  |
-| Group Meta Feed                  | Core, Recognition, State Feed | Mandatory                                  |
-| Departed Member Profile Feed     | Core, Group Meta, Message     | Mandatory reverse reconstruction component |
-| Message Query                    | Core, Recognition             | Mandatory                                  |
-| Message Tombstone Query          | Core, Message                 | Mandatory                                  |
-| Message                          | Core                          | Mandatory, including every v1 content type |
-| Resources                        | Core, Message                 | Mandatory                                  |
-| Call Signaling                   | Core, Transport, Message      | Mandatory                                  |
-| Stable Error Registry            | Every operation               | Mandatory                                  |
+| Module                  | Dependencies                  | v1 requirement                             |
+| ----------------------- | ----------------------------- | ------------------------------------------ |
+| Core Protocol           | None                          | Mandatory                                  |
+| Transport and Security  | Core                          | Mandatory                                  |
+| Peer Recognition        | Core, Transport               | Mandatory                                  |
+| State Feed              | Core, Recognition             | Mandatory                                  |
+| Group Meta Feed         | Core, Recognition, State Feed | Mandatory                                  |
+| Authorized Profile      | Core, Group Meta, Message     | Mandatory account/revision profile lookup  |
+| Message Author Profile  | Core, Group Meta, Message     | Mandatory exact-message profile lookup     |
+| Message Query           | Core, Recognition             | Mandatory                                  |
+| Message Tombstone Query | Core, Message                 | Mandatory                                  |
+| Message                 | Core                          | Mandatory, including every v1 content type |
+| Resources               | Core, Message                 | Mandatory                                  |
+| Call Signaling          | Core, Transport, Message      | Mandatory                                  |
+| Stable Error Registry   | Every operation               | Mandatory                                  |
 
 JSON Schema, the HTTP manifest, and test vectors are non-normative validation artifacts, but a formal release must not ship with a known conflict between those artifacts and the normative text. Passing these artifacts does not by itself prove compliance with the timing, security, authorization, and durable-state requirements in the normative text.
 

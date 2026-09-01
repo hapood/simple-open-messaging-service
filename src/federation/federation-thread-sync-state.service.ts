@@ -388,13 +388,17 @@ export class FederationThreadSyncStateService {
         where: eq(federationThreadSyncState.threadId, threadId),
       });
     if (!state) {
-      throw new Error(`federated thread ${threadId} has no synchronization state`);
+      throw new Error(
+        `federated thread ${threadId} has no synchronization state`,
+      );
     }
     return state;
   }
 
   /** Reconstruct the process-local reverse cursor from immutable gap boundaries and durable STUBs. */
-  async resolveReverseWindow(threadId: number): Promise<FederationReverseWindow> {
+  async resolveReverseWindow(
+    threadId: number,
+  ): Promise<FederationReverseWindow> {
     const state = await this.require(threadId);
     if (state.historyBoundaryReached) {
       return {

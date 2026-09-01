@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { Loader2 } from 'lucide-react';
 import {
-  useGcAvatars,
   useGcForwardBundles,
   useInspectForwardBundles,
   usePendingAssets,
@@ -45,7 +44,7 @@ import { formatApiError } from '@/lib/format-error';
 import { useLogStream } from '@/hooks/use-log-stream';
 import { LogLine } from '@/routes/logs/log-line';
 
-type GcAction = 'gc' | 'reconcile' | 'avatars' | 'forwardBundles';
+type GcAction = 'gc' | 'reconcile' | 'forwardBundles';
 const PENDING_DELETION_PAGE_SIZE = 20;
 
 function formatBytes(bytes: number): string {
@@ -86,7 +85,6 @@ export function MediaPage() {
   const isSuper = useIsSuperAdmin();
   const gc = useTriggerMediaGc();
   const reconcile = useReconcileMedia();
-  const avatars = useGcAvatars();
   const inspectBundles = useInspectForwardBundles();
   const bundleGc = useGcForwardBundles();
   const pendingAssets = usePendingAssets(isSuper);
@@ -145,7 +143,6 @@ export function MediaPage() {
   const busy =
     gc.isPending ||
     reconcile.isPending ||
-    avatars.isPending ||
     inspectBundles.isPending ||
     bundleGc.isPending;
 
@@ -157,9 +154,6 @@ export function MediaPage() {
       } else if (a === 'reconcile') {
         const started = await reconcile.mutateAsync();
         setTaskId(started.id);
-      } else if (a === 'avatars') {
-        const r = await avatars.mutateAsync();
-        toast.success(t('media.avatarsDone', { files: r.sweptFiles }));
       } else {
         const inspected = await inspectBundles.mutateAsync();
         if (inspected.orphanBundles === 0) {
@@ -199,13 +193,6 @@ export function MediaPage() {
               onClick={() => setPending('gc')}
             >
               {t('media.gc')}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setPending('avatars')}
-            >
-              {t('media.gcAvatars')}
             </Button>
             <Button
               variant="outline"

@@ -363,7 +363,7 @@ export class ClientStateFeedService {
         name: true,
         bio: true,
         avatar: true,
-        profileRev: true,
+        defaultProfileRev: true,
         namespaceId: true,
       },
     });
@@ -379,7 +379,7 @@ export class ClientStateFeedService {
         subjectAccount: '',
         subjectDomain: 'local',
         body: {
-          profileRev: subject.profileRev,
+          profileRev: subject.defaultProfileRev,
           displayName: subject.name,
           bio: subject.bio,
           avatar: subject.avatar || null,
@@ -452,7 +452,7 @@ export class ClientStateFeedService {
       SELECT group_state.id AS "groupId", group_state.account, group_state.domain,
              group_state."namespaceId",
              group_state.name AS "displayName", group_state.description AS bio,
-             group_state.avatar, group_state."profileRev" AS "profileRev"
+             group_state.avatar, group_state."defaultProfileRev" AS "profileRev"
       FROM "MessageThread" thread
       JOIN "Group" group_state ON group_state.id = thread."groupId"
       WHERE thread.id = ${threadId} AND thread.type = 'GROUP'
@@ -467,7 +467,9 @@ export class ClientStateFeedService {
       role: string;
       displayName: string;
       avatar: string | null;
+      profileResolved: boolean;
       profileRev: number;
+      profileMessageSeq: number | null;
       namespaceId: number;
       isLocalAccount: boolean;
       isAuthorized: boolean;
@@ -475,8 +477,14 @@ export class ClientStateFeedService {
       SELECT member.id AS "userId", member.account, member.domain,
              member."namespaceId",
              COALESCE(membership.role, 'MEMBER') AS role,
-             member.name AS "displayName", NULLIF(member.avatar, '') AS avatar,
-             member."profileRev" AS "profileRev",
+             COALESCE(exact_profile."displayName", member.account) AS "displayName",
+             NULLIF(exact_profile.avatar, '') AS avatar,
+             exact_profile.id IS NOT NULL AS "profileResolved",
+             CASE WHEN membership."profileMessageSeq" IS NULL
+               THEN member."defaultProfileRev"
+               ELSE membership."profileRev"
+             END AS "profileRev",
+             membership."profileMessageSeq" AS "profileMessageSeq",
              EXISTS (SELECT 1 FROM "Account" local_account WHERE local_account.id = member.id)
                AS "isLocalAccount",
              EXISTS (
@@ -495,6 +503,17 @@ export class ClientStateFeedService {
              ) AS "isAuthorized"
       FROM "ThreadMember" membership
       JOIN "User" member ON member.id = membership."userId"
+      LEFT JOIN LATERAL (
+        SELECT version.id, version."displayName", version.avatar
+        FROM "ProfileVersion" version
+        WHERE version."userId" = member.id
+          AND version."profileRev" = CASE
+            WHEN membership."profileMessageSeq" IS NULL
+            THEN member."defaultProfileRev"
+            ELSE membership."profileRev"
+          END
+        LIMIT 1
+      ) exact_profile ON true
       WHERE membership."threadId" = ${threadId}
         AND membership."left" = false
       ORDER BY member.domain, member.account
@@ -506,8 +525,10 @@ export class ClientStateFeedService {
       body: {
         role: member.role,
         profileRev: member.profileRev,
+        profileMessageSeq: member.profileMessageSeq,
         displayName: member.displayName,
         avatar: member.avatar,
+        profileResolved: member.profileResolved,
       },
     }));
     const localConsumers = members.rows

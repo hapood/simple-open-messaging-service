@@ -1193,6 +1193,54 @@ describe('WebdbService', () => {
         group: { memberCount: 2, groupMetaFeedId: '2' },
       });
 
+      expect(
+        await webdb.recordGroupMemberMessageProfile(
+          9,
+          {
+            account: 'alice',
+            domain: 'home.example',
+            sourceDomain: 'local',
+            namespaceId: 12,
+          },
+          3,
+          20,
+        ),
+      ).toBe(true);
+      expect(
+        await webdb.recordGroupMemberMessageProfile(
+          9,
+          {
+            account: 'alice',
+            domain: 'home.example',
+            sourceDomain: 'local',
+            namespaceId: 12,
+          },
+          9,
+          19,
+        ),
+      ).toBe(false);
+      expect(
+        await webdb.storeGroupMemberResolvedProfile(
+          9,
+          {
+            account: 'alice',
+            domain: 'home.example',
+            sourceDomain: 'local',
+            namespaceId: 12,
+          },
+          { rev: 3, name: 'Alice in team', avatar: '/team.webp' },
+        ),
+      ).toBe(true);
+      expect(
+        await webdb.getGroupMember(9, 'alice', 'home.example', 'local', 0),
+      ).toMatchObject({
+        profileRev: 3,
+        profileMessageSeq: 20,
+        resolvedProfileRev: 3,
+        profileName: 'Alice in team',
+        profileAvatar: '/team.webp',
+      });
+
       await webdb.applyStateFeedPage([], 4, [
         {
           threadId: 9,

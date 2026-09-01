@@ -23,7 +23,6 @@ import { FederationMessageTombstoneFeedService } from './federation-message-tomb
 import { SettingsService } from '../settings/settings.service.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
 import { GroupMetaFeedService } from './group-meta-feed.service.js';
-import { DepartedMemberProfileQueryService } from './departed-member-profile-query.service.js';
 import { FEDERATION_API_PREFIX } from './federation-protocol.js';
 import { FEDERATION_THREAD_SEQUENCE_MAX } from './federation-thread-round.constants.js';
 import { FederationThreadRoundSchedulerService } from './federation-thread-round-scheduler.service.js';
@@ -66,7 +65,6 @@ export class S2sController {
     private readonly peerStateFeed: PeerStateFeedService,
     private readonly roundScheduler: FederationThreadRoundSchedulerService,
     private readonly groupMetaFeed: GroupMetaFeedService,
-    private readonly departedMemberProfiles: DepartedMemberProfileQueryService,
   ) {}
 
   @Get('group-meta')
@@ -119,59 +117,6 @@ export class S2sController {
       normalizedAccount,
       mode,
       after,
-      take,
-      through,
-    );
-  }
-
-  @Get('departed-member-profiles')
-  async getDepartedMemberProfiles(
-    @Req() req: FastifyRequest,
-    @Query('account') account?: string,
-    @Query('before') beforeParam?: string,
-    @Query('through') throughParam?: string,
-    @Query('take') takeParam?: string,
-  ) {
-    this.assertQueryShape(req, ['account', 'before', 'through', 'take']);
-    if (typeof account !== 'string')
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'departed-member profile query requires a group account',
-        HttpStatus.BAD_REQUEST,
-      );
-    const normalizedAccount = requireAccount(account, 'account');
-    if (!normalizedAccount.startsWith('!'))
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'departed-member profile query account must be a group account',
-        HttpStatus.BAD_REQUEST,
-      );
-    if (
-      beforeParam === undefined &&
-      (takeParam !== undefined || throughParam !== undefined)
-    )
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'take and through require before',
-        HttpStatus.BAD_REQUEST,
-      );
-    const before =
-      beforeParam === undefined
-        ? undefined
-        : this.parseThreadSequence(beforeParam, 'before', true);
-    const through =
-      throughParam === undefined
-        ? undefined
-        : this.parseThreadSequence(throughParam, 'through');
-    const take =
-      takeParam === undefined
-        ? undefined
-        : this.parsePositiveSafeIntegerQuery(takeParam, 'take');
-    return this.departedMemberProfiles.query(
-      this.signerDomain(req),
-      req.peer!.namespaceId,
-      normalizedAccount,
-      before,
       take,
       through,
     );
@@ -376,6 +321,76 @@ export class S2sController {
     );
   }
 
+  @Get('message-author-profile')
+  async getMessageAuthorProfile(
+    @Req() req: FastifyRequest,
+    @Query('account') account?: string,
+    @Query('peerAccount') peerAccount?: string,
+    @Query('messageSeq') messageSeqParam?: string,
+  ) {
+    this.assertQueryShape(req, ['account', 'peerAccount', 'messageSeq']);
+    if (messageSeqParam === undefined) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'messageSeq is required',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const selector = this.parseThreadQuery(account, peerAccount);
+    const messageSeq = this.parseThreadSequence(messageSeqParam, 'messageSeq');
+    if (messageSeq < 1) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'messageSeq must be positive',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const peerDomain = this.signerDomain(req);
+    const page = await this.messageFeed.query(
+      peerDomain,
+      req.peer!.namespaceId,
+      selector,
+      messageSeq - 1,
+      1,
+      messageSeq,
+      true,
+    );
+    const item = page.messages.find(
+      (candidate) => candidate.seq === messageSeq,
+    );
+    if (!item) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'message is not available to this peer',
+      );
+    }
+    const author =
+      'author' in item
+        ? item.author
+        : item.authorRef === 'THREAD_ACCOUNT'
+          ? { account: item.thread.account, domain: this.federation.ourDomain }
+          : { account: item.thread.peerAccount, domain: peerDomain };
+    const profile = await this.federation.getStoredUserProfile(
+      author.account,
+      author.domain,
+      req.peer!.namespaceId,
+      item.profileRev,
+    );
+    if (!profile) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'referenced profile revision is unavailable',
+      );
+    }
+    return {
+      account: profile.account,
+      domain: profile.domain,
+      profileRev: profile.profileRev,
+      displayName: profile.displayName,
+      avatar: profile.avatar,
+    };
+  }
+
   @Get('state-feed')
   async getStateFeed(
     @Req() req: FastifyRequest,
@@ -445,6 +460,32 @@ export class S2sController {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         `user ${account} not found`,
+      );
+    }
+    return profile;
+  }
+
+  @Get('profiles/:account')
+  async getAuthorizedProfile(@Req() req: FastifyRequest) {
+    const parsed = parseFederationResourceRequest(req, {
+      pathPrefix: '/s2s/v1/profiles/',
+      pathName: 'account',
+      query: [{ name: 'rev' }],
+    });
+    const account = requireAccount(parsed.pathValue, 'account');
+    const rev = requireSafeDecimal(parsed.query.rev, 'rev');
+    const profile = await this.resourceOperation(() =>
+      this.federation.getAuthorizedLocalProfile(
+        account,
+        rev,
+        this.signerDomain(req),
+        req.peer!.namespaceId,
+      ),
+    );
+    if (!profile) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        `profile ${account} revision ${rev} not found`,
       );
     }
     return profile;

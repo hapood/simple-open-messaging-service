@@ -229,6 +229,8 @@ describe('WebdbService native SQLite routing', () => {
       createdAt: 100,
       updatedAt: 100,
       creator: { account: 'alice', domain: 'local', namespaceId: 0 },
+      profileRev: 2,
+      localState: 'READY',
       isDeleted: false,
       content: 'hello',
       contentType: 'PURE_TEXT',

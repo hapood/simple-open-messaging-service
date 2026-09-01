@@ -13,6 +13,7 @@ export interface FriendRequestPeer {
   bio: string;
   domain: string;
   namespaceId: number;
+  profileRev?: number;
 }
 
 export interface RelationshipIntentFact {

@@ -579,8 +579,13 @@
       }
     },
     {
-      "name": "departed-member profile feed rejects invalid parameter shapes",
-      "schema": "urn:somfp:v1:http-parameters#/$defs/departedMemberProfileQuery",
+      "name": "authorized profile rejects omitted revision",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/authorizedProfileParameters",
+      "value": { "account": "alice" }
+    },
+    {
+      "name": "message author profile rejects invalid parameter shapes",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/messageAuthorProfileQuery",
       "values": [
         { "account": "alice", "after": "0" },
         { "account": "!group", "after": "0" },
@@ -588,12 +593,13 @@
         { "account": "!group", "take": "10" },
         { "account": "!group", "through": "10" },
         { "account": "!group", "after": "01" },
-        { "account": "!group", "after": "0", "unknown": "1" }
+        { "account": "!group", "after": "0", "unknown": "1" },
+        { "account": "!group", "seq": "1" }
       ]
     },
     {
-      "name": "departed-member profile page rejects invalid members",
-      "schema": "urn:somfp:v1:departed-member-profile-query",
+      "name": "message author profile rejects non-profile response shapes",
+      "schema": "urn:somfp:v1:message-author-profile",
       "values": [
         {
           "members": [
@@ -901,6 +907,7 @@
             "thread": { "account": "alice", "peerAccount": "bob" },
             "authorRef": "THREAD_ACCOUNT",
             "seq": 3,
+            "profileRev": 3,
             "originSeq": null,
             "contentType": "CALL",
             "content": "{\"mediaType\":\"AUDIO\",\"outcome\":\"completed\",\"startedAt\":1700000000000,\"endedAt\":1700000001000}",
@@ -923,6 +930,7 @@
             "thread": { "account": "alice", "peerAccount": "bob" },
             "authorRef": "THREAD_ACCOUNT",
             "seq": 1,
+            "profileRev": 3,
             "originSeq": null,
             "contentType": "PURE_TEXT",
             "content": "{\"text\":\"hello\"}",
@@ -946,6 +954,7 @@
             "authorRef": "THREAD_ACCOUNT",
             "author": { "account": "alice", "domain": "a.example" },
             "seq": 1,
+            "profileRev": 3,
             "originSeq": null,
             "contentType": "PURE_TEXT",
             "content": "{\"text\":\"hello\"}",
@@ -967,6 +976,7 @@
             "thread": { "account": "!team" },
             "authorRef": "THREAD_ACCOUNT",
             "seq": 1,
+            "profileRev": 3,
             "originSeq": null,
             "contentType": "PURE_TEXT",
             "content": "{\"text\":\"hello\"}",

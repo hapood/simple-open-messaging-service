@@ -7,6 +7,7 @@ import { serializeBody } from '../common/serialize.interceptor.js';
 import {
   groupMetaFeedTarget,
   groupMetaMemberFeed,
+  groupMetaProfileFeed,
   group,
 } from '../database/schema.js';
 import {
@@ -31,7 +32,11 @@ export type GroupMetaFeedItem = GroupMetaFeedItemBase &
   (
     | { operation: 'UPSERT'; body: Record<string, unknown> }
     | { operation: 'DEPART'; body: Record<string, unknown> }
-  );
+  ) | {
+    feedId: string;
+    operation: 'GROUP_PROFILE';
+    body: { profileRev: number };
+  };
 
 export interface GroupMetaFeedPage {
   account: string;
@@ -72,6 +77,7 @@ export class GroupMetaFeedService {
     targetPeerDomain: string,
     targetNamespaceId: number,
     groupId: number,
+    profileRev: number,
     members: readonly GroupMetaMemberWrite[],
   ): Promise<bigint> {
     await tx
@@ -194,6 +200,46 @@ export class GroupMetaFeedService {
           ),
         );
     }
+    const [currentProfile] = await tx
+      .select({ profileRev: groupMetaProfileFeed.profileRev })
+      .from(groupMetaProfileFeed)
+      .where(
+        and(
+          eq(groupMetaProfileFeed.targetPeerDomain, targetPeerDomain),
+          eq(groupMetaProfileFeed.targetNamespaceId, targetNamespaceId),
+          eq(groupMetaProfileFeed.groupId, groupId),
+        ),
+      )
+      .limit(1);
+    if (currentProfile?.profileRev !== profileRev) {
+      allocatedThrough += 1n;
+      await tx
+        .insert(groupMetaProfileFeed)
+        .values({
+          targetPeerDomain,
+          targetNamespaceId,
+          groupId,
+          feedId: allocatedThrough,
+          profileRev,
+        })
+        .onConflictDoUpdate({
+          target: [
+            groupMetaProfileFeed.targetNamespaceId,
+            groupMetaProfileFeed.groupId,
+          ],
+          set: { feedId: allocatedThrough, profileRev, updatedAt: new Date() },
+        });
+      await tx
+        .update(groupMetaFeedTarget)
+        .set({ allocatedThrough, updatedAt: new Date() })
+        .where(
+          and(
+            eq(groupMetaFeedTarget.targetPeerDomain, targetPeerDomain),
+            eq(groupMetaFeedTarget.targetNamespaceId, targetNamespaceId),
+            eq(groupMetaFeedTarget.groupId, groupId),
+          ),
+        );
+    }
     return allocatedThrough;
   }
 
@@ -292,7 +338,7 @@ export class GroupMetaFeedService {
             )`,
           )
         : undefined;
-    const result = await this.database.db
+    const memberRows = await this.database.db
       .select()
       .from(groupMetaMemberFeed)
       .where(
@@ -305,32 +351,46 @@ export class GroupMetaFeedService {
           modeFilter,
         ),
       )
-      .orderBy(asc(groupMetaMemberFeed.feedId))
-      .limit(limit);
-    const hasMore = result.length > take;
-    const pageRows = hasMore ? result.slice(0, take) : result;
-    const scannedThrough = hasMore ? BigInt(pageRows.at(-1)!.feedId) : scanEnd;
-    return {
-      account,
-      mode,
-      items: pageRows.map((row): GroupMetaFeedItem => {
+      .orderBy(asc(groupMetaMemberFeed.feedId));
+    const profileRows = await this.database.db
+      .select({
+        feedId: groupMetaProfileFeed.feedId,
+        profileRev: groupMetaProfileFeed.profileRev,
+      })
+      .from(groupMetaProfileFeed)
+      .where(
+        and(
+          eq(groupMetaProfileFeed.targetPeerDomain, peerDomain),
+          eq(groupMetaProfileFeed.targetNamespaceId, namespaceId),
+          eq(groupMetaProfileFeed.groupId, source.groupId),
+          sql`${groupMetaProfileFeed.feedId} > ${after}`,
+          lte(groupMetaProfileFeed.feedId, scanEnd),
+        ),
+      );
+    const result: GroupMetaFeedItem[] = [
+      ...memberRows.map((row): GroupMetaFeedItem => {
         const item = {
           feedId: row.feedId.toString(),
           account: row.memberAccount,
           domain: row.memberDomain,
         };
         return row.operation === 'UPSERT'
-          ? {
-              ...item,
-              operation: 'UPSERT',
-              body: row.body as Record<string, unknown>,
-            }
-          : {
-              ...item,
-              operation: 'DEPART',
-              body: row.body as Record<string, unknown>,
-            };
+          ? { ...item, operation: 'UPSERT', body: row.body as Record<string, unknown> }
+          : { ...item, operation: 'DEPART', body: row.body as Record<string, unknown> };
       }),
+      ...profileRows.map((row): GroupMetaFeedItem => ({
+        feedId: row.feedId.toString(),
+        operation: 'GROUP_PROFILE',
+        body: { profileRev: row.profileRev },
+      })),
+    ].sort((a, b) => (BigInt(a.feedId) < BigInt(b.feedId) ? -1 : 1));
+    const hasMore = result.length > take;
+    const pageRows = hasMore ? result.slice(0, take) : result;
+    const scannedThrough = hasMore ? BigInt(pageRows.at(-1)!.feedId) : scanEnd;
+    return {
+      account,
+      mode,
+      items: pageRows,
       scannedThrough: scannedThrough.toString(),
       groupMetaFeedEndId: end.toString(),
       hasMore,

@@ -132,6 +132,14 @@ export interface MemberRecord {
   namespaceId: number;
   role: 'OWNER' | 'ADMIN' | 'MEMBER';
   left: boolean;
+  /** Profile reference selected by this group's metadata/message history. */
+  profileRev?: number;
+  /** Message that most recently selected profileRev inside this group. */
+  profileMessageSeq?: number | null;
+  /** Exact resolved display data remains group-scoped instead of mutating the source User row. */
+  resolvedProfileRev?: number;
+  profileName?: string;
+  profileAvatar?: string;
 }
 
 export interface ResolvedMemberRecord extends MemberRecord {
@@ -271,7 +279,7 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-export const CACHE_SCHEMA_VERSION = 11;
+export const CACHE_SCHEMA_VERSION = 12;
 export const MESSAGE_CACHE_SCHEMA_VERSION = 3;
 const IDB_FORMAT_VERSION = 1;
 
@@ -1640,13 +1648,18 @@ export class WebdbService implements OnDestroy {
         const body = item.body as {
           role: 'OWNER' | 'ADMIN' | 'MEMBER';
           profileRev: number;
+          profileMessageSeq?: number | null;
+          profileResolved?: boolean;
           displayName: string;
           avatar: string | null;
         };
         const existingUser = await tx
           .objectStore('users')
           .get([item.account, item.domain, sourceDomain, update.namespaceId]);
-        if (!existingUser || body.profileRev >= existingUser.profileRev)
+        if (
+          body.profileResolved !== false &&
+          (!existingUser || body.profileRev >= existingUser.profileRev)
+        )
           await tx.objectStore('users').put({
             ...(existingUser?.id === undefined ? {} : { id: existingUser.id }),
             account: item.account,
@@ -1669,6 +1682,20 @@ export class WebdbService implements OnDestroy {
           namespaceId: update.namespaceId,
           role: body.role,
           left: false,
+          profileRev: body.profileRev,
+          profileMessageSeq: body.profileMessageSeq ?? null,
+          resolvedProfileRev:
+            body.profileResolved !== false
+              ? body.profileRev
+              : previous?.resolvedProfileRev,
+          profileName:
+            body.profileResolved !== false
+              ? body.displayName
+              : previous?.profileName,
+          profileAvatar:
+            body.profileResolved !== false
+              ? (body.avatar ?? '')
+              : previous?.profileAvatar,
         });
       }
       const currentMembers = await members
@@ -1716,20 +1743,19 @@ export class WebdbService implements OnDestroy {
             op.domain,
             namespaceId,
           ]);
-          if (!previous || body.profileRev >= previous.profileRev)
-            await groups.put({
-              id: previous?.id,
-              account: op.account,
-              domain: op.domain,
-              namespaceId,
-              name: body.displayName,
-              avatar: body.avatar ?? '',
-              description: body.bio,
-              profileRev: body.profileRev,
-              dissolvedAt: previous?.dissolvedAt ?? null,
-              createdAt: previous?.createdAt ?? now,
-              updatedAt: now,
-            });
+          await groups.put({
+            id: previous?.id,
+            account: op.account,
+            domain: op.domain,
+            namespaceId,
+            name: op.account,
+            avatar: '',
+            description: previous?.description ?? '',
+            profileRev: body.profileRev,
+            dissolvedAt: previous?.dissolvedAt ?? null,
+            createdAt: previous?.createdAt ?? now,
+            updatedAt: now,
+          });
         } else {
           const sourceDomain =
             'sourceDomain' in body && typeof body.sourceDomain === 'string'
@@ -1743,29 +1769,27 @@ export class WebdbService implements OnDestroy {
             sourceDomain,
             namespaceId,
           ]);
-          if (!previous || body.profileRev >= previous.profileRev)
-            await users.put({
-              id: previous?.id,
-              account: op.account,
-              domain: op.domain,
-              sourceDomain,
-              namespaceId,
-              availability: 'AVAILABLE',
-              createdAt: previous?.createdAt ?? now,
-              updatedAt: now,
-              name: body.displayName,
-              avatar: body.avatar ?? '',
-              bio: body.bio,
-              profileRev: body.profileRev,
-            });
+          await users.put({
+            id: previous?.id,
+            account: op.account,
+            domain: op.domain,
+            sourceDomain,
+            namespaceId,
+            availability: 'AVAILABLE',
+            createdAt: previous?.createdAt ?? now,
+            updatedAt: now,
+            name: body.displayName,
+            avatar: body.avatar ?? '',
+            bio: body.bio,
+            profileRev: body.profileRev,
+          });
         }
         const friendRequests = tx.objectStore('friendRequests');
         for (const request of await friendRequests.getAll()) {
           if (request.kind === 'GROUP') {
             if (
               request.group?.account !== op.account ||
-              request.group.domain !== op.domain ||
-              body.profileRev < request.group.profileRev
+              request.group.domain !== op.domain
             )
               continue;
             await friendRequests.put({
@@ -1785,9 +1809,9 @@ export class WebdbService implements OnDestroy {
         for (const thread of await threads.getAll()) {
           if (
             thread.type === 'P2P' &&
+            thread.peerProfileMessageSeq == null &&
             thread.peerUser.account === op.account &&
-            (thread.peerUser.domain ?? '') === op.domain &&
-            body.profileRev >= (thread.peerUser.profileRev ?? 0)
+            (thread.peerUser.domain ?? '') === op.domain
           )
             await threads.put({
               ...thread,
@@ -1802,16 +1826,14 @@ export class WebdbService implements OnDestroy {
           else if (
             thread.type === 'GROUP' &&
             thread.group.account === op.account &&
-            thread.group.domain === op.domain &&
-            body.profileRev >= thread.group.profileRev
+            thread.group.domain === op.domain
           )
             await threads.put({
               ...thread,
               group: {
                 ...thread.group,
-                name: body.displayName,
-                description: body.bio,
-                avatar: body.avatar ?? '',
+                name: thread.group.account,
+                avatar: '',
                 profileRev: body.profileRev,
               },
             });
@@ -1868,6 +1890,7 @@ export class WebdbService implements OnDestroy {
             ...thread,
             lastMessageSeq: op.body.messageEndSeq,
             tombstoneEndSeq: op.body.tombstoneEndSeq,
+            peerProfileMessageSeq: op.body.peerProfileMessageSeq,
             lastMessagePreviewSeq: op.body.preview.seq,
             lastMessagePreview: op.body.preview.text,
             lastMessageSenderId: op.body.preview.senderId,
@@ -2087,6 +2110,132 @@ export class WebdbService implements OnDestroy {
         namespaceId,
       ]);
       return user ? { ...member, user } : undefined;
+    });
+  }
+
+  async recordGroupMemberMessageProfile(
+    threadId: number,
+    identity: {
+      account: string;
+      domain: string;
+      sourceDomain: string;
+      namespaceId: number;
+    },
+    profileRev: number,
+    messageSeq: number,
+  ): Promise<boolean> {
+    return this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId != null)
+        return tauriInvoke<boolean>(
+          'native_db_record_group_member_profile_ref',
+          {
+            userId: Number(this.currentUserId),
+            threadId,
+            ...identity,
+            profileRev,
+            messageSeq,
+          },
+        );
+      const db = await this.db();
+      let key: [number, string, string, string, number] = [
+        threadId,
+        identity.account,
+        identity.domain,
+        identity.sourceDomain,
+        identity.namespaceId,
+      ];
+      const tx = db.transaction('members', 'readwrite');
+      let previous = await tx.store.get(key);
+      if (!previous) {
+        previous = (await tx.store.index('thread').getAll(threadId)).find(
+          (member) =>
+            member.account === identity.account &&
+            member.domain === identity.domain,
+        );
+        if (previous)
+          key = [
+            previous.threadId,
+            previous.account,
+            previous.domain,
+            previous.sourceDomain,
+            previous.namespaceId,
+          ];
+      }
+      if (
+        !previous ||
+        previous.left ||
+        (previous.profileMessageSeq ?? 0) >= messageSeq
+      ) {
+        await tx.done;
+        return false;
+      }
+      await tx.store.put({
+        ...previous,
+        profileRev,
+        profileMessageSeq: messageSeq,
+      });
+      await tx.done;
+      return true;
+    });
+  }
+
+  async storeGroupMemberResolvedProfile(
+    threadId: number,
+    identity: {
+      account: string;
+      domain: string;
+      sourceDomain: string;
+      namespaceId: number;
+    },
+    profile: { rev: number; name: string; avatar: string },
+  ): Promise<boolean> {
+    return this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId != null)
+        return tauriInvoke<boolean>('native_db_store_group_member_profile', {
+          userId: Number(this.currentUserId),
+          threadId,
+          ...identity,
+          profileRev: profile.rev,
+          name: profile.name,
+          avatar: profile.avatar,
+        });
+      const db = await this.db();
+      let key: [number, string, string, string, number] = [
+        threadId,
+        identity.account,
+        identity.domain,
+        identity.sourceDomain,
+        identity.namespaceId,
+      ];
+      const tx = db.transaction('members', 'readwrite');
+      let previous = await tx.store.get(key);
+      if (!previous) {
+        previous = (await tx.store.index('thread').getAll(threadId)).find(
+          (member) =>
+            member.account === identity.account &&
+            member.domain === identity.domain,
+        );
+        if (previous)
+          key = [
+            previous.threadId,
+            previous.account,
+            previous.domain,
+            previous.sourceDomain,
+            previous.namespaceId,
+          ];
+      }
+      if (!previous || previous.left || previous.profileRev !== profile.rev) {
+        await tx.done;
+        return false;
+      }
+      await tx.store.put({
+        ...previous,
+        resolvedProfileRev: profile.rev,
+        profileName: profile.name,
+        profileAvatar: profile.avatar,
+      });
+      await tx.done;
+      return true;
     });
   }
 

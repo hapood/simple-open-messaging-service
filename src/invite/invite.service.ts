@@ -196,7 +196,7 @@ export class InviteService {
         name: group.name,
         avatar: group.avatar,
         description: group.description,
-        profileRev: group.profileRev,
+        profileRev: group.defaultProfileRev,
       })
       .from(messageThread)
       .innerJoin(group, eq(group.id, messageThread.groupId))
@@ -612,6 +612,7 @@ export class InviteService {
       avatar: value.avatar,
       bio: value.bio,
       domain: value.domain,
+      profileRev: value.defaultProfileRev,
     };
   }
 
@@ -1497,6 +1498,7 @@ export class InviteService {
       localUserId: number;
       peerUserId: number;
       status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
+      profileRev: number;
       note: string;
       requestedAt: Date | null;
       expiresAt: Date | null;
@@ -1524,6 +1526,7 @@ export class InviteService {
         subjectUserId: params.localUserId,
         threadId: before.pair.threadId,
         status: params.status,
+        profileRev: params.profileRev,
         note: params.note,
         requestedAt: params.status === 'REVOKED' ? null : params.requestedAt,
         expiresAt: params.status === 'REQUESTED' ? params.expiresAt : null,

@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  gcAvatars,
   gcForwardBundles,
   getMediaStats,
   inspectForwardBundles,
@@ -162,11 +161,6 @@ export function useMediaTaskProgress(taskId: string | null) {
   }, [taskId]);
 
   return { task, connected };
-}
-
-export function useGcAvatars() {
-  const invalidate = useInvalidateMedia();
-  return useMutation({ mutationFn: gcAvatars, onSuccess: invalidate });
 }
 
 export function useInspectForwardBundles() {

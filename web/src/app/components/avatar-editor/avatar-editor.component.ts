@@ -31,8 +31,8 @@ import {
  * The picked file is decoded with EXIF applied (so the preview matches the
  * backend's sharp .rotate() output), shown in a fixed 1:1 frame the user pans
  * (drag) and zooms (slider / wheel / pinch). On "Done" the visible square is
- * drawn from the source bitmap to a PNG and returned to the opener, which
- * uploads it through the existing update-avatar endpoint. The backend still
+ * drawn from the source bitmap to a PNG and returned to the profile form. The
+ * form submits its bytes as Base64 together with name and bio. The backend still
  * re-crops to square + emits its WebP sizes — a square input makes that a no-op.
  *
  * Zoneless notes: pan runs on imperative pointer listeners that mutate plain

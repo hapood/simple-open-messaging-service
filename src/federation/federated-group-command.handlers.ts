@@ -47,7 +47,9 @@ export class RequestFederatedGroupJoinCommandHandler extends FederatedGroupComma
     super(dispatcher, execution);
   }
   execute(command: DomainCommand): Promise<void> {
-    return this.execution.request(readRequestFederatedGroupJoinCommand(command));
+    return this.execution.request(
+      readRequestFederatedGroupJoinCommand(command),
+    );
   }
 }
 

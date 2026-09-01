@@ -5,23 +5,23 @@
   "$defs": {
     "upsertBody": {
       "type": "object",
-      "required": ["role", "profileRev", "displayName", "avatar"],
+      "required": ["role"],
       "properties": {
-        "role": { "enum": ["OWNER", "ADMIN", "MEMBER"] },
+        "role": { "enum": ["OWNER", "ADMIN", "MEMBER"] }
+      },
+      "additionalProperties": false
+    },
+    "profileBody": {
+      "type": "object",
+      "required": ["profileRev"],
+      "properties": {
         "profileRev": {
           "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
-        },
-        "displayName": { "type": "string", "minLength": 1, "maxLength": 30 },
-        "avatar": {
-          "oneOf": [
-            { "$ref": "urn:somfp:v1:common#/$defs/inlineProfileAvatar" },
-            { "type": "null" }
-          ]
         }
       },
       "additionalProperties": false
     },
-    "itemBase": {
+    "memberItemBase": {
       "type": "object",
       "required": ["feedId", "account", "domain", "operation", "body"],
       "properties": {
@@ -37,7 +37,7 @@
     "item": {
       "oneOf": [
         {
-          "$ref": "#/$defs/itemBase",
+          "$ref": "#/$defs/memberItemBase",
           "properties": {
             "operation": { "const": "UPSERT" },
             "body": { "$ref": "#/$defs/upsertBody" }
@@ -45,12 +45,24 @@
           "unevaluatedProperties": false
         },
         {
-          "$ref": "#/$defs/itemBase",
+          "$ref": "#/$defs/memberItemBase",
           "properties": {
             "operation": { "const": "DEPART" },
             "body": { "$ref": "#/$defs/upsertBody" }
           },
           "unevaluatedProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["feedId", "operation", "body"],
+          "properties": {
+            "feedId": {
+              "$ref": "urn:somfp:v1:common#/$defs/positiveDecimalString"
+            },
+            "operation": { "const": "GROUP_PROFILE" },
+            "body": { "$ref": "#/$defs/profileBody" }
+          },
+          "additionalProperties": false
         }
       ]
     }

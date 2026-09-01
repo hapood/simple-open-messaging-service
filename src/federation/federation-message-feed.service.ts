@@ -63,6 +63,7 @@ export type FederationMessageFeedAsset = FederationByteDescriptor;
 interface FederationMessageFeedMessageBase
   extends FederatedMessagePayload<string> {
   seq: number;
+  profileRev: number;
   originSeq: number | null;
   originCreatedAt: number | null;
   createdAt: number;
@@ -185,6 +186,7 @@ export class FederationMessageFeedService {
               messageId: message.id,
               threadId: message.threadId,
               seq: message.seq,
+              profileRev: message.profileRev,
               originSeq: message.originSeq,
               originServerTime: message.originServerTime,
               contentType: message.contentType,
@@ -259,6 +261,7 @@ export class FederationMessageFeedService {
       messageId: bigint;
       threadId: number;
       seq: number;
+      profileRev: number;
       originSeq: number | null;
       originServerTime: Date | null;
       contentType: ContentType;
@@ -415,6 +418,7 @@ export class FederationMessageFeedService {
           : groupOriginById.get(row.groupId!) === peerDomain);
       const envelope = {
         seq: row.seq,
+        profileRev: row.profileRev,
         originSeq: isProcessingReceipt ? row.originSeq : null,
         originCreatedAt: isProcessingReceipt
           ? (row.originServerTime?.getTime() ?? null)

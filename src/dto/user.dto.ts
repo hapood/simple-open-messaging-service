@@ -128,28 +128,35 @@ export class PeerTrustStatusDto {
 }
 
 /**
- * Update the current user's profile (nickname/bio). All fields optional; send only what changes.
- * account (account) cannot be changed here — identity changes go through a separate flow.
+ * Create one complete profile revision. The account identity is immutable.
  */
 export class UpdateProfileDto {
   @ApiProperty({
-    required: false,
+    required: true,
     example: 'Alice',
     description: 'Display name (1-30 chars; unicode/emoji allowed)',
   })
-  @IsOptional()
   @IsDisplayName()
-  name?: string;
+  name!: string;
 
   @ApiProperty({
-    required: false,
+    required: true,
     example: 'Hey there!',
     description: 'Bio (≤120 chars)',
   })
-  @IsOptional()
   @IsString()
   @MaxLength(120, { message: 'bio must be at most 120 chars' })
-  bio?: string;
+  bio!: string;
+
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description:
+      'Canonical base64 image bytes. Omit to keep the previous avatar; null removes it.',
+  })
+  @IsOptional()
+  @IsString()
+  avatarBase64?: string | null;
 }
 
 export class UserAddressDto {

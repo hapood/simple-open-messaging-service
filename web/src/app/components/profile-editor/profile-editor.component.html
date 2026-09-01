@@ -47,11 +47,11 @@
             class="avatar-edit"
             type="button"
             (click)="fileInput.click()"
-            [disabled]="uploading()"
+            [disabled]="saving()"
             [attr.aria-label]="'profile.changeAvatarAria' | transloco"
           >
             <span class="avatar-hint">
-              @if (uploading()) {
+              @if (saving()) {
                 <span class="spin"></span>
               } @else {
                 {{ 'group.changeAvatarHint' | transloco }}

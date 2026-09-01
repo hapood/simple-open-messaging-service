@@ -4,6 +4,7 @@ import {
   HttpStatus,
   Inject,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { normalizeAccount, isValidAccount } from '../common/account.js';
@@ -103,6 +104,7 @@ import { FederationLocalSystemMessagePublisher } from './federation-local-system
 import { FederationStatePullService } from './federation-state-pull.service.js';
 import { FederationPeerResourceService } from './federation-peer-resource.service.js';
 import { FederationInboundMessageCommitService } from './federation-inbound-message-commit.service.js';
+import { ProfileResolutionCoordinatorService } from './profile-resolution-coordinator.service.js';
 import { FederationOutboundMessageSignalService } from './federation-outbound-message-signal.service.js';
 import { FederationThreadQueryDenialService } from './federation-thread-query-denial.service.js';
 
@@ -186,6 +188,8 @@ export class FederationService {
     private readonly relationshipCommands: FederationRelationshipCommandService,
     private readonly namespaces: FederationNamespaceService,
     private readonly stateFeedConsumer: FederationStateFeedConsumerService,
+    @Optional()
+    private readonly profileResolutions?: ProfileResolutionCoordinatorService,
   ) {}
 
   /** The wire address of a LOCAL user: { account, domain } (domain = our real config.domain). */
@@ -257,19 +261,6 @@ export class FederationService {
     return this.users.findLocalUserIdByAddress(address);
   }
 
-  /** Transactional PROFILE writer used by profile mutations. The caller sends wake-ups only after commit. */
-  async writeProfileStateInTx(
-    tx: DatabaseTransaction,
-    userId: number,
-    clientFeedUpdates?: PendingClientStateFeedUpdate[],
-  ): Promise<Map<string, bigint>> {
-    return this.profileStatePublisher.writeProfileStateInTx(
-      tx,
-      userId,
-      clientFeedUpdates,
-    );
-  }
-
   /** Remove origin-owned group disclosure after the peer's last active member disappears. */
   private async cleanupGroupProjectionInTx(
     tx: DatabaseTransaction,
@@ -291,9 +282,7 @@ export class FederationService {
     );
   }
 
-  /** Accept an incoming Address-based request. This is the first point where this server consents to
-   * the relationship, so the verified PROFILE projection is promoted into User and the existing
-   * id-based friendship state machine can take over. */
+  /** Accept an incoming Address-based request and promote it into the id-based friendship state machine. */
   async acceptAddressedFriendRequest(
     localUserId: number,
     remote: { account: string; domain: string },
@@ -348,6 +337,7 @@ export class FederationService {
           threadId: shell.threadId,
           author: 'GROUP',
           status: 'REQUESTED',
+          profileRev: request.profileRevision ?? 0,
           note: request.note,
           requestedAt: request.requestedAt,
           expiresAt: request.expiresAt,
@@ -396,6 +386,7 @@ export class FederationService {
         subjectUserId: localUserId,
         threadId: null,
         status: 'REQUESTED',
+        profileRev: request.profileRevision ?? 0,
         note: request.note,
         requestedAt: request.requestedAt,
         expiresAt: request.expiresAt,
@@ -563,7 +554,7 @@ export class FederationService {
           name: true,
           avatar: true,
           description: true,
-          profileRev: true,
+          defaultProfileRev: true,
           namespaceId: true,
         },
       });
@@ -620,7 +611,7 @@ export class FederationService {
             name: groupState.name,
             avatar: groupState.avatar,
             description: groupState.description,
-            profileRev: groupState.profileRev,
+            profileRev: groupState.defaultProfileRev,
           },
         },
       });
@@ -702,6 +693,20 @@ export class FederationService {
         },
       });
       if (!local) throw new Error('local friend requester disappeared');
+      const remoteUserId = await this.ensureForeignUserInTransaction(
+        tx,
+        request.remoteAccount,
+        request.remoteDomain,
+        request.namespaceId,
+      );
+      const authored = (
+        await this.relationshipIntents.readP2PRelationshipInTx(
+          tx,
+          localUserId,
+          remoteUserId,
+        )
+      ).firstIntent;
+      if (!authored) throw new Error('addressed friend intent disappeared');
       const clientFeedId = await this.clientStateFeed.writeInTx(tx, {
         userId: localUserId,
         namespaceId: request.namespaceId,
@@ -739,6 +744,7 @@ export class FederationService {
           eventType: 'RELATIONSHIP_INTENT',
           body: {
             status: 'REVOKED',
+            profileRev: authored.profileRev,
             note: '',
             requestedAt: null,
             expiresAt: null,
@@ -928,8 +934,9 @@ export class FederationService {
         subjectDomain: string;
         subjectNamespaceId: number;
         threadId: number | null;
+        profileRev: number;
       }>(sql`
-        SELECT intent."pairId", intent."authorSide", pair.kind, pair."threadId",
+        SELECT intent."pairId", intent."authorSide", intent."profileRev", pair.kind, pair."threadId",
           CASE WHEN intent."authorSide" = 'A' THEN pair."endpointAAccount"
             ELSE pair."endpointBAccount" END AS "authorAccount",
           CASE WHEN intent."authorSide" = 'A' THEN pair."endpointADomain"
@@ -1079,6 +1086,7 @@ export class FederationService {
             eventType: 'RELATIONSHIP_INTENT',
             body: {
               status: 'REVOKED',
+              profileRev: request.profileRev,
               note: '',
               requestedAt: null,
               expiresAt: null,
@@ -1095,7 +1103,7 @@ export class FederationService {
     return result.count;
   }
 
-  /** Transactional authoritative GROUP_META + group PROFILE snapshot writer. */
+  /** Transactional authoritative group-meta snapshot writer. */
   async writeGroupStateInTx(
     tx: DatabaseTransaction,
     threadId: number,
@@ -1111,6 +1119,34 @@ export class FederationService {
   /** Public profile of a local user (GET /s2s/v1/users/:account). Null if not local / not found. */
   async getLocalUserProfile(address: S2SAddress): Promise<S2SProfile | null> {
     return this.profiles.getLocalUserProfile(address);
+  }
+
+  async getAuthorizedLocalProfile(
+    account: string,
+    rev: number,
+    peerDomain: string,
+    namespaceId: number,
+  ): Promise<S2SProfile | null> {
+    return this.profiles.getAuthorizedLocalProfile(
+      account,
+      rev,
+      peerDomain,
+      namespaceId,
+    );
+  }
+
+  async getStoredUserProfile(
+    account: string,
+    domain: string,
+    namespaceId: number,
+    rev: number,
+  ): Promise<S2SProfile | null> {
+    return this.profiles.getStoredUserProfile(
+      account,
+      domain,
+      namespaceId,
+      rev,
+    );
   }
 
   /** Find or create a foreign User stub for account@<peer-domain>. Stubs never authenticate. */
@@ -1420,10 +1456,6 @@ export class FederationService {
     return this.statePull.pullStateFromPeer(domain, requiredRevision);
   }
 
-  /** Materialize a stable address-derived identity shell. PROFILE is ordered after the confirming
-   * ACCEPTED, so the initial row intentionally contains placeholders and is filled by a later
-   * verified PROFILE item in the same or a subsequent drain. */
-
   /** Ensure an incoming federated group request has a structurally complete retained conversation.
    * RelationshipIntent remains the sole authorization source, and no client state entry is published
    * until the user accepts the request. */
@@ -1623,6 +1655,20 @@ export class FederationService {
             effect.threadId,
             effect.message!.seq,
           ).catch(() => undefined);
+        }
+      }
+      if (this.profileResolutions && !effect.message!.isDeleted) {
+        for (const userId of effect.recipients) {
+          void this.profileResolutions
+            .start(userId, {
+              threadId: effect.threadId,
+              messageSeq: effect.message!.seq,
+            })
+            .catch((error: unknown) =>
+              this.logger.warn(
+                `message profile resolution failed for ${effect.threadId}:${effect.message!.seq}: ${(error as Error).message}`,
+              ),
+            );
         }
       }
       if (

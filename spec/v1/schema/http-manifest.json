@@ -61,13 +61,23 @@
       "responseEnvelope": true
     },
     {
-      "id": "departedMemberProfileQuery",
+      "id": "authorizedProfile",
       "method": "GET",
-      "path": "/s2s/v1/departed-member-profiles",
+      "path": "/s2s/v1/profiles/:account",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
-      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/departedMemberProfileQuery",
-      "responseSchema": "urn:somfp:v1:departed-member-profile-query",
+      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/authorizedProfileParameters",
+      "responseSchema": "urn:somfp:v1:authorized-profile",
+      "responseEnvelope": true
+    },
+    {
+      "id": "messageAuthorProfileQuery",
+      "method": "GET",
+      "path": "/s2s/v1/message-author-profile",
+      "authentication": "recognized-http-message-signature",
+      "successStatus": [200],
+      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/messageAuthorProfileQuery",
+      "responseSchema": "urn:somfp:v1:message-author-profile",
       "responseEnvelope": true
     },
     {

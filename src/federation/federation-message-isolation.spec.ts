@@ -18,6 +18,7 @@ const item = (sequence: string): FederationMessageFeedMessage => ({
   },
   authorRef: 'THREAD_PEER_ACCOUNT',
   seq: Number(sequence),
+  profileRev: 3,
   originSeq: Number(sequence),
   contentType: 'PURE_TEXT',
   content: JSON.stringify({ text: `message ${sequence}` }),
@@ -79,6 +80,7 @@ describe('federation message context isolation', () => {
         },
       },
       insert: vi.fn().mockReturnValue({ values: insertedValues }),
+      execute: vi.fn().mockResolvedValue({ rowCount: 0 }),
     };
     Object.assign(service, {
       config: { domain: 'local.example' },

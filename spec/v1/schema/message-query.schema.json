@@ -19,6 +19,7 @@
       "required": [
         "thread",
         "seq",
+        "profileRev",
         "originSeq",
         "originCreatedAt",
         "contentType",
@@ -36,6 +37,9 @@
         },
         "seq": {
           "$ref": "urn:somfp:v1:common#/$defs/positiveThreadSequence"
+        },
+        "profileRev": {
+          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
         },
         "originSeq": {
           "oneOf": [

@@ -81,7 +81,7 @@ export class SseService implements OnModuleDestroy {
         .select({
           stateFeedAllocatedThrough: account.stateFeedAllocatedThrough,
           readRevision: account.readRevision,
-          profileRev: userTable.profileRev,
+          profileRev: userTable.defaultProfileRev,
         })
         .from(account)
         .innerJoin(userTable, eq(userTable.id, account.id))
@@ -246,6 +246,20 @@ export class SseService implements OnModuleDestroy {
     },
   ) {
     this.pushToUser(userId, 'MEDIA_STATUS', data);
+  }
+
+  onProfileResolved(userId: number, data: { requestId: string; profile: unknown }) {
+    this.pushToUser(userId, 'PROFILE_RESOLVED', data);
+  }
+
+  onProfileFailed(
+    userId: number,
+    data: {
+      requestId: string;
+      reason: 'NOT_FOUND' | 'NOT_DISCLOSED' | 'TEMPORARILY_UNAVAILABLE';
+    },
+  ) {
+    this.pushToUser(userId, 'PROFILE_FAILED', data);
   }
 
   /** Signal that the durable client state feed has advanced. */

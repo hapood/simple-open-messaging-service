@@ -72,8 +72,8 @@ export class ProfileEditorComponent {
   readonly bio = signal('');
   readonly nameHint = signal('');
   readonly isNameValid = signal(true);
-  readonly uploading = signal(false);
   readonly avatarDraft = signal<File | null>(null);
+  readonly pendingAvatar = signal<File | null>(null);
   readonly saving = signal(false);
   /** Brief "Saved" confirmation on the Save button after a successful save (~1.5s). */
   readonly justSaved = signal(false);
@@ -129,8 +129,7 @@ export class ProfileEditorComponent {
     return (
       this.isNameValid() &&
       !this.saving() &&
-      !this.uploading() &&
-      (nameChanged || bioChanged)
+      (nameChanged || bioChanged || this.pendingAvatar() !== null)
     );
   });
 
@@ -149,32 +148,33 @@ export class ProfileEditorComponent {
 
   finishAvatarEdit(file: File) {
     this.avatarDraft.set(null);
-    this.uploadAvatarFile(file);
+    this.pendingAvatar.set(file);
   }
 
-  private uploadAvatarFile(file: File) {
-    this.uploading.set(true);
-    this.userService.updateAvatar(file).subscribe({
-      next: () => {
-        this.uploading.set(false);
-        // avatar persisted → re-read sessionProfile; rail/tab/preview refresh accordingly.
-        this.userService.updateSessionProfile();
-      },
-      error: () => {
-        this.uploading.set(false);
-      },
-    });
-  }
-
-  save() {
+  async save() {
     if (!this.canSave()) return;
     this.saving.set(true);
+    let avatarBase64: string | undefined;
+    const avatar = this.pendingAvatar();
+    if (avatar) {
+      try {
+        avatarBase64 = await this.fileBase64(avatar);
+      } catch {
+        this.saving.set(false);
+        return;
+      }
+    }
     this.userService
-      .updateProfile({ name: this.name().trim(), bio: this.bio() })
+      .updateProfile({
+        name: this.name().trim(),
+        bio: this.bio(),
+        ...(avatarBase64 === undefined ? {} : { avatarBase64 }),
+      })
       .subscribe({
         next: (res) => {
           this.saving.set(false);
           if (res.code === 0) {
+            this.pendingAvatar.set(null);
             this.userService.updateSessionProfile();
             this.saved.emit();
             this.flashSaved();
@@ -184,6 +184,17 @@ export class ProfileEditorComponent {
           this.saving.set(false);
         },
       });
+  }
+
+  private fileBase64(file: File): Promise<string> {
+    return file.arrayBuffer().then((buffer) => {
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+      for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+      }
+      return btoa(binary);
+    });
   }
 
   /** Flash the "Saved" confirmation on the Save button for ~1.5s (re-entrant — a rapid second save resets it). */

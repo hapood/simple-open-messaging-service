@@ -13,6 +13,9 @@ export interface ResolvedMemberProfile {
   isOwner: boolean;
   name: string;
   avatar: string;
+  profileRev: number;
+  profileMessageSeq: number | null;
+  profileResolved: boolean;
 }
 
 /** Paginated local-database reader for the materialized group roster. */
@@ -45,8 +48,19 @@ export class MemberProfileRepository {
       namespaceId: member.namespaceId,
       role: member.role,
       isOwner: member.role === 'OWNER',
-      name: member.user.name,
-      avatar: member.user.avatar,
+      name:
+        member.resolvedProfileRev === member.profileRev
+          ? (member.profileName ?? member.user.name)
+          : member.account,
+      avatar:
+        member.resolvedProfileRev === member.profileRev
+          ? (member.profileAvatar ?? member.user.avatar)
+          : '',
+      profileRev: member.profileRev ?? member.user.profileRev,
+      profileMessageSeq: member.profileMessageSeq ?? null,
+      profileResolved:
+        (member.profileRev ?? member.user.profileRev) ===
+        (member.resolvedProfileRev ?? member.user.profileRev),
     }));
   }
 
@@ -72,8 +86,61 @@ export class MemberProfileRepository {
       namespaceId: member.namespaceId,
       role: member.role,
       isOwner: member.role === 'OWNER',
-      name: member.user.name,
-      avatar: member.user.avatar,
+      name:
+        member.resolvedProfileRev === member.profileRev
+          ? (member.profileName ?? member.user.name)
+          : member.account,
+      avatar:
+        member.resolvedProfileRev === member.profileRev
+          ? (member.profileAvatar ?? member.user.avatar)
+          : '',
+      profileRev: member.profileRev ?? member.user.profileRev,
+      profileMessageSeq: member.profileMessageSeq ?? null,
+      profileResolved:
+        (member.profileRev ?? member.user.profileRev) ===
+        (member.resolvedProfileRev ?? member.user.profileRev),
     };
+  }
+
+  async recordMessageProfile(
+    threadId: number,
+    identity: {
+      account: string;
+      domain: string;
+      sourceDomain: string;
+      namespaceId: number;
+    },
+    profileRev: number,
+    messageSeq: number,
+  ): Promise<void> {
+    if (
+      await this.webdb.recordGroupMemberMessageProfile(
+        threadId,
+        identity,
+        profileRev,
+        messageSeq,
+      )
+    )
+      this.notifyChanged([threadId]);
+  }
+
+  async storeResolvedProfile(
+    threadId: number,
+    identity: {
+      account: string;
+      domain: string;
+      sourceDomain: string;
+      namespaceId: number;
+    },
+    profile: { rev: number; name: string; avatar: string },
+  ): Promise<void> {
+    if (
+      await this.webdb.storeGroupMemberResolvedProfile(
+        threadId,
+        identity,
+        profile,
+      )
+    )
+      this.notifyChanged([threadId]);
   }
 }

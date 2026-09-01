@@ -24,6 +24,7 @@ const REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export interface RelationshipIntentState extends Record<string, unknown> {
   id: bigint;
   status: RelationshipIntentStatus;
+  profileRev: number;
   note: string;
   requestedAt: Date | null;
   expiresAt: Date | null;
@@ -51,6 +52,7 @@ export type LockedPair = PairKey & {
 type RawIntent = {
   id: bigint;
   status: RelationshipIntentStatus;
+  profileRev: number;
   note: string;
   requestedAt: Date | null;
   expiresAt: Date | null;
@@ -114,6 +116,7 @@ export class RelationshipIntentService {
       subjectUserId: number;
       threadId: number | null;
       status: RelationshipIntentStatus;
+      profileRev: number;
       note: string;
       requestedAt: Date | null;
       expiresAt: Date | null;
@@ -130,6 +133,7 @@ export class RelationshipIntentService {
       pair,
       authorSide,
       status: params.status,
+      profileRev: params.profileRev,
       note: params.note,
       requestedAt: params.requestedAt,
       expiresAt: params.expiresAt,
@@ -224,6 +228,7 @@ export class RelationshipIntentService {
       threadId: number;
       author: 'GROUP' | 'MEMBER';
       status: RelationshipIntentStatus;
+      profileRev: number;
       note: string;
       requestedAt: Date | null;
       expiresAt: Date | null;
@@ -239,6 +244,7 @@ export class RelationshipIntentService {
       pair,
       authorSide,
       status: params.status,
+      profileRev: params.profileRev,
       note: params.note,
       requestedAt: params.requestedAt,
       expiresAt: params.expiresAt,
@@ -490,13 +496,39 @@ export class RelationshipIntentService {
         : null;
     const written = await tx.execute(sql`
       INSERT INTO "RelationshipIntent" (
-        "pairId", "authorSide", status, note,
+        "pairId", "authorSide", status, "profileRev", note,
         "requestedAt", "expiresAt", "updatedAt"
       ) VALUES (${params.pair.id}, ${params.authorSide},
-        ${status}::"RelationshipIntentStatus", ${(params.note ?? '').slice(0, 255)},
+        ${status}::"RelationshipIntentStatus",
+        COALESCE((
+          SELECT CASE
+            WHEN ${params.authorSide} = 'A' AND pair."endpointAType" = 'USER' THEN
+              (SELECT profile."defaultProfileRev" FROM "User" profile
+                WHERE profile.account = pair."endpointAAccount" AND profile.domain = 'local'
+                  AND profile."namespaceId" = 0 LIMIT 1)
+            WHEN ${params.authorSide} = 'B' AND pair."endpointBType" = 'USER' THEN
+              (SELECT profile."defaultProfileRev" FROM "User" profile
+                WHERE profile.account = pair."endpointBAccount" AND profile.domain = 'local'
+                  AND profile."namespaceId" = 0 LIMIT 1)
+            WHEN ${params.authorSide} = 'A' AND pair."endpointAType" = 'GROUP' THEN
+              (SELECT profile."defaultProfileRev" FROM "Group" profile
+                WHERE profile.account = pair."endpointAAccount" AND profile.domain = 'local'
+                  AND profile."namespaceId" = 0 LIMIT 1)
+            WHEN ${params.authorSide} = 'B' AND pair."endpointBType" = 'GROUP' THEN
+              (SELECT profile."defaultProfileRev" FROM "Group" profile
+                WHERE profile.account = pair."endpointBAccount" AND profile.domain = 'local'
+                  AND profile."namespaceId" = 0 LIMIT 1)
+          END
+          FROM "RelationshipPair" pair WHERE pair.id = ${params.pair.id}
+        ), 0), ${(params.note ?? '').slice(0, 255)},
         ${requestedAt}, ${expiresAt}, CURRENT_TIMESTAMP)
       ON CONFLICT ("pairId", "authorSide") DO UPDATE SET
         status = EXCLUDED.status, note = EXCLUDED.note,
+        "profileRev" = CASE
+          WHEN "RelationshipIntent".status = 'REVOKED'
+            AND EXCLUDED.status = 'REQUESTED' THEN EXCLUDED."profileRev"
+          ELSE "RelationshipIntent"."profileRev"
+        END,
         "requestedAt" = CASE
           WHEN EXCLUDED.status IN ('REQUESTED', 'ACCEPTED') THEN EXCLUDED."requestedAt"
           ELSE "RelationshipIntent"."requestedAt" END,
@@ -525,6 +557,7 @@ export class RelationshipIntentService {
       pair: LockedPair;
       authorSide: 'A' | 'B';
       status: RelationshipIntentStatus;
+      profileRev: number;
       note: string;
       requestedAt: Date | null;
       expiresAt: Date | null;
@@ -549,13 +582,18 @@ export class RelationshipIntentService {
 
     const applied = await tx.execute(sql`
       INSERT INTO "RelationshipIntent" (
-        "pairId", "authorSide", status, note,
+        "pairId", "authorSide", status, "profileRev", note,
         "requestedAt", "expiresAt", "updatedAt"
       ) VALUES (${params.pair.id}, ${params.authorSide},
-        ${params.status}::"RelationshipIntentStatus", ${params.note.slice(0, 255)},
+        ${params.status}::"RelationshipIntentStatus", ${params.profileRev}, ${params.note.slice(0, 255)},
         ${params.requestedAt}, ${params.expiresAt}, CURRENT_TIMESTAMP)
       ON CONFLICT ("pairId", "authorSide") DO UPDATE SET
         status = EXCLUDED.status, note = EXCLUDED.note,
+        "profileRev" = CASE
+          WHEN "RelationshipIntent".status = 'REVOKED'
+            AND EXCLUDED.status = 'REQUESTED' THEN EXCLUDED."profileRev"
+          ELSE "RelationshipIntent"."profileRev"
+        END,
         "requestedAt" = EXCLUDED."requestedAt", "expiresAt" = EXCLUDED."expiresAt",
         "updatedAt" = CURRENT_TIMESTAMP
       WHERE "RelationshipIntent".status IS DISTINCT FROM EXCLUDED.status
@@ -808,6 +846,7 @@ export class RelationshipIntentService {
       columns: {
         id: true,
         status: true,
+        profileRev: true,
         note: true,
         requestedAt: true,
         expiresAt: true,
@@ -824,6 +863,7 @@ export class RelationshipIntentService {
         id: relationshipIntent.id,
         authorSide: relationshipIntent.authorSide,
         status: relationshipIntent.status,
+        profileRev: relationshipIntent.profileRev,
         note: relationshipIntent.note,
         requestedAt: relationshipIntent.requestedAt,
         expiresAt: relationshipIntent.expiresAt,

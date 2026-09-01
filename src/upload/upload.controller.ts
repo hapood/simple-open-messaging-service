@@ -210,8 +210,8 @@ export class UploadController {
    * Avatar upload (user + group avatars): multipart/form-data, field file=<image>. Same image
    * validation as /upload (consumeImage + magic-byte), then the sharp multi-size webp avatar
    * pipeline (saveAvatars). Returns { avatar: representativeUrl } — the frontend stores it verbatim
-   * as Group.avatar (create/update). User avatars still go through /user/update-avatar (which calls
-   * saveAvatars directly); this endpoint is the canonical upload for GROUP avatars so they land in
+   * as Group.avatar (create/update). User avatars are submitted as base64 together with name and bio;
+   * this endpoint is the canonical upload for GROUP avatars so they land in
    * uploads/avatars/ (outside the per-object authz gate's shards/ scope) instead of generic /upload
    * (which writes to shards/ and would 401 under thread-membership authz). Never carries a client-
    * message-id → never promotes → validation failures throw directly (no staged-failure persistence).

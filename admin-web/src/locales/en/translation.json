@@ -801,7 +801,6 @@
     "onDiskFiles": "{{files}} files",
     "byExt": "By extension",
     "gc": "Run GC",
-    "gcAvatars": "GC avatars",
     "gcForwardBundles": "Inspect forward bundles",
     "reconcile": "Reconcile",
     "col": { "ext": "Extension", "files": "Files", "bytes": "Bytes" },
@@ -809,7 +808,6 @@
     "confirmTitle": {
       "gc": "Run garbage collection?",
       "reconcile": "Reconcile shards?",
-      "avatars": "Reclaim orphan avatars?",
       "forwardBundles": "Inspect and clean orphan forward bundles?"
     },
     "confirmBody": {
@@ -826,7 +824,6 @@
     },
     "gcDone": "GC: reaped {{rows}} row(s) / {{files}} file(s)",
     "reconcileDone": "Reconcile: reaped {{files}} file(s)",
-    "avatarsDone": "Reclaimed {{files}} avatar file(s)",
     "forwardBundlesNone": "No orphan forward bundles found",
     "forwardBundlesDone": "Removed {{bundles}} bundle(s) and released {{assets}} asset reference(s)"
   },

@@ -17,7 +17,7 @@ use messages::{
 };
 
 const DB_FILENAME: &str = "soms-local.sqlite3";
-const CACHE_SCHEMA_VERSION: i64 = 13;
+const CACHE_SCHEMA_VERSION: i64 = 14;
 
 fn db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app
@@ -204,6 +204,11 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
           namespace_id INTEGER NOT NULL,
           role TEXT NOT NULL,
           left_state INTEGER NOT NULL DEFAULT 0,
+          profile_rev INTEGER NOT NULL DEFAULT 0,
+          profile_message_seq INTEGER,
+          resolved_profile_rev INTEGER,
+          profile_name TEXT,
+          profile_avatar TEXT,
           PRIMARY KEY (user_id, thread_id, member_account, member_domain, source_domain, namespace_id),
           FOREIGN KEY (user_id, source_domain, namespace_id)
             REFERENCES namespaces(user_id, domain, namespace_id)

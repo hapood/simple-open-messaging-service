@@ -17,10 +17,10 @@ spec/
     protocol.md               Core protocol
     transport-security.md     Discovery, TLS, keys, and HTTP Message Signatures
     recognition.md            Bidirectional peer recognition and identity continuity
-    state-feed.md             Complete state-feed wire schema
-    group-meta.md             Per-peer group roster and member-profile synchronization
-    departed-member-profile-query.md
-                              Departed group-message author profile query
+    state-feed.md             Relationship/profile references and feed heads
+    group-meta.md             Group roster, roles, and profile-reference sync
+    authorized-profile.md     Authorized account and profile-revision lookup
+    message-author-profile.md Exact-message-authorized display profile query
     message-feed.md           Per-thread message query and skip-mode rules
     message-tombstone-feed.md Authoritative per-thread deletion query
     message.md                Message content-type overview and entry point
@@ -31,7 +31,7 @@ spec/
     schema/                   JSON Schema, HTTP manifest, and conformance vectors
 ```
 
-Twelve normative documents—the core protocol and eleven subject specifications—jointly define v1. The machine-readable package bearing the same version supports automated validation. If normative text conflicts with a Schema, test vector, or tool, the normative text prevails and the other artifact should be corrected in the same release candidate.
+Thirteen normative documents—the core protocol and twelve subject specifications—jointly define v1. The machine-readable package bearing the same version supports automated validation. If normative text conflicts with a Schema, test vector, or tool, the normative text prevails and the other artifact should be corrected in the same release candidate.
 
 Protocol changes and releases follow [Governance](./GOVERNANCE.md). Security issues follow the [Security Policy](./SECURITY.md). `RELEASE.json` provides version metadata to release tools but does not alter the normative text.
 

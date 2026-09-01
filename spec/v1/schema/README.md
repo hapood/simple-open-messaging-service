@@ -11,9 +11,10 @@ This directory ships with the v1 normative text as a non-normative validation re
 - `common.schema.json`: shared Federation types for identity, time, cursors, digests, and addresses.
 - `discovery.schema.json`: cross-version bootstrap and key discovery at `/.well-known/somfp`.
 - `identity.schema.json`: closed JSON shapes for Recognize, Health, and feed-head hints.
-- `state-feed.schema.json`: compacted profile, relationship, Group Meta head, and combined thread-content head items.
-- `group-meta.schema.json`: full and delta group-member projections, including roles and source-scoped profiles.
-- `departed-member-profile-query.schema.json`: reverse-only compressed source-scoped profiles for departed authors selected by a group message-sequence window.
+- `state-feed.schema.json`: compacted relationship/profile-reference, Group Meta head, and combined thread-content head items.
+- `group-meta.schema.json`: full and delta group-member role and compacted group-profile-reference projections.
+- `authorized-profile.schema.json`: policy-controlled exact account/revision profile response.
+- `message-author-profile.schema.json`: display name and Base64 avatar selected by an exact authorized message and profile revision.
 - `message-query.schema.json` and `message-tombstone-query.schema.json`: messages and authoritative deletion facts returned by thread queries.
 - `message-content.schema.json`: all parsed core message-content variants selected by `contentType`.
 - `call.schema.json`: every call lifecycle and signal operation with its closed conditional field set.
@@ -36,7 +37,7 @@ operation.
 - `vectors/valid.json` and `vectors/invalid.json`: positive and negative JSON vectors.
 - `vectors/http-message-signature.json`: a general fixed Ed25519 HTTP Message Signature vector.
 - `vectors/call-http-message-signature.json`: a completely signed `/s2s/v1/call` vector.
-- `vectors/feed-query-semantics.json`: structured state-machine assertions for state-first processing, fixed `through`, relationship restoration, departed-author profile ordering, rejoin convergence, skip-mode reverse recovery, deferred queries, and unknown-thread recovery.
+- `vectors/feed-query-semantics.json`: structured state-machine assertions for state-first processing, fixed `through`, relationship restoration, exact-message profile authorization, rejoin convergence, skip-mode reverse recovery, deferred queries, and unknown-thread recovery.
 
 ## Validation
 

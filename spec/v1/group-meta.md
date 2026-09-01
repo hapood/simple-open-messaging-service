@@ -3,16 +3,12 @@
 Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
 This document is entirely normative. `GET /s2s/v1/group-meta` is the sole
-federation source of an origin-owned group's member roster, member roles, and
-source-scoped member display profiles. Receivers derive group membership and
-the owner from this feed. No group settings, owner field, active flag,
-dissolution flag, or complete roster is carried by `state-feed`.
-
-Full mode covers the current roster. Delta `DEPART` items retain the departing
-member's final role and source-scoped profile for ordinary forward message
-consumption, but do not form a historical roster. Skip-mode reverse history
-obtains other departed-author profiles from the reverse-only
-[Departed Member Profile Feed](./departed-member-profile-query.md).
+federation source of an origin-owned group's member roster and roles. Receivers
+derive group membership and the owner from this feed. It also carries the
+group's exact profile revision as a compacted `GROUP_PROFILE` item. It carries
+no member name, avatar, biography, or profile revision. No group settings,
+owner field, active flag, dissolution flag, or complete roster is carried by
+`state-feed`.
 
 ## 1. Request
 
@@ -63,29 +59,37 @@ interface GroupMetaFeedPage {
   hasMore: boolean;
 }
 
-interface GroupMetaItemBase {
+interface GroupMetaMemberItemBase {
   feedId: PositiveDecimalString;
   account: UserAccount;
   domain: Domain;
 }
 
-interface GroupMetaUpsertItem extends GroupMetaItemBase {
+interface GroupMetaUpsertItem extends GroupMetaMemberItemBase {
   operation: 'UPSERT';
   body: GroupMetaMemberBody;
 }
 
-interface GroupMetaDepartItem extends GroupMetaItemBase {
+interface GroupMetaDepartItem extends GroupMetaMemberItemBase {
   operation: 'DEPART';
   body: GroupMetaMemberBody;
 }
 
-type GroupMetaItem = GroupMetaUpsertItem | GroupMetaDepartItem;
+interface GroupMetaProfileItem {
+  feedId: PositiveDecimalString;
+  operation: 'GROUP_PROFILE';
+  body: {
+    profileRev: SafeInteger;
+  };
+}
+
+type GroupMetaItem =
+  | GroupMetaUpsertItem
+  | GroupMetaDepartItem
+  | GroupMetaProfileItem;
 
 interface GroupMetaMemberBody {
   role: 'OWNER' | 'ADMIN' | 'MEMBER';
-  profileRev: SafeInteger;
-  displayName: string;
-  avatar: InlineProfileAvatar | null;
 }
 ```
 
@@ -95,6 +99,19 @@ strictly increasing, never reused, and independent of every other feed.
 `groupMetaFeedEndId` use this same exact-decimal coordinate space.
 Closing and later restoring authorization for the same target peer and group
 MUST NOT reset this coordinate space or reuse a prior `feedId`.
+
+Member items have stable key `(member account, member domain)`. The single
+`GROUP_PROFILE` projection has a separate group-wide stable key and carries no
+member identity. Its `profileRev` applies to the page's group `account`. Group
+Meta does not carry the group name, biography, or avatar bytes.
+
+When the group profile changes, the origin allocates a new `GROUP_PROFILE` item
+for every authorized target peer and advances that target's
+`groupMetaFeedEndId`. Compaction may replace the older item for the same stable
+key, but the surviving item's original `feedId` is preserved. The consumer
+selects the committed `GROUP_PROFILE` item with the greatest `feedId`; it does
+not compare `profileRev` values. It resolves that exact `(group account,
+profileRev)` through [Authorized Profile](./authorized-profile.md).
 
 For one consistent source snapshot:
 
@@ -110,24 +127,20 @@ Items MUST be strictly increasing by `feedId` and lie in
 different finite page size. The consumer commits page effects and
 `scannedThrough` atomically.
 
-Member display data is source-scoped. Different group origins MAY publish
-different display data or profile revisions for the same member Address. A
-receiver MUST isolate those projections by
-`(source origin domain, member domain, member account)` and MUST NOT globally
-merge them by member Address alone.
-
 Exactly one current member has role `OWNER` in every non-empty roster. The
 receiver derives the owner from that role and derives its local active state by
 whether one of its own users remains in the roster. Non-member-derived settings
 are local policy and are not federated facts.
 
-Both `UPSERT` and `DEPART` carry the same member body. A `DEPART` preserves the
-complete historical member projection: stable Address, final role, and
-source-scoped profile. The consumer commits that projection and marks the
-member departed instead of deleting it, preserving the author projection for
-retained messages. A later `UPSERT` for the same stable key
-marks the member current again and replaces its role/profile fields. The shared
-`InlineProfileAvatar` rules apply to every non-null `avatar`.
+Both `UPSERT` and `DEPART` carry the same role-only body. A `DEPART` preserves
+the stable Address and final role but carries no member profile. The consumer
+marks the member departed instead of deleting the retained roster projection.
+A later `UPSERT` for the same stable key marks the member current again and
+replaces its role.
+
+`feedId`, message `seq`, and `profileRev` are distinct coordinate spaces. A
+Group Meta `feedId` selects the newest group-profile reference but MUST NOT be
+used as a profile revision or message coordinate.
 
 ## 3. Full mode
 
@@ -135,35 +148,34 @@ Full mode is an authoritative snapshot of the current roster at the fixed
 `through`. It returns exactly one `UPSERT` for each member whose latest
 operation at or below `through` is `UPSERT`, using that operation's `feedId`.
 It MUST NOT return `DEPART` items or members whose latest operation at that
-boundary is `DEPART`.
+boundary is `DEPART`. It also returns exactly one `GROUP_PROFILE`: the newest
+such item at or below `through`.
 
 The consumer accumulates the bounded full drain and applies it atomically. On
 successful completion it marks every previously materialized member absent
-from the snapshot as departed, without deleting the retained member or profile
+from the snapshot as departed, without deleting the retained roster
 projection. A failed or incomplete full drain MUST NOT alter the committed
 roster or cursor.
 
 The source MUST retain the latest `UPSERT` needed to reproduce every current
-member for an active bounded full drain. Full Group Meta has no disclosure
-obligation for departed members or historical message authors; delta `DEPART`
-covers ordinary forward processing and the separate reverse-only Departed
-Member Profile Feed defines skip-mode history.
+member and the latest `GROUP_PROFILE` needed to reproduce the current group
+profile reference for an active bounded full drain. Full Group Meta has no
+member display-profile or historical-message-author obligation.
 
 ## 4. Delta mode
 
-Delta mode returns retained `UPSERT` and profile-bearing `DEPART` changes in
-feed order. A consumer applies each item by stable member key and adopts its
-page cursor atomically. `DEPART` marks the retained projection departed instead
-of removing it. Items at or below the committed feed cursor are already applied
+Delta mode returns retained `UPSERT`, `DEPART`, and `GROUP_PROFILE` changes in
+feed order. A consumer applies member items by stable member key, applies
+`GROUP_PROFILE` by its separate group-wide stable key, and adopts its page
+cursor atomically. `DEPART` marks the retained projection departed instead of
+removing it. Items at or below the committed feed cursor are already applied
 and MUST NOT be replayed.
 
-For each target peer, the source MUST retain every profile-bearing `DEPART`
-needed to associate an author projection with any still-serviceable ordinary
-forward message interval allocated to that peer. It MAY compact an older
-departure only after that dependency is no longer serviceable; the delta
-retention floor MUST NOT cross a required departure. The reverse-only Departed
-Member Profile Feed has its own historical selection obligation. If
-`after` is below the delta retention floor, the source MUST return
+The source MAY compact an older `DEPART` after it is no longer required by an
+active bounded drain or by the current roster result. Message-author profile
+retention is independent of Group Meta and is defined by
+[Message Author Profile](./message-author-profile.md). If `after` is below the
+delta retention floor, the source MUST return
 `FEDERATION_FEED_CURSOR_UNAVAILABLE` with the common exclusive
 `resumeAfter/resumeBefore` boundaries. The consumer restarts with
 `mode=full`, `after=resumeAfter`, and fixed
@@ -181,9 +193,10 @@ commits that state-feed item. The hint is not roster data and cannot itself add
 or remove a member.
 
 Before an origin makes a newly accepted group message queryable or publishes
-its `THREAD_CONTENT_HEAD`, every member projection required to identify that
-message's author MUST already be committed in Group Meta. The corresponding
-`GROUP_META_FEED_HEAD` MUST precede the thread-content item in State Feed. A
-later lightweight `feed-heads` hint advertises a `stateFeedEndId` covering both
-items. The consumer drains that state and Group Meta dependency while
-reconciling the corresponding message interval.
+its `THREAD_CONTENT_HEAD`, the author's Address and role projection MUST
+already be committed in Group Meta. The corresponding `GROUP_META_FEED_HEAD`
+MUST precede the thread-content item in State Feed. A later lightweight
+`feed-heads` hint advertises a `stateFeedEndId` covering both items. The
+consumer drains that state and Group Meta dependency while reconciling the
+corresponding message interval. The author's display data is not a Group Meta
+dependency and is fetched using the exact message coordinate when needed.

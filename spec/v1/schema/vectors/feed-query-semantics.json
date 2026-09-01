@@ -11,13 +11,13 @@
           "request": "state-feed",
           "after": "4",
           "through": "6",
-          "responseItems": ["PROFILE@5", "THREAD_CONTENT_HEAD@6"],
+          "responseItems": ["GROUP_META_FEED_HEAD@5", "THREAD_CONTENT_HEAD@6"],
           "responseScannedThrough": "6",
           "commit": true
         }
       ],
       "assertions": [
-        "profile is applied before the thread targets",
+        "group roster head is applied before the thread targets",
         "message and deletion targets come from one item"
       ]
     },
@@ -114,20 +114,20 @@
       ]
     },
     {
-      "name": "a compacted dependency move reindexes its thread head",
+      "name": "a compacted roster dependency move reindexes its thread head",
       "initialCursors": { "state": "6" },
       "steps": [
         {
           "request": "state-feed",
           "after": "6",
-          "responseItems": ["PROFILE@7", "THREAD_CONTENT_HEAD@8"],
+          "responseItems": ["GROUP_META_FEED_HEAD@7", "THREAD_CONTENT_HEAD@8"],
           "responseScannedThrough": "8",
           "hasMore": false,
           "commit": true
         }
       ],
       "assertions": [
-        "the newer profile remains before its dependent thread head",
+        "the newer group-meta head remains before its dependent thread head",
         "unchanged thread coordinates may be force-reindexed"
       ]
     },
@@ -156,35 +156,19 @@
         "forward start equals max of local cursor and resumeAfter",
         "the discarded gap is absent rather than pending",
         "the discarded gap does not imply source-side deletion",
-        "complete group-meta departures commit before messages become visible",
-        "the reverse-only departed-member profile feed is not queried"
+        "role-only group-meta departures commit before messages become visible",
+        "message profiles are fetched lazily by exact message coordinate"
       ]
     },
     {
       "name": "skip-mode reverse starts at latest and remains continuous",
       "initialCursors": {
-        "messageQuery": 60,
-        "departedMemberProfileQuery": 60
+        "messageQuery": 60
       },
       "source": { "resumeAfter": 10, "resumeBefore": 61 },
       "steps": [
         { "action": "commit-latest-state" },
         { "action": "commit-group-meta-full" },
-        {
-          "request": "departed-member-profiles",
-          "mode": "skip-reverse",
-          "before": "61",
-          "through": "10",
-          "responseScannedThrough": 40,
-          "commit": true
-        },
-        {
-          "request": "departed-member-profiles",
-          "before": "40",
-          "through": "10",
-          "responseScannedThrough": 10,
-          "commit": true
-        },
         {
           "request": "messages",
           "before": "61",
@@ -194,9 +178,42 @@
         }
       ],
       "assertions": [
-        "neither reverse query starts at an intermediate sequence",
+        "the reverse query does not start at an intermediate sequence",
         "every later reverse page uses the preceding scannedThrough",
         "reverse progress does not move the forward cursor backward"
+      ]
+    },
+    {
+      "name": "profile lookup is lazy and bound to one authorized message version",
+      "steps": [
+        {
+          "request": "messages",
+          "thread": "!team",
+          "returnedSeqs": [41],
+          "commit": true
+        },
+        {
+          "request": "message-author-profile",
+          "thread": "!team",
+          "messageSeq": 41,
+          "responseProfileRev": 3,
+          "messageAllocatedToSigner": true,
+          "commit": true
+        },
+        {
+          "request": "message-author-profile",
+          "thread": "!team",
+          "messageSeq": 42,
+          "messageAllocatedToSigner": false,
+          "responseCode": 10004,
+          "commit": false
+        }
+      ],
+      "assertions": [
+        "profile revision 3 is revealed by the exact message query only when the consumer needs it",
+        "the message allocation and current thread authorization are both verified",
+        "an unallocated message coordinate is denied",
+        "no current-profile fallback is returned"
       ]
     },
     {
@@ -207,15 +224,7 @@
           "request": "group-meta",
           "mode": "delta",
           "departedMembers": ["bob@b.example"],
-          "completeMemberBody": true,
-          "commit": true
-        },
-        {
-          "request": "departed-member-profiles",
-          "mode": "skip-reverse",
-          "before": "61",
-          "through": "40",
-          "rejoinedAuthorsOmitted": ["alice@a.example"],
+          "roleOnlyMemberBody": true,
           "commit": true
         },
         {
@@ -233,10 +242,10 @@
         }
       ],
       "assertions": [
-        "a rejoined current member may temporarily use a placeholder in either direction",
-        "group meta replaces the placeholder",
-        "a pending reverse departed-member profile page cannot be bypassed",
-        "forward processing uses complete profile-bearing group-meta departures instead of this feed"
+        "a rejoined current member may temporarily use an account-domain placeholder in either direction",
+        "group meta supplies role but no display profile",
+        "message-author profiles are requested lazily with exact thread and seq",
+        "group-meta departures carry no profile revision or avatar"
       ]
     }
   ]

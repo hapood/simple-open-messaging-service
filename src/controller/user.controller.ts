@@ -14,7 +14,6 @@ import {
   ApiBearerAuth,
   ApiOperation,
   ApiTags,
-  ApiConsumes,
 } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import type { FastifyReply } from 'fastify';
@@ -113,7 +112,10 @@ export class UserController {
   async getMyProfile(@Request() req: FastifyRequest) {
     // findSelfProfile omits hashPwd. Friend-request notification state travels in the unified state delta;
     // its seen cursor is local to each device.
-    return this.userService.findSelfProfile(req.user.userId);
+    const profile = await this.userService.findSelfProfile(req.user.userId);
+    if (!profile) return profile;
+    const { defaultProfileRev, ...rest } = profile;
+    return { ...rest, profileRev: defaultProfileRev };
   }
 
   @ApiBearerAuth()
@@ -134,52 +136,6 @@ export class UserController {
 
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
-  @Post('user/update-avatar')
-  @ApiOperation({
-    summary:
-      'Update the current user avatar (multipart file; sharp rewrites to 32/64/128/256/512 multi-size webp)',
-  })
-  @ApiConsumes('multipart/form-data')
-  async updateAvatar(@Request() req: FastifyRequest) {
-    const img = await this.uploadService.consumeImage(req);
-    if (img.kind === 'rejected') {
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        img.reason === 'no-file'
-          ? 'no file'
-          : img.reason === 'too-large'
-            ? 'file too large'
-            : 'invalid image',
-      );
-    }
-    // Magic-number check first: quickly reject non-images with a forged mimetype (sharp re-validates in saveAvatars).
-    if (!this.uploadService.isImage(img.mimetype, img.buffer)) {
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        'invalid image',
-      );
-    }
-    // Write new multi-size avatar → update DB. The previous avatar files are intentionally LEFT on
-    // disk: gcOrphanedAvatars reaps them once they are no longer any User/Group's current avatar, so
-    // there is no delete racing a still-rendering <img> on another device/tab.
-    let url: string;
-    try {
-      url = await this.uploadService.saveAvatars(img.buffer);
-    } catch {
-      // sharp decode failure (corrupt / pixel-bomb / non-image) → always rejected as invalid image; nothing written to disk or DB.
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        'invalid image',
-      );
-    }
-    await this.userService.updateAvatar(req.user.userId, url);
-    // Self-profile-rev push so the editor's OTHER tabs/devices learn their own profile changed and re-
-    // fetch (multi-device self refresh); the native HELLO cache also merges it for a fresh webview replay.
-    return { avatar: url };
-  }
-
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
   @Post('user/update-profile')
   @ApiOperation({
     summary:
@@ -190,9 +146,25 @@ export class UserController {
     @Request() req: FastifyRequest,
     @Body() dto: UpdateProfileDto,
   ) {
-    const data = await this.userService.updateProfile(req.user.userId, dto);
-    // Self-profile-rev push (multi-device self refresh + native HELLO-cache merge). See updateAvatar.
-    return data;
+    let avatar: string | null | undefined;
+    if (dto.avatarBase64 === null) avatar = null;
+    else if (dto.avatarBase64 !== undefined) {
+      try {
+        avatar = await this.uploadService.saveAvatarFromClientBase64(
+          dto.avatarBase64,
+        );
+      } catch {
+        throw new BusinessException(
+          BusinessCode.VALIDATION_FAILED,
+          'invalid avatar',
+        );
+      }
+    }
+    return this.userService.updateProfile(req.user.userId, {
+      name: dto.name,
+      bio: dto.bio,
+      avatar,
+    });
   }
 
   @ApiBearerAuth()

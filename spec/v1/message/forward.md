@@ -30,6 +30,7 @@ This is a closed schema with no optional fields.
   },
   "authorRef": "THREAD_ACCOUNT",
   "seq": 91,
+  "profileRev": 7,
   "originSeq": null,
   "originCreatedAt": null,
   "createdAt": 1770000200000,

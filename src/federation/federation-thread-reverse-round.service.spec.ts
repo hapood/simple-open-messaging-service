@@ -25,7 +25,6 @@ function harness(window: FederationReverseWindow = WINDOW) {
       scannedThrough: 50,
       hasMore: true,
     }),
-    processDepartedMemberProfiles: vi.fn().mockResolvedValue([]),
     complete: vi.fn().mockResolvedValue(undefined),
     markUnavailable: vi.fn().mockResolvedValue(undefined),
   };
@@ -46,7 +45,6 @@ describe('FederationThreadReverseRoundService', () => {
       batchOldestSeq: 50,
       nextBeforeSeq: 50,
       fetchedMessages: true,
-      processedDepartedMemberProfiles: true,
       closesReverseHistory: false,
       continuation: null,
     });
@@ -90,19 +88,9 @@ describe('FederationThreadReverseRoundService', () => {
         nextBeforeSeq: 1,
         throughSeq: 1,
         messageSeqOffset: 8,
-        departedMemberProfiles: [],
       },
       closesGap: true,
     });
-  });
-
-  it('omits departed-member work for P2P history', async () => {
-    const { service, driver } = harness();
-    const { processDepartedMemberProfiles: _, ...p2pDriver } = driver;
-
-    await expect(
-      service.run(31, 'peer.test', 12, p2pDriver),
-    ).resolves.toMatchObject({ processedDepartedMemberProfiles: false });
   });
 
   it('does no work when latest=1 produced no reverse gap', async () => {

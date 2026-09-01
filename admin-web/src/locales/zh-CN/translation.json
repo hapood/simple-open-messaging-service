@@ -798,7 +798,6 @@
     "onDiskFiles": "{{files}} 个文件",
     "byExt": "按扩展名",
     "gc": "执行 GC",
-    "gcAvatars": "回收头像",
     "gcForwardBundles": "检测转发 Bundle",
     "reconcile": "对账",
     "col": { "ext": "扩展名", "files": "文件数", "bytes": "字节" },
@@ -806,7 +805,6 @@
     "confirmTitle": {
       "gc": "执行垃圾回收？",
       "reconcile": "对账 shards？",
-      "avatars": "回收孤立头像？",
       "forwardBundles": "检测并清理孤立转发 Bundle？"
     },
     "confirmBody": {
@@ -823,7 +821,6 @@
     },
     "gcDone": "GC：回收 {{rows}} 行 / {{files}} 文件",
     "reconcileDone": "对账：回收 {{files}} 文件",
-    "avatarsDone": "回收 {{files}} 个头像文件",
     "forwardBundlesNone": "未发现孤立转发 Bundle",
     "forwardBundlesDone": "已清理 {{bundles}} 个 Bundle，释放 {{assets}} 个资源引用"
   },

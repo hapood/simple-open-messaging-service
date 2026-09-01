@@ -29,6 +29,8 @@ export type Message = Omit<
   'contentType' | 'mediaStatus'
 > & {
   contentType: S['MessageResponseDto']['contentType'];
+  /** Immutable author profile selected when this message was committed. */
+  profileRev: number;
   /** Federated media localize status (absent = ready). Carried on query-messages rows + NEW_MESSAGE
    *  frames; one mounted-message service reconciles mount, reconnect and SSE updates. */
   mediaStatus?: MediaStatus;
@@ -106,6 +108,8 @@ type ConversationItemBase = {
   role: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
   lastMessageAt: number | null;
   lastMessageSeq?: number | null;
+  /** Latest visible peer-authored message whose exact profile revision drives a P2P row avatar. */
+  peerProfileMessageSeq?: number | null;
   /** Latest per-thread deletion-log target advertised by the unified content feed. */
   tombstoneEndSeq?: number;
   muted: boolean;

@@ -5,6 +5,7 @@ import {
   eq,
   gt,
   inArray,
+  isNull,
   isNotNull,
   gte,
   lt,
@@ -30,6 +31,7 @@ import {
   fileSyncProgress,
   federationThreadHistoryGap,
   group,
+  threadMember,
   threadParticipant,
   user,
 } from '../database/schema.js';
@@ -313,6 +315,7 @@ export class MessageService {
             creatorAccount: user.account,
             creatorDomain: user.domain,
             creatorNamespaceId: user.namespaceId,
+            profileRev: user.defaultProfileRev,
           })
           .from(messageThread)
           .innerJoin(
@@ -441,11 +444,29 @@ export class MessageService {
             creatorAccount: writeAccess.creatorAccount,
             creatorDomain: writeAccess.creatorDomain,
             creatorNamespaceId: writeAccess.creatorNamespaceId,
+            profileRev: writeAccess.profileRev,
             clientMessageId,
             seq,
             updatedAt: new Date(),
           })
           .returning();
+        await tx
+          .update(threadMember)
+          .set({
+            profileRev: writeAccess.profileRev,
+            profileMessageSeq: seq,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(threadMember.threadId, threadId),
+              eq(threadMember.userId, userId),
+              or(
+                isNull(threadMember.profileMessageSeq),
+                lt(threadMember.profileMessageSeq, seq),
+              ),
+            ),
+          );
         if (type === ContentType.FORWARD) {
           if (!forwardBundleId) {
             throw new Error('FORWARD message requires forwardBundleId');
@@ -1132,11 +1153,35 @@ export class MessageService {
             creatorAccount: stage.creatorAccount,
             creatorDomain: stage.creatorDomain,
             creatorNamespaceId: stage.namespaceId,
+            profileRev: sql`(
+              SELECT profile."defaultProfileRev" FROM "User" profile
+              WHERE profile.account = ${stage.creatorAccount}
+                AND profile.domain = ${stage.creatorDomain}
+                AND profile."namespaceId" = ${stage.namespaceId}
+              LIMIT 1
+            )`,
             clientMessageId,
             seq,
             updatedAt: new Date(),
           })
           .returning();
+        await tx
+          .update(threadMember)
+          .set({
+            profileRev: msg.profileRev,
+            profileMessageSeq: seq,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(threadMember.threadId, stage.threadId),
+              eq(threadMember.userId, creatorUserId),
+              or(
+                isNull(threadMember.profileMessageSeq),
+                lt(threadMember.profileMessageSeq, seq),
+              ),
+            ),
+          );
         await tx
           .update(messageThread)
           .set({

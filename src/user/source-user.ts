@@ -32,26 +32,21 @@ export async function upsertSourceUserInTx(
       name: profile.name,
       avatar: profile.avatar ?? '',
       bio: profile.bio ?? '',
-      profileRev: profile.profileRev,
+      defaultProfileRev: profile.profileRev,
       availability,
       updatedAt: new Date(),
     })
     .onConflictDoUpdate({
-      target: [
-        user.account,
-        user.domain,
-        user.sourceDomain,
-        user.namespaceId,
-      ],
+      target: [user.account, user.domain, user.sourceDomain, user.namespaceId],
       set: {
         name: profile.name,
         avatar: profile.avatar ?? '',
         bio: profile.bio ?? '',
-        profileRev: profile.profileRev,
+        defaultProfileRev: profile.profileRev,
         availability,
         updatedAt: new Date(),
       },
-      setWhere: sql`${profile.profileRev} >= ${user.profileRev}`,
+      setWhere: sql`${profile.profileRev} >= ${user.defaultProfileRev}`,
     })
     .returning({ id: user.id });
   if (written) return written.id;

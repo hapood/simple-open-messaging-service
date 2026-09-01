@@ -17,7 +17,6 @@ import {
   eq,
   inArray,
   lt,
-  ne,
   or,
   sql,
 } from 'drizzle-orm';
@@ -38,11 +37,9 @@ import {
   message,
   messageThread,
   pendingMedia,
-  user,
 } from '../database/schema.js';
 import { MediaAssetService } from '../upload/media-asset.service.js';
 import { UploadService } from '../upload/upload.service.js';
-import { parseAvatarBase } from '../upload/avatar-path.js';
 import { formatSseFrame, initSseResponse } from '../common/sse-stream.js';
 
 const readdirAsync = promisify(readdir);
@@ -136,9 +133,8 @@ export interface ReconcileResult {
  *    and unlink the shard files, then sweep stale tmp artifacts.
  *  - {@link reconcileShards}: salvage crashed CAS publishes, then bounded-batch disk/database repair.
  *
- * GC scans ONLY uploads/cas/ (shards) + uploads/cas/tmp/ (transient ingest artifacts). Avatars are
- * never touched — they have no MediaAsset row; avatar overwrite-delete is owned by
- * UploadService.deleteByUrl. `clearHistory` only changes a per-user watermark and therefore never
+ * GC scans ONLY uploads/cas/ (shards) + uploads/cas/tmp/ (transient ingest artifacts). It does not
+ * enumerate or delete avatars. `clearHistory` only changes a per-user watermark and therefore never
  * affects media liveness.
  */
 @Injectable()
@@ -1176,66 +1172,6 @@ export class MediaAssetGcService {
           .sort((x, y) => (x.bytes > y.bytes ? -1 : x.bytes < y.bytes ? 1 : 0)),
       },
     };
-  }
-
-  /**
-   * Reap orphaned AVATARS — files under uploads/avatars/ whose `<base>` is not the current avatar of
-   * any User. "Expired" = no longer referenced, NOT a time-based TTL. One rule covers every orphan
-   * source:
-   *  - superseded-on-replace (avatar changes no longer delete the old files — see UploadService),
-   *  - deleted-user avatars (no User row references them).
-   * The multi-size family ([32,64,128,256,512]) is handled by keying on `<base>`: all 5 sizes of a
-   * live base are kept, all 5 of a dead base are swept together. NEVER touches uploads/cas/ (that
-   * is gcOrphanedAssets' domain).
-   */
-  async gcOrphanedAvatars(): Promise<{ sweptFiles: number }> {
-    // Live `<base>` set from person and group profiles. parseAvatarBase strips the size + path, so all 5
-    // sizes of one logical avatar collapse to one key.
-    const users = await this.database.db
-      .select({ avatar: user.avatar })
-      .from(user)
-      .where(ne(user.avatar, ''));
-    const groups = await this.database.db
-      .select({ avatar: group.avatar })
-      .from(group)
-      .where(ne(group.avatar, ''));
-    const live = new Set<string>();
-    for (const r of [...users, ...groups]) {
-      if (!r.avatar) continue;
-      const base = parseAvatarBase(r.avatar);
-      if (base) live.add(base);
-    }
-
-    // Orphan sweep: uploads/avatars/<base>-<size>.webp whose base is not live.
-    const swept = await this.sweepAvatarDir(
-      join(this.upload.uploadDir, 'avatars'),
-      live,
-    );
-
-    this.logger.log(
-      `gcOrphanedAvatars: swept ${swept} orphaned avatar file(s).`,
-    );
-    return { sweptFiles: swept };
-  }
-
-  /** Sweep one avatar directory: unlink every `<base>-<size>.webp` whose base is not live. */
-  private async sweepAvatarDir(
-    dir: string,
-    live: Set<string>,
-  ): Promise<number> {
-    let swept = 0;
-    try {
-      for (const name of await readdirAsync(dir)) {
-        const base = parseAvatarBase(name); // bare filename → AVATAR_FILE_RE
-        if (base && !live.has(base)) {
-          await unlinkAsync(join(dir, name)).catch(() => {});
-          swept++;
-        }
-      }
-    } catch {
-      // dir missing — nothing to sweep.
-    }
-    return swept;
   }
 
   /** Delete the single extensionless blob for a digest. */

@@ -6,10 +6,7 @@ import {
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
-import {
-  federatedPeer,
-  identityNamespace,
-} from '../database/schema.js';
+import { federatedPeer, identityNamespace } from '../database/schema.js';
 
 export interface FederationContext {
   domain: string;
@@ -75,10 +72,7 @@ export class FederationNamespaceService {
         and(
           eq(identityNamespace.id, context.namespaceId),
           eq(identityNamespace.domain, context.domain),
-          eq(
-            identityNamespace.rootKeyFingerprint,
-            context.rootKeyFingerprint,
-          ),
+          eq(identityNamespace.rootKeyFingerprint, context.rootKeyFingerprint),
         ),
       )
       .limit(1);

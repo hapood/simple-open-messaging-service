@@ -1,6 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import { normalizeAccount } from '../common/account.js';
-import type { DepartedMemberProfile } from './departed-member-profile-query.service.js';
 import {
   FEDERATION_THREAD_SEQUENCE_MAX,
   resolveFederationThreadRoundTake,
@@ -20,7 +18,6 @@ export interface FederationReverseRoundContext {
   nextBeforeSeq: number;
   throughSeq: number;
   messageSeqOffset: number;
-  departedMemberProfiles: DepartedMemberProfile[];
 }
 
 export interface FederationThreadReverseRoundDriver {
@@ -31,13 +28,6 @@ export interface FederationThreadReverseRoundDriver {
     through: number;
     take: number;
   }): Promise<FederationReverseMessageResult>;
-  processDepartedMemberProfiles?(params: {
-    threadId: number;
-    peerDomain: string;
-    before: number;
-    through: number;
-    take: number;
-  }): Promise<readonly DepartedMemberProfile[]>;
   complete(params: {
     threadId: number;
     peerDomain: string;
@@ -57,7 +47,6 @@ export interface FederationThreadReverseRoundResult {
   batchOldestSeq: number | null;
   nextBeforeSeq: number;
   fetchedMessages: boolean;
-  processedDepartedMemberProfiles: boolean;
   closesReverseHistory: boolean;
   continuation: FederationReverseRoundContext | null;
 }
@@ -89,7 +78,6 @@ export class FederationThreadReverseRoundService {
         batchOldestSeq: null,
         nextBeforeSeq: 0,
         fetchedMessages: false,
-        processedDepartedMemberProfiles: false,
         closesReverseHistory: true,
         continuation: null,
       };
@@ -120,7 +108,6 @@ export class FederationThreadReverseRoundService {
         batchOldestSeq: null,
         nextBeforeSeq: beforeSeq,
         fetchedMessages: true,
-        processedDepartedMemberProfiles: false,
         closesReverseHistory: true,
         continuation: null,
       };
@@ -128,35 +115,9 @@ export class FederationThreadReverseRoundService {
 
     const batchOldestSeq = result.scannedThrough;
     this.assertBatchBoundary(batchOldestSeq, beforeSeq, context.throughSeq);
-    let processedDepartedMemberProfiles = false;
-    let departedMemberProfiles = context.departedMemberProfiles;
-    if (driver.processDepartedMemberProfiles) {
-      let fetchedProfiles: readonly DepartedMemberProfile[];
-      try {
-        fetchedProfiles = await driver.processDepartedMemberProfiles({
-          threadId,
-          peerDomain,
-          before: beforeSeq,
-          through: batchOldestSeq,
-          take,
-        });
-      } catch (error) {
-        throw new FederationThreadRoundRemoteError(
-          error,
-          context.authorizationEpoch,
-        );
-      }
-      departedMemberProfiles = this.mergeDepartedMemberProfiles(
-        departedMemberProfiles,
-        fetchedProfiles,
-      );
-      processedDepartedMemberProfiles = true;
-    }
-
     const nextContext: FederationReverseRoundContext = {
       ...context,
       nextBeforeSeq: batchOldestSeq,
-      departedMemberProfiles,
     };
     const closesReverseHistory =
       !result.hasMore || batchOldestSeq <= context.throughSeq;
@@ -172,7 +133,6 @@ export class FederationThreadReverseRoundService {
       batchOldestSeq,
       nextBeforeSeq: batchOldestSeq,
       fetchedMessages: true,
-      processedDepartedMemberProfiles,
       closesReverseHistory,
       continuation: null,
     };
@@ -192,7 +152,6 @@ export class FederationThreadReverseRoundService {
       nextBeforeSeq: window.beforeSeq,
       throughSeq: window.throughSeq,
       messageSeqOffset: window.messageSeqOffset,
-      departedMemberProfiles: [],
     };
   }
 
@@ -214,31 +173,6 @@ export class FederationThreadReverseRoundService {
       }
     }
     return this.createContext(threadId, peerDomain, namespaceId);
-  }
-
-  private mergeDepartedMemberProfiles(
-    existing: readonly DepartedMemberProfile[],
-    incoming: readonly DepartedMemberProfile[],
-  ): DepartedMemberProfile[] {
-    const merged = new Map<string, DepartedMemberProfile>();
-    for (const member of [...existing, ...incoming]) {
-      const account = normalizeAccount(member.account);
-      const key = JSON.stringify([member.domain, account]);
-      const current = merged.get(key);
-      if (!current) {
-        merged.set(key, { ...member, account });
-        continue;
-      }
-      const newestProfile =
-        member.profileRev > current.profileRev
-          ? { ...member, account }
-          : current;
-      merged.set(key, {
-        ...newestProfile,
-        lastSentSeq: Math.max(current.lastSentSeq, member.lastSentSeq),
-      });
-    }
-    return [...merged.values()];
   }
 
   private assertContext(context: FederationReverseRoundContext): void {

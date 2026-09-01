@@ -1208,6 +1208,25 @@ export class UploadService {
     return `/uploads/avatars/${base}-${AVATAR_MAX}.webp`;
   }
 
+  /** Decode an authenticated client's canonical base64 avatar and run the normal image pipeline. */
+  async saveAvatarFromClientBase64(base64: string): Promise<string> {
+    if (
+      typeof base64 !== 'string' ||
+      base64.length < 4 ||
+      base64.length > UploadService.MAX_AVATAR_WIRE_B64_LEN ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+        base64,
+      )
+    ) {
+      throw new Error('avatar base64 is invalid');
+    }
+    const bytes = Buffer.from(base64, 'base64');
+    if (bytes.length === 0 || bytes.toString('base64') !== base64) {
+      throw new Error('avatar base64 is not canonical');
+    }
+    return this.saveAvatars(bytes);
+  }
+
   /**
    * Federation outbound: read a stored avatar file back as the S2S wire shape — base64 of the source
    * bytes + the source pixel dimensions (declared, never trusted on the receiving side). Null when the

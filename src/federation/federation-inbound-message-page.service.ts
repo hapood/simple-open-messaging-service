@@ -442,6 +442,7 @@ export class FederationInboundMessagePageService {
           namespaceId: token.namespaceId,
           message: {
             originSeq: item.seq,
+            profileRev: item.profileRev,
             clientMessageId: item.clientMessageId ?? null,
             contentType: item.contentType,
             content: storedContent,

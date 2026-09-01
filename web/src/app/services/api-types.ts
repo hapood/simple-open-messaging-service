@@ -532,23 +532,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/user/update-avatar": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Update the current user avatar (multipart file; sharp rewrites to 32/64/128/256/512 multi-size webp) */
-        post: operations["UserController_updateAvatar"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/user/update-profile": {
         parameters: {
             query?: never;
@@ -1254,7 +1237,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Build notifications from changed threads in the per-user message feed */
+        /** Build notifications from changed thread heads in ClientStateFeed */
         post: operations["NotificationController_queryNotifications"];
         delete?: never;
         options?: never;
@@ -2396,6 +2379,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/settings/federation-history-access": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AdminSettingsController_setFederationHistoryAccess"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/settings/federation-download": {
         parameters: {
             query?: never;
@@ -2523,7 +2522,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Preview the destructive scope of an identity-mismatch halted peer reset (read-only) */
+        /** Preview the namespace retired by an identity-mismatch halted peer reset (read-only) */
         post: operations["AdminFederationController_resetPreview"];
         delete?: never;
         options?: never;
@@ -2540,7 +2539,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Freeze an identity-mismatch halted domain and mark its related threads for resumable truncation */
+        /** Retire the active namespace of an identity-mismatch halted peer */
         post: operations["AdminFederationController_resetPeer"];
         delete?: never;
         options?: never;
@@ -2837,23 +2836,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/admin/media/gc-avatars": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Reap orphaned avatars (no longer any User current avatar) from uploads/avatars */
-        post: operations["MediaAssetGcController_gcAvatars"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/admin/media/forward-bundles/inspect": {
         parameters: {
             query?: never;
@@ -2999,7 +2981,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Admin action audit log (paginated + filter by action/adminId/success) */
+        /** Admin action audit log (paginated + filter by action/adminId/status) */
         post: operations["AuditController_list"];
         delete?: never;
         options?: never;
@@ -3500,6 +3482,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/domain-commands": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Domain command history (paginated and filterable) */
+        post: operations["DomainCommandAdminController_list"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/diagnostics/report": {
         parameters: {
             query?: never;
@@ -3565,22 +3564,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/message-tombstone-feed": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["S2sController_getMessageTombstones"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/s2s/v1/message-tombstones": {
         parameters: {
             query?: never;
@@ -3597,22 +3580,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/message-feed": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["S2sController_getMissed"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/s2s/v1/messages": {
         parameters: {
             query?: never;
@@ -3621,6 +3588,22 @@ export interface paths {
             cookie?: never;
         };
         get: operations["S2sController_queryMessages"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/message-author-profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getMessageAuthorProfile"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3669,6 +3652,22 @@ export interface paths {
             cookie?: never;
         };
         get: operations["S2sController_getUserProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/profiles/{account}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getAuthorizedProfile"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3735,6 +3734,22 @@ export interface paths {
         get: operations["S2sRecognitionController_health"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/user/profile-resolution": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["ProfileResolutionController_start"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3816,6 +3831,11 @@ export interface components {
              */
             threadId: number;
             /**
+             * @description Optional recovery filter. Tombstones above this target message sequence are scanned but omitted.
+             * @example 120
+             */
+            maxMessageSeq?: number;
+            /**
              * @description Exclusive forward tombstone cursor.
              * @example 0
              */
@@ -3830,11 +3850,6 @@ export interface components {
              * @example 20
              */
             through?: number;
-            /**
-             * @description Initial recovery filter: return only tombstones targeting messages at or below this sequence while still scanning the full deletion interval.
-             * @example 200
-             */
-            maxMessageSeq?: number;
             /** @default 100 */
             take: number;
         };
@@ -3865,6 +3880,11 @@ export interface components {
              */
             seq: number;
             /**
+             * @description Immutable complete-profile revision selected when this message was authored
+             * @example 7
+             */
+            profileRev: number;
+            /**
              * @description Content type
              * @enum {string}
              */
@@ -3893,6 +3913,12 @@ export interface components {
             updatedAt: number;
             /** @example false */
             isDeleted: boolean;
+            /**
+             * @description Local materialization state. STUB and FAILED remain client-visible placeholders; only READY participates in derived projections.
+             * @example READY
+             * @enum {string}
+             */
+            localState: "STUB" | "FAILED" | "READY";
             /**
              * @description Client-generated idempotency UUID (present when the message was sent through the optimistic-send path). The frontend correlates its optimistic bubble with this server-confirmed real by this key.
              * @example b3f4a1e2-1c2d-4e3f-8a9b-0c1d2e3f4a5b
@@ -4006,8 +4032,23 @@ export interface components {
              */
             threadId: number;
         };
+        MessageHistoryGapDto: {
+            /**
+             * @description First missing message sequence
+             * @example 20
+             */
+            startSeq: number;
+            /**
+             * @description Last missing message sequence
+             * @example 30
+             */
+            endSeq: number;
+            /** @example true */
+            recoverable: boolean;
+        };
         MessageQueryPageDto: {
             messages: components["schemas"]["MessageResponseDto"][];
+            gaps: components["schemas"]["MessageHistoryGapDto"][];
             /**
              * @description Direction-relative scan cursor
              * @example 42
@@ -4290,12 +4331,23 @@ export interface components {
              * @description Display name (1-30 chars; unicode/emoji allowed)
              * @example Alice
              */
-            name?: string;
+            name: string;
             /**
              * @description Bio (≤120 chars)
              * @example Hey there!
              */
-            bio?: string;
+            bio: string;
+            /** @description Canonical base64 image bytes. Omit to keep the previous avatar; null removes it. */
+            avatarBase64?: string | null;
+        };
+        DomainCommandAcceptedDto: {
+            /**
+             * @description Durable command ID
+             * @example 123
+             */
+            commandId: string;
+            /** @enum {string} */
+            status: "PENDING";
         };
         DeleteFriendDto: {
             /**
@@ -4708,7 +4760,7 @@ export interface components {
         };
         NotificationFeedQueryDto: {
             /**
-             * @description Exclusive per-user message-feed cursor.
+             * @description Exclusive per-user ClientStateFeed cursor.
              * @default 0
              */
             after: number;
@@ -5082,6 +5134,13 @@ export interface components {
             /** @example 8 */
             perPeer: number;
         };
+        FederationHistoryAccessDto: {
+            /**
+             * @default true
+             * @example true
+             */
+            enabled: boolean;
+        };
         FederationDownloadLimitsDto: {
             /** @example 10 */
             global: number;
@@ -5194,8 +5253,11 @@ export interface components {
             action?: string;
             /** @description Scope to one actor */
             adminId?: number;
-            /** @description Filter by outcome */
-            success?: boolean;
+            /**
+             * @description Filter by lifecycle state
+             * @enum {string}
+             */
+            status?: "STARTED" | "SUCCEEDED" | "FAILED";
         };
         AdminManageListDto: {
             /** @default 0 */
@@ -5347,6 +5409,16 @@ export interface components {
             reportIds: string[];
             /** @enum {string} */
             status: "UPHELD" | "REJECTED";
+        };
+        AdminDomainCommandQueryDto: {
+            /** @default 0 */
+            skip: number;
+            /** @default 50 */
+            take: number;
+            /** @description Substring over command type or aggregate key */
+            search?: string;
+            /** @enum {string} */
+            status?: "PENDING" | "PROCESSING" | "SUCCEEDED" | "REJECTED" | "FAILED";
         };
     };
     responses: never;
@@ -6037,23 +6109,6 @@ export interface operations {
             };
         };
     };
-    UserController_updateAvatar: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     UserController_updateProfile: {
         parameters: {
             query?: never;
@@ -6143,7 +6198,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DomainCommandAcceptedDto"];
+                    };
+                };
             };
         };
     };
@@ -6429,7 +6488,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DomainCommandAcceptedDto"];
+                    };
+                };
             };
         };
     };
@@ -6450,7 +6513,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DomainCommandAcceptedDto"];
+                    };
+                };
             };
         };
     };
@@ -6471,7 +6538,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DomainCommandAcceptedDto"];
+                    };
+                };
             };
         };
     };
@@ -6492,7 +6563,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DomainCommandAcceptedDto"];
+                    };
+                };
             };
         };
     };
@@ -6513,7 +6588,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DomainCommandAcceptedDto"];
+                    };
+                };
             };
         };
     };
@@ -6534,7 +6613,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DomainCommandAcceptedDto"];
+                    };
+                };
             };
         };
     };
@@ -6555,7 +6638,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DomainCommandAcceptedDto"];
+                    };
+                };
             };
         };
     };
@@ -6576,7 +6663,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DomainCommandAcceptedDto"];
+                    };
+                };
             };
         };
     };
@@ -6597,7 +6688,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DomainCommandAcceptedDto"];
+                    };
+                };
             };
         };
     };
@@ -6618,7 +6713,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DomainCommandAcceptedDto"];
+                    };
+                };
             };
         };
     };
@@ -6681,7 +6780,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DomainCommandAcceptedDto"];
+                    };
+                };
             };
         };
     };
@@ -6702,7 +6805,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DomainCommandAcceptedDto"];
+                    };
+                };
             };
         };
     };
@@ -6744,7 +6851,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DomainCommandAcceptedDto"];
+                    };
+                };
             };
         };
     };
@@ -6765,7 +6876,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["DomainCommandAcceptedDto"];
+                    };
+                };
             };
         };
     };
@@ -8300,6 +8415,27 @@ export interface operations {
             };
         };
     };
+    AdminSettingsController_setFederationHistoryAccess: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FederationHistoryAccessDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     AdminSettingsController_setFederationDownloadLimits: {
         parameters: {
             query?: never;
@@ -8802,23 +8938,6 @@ export interface operations {
             path: {
                 id: string;
             };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    MediaAssetGcController_gcAvatars: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -9565,6 +9684,27 @@ export interface operations {
             };
         };
     };
+    DomainCommandAdminController_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminDomainCommandQueryDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     DiagnosticsController_report: {
         parameters: {
             query?: never;
@@ -9639,58 +9779,16 @@ export interface operations {
             };
         };
     };
-    S2sController_getMessageTombstones: {
-        parameters: {
-            query: {
-                after: string;
-                take: string;
-                through: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     S2sController_queryMessageTombstones: {
         parameters: {
             query: {
                 account: string;
                 peerAccount: string;
                 after: string;
-                before: string;
                 take: string;
                 through: string;
                 includeSelf: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    S2sController_getMissed: {
-        parameters: {
-            query: {
-                after: string;
-                take: string;
-                through: string;
+                maxMessageSeq: string;
             };
             header?: never;
             path?: never;
@@ -9716,6 +9814,27 @@ export interface operations {
                 take: string;
                 through: string;
                 includeSelf: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getMessageAuthorProfile: {
+        parameters: {
+            query: {
+                account: string;
+                peerAccount: string;
+                messageSeq: string;
             };
             header?: never;
             path?: never;
@@ -9770,6 +9889,23 @@ export interface operations {
         };
     };
     S2sController_getUserProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getAuthorizedProfile: {
         parameters: {
             query?: never;
             header?: never;
@@ -9851,6 +9987,51 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    ProfileResolutionController_start: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    account: string;
+                    domain: string;
+                    rev: number;
+                } | {
+                    threadId: number;
+                    messageSeq: number;
+                };
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        status: "READY";
+                        profile: {
+                            account: string;
+                            domain: string;
+                            rev: number;
+                            name: string;
+                            avatarBase64: string | null;
+                        };
+                    } | {
+                        /** @enum {string} */
+                        status: "PENDING";
+                        /** Format: uuid */
+                        requestId: string;
+                    };
+                };
             };
         };
     };

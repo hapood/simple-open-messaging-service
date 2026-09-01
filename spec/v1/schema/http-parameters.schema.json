@@ -13,6 +13,15 @@
       },
       "additionalProperties": false
     },
+    "authorizedProfileParameters": {
+      "type": "object",
+      "required": ["account", "rev"],
+      "properties": {
+        "account": { "$ref": "urn:somfp:v1:common#/$defs/account" },
+        "rev": { "type": "string", "pattern": "^(0|[1-9][0-9]{0,15})$" }
+      },
+      "additionalProperties": false
+    },
     "feedQuery": {
       "type": "object",
       "dependentRequired": { "take": ["after"], "through": ["after"] },
@@ -152,17 +161,34 @@
       },
       "additionalProperties": false
     },
-    "departedMemberProfileQuery": {
-      "type": "object",
-      "required": ["account"],
-      "dependentRequired": { "take": ["before"], "through": ["before"] },
-      "properties": {
-        "account": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },
-        "before": { "$ref": "urn:somfp:v1:common#/$defs/decimalString" },
-        "through": { "$ref": "urn:somfp:v1:common#/$defs/decimalString" },
-        "take": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" }
-      },
-      "additionalProperties": false
+    "messageAuthorProfileQuery": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["account", "peerAccount", "messageSeq"],
+          "properties": {
+            "account": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
+            "peerAccount": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
+            "messageSeq": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,15}$"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["account", "messageSeq"],
+          "properties": {
+            "account": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },
+            "messageSeq": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,15}$"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
     },
     "mediaParameters": {
       "type": "object",

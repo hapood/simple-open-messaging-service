@@ -3,13 +3,11 @@
 Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
 This document is entirely normative. `GET /s2s/v1/state-feed` is the
-per-peer compacted feed for relationship facts, home-authored profiles,
-group-meta feed-head hints, and per-thread message and deletion query heads.
-Group members, roles, and source-scoped member
-profiles for current members are available only from
-[Group Meta Feed](./group-meta.md). Source-scoped profiles for departed group-
-message authors are available from the
-[Departed Member Profile Feed](./departed-member-profile-query.md).
+per-peer compacted feed for relationship facts, group-meta feed-head hints,
+and per-thread message and deletion query heads. It carries no user or group
+profile display data; Relationship Intent carries only an exact revision
+reference. Message-author display data is resolved only through the exact-message
+[Message Author Profile](./message-author-profile.md) operation.
 
 ## 1. Request and bootstrap
 
@@ -57,7 +55,6 @@ Reading is not acknowledgement and the source stores no consumer cursor.
 
 ```ts
 type StateEventType =
-  | 'PROFILE'
   | 'RELATIONSHIP_INTENT'
   | 'GROUP_META_FEED_HEAD'
   | 'THREAD_CONTENT_HEAD';
@@ -66,11 +63,6 @@ interface StateFeedItemBase {
   account: Account;
   eventType: StateEventType;
   feedId: PositiveDecimalString;
-}
-
-interface ProfileItem extends StateFeedItemBase {
-  eventType: 'PROFILE';
-  body: ProfileBody;
 }
 
 interface RelationshipIntentItem extends StateFeedItemBase {
@@ -99,7 +91,6 @@ interface GroupThreadContentHeadItem extends StateFeedItemBase {
 }
 
 type StateFeedItem =
-  | ProfileItem
   | RelationshipIntentItem
   | GroupMetaFeedHeadItem
   | P2PThreadContentHeadItem
@@ -108,44 +99,19 @@ type StateFeedItem =
 
 `eventType` discriminates the item union; it is not part of an event's business
 stable key. Within one authenticated source feed, each event type defines its
-own stable key: `PROFILE` uses `account`, `RELATIONSHIP_INTENT` uses the directed
-pair `(account, peerAccount)`, `GROUP_META_FEED_HEAD` uses the group `account`,
-and `THREAD_CONTENT_HEAD` uses the Thread Address defined in Section 7. The
+own stable key: `RELATIONSHIP_INTENT` uses the directed pair
+`(account, peerAccount)`, `GROUP_META_FEED_HEAD` uses the group `account`,
+and `THREAD_CONTENT_HEAD` uses the Thread Address defined in Section 6. The
 source domain is the authenticated publisher and is not repeated in an item.
 Only relationship and P2P thread-content items carry `peerAccount`. Unknown
 event types or fields are malformed.
 
-## 4. PROFILE
-
-```ts
-interface ProfileBody {
-  profileRev: SafeInteger;
-  displayName: string;
-  bio: string;
-  avatar: InlineProfileAvatar | null;
-}
-```
-
-A `PROFILE` is a complete home-authored user or group identity profile. Its
-address domain is the authenticated source domain. `displayName` contains 1–30
-Unicode code points and `bio` contains 0–120. The shared
-`InlineProfileAvatar` rules apply. Profile data grants no relationship, membership, message,
-or resource permission.
-
-The source publishes a profile only while the target peer has the corresponding
-effective disclosure source. After publishing a new user/user `REQUESTED`, the
-source MUST publish the requester's current `PROFILE` to that peer at a greater
-`feedId`. It MUST allocate this profile item even when the same `profileRev` is
-already projected, so a receiver that discarded earlier pending state can apply
-the request with a complete display snapshot. Outside this request-bound
-reindex, an unchanged `profileRev` MUST have identical content and does not
-allocate another feed ID.
-
-## 5. RELATIONSHIP_INTENT
+## 4. RELATIONSHIP_INTENT
 
 ```ts
 interface RelationshipIntentBody {
   status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
+  profileRev: SafeInteger;
   note: string;
   requestedAt: EpochMilliseconds | null;
   expiresAt: EpochMilliseconds | null;
@@ -159,7 +125,19 @@ controlled exclusively by its author; a receiver MUST NOT invent or publish a
 transition on the author's behalf. `ACCEPTED` is a durable acknowledgement of a
 request flow, not a second request and not a transport acknowledgement.
 
-### 5.1 Authored intent state machine
+`profileRev` is the source account's immutable profile reference selected when
+the current request flow was authored. `REQUESTED -> ACCEPTED` and the later
+`REVOKED` transition retain that same reference. A new request flow after
+revocation selects the author's chosen revision, normally its local default.
+
+A profile update by itself MUST NOT mutate or republish a
+`RELATIONSHIP_INTENT`, allocate a new State Feed item, or change its
+`profileRev`. Consequently, a peer with no later peer-authored message keeps
+displaying the revision referenced by the relationship flow. P2P profile
+changes become visible through a later message carrying a different
+`profileRev`, not through relationship-state churn.
+
+### 4.1 Authored intent state machine
 
 A `RELATIONSHIP_INTENT` is a single directed state machine from its author to
 its peer:
@@ -182,7 +160,7 @@ The timestamp fields have the following state-dependent invariants:
 - `REVOKED` MUST have `expiresAt: null`. Its `requestedAt` MAY retain the time of
   the superseded request flow or be `null`; it has no effect on revocation.
 
-### 5.2 Derived relationship
+### 4.2 Derived relationship
 
 The relationship is derived by folding two independently authored directional
 intents. The following table is a relationship-derivation matrix, not the state
@@ -238,7 +216,7 @@ snapshot, the receiver retains the expired `REQUESTED` as an ineffective
 authored fact. `REVOKED` is a current compacted fact, not a group-member
 deletion.
 
-## 6. GROUP_META_FEED_HEAD
+## 5. GROUP_META_FEED_HEAD
 
 ```ts
 interface GroupMetaFeedHeadBody {
@@ -248,7 +226,7 @@ interface GroupMetaFeedHeadBody {
 
 The item account MUST be a group owned by the authenticated source domain.
 `groupMetaFeedEndId` is the latest `feedId` in that target peer and
-group's Group Meta feed. It MUST NOT contain a roster, member profile, owner, active flag,
+group's Group Meta feed. It MUST NOT contain a roster, member display data, owner, active flag,
 dissolution flag, group setting, or other meta fact.
 
 The origin commits the target peer's group-meta projection before allocating
@@ -263,7 +241,7 @@ The group owner is derived from the member carrying role `OWNER`; membership
 and active local participation are derived from current member keys.
 Non-member-derived settings are not federated.
 
-## 7. THREAD_CONTENT_HEAD
+## 6. THREAD_CONTENT_HEAD
 
 ```ts
 interface ThreadContentHeadBody {
@@ -301,20 +279,19 @@ If access is later restored, the publisher MUST allocate a new, greater
 `feedId`, even when both query coordinates equal values previously exposed for
 the stable key.
 
-## 8. Ordering, recovery, and authorization
+## 7. Ordering, recovery, and authorization
 
-A source commits a relationship direction before dependent `PROFILE` or
+A source commits a relationship direction before dependent
 `GROUP_META_FEED_HEAD` items become visible. It MUST allocate every
 `THREAD_CONTENT_HEAD` after the current State Feed projections required to
-identify and authorize that thread. For a newly invited P2P participant, this
-places the required `PROFILE` before the first thread-content item. For a group,
-the required `GROUP_META_FEED_HEAD` precedes the thread-content item.
+identify and authorize that thread. For a group, the required
+`GROUP_META_FEED_HEAD` precedes the thread-content item.
 
 State Feed compaction MUST preserve this dependency order for a complete
 rebuild. If a required current projection moves to a greater `feedId`, the
 publisher MUST reindex each dependent thread-content item at a still greater
 `feedId`, even when its two sequence coordinates are unchanged. The consumer
-applies relationship and identity dependencies before accepting their
+applies relationship and roster dependencies before accepting their
 thread-content targets, regardless of placement within one fetched page.
 
 A malformed item is isolated according to the common permanent-item rules. A

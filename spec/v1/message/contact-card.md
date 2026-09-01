@@ -75,6 +75,7 @@ This is a closed schema. `account`, `domain`, and `displayName` are required.
   },
   "authorRef": "THREAD_ACCOUNT",
   "seq": 72,
+  "profileRev": 7,
   "originSeq": null,
   "originCreatedAt": null,
   "createdAt": 1770000020000,

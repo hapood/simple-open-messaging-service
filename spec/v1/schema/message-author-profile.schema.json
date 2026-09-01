@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:somfp:v1:message-author-profile",
+  "title": "GET /s2s/v1/message-author-profile response data",
+  "type": "object",
+  "required": ["account", "domain", "profileRev", "displayName", "avatar"],
+  "properties": {
+    "account": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
+    "domain": { "$ref": "urn:somfp:v1:common#/$defs/domain" },
+    "profileRev": {
+      "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+    },
+    "displayName": { "type": "string", "minLength": 1, "maxLength": 30 },
+    "avatar": {
+      "oneOf": [
+        { "$ref": "urn:somfp:v1:common#/$defs/inlineProfileAvatar" },
+        { "type": "null" }
+      ]
+    }
+  },
+  "additionalProperties": false
+}

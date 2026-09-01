@@ -17,12 +17,13 @@ export function readFederatedFriendCommand(
   return { actorUserId: command.actorUserId, account, domain };
 }
 
-export function readSendFederatedFriendCommand(command: DomainCommand):
-  FederatedFriendCommand & {
-    note: string;
-    displayName: string;
-    avatar?: string;
-  } {
+export function readSendFederatedFriendCommand(
+  command: DomainCommand,
+): FederatedFriendCommand & {
+  note: string;
+  displayName: string;
+  avatar?: string;
+} {
   const base = readFederatedFriendCommand(command);
   const note = readString(command.payload.note, 'note');
   const displayName = readNonEmptyString(

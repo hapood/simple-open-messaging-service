@@ -418,7 +418,7 @@ describe('FederationProfileService resource path', () => {
       name: 'Alice',
       bio: '',
       avatar: '/avatar.webp',
-      profileRev: 7,
+      defaultProfileRev: 7,
     });
     expect(saveAvatarFromWire).toHaveBeenCalledExactlyOnceWith({
       b64: bytes.toString('base64'),

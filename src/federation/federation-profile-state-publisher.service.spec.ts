@@ -15,58 +15,6 @@ function queryResult<T>(value: T) {
 }
 
 describe('FederationProfileStatePublisher', () => {
-  it('publishes a directly addressed user profile', async () => {
-    const tx = {
-      select: vi.fn(() =>
-        queryResult([
-          {
-            account: 'alice',
-            name: 'Alice',
-            avatar: 'avatars/alice.webp',
-            bio: 'hello',
-            profileRev: 4,
-          },
-        ]),
-      ),
-    } as never;
-    const stateFeed = {
-      writeManyInTx: vi.fn().mockResolvedValue(new Map([['peer.test', 7n]])),
-    };
-    const upload = {
-      readAvatarAsWire: vi.fn().mockResolvedValue({
-        b64: Buffer.from('avatar').toString('base64'),
-        w: 32,
-        h: 32,
-      }),
-    };
-    const publisher = new FederationProfileStatePublisher(
-      upload as never,
-      stateFeed as never,
-      {} as never,
-      {} as never,
-      undefined,
-    );
-
-    await expect(
-      publisher.writeUserProfileToPeerInTx(tx, 1, 'peer.test', 12, true),
-    ).resolves.toEqual(new Map([['peer.test', 7n]]));
-    expect(stateFeed.writeManyInTx).toHaveBeenCalledWith(tx, [
-      expect.objectContaining({
-        peerDomain: 'peer.test',
-        namespaceId: 12,
-        account: 'alice',
-        eventType: 'PROFILE',
-        forceReindex: true,
-        body: expect.objectContaining({
-          profileRev: 4,
-          displayName: 'Alice',
-          bio: 'hello',
-          avatar: expect.objectContaining({ width: 32, height: 32 }),
-        }),
-      }),
-    ]);
-  });
-
   it('commits group-meta heads before publishing their state-feed references', async () => {
     const select = vi
       .fn()
@@ -114,7 +62,6 @@ describe('FederationProfileStatePublisher', () => {
       refreshInTx: vi.fn().mockResolvedValue(undefined),
     };
     const publisher = new FederationProfileStatePublisher(
-      { readAvatarAsWire: vi.fn() } as never,
       stateFeed as never,
       clientStateFeed as never,
       threadContentHeads as never,
@@ -128,10 +75,11 @@ describe('FederationProfileStatePublisher', () => {
       'peer.test',
       12,
       9,
+      3,
       [
         expect.objectContaining({
           account: 'alice',
-          body: expect.objectContaining({ role: 'OWNER', profileRev: 2 }),
+          body: { role: 'OWNER' },
         }),
       ],
     );
@@ -139,7 +87,6 @@ describe('FederationProfileStatePublisher', () => {
       groupMetaFeed.reconcileInTx.mock.invocationCallOrder[0],
     ).toBeLessThan(stateFeed.writeManyInTx.mock.invocationCallOrder[0]);
     expect(stateFeed.writeManyInTx).toHaveBeenCalledWith(tx, [
-      expect.objectContaining({ eventType: 'PROFILE', account: '!group' }),
       expect.objectContaining({
         eventType: 'GROUP_META_FEED_HEAD',
         body: { groupMetaFeedEndId: '10' },

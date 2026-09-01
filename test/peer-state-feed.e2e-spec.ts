@@ -5,7 +5,6 @@ import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import { MessageThreadType } from '../src/database/enums.js';
 import {
-  federatedFriendRequest,
   federatedPeer,
   group,
   identityNamespace,
@@ -18,8 +17,6 @@ import {
 } from '../src/database/schema.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
 import { RelationshipIntentService } from '../src/invite/relationship-intent.service.js';
-import { FederationStateFeedConsumerService } from '../src/federation/federation-state-feed-consumer.service.js';
-import type { DatabaseTransaction } from '../src/database/database.service.js';
 
 const DOMAINS = ['state-feed-a.test', 'state-feed-b.test'];
 
@@ -84,123 +81,51 @@ describe('per-peer state feed', () => {
         {
           peerDomain: DOMAINS[0],
           namespaceId: namespaceId(DOMAINS[0]),
-          account: 'alice',
+          account: '!group-a',
           domain: 'local.test',
-          eventType: 'PROFILE',
+          eventType: 'GROUP_META_FEED_HEAD',
           subjectAccount: '',
           subjectDomain: 'local',
-          body: { name: 'A' },
+          body: { groupMetaFeedEndId: '1' },
         },
       ]);
       await feed.writeManyInTx(tx, [
         {
           peerDomain: DOMAINS[0],
           namespaceId: namespaceId(DOMAINS[0]),
-          account: 'alice',
+          account: '!group-a',
           domain: 'local.test',
-          eventType: 'PROFILE',
+          eventType: 'GROUP_META_FEED_HEAD',
           subjectAccount: '',
           subjectDomain: 'local',
-          body: { name: 'B', updatedAt: wireTime, opaqueRevision: 9n },
+          body: { groupMetaFeedEndId: '2', updatedAt: wireTime },
         },
       ]);
       await feed.writeManyInTx(tx, [
         {
           peerDomain: DOMAINS[0],
           namespaceId: namespaceId(DOMAINS[0]),
-          account: 'alice',
+          account: '!group-a',
           domain: 'local.test',
-          eventType: 'PROFILE',
+          eventType: 'GROUP_META_FEED_HEAD',
           subjectAccount: '',
           subjectDomain: 'local',
-          body: { name: 'B', updatedAt: wireTime, opaqueRevision: 9n },
+          body: { groupMetaFeedEndId: '2', updatedAt: wireTime },
         },
       ]);
     });
-    const page = await feed.serve(
-      DOMAINS[0],
-      namespaceId(DOMAINS[0]),
-      0n,
-    );
+    const page = await feed.serve(DOMAINS[0], namespaceId(DOMAINS[0]), 0n);
     expect(page.stateFeedEndId).toBe('2');
     expect(page.scannedThrough).toBe('2');
     expect(page.items).toMatchObject([
       {
         feedId: '2',
         body: {
-          name: 'B',
+          groupMetaFeedEndId: '2',
           updatedAt: wireTime.getTime(),
-          opaqueRevision: '9',
         },
       },
     ]);
-  });
-
-  it('does not persist an unsolicited human PROFILE without a preceding request', async () => {
-    const account = 'unsolicited-profile';
-    const peerDomain = DOMAINS[0];
-    const receiver = Object.create(
-      FederationStateFeedConsumerService.prototype,
-    ) as FederationStateFeedConsumerService;
-    Object.assign(receiver, {
-      config: { domain: 'receiver.test' },
-    });
-    const applyStateFeedPageInTx = receiver.applyPageInTx.bind(receiver) as (
-      tx: DatabaseTransaction,
-      domain: string,
-      namespaceId: number,
-      page: {
-        stateFeedEndId: string;
-        scannedThrough: string;
-        hasMore: boolean;
-        items: Array<{
-          account: string;
-          eventType: 'PROFILE';
-          feedId: string;
-          body: {
-            profileRev: number;
-            displayName: string;
-            bio: string;
-            avatar: null;
-          };
-        }>;
-      },
-    ) => Promise<unknown>;
-
-    await database.db.transaction((tx) =>
-      applyStateFeedPageInTx(tx, peerDomain, namespaceId(peerDomain), {
-        stateFeedEndId: '1',
-        scannedThrough: '1',
-        hasMore: false,
-        items: [
-          {
-            account,
-            eventType: 'PROFILE',
-            feedId: '1',
-            body: {
-              profileRev: 1,
-              displayName: 'Unsolicited Profile',
-              bio: '',
-              avatar: null,
-            },
-          },
-        ],
-      }),
-    );
-
-    expect(
-      await database.db.query.federatedFriendRequest.findFirst({
-        where: and(
-          eq(federatedFriendRequest.remoteDomain, peerDomain),
-          eq(federatedFriendRequest.remoteAccount, account),
-        ),
-      }),
-    ).toBeUndefined();
-    expect(
-      await database.db.query.user.findFirst({
-        where: and(eq(user.domain, peerDomain), eq(user.account, account)),
-      }),
-    ).toBeUndefined();
   });
 
   it('reindexes an unchanged confirmation when explicitly required', async () => {
@@ -209,6 +134,7 @@ describe('per-peer state feed', () => {
     try {
       const body = {
         status: 'ACCEPTED',
+        profileRev: 3,
         note: '',
         requestedAt: wireTime,
         expiresAt: null,
@@ -251,135 +177,13 @@ describe('per-peer state feed', () => {
           feedId: '2',
           body: {
             status: 'ACCEPTED',
+            profileRev: 3,
             note: '',
             requestedAt: wireTime.getTime(),
             expiresAt: null,
           },
         },
       ]);
-    } finally {
-      await database.db
-        .delete(federatedPeer)
-        .where(eq(federatedPeer.domain, domain));
-    }
-  });
-
-  it('advances the feed while reusing the current snapshot revision', async () => {
-    const domain = 'state-feed-snapshot-revision.test';
-    const testNamespaceId = await seedPeer(domain);
-    try {
-      const write = {
-        peerDomain: domain,
-        namespaceId: testNamespaceId,
-        account: 'alice',
-        domain: 'local.test',
-        eventType: 'PROFILE' as const,
-        subjectAccount: '',
-        subjectDomain: 'local',
-        body: { profileRev: 7, displayName: 'Alice', bio: '', avatar: null },
-      };
-      await database.db.transaction(async (tx) => {
-        await feed.writeManyInTx(tx, [write]);
-        await feed.writeManyInTx(tx, [{ ...write, forceReindex: true }]);
-      });
-
-      const page = await feed.serve(domain, testNamespaceId, 0n);
-      expect(page.stateFeedEndId).toBe('2');
-      expect(page.items).toMatchObject([
-        { feedId: '2', body: { profileRev: 7 } },
-      ]);
-    } finally {
-      await database.db
-        .delete(federatedPeer)
-        .where(eq(federatedPeer.domain, domain));
-    }
-  });
-
-  it('deduplicates an unchanged snapshot revision without reindexing', async () => {
-    const domain = 'state-feed-snapshot-dedup.test';
-    const testNamespaceId = await seedPeer(domain);
-    try {
-      const write = {
-        peerDomain: domain,
-        namespaceId: testNamespaceId,
-        account: 'alice',
-        domain: 'local.test',
-        eventType: 'PROFILE' as const,
-        subjectAccount: '',
-        subjectDomain: 'local',
-        body: { profileRev: 8, displayName: 'Alice', bio: '', avatar: null },
-      };
-      await database.db.transaction(async (tx) => {
-        await feed.writeManyInTx(tx, [write]);
-        await feed.writeManyInTx(tx, [write]);
-      });
-
-      const page = await feed.serve(domain, testNamespaceId, 0n);
-      expect(page.stateFeedEndId).toBe('1');
-      expect(page.items).toMatchObject([
-        { feedId: '1', body: { profileRev: 8 } },
-      ]);
-    } finally {
-      await database.db
-        .delete(federatedPeer)
-        .where(eq(federatedPeer.domain, domain));
-    }
-  });
-
-  it('rejects PROFILE changes that do not advance the snapshot revision', async () => {
-    const domain = 'state-feed-snapshot-mutation.test';
-    const testNamespaceId = await seedPeer(domain);
-    try {
-      await expect(
-        database.db.transaction(async (tx) => {
-          await feed.writeManyInTx(tx, [
-            {
-              peerDomain: domain,
-              namespaceId: testNamespaceId,
-              account: 'alice',
-              domain: 'local.test',
-              eventType: 'PROFILE',
-              subjectAccount: '',
-              subjectDomain: 'local',
-              body: {
-                profileRev: 9,
-                displayName: 'Alice',
-                bio: '',
-                avatar: null,
-              },
-            },
-          ]);
-          await feed.writeManyInTx(tx, [
-            {
-              peerDomain: domain,
-              namespaceId: testNamespaceId,
-              account: 'alice',
-              domain: 'local.test',
-              eventType: 'PROFILE',
-              subjectAccount: '',
-              subjectDomain: 'local',
-              forceReindex: true,
-              body: {
-                profileRev: 9,
-                displayName: 'Changed without revision',
-                bio: '',
-                avatar: null,
-              },
-            },
-          ]);
-        }),
-      ).rejects.toThrow('PROFILE revision 9 changed without advancing');
-
-      expect(
-        await database.db.query.peerStateFeedTarget.findFirst({
-          where: eq(peerStateFeedTarget.peerDomain, domain),
-        }),
-      ).toBeUndefined();
-      expect(
-        await database.db.query.peerStateFeed.findFirst({
-          where: eq(peerStateFeed.peerDomain, domain),
-        }),
-      ).toBeUndefined();
     } finally {
       await database.db
         .delete(federatedPeer)
@@ -400,6 +204,7 @@ describe('per-peer state feed', () => {
           eventType: 'RELATIONSHIP_INTENT',
           body: {
             status: 'ACCEPTED',
+            profileRev: 3,
             note: '',
             requestedAt: wireTime,
             expiresAt: null,
@@ -415,6 +220,7 @@ describe('per-peer state feed', () => {
           eventType: 'RELATIONSHIP_INTENT',
           body: {
             status: 'REVOKED',
+            profileRev: 5,
             note: '',
             requestedAt: null,
             expiresAt: null,
@@ -423,12 +229,12 @@ describe('per-peer state feed', () => {
         {
           peerDomain: DOMAINS[1],
           namespaceId: namespaceId(DOMAINS[1]),
-          account: 'alice',
+          account: '!private-to-b',
           domain: 'local.test',
-          eventType: 'PROFILE',
+          eventType: 'GROUP_META_FEED_HEAD',
           subjectAccount: '',
           subjectDomain: 'local',
-          body: { name: 'private-to-b' },
+          body: { groupMetaFeedEndId: '1' },
         },
       ]);
     });
@@ -436,20 +242,12 @@ describe('per-peer state feed', () => {
     const b = await feed.serve(DOMAINS[1], namespaceId(DOMAINS[1]), 0n);
     expect(a.items.map((x) => x.peerAccount)).toEqual(['bob', 'carol']);
     expect(b.items).toHaveLength(1);
-    expect(b.items[0].body).toMatchObject({ name: 'private-to-b' });
+    expect(b.items[0].body).toMatchObject({ groupMetaFeedEndId: '1' });
   });
 
   it('serves an older after without maintaining a source-side peer cursor', async () => {
-    const later = await feed.serve(
-      DOMAINS[0],
-      namespaceId(DOMAINS[0]),
-      4n,
-    );
-    const replay = await feed.serve(
-      DOMAINS[0],
-      namespaceId(DOMAINS[0]),
-      0n,
-    );
+    const later = await feed.serve(DOMAINS[0], namespaceId(DOMAINS[0]), 4n);
+    const replay = await feed.serve(DOMAINS[0], namespaceId(DOMAINS[0]), 0n);
     expect(BigInt(replay.scannedThrough)).toBeGreaterThanOrEqual(
       BigInt(later.scannedThrough),
     );
@@ -463,12 +261,12 @@ describe('per-peer state feed', () => {
           {
             peerDomain: DOMAINS[1],
             namespaceId: namespaceId(DOMAINS[1]),
-            account: 'rollback',
+            account: '!rollback',
             domain: 'local.test',
-            eventType: 'PROFILE',
+            eventType: 'GROUP_META_FEED_HEAD',
             subjectAccount: '',
             subjectDomain: 'local',
-            body: {},
+            body: { groupMetaFeedEndId: '1' },
           },
         ]);
         throw new Error('rollback');
@@ -481,7 +279,7 @@ describe('per-peer state feed', () => {
     const rows = await database.db
       .select()
       .from(peerStateFeed)
-      .where(eq(peerStateFeed.account, 'rollback'));
+      .where(eq(peerStateFeed.account, '!rollback'));
     expect(target.allocatedThrough).toBe(1n);
     expect(rows).toHaveLength(0);
   });
@@ -494,12 +292,12 @@ describe('per-peer state feed', () => {
         {
           peerDomain: domain,
           namespaceId: testNamespaceId,
-          account: 'alice',
+          account: '!group-cascade',
           domain: 'local.test',
-          eventType: 'PROFILE',
+          eventType: 'GROUP_META_FEED_HEAD',
           subjectAccount: '',
           subjectDomain: 'local',
-          body: {},
+          body: { groupMetaFeedEndId: '1' },
         },
       ]),
     );
@@ -549,6 +347,7 @@ describe('per-peer state feed', () => {
           threadId: thread.id,
           author: 'GROUP',
           status: 'REQUESTED',
+          profileRev: 7,
           note: 'first',
           requestedAt: new Date('2026-01-01T00:00:00Z'),
           expiresAt: new Date('2026-01-08T00:00:00Z'),
@@ -571,6 +370,7 @@ describe('per-peer state feed', () => {
           threadId: thread.id,
           author: 'GROUP',
           status: 'REVOKED',
+          profileRev: 7,
           note: 'must not overwrite',
           requestedAt: null,
           expiresAt: null,

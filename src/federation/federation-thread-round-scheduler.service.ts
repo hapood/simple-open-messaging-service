@@ -185,9 +185,7 @@ export class FederationThreadRoundSchedulerService
       event.namespaceId,
     );
     if (this.inactiveThreads.has(key)) return;
-    this.blockedThreads.delete(
-      key,
-    );
+    this.blockedThreads.delete(key);
     if (event.direction === 'both') {
       void this.wakeCaptured(
         event.threadId,
@@ -290,10 +288,7 @@ export class FederationThreadRoundSchedulerService
     if (this.shuttingDown) return;
     const queue = this.queues[direction];
     const workKey = this.workKey(threadId, peerDomain, namespaceId);
-    if (
-      this.blockedThreads.has(workKey) ||
-      this.inactiveThreads.has(workKey)
-    )
+    if (this.blockedThreads.has(workKey) || this.inactiveThreads.has(workKey))
       return;
     if (queue.activeThreads.has(workKey)) {
       queue.dirtyThreads.add(workKey);
@@ -565,12 +560,7 @@ export class FederationThreadRoundSchedulerService
     const delay = this.retryDelay(attempt, minimumDelayMs);
     const timer = setTimeout(() => {
       this.retries.delete(key);
-      void this.retryIfActive(
-        threadId,
-        peerDomain,
-        namespaceId,
-        direction,
-      );
+      void this.retryIfActive(threadId, peerDomain, namespaceId, direction);
     }, delay);
     timer.unref?.();
     this.retries.set(key, timer);

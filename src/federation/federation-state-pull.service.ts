@@ -22,6 +22,7 @@ import { FederationThreadContentHeadService } from './federation-thread-content-
 import { FederationTrustedPeerClient } from './federation-trusted-peer-client.service.js';
 import type { GroupMetaFeedPage } from './group-meta-feed.service.js';
 import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
+import { ProfileResolutionCoordinatorService } from './profile-resolution-coordinator.service.js';
 import {
   PeerStateFeedService,
   type PeerStateFeedPage,
@@ -43,6 +44,7 @@ export class FederationStatePullService {
     private readonly threadContentHeads: FederationThreadContentHeadService,
     private readonly clientStateFeed: ClientStateFeedService,
     private readonly systemMessages: FederationLocalSystemMessagePublisher,
+    private readonly profileResolutions: ProfileResolutionCoordinatorService,
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
@@ -165,6 +167,7 @@ export class FederationStatePullService {
           statePushDomains: [],
           localSystemMessages: [],
           threadRoundWakes: [],
+          profileResolutions: [],
         };
         drainClientFeedUpdates.push(...effect.clientFeedUpdates);
         this.pushStateFeedDomains(effect.statePushDomains);
@@ -172,6 +175,18 @@ export class FederationStatePullService {
           await this.systemMessages.publish(status);
         for (const wake of effect.threadRoundWakes)
           this.eventEmitter.emit(FEDERATION_THREAD_ROUND_WAKE, wake);
+        for (const resolution of effect.profileResolutions)
+          void this.profileResolutions
+            .start(resolution.userId, {
+              account: resolution.account,
+              domain: resolution.domain,
+              rev: resolution.rev,
+            })
+            .catch((error: unknown) =>
+              this.logger.warn(
+                `profile resolution failed for ${resolution.account}@${resolution.domain} rev ${resolution.rev}: ${(error as Error).message}`,
+              ),
+            );
         const feedId = page.items[0]?.feedId;
         if (feedId !== undefined) groupMetaPagesByFeedId.delete(feedId);
       },

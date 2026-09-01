@@ -28,6 +28,12 @@ of retained inbound task rows. Retention limits and a cleanup policy are
 explicitly deferred. Status SSE is used only as a four-state transition wake;
 it does not carry byte progress.
 
+`MEDIA_STATUS` uses the application's existing authenticated `/events` stream.
+It does not own a media-specific SSE connection. Profile resolution reuses the
+same stream as defined in
+[Profile Version Storage and Resolution](./profile-version-resolution.md); the
+two features differ only by named event type and subscriber.
+
 ### 1.1 Current implementation baseline
 
 The repository already has most of the delivery path:

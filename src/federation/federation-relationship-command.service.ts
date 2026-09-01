@@ -85,7 +85,7 @@ export class FederationRelationshipCommandService {
           name: true,
           avatar: true,
           description: true,
-          profileRev: true,
+          defaultProfileRev: true,
         },
       }),
       tx.query.user.findFirst({
@@ -162,7 +162,7 @@ export class FederationRelationshipCommandService {
               name: projectedGroup.name,
               avatar: projectedGroup.avatar,
               description: group.description,
-              profileRev: group.profileRev,
+              profileRev: group.defaultProfileRev,
             },
           },
         });
@@ -188,6 +188,7 @@ export class FederationRelationshipCommandService {
       forceReindex: status === 'ACCEPTED',
       body: {
         status: membership.request.status,
+        profileRev: membership.request.profileRev,
         note: membership.request.note,
         requestedAt: membership.request.requestedAt,
         expiresAt: membership.request.expiresAt,
@@ -225,7 +226,7 @@ export class FederationRelationshipCommandService {
             name: projectedGroup.name,
             avatar: projectedGroup.avatar,
             description: group.description,
-            profileRev: group.profileRev,
+            profileRev: group.defaultProfileRev,
           },
         },
       });
@@ -233,15 +234,7 @@ export class FederationRelationshipCommandService {
         clientFeedUpdates.push({ userId: memberUserId, feedId });
     }
     if (membership.request.status === 'REVOKED') {
-      const intent = await this.stateFeed.writeManyInTx(tx, [relationship]);
-      await this.profiles.cleanupUserProfileProjectionInTx(
-        tx,
-        memberUserId,
-        member.account,
-        group.domain,
-        group.namespaceId!,
-      );
-      return intent;
+      return this.stateFeed.writeManyInTx(tx, [relationship]);
     }
     return this.writeIdentityRelationshipStateToPeerInTx(
       tx,
@@ -270,7 +263,7 @@ export class FederationRelationshipCommandService {
         groupName: tables.group.name,
         groupAvatar: tables.group.avatar,
         groupDescription: tables.group.description,
-        groupProfileRev: tables.group.profileRev,
+        groupProfileRev: tables.group.defaultProfileRev,
         groupNamespaceId: tables.group.namespaceId,
       })
       .from(tables.messageThread)
@@ -381,6 +374,7 @@ export class FederationRelationshipCommandService {
       forceReindex: status === 'ACCEPTED',
       body: {
         status: membership.request.status,
+        profileRev: membership.request.profileRev,
         note: membership.request.note,
         requestedAt: membership.request.requestedAt,
         expiresAt: membership.request.expiresAt,
@@ -399,15 +393,7 @@ export class FederationRelationshipCommandService {
       );
       return new Map([...intent, ...cleanup]);
     }
-    const intent = await this.stateFeed.writeManyInTx(tx, [relationship]);
-    const profile = await this.profiles.writeGroupProfileToPeerInTx(
-      tx,
-      state.groupId,
-      member.domain,
-      member.namespaceId!,
-      membership.request.status === 'REQUESTED',
-    );
-    const identityState = new Map([...intent, ...profile]);
+    const identityState = await this.stateFeed.writeManyInTx(tx, [relationship]);
     if (membership.request.status === 'REQUESTED') return identityState;
     const groupState = await this.profiles.writeGroupStateInTx(
       tx,
@@ -469,21 +455,14 @@ export class FederationRelationshipCommandService {
       forceReindex: forceConfirmationReindex && current.status === 'ACCEPTED',
       body: {
         status: current.status,
+        profileRev: current.profileRev,
         note: current.note,
         requestedAt: current.requestedAt,
         expiresAt: current.expiresAt,
       },
     };
     if (current.status === 'REVOKED') {
-      const written = await this.stateFeed.writeManyInTx(tx, [relationship]);
-      await this.profiles.cleanupUserProfileProjectionInTx(
-        tx,
-        localUserId,
-        local.account,
-        remote.domain,
-        remote.namespaceId!,
-      );
-      return written;
+      return this.stateFeed.writeManyInTx(tx, [relationship]);
     }
     return this.writeIdentityRelationshipStateToPeerInTx(
       tx,
@@ -531,6 +510,14 @@ export class FederationRelationshipCommandService {
         state.snapshot,
       )),
     );
+    const current = (
+      await this.relationshipIntents.readP2PRelationshipInTx(
+        tx,
+        localUserId,
+        remoteUserId,
+      )
+    ).firstIntent;
+    if (!current) throw new Error('addressed friend request write disappeared');
     return this.writeIdentityRelationshipStateToPeerInTx(
       tx,
       localUserId,
@@ -543,10 +530,11 @@ export class FederationRelationshipCommandService {
         subjectDomain: remote.domain,
         eventType: 'RELATIONSHIP_INTENT',
         body: {
-          status: 'REQUESTED',
-          note: state.note,
-          requestedAt: state.requestedAt,
-          expiresAt: state.expiresAt,
+          status: current.status,
+          profileRev: current.profileRev,
+          note: current.note,
+          requestedAt: current.requestedAt,
+          expiresAt: current.expiresAt,
         },
       },
       true,
@@ -559,15 +547,9 @@ export class FederationRelationshipCommandService {
     relationship: PeerStateFeedWrite,
     forceProfileReindex: boolean,
   ): Promise<Map<string, bigint>> {
-    const intent = await this.stateFeed.writeManyInTx(tx, [relationship]);
-    const profile = await this.profiles.writeUserProfileToPeerInTx(
-      tx,
-      identityUserId,
-      relationship.peerDomain,
-      relationship.namespaceId,
-      forceProfileReindex,
-    );
-    return new Map([...intent, ...profile]);
+    void identityUserId;
+    void forceProfileReindex;
+    return this.stateFeed.writeManyInTx(tx, [relationship]);
   }
 
   private async materializeFederatedUserInTx(

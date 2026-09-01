@@ -40,6 +40,7 @@ This is a closed schema. `url`, `title`, and `description` are always required. 
   },
   "authorRef": "THREAD_ACCOUNT",
   "seq": 61,
+  "profileRev": 7,
   "originSeq": null,
   "originCreatedAt": null,
   "createdAt": 1770000010000,

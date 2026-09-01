@@ -151,12 +151,7 @@ describe('FederationThreadForwardRoundExecutorService', () => {
       'origin.test',
       16 * 1024 * 1024,
     );
-    expect(h.messageAdvance).toHaveBeenCalledWith(
-      {},
-      31,
-      60,
-      100,
-    );
+    expect(h.messageAdvance).toHaveBeenCalledWith({}, 31, 60, 100);
     expect(h.deletionAdvance).not.toHaveBeenCalled();
     expect(h.epochLock).toHaveBeenCalledWith({}, 31, 4);
     expect(h.publishMessage).toHaveBeenCalledOnce();
@@ -177,12 +172,7 @@ describe('FederationThreadForwardRoundExecutorService', () => {
       'origin.test',
       4 * 1024 * 1024,
     );
-    expect(h.deletionAdvance).toHaveBeenCalledWith(
-      {},
-      31,
-      9,
-      9,
-    );
+    expect(h.deletionAdvance).toHaveBeenCalledWith({}, 31, 9, 9);
     expect(h.messageAdvance).not.toHaveBeenCalled();
     expect(h.epochLock).toHaveBeenCalledWith({}, 31, 4);
     expect(h.publishTombstone).toHaveBeenCalledOnce();

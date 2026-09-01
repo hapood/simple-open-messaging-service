@@ -55,7 +55,7 @@ import { DomainCommandAdminController } from './domain-command-admin.controller.
     GatewayModule,
     // PushService (exported by PushModule) powers admin/push device-token management + test pushes.
     PushModule,
-    // UploadService lets MediaAssetGcService resolve CAS and avatar paths for manual cleanup.
+    // UploadService lets MediaAssetGcService resolve CAS paths for manual cleanup.
     UploadModule,
     // KvStoreService backs ThrottleGuard's counters (admin/login failure rate-limiting).
     KvStoreModule,

@@ -142,10 +142,6 @@ export function forceTerminatePending(digest: string) {
   );
 }
 
-export function gcAvatars(): Promise<{ sweptFiles: number }> {
-  return request<{ sweptFiles: number }>('/admin/media/gc-avatars');
-}
-
 export function inspectForwardBundles(): Promise<ForwardBundleGcResult> {
   return request<ForwardBundleGcResult>('/admin/media/forward-bundles/inspect');
 }

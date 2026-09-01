@@ -1,7 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { createHash } from 'node:crypto';
 
-import { and, count, eq, gt, lt, ne, or, sql } from 'drizzle-orm';
+import { and, count, eq, gt, ne, or, sql } from 'drizzle-orm';
 import { normalizeAccount } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -25,7 +24,6 @@ import {
 } from '../message/message.service.js';
 import { SystemMessageType } from '../message/system-message.js';
 import { ensureLocalThreadParticipantInTx } from '../thread-participant/local-thread-participant.js';
-import { UploadService } from '../upload/upload.service.js';
 import { upsertSourceUserInTx } from '../user/source-user.js';
 import {
   closeFederatedAudienceInTx,
@@ -37,6 +35,10 @@ import { FederationGroupRosterProjectionService } from './federation-group-roste
 import type { FederationThreadAddress } from './federation-message-feed.service.js';
 import { FederationProfileStatePublisher } from './federation-profile-state-publisher.service.js';
 import { FederationRelationshipCommandService } from './federation-relationship-command.service.js';
+import {
+  type FederationStateEventType,
+  isFederationStateEventType,
+} from './federation-state-event.js';
 import { FEDERATION_THREAD_SEQUENCE_MAX } from './federation-thread-round.constants.js';
 import { FederationThreadSyncStateService } from './federation-thread-sync-state.service.js';
 import type { GroupMetaFeedPage } from './group-meta-feed.service.js';
@@ -77,6 +79,12 @@ export interface StatePageEffect {
     namespaceId: number;
     direction: 'forward' | 'both';
   }>;
+  profileResolutions: Array<{
+    userId: number;
+    account: string;
+    domain: string;
+    rev: number;
+  }>;
 }
 
 /** Applies validated peer State Feed pages inside the pull worker's transaction. */
@@ -87,7 +95,6 @@ export class FederationStateFeedConsumerService {
 
   constructor(
     private readonly relationshipIntents: RelationshipIntentService,
-    private readonly upload: UploadService,
     private readonly clientStateFeed: ClientStateFeedService,
     private readonly stateFeed: PeerStateFeedService,
     private readonly invite: InviteService,
@@ -98,9 +105,8 @@ export class FederationStateFeedConsumerService {
     private readonly groupRosterProjection: FederationGroupRosterProjectionService,
   ) {}
 
-  /** Materialize a stable address-derived identity shell. PROFILE is ordered after the confirming
-   * ACCEPTED, so the initial row intentionally contains placeholders and is filled by a later
-   * verified PROFILE item in the same or a subsequent drain. */
+  /** Materialize a stable address-derived identity shell. Exact profile snapshots are resolved
+   * independently from the revision referenced by an intent or message. */
   async materializeFederatedUserInTx(
     tx: DatabaseTransaction,
     account: string,
@@ -184,25 +190,33 @@ export class FederationStateFeedConsumerService {
     const statePushDomains: string[] = [];
     const localSystemMessages: StatePageEffect['localSystemMessages'] = [];
     const threadRoundWakes: StatePageEffect['threadRoundWakes'] = [];
+    const profileResolutions: StatePageEffect['profileResolutions'] = [];
     // Relationship state creates the authorized group shell before a group-meta revision is applied.
-    // PROFILE then hydrates identity, and the group-meta pull materializes the complete member closure.
-    const applyPriority = {
+    const applyPriority: Record<FederationStateEventType, number> = {
       RELATIONSHIP_INTENT: 0,
-      PROFILE: 1,
-      GROUP_META_FEED_HEAD: 2,
-      THREAD_CONTENT_HEAD: 3,
-    } as const;
+      GROUP_META_FEED_HEAD: 1,
+      THREAD_CONTENT_HEAD: 2,
+    };
+    const priorityOf = (eventType: unknown): number =>
+      isFederationStateEventType(eventType)
+        ? applyPriority[eventType]
+        : Number.MAX_SAFE_INTEGER;
     for (const [itemIndex, item] of [...page.items]
-      .sort((a, b) => applyPriority[a.eventType] - applyPriority[b.eventType])
+      .sort((a, b) => priorityOf(a.eventType) - priorityOf(b.eventType))
       .entries()) {
       const savepoint = `federation_state_${itemIndex}`;
       const clientFeedUpdatesLength = clientFeedUpdates.length;
       const statePushLength = statePushDomains.length;
       const systemMessageLength = localSystemMessages.length;
       const threadRoundWakeLength = threadRoundWakes.length;
+      const profileResolutionLength = profileResolutions.length;
       await tx.execute(sql.raw(`SAVEPOINT ${savepoint}`));
       try {
         const wireItem = item as unknown as Record<string, unknown>;
+        if (!isFederationStateEventType(wireItem.eventType))
+          throw new PermanentFederationItemError(
+            'unknown state feed event type',
+          );
         const allowedKeys = new Set([
           'account',
           'eventType',
@@ -223,258 +237,14 @@ export class FederationStateFeedConsumerService {
           );
         if (!item.body || typeof item.body !== 'object')
           throw new PermanentFederationItemError('invalid state feed body');
-        if (item.eventType === 'PROFILE') {
-          const body = item.body as {
-            profileRev?: unknown;
-            displayName?: unknown;
-            bio?: unknown;
-            avatar?: unknown;
-          };
-          if (
-            !Number.isInteger(body.profileRev) ||
-            Number(body.profileRev) < 0 ||
-            Number(body.profileRev) > 2_147_483_647 ||
-            typeof body.displayName !== 'string' ||
-            typeof body.bio !== 'string'
-          )
-            throw new PermanentFederationItemError('invalid PROFILE body');
-          const revision = Number(body.profileRev);
-          const isGroupProfile = item.account.startsWith('!');
-          const currentProfile = isGroupProfile
-            ? await tx.query.group.findFirst({
-                where: and(
-                  eq(tables.group.account, normalizeAccount(item.account)),
-                  eq(tables.group.domain, peerDomain),
-                  eq(tables.group.namespaceId, namespaceId),
-                ),
-                columns: { id: true, profileRev: true },
-              })
-            : await tx.query.user.findFirst({
-                where: and(
-                  eq(tables.user.account, normalizeAccount(item.account)),
-                  eq(tables.user.domain, peerDomain),
-                  eq(tables.user.sourceDomain, peerDomain),
-                  eq(tables.user.namespaceId, namespaceId),
-                ),
-                columns: { id: true, profileRev: true },
-              });
-          const currentRevision = currentProfile?.profileRev;
-          if (currentRevision !== undefined && currentRevision >= revision)
-            continue;
-          const pendingRequests = await tx
-            .select({
-              localUserId: tables.federatedFriendRequest.localUserId,
-              note: tables.federatedFriendRequest.note,
-              requestedAt: tables.federatedFriendRequest.requestedAt,
-              expiresAt: tables.federatedFriendRequest.expiresAt,
-            })
-            .from(tables.federatedFriendRequest)
-            .where(
-              and(
-                eq(tables.federatedFriendRequest.remoteAccount, item.account),
-                eq(tables.federatedFriendRequest.remoteDomain, peerDomain),
-                eq(tables.federatedFriendRequest.namespaceId, namespaceId),
-                eq(tables.federatedFriendRequest.direction, 'INCOMING'),
-                eq(tables.federatedFriendRequest.status, 'REQUESTED'),
-              ),
-            );
-          // A PROFILE is a dependent snapshot, never an unsolicited discovery mechanism. A human
-          // profile without either an already-materialized identity or a preceding request is ignored.
-          if (!currentProfile && pendingRequests.length === 0) continue;
-          let avatar: string | null = null;
-          if (body.avatar !== null) {
-            const wire = body.avatar as {
-              digest?: unknown;
-              mimeType?: unknown;
-              base64?: unknown;
-              width?: unknown;
-              height?: unknown;
-            };
-            if (
-              !wire ||
-              typeof wire.digest !== 'string' ||
-              !/^[a-f0-9]{64}$/.test(wire.digest) ||
-              typeof wire.mimeType !== 'string' ||
-              typeof wire.base64 !== 'string' ||
-              !Number.isSafeInteger(wire.width) ||
-              Number(wire.width) < 1 ||
-              !Number.isSafeInteger(wire.height) ||
-              Number(wire.height) < 1
-            )
-              throw new PermanentFederationItemError('invalid PROFILE avatar');
-            const bytes = Buffer.from(wire.base64, 'base64');
-            if (
-              bytes.toString('base64') !== wire.base64 ||
-              createHash('sha256').update(bytes).digest('hex') !== wire.digest
-            )
-              throw new PermanentFederationItemError(
-                'PROFILE avatar digest mismatch',
-              );
-            avatar = await this.upload.saveAvatarFromWire({
-              b64: wire.base64,
-              w: Number(wire.width),
-              h: Number(wire.height),
-            });
-          }
-          let profileUserId: number | null = null;
-          if (isGroupProfile) {
-            if (!currentProfile) continue;
-            await tx
-              .update(tables.group)
-              .set({
-                name: body.displayName,
-                description: body.bio,
-                avatar: avatar ?? '',
-                profileRev: revision,
-                updatedAt: new Date(),
-              })
-              .where(
-                and(
-                  eq(tables.group.id, currentProfile.id),
-                  lt(tables.group.profileRev, revision),
-                ),
-              );
-          } else {
-            profileUserId = await upsertSourceUserInTx(tx, {
-              account: item.account,
-              domain: peerDomain,
-              sourceDomain: peerDomain,
-              namespaceId,
-              name: body.displayName,
-              avatar,
-              bio: body.bio,
-              profileRev: revision,
-            });
-          }
-          if (pendingRequests.length > 0 && !item.account.startsWith('!')) {
-            await tx
-              .update(tables.federatedFriendRequest)
-              .set({
-                displayName: body.displayName,
-                avatar,
-                profileRevision: revision,
-                updatedAt: new Date(),
-              })
-              .where(
-                and(
-                  eq(tables.federatedFriendRequest.remoteAccount, item.account),
-                  eq(tables.federatedFriendRequest.remoteDomain, peerDomain),
-                  eq(tables.federatedFriendRequest.namespaceId, namespaceId),
-                  eq(tables.federatedFriendRequest.direction, 'INCOMING'),
-                  eq(tables.federatedFriendRequest.status, 'REQUESTED'),
-                ),
-              );
-            for (const pending of pendingRequests) {
-              const localUser = await tx.query.user.findFirst({
-                where: eq(tables.user.id, pending.localUserId),
-                columns: { account: true, domain: true },
-              });
-              if (!localUser) continue;
-              const clientFeedId = await this.clientStateFeed.writeInTx(tx, {
-                userId: pending.localUserId,
-                namespaceId,
-                account: normalizeAccount(item.account),
-                domain: peerDomain,
-                eventType: 'RELATIONSHIP_INTENT',
-                subjectAccount: localUser.account,
-                subjectDomain: localUser.domain,
-                body: {
-                  status: 'REQUESTED',
-                  note: pending.note,
-                  requestedAt: pending.requestedAt?.getTime() ?? null,
-                  expiresAt: pending.expiresAt?.getTime() ?? null,
-                  direction: 'INCOMING',
-                  localThreadId: null,
-                  peer: {
-                    id: 0,
-                    account: normalizeAccount(item.account),
-                    name: body.displayName,
-                    avatar: avatar ?? '',
-                    domain: peerDomain,
-                  },
-                },
-              });
-              if (clientFeedId !== null)
-                clientFeedUpdates.push({
-                  userId: pending.localUserId,
-                  feedId: clientFeedId,
-                });
-            }
-          }
-          if (isGroupProfile && pendingRequests.length > 0) {
-            for (const pending of pendingRequests) {
-              const feedId = await this.clientStateFeed.writeInTx(tx, {
-                userId: pending.localUserId,
-                namespaceId,
-                account: normalizeAccount(item.account),
-                domain: peerDomain,
-                eventType: 'PROFILE',
-                subjectAccount: '',
-                subjectDomain: 'local',
-                body: {
-                  profileRev: revision,
-                  displayName: body.displayName,
-                  bio: body.bio,
-                  avatar: avatar ?? null,
-                },
-              });
-              if (feedId !== null)
-                clientFeedUpdates.push({
-                  userId: pending.localUserId,
-                  feedId,
-                });
-            }
-          }
-          if (profileUserId === null) continue;
-          const consumerCandidates = await tx.execute<{
-            userId: number;
-            threadId: number;
-          }>(sql`
-          SELECT DISTINCT local_participant."accountId" AS "userId",
-            foreign_member."threadId"
-          FROM "ThreadMember" foreign_member
-          JOIN "ThreadParticipant" local_participant
-            ON local_participant."threadId" = foreign_member."threadId"
-          WHERE foreign_member."userId" = ${profileUserId}
-        `);
-          const consumers = (
-            await Promise.all(
-              consumerCandidates.rows.map(async (candidate) => ({
-                ...candidate,
-                authorized:
-                  (await isThreadMutuallyAuthorized(
-                    tx,
-                    profileUserId,
-                    candidate.threadId,
-                  )) &&
-                  (await isThreadMutuallyAuthorized(
-                    tx,
-                    candidate.userId,
-                    candidate.threadId,
-                  )),
-              })),
-            )
-          ).filter((candidate) => candidate.authorized);
-          clientFeedUpdates.push(
-            ...(await this.clientStateFeed.recordProfileStateInTx(
-              tx,
-              profileUserId,
-              consumers.map((row) => row.userId),
-            )),
-          );
-          const published = await this.publishGroupMemberProfileInTx(
-            tx,
-            profileUserId,
-            clientFeedUpdates,
-          );
-          statePushDomains.push(...published.keys());
-        } else if (
+        if (
           item.eventType === 'RELATIONSHIP_INTENT' &&
           !item.account.startsWith('!') &&
           !item.peerAccount?.startsWith('!')
         ) {
           const body = item.body as {
             status?: unknown;
+            profileRev?: unknown;
             note?: unknown;
             requestedAt?: unknown;
             expiresAt?: unknown;
@@ -484,6 +254,9 @@ export class FederationStateFeedConsumerService {
             !['REQUESTED', 'ACCEPTED', 'REVOKED'].includes(
               String(body.status),
             ) ||
+            !Number.isSafeInteger(body.profileRev) ||
+            Number(body.profileRev) < 0 ||
+            Number(body.profileRev) > 2_147_483_647 ||
             typeof body.note !== 'string' ||
             body.note.length > 255 ||
             (body.requestedAt !== null &&
@@ -500,7 +273,13 @@ export class FederationStateFeedConsumerService {
             (body.status !== 'REQUESTED' && body.expiresAt !== null) ||
             Object.keys(body).some(
               (key) =>
-                !['status', 'note', 'requestedAt', 'expiresAt'].includes(key),
+                ![
+                  'status',
+                  'profileRev',
+                  'note',
+                  'requestedAt',
+                  'expiresAt',
+                ].includes(key),
             )
           )
             throw new PermanentFederationItemError(
@@ -557,7 +336,7 @@ export class FederationStateFeedConsumerService {
               account: tables.user.account,
               name: tables.user.name,
               avatar: tables.user.avatar,
-              profileRev: tables.user.profileRev,
+              profileRev: tables.user.defaultProfileRev,
             })
             .from(tables.user)
             .where(
@@ -573,6 +352,14 @@ export class FederationStateFeedConsumerService {
             throw new PermanentFederationItemError(
               'user relationship local subject does not exist',
             );
+          if (body.status !== 'REVOKED') {
+            profileResolutions.push({
+              userId: localUser.id,
+              account: normalizeAccount(item.account),
+              domain: peerDomain,
+              rev: Number(body.profileRev),
+            });
+          }
           // Pending federation requests are keyed by immutable Address even when
           // this server happens to have materialized the same remote account for
           // another relationship. Stub existence must not switch persistence to
@@ -581,7 +368,7 @@ export class FederationStateFeedConsumerService {
             const pendingName =
               remoteUser?.name ?? normalizeAccount(item.account);
             const pendingAvatar = remoteUser?.avatar ?? null;
-            const pendingProfileRevision = remoteUser?.profileRev ?? 0;
+            const pendingProfileRevision = Number(body.profileRev);
             const applied = await tx.execute(sql`
             INSERT INTO "FederatedFriendRequest" (
               "localUserId", "remoteAccount", "remoteDomain", "namespaceId", direction, status,
@@ -627,6 +414,7 @@ export class FederationStateFeedConsumerService {
                     name: pendingName,
                     avatar: pendingAvatar ?? '',
                     domain: peerDomain,
+                    profileRev: Number(body.profileRev),
                   },
                 },
               });
@@ -662,6 +450,17 @@ export class FederationStateFeedConsumerService {
                 requestedAt: tables.federatedFriendRequest.requestedAt,
               });
             if (crossed) {
+              if (!remoteUser)
+                throw new Error('crossed friend request identity disappeared');
+              const authored = (
+                await this.relationshipIntents.readP2PRelationshipInTx(
+                  tx,
+                  localUser.id,
+                  remoteUser.id,
+                )
+              ).firstIntent;
+              if (!authored)
+                throw new Error('crossed friend request intent disappeared');
               const confirmation = await this.stateFeed.writeManyInTx(tx, [
                 {
                   peerDomain,
@@ -674,6 +473,7 @@ export class FederationStateFeedConsumerService {
                   forceReindex: true,
                   body: {
                     status: 'ACCEPTED',
+                    profileRev: authored.profileRev,
                     note: crossed.note,
                     requestedAt: crossed.requestedAt,
                     expiresAt: null,
@@ -735,6 +535,7 @@ export class FederationStateFeedConsumerService {
                       normalizeAccount(item.account),
                     avatar: revoked.rows[0].avatar ?? '',
                     domain: peerDomain,
+                    profileRev: Number(body.profileRev),
                   },
                 },
               });
@@ -812,6 +613,8 @@ export class FederationStateFeedConsumerService {
                   subjectUserId: localUser.id,
                   threadId: null,
                   status: 'REQUESTED',
+                  profileRev:
+                    incoming.profileRevision ?? Number(body.profileRev),
                   note: incoming.note,
                   requestedAt: incoming.requestedAt,
                   expiresAt: incoming.expiresAt,
@@ -828,7 +631,7 @@ export class FederationStateFeedConsumerService {
           }
           if (!remoteUser)
             throw new PermanentFederationItemError(
-              'user relationship arrived without PROFILE',
+              'user relationship has no materialized identity shell',
             );
           const effect = await this.invite.applyRemoteFriendIntentInTx(tx, {
             localUserId: localUser.id,
@@ -839,6 +642,7 @@ export class FederationStateFeedConsumerService {
                 : body.status === 'REVOKED'
                   ? 'REVOKED'
                   : 'REQUESTED',
+            profileRev: Number(body.profileRev),
             note: body.note,
             requestedAt,
             expiresAt,
@@ -883,6 +687,7 @@ export class FederationStateFeedConsumerService {
                 forceReindex: true,
                 body: {
                   status: localDirection.status,
+                  profileRev: localDirection.profileRev,
                   note: localDirection.note,
                   requestedAt: localDirection.requestedAt,
                   expiresAt: localDirection.expiresAt,
@@ -945,6 +750,7 @@ export class FederationStateFeedConsumerService {
             );
           const body = item.body as {
             status?: unknown;
+            profileRev?: unknown;
             note?: unknown;
             requestedAt?: unknown;
             expiresAt?: unknown;
@@ -953,6 +759,9 @@ export class FederationStateFeedConsumerService {
             !['REQUESTED', 'ACCEPTED', 'REVOKED'].includes(
               String(body.status),
             ) ||
+            !Number.isSafeInteger(body.profileRev) ||
+            Number(body.profileRev) < 0 ||
+            Number(body.profileRev) > 2_147_483_647 ||
             typeof body.note !== 'string' ||
             body.note.length > 255 ||
             (body.requestedAt !== null &&
@@ -963,7 +772,13 @@ export class FederationStateFeedConsumerService {
                 Number(body.expiresAt) < 0)) ||
             Object.keys(body).some(
               (key) =>
-                !['status', 'note', 'requestedAt', 'expiresAt'].includes(key),
+                ![
+                  'status',
+                  'profileRev',
+                  'note',
+                  'requestedAt',
+                  'expiresAt',
+                ].includes(key),
             )
           )
             throw new PermanentFederationItemError(
@@ -1033,9 +848,16 @@ export class FederationStateFeedConsumerService {
               threadId: shell.threadId,
               author: 'GROUP',
               status: storageStatus,
+              profileRev: Number(body.profileRev),
               note: body.note,
               requestedAt,
               expiresAt,
+            });
+            profileResolutions.push({
+              userId: localMember.id,
+              account: groupAccount,
+              domain: peerDomain,
+              rev: Number(body.profileRev),
             });
             await tx
               .insert(tables.federatedFriendRequest)
@@ -1051,7 +873,7 @@ export class FederationStateFeedConsumerService {
                 expiresAt,
                 displayName: groupAccount,
                 avatar: null,
-                profileRevision: 0,
+                profileRevision: Number(body.profileRev),
                 updatedAt: new Date(),
               })
               .onConflictDoUpdate({
@@ -1090,7 +912,7 @@ export class FederationStateFeedConsumerService {
                   name: groupAccount,
                   avatar: '',
                   description: '',
-                  profileRev: 0,
+                  profileRev: Number(body.profileRev),
                 },
               },
             });
@@ -1108,7 +930,7 @@ export class FederationStateFeedConsumerService {
               name: tables.group.name,
               avatar: tables.group.avatar,
               description: tables.group.description,
-              profileRev: tables.group.profileRev,
+              profileRev: tables.group.defaultProfileRev,
             })
             .from(tables.group)
             .where(
@@ -1180,10 +1002,36 @@ export class FederationStateFeedConsumerService {
               threadId: relationshipThread.id,
               author: inviteDirection ? 'GROUP' : 'MEMBER',
               status: storageStatus,
+              profileRev: Number(body.profileRev),
               note: body.note,
               requestedAt,
               expiresAt,
             });
+          if (!inviteDirection && storageStatus !== 'REVOKED') {
+            const managers = await tx
+              .select({ userId: tables.threadMember.userId })
+              .from(tables.threadMember)
+              .innerJoin(
+                tables.user,
+                eq(tables.user.id, tables.threadMember.userId),
+              )
+              .where(
+                and(
+                  eq(tables.threadMember.threadId, relationshipThread.id),
+                  eq(tables.threadMember.left, false),
+                  sql`${tables.threadMember.role} IN ('OWNER', 'ADMIN')`,
+                  eq(tables.user.domain, 'local'),
+                ),
+              );
+            for (const manager of managers) {
+              profileResolutions.push({
+                userId: manager.userId,
+                account: normalizeAccount(item.account),
+                domain: peerDomain,
+                rev: Number(body.profileRev),
+              });
+            }
+          }
           if (!inviteDirection && membership.changed) {
             const originThread = await tx.query.messageThread.findFirst({
               where: eq(tables.messageThread.groupId, groupState.id),
@@ -1570,22 +1418,6 @@ export class FederationStateFeedConsumerService {
             );
           statePushDomains.push(...groupEffect.statePushDomains);
           localSystemMessages.push(...groupEffect.systemMessages);
-          // A newly active local member's profile must enter the outbound state
-          // feed in the same transaction as the mirror roster. Otherwise a crash
-          // after applying GROUP_META could permanently lose the profile publication.
-          for (const userId of new Set(
-            groupEffect.users
-              .filter((effect) => effect.active)
-              .map((effect) => effect.userId),
-          )) {
-            const profiles =
-              await this.profileStatePublisher.writeProfileStateInTx(
-                tx,
-                userId,
-                clientFeedUpdates,
-              );
-            statePushDomains.push(...profiles.keys());
-          }
         } else if (item.eventType === 'THREAD_CONTENT_HEAD') {
           const body = item.body as {
             messageEndSeq?: unknown;
@@ -1664,6 +1496,7 @@ export class FederationStateFeedConsumerService {
         statePushDomains.length = statePushLength;
         localSystemMessages.length = systemMessageLength;
         threadRoundWakes.length = threadRoundWakeLength;
+        profileResolutions.length = profileResolutionLength;
         if (!(error instanceof PermanentFederationItemError)) throw error;
         this.logger.error(
           `ignored invalid state-feed item from ${peerDomain} at ${item.feedId}: ${error.message}`,
@@ -1677,48 +1510,8 @@ export class FederationStateFeedConsumerService {
       statePushDomains,
       localSystemMessages,
       threadRoundWakes,
+      profileResolutions,
     };
-  }
-
-  /** Refresh every local-origin group source that exposes this member. */
-  private async publishGroupMemberProfileInTx(
-    tx: DatabaseTransaction,
-    userId: number,
-    clientFeedUpdates: PendingClientStateFeedUpdate[],
-  ): Promise<Map<string, bigint>> {
-    const groups = await tx.execute<{ threadId: number }>(sql`
-      SELECT DISTINCT member."threadId"
-      FROM "ThreadMember" member
-      JOIN "MessageThread" thread ON thread.id = member."threadId" AND thread.type = 'GROUP'
-      JOIN "Group" group_profile ON group_profile.id = thread."groupId" AND group_profile.domain = 'local'
-      WHERE member."userId" = ${userId} AND member."left" = false
-    `);
-    const result = new Map<string, bigint>();
-    for (const group of groups.rows) {
-      if (!(await isThreadMutuallyAuthorized(tx, userId, group.threadId)))
-        continue;
-      const state = await this.refreshGroupMemberProjectionInTx(
-        tx,
-        group.threadId,
-        clientFeedUpdates,
-      );
-      for (const entry of state) result.set(...entry);
-    }
-    return result;
-  }
-
-  /** A member profile change is a group-meta semantic change and therefore advances the same group
-   * revision used by roster mutations before publishing the compacted member projection. */
-  private async refreshGroupMemberProjectionInTx(
-    tx: DatabaseTransaction,
-    threadId: number,
-    clientFeedUpdates?: PendingClientStateFeedUpdate[],
-  ): Promise<Map<string, bigint>> {
-    return this.profileStatePublisher.writeGroupStateInTx(
-      tx,
-      threadId,
-      clientFeedUpdates,
-    );
   }
 
   private async applyGroupMetaFeedPageInTx(
@@ -1740,7 +1533,10 @@ export class FederationStateFeedConsumerService {
     const groupAccount = normalizeAccount(account);
     const revision = BigInt(page.scannedThrough);
     const [mirror] = await tx
-      .select({ threadId: tables.messageThread.id })
+      .select({
+        threadId: tables.messageThread.id,
+        groupId: tables.group.id,
+      })
       .from(tables.group)
       .innerJoin(
         tables.messageThread,
@@ -1770,15 +1566,35 @@ export class FederationStateFeedConsumerService {
       if (!/^[1-9]\d*$/.test(member.feedId))
         throw new Error('invalid group-meta feed id');
       const feedId = BigInt(member.feedId);
+      if (feedId <= previousFeedId || feedId > BigInt(page.scannedThrough))
+        throw new Error('invalid group-meta item');
+      previousFeedId = feedId;
+      if (member.operation === 'GROUP_PROFILE') {
+        if (
+          !Number.isSafeInteger(member.body.profileRev) ||
+          member.body.profileRev < 0 ||
+          (page.mode === 'full' &&
+            page.items.filter((item) => item.operation === 'GROUP_PROFILE')
+              .length !== 1)
+        ) {
+          throw new Error('invalid group-meta profile item');
+        }
+        await tx
+          .update(tables.group)
+          .set({
+            defaultProfileRev: member.body.profileRev,
+            updatedAt: new Date(),
+          })
+          .where(eq(tables.group.id, mirror.groupId));
+        continue;
+      }
       if (
-        feedId <= previousFeedId ||
-        feedId > BigInt(page.scannedThrough) ||
         typeof member.account !== 'string' ||
         typeof member.domain !== 'string' ||
         (member.operation !== 'UPSERT' && member.operation !== 'DEPART')
-      )
+      ) {
         throw new Error('invalid group-meta member');
-      previousFeedId = feedId;
+      }
       const memberAccount = normalizeAccount(member.account);
       const key = `${member.domain}\u0000${memberAccount}`;
       if (page.mode === 'full') {
@@ -1814,59 +1630,20 @@ export class FederationStateFeedConsumerService {
           afterRole: previous && !previous.left ? previous.role : null,
         });
       }
-      const body = member.body as {
-        role?: unknown;
-        profileRev?: unknown;
-        displayName?: unknown;
-        avatar?: unknown;
-      };
+      const body = member.body as { role?: unknown };
       if (
         !Object.values(GroupRole).includes(body.role as GroupRole) ||
-        !Number.isSafeInteger(body.profileRev) ||
-        Number(body.profileRev) < 0 ||
-        typeof body.displayName !== 'string' ||
-        body.displayName.length < 1
+        Object.keys(body).some((key) => key !== 'role')
       )
         throw new Error('invalid group-meta member body');
-      let avatar: string | null = null;
-      if (body.avatar !== null) {
-        const wire = body.avatar as {
-          digest?: unknown;
-          base64?: unknown;
-          width?: unknown;
-          height?: unknown;
-        };
-        if (
-          !wire ||
-          typeof wire.digest !== 'string' ||
-          !/^[a-f0-9]{64}$/.test(wire.digest) ||
-          typeof wire.base64 !== 'string' ||
-          !Number.isSafeInteger(wire.width) ||
-          Number(wire.width) < 1 ||
-          !Number.isSafeInteger(wire.height) ||
-          Number(wire.height) < 1
-        )
-          throw new Error('invalid group-meta member avatar');
-        const bytes = Buffer.from(wire.base64, 'base64');
-        if (
-          bytes.toString('base64') !== wire.base64 ||
-          createHash('sha256').update(bytes).digest('hex') !== wire.digest
-        )
-          throw new Error('group-meta member avatar digest mismatch');
-        avatar = await this.upload.saveAvatarFromWire({
-          b64: wire.base64,
-          w: Number(wire.width),
-          h: Number(wire.height),
-        });
-      }
       const sourceUserId = await upsertSourceUserInTx(tx, {
         account: memberAccount,
         domain: member.domain,
         sourceDomain: peerDomain,
         namespaceId,
-        name: body.displayName,
-        avatar,
-        profileRev: Number(body.profileRev),
+        name: memberAccount,
+        avatar: null,
+        profileRev: 0,
       });
       await tx
         .insert(tables.threadMember)

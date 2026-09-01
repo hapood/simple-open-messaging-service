@@ -94,6 +94,11 @@ pub(crate) async fn native_db_get_group_member(
                'domain',member.member_domain,'sourceDomain',member.source_domain,
                'namespaceId',member.namespace_id,
                'role',member.role,'left',json('false'),
+               'profileRev',member.profile_rev,
+               'profileMessageSeq',member.profile_message_seq,
+               'resolvedProfileRev',member.resolved_profile_rev,
+               'profileName',member.profile_name,
+               'profileAvatar',member.profile_avatar,
                'user',json(identity.payload_json))
              FROM members member JOIN users identity
                ON identity.user_id=member.user_id AND identity.account=member.member_account
@@ -133,6 +138,11 @@ pub(crate) async fn native_db_query_group_members(
                    'sourceDomain', member.source_domain, 'namespaceId', member.namespace_id,
                    'role', member.role,
                    'left', json('false'),
+                   'profileRev',member.profile_rev,
+                   'profileMessageSeq',member.profile_message_seq,
+                   'resolvedProfileRev',member.resolved_profile_rev,
+                   'profileName',member.profile_name,
+                   'profileAvatar',member.profile_avatar,
                    'user', json(identity.payload_json)
                  )
                  FROM members member JOIN users identity
@@ -165,6 +175,82 @@ pub(crate) async fn native_db_query_group_members(
     })
     .await
     .map_err(|e| format!("join group member page: {e}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn native_db_record_group_member_profile_ref(
+    app: tauri::AppHandle,
+    user_id: i64,
+    thread_id: i64,
+    account: String,
+    domain: String,
+    source_domain: String,
+    namespace_id: i64,
+    profile_rev: i64,
+    message_seq: i64,
+) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let changed = open(&app)?
+            .execute(
+                "UPDATE members SET profile_rev=?7,profile_message_seq=?8
+                 WHERE user_id=?1 AND thread_id=?2 AND member_account=?3
+                   AND member_domain=?4
+                   AND left_state=0 AND COALESCE(profile_message_seq,0)<?8",
+                params![
+                    user_id,
+                    thread_id,
+                    account,
+                    domain,
+                    source_domain,
+                    namespace_id,
+                    profile_rev,
+                    message_seq,
+                ],
+            )
+            .map_err(|e| format!("record group member profile reference: {e}"))?;
+        Ok(changed > 0)
+    })
+    .await
+    .map_err(|e| format!("join group member profile reference write: {e}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn native_db_store_group_member_profile(
+    app: tauri::AppHandle,
+    user_id: i64,
+    thread_id: i64,
+    account: String,
+    domain: String,
+    source_domain: String,
+    namespace_id: i64,
+    profile_rev: i64,
+    name: String,
+    avatar: String,
+) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let changed = open(&app)?
+            .execute(
+                "UPDATE members SET resolved_profile_rev=?7,profile_name=?8,profile_avatar=?9
+                 WHERE user_id=?1 AND thread_id=?2 AND member_account=?3
+                   AND member_domain=?4
+                   AND left_state=0 AND profile_rev=?7",
+                params![
+                    user_id,
+                    thread_id,
+                    account,
+                    domain,
+                    source_domain,
+                    namespace_id,
+                    profile_rev,
+                    name,
+                    avatar,
+                ],
+            )
+            .map_err(|e| format!("store group member profile: {e}"))?;
+        Ok(changed > 0)
+    })
+    .await
+    .map_err(|e| format!("join group member profile write: {e}"))?
 }
 
 #[tauri::command]

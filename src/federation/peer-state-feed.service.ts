@@ -20,18 +20,35 @@ export type PeerStateEventType = (typeof peerStateEventType.enumValues)[number];
 /** The `/s2s/v1` route is the schema version; bodies contain business state only. */
 export type PeerStateBody = Record<string, unknown>;
 
-export interface PeerStateFeedWrite {
+interface PeerStateFeedWriteBase {
   peerDomain: string;
   namespaceId: number;
   account: string;
   domain: string;
-  eventType: PeerStateEventType;
   subjectAccount: string;
   subjectDomain: string;
-  body: PeerStateBody;
   /** Reallocate the same body after one of its referenced compacted keys moved later. */
   forceReindex?: boolean;
 }
+
+export type PeerStateFeedWrite = PeerStateFeedWriteBase &
+  (
+    | {
+        eventType: 'RELATIONSHIP_INTENT';
+        body: PeerStateBody & { status: unknown; profileRev: number };
+      }
+    | {
+        eventType: 'GROUP_META_FEED_HEAD';
+        body: PeerStateBody & { groupMetaFeedEndId: string };
+      }
+    | {
+        eventType: 'THREAD_CONTENT_HEAD';
+        body: PeerStateBody & {
+          messageEndSeq: number;
+          tombstoneEndSeq: number;
+        };
+      }
+  );
 
 export interface PeerStateFeedPage {
   items: Array<{
@@ -70,10 +87,7 @@ const snapshotRevision = (
       ? `${Number(messageEndSeq)}:${Number(tombstoneEndSeq)}`
       : undefined;
   }
-  const value = eventType === 'PROFILE' ? body.profileRev : undefined;
-  return Number.isSafeInteger(value) && Number(value) >= 0
-    ? Number(value)
-    : undefined;
+  return undefined;
 };
 
 @Injectable()
@@ -259,7 +273,10 @@ export class PeerStateFeedService {
               eventType: 'THREAD_CONTENT_HEAD' as const,
               subjectAccount: dependent.subjectAccount,
               subjectDomain: dependent.subjectDomain,
-              body: dependent.body as PeerStateBody,
+              body: dependent.body as PeerStateBody & {
+                messageEndSeq: number;
+                tombstoneEndSeq: number;
+              },
               forceReindex: true,
             })),
           );

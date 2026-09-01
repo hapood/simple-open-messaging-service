@@ -21,6 +21,7 @@ import { MemberProfileRepository } from './member-profile-store.service';
 import { ToastService } from './toast.service';
 import { TranslocoService } from '@jsverse/transloco';
 import { FederationNamespaceService } from './federation-namespace.service';
+import { ProfileResolutionService } from './profile-resolution.service';
 
 const CLIENT_FEED_CURSOR_UNAVAILABLE = 30006;
 
@@ -68,6 +69,7 @@ export class ThreadRepository {
   private readonly toast = inject(ToastService);
   private readonly transloco = inject(TranslocoService);
   private readonly namespaces = inject(FederationNamespaceService);
+  private readonly profileResolutions = inject(ProfileResolutionService);
 
   private readonly _items = signal<ConversationItem[]>([]);
   readonly items = this._items.asReadonly();
@@ -298,6 +300,13 @@ export class ThreadRepository {
           this.localStableReadSeq.set(item.threadId, item.lastReadSeq);
       }
       this.applyItems(cached); // flips READY
+      for (const item of cached) {
+        if (item.type === 'P2P' && item.peerProfileMessageSeq != null)
+          this.resolveThreadPeerProfile(
+            item.threadId,
+            item.peerProfileMessageSeq,
+          );
+      }
       void this.hydratePreviews(); // re-derive previews from the local message store
     } else if (this._items().length === 0 && this._status() !== 'READY') {
       this._status.set('LOADING'); // cold start, no cache → await HELLO's delta
@@ -644,6 +653,86 @@ export class ThreadRepository {
     }
     this._pendingTopId = null;
     return topId;
+  }
+
+  private resolveThreadPeerProfile(threadId: number, messageSeq: number): void {
+    this.profileResolutions.resolve({ threadId, messageSeq }).subscribe({
+      next: (profile) => {
+        let changed: P2PConversationItem | undefined;
+        this._items.update((items) =>
+          items.map((item) => {
+            if (
+              item.threadId !== threadId ||
+              item.type !== 'P2P' ||
+              item.peerProfileMessageSeq !== messageSeq ||
+              item.peerUser.account !== profile.account
+            )
+              return item;
+            changed = {
+              ...item,
+              peerUser: {
+                ...item.peerUser,
+                name: profile.name,
+                avatar: profile.avatarBase64
+                  ? `data:image/webp;base64,${profile.avatarBase64}`
+                  : '',
+                profileRev: profile.rev,
+              },
+            };
+            return changed;
+          }),
+        );
+        if (changed) void this.persistThread(changed);
+      },
+      error: (error: unknown) =>
+        console.warn(
+          `[profile] failed to resolve thread ${threadId} message ${messageSeq}`,
+          error,
+        ),
+    });
+  }
+
+  private resolveThreadGroupProfile(
+    threadId: number,
+    account: string,
+    domain: string,
+    rev: number,
+  ): void {
+    this.profileResolutions.resolve({ account, domain, rev }).subscribe({
+      next: (profile) => {
+        let changed: GroupConversationItem | undefined;
+        this._items.update((items) =>
+          items.map((item) => {
+            if (
+              item.threadId !== threadId ||
+              item.type !== 'GROUP' ||
+              item.group.account !== account ||
+              item.group.domain !== domain ||
+              item.group.profileRev !== rev
+            )
+              return item;
+            changed = {
+              ...item,
+              group: {
+                ...item.group,
+                name: profile.name,
+                avatar: profile.avatarBase64
+                  ? `data:image/webp;base64,${profile.avatarBase64}`
+                  : '',
+                profileRev: profile.rev,
+              },
+            };
+            return changed;
+          }),
+        );
+        if (changed) void this.persistThread(changed);
+      },
+      error: (error: unknown) =>
+        console.warn(
+          `[profile] failed to resolve group thread ${threadId} revision ${rev}`,
+          error,
+        ),
+    });
   }
 
   private applyPeerProfile(u: User): void {
@@ -1077,6 +1166,7 @@ export class ThreadRepository {
                 ...current,
                 lastMessageSeq: op.body.messageEndSeq,
                 tombstoneEndSeq: op.body.tombstoneEndSeq,
+                peerProfileMessageSeq: op.body.peerProfileMessageSeq,
                 lastMessagePreviewSeq: op.body.preview.seq,
                 lastMessagePreview: op.body.preview.text,
                 lastMessageSenderId: op.body.preview.senderId,
@@ -1089,6 +1179,11 @@ export class ThreadRepository {
               void this.messageRepo.updateTombstoneTarget(
                 op.body.threadId,
                 op.body.tombstoneEndSeq,
+              );
+            if (op.body.peerProfileMessageSeq != null)
+              this.resolveThreadPeerProfile(
+                op.body.threadId,
+                op.body.peerProfileMessageSeq,
               );
           } else if (op.eventType === 'THREAD_BLOCK') {
             this.applyThreadMeta(op.body.threadId, {
@@ -1208,13 +1303,19 @@ export class ThreadRepository {
       { eventType: 'PROFILE' }
     >,
   ): void {
+    const matchingGroups = this._items().filter(
+      (thread): thread is GroupConversationItem =>
+        thread.type === 'GROUP' &&
+        thread.group.account === item.account &&
+        thread.group.domain === item.domain,
+    );
     this._items.update((threads) =>
       threads.map((thread) => {
         if (
           thread.type === 'P2P' &&
+          thread.peerProfileMessageSeq == null &&
           thread.peerUser.account === item.account &&
-          (thread.peerUser.domain ?? '') === item.domain &&
-          item.body.profileRev >= (thread.peerUser.profileRev ?? 0)
+          (thread.peerUser.domain ?? '') === item.domain
         )
           return {
             ...thread,
@@ -1229,22 +1330,27 @@ export class ThreadRepository {
         if (
           thread.type === 'GROUP' &&
           thread.group.account === item.account &&
-          thread.group.domain === item.domain &&
-          item.body.profileRev >= thread.group.profileRev
+          thread.group.domain === item.domain
         )
           return {
             ...thread,
             group: {
               ...thread.group,
-              name: item.body.displayName,
-              description: item.body.bio,
-              avatar: item.body.avatar ?? '',
+              name: thread.group.account,
+              avatar: '',
               profileRev: item.body.profileRev,
             },
           };
         return thread;
       }),
     );
+    for (const thread of matchingGroups)
+      this.resolveThreadGroupProfile(
+        thread.threadId,
+        item.account,
+        item.domain,
+        item.body.profileRev,
+      );
   }
 
   private async prefetchGroupMeta(

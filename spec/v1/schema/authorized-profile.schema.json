@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:somfp:v1:authorized-profile",
+  "title": "GET /s2s/v1/profiles/:account response data",
+  "type": "object",
+  "required": [
+    "account",
+    "domain",
+    "displayName",
+    "bio",
+    "avatar",
+    "profileRev"
+  ],
+  "properties": {
+    "account": { "$ref": "urn:somfp:v1:common#/$defs/account" },
+    "domain": { "$ref": "urn:somfp:v1:common#/$defs/domain" },
+    "displayName": { "type": "string", "minLength": 1, "maxLength": 30 },
+    "bio": { "type": "string", "maxLength": 120 },
+    "avatar": {
+      "oneOf": [
+        { "$ref": "urn:somfp:v1:common#/$defs/inlineProfileAvatar" },
+        { "type": "null" }
+      ]
+    },
+    "profileRev": {
+      "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+    }
+  },
+  "additionalProperties": false
+}

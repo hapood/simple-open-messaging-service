@@ -128,6 +128,12 @@ export class MessageResponseDto {
   })
   seq!: number;
 
+  @ApiProperty({
+    example: 7,
+    description: 'Immutable complete-profile revision selected when this message was authored',
+  })
+  profileRev!: number;
+
   @ApiProperty({ enum: ContentType, description: 'Content type' })
   contentType!: ContentType;
 

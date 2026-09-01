@@ -38,6 +38,8 @@ import {
 import { UserService } from '../../services/user.service';
 import { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
 import { ProfileRepository } from '../../services/profile-store.service';
+import { ProfileResolutionService } from '../../services/profile-resolution.service';
+import { MemberProfileRepository } from '../../services/member-profile-store.service';
 import {
   messageCreatorKey,
   parseUserIdentityKey,
@@ -151,6 +153,19 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   private readonly onNewerAvailable: (seq: number) => void;
   private readonly seqsByCreator = new Map<string, Set<number>>();
   private readonly profilesInFlight = new Map<string, Promise<void>>();
+  private readonly profilesBySeq = new Map<
+    number,
+    {
+      name: string;
+      account: string;
+      avatar: string;
+      domain: string;
+      isSelf: boolean;
+      avatarIdentityId: string;
+    }
+  >();
+  private readonly profileRequests = new Set<number>();
+  private readonly profileSubscriptions = new Set<Subscription>();
   private initializingDb = true;
   private loadedSeq = -1;
   /** Newer-edge demands are long-lived: at the current newest they remain pending until a real item exists. */
@@ -181,6 +196,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     private readonly outbox: ThreadSendOutbox,
     live: HttpItemSourceLiveOpts,
     private readonly profileRepo?: ProfileRepository,
+    private readonly profileResolver?: ProfileResolutionService,
+    private readonly memberProfiles?: MemberProfileRepository,
   ) {
     this.pending = outbox.forThread(conv.threadId);
     this.onMediaStatus = live.onMediaStatus ?? (() => {});
@@ -479,6 +496,9 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     this.mediaStatusSub = undefined;
     this.reconnectSub?.unsubscribe();
     this.reconnectSub = undefined;
+    for (const subscription of this.profileSubscriptions)
+      subscription.unsubscribe();
+    this.profileSubscriptions.clear();
     for (const waiter of this.newerWaiters) waiter.subscriber.complete();
     this.newerWaiters.clear();
     this.gapIdByKey.clear();
@@ -721,7 +741,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     }
     if (m.creator === null) throw new Error('authored message has no creator');
     const creatorKey = this.creatorKey(m.creator)!;
-    const p = this.profiles.get(creatorKey);
+    const p = this.profilesBySeq.get(m.seq) ?? this.profiles.get(creatorKey);
     if (!p) throw new Error('message User was not resolved');
     const textContent =
       m.contentType === 'PURE_TEXT'
@@ -796,6 +816,26 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 
   /** Resolve every authored row from the local source-scoped User table before constructing UI items. */
   private async ensureProfiles(msgs: Message[]): Promise<void> {
+    if (this.conv.type === 'GROUP' && this.memberProfiles) {
+      await Promise.all(
+        msgs.flatMap((message) => {
+          if (message.creator === null) return [];
+          const identity = parseUserIdentityKey(
+            this.creatorKey(message.creator)!,
+          );
+          return identity
+            ? [
+                this.memberProfiles!.recordMessageProfile(
+                  this.conv.threadId,
+                  identity,
+                  message.profileRev,
+                  message.seq,
+                ),
+              ]
+            : [];
+        }),
+      );
+    }
     const missing = new Set<string>();
     for (const m of msgs) {
       if (m.creator === null) continue;
@@ -835,6 +875,65 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         return load;
       }),
     );
+    if (!this.profileResolver) return;
+    for (const message of msgs) {
+      if (
+        message.creator === null ||
+        this.profileRequests.has(message.seq) ||
+        this.profilesBySeq.has(message.seq)
+      )
+        continue;
+      this.profileRequests.add(message.seq);
+      const creatorKey = this.creatorKey(message.creator)!;
+      let subscription!: Subscription;
+      subscription = this.profileResolver
+        .resolve({ threadId: this.conv.threadId, messageSeq: message.seq })
+        .subscribe({
+          next: (resolved) => {
+            const profile = {
+              name: resolved.name,
+              account: resolved.account,
+              avatar: resolved.avatarBase64
+                ? `data:image/webp;base64,${resolved.avatarBase64}`
+                : '',
+              avatarIdentityId: `${creatorKey}\u0000profile:${resolved.rev}`,
+              domain: resolved.domain,
+              isSelf: this.isSelfAddress(
+                message.creator!.account,
+                message.creator!.domain,
+              ),
+            };
+            this.profilesBySeq.set(message.seq, profile);
+            if (this.conv.type === 'GROUP' && this.memberProfiles) {
+              const identity = parseUserIdentityKey(creatorKey);
+              if (identity)
+                void this.memberProfiles.storeResolvedProfile(
+                  this.conv.threadId,
+                  identity,
+                  {
+                    rev: resolved.rev,
+                    name: resolved.name,
+                    avatar: profile.avatar,
+                  },
+                );
+            }
+            this.onProfile(message.seq, {
+              name: profile.name,
+              avatar: profile.avatar,
+              avatarIdentityId: profile.avatarIdentityId,
+              avatarAccount: profile.account,
+              avatarDomain: profile.domain,
+              isSelf: profile.isSelf,
+            });
+          },
+          error: () => {
+            this.profileRequests.delete(message.seq);
+          },
+          complete: () => this.profileSubscriptions.delete(subscription),
+        });
+      this.profileSubscriptions.add(subscription);
+      if (subscription.closed) this.profileSubscriptions.delete(subscription);
+    }
   }
 }
 

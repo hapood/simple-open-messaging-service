@@ -396,7 +396,7 @@ export class ThreadParticipantService {
       if (peer.domain !== 'local')
         await closeFederatedAudienceInTx(tx, peer.domain, threadId);
 
-      const request = await tx.execute(sql`
+      const request = await tx.execute<{ profileRev: number }>(sql`
         INSERT INTO "RelationshipIntent" (
           "pairId", "authorSide", status, note,
           "requestedAt", "expiresAt", "updatedAt"
@@ -405,7 +405,7 @@ export class ThreadParticipantService {
           status = 'REVOKED', note = '', "requestedAt" = NULL,
           "expiresAt" = NULL, "updatedAt" = CURRENT_TIMESTAMP
         WHERE "RelationshipIntent".status <> 'REVOKED'
-        RETURNING 1
+        RETURNING "profileRev"
       `);
       if (peer.domain === 'local')
         await tx.execute(sql`
@@ -424,6 +424,9 @@ export class ThreadParticipantService {
         WHERE id = ${pairId} AND active = true
       `);
       if ((request.rowCount ?? 0) > 0 && peer.domain !== 'local') {
+        const profileRev = request.rows[0]?.profileRev;
+        if (profileRev === undefined)
+          throw new Error('revoked friend intent disappeared');
         const localDomain = process.env.SOMS_DOMAIN;
         if (!localDomain)
           throw new Error('SOMS_DOMAIN is required for federation state');
@@ -438,6 +441,7 @@ export class ThreadParticipantService {
             eventType: 'RELATIONSHIP_INTENT',
             body: {
               status: 'REVOKED',
+              profileRev,
               note: '',
               requestedAt: null,
               expiresAt: null,

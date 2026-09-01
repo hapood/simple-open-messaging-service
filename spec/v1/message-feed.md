@@ -6,7 +6,7 @@ Normative scope: this entire document is normative.
 This document defines the per-thread message-content query
 `GET /s2s/v1/messages`. The compacted `thread + messageEndSeq +
 tombstoneEndSeq` discovery projection is a `THREAD_CONTENT_HEAD` item in
-[State Feed](./state-feed.md#7-thread_content_head). Authorization, message
+[State Feed](./state-feed.md#6-thread_content_head). Authorization, message
 return, and content-retention policy are applied by the query operation. See
 [Message](./message.md) for message schemas and [Protocol](./protocol.md) for
 common rules.
@@ -162,22 +162,17 @@ completely replicated or processed, generate a processing receipt for a skipped
 message, or infer any source-side deletion or acknowledgement. This choice does
 not alter source data, authorization, allocation proofs, or query coordinates.
 
-For a GROUP reverse reconstruction, message and departed-member profile windows
-MUST both start with the exclusive boundary `E+1` derived from the same
-committed `messageEndSeq=E`. Each actual reverse message batch ends at the
-message response's direction-relative `scannedThrough`, including when the page
-contains no message. The corresponding departed-member profile drain MUST cover
-that same source-sequence window. Later pages continue only from successfully
-committed `scannedThrough` values. A consumer MUST NOT bootstrap either query
-at an unrelated intermediate `before`. After reconstruction, ordinary forward
-processing continues from the latest position adopted before the reverse drain;
-reverse progress does not move that position backward.
+For a GROUP reverse reconstruction, the first message query starts with the
+exclusive boundary `E+1` derived from the committed `messageEndSeq=E`. Later
+pages continue only from successfully committed `scannedThrough` values. After
+reconstruction, ordinary forward processing continues from the latest position
+adopted before the reverse drain; reverse progress does not move that position
+backward.
 
 A reverse message batch is not reconciled until the consumer has applied the
-required Group Meta state, the corresponding departed-member profile pages, and
-every authoritative tombstone it has already discovered for that batch. An
-unresolved message dependency prevents reconciliation until the message can be
-accepted or an authoritative tombstone terminates it.
+required Group Meta state and every authoritative tombstone it has already
+discovered for that batch. Display profiles MAY be resolved lazily per message
+and do not block message-coordinate acceptance.
 
 ## 4. Authorization and state reconciliation
 
@@ -202,7 +197,27 @@ When the revalidated state still authorizes the denied request, the consumer MUS
 
 Authorization calculation MAY atomically derive immediately available state from existing authoritative facts, such as request expiration, friendship validity, or group-audience validity. This reconciliation MUST be idempotent and MUST NOT create an invitation, accept a friendship, join a group, or expand the current request's authorization merely because the peer issued a GET.
 
-The consumer receives messages idempotently by `(source domain, thread, seq)`. A forward consumer MAY fetch a bounded message interval concurrently with its bounded authoritative tombstone drain, but it does not complete reconciliation of that interval until both results have been applied. For an ordinary forward GROUP interval, it SHOULD first commit the required Group Meta head, including complete profile-bearing `DEPART` items, and MUST NOT query the reverse-only [Departed Member Profile Feed](./departed-member-profile-query.md). If Group Meta has not converged, the stable author Address remains valid, the consumer MUST continue the Group Meta drain, and it MUST NOT infer a role or current-membership state from the absent profile projection. Reverse reconstruction MUST apply its corresponding departed-member profile page before completing reconciliation of the reconstructed window. Concurrent forward fetching does not permit a required reverse profile page to be bypassed. Media and forward bundles continue to use the exact message binding in [Resources](./resources.md).
+The consumer receives messages idempotently by `(source domain, thread, seq)`.
+Every message carries the exact immutable author `profileRev`. A forward
+consumer MAY fetch a bounded message interval concurrently with its bounded authoritative
+tombstone drain, but it does not complete reconciliation of that interval until
+both results have been applied. For a GROUP interval, it SHOULD first commit
+the required role-only Group Meta head. If Group Meta has not converged, the
+stable author Address remains valid, the consumer MUST continue Group Meta
+drain, and it MUST NOT infer a role or current-membership state. The consumer
+MAY fetch display data using [Message Author Profile](./message-author-profile.md)
+after accepting the message coordinate. For P2P thread display, the greatest
+committed `seq` authored by the peer selects its carried `profileRev`; the
+consumer MUST NOT compare revision numbers or let a self-authored message
+replace the peer selection. Media and forward bundles continue to use the exact
+message binding in [Resources](./resources.md).
+
+For group member display, a consumer SHOULD keep the selected revision scoped
+to `(group thread, author Address)`. Within that scope, the greatest committed
+message `seq` authored by that member selects its carried `profileRev`.
+Selection in one group MUST NOT replace the member display selection in another
+group. This local materialization rule does not add member profile data to
+Group Meta and does not change group-profile selection for the thread avatar.
 
 ## 5. Query-specific deferral results
 

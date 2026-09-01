@@ -7,7 +7,6 @@ import {
   FORWARD_MAX_WIRE_JSON_BYTES,
   type ForwardWireBundle,
 } from '../forward/forward-bundle.service.js';
-import { FederationDepartedMemberProfileConsumerService } from './federation-departed-member-profile-consumer.service.js';
 import {
   encodeFederationResourceComponent,
   requireBundleId,
@@ -46,7 +45,6 @@ export class FederationThreadReverseRoundExecutorService {
     private readonly database: DatabaseService,
     private readonly rounds: FederationThreadReverseRoundService,
     private readonly federation: FederationService,
-    private readonly departedProfiles: FederationDepartedMemberProfileConsumerService,
     private readonly sources: FederationThreadSourceService,
   ) {}
 
@@ -73,26 +71,6 @@ export class FederationThreadReverseRoundExecutorService {
           messageBatch = fetched.batch;
           return fetched.result;
         },
-        ...(source.kind === 'GROUP'
-          ? {
-              processDepartedMemberProfiles: ({
-                before,
-                through,
-                take: pageTake,
-              }: {
-                threadId: number;
-                peerDomain: string;
-                before: number;
-                through: number;
-                take: number;
-              }) =>
-                this.departedProfiles.fetch(source, {
-                  before,
-                  through,
-                  take: pageTake,
-                }),
-            }
-          : {}),
         complete: ({ context, closesGap }) => {
           if (!messageBatch)
             throw new Error('reverse round completed without a message batch');
@@ -316,13 +294,6 @@ export class FederationThreadReverseRoundExecutorService {
               messageSeqOffset: context.messageSeqOffset,
             });
           publish = applied.publish;
-          if (source.kind === 'GROUP') {
-            await this.departedProfiles.applyInTransaction(
-              tx,
-              source,
-              context.departedMemberProfiles,
-            );
-          }
           await this.federation.finalizeReverseMessageWindowInTransaction(tx, {
             threadId: source.threadId,
             peerDomain: source.peerDomain,

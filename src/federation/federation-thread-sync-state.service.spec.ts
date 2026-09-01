@@ -428,9 +428,7 @@ describe('FederationThreadSyncStateService reverse window reconstruction', () =>
       },
     } as never);
 
-    await expect(
-      service.resolveReverseWindow(31),
-    ).resolves.toEqual({
+    await expect(service.resolveReverseWindow(31)).resolves.toEqual({
       authorizationEpoch: 8,
       gapId: 12n,
       beforeSeq: 100,
@@ -453,9 +451,7 @@ describe('FederationThreadSyncStateService reverse window reconstruction', () =>
       },
     } as never);
 
-    await expect(
-      service.resolveReverseWindow(31),
-    ).resolves.toEqual({
+    await expect(service.resolveReverseWindow(31)).resolves.toEqual({
       authorizationEpoch: 8,
       gapId: null,
       beforeSeq: 0,

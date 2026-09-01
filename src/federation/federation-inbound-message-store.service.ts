@@ -51,6 +51,7 @@ export interface FederationInboundMessageStoreParams {
   namespaceId: number;
   message: {
     originSeq: number;
+    profileRev: number;
     clientMessageId: string | null;
     contentType: string;
     content: string;
@@ -237,6 +238,7 @@ export class FederationInboundMessageStoreService {
             creator.domain === this.config.domain ? 0 : namespaceId,
           seq,
           originSeq: incoming.originSeq,
+          profileRev: incoming.profileRev,
           clientMessageId: incoming.clientMessageId,
           originServerTime: originTime,
           federationSourceDomain: fetchedFromDomain,
@@ -245,6 +247,14 @@ export class FederationInboundMessageStoreService {
           updatedAt: new Date(),
         })
         .returning({ id: tables.message.id });
+      await this.recordGroupMemberProfileReference(
+        tx,
+        threadId,
+        creator,
+        namespaceId,
+        incoming.profileRev,
+        seq,
+      );
       if (!sequencePolicy) {
         await recordHostedGroupSentBoundaries(tx, threadId, creator, seq);
         await ClientThreadContentHeadWriter.publishMessage(tx, threadId, seq);
@@ -322,6 +332,7 @@ export class FederationInboundMessageStoreService {
           creator.domain === this.config.domain ? 0 : namespaceId,
         seq,
         originSeq: incoming.originSeq,
+        profileRev: incoming.profileRev,
         clientMessageId: incoming.clientMessageId,
         originServerTime: originTime,
         federationSourceDomain: fetchedFromDomain,
@@ -331,6 +342,14 @@ export class FederationInboundMessageStoreService {
         updatedAt: new Date(),
       })
       .returning();
+    await this.recordGroupMemberProfileReference(
+      tx,
+      threadId,
+      creator,
+      namespaceId,
+      incoming.profileRev,
+      seq,
+    );
     if (!sequencePolicy) {
       await recordHostedGroupSentBoundaries(tx, threadId, creator, seq);
     }
@@ -384,6 +403,30 @@ export class FederationInboundMessageStoreService {
       );
     }
     return { kind: 'message', message, storedContent, localForwardBundleId };
+  }
+
+  private async recordGroupMemberProfileReference(
+    tx: DatabaseTransaction,
+    threadId: number,
+    creator: { account: string; domain: string },
+    namespaceId: number,
+    profileRev: number,
+    messageSeq: number,
+  ): Promise<void> {
+    await tx.execute(sql`
+      UPDATE "ThreadMember" membership
+      SET "profileRev" = ${profileRev},
+          "profileMessageSeq" = ${messageSeq},
+          "updatedAt" = CURRENT_TIMESTAMP
+      FROM "User" member
+      WHERE membership."threadId" = ${threadId}
+        AND member.id = membership."userId"
+        AND member.account = ${creator.account}
+        AND member.domain = ${creator.domain}
+        AND member."namespaceId" = ${creator.domain === this.config.domain ? 0 : namespaceId}
+        AND (membership."profileMessageSeq" IS NULL
+          OR membership."profileMessageSeq" < ${messageSeq})
+    `);
   }
 
   async resolveLocalQuoteSeq(

@@ -230,10 +230,6 @@ export async function configureApp(
         method: RequestMethod.GET,
       },
       {
-        path: `${FEDERATION_API_PREFIX}/departed-member-profiles`,
-        method: RequestMethod.GET,
-      },
-      {
         path: `${FEDERATION_API_PREFIX}/messages`,
         method: RequestMethod.GET,
       },
@@ -244,6 +240,14 @@ export async function configureApp(
       { path: `${FEDERATION_API_PREFIX}/call`, method: RequestMethod.POST },
       {
         path: `${FEDERATION_API_PREFIX}/users/:account`,
+        method: RequestMethod.GET,
+      },
+      {
+        path: `${FEDERATION_API_PREFIX}/profiles/:account`,
+        method: RequestMethod.GET,
+      },
+      {
+        path: `${FEDERATION_API_PREFIX}/message-author-profile`,
         method: RequestMethod.GET,
       },
       {

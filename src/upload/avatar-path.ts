@@ -10,7 +10,7 @@ import {
  *  - {@link UploadService.saveAvatars} (writer) — imports AVATAR_SIZES/AVATAR_MAX,
  *  - the {@link IsValidAvatarPath} DTO validator (rejects /uploads/cas/ + external URLs for
  *    Group.avatar, so a group avatar can never sit under the per-object authz gate's shards/ scope),
- *  - the avatar GC (walks uploads/avatars/, groups files by <base>).
+ *  - avatar URL parsing and responsive-size selection.
  *
  * URL shape: `/uploads/avatars/<base>-<size>.webp`. `<base>` = `${Date.now()}-${randomBytes(6).hex}`
  * (hyphenated); `<size>` ∈ AVATAR_SIZES.
@@ -25,12 +25,6 @@ export const AVATAR_MAX = 512;
 
 const SIZE_ALT = AVATAR_SIZES.join('|');
 
-/** Matches an avatar FILENAME on disk: `<base>-<size>.webp`. Captures `<base>`. Used by the GC walk
- *  to identify avatar files and group all sizes of one logical avatar together. */
-export const AVATAR_FILE_RE = new RegExp(
-  `^([A-Za-z0-9._-]+)-(?:${SIZE_ALT})\\.webp$`,
-);
-
 /** Matches an avatar URL: `/uploads/avatars/<base>-<size>.webp`. Captures `<base>`. The literal
  *  `avatars/` segment + the absence of any other `/` after it distinguishes it from `/uploads/cas/*`
  *  NEVER matches (shards has extra path segments) — so a group avatar can never be pointed at gated
@@ -38,13 +32,6 @@ export const AVATAR_FILE_RE = new RegExp(
 export const AVATAR_URL_RE = new RegExp(
   `^/uploads/avatars/([A-Za-z0-9._-]+)-(?:${SIZE_ALT})\\.webp$`,
 );
-
-/** Extract the avatar `<base>` from a URL or a bare filename, or null if it is not an avatar path.
- *  Tries the URL form first, then the bare-filename form (GC passes filenames, DTOs pass URLs). */
-export function parseAvatarBase(path: string): string | null {
-  const m = AVATAR_URL_RE.exec(path) ?? AVATAR_FILE_RE.exec(path);
-  return m ? m[1] : null;
-}
 
 /** True iff `value` is a valid avatar URL OR the empty string (empty = clear the avatar). The empty
  *  allowance is what @IsValidAvatarPath builds on so a client can unset a group avatar. */

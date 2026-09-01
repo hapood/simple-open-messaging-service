@@ -19,6 +19,7 @@ import {
   relationshipIntent,
   relationshipPair,
   messageThread,
+  profileVersion,
   threadAudience,
   threadMember,
   threadParticipant,
@@ -625,7 +626,7 @@ export class GroupService {
         avatar: row.group.avatar,
         bio: row.group.description,
         domain: row.group.domain,
-        profileRev: row.group.profileRev,
+        profileRev: row.group.defaultProfileRev,
         ownerId: ownerByThread.get(row.threadId) ?? 0,
         dissolvedAt: row.group.dissolvedAt,
       });
@@ -670,6 +671,13 @@ export class GroupService {
             })
             .returning()
             .then(([row]) => row);
+          await tx.insert(profileVersion).values({
+            groupId: groupState.id,
+            profileRev: 0,
+            displayName: groupState.name,
+            avatar: groupState.avatar,
+            bio: groupState.description,
+          });
           const [ownerMember] = await tx
             .insert(threadMember)
             .values({
@@ -1651,17 +1659,33 @@ export class GroupService {
         HttpStatus.NOT_FOUND,
       );
     }
-    const data: Partial<typeof group.$inferInsert> = {};
-    if (params.name !== undefined) data.name = params.name;
-    if (params.description !== undefined) data.description = params.description;
-    if (params.avatar !== undefined) data.avatar = params.avatar;
     const result = await this.database.db.transaction(async (tx) => {
       const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
+      const [current] = await tx
+        .select()
+        .from(group)
+        .where(eq(group.id, trd.groupId!))
+        .for('update')
+        .limit(1);
+      if (!current) throw new Error('group disappeared during profile update');
+      const nextRev = current.defaultProfileRev + 1;
+      const name = params.name ?? current.name;
+      const description = params.description ?? current.description;
+      const avatar = params.avatar ?? current.avatar;
+      await tx.insert(profileVersion).values({
+        groupId: current.id,
+        profileRev: nextRev,
+        displayName: name,
+        avatar,
+        bio: description,
+      });
       const [row] = await tx
         .update(group)
         .set({
-          ...data,
-          profileRev: sql`${group.profileRev} + 1`,
+          name,
+          description,
+          avatar,
+          defaultProfileRev: nextRev,
           updatedAt: new Date(),
         })
         .where(eq(group.id, trd.groupId!))

@@ -97,6 +97,7 @@ export class FederationInboundMessageValidatorService {
         'thread',
         isGroup ? 'author' : 'authorRef',
         'seq',
+        'profileRev',
         'originSeq',
         'contentType',
         'content',
@@ -107,6 +108,17 @@ export class FederationInboundMessageValidatorService {
       ],
       ['quoteTarget'],
     );
+    if (
+      !Number.isSafeInteger(item.profileRev) ||
+      item.profileRev < 0 ||
+      item.profileRev > 2_147_483_647
+    ) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'federated message has an invalid profileRev',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
     const thread = assertFields(
       rawThread,
       isGroup ? ['account'] : ['account', 'peerAccount'],

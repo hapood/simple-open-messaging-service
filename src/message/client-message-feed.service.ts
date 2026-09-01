@@ -24,6 +24,7 @@ type ClientThreadContentHead = {
   threadId: number;
   messageEndSeq: number;
   tombstoneEndSeq: number;
+  peerProfileMessageSeq: number | null;
   preview: ClientThreadPreview;
 };
 
@@ -88,6 +89,12 @@ export class ClientThreadContentHeadWriter {
       threadId,
       messageEndSeq,
       tombstoneEndSeq: current?.tombstoneEndSeq ?? 0,
+      peerProfileMessageSeq: await this.latestPeerProfileMessageSeq(
+        tx,
+        userId,
+        threadId,
+        messageEndSeq,
+      ),
       preview: source.isDeleted
         ? this.emptyPreview(source.seq)
         : {
@@ -136,6 +143,12 @@ export class ClientThreadContentHeadWriter {
         threadId,
         messageEndSeq: current?.messageEndSeq ?? thread.curSeq,
         tombstoneEndSeq,
+        peerProfileMessageSeq: await this.latestPeerProfileMessageSeq(
+          tx,
+          userId,
+          threadId,
+          current?.messageEndSeq ?? thread.curSeq,
+        ),
         preview:
           opts?.clearPreviewMessageSeq !== undefined
             ? this.emptyPreview(opts.clearPreviewMessageSeq)
@@ -203,6 +216,28 @@ export class ClientThreadContentHeadWriter {
 
   private static emptyPreview(seq: number): ClientThreadPreview {
     return { seq, text: '', senderId: null };
+  }
+
+  private static async latestPeerProfileMessageSeq(
+    tx: DatabaseTransaction,
+    userId: number,
+    threadId: number,
+    throughSeq: number,
+  ): Promise<number | null> {
+    const result = await tx.execute<{ seq: number | null }>(sql`
+      SELECT MAX(authored.seq)::integer AS seq
+      FROM "Message" authored
+      JOIN "User" self ON self.id = ${userId}
+      WHERE authored."threadId" = ${threadId}
+        AND authored.seq <= ${throughSeq}
+        AND authored."localState" = 'READY'
+        AND authored."isDeleted" = false
+        AND authored."creatorAccount" IS NOT NULL
+        AND authored."creatorDomain" IS NOT NULL
+        AND (authored."creatorAccount" <> self.account
+          OR authored."creatorDomain" <> 'local')
+    `);
+    return result.rows[0]?.seq ?? null;
   }
 
   private static async activeUserIds(

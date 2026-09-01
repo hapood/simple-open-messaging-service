@@ -313,11 +313,7 @@ export class FederationRecognitionService {
     }
     await this.database.db.transaction(async (tx) => {
       const peer = await this.lockPeer(tx, normalized);
-      if (
-        !peer ||
-        !peer.identityPinnedAt ||
-        peer.trustLevel === 'halted'
-      )
+      if (!peer || !peer.identityPinnedAt || peer.trustLevel === 'halted')
         return;
       const now = new Date();
       const next = {
@@ -346,11 +342,7 @@ export class FederationRecognitionService {
     const normalized = this.normalizeDomain(domain);
     await this.database.db.transaction(async (tx) => {
       const peer = await this.lockPeer(tx, normalized);
-      if (
-        !peer ||
-        !peer.identityPinnedAt ||
-        peer.trustLevel === 'halted'
-      )
+      if (!peer || !peer.identityPinnedAt || peer.trustLevel === 'halted')
         return;
       const now = new Date();
       const trustLevel = this.lifecycle({

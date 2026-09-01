@@ -1,6 +1,6 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { normalizeAccount } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -40,6 +40,7 @@ export class FederationProfileService {
 
   async toS2SProfile(user: {
     account: string;
+    domain?: string;
     name: string;
     avatar: string;
     bio: string;
@@ -61,12 +62,264 @@ export class FederationProfileService {
       : null;
     return {
       account: user.account,
-      domain: this.config.domain,
+      domain: user.domain ?? this.config.domain,
       displayName: user.name,
       avatar,
       bio: user.bio,
       profileRev: user.profileRev,
     };
+  }
+
+  async getStoredUserProfile(
+    account: string,
+    domain: string,
+    namespaceId: number,
+    rev: number,
+  ): Promise<S2SProfile | null> {
+    const storedDomain = domain === this.config.domain ? 'local' : domain;
+    const row = await this.database.db
+      .select({
+        account: tables.user.account,
+        displayName: tables.profileVersion.displayName,
+        avatar: tables.profileVersion.avatar,
+        bio: tables.profileVersion.bio,
+        profileRev: tables.profileVersion.profileRev,
+      })
+      .from(tables.user)
+      .innerJoin(
+        tables.profileVersion,
+        and(
+          eq(tables.profileVersion.userId, tables.user.id),
+          eq(tables.profileVersion.profileRev, rev),
+        ),
+      )
+      .where(
+        and(
+          eq(tables.user.account, normalizeAccount(account)),
+          eq(tables.user.domain, storedDomain),
+          eq(
+            tables.user.namespaceId,
+            storedDomain === 'local' ? 0 : namespaceId,
+          ),
+        ),
+      )
+      .limit(1)
+      .then(([value]) => value);
+    if (row) {
+      return this.toS2SProfile({
+        account: row.account,
+        domain,
+        name: row.displayName,
+        avatar: row.avatar,
+        bio: row.bio,
+        profileRev: row.profileRev,
+      });
+    }
+    const referenced = await this.database.db
+      .select({
+        account: tables.user.account,
+        displayName: tables.referencedUserProfileVersion.displayName,
+        avatar: tables.referencedUserProfileVersion.avatar,
+        profileRev: tables.referencedUserProfileVersion.profileRev,
+      })
+      .from(tables.user)
+      .innerJoin(
+        tables.referencedUserProfileVersion,
+        and(
+          eq(tables.referencedUserProfileVersion.userId, tables.user.id),
+          eq(tables.referencedUserProfileVersion.profileRev, rev),
+        ),
+      )
+      .where(
+        and(
+          eq(tables.user.account, normalizeAccount(account)),
+          eq(tables.user.domain, storedDomain),
+          eq(
+            tables.user.namespaceId,
+            storedDomain === 'local' ? 0 : namespaceId,
+          ),
+        ),
+      )
+      .limit(1)
+      .then(([value]) => value);
+    if (!referenced) return null;
+    return this.toS2SProfile({
+      account: referenced.account,
+      domain,
+      name: referenced.displayName,
+      avatar: referenced.avatar,
+      bio: '',
+      profileRev: referenced.profileRev,
+    });
+  }
+
+  async getStoredProfile(
+    account: string,
+    domain: string,
+    namespaceId: number,
+    rev: number,
+  ): Promise<S2SProfile | null> {
+    if (!account.startsWith('!')) {
+      return this.getStoredUserProfile(account, domain, namespaceId, rev);
+    }
+    const storedDomain = domain === this.config.domain ? 'local' : domain;
+    const row = await this.database.db
+      .select({
+        account: tables.group.account,
+        displayName: tables.profileVersion.displayName,
+        avatar: tables.profileVersion.avatar,
+        bio: tables.profileVersion.bio,
+        profileRev: tables.profileVersion.profileRev,
+      })
+      .from(tables.group)
+      .innerJoin(
+        tables.profileVersion,
+        and(
+          eq(tables.profileVersion.groupId, tables.group.id),
+          eq(tables.profileVersion.profileRev, rev),
+        ),
+      )
+      .where(
+        and(
+          eq(tables.group.account, normalizeAccount(account)),
+          eq(tables.group.domain, storedDomain),
+          eq(
+            tables.group.namespaceId,
+            storedDomain === 'local' ? 0 : namespaceId,
+          ),
+        ),
+      )
+      .limit(1)
+      .then(([value]) => value);
+    if (!row) return null;
+    return this.toS2SProfile({
+      account: row.account,
+      domain,
+      name: row.displayName,
+      avatar: row.avatar,
+      bio: row.bio,
+      profileRev: row.profileRev,
+    });
+  }
+
+  /** Persist one exact foreign snapshot without comparing revision numbers or moving a default pointer. */
+  async materializeExactForeignProfile(
+    profile: S2SProfile,
+    sourceDomain: string,
+    namespaceId: number,
+  ): Promise<void> {
+    if (profile.account.startsWith('!')) {
+      const group = await this.database.db.query.group.findFirst({
+        where: and(
+          eq(tables.group.account, normalizeAccount(profile.account)),
+          eq(tables.group.domain, profile.domain),
+          eq(tables.group.namespaceId, namespaceId),
+        ),
+        columns: { id: true },
+      });
+      if (!group) {
+        throw new BusinessException(
+          BusinessCode.NOT_FOUND,
+          'group profile shell is unavailable',
+        );
+      }
+      const prepared = await this.prepareForeignProfileData(profile);
+      if (profile.avatar && prepared.avatar === undefined) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'peer returned an invalid profile avatar',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      await this.database.db
+        .insert(tables.profileVersion)
+        .values({
+          groupId: group.id,
+          profileRev: profile.profileRev,
+          displayName: profile.displayName,
+          avatar: prepared.avatar ?? '',
+          bio: profile.bio,
+        })
+        .onConflictDoNothing();
+      return;
+    }
+    const existing = await this.database.db.query.user.findFirst({
+      where: and(
+        eq(tables.user.account, normalizeAccount(profile.account)),
+        eq(tables.user.domain, profile.domain),
+        eq(tables.user.sourceDomain, sourceDomain),
+        eq(tables.user.namespaceId, namespaceId),
+      ),
+      columns: { id: true },
+    });
+    const userId =
+      existing?.id ??
+      (await this.users.ensureForeignUser(
+        profile.account,
+        profile.domain,
+        namespaceId,
+      ));
+    const prepared = await this.prepareForeignProfileData(profile);
+    if (profile.avatar && prepared.avatar === undefined) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'peer returned an invalid profile avatar',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    await this.database.db
+      .insert(tables.profileVersion)
+      .values({
+        userId,
+        profileRev: profile.profileRev,
+        displayName: profile.displayName,
+        avatar: prepared.avatar ?? '',
+        bio: profile.bio,
+      })
+      .onConflictDoNothing();
+  }
+
+  /** Retain the disclosure-limited display snapshot referenced by one received message. */
+  async materializeReferencedUserProfile(
+    profile: Omit<S2SProfile, 'bio'>,
+    sourceDomain: string,
+    namespaceId: number,
+  ): Promise<void> {
+    const existing = await this.database.db.query.user.findFirst({
+      where: and(
+        eq(tables.user.account, normalizeAccount(profile.account)),
+        eq(tables.user.domain, profile.domain),
+        eq(tables.user.sourceDomain, sourceDomain),
+        eq(tables.user.namespaceId, namespaceId),
+      ),
+      columns: { id: true },
+    });
+    if (!existing) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'message author shell is unavailable',
+      );
+    }
+    const prepared = await this.prepareForeignProfileData({
+      ...profile,
+      bio: '',
+    });
+    if (profile.avatar && prepared.avatar === undefined) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'peer returned an invalid profile avatar',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    await this.database.db
+      .insert(tables.referencedUserProfileVersion)
+      .values({
+        userId: existing.id,
+        profileRev: profile.profileRev,
+        displayName: profile.displayName,
+        avatar: prepared.avatar ?? '',
+      })
+      .onConflictDoNothing();
   }
 
   async getLocalUserProfile(address: S2SAddress): Promise<S2SProfile | null> {
@@ -79,7 +332,138 @@ export class FederationProfileService {
       ),
     });
     if (!user || user.domain !== 'local') return null;
-    return this.toS2SProfile(user);
+    return this.toS2SProfile({
+      ...user,
+      profileRev: user.defaultProfileRev,
+    });
+  }
+
+  /** Resolve one exact locally-owned revision after applying this server's disclosure policy. */
+  async getAuthorizedLocalProfile(
+    account: string,
+    rev: number,
+    peerDomain: string,
+    namespaceId: number,
+  ): Promise<S2SProfile | null> {
+    if (account.startsWith('!')) {
+      const row = await this.database.db
+        .select({
+          groupId: tables.group.id,
+          account: tables.group.account,
+          displayName: tables.profileVersion.displayName,
+          avatar: tables.profileVersion.avatar,
+          bio: tables.profileVersion.bio,
+          profileRev: tables.profileVersion.profileRev,
+        })
+        .from(tables.group)
+        .innerJoin(
+          tables.profileVersion,
+          and(
+            eq(tables.profileVersion.groupId, tables.group.id),
+            eq(tables.profileVersion.profileRev, rev),
+          ),
+        )
+        .where(
+          and(
+            eq(tables.group.account, account),
+            eq(tables.group.domain, 'local'),
+            eq(tables.group.namespaceId, 0),
+          ),
+        )
+        .limit(1)
+        .then(([value]) => value);
+      if (!row) return null;
+      const disclosed = await this.database.db
+        .select({ value: sql<number>`1` })
+        .from(tables.groupMetaProfileFeed)
+        .where(
+          and(
+            eq(tables.groupMetaProfileFeed.groupId, row.groupId),
+            eq(tables.groupMetaProfileFeed.targetPeerDomain, peerDomain),
+            eq(tables.groupMetaProfileFeed.targetNamespaceId, namespaceId),
+            eq(tables.groupMetaProfileFeed.profileRev, rev),
+          ),
+        )
+        .limit(1);
+      if (disclosed.length === 0) this.profileNotDisclosed();
+      return this.toS2SProfile({
+        account: row.account,
+        name: row.displayName,
+        avatar: row.avatar,
+        bio: row.bio,
+        profileRev: row.profileRev,
+      });
+    }
+
+    const row = await this.database.db
+      .select({
+        userId: tables.user.id,
+        account: tables.user.account,
+        displayName: tables.profileVersion.displayName,
+        avatar: tables.profileVersion.avatar,
+        bio: tables.profileVersion.bio,
+        profileRev: tables.profileVersion.profileRev,
+      })
+      .from(tables.user)
+      .innerJoin(
+        tables.profileVersion,
+        and(
+          eq(tables.profileVersion.userId, tables.user.id),
+          eq(tables.profileVersion.profileRev, rev),
+        ),
+      )
+      .where(
+        and(
+          eq(tables.user.account, normalizeAccount(account)),
+          eq(tables.user.domain, 'local'),
+          eq(tables.user.namespaceId, 0),
+        ),
+      )
+      .limit(1)
+      .then(([value]) => value);
+    if (!row) return null;
+
+    const authorized = await this.database.db.execute(sql`
+      SELECT 1
+      FROM "RelationshipIntent" intent
+      JOIN "RelationshipPair" pair ON pair.id = intent."pairId"
+      WHERE intent."profileRev" = ${rev}
+        AND intent.status IN ('REQUESTED', 'ACCEPTED')
+        AND pair.kind = 'P2P'
+        AND (
+          (intent."authorSide" = 'A'
+            AND pair."endpointAType" = 'USER'
+            AND pair."endpointAAccount" = ${row.account}
+            AND pair."endpointADomain" = ${this.config.domain}
+            AND pair."endpointBType" = 'USER'
+            AND pair."endpointBDomain" = ${peerDomain}
+            AND pair."endpointBNamespaceId" = ${namespaceId})
+          OR
+          (intent."authorSide" = 'B'
+            AND pair."endpointBType" = 'USER'
+            AND pair."endpointBAccount" = ${row.account}
+            AND pair."endpointBDomain" = ${this.config.domain}
+            AND pair."endpointAType" = 'USER'
+            AND pair."endpointADomain" = ${peerDomain}
+            AND pair."endpointANamespaceId" = ${namespaceId})
+        )
+      LIMIT 1
+    `);
+    if (authorized.rows.length === 0) this.profileNotDisclosed();
+    return this.toS2SProfile({
+      account: row.account,
+      name: row.displayName,
+      avatar: row.avatar,
+      bio: row.bio,
+      profileRev: row.profileRev,
+    });
+  }
+
+  private profileNotDisclosed(): never {
+    throw new BusinessException(
+      BusinessCode.FEDERATION_PROFILE_NOT_DISCLOSED,
+      'profile revision is not disclosed to this peer',
+    );
   }
 
   async ensureForeignUserLocalized(
@@ -115,9 +499,9 @@ export class FederationProfileService {
   ): Promise<void> {
     const stub = await this.database.db.query.user.findFirst({
       where: eq(tables.user.id, userId),
-      columns: { avatar: true, profileRev: true },
+      columns: { id: true },
     });
-    if (!stub || profile.profileRev <= stub.profileRev) return;
+    if (!stub) return;
 
     const data = await this.prepareForeignProfileData(profile);
     if (gate) {
@@ -169,18 +553,6 @@ export class FederationProfileService {
         domain,
         peerToken.namespaceId,
       );
-      const [stub] = await tx
-        .select({ profileRev: tables.user.profileRev })
-        .from(tables.user)
-        .where(eq(tables.user.id, userId))
-        .for('update')
-        .limit(1);
-      if (
-        stub?.profileRev !== undefined &&
-        profile.profileRev <= stub.profileRev
-      ) {
-        return userId;
-      }
       const data = await this.prepareForeignProfileData(profile);
       await tx
         .update(tables.user)
@@ -193,7 +565,7 @@ export class FederationProfileService {
   private async prepareForeignProfileData(profile: S2SProfile): Promise<{
     name: string;
     bio: string;
-    profileRev: number;
+    defaultProfileRev: number;
     avatar?: string;
   }> {
     let newAvatarUrl: string | null = null;
@@ -227,12 +599,12 @@ export class FederationProfileService {
     const data: {
       name: string;
       bio: string;
-      profileRev: number;
+      defaultProfileRev: number;
       avatar?: string;
     } = {
       name: profile.displayName,
       bio: profile.bio,
-      profileRev: profile.profileRev,
+      defaultProfileRev: profile.profileRev,
     };
     if (newAvatarUrl !== null) data.avatar = newAvatarUrl;
     return data;

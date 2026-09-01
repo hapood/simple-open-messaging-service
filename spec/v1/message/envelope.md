@@ -34,6 +34,7 @@ interface EncodedMessageContent {
 
 interface FederatedMessageBase extends EncodedMessageContent {
   seq: ThreadSequence;
+  profileRev: SafeInteger;
   originSeq: ThreadSequence | null;
   originCreatedAt: EpochMilliseconds | null;
   createdAt: EpochMilliseconds;
@@ -85,6 +86,14 @@ type FederatedMessage = FederatedMessageContent &
 - A GROUP message MUST contain the explicit `author` address and MUST NOT
   contain `authorRef`. A group publisher may relay a message authored on
   another member domain, so direction alone cannot identify its author.
+- `profileRev` identifies the immutable author profile selected when the
+  publisher committed this message copy. It applies to the reconstructed P2P
+  author or explicit GROUP `author`, never to the thread or group account.
+- A locally authored new message carries the revision selected for its
+  audience, normally the author's local default. A non-authoritative copy, accepted group submission, authoritative
+  group distribution, mirror copy, and processing receipt MUST preserve the
+  direct incoming message's `profileRev`; an intermediary MUST NOT substitute
+  its own default revision or another retained version.
 
 ## 3. Ordering and origin time
 
@@ -125,6 +134,7 @@ All of the following fields are immutable at a given origin coordinate:
 - `thread`
 - `authorRef` for P2P, or `author` for GROUP
 - `seq`
+- `profileRev`
 - `originSeq/originCreatedAt`
 - `createdAt`
 - `clientMessageId` for CALL

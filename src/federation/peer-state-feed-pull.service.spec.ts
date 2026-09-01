@@ -64,7 +64,12 @@ describe('PeerStateFeedPullService atomic item application', () => {
       fetch: async () => ({
         ...page('1'),
         items: [
-          { account: 'alice', eventType: 'PROFILE', feedId: '1', body: {} },
+          {
+            account: '!group',
+            eventType: 'GROUP_META_FEED_HEAD',
+            feedId: '1',
+            body: { groupMetaFeedEndId: '1' },
+          },
         ],
       }),
       apply: async () => void order.push('state'),
@@ -81,8 +86,8 @@ describe('PeerStateFeedPullService atomic item application', () => {
           ...page('1'),
           items: [
             {
-              account: 'alice',
-              eventType: 'PROFILE',
+              account: '!group',
+              eventType: 'GROUP_META_FEED_HEAD',
               feedId: '1',
               body: {},
             },
@@ -111,14 +116,14 @@ describe('PeerStateFeedPullService atomic item application', () => {
         fetch: async () => ({
           items: [
             {
-              account: 'alice',
-              eventType: 'PROFILE',
+              account: '!group-a',
+              eventType: 'GROUP_META_FEED_HEAD',
               feedId: '1',
               body: {},
             },
             {
-              account: 'bob',
-              eventType: 'PROFILE',
+              account: '!group-b',
+              eventType: 'GROUP_META_FEED_HEAD',
               feedId: '2',
               body: {},
             },
@@ -149,14 +154,14 @@ describe('PeerStateFeedPullService atomic item application', () => {
         fetch: async () => ({
           items: [
             {
-              account: 'alice',
-              eventType: 'PROFILE',
+              account: '!group-a',
+              eventType: 'GROUP_META_FEED_HEAD',
               feedId: '1',
               body: {},
             },
             {
-              account: 'bob',
-              eventType: 'PROFILE',
+              account: '!group-b',
+              eventType: 'GROUP_META_FEED_HEAD',
               feedId: '2',
               body: {},
             },
@@ -175,14 +180,14 @@ describe('PeerStateFeedPullService atomic item application', () => {
     const resumedFetch = vi.fn(async () => ({
       items: [
         {
-          account: 'bob',
-          eventType: 'PROFILE' as const,
+          account: '!group-b',
+          eventType: 'GROUP_META_FEED_HEAD' as const,
           feedId: '2',
           body: {},
         },
         {
-          account: 'carol',
-          eventType: 'PROFILE' as const,
+          account: '!group-c',
+          eventType: 'GROUP_META_FEED_HEAD' as const,
           feedId: '3',
           body: {},
         },
@@ -223,7 +228,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
           items: [
             {
               account: 'a',
-              eventType: 'PROFILE',
+              eventType: 'GROUP_META_FEED_HEAD',
               feedId: '2',
               body: {},
             },

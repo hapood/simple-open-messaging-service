@@ -76,7 +76,6 @@ export const uploadSessionStatus = pgEnum('UploadSessionStatus', [
   'ABORTED',
 ]);
 export const peerStateEventType = pgEnum('PeerStateEventType', [
-  'PROFILE',
   'RELATIONSHIP_INTENT',
   'GROUP_META_FEED_HEAD',
   'THREAD_CONTENT_HEAD',
@@ -324,7 +323,8 @@ export const user = pgTable(
       withTimezone: true,
       mode: 'date',
     }).notNull(),
-    profileRev: integer().default(0).notNull(),
+    /** Local authoring default; federation peers can only resolve explicit references. */
+    defaultProfileRev: integer().default(0).notNull(),
   },
   (table) => [
     unique('User_account_domain_sourceDomain_namespaceId_key').on(
@@ -516,6 +516,10 @@ export const threadMember = pgTable(
     userId: integer().notNull(),
     role: groupRole(),
     left: boolean().default(false).notNull(),
+    /** Latest profile revision selected by this member's messages in this thread. */
+    profileRev: integer().default(0).notNull(),
+    /** Message sequence ordering profileRev; revision numbers are not clocks. */
+    profileMessageSeq: integer(),
     /** Earliest authored sequence tracked by a group hosted on this server. */
     firstSentSeq: integer(),
     /** Latest authored sequence tracked by a locally hosted group. */
@@ -566,6 +570,11 @@ export const threadMember = pgTable(
     check(
       'ThreadMember_firstSentSeq_check',
       sql`${table.firstSentSeq} IS NULL OR ${table.firstSentSeq} > 0`,
+    ),
+    check('ThreadMember_profileRev_check', sql`${table.profileRev} >= 0`),
+    check(
+      'ThreadMember_profileMessageSeq_check',
+      sql`${table.profileMessageSeq} IS NULL OR ${table.profileMessageSeq} > 0`,
     ),
   ],
 );
@@ -850,6 +859,8 @@ export const message = pgTable(
   {
     id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
     seq: integer().notNull(),
+    /** Immutable author profile revision carried by the federated message. */
+    profileRev: integer().default(0).notNull(),
     contentType: contentType().notNull(),
     content: jsonbText().notNull(),
     threadId: integer().notNull(),
@@ -882,6 +893,7 @@ export const message = pgTable(
   },
   (table) => [
     check('Message_seq_check', sql`${table.seq} > 0`),
+    check('Message_profileRev_check', sql`${table.profileRev} >= 0`),
     check(
       'Message_system_creator_check',
       sql`(${table.contentType} = 'SYSTEM' AND ${table.creatorAccount} IS NULL AND ${table.creatorDomain} IS NULL) OR (${table.contentType} <> 'SYSTEM' AND ${table.creatorAccount} IS NOT NULL AND ${table.creatorDomain} IS NOT NULL)`,
@@ -1632,7 +1644,8 @@ export const group = pgTable(
     name: varchar({ length: 30 }).notNull(),
     avatar: text().default('').notNull(),
     description: varchar({ length: 255 }).default('').notNull(),
-    profileRev: integer().default(0).notNull(),
+    /** Local authoring default; federation peers can only resolve explicit references. */
+    defaultProfileRev: integer().default(0).notNull(),
     /** Whether this remote group currently has federation authorization through at least one
      * active local member relationship. Local groups always retain false. */
     federationAuthorized: boolean().default(false).notNull(),
@@ -1663,10 +1676,83 @@ export const group = pgTable(
       sql`(${table.domain} = 'local') = (${table.namespaceId} = 0)`,
     ),
     check('Group_account_sigil_check', sql`${table.account} LIKE '!%'`),
-    check('Group_profileRev_check', sql`${table.profileRev} >= 0`),
+    check(
+      'Group_defaultProfileRev_check',
+      sql`${table.defaultProfileRev} >= 0`,
+    ),
     check(
       'Group_local_federationAuthorized_check',
       sql`${table.domain} <> 'local' OR ${table.federationAuthorized} = false`,
+    ),
+  ],
+);
+
+/** Immutable user and group profile snapshots. */
+export const profileVersion = pgTable(
+  'ProfileVersion',
+  {
+    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
+    userId: integer(),
+    groupId: integer(),
+    profileRev: integer().notNull(),
+    displayName: varchar({ length: 30 }).notNull(),
+    avatar: text().default('').notNull(),
+    bio: varchar({ length: 255 }).default('').notNull(),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('ProfileVersion_userId_profileRev_key')
+      .on(table.userId, table.profileRev)
+      .where(sql`${table.userId} IS NOT NULL`),
+    uniqueIndex('ProfileVersion_groupId_profileRev_key')
+      .on(table.groupId, table.profileRev)
+      .where(sql`${table.groupId} IS NOT NULL`),
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [user.id],
+      name: 'ProfileVersion_userId_fkey',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.groupId],
+      foreignColumns: [group.id],
+      name: 'ProfileVersion_groupId_fkey',
+    }).onDelete('cascade'),
+    check(
+      'ProfileVersion_owner_check',
+      sql`(${table.userId} IS NOT NULL) <> (${table.groupId} IS NOT NULL)`,
+    ),
+    check('ProfileVersion_profileRev_check', sql`${table.profileRev} >= 0`),
+  ],
+);
+
+/** Durable name/avatar snapshot retained only after a message references a foreign revision. */
+export const referencedUserProfileVersion = pgTable(
+  'ReferencedUserProfileVersion',
+  {
+    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
+    userId: integer().notNull(),
+    profileRev: integer().notNull(),
+    displayName: varchar({ length: 30 }).notNull(),
+    avatar: text().default('').notNull(),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('ReferencedUserProfileVersion_userId_profileRev_key').on(
+      table.userId,
+      table.profileRev,
+    ),
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [user.id],
+      name: 'ReferencedUserProfileVersion_userId_fkey',
+    }).onDelete('cascade'),
+    check(
+      'ReferencedUserProfileVersion_profileRev_check',
+      sql`${table.profileRev} >= 0`,
     ),
   ],
 );
@@ -1931,7 +2017,7 @@ export const peerStateFeed = pgTable(
       'PeerStateFeed_subject_check',
       sql`(${table.eventType} = 'RELATIONSHIP_INTENT' AND ${table.subjectAccount} <> '' AND ${table.subjectDomain} <> '')
         OR (${table.eventType} = 'THREAD_CONTENT_HEAD' AND ((${table.account} LIKE '!%' AND ${table.subjectAccount} = '' AND ${table.subjectDomain} = 'local') OR (${table.account} NOT LIKE '!%' AND ${table.subjectAccount} <> '' AND ${table.subjectDomain} = ${table.peerDomain})))
-        OR (${table.eventType} NOT IN ('RELATIONSHIP_INTENT', 'THREAD_CONTENT_HEAD') AND ${table.subjectAccount} = '' AND ${table.subjectDomain} = 'local')`,
+        OR (${table.eventType} = 'GROUP_META_FEED_HEAD' AND ${table.subjectAccount} = '' AND ${table.subjectDomain} = 'local')`,
     ),
   ],
 );
@@ -2054,6 +2140,45 @@ export const groupMetaFeedTarget = pgTable(
     check(
       'GroupMetaFeedTarget_oldestAvailableAfter_check',
       sql`${table.oldestAvailableAfter} >= 0 AND ${table.oldestAvailableAfter} <= ${table.allocatedThrough}`,
+    ),
+  ],
+);
+
+/** The single compacted GROUP_PROFILE item in each target peer/group Group Meta feed. */
+export const groupMetaProfileFeed = pgTable(
+  'GroupMetaProfileFeed',
+  {
+    targetPeerDomain: varchar({ length: 63 }).notNull(),
+    targetNamespaceId: integer().notNull(),
+    groupId: integer().notNull(),
+    feedId: bigint({ mode: 'bigint' }).notNull(),
+    profileRev: integer().notNull(),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.targetNamespaceId, table.groupId],
+      name: 'GroupMetaProfileFeed_pkey',
+    }),
+    foreignKey({
+      columns: [table.targetPeerDomain, table.targetNamespaceId],
+      foreignColumns: [identityNamespace.domain, identityNamespace.id],
+      name: 'GroupMetaProfileFeed_targetNamespace_fkey',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.groupId],
+      foreignColumns: [group.id],
+      name: 'GroupMetaProfileFeed_groupId_fkey',
+    }).onDelete('cascade'),
+    check('GroupMetaProfileFeed_feedId_check', sql`${table.feedId} > 0`),
+    check(
+      'GroupMetaProfileFeed_profileRev_check',
+      sql`${table.profileRev} >= 0`,
     ),
   ],
 );
@@ -2261,6 +2386,8 @@ export const relationshipIntent = pgTable(
     pairId: bigint({ mode: 'bigint' }).notNull(),
     authorSide: varchar({ length: 1 }).notNull(),
     status: relationshipIntentStatus().notNull(),
+    /** Immutable author profile reference retained for the current request flow. */
+    profileRev: integer().default(0).notNull(),
     note: varchar({ length: 255 }).default('').notNull(),
     requestedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     expiresAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
@@ -2283,6 +2410,7 @@ export const relationshipIntent = pgTable(
       'RelationshipIntent_authorSide_check',
       sql`${table.authorSide} IN ('A', 'B')`,
     ),
+    check('RelationshipIntent_profileRev_check', sql`${table.profileRev} >= 0`),
     check(
       'RelationshipIntent_expiry_check',
       sql`(${table.status} = 'REQUESTED' AND ${table.requestedAt} IS NOT NULL AND ${table.expiresAt} IS NOT NULL AND ${table.expiresAt} > ${table.requestedAt} AND ${table.expiresAt} <= ${table.requestedAt} + INTERVAL '7 days') OR (${table.status} = 'ACCEPTED' AND ${table.requestedAt} IS NOT NULL AND ${table.expiresAt} IS NULL) OR (${table.status} = 'REVOKED' AND ${table.expiresAt} IS NULL)`,

@@ -6,7 +6,7 @@ import {
   OnDestroy,
   isDevMode,
 } from '@angular/core';
-import { Subject } from 'rxjs';
+import { BehaviorSubject, Subject } from 'rxjs';
 import { AuthService } from './auth.service';
 import { apiOrigin, isAndroidNative, isTauri } from './runtime';
 import {
@@ -49,6 +49,11 @@ export class WebsocketService implements OnDestroy {
   /** Reconnect-success pulse: http-item-source subscribes and backfills messages missed during the
    *  disconnect via the newestMsgId cursor. */
   readonly reconnect$ = new Subject<void>();
+  /** True only after the current shared /events connection has delivered its HELLO handshake. */
+  readonly helloReady$ = new BehaviorSubject(false);
+  /** Monotonic HELLO generation used by request coordinators to retry work whose terminal SSE
+   * event may have been lost with a previous connection. */
+  readonly helloGeneration$ = new BehaviorSubject(0);
   /** Connection state for the shell's connection-lost banner. See {@link ConnectionState}. */
   readonly state = signal<ConnectionState>('closed');
   /** Milliseconds remaining until the next reconnect attempt, or null when not in a scheduled backoff.
@@ -113,13 +118,18 @@ export class WebsocketService implements OnDestroy {
         // HELLO landed — the connect handshake succeeded; cancel the deadline that would otherwise force a
         // reconnect. (Intercepted here, before fan-out, so the timeout clears even though the threadlist is
         // the downstream consumer — mirrors how FORCE_LOGOUT is intercepted in each transport.)
-        if (m.event === 'HELLO') this.clearHelloTimeout();
+        if (m.event === 'HELLO') {
+          this.clearHelloTimeout();
+          this.helloReady$.next(true);
+          this.helloGeneration$.next(this.helloGeneration$.value + 1);
+        }
         this.eventSubject.next(m);
       },
       onState: (s) => {
         if (isFullConsoleLoggingEnabled())
           console.info('[sse] realtime state →', s);
         this.state.set(s);
+        if (s !== 'open') this.helloReady$.next(false);
         // Leaving the backoff state — drop any live countdown. (Entering `reconnecting` does NOT set a
         // countdown; the transport emits the deadline separately via onReconnectIn.)
         if (s !== 'reconnecting') this.clearReconnectIn();

@@ -49,13 +49,6 @@ function target() {
     ),
   };
   const groupMetaFeed = { serve: vi.fn().mockResolvedValue({}) };
-  const departedMemberProfiles = {
-    query: vi.fn().mockResolvedValue({
-      members: [],
-      scannedThrough: 1,
-      hasMore: false,
-    }),
-  };
   const controller = new S2sController(
     federation as never,
     messageFeed as never,
@@ -64,7 +57,6 @@ function target() {
     peerStateFeed as never,
     roundScheduler as never,
     groupMetaFeed as never,
-    departedMemberProfiles as never,
   );
   return {
     controller,
@@ -76,7 +68,6 @@ function target() {
     tombstonePull,
     roundScheduler,
     groupMetaFeed,
-    departedMemberProfiles,
   };
 }
 
@@ -467,68 +458,6 @@ describe('S2sController group-meta modes', () => {
       status: 400,
     });
     expect(groupMetaFeed.serve).not.toHaveBeenCalled();
-  });
-});
-
-describe('S2sController departed-member profile query', () => {
-  it('routes a reverse group sequence window', async () => {
-    const { controller, departedMemberProfiles } = target();
-    const req = {
-      query: {
-        account: '!group',
-        before: '41',
-        through: '20',
-        take: '25',
-      },
-      peer: {
-        domain: 'a.example',
-        keyId: 'a.example/key-1',
-        namespaceId: 7,
-      },
-    } as unknown as FastifyRequest;
-
-    await controller.getDepartedMemberProfiles(req, '!group', '41', '20', '25');
-
-    expect(departedMemberProfiles.query).toHaveBeenCalledWith(
-      'a.example',
-      7,
-      '!group',
-      41,
-      25,
-      20,
-    );
-  });
-
-  it('routes bootstrap and rejects an arbitrary mixed direction', async () => {
-    const { controller, departedMemberProfiles } = target();
-    const bootstrap = {
-      query: { account: '!group' },
-      peer: {
-        domain: 'a.example',
-        keyId: 'a.example/key-1',
-        namespaceId: 7,
-      },
-    } as unknown as FastifyRequest;
-    await controller.getDepartedMemberProfiles(bootstrap, '!group');
-    expect(departedMemberProfiles.query).toHaveBeenLastCalledWith(
-      'a.example',
-      7,
-      '!group',
-      undefined,
-      undefined,
-      undefined,
-    );
-
-    const invalid = {
-      query: { account: '!group', after: '1' },
-      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
-    } as unknown as FastifyRequest;
-    await expect(
-      controller.getDepartedMemberProfiles(invalid, '!group'),
-    ).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_MALFORMED,
-      status: 400,
-    });
   });
 });
 

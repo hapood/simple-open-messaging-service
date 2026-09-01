@@ -71,11 +71,10 @@ export class FederatedFriendCommandExecutionService {
     account: string;
     domain: string;
   }): Promise<void> {
-    const statePeers =
-      await this.federation.revokeAddressedOutgoingRequest(
-        params.actorUserId,
-        { account: params.account, domain: params.domain },
-      );
+    const statePeers = await this.federation.revokeAddressedOutgoingRequest(
+      params.actorUserId,
+      { account: params.account, domain: params.domain },
+    );
     this.wakePeers(statePeers, 'friend request revocation');
   }
 

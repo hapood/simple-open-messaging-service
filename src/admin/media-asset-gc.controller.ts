@@ -125,17 +125,6 @@ export class MediaAssetGcController {
     this.gc.attachProgress(id, reply.raw, req.headers.origin);
   }
 
-  @Audit('media.gc_avatars')
-  @HttpCode(HttpStatus.OK)
-  @Post('admin/media/gc-avatars')
-  @ApiOperation({
-    summary:
-      'Reap orphaned avatars (no longer any User current avatar) from uploads/avatars',
-  })
-  async gcAvatars() {
-    return this.gc.gcOrphanedAvatars();
-  }
-
   @Audit('media.inspect_forward_bundles')
   @HttpCode(HttpStatus.OK)
   @Post('admin/media/forward-bundles/inspect')

@@ -315,54 +315,6 @@ describe('Media asset garbage collection', () => {
     ).toBeUndefined();
   });
 
-  it('gcOrphanedAvatars reaps superseded avatars and keeps the live one', async () => {
-    // Two avatars via the real pipeline — each writes 5 webp sizes to uploads/avatars/ under a unique
-    // base (saveAvatars mints Date.now()+random, so identical bytes still produce distinct files).
-    // makePng: a sharp-generated PNG (saveAvatars DECODES via sharp; hand-written base64 PNGs throw).
-    const png = await makePng(123);
-    const liveUrl = await upload.saveAvatars(png);
-    const orphanUrl = await upload.saveAvatars(png);
-    // `liveUrl` is the CURRENT avatar of a user → live; `orphanUrl` references nothing → expired.
-    await database.db
-      .insert(user)
-      .values({
-        account: 'avatar-gc-live',
-        domain: 'local',
-        sourceDomain: 'local',
-        namespaceId: 0,
-        name: 'live',
-        avatar: liveUrl,
-        updatedAt: new Date(),
-      })
-      .onConflictDoUpdate({
-        target: [
-          user.account,
-          user.domain,
-          user.sourceDomain,
-          user.namespaceId,
-        ],
-        set: { avatar: liveUrl, updatedAt: new Date() },
-      });
-    const livePath = join(upload.uploadDir, liveUrl.slice('/uploads/'.length));
-    const orphanPath = join(
-      upload.uploadDir,
-      orphanUrl.slice('/uploads/'.length),
-    );
-    expect(existsSync(livePath)).toBe(true);
-    expect(existsSync(orphanPath)).toBe(true);
-
-    await gc.gcOrphanedAvatars();
-
-    expect(existsSync(livePath)).toBe(true); // referenced by a User → kept
-    expect(existsSync(orphanPath)).toBe(false); // superseded, referenced by nothing → reaped
-
-    // Cleanup the live user so repeated runs / forks stay deterministic.
-    await database.db
-      .delete(user)
-      .where(eq(user.account, 'avatar-gc-live'))
-      .catch(() => {});
-  });
-
   // ── PendingMedia stale-pending sweep ─────────────────────────────────────────────────────────
   // A staged media send whose upload/localize never completed (crash/abandon) leaves a PendingMedia
   // row created BEFORE the file write. The sweep reaps it past TTL — the orphan-cleanup handle that

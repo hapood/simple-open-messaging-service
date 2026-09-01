@@ -73,7 +73,7 @@ export class FederationGroupRequestProjectionService {
           name: true,
           avatar: true,
           bio: true,
-          profileRev: true,
+          defaultProfileRev: true,
         },
       }),
       tx

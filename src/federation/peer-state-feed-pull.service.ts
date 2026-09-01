@@ -32,8 +32,7 @@ export class PeerStateFeedPullService {
     if (rev < 0n) throw new Error('state feed rev must be non-negative');
     const key = this.key(peerDomain, namespaceId);
     const current = this.advertised.get(key);
-    if (current === undefined || rev > current)
-      this.advertised.set(key, rev);
+    if (current === undefined || rev > current) this.advertised.set(key, rev);
   }
 
   run(
@@ -50,10 +49,11 @@ export class PeerStateFeedPullService {
       if (this.pending.has(key))
         queueMicrotask(
           () =>
-            void this.run(peerDomain, namespaceId, callbacks).catch((e: unknown) =>
-              this.logger.warn(
-                `state drain failed for ${peerDomain}: ${(e as Error).message}`,
-              ),
+            void this.run(peerDomain, namespaceId, callbacks).catch(
+              (e: unknown) =>
+                this.logger.warn(
+                  `state drain failed for ${peerDomain}: ${(e as Error).message}`,
+                ),
             ),
         );
     });

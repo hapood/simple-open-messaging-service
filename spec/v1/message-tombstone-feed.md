@@ -7,7 +7,7 @@ This document is entirely normative.
 This document defines the per-thread authoritative deletion query
 `GET /s2s/v1/message-tombstones`. The compacted `thread + messageEndSeq +
 tombstoneEndSeq` discovery projection is a `THREAD_CONTENT_HEAD` item in
-[State Feed](./state-feed.md#7-thread_content_head).
+[State Feed](./state-feed.md#6-thread_content_head).
 
 ## 1. Authoritative deletion facts
 

@@ -533,40 +533,60 @@ pub(crate) async fn native_db_apply_state_feed_page(
                 }
                 let profile_rev = item.body.get("profileRev").and_then(Value::as_i64)
                     .ok_or_else(|| "group-meta UPSERT has no profileRev".to_string())?;
-                let profile = serde_json::json!({
-                    "account": item.account,
-                    "domain": item.domain,
-                    "sourceDomain": source_server,
-                    "namespaceId": item.namespace_id,
-                    "name": item.body.get("displayName").cloned().unwrap_or(Value::String(String::new())),
-                    "avatar": item.body.get("avatar").and_then(Value::as_str).unwrap_or(""),
-                    "bio": "",
-                    "availability": "AVAILABLE",
-                    "profileRev": profile_rev,
-                    "createdAt": now,
-                    "updatedAt": now,
-                });
-                tx.execute(
-                    "INSERT INTO users(user_id,account,domain,source_domain,namespace_id,surrogate_id,payload_json,profile_rev)
-                     VALUES(?1,?2,?3,?4,?5,NULL,?6,?7)
-                     ON CONFLICT(user_id,account,domain,source_domain,namespace_id) DO UPDATE SET
-                       payload_json=excluded.payload_json,profile_rev=excluded.profile_rev
-                     WHERE excluded.profile_rev >= users.profile_rev",
-                    params![
-                        user_id, item.account, item.domain, source_server,
-                        item.namespace_id, json_text(&profile)?, profile_rev,
-                    ],
-                ).map_err(|e| format!("upsert group member user: {e}"))?;
+                let profile_message_seq = item.body.get("profileMessageSeq").and_then(Value::as_i64);
+                let profile_resolved = item.body.get("profileResolved")
+                    .and_then(Value::as_bool).unwrap_or(true);
+                if profile_resolved {
+                    let profile = serde_json::json!({
+                        "account": item.account,
+                        "domain": item.domain,
+                        "sourceDomain": source_server,
+                        "namespaceId": item.namespace_id,
+                        "name": item.body.get("displayName").cloned().unwrap_or(Value::String(String::new())),
+                        "avatar": item.body.get("avatar").and_then(Value::as_str).unwrap_or(""),
+                        "bio": "",
+                        "availability": "AVAILABLE",
+                        "profileRev": profile_rev,
+                        "createdAt": now,
+                        "updatedAt": now,
+                    });
+                    tx.execute(
+                        "INSERT INTO users(user_id,account,domain,source_domain,namespace_id,surrogate_id,payload_json,profile_rev)
+                         VALUES(?1,?2,?3,?4,?5,NULL,?6,?7)
+                         ON CONFLICT(user_id,account,domain,source_domain,namespace_id) DO UPDATE SET
+                           payload_json=excluded.payload_json,profile_rev=excluded.profile_rev
+                         WHERE excluded.profile_rev >= users.profile_rev",
+                        params![
+                            user_id, item.account, item.domain, source_server,
+                            item.namespace_id, json_text(&profile)?, profile_rev,
+                        ],
+                    ).map_err(|e| format!("upsert group member user: {e}"))?;
+                }
+                let resolved_profile_rev = profile_resolved.then_some(profile_rev);
+                let profile_name = profile_resolved.then(||
+                    item.body.get("displayName").and_then(Value::as_str).unwrap_or(""));
+                let profile_avatar = profile_resolved.then(||
+                    item.body.get("avatar").and_then(Value::as_str).unwrap_or(""));
                 tx.execute(
                     "INSERT INTO members(
-                       user_id,thread_id,member_account,member_domain,source_domain,namespace_id,role,left_state
-                     ) VALUES(?1,?2,?3,?4,?5,?6,?7,0)
+                       user_id,thread_id,member_account,member_domain,source_domain,namespace_id,role,left_state,
+                       profile_rev,profile_message_seq,resolved_profile_rev,profile_name,profile_avatar
+                     ) VALUES(?1,?2,?3,?4,?5,?6,?7,0,?8,?9,?10,?11,?12)
                      ON CONFLICT(user_id,thread_id,member_account,member_domain,source_domain,namespace_id)
-                     DO UPDATE SET role=excluded.role,left_state=0",
+                     DO UPDATE SET role=excluded.role,left_state=0,
+                       profile_rev=excluded.profile_rev,profile_message_seq=excluded.profile_message_seq,
+                       resolved_profile_rev=COALESCE(excluded.resolved_profile_rev,members.resolved_profile_rev),
+                       profile_name=COALESCE(excluded.profile_name,members.profile_name),
+                       profile_avatar=COALESCE(excluded.profile_avatar,members.profile_avatar)",
                     params![
                         user_id, update.thread_id, item.account, item.domain, source_server,
                         item.namespace_id,
                         item.body.get("role").and_then(Value::as_str).unwrap_or("MEMBER"),
+                        profile_rev,
+                        profile_message_seq,
+                        resolved_profile_rev,
+                        profile_name,
+                        profile_avatar,
                     ],
                 ).map_err(|e| format!("upsert group member: {e}"))?;
             }

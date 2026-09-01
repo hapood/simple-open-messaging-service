@@ -94,19 +94,21 @@ Lengths below count Unicode code points, not UTF-8 bytes or UTF-16 code units.
 | `displayName` | 1–30 code points, without unpaired surrogates                |
 | `bio`         | 0–120 code points, without unpaired surrogates               |
 | `avatar`      | `null` or a shared `InlineProfileAvatar`                     |
-| `profileRev`  | Monotonically non-decreasing `SafeInteger` for this user     |
+| `profileRev`  | Exact immutable profile-version `SafeInteger` for this user  |
 
 The shared inline-avatar validation rules apply. `avatar: null` explicitly
-means no avatar. A response with an equal
-or lower `profileRev` MUST NOT replace a newer committed profile for the same
-`account/domain`. Unknown data fields MUST be rejected.
+means no avatar. Consumers store versions by `(account, domain, profileRev)`;
+they MUST NOT replace one version merely because another revision is
+numerically greater or smaller. Unknown data fields MUST be rejected.
 
-This is the public user profile for exact-account lookup. It MUST NOT contain
+This is the add-friend user profile for exact-account lookup. It MUST NOT contain
 relationship directions, group membership, presence, contact information,
 deletion reasons, or another peer's visibility state.
-Full friend and member display profiles are published through the state feed
-only when the corresponding visibility exists. v1 defines no fuzzy user search
-or account-enumeration operation.
+State Feed and Group Meta do not publish display profiles. Established user and
+group threads use [Authorized Profile](./authorized-profile.md); a peer that
+needs the version selected by a message uses the exact-message-authorized
+[Message Author Profile](./message-author-profile.md). v1 defines no fuzzy user
+search or account-enumeration operation.
 
 ### 2.3 Errors and application
 
