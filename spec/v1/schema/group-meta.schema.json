@@ -5,9 +5,12 @@
   "$defs": {
     "upsertBody": {
       "type": "object",
-      "required": ["role"],
+      "required": ["role", "profileRev"],
       "properties": {
-        "role": { "enum": ["OWNER", "ADMIN", "MEMBER"] }
+        "role": { "enum": ["OWNER", "ADMIN", "MEMBER"] },
+        "profileRev": {
+          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+        }
       },
       "additionalProperties": false
     },
@@ -23,21 +26,21 @@
     },
     "memberItemBase": {
       "type": "object",
-      "required": ["feedId", "account", "domain", "operation", "body"],
+      "required": ["feedId", "account", "domain", "operation"],
       "properties": {
         "feedId": {
           "$ref": "urn:somfp:v1:common#/$defs/positiveDecimalString"
         },
         "account": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
         "domain": { "$ref": "urn:somfp:v1:common#/$defs/domain" },
-        "operation": { "type": "string" },
-        "body": { "type": "object" }
+        "operation": { "type": "string" }
       }
     },
     "item": {
       "oneOf": [
         {
           "$ref": "#/$defs/memberItemBase",
+          "required": ["body"],
           "properties": {
             "operation": { "const": "UPSERT" },
             "body": { "$ref": "#/$defs/upsertBody" }
@@ -47,8 +50,7 @@
         {
           "$ref": "#/$defs/memberItemBase",
           "properties": {
-            "operation": { "const": "DEPART" },
-            "body": { "$ref": "#/$defs/upsertBody" }
+            "operation": { "const": "DEPART" }
           },
           "unevaluatedProperties": false
         },

@@ -12,7 +12,7 @@ The key words `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, and `MAY` are to be in
 
 ## 0. Normative documents and precedence
 
-Federation v1 requirements are jointly defined by this document and the explicitly referenced [Transport and Security](./transport-security.md), [Peer Recognition](./recognition.md), [State Feed](./state-feed.md), [Group Meta Feed](./group-meta.md), [Authorized Profile](./authorized-profile.md), [Message Author Profile](./message-author-profile.md), [Message Query](./message-feed.md), [Message Tombstone Query](./message-tombstone-feed.md), [Resources](./resources.md), [Calls](./calls.md), and [Stable Error Registry](./errors.md). This document owns the shared protocol contract. An operation document MAY tighten fields, states, and authorization for its operation without weakening this document's security baseline. Conflicting requirements for the same externally observable behavior are a specification defect. An implementation MUST fail closed and MUST NOT choose the less restrictive interpretation.
+Federation v1 requirements are jointly defined by this document and the explicitly referenced [Transport and Security](./transport-security.md), [Peer Recognition](./recognition.md), [State Feed](./state-feed.md), [Group Meta Feed](./group-meta.md), [Authorized Profile](./authorized-profile.md), [Group Member Profile](./group-member-profile.md), [Message Author Profile](./message-author-profile.md), [Message Query](./message-feed.md), [Message Tombstone Query](./message-tombstone-feed.md), [Resources](./resources.md), [Calls](./calls.md), and [Stable Error Registry](./errors.md). This document owns the shared protocol contract. An operation document MAY tighten fields, states, and authorization only for its operation and only where this document permits operation-specific requirements; it MUST NOT weaken or redefine the shared security, identity, envelope, or evolution rules. The Stable Error Registry is authoritative for error-code/status/action mappings, and Transport and Security is authoritative for discovery, TLS, and HTTP Message Signatures. A remaining conflict for the same externally observable behavior is a specification defect, not an implementation choice; the release package MUST be corrected rather than treating either interpretation as conformant.
 
 JSON Schema, the HTTP manifest, and vectors under `schema/` are validation artifacts and cannot override normative text. They MUST remain aligned field by field with the text, with conformance checks preventing drift.
 
@@ -23,7 +23,7 @@ JSON Schema, the HTTP manifest, and vectors under `schema/` are validation artif
 - **Peer**: a remote server with which the local server is establishing or has established bidirectional recognition.
 - **Origin**: the sole authority for a group's identity, roster, and accepted timeline, including terminal deletion facts. A member from a third-party domain remains the message author, but its home server submits only to the origin; only the origin publishes accepted facts to group mirrors.
 - **Mirror**: a group copy held by a non-origin server. A mirror consumes authoritative group state, messages, and deletions only from the origin and MUST NOT republish received group facts to a third peer.
-- **Submission**: a message or withdrawal request sent by a member's home server to the group origin. A submission is not an authoritative fact for group mirrors; the origin MUST validate and durably accept it before authoritative distribution.
+- **Submission**: a member-authored message published by its home server to the group origin. A submission is not an authoritative fact for group mirrors; the origin MUST validate and durably accept it before authoritative distribution. Author-enacted deletion is instead a `USER_RETRACTION` tombstone fact published through the tombstone feed.
 - **Authoritative distribution**: direct publication by the group origin of accepted group facts to peers holding a mirror. It is not arbitrary peer relay and has no mirror-to-mirror next hop.
 - **Publisher**: the server providing a feed, resource, or authoritative state in an operation or synchronization direction.
 - **Source**: the server acting as publisher in a feed or query context. `source` is not a separate identity or trust role; outside feed and query contexts, use `publisher`.
@@ -60,7 +60,7 @@ The v1 wire surface and every v1 object are closed. Unknown fields and unknown e
 
 ## 3. Federation v1 HTTP surface
 
-The following table is the complete v1 surface. Its synchronization surface contains two GET feeds, two GET thread queries, one authorized account-profile query, one exact-message profile query, and one POST feed-head hint. The authentication context determines how signature validation obtains a key and which peer states MAY invoke an operation; it does not change the Section 6 signature wire format.
+The following table is the complete v1 surface. Its synchronization surface contains two GET feeds, two GET thread queries, three exact profile queries, and one POST feed-head hint. The authentication context determines how signature validation obtains a key and which peer states MAY invoke an operation; it does not change the Section 6 signature wire format.
 
 | Method | Absolute path                       | Authentication context | Request                   | Success     | Response                 |
 | ------ | ----------------------------------- | ---------------------- | ------------------------- | ----------- | ------------------------ |
@@ -71,6 +71,7 @@ The following table is the complete v1 surface. Its synchronization surface cont
 | `GET`  | `/s2s/v1/state-feed`                | recognized signed      | feed query                | `200`       | success data envelope    |
 | `GET`  | `/s2s/v1/group-meta`                | recognized signed      | group/meta mode query     | `200`       | success data envelope    |
 | `GET`  | `/s2s/v1/profiles/:account`         | recognized signed      | account + required rev    | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/group-member-profile`      | recognized signed      | exact Group Meta profile  | `200`       | success data envelope    |
 | `GET`  | `/s2s/v1/message-author-profile`    | recognized signed      | exact message profile     | `200`       | success data envelope    |
 | `GET`  | `/s2s/v1/messages`                  | recognized signed      | thread data query         | `200`       | success data envelope    |
 | `GET`  | `/s2s/v1/message-tombstones`        | recognized signed      | thread data query         | `200`       | success data envelope    |
@@ -81,7 +82,12 @@ The following table is the complete v1 surface. Its synchronization surface cont
 
 All four signed contexts use the same HTTP Message Signature profile but have different authorization boundaries:
 
-- **bootstrap signed** applies only to `recognize`. The receiver obtains the root key and a valid signing-key certificate from the signer domain's current well-known document, validates the HTTP signature and domain binding, and only then commits the directional recognition fact in one transaction. One request MUST NOT be interpreted as bidirectional recognition.
+- **bootstrap signed** applies only to `recognize`. The receiver obtains the root
+  key and a valid signing-key certificate from the signer domain's current
+  well-known document, validates the HTTP signature and domain binding, and only
+  then makes the directional recognition fact durably recoverable as one
+  externally indivisible commit. The protocol does not prescribe a database
+  transaction. One request MUST NOT be interpreted as bidirectional recognition.
 - **status signed** applies only to `health`. The receiver attempts validation using only an existing pinned/recognition identity. A recognized but not-yet-converged peer MAY receive `degraded`. Unknown, unrecognized, or unauthorized requesters uniformly receive privacy-safe `unavailable`; the query MUST NOT trigger first recognition.
 - **lightweight signed** applies only to `feed-heads`. Before returning Recognize `OK` to a signer, the receiver MUST atomically open this directional gate. The signer MAY send this operation only after receiving `OK`. This context does not require full `available` state and cannot authorize another data-plane operation.
 - **recognized signed** requires a pinned root, complete bidirectional recognition facts, a currently valid signing-key certificate, and the operation's own business authorization. A receiver MUST NOT reject a request merely because its cached availability view is `degraded`. A successfully validated and processed request/response round trip MAY clear transport-only degradation as defined by recognition.md. `halted` remains a hard protocol or policy gate whose specific cause is retained outside the lifecycle. calls.md further defines safe termination of an existing active call binding.
@@ -230,35 +236,53 @@ An accepted cursor position represents every accepted item through that position
 
 ## 8. Durable state and lifecycle
 
-`state-feed` carries one account-generic `RELATIONSHIP_INTENT`, `GROUP_META_FEED_HEAD` hints, and combined `THREAD_CONTENT_HEAD` message/deletion query bounds. It carries no profile bytes; a relationship intent carries only its exact `profileRev` reference. The group-meta feed is the sole source of the current group roster, roles, and compacted group-profile reference; its member body contains only `role`. Every message carries its author's exact `profileRev`. For any queryable message coordinate, Message Author Profile returns that referenced immutable version after exact-message authorization. Group Meta's first read is `full`; later reads use `delta`. User/user and user/group query authorization is directional: an effective `REQUESTED` or valid `ACCEPTED` authored by the source grants the target peer identical access to that source's relationship data. Group/group relationships are invalid.
+`state-feed` carries one account-generic `RELATIONSHIP_INTENT`, `GROUP_META_FEED_HEAD` hints, and combined `THREAD_CONTENT_HEAD` message/deletion query bounds. It carries no profile bytes; a relationship intent carries only its exact `profileRev` reference. The group origin's one canonical group-meta feed is the sole source of the current group roster, roles, member-profile references, and compacted group-profile reference. An `UPSERT` member body contains `role` and `profileRev` but no display bytes; `DEPART` has no body. Group Member Profile resolves an exact current member reference from that feed. Every message carries its author's exact `profileRev`. For any queryable message coordinate, Message Author Profile returns that referenced immutable version after exact-message authorization. Group Meta's first read is `full`; later reads use `delta` above the peer's authorization-segment visibility floor. An effective source-authored `REQUESTED` or `ACCEPTED` direction grants passive query access to the source's P2P data. At a group origin, an effective group-to-member direction grants that member's peer passive query access to authoritative group messages, tombstones, and Group Meta. In the reverse direction, the mirrored group's immutable authority binding lets the origin query member-authored message submissions, author-enacted tombstones, and direct-origin processing receipts without a member-to-group intent grant. These facts are transported through their respective feeds, not modeled as requests. Content and Group Meta heads are published only after the applicable relationship is confirmed; for GROUP, at least one member hosted by that peer must remain confirmed. Group/group relationships are invalid.
 
-[Federation v1 State Feed](./state-feed.md) defines complete pages, its three event bodies, field constraints, compacted thread-content heads, and merge semantics. [Group Meta Feed](./group-meta.md) defines the role-only per-peer member projection and the group profile revision. [Authorized Profile](./authorized-profile.md) defines policy-controlled account/revision lookup. [Message Author Profile](./message-author-profile.md) defines lazy display lookup bound to an exact authorized message. [Federation v1 Message Query](./message-feed.md) defines `/messages`. [Message](./message.md) defines the ten core message contents and their media and forward bodies. [Federation v1 Message Tombstone Query](./message-tombstone-feed.md) defines authoritative deletion facts and `/message-tombstones`. Those documents and this one jointly form the v1 normative text; this summary cannot override their field-level requirements.
+[Federation v1 State Feed](./state-feed.md) defines complete pages, its three event bodies, field constraints, compacted thread-content heads, and merge semantics. [Group Meta Feed](./group-meta.md) defines the group-origin canonical role/profile-reference roster and group profile revision. [Authorized Profile](./authorized-profile.md) defines policy-controlled account/revision lookup. [Group Member Profile](./group-member-profile.md) defines the asymmetric lookup of an exact complete current-member profile from the group origin. [Message Author Profile](./message-author-profile.md) defines lazy complete-profile lookup bound to an exact authorized message. [Federation v1 Message Query](./message-feed.md) defines `/messages`. [Message](./message.md) defines the ten core message contents and their media and forward bodies. [Federation v1 Message Tombstone Query](./message-tombstone-feed.md) defines authoritative deletion facts and `/message-tombstones`. Those documents and this one jointly form the v1 normative text; this summary cannot override their field-level requirements.
 
-One-to-one real-time calls use WebRTC media/JSEP and signed `/s2s/v1/call` frames for federation signaling. [Federation v1 Audio and Video Calls](./calls.md) defines the complete HTTP operation, frame, lifecycle, failure semantics, and one-way AUDIO-to-VIDEO upgrade on the same connection. Real-time frames do not enter a feed; terminal history is an ordinary `CALL` message.
+One-to-one real-time calls use WebRTC media/JSEP and signed `/s2s/v1/call`
+frames for federation signaling. [Federation v1 Audio and Video
+Calls](./calls.md) defines the mandatory end-to-end Call Profile covering the
+HTTP operation, frame, lifecycle, endpoint WebRTC/JSEP behavior, failure
+semantics, and one-way AUDIO-to-VIDEO upgrade on the same connection. Call is
+not a separately negotiated capability; publishing v1 requires the complete
+profile. The local server-to-endpoint API is not part of the SOMFP wire surface.
+Real-time frames do not enter a feed; terminal history is an ordinary `CALL`
+message.
 
 Relationship revocation, leaving, removal, dissolution, and roster updates MUST converge through durable state and cannot depend on a feed-head hint or ordinary message payload. A P2P profile update MUST NOT mutate Relationship Intent and becomes observable to a peer only when a later peer-authored message carries a different revision. A group profile update becomes observable through a later compacted Group Meta `GROUP_PROFILE` item.
 
-Authorization revocation stops subsequent allocation but does not delete historical proof already allocated to a peer. Historical reads and media authorization validate their respective thread audiences; a thread-content projection cannot replace resource authorization for media or a forward bundle. A server's local group capacity, quota, and retention policy are not protocol constants.
+Authorization revocation stops all access granted by that relationship. It does not
+delete canonical Group Meta history, but retained global history is never
+authorization proof and reauthorization sets a new delta visibility floor.
+After reauthorization, an implementation decides which retained message
+positions are serviceable, including positions produced during the absence.
+Historical reads and media authorization validate their current operation-specific
+authorization; a thread-content projection cannot replace resource
+authorization for media or a forward bundle. A server's local group capacity,
+quota, history, and retention policies are not protocol constants.
 
 ### 8.1 State-derived authorization closure
 
 All state, group-meta, message-index, tombstone-index, thread-query, media, and
 forward-bundle operations MUST derive their disclosure and authorization from
-the same durable directional relationships, effective group members, thread
-audiences, and historical allocation proofs that state-feed converges. An item,
+the same durable directional relationships, effective group members, and
+operation-specific local history policy that state-feed
+converges. An item,
 feed head, retained cursor, cached mirror, or prior successful
 request is never authorization proof by itself.
 
 The required closure is:
 
-| Operation                             | Required state-derived rule                                                                                                                                |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `state-feed`                          | Publishes relationship facts with exact profile references, group-meta heads, and thread-content heads; it publishes no profile display data.              |
-| `group-meta`                          | Publishes the origin-authoritative current roster and compacted group-profile reference; it does not provide a historical roster.                          |
-| `/profiles/:account`                  | Requires `rev` and returns only that exact allocated immutable profile revision when current policy permits it.                                            |
-| `/message-author-profile`             | Returns only the profile version referenced by an exact message currently authorized and historically allocated to the signer.                             |
-| `/messages` and `/message-tombstones` | Recompute current relationship, group audience, and historical allocation authorization on every request; a stale thread-content head grants no authority. |
-| Media and forward bundles             | Recompute the exact authorized message/thread binding independently of every feed cursor or hint.                                                          |
+| Operation                             | Required state-derived rule                                                                                                                   |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `state-feed`                          | Publishes relationship facts with exact profile references, group-meta heads, and thread-content heads; it publishes no profile display data. |
+| `group-meta`                          | Publishes the origin-authoritative current roster and compacted group-profile reference; it does not provide a historical roster.             |
+| `/profiles/:account`                  | Requires `rev` and returns only that exact allocated immutable profile revision when current policy permits it.                               |
+| `/group-member-profile`               | The group origin returns only the exact complete profile referenced by a current canonical Group Meta member to a currently authorized peer.  |
+| `/message-author-profile`             | Returns only the complete profile version referenced by an exact message currently authorized and serviceable to the signer.                  |
+| `/messages` and `/message-tombstones` | Recompute the operation's relationship and authority rules and apply local history policy on every request; a stale head grants no authority. |
+| Media and forward bundles             | Recompute the exact authorized message/thread binding independently of every feed cursor or hint.                                             |
 
 Consumers MUST drain state first and MUST NOT use data learned from another
 feed to invent a relationship or member absent from the applicable state
@@ -273,7 +297,7 @@ still authorizes group-meta access.
 
 The following publication, recovery, and loop-prevention rules form part of the v1 contract:
 
-- A feed consists of durable changes allocated for a target peer. A change references or carries its visible durable fact; it is not an author-filtered view that excludes content originating with the requester.
+- State Feed consists of durable changes allocated for a target peer. Group Meta is instead one canonical feed per origin-owned group, disclosed under an effective group-authored member intent and filtered by the applicable delta visibility floor, mode, and retention boundary. A change references or carries its visible durable fact; it is not an author-filtered view that excludes content originating with the requester.
 - `state-feed` MAY return a directional fact first proposed by the requester and later persisted, confirmed, rejected, or revised by the publisher. A consumer MUST apply it by compacted key in `feedId` order and MUST NOT discard a fact merely because the consumer originally authored it.
 - A message item's `seq/createdAt` is the current publisher's local-copy coordinate and persistence time. A message published by the current publisher as timeline authority MUST have `originSeq/originCreatedAt` equal to `null/null`. A non-authoritative copy formed by pulling MUST store the direct publisher's `seq/createdAt` as its own `originSeq/originCreatedAt`.
 - After consumer B pulls and durably stores a message from publisher A, B SHOULD make its stored copy readable by A through message query as a processing receipt. B allocates the copy back to A, advances that thread's `messageEndSeq` toward A, and publishes a new `THREAD_CONTENT_HEAD` item. A then reads the copy through B's `/messages` query. `(thread, author, originSeq)` identifies which message previously published by A was durably processed by B. B's publisher-local `seq/createdAt` gives B's copy coordinate and time, while `originSeq/originCreatedAt` equals the original A item’s `seq/createdAt`. The processing acknowledgement therefore comes from the queried message, not the State Feed item.
@@ -285,7 +309,7 @@ The following publication, recovery, and loop-prevention rules form part of the 
 
 This specification uses the following feed-coordinate terms consistently. An unqualified `HWM` MUST NOT refer to more than one of them:
 
-- `feedId`: a positive item ID allocated by the source in a feed-coordinate space. State Feed has one per-peer space and Group Meta has one per target-peer/group space. IDs strictly increase and are never reused but need not be contiguous.
+- `feedId`: a positive item ID allocated by the source in a feed-coordinate space. State Feed has one per-peer space and Group Meta has one canonical space per origin-owned group. IDs strictly increase and are never reused but need not be contiguous.
 - `after`: the exclusive scan position supplied by the consumer. The source does not treat it as an ACK or validate monotonicity.
 - `through`: the inclusive upper bound of a bounded drain. It is not an acknowledgement.
 - `scannedThrough`: the direction-relative boundary through which a page has scanned continuously. It becomes the next `after` for a forward query or the next `before` for a reverse thread query after successful commit.
@@ -295,10 +319,16 @@ This specification uses the following feed-coordinate terms consistently. An unq
 - A message's `seq` is its publisher-local thread coordinate. The
   Message Author Profile request names the same value `messageSeq` to prevent
   confusion with a feed coordinate.
-- `profileRev` is an immutable profile-version identifier. It is neither a
-  feed cursor nor a message coordinate, and consumers MUST NOT compare revision
-  numbers to decide which profile reference is newer. The authoritative
-  referencing object's `feedId` or message `seq` determines selection.
+- `profileRev` is an immutable profile-version identifier. A real profile
+  revision is a positive `SafeInteger`, begins allocation at `1`, and is never
+  reused for different content within one `(account, domain)`. The required,
+  non-null value `0` is the sole sentinel meaning that the referencing object
+  has no profile snapshot. A consumer MUST NOT issue Authorized Profile, Group
+  Member Profile, or Message Author Profile work for a zero reference. A
+  positive revision is neither a feed cursor nor a message coordinate, and
+  consumers MUST NOT compare revision numbers to decide which profile reference
+  is newer. The authoritative referencing object's `feedId` or message `seq`
+  determines selection.
 - The stable federation-thread key is the canonical source-user/target-peer-user
   pair for P2P, or the group-address/target-peer-domain pair for a group. Within
   each key, exposed message and tombstone sequence bounds never decrease or
@@ -361,7 +391,7 @@ After receiving hint `S`, a consumer drains State Feed from its committed cursor
 state-feed?after=<committedStateCursor>&through=S
 ```
 
-The consumer commits the applicable relationship and Group Meta dependencies before accepting a `THREAD_CONTENT_HEAD` target. The item supplies both thread end sequences; `/messages` and `/message-tombstones` provide actual content. For a group-message interval, the consumer SHOULD first commit the required role-only Group Meta head. The stable author Address remains valid when display data is not cached, and the consumer MUST NOT infer a role or current-membership state from missing display data. Message Author Profile queries are lazy, exact-message reads and are not a reverse-feed dependency. Required bounded tombstone and message queries MAY execute concurrently and commit independently. Compaction may move an item to a greater feed ID during a drain; a later hint or periodic reconciliation MUST discover it again.
+The consumer commits the applicable relationship and Group Meta dependencies before accepting a `THREAD_CONTENT_HEAD` target. The item supplies both thread end sequences; `/messages` and `/message-tombstones` provide actual content. For a group-message interval, the consumer SHOULD first commit the required role-and-profile-reference Group Meta head. The stable author Address remains valid when display data is not cached, and the consumer MUST NOT infer a role or current-membership state from missing display data. Group Member Profile and Message Author Profile queries are lazy display reads and are not reverse-feed dependencies. Required bounded tombstone and message queries MAY execute concurrently and commit independently. Compaction may move an item to a greater feed ID during a drain; a later hint or periodic reconciliation MUST discover it again.
 
 Absence of a `THREAD_CONTENT_HEAD` from the current State Feed projection is not a deletion notice. State Feed relationship facts remain the primary path for relationship termination. An authenticated query denial follows the current-state revalidation and locally authored P2P or GROUP convergence rules in Message Query Section 4. Neither a denial nor its relationship transition moves a feed cursor or committed thread-local cursor backward.
 
@@ -432,7 +462,7 @@ use the skip-mode entry and safety rules in
 
 If a `THREAD_CONTENT_HEAD` references a thread whose required state has not yet converged, the consumer SHOULD continue the State Feed drain before accepting its targets. The publisher's dependency ordering supports convergence when the required state is merely delayed. After process recovery, the consumer confirms the cached peer root identity and a usable signing certificate before draining.
 
-Media content carries only explicit digests, not publisher display or download URLs. The consumer constructs `media/:digest` Range requests from the outer message's authorization coordinates. Download authorization MUST join the signer's current thread audience and validate the digest binding to the exact message or its forward closure. It MUST NOT depend on a collected thread-content head. A download failure or quota pause MUST NOT roll back a committed feed cursor; retrying must preserve the exact message and resource binding. A forward bundle is a bounded, immutable, digest-validated closure.
+Media content carries only explicit digests, not publisher display or download URLs. The consumer constructs `media/:digest` Range requests from the outer message's authorization coordinates. Before returning bytes, the publisher MUST recompute the signer's current message-query authorization and validate the digest binding to the exact message or its forward closure. It MUST NOT depend on a collected thread-content head. A download failure or quota pause MUST NOT roll back a committed feed cursor; retrying must preserve the exact message and resource binding. A forward bundle is a bounded, immutable, digest-validated closure.
 
 ## 10. Identity continuity and reset requirements
 

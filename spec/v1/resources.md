@@ -81,34 +81,48 @@ interface PublicUserProfile {
   displayName: string;
   bio: string;
   avatar: InlineProfileAvatar | null;
-  profileRev: SafeInteger;
+  profileRev: PositiveSafeInteger;
 }
 ```
 
 Lengths below count Unicode code points, not UTF-8 bytes or UTF-16 code units.
 
-| Field         | Requirement                                                  |
-| ------------- | ------------------------------------------------------------ |
-| `account`     | Equal to the normalized path `account`                       |
-| `domain`      | Equal to the responding server's canonical logical authority |
-| `displayName` | 1–30 code points, without unpaired surrogates                |
-| `bio`         | 0–120 code points, without unpaired surrogates               |
-| `avatar`      | `null` or a shared `InlineProfileAvatar`                     |
-| `profileRev`  | Exact immutable profile-version `SafeInteger` for this user  |
+| Field         | Requirement                                                   |
+| ------------- | ------------------------------------------------------------- |
+| `account`     | Equal to the normalized path `account`                        |
+| `domain`      | Equal to the responding server's canonical logical authority  |
+| `displayName` | 1–30 code points, without unpaired surrogates                 |
+| `bio`         | 0–120 code points, without unpaired surrogates                |
+| `avatar`      | `null` or a shared `InlineProfileAvatar`                      |
+| `profileRev`  | Required, non-null, positive immutable revision for this user |
 
 The shared inline-avatar validation rules apply. `avatar: null` explicitly
 means no avatar. Consumers store versions by `(account, domain, profileRev)`;
 they MUST NOT replace one version merely because another revision is
 numerically greater or smaller. Unknown data fields MUST be rejected.
 
+Real profile revision allocation begins at `1`. The no-profile sentinel `0`
+cannot appear in a successful user-profile response. A reference carrying zero
+requires no profile request.
+
 This is the add-friend user profile for exact-account lookup. It MUST NOT contain
 relationship directions, group membership, presence, contact information,
 deletion reasons, or another peer's visibility state.
 State Feed and Group Meta do not publish display profiles. Established user and
-group threads use [Authorized Profile](./authorized-profile.md); a peer that
+group threads use [Authorized Profile](./authorized-profile.md); exact current
+Group Meta member references use [Group Member Profile](./group-member-profile.md)
+served by the group origin. A mirror requests that snapshot from the group
+origin, caches it for local use, and never redirects another mirror to the
+member's account home. A peer that
 needs the version selected by a message uses the exact-message-authorized
 [Message Author Profile](./message-author-profile.md). v1 defines no fuzzy user
 search or account-enumeration operation.
+
+All four Federation v1 profile retrieval operations—Public User Profile,
+Authorized Profile, Group Member Profile, and Message Author Profile—return the
+same complete profile fields: `account`, `domain`, `displayName`, required
+`bio`, nullable `avatar`, and positive `profileRev`. Their authorization
+coordinates differ; the returned snapshot shape does not.
 
 ### 2.3 Errors and application
 
@@ -189,13 +203,14 @@ The consumer MUST validate the content descriptor against the outer message's
 LINK page URL, or a guessed coordinate.
 
 Before returning bytes, the publisher MUST prove that the undeleted message
-identified by `(fromAccount, fromDomain, toAccount, seq)` was durably allocated
-to the signer's thread audience and that `digest` is directly bound to that
-message or belongs to the complete parent forward bundle bound by it. A bundle
-ID is not part of the media request. Knowledge of a digest or bundle ID,
-receipt of a feed page, or a current federation relationship is insufficient.
-Feed compaction or acknowledgement MUST NOT by itself erase a historical
-allocation proof.
+identified by `(fromAccount, fromDomain, toAccount, seq)` is currently
+serviceable to the signer under the applicable message-query authorization and
+local history policy, and that `digest` is directly bound to that message or
+belongs to the complete parent forward bundle bound by it. A bundle ID is not
+part of the media request. Knowledge of a digest or bundle ID, receipt of a feed
+page, or a current federation relationship without the exact serviceable
+message binding is insufficient. Feed compaction or acknowledgement MUST NOT by
+itself change that binding.
 
 ### 3.2 Range requests and successful responses
 
@@ -239,7 +254,7 @@ The publisher MUST classify an error before sending any resource byte:
 | ---------------------------------------------------------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------- |
 | Malformed path, query, encoding, or Range; duplicate, unknown, or out-of-order query           | `400 FEDERATION_MALFORMED`             | Correct the request; do not retry unchanged or alter peer lifecycle.                        |
 | Failed pinned identity, recognition, or signature                                              | Registered `401` code                  | Reject response data and follow the registry.                                               |
-| No authorized message/audience proof for the coordinate                                        | `200 FORBIDDEN`                        | Treat as a permanent business refusal; do not guess another coordinate or degrade the peer. |
+| No current exact-message authorization for the coordinate                                      | `200 FORBIDDEN`                        | Treat as a permanent business refusal; do not guess another coordinate or degrade the peer. |
 | Authorized message exists but the digest is not bound to it                                    | `200 NOT_FOUND`                        | Retry only after relevant message/resource state changes or manual action.                  |
 | A forward root or its complete closure does not bind the digest                                | `200 NOT_FOUND`                        | Do not substitute child IDs, inner authors, or another publisher.                           |
 | Binding exists but the complete blob is deleted, missing, or unreadable as a complete resource | `200 NOT_FOUND`                        | Keep the message and mark only the asset unavailable under local policy.                    |
@@ -248,8 +263,8 @@ The publisher MUST classify an error before sending any resource byte:
 | The publisher is temporarily unable to read storage and cannot establish absence               | `503 INTERNAL`                         | Retain the coordinate and cursor; retry with bounded backoff according to the registry.     |
 
 `NOT_FOUND` means only that this publisher cannot provide this digest under the
-authorized coordinate. It does not prove global absence. Lack of audience
-proof MUST NOT be downgraded to `NOT_FOUND`, and a confirmed missing blob MUST
+authorized coordinate. It does not prove global absence. Lack of current
+authorization MUST NOT be downgraded to `NOT_FOUND`, and a confirmed missing blob MUST
 NOT be promoted to `503` to induce indefinite automatic retries.
 
 An asset failure is not a source message deletion and MUST NOT create or relay
@@ -308,8 +323,9 @@ characters and at most 26 UTF-8 bytes after path decoding. It MUST NOT contain
 NUL or `/`.
 
 The publisher MUST prove that the bundle is bound to at least one undeleted
-FORWARD message durably allocated to the signer's thread audience. Knowledge
-of the bundle ID, a child reference, or current recognition is insufficient.
+FORWARD message currently serviceable to the signer under the publisher's
+authorization and local history policy. Knowledge of the bundle ID, a child
+reference, or current recognition is insufficient.
 
 ### 4.2 Successful response and invariants
 

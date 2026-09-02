@@ -4,10 +4,11 @@ Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
 This document is entirely normative.
 
-This document defines the complete server-to-server contract for one-to-one
-calls. Federation v1 defines the signed `POST /s2s/v1/call` operation and its
-protocol lifecycle events. Media, SDP, ICE, STUN, and TURN remain governed by
-the external standards listed in Section 13.
+This document defines the mandatory end-to-end interoperability profile for
+one-to-one calls. It covers both the signed `POST /s2s/v1/call`
+server-to-server operation and the WebRTC/JSEP behavior required of the endpoint
+subsystems that produce and consume its signaling. Media, SDP, ICE, STUN, and
+TURN remain governed by the external standards listed in Section 13.
 
 This operation also follows the shared types and response envelope in the
 [core protocol](./protocol.md), identity and HTTP Message Signature rules in
@@ -15,7 +16,7 @@ This operation also follows the shared types and response envelope in the
 [stable error registry](./errors.md). The JSON Schema is a non-normative
 machine-readable validation resource and cannot override this text.
 
-## 1. Protocol scope
+## 1. Protocol scope and conformance boundary
 
 Federation v1 provides:
 
@@ -26,6 +27,19 @@ Federation v1 provides:
   events; and
 - frame ordering, retry, idempotency, race convergence, and bounded call
   tombstones.
+
+The Call Profile spans the Federation wire between the caller and callee
+servers and the endpoint WebRTC/JSEP behavior required to give relayed payloads
+one deterministic end-to-end meaning. The local API or transport between a
+server and its endpoint subsystem is not part of the SOMFP wire protocol. A
+deployment MAY use WebSocket, push delivery, HTTP, native IPC, or another local
+mechanism, but its server and every supported call endpoint MUST jointly satisfy
+this profile.
+
+Call is a mandatory v1 feature, not a negotiated capability. A node publishing
+`1` in `protocolVersions` MUST implement this complete profile and MUST NOT
+claim v1 conformance if its supported endpoints cannot perform the required
+WebRTC/JSEP behavior.
 
 Media does not pass through `/s2s/v1/call`, the state feed, or the message feed.
 Federation servers MUST NOT decrypt, transcode, mix, or relay media, and MUST
@@ -45,7 +59,10 @@ being inferred from SDP, ICE, or WebRTC transport state.
   lifecycle result.
 - The **callee server** receives `incoming` and maintains the ephemeral peer
   signaling state.
-- An **endpoint** produces or consumes WebRTC signaling and media.
+- The **caller endpoint subsystem** is the local component or coordinated set
+  of components that owns the caller-side `RTCPeerConnection` and produces or
+  consumes caller-side WebRTC signaling and media.
+- The **callee endpoint subsystem** has the corresponding callee-side role.
 - `callId` is the canonical UUID correlation key for one call. The caller
   server MUST NOT reuse it for another call and MUST preserve it when retrying
   the same call.
@@ -57,6 +74,12 @@ Both UUID fields follow `common.schema.json#/$defs/canonicalUuid`: RFC 9562,
 version field 1–8, RFC variant, lowercase hyphenated `8-4-4-4-12` form. v1 does
 not vary behavior by UUID version. The sending server is responsible for every
 wire ID regardless of whether an endpoint or server generated it.
+
+An endpoint subsystem MAY be one process, multiple cooperating components, or
+one endpoint selected from several user devices. That decomposition and the
+local selection mechanism are implementation choices. For one accepted call
+binding, exactly one logical endpoint instance on each side MUST own an active
+WebRTC negotiation at a time.
 
 Only `incoming` carries accounts:
 
@@ -191,7 +214,7 @@ type CallFrame =
 ```
 
 `callId`, `operation`, and `mediaType` are required in every frame. Except for
-`video-upgraded`, `mediaType` MUST equal the receiver's current stored type.
+`video-upgraded`, `mediaType` MUST equal the receiver's current bound type.
 During upgrade negotiation it remains `AUDIO`; it becomes `VIDEO` only when
 `video-upgraded` is accepted. v1 does not permit downgrade to AUDIO.
 
@@ -246,18 +269,32 @@ ringing(op), signal: no stage change
 | `ended`          | Either direction | `accepted` or `connected`     | Enter `terminal`           | Already terminal                              |
 | `signal`         | Section 8        | Section 8                     | Relay without stage change | Signal ID already processed                   |
 
-The callee server MUST send `ringing` only after local confirmation that the
-callee endpoint began alerting. Failure of this advisory frame MUST NOT block
+The callee server MUST send `ringing` only after its endpoint subsystem provides
+a trustworthy indication that user-visible alerting began for this call
+binding. Delivery of `incoming` to a device, acceptance by a push service, or
+creation of server-side call state alone is insufficient. How the endpoint
+provides the indication is local. Failure of this advisory frame MUST NOT block
 acceptance or fail the call.
+
+The callee server MUST send `accepted` only after one callee endpoint instance
+has claimed the call binding and the deployment prevents another endpoint from
+independently accepting the same binding. Multi-device arbitration is local,
+but its result MUST be externally equivalent to one logical callee endpoint.
 
 `cancelled` applies in `accepted` to converge a race in which the caller
 cancelled before observing acceptance. After the caller server has accepted
 `accepted`, a later local hang-up uses `ended`, not a newly generated
 `cancelled`.
 
-`connected.payload.startedAt` is the callee endpoint's first confirmation of a
-media connection, expressed as an integer in `0..9007199254740991`. Only the
-callee server sends `connected`; a caller endpoint does not create a second
+The callee endpoint subsystem MUST report connection only after its
+`RTCPeerConnection.connectionState` first becomes `connected`; candidate
+discovery, successful SDP application, or the start of ICE or DTLS negotiation
+alone is insufficient. The callee server assigns
+`connected.payload.startedAt` when it first accepts that endpoint indication,
+expressed as an integer in `0..9007199254740991`, and MUST preserve that value
+on every retry. The timestamp is diagnostic and MUST NOT determine frame
+ordering, authorization, expiry, or race resolution. Only the callee server
+sends `connected`; the caller endpoint subsystem does not create a second
 federation timestamp.
 
 | `endReason` | Permitted stage           | Meaning                                                                       |
@@ -349,15 +386,35 @@ or `missed` after acceptance.
 
 ## 8. Signal payloads, phases, and retries
 
+Endpoint subsystems MUST perform offer/answer processing with the
+`RTCPeerConnection` signaling state machine defined by
+[WebRTC 1.0](https://www.w3.org/TR/webrtc/) and the offer/answer procedures in
+[RFC 8829 JSEP](https://www.rfc-editor.org/rfc/rfc8829.html). Those standards
+define how session descriptions are parsed, applied, and used to create offers
+and answers; this profile does not reproduce or replace their algorithms.
+
+In particular, an answerer MUST successfully apply a remote offer with
+`setRemoteDescription` before invoking `createAnswer`, and MUST successfully
+apply its generated answer with `setLocalDescription` before sending that
+answer. The offerer MUST successfully apply the remote answer with
+`setRemoteDescription` before treating that negotiation as complete. A failed
+description operation is not a completed negotiation and follows the SOMFP
+failure-convergence rule below.
+
 `signal.payload.data` is a string of 1–32768 Unicode code points. Federation
 servers validate only its outer type, length, ID, and active binding. They MUST
 NOT parse, normalize, reserialize, or rewrite it.
 
 `JsonText<T>` documents the structure an endpoint obtains after `JSON.parse`;
-the wire field remains an unmodified JSON string. The producer MUST generate
-the specified inner structure, and the consuming side validates it before use.
-Invalid inner content may terminate or be ignored by local negotiation but does
-not retroactively change server-level signal idempotency.
+the wire field remains an unmodified JSON string. Opaque to Federation servers
+does not mean unvalidated end to end: the producing endpoint subsystem MUST
+generate the specified inner structure, and the consuming endpoint subsystem
+MUST validate it before use. An invalid offer or answer MUST fail the active
+negotiation and converge the call through `ended(failed)`. An invalid individual
+ICE candidate MUST be ignored without undoing server-level signal acceptance.
+An invalid `video-state` payload MUST be ignored and MUST NOT by itself terminate
+an otherwise usable call. Invalid inner content does not make an accepted
+`signalId` reusable or retroactively change server-level idempotency.
 
 | `signalType`  | Direction       | Permitted stage                    | `data`                                                                                                                              |
 | ------------- | --------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
@@ -382,14 +439,24 @@ tombstone lifetime.
 ICE may arrive out of order relative to an offer or answer. A federation server
 MUST NOT reject, reorder, or interpret ICE according to JSEP ordering; it
 validates the outer frame and relays it unchanged. Endpoints buffer and apply
-it according to their WebRTC signaling state. ICE restart creates no lifecycle
-event. A successful AUDIO-to-VIDEO negotiation uses Section 9.
+it through `addIceCandidate` according to the WebRTC 1.0 and JSEP signaling
+state. ICE restart creates no lifecycle event. A successful AUDIO-to-VIDEO
+negotiation uses Section 9.
+
+HTTP `200/code=0` acknowledges server-level validation and acceptance, not
+endpoint delivery or successful application. Endpoint application failure MUST
+converge through a later lifecycle frame or the applicable finite deadline; it
+MUST NOT cause reuse of the accepted `signalId`.
 
 ## 9. AUDIO-to-VIDEO upgrade
 
-The caller endpoint is the offerer and the callee endpoint is the answerer for
-all v1 negotiations. This application profile avoids offer glare; it is not a
-restriction imposed by RFC 3264.
+The caller endpoint subsystem MUST be the offerer and the callee endpoint
+subsystem MUST be the answerer for the initial negotiation, media
+renegotiation, ICE restart, and AUDIO-to-VIDEO upgrade. A callee-side
+`negotiationneeded` event MUST NOT directly produce an offer; the callee first
+expresses the applicable protocol request and the caller produces the offer.
+This SOMFP application rule avoids offer glare; WebRTC 1.0, JSEP, and RFC 3264
+do not require one fixed side to remain the offerer.
 
 When the callee requests an upgrade, it first sends
 `video-state {"enabled":true}` and the caller creates the new offer. A caller
@@ -447,13 +514,10 @@ Both servers MUST use finite unanswered and post-acceptance connection
 deadlines. Their durations and relative ordering are local policy. On
 acceptance, the unanswered deadline ceases and the connection deadline begins.
 
-For interoperable default behavior, an implementation SHOULD use 45 seconds
-for both the unanswered deadline and the post-acceptance connection deadline.
-A caller-side safety deadline used to cover peer-server failure or partition
-SHOULD be longer than the corresponding peer deadline plus an ordinary S2S
-retry window; 60 seconds is the recommended default. These values are not wire
-constants, and an implementation MAY choose different finite values for its
-deployment conditions.
+As a non-normative operational default, a deployment can use approximately 45
+seconds for both the unanswered and post-acceptance connection deadlines and a
+longer caller-side safety deadline, such as 60 seconds, to cover peer-server
+failure or partition. These values are not wire constants.
 
 A transient S2S delivery failure does not extend a lifecycle deadline. The
 bounded retry permitted by Section 11 may allow an identical frame to arrive
@@ -562,7 +626,11 @@ digest and signature.
 
 ## 13. External standards
 
-Federation v1 does not modify or redefine:
+The WebRTC 1.0 and RFC 8829 references above are normative for endpoint
+offer/answer and `RTCPeerConnection` processing. SOMFP defines the signaling
+transport, fixed endpoint roles, lifecycle, idempotency, and application
+failure convergence around those algorithms; it does not modify or redefine
+the external standards below:
 
 - [WebRTC 1.0](https://www.w3.org/TR/webrtc/)
 - [RFC 8829 — JSEP](https://www.rfc-editor.org/rfc/rfc8829.html)

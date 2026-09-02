@@ -18,7 +18,7 @@
       "required": ["account", "rev"],
       "properties": {
         "account": { "$ref": "urn:somfp:v1:common#/$defs/account" },
-        "rev": { "type": "string", "pattern": "^(0|[1-9][0-9]{0,15})$" }
+        "rev": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" }
       },
       "additionalProperties": false
     },
@@ -189,6 +189,19 @@
           "additionalProperties": false
         }
       ]
+    },
+    "groupMemberProfileQuery": {
+      "type": "object",
+      "required": ["account", "memberAccount", "memberDomain", "rev"],
+      "properties": {
+        "account": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },
+        "memberAccount": {
+          "$ref": "urn:somfp:v1:common#/$defs/userAccount"
+        },
+        "memberDomain": { "$ref": "urn:somfp:v1:common#/$defs/domain" },
+        "rev": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" }
+      },
+      "additionalProperties": false
     },
     "mediaParameters": {
       "type": "object",

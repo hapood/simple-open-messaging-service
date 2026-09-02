@@ -18,20 +18,26 @@ See [CONFORMANCE](./CONFORMANCE.md) for the complete conformance scope and modul
 2. [Transport and Security](./transport-security.md): well-known discovery, root and signing keys, SRV, TLS, logical authority, digests, and HTTP Message Signatures.
 3. [Peer Recognition](./recognition.md): bidirectional Recognize, root public-key pinning, Health availability queries, degraded state, timing, and failure handling.
 4. [State Feed](./state-feed.md): compacted relationship/profile-reference, Group Meta feed-head, and thread-content snapshots.
-5. [Group Meta Feed](./group-meta.md): per-peer full and delta member-role and compacted group-profile-reference projections.
+5. [Group Meta Feed](./group-meta.md): the group-origin canonical full and delta member-role and compacted group-profile-reference feed.
 6. [Authorized Profile](./authorized-profile.md): policy-controlled exact account/revision lookup for established user and group threads.
-7. [Message Author Profile](./message-author-profile.md): lazy display-name and Base64-avatar lookup authorized by an exact message.
-8. [Message Query](./message-feed.md): per-thread message query and skip-mode boundaries.
-9. [Message Tombstone Query](./message-tombstone-feed.md): permanent deletion facts, authoritative query, and race convergence.
-10. [Message](./message.md): message identity, content types, resource references, replies, and forward closure.
-11. [Resources](./resources.md): parameters, responses, authorization, and errors for profiles, media bytes, and forward closure.
-12. [Audio and Video Calls](./calls.md): the standard WebRTC stack, S2S frames, state machine, and AUDIO-to-VIDEO upgrade.
-13. [Stable Error Registry](./errors.md): stable error codes, HTTP status, retry behavior, and identity actions.
-14. [Machine-readable Release Package](./schema/README.md): JSON Schema, HTTP manifest, positive and negative vectors, and the Conformance CLI.
+7. [Group Member Profile](./group-member-profile.md): asymmetric exact member-profile lookup served by the group origin and authorized by its canonical Group Meta state.
+8. [Message Author Profile](./message-author-profile.md): lazy complete-profile lookup authorized by an exact message.
+9. [Message Query](./message-feed.md): per-thread message query and skip-mode boundaries.
+10. [Message Tombstone Query](./message-tombstone-feed.md): permanent deletion facts, authoritative query, and race convergence.
+11. [Message](./message.md): message identity, content types, resource references, replies, and forward closure.
+12. [Resources](./resources.md): parameters, responses, authorization, and errors for profiles, media bytes, and forward closure.
+13. [Audio and Video Calls](./calls.md): the mandatory end-to-end Call Profile, including S2S frames, endpoint WebRTC/JSEP behavior, lifecycle state, and AUDIO-to-VIDEO upgrade on the same connection.
+14. [Stable Error Registry](./errors.md): stable error codes, HTTP status, retry behavior, and identity actions.
+15. [Machine-readable Release Package](./schema/README.md): JSON Schema, HTTP manifest, positive and negative vectors, and the Conformance CLI.
 
 The Core Protocol defines shared rules. Transport and Security defines the discovery, TLS, and signature profile shared by all operations. Each remaining operation document defines only its body, authorization, state, and idempotency semantics. Together these documents form one versioned release package, whose status applies to the whole package rather than ordinary chapters.
 
-An operation document may tighten a shared rule but cannot weaken transport or identity security. A conflict between normative documents is a specification defect and must be handled according to the precedence rules in the Core Protocol; JSON Schema, examples, and existing implementations must not be used to infer an alternative meaning.
+An operation document may tighten a shared rule only within the scope delegated
+by the Core Protocol and cannot weaken transport, identity, envelope, or
+evolution rules. The Core Protocol defines document ownership and precedence. A
+remaining conflict between normative documents is a release defect that must be
+corrected; JSON Schema, examples, and existing implementations must not be used
+to select an alternative meaning.
 
 JSON Schema, the HTTP manifest, positive and negative vectors, and the Conformance CLI ship with the normative text as non-normative validation resources. They are not part of runtime negotiation and cannot alter the normative text. Cross-major discovery selects a common major only through `protocolVersions`.
 

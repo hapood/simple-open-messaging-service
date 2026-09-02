@@ -29,13 +29,20 @@
         },
         "author": {
           "type": "object",
-          "required": ["displayName", "account", "domain"],
+          "required": ["account", "domain"],
           "properties": {
-            "displayName": { "type": "string" },
             "account": {
               "$ref": "urn:somfp:v1:common#/$defs/userAccount"
             },
-            "domain": { "$ref": "urn:somfp:v1:common#/$defs/domain" },
+            "domain": { "$ref": "urn:somfp:v1:common#/$defs/domain" }
+          },
+          "additionalProperties": false
+        },
+        "profile": {
+          "type": "object",
+          "required": ["displayName"],
+          "properties": {
+            "displayName": { "type": "string" },
             "avatarDigest": {
               "$ref": "urn:somfp:v1:common#/$defs/sha256Hex"
             }
@@ -81,12 +88,7 @@
     }
   },
   "type": "object",
-  "required": [
-    "id",
-    "messages",
-    "children",
-    "assets"
-  ],
+  "required": ["id", "messages", "children", "assets"],
   "properties": {
     "id": { "$ref": "#/$defs/bundleId" },
     "messages": {

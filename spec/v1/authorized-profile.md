@@ -14,8 +14,9 @@ GET /s2s/v1/profiles/:account?rev=:rev
 ```
 
 `account` MAY be a `UserAccount` or `GroupAccount` owned by the responding
-domain. `rev` is required and is a canonical non-negative decimal
-`SafeInteger`. Omitting `rev`, or including any other query parameter, returns
+domain. `rev` is required and is a canonical positive decimal `SafeInteger`.
+The value `0` is the no-profile sentinel and MUST NOT be requested. Omitting
+`rev`, sending `0`, or including any other query parameter returns
 `400 FEDERATION_MALFORMED`.
 
 The publisher returns that exact immutable revision and MUST NOT substitute a
@@ -34,15 +35,22 @@ interface AuthorizedProfile {
   displayName: string;
   bio: string;
   avatar: InlineProfileAvatar | null;
-  profileRev: SafeInteger;
+  profileRev: PositiveSafeInteger;
 }
 ```
 
 Name, biography, and avatar are updated together in one profile operation and
-produce one new revision. A publisher may keep a local default revision for
-authoring new references, but that pointer is not a federated fact and is not
-remotely queryable. A future publisher may select different revisions for
-different peers. The response `profileRev` MUST equal the requested `rev`.
+produce one new revision. Within one `(account, domain)`, a `profileRev` is
+permanently bound to one immutable snapshot and MUST NOT be reused, even after
+that snapshot is no longer referenced or retained. A publisher may keep a local
+`defaultProfileRev` for authoring new references, but that pointer is not a
+federated fact, does not make other revisions inactive, and is not remotely
+queryable. A future publisher may select different revisions for different
+peers. The response `profileRev` MUST equal the requested `rev`.
+
+Revision allocation begins at `1`. The response object and every field shown
+above are required; `profileRev` is never absent or `null`. The value `0` is not
+a profile revision and can never appear in a successful response.
 
 Relationship Intent, messages, and Group Meta `GROUP_PROFILE` items carry exact
 profile references without carrying name, biography, or avatar bytes. A
@@ -51,8 +59,8 @@ authorization permits account/revision lookup.
 
 ## 3. Authorization and errors
 
-The profile owner MAY independently control which recognized peers may read an
-active or historical revision. Recognition, knowledge of `account`, knowledge
+The profile owner MAY independently control which recognized peers may read a
+default-selected or historical revision. Recognition, knowledge of `account`, knowledge
 of `rev`, or possession of earlier profile data does not grant access.
 
 The publisher MUST evaluate its current disclosure policy for every request.

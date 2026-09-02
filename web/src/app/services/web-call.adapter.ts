@@ -324,21 +324,32 @@ export class WebCallAdapter implements CallAdapter {
     this.seenSignalIds.add(signal.id);
     if (signal.kind === 'offer') {
       if (!this.pc) this.pendingOffer = signal.payload;
-      else await this.applyOffer(signal.payload);
+      else {
+        try {
+          await this.applyOffer(signal.payload);
+        } catch (error) {
+          this.failNegotiation('remote offer', error);
+        }
+      }
     } else if (signal.kind === 'answer' && this.pc) {
-      if (this.answerBackstop) clearTimeout(this.answerBackstop);
-      await this.pc.setRemoteDescription({
-        type: 'answer',
-        sdp: signal.payload,
-      });
-      this.update({ phase: 'connecting', step: 'answer-received' });
-      if (this.state.videoUpgradeState === 'upgrading')
-        await this.completeVideoUpgrade();
+      try {
+        await this.pc.setRemoteDescription({
+          type: 'answer',
+          sdp: signal.payload,
+        });
+        if (this.answerBackstop) clearTimeout(this.answerBackstop);
+        this.update({ phase: 'connecting', step: 'answer-received' });
+        if (this.state.videoUpgradeState === 'upgrading')
+          await this.completeVideoUpgrade();
+      } catch (error) {
+        this.failNegotiation('remote answer', error);
+      }
     } else if (signal.kind === 'ice') {
       if (!this.pc?.remoteDescription) this.pendingIce.push(signal.payload);
       else await this.applyIce(signal.payload);
     } else if (signal.kind === 'video-state') {
       const enabled = this.readVideoEnabled(signal.payload);
+      if (enabled === undefined) return;
       this.update({
         remoteCameraEnabled: enabled,
         ...(enabled && this.state.callType === 'AUDIO'
@@ -462,8 +473,13 @@ export class WebCallAdapter implements CallAdapter {
   }
 
   private async applyIce(payload: string): Promise<void> {
-    const candidate = JSON.parse(payload) as RTCIceCandidateInit;
-    await this.pc?.addIceCandidate(candidate);
+    try {
+      const parsed: unknown = JSON.parse(payload);
+      if (!this.isIceCandidateInit(parsed)) return;
+      await this.pc?.addIceCandidate(parsed);
+    } catch (error) {
+      console.warn('[call:web] ignored invalid ICE candidate', error);
+    }
   }
 
   private async flushPendingIce(): Promise<void> {
@@ -664,7 +680,7 @@ export class WebCallAdapter implements CallAdapter {
 
   private async completeVideoUpgrade(): Promise<void> {
     const callSid = this.state.callSid;
-    if (!callSid) return;
+    if (!callSid || !this.state.isCaller) return;
     try {
       await this.post('calls/upgrade-video', { callSid });
       this.update({ callType: 'VIDEO', videoUpgradeState: 'idle' });
@@ -699,12 +715,55 @@ export class WebCallAdapter implements CallAdapter {
     }
   }
 
-  private readVideoEnabled(payload: string): boolean {
+  private readVideoEnabled(payload: string): boolean | undefined {
     try {
-      return !!(JSON.parse(payload) as { enabled?: boolean }).enabled;
+      const parsed: unknown = JSON.parse(payload);
+      if (
+        typeof parsed !== 'object' ||
+        parsed === null ||
+        Array.isArray(parsed) ||
+        Object.keys(parsed).length !== 1 ||
+        !('enabled' in parsed) ||
+        typeof parsed.enabled !== 'boolean'
+      )
+        return undefined;
+      return parsed.enabled;
     } catch {
-      return false;
+      return undefined;
     }
+  }
+
+  private isIceCandidateInit(value: unknown): value is RTCIceCandidateInit {
+    if (typeof value !== 'object' || value === null || Array.isArray(value))
+      return false;
+    const candidate = value as Record<string, unknown>;
+    const allowed = new Set([
+      'candidate',
+      'sdpMid',
+      'sdpMLineIndex',
+      'usernameFragment',
+    ]);
+    if (Object.keys(candidate).some((key) => !allowed.has(key))) return false;
+    return (
+      (candidate['candidate'] === undefined ||
+        typeof candidate['candidate'] === 'string') &&
+      (candidate['sdpMid'] === undefined ||
+        candidate['sdpMid'] === null ||
+        typeof candidate['sdpMid'] === 'string') &&
+      (candidate['sdpMLineIndex'] === undefined ||
+        candidate['sdpMLineIndex'] === null ||
+        (Number.isInteger(candidate['sdpMLineIndex']) &&
+          (candidate['sdpMLineIndex'] as number) >= 0)) &&
+      (candidate['usernameFragment'] === undefined ||
+        candidate['usernameFragment'] === null ||
+        typeof candidate['usernameFragment'] === 'string')
+    );
+  }
+
+  private failNegotiation(context: string, error: unknown): void {
+    console.error(`[call:web] ${context} failed`, error);
+    const callSid = this.state.callSid;
+    if (callSid) this.terminate('calls/end', { callSid, endReason: 'failed' });
   }
 
   private bindLocalTrackLifecycle(track: MediaStreamTrack): void {

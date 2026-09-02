@@ -55,14 +55,17 @@ interface ForwardChildBundle {
   messages: ForwardBundleMessage[];
 }
 
-interface ForwardAuthorSnapshot extends Address {
+type ForwardAuthor = Address;
+
+interface ForwardProfileSnapshot {
   displayName: string;
   avatarDigest?: Sha256Hex;
 }
 
 interface ForwardBundleMessageBase {
   id: PositiveSafeInteger;
-  author: ForwardAuthorSnapshot;
+  author: ForwardAuthor;
+  profile?: ForwardProfileSnapshot;
   sentAt: EpochMilliseconds;
   quoteTargetId?: PositiveSafeInteger;
 }
@@ -99,15 +102,31 @@ Every object is a closed schema. Inner `content` uses the corresponding message-
 
 ## 5. Authors, quotes, and assets
 
-- `author.account/domain` MUST form a valid `UserAccount` address.
-- `displayName` is an untrusted display snapshot.
-- `avatarDigest` is genuinely optional; when present, it MUST appear in the parent `assets`.
+- `author.account/domain` MUST form a valid `UserAccount` address and is always
+  present independently from display data.
+- `profile`, when present, is an untrusted immutable display snapshot. The
+  publisher includes it only when it durably holds the exact snapshot selected
+  by the source message's `profileRev` at bundle creation time.
+- If that exact snapshot is unavailable, the publisher MUST omit `profile`. It
+  MUST NOT substitute the author's default, current, cached-unversioned, or
+  numerically newest profile, and forward creation does not grant authority to
+  fetch an otherwise unavailable profile.
+- A known snapshot with no avatar still carries `profile.displayName` and omits
+  only `profile.avatarDigest`. Absence of `profile` means the complete exact
+  display snapshot was unavailable; it does not mean that the author has no
+  avatar.
+- `profile.avatarDigest`, when present, MUST appear in the parent `assets`.
+  The profile snapshot deliberately carries no `profileRev`: it is frozen and
+  self-contained inside the bundle and creates no exact-profile query right.
 - `quoteTargetId` is conditional; when present, it MUST identify a target in the same enclosing `messages[]`. A quote carries no preview.
 - The filename, MIME type, and media kind come from the inner content that references the digest and are not repeated in the asset descriptor.
 - An inner CONTACT_CARD retains its original address and display snapshot; its optional `avatarDigest` participates in the parent asset set like every other inner-content digest.
-- The deduplicated set of all author-avatar and inner-content digests MUST exactly equal the parent `assets`.
+- The deduplicated set of all profile-avatar and inner-content digests MUST exactly equal the parent `assets`.
 - A child has no independent assets array.
-- The consumer computes local counts from the actual lengths of the parent messages, all child messages, and assets, and may persist them for quota, garbage collection, and administrative statistics. The publisher does not declare these counts on the wire.
+- The consumer computes any locally needed counts from the actual lengths of
+  the parent messages, all child messages, and assets. The publisher does not
+  declare derivable counts on the wire, and the protocol does not prescribe
+  their storage or local use.
 
 Inner CALL entries are immutable historical displays and grant no real-time call state. The enclosing `ForwardBundleMessage.author` identifies the inner caller; the bundle does not represent the CALL callee.
 
@@ -125,8 +144,7 @@ The following is the complete response data referenced by the card in Section 2.
       "id": 1,
       "author": {
         "account": "alice",
-        "domain": "a.example",
-        "displayName": "Alice"
+        "domain": "a.example"
       },
       "sentAt": 1769990000000,
       "contentType": "PURE_TEXT",
@@ -147,7 +165,9 @@ An inner FORWARD in the parent messages:
   "id": 2,
   "author": {
     "account": "alice",
-    "domain": "a.example",
+    "domain": "a.example"
+  },
+  "profile": {
     "displayName": "Alice"
   },
   "sentAt": 1769991000000,
@@ -167,7 +187,9 @@ The same response `children[]` MUST contain:
       "id": 1,
       "author": {
         "account": "bob",
-        "domain": "b.example",
+        "domain": "b.example"
+      },
+      "profile": {
         "displayName": "Bob"
       },
       "sentAt": 1769980000000,
@@ -197,6 +219,8 @@ A consumer MUST reject at least the following cases:
 - A non-FORWARD inner message carries `childBundleId`.
 - A message ID is duplicated within one messages array.
 - `quoteTargetId` does not exist in the same enclosing messages array.
-- The author or content-digest set differs from the parent `assets`.
+- The profile-avatar or content-digest set differs from the parent `assets`.
+- `author` carries display fields, or `profile` carries identity fields or a
+  `profileRev`.
 - Any object contains an unknown field.
 - The bundle can be read, validated, or persisted only partially.

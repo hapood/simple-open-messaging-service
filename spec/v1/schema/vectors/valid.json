@@ -173,14 +173,14 @@
             "account": "alice",
             "domain": "a.example",
             "operation": "UPSERT",
-            "body": { "role": "OWNER" }
+            "body": { "role": "OWNER", "profileRev": 2 }
           },
           {
             "feedId": "8",
             "account": "bob",
             "domain": "b.example",
             "operation": "UPSERT",
-            "body": { "role": "MEMBER" }
+            "body": { "role": "MEMBER", "profileRev": 1 }
           },
           {
             "feedId": "9",
@@ -194,7 +194,7 @@
       }
     },
     {
-      "name": "group meta departure retains Address and final role",
+      "name": "group meta departure carries only its member Address",
       "schema": "urn:somfp:v1:group-meta",
       "value": {
         "account": "!01arz3ndektsv4rrffq69g5fav",
@@ -204,8 +204,7 @@
             "feedId": "10",
             "account": "bob",
             "domain": "b.example",
-            "operation": "DEPART",
-            "body": { "role": "MEMBER" }
+            "operation": "DEPART"
           }
         ],
         "scannedThrough": "10",
@@ -519,7 +518,30 @@
         "domain": "a.example",
         "profileRev": 3,
         "displayName": "Alice",
+        "bio": "",
         "avatar": null
+      }
+    },
+    {
+      "name": "group member profile response",
+      "schema": "urn:somfp:v1:group-member-profile",
+      "value": {
+        "account": "alice",
+        "domain": "a.example",
+        "profileRev": 3,
+        "displayName": "Alice",
+        "bio": "",
+        "avatar": null
+      }
+    },
+    {
+      "name": "group member profile query parameters",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/groupMemberProfileQuery",
+      "value": {
+        "account": "!group",
+        "memberAccount": "alice",
+        "memberDomain": "a.example",
+        "rev": "3"
       }
     },
     {
@@ -564,13 +586,25 @@
           {
             "id": 1,
             "author": {
-              "displayName": "Alice",
               "account": "alice",
               "domain": "a.example"
             },
             "contentType": "PURE_TEXT",
             "content": "{\"text\":\"hello\"}",
             "sentAt": 1
+          },
+          {
+            "id": 2,
+            "author": {
+              "account": "bob",
+              "domain": "b.example"
+            },
+            "profile": {
+              "displayName": "Bob"
+            },
+            "contentType": "PURE_TEXT",
+            "content": "{\"text\":\"profile snapshot is optional\"}",
+            "sentAt": 2
           }
         ],
         "children": [],

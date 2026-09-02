@@ -598,6 +598,30 @@
       ]
     },
     {
+      "name": "group member profile rejects incomplete or ambiguous selectors",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/groupMemberProfileQuery",
+      "values": [
+        {
+          "account": "!group",
+          "memberAccount": "alice",
+          "memberDomain": "a.example"
+        },
+        {
+          "account": "!group",
+          "memberAccount": "alice",
+          "memberDomain": "a.example",
+          "rev": "3",
+          "messageSeq": "1"
+        },
+        {
+          "account": "alice",
+          "memberAccount": "bob",
+          "memberDomain": "b.example",
+          "rev": "3"
+        }
+      ]
+    },
+    {
       "name": "message author profile rejects non-profile response shapes",
       "schema": "urn:somfp:v1:message-author-profile",
       "values": [
@@ -838,7 +862,7 @@
       "value": { "code": 0, "message": "ok" }
     },
     {
-      "name": "group-meta departure rejects an empty historical member body",
+      "name": "group-meta departure rejects every body",
       "schema": "urn:somfp:v1:group-meta",
       "value": {
         "account": "!group",
@@ -965,6 +989,112 @@
         ],
         "scannedThrough": 1,
         "hasMore": false
+      }
+    },
+    {
+      "name": "forward bundle rejects display fields mixed into author identity",
+      "schema": "urn:somfp:v1:forward-bundle",
+      "value": {
+        "id": "b1",
+        "messages": [
+          {
+            "id": 1,
+            "author": {
+              "account": "alice",
+              "domain": "a.example",
+              "displayName": "Alice"
+            },
+            "contentType": "PURE_TEXT",
+            "content": "{\"text\":\"hello\"}",
+            "sentAt": 1
+          }
+        ],
+        "children": [],
+        "assets": []
+      }
+    },
+    {
+      "name": "authorized profile parameters reject no-profile sentinel",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/authorizedProfileParameters",
+      "value": { "account": "alice", "rev": "0" }
+    },
+    {
+      "name": "group member profile parameters reject no-profile sentinel",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/groupMemberProfileQuery",
+      "value": {
+        "account": "!team",
+        "memberAccount": "alice",
+        "memberDomain": "a.example",
+        "rev": "0"
+      }
+    },
+    {
+      "name": "public user profile rejects zero revision",
+      "schema": "urn:somfp:v1:profile",
+      "value": {
+        "account": "alice",
+        "domain": "a.example",
+        "displayName": "Alice",
+        "bio": "",
+        "avatar": null,
+        "profileRev": 0
+      }
+    },
+    {
+      "name": "authorized profile rejects null revision",
+      "schema": "urn:somfp:v1:authorized-profile",
+      "value": {
+        "account": "alice",
+        "domain": "a.example",
+        "displayName": "Alice",
+        "bio": "",
+        "avatar": null,
+        "profileRev": null
+      }
+    },
+    {
+      "name": "group member profile rejects zero revision",
+      "schema": "urn:somfp:v1:group-member-profile",
+      "value": {
+        "account": "alice",
+        "domain": "a.example",
+        "displayName": "Alice",
+        "bio": "",
+        "avatar": null,
+        "profileRev": 0
+      }
+    },
+    {
+      "name": "group member profile rejects missing revision",
+      "schema": "urn:somfp:v1:group-member-profile",
+      "value": {
+        "account": "alice",
+        "domain": "a.example",
+        "displayName": "Alice",
+        "bio": "",
+        "avatar": null
+      }
+    },
+    {
+      "name": "message author profile rejects missing bio",
+      "schema": "urn:somfp:v1:message-author-profile",
+      "value": {
+        "account": "alice",
+        "domain": "a.example",
+        "profileRev": 3,
+        "displayName": "Alice",
+        "avatar": null
+      }
+    },
+    {
+      "name": "group member profile rejects missing bio",
+      "schema": "urn:somfp:v1:group-member-profile",
+      "value": {
+        "account": "alice",
+        "domain": "a.example",
+        "profileRev": 3,
+        "displayName": "Alice",
+        "avatar": null
       }
     },
     {

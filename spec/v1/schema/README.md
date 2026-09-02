@@ -4,7 +4,11 @@ Status: `RELEASE CANDIDATE`
 
 Release: `v1.0.0-rc.0`
 
-This directory ships with the v1 normative text as a non-normative validation resource and uses JSON Schema Draft 2020-12. The normative text defines transaction, permission, signature, cursor, and state-machine semantics. The schemas define mechanically checkable JSON shapes. If they conflict, the normative text prevails and the release package must be corrected.
+This directory ships with the v1 normative text as a non-normative validation
+resource and uses JSON Schema Draft 2020-12. The normative text defines atomic
+commit boundaries, permission, signature, cursor, and state-machine semantics.
+The schemas define mechanically checkable JSON shapes. If they conflict, the
+normative text prevails and the release package must be corrected.
 
 ## Files
 
@@ -12,9 +16,10 @@ This directory ships with the v1 normative text as a non-normative validation re
 - `discovery.schema.json`: cross-version bootstrap and key discovery at `/.well-known/somfp`.
 - `identity.schema.json`: closed JSON shapes for Recognize, Health, and feed-head hints.
 - `state-feed.schema.json`: compacted relationship/profile-reference, Group Meta head, and combined thread-content head items.
-- `group-meta.schema.json`: full and delta group-member role and compacted group-profile-reference projections.
+- `group-meta.schema.json`: full and delta group-member role/profile-reference and compacted group-profile-reference projections.
 - `authorized-profile.schema.json`: policy-controlled exact account/revision profile response.
-- `message-author-profile.schema.json`: display name and Base64 avatar selected by an exact authorized message and profile revision.
+- `group-member-profile.schema.json`: complete profile snapshot served by the group origin and selected by an exact current canonical Group Meta member reference.
+- `message-author-profile.schema.json`: complete profile snapshot selected by an exact authorized message and profile revision.
 - `message-query.schema.json` and `message-tombstone-query.schema.json`: messages and authoritative deletion facts returned by thread queries.
 - `message-content.schema.json`: all parsed core message-content variants selected by `contentType`.
 - `call.schema.json`: every call lifecycle and signal operation with its closed conditional field set.
@@ -37,7 +42,7 @@ operation.
 - `vectors/valid.json` and `vectors/invalid.json`: positive and negative JSON vectors.
 - `vectors/http-message-signature.json`: a general fixed Ed25519 HTTP Message Signature vector.
 - `vectors/call-http-message-signature.json`: a completely signed `/s2s/v1/call` vector.
-- `vectors/feed-query-semantics.json`: structured state-machine assertions for state-first processing, fixed `through`, relationship restoration, exact-message profile authorization, rejoin convergence, skip-mode reverse recovery, deferred queries, and unknown-thread recovery.
+- `vectors/feed-query-semantics.json`: structured state-machine assertions for state-first processing, fixed `through`, relationship restoration, exact Group Meta member-profile authorization, exact-message profile authorization, rejoin convergence, skip-mode reverse recovery, deferred queries, and unknown-thread recovery.
 
 ## Validation
 
@@ -47,7 +52,12 @@ Run from the repository root:
 npm run federation:conformance
 ```
 
-The command compiles every schema; validates positive and negative vectors; verifies secondary parsing of message `content`; checks strictly increasing version arrays; verifies the complete HTTP manifest; compares the normative error registry exactly with the error schema; and verifies fixed signature vectors. The CLI does not import implementation constants or services from SOMS `src/`. Repository unit tests additionally compare the manifest, schema enums, normative text, and Nest route metadata to prevent drift between release artifacts and the reference implementation.
+The command compiles every schema; validates positive and negative vectors;
+verifies secondary parsing of message `content`; checks strictly increasing
+version arrays; verifies the complete HTTP manifest; compares the normative
+error registry exactly with the error schema; and verifies fixed signature
+vectors. The CLI reads only this release package and does not depend on a
+particular implementation framework, route registry, database, or service.
 
 Third-party implementations can validate their own JSON:
 

@@ -490,8 +490,9 @@ object CallController {
         when (kind) {
             "offer" -> {
                 SomsLog.d(TAG) { "applying remote offer → setRemoteDescription + createAnswer" }
-                setRemote(connection, Type.OFFER, payload)
-                connection.createAnswer(answerSdpObserver, offerAnswerConstraints())
+                setRemote(connection, Type.OFFER, payload) {
+                    connection.createAnswer(answerSdpObserver, offerAnswerConstraints())
+                }
             }
             "answer" -> {
                 // Idempotent: the SSE relay + the server-fetch fallback can both deliver the answer — apply it
@@ -501,22 +502,43 @@ object CallController {
                 if (answerApplied) { SomsLog.d(TAG) { "answer already applied — skip duplicate" }; return }
                 answerApplied = true
                 SomsLog.d(TAG) { "applying remote answer → setRemoteDescription" }
-                setRemote(connection, Type.ANSWER, payload)
-                if (videoRenegotiationInFlight) {
-                    videoRenegotiationInFlight = false
-                    completeVideoUpgrade()
-                }
-                if (phase == "calling" || phase == "ringing") {
-                    step = "answer-received"
-                    phase = "connecting"
-                    pushSnapshot()
+                setRemote(connection, Type.ANSWER, payload) {
+                    if (videoRenegotiationInFlight) {
+                        videoRenegotiationInFlight = false
+                        if (isCaller) completeVideoUpgrade()
+                    }
+                    if (phase == "calling" || phase == "ringing") {
+                        step = "answer-received"
+                        phase = "connecting"
+                        pushSnapshot()
+                    }
                 }
             }
             "ice" -> {
-                val p = JSONObject(payload)
-                connection.addIceCandidate(
-                    IceCandidate(p.optString("sdpMid"), p.optInt("sdpMLineIndex"), p.optString("candidate")),
+                val p = runCatching { JSONObject(payload) }.getOrElse {
+                    SomsLog.w(TAG) { "ignored invalid ICE JSON: ${it.message}" }
+                    return
+                }
+                val allowed = setOf("candidate", "sdpMid", "sdpMLineIndex", "usernameFragment")
+                val lineIndex = p.opt("sdpMLineIndex")
+                val validLineIndex = lineIndex == null || lineIndex == JSONObject.NULL ||
+                    (lineIndex is Number && lineIndex.toDouble() >= 0.0 && lineIndex.toDouble() % 1.0 == 0.0)
+                if (p.keys().asSequence().any { it !in allowed } ||
+                    (p.has("candidate") && p.opt("candidate") !is String) ||
+                    (p.has("sdpMid") && p.opt("sdpMid") !is String && !p.isNull("sdpMid")) ||
+                    !validLineIndex ||
+                    (p.has("usernameFragment") && p.opt("usernameFragment") !is String && !p.isNull("usernameFragment"))) {
+                    SomsLog.w(TAG) { "ignored invalid ICE candidate shape" }
+                    return
+                }
+                val accepted = connection.addIceCandidate(
+                    IceCandidate(
+                        if (!p.has("sdpMid") || p.isNull("sdpMid")) null else p.getString("sdpMid"),
+                        if (!p.has("sdpMLineIndex") || p.isNull("sdpMLineIndex")) -1 else p.getInt("sdpMLineIndex"),
+                        p.optString("candidate"),
+                    ),
                 )
+                if (!accepted) SomsLog.w(TAG) { "ignored rejected ICE candidate" }
             }
         }
     }
@@ -667,14 +689,24 @@ object CallController {
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", if (wantsVideo) "true" else "false"))
         }
 
-    /** setRemoteDescription wrapper that logs failure (a bad SDP usually means a signaling race; the call
-     *  will time out / fail via the connection state rather than crash here). */
-    private fun setRemote(connection: PeerConnection, type: Type, sdp: String) {
+    /** Apply a remote description before continuing the dependent JSEP step. A rejected remote SDP is a
+     *  terminal negotiation failure; it must not create an answer or commit an upgrade. */
+    private fun setRemote(connection: PeerConnection, type: Type, sdp: String, onSuccess: () -> Unit) {
         connection.setRemoteDescription(object : SdpObserver {
             override fun onCreateSuccess(p0: SessionDescription?) {}
-            override fun onSetSuccess() { SomsLog.d(TAG) { "setRemoteDescription($type) ok" } }
+            override fun onSetSuccess() {
+                callExecutor.execute {
+                    SomsLog.d(TAG) { "setRemoteDescription($type) ok" }
+                    onSuccess()
+                }
+            }
             override fun onCreateFailure(p0: String?) {}
-            override fun onSetFailure(error: String?) { SomsLog.w(TAG) { "setRemoteDescription($type) failed: $error" } }
+            override fun onSetFailure(error: String?) {
+                callExecutor.execute {
+                    SomsLog.w(TAG) { "setRemoteDescription($type) failed: $error" }
+                    fail("failed")
+                }
+            }
         }, SessionDescription(type, sdp))
     }
 
@@ -687,34 +719,31 @@ object CallController {
             // so re-arm the answer-idempotency guard — otherwise the restart answer would be skipped as a "duplicate".
             answerApplied = false
             SomsLog.d(TAG) { "offer created → setLocalDescription + relay" }
-            if (videoRenegotiationInFlight) {
-                connection.setLocalDescription(object : SdpObserver {
-                    override fun onCreateSuccess(p0: SessionDescription?) {}
-                    override fun onSetSuccess() {
+            connection.setLocalDescription(object : SdpObserver {
+                override fun onCreateSuccess(p0: SessionDescription?) {}
+                override fun onSetSuccess() {
+                    callExecutor.execute {
                         postSignal(sid, peerUserId, "offer", sdp.description)
                         setStep("offer-sent")
                     }
-                    override fun onCreateFailure(p0: String?) {}
-                    override fun onSetFailure(error: String?) {
-                        failVideoUpgrade("set-local-offer: $error")
+                }
+                override fun onCreateFailure(p0: String?) {}
+                override fun onSetFailure(error: String?) {
+                    callExecutor.execute {
+                        SomsLog.w(TAG) { "setLocalDescription(offer) failed: $error" }
+                        failLocalOffer("set-local-offer")
                     }
-                }, sdp)
-            } else {
-                connection.setLocalDescription(EmptySdpObserver, sdp)
-                postSignal(sid, peerUserId, "offer", sdp.description)
-                setStep("offer-sent")
-            }
+                }
+            }, sdp)
         }
         override fun onSetSuccess() {}
         override fun onCreateFailure(error: String?) {
             SomsLog.w(TAG) { "createOffer failed: $error" }
-            if (videoRenegotiationInFlight) failVideoUpgrade("create-offer")
-            else abortOutgoingSetup("create-offer")
+            failLocalOffer("create-offer")
         }
         override fun onSetFailure(error: String?) {
             SomsLog.w(TAG) { "setLocalDescription(offer) failed: $error" }
-            if (videoRenegotiationInFlight) failVideoUpgrade("set-local-offer")
-            else abortOutgoingSetup("set-local-offer")
+            failLocalOffer("set-local-offer")
         }
     }
 
@@ -724,41 +753,32 @@ object CallController {
             val sid = callSid ?: return
             if (sdp == null) return
             SomsLog.d(TAG) { "answer created → setLocalDescription + relay" }
-            if (videoUpgradeState == "upgrading") {
-                connection.setLocalDescription(object : SdpObserver {
-                    override fun onCreateSuccess(p0: SessionDescription?) {}
-                    override fun onSetSuccess() {
+            connection.setLocalDescription(object : SdpObserver {
+                override fun onCreateSuccess(p0: SessionDescription?) {}
+                override fun onSetSuccess() {
+                    callExecutor.execute {
                         postSignal(sid, peerUserId, "answer", sdp.description)
                         setStep("answer-sent")
-                        completeVideoUpgrade()
                     }
-                    override fun onCreateFailure(p0: String?) {}
-                    override fun onSetFailure(error: String?) {
-                        failVideoUpgrade("set-local-answer: $error")
+                }
+                override fun onCreateFailure(p0: String?) {}
+                override fun onSetFailure(error: String?) {
+                    callExecutor.execute {
+                        SomsLog.w(TAG) { "setLocalDescription(answer) failed: $error" }
+                        fail("failed")
                     }
-                }, sdp)
-            } else {
-                connection.setLocalDescription(EmptySdpObserver, sdp)
-                postSignal(sid, peerUserId, "answer", sdp.description)
-                setStep("answer-sent")
-            }
+                }
+            }, sdp)
         }
         override fun onSetSuccess() {}
         override fun onCreateFailure(error: String?) {
             SomsLog.w(TAG) { "createAnswer failed: $error" }
-            if (videoUpgradeState == "upgrading") failVideoUpgrade("create-answer")
+            fail("failed")
         }
         override fun onSetFailure(error: String?) {
             SomsLog.w(TAG) { "setLocalDescription(answer) failed: $error" }
-            if (videoUpgradeState == "upgrading") failVideoUpgrade("set-local-answer")
+            fail("failed")
         }
-    }
-
-    private object EmptySdpObserver : SdpObserver {
-        override fun onCreateSuccess(p0: SessionDescription?) {}
-        override fun onSetSuccess() {}
-        override fun onCreateFailure(p0: String?) {}
-        override fun onSetFailure(p0: String?) {}
     }
 
     // ── public API (the SomsCallInterface bridge calls these) ─────────────────────
@@ -1025,7 +1045,9 @@ object CallController {
     }
 
     private fun handleRemoteVideoState(payload: String) {
-        val enabled = runCatching { JSONObject(payload).optBoolean("enabled", false) }.getOrDefault(false)
+        val parsed = runCatching { JSONObject(payload) }.getOrNull() ?: return
+        if (parsed.length() != 1 || !parsed.has("enabled") || parsed.opt("enabled") !is Boolean) return
+        val enabled = parsed.getBoolean("enabled")
         remoteCameraEnabled = enabled
         if (enabled && callType == "AUDIO") videoUpgradeState = "upgrading"
         pushSnapshot()
@@ -1069,6 +1091,14 @@ object CallController {
         videoRenegotiationInFlight = false
         videoUpgradeState = "failed"
         pushSnapshot()
+    }
+
+    private fun failLocalOffer(reason: String) {
+        when {
+            videoRenegotiationInFlight -> failVideoUpgrade(reason)
+            phase == "calling" || phase == "ringing" -> abortOutgoingSetup(reason)
+            else -> fail("failed")
+        }
     }
 
     /** Mute/unmute the mic (local audio track enabled state). */

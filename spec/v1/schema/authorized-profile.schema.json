@@ -23,7 +23,7 @@
       ]
     },
     "profileRev": {
-      "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+      "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
     }
   },
   "additionalProperties": false

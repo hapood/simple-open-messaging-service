@@ -51,15 +51,25 @@ and a group query continues the coordinate space for the same group-address and
 verified-peer pair, regardless of which users on that peer currently belong to
 the group.
 
-`includeSelf` is optional. Its wire value is lowercase `true` or `false`, and omission defaults to `true`. With `includeSelf=false`, the source omits messages whose reconstructed author domain equals the verified signer domain. For P2P this is exactly `authorRef=THREAD_PEER_ACCOUNT`. For GROUP it filters the messages of every member identity hosted by the verified peer, not merely one selected member or the member that caused authorization; this is determined by `message.author.domain` after canonical Domain validation. This comparison MUST NOT be inferred from a local user ID, publisher-local `seq`, or `originSeq`. A filtered sequence is a scannable hole and does not prevent `scannedThrough` from advancing in the selected direction. The parameter affects only this page projection and does not delete a processing receipt, allocation proof, or message. The fixed query-key order is `account`, optional `peerAccount`, `after`, `before`, `through`, `take`, then `includeSelf`; omitted optional fields leave no placeholder.
+`includeSelf` is optional. Its wire value is lowercase `true` or `false`, and omission defaults to `true`. With `includeSelf=false`, the source omits messages whose reconstructed author domain equals the verified signer domain. For P2P this is exactly `authorRef=THREAD_PEER_ACCOUNT`. For GROUP it filters the messages of every member identity hosted by the verified peer, not merely one selected member or the member that caused authorization; this is determined by `message.author.domain` after canonical Domain validation. This comparison MUST NOT be inferred from a local user ID, publisher-local `seq`, or `originSeq`. A filtered sequence is a scannable hole and does not prevent `scannedThrough` from advancing in the selected direction. The parameter affects only this page projection and does not delete a processing receipt, history-policy decision, or message. The fixed query-key order is `account`, optional `peerAccount`, `after`, `before`, `through`, `take`, then `includeSelf`; omitted optional fields leave no placeholder.
 
 GROUP message query has exactly three valid directions:
 
-- A member home server MAY return to the group origin only submissions authored by users in its own domain. The data is not an authoritative group fact until the origin validates and durably accepts it.
-- The group origin MAY return an accepted authoritative timeline only to a peer that holds a mirror of the group.
-- After a mirror durably persists an authoritative message pulled directly from the group origin, it SHOULD return its local durable copy to that origin as a processing receipt. If returned, it MUST be returned only to that origin. The copy's `originSeq/originCreatedAt` equals the origin item's `seq/createdAt`, allowing the origin to associate its earlier authoritative publication.
+- A member home server returns to the group origin only submissions authored by
+  users in its own domain. These feed items are not authoritative group facts
+  until the origin validates and durably accepts them.
+- The group origin returns its accepted authoritative timeline to a member home
+  server holding a mirror.
+- A mirror MAY return to the group origin only non-authoritative copies pulled
+  directly from that origin, as processing receipts.
 
-A mirror MUST NOT return a group message to a peer other than that message's direct publisher. A member home server likewise MUST NOT return a message authored outside its domain in a submission. Before generating a page, the source MUST distinguish the three directions using signer domain, group origin, author domain, durable group-membership facts, and the copy's direct origin. On receiving a processing receipt, the origin associates `(thread, author, originSeq)` with local `(thread, author, seq)`; it creates no message or new thread-content item and MUST NOT write back to the original message. The v1 group-message topology ends here: there is no protocol step for a mirror to relay to another peer or redistribute a receipt.
+Before generating a page, the source MUST distinguish a member submission,
+authoritative distribution, and a processing receipt using the group authority,
+signer domain, author domain, message direct source, and intent direction. A
+mirror MUST NOT return a group message to a peer other than its group origin.
+A member home server MUST NOT return a submission authored outside its own
+domain. A feed query transports these durable items; it does not turn them into
+requests.
 
 Omitting both `after` and `before` bootstraps this thread query. The source
 returns `FEDERATION_FEED_CURSOR_UNAVAILABLE { resumeAfter, resumeBefore }` and no
@@ -118,9 +128,12 @@ inclusive lower `through` bound and `hasMore: false`. Returned messages are
 strictly decreasing and lie in `[scannedThrough, before)`. The next page uses
 `before=scannedThrough`. An empty page may scan directly down to `through`.
 
-Unallocated sequences, sequences not allocated to this peer, and positions with
-an authoritative tombstone are scannable holes in either direction and do not
-block `scannedThrough`. Continuous bounded pagination MUST retain the original
+Unallocated sequences, positions omitted by the source's local history policy,
+and positions with an authoritative tombstone are scannable holes in either
+direction and do not block `scannedThrough`. The protocol does not require a
+publisher to expose or suppress messages produced during a prior authorization
+absence; that retained-history choice is implementation policy. Continuous
+bounded pagination MUST retain the original
 `through` and direction. Repeated GETs against the same snapshot and parameters
 MUST be semantically idempotent.
 
@@ -160,7 +173,7 @@ position and treat every skipped coordinate through that position as
 intentionally discarded. It MUST NOT represent the skipped interval as
 completely replicated or processed, generate a processing receipt for a skipped
 message, or infer any source-side deletion or acknowledgement. This choice does
-not alter source data, authorization, allocation proofs, or query coordinates.
+not alter source data, authorization, history policy, or query coordinates.
 
 For a GROUP reverse reconstruction, the first message query starts with the
 exclusive boundary `E+1` derived from the committed `messageEndSeq=E`. Later
@@ -176,20 +189,34 @@ and do not block message-coordinate acceptance.
 
 ## 4. Authorization and state reconciliation
 
-On every query, the source MUST recompute access from its durable authored relationship direction, group audience, block, thread authority, historical allocation proof, and local policy. The presence of a `THREAD_CONTENT_HEAD` item is not authorization proof. For both user/user and user/group relationships, an unexpired source-authored `REQUESTED` or valid `ACCEPTED` grants the target peer query access without requiring the reverse direction. Before publishing either state, the source MUST have established every thread, audience, and authorization fact needed to serve that query. A newly requested thread with no allocated messages returns a successful empty page.
+On every query, the source MUST recompute access from its durable authored
+relationship direction, block state, thread authority, and local policy. The
+presence of a `THREAD_CONTENT_HEAD` item is not authorization proof. A P2P query
+requires an effective source-authored user-to-user
+`REQUESTED` or `ACCEPTED` direction for the exact selector. A GROUP authoritative
+distribution query requires at least one effective source-authored
+group-to-member `REQUESTED` or `ACCEPTED` direction whose member belongs to the
+verified signer peer. In the reverse direction, the signer MUST be the exact
+authority of the mirrored group. That authority binding permits the origin to
+query member submissions authored in the source domain and processing receipts
+whose direct federation source is the origin; it does not require a
+source-authored member-to-group intent. An effective `REQUESTED` expires at its
+absolute `expiresAt`; an `ACCEPTED` remains effective until superseded.
 
-For the same stable key, `REQUESTED` and `ACCEPTED` grant identical message-query
-permission. Receiving the reverse `ACCEPTED`, or otherwise transitioning from
-`REQUESTED` to mutually confirmed `ACCEPTED`, MUST NOT expand, reset, shrink, or
-replace that peer's queryable sequence-coordinate space solely because of the
-confirmation. When the authored grant or required peer-level group audience is
-invalid, the source MUST return `FORBIDDEN`. If the same stable-key relationship
-is later re-established, its original query coordinates resume and MUST NOT
-reset or shrink. While access is valid, only messages with durable allocation
-proof granted to that peer during a historically valid audience may be returned.
-Sequences not allocated during an absence are holes and MUST NOT be backfilled
-on rejoin. Content-retention policy may still skip a purged prefix through
-`resumeAfter` under Section 2.2.
+The source MUST have established the stable thread and query state before
+publishing the positive intent. A one-way grant authorizes passive querying but
+MUST NOT publish `THREAD_CONTENT_HEAD`, Group Meta head, or another content wake
+until the applicable relationship is confirmed. For GROUP, at least one member
+hosted by that peer MUST remain confirmed.
+`REQUESTED` and `ACCEPTED` grant identical query permission for the same stable
+key. Confirmation or later reauthorization MUST NOT replace the stable thread's
+sequence-coordinate space. If the same stable-key relationship is later
+re-established, its original coordinate identity resumes. The publisher MAY expose retained
+messages from before or during an authorization absence, or leave those
+positions as holes, according to its local history policy. That choice MUST be
+stable for a repeated query snapshot and MUST NOT bypass current authorization.
+Content-retention policy may still skip a purged prefix through `resumeAfter`
+under Section 2.2.
 
 After receiving relationship-termination state from State Feed, the consumer MUST invalidate the current message target for that peer and thread and stop retrying its query. If state notification is delayed, lost, or not yet locally converged, message-query `FORBIDDEN` is the fast-convergence fallback signal. Before authoring a transition, the consumer MUST atomically revalidate the current relationship state. If that state has changed since the denied request began, the denial MUST NOT author a transition and the consumer MUST resume from current durable state.
 
@@ -198,11 +225,13 @@ When the revalidated state still authorizes the denied request, the consumer MUS
 Authorization calculation MAY atomically derive immediately available state from existing authoritative facts, such as request expiration, friendship validity, or group-audience validity. This reconciliation MUST be idempotent and MUST NOT create an invitation, accept a friendship, join a group, or expand the current request's authorization merely because the peer issued a GET.
 
 The consumer receives messages idempotently by `(source domain, thread, seq)`.
-Every message carries the exact immutable author `profileRev`. A forward
+Every message carries a required, non-null author `profileRev`. A positive value
+is an exact immutable profile reference; `0` means no profile and MUST NOT
+trigger a profile request. A forward
 consumer MAY fetch a bounded message interval concurrently with its bounded authoritative
 tombstone drain, but it does not complete reconciliation of that interval until
 both results have been applied. For a GROUP interval, it SHOULD first commit
-the required role-only Group Meta head. If Group Meta has not converged, the
+the required role-and-profile-reference Group Meta head. If Group Meta has not converged, the
 stable author Address remains valid, the consumer MUST continue Group Meta
 drain, and it MUST NOT infer a role or current-membership state. The consumer
 MAY fetch display data using [Message Author Profile](./message-author-profile.md)

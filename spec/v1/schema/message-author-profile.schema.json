@@ -3,14 +3,22 @@
   "$id": "urn:somfp:v1:message-author-profile",
   "title": "GET /s2s/v1/message-author-profile response data",
   "type": "object",
-  "required": ["account", "domain", "profileRev", "displayName", "avatar"],
+  "required": [
+    "account",
+    "domain",
+    "profileRev",
+    "displayName",
+    "bio",
+    "avatar"
+  ],
   "properties": {
     "account": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
     "domain": { "$ref": "urn:somfp:v1:common#/$defs/domain" },
     "profileRev": {
-      "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+      "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
     },
     "displayName": { "type": "string", "minLength": 1, "maxLength": 30 },
+    "bio": { "type": "string", "maxLength": 120 },
     "avatar": {
       "oneOf": [
         { "$ref": "urn:somfp:v1:common#/$defs/inlineProfileAvatar" },

@@ -72,7 +72,10 @@ The following names describe protocol facts and do not require an implementation
 | `localServiceAvailable`        | The local node is ready to provide post-recognition service to the peer | Atomically before sending reverse Recognize; or before returning `OK` when receiving reverse Recognize                           |
 | `remoteServiceReachable`       | The peer's service and one valid protocol round trip have been observed | Valid Health `available`/`degraded`, reverse Recognize `OK`, or any normally authenticated and processed S2S request or response |
 
-The peer lifecycle is this closed enum. It states only whether communication with the peer may continue automatically and does not duplicate every failure cause as a lifecycle value:
+The peer lifecycle is this closed abstract protocol model. Its labels state only
+whether communication with the peer may continue automatically and do not
+require an implementation to store one same-named enum or to duplicate every
+failure cause as a lifecycle value:
 
 | State          | Exact definition                                                                                                                                                                                           |
 | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -114,7 +117,10 @@ stateDiagram-v2
     degraded --> halted: verifiable hard failure
 ```
 
-State transitions MUST follow this table. “Recompute” means deriving the next state in the same transaction from the `available` formula above and the current facts.
+Externally observable state transitions MUST be equivalent to this table.
+“Recompute” means deriving the next abstract state indivisibly with the fact
+changes in the same row; no peer or recovery path may observe a prohibited
+intermediate authorization state.
 
 | Event                                                                                                     | Prior state                               | Local fact change                                                                                        | Next state and handling                                           |
 | --------------------------------------------------------------------------------------------------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
@@ -203,7 +209,7 @@ protocol version by `/s2s/v1`; the body repeats none of them.
 
 The request MUST be constructed in the common order defined in protocol.md: final compact JSON UTF-8 bytes, `Content-Digest`, `Date` and signature parameters, RFC 9421 signature base, then Ed25519 `Signature`. The protocol does not generally require compact serialization for JSON objects, but the digest and signature MUST cover the exact bytes sent. The body MUST NOT be serialized again after signing.
 
-### 5.2 Recipient transaction and `OK`
+### 5.2 Recipient commit boundary and `OK`
 
 After all validation and policy checks succeed, B MUST atomically complete the following before returning a response:
 
@@ -226,20 +232,36 @@ Content-Type: application/json
 
 The recipient MUST first parse the body as `application/json`, then require an object containing exactly one member, `ok`, whose JSON Boolean value is `true`. Thus `{"ok":true}` and the formatted representation above are valid; `{"ok":1}`, `{"ok":true,"extra":null}`, `[true]`, an empty body, and trailing non-whitespace data are invalid. An implementation MUST NOT determine success from the raw UTF-8 bytes, whitespace, or object-member layout.
 
-B MUST NOT return `OK` before committing the transaction. A may atomically set `outboundRecognitionConfirmed` only after receiving HTTP `200`, strictly validating the `RecognizeOk` shape above, and confirming that the response came from the same TLS connection and authority as the request. A timeout or network error cannot substitute for this confirmation. A peer with an incomplete handshake remains `establishing`; only a peer that previously completed bidirectional recognition may enter `degraded`.
+B MUST NOT return `OK` before making all required effects durably recoverable as
+one externally indivisible commit. A may adopt
+`outboundRecognitionConfirmed` only after receiving HTTP `200`, strictly
+validating the `RecognizeOk` shape above, and confirming that the response came
+from the same TLS connection and authority as the request. A timeout or network
+error cannot substitute for this confirmation. A peer with an incomplete
+handshake remains `establishing`; only a peer that previously completed
+bidirectional recognition may enter `degraded`.
 
-The response does not use an additional detached signature. Hostname-verified HTTPS authenticates the responder, while B's transaction and the fixed response semantics confirm the request direction fact.
+The response does not use an additional detached signature. Hostname-verified
+HTTPS authenticates the responder, while B's indivisible durable commit and the
+fixed response semantics confirm the request direction fact.
 
 ### 5.3 Preflight before reverse Recognize
 
-After successfully committing `A → B` and returning the first `OK`, B MUST complete local preparation before starting `B → A`. Before sending the HTTP request, B MUST perform the following in one transaction:
+After successfully committing `A → B` and returning the first `OK`, B MUST
+complete local preparation before starting `B → A`. Before sending the HTTP
+request, B MUST make the following effects durably recoverable as one externally
+indivisible commit:
 
 1. Make and persist `recognizesPeer(A)`; the A root used during validation becomes the pinned identity anchor.
 2. Prepare to process authorized requests that A may subsequently send, including the state needed by both lightweight-hint receive paths.
 3. Set `localServiceAvailable`, so A's subsequent valid Health query can return at least `degraded` rather than `unavailable`.
 4. Durably record pending reverse-Recognize work, so a crash cannot leave the service prepared but the reverse recognition permanently unsent.
 
-B MAY send the reverse HTTP Recognize only after this transaction commits. `localServiceAvailable` means B is ready; it does not mean A received the reverse request. B therefore MUST NOT assume `remoteServiceReachable` before receiving A's reverse `OK`.
+B MAY send the reverse HTTP Recognize only after that commit. The protocol does
+not prescribe a database transaction, queue, or worker representation.
+`localServiceAvailable` means B is ready; it does not mean A received the
+reverse request. B therefore MUST NOT assume `remoteServiceReachable` before
+receiving A's reverse `OK`.
 
 ## 6. Complete sequence
 
@@ -336,7 +358,14 @@ B validates A's Recognize under Section 4.2. When all validation and policy chec
 | B's local identity material is unavailable                               |  503 | `FEDERATION_LOCAL_IDENTITY_LOST`          | Do not commit a new direction fact                                                                         |
 | Commit failure or transient internal error                               |  503 | `INTERNAL`                                | Do not expose uncommitted facts; retain previously committed state                                         |
 
-When returning any error, B MUST NOT commit a new direction fact, lightweight gate, or reverse work because of this request. Facts committed by an earlier successful idempotent request are not rolled back by a later failure. HTTP signature failure alone is not evidence that the root identity changed. Only a root independently obtained through hostname-verified HTTPS that conflicts with the existing pin MAY trigger identity mismatch. Normal rotation of signing certificates authorized by the same pinned root is not identity mismatch.
+When returning any error, B MUST NOT create a new direction fact, open the
+lightweight gate, or make a reverse Recognize eligible because of this request.
+Facts committed by an earlier successful idempotent request are not rolled back
+by a later failure. HTTP signature failure alone is not evidence that the root
+identity changed. Only a root independently obtained through hostname-verified
+HTTPS that conflicts with the existing pin MAY trigger identity mismatch.
+Normal rotation of signing certificates authorized by the same pinned root is
+not identity mismatch.
 
 ### 8.2 Requester A: consuming the response and updating local state
 
@@ -366,7 +395,11 @@ If the first `OK` succeeds but reverse `B → A` fails, completed direction fact
 
 ### 8.4 Blocklist
 
-An implementation MAY allow an administrator to add a canonical peer domain to a local blocklist. The blocklist MUST be checked before committing a new inbound Recognize. On a match, return HTTP `409` with `FEDERATION_PEER_BLOCKED` and MUST NOT commit a direction fact, lightweight receive gate, reverse work, or service availability.
+An implementation MAY allow an administrator to add a canonical peer domain to
+a local blocklist. The blocklist MUST be checked before committing a new inbound
+Recognize. On a match, return HTTP `409` with `FEDERATION_PEER_BLOCKED` and MUST
+NOT create a direction fact, open the lightweight receive gate, make reverse
+Recognize eligible, or expose service availability.
 
 An initiator receiving this explicit error MUST record a remote-blocked reason, enter `halted`, and stop all automatic communication. Health still returns the uniform `unavailable` projection for a peer halted by blocking and MUST NOT expose the reason. The local administrator determines whether and how to remove the block; that decision is outside the Federation v1 wire protocol.
 

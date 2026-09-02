@@ -125,10 +125,12 @@ controlled exclusively by its author; a receiver MUST NOT invent or publish a
 transition on the author's behalf. `ACCEPTED` is a durable acknowledgement of a
 request flow, not a second request and not a transport acknowledgement.
 
-`profileRev` is the source account's immutable profile reference selected when
-the current request flow was authored. `REQUESTED -> ACCEPTED` and the later
-`REVOKED` transition retain that same reference. A new request flow after
-revocation selects the author's chosen revision, normally its local default.
+`profileRev` is required and non-null. A positive value is the source account's
+immutable profile reference selected when the current request flow was authored;
+`0` means that the flow carries no profile and the consumer performs no profile
+request. `REQUESTED -> ACCEPTED` and the later `REVOKED` transition retain that
+same value. A new request flow after revocation selects the author's chosen
+revision, normally its local default, or zero when it has none.
 
 A profile update by itself MUST NOT mutate or republish a
 `RELATIONSHIP_INTENT`, allocate a new State Feed item, or change its
@@ -225,17 +227,20 @@ interface GroupMetaFeedHeadBody {
 ```
 
 The item account MUST be a group owned by the authenticated source domain.
-`groupMetaFeedEndId` is the latest `feedId` in that target peer and
-group's Group Meta feed. It MUST NOT contain a roster, member display data, owner, active flag,
+`groupMetaFeedEndId` is a committed `feedId` in the origin-owned group's one
+canonical Group Meta feed. It MUST NOT contain a roster, member display data, owner, active flag,
 dissolution flag, group setting, or other meta fact.
 
-The origin commits the target peer's group-meta projection before allocating
-this item. On first synchronization the receiver requests `group-meta` in
+The origin commits each canonical group-meta mutation once before allocating
+this item for an authorized audience. On first synchronization the receiver requests `group-meta` in
 `full` mode. Later synchronizations use `delta` from the last atomically committed
 Group Meta feed cursor. If delta history is unavailable, the receiver returns to
 `full`. The receiver MUST commit a Group Meta cursor greater than or equal to
 `groupMetaFeedEndId` before committing this state item; a later projection may
 legitimately overtake the feed-head hint while the consumer is fetching it.
+The State Feed item is audience-specific; the Group Meta coordinate it names is
+not. A newly authorized or reauthorized audience cannot use that common
+coordinate to bypass its Group Meta delta visibility floor.
 
 The group owner is derived from the member carrying role `OWNER`; membership
 and active local participation are derived from current member keys.
@@ -286,6 +291,13 @@ A source commits a relationship direction before dependent
 `THREAD_CONTENT_HEAD` after the current State Feed projections required to
 identify and authorize that thread. For a group, the required
 `GROUP_META_FEED_HEAD` precedes the thread-content item.
+
+An effective one-way `REQUESTED` authorizes the passive queries defined by the
+message, tombstone, and profile operations, but it does not make these dependent
+head projections visible. The source MUST wait until the derived relationship is
+confirmed before allocating or publishing `GROUP_META_FEED_HEAD` or
+`THREAD_CONTENT_HEAD` for that peer. For GROUP, at least one member hosted by
+that peer MUST remain confirmed.
 
 State Feed compaction MUST preserve this dependency order for a complete
 rebuild. If a required current projection moves to a greater `feedId`, the

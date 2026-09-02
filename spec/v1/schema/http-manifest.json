@@ -71,6 +71,16 @@
       "responseEnvelope": true
     },
     {
+      "id": "groupMemberProfileQuery",
+      "method": "GET",
+      "path": "/s2s/v1/group-member-profile",
+      "authentication": "recognized-http-message-signature",
+      "successStatus": [200],
+      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/groupMemberProfileQuery",
+      "responseSchema": "urn:somfp:v1:group-member-profile",
+      "responseEnvelope": true
+    },
+    {
       "id": "messageAuthorProfileQuery",
       "method": "GET",
       "path": "/s2s/v1/message-author-profile",

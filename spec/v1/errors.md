@@ -137,8 +137,11 @@ current projection required for reconstruction. Message feed MAY advance its
 retained lower boundary under its capacity rules. A tombstone query MUST NOT
 move its lower boundary because of cleanup.
 
-For an unavailable Group Meta delta, the consumer starts a full replacement
-drain with `after=resumeAfter` and fixed `through=resumeBefore-1`. It discards
+For a Group Meta delta below either the canonical feed's retention floor or the
+authenticated audience's visibility floor, the consumer starts a full replacement
+drain with `after=resumeAfter` and fixed `through=resumeBefore-1`. Full mode
+contains only the current roster at that boundary and does not disclose
+pre-authorization departures. The consumer discards
 no committed roster until replacement succeeds atomically and MUST NOT skip
 full merely because its local cursor is numerically equal to or greater than
 one of the returned boundaries.
@@ -149,7 +152,7 @@ potentially serviceable positive coordinate is `N`, then
 protocol does not guarantee that items exist at `N` or `M`, because the relevant
 coordinate space may contain unallocated, filtered, or unauthorized holes.
 
-`FEDERATION_MESSAGE_QUERY_RATE_LIMITED` and `FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE` MUST carry `FederationQueryRetryData` and may be used only by `GET /s2s/v1/messages`. Both are application deferrals after HTTP and identity authentication. They MUST NOT conceal signature, binding, authorization, or malformed errors, and MUST NOT be used by tombstone query, State Feed, Group Meta Feed, Message Author Profile, or for federation-wide service unavailability. They do not use the HTTP `Retry-After` header.
+`FEDERATION_MESSAGE_QUERY_RATE_LIMITED` and `FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE` MUST carry `FederationQueryRetryData` and may be used only by `GET /s2s/v1/messages`. Both are application deferrals after HTTP and identity authentication. They MUST NOT conceal signature, binding, authorization, or malformed errors, and MUST NOT be used by tombstone query, State Feed, Group Meta Feed, Authorized Profile, Group Member Profile, Message Author Profile, or for federation-wide service unavailability. They do not use the HTTP `Retry-After` header.
 
 Complete wire example:
 
@@ -206,6 +209,11 @@ Media HTTP `200` may be either a complete `application/octet-stream` resource su
 
 How a mirror displays, retains, or marks a message whose resource returned `NOT_FOUND` is local consumer policy. The result is not itself message deletion or a tombstone. See Resources Sections 3.3 and 4.4 for the precise boundaries.
 
-Unlisted local client application codes are not part of the Federation v1 wire registry. An S2S publisher MUST NOT send them as protocol errors. Adding a stable error semantic is an additive v1 revision; changing an existing code's meaning, retryability, or identity action is incompatible.
+Unlisted local client application codes are not part of the Federation v1 wire
+registry. An S2S publisher MUST NOT send them as protocol errors. The stable v1
+code registry is closed: adding a stable error semantic or changing an existing
+code's meaning, retryability, identity action, cursor effect, or structured data
+requires a new protocol major. A package revision may only correct an artifact
+to match an already-defined v1 semantic without allocating a new wire code.
 
 `GET /s2s/v1/health` is a status-query operation. For a parseable request involving an unknown peer, a peer not recognized locally, insufficient authorization, or failure to verify an existing identity, `unavailable` is the normal query result defined by recognition.md and is not an error in this registry. Generic malformed HTTP or signature structure uses `400 FEDERATION_MALFORMED`. Temporary rate limiting and server failure independent of peer existence uniformly use HTTP `503`, with `RATE_LIMITED` or `INTERNAL`, respectively, for diagnostic classification.

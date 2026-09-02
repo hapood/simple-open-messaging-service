@@ -88,9 +88,13 @@ type FederatedMessage = FederatedMessageContent &
   another member domain, so direction alone cannot identify its author.
 - `profileRev` identifies the immutable author profile selected when the
   publisher committed this message copy. It applies to the reconstructed P2P
-  author or explicit GROUP `author`, never to the thread or group account.
+  author or explicit GROUP `author`, never to the thread or group account. It
+  is required and non-null; a positive value selects a real revision, while `0`
+  means that this message has no author-profile snapshot and MUST NOT trigger a
+  profile request.
 - A locally authored new message carries the revision selected for its
-  audience, normally the author's local default. A non-authoritative copy, accepted group submission, authoritative
+  audience, normally the author's `defaultProfileRev` observed by the message
+  commit. A non-authoritative copy, accepted group submission, authoritative
   group distribution, mirror copy, and processing receipt MUST preserve the
   direct incoming message's `profileRev`; an intermediary MUST NOT substitute
   its own default revision or another retained version.

@@ -65,11 +65,11 @@
       "assertions": ["message query cursor remains 20"]
     },
     {
-      "name": "same account reactivation preserves cursor and leaves allocation holes",
+      "name": "same account reactivation preserves cursor and applies local history policy",
       "initialCursors": { "messageQuery": "20" },
       "source": {
-        "allocatedSeqs": [21, 22, 28, 29],
-        "inactiveInterval": [23, 27]
+        "serviceableSeqs": [21, 22, 28, 29],
+        "historyPolicyOmission": [23, 27]
       },
       "steps": [
         {
@@ -85,7 +85,8 @@
       ],
       "assertions": [
         "query coordinate identity is unchanged",
-        "seq 23 through 27 are not backfilled"
+        "seq 23 through 27 are holes selected by this publisher history policy",
+        "the protocol also permits another publisher policy to expose retained positions from the absence"
       ]
     },
     {
@@ -156,7 +157,7 @@
         "forward start equals max of local cursor and resumeAfter",
         "the discarded gap is absent rather than pending",
         "the discarded gap does not imply source-side deletion",
-        "role-only group-meta departures commit before messages become visible",
+        "role-and-profile-reference group-meta departures commit before messages become visible",
         "message profiles are fetched lazily by exact message coordinate"
       ]
     },
@@ -197,23 +198,58 @@
           "thread": "!team",
           "messageSeq": 41,
           "responseProfileRev": 3,
-          "messageAllocatedToSigner": true,
+          "messageServiceableToSigner": true,
           "commit": true
         },
         {
           "request": "message-author-profile",
           "thread": "!team",
           "messageSeq": 42,
-          "messageAllocatedToSigner": false,
+          "messageServiceableToSigner": false,
           "responseCode": 10004,
           "commit": false
         }
       ],
       "assertions": [
         "profile revision 3 is revealed by the exact message query only when the consumer needs it",
-        "the message allocation and current thread authorization are both verified",
-        "an unallocated message coordinate is denied",
+        "the exact message serviceability and current thread authorization are both verified",
+        "a message coordinate excluded by local history policy is denied",
         "no current-profile fallback is returned"
+      ]
+    },
+    {
+      "name": "canonical group meta hides pre-authorization delta history",
+      "canonicalGroupMetaEnd": "20",
+      "audienceVisibleAfter": "20",
+      "steps": [
+        {
+          "request": "group-meta",
+          "mode": "delta",
+          "after": "0",
+          "responseCode": 50019,
+          "commit": false
+        },
+        {
+          "request": "group-meta",
+          "mode": "full",
+          "after": "0",
+          "through": "20",
+          "currentMembersOnly": true,
+          "commit": true
+        },
+        {
+          "request": "group-meta",
+          "mode": "delta",
+          "after": "20",
+          "through": "23",
+          "commit": true
+        }
+      ],
+      "assertions": [
+        "all audiences read one group-global coordinate space",
+        "a new or restored audience cannot enumerate changes before its visibility floor",
+        "full recovery exposes the current roster without exposing prior departures",
+        "subsequent delta reads begin at or above the audience visibility floor"
       ]
     },
     {
@@ -224,7 +260,7 @@
           "request": "group-meta",
           "mode": "delta",
           "departedMembers": ["bob@b.example"],
-          "roleOnlyMemberBody": true,
+          "departBodyAbsent": true,
           "commit": true
         },
         {
@@ -239,13 +275,23 @@
           "mode": "delta",
           "upsertedMembers": ["alice@a.example"],
           "commit": true
+        },
+        {
+          "request": "group-member-profile",
+          "thread": "!team",
+          "member": "alice@a.example",
+          "profileRev": 3,
+          "authorizedGroupAudience": true,
+          "canonicalCurrentGroupMetaReference": true,
+          "commit": true
         }
       ],
       "assertions": [
         "a rejoined current member may temporarily use an account-domain placeholder in either direction",
-        "group meta supplies role but no display profile",
+        "group meta supplies role and an exact profile reference but no display bytes",
+        "group-member profile resolution uses the exact revision selected by committed group meta",
         "message-author profiles are requested lazily with exact thread and seq",
-        "group-meta departures carry no profile revision or avatar"
+        "group-meta departures carry no body, role, or profile revision"
       ]
     }
   ]

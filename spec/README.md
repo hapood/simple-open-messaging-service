@@ -20,6 +20,7 @@ spec/
     state-feed.md             Relationship/profile references and feed heads
     group-meta.md             Group roster, roles, and profile-reference sync
     authorized-profile.md     Authorized account and profile-revision lookup
+    group-member-profile.md   Group-projection-authorized member profile lookup
     message-author-profile.md Exact-message-authorized display profile query
     message-feed.md           Per-thread message query and skip-mode rules
     message-tombstone-feed.md Authoritative per-thread deletion query
@@ -31,7 +32,7 @@ spec/
     schema/                   JSON Schema, HTTP manifest, and conformance vectors
 ```
 
-Thirteen normative documents—the core protocol and twelve subject specifications—jointly define v1. The machine-readable package bearing the same version supports automated validation. If normative text conflicts with a Schema, test vector, or tool, the normative text prevails and the other artifact should be corrected in the same release candidate.
+Fourteen normative documents—the core protocol and thirteen subject specifications—jointly define v1. The machine-readable package bearing the same version supports automated validation. If normative text conflicts with a Schema, test vector, or tool, the normative text prevails and the other artifact should be corrected in the same release candidate.
 
 Protocol changes and releases follow [Governance](./GOVERNANCE.md). Security issues follow the [Security Policy](./SECURITY.md). `RELEASE.json` provides version metadata to release tools but does not alter the normative text.
 

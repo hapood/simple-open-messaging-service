@@ -17,7 +17,7 @@ type MessageTombstoneType = 'USER_RETRACTION' | 'MODERATION_REMOVAL';
 interface MessageTombstone {
   deletionSeq: PositiveThreadSequence;
   thread: ThreadAddress;
-  messageSeq: ThreadSequence;
+  messageSeq: PositiveThreadSequence;
   type: MessageTombstoneType;
   deletedAt: EpochMilliseconds;
 }
@@ -34,21 +34,24 @@ message query. It therefore uses that publisher's thread-message coordinate.
 It is neither a copy of the target message's nullable outer `originSeq` nor a
 globally stable coordinate across arbitrary publishers.
 
-For a P2P `USER_RETRACTION`, the authority is the target message author's domain. For
-a group message, the authoritative publisher is always the group origin. A
-third-party member home server MAY only submit a `USER_RETRACTION` for its local
-author to the origin. The origin validates the submission, creates the
-authoritative group fact, and distributes it to mirrors. Only the group
-origin's moderation process MAY create a `MODERATION_REMOVAL`. A mirror MUST NOT relay a
-group tombstone further.
+For a P2P `USER_RETRACTION`, the authority is the target message author's
+domain. For a group message authored by one of its local users, a member home
+server directly publishes the `USER_RETRACTION` in its tombstone feed to the
+group origin. This is an author-enacted deletion fact, not a request. The origin
+validates the author and target binding, accepts the deletion into the
+authoritative group timeline, translates its coordinate, and publishes the
+result to mirrors. Only the group origin's moderation process MAY create a
+`MODERATION_REMOVAL`. A mirror MUST NOT relay a group tombstone to a peer other
+than its group origin.
 
 `deletionSeq` is the tombstone's independent positive thread-local identifier. It
 MUST strictly increase without reuse within a thread. The protocol requires
 neither contiguous values nor a separate allocator for every thread. It is
 independent of message `seq`, `messageSeq`, and feed IDs. A publisher MUST NOT
 allocate `deletionSeq` greater than `SafeInteger - 1`; `messageSeq` has the
-same limit because it references a message `seq`. `tombstoneEndSeq` MUST also
-be a JSON `PositiveThreadSequence`. Tombstone-query response boundaries are
+same limit because it references a message `seq`. `tombstoneEndSeq` is a JSON
+`ThreadSequence`: it is `0` when no deletion exists and otherwise identifies
+the inclusive positive deletion end. Tombstone-query response boundaries are
 JSON `SafeInteger` values. A publisher MUST retain authoritative tombstones
 permanently and MUST NOT discard them or
 reset their sequence because of capacity, age, peer acknowledgement, renewed
@@ -56,11 +59,11 @@ friendship, or group re-entry.
 
 To apply a tombstone, a consumer locates its local target using the persistently
 stored source domain, thread, and source message `seq`. When a group member's
-home server submits a `USER_RETRACTION` to the group origin, it uses the `seq` with
-which it exposed that message to the origin. When the origin publishes the
-resulting authoritative tombstone to a mirror, it instead uses the `seq` with
-which the origin exposed the target message to that mirror. A publisher MUST
-NOT forward the previous hop's `messageSeq` without translating coordinates.
+home server publishes a `USER_RETRACTION` to the group origin, it uses the `seq`
+with which it exposed that message to the origin. When the origin publishes the
+accepted tombstone to a mirror, it instead uses the `seq` with which the origin
+exposed the target message to that mirror. A publisher MUST NOT forward the
+previous hop's `messageSeq` without translating coordinates.
 
 ## 2. Tombstone query
 
@@ -95,12 +98,19 @@ a tombstone wire field. A filtered `deletionSeq` is a scannable gap and does not
 prevent `scannedThrough` from advancing. Filtering does not delete the
 authoritative tombstone.
 
-There are exactly two valid publication paths for group tombstones: a member
-home server provides the group origin with a `USER_RETRACTION` submission for
-its local author, and the group origin provides enacted authoritative
-tombstones to a peer holding a mirror of that group. A mirror MUST NOT return a
-group tombstone to a non-origin peer and MUST NOT create or relay a
-`MODERATION_REMOVAL`.
+The fixed query-key order is `account`, optional `peerAccount`, `after`,
+`through`, `take`, `includeSelf`, then `maxMessageSeq`; omitted optional fields
+leave no placeholder.
+
+There are exactly two valid group publication paths through this query:
+
+- A member home server publishes `USER_RETRACTION` tombstones only for messages
+  authored by its local users to the group origin.
+- The group origin publishes accepted `USER_RETRACTION` and enacted
+  `MODERATION_REMOVAL` tombstones to member home servers holding mirrors.
+
+A mirror MUST NOT publish a group tombstone to a peer other than its group
+origin and MUST NOT create or relay a `MODERATION_REMOVAL`.
 
 When `after` is omitted, the source returns
 `FEDERATION_FEED_CURSOR_UNAVAILABLE { resumeAfter, resumeBefore }` instead of a
@@ -161,20 +171,29 @@ intentionally unreplicated and MUST NOT claim complete tombstone processing for
 it. Fast-forward does not weaken or delete an authoritative tombstone, alter
 source data, or acknowledge processing to the source.
 
-For every query, the source MUST revalidate its current authored relationship
-direction, thread authority, whether the target peer was granted visibility of
-the target message, current blocking, and local policy. For both user/user and
-user/group relationships, an unexpired source-authored `REQUESTED` or valid
-`ACCEPTED` grants the target peer query access without requiring the reverse
-direction. Before publishing either state, the source MUST have established
-every thread, audience, and authorization fact needed to serve that query.
-`REQUESTED` and `ACCEPTED` grant identical tombstone-query permission for the
-same stable key; reverse confirmation MUST NOT expand, reset, shrink, or replace
-that peer's deletion-sequence coordinate space solely because of confirmation.
-A `THREAD_CONTENT_HEAD` item is not proof of authorization. Authorization evaluation MAY
-idempotently materialize immediate friendship or group state derived from
-existing durable facts, but the GET request itself MUST NOT create or broaden
-authorization.
+For every query, the source MUST revalidate its durable authored relationship
+direction, thread authority, local history policy, current blocking, and local
+policy. A P2P query requires an effective source-authored user-to-user
+`REQUESTED` or `ACCEPTED` direction for the exact selector. A GROUP query is
+served by a group origin under at least one effective source-authored
+group-to-member `REQUESTED` or `ACCEPTED` direction whose member belongs to the
+verified signer peer. In the reverse direction, the signer MUST be the exact
+authority of the mirrored group, and the source may return only
+`USER_RETRACTION` tombstones whose target author belongs to the source domain.
+That reverse authority binding does not require a source-authored
+member-to-group intent. An effective `REQUESTED` expires at its absolute
+`expiresAt`; an `ACCEPTED` remains effective until superseded. A
+`THREAD_CONTENT_HEAD` is not authorization proof.
+
+The source MUST establish the stable query state before publishing a positive
+intent. A one-way grant authorizes passive querying but MUST NOT publish content
+heads or wake hints until the applicable relationship is confirmed. For GROUP,
+at least one member hosted by that peer MUST remain confirmed. `REQUESTED` and
+`ACCEPTED` grant identical query permission
+for the same stable key. Confirmation or later reauthorization MUST NOT replace
+the stable thread's deletion-sequence coordinate space. Authorization evaluation
+MAY idempotently materialize state derived from existing durable facts, but the
+GET request itself MUST NOT create or broaden authorization.
 
 After receiving relationship termination through the state feed, a consumer
 MUST invalidate that peer/thread's current deletion target. If a tombstone

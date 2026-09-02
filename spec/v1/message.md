@@ -30,7 +30,9 @@ A consumer processes an item of a known type in this order:
 3. Validate content digests and asset descriptors, and enforce local size limits from `assets[].bytes` before download.
 4. Receive idempotently by direct-origin coordinate.
 5. Enforce local quotas against actual arrays and descriptors; do not trust remotely supplied derivable counts.
-6. Persist the message and durable resource work, then fetch bytes through the resource operations.
+6. Make the accepted message durably recoverable before committing its query
+   cursor, then fetch bytes through the resource operations. The protocol does
+   not require a particular database transaction, work queue, or storage model.
 
 A bad item or resource failure MUST NOT permanently block other valid messages on the same page or the query cursor.
 

@@ -93,6 +93,37 @@ describe('WebCallAdapter multi-device ownership', () => {
     expect(adapter.snapshot().remoteCameraEnabled).toBe(true);
   });
 
+  it('ignores malformed or non-closed video-state payloads', async () => {
+    const adapter = new WebCallAdapter(
+      { post: () => of({ code: 0, message: '' }) } as unknown as HttpClient,
+      IDLE_CALL,
+    );
+    adapter.applyLifecycle({
+      ...IDLE_CALL,
+      phase: 'connected',
+      callSid: 'call-1',
+      callType: 'VIDEO',
+      remoteCameraEnabled: true,
+    });
+
+    await adapter.handleSignal({
+      id: 'bad-json',
+      callSid: 'call-1',
+      fromUserId: 7,
+      kind: 'video-state',
+      payload: '{',
+    });
+    await adapter.handleSignal({
+      id: 'bad-shape',
+      callSid: 'call-1',
+      fromUserId: 7,
+      kind: 'video-state',
+      payload: '{"enabled":false,"extra":true}',
+    });
+
+    expect(adapter.snapshot().remoteCameraEnabled).toBe(true);
+  });
+
   it('lets the callee wait for the caller-owned ICE restart', () => {
     expect(webReconnectDecision(false, false)).toEqual({
       delayMs: 30000,

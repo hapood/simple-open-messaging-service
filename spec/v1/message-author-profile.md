@@ -4,8 +4,8 @@ Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
 This document is entirely normative. It defines the on-demand operation
 `GET /s2s/v1/message-author-profile`. A peer uses it only when it needs the
-display name or avatar version referenced by a message it can query. State Feed
-and Group Meta do not carry this display data.
+complete profile version referenced by a message it can query. State Feed and
+Group Meta do not carry this profile data.
 
 ## 1. Request
 
@@ -35,7 +35,9 @@ return `400 FEDERATION_MALFORMED`.
 The message wire carries its author's `profileRev`. The requester submits the
 message coordinate so the publisher can verify exact-message authorization;
 the response revision MUST match the immutable revision carried by that
-message copy. `messageSeq` is never a State Feed or Group Meta `feedId`.
+message copy. A message carrying `profileRev = 0` has no profile snapshot, and
+a consumer MUST NOT invoke this operation for it. `messageSeq` is never a State
+Feed or Group Meta `feedId`.
 
 ## 2. Successful response
 
@@ -45,8 +47,9 @@ The success `data` is this closed object:
 interface MessageAuthorProfile {
   account: UserAccount;
   domain: Domain;
-  profileRev: SafeInteger;
+  profileRev: PositiveSafeInteger;
   displayName: string;
+  bio: string;
   avatar: InlineProfileAvatar | null;
 }
 ```
@@ -54,14 +57,19 @@ interface MessageAuthorProfile {
 `account/domain` MUST equal the author reconstructed from the exact message.
 `profileRev` MUST equal the immutable profile revision selected for the
 requested message copy. `displayName` contains 1–30 Unicode code points without
-unpaired surrogates. `avatar` is either `null` or the shared Base64-bearing
+unpaired surrogates. `bio` contains 0–120 Unicode code points without unpaired
+surrogates. `avatar` is either `null` or the shared Base64-bearing
 `InlineProfileAvatar`; no URL or independently fetchable avatar reference is
-returned. The response MUST NOT contain biography, relationship, presence,
-membership, or role data.
+returned. The response MUST NOT contain relationship, presence, membership, or
+role data.
 
 A consumer MUST key the cached result by `(publisher domain, author account,
 author domain, profileRev)`. It MUST NOT replace another revision or treat this
 source-bound snapshot as the author's current public profile.
+
+The response `profileRev` is required, non-null, and positive. A request naming
+a message whose reference is zero returns `NOT_FOUND` and never substitutes a
+different revision.
 
 ## 3. Exact-message authorization
 
@@ -70,12 +78,12 @@ For every request the publisher MUST:
 1. Resolve the normalized Thread Address exactly as for `/messages`.
 2. Find the immutable message at the requested publisher-local `messageSeq`.
 3. Recompute current thread-query authorization and verify that this exact
-   message was durably allocated to the authenticated peer during a valid
-   historical audience.
+   message is serviceable to the authenticated peer under the publisher's
+   current authorization and local history policy.
 4. Reconstruct the message author from `authorRef` for P2P or `author` for
    GROUP.
 5. Resolve the immutable `profileRev` carried by that message copy.
-6. Return the retained display snapshot for that author and revision.
+6. Return the retained complete profile snapshot for that author and revision.
 
 A `THREAD_CONTENT_HEAD`, Group Meta membership, possession of the author
 Address, knowledge of a profile revision, or an earlier successful response is
@@ -92,8 +100,8 @@ membership, message, media, or subsequent profile permission.
 
 Before making a message queryable to a peer, the publisher MUST carry a stable
 author-profile revision on that message coordinate. The publisher SHOULD
-retain that exact display snapshot while the message remains serviceable to
-any peer, including during storage degradation.
+retain that exact complete profile snapshot while the message remains
+serviceable to any peer, including during storage degradation.
 This obligation applies to P2P messages, group submissions, authoritative group
 messages, and processing receipts, including messages authored on another
 domain.
@@ -118,13 +126,14 @@ MUST create a new revision and MUST NOT mutate a retained older snapshot.
 
 Group departure, relationship transition, forward-cursor advancement, State
 Feed compaction, and Group Meta compaction do not independently release this
-retention obligation. Message-content retention and historical allocation proof
-determine when it ends.
+retention obligation. The publisher's message-content retention and local
+history policy determine when that message stops being serviceable to the peer
+and the obligation ends.
 
 ## 5. Consumer behavior
 
 Receiving and committing a message does not require eagerly fetching its
-display profile. A consumer MAY request the profile lazily when rendering the
+complete profile. A consumer MAY request the profile lazily when rendering the
 message and MAY reuse a validated cached snapshot with the exact cache key.
 For a P2P thread display, the peer-authored message with the greatest committed
 `seq` selects its `profileRev`; a locally authored message does not replace the
