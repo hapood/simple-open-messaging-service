@@ -48,7 +48,7 @@ export const router = createBrowserRouter(
         {
           element: <ProtectedRoute />,
           children: [
-            { path: '/', element: <Navigate to="/dashboard" replace /> },
+            { path: '/', element: <Navigate to="/users" replace /> },
             {
               path: '/dashboard',
               lazy: () =>
@@ -227,17 +227,17 @@ export const router = createBrowserRouter(
                 ),
             },
             {
-              path: '/commands',
+              path: '/durable-tasks',
               lazy: () =>
-                import('@/routes/domain-commands/domain-command-page').then(
+                import('@/routes/durable-tasks/durable-task-page').then(
                   (m) => ({
-                    Component: m.DomainCommandPage,
+                    Component: m.DurableTaskPage,
                   }),
                 ),
             },
             {
               path: '/audit',
-              element: <Navigate to="/commands" replace />,
+              element: <Navigate to="/durable-tasks" replace />,
             },
             {
               path: '/settings',

@@ -2,21 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { matchNav, NAV_GROUPS } from './nav-config';
 
 /**
- * Guards the sidebar active-state + top-bar breadcrumb logic. These are the paths the IA
- * reorganization produced: 14 primary items, the footer Account item, and the route-driven tab
- * sub-paths (/users/operators, /sessions/admins, /sessions/reuse, /federation/self-check,
- * /push/config, /logs/history, /logs/audit) that must still highlight their parent section.
+ * Guards the sidebar active-state + top-bar breadcrumb logic. Disabled first-release entries stay
+ * visible in the sidebar but must not become active or provide a breadcrumb.
  */
 describe('matchNav', () => {
-  it('matches every standalone top-level item exactly', () => {
-    expect(matchNav('/dashboard')?.item.key).toBe('dashboard');
-    expect(matchNav('/groups')?.item.key).toBe('groups');
-    expect(matchNav('/connections')?.item.key).toBe('connections');
-    expect(matchNav('/bans')?.item.key).toBe('bans');
-    expect(matchNav('/commands')?.item.key).toBe('commands');
+  it('matches every enabled standalone top-level item exactly', () => {
     expect(matchNav('/message-reports')?.item.key).toBe('messageReports');
-    expect(matchNav('/media')?.item.key).toBe('media');
-    expect(matchNav('/settings')?.item.key).toBe('settings');
   });
 
   it('matches the Users section, its Operators tab, and user detail (prefix)', () => {
@@ -25,35 +16,36 @@ describe('matchNav', () => {
     expect(matchNav('/users/42')?.item.key).toBe('users');
   });
 
-  it('matches the Sessions hub and its admin/reuse tabs', () => {
-    expect(matchNav('/sessions')?.item.key).toBe('sessions');
-    expect(matchNav('/sessions/admins')?.item.key).toBe('sessions');
-    expect(matchNav('/sessions/reuse')?.item.key).toBe('sessions');
-  });
-
-  it('matches Federation, the self-check tab, and peer detail (end:false)', () => {
-    expect(matchNav('/federation')?.item.key).toBe('federation');
-    expect(matchNav('/federation/self-check')?.item.key).toBe('federation');
-    expect(matchNav('/federation/example.com')?.item.key).toBe('federation');
-    expect(matchNav('/quotas')).toBeNull();
-  });
-
-  it('matches Push + config tab, Logs + history/audit tabs', () => {
-    expect(matchNav('/push')?.item.key).toBe('push');
-    expect(matchNav('/push/config')?.item.key).toBe('push');
+  it('matches the enabled Logs hub and its child routes', () => {
     expect(matchNav('/logs')?.item.key).toBe('logs');
     expect(matchNav('/logs/history')?.item.key).toBe('logs');
     expect(matchNav('/logs/diagnostics')?.item.key).toBe('logs');
   });
 
-  it('resolves each item to its group', () => {
-    expect(matchNav('/dashboard')?.group.labelKey).toBe('nav.group.overview');
-    expect(matchNav('/sessions')?.group.labelKey).toBe('nav.group.access');
-    expect(matchNav('/commands')?.group.labelKey).toBe('nav.group.access');
+  it('resolves enabled items to their groups', () => {
+    expect(matchNav('/users')?.group.labelKey).toBe('nav.group.overview');
     expect(matchNav('/message-reports')?.group.labelKey).toBe(
       'nav.group.access',
     );
-    expect(matchNav('/settings')?.group.labelKey).toBe('nav.group.system');
+    expect(matchNav('/logs')?.group.labelKey).toBe('nav.group.system');
+  });
+
+  it('does not match disabled first-release entries or their child routes', () => {
+    for (const path of [
+      '/dashboard',
+      '/groups',
+      '/connections',
+      '/bans',
+      '/durable-tasks',
+      '/sessions/admins',
+      '/federation/example.com',
+      '/push/config',
+      '/media',
+      '/rate-limits',
+      '/settings',
+    ]) {
+      expect(matchNav(path)).toBeNull();
+    }
   });
 
   it('matches My Account in the footer Account group', () => {
@@ -74,6 +66,13 @@ describe('NAV_GROUPS shape', () => {
     expect(primary).toHaveLength(14);
     const footer = NAV_GROUPS.filter((g) => g.footer).flatMap((g) => g.items);
     expect(footer.map((i) => i.key)).toEqual(['security']);
+  });
+
+  it('only enables the first-release navigation surface', () => {
+    const enabled = NAV_GROUPS.flatMap((group) => group.items)
+      .filter((item) => !item.disabled)
+      .map((item) => item.key);
+    expect(enabled).toEqual(['users', 'messageReports', 'logs', 'security']);
   });
 
   it('no primary group is accidentally marked footer', () => {

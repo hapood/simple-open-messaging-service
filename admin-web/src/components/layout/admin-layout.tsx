@@ -6,7 +6,6 @@ import { useAuth } from '@/auth/auth-context'
 import { Button } from '@/components/ui/button'
 import { NAV_GROUPS, type NavItem } from '@/components/layout/nav-config'
 import { TopBar } from '@/components/layout/top-bar'
-import { CommandPalette } from '@/components/layout/command-palette'
 import { BreakerBanner } from '@/components/admin/breaker-banner'
 
 export function AdminLayout({ children }: { children: ReactNode }) {
@@ -92,7 +91,6 @@ export function AdminLayout({ children }: { children: ReactNode }) {
           </div>
         </main>
       </div>
-      <CommandPalette />
     </div>
   )
 }

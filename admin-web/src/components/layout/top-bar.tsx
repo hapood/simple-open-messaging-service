@@ -52,8 +52,8 @@ export function TopBar({ onOpenNavigation }: { onOpenNavigation: () => void }) {
           variant="ghost"
           size="sm"
           className="gap-2 text-muted-foreground"
-          onClick={() => window.dispatchEvent(new CustomEvent('open-command-palette'))}
-          title={`${t('search.placeholder')} (⌘K)`}
+          disabled
+          title={t('common.comingSoon')}
         >
           <Search className="size-4" />
           <span className="hidden md:inline">{t('topBar.search')}</span>

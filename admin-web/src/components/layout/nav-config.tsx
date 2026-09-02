@@ -32,7 +32,7 @@ export type NavKey =
   | 'media'
   | 'settings'
   | 'security'
-  | 'commands'
+  | 'durableTasks'
   | 'rateLimits'
   | 'messageReports';
 
@@ -68,19 +68,29 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     labelKey: 'nav.group.overview',
     items: [
-      { to: '/dashboard', key: 'dashboard', icon: LayoutDashboard },
+      {
+        to: '/dashboard',
+        key: 'dashboard',
+        icon: LayoutDashboard,
+        disabled: true,
+      },
       { to: '/users', key: 'users', icon: Users },
-      { to: '/federation', key: 'federation', icon: Globe },
-      { to: '/connections', key: 'connections', icon: Radio },
+      { to: '/federation', key: 'federation', icon: Globe, disabled: true },
+      { to: '/connections', key: 'connections', icon: Radio, disabled: true },
     ],
   },
   {
     labelKey: 'nav.group.access',
     items: [
-      { to: '/sessions', key: 'sessions', icon: Monitor },
-      { to: '/groups', key: 'groups', icon: Hash },
-      { to: '/bans', key: 'bans', icon: ShieldBan },
-      { to: '/commands', key: 'commands', icon: ListChecks },
+      { to: '/sessions', key: 'sessions', icon: Monitor, disabled: true },
+      { to: '/groups', key: 'groups', icon: Hash, disabled: true },
+      { to: '/bans', key: 'bans', icon: ShieldBan, disabled: true },
+      {
+        to: '/durable-tasks',
+        key: 'durableTasks',
+        icon: ListChecks,
+        disabled: true,
+      },
       {
         to: '/message-reports',
         key: 'messageReports',
@@ -91,11 +101,16 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     labelKey: 'nav.group.system',
     items: [
-      { to: '/push', key: 'push', icon: Bell },
-      { to: '/media', key: 'media', icon: HardDrive },
+      { to: '/push', key: 'push', icon: Bell, disabled: true },
+      { to: '/media', key: 'media', icon: HardDrive, disabled: true },
       { to: '/logs', key: 'logs', icon: ScrollText },
-      { to: '/rate-limits', key: 'rateLimits', icon: Gauge },
-      { to: '/settings', key: 'settings', icon: Settings },
+      {
+        to: '/rate-limits',
+        key: 'rateLimits',
+        icon: Gauge,
+        disabled: true,
+      },
+      { to: '/settings', key: 'settings', icon: Settings, disabled: true },
     ],
   },
   {
